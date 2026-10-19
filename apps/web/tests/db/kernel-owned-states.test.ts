@@ -5,7 +5,7 @@
  */
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
-import { kernelOwnedDeliveryStates } from '../../src/lib/workflow/delivery-view';
+import { kernelOwnedDeliveryStates, kernelOwnerDeliveryFacts } from '../../src/lib/workflow/delivery-view';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
 
 let t: { repairing: string; released: string; none: string };
@@ -27,5 +27,14 @@ describe('kernelOwnedDeliveryStates', () => {
 
   test('an empty list issues no query and returns nothing', async () => {
     expect(await kernelOwnedDeliveryStates([])).toEqual([]);
+  });
+});
+
+// 92a439a6: the owner loop's read of its own delivery.
+describe('kernelOwnerDeliveryFacts', () => {
+  test('the newest kernel delivery of the task, with its PR and merge time; none for a released or missing one', async () => {
+    expect(await kernelOwnerDeliveryFacts(t.repairing)).toEqual({ state: 'REPAIRING', prNumber: null, mergedAt: null });
+    expect(await kernelOwnerDeliveryFacts(t.released)).toBeNull();
+    expect(await kernelOwnerDeliveryFacts(t.none)).toBeNull();
   });
 });

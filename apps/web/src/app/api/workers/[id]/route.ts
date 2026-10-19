@@ -1,10 +1,11 @@
 import { repairPathManifest, readRepairPrFiles } from '@/lib/repair-manifest';
 import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-completion';
-import { NextRequest, NextResponse, after } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { withLoaderLabel } from '@buildd/core/db/query-label';
+import { deferredReplyWork } from '@/lib/deferred-reply-work';
 import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/model-policy';
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules, reviewFeedback } from '@buildd/core/db/schema';
@@ -144,33 +145,6 @@ import { settleWorkChanges } from '@/lib/settle-work-changes';
 import { clearTeamCache } from '@/lib/team-cache';
 import { readRound } from '@/lib/read-round';
 import { changedFields, livenessWriteDue, markWorkerHeartbeat, markParkedWorkerSeen, INTERACTIVE_SESSION_SEEN_WRITE_MS } from '@/lib/worker-patch-diff';
-
-/**
- * Work that does not change the reply runs after it is sent (spec 3ef37387
- * R-33): `after()` inside a request, inline outside one (tests, scripts), so
- * nothing is lost where no response is being sent. Never throws.
- */
-function deferredReplyWork() {
-  const pending: Array<{ label: string; fn: () => Promise<unknown> }> = [];
-  let scheduled = false;
-  return async (label: string, fn: () => Promise<unknown>): Promise<void> => {
-    const run = async () => {
-      for (const item of pending.splice(0)) {
-        try { await withLoaderLabel(`workers.patch.after.${item.label}`, item.fn); }
-        catch (err) { console.error(`[workers PATCH] ${item.label} failed:`, err); }
-      }
-    };
-    pending.push({ label, fn });
-    if (scheduled) return;
-    try {
-      after(run);
-      scheduled = true;
-    } catch {
-      // Direct invocation (scripts/unit tests) has no request lifetime.
-      await run();
-    }
-  };
-}
 
 /**
  * Worker statuses from which no further live update is legal. Every optimistic
@@ -773,6 +747,20 @@ export async function GET(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
+  // view=status: what a poller reads (the runner's reconcile and terminal
+  // checks): status, error and the task's status, never the workspace row or
+  // the worker's JSON columns. API keys only; the owner check is the same.
+  if (account && req.nextUrl.searchParams.get('view') === 'status') {
+    const lean = await db.query.workers.findFirst({
+      where: sqlWhere(eq(workers.id, id)),
+      columns: { id: true, status: true, error: true, accountId: true, taskId: true, workspaceId: true, claimedByUserId: true },
+      with: { task: { columns: { status: true } } },
+    });
+    if (!lean) return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+    if (!callerOwnsWorker(account, lean)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    return NextResponse.json({ id: lean.id, status: lean.status, error: lean.error ?? null, task: lean.task ? { status: lean.task.status } : null });
+  }
+
   const worker = await db.query.workers.findFirst({
     where: sqlWhere(eq(workers.id, id)),
     with: { task: true, workspace: true },
@@ -822,6 +810,11 @@ async function patchWorker(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  // Non-outcome work only (telemetry, notifications, cache and ledger writes).
+  // A client that disconnects mid-handler lets the drain run early, and what is
+  // queued after it schedules a second after() that waitUntil may not cover.
+  // So a verdict, an attempt end, a release decision or a terminal record goes
+  // through `terminalWork` (inline for a terminal report), never through here.
   const afterReply = deferredReplyWork();
 
   const authHeader = req.headers.get('authorization');
@@ -1286,6 +1279,12 @@ async function patchWorker(
   // writes them first: its own failure handling below reads the traces.
   const reportIsTerminal = reportedStatus === 'completed' || reportedStatus === 'failed' || reportedStatus === 'error';
   const telemetryWrite = (label: string, fn: () => Promise<unknown>) => reportIsTerminal
+    ? fn().then(() => {}, err => console.error(`[workers PATCH] ${label} failed:`, err))
+    : afterReply(label, fn);
+  // A terminal report's follow-up (release, reviewer verdict, the kernel's
+  // attempt end, terminal records) runs before the reply, as it did before
+  // R-33: an outcome must never depend on the request's lifetime.
+  const terminalWork = (label: string, fn: () => Promise<unknown>) => reportIsTerminal
     ? fn().then(() => {}, err => console.error(`[workers PATCH] ${label} failed:`, err))
     : afterReply(label, fn);
   // appendMcpCalls: merge new MCP tool calls into existing log
@@ -1867,7 +1866,7 @@ async function patchWorker(
       // The sample plus this sync's paths plus what the task actually holds:
       // the leases are the complete set, the sample may be truncated.
       const observedTaskId = worker.taskId;
-      await afterReply('terminal touched paths', async () => {
+      await terminalWork('terminal touched paths', async () => {
       const observed = Array.isArray(worker.observedTouches) ? (worker.observedTouches as string[]) : [];
       const owned = worker.workspaceId ? await terminalOwnedPaths(worker.workspaceId, observedTaskId) : [];
       const finalPaths = [...new Set([...observed, ...reportedTouches, ...owned])];
@@ -4479,7 +4478,7 @@ async function patchWorker(
       };
 
       const completedTaskId = worker.taskId;
-      await afterReply('completion follow-up', async () => {
+      await terminalWork('completion follow-up', async () => {
       // Run release sequence on successful completion.
       // IMPORTANT: a failed release overrides the task status to 'failed' — the
       // task is not truly done until the release PR lands and prod is healthy.
@@ -4881,33 +4880,35 @@ async function patchWorker(
       if (terminalRow?.deliveryRole !== 'owner') await runStep('workflow-attempt-ended', workflowAttemptEnd);
 
       // Notify on task completion/failure — routed to the OWNING team's channel.
-      await runStep('notify', async () => {
-        const taskRecord = await db.query.tasks.findFirst({
-          where: sqlWhere(eq(tasks.id, taskId)),
-          // startAt feeds the auto-retry wake below.
-          columns: {
-            id: true, title: true, description: true, workspaceId: true, mode: true, priority: true,
-            missionId: true, backend: true, roleSlug: true, runnerPreference: true, startAt: true,
-          },
-          with: {
-            workspace: {
-              columns: {
-                id: true, name: true, teamId: true, repo: true, webhookConfig: true,
-                githubInstallationId: true, githubRepoId: true,
-              },
-            },
-          },
-        });
-        if (shouldAutoRetry && taskRecord) {
+      // The auto-retry wake is delivery, not a notification: it stays inline.
+      // Telling people (the emit below) changes no outcome, so it goes after
+      // the reply (R-33). Nothing else in this block may move there: the
+      // verdict, the attempt end, the release decision and the terminal record
+      // are outcomes, and `after()` is not guaranteed to run them (a client
+      // that disconnects can end the request before the drain is scheduled).
+      const notifyTaskRow = () => db.query.tasks.findFirst({
+        where: sqlWhere(eq(tasks.id, taskId)),
+        columns: { id: true, title: true, startAt: true },
+        with: { workspace: { columns: { name: true, teamId: true } } },
+      });
+      if (shouldAutoRetry) {
+        await runStep('retry-wake', async () => {
+          const taskRecord = await notifyTaskRow();
+          if (!taskRecord) return;
           // The requeue is already durable (tasks trigger); this labels it and
           // kicks delivery. A backoff/loop startAt keys the wake onto the
           // trigger's scheduled row instead of spending an immediate no-op one.
           const retryAt = taskRecord.startAt ? new Date(taskRecord.startAt) : null;
           const deferred = retryAt && retryAt.getTime() > Date.now() ? retryAt : undefined;
           await wakeTask(completedTaskId!, 'task.requeued', deferred ? { notBefore: deferred } : {});
-        }
-        const notifyTeamId = (taskRecord?.workspace as { teamId?: string } | undefined)?.teamId;
-        if (taskRecord && notifyTeamId) {
+        });
+      }
+      // A release held for CI is not an outcome yet (the release PR's CI emits it).
+      if (!(releaseHeld && !shouldAutoRetry)) {
+        await afterReply('task outcome notification', () => runStep('notify', async () => {
+          const taskRecord = await notifyTaskRow();
+          const notifyTeamId = (taskRecord?.workspace as { teamId?: string } | undefined)?.teamId;
+          if (!taskRecord || !notifyTeamId) return;
           // A contract violation (planning/review) reports `status:'completed'`
           // in the request body — that's what the agent claimed — but the task
           // was overridden to failed/requeued above. Using the raw body status
@@ -4915,11 +4916,8 @@ async function patchWorker(
           // "Task done" (see recordTaskOutcome's `effectiveOutcome`, which
           // already applies this same correction).
           // A completion-policy slot overrides the report the same way: a
-          // loop that ran out of attempts or a failed release is a failure,
-          // and a release held for CI is not an outcome yet (the release
-          // PR's CI emits it, github/webhook).
+          // loop that ran out of attempts or a failed release is a failure.
           const isDone = status === 'completed' && !contractViolation && !slotFailure;
-          if (releaseHeld && !shouldAutoRetry) return;
           // Who hears about it (the team's channel, the subscriptions ledger,
           // a chat-filed mission's conversation) is the modules' business.
           await emit({
@@ -4936,8 +4934,8 @@ async function patchWorker(
             error: error ?? null,
             failure: shouldAutoRetry ? null : slotFailure,
           }, { isolate: (_label, fn) => runStep('notify', fn) });
-        }
-      });
+        }));
+      }
 
       // Credential health tracking: update health state on auth failure or success.
       await runStep('credential-health', () => recordCredentialHealthForOutcome(taskId, status, error));
@@ -5076,7 +5074,7 @@ async function patchWorker(
     await clearTeamCache(wsForSensitivity?.teamId, 'questions');
   }
 
-  await afterReply('worker follow-up', async () => {
+  await terminalWork('worker follow-up', async () => {
   // A runner repeats status and PR fields on every sync. Only actual writes
   // invalidate derived summaries; noteWorkChanged coalesces their listeners.
   if (writeSet && ['status', 'waitingFor', 'prUrl', 'prNumber'].some(key => key in writeSet)) {

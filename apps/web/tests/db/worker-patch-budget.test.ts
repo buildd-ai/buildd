@@ -40,6 +40,8 @@ mock.module('next/server', () => ({ ...realNext, after: (fn: () => Promise<unkno
 const workersRoute = await import('../../src/app/api/workers/[id]/route');
 
 const BUDGET = 10;
+/** A terminal report's follow-up runs inline (see the completion case). */
+const TERMINAL_BUDGET = 50;
 
 async function seed(warm = true) {
   const { teamId, workspaceId } = await seedWorkspace();
@@ -94,12 +96,12 @@ const SYNC = {
   dirtyWorktree: false,
 };
 
-async function expectWithinBudget(name: string, rec: Awaited<ReturnType<typeof patch>>, status = 200) {
+async function expectWithinBudget(name: string, rec: Awaited<ReturnType<typeof patch>>, status = 200, budget = BUDGET) {
   const res = rec.result as Response;
   expect({ name, status: res.status }).toEqual({ name, status });
   // The query list rides in the failure so a regression names its new query.
   process.stdout.write(`[worker PATCH budget] ${name}: ${rec.count} round trips\n`);
-  expect({ name, overBudget: rec.count > BUDGET ? describeRec(rec) : null }).toEqual({ name, overBudget: null });
+  expect({ name, overBudget: rec.count > budget ? describeRec(rec) : null }).toEqual({ name, overBudget: null });
 }
 
 describe('PATCH /api/workers/[id] query budget (R-33)', () => {
@@ -207,7 +209,10 @@ describe('PATCH /api/workers/[id] query budget (R-33)', () => {
   it('completion', async () => {
     const s = await seed();
     const rec = await patch(s, { status: 'completed', summary: 'done' });
-    await expectWithinBudget('completion', rec);
+    // A terminal report runs its follow-up (release, reviewer verdict, the
+    // kernel's attempt end, terminal records) before the reply: deferring it
+    // lost outcomes in v0.367.0. Bounded here so it cannot grow unnoticed.
+    await expectWithinBudget('completion', rec, 200, TERMINAL_BUDGET);
     const [w] = await q<{ status: string }>(sql`SELECT status FROM workers WHERE id = ${s.workerId}::uuid`);
     expect(w.status).toBe('completed');
     const [t] = await q<{ status: string }>(sql`SELECT status FROM tasks WHERE id = ${s.taskId}::uuid`);

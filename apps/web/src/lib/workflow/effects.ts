@@ -46,7 +46,9 @@ export function claimDueEffectsSql(limit: number, leaseMs = EFFECT_LEASE_MS, del
   return sql`-- workflow:claim_effects
 WITH due AS (
   SELECT id FROM workflow_effects
-  WHERE ((status = 'pending' AND not_before <= now())
+  -- A mission epoch's rows (no delivery) are drained by epoch-effects.ts.
+  WHERE delivery_id IS NOT NULL
+    AND ((status = 'pending' AND not_before <= now())
      OR (status = 'delivering' AND lease_until < now()))
     ${deliveryId ? sql`AND delivery_id = ${deliveryId}::uuid` : sql``}
   ORDER BY not_before, id
@@ -140,6 +142,14 @@ export function wakeHeldMergesSql(deliveryId: string, headSha: string): SQL {
 UPDATE workflow_effects SET not_before = now(), updated_at = now()
 WHERE delivery_id = ${deliveryId}::uuid AND kind = 'merge_call' AND status = 'pending'
   AND outcome LIKE ${`${MERGE_HELD_OUTCOME}:%`}::text AND payload->>'headSha' = ${headSha}::text
+RETURNING id`;
+}
+
+/** §5: the open findings of one delivery become another's, ids kept (a closed one stays where it was decided). */
+export function carryOpenFindingsSql(fromDeliveryId: string, toDeliveryId: string): SQL {
+  return sql`-- workflow:carry_open_findings
+UPDATE workflow_findings SET delivery_id = ${toDeliveryId}::uuid, updated_at = now()
+WHERE delivery_id = ${fromDeliveryId}::uuid AND status IN ('open', 'addressed')
 RETURNING id`;
 }
 

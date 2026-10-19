@@ -67,8 +67,14 @@ const KERNEL_ENTRY_POINTS = new Set(['kernel-client', 'command-api', 'command-ke
   'review-round-metrics',
   // Living Spec r7 AC-46: a refused decision in plain words (pure strings from a reason code; no command).
   'decision-refusal',
+  // Living Spec r7 AC-24 / AC-43: the round reading and the escalation decision's wording, pure strings
+  // from the DeliveryView (no command, no reducer), read by the task page, get_pr and the activity comment.
+  'delivery-rounds', 'escalation-copy',
   // The landing gate's pure answer and the `buildd/landing` context (workflow-kernel-library.md §4): read-only, like projections.
   'landing-gate',
+  // §6 scope amendments: the scope hold on a task (a predicate over `context.heldBy`, no I/O), so the
+  // task PATCH can tell a scope hold from a person's own before it records the answer through the kernel.
+  'scope-hold',
   // S4a: the PR fact funnel's scope for terminal facts (a predicate, no command): the way a funnel caller
   // records a merge or close without deciding it for a delivery-owned row.
   'pr-fact-scope',
@@ -86,7 +92,10 @@ const KERNEL_ENTRY_POINTS = new Set(['kernel-client', 'command-api', 'command-ke
   'owner-attempt',
   // The platform operator's kernel view (Health, operator only): bounded SELECTs over the log and the
   // parked commands, plus the PR timeline through loadView; no command, so it cannot assign a state.
-  'operator-view']);
+  'operator-view',
+  // §6: the mission epochs' outbox. The refresh triggers owe the writable epoch's refresh row and drain
+  // it; it writes only workflow_effects rows owned by an epoch, never a delivery or an epoch's state.
+  'epoch-effects']);
 const COMPOSITION_ROOT = 'apps/web/src/modules.ts';
 // The package is matched too: importing `@buildd/workflow-kernel/reducer` is importing the reducer, and its
 // root (`@buildd/workflow-kernel`, every module at once) reads as `index`, which is no entry point.
@@ -305,16 +314,19 @@ describe('S3a: doors submit kernel commands through the one client', () => {
  *
  *  - The only SQL that writes those columns is `packages/core/pr-facts.ts` (`recordPrFact`) and
  *    `pr-fact-sql.ts` (the projection fragment the transition embeds). A raw or Drizzle write anywhere else fails here.
- *  - A terminal fact (merged, closed) needs a scope, and scopes are minted only in the kernel
- *    (`apps/web/src/lib/workflow/pr-fact-scope.ts`): `factFunnelScope` keeps a kernel-owned row out
- *    unless its delivery already says the same thing. So a caller records the fact; the reducer
- *    decides. The type requires the scope and the funnel refuses a terminal fact without one.
+ *  - Every fact needs a scope, and scopes are minted only in the kernel
+ *    (`apps/web/src/lib/workflow/pr-fact-scope.ts`). For a terminal fact (merged, closed)
+ *    `factFunnelScope` keeps a kernel-owned row out unless its delivery already says the same
+ *    thing. For a non-terminal fact (open, CI, conflict, unresolvable) it defers every kernel-owned
+ *    row: reported back, never written, because every other kernel transition projects the row's
+ *    live status from the delivery's own readings (kernel.ts `w_live`, AC-1). So a caller records
+ *    the fact; the reducer decides. The type requires the scope, the funnel refuses a fact without
+ *    one, and the guard below fails a call outside the kernel that passes none.
  *  - Every module outside the kernel that calls the funnel is listed below with its reason, so a
  *    new caller fails naming its file, and a listed caller that stops calling it fails too.
  *
- * Still allowed, and listed here so the debt is visible: the funnel's NON-terminal facts
- * (pr_open, ci_*, conflict, unresolvable) for delivery-owned rows, and every `tasks.status` /
- * `tasks.result` writer. Both are S4b's.
+ * Still allowed, and listed here so the debt is visible: every `tasks.status` / `tasks.result`
+ * writer (S4b's, below).
  */
 const PR_FACTS = new Set(['packages/core/pr-facts.ts', 'packages/core/pr-fact-sql.ts']);
 const WORKERS_COLUMN_DECLARATIONS = new Set<string>([
@@ -324,28 +336,28 @@ const WORKERS_COLUMN_DECLARATIONS = new Set<string>([
   'scripts/demo/advance.ts',
 ]);
 
-/** Terminal facts here go under `factFunnelScope`; non-terminal facts (open, CI, conflict, unresolvable) stay unscoped: S4a and S4b did not scope them and no open slice owns it (a follow-up task, if wanted). */
-const FUNNEL = 'records PR facts through the funnel; a terminal fact under factFunnelScope (delivery-owned rows take only what their delivery says)';
+/** Every fact here goes under `factFunnelScope`: a terminal one reaches a delivery-owned row only when its delivery agrees, a non-terminal one never (deferred to `w_live`). */
+const FUNNEL = 'records PR facts through the funnel under factFunnelScope (delivery-owned rows take only what their delivery says)';
 const FUNNEL_CALLERS: Record<string, string> = {
-  'apps/web/src/app/api/github/webhook/route.ts': `${FUNNEL}; CI, conflict and open facts unscoped (unscoped, no owning slice). A kernel-owned merge is T17's, reached through observePrState`,
+  'apps/web/src/app/api/github/webhook/route.ts': `${FUNNEL}; CI, conflict and open facts defer a delivery-owned row to its transition's projection, recorded before the kernel sees the green. A kernel-owned merge is T17's, reached through observePrState`,
   'apps/web/src/app/api/github/pr/route.ts': `${FUNNEL}: the legacy merge door's receipt`,
   'apps/web/src/app/api/prs/[prNumber]/merge/route.ts': `${FUNNEL}: the dashboard merge door's receipt`,
-  'apps/web/src/app/api/admin/backfill-merged-prs/route.ts': 'unresolvable bookkeeping only (non-terminal, unscoped; no owning slice)',
+  'apps/web/src/app/api/admin/backfill-merged-prs/route.ts': `${FUNNEL}: unresolvable bookkeeping only (deferred for a delivery-owned row)`,
   'apps/web/src/lib/dead-pr-shutdown.ts': `${FUNNEL}: the loser of a duplicate PR closes`,
-  'apps/web/src/lib/dead-zone-sweep.ts': `${FUNNEL}: the sweep heals a missed merge or close`,
-  'apps/web/src/lib/mission-pr.ts': `${FUNNEL}; the open fact unscoped (unscoped; no owning slice). The mission PR's delivery is opened by openMissionPrDelivery (S6)`,
+  'apps/web/src/lib/dead-zone-sweep.ts': `${FUNNEL}: the sweep heals a missed merge or close, and records conflict or red CI`,
+  'apps/web/src/lib/mission-pr.ts': `${FUNNEL}; the open fact deferred for a delivery-owned row. The mission PR's delivery is opened by openMissionPrDelivery (S6)`,
   'apps/web/src/lib/pr-fact-import.ts': `${FUNNEL}: the reconcile script's import`,
   'apps/web/src/lib/pr-merge-stamp.ts': `${FUNNEL}: stampPrMergedOnAllRows, the legacy merge's stamp`,
   // runMergedPrWork stamps only with \`stamp: true\`: the webhook's legacy path. A kernel-owned PR's
   // work runs from the emit_pr_merged effect with \`stamp: false\`, after T17 already projected the rows.
   'apps/web/src/lib/pr-merged-work.ts': `${FUNNEL}: stampPrMergedOnAllRows for a PR the kernel does not own`,
-  'apps/web/src/lib/pr-reconcile.ts': `${FUNNEL}; conflict and unresolvable unscoped (unscoped; no owning slice)`,
-  'apps/web/src/lib/pr-review-request.ts': `${FUNNEL}; the open fact unscoped (unscoped; no owning slice)`,
-  'apps/web/src/lib/pr-state-refresh.ts': `${FUNNEL}; the CI fact unscoped (unscoped; no owning slice). The render read-through itself retires with AC-3`,
-  'apps/web/src/lib/register-local-pr.ts': 'the open fact only (non-terminal, unscoped; no owning slice)',
-  'apps/web/src/lib/worker-pr-slot.ts': 'the open fact only (non-terminal, unscoped; no owning slice): the PR-only owner row: a second PR from one worker, or an orphan PR the hourly sweep adopts',
+  'apps/web/src/lib/pr-reconcile.ts': `${FUNNEL}; conflict and unresolvable deferred for a delivery-owned row`,
+  'apps/web/src/lib/pr-review-request.ts': `${FUNNEL}; the open fact deferred for a delivery-owned row`,
+  'apps/web/src/lib/pr-state-refresh.ts': `${FUNNEL}; the CI fact only for rows no delivery owns (AC-3 skips owned rows before it). The render read-through itself retires with AC-3`,
+  'apps/web/src/lib/register-local-pr.ts': `${FUNNEL}: the open fact only (deferred for a delivery-owned row)`,
+  'apps/web/src/lib/worker-pr-slot.ts': `${FUNNEL}: the open fact only (deferred for a delivery-owned row), the sibling owner row of a second PR from one worker`,
   // Cannot import apps/web, so it mints an unscoped scope (below).
-  'packages/core/scripts/backfill-mergedat.ts': 'manual operator backfill, run by hand; unscoped. Healing through the kernel floor instead has no owning slice',
+  'packages/core/scripts/backfill-mergedat.ts': 'manual operator backfill of terminal facts, run by hand; unscoped. Healing through the kernel floor instead has no owning slice',
 };
 /** Minting a terminal-fact scope outside the kernel bypasses the delivery check. */
 const SCOPE_MINTERS: Record<string, string> = {
@@ -353,7 +365,28 @@ const SCOPE_MINTERS: Record<string, string> = {
 };
 const FUNNEL_CALL = /\b(?:recordPrFact|stampPrMergedOnAllRows)\b/;
 /** The funnel's SQL builders write the columns: only the funnel and the kernel may run them. */
-const FUNNEL_SQL = /\b(?:recordPrFactSql|prFactProjectionSql)\b/;
+const FUNNEL_SQL = /\b(?:recordPrFactSql|prFactProjectionSql|prLiveProjectionSql)\b/;
+
+/**
+ * AC-1: each `recordPrFact(...)` call in `src` whose arguments pass no scope, by line. A call with
+ * no scope could write a delivery-owned row outside a transition (the funnel refuses it at run
+ * time too; this names the file in CI).
+ */
+function unscopedFunnelCalls(src: string): string[] {
+  const out: string[] = [];
+  const line = (i: number) => src.slice(0, i).split('\n').length;
+  for (const m of src.matchAll(/\brecordPrFact\s*\(/g)) {
+    let depth = 1;
+    let i = m.index! + m[0].length;
+    for (; i < src.length && depth > 0; i++) {
+      if (src[i] === '(') depth++;
+      else if (src[i] === ')') depth--;
+    }
+    const args = src.slice(m.index! + m[0].length, i - 1);
+    if (!/\bscope\b/.test(args)) out.push(`recordPrFact@${line(m.index!)}`);
+  }
+  return out;
+}
 /** Minting a scope, or borrowing the kernel's own unscoped one (only `stamp_pr_rows` may write past the delivery check). */
 const SCOPE_MINT = /\b(?:unscopedPrFactScope|PR_FACT_SCOPE|kernelProjectionScope)\b/;
 
@@ -745,6 +778,16 @@ describe('S4a: the delivery columns (workers.merged_at, workers.pr_lifecycle_sta
     expect(Object.keys(FUNNEL_CALLERS).filter((f) => !callers.includes(f))).toEqual([]);
   });
 
+  it('every funnel call outside the kernel passes a scope: an unscoped fact can never reach a delivery-owned row (AC-1)', () => {
+    const offenders = outside.flatMap((f) => unscopedFunnelCalls(code(f)).map((s) => `${f} ${s}`));
+    expect(offenders).toEqual([]);
+    // The scan can fail, and it reads the whole call, however it wraps.
+    expect(unscopedFunnelCalls(`await recordPrFact({ workerId: w.id }, { kind: 'ci', status: 'ci_failed' });`)).toEqual(['recordPrFact@1']);
+    expect(unscopedFunnelCalls(`await recordPrFact(\n  { workerId: w.id },\n  isDirty ? { kind: 'conflict' } : { kind: 'open' },\n);`)).toEqual(['recordPrFact@1']);
+    expect(unscopedFunnelCalls(`await recordPrFact({ workerId: f(x) }, { kind: 'open' }, { bookkeeping: { prIsDraft: g(y) }, scope: factFunnelScope });`)).toEqual([]);
+    expect(unscopedFunnelCalls(`const { recordPrFact } = await import('@buildd/core/pr-facts');`)).toEqual([]);
+  });
+
   it("the funnel's SQL builders run only in the funnel and the kernel", () => {
     expect(outside.filter((f) => FUNNEL_SQL.test(code(f)))).toEqual([]);
   });
@@ -761,6 +804,10 @@ describe('S4a: the delivery columns (workers.merged_at, workers.pr_lifecycle_sta
     const kernel = code(`${KERNEL_DIR}kernel.ts`);
     expect(/w_proj AS \(/.test(kernel)).toBe(true);
     expect(/prFactProjectionSql\(/.test(kernel)).toBe(true);
+    // AC-1, the non-terminal half: every other transition projects the live status the funnel defers.
+    expect(/w_live AS \(/.test(kernel)).toBe(true);
+    expect(/prLiveProjectionSql\(/.test(kernel)).toBe(true);
+    expect(/defers:\s*\(\)\s*=>\s*kernelOwnedRowSql\(\)/.test(code(`${KERNEL_DIR}pr-fact-scope.ts`))).toBe(true);
   });
 
   it('every tasks.status / tasks.result writer outside the kernel is listed with its reason (S4b)', () => {

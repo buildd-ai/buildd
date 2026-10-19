@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/override-permission.ts, apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [apps/web/src/lib/workflow/kernel-telemetry.test.ts, apps/control-plane/src/axiom-export.test.ts, packages/workflow-kernel/src/review-verdict-authority.test.ts, apps/web/src/lib/override-permission.test.ts, apps/web/src/app/api/prs/[prNumber]/approve-override/route.test.ts, apps/web/tests/db/escalation-decisions.test.ts, packages/workflow-kernel/src/decision-refusal.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/pr-landing-adoption.test.ts, apps/web/tests/db/merge-adoption.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts]
+verified_by: [apps/web/tests/db/epoch-effects.test.ts, apps/web/src/lib/workflow/kernel-telemetry.test.ts, apps/control-plane/src/axiom-export.test.ts, packages/workflow-kernel/src/review-verdict-authority.test.ts, apps/web/src/lib/override-permission.test.ts, apps/web/src/app/api/prs/[prNumber]/approve-override/route.test.ts, apps/web/tests/db/escalation-decisions.test.ts, packages/workflow-kernel/src/decision-refusal.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/pr-landing-adoption.test.ts, apps/web/tests/db/merge-adoption.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts, apps/web/src/lib/workflow/fix-completion-gate.test.ts, apps/web/tests/db/workflow-seam.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -1245,8 +1245,12 @@ push, refresh, completion or owner change can make it disappear.
 - Remaining rule-4 deviations: a fix in another directory than the
   finding's, with nothing the feedback names, needs the `fixedElsewhere`
   claim; a finding on a file at the repository root accepts any change (its
-  directory is the root); the gate does not tell a refresh push credited to a
-  running fix (§6.9) from the fix's own; legacy review fixes have no gate.
+  directory is the root); legacy review fixes have no gate.
+- Completion, a head moved only by a merge of the base (AC-79): refused
+  (`repair_base_only`) when the PR's diff against the base is the same at the
+  bound head and the live one (`contentEquivalent`): nothing on the head is
+  the fix's own work. A `fixedElsewhere` claim does not excuse it; a person's
+  applied fix (T23) is not checked. An unread compare is not this refusal.
 - A no-op claim never resolves anything: the attempt ends `noop` (it spends
   the budget) and a verification round at the same head checks the named
   findings. A fix that ends with the head where it was bound (read live; an
@@ -1314,6 +1318,25 @@ push, refresh, completion or owner change can make it disappear.
   approved head). Classifying a pre-test infrastructure failure so no CI fix
   is dispatched at all is not built: the green re-run is what clears it.
 
+- A merge of the base while a review fix runs is never the fix's push
+  (AC-79). §6.9 credits a running attempt with any push that descends from
+  its bound head, and a merge of the base does. The head fact reads whether
+  the move from the held head brought only base commits (`baseOnly`: the
+  platform's own `refresh_branch` pinned to the held head updated the
+  branch, or the PR's diff against the base is unchanged across the move)
+  and, when it did, the push is recorded as foreign (`foreignPush`,
+  `baseOnly` on the transition): it is not added to the attempt's reported
+  heads and addresses no finding, even where the base touched a finding's
+  file. A head the fix itself reported stays its own. At the fix's end the
+  seam reads the same compare from the bound head (`AttemptEnded.baseOnly`):
+  when only base commits moved the PR since the fix started, the fix does not
+  complete on that head whatever outcome it reports. The attempt ends `noop`
+  (it spends the budget, AC-19) and a delta round scoped to the refresh is
+  queued at the head (trigger `base_refresh`, scope `refresh { fromHeadSha,
+  toHeadSha }`); the open verdict and findings stand. A fix that pushed its
+  own work and then had the base merged in is credited with its own push
+  only and completes on the merged head as any fix does.
+
 **Acceptance criteria**:
 - AC-17: GIVEN two findings at head A WHEN a fix push touches one finding's
   path and a migration-only push follows THEN one finding is `addressed`, the
@@ -1330,6 +1353,12 @@ push, refresh, completion or owner change can make it disappear.
   finding's path and CI goes green on it THEN that finding is `addressed`
   (awaiting verification) and the other `open`, nothing is verified, no review
   or fix is dispatched, nothing merges, and the delivery stays the person's.
+- AC-79 (failure; implements Living Spec criterion AC-36): GIVEN a running
+  review fix WHEN the PR head moves by a merge of the base only THEN the push
+  is recorded as foreign and not credited to the fix, the fix cannot complete
+  on it (`repair_base_only`; its end is "no change"), and a delta round scoped
+  to the refresh is queued; WHEN the fix pushed its own work before the merge
+  THEN only that push is credited and the fix completes on the merged head.
 
 Counting (Living Spec r7 §7, task 59f2c591). Every surface counts findings
 from one partition, `findingTotals`: each required finding is in exactly one
@@ -1341,6 +1370,7 @@ as resolved. `open + addressedAwaitingVerification` is what blocks landing.
 | AC | Test |
 | --- | --- |
 | Criterion AC-66 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "r7 AC-44"; `apps/web/tests/db/escalation-decisions.test.ts` › "AC-44 / AC-47" |
+| Criterion AC-79 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "AC-79"; `packages/workflow-kernel/src/reducer.test.ts` › "AC-79"; `apps/web/src/lib/workflow/fix-completion-gate.test.ts` › "AC-79"; `apps/web/tests/db/workflow-seam.test.ts` › "AC-79" |
 
 ## 6. Mission deliveries and epochs
 
@@ -1414,8 +1444,11 @@ later work and nothing refreshes or re-ships a branch that already landed.
   merged plus epoch 2 open on that same branch, which is never deleted while the
   open epoch uses it. Until adopted, a mission's readers keep the pre-epoch
   answers. History before adoption is not reconstructed.
-- Scope amendments (S6b): a deliverable task added to a mission (not the
-  organizer decomposing its own brief) gets one scope decision at the Decide
+- Scope amendments (S6b): a deliverable task added to a mission, filed into it
+  or linked to it (`manage_missions link_task`, a task PATCH setting
+  `missionId`; not the organizer decomposing its own brief, which for a linked
+  task means only a child of this mission's own planning task) gets one scope
+  decision at the Decide
   point `mission_scope` (`in_scope | amend_scope | ask`, decision kind
   `buildd.mission_scope`), recorded with `decideAndRecord`, so a replay reads
   it and never asks again. The package's `planScope` turns it into what is
@@ -1433,18 +1466,34 @@ later work and nothing refreshes or re-ships a branch that already landed.
   - `ask`, or any amendment that would remove a criterion, change a command,
     turn a mechanical criterion into prose or clear the list
     (`criteriaWeakening`): held. The task gets the claim gate's single-task
-    hold, and one mission note asks a person; the contract is unchanged.
+    hold, naming the mission (`scopeHold`), and one mission note asks a
+    person; the contract is unchanged.
+  - A held decision is answered once (kernel op `mission_scope_resolve`, the
+    package's `planScopeResolution`, one statement): `in_scope` (it fits),
+    `amend_scope` (the amendment is planned again on the mission as it is now
+    and applied with the same compare-and-set, even one that weakens a
+    criterion, since that is what the person was asked), `out_of_scope` (the
+    task is cancelled) and `withdrawn` (the task left the mission first). Each
+    releases only the hold that mission's decision placed, never a person's
+    own or another mission's, and answers the note. A person answers through
+    `POST /api/tasks/[id]/scope-answer` (person-only), and resuming the held
+    task records `in_scope`; leaving the mission records `withdrawn`.
   - The default (no decider, an error, a timeout, an invalid or low-confidence
     answer) is `in_scope`, or `amend_scope` when the filer proposed one, so
     ordinary filing never waits on a person, and the default is recorded with
-    its reason. NOT IMPLEMENTED: recording the person's resolution of a held
-    decision when the task is resumed (the hold is lifted by the normal Resume),
-    and the decision for a task moved into a mission by `link_task`.
+    its reason. NOT IMPLEMENTED: a held task cancelled outside the scope
+    answer keeps its decision held (the mission page still lists it).
 - Refresh reads "shipped" from delivery state: a refresh acts on the writable
   epoch's branch only, and never runs for a merged epoch
-  (`mission-branch-refresh.md`, Eligibility). NOT IMPLEMENTED: the refresh as
-  an outbox effect of the epoch; it still runs from the start trigger and the
-  backstop, gated on epoch state.
+  (`mission-branch-refresh.md`, Eligibility). The refresh is an outbox effect
+  of the epoch: the writable epoch owes a `refresh_mission_branch` row in
+  `workflow_effects`, owned by the epoch (`epoch_id`; a row has an epoch or a
+  delivery and transition, never both), and a merged epoch owes none
+  (`owedRefresh`). A task's claim and the backstop owe it and drain their own
+  row; the floor drains what is left due (`drainDueEpochEffects`). A row owed
+  before its epoch merged is done as `skipped:superseded` without running
+  (`epochEffectIsCurrent`). The PR deliveries' drain never claims an epoch
+  row.
 - A clean refresh merge is a recorded fact on the delivery (head moved by
   refresh, not a fix, §13.13 rule 5).
 - A conflicted refresh files one pinned builder (single-flight per epoch and
@@ -1523,7 +1572,7 @@ later work and nothing refreshes or re-ships a branch that already landed.
 | AC | Test |
 | --- | --- |
 | Criterion AC-20 | `packages/workflow-kernel/src/delivery-epochs.test.ts` › "AC-20 / scenario 1 and 3"; `apps/web/tests/db/mission-epochs.test.ts` › "AC-20", "scenario 2" |
-| Criterion AC-21 | `apps/web/src/lib/mission-branch-refresh.test.ts` › "mission delivery records (AC-21)" |
+| Criterion AC-21 | `apps/web/src/lib/mission-branch-refresh.test.ts` › "mission delivery records (AC-21)", "the refresh as an effect of the writable epoch"; `apps/web/tests/db/epoch-effects.test.ts` › "a merged epoch owes none", "a row owed before its epoch merged is skipped when claimed" |
 | Criterion AC-22 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
 | Criterion AC-23 | `apps/web/tests/db/mission-epochs.test.ts` › "AC-23 / a11abc4b"; `apps/web/src/lib/mission-pr.test.ts` › "a refresh PR lands only on the delivery it was filed for" |
 | Criterion AC-71 | `apps/web/src/lib/integration-refresh.test.ts` › "refreshFiledFor"; `apps/web/src/lib/stale-workers.test.ts` › "#4909"; `apps/web/src/lib/mission-pr.test.ts` › "#4909" |
@@ -1723,7 +1772,14 @@ column outside the kernel; S3 and S4 remove or route each one.
   own statement; a terminal fact (merged, closed) from any of these callers
   carries the kernel's scope (`pr-fact-scope.ts`), so a delivery-owned row
   takes only what its delivery already says. Their non-terminal facts
-  (`pr_open`, CI, conflict, unresolvable) stay unscoped: S4a and S4b did not take them and no open slice owns them. "Delivery-owned" has
+  (`pr_open`, CI, conflict, unresolvable) carry the same scope, which defers
+  every delivery-owned row: the funnel reports it (`deferred`, so a caller's
+  side effects still see a fact that is new for the row) and writes none.
+  Every other kernel transition projects the row's live status from the
+  delivery's own readings at its head, in its own statement (`w_live`,
+  `prLiveProjectionSql`): dirty mergeability is `conflict`, then a red or
+  green CI verdict, else `pr_open`. A funnel call with no scope is refused,
+  by type and at run time, and the write-site guard names its file. "Delivery-owned" has
   one definition (`kernelOwnedRowSql`: a kernel-authority delivery, kill switch
   on, owns the row's PR), shared by the funnel and the render read-through. A
   merge the kernel saw but could not apply (its live read failed, a render

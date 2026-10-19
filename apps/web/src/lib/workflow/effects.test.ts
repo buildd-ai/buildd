@@ -17,6 +17,7 @@ import {
   renewEffectLeaseSql,
   runEffects,
   wakeHeldMergesSql,
+  carryOpenFindingsSql,
   EFFECT_MAX_ATTEMPTS,
   KERNEL_ONLY_EFFECTS,
 } from './effects';
@@ -26,6 +27,15 @@ const dialect = new PgDialect();
 const render = (q: SQL) => dialect.sqlToQuery(q);
 
 describe('SQL', () => {
+  test('carry-over moves only open and addressed findings of one delivery to the other, keeping ids', () => {
+    const { sql: text, params } = render(carryOpenFindingsSql('d-old', 'd-new'));
+    expect(text).toContain('UPDATE workflow_findings SET delivery_id = $1::uuid');
+    expect(text).toContain("delivery_id = $2::uuid AND status IN ('open', 'addressed')");
+    expect(text).toContain('RETURNING id');
+    expect(text).not.toContain('SET id');
+    expect(params).toEqual(['d-new', 'd-old']);
+  });
+
   test('claim takes due and lease-expired rows with SKIP LOCKED and returns the delivery/transition it must re-check', () => {
     const { sql: text, params } = render(claimDueEffectsSql(10));
     expect(text).toContain("(status = 'pending' AND not_before <= now())");

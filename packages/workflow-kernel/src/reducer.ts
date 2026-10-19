@@ -24,7 +24,7 @@ import type {
   LivePr,
   RoundOp,
 } from './commands';
-import { deltaApprovalEligibility, PUSH_TRIGGERS, type DeltaReading, type RoundTrigger } from './delta-approval';
+import { deltaApprovalEligibility, emptyDeltaCarry, PUSH_TRIGGERS, type DeltaReading, type RoundTrigger } from './delta-approval';
 import { addressFindings, applyVerdictToFindings, describeFinding, isTaskId, openRequiredFindings } from './findings';
 import {
   isHumanActor,
@@ -1465,6 +1465,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         patch: { supersededByPr: cmd.target.prNumber, supersededByUrl: cmd.target.url, supersededReason: cmd.reason, recordedBy: cmd.actor },
         effects: [
           { kind: 'project_supersession', dedupeKey: `project_supersession:${dd.id}`, payload: { target: cmd.target } },
+          { kind: 'carry_findings', dedupeKey: `carry_findings:${dd.id}`, payload: { target: cmd.target } },
           { kind: 'wake_mission', dedupeKey: `wake_mission:${dd.id}:superseded`, payload: {} },
         ],
         evidence: { target: cmd.target, reason: cmd.reason },
@@ -1994,7 +1995,8 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
   // platform's own write, never a fix, whoever's push it turns out to be.
   const mechanical = d.state === 'REPAIRING' && c.attempt(d.boundAttemptId)?.mode === 'mechanical';
   const dec = headObservedInner(c, cmd);
-  if (dec.result !== 'apply' || mechanical || dec.evidence.carryForward === 'own_refresh') return dec;
+  // AC-79: a merge of the base recorded while a fix runs is a refresh push too.
+  if (dec.result !== 'apply' || mechanical || dec.evidence.carryForward === 'own_refresh' || dec.evidence.baseOnly) return dec;
   return withAddressed(c, dec, cmd.live.headSha, cmd.changedPaths);
 }
 
@@ -2028,12 +2030,14 @@ function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' 
     });
   };
   const carry = (implied?: 'own_refresh'): Decision | null => {
-    const basis = cmd.carryForward ?? implied;
+    // 92a439a6: an empty bounded delta from the approval is content equivalence too.
+    const from = cmd.carryForward || implied ? null : emptyDeltaCarry(c.view, h, cmd.delta);
+    const basis = cmd.carryForward ?? implied ?? (from ? 'content_equivalent' : null);
     if (!basis) return null;
     const p: DeliveryPatch = d.approvalBasis === 'composition'
       ? { compositionHeads: [...d.compositionHeads, h] }
       : { approvedHeads: [...d.approvedHeads, h] };
-    return c.apply(key, 'APPROVED', { patch: { ...p, currentHeadSha: h, stateReason: null }, evidence: { ...evidence, carryForward: basis } });
+    return c.apply(key, 'APPROVED', { patch: { ...p, currentHeadSha: h, stateReason: null }, evidence: { ...evidence, carryForward: basis, ...(from ? { carriedFrom: from, emptyDelta: true } : {}) } });
   };
 
   switch (d.state) {
@@ -2147,11 +2151,15 @@ function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' 
       // Mid-fix pushes are normal; the round advances at AttemptEnded. A push
       // the running attempt can claim is recorded as its provenance (§6.9).
       const a = c.attempt(d.boundAttemptId);
-      const by = attributeHead(a, h, cmd.attribution);
+      // AC-79: a merge of the base descends from the fix's bound head, so ancestry alone would
+      // credit it. A push that brought only base commits is foreign whoever made it, unless the
+      // fix itself reported that exact head.
+      const baseOnly = cmd.baseOnly && !(a?.reportedShas.includes(h)) ? cmd.baseOnly : null;
+      const by = baseOnly ? 'foreign_running' : attributeHead(a, h, cmd.attribution);
       return c.apply(key, 'FIXING', {
         patch: { currentHeadSha: h },
         attempts: a && by === 'attempt' ? [{ op: 'update', attemptId: a.id, whenStatus: ['queued', 'running'], set: { appendReportedSha: h } }] : [],
-        evidence: by === 'attempt' ? evidence : { ...evidence, foreignPush: true },
+        evidence: by === 'attempt' ? evidence : { ...evidence, foreignPush: true, ...(baseOnly ? { baseOnly } : {}) },
       });
     }
     case 'APPROVED':
@@ -2274,7 +2282,7 @@ function attemptWithdrawn(c: Ctx, cmd: Extract<Command, { type: 'AttemptWithdraw
 function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): Decision {
   const fromState = c.d!.state;
   const dec = attemptEndedInner(c, cmd);
-  if (dec.result !== 'apply' || (fromState !== 'FIXING' && fromState !== 'REPAIRING') || !cmd.live || dec.toState === 'AWAITING_PUSH') return dec;
+  if (dec.result !== 'apply' || (fromState !== 'FIXING' && fromState !== 'REPAIRING') || !cmd.live || dec.toState === 'AWAITING_PUSH' || dec.evidence.baseOnly) return dec;
   if (dec.patch.currentHeadSha !== cmd.live.headSha) return dec;
   return withAddressed(c, dec, cmd.live.headSha, cmd.changedPaths);
 }
@@ -2407,6 +2415,15 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
     }
   }
 
+  // AC-79: a review fix whose end finds only base commits on the head since its bound one
+  // pushed nothing of its own: whatever proof the move would give, it is not the fix's. The fix
+  // does not complete on it, whatever outcome it reports; the attempt ends with no change (it
+  // spends the budget, AC-19) and a round scoped to the refresh reviews what the base brought in
+  // (the open verdict and findings still stand).
+  if (d.state === 'FIXING' && cmd.baseOnly === true && livePrOpen(live) && a.boundHeadSha && live!.headSha !== a.boundHeadSha) {
+    return baseOnlyEnd(c, key, a, live!.headSha, end('noop'), { ...evidence, baseOnly: true, attemptId: a.id });
+  }
+
   if (cmd.outcome === 'success' || (cmd.outcome === 'unproven' && cmd.commitCount > 0)) {
     // abe42d1b: an agent that pushed from its own session leaves the runner nothing local to
     // report, but its push was attributed to it mid-attempt (§6.9). That push is its L, as the
@@ -2432,13 +2449,18 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
         attempts: [end('delivered', h)], evidence: { ...evidence, proof, policy: 'no_review' },
       });
     }
-    if (d.state === 'REPAIRING' && cmd.carryForward && headCoverage(d, a.boundHeadSha) !== 'none') {
+    // T11 / §8.3: a repair whose head leaves the PR's diff unchanged (an agent conflict repair that
+    // only merged the base) keeps the approval. The host's compare says so (`carryForward`), or the
+    // delta it read from the approval is empty (92a439a6); either way no reviewer round is started.
+    const emptyFrom = d.state === 'REPAIRING' && !cmd.carryForward ? emptyDeltaCarry(c.view, h, cmd.delta) : null;
+    if (d.state === 'REPAIRING' && ((cmd.carryForward && headCoverage(d, a.boundHeadSha) !== 'none') || emptyFrom)) {
       const p: DeliveryPatch = d.approvalBasis === 'composition'
         ? { compositionHeads: [...d.compositionHeads, h] }
         : { approvedHeads: [...d.approvedHeads, h] };
       return c.apply(key, 'APPROVED', {
         patch: { ...p, currentHeadSha: h, boundAttemptId: null, stateReason: null },
-        attempts: [end('delivered', h)], evidence: { ...evidence, proof, carryForward: cmd.carryForward },
+        attempts: [end('delivered', h)],
+        evidence: { ...evidence, proof, carryForward: cmd.carryForward ?? 'content_equivalent', previousHead: a.boundHeadSha, ...(emptyFrom ? { carriedFrom: emptyFrom, emptyDelta: true } : {}) },
       });
     }
     const r = c.startRound(h, { trigger: attemptTrigger(a), delta: cmd.delta });
@@ -2509,6 +2531,26 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
     attempts: [end('failed'), { op: 'insert', id, family: a.family, attemptNo: n, mode: a.mode, boundHeadSha: a.boundHeadSha, triggerReason: a.triggerReason, taskId: null, trigger: 'automatic', status: 'queued', maxAttempts: max }],
     effects: [{ kind, dedupeKey: `${kind}:${d.id}:${a.boundHeadSha}:${a.mode}:${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: max, headSha: a.boundHeadSha, signature: a.triggerReason } }],
     evidence,
+  });
+}
+
+/**
+ * AC-79: a review fix ended and the only move on the PR since its bound head was a merge of the
+ * base. The round that follows is a delta of the refresh (trigger `base_refresh`, scope `refresh`),
+ * unless the head already has an open or decided round of its own.
+ */
+function baseOnlyEnd(c: Ctx, key: string, a: AttemptSnapshot, h: string, ended: AttemptOp, evidence: Record<string, unknown>): Decision {
+  const ev = { ...evidence, headMovedDuringFix: { from: a.boundHeadSha, to: h } };
+  const base: DeliveryPatch = { currentHeadSha: h, boundAttemptId: null, stateReason: null };
+  if (c.openRoundAt(h)) return c.apply(key, 'AWAITING_REVIEW', { patch: base, attempts: [ended], evidence: ev });
+  const decided = c.decidedAt(h);
+  if (decided) {
+    const re = reenterVerdict(c, key, decided, h, ev);
+    return re.result === 'apply' ? { ...re, patch: { ...re.patch, currentHeadSha: h, boundAttemptId: null }, attempts: [ended, ...re.attempts] } : re;
+  }
+  const r = c.startRound(h, { trigger: 'base_refresh', scope: { refresh: { fromHeadSha: a.boundHeadSha, toHeadSha: h } } });
+  return c.apply(key, 'AWAITING_REVIEW', {
+    patch: { ...base, ...r.patch }, rounds: r.rounds, attempts: [ended], effects: r.effects, evidence: ev,
   });
 }
 
