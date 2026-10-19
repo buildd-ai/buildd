@@ -815,7 +815,7 @@ role `connectorRefs`, credential health (§6b), the team's catalog policy (§5b)
 and, for deployment needs, the role's Operator grant. It changes nothing:
 installing, enabling, granting and connecting stay admin/human acts.
 
-- A need is `domain:verb`: domain one of `observability | deployment | database |
+- A search is `domain:verb` (a category filter; what an agent requests is a provider and `read | write`, see capability-requests.md): domain one of `observability | deployment | database |
   analytics | work_tracking | docs | source_control`, verb `read | query | write`.
   A bare domain means `read`. Anything else is rejected, never guessed.
 - Provider coverage comes from a short per-catalog-slug profile

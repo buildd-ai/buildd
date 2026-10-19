@@ -323,7 +323,8 @@ export function matchPolicy(rules: readonly PolicyRule[], scope: PolicyScope): P
   let best: PolicyRule | null = null;
   let bestSpec = -1;
   for (const r of rules) {
-    if (r.provider !== scope.provider || r.risk !== scope.risk) continue;
+    // A rule written at `query` (the retired middle verb) keeps governing reads.
+    if (r.provider !== scope.provider || (r.risk !== scope.risk && !(r.risk === 'query' && scope.risk === 'read'))) continue;
     if (r.workspaceId && r.workspaceId !== scope.workspaceId) continue;
     if (r.roleSlug && r.roleSlug !== scope.roleSlug) continue;
     if (r.environment && r.environment !== scope.environment) continue;

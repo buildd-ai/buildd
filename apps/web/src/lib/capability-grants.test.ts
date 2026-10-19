@@ -182,6 +182,12 @@ describe('team policy', () => {
     expect(effectivePolicy([], { ...scope, risk: 'write' }, true).effect).toBe('ask_human');
   });
 
+  it('a rule written at the retired query risk still governs a read ask', () => {
+    const rules = [rule({ risk: 'query', effect: 'forbidden' })];
+    expect(matchPolicy(rules, { provider: 'axiom', risk: 'read', workspaceId: WS, roleSlug: null, environment: null, resource: null })?.effect).toBe('forbidden');
+    expect(matchPolicy(rules, { provider: 'axiom', risk: 'write', workspaceId: WS, roleSlug: null, environment: null, resource: null })).toBeNull();
+  });
+
   it('scope key distinguishes unset from set dimensions', () => {
     expect(policyScopeKey(rule({}))).not.toBe(policyScopeKey(rule({ environment: 'production' })));
   });
@@ -237,13 +243,14 @@ describe('resolveCapabilityRequest', () => {
     expect(resolveCapabilityRequest(ctx({ discovery: discovery([cand({ connectorId: null, access: 'ask_admin', health: 'not_installed' })]) })).kind).toBe('need_connection');
   });
 
-  it('prefers a usable candidate and lists the rest as alternatives', () => {
+  it('answers for the provider asked, not another one', () => {
     const r = resolveCapabilityRequest(ctx({ discovery: discovery([
       cand({ slug: 'sentry', connectorId: null, access: 'ask_admin', nextSteps: ['add sentry'] }),
       cand(),
     ]) }));
     expect(r.kind).toBe('auto_granted');
-    expect(r.alternatives).toEqual([{ provider: 'sentry', connector: null, outcome: 'need_connection', nextSteps: ['add sentry'] }]);
+    // The ask names a provider: another provider is not an alternative to it.
+    expect(r.alternatives).toEqual([]);
   });
 
   it('unavailable with alternatives when the named provider serves nothing', () => {
