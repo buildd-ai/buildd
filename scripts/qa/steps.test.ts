@@ -264,8 +264,10 @@ describe('scripts/qa/plans/run-activity.json', () => {
 describe('scripts/qa/plans/mission-history.json', () => {
   it('opens History server-built (?layout=feed) and shoots both lenses with a long wait', () => {
     const plan = parsePlan(readFileSync(join(import.meta.dir, 'plans/mission-history.json'), 'utf-8'), { pageSource: 'sandbox' });
-    expect(plan.map(r => r.route)).toEqual(['/app/missions/:id?layout=feed']);
+    expect(plan.map(r => r.route)).toEqual(['/app/missions/:id?layout=feed&qaHistory=1']);
     expect(plan[0].states.map(s => s.key)).toEqual(['highlights', 'all-activity']);
     for (const s of plan[0].states) expect(s.steps[0].timeoutMs).toBeGreaterThan(5_000);
+    // Both lenses must wait for event rows, which the fixture guarantees, not the empty-capable feed shell.
+    for (const s of plan[0].states) expect(s.steps.some(st => st.action === 'waitFor' && st.selector === 'testid:feed-event')).toBe(true);
   });
 });

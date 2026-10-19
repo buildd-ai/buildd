@@ -1,11 +1,11 @@
 [
   {
-    "route": "/app/missions/:id?layout=feed",
+    "route": "/app/missions/:id?layout=feed&qaHistory=1",
     "states": [
       {
         "key": "highlights",
         "steps": [
-          { "action": "waitFor", "selector": "testid:mission-event-feed", "timeoutMs": 30000 },
+          { "action": "waitFor", "selector": "testid:feed-event", "timeoutMs": 30000 },
           { "action": "assertLayout", "selector": "testid:mission-event-feed" }
         ]
       },
