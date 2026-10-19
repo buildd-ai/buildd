@@ -6,13 +6,13 @@ const B = 'b'.repeat(40);
 const integration = (headSha = A): MissionTarget => ({ kind: 'integration', headSha, branch: 'mission/x' });
 let n = 0;
 const row = (criterionId: string, verdict: MissionVerdictRow['verdict'], headSha: string | null = A, at = `2026-10-14T10:${String(10 + (n++ % 50)).padStart(2, '0')}:00Z`): MissionVerdictRow =>
-  ({ id: `v${n}`, criterionId, verdict, headSha, at });
+  ({ id: `v${n}`, criterionId, verdict, headSha, at, source: 'test' });
 
 describe('foldMissionSpec', () => {
   it('passes only when every in-scope criterion passes on the current integration head', () => {
     const r = foldMissionSpec({ scope: ['R-1', 'R-2'], waived: [], rows: [row('R-1', 'pass'), row('R-2', 'pass')], target: integration() });
     expect(r.verdict).toBe('pass');
-    expect(r.evidence).toContain('two criteria pass on aaaaaaa');
+    expect(r.evidence).toContain('two tested checks pass on aaaaaaa');
   });
 
   // AC-38 / AC-13: PR reviews can all pass and the mission still waits on the integrated audit.
@@ -109,5 +109,49 @@ describe('foldMissionSpec: a test result outranks a reviewer opinion', () => {
   it('a later test supersedes the failed one', () => {
     const rows = [{ ...row('R-1', 'fail', A, '2026-10-14T10:00:00Z'), source: 'test' as const }, { ...row('R-1', 'pass', A, '2026-10-14T11:00:00Z'), source: 'test' as const }];
     expect(foldMissionSpec({ scope: ['R-1'], waived: [], rows, target: integration() }).verdict).toBe('pass');
+  });
+});
+
+
+describe('R-83: achievement counts tested checks only', () => {
+  for (const verdict of ['pass', 'fail', 'inconclusive', 'unsupported'] as const) {
+    it(`keeps a judged ${verdict} beside passing tests without counting it`, () => {
+      const r = foldMissionSpec({ scope: ['R-1', 'R-2'], waived: [], target: integration(), rows: [
+        row('R-1', 'pass'), { ...row('R-2', verdict), source: 'review' },
+      ] });
+      expect(r.verdict).toBe('pass');
+      expect(r.evidence).toContain('The tested check passes');
+      expect(r.standings[1]).toMatchObject({ criterionId: 'R-2', standing: verdict, source: 'review' });
+    });
+  }
+
+  it('does not award achievement from reviewer passes alone, including legacy rows', () => {
+    const judged = { ...row('R-1', 'pass'), source: undefined };
+    expect(foldMissionSpec({ scope: ['R-1'], waived: [], rows: [judged], target: integration() }).verdict).toBe('UNVERIFIED');
+  });
+
+  it('keeps an inconclusive test open even when a later reviewer passes it', () => {
+    const r = foldMissionSpec({ scope: ['R-1'], waived: [], target: integration(), rows: [
+      row('R-1', 'inconclusive', A, '2026-10-14T10:00:00Z'),
+      { ...row('R-1', 'pass', A, '2026-10-14T11:00:00Z'), source: 'review' },
+    ] });
+    expect(r.verdict).toBe('UNVERIFIED');
+    expect(r.standings[0]).toMatchObject({ standing: 'inconclusive', source: 'test' });
+  });
+
+  it('does not count a review toward the passing-test total', () => {
+    const r = foldMissionSpec({ scope: ['R-1', 'R-2', 'R-3'], waived: [], target: integration(), rows: [
+      row('R-1', 'pass'), row('R-2', 'inconclusive'), { ...row('R-3', 'pass'), source: 'review' },
+    ] });
+    expect(r.verdict).toBe('UNVERIFIED');
+    expect(r.evidence).toContain('One of two');
+  });
+
+  it('requires tests on the merged result even with current reviewer passes', () => {
+    const r = foldMissionSpec({ scope: ['R-1', 'R-2'], waived: [], target: integration(B), rows: [
+      row('R-1', 'pass', A), { ...row('R-2', 'pass', B), source: 'review' },
+    ] });
+    expect(r.verdict).toBe('UNVERIFIED');
+    expect(r.standings[0].standing).toBe('stale');
   });
 });
