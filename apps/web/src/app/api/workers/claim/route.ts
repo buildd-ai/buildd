@@ -3666,7 +3666,7 @@ export async function POST(req: NextRequest) {
   for (const cw of claimedWorkers) {
     const t = filteredTasks.find(x => x.id === cw.taskId) as any;
     // A tenant task runs on its tenant's own seat; that is not a route of this team's.
-    if (!t || t.backend === 'codex' || (t.context as { tenantContext?: { tenantId?: string } } | null)?.tenantContext?.tenantId) continue;
+    if (!t || t.backend === 'codex' || (t.context as { tenantContext?: { tenantId?: unknown } } | null)?.tenantContext?.tenantId) continue;
     try {
       const modelRoute = await claudeRouteFor(t.workspace?.teamId as string | undefined, t.workspaceId);
       await db.update(workers).set({ modelRoute }).where(eq(workers.id, cw.id));
