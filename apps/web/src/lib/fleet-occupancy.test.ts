@@ -429,3 +429,66 @@ describe('AC-5 edge cases', () => {
     expect(s.summary.sessions.peak).toBe(1);
   });
 });
+
+describe('one principal for totals, members and class (task owner vs claimer)', () => {
+  const windows = ['24h', '7d', '30d'] as const;
+  const span = { startedAt: NOW - 2 * H, completedAt: NOW - H };
+
+  for (const win of windows) {
+    it(`${win}: runner work lists its task owner as the member, not the claimer`, () => {
+      const s = buildOccupancySeries({
+        window: win, now: NOW, viewerId: 'me',
+        workers: [row({ ...span, ownerId: 'me', taskOwnerId: 'you', runnerClass: 'personal' })],
+      });
+      expect(s.summary.runnerBy.others.peak).toBe(1);
+      expect(s.members!.map(m => m.id)).toEqual(['you']);
+      expect(s.members![0].isMe).toBe(false);
+      expect(s.summary.runnerByClass.personal.peak).toBe(1);
+    });
+
+    it(`${win}: a service-owned task has no member row and is unattributed`, () => {
+      const s = buildOccupancySeries({
+        window: win, now: NOW, viewerId: 'me',
+        workers: [row({ ...span, ownerId: 'me', taskOwnerId: null, runnerClass: 'personal' })],
+      });
+      expect(s.summary.runnerBy.unattributed.peak).toBe(1);
+      expect(s.members).toEqual([]);
+    });
+
+    it(`${win}: a key-claimed task on a managed runner is its task owner's member row`, () => {
+      const s = buildOccupancySeries({
+        window: win, now: NOW, viewerId: 'me',
+        workers: [row({ ...span, ownerId: null, taskOwnerId: 'me', runnerClass: 'managed' })],
+      });
+      expect(s.summary.runnerBy.mine.peak).toBe(1);
+      expect(s.members!.map(m => [m.id, m.isMe])).toEqual([['me', true]]);
+    });
+  }
+
+  it('without a task owner recorded (older callers) the claimer is the principal everywhere', () => {
+    const s = buildOccupancySeries({ window: '24h', now: NOW, viewerId: 'me', workers: [row({ ...span, ownerId: 'me' })] });
+    expect(s.summary.runnerBy.mine.peak).toBe(1);
+    expect(s.members!.map(m => m.id)).toEqual(['me']);
+  });
+
+  it('sessions stay with the claimer and add no member row', () => {
+    const s = buildOccupancySeries({ window: '24h', now: NOW, viewerId: 'me', workers: [row({ ...span, runner: 'mcp', ownerId: 'me', taskOwnerId: 'you' })] });
+    expect(s.summary.sessionsBy.mine.peak).toBe(1);
+    expect(s.members).toEqual([]);
+  });
+});
+
+describe('history privacy with one principal', () => {
+  it('a linked-team member does not get a named row for the other team\'s task owner, in any window', () => {
+    for (const win of ['24h', '7d', '30d'] as const) {
+      const s = buildOccupancySeries({
+        window: win, now: NOW, viewerId: 'me',
+        workers: [row({ startedAt: NOW - 2 * H, completedAt: NOW - H, ownerId: 'me', taskOwnerId: 'other-team-owner', runnerClass: 'personal' })],
+      });
+      const scoped = scopeMembers(s, new Set(['me', 'mate']));
+      expect(scoped.members).toEqual([]);
+      expect(scoped.summary.runnerBy.others.peak).toBe(1);
+      expect(JSON.stringify(scoped.members)).not.toContain('other-team-owner');
+    }
+  });
+});

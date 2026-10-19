@@ -27,6 +27,29 @@ export interface RunnerRouteRow {
 export interface RunnerRouteInput {
   modelAuthSource?: RunnerModelAuthSource | null;
   codexAuthSource?: RunnerCodexAuthSource | null;
+  /**
+   * How this runner's recent runs were actually charged (`workers.costBasis`,
+   * reported by whoever picked the credential). The recorded route: it is what
+   * happened, whichever of a local login or a task-selected team key was used.
+   */
+  recentCostBasis?: readonly (RecordedBasis | null)[] | null;
+}
+
+type RecordedBasis = 'real' | 'virtual' | 'mixed' | 'unknown';
+
+/**
+ * What recent runs on this runner were charged to, read from the record and
+ * never inferred from the local login (a team key can serve a task on a
+ * machine that has a plan login). Hidden when nothing has been recorded.
+ */
+export function recordedRouteRow(bases: readonly (RecordedBasis | null)[] | null | undefined): RunnerRouteRow | null {
+  const known = new Set((bases ?? []).filter((b): b is Exclude<RecordedBasis, 'unknown'> => !!b && b !== 'unknown'));
+  if (known.size === 0) return null;
+  const real = known.has('real') || known.has('mixed');
+  const virtual = known.has('virtual') || known.has('mixed');
+  const source = real && virtual ? 'Recent runs: some billed per token, some from a plan allowance'
+    : real ? 'Recent runs: billed per token' : 'Recent runs: drawn from a plan allowance';
+  return { label: 'Charged to', source, state: 'ready' };
 }
 
 export function claudeRouteRow(source: RunnerModelAuthSource | null | undefined): RunnerRouteRow {
@@ -56,8 +79,9 @@ export interface RunnerRouteDetail {
 }
 
 export function runnerRouteDetail(hb: RunnerRouteInput): RunnerRouteDetail {
+  const recorded = recordedRouteRow(hb.recentCostBasis);
   return {
-    rows: [claudeRouteRow(hb.modelAuthSource), codexRouteRow(hb.codexAuthSource)],
-    note: "Reported by the runner on its last check-in. A team API key or gateway is chosen per task and isn't shown here.",
+    rows: [claudeRouteRow(hb.modelAuthSource), codexRouteRow(hb.codexAuthSource), ...(recorded ? [recorded] : [])],
+    note: "Login rows are what the runner reported on its last check-in. A team API key or gateway is chosen per task: \"Charged to\" is what recent runs recorded, not a claim about what the next run will use.",
   };
 }

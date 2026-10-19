@@ -11,6 +11,7 @@
  */
 import { INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, questionSessionEnded, activeRunnerHold, executorDisplayName, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
 import { assignSlots, fitLaneWindowStart } from '@/components/fleet/slot-lanes-layout';
+import { workPrincipal } from './fleet-occupancy';
 import { runnerIdentity, runnerNameFromUrl } from './runner-display';
 import { missionTaskHref } from './mission-task-href';
 import { taskShortLabel } from './segment-label';
@@ -46,6 +47,8 @@ export interface FleetWorkerRow {
   accountId?: string | null;
   /** The user who claimed the run (`workers.claimedByUserId`); null when unknown. */
   ownerId?: string | null;
+  /** `tasks.createdByUserId`: decides `mine` for runner work (see `workPrincipal`); absent = the claimer decides. */
+  taskOwnerId?: string | null;
   runner: string;
   localUiUrl?: string | null;
   status: string;
@@ -207,7 +210,8 @@ export function buildFleetSnapshot(
   /** One run onto its slot: the lane bar, and the live worker or the slot's last run. */
   const place = (slot: FleetSlot, w: FleetWorkerRow, iv: { start: number; end: number | null }) => {
     const t = w.task ?? null;
-    const mine = opts.viewerId ? (w.ownerId ? w.ownerId === opts.viewerId : null) : undefined;
+    const principal = workPrincipal(w, w.runner === INTERACTIVE_WORKER_RUNNER && !w.localUiUrl ? 'interactive' : 'runner');
+    const mine = opts.viewerId ? (principal ? principal === opts.viewerId : null) : undefined;
     const { label, rest } = t ? taskShortLabel(t) : { label: 'task', rest: '' };
     // The task's own short label ("reconcile exports spec") names the run;
     // the one-word pick is only a chip beside it. "untitled" names nothing.

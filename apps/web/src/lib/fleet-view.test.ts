@@ -593,3 +593,26 @@ describe('one runner, one count (Settings, Health and list_runners agree)', () =
     expect(runnerBusyLine(s.runners[0])).toBe('Offline');
   });
 });
+
+describe('mine follows the same principal as occupancy (task owner for runner work)', () => {
+  const hb: FleetHeartbeatRow = { id: 'h1', accountId: 'acct', localUiUrl: 'http://atlas.local:8766', maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW - 10_000) };
+  const w = (id: string, over: Partial<FleetWorkerRow>): FleetWorkerRow => ({
+    id, accountId: 'acct', runner: 'http://atlas.local:8766', status: 'running', startedAt: min(10),
+    task: { id: `t-${id}`, title: id, roleSlug: 'builder', missionId: null }, ...over,
+  });
+  const liveMine = (over: Partial<FleetWorkerRow>) =>
+    buildFleetSnapshot([hb], [w('a', over)], { now: NOW, viewerId: 'me' }).runners[0].slots.find(s => s.worker)!.worker!.mine;
+
+  it("another member's task claimed by me is not mine", () => {
+    expect(liveMine({ ownerId: 'me', taskOwnerId: 'you' })).toBe(false);
+  });
+  it('my task claimed by a key (no claimer) is mine', () => {
+    expect(liveMine({ ownerId: null, taskOwnerId: 'me' })).toBe(true);
+  });
+  it('a service-owned task is unknown even when I claimed it', () => {
+    expect(liveMine({ ownerId: 'me', taskOwnerId: null })).toBeNull();
+  });
+  it('no task owner recorded: the claimer decides', () => {
+    expect(liveMine({ ownerId: 'me' })).toBe(true);
+  });
+});

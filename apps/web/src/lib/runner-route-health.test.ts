@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { runnerRouteDetail } from './runner-route-health';
+import { recordedRouteRow, runnerRouteDetail } from './runner-route-health';
 
 describe('runnerRouteDetail (capacity spec R-11)', () => {
   it('names the local login type without exposing anything but a label', () => {
@@ -18,5 +18,20 @@ describe('runnerRouteDetail (capacity spec R-11)', () => {
 
   it('does not claim team key readiness', () => {
     expect(runnerRouteDetail({}).note).toContain('team API key');
+  });
+
+  it('reads the recorded route of recent runs, independent of the local login', () => {
+    const d = runnerRouteDetail({ modelAuthSource: 'machine_login', recentCostBasis: ['real', 'real', null, 'unknown'] });
+    expect(d.rows[0].source).toContain('plan');
+    const r = d.rows.find(x => x.label === 'Charged to')!;
+    expect(r.source).toBe('Recent runs: billed per token');
+  });
+
+  it('says mixed when both were recorded, and nothing when none was', () => {
+    expect(recordedRouteRow(['real', 'virtual'])!.source).toContain('some billed per token');
+    expect(recordedRouteRow(['mixed'])!.source).toContain('some billed per token');
+    expect(recordedRouteRow(['virtual'])!.source).toContain('plan allowance');
+    expect(recordedRouteRow([null, 'unknown'])).toBeNull();
+    expect(runnerRouteDetail({}).rows).toHaveLength(2);
   });
 });
