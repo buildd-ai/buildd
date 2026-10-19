@@ -1,6 +1,6 @@
 import { testsByCheck, type AcceptanceTest } from '@/lib/specs/acceptance-gate';
 
-const WORDS: Record<string, string> = { fail: 'fails, as wanted', pass: 'passes already', inconclusive: 'inconclusive' };
+const WORDS: Record<string, string> = { fail: 'fails', pass: 'passes', inconclusive: 'inconclusive' };
 
 /** The tests the mission added, grouped by the check each covers (spec 1dc6cc39 R-79). */
 export default function MissionAcceptanceTests({ tests }: { tests: readonly AcceptanceTest[] }) {
@@ -14,7 +14,7 @@ export default function MissionAcceptanceTests({ tests }: { tests: readonly Acce
             <span className="font-mono text-meta text-text-muted">{g.checkId}</span>
             <ul>
               {g.tests.map((t) => (
-                <li key={t.name}>{t.name} <span className="text-meta text-text-muted">{t.startingResult ? WORDS[t.startingResult] : 'not run yet'}</span></li>
+                <li key={t.name}>{t.name} <span className="text-meta text-text-muted">{t.startingResult ? WORDS[t.startingResult] : 'Not run'}</span></li>
               ))}
             </ul>
           </li>
