@@ -243,7 +243,7 @@ describe('profiles — an operator schedules only the parts it runs', () => {
       '/api/cron/waiting-input-sweep',
     ]);
     const ops = selectJobs(m.jobs, parseProfiles('ops')).map((j) => j.path).sort();
-    expect(ops).toEqual(['/api/cron/queue-stall', '/api/cron/queue-stall?scope=fleet-idle', '/api/cron/role-outcomes']);
+    expect(ops).toEqual(['/api/cron/page-budget', '/api/cron/queue-stall', '/api/cron/queue-stall?scope=fleet-idle', '/api/cron/role-outcomes']);
     expect(byPath('/api/cron/schedules')!.profile).toBe('module:schedules');
     expect(byPath('/api/cron/mission-invariants')!.profile).toBe('module:missions');
   });

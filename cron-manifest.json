@@ -139,6 +139,14 @@
       "method": "POST"
     },
     {
+      "$comment": "Page speed-budget alert (spec 3ef37387 R-31, R-40, R-42). Pages wrapped in withPageBudget leave a short-lived system_cache row for each load over its PAGE_BUDGETS entry; this reads the trailing hour and pages the operator when a page has three or more, naming the page and its heaviest loader, at most once a day per page. The in-repo replacement for an Axiom monitor an unattended run cannot read. ALL 24 HOURS on the hour: pure indexed reads on one small table with no network except the push, and :00 lands inside the wake window the schedules tick already opens. `changed` = pages alerted (findings polarity, declared in CRON_JOB_REGISTRY).",
+      "title": "Buildd: Page Budget Alert",
+      "profile": "ops",
+      "path": "/api/cron/page-budget",
+      "schedule": "0 * * * *",
+      "method": "POST"
+    },
+    {
       "$comment": "Fleet-idle detector — the SAME route as the queue-stall watchdog above, behind ?scope=fleet-idle, and a different question: not 'is this task gated' but 'is this account's fleet transacting at all'. Alarms when a runner is heartbeating with a free worker slot, claimable work has waited past the route's 45-minute threshold, and workers.started_at shows nothing has started. That is what a tripped claim circuit breaker looks like from the server: a fully-paused runner's heartbeat is byte-identical to a healthy idle one, and its refusal reason never leaves the host. ALL 24 HOURS, and that is the whole point — the incident this detects ran overnight, and with a `7-23` range the back half of the window falls in the nightly gap exactly as it did for the credential sweep ('OAuth tokens expire overnight too') and release health ('releases are cut at any hour'). It can afford 24h because it is pure indexed aggregates with NO network: the gate pass is daytime-only BECAUSE it HTTP-probes every connector a role needs, so do NOT fold these two passes together or merge their schedules — that re-imports the cost that created the gap. On the hour, NOT offset: Neon autosuspends after ~5 idle minutes, so landing inside the window the schedules tick already opens at :00 is free, while an offset 20 minutes out would open a second one every hour. Separate cron_runs slug (queue-stall:fleet-idle, same convention as pr-reconcile:merge-state) so the two cadences stay separate health signals.",
       "title": "Buildd: Fleet Idle Detector",
       "profile": "ops",

@@ -129,6 +129,7 @@ import MissionSituationBlock, { affordanceFor, MISSION_CRITERIA_ANCHOR } from '@
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { readRound } from '@/lib/read-round';
+import { withPageBudget } from '@/lib/page-budget-watch';
 
 export const dynamic = 'force-dynamic';
 
@@ -145,7 +146,7 @@ type PageProps = {
  * rows and header are derived from the whole mission read (gates, deliveries,
  * release and visual state), and have no smaller source to render from.
  */
-export default async function MissionDetailPage(props: PageProps) {
+async function MissionDetailPage(props: PageProps) {
   const [{ id }, search] = await Promise.all([props.params, props.searchParams]);
   async function loadRegion() {
     'use server';
@@ -1439,3 +1440,4 @@ async function MissionDetailBody({
   );
 }
 
+export default withPageBudget('missionPage', MissionDetailPage);
