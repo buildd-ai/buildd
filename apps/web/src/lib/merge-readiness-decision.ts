@@ -24,8 +24,8 @@
  * - **Facts, not content** (`MergeAdviceFacts`): enums and booleans the server
  *   derived when it built the card. Never a diff, a title or reviewer prose.
  */
-import { noul } from '@builddai/ai-kit/decide';
-import type { DecisionKindConfig, DecisionRequest, DecisionResponse, ModelVerdict, DecisionVerdict } from '@builddai/ai-kit/decide';
+import { noul } from '@buildd/ai-kit/decide';
+import type { DecisionKindConfig, DecisionRequest, DecisionResponse, ModelVerdict, DecisionVerdict } from '@buildd/ai-kit/decide';
 import { defineBuilddDecisionKind, type BuilddDecisionKindBinding } from '@buildd/core/decision-kinds';
 import { runBuilddDecision, type BuilddDecisionScope } from '@buildd/core/decision-policy';
 import {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { defineDecisionKind, runDecisionKind } from '@builddai/ai-kit/decide';
+import { defineDecisionKind, runDecisionKind } from '@buildd/ai-kit/decide';
 import { listBuilddDecisionKinds } from '../decision-kinds';
 import {
   POST_SESSION_TRIAGE_CONFIG,

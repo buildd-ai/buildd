@@ -4,11 +4,11 @@
  * screen that fixes it; members are told who can, or to add their own key when
  * the team's policy asks for one. The mission form is untouched either way.
  *
- * The card is the kit's (`ChatSetupCard` from @builddai/ai-kit/chat/react);
+ * The card is the kit's (`ChatSetupCard` from @buildd/ai-kit/chat/react);
  * the copy and the settings link are buildd's.
  */
 import Link from 'next/link';
-import { ChatSetupCard as KitChatSetupCard } from '@builddai/ai-kit/chat/react';
+import { ChatSetupCard as KitChatSetupCard } from '@buildd/ai-kit/chat/react';
 
 export type ChatSetupReason = 'no_key';
 

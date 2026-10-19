@@ -8,7 +8,7 @@
 // stored per-task/role/workspace settings: disable a provider and matching jobs
 // run on an enabled one; re-enable and they snap back to their original backend.
 
-import { backendCredentialPurposes } from '@builddai/ai-kit/models/provider-registry';
+import { backendCredentialPurposes } from '@buildd/ai-kit/models/provider-registry';
 
 /** Backends that can be persisted on `tasks.backend` (the `agent_backend` enum). */
 export type AgentBackend = 'claude' | 'codex';

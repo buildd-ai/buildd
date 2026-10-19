@@ -37,7 +37,7 @@ import { dockChoice, needsDockRef, NEEDS_DOCK_CLOSED_KEY } from './dock-model';
 import { seaMood } from './sea';
 import { canvasHero, canvasMood, canvasPlaceholder, canvasSuggestions, pickedStatus, type CanvasPulse } from './canvas-empty';
 import { Kbd } from '@/components/KeyHints';
-import { ChatEmpty, type ChatEmptyChip } from '@builddai/ai-kit/chat/react';
+import { ChatEmpty, type ChatEmptyChip } from '@buildd/ai-kit/chat/react';
 import { INITIAL_PANE, paneReducer } from './pane-state';
 import { MissionAskAbout, MissionContextCard, MissionScopeCell } from './MissionSheet';
 import { objectSheetTitle } from './mission-sheet';

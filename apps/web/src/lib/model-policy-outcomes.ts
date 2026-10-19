@@ -19,7 +19,7 @@ import { eq } from 'drizzle-orm';
 import {
   remotePolicyConfigFromEnv, reportPolicyOutcome, type RemotePolicyConfig,
 } from '@buildd/core/model-policy';
-import type { PolicyObservation } from '@builddai/ai-kit/policy';
+import type { PolicyObservation } from '@buildd/ai-kit/policy';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface ReportTaskPolicyOutcomeDeps {

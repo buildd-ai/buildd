@@ -13,7 +13,7 @@
  */
 import { createHmac, timingSafeEqual } from 'crypto';
 import { and, desc, eq, gte, inArray } from 'drizzle-orm';
-import { canonicalJson, shortHash } from '@builddai/ai-kit/decide';
+import { canonicalJson, shortHash } from '@buildd/ai-kit/decide';
 import { db } from '@buildd/core/db';
 import { decisionRecords } from '@buildd/core/db/schema';
 import { signingSecret } from '@/lib/github-install-state';

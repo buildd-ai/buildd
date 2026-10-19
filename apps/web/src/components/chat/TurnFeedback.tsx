@@ -4,7 +4,7 @@
  * Thumbs on an assistant turn (knowledge-base: buildd/design/tier-model-pools.md §9 "Chat").
  * The thumbs, the one optional reason (a popover on desktop, a bottom sheet on
  * a phone) and the vote state are the kit's (`TurnFeedbackProvider` /
- * `TurnFeedback` from @builddai/ai-kit/chat/react). buildd owns the transport,
+ * `TurnFeedback` from @buildd/ai-kit/chat/react). buildd owns the transport,
  * `/api/feedback` (one row per vote; the route toggles an identical vote
  * off, as the kit does), and the reason list from `@buildd/core/tier-pool`.
  * Only labels are sent, never text.
@@ -15,8 +15,8 @@ import {
   TurnFeedbackProvider as KitTurnFeedbackProvider,
   type FeedbackReason,
   type TurnFeedbackEvent,
-} from '@builddai/ai-kit/chat/react';
-import type { TurnSignal, TurnVote as KitTurnVote } from '@builddai/ai-kit/chat/contract';
+} from '@buildd/ai-kit/chat/react';
+import type { TurnSignal, TurnVote as KitTurnVote } from '@buildd/ai-kit/chat/contract';
 import { CHAT_FEEDBACK_REASONS, CHAT_FEEDBACK_REASON_LABELS, isChatFeedbackReason, type ChatFeedbackReason } from '@buildd/core/tier-pool';
 
 export type { TurnSignal };

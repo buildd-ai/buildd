@@ -9,7 +9,7 @@ import { join } from 'path';
 // docs/specs/living-specs.md, "Portable contract".
 
 const REPO = join(import.meta.dir, '../../..');
-const SPEC = String.raw`['"]((?:@buildd|@builddai)\/[^'"]*|drizzle-orm(?:\/[^'"]*)?|@neondatabase\/[^'"]+|@\/[^'"]*|\.\.\/[^'"]*)['"]`;
+const SPEC = String.raw`['"](@buildd\/[^'"]*|drizzle-orm(?:\/[^'"]*)?|@neondatabase\/[^'"]+|@\/[^'"]*|\.\.\/[^'"]*)['"]`;
 const FORBIDDEN = new RegExp(String.raw`(?:from\s+|import\s*\(\s*|import\s+|require\(\s*)` + SPEC);
 
 function sources(): string[] {

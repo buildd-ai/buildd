@@ -3,7 +3,7 @@
  * request a provider sees. Every dep is a fake; nothing here reaches a model.
  */
 import { describe, expect, it } from 'bun:test';
-import type { DecisionResponse } from '@builddai/ai-kit/decide';
+import type { DecisionResponse } from '@buildd/ai-kit/decide';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
 import type { FailureIncidentRecovery } from '@buildd/shared';
 import { buildOperatorEvidencePack, type PackCauseInput } from './operator-recovery-evidence';

@@ -77,8 +77,8 @@ describe('build job split', () => {
       'Type check',
       'Detect affected tests',
       'Run tests',
-      'Build @builddai/ai-kit dist and import it on Node',
-      'Install @builddai/ai-kit into a clean consumer project',
+      'Build @buildd/ai-kit dist and import it on Node',
+      'Install @buildd/ai-kit into a clean consumer project',
       'Build',
     ];
     const all = PARTS.flatMap(stepNames);

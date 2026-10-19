@@ -14,7 +14,7 @@
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { applyTurnVote, type TurnSignal, type TurnVote } from '@builddai/ai-kit/chat/contract';
+import { applyTurnVote, type TurnSignal, type TurnVote } from '@buildd/ai-kit/chat/contract';
 import { MenuOption, kitVarsAt, sheetMatches } from './Menu';
 
 export interface FeedbackReason<R extends string = string> {

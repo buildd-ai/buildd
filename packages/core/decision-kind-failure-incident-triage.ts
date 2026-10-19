@@ -21,8 +21,8 @@
  * error text. The model never sees a log line.
  */
 
-import { choice } from '@builddai/ai-kit/decide';
-import type { DecisionKindConfig, FeatureParse } from '@builddai/ai-kit/decide';
+import { choice } from '@buildd/ai-kit/decide';
+import type { DecisionKindConfig, FeatureParse } from '@buildd/ai-kit/decide';
 import { defineBuilddDecisionKind, type BuilddDecisionKindBinding } from './decision-kinds';
 
 export const FAILURE_INCIDENT_TRIAGE_KIND = 'buildd.failure_incident_triage' as const;

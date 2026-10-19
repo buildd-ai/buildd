@@ -4,7 +4,7 @@
  * side panel shows. Generic over the app's `ObjectRef` kinds; the app renders
  * each kind and decides where "Pop out" goes.
  */
-import type { ObjectRef } from '@builddai/ai-kit/chat/contract';
+import type { ObjectRef } from '@buildd/ai-kit/chat/contract';
 
 // ── Pane ──────────────────────────────────────────────────────────────────────
 

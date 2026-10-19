@@ -41,7 +41,7 @@ import {
   type EvalSplit,
   type EvalSummary,
   type RunOptions,
-} from '@builddai/ai-kit/decide';
+} from '@buildd/ai-kit/decide';
 
 export interface SurfaceCandidate {
   id: string;

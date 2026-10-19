@@ -205,14 +205,57 @@ function serverKey(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || name.toLowerCase();
 }
 
+/**
+ * What a resolution matches on. `domain:verb` (a search filter over what the
+ * catalog serves) and `provider + access` (what an agent asks for) differ only
+ * in which catalog entries count as a match.
+ */
+interface ResolveSpec {
+  capability: string;
+  requested: 'read' | 'write';
+  /** The domain a partial match is explained for; absent when matching by provider. */
+  domain?: CapabilityDomain;
+  matchOf: (entry: ResolvedCatalogEntry) => { match: CapabilityCandidate['match']; profile: ProviderProfile | null } | null;
+}
+
+/** Search filter: what could serve `domain:verb`. The categories are only this, never what is requested or granted. */
 export function resolveCapability(input: DiscoveryInput, raw: string): CapabilityResolution | { error: string } {
   const parsed = parseCapability(raw);
   if (!parsed) {
     return { error: `Unknown capability "${raw}". Use domain:verb with domain one of ${CAPABILITY_DOMAINS.join(', ')} and verb one of ${CAPABILITY_VERBS.join(', ')} (e.g. observability:query).` };
   }
   const { domain, verb } = parsed;
-  const capability = `${domain}:${verb}`;
-  const requested: 'read' | 'write' = verb === 'write' ? 'write' : 'read';
+  return resolveWith(input, {
+    capability: `${domain}:${verb}`,
+    requested: verb === 'write' ? 'write' : 'read',
+    domain,
+    matchOf(entry) {
+      const profile = PROVIDER_PROFILES[entry.slug] ?? null;
+      if (profile) {
+        const serves = profile.serves[domain];
+        if (!serves) return null;
+        const m = verbCovered(serves, verb);
+        return m ? { match: m, profile } : null;
+      }
+      return CATEGORY_DOMAIN[entry.category] === domain ? { match: 'category', profile: null } : null;
+    },
+  });
+}
+
+/**
+ * What an agent asks for: one provider (a catalog slug) at `read` or `write`.
+ * Tools stay the provider's own; the gateway and policy decide per tool.
+ */
+export function resolveProviderAccess(input: DiscoveryInput, provider: string, access: 'read' | 'write'): CapabilityResolution {
+  return resolveWith(input, {
+    capability: `${provider}:${access}`,
+    requested: access,
+    matchOf: entry => entry.slug === provider ? { match: 'exact', profile: PROVIDER_PROFILES[entry.slug] ?? null } : null,
+  }) as CapabilityResolution;
+}
+
+function resolveWith(input: DiscoveryInput, spec: ResolveSpec): CapabilityResolution {
+  const { capability, requested, domain, matchOf } = spec;
 
   const roleBySlug = new Map(input.roles.map(r => [r.slug, r]));
   const evaluatedRole = input.roleSlug ? roleBySlug.get(input.roleSlug) ?? null : null;
@@ -222,17 +265,6 @@ export function resolveCapability(input: DiscoveryInput, raw: string): Capabilit
   for (const e of input.catalog) {
     const k = normalizeConnectorUrl(e.url);
     if (k) entryByUrl.set(k, e);
-  }
-
-  function matchOf(entry: ResolvedCatalogEntry): { match: CapabilityCandidate['match']; profile: ProviderProfile | null } | null {
-    const profile = PROVIDER_PROFILES[entry.slug] ?? null;
-    if (profile) {
-      const serves = profile.serves[domain];
-      if (!serves) return null;
-      const m = verbCovered(serves, verb);
-      return m ? { match: m, profile } : null;
-    }
-    return CATEGORY_DOMAIN[entry.category] === domain ? { match: 'category', profile: null } : null;
   }
 
   function riskOf(profile: ProviderProfile | null): CapabilityCandidate['risk'] {
@@ -322,7 +354,7 @@ export function resolveCapability(input: DiscoveryInput, raw: string): Capabilit
       provider: { slug: entry.slug, name: entry.name, catalogPolicy: entry.policy },
       connector: { id: c.id, name: c.name, ownership: c.ownerTeamId === input.teamId ? 'team' : 'shared', transport: c.transport },
       match: m.match,
-      ...(m.match === 'partial' && m.profile?.partialNote?.[domain] ? { matchNote: m.profile.partialNote[domain] } : {}),
+      ...(m.match === 'partial' && domain && m.profile?.partialNote?.[domain] ? { matchNote: m.profile.partialNote[domain] } : {}),
       access,
       availableNow,
       reasons,
@@ -351,7 +383,7 @@ export function resolveCapability(input: DiscoveryInput, raw: string): Capabilit
       provider: { slug: entry.slug, name: entry.name, catalogPolicy: entry.policy },
       connector: null,
       match: m.match,
-      ...(m.match === 'partial' && m.profile?.partialNote?.[domain] ? { matchNote: m.profile.partialNote[domain] } : {}),
+      ...(m.match === 'partial' && domain && m.profile?.partialNote?.[domain] ? { matchNote: m.profile.partialNote[domain] } : {}),
       access: blocked ? 'forbidden' : 'ask_admin',
       availableNow: false,
       reasons: blocked ? ['catalog_blocked'] : ['not_installed'],

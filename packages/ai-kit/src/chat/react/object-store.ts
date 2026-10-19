@@ -15,7 +15,7 @@
  *
  * No React, no fetch, no realtime client here: the app brings those.
  */
-import { refKey, type ObjectRef } from '@builddai/ai-kit/chat/contract';
+import { refKey, type ObjectRef } from '@buildd/ai-kit/chat/contract';
 
 export interface ObjectEntry<V> {
   view: V | null;

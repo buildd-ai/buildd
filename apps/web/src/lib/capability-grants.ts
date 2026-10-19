@@ -2,9 +2,10 @@
  * Capability requests, team policy and task-scoped grants: the rules. Pure;
  * the db half is capability-grants-store.ts.
  *
- * A running agent asks for a semantic need (`observability:query`, optionally
- * naming a provider, an exact tool, a resource and an environment); it never
- * names a connector id or a credential. The answer reuses discovery
+ * A running agent asks for a provider and an access (`axiom` + `read`,
+ * optionally an exact tool, a resource and an environment); it never names a
+ * connector id or a credential. buildd's own capabilities (`tasks:create`,
+ * `analytics:read` on a named workspace) are the same ask under provider `buildd`. The answer reuses discovery
  * (connector-capabilities.ts: connectors, shares, workspace enablement, role
  * connectorRefs, credential health, catalog policy) and adds two things:
  *
@@ -29,7 +30,6 @@
  */
 import { isLiveWorkerStatus, isOpenTaskStatus } from '@buildd/shared';
 import type { CapabilityCandidate, CapabilityResolution } from './connector-capabilities';
-import { parseCapability } from './connector-capabilities';
 import {
   MODEL_INFERENCE_CAPABILITY,
   MODEL_INFERENCE_OPERATIONS,
@@ -63,14 +63,24 @@ export const MAX_GRANT_TTL_SECONDS = 24 * 60 * 60;
 export const MODEL_INFERENCE_PROVIDERS: readonly ModelInferenceProvider[] = ['openrouter', 'litellm'];
 
 /**
- * Filing tasks in another workspace of the team. Not a connector: buildd
- * itself serves it, so the provider is always `buildd` and the resource is
- * the target workspace's UUID. Always a write, so always a person's decision;
- * an approval lands as a grant on the task's own delegation
+ * buildd's own capabilities, requested as provider `buildd` with an access:
+ * `write` files tasks in another workspace (`tasks:create`), `read` reads its
+ * analytics (`analytics:read`). Not connectors: buildd serves them, so the
+ * resource is the target workspace's UUID. A person always decides, and an
+ * approval lands as a grant on the task's own delegation
  * (lib/task-delegation.ts), which its token re-reads on every call.
  */
 export const TASK_FILING_CAPABILITY = 'tasks:create';
+export const ANALYTICS_READ_CAPABILITY = 'analytics:read';
 export const TASK_FILING_PROVIDER = 'buildd';
+export const REQUEST_ACCESSES = ['read', 'write'] as const;
+export type RequestAccess = (typeof REQUEST_ACCESSES)[number];
+const BUILDD_CAPABILITY_BY_ACCESS: Record<RequestAccess, 'tasks:create' | 'analytics:read'> = {
+  write: TASK_FILING_CAPABILITY, read: ANALYTICS_READ_CAPABILITY,
+};
+/** A capability buildd itself serves through a task delegation (no connector, no policy). */
+export const isDelegationCapability = (c: string): c is 'tasks:create' | 'analytics:read' =>
+  c === TASK_FILING_CAPABILITY || c === ANALYTICS_READ_CAPABILITY;
 const WORKSPACE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
@@ -98,8 +108,9 @@ export interface ModelInferenceScope {
 }
 
 export interface CapabilityRequest {
-  /** `domain:verb`, or `model.inference`. */
+  /** `<provider>:<access>`, buildd's `tasks:create` / `analytics:read`, or `model.inference`. */
   capability: string;
+  access: RequestAccess;
   provider: string | null;
   tool: string | null;
   resource: string | null;
@@ -117,7 +128,7 @@ const TOOL_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/;
 const RESOURCE_RE = /^[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,199}$/;
 const ENV_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$/;
-const ALLOWED_KEYS = new Set(['capability', 'provider', 'tool', 'resource', 'environment', 'risk', 'ttlSeconds', 'reason', 'models', 'operations', 'budget']);
+const ALLOWED_KEYS = new Set(['capability', 'access', 'provider', 'tool', 'resource', 'environment', 'risk', 'ttlSeconds', 'reason', 'models', 'operations', 'budget']);
 /** Things an agent must never hand the broker: it names needs, not plumbing. */
 const FORBIDDEN_KEYS = ['connectorId', 'credentialRef', 'apiKey', 'token', 'baseURL', 'endpoint', 'headers', 'url'];
 
@@ -133,7 +144,7 @@ export function parseCapabilityRequest(body: unknown): { ok: true; request: Capa
   if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false, error: 'Body must be an object' };
   const b = body as Record<string, unknown>;
   for (const k of FORBIDDEN_KEYS) {
-    if (k in b) return { ok: false, error: `${k} is not accepted: ask for a capability (domain:verb) and optionally a provider; buildd picks the connector and holds the credential` };
+    if (k in b) return { ok: false, error: `${k} is not accepted: ask for a provider and an access (read | write); buildd picks the connector and holds the credential` };
   }
   for (const k of Object.keys(b)) if (!ALLOWED_KEYS.has(k)) return { ok: false, error: `unknown field ${k}` };
 
@@ -144,6 +155,12 @@ export function parseCapabilityRequest(body: unknown): { ok: true; request: Capa
   const environment = optStr(typeof b.environment === 'string' ? b.environment.toLowerCase() : b.environment, ENV_RE, 'environment');
   for (const p of [provider, tool, resource, environment]) if (!p.ok) return { ok: false, error: p.error };
   const val = <T,>(p: Parse<T>) => (p as { ok: true; value: T }).value;
+
+  let access: RequestAccess | null = null;
+  if (b.access !== undefined && b.access !== null) {
+    if (typeof b.access !== 'string' || !(REQUEST_ACCESSES as readonly string[]).includes(b.access)) return { ok: false, error: `access must be one of ${REQUEST_ACCESSES.join(', ')}` };
+    access = b.access as RequestAccess;
+  }
 
   let declared: CapabilityRisk | null = null;
   if (b.risk !== undefined && b.risk !== null) {
@@ -176,39 +193,48 @@ export function parseCapabilityRequest(body: unknown): { ok: true; request: Capa
     return {
       ok: true,
       request: {
-        capability, provider: p, tool: null, resource: null, environment: null,
+        capability, access: 'read', provider: p, tool: null, resource: null, environment: null,
         risk: maxRisk('query', declared ?? 'query'), ttlSeconds, reason,
         modelInference: { models: [...new Set(models as string[])].sort(), operations: [...new Set(operations as ModelInferenceOperation[])], budget: b.budget as ModelInferenceBudget },
       },
     };
   }
 
-  if (capability === TASK_FILING_CAPABILITY) {
-    const p = val(provider);
-    if (p && p !== TASK_FILING_PROVIDER) return { ok: false, error: `${TASK_FILING_CAPABILITY} is served by buildd itself; omit provider` };
+  // buildd's own capabilities: provider `buildd` + access, or the capability's own name.
+  const p = val(provider);
+  const named = isDelegationCapability(capability) ? capability : null;
+  if (p === TASK_FILING_PROVIDER || named) {
+    if (p && p !== TASK_FILING_PROVIDER) return { ok: false, error: `${capability} is served by buildd itself: use provider "${TASK_FILING_PROVIDER}"` };
+    const accessOf = named ? (named === TASK_FILING_CAPABILITY ? 'write' : 'read') : access;
+    if (!accessOf) return { ok: false, error: `provider "${TASK_FILING_PROVIDER}" needs access: write (file tasks in a workspace) or read (read its analytics)` };
+    if (access && named && access !== accessOf) return { ok: false, error: `${named} is access ${accessOf}` };
+    const cap = BUILDD_CAPABILITY_BY_ACCESS[accessOf];
     const r = val(resource);
-    if (!r || !WORKSPACE_UUID_RE.test(r)) return { ok: false, error: `${TASK_FILING_CAPABILITY} needs resource: the UUID of the workspace to file tasks in` };
+    if (!r || !WORKSPACE_UUID_RE.test(r)) return { ok: false, error: `${cap} needs resource: the UUID of the workspace` };
     if (val(tool) || val(environment) || b.models !== undefined || b.operations !== undefined || b.budget !== undefined) {
-      return { ok: false, error: `${TASK_FILING_CAPABILITY} takes only resource (a workspace UUID) and reason` };
+      return { ok: false, error: `${cap} takes only resource (a workspace UUID) and reason` };
     }
     return {
       ok: true,
       request: {
-        capability, provider: TASK_FILING_PROVIDER, tool: null, resource: r.toLowerCase(), environment: null,
-        risk: 'write', ttlSeconds, reason, modelInference: null,
+        capability: cap, access: accessOf, provider: TASK_FILING_PROVIDER, tool: null, resource: r.toLowerCase(), environment: null,
+        risk: accessOf === 'write' ? 'write' : 'read', ttlSeconds, reason, modelInference: null,
       },
     };
   }
 
-  const parsed = parseCapability(capability);
-  if (!parsed) return { ok: false, error: `Unknown capability "${capability}". Use domain:verb (e.g. observability:query) or model.inference.` };
+  if (capability && capability.includes(':')) {
+    return { ok: false, error: `Ask for a provider and an access, not "${capability}": { provider: "<catalog slug>", access: "read" | "write" }. GET /api/connectors/capabilities?capability=${capability} searches which providers serve it.` };
+  }
+  if (!p) return { ok: false, error: 'provider is required: the catalog slug to use (e.g. axiom), with access read or write' };
+  if (!access) return { ok: false, error: 'access is required: read or write' };
   if (b.models !== undefined || b.operations !== undefined || b.budget !== undefined) return { ok: false, error: 'models/operations/budget are for model.inference only' };
   const t = val(tool);
-  const risk = maxRisk(parsed.verb, declared ?? parsed.verb, t ? classifyToolRisk(t) : parsed.verb);
+  const risk = maxRisk(access, declared ?? access, t ? classifyToolRisk(t) : access);
   return {
     ok: true,
     request: {
-      capability: `${parsed.domain}:${parsed.verb}`, provider: val(provider), tool: t, resource: val(resource), environment: val(environment),
+      capability: `${p}:${access}`, access, provider: p, tool: t, resource: val(resource), environment: val(environment),
       risk, ttlSeconds, reason, modelInference: null,
     },
   };
@@ -297,7 +323,8 @@ export function matchPolicy(rules: readonly PolicyRule[], scope: PolicyScope): P
   let best: PolicyRule | null = null;
   let bestSpec = -1;
   for (const r of rules) {
-    if (r.provider !== scope.provider || r.risk !== scope.risk) continue;
+    // A rule written at `query` (the retired middle verb) keeps governing reads.
+    if (r.provider !== scope.provider || (r.risk !== scope.risk && !(r.risk === 'query' && scope.risk === 'read'))) continue;
     if (r.workspaceId && r.workspaceId !== scope.workspaceId) continue;
     if (r.roleSlug && r.roleSlug !== scope.roleSlug) continue;
     if (r.environment && r.environment !== scope.environment) continue;

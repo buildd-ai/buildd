@@ -304,7 +304,7 @@ const NEXT_STEPS: Record<CallRefusal, string> = {
   role_ceiling: "This tool changes things at the provider and this task's role is limited to reading. Do not retry; if the change is needed, say so in a note.",
   unattended_ceiling: 'Scheduled and sentinel runs may only read from providers. Do not retry; file a task for a person-supervised run if a change is needed.',
   policy_forbidden: 'Team capability policy forbids this access.',
-  capability_not_granted: 'Ask for it with request_capability (capability, provider, and this exact tool). Writes need a person to approve; keep working on other things meanwhile.',
+  capability_not_granted: 'Ask for it with request_capability (provider, access, and this exact tool). Writes need a person to approve; keep working on other things meanwhile.',
   rate_limited: 'Too many provider calls in the last minute. Wait before calling again.',
   replayed_call: 'This exact write was already sent once in this session; it was not sent again.',
   gateway_unavailable: 'buildd could not check this call right now, so it was not sent. Try again shortly.',

@@ -1,6 +1,6 @@
 /**
  * buildd's approval primitives (approvals.ts) and the kit's
- * (`@builddai/ai-kit/chat/server`, which `createChatTurn` uses) must agree
+ * (`@buildd/ai-kit/chat/server`, which `createChatTurn` uses) must agree
  * while both exist (P6 moves buildd's turn onto the kit):
  *  - the same input hash, so an approval row written by one verifies in the other;
  *  - the same approval-request rows from a message;
@@ -11,7 +11,7 @@ import { describe, expect, it, mock } from 'bun:test';
 mock.module('@buildd/core/db', () => ({ db: {} }));
 
 const buildd = await import('./approvals');
-const kit = await import('@builddai/ai-kit/chat/server');
+const kit = await import('@buildd/ai-kit/chat/server');
 const { encodeApprovalPreview } = await import('@buildd/shared');
 
 const input = { action: 'create', title: 'Bill in local currency', goalCriteria: [{ type: 'description', description: 'x' }], extra: undefined };

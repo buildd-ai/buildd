@@ -44,7 +44,7 @@ import {
   type EvalPrediction,
   type EvalSummary,
   type RunOptions,
-} from '@builddai/ai-kit/decide';
+} from '@buildd/ai-kit/decide';
 import type { OrchestrationDecisionOutcome } from './orchestration-decision';
 import { activePrompt, notePromptRejected, registerPrompt, resolvedPromptVersion } from './prompts';
 import { hasConcretePathManifest, pathsOverlap, REPO_WIDE_SENTINEL } from './path-overlap';

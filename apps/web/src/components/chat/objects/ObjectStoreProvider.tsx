@@ -13,7 +13,7 @@ import {
   useObjectEntry as useKitObjectEntry,
   useObjectStore as useKitObjectStore,
   type ObjectStore as KitObjectStore,
-} from '@builddai/ai-kit/chat/react';
+} from '@buildd/ai-kit/chat/react';
 import { CHANNEL_PREFIX, subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
 import { MISSION_EVENTS, WORKSPACE_EVENTS } from '@/app/app/(protected)/missions/[id]/MissionAutoRefresh';
 import type { BuilddObjectRef } from '../chat-contract';

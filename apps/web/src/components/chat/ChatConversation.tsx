@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * One conversation on the kit's `useKitChat` (@builddai/ai-kit/chat/react,
+ * One conversation on the kit's `useKitChat` (@buildd/ai-kit/chat/react,
  * `useChat` from AI SDK v7 underneath). The server's stored history is the
  * source of truth, so each request carries only the newest message
  * (`ChatTurnRequest`) plus how the chat was opened. An approval answer is a
@@ -17,7 +17,7 @@
  * Other devices: `conversation:updated` on `conversation-{id}` is a ping; when
  * nothing is streaming here, the conversation is refetched and replaced.
  */
-import { useKitChat } from '@builddai/ai-kit/chat/react';
+import { useKitChat } from '@buildd/ai-kit/chat/react';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {

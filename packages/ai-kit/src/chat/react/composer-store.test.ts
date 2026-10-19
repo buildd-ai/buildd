@@ -1,7 +1,7 @@
 /** Ported from buildd's components/chat/composer-store.test.ts, against the app adapter instead of fetch. */
 import { describe, expect, it } from 'bun:test';
 import { applyComposerSeed, createComposerStore, tierPrefs, type ComposerSeed, type ComposerSnapshot } from './composer-store';
-import { defineTierPolicy } from '@builddai/ai-kit/chat/contract';
+import { defineTierPolicy } from '@buildd/ai-kit/chat/contract';
 
 const base: ComposerSnapshot = { key: 't', draft: '', scope: null, tier: null, seeded: false, touched: { scope: false, tier: false } };
 

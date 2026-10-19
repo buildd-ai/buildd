@@ -1,5 +1,5 @@
 /**
- * `@builddai/ai-kit/models`: the model-plan client (server side, no peers,
+ * `@buildd/ai-kit/models`: the model-plan client (server side, no peers,
  * no framework deps; Node, Bun and edge).
  *
  * An app asks buildd for a plan (`tier` + `surface` + `kind`) and gets back

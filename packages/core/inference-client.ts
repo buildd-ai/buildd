@@ -44,7 +44,7 @@ import { INFERENCE_KEY_PURPOSE as KEY_PURPOSE } from './inference-keys';
 import { resolveTierEntry } from './model-tier-registry';
 import type { Tier, TierProvider } from './model-tier-defaults';
 import { isInferenceAllowed, type InferenceCapability } from './inference-policy';
-import { ROUTES, routeAttributionHeaders, type RouteId } from '@builddai/ai-kit/models';
+import { ROUTES, routeAttributionHeaders, type RouteId } from '@buildd/ai-kit/models';
 import { createPublicGatewayFetcher } from './net/fetch-public-gateway';
 import { isRouteVendor, resolveInferenceRoute } from './inference-route';
 import { sqlWhere } from './db/relational-sql';

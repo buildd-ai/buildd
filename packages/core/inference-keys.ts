@@ -56,9 +56,9 @@ import { eq } from 'drizzle-orm';
 import { decrypt } from './secrets';
 import { effectiveKeyPolicy, toCredentialPolicy, type InferenceKeyPolicy } from './inference-key-policy';
 import type { PolicyScope } from './providers/policy';
-import { ROUTES, routeAuthHeaders } from '@builddai/ai-kit/models/routes';
+import { ROUTES, routeAuthHeaders } from '@buildd/ai-kit/models/routes';
 
-import { PERSONAL_KEY_PROVIDERS, isPersonalKeyProvider, providerKeyCapability, type PersonalKeyProvider } from '@builddai/ai-kit/models/provider-keys';
+import { PERSONAL_KEY_PROVIDERS, isPersonalKeyProvider, providerKeyCapability, type PersonalKeyProvider } from '@buildd/ai-kit/models/provider-keys';
 import { sqlWhere } from './db/relational-sql';
 
 export type InferenceKeyProvider = PersonalKeyProvider;

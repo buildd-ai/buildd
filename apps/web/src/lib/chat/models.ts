@@ -21,7 +21,7 @@ import type { Tier } from '@buildd/core/model-tier-defaults';
 import type { ChatProvider } from '@buildd/shared';
 import { openRouterModelId } from './openrouter-id';
 import { resolveLiteLLMGateway, type LiteLLMGateway } from '@buildd/core/litellm-gateway';
-import { gatewayModel } from '@builddai/ai-kit/models';
+import { gatewayModel } from '@buildd/ai-kit/models';
 import { createPublicGatewayFetcher } from '@buildd/core/net/fetch-public-gateway';
 
 export type ChatTier = Extract<Tier, 'budget' | 'standard' | 'premium'>;

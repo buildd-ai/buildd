@@ -30,8 +30,8 @@
  * `estimateTaskSize`. Not wired to any route yet.
  */
 
-import { choice } from '@builddai/ai-kit/decide';
-import type { DecisionKindConfig, FeatureParse } from '@builddai/ai-kit/decide';
+import { choice } from '@buildd/ai-kit/decide';
+import type { DecisionKindConfig, FeatureParse } from '@buildd/ai-kit/decide';
 import { defineBuilddDecisionKind, type BuilddDecisionKindBinding } from '@buildd/core/decision-kinds';
 import { intersectPaths } from '@buildd/core/path-overlap';
 import type { EstimateTaskSizeArgs, ExpectedTaskSize } from '@buildd/core/task-size-estimate';
