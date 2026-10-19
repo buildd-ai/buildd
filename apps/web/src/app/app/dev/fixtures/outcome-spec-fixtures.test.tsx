@@ -75,7 +75,8 @@ describe('outcome spec fixtures (?state=mission-task-strip&variant=outcome-spec-
       expect(row.detail ?? '').not.toContain('once the build');
       const html = renderToStaticMarkup(<OutcomeSpecCriterion missionId="m" criterion={criterion} entry={entry} />);
       expect(html).not.toContain('once the build');
-      expect(html).toContain('The build is done.');
+      expect(html).not.toContain('The build is done.');
+      expect(row.detail ?? '').toContain('The build is done.');
     }
   });
 

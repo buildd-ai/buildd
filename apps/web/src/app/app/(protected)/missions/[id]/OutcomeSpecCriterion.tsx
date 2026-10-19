@@ -6,6 +6,7 @@
  * integrated result in words, what is still open by standing, what a person
  * waived, the final verification and who acts next.
  *
+ * The closing "who acts next" sentence lives in the Checks row, not here.
  * Words come from `outcomeSpecView`, the same view the Overview's Verify row
  * reads. Waiving and removing are a person's decisions with a reason; the
  * server refuses them to anything else, and a read-only viewer sees neither.
@@ -118,12 +119,12 @@ export default function OutcomeSpecCriterion({ missionId, criterion, entry, read
       {v.waived.length > 0 && (
         <ul className="space-y-1" data-testid="outcome-spec-waived">
           {v.waived.map(w => (
-            <li key={w.criterionId} className="text-meta text-text-muted leading-snug">
-              <span className="font-mono">{w.criterionId}</span> waived: {w.reason}
+            <li key={w.criterionId} className="text-meta text-text-muted leading-snug flex flex-wrap items-baseline gap-x-2">
+              <span className="min-w-0 break-words"><span className="font-mono">{w.criterionId}</span> waived: {w.reason}</span>
               {!readonly && (
                 <button
                   type="button"
-                  className={`${ACTION} ml-1`}
+                  className={ACTION}
                   disabled={saving}
                   data-testid={`unwaive-${w.criterionId}`}
                   onClick={() => send({ specId: criterion.specId, unwaive: [w.criterionId] })}
@@ -135,7 +136,6 @@ export default function OutcomeSpecCriterion({ missionId, criterion, entry, read
           ))}
         </ul>
       )}
-      <p className="text-meta text-text-secondary leading-snug" data-testid="outcome-spec-next">{v.next}</p>
       {v.verificationTaskId && (
         <a href={`/app/tasks/${v.verificationTaskId}`} className={ACTION}>
           Final verification {v.verificationTaskId.slice(0, 8)}
