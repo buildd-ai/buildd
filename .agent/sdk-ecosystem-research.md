@@ -1,16 +1,39 @@
 # Claude Agent SDK Ecosystem Research
 
-**Last updated**: 2026-10-12
-**Previous scan**: 2026-10-06
-**Current SDK version in Buildd**: `^0.3.290` (runner + core; `bun.lock` resolves `0.3.290`). npm head is `0.3.296` (published ~Oct 9) — 6 patch versions behind.
-**Python SDK**: v0.2.165
-**Claude Code CLI**: v2.1.296
+**Last updated**: 2026-10-19
+**Previous scan**: 2026-10-12
+**Current SDK version in Buildd**: `^0.3.290` (runner + core; `bun.lock` resolves `0.3.290`). npm head is `0.3.303` (Oct 18) — 13 patch versions behind. The pin did not move this week, so last week's bump recommendation is still open.
 
 > **Note**: For SDK feature details and integration status, see [sdk-reference/](sdk-reference/).
 
 ---
 
-## Oct 12 scan: status of last week's URGENT items (verified in code)
+## Oct 19 scan (Oct 13 – Oct 19)
+
+TypeScript SDK 0.3.299–0.3.303 (0.3.297/298 not on npm). Community-repo trending was not re-scanned; see older sections.
+
+| Version | Change |
+|---------|--------|
+| 0.3.303 | Parity with CLI 2.1.303 |
+| 0.3.302 | Fork subagents enabled by default in SDK sessions; permission-mode defaults adjusted for third-party providers; results delivering output as `structured_output` now return errors |
+| 0.3.301 | Per-tool permission policies on sdk-type MCP server configs; public exports of built-in tool names and legacy aliases; plugin folder loading/reload; model setting fixed at usage limits |
+| 0.3.300 | Adaptive thinking standardized across model capabilities; background subagent reporting improved; browser bundle ~40% smaller |
+| 0.3.299 | Optional `nextFireAt` on cron tool outputs; conversation rewind edge cases |
+
+Source: SDK CHANGELOG summary (no dates in it; dates from npm publish times). Entries are summarized, not verified against the CLI changelog.
+
+### Recommendations (this week)
+
+1. **Bump SDK `^0.3.290` → `^0.3.303`** (runner + core, `bun install`). Carries over last week's 0.3.296 bump; now also brings adaptive-thinking standardization. Low effort, Medium-High priority. Review before bumping: (a) fork-subagents-on-by-default changes subagent context/cost behavior; (b) `structured_output` now errors — grep for consumers of `structured_output` / `outputFormat` in `apps/runner/src/workers.ts` first.
+2. **Use SDK built-in tool-name exports (0.3.301)** instead of hardcoded tool-name lists in role `allowedTools` handling. Low.
+3. **Per-tool permission policies on sdk MCP servers (0.3.301)** could replace some `canUseTool` logic for the in-process buildd MCP server. Medium; evaluate.
+4. Still open from Oct 12: Sonnet 5.5 cache-read price ($0.10/MTok) in `model-prices.ts`, Haiku 5.5 CLI floor in `MODEL_MIN_CLI_VERSION` (do not guess the floor), Agent-tool `effort` param for cheap subagents, `claude_code_version` runtime gating.
+
+---
+
+## Archive: Oct 12 scan
+
+### Status of last week's URGENT items (verified in code)
 
 - **Sonnet 5.5 `thinking: disabled` 400 — FIXED.** `packages/core/model-thinking.ts` `rejectsDisabledThinking()` now matches `claude-(sonnet|haiku)-5-5`; `MODEL_MIN_CLI_VERSION` has `claude-sonnet-5-5: 2.1.284`.
 - **TodoWrite/Task tools missing on newer models — FIXED.** `apps/runner/src/workers.ts` (~line 4130) sets `CLAUDE_CODE_ENABLE_TODO_TOOLS = '1'` in the spawn env. Closes a 6-scan-old item. Residual: confirm via a worker `system/init` tools list / `get_usage_stats` histogram that `TodoWrite` now appears.
