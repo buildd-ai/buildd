@@ -7,7 +7,44 @@
  * facts and re-enqueues owed effects; the reducer decides what they mean.
  */
 import { sql, type SQL } from 'drizzle-orm';
+import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { TERMINAL_STATES, type KernelView } from './types';
+
+/**
+ * How long a round may go on waiting on a reviewer task that has ended before the floor fails it
+ * (7105282e). Long enough for the reviewer's own completion to record its verdict or its failure,
+ * and for a parked verdict to be re-sent.
+ */
+export const ENDED_REVIEWER_GRACE_MS = 15 * 60_000;
+
+/** The current round of a delivery waiting on review, when a reviewer task is bound to it. */
+export function roundWaitingOnReviewer(view: KernelView): { roundId: string; reviewerTaskId: string } | null {
+  const d = view.delivery;
+  if (!d || d.state !== 'AWAITING_REVIEW') return null;
+  const r = view.rounds.find((x) => x.round === d.currentRound && (x.status === 'queued' || x.status === 'reviewing'));
+  return r?.reviewerTaskId ? { roundId: r.id, reviewerTaskId: r.reviewerTaskId } : null;
+}
+
+/**
+ * One row when that round's reviewer task has ended and nothing settled the round since: the task
+ * and the round have both been still for `graceMs`, and no verdict or end of that reviewer is parked
+ * for the floor to re-send. A reviewer that completes is answered by its verdict (T6) and one that
+ * fails by T27, but a verdict that never reached the kernel (a follow-up that did not run, a command
+ * that could not be parked) leaves the round open with nobody left to answer it.
+ */
+export function endedReviewerSql(p: { roundId: string; reviewerTaskId: string; graceMs: number }): SQL {
+  const terminal = sql.join(TERMINAL_TASK_STATUSES.map((s) => sql`${s}::text`), sql`, `);
+  const grace = sql`now() - make_interval(secs => ${p.graceMs}::bigint / 1000.0)`;
+  return sql`-- workflow:ended_reviewer
+SELECT t.id, t.status FROM tasks t
+JOIN workflow_review_rounds r ON r.id = ${p.roundId}::uuid AND r.reviewer_task_id = t.id
+WHERE t.id = ${p.reviewerTaskId}::uuid AND t.status IN (${terminal})
+  AND t.updated_at <= ${grace} AND r.updated_at <= ${grace}
+  AND NOT EXISTS (SELECT 1 FROM workflow_command_outbox o
+    WHERE o.status = 'pending' AND o.op IN ('record_review_verdict', 'attempt_ended')
+      AND (o.command_input->'reviewerTask'->>'id' = t.id::text OR o.command_input->'task'->>'id' = t.id::text))
+LIMIT 1`;
+}
 
 /**
  * A REPAIRING delivery bound to a queued mechanical row whose pinned head the
