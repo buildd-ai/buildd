@@ -50,6 +50,22 @@ describe('signatures', () => {
   });
 });
 
+describe('the DB architecture job runs on both refs under two names', () => {
+  // build.yml names it "· merge ref" on a PR and "· branch HEAD" on a push to the base.
+  const PR = 'DB architecture (real Postgres) · merge ref';
+  const BASE = 'DB architecture (real Postgres) · branch HEAD';
+
+  test('the ref under test does not change the check: base and PR failures share a signature', () => {
+    const test = 'task page byte budget';
+    expect(ciSignature(failingEntries(BASE, [test]))).toBe(ciSignature(failingEntries(PR, [test])));
+    expect(trunkExplains(ciSignature(failingEntries(PR, [test])), ciSignature(failingEntries(BASE, [test])))).toBe(true);
+  });
+
+  test('a different failing test on the PR is still its own', () => {
+    expect(trunkExplains(ciSignature(failingEntries(PR, ['b'])), ciSignature(failingEntries(BASE, ['a'])))).toBe(false);
+  });
+});
+
 describe('signatures at test level: a shared job name is not a shared failure', () => {
   const SHARD1 = 'build · unit tests (1/3)';
   const SHARD2 = 'build · unit tests (2/3)';
