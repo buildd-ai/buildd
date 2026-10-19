@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { specOutcomeVerdicts, verdictEvidence, workers } from '@buildd/core/db/schema';
+import { specOutcomeVerdicts, specRevisions, specs, verdictEvidence, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, isNotNull } from 'drizzle-orm';
 
 export type EvidenceKind = 'test' | 'task' | 'pr' | 'commit';
@@ -68,17 +68,21 @@ export async function trackVerdictEvidence(verdictId: string): Promise<void> {
   }
 }
 
-/** Forward: the evidence behind a criterion of a revision, newest first. */
-export async function evidenceForCriterion(specRevisionId: string, criterionId: string) {
+/** Forward: the evidence behind a criterion of a revision, newest first. Only a revision of a spec in `workspaceId`. */
+export async function evidenceForCriterion(workspaceId: string, specRevisionId: string, criterionId: string) {
   return db.select({ verdictId: verdictEvidence.verdictId, kind: verdictEvidence.kind, ref: verdictEvidence.ref, at: verdictEvidence.createdAt })
     .from(verdictEvidence)
-    .where(and(eq(verdictEvidence.specRevisionId, specRevisionId), eq(verdictEvidence.criterionId, criterionId)))
+    .innerJoin(specRevisions, eq(specRevisions.id, verdictEvidence.specRevisionId))
+    .innerJoin(specs, eq(specs.id, specRevisions.specId))
+    .where(and(eq(specs.workspaceId, workspaceId), eq(verdictEvidence.specRevisionId, specRevisionId), eq(verdictEvidence.criterionId, criterionId)))
     .orderBy(desc(verdictEvidence.createdAt));
 }
 
-/** Backward: the criteria a test, task, PR or commit speaks for (regression provenance). */
-export async function criteriaForEvidence(kind: EvidenceKind, ref: string) {
+/** Backward: the criteria a test, task, PR or commit speaks for (regression provenance), within `workspaceId` only. */
+export async function criteriaForEvidence(workspaceId: string, kind: EvidenceKind, ref: string) {
   return db.select({ specRevisionId: verdictEvidence.specRevisionId, criterionId: verdictEvidence.criterionId, verdictId: verdictEvidence.verdictId })
     .from(verdictEvidence)
-    .where(and(eq(verdictEvidence.kind, kind), eq(verdictEvidence.ref, kind === 'commit' ? ref.toLowerCase() : ref)));
+    .innerJoin(specRevisions, eq(specRevisions.id, verdictEvidence.specRevisionId))
+    .innerJoin(specs, eq(specs.id, specRevisions.specId))
+    .where(and(eq(specs.workspaceId, workspaceId), eq(verdictEvidence.kind, kind), eq(verdictEvidence.ref, kind === 'commit' ? ref.toLowerCase() : ref)));
 }
