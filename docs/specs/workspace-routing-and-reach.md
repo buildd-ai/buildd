@@ -258,22 +258,68 @@ from the next run.
 
 ## 7. Decisions needed
 
-- D-1: **Where platform friction goes.** Proposal: a team setting naming one
-  platform workspace; when unset, the reporter's home, as today.
-- D-2: **Auto-accepting schedule moves.** Proposal: never in the first
-  version. A move changes which runners, repo and connectors run future work,
-  so a person accepts it. A team policy for auto-accept can come later.
-- D-3: **One reach rule for `analytics:read`.** Proposal: team plus grant (the
-  routes' rule). The grant was made by a person who reached the target; the
-  claiming runner's own reach is about where it may run, not what the task
-  may read.
-- D-4: **Subject inference.** Proposal: explicit only. A subject is declared by
-  the filer (`repo` or `readsFrom`/`filingTargets`); buildd does not guess a
-  subject from the description.
-- D-5: **Renaming the overloaded `analytics:read`.** The string means a token
-  scope, a delegation capability and a connector capability. Proposal: keep
-  it on tokens and delegations and refuse it in `request_capability` with a
-  message pointing to delegation, instead of resolving it to a connector.
+Each lists the options and the recommendation, judged for a team of many
+people and for many teams on one buildd, not only for one operator.
+
+- D-1: **Where friction goes.**
+  (a) the reporter's home, as today: fine for project friction, but platform
+  friction from another team's agents never reaches the people who maintain
+  buildd;
+  (b) a per-team "platform workspace" setting: solves one team, still
+  invisible to the operator;
+  (c) classify on filing: friction about the reporter's own repo stays home;
+  friction about buildd itself (a buildd MCP tool or route, a traced error
+  signature) becomes a platform signal deduplicated by signature across
+  teams, carrying only signature, tool, error code, buildd version and count,
+  never task content, and an operator opens the fix task from it.
+  **Recommended: (c).** A team may opt in to attaching excerpts.
+- D-2: **Who accepts a schedule move, and where it shows.**
+  (a) always a person: a card on Home for the schedule's owner and holders of
+  `delegate_schedule_access`, with Accept, Keep, and Accept with a read grant
+  on the old home, plus a banner on the schedule;
+  (b) auto-accept low-risk moves (same team, same repo) and post an FYI card
+  with undo;
+  (c) a team policy (forbidden, ask, auto) on the existing
+  `capability_policies` machinery, as provider `buildd`.
+  **Recommended: (a) now, (c) later** with ask as the default. An unanswered
+  proposal never blocks runs: the schedule keeps its current home.
+- D-3: **One reach rule for delegated reads.**
+  (a) team plus grant (the routes today);
+  (b) team plus grant plus the claiming account's own access to the target
+  (the claim pre-flight today, and what `docs/SPEC.md` already states: a
+  delegation "never exceeds the minting account's reach");
+  (c) a grant also links the account to the target.
+  **Recommended: (b).** It is the documented invariant, and with more people
+  a restricted workspace (a client's data) stays closed to a runner that
+  cannot access it, even when someone else granted the read. The routes'
+  delegated check gains the account-reach test; a task held at claim is
+  claimable by a runner that has access.
+- D-4: **Inferring the subject.**
+  (a) explicit only: the filer declares `repo`, `readsFrom` or
+  `filingTargets`;
+  (b) inferred as a suggestion: buildd reads repo and workspace mentions
+  (as chat routing's named-workspace step does), records source `inferred`,
+  and shows it on the approval card, but never files on it alone;
+  (c) inferred and applied.
+  **Recommended: (a) for agents, (b) for people in chat.** An agent can always
+  declare; a person typing in chat should not have to, but should see where
+  the task will land before approving. (c) misroutes silently.
+- D-5: **What `analytics:read` means.** It names three things today: an
+  API-key scope, a delegation capability, and a connector capability
+  (connector domain `analytics`, PostHog).
+  (a) keep the strings, disambiguate by `provider`;
+  (b) rename the connector domain;
+  (c) namespace every capability string.
+  **Recommended: (a) and (b).** `analytics:read` means buildd's own
+  coordination data about a workspace: the decision ledger and stats,
+  coordination and gate stats, failure analytics, usage, dispatch health,
+  explain and error traces. It never covers task content, memory, knowledge
+  or code. The connector domain becomes `product_analytics`.
+  `request_capability { provider: buildd, capability: analytics:read,
+  resource: <workspace> }` becomes a person-decided request that writes a
+  task delegation, as `tasks:create` does today, so "grant read and retry"
+  is one real action. Without a provider, `analytics:read` resolves to buildd,
+  never to a connector.
 
 ## 8. Discrepancies found while writing this
 
