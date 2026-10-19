@@ -232,6 +232,19 @@ export function missingDeployPermissions(caps: CloudflareCapabilities | null | u
     .map((k) => CAPABILITY_LABEL[k].permission);
 }
 
+/**
+ * `missingDeployPermissions` for a page that has not run Verify yet: read the
+ * refusals back out of the row's `lastVerificationError`, which Verify writes
+ * with `capabilityProblems`. Matches the exact line `describeCloudflareCapability`
+ * writes for each refused deploy permission, so the two stay in step.
+ */
+export function missingDeployPermissionsFromVerification(lastVerificationError: string | null | undefined): string[] {
+  if (!lastVerificationError) return [];
+  return DEPLOY_CAPABILITIES
+    .filter((k) => lastVerificationError.includes(describeCloudflareCapability(k, { state: 'not_allowed' })))
+    .map((k) => CAPABILITY_LABEL[k].permission);
+}
+
 /** The card's words for one check: "Workers AI: not allowed (add Workers AI Read to this token)". */
 export function describeCloudflareCapability(which: CloudflareCapability, check: CapabilityCheck): string {
   const { name, permission } = CAPABILITY_LABEL[which];

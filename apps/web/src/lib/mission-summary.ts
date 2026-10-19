@@ -201,18 +201,21 @@ function homeReading(
   visualReview: MissionVisualReviewState | null, visualRead: boolean, now: number,
 ): MissionHomeReading {
   const row = { ...mission, tasks: cardTasks } as unknown as ListMissionRow;
+  const stored = missionDeliveryFacts(row as never, visualRead ? summarizeVisualReview(visualReview) : undefined, now);
   const delivery = projectMissionDelivery({
     id: mission.id, title: mission.title, status: mission.status, href: `/app/missions/${mission.id}`,
     isHeld: mission.isHeld, armedAt: mission.armedAt, integrationBranch: mission.integrationBranchEnabled === true,
     tasks: cardTasks as never,
     // The same facts the missions list reads, so both cards agree.
-    ...missionDeliveryFacts(row as never, visualRead ? summarizeVisualReview(visualReview) : undefined, now),
+    ...stored,
+    // The stored row carries no elapsed time: the strand reads quiet, `quietSince` rides along, and a read adds the rest (`deliveryAtRead`).
+    localStrand: stored.localStrand ? { stranded: false, quietMs: 0 } : null,
   }, missionHelpers);
   const view = buildMissionCardView(row, { from: 'home', now, summary: card, deliveryViews });
   const model = buildMissionListCard(row, view, card, { now });
   const live = card.liveWorkers > 0 || LIVE_GROUPS.has(card.group);
   return {
-    delivery: toDeliveryRow(delivery),
+    delivery: toDeliveryRow(delivery, stored.localStrand?.quietSince),
     quietCause: quietCauseOf(delivery),
     card: {
       kind: model.kind,

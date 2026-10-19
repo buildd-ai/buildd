@@ -143,6 +143,7 @@ import {
 import { HUMAN_UI_DENIAL, RUNNER_DENIAL_MARKER } from './runner-denial';
 import { scanToolResult, scanBashResult, clearWorkerThrottle } from './error-trace-scanner';
 import { detectCreatedPr, prRequiredUnmet } from './pr-detection';
+import { completeTaskAttemptFrom, replayCompletion, type CompletionReplayOutcome } from './completion-replay';
 import { RecoveryManager } from './recovery';
 import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBreaker } from './connector-auth-detection';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
@@ -3709,6 +3710,31 @@ export class WorkerManager {
   }
 
   /**
+   * Replay the agent's own complete_task after it failed on the transport
+   * (completion-replay.ts). `landed` sends the session down the ordinary
+   * completed path, which already handles a worker the server terminalised
+   * first; anything else leaves the existing session-end handling to decide.
+   */
+  private async replayAgentCompletion(worker: LocalWorker): Promise<CompletionReplayOutcome> {
+    const attempt = worker.lastCompleteTaskAttempt;
+    if (!attempt) return 'unreachable';
+    const { outcome, sends } = await replayCompletion({
+      remoteStatus: async () => {
+        try { return (await this.buildd.getWorkerRemote(worker.id))?.status ?? null; } catch { return null; }
+      },
+      send: payload => this.buildd.updateWorker(worker.id, payload as Parameters<BuilddClient['updateWorker']>[1]),
+      sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+    }, attempt.params);
+    sessionLog(worker.id, outcome === 'landed' ? 'info' : 'warn', 'completion_replay', `outcome=${outcome} sends=${sends}`, worker.taskId);
+    if (outcome === 'landed') {
+      this.addMilestone(worker, { type: 'status', label: sends > 0 ? 'complete_task failed on the connection — the runner delivered it' : 'complete_task had landed despite the connection error', ts: Date.now() });
+    }
+    // Spent either way: a later branch must not replay it again.
+    worker.lastCompleteTaskAttempt = { ...attempt, transientFailure: false };
+    return outcome;
+  }
+
+  /**
    * Give a session ending without delivering one more bounded turn, with
    * label-specific text (session-end-classification.ts) instead of PR
    * #3143's one generic nudge. Records the push (label, text, timestamp) on
@@ -3762,7 +3788,8 @@ export class WorkerManager {
       : disposition === 'hold' ? { ...base, disposition: 'hold', holdReason: note } : base;
     worker.waitingFor = question;
     worker.status = 'waiting';
-    worker.currentAction = 'Needs a person';
+    // A recovered park waits on its repair task, not on a person.
+    worker.currentAction = question.disposition === 'recovered' ? 'Waiting on a platform repair' : 'Needs a person';
     worker.hasNewActivity = true;
     this.addMilestone(worker, { type: 'status', label: `Parked — ${label}`, ts: Date.now() });
     await this.buildd.updateWorker(worker.id, {
@@ -5774,6 +5801,15 @@ export class WorkerManager {
       const earlyOutput = worker.output.slice(0, 3).join('\n').toLowerCase();
       const authFailed = worker.toolCalls.length === 0 && isAuthError(earlyOutput);
 
+      // The agent's complete_task failed on the transport (ECONNRESET, 5xx):
+      // its outcome was decided, the server may not have heard it. Replay it
+      // (bounded, confirmed by read-back) before anything below reads this
+      // session as one that delivered nothing — that read is what turned a
+      // transient platform error into a parked question.
+      const completionReplay = !authFailed && worker.lastCompleteTaskAttempt?.transientFailure
+        ? await this.replayAgentCompletion(worker)
+        : null;
+
       if (authFailed) {
         // The session died on its first model call: the backend's own auth refusal.
         worker.modelLoginFailed = true;
@@ -5818,7 +5854,7 @@ export class WorkerManager {
         });
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
-      } else if (prRequiredUnmet({ outputRequirement: task.outputRequirement, prCreated: worker.prCreated })) {
+      } else if (completionReplay !== 'landed' && prRequiredUnmet({ outputRequirement: task.outputRequirement, prCreated: worker.prCreated })) {
         // pr_required, but the session produced no runner-confirmed PR. Does
         // NOT require zero commits — the mission's own motivating case (dozens
         // of commits, no PR, a session that just stopped mid-wait) has real
@@ -7298,6 +7334,13 @@ export class WorkerManager {
             worker.prCreated = true;
             if (prResult.url) worker.prUrl = prResult.url;
           }
+          const completionAttempt = completeTaskAttemptFrom({
+            toolName: source,
+            input: sourceInput,
+            resultText: text,
+            isError: block.is_error === true,
+          });
+          if (completionAttempt) worker.lastCompleteTaskAttempt = completionAttempt;
 
           // `is_error` gates the broad patterns — see error-trace-scanner.ts.
           // Without it, five in six firings landed on successful output.

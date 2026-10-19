@@ -105,7 +105,7 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import type { LoopVerdict } from '@/lib/completion-policy';
 import type { HeldOutcomeAnalytics, SlotFailure } from '@/lib/core-events';
-import { COMPLETION_POLICIES, MISSION_SHIPPING_PR_MERGED, RECOVERABLE_BLOCKER_REPAIR, republishPrHeads } from '@/modules';
+import { COMPLETION_POLICIES, MISSION_SHIPPING_PR_MERGED, RECOVERABLE_BLOCKER_REPAIR, reconcileRecoverableBlockerRepair, republishPrHeads } from '@/modules';
 import type { TaskHandoff, PathCollisionNotice } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { reportWorkerModelIncident } from '@/lib/model-compatibility-incident';
@@ -1482,6 +1482,22 @@ async function patchWorker(
       hold = parked.hold;
       parkAdmitted = parked.admitted;
       stored = parked.waitingFor as typeof briefed;
+      // Parked on a repair that already landed (it finished before this park
+      // arrived): the repair's own completion found nothing to resume, so
+      // resume here, after this park is written (agent-question-protocol AC-55).
+      const parkedRepairId = (stored as { disposition?: string; repairTaskId?: unknown } | null)?.disposition === 'recovered'
+        ? (stored as { repairTaskId?: unknown }).repairTaskId : null;
+      if (status === 'waiting_input' && typeof parkedRepairId === 'string' && isUuid(parkedRepairId)) {
+        await afterReply('recoverable-blocker-late-park', async () => {
+          const repair = await db.query.tasks.findFirst({
+            where: sqlWhere(and(eq(tasks.id, parkedRepairId), eq(tasks.status, 'completed'))),
+            columns: { id: true, result: true },
+          });
+          if (!repair) return;
+          const summary = (repair.result as { summary?: unknown } | null)?.summary;
+          await reconcileRecoverableBlockerRepair({ id: repair.id, summary: typeof summary === 'string' ? summary : null });
+        });
+      }
     }
     // Sensitive: no prose, but the disposition fields are not prose and must
     // survive — Needs You admission reads them.
@@ -4701,6 +4717,13 @@ async function patchWorker(
       // Resolve dependencies (check if parent's children all completed)
       await runStep('resolve-dependencies', async () => {
         await resolveCompletedTask(taskId, worker.workspaceId);
+      });
+
+      // A recoverable-blocker repair landed: resume the tasks parked on it
+      // (agent-question-protocol AC-55). Idempotent, so a duplicate completion is harmless.
+      await runStep('recoverable-blocker-reconcile', async () => {
+        if (effectiveOutcome !== 'completed' || shouldAutoRetry) return;
+        await reconcileRecoverableBlockerRepair({ id: taskId, context: terminalTaskRow[0]?.context ?? null, summary: typeof body.summary === 'string' ? body.summary : null });
       });
 
       // Re-arm any schedule that was deferred by its per-schedule concurrent cap
