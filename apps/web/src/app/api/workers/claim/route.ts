@@ -3661,6 +3661,20 @@ export async function POST(req: NextRequest) {
   }
 
   claimTiming('response_ready', { workers: claimedWorkers.length });
+  // Record which model route each Claude run was set up with, as a label for
+  // the runner detail. Fail-open: the claim has already succeeded.
+  for (const cw of claimedWorkers) {
+    const t = filteredTasks.find(x => x.id === cw.taskId) as any;
+    // A tenant task runs on its tenant's own seat; that is not a route of this team's.
+    if (!t || t.backend === 'codex' || (t.context as { tenantContext?: { tenantId?: string } } | null)?.tenantContext?.tenantId) continue;
+    try {
+      const modelRoute = await claudeRouteFor(t.workspace?.teamId as string | undefined, t.workspaceId);
+      await db.update(workers).set({ modelRoute }).where(eq(workers.id, cw.id));
+    } catch (err) {
+      console.warn(`[claim] model route not recorded for worker ${cw.id}:`, err instanceof Error ? err.message : err);
+    }
+  }
+
   return jsonResponse({
     // The workspace dispatch token never leaves in a claim (lib/workspace-dispatch-token.ts).
     workers: claimedWorkers.map((cw) => (cw.task
