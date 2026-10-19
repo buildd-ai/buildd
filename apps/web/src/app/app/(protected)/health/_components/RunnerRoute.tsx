@@ -24,6 +24,19 @@ export function RunnerRoute({ runner }: { runner: RunnerRouteInput }) {
           </li>
         ))}
       </ul>
+      {d.taskRoutes.length > 0 && (
+        <>
+          <p className="text-text-secondary pt-1">Recent task routes</p>
+          <ul data-testid="runner-task-routes" className="space-y-0.5">
+            {d.taskRoutes.map(r => (
+              <li key={r.route} className="flex justify-between gap-3">
+                <span className="text-text-secondary break-words">{r.source}</span>
+                <span className="shrink-0 text-text-muted">{r.count} {r.count === 1 ? 'run' : 'runs'}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
       <p className="text-text-muted">{d.note}</p>
     </div>
   );

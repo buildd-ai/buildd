@@ -156,7 +156,8 @@ mock.module('@buildd/core/db', () => ({
       oauthBudgetEpisodes: { findMany: mockOauthEpisodesFindMany },
     },
     update: (table: any) => {
-      if (table === 'workers') return mockWorkersUpdate();
+      // The mocked schema's workers table is an object (its `turns` column), not the string 'workers'.
+      if (table === 'workers' || table?.turns === 'turns') return mockWorkersUpdate();
       if (table === 'tasks') return mockTasksUpdate();
       if (table === 'accounts' || table === mockAccountsTable) return mockAccountsUpdate();
       if (table?.pacingMode === 'pacingMode') {
@@ -5020,6 +5021,25 @@ describe('POST /api/workers/claim', () => {
 
     beforeEach(() => {
       lastTaskSetPayload = null;
+    });
+
+    it('records the claim\'s model route on the worker as a label', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api', maxCostPerDay: '100', totalCost: '5' });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([{
+        id: 'task-1', workspaceId: 'ws-1', title: 'simple doc edit', kind: 'engineering', complexity: 'simple',
+        priority: 0, dependsOn: [], workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
+      }]);
+      mockClaimSuccess();
+      const sets: any[] = [];
+      mockWorkersUpdate.mockImplementation(() => ({ set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => []) })) }; }) }));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+      expect(res.status).toBe(200);
+      // No team on the task: the route is the plan login, the claim's own fallback answer.
+      expect(sets.find(v => 'modelRoute' in v)).toEqual({ modelRoute: 'oauth_seat' });
     });
 
     it('writes predictedModel and injects model into task.context on successful claim', async () => {

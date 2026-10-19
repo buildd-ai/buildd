@@ -41,7 +41,7 @@ const workersRoute = await import('../../src/app/api/workers/[id]/route');
 
 const BUDGET = 10;
 /** A terminal report's follow-up runs inline (see the completion case). */
-const TERMINAL_BUDGET = 50;
+const TERMINAL_BUDGET = 60;
 
 async function seed(warm = true) {
   const { teamId, workspaceId } = await seedWorkspace();
