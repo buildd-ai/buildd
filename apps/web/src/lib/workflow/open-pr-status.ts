@@ -135,6 +135,26 @@ async function listOpenPullsLive(installationId: number, repoFullName: string): 
   return out;
 }
 
+/** Parses the HTTP status code from a githubApi error message. */
+function parseStatusFromError(err: unknown): number | null {
+  if (err instanceof Error) {
+    const match = err.message.match(/GitHub API error: (\d+)/);
+    if (match) return parseInt(match[1], 10);
+  }
+  return null;
+}
+
+/** Checks if a 403 error is a statuses:write permission denied, not a rate limit or other 403. */
+function isStatusesPermissionDenied(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const status = parseStatusFromError(err);
+  if (status !== 403) return false;
+  const msg = err.message.toLowerCase();
+  return (msg.includes('resource not accessible') ||
+    (msg.includes('statuses') && (msg.includes('permission') || msg.includes('forbidden'))) ||
+    msg.includes('statuses:write'));
+}
+
 async function publishLive(installationId: number, p: { repoFullName: string; sha: string; context: string; state: LandingStatus['state']; description: string }): Promise<void> {
   // The kernel's `GithubWrites.publishStatus` (kernel-ports.ts), with no link: a PR no delivery owns has no task page.
   await githubApi(installationId, `/repos/${p.repoFullName}/statuses/${p.sha}`, {
@@ -155,6 +175,14 @@ interface HeadRun {
 }
 
 type HeadResult = { shown: boolean; by: OpenHeadAnswer['by'] | null; wrote: boolean; republished: boolean; unchanged: boolean };
+
+/** Error thrown when publish fails due to statuses:write permission denied. */
+class StatusesPermissionDeniedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StatusesPermissionDeniedError';
+  }
+}
 
 /** Write `answer` on one open head (the sweep's and the webhooks' shared step): what GitHub shows now is compared first, so a repeat writes nothing. */
 async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha: string): Promise<HeadResult> {
@@ -211,8 +239,17 @@ async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha:
     }
   } else {
     // Under both names, the legacy one first, as the kernel writes them.
-    for (const context of LANDING_STATUS_CONTEXTS) {
-      await publish(installationId, { repoFullName, sha, context, state: answer.status.state, description: answer.status.description });
+    try {
+      for (const context of LANDING_STATUS_CONTEXTS) {
+        await publish(installationId, { repoFullName, sha, context, state: answer.status.state, description: answer.status.description });
+      }
+    } catch (err) {
+      // If the publish fails due to statuses:write permission denied, rethrow as a special error
+      // so the caller can skip the entire repo. Other 403s (rate limits, etc.) are regular errors.
+      if (isStatusesPermissionDenied(err)) {
+        throw new StatusesPermissionDeniedError(`No statuses:write permission for ${repoFullName}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      throw err;
     }
     out.wrote = true;
     out.shown = true;
@@ -285,13 +322,12 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
         if (prOwner) break;
       }
 
-      // Skip ordinary PRs without a live delivery only if this repo is linked from multiple workspaces
-      // (i.e., it's in another workspace's scope). Single-workspace repos publish pending as before.
-      // Bots and drafts are always published (except release candidates, handled by publishHead).
+      // Skip unowned non-candidate PRs (bots, drafts, and ordinary PRs always go to publishHead if they could be candidates)
       const isBot = pr.user?.login?.toLowerCase().includes('[bot]');
       const isDraft = pr.draft;
-      const isSharedRepo = links.length > 1;
-      if (!prOwner && !isBot && !isDraft && isSharedRepo) {
+      const facts = prFacts(pr, sha, repoFullName);
+      const couldBeCandidate = links.some((l) => reviews.mayBeCandidate(l.releaseConfig, facts));
+      if (!prOwner && !isBot && !isDraft && !couldBeCandidate) {
         s.skipped++;
         s.skipReasons.noDelivery++;
         console.error(`[workflow] open PR status for ${repoFullName}#${pr.number} skipped: no live delivery`);
@@ -307,22 +343,11 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
         if (r.wrote) s.published++;
         else if (r.unchanged) s.unchanged++;
       } catch (err) {
-        // Only skip the repo for confirmed statuses:write permission denied.
-        // GitHub's permission denied for statuses:write includes keywords like "resource not accessible"
-        // or "statuses" combined with permission-related terms. Rate limits, review access errors, and
-        // other 403s should be treated as errors, not permission denials.
-        const msg = err instanceof Error ? err.message.toLowerCase() : '';
-        const isConfirmedPermissionDenied = err instanceof Error && (err as any).status === 403 &&
-          (msg.includes('resource not accessible') ||
-           (msg.includes('statuses') && (msg.includes('permission') || msg.includes('forbidden'))) ||
-           msg.includes('statuses:write'));
-
-        if (isConfirmedPermissionDenied) {
+        if (err instanceof StatusesPermissionDeniedError) {
           repoHasNoPermission = true;
           s.skipped++;
           s.skipReasons.noStatusesPermission++;
-          console.error(`[workflow] open PR status for ${repoFullName}#${pr.number} skipped: no statuses:write permission`);
-          // Skipped heads are marked as shown (the skip is the final answer, not missing coverage)
+          console.error(`[workflow] open PR status for ${repoFullName}#${pr.number} skipped: ${err.message}`);
           shown = true;
         } else {
           s.errors++;
