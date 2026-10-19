@@ -13,7 +13,10 @@
  * Pure, and stored facts only: explain never calls GitHub (see explain.ts).
  * Precedence, newest authority first:
  *  1. the kernel delivery (REPAIRING / BLOCKED_ON_TRUNK / ESCALATED, or a
- *     conflict on its current head);
+ *     conflict on its current head). A delivery that has not been approved on
+ *     its current head (AWAITING_REVIEW, CHANGES_REQUESTED, FIXING,
+ *     AWAITING_PUSH) is never "ready to merge": the platform owes the next
+ *     step, whatever round or attempt number it has reached;
  *  2. the newest `pr_landing` gate row, when it is about the current head (kernel)
  *     or no repair has completed since it was written (legacy);
  *  3. the legacy conflict fact (`workers.prLifecycleStatus = 'conflict'`).
@@ -29,7 +32,10 @@ export type LandingBlockCause =
   | 'repair_exhausted'
   | 'human_decision'
   | 'trunk_blocked'
-  | 'ci_pending';
+  | 'ci_pending'
+  | 'review_pending'
+  | 'fix_pending'
+  | 'push_pending';
 
 export interface LandingBlocker {
   taskId: string;
@@ -98,6 +104,16 @@ export function deriveLandingBlocker(p: {
     }
     if (d.state === 'BLOCKED_ON_TRUNK') {
       return { ...base, cause: 'trunk_blocked', owner: 'platform', label: `${pr} is waiting on a red trunk`, nextAction: 'Nothing to do on this PR: it lands once trunk is green again.', derivedFrom: 'workflow_deliveries' };
+    }
+    if (d.state === 'AWAITING_REVIEW') {
+      const head = d.headSha ? ` at ${d.headSha.slice(0, 7)}` : '';
+      return { ...base, cause: 'review_pending', owner: 'platform', label: `${pr} is waiting for its review${head}`, nextAction: 'Nothing to do yet: it is merged once the review of its current head approves and checks are green.', derivedFrom: 'workflow_deliveries' };
+    }
+    if (d.state === 'CHANGES_REQUESTED' || d.state === 'FIXING') {
+      return { ...base, cause: 'fix_pending', owner: 'platform', label: `${pr} has review changes being fixed`, nextAction: 'Nothing to do yet: the fix is re-reviewed when it pushes.', derivedFrom: 'workflow_deliveries' };
+    }
+    if (d.state === 'AWAITING_PUSH') {
+      return { ...base, cause: 'push_pending', owner: 'platform', label: `${pr} is waiting for a push to reach GitHub`, nextAction: 'Nothing to do yet: it is reviewed once the push lands.', derivedFrom: 'workflow_deliveries' };
     }
     if (d.state === 'REPAIRING') {
       const running = d.currentAttempt ? d.currentAttempt.status !== 'pending' : !!openRepair?.claimed;

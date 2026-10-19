@@ -10,7 +10,8 @@
  *
  * Idempotent per row: safe to run multiple times, and safe against a parent
  * branch that already holds some of these rows (e.g. only one of the two
- * accounts). Each missing row is created; existing rows are left alone.
+ * accounts). Missing rows are created; fixture permissions and isolation policy
+ * are repaired on reused rows.
  *
  * Usage:
  *   DATABASE_URL="…" bun run scripts/seed-integration-fixtures.ts
@@ -121,6 +122,18 @@ export async function seedFixtures(sql: SqlClient, apiKey: string, adminApiKey: 
     seeded = true;
     console.log(`Created workspace: ${workspaceId}`);
   }
+
+  // Only this synthetic fixture workspace may run on the CI runner without
+  // protected confinement. Preserve unrelated config and repair reused rows.
+  const trusted = await sql`
+    UPDATE workspaces
+    SET git_config = COALESCE(git_config, '{}'::jsonb) || '{"isolationPolicy":"trusted_local"}'::jsonb,
+        updated_at = NOW()
+    WHERE id = ${workspaceId}
+      AND git_config->>'isolationPolicy' IS DISTINCT FROM 'trusted_local'
+    RETURNING id
+  `;
+  if (trusted.length > 0) seeded = true;
 
   // 4. Links: a restricted workspace is reachable only through these
   // (lib/workspace-access.ts). Both keys create tasks in the integration suite
