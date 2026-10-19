@@ -58,6 +58,8 @@ export async function computeSupersededFailedTasks(
   missionId: string,
   workspaceId: string | null,
   failedTasks: SupersededCheckTask[],
+  /** The mission's legacy audit switch, for the waiver's policy check. */
+  autoSurfaceAudit?: boolean | null,
 ): Promise<Map<string, SupersededResult>> {
   const result = new Map<string, SupersededResult>();
   if (failedTasks.length === 0) return result;
@@ -71,7 +73,7 @@ export async function computeSupersededFailedTasks(
 
   const failedAudits = failedTasks.filter(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG);
 
-  const [mergedWorkers, titleSiblings, replacedAudits] = await Promise.all([
+  const [mergedWorkers, titleSiblings, replacedAudits, waived] = await Promise.all([
     prNumbers.length > 0 && workspaceId != null
       ? db.query.workers.findMany({
           where: sqlWhere(and(
@@ -105,6 +107,9 @@ export async function computeSupersededFailedTasks(
           .then(m => m.replacedAudits ?? [])
           .catch(() => [])
       : Promise.resolve([]),
+    failedAudits.length > 0
+      ? import('@/lib/mission-surface-audit-gate').then(m => m.surfaceAuditWaived({ id: missionId, workspaceId, autoSurfaceAudit }))
+      : Promise.resolve(false),
   ]);
 
   const mergedPrNumbers = new Set(
@@ -114,6 +119,13 @@ export async function computeSupersededFailedTasks(
   for (const r of replacedAudits) {
     if (!failedAudits.some(t => t.id === r.auditTaskId)) continue;
     result.set(r.auditTaskId, { taskId: r.auditTaskId, prNumber: null, supersedingTaskId: r.replacedBy[0] ?? null, replacedByAudit: true });
+  }
+
+  // A person's waiver retires every failed audit row, same as completion does.
+  if (waived) {
+    for (const t of failedAudits) {
+      if (!result.has(t.id)) result.set(t.id, { taskId: t.id, prNumber: null, supersedingTaskId: null, replacedByAudit: true });
+    }
   }
 
   for (const t of failedTasks) {

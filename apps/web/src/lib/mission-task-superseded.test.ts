@@ -63,6 +63,9 @@ let visualModel: any = null;
 const mockLoadVisualReview = mock(async (_m: any) => visualModel);
 mock.module('@/lib/visual-review-load', () => ({ loadVisualReview: mockLoadVisualReview }));
 
+let waived = false;
+mock.module('@/lib/mission-surface-audit-gate', () => ({ surfaceAuditWaived: mock(async () => waived) }));
+
 import { computeSupersededFailedTasks } from './mission-task-superseded';
 
 describe('computeSupersededFailedTasks', () => {
@@ -191,6 +194,24 @@ describe('computeSupersededFailedTasks', () => {
       ]);
       expect(result.has('t-1')).toBe(false);
       expect(mockLoadVisualReview).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('a failed visual audit the owner waived', () => {
+    const failedAudit = { id: 'a-1', title: '[surface audit] round 2: M', subjectPrNumber: null, createdAt: new Date(), roleSlug: 'visual-auditor' };
+    const failedBuild = { id: 't-1', title: 'Build it', subjectPrNumber: null, createdAt: new Date(), roleSlug: 'builder' };
+    beforeEach(() => { visualModel = { replacedAudits: [] }; });
+
+    it('is superseded by the waiver; an implementation failure beside it is not', async () => {
+      waived = true;
+      const result = await computeSupersededFailedTasks('m-1', 'ws-1', [failedAudit, failedBuild]);
+      expect(result.get('a-1')?.replacedByAudit).toBe(true);
+      expect(result.has('t-1')).toBe(false);
+    });
+
+    it('is not superseded without a waiver', async () => {
+      waived = false;
+      expect((await computeSupersededFailedTasks('m-1', 'ws-1', [failedAudit])).has('a-1')).toBe(false);
     });
   });
 });
