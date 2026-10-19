@@ -21,6 +21,7 @@ import type { AnySubscriber } from '@/lib/core-events';
 import { decisionSubscribers } from '@/lib/decision-subscribers';
 import { startDecisionReplayStore } from '@/lib/decision-replay-store';
 import { accessNeedsYouRead } from '@/lib/capability-grants-needs-you';
+import { noteScheduleRefusal } from '@/lib/schedule-move';
 import { scheduleMoveNeedsYouRead } from '@/lib/schedule-move-needs-you';
 import { homeMissionSummaries } from '@/lib/mission-summary-home';
 import { loadMissionStagesFromSummaries } from '@/lib/mission-stage-read';
@@ -435,3 +436,6 @@ export const CLAIM_LEARNING_HOOKS: import('@/app/api/workers/claim/learning-hook
   loadPolicy: async (gate, area) => (await import('@buildd/core/orchestration-claim-learning-source')).loadClaimLearningPolicy(gate, area),
   record: async (row, replay) => (await import('@buildd/core/orchestration-ledger-source')).recordOrchestrationDecision(row, replay),
 };
+
+/** Task filing reach refusal: optional schedules module observes repeated refusals. */
+export const TASK_REACH_REFUSAL = noteScheduleRefusal;
