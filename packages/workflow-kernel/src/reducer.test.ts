@@ -2856,3 +2856,64 @@ describe('295486ba: a cancelled CI fix that never started spends nothing; a gree
     });
   });
 });
+
+describe('AC-31: a forced review, a verdict or a rail finding before merge_call runs stops the merge', () => {
+  // LANDING with the merge call queued (or parked on a hold): it has not gone out yet.
+  const queued = (o: Partial<DeliverySnapshot> = {}, rounds: RoundSnapshot[] = []) =>
+    V(D({ state: 'LANDING', approvedHeads: ['H1'], approvalBasis: 'verdict', currentRound: 1, ...o }), rounds);
+  const called = (rounds: RoundSnapshot[] = []) => queued({ stateReason: 'merge_called' }, rounds);
+  const approvedR1 = R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' });
+  const force = (v: KernelView, actor = 'human:owner') =>
+    run(v, { type: 'ReviewRequested', actor, headSha: 'H1', live: live('H1'), forced: true });
+  const verdict = (v: KernelView, effectiveVerdict: 'approve' | 'request_changes' | 'escalate', roundId = 'r2') =>
+    run(v, { type: 'ReviewVerdictRecorded', actor: 'reviewer', roundId, verdict: effectiveVerdict, effectiveVerdict, headBound: 'H1' });
+  const policy = (v: KernelView) =>
+    run(v, { type: 'PolicyEvidenceRecorded', actor: 'rail:migration', evidence: { headSha: 'H1', outcome: 'human', reason: 'drops a column', destructive: true } });
+
+  test('a person forcing a review leaves LANDING for AWAITING_REVIEW with a new round; the merge_call is not re-queued', () => {
+    const dec = applied(force(queued({}, [approvedR1])));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.fromState).toBe('LANDING');
+    expect(effectKinds(dec)).toContain('dispatch_review');
+    expect(effectKinds(dec)).not.toContain('merge_call');
+    expect(dec.evidence.stoppedLanding).toBe(true);
+    expect(dec.bypass).toMatchObject({ forced: true, actor: 'human:owner' });
+  });
+  test('nobody else interrupts a landing: an unforced request, or an agent forcing one, is refused', () => {
+    expectResult(run(queued(), { type: 'ReviewRequested', actor: 'human:owner', headSha: 'H1', live: live('H1') }), 'rejected', 'state_not_allowed');
+    expectResult(run(queued(), { type: 'ReviewRequested', actor: 'kernel', headSha: 'H1', live: live('H1') }), 'rejected', 'state_not_allowed');
+    expectResult(force(queued(), 'agent:t9'), 'rejected', 'state_not_allowed');
+  });
+  test('once the merge call answered merged or indeterminate, a forced review is refused: verify_merge decides', () => {
+    const m = applied(run(queued(), { type: 'MergeCallResult', actor: 'kernel', headSha: 'H1', outcome: 'merged' }));
+    expect(m.patch.stateReason).toBe('merge_called');
+    expectResult(force(called()), 'rejected', 'merge_in_flight');
+  });
+  test('a request for changes on a round still open when the door landed moves LANDING to CHANGES_REQUESTED and owes a fix', () => {
+    // A person's "Merge anyway" landed while round 2 was being reviewed.
+    const v = queued({ currentRound: 2, approvedHeads: [], approvalBasis: null }, [approvedR1, R({ id: 'r2', round: 2, status: 'reviewing' })]);
+    const dec = applied(verdict(v, 'request_changes'));
+    expect({ from: dec.fromState, to: dec.toState }).toEqual({ from: 'LANDING', to: 'CHANGES_REQUESTED' });
+    expect(effectKinds(dec)).toEqual(expect.arrayContaining(['post_review', 'dispatch_fix']));
+    expect(applied(verdict(v, 'escalate')).toState).toBe('ESCALATED');
+  });
+  test('an approval of that round leaves the queued merge queued (LANDING), with the head approved', () => {
+    const v = queued({ currentRound: 2, approvedHeads: [], approvalBasis: null }, [approvedR1, R({ id: 'r2', round: 2, status: 'reviewing' })]);
+    const dec = applied(verdict(v, 'approve'));
+    expect(dec.toState).toBe('LANDING');
+    expect(dec.patch).toMatchObject({ approvedHeads: ['H1'], approvalBasis: 'verdict' });
+  });
+  test('after the merge call, a late verdict is kept on its round and the state does not move', () => {
+    const v = V(D({ state: 'LANDING', stateReason: 'merge_called', currentRound: 2 }), [approvedR1, R({ id: 'r2', round: 2, status: 'reviewing' })]);
+    const dec = applied(verdict(v, 'request_changes'));
+    expect(dec.toState).toBe('LANDING');
+    expect(dec.evidence).toMatchObject({ heldBy: 'LANDING', deferred: true });
+  });
+  test('a rail finding on the head stops a queued merge (T28 acts as from APPROVED); after the call it is only recorded', () => {
+    const dec = applied(policy(queued()));
+    expect({ from: dec.fromState, to: dec.toState, why: dec.patch.stateReason }).toEqual({ from: 'LANDING', to: 'ESCALATED', why: 'policy_human' });
+    expect(dec.evidence.stoppedLanding).toBe(true);
+    const late = applied(policy(called()));
+    expect({ to: late.toState, recordedOnly: late.evidence.recordedOnly }).toEqual({ to: 'LANDING', recordedOnly: true });
+  });
+});
