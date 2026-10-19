@@ -19,7 +19,7 @@ import { isUnitTestFile } from './run-unit-tests';
  * A file appearing here is a claim that something ELSE runs it. Name what.
  */
 const DELIBERATELY_NOT_IN_THE_UNIT_SUITE: Array<[pattern: RegExp, runBy: string]> = [
-  [/^apps\/web\/tests\/integration\//, 'bun run test:integration (needs a live server + API key)'],
+  [/^apps\/web\/tests\/integration\/(?!verdict-acceptance\.test\.ts$)/, 'bun run test:integration (needs a live server + API key)'],
   [/^apps\/runner\/__tests__\/integration/, 'bun run test:integration (spawns real sessions)'],
   [/^tests\/e2e\//, 'bun run test:e2e (needs BUILDD_TEST_SERVER)'],
   [/^apps\/web\/tests\/db\//, 'bun run test:db (real Postgres; CI db-architecture job in build.yml)'],
