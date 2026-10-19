@@ -31,7 +31,7 @@ export { trunkFixDescription, trunkFixTitle, trunkHandlers, trunkSteerNote } fro
 
 /** The effect kinds the package's handlers own: every kind but the host's `stamp_pr_rows` projection. */
 export const KERNEL_HANDLED_EFFECTS: readonly EffectKind[] = [
-  'scan_supersession', 'project_supersession', 'wake_mission',
+  'scan_supersession', 'project_supersession', 'carry_findings', 'wake_mission',
   'render_activity',
   'merge_call', 'verify_merge', 'emit_pr_merged', 'finalize_mission_pr', 'publish_landing_status', 'dispatch_external_merge_fix',
   'dispatch_ci_fix', 'capture_ci_evidence', 'dispatch_trunk_fix',

@@ -35,7 +35,7 @@ let holds: any[] = [];
 mock.module('@/lib/coordination-holds', () => ({ loadTaskCoordinationHolds: async () => holds }));
 mock.module('@/app/api/workers/claim/coordination-snapshot', () => ({
   loadOpenPrTasksByWorkspace: async () => new Map(),
-  loadMissionCoordination: async () => ({ missionClaimMap: new Map(), missionActiveCountMap: new Map(), missionAdvisoryInFlight: new Map(), missionInFlightRows: [] }),
+  loadMissionCoordination: async () => ({ missionClaimMap: new Map(), missionActiveCountMap: new Map(), missionInFlightRows: [] }),
 }));
 mock.module('@buildd/core/path-claim', () => ({ getActiveClaimsByWorkspace: async () => new Map() }));
 let local = false;

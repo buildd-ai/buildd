@@ -166,6 +166,12 @@ export interface Store {
   /** §14: hand a kernel delivery to legacy. false = it was not the kernel's. */
   releaseToLegacy(deliveryId: string): Promise<boolean>;
 
+  /**
+   * §5: move the open findings (`open`, `addressed`) of one delivery to another, ids kept. Closed ones
+   * stay where they were decided. Returns the ids moved; a replay finds none left.
+   */
+  carryOpenFindings(fromDeliveryId: string, toDeliveryId: string): Promise<string[]>;
+
   /** Take the lane, or renew it for its holder. true only when this delivery holds it afterwards. */
   acquireLane(k: LaneKey & { deliveryId: string; headSha: string; holdMs: number }): Promise<boolean>;
   laneHolder(k: LaneKey): Promise<{ deliveryId: string; prNumber: number | null } | null>;

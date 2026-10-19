@@ -542,6 +542,67 @@ export function pendingEpochSteps(v: Pick<MissionEpochView, 'epochs'>): EpochSte
   return out;
 }
 
+// ── What the writable epoch owes the outbox ─────────────────────────────────
+
+/** Effects a mission epoch owes, drained apart from the PR deliveries' (they have no delivery row). */
+export const EPOCH_EFFECT_KINDS = ['refresh_mission_branch'] as const;
+export type EpochEffectKind = (typeof EPOCH_EFFECT_KINDS)[number];
+
+/**
+ * Who asked for a refresh. `start`: a mission task is being claimed, an
+ * authorized start, so a paused or held mission is refreshed too. `backstop`:
+ * unsolicited upkeep, which a paused, held or budget-exhausted mission never
+ * gets (mission-branch-refresh.md, Eligibility).
+ */
+export type RefreshTrigger = 'start' | 'backstop';
+
+/** Asks from one trigger inside this window owe one refresh between them (a burst of claims is one row). */
+export const REFRESH_EFFECT_WINDOW_MS = 60_000;
+
+export interface EpochEffectSpec {
+  epochId: string;
+  kind: EpochEffectKind;
+  dedupeKey: string;
+  payload: { branch: string; trigger: RefreshTrigger };
+}
+
+/**
+ * The refresh the mission owes now, as one outbox row on its writable epoch:
+ * merge trunk into that epoch's branch. A merged epoch owes none, nor does a
+ * closed mission, a mission with no writable epoch, or a cut epoch whose
+ * branch is not there yet (`cut_branch` is owed first, from the merge commit).
+ * Time arrives on the call; the dedupe key folds every ask of one trigger in
+ * one window into one row.
+ */
+export function owedRefresh(
+  v: Pick<MissionEpochView, 'epochs' | 'terminal'>,
+  p: { trigger: RefreshTrigger; nowMs: number },
+): EpochEffectSpec | null {
+  if (v.terminal) return null;
+  const open = writableEpoch(v);
+  if (!open) return null;
+  if (open.origin === 'cut' && !open.branchReadyAt) return null;
+  const window = Math.floor(p.nowMs / REFRESH_EFFECT_WINDOW_MS);
+  return {
+    epochId: open.id,
+    kind: 'refresh_mission_branch',
+    dedupeKey: `refresh_mission_branch:${open.id}:${p.trigger}:${window}`,
+    payload: { branch: open.branch, trigger: p.trigger },
+  };
+}
+
+/**
+ * Is a claimed epoch effect still owed, read just before it runs? Only while
+ * its epoch is the open one, on the branch it was owed for. A row queued
+ * before the epoch merged is done as superseded, never run.
+ */
+export function epochEffectIsCurrent(
+  epoch: Pick<EpochSnapshot, 'state' | 'branch'> | null,
+  payload: { branch?: unknown },
+): boolean {
+  return !!epoch && epoch.state === 'open' && epoch.branch === payload.branch;
+}
+
 // ── When a delivery branch is finished ──────────────────────────────────────
 
 /**
