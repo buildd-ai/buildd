@@ -42,6 +42,7 @@ import {
   sectionDenominator,
 } from '@/lib/health-metric-grammar';
 import { resolveClaudeRoute } from '@/lib/claude-route-eligibility';
+import { strandHeadline } from '@/lib/strand-headline';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { describeRunnerRoute } from '@/lib/runner-route';
 import { countOf } from '@/lib/plural';
@@ -643,20 +644,22 @@ export function HealthClient({
             {/* Backends stranding pending work — a missing credential, counted in
                 tasks. Deliberately NOT a task-level gate (PR #1864): the same
                 module feeds Settings → Agent backends, which is where the fix is. */}
-            {strandedBackends.map((b) => (
-              <div key={`strand-${b.backend}`} className="px-4 py-3">
+            {strandedBackends.map((b) => {
+              const h = strandHeadline(b);
+              return (
+              <div key={`strand-${b.backend}`} data-testid={`strand-${b.backend}`} data-confirmed={h.confirmed} className="px-4 py-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <p className="text-sm font-medium text-text-primary">
-                        {b.label} has no credential
+                        {h.title}
                       </p>
-                      <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-medium bg-status-error/10 text-status-error">
-                        {b.strandedPending} task{b.strandedPending === 1 ? '' : 's'} unclaimable
+                      <span className={`text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-medium ${h.confirmed ? 'bg-status-error/10 text-status-error' : 'bg-status-warning/10 text-status-warning'}`}>
+                        {h.tag}
                       </span>
                     </div>
                     <p className="text-xs text-text-muted mt-0.5">
-                      Pending work routes to {b.label}, and no runner can claim it
+                      {h.detail}
                       {b.enabledForTeam ? '. Connect it, or disable it team-wide to reroute' : ''}.
                     </p>
                     {b.sampleTasks.length > 0 && (
@@ -683,7 +686,8 @@ export function HealthClient({
                   </a>
                 </div>
               </div>
-            ))}
+              );
+            })}
 
             {/* Offline runners */}
             {offlineRunners.map((hb) => (
@@ -2411,8 +2415,8 @@ function FailureAnalyticsSection({
 export function routeLine(r: { requested: string; effective: string } | undefined): string {
   if (!r) return '';
   return r.requested === r.effective
-    ? `routes to ${r.effective}; `
-    : `asked for ${r.requested}, routes to ${r.effective}; `;
+    ? `preference ${r.requested}, routes to ${r.effective}, queued; `
+    : `preference ${r.requested}, team mask moves it to ${r.effective}, queued; `;
 }
 
 /**
