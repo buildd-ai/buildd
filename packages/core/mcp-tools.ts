@@ -1979,15 +1979,13 @@ async function resolveWorkspaceId(
   }
 
   // Fall back to name match across accessible workspaces. A per-task token
-  // (cloud container / worker session running under a `bldt_` token) has no
-  // auth path into this listing endpoint at all — it always 401s here,
-  // regardless of which name was passed, because listing is inherently
-  // team-wide and the token can only ever reach its own task's workspace.
-  // Such a caller already has that one workspace bound unambiguously
-  // (ctx.getWorkspaceId()), so a name match against it is a convenience
-  // confirmation, not a real lookup: fall back to the bound workspace instead
-  // of surfacing this scope-shaped 401 as a raw API error. Any other failure
-  // (a genuine outage, etc.) still propagates.
+  // (`bldt_`) gets a narrowed list here: its own task's workspace plus the
+  // ones its delegation grants analytics:read or tasks:create on. A 401 can
+  // still come back (a server predating that, or a token the listing rejects);
+  // such a caller has its own workspace bound unambiguously
+  // (ctx.getWorkspaceId()), so fall back to it instead of surfacing the 401
+  // as a raw API error. Any other failure (a genuine outage, etc.) still
+  // propagates.
   let wsData;
   try {
     wsData = await api('/api/workspaces');
