@@ -153,7 +153,11 @@ export async function selectMissionSpec(caller: SpecCaller, missionId: string, i
   await db.update(missions).set({ goalCriteria: merged.criteria, updatedAt: now } as any).where(eq(missions.id, missionId));
   // The mission starts with its acceptance tests (spec 1dc6cc39 R-76): filed once,
   // every building task waits for it, and its role is never the builder's.
-  await ensureAcceptanceTests(missionId, next, [...inScope]).catch((e) => console.error(`[acceptance-tests] mission ${missionId}:`, e));
+  const acceptance = await ensureAcceptanceTests(missionId, next, [...inScope]).catch((e) => {
+    console.error(`[acceptance-tests] mission ${missionId}:`, e);
+    return null;
+  });
+  if (acceptance?.kind === 'unavailable') await note(missionId, caller, 'Acceptance tests not filed', acceptance.reason).catch(() => {});
   if (input.waive !== undefined || input.unwaive !== undefined) {
     await note(missionId, caller, 'Outcome spec criteria waived', waived.map((w) => `${w.criterionId}: ${w.reason}`).join('\n') || 'No criteria are waived now.');
   }

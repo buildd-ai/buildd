@@ -35,12 +35,25 @@ type Held = { id: string; status: string; taskClass?: string | null; title?: str
 
 const isAcceptanceTests = (t: Held) => !!t.context && typeof t.context === 'object' && (t.context as Record<string, unknown>).acceptanceTests != null;
 
-/** Pure: unstarted building tasks that do not yet wait for the acceptance-tests task, with their new dependsOn. */
+const isDeadAcceptanceTests = (t: Held) =>
+  isAcceptanceTests(t) && t.status !== 'completed' && (TERMINAL_TASK_STATUSES as readonly string[]).includes(t.status);
+
+/**
+ * Pure: unstarted building tasks whose dependsOn must change so they wait for the acceptance-tests task.
+ * A dependency on a failed or cancelled acceptance-tests task is swapped for the new id: claim never
+ * clears a failed dependency, so leaving it would hold the builder forever.
+ */
 export function holdsForAcceptanceTests(rows: readonly Held[], acceptanceTaskId: string): Array<{ id: string; dependsOn: string[] }> {
-  return rows
-    .filter((t) => t.id !== acceptanceTaskId && t.status === 'pending' && !isAcceptanceTests(t) && isBuildDeliverable(t as any))
-    .filter((t) => !(t.dependsOn ?? []).includes(acceptanceTaskId))
-    .map((t) => ({ id: t.id, dependsOn: [...(t.dependsOn ?? []), acceptanceTaskId] }));
+  const dead = new Set(rows.filter((t) => t.id !== acceptanceTaskId && isDeadAcceptanceTests(t)).map((t) => t.id));
+  const out: Array<{ id: string; dependsOn: string[] }> = [];
+  for (const t of rows) {
+    if (t.id === acceptanceTaskId || t.status !== 'pending' || isAcceptanceTests(t) || !isBuildDeliverable(t as any)) continue;
+    const current = t.dependsOn ?? [];
+    const kept = current.filter((d) => !dead.has(d));
+    if (kept.includes(acceptanceTaskId) && kept.length === current.length) continue;
+    out.push({ id: t.id, dependsOn: kept.includes(acceptanceTaskId) ? kept : [...kept, acceptanceTaskId] });
+  }
+  return out;
 }
 
 export type AcceptanceTests = { kind: 'open' | 'dispatched'; taskId: string } | { kind: 'unavailable'; reason: string };
@@ -64,7 +77,10 @@ export async function ensureAcceptanceTests(missionId: string, criterion: Living
     if (!mission?.workspaceId) return { kind: 'unavailable', reason: 'the mission has no workspace' };
     const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, mission.workspaceId)) });
     if (!workspace) return { kind: 'unavailable', reason: 'workspace not found' };
+    // The agent must not be a builder's. A role-less task could be claimed by a builder
+    // runner and nothing at claim enforces `apartFrom`, so with no non-builder role we file nothing.
     const roleSlug = await pickEffectiveRole(mission.workspaceId, acceptanceRoleCandidates());
+    if (!roleSlug) return { kind: 'unavailable', reason: `the workspace has no ${acceptanceRoleCandidates().join(', ')} role to write the tests apart from a builder` };
     const base = missionIntegrationBase(mission);
     const title = `${ACCEPTANCE_TESTS_PREFIX} ${criterion.label ?? `spec revision ${criterion.revision}`}`;
     const description = [
@@ -88,7 +104,7 @@ export async function ensureAcceptanceTests(missionId: string, criterion: Living
       taskClass: 'work',
       creationSource: 'orchestrator',
       missionId,
-      ...(roleSlug ? { roleSlug } : {}),
+      roleSlug,
       outputRequirement: 'pr_required',
       context: {
         acceptanceTests: { missionId, specId: criterion.specId, specRevisionId: criterion.specRevisionId, apartFrom: 'builder' },
