@@ -3,6 +3,7 @@ import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus, type TaskStatusValue } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { pinSpecSource } from '@/lib/specs/pin';
+import { openAcceptanceTestsTaskId } from '@/lib/specs/acceptance-tests';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions, workers, missionNotes } from '@buildd/core/db/schema';
 import { desc, asc, eq, and, or, not, gt, inArray, notInArray, gte, isNotNull, isNull, like, sql } from 'drizzle-orm';
@@ -1040,6 +1041,13 @@ export async function POST(req: NextRequest) {
         existingDepsSet.add(id);
       }
       softOverlaps = split.soft;
+    }
+
+    // Every building task in a mission with an outcome spec waits for its
+    // acceptance-tests task (spec 1dc6cc39 R-76).
+    if (missionId) {
+      const acceptanceId = await openAcceptanceTestsTaskId(missionId).catch(() => null);
+      if (acceptanceId && !resolvedDependsOn.includes(acceptanceId)) resolvedDependsOn.push(acceptanceId);
     }
 
     // Resolve creator context using the service

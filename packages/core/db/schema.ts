@@ -2862,7 +2862,8 @@ export interface SpecMetadataBlock {
   summary?: string;
   last_verified?: string;
   surfaces?: string[];
-  verified_by?: string[];
+  /** Repo paths of the tests that check it, flat or keyed by check id (R-77). */
+  verified_by?: string[] | Record<string, string[]>;
   assertions?: Array<Record<string, string | number | boolean>>;
   /**
    * An area's own: the `domain:` values it covers (e.g. `[tasks, missions]`).

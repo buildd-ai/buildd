@@ -610,8 +610,13 @@ export type Command =
   | (Base & {
       type: 'ReviewRoundFailed';
       roundId: string;
-      /** `human_takeover` (a person interrupted the reviewer) escalates at once, never re-queued. */
-      reason: 'no_verdict' | 'prose_verdict' | 'infra' | 'human_takeover' | 'evidence_not_at_head';
+      /**
+       * `human_takeover` (a person interrupted the reviewer) escalates at once, never re-queued.
+       * `verdict_not_applied`: the reviewer's verdict reached T6 but was refused or kept stale while
+       * its round stayed open. `reviewer_ended`: the floor found the round still waiting on a reviewer
+       * task that ended a while ago with nothing recorded (7105282e).
+       */
+      reason: 'no_verdict' | 'prose_verdict' | 'infra' | 'human_takeover' | 'evidence_not_at_head' | 'verdict_not_applied' | 'reviewer_ended';
       maxContractRetries: number;
       /**
        * The reviewer task whose run failed. The failure is counted once per
