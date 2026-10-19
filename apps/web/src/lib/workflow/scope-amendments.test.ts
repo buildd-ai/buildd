@@ -5,8 +5,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { planScope } from '@buildd/workflow-kernel/scope-amendments';
-import { recordScopeSql, scopeAmendmentsSql } from './scope-amendments';
+import { planScope, planScopeResolution } from '@buildd/workflow-kernel/scope-amendments';
+import { recordScopeSql, resolveScopeSql, scopeAmendmentsSql } from './scope-amendments';
 
 const dialect = new PgDialect();
 const mission = { description: 'd', goalCriteria: [{ type: 'all_prs_merged' }], scopeVersion: 4 };
@@ -38,5 +38,27 @@ describe('scope amendment SQL', () => {
     expect(sql).toContain("AND status = 'pending' AND EXISTS (SELECT 1 FROM a)");
     expect(sql).toContain("'system', 'question'");
     expect(sql).not.toContain('UPDATE missions');
+  });
+
+  it('an answer resolves only a held row, releases only this mission\'s hold and answers the question', () => {
+    const plan = planScopeResolution({ answer: 'out_of_scope', held: { status: 'held' }, mission, task });
+    if (!plan.act) throw new Error('expected a plan');
+    const { sql } = dialect.sqlToQuery(resolveScopeSql({ missionId: 'm', taskId: 't', plan, actor: 'human:p' }));
+    expect(sql).toContain("SET status = 'resolved', resolution = $");
+    expect(sql).toContain("AND status = 'held'");
+    expect(sql).toMatch(/COALESCE\(t\.context->'heldBy'->>'missionId', \$\d+::text\) = \$\d+::text/);
+    expect(sql).toContain("UPDATE mission_notes SET status = 'answered'");
+    expect(sql).not.toContain('UPDATE missions');
+  });
+
+  it('an accepted amendment moves the mission only at the version it read, and only while the decision is held', () => {
+    const plan = planScopeResolution({ answer: 'amend_scope', held: { status: 'held' }, mission, task });
+    if (!plan.act) throw new Error('expected a plan');
+    const { sql, params } = dialect.sqlToQuery(resolveScopeSql({ missionId: 'm', taskId: 't', plan, actor: 'human:p' }));
+    expect(sql).toMatch(/AND scope_version = \$\d+::int AND EXISTS \(SELECT 1 FROM workflow_scope_amendments/);
+    expect(sql).toContain("state = 'open' AND pr_number IS NULL AND EXISTS (SELECT 1 FROM m)");
+    expect(sql).toContain("AND status = 'held' AND EXISTS (SELECT 1 FROM m)");
+    expect(params).toContain(4);
+    expect(params).toContain(5);
   });
 });

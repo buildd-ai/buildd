@@ -17,12 +17,15 @@ export default function Segmented<V extends string>({
   value,
   onChange,
   label,
+  describedBy,
   className = '',
 }: {
   items: readonly SegmentedItem<V>[];
   value: V;
   onChange: (value: V) => void;
   label: string;
+  /** The id of text that explains the choices, read after the group's name. */
+  describedBy?: string;
   className?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -42,6 +45,7 @@ export default function Segmented<V extends string>({
       ref={ref}
       role="radiogroup"
       aria-label={label}
+      aria-describedby={describedBy}
       onKeyDown={onKeyDown}
       data-testid="segmented"
       className={`inline-flex gap-0.5 rounded-[var(--radius-card)] bg-[var(--q-tint)] p-[3px] ${className}`}

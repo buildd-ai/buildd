@@ -20,6 +20,7 @@ import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/li
 import type { Clock } from '@/lib/realtime-throttle';
 import { demandCatchUp, subscribeCatchUp } from '@/lib/app-freshness';
 import { requestPageRefresh, type Refresher } from '@/lib/page-refresh';
+import { useRegionRefresher } from '@/components/LiveRegion';
 import { MISSION_MASTHEAD_FOLDED_PX } from '@/components/missions/MissionMasthead';
 import { missionTaskAnchorId } from '@/lib/mission-task-href';
 import {
@@ -81,7 +82,8 @@ export default function MissionAutoRefresh({
   clock,
   scroller = defaultScroller,
 }: MissionAutoRefreshProps) {
-  const router = useRouter();
+  // A structural event re-reads the page's live region, not the whole page.
+  const router = useRegionRefresher(useRouter());
   const store = useMemo(() => createMissionLiveStore(), []);
   const refresherRef = useRef<MissionRefresher | null>(null);
   const anchorRef = useRef<ScrollAnchor | null>(null);

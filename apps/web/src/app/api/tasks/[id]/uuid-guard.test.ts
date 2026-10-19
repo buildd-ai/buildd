@@ -31,6 +31,7 @@ const ID_GUARDED_FILES = [
   'notes/route.ts',
   'notes/[noteId]/reply/route.ts',
   'reject-plan/route.ts',
+  'scope-answer/route.ts',
   'summary/route.ts',
 ];
 
