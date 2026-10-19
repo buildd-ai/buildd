@@ -283,7 +283,7 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
             <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noreferrer" className="underline">
               dash.cloudflare.com/profile/api-tokens
             </a>{' '}
-            with Workers Scripts Edit (it covers Durable Objects), Containers Edit, Workers R2 Storage Edit and Account Settings Read to deploy, Workers AI Read for Clef decisions, and AI Gateway Read if you use one.
+            with Workers Scripts, Containers and Workers R2 Storage edit, Account Settings read, Workers AI Read for Clef decisions, and AI Gateway if you use one.
           </p>
           <input
             value={apiToken}
