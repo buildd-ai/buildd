@@ -552,7 +552,15 @@ class Ctx {
     const n = d.currentRound + 1;
     const trigger: RoundTrigger = opts.trigger ?? (last ? 'new_commits' : 'first_pass');
     let kind: RoundKind | undefined = opts.kind;
-    let scope: Record<string, unknown> | null = opts.scope ?? null;
+    // A deferred request may discover a new head/base or a composition delta
+    // before any reviewer was filed. Its callback still belongs to the review
+    // being requested; callbacks already delivered to a reviewer stay there.
+    const pendingCallback = this.openRounds()
+      .filter((r) => !r.reviewerTaskId && r.scope?.reviewCallback)
+      .sort((a, b) => b.round - a.round)[0]?.scope?.reviewCallback;
+    let scope: Record<string, unknown> | null = pendingCallback
+      ? { reviewCallback: pendingCallback, ...opts.scope }
+      : opts.scope ?? null;
     if (!kind) {
       if (last && last.headSha !== head && last.effectiveVerdict === 'approve') {
         const el = deltaApprovalEligibility(this.view, head, opts.delta);
@@ -746,7 +754,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (stopsLanding && !landingInterruptible(dd)) return c.rejected('merge_in_flight');
       if (!allowed.includes(dd.state) && !stopsLanding) return c.rejected('state_not_allowed');
       if (dd.state === 'WORKING' && dd.prNumber == null) return c.rejected('pr_not_bound');
-      if (cmd.headSha !== dd.currentHeadSha || cmd.live.headSha !== cmd.headSha) return c.rejected('round_head_not_current');
+      if (cmd.headSha !== dd.currentHeadSha || (cmd.live && cmd.live.headSha !== cmd.headSha)) return c.rejected('round_head_not_current');
       if (c.openRoundAt(cmd.headSha)) return c.rejected('review_in_flight');
       // A forced round (a second look at a head that already has a verdict) is a person's call.
       if (cmd.forced && !isHumanActor(cmd.actor)) return c.rejected('force_requires_human');
@@ -758,7 +766,17 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         return c.rejected('escalation_needs_human');
       }
       if (c.decidedAt(cmd.headSha) && !cmd.forced) return c.rejected('head_already_reviewed');
-      const r = c.startRound(cmd.headSha, cmd.forced || isHumanActor(cmd.actor) ? { trigger: 'manual_force' } : {});
+      const scope = {
+        ...(!cmd.live ? { revalidate: true } : {}),
+        ...(cmd.reviewCallback ? { reviewCallback: cmd.reviewCallback } : {}),
+      };
+      const r = c.startRound(cmd.headSha, {
+        ...(cmd.forced || isHumanActor(cmd.actor) ? { trigger: 'manual_force' as const } : {}),
+        ...(Object.keys(scope).length ? { scope } : {}),
+      });
+      if (!cmd.live) {
+        for (const effect of r.effects) effect.payload.revalidate = true;
+      }
       const attempts: AttemptOp[] = dd.state === 'CHANGES_REQUESTED' ? [{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }] : [];
       const decision = cmd.decision ?? null;
       return c.apply(decision ? humanDecisionKey(dd.id, decision.id) : `round:${dd.id}:${cmd.headSha}:${r.roundNo}`, 'AWAITING_REVIEW', {
@@ -1925,7 +1943,7 @@ function roundFailed(
     return c.apply(key, 'AWAITING_REVIEW', {
       guardRound: true,
       rounds: [{ op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'], set: { status: 'queued', failureCount: n, clearReviewer: true } }],
-      effects: [{ kind: 'dispatch_review', dedupeKey: `dispatch_review:${dd.id}:${round.round}:retry${n}`, payload: { roundId: round.id, round: round.round, headSha: round.headSha, kind: round.kind, retry: n }, ...(f.retryDelayMs ? { delayMs: f.retryDelayMs * n } : {}) }, gate],
+      effects: [{ kind: 'dispatch_review', dedupeKey: `dispatch_review:${dd.id}:${round.round}:retry${n}`, payload: { roundId: round.id, round: round.round, headSha: round.headSha, kind: round.kind, retry: n, ...(round.scope?.revalidate === true ? { revalidate: true } : {}) }, ...(f.retryDelayMs ? { delayMs: f.retryDelayMs * n } : {}) }, gate],
       evidence: ev,
     });
   }

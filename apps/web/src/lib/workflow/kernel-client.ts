@@ -438,7 +438,7 @@ async function submitUntil<K extends KernelOp>(
       const headers = await signRequest({ keyId: key.keyId, secret: key.secret, method: 'POST', path: url.pathname + url.search, body });
       res = await doFetch(url.toString(), {
         method: 'POST',
-        headers: { ...headers, 'content-type': 'application/json' },
+        headers: { ...headers, 'content-type': 'application/json', 'user-agent': 'buildd-kernel-client/1' },
         body,
         signal: AbortSignal.timeout(Math.min(left, 25_000)),
       });

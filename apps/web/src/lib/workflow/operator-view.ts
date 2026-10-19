@@ -18,6 +18,7 @@ import { db } from '@buildd/core/db';
 import { describeFinding } from '@buildd/workflow-kernel/findings';
 import { landingStatusOf, LANDING_STATUS_CONTEXT } from '@buildd/workflow-kernel/landing-gate';
 import { loadView, type Exec } from './kernel';
+import { liveDeadEffects, type LiveDeadEffects } from './dead-effect-sweep';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -123,6 +124,8 @@ export interface KernelOperatorView {
   web: { count: number; recent: TransitionRow[] };
   parked: ParkedView;
   floorRuns: FloorRun[];
+  /** Effects that are `dead` on a delivery still live: the floor leaves them for an operator. */
+  deadEffects: LiveDeadEffects;
   timeline: TimelineResult;
 }
 
@@ -267,6 +270,11 @@ export function describeFloorResult(result: J | null): { repaired: string[]; pro
     if (Array.isArray(missing) && missing.length) problems.push(`${plural(missing.length, 'open PR head', 'open PR heads')} still without the approval check`);
     if (n(open.errors)) problems.push(`${plural(n(open.errors), 'open PR head', 'open PR heads')} could not be read`);
   }
+  const dead = step('deadEffects');
+  if (dead) {
+    if (n(dead.closed)) repaired.push(`closed ${plural(n(dead.closed), 'dead effect', 'dead effects')} as superseded`);
+    if (n(dead.live)) problems.push(`${plural(n(dead.live), 'dead effect', 'dead effects')} still owed to a live delivery`);
+  }
   const trunkErr = typeof result.commandsPruned === 'object' && obj(result.commandsPruned)?.error;
   if (typeof trunkErr === 'string') problems.push(`pruning old commands failed: ${trunkErr.slice(0, 160)}`);
   return { repaired, problems };
@@ -277,7 +285,7 @@ export async function lastFloorRuns(exec: Exec = dbExec): Promise<FloorRun[]> {
   const pick = sql`id, job, started_at, duration_ms, ok, error, jsonb_build_object(
     'host', result->>'host', 'kernelHost', result->>'kernelHost', 'kernelOutbox', result->'kernelOutbox', 'trunk', result->'trunk',
     'kernelFloor', result->'kernelFloor', 'treadmillCycles', result->'treadmillCycles', 'commandsPruned', result->'commandsPruned',
-    'parkedCommands', result->'parkedCommands', 'openPrStatuses', result->'openPrStatuses') AS result`;
+    'parkedCommands', result->'parkedCommands', 'openPrStatuses', result->'openPrStatuses', 'deadEffects', result->'deadEffects') AS result`;
   const res = await exec(sql`-- kernel_operator:floor_runs
 SELECT * FROM (
   (SELECT ${pick} FROM cron_runs WHERE job = 'kernel-floor' ORDER BY started_at DESC LIMIT ${FLOOR_RUN_LIMIT})
@@ -351,12 +359,13 @@ export async function loadKernelOperatorView(query: KernelQuery, exec: Exec = db
     if (!scope.ids || scope.ids.length === 0) return { kind: 'no_workspace', scope: scope.missing ?? '' };
     return prTimeline({ ids: scope.ids, prNumber: query.pr }, exec);
   })();
-  const [transitions, web, parked, floorRuns, tl] = await Promise.all([
+  const [transitions, web, parked, floorRuns, deadEffects, tl] = await Promise.all([
     scope.ids && scope.ids.length === 0 ? Promise.resolve([]) : recentTransitions({ since, ids: scope.ids, command, limit: TRANSITION_LIMIT }, exec),
     webHostTransitions(since, exec),
     parkedCommands(since, exec),
     lastFloorRuns(exec),
+    liveDeadEffects(exec),
     timeline,
   ]);
-  return { query, since, now, scopeMissing: scope.missing, transitions, web, parked, floorRuns, timeline: tl };
+  return { query, since, now, scopeMissing: scope.missing, transitions, web, parked, floorRuns, deadEffects, timeline: tl };
 }

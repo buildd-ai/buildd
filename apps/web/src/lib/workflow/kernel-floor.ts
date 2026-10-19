@@ -26,6 +26,7 @@ import { commandsConfigured, executionModeOf } from './command-api';
 import { publishOpenPrStatuses, type OpenPrStatusSummary } from './open-pr-status';
 import { runDueEffectDrains, type EffectTickResult } from './effect-timer';
 import { drainDueEpochEffects, type EpochDrainSummary } from './epoch-effects';
+import { sweepDeadEffects, type DeadEffectsSummary } from './dead-effect-sweep';
 import { KERNEL_SPAN, emitKernelSpan, floorSpanAttributes, type FloorRepairs, type OutboxDepth } from './kernel-telemetry';
 
 export { readOutboxDepth } from './command-outbox';
@@ -49,6 +50,8 @@ export interface KernelFloorResult {
   commandsPruned: Isolated<number>;
   parkedCommands: Isolated<ParkedDrainSummary>;
   openPrStatuses: Isolated<OpenPrStatusSummary>;
+  /** Dead effects: moot ones closed as superseded, the rest reported (dead-effect-sweep.ts). */
+  deadEffects: Isolated<DeadEffectsSummary>;
 }
 
 export interface KernelFloorDeps {
@@ -60,6 +63,7 @@ export interface KernelFloorDeps {
   pruneCommands?: () => Promise<number>;
   drainParkedCommands?: () => Promise<ParkedDrainSummary>;
   publishOpenPrStatuses?: () => Promise<OpenPrStatusSummary>;
+  sweepDeadEffects?: () => Promise<DeadEffectsSummary>;
   /** The outboxes' depth after the pass, for its span (`kernel.floor`). */
   readOutboxDepth?: () => Promise<OutboxDepth>;
 }
@@ -69,7 +73,7 @@ const isolate = <T>(p: () => Promise<T>): Promise<Isolated<T>> =>
 
 export async function runKernelFloor(deps: KernelFloorDeps = {}): Promise<KernelFloorResult> {
   const startedAt = Date.now();
-  const [kernelOutbox, epochOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands, openPrStatuses] = await Promise.all([
+  const [kernelOutbox, epochOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands, openPrStatuses, deadEffects] = await Promise.all([
     isolate(() => (deps.drainDueEffects ?? drainDueEffects)()),
     isolate(() => (deps.drainDueEpochEffects ?? (() => drainDueEpochEffects()))()),
     isolate(() => (deps.reconcileTrunkIncidents ?? (() => reconcileTrunkIncidents()))()),
@@ -78,8 +82,9 @@ export async function runKernelFloor(deps: KernelFloorDeps = {}): Promise<Kernel
     isolate(() => (deps.pruneCommands ?? (() => postgresCommandLedger().prune()))()),
     isolate(() => (deps.drainParkedCommands ?? (() => drainParkedCommands()))()),
     isolate(() => (deps.publishOpenPrStatuses ?? (() => publishOpenPrStatuses()))()),
+    isolate(() => (deps.sweepDeadEffects ?? (() => sweepDeadEffects()))()),
   ]);
-  const result = { kernelOutbox, epochOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands, openPrStatuses };
+  const result = { kernelOutbox, epochOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands, openPrStatuses, deadEffects };
   // After the pass: what it left waiting. A failed read is reported as unread, never as empty.
   const depth = await (deps.readOutboxDepth ?? readOutboxDepth)().catch((err: unknown) => {
     console.error('[kernel-floor] the outbox depth could not be read:', err instanceof Error ? err.message : err);
@@ -101,11 +106,16 @@ export function floorRepairsOf(r: KernelFloorResult): FloorRepairs {
   };
 }
 
+/** The dead-effect sweep as span facts; null when the sweep failed (the run's errors say so). */
+export function deadEffectsOf(r: KernelFloorResult): DeadEffectsSummary | null {
+  return ok(r.deadEffects) ? r.deadEffects : null;
+}
+
 function reportKernelFloor(r: KernelFloorResult, depth: OutboxDepth | null, startedAt: number): void {
   const errors = kernelFloorOutcome(r).errors;
   emitKernelSpan({
     name: KERNEL_SPAN.floor, startMs: startedAt, durationMs: Date.now() - startedAt, error: errors > 0,
-    attributes: floorSpanAttributes({ host: kernelHost(), depth, repairs: floorRepairsOf(r), errors }),
+    attributes: floorSpanAttributes({ host: kernelHost(), depth, repairs: floorRepairsOf(r), errors, deadEffects: deadEffectsOf(r) }),
   });
 }
 
@@ -122,12 +132,13 @@ export function kernelFloorOutcome(r: KernelFloorResult): { processed: number; c
   const parked = ok(r.parkedCommands) ? r.parkedCommands : null;
   // AC-76: an open head still without Buildd / Review approval is an error of the run, so the coverage can fail.
   const open = ok(r.openPrStatuses) ? r.openPrStatuses : null;
+  const dead = ok(r.deadEffects) ? r.deadEffects : null;
   return {
     processed: (outbox?.claimed ?? 0) + (epochs?.claimed ?? 0) + (floor?.checked ?? 0) + (trunk?.checked ?? 0) + (tread?.checked ?? 0) + (parked?.claimed ?? 0) + (open?.checked ?? 0),
     changed: (outbox?.done ?? 0) + (epochs?.done ?? 0) + (floor ? floor.imported + floor.enqueued : 0) + (trunk?.resolved ?? 0) + (tread?.restarted ?? 0) + (parked?.done ?? 0)
-      + (open ? open.published + open.republished : 0),
+      + (open ? open.published + open.republished : 0) + (dead?.closed ?? 0),
     errors: (outbox ? outbox.failed : 1) + (epochs ? epochs.failed + epochs.dead : 1) + (floor ? floor.errors : 1) + (trunk ? trunk.errors : 1) + (tread ? tread.errors : 1) + (ok(r.commandsPruned) ? 0 : 1) + (parked ? parked.dead : 1)
-      + (open ? open.errors + open.coverage.missing.length : 1),
+      + (open ? open.errors + open.coverage.missing.length : 1) + (dead ? 0 : 1),
   };
 }
 
@@ -142,6 +153,7 @@ export function logKernelFloor(r: KernelFloorResult, where: string): void {
   line('KernelCommandsPruned', r.commandsPruned);
   line('KernelParkedCommands', r.parkedCommands);
   line('OpenPrStatuses', r.openPrStatuses);
+  line('DeadEffects', r.deadEffects);
 }
 
 export const KERNEL_FLOOR_JOB = 'kernel-floor';

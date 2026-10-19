@@ -36,7 +36,7 @@ const mockSelect = mock((shape: any) => {
 mock.module('@buildd/core/db', () => ({ db: { select: mockSelect } }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  tasks: { id: 'id', title: 'title', status: 'status', backend: 'backend', workspaceId: 'workspaceId', createdAt: 'createdAt' },
+  tasks: { id: 'id', title: 'title', status: 'status', backend: 'backend', workspaceId: 'workspaceId', createdAt: 'createdAt', context: 'context' },
   workspaces: { id: 'ws.id', name: 'ws.name' },
 }));
 
@@ -61,7 +61,10 @@ mock.module('@/app/api/workers/claim/held-gate', () => ({
   notHeldOrLocal: () => ({ _op: 'notHeldOrLocal' }),
 }));
 
-mock.module('@/lib/claim-blocker-projection', () => ({ loadClaimBlockers: async () => new Map() }));
+let blockerBackends: ReadonlyMap<string, string> | undefined;
+mock.module('@/lib/claim-blocker-projection', () => ({
+  loadClaimBlockers: async (_ids: string[], eff?: ReadonlyMap<string, string>) => { blockerBackends = eff; return new Map(); },
+}));
 mock.module('@/lib/backend-failover', () => ({
   isBackendConfigured: mockIsBackendConfigured,
   teamEnabledBackends: mockTeamEnabledBackends,
@@ -77,6 +80,7 @@ const stat = (summary: any, backend: string) =>
 
 beforeEach(() => {
   countRows = [];
+  blockerBackends = undefined;
   sampleRowsByCall = [];
   sampleCalls = 0;
   selectedShapes = [];
@@ -250,5 +254,27 @@ describe('createBackendStrandProbe', () => {
     mockIsBackendConfigured.mockImplementation(() => Promise.reject(new Error('db down')));
     const probe = createBackendStrandProbe();
     expect(await probe.check({ backend: 'codex', workspaceId: 'ws-1', teamId: 'team-1' })).toBeNull();
+  });
+});
+
+describe('getBackendStrandSummary — executed route, not the stored preference', () => {
+  it('shows a recorded Claude failover as Claude and does not judge it by the Codex block', async () => {
+    countRows = [{ workspaceId: 'ws-1', backend: 'codex', count: 1 }];
+    sampleRowsByCall = [[
+      { id: 't-1', title: 'Failed over', workspaceName: 'alpha', backend: 'codex',
+        context: { backendRouting: { backend: 'claude', from: 'codex', reason: 'codex_rate_limited' } } },
+      { id: 't-2', title: 'Pinned', workspaceName: 'alpha', backend: 'codex',
+        context: { backendPinned: true, backendRouting: { backend: 'claude', from: 'codex', reason: 'codex_rate_limited' } } },
+      { id: 't-3', title: 'Plain', workspaceName: 'alpha', backend: 'codex', context: {} },
+    ]];
+
+    const summary = await getBackendStrandSummary({ teamId: 'team-1', workspaceIds: ['ws-1'] });
+
+    const routes = Object.fromEntries(stat(summary, 'codex').sampleTasks.map((t: any) => [t.id, t.route]));
+    expect(routes['t-1']).toEqual({ requested: 'codex', effective: 'claude' });
+    expect(routes['t-2']).toEqual({ requested: 'codex', effective: 'codex' });
+    expect(routes['t-3']).toEqual({ requested: 'codex', effective: 'codex' });
+    expect(blockerBackends?.get('t-1')).toBe('claude');
+    expect(blockerBackends?.get('t-3')).toBe('codex');
   });
 });
