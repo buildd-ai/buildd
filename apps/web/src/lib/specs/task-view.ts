@@ -26,7 +26,7 @@ export async function loadLivingSpecView(taskId: string, specId: string, pin: un
         ? {
           outcome: read.outcome.outcome,
           reason: read.outcome.reason,
-          criteria: (read.outcome.criteria as ReadonlyArray<OutcomeView['criteria'][number]>).map((c) => ({ criterionId: c.criterionId, text: c.text, verdict: c.verdict, stale: c.stale })),
+          criteria: (read.outcome.criteria as ReadonlyArray<OutcomeView['criteria'][number]>).map((c) => ({ criterionId: c.criterionId, text: c.text, verdict: c.verdict, stale: c.stale, overriddenReviews: c.overriddenReviews })),
         }
         : null,
     };

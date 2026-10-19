@@ -74,6 +74,15 @@ export default function OutcomeSpecCriterion({ missionId, criterion, entry, read
           Only {v.narrowed.criterionIds.join(', ')}: {v.narrowed.reason}
         </p>
       )}
+      {v.outranked.length > 0 && (
+        <ul className="space-y-1" data-testid="outcome-spec-outranked">
+          {v.outranked.map(o => (
+            <li key={o.criterionId} className="text-meta text-text-muted leading-snug">
+              <span className="font-mono">{o.criterionId}</span>: {o.note}
+            </li>
+          ))}
+        </ul>
+      )}
       {v.open.length > 0 && (
         <ul className="space-y-1" data-testid="outcome-spec-open">
           {v.open.map(o => (

@@ -32,7 +32,7 @@ import {
   projectMissionDelivery, type MissionDeliveryHead, type MissionTaskRules, type MissionTaskRow, type TaskDelivery,
 } from '@/lib/delivery-projection';
 import {
-  buildActivityHistory, buildActivityNow, reviewOf,
+  buildActivityHistory, buildActivityNow, kernelOwnedBy, reviewOf,
   type ActivityMission, type ActivityNow, type ActivityTaskInput, type Episode,
 } from '@/lib/activity-delivery';
 import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
@@ -428,6 +428,8 @@ export async function loadActivity(input: {
       updatedAt: new Date(t.updatedAt).toISOString(),
       waitingPrompt: waiting && waiting.waitingPrompt != null ? waiting.waitingPrompt || 'Has a question' : null,
       review: isReview ? reviewOf({ effectiveVerdict: t.reviewVerdict }, { headSha: t.reviewHeadSha }) : null,
+      // The delivery this task owns: its revision card reads the kernel's rounds and ledger.
+      kernel: kernelOwnedBy(load.views, t.id),
       workers: ws.map(w => ({
         status: w.status,
         name: (w.id && localHolds.get(w.id)?.client) || w.name,

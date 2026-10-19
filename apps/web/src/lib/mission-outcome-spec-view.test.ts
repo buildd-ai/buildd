@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { GoalCriteriaState, LivingSpecCriterionStanding, LivingSpecGoalCriterion } from '@buildd/shared';
-import { countWord, outcomeSpecView } from './mission-outcome-spec-view';
+import { countWord, outcomeSpecView, outrankedNote } from './mission-outcome-spec-view';
 
 const SPEC = '00000000-0000-4000-8000-000000000001';
 const crit = (extra: Partial<LivingSpecGoalCriterion> = {}): LivingSpecGoalCriterion => ({
@@ -90,5 +90,12 @@ describe('outcomeSpecView', () => {
     expect(countWord(0)).toBe('zero');
     expect(countWord(12)).toBe('twelve');
     expect(countWord(13)).toBe('13');
+  });
+});
+
+describe('outranked review note (R-85, AC-129)', () => {
+  it('words the count of reviews a test result outranked', () => {
+    expect(outrankedNote('R-1', 1).note).toBe('A review verdict was outranked by the test result.');
+    expect(outrankedNote('R-1', 3).note).toBe('3 review verdicts were outranked by the test result.');
   });
 });
