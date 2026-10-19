@@ -52,7 +52,7 @@ import { missionEpochsOf } from '@/lib/workflow/delivery-ship';
 import { deliveryDisagreements, overlayDeliveryLifecycle, type DeliveryDisagreement } from '@/lib/delivery-overlay';
 import { attemptLine } from '@/lib/workflow/projections';
 import { loadClaimHoldReasons, loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
-import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
+import { isMissionAuditTask } from '@buildd/core/surface-audit';
 import { openCriteriaChecks, summarizeVisualReview } from '@/lib/mission-open-checks';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
@@ -60,7 +60,7 @@ import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { coordinationGateDetail, coordinationLink, latestOverlapStarts, overlapStartLink, type CoordinationHold } from '@/lib/explain-coordination';
 import { loadCoordinationHolds, type HoldTask } from '@/lib/coordination-holds';
 import { latestDispatchForTask } from '@buildd/core/dispatch-outbox';
-import { loadBrowserRunnerHeartbeats } from './runner-heartbeats';
+import { loadBrowserRunnerHeartbeats, loadRunnerOnlineByWorkspace } from './runner-heartbeats';
 import { browserRunnerOnline } from './visual-audit-runner';
 import { deriveCiRedChains } from './ci-red-chain';
 import {
@@ -261,6 +261,12 @@ async function missingBrowserFor(rows: LoadedTask[], workspaceId: string | null,
   }
 }
 
+/** `false` only when the lookup succeeded and no runner can claim here; unknown and local-session missions stay undefined. */
+async function runnerOnlineFor(rows: LoadedTask[], workspaceId: string | null, local: boolean): Promise<boolean | undefined> {
+  if (local || !workspaceId || !rows.some(t => t.status === 'pending')) return undefined;
+  return (await loadRunnerOnlineByWorkspace([workspaceId])).get(workspaceId);
+}
+
 /** True when a worker in a live status is on this row — the per-task half of `activeAgents`. */
 function hasLiveWorker(t: { workers?: Array<{ status: string }> | null }): boolean {
   return (t.workers ?? []).some(w => LIVE_WORKER_STATUSES.has(w.status));
@@ -375,9 +381,13 @@ function iso(d: Date | string | null | undefined): string | null {
  */
 export function historyPrStateOf(
   w: Pick<LoadedTask['workers'][number], 'prNumber' | 'prLifecycleStatus' | 'mergedAt'> | undefined,
-  delivery?: Pick<DeliveryView, 'prState' | 'prNumber'> | null,
+  delivery?: (Pick<DeliveryView, 'prState' | 'prNumber'> & { state?: DeliveryView['state'] }) | null,
 ): HistoryNode['prState'] {
   if (!w?.prNumber && !(delivery?.prState && delivery.prNumber != null)) return 'none';
+  // A delivery that has not projected a PR state yet is "open", not the worker
+  // row's: that column is the fact cache of a past CI run (a head ago), which
+  // is how an approved PR with green checks read ci_failed in its own history.
+  if (delivery && delivery.prNumber != null && !delivery.prState && delivery.state && !deliverySettled({ state: delivery.state })) return 'open';
   const state = resolvePrDisplayState({ delivery, prLifecycleStatus: w?.prLifecycleStatus, mergedAt: w?.mergedAt });
   switch (state) {
     case 'merged': case 'closed': case 'conflict': case 'ci_failed': return state;
@@ -525,6 +535,7 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
       createdAt: t.createdAt,
       roleSlug: t.roleSlug,
     })),
+    m.autoSurfaceAudit as boolean | null | undefined,
   );
 
   // S35: a failed attempt the kernel already replaced (its delivery is live or
@@ -568,7 +579,7 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
   // the canonical state only then, so every other explain stays one query lighter.
   // An open audit row also needs it: the header follows the visual review state
   // (waived, blocked, running), not the audit task row (spec 8e137fdb I-1, I-5).
-  const openAudit = loaded.some(t => OPEN_TASK_STATUSES.has(t.status) && isSurfaceAuditTask(t.title ?? ''));
+  const openAudit = loaded.some(t => OPEN_TASK_STATUSES.has(t.status) && isMissionAuditTask(t));
   const visualReviewState = !(completion.code === 'surface_audit_missing' || openAudit) ? null
     : inputs ? inputs.visualReviewState
     : await import('@/lib/workflow/visual-review-state-load')
@@ -642,7 +653,9 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
     .map(t => ({ task: t, superseded: supersededMap.get(t.id)! }));
 
   const missingBrowser = await missingBrowserFor(openTasks, m.workspaceId ?? null, m.executor === 'local');
+  const runnerOnline = await runnerOnlineFor(openTasks, m.workspaceId ?? null, m.executor === 'local');
   const input: MissionStateInput = {
+    runnerOnline,
     status: String(m.status),
     isHeld: m.isHeld === true,
     armedAt: m.armedAt ?? null,
@@ -665,7 +678,7 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
     openTasks: openTasks.map(t => ({
       id: t.id, status: t.status, title: t.title, waitingOnTaskIds: waitingOnOf(t),
       ...(t.status === 'pending' ? { waitingOnPrs: unmetDependencyPrs(t, loadedById) } : {}),
-      surfaceAudit: isSurfaceAuditTask(t.title ?? ''),
+      surfaceAudit: isMissionAuditTask(t),
       holdReason: t.status === 'pending' ? holdReasons.get(t.id) ?? null : null,
       missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
     })),
@@ -732,6 +745,7 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
         prNumber: superseded.prNumber,
         supersedingTaskId: superseded.supersedingTaskId,
         ...(superseded.replacedByAudit ? { replacedByAudit: true as const } : {}),
+        ...(superseded.waived ? { waived: true as const } : {}),
       })),
     },
   };
@@ -854,6 +868,19 @@ function ownerView(m: ReadonlyMap<string, DeliveryView>, taskId: string): Delive
 }
 
 /**
+ * The delivery whose PR this task's worker points at: its own, or, for a
+ * review-fix or repair attempt that pushed to its delivery's PR, that one.
+ * The PR's state is then the delivery's, never the attempt's worker columns
+ * (task fa37ed4b: a completed fix on an ESCALATED PR read as ready to merge).
+ */
+function prDeliveryView(m: ReadonlyMap<string, DeliveryView>, taskId: string, prNumber: number | null | undefined): DeliveryView | null {
+  const own = ownerView(m, taskId);
+  if (own) return own;
+  const v = m.get(taskId);
+  return v && prNumber != null && v.prNumber === prNumber ? v : null;
+}
+
+/**
  * §17.5: the owner task's unmerged PR, read from its kernel-owned delivery.
  * Merged, superseded and abandoned deliveries are settled; a closed one with no
  * edge is closed-unsuperseded (the remedy is a supersession, not a merge).
@@ -932,8 +959,8 @@ async function viewForTask(taskId: string): Promise<{
   view: MissionStateView;
   /** Every DeliveryView the chain's tasks belong to, keyed by task id. */
   deliveries: Map<string, DeliveryView>;
-  /** The delivery this task OWNS, when the kernel owns it. */
-  ownDelivery: DeliveryView | null;
+  /** The kernel delivery this task's PR belongs to: the one it owns, or the one its fix attempt pushed to. */
+  prDelivery: DeliveryView | null;
   task: LoadedTask;
   family: LoadedTask[];
   /** The whole fix-attempt chain this task sits in, for `history` only — state is still derived from `family`. */
@@ -1001,17 +1028,17 @@ async function viewForTask(taskId: string): Promise<{
   const activeAgents = family.flatMap(t => t.workers ?? []).filter(w => LIVE_WORKER_STATUSES.has(w.status)).length;
 
   const worker = task.workers?.[0];
-  // One DeliveryView load for the whole chain (§17.5). A task that OWNS a
-  // kernel-owned delivery takes its PR reading from the delivery; the worker
-  // columns below are the legacy path only.
+  // One DeliveryView load for the whole chain (§17.5). A task that owns a
+  // kernel-owned delivery, or an attempt that pushed to its PR, takes its PR
+  // reading from the delivery; the worker columns below are the legacy path only.
   const deliveries = await getDeliveryViewsForTasks(historyTasks.map(t => t.id));
-  const ownDelivery = ownerView(deliveries, taskId);
+  const prDelivery = prDeliveryView(deliveries, taskId, worker?.prNumber);
   // A PR recorded as superseded (task fcaf83d5) shipped anyway, under a
   // different, merged PR — verified against GitHub at write time, so it reads
   // as shipped here without a second check. Never awaiting-merge.
   // An abandoned PR (closed, with a person's reason) is settled, not awaiting.
-  const unmergedPr: NonNullable<StateBecauseExtras['unmergedPrs']> = ownDelivery
-    ? kernelUnmergedPr(task, worker, ownDelivery)
+  const unmergedPr: NonNullable<StateBecauseExtras['unmergedPrs']> = prDelivery
+    ? kernelUnmergedPr(task, worker, prDelivery)
     : task.status === 'completed' && worker?.prNumber && !worker.mergedAt && !worker.supersededByPrNumber
       && !(worker.prLifecycleStatus === 'closed' && worker.abandonedAt)
       ? [{
@@ -1044,18 +1071,20 @@ async function viewForTask(taskId: string): Promise<{
 
   // Why the unmerged PR cannot land, from stored landing facts (§13.11 rule 3).
   const openPr = unmergedPr.find(p => !p.closedUnsuperseded) ?? null;
-  const landingBlocked = openPr ? await loadLandingBlocker(task, openPr, ownDelivery, worker?.prLifecycleStatus ?? null, historyTasks) : [];
+  const landingBlocked = openPr ? await loadLandingBlocker(task, openPr, prDelivery, worker?.prLifecycleStatus ?? null, historyTasks) : [];
 
+  const runnerOnline = await runnerOnlineFor(family, task.workspaceId, executor === 'local');
   const input: MissionStateInput = {
     // A cancelled task is closed, not idle. `completed` is only terminal for
     // this view once its PR has landed — the merge rule below decides that.
     status: task.status === 'cancelled'
       || (task.status === 'completed' && unmergedPr.length === 0 && !openAttempt)
-      || (!!ownDelivery && deliverySettled(ownDelivery) && ownDelivery.state !== 'FAILED' && !openAttempt)
+      || (!!prDelivery && deliverySettled(prDelivery) && prDelivery.state !== 'FAILED' && !openAttempt)
       ? 'completed'
       : 'active',
     openAttempt,
     isHeld: false,
+    runnerOnline,
     executor,
     activeAgents,
     health,
@@ -1070,7 +1099,7 @@ async function viewForTask(taskId: string): Promise<{
     wait: classifyMissionWait(family as unknown as WaitClassifiableTask[]),
     landingBlocked,
     ciRed: deriveCiRedChains(
-      unmergedPr.filter(p => !p.closedUnsuperseded).map(p => (ownDelivery ? { ...p, ciRed: ownDelivery.prState === 'ci_failed' } : p)),
+      unmergedPr.filter(p => !p.closedUnsuperseded).map(p => (prDelivery ? { ...p, ciRed: prDelivery.prState === 'ci_failed' } : p)),
       family,
     ),
     completion: unmergedPr.length > 0 && !openAttempt
@@ -1090,7 +1119,7 @@ async function viewForTask(taskId: string): Promise<{
   return {
     view: deriveMissionStateView(input),
     deliveries,
-    ownDelivery,
+    prDelivery,
     task: task as LoadedTask,
     family,
     lineage: historyTasks,
@@ -1298,7 +1327,7 @@ export async function explainPr(worker: {
   const taskId = await prOwnerTaskId(worker.taskId, worker.prNumber);
   const loaded = await viewForTask(taskId);
   if (!loaded) return null;
-  const { view, task, lineage, answerExtras, workspaceId, missionId, ownDelivery } = loaded;
+  const { view, task, lineage, answerExtras, workspaceId, missionId, deliveries, prDelivery } = loaded;
 
   const subject: ExplainAnswer['subject'] = {
     scope: 'pr',
@@ -1355,7 +1384,8 @@ export async function explainPr(worker: {
   // rejections, review_verdict deferrals) is the task's.
   const gateHistory = await loadGateHistory(taskId);
   const evidenceObjects = await loadInlineEvidence(worker.workspaceId, taskId, { surface: 'explain', actor });
-  return { scope: 'pr', subjects: [withDelivery(withBackendRouting(answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects), task), ownDelivery ?? null)] };
+  const answer = withBackendRouting(answerFrom(view, subject, buildHistory(lineage, deliveries), because, gateHistory, evidenceObjects), task);
+  return { scope: 'pr', subjects: [withDelivery(answer, prDelivery)] };
 }
 
 // ─── Workspace scope ──────────────────────────────────────────────────────────

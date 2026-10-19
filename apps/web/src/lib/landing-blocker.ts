@@ -12,11 +12,17 @@
  *
  * Pure, and stored facts only: explain never calls GitHub (see explain.ts).
  * Precedence, newest authority first:
- *  1. the kernel delivery (REPAIRING / BLOCKED_ON_TRUNK / ESCALATED, or a
- *     conflict on its current head);
- *  2. the newest `pr_landing` gate row, when it is about the current head (kernel)
+ *  1. the kernel delivery — ESCALATED, BLOCKED_ON_TRUNK;
+ *  2. a conflict on the current head (checked before most delivery states except
+ *     REPAIRING, which uses its currentAttempt). Conflicts always block landing,
+ *     even while awaiting review;
+ *  3. a delivery that has not been approved on its current head
+ *     (AWAITING_REVIEW, CHANGES_REQUESTED, FIXING, AWAITING_PUSH, REPAIRING): the
+ *     platform owes the next step, whatever round or attempt number it has reached.
+ *     REPAIRING uses its currentAttempt to determine repair_running vs repair_queued;
+ *  4. the newest `pr_landing` gate row, when it is about the current head (kernel)
  *     or no repair has completed since it was written (legacy);
- *  3. the legacy conflict fact (`workers.prLifecycleStatus = 'conflict'`).
+ *  5. the legacy conflict fact (`workers.prLifecycleStatus = 'conflict'`).
  * An open repair attempt upgrades a conflict or collision to queued / running.
  */
 import type { DeliveryView } from '@/lib/workflow/projections';
@@ -29,7 +35,10 @@ export type LandingBlockCause =
   | 'repair_exhausted'
   | 'human_decision'
   | 'trunk_blocked'
-  | 'ci_pending';
+  | 'ci_pending'
+  | 'review_pending'
+  | 'fix_pending'
+  | 'push_pending';
 
 export interface LandingBlocker {
   taskId: string;
@@ -99,6 +108,52 @@ export function deriveLandingBlocker(p: {
     if (d.state === 'BLOCKED_ON_TRUNK') {
       return { ...base, cause: 'trunk_blocked', owner: 'platform', label: `${pr} is waiting on a red trunk`, nextAction: 'Nothing to do on this PR: it lands once trunk is green again.', derivedFrom: 'workflow_deliveries' };
     }
+
+    // Check for conflicts on the current head — a conflict always blocks landing,
+    // even while awaiting review, changes requested, or any other state.
+    // Skip this block for REPAIRING states, which handle conflicts with d.currentAttempt.
+    if (d.prState === 'conflict' && d.state !== 'REPAIRING') {
+      if (openRepair) {
+        return {
+          ...base,
+          cause: openRepair.claimed ? 'repair_running' : 'repair_queued',
+          owner: 'platform',
+          label: `${pr} conflicts with its base; ${openRepair.claimed ? 'a repair is running' : 'a repair is queued, no worker yet'}`,
+          nextAction: 'Nothing to do yet: buildd is repairing the branch.',
+          derivedFrom: 'workflow_deliveries',
+        };
+      }
+      const ended = repairs.length > 0;
+      if (ended) {
+        return {
+          ...base,
+          cause: 'repair_exhausted',
+          owner: 'person',
+          label: `${pr} conflicts with its base, and its ${repairs.length} repair attempt${repairs.length === 1 ? '' : 's'} ended without fixing it`,
+          nextAction: `Merge the PR's base into its head branch and resolve the conflicts, or close the PR.`,
+          derivedFrom: 'workflow_deliveries',
+        };
+      }
+      return {
+        ...base,
+        cause: 'conflicted',
+        owner: 'platform',
+        label: `${pr} conflicts with its base`,
+        nextAction: 'Not ready to merge: buildd files a repair for it. If none appears, re-run the landing check.',
+        derivedFrom: 'workflow_deliveries',
+      };
+    }
+
+    if (d.state === 'AWAITING_REVIEW') {
+      const head = d.headSha ? ` at ${d.headSha.slice(0, 7)}` : '';
+      return { ...base, cause: 'review_pending', owner: 'platform', label: `${pr} is waiting for its review${head}`, nextAction: 'Nothing to do yet: it is merged once the review of its current head approves and checks are green.', derivedFrom: 'workflow_deliveries' };
+    }
+    if (d.state === 'CHANGES_REQUESTED' || d.state === 'FIXING') {
+      return { ...base, cause: 'fix_pending', owner: 'platform', label: `${pr} has review changes being fixed`, nextAction: 'Nothing to do yet: the fix is re-reviewed when it pushes.', derivedFrom: 'workflow_deliveries' };
+    }
+    if (d.state === 'AWAITING_PUSH') {
+      return { ...base, cause: 'push_pending', owner: 'platform', label: `${pr} is waiting for a push to reach GitHub`, nextAction: 'Nothing to do yet: it is reviewed once the push lands.', derivedFrom: 'workflow_deliveries' };
+    }
     if (d.state === 'REPAIRING') {
       const running = d.currentAttempt ? d.currentAttempt.status !== 'pending' : !!openRepair?.claimed;
       return {
@@ -126,9 +181,10 @@ export function deriveLandingBlocker(p: {
       detail = row.reason;
     }
   }
-  if (!cause && (d ? d.prState === 'conflict' : p.prLifecycleStatus === 'conflict')) {
+  // Legacy path: no delivery, so check the worker's prLifecycleStatus
+  if (!cause && !d && p.prLifecycleStatus === 'conflict') {
     cause = 'conflicted';
-    derivedFrom = d ? 'workflow_deliveries' : 'workers.prLifecycleStatus';
+    derivedFrom = 'workers.prLifecycleStatus';
   }
   if (!cause) return null;
 

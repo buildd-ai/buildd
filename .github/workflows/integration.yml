@@ -502,6 +502,9 @@ jobs:
                 # the process, so the port stops answering): the verdict would be for code the
                 # job never named.
                 export BUILDD_DISABLE_AUTO_UPDATE=1
+                # Synthetic fixture tasks may run without bwrap in this CI container.
+                # Protected workspaces still fail the server isolation gate.
+                export BUILDD_ALLOW_REDUCED_ISOLATION=1
                 cd /tmp/buildd-ci && bun run apps/runner/src/index.ts >> /tmp/buildd-test.log 2>&1
               '
             "

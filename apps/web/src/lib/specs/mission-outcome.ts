@@ -4,7 +4,7 @@ import { and, asc, eq, inArray } from 'drizzle-orm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
-import { VERIFICATION_VERDICTS, boundEvidenceRefs, type VerificationVerdict } from '@buildd/core/verification-check';
+import { VERIFICATION_VERDICTS, boundEvidenceRefs, verdictSourceOfEvidence, type VerificationVerdict } from '@buildd/core/verification-check';
 import type { LivingSpecGoalCriterion } from '@buildd/shared';
 import type { RequirementRef } from '@buildd/spec-contract/requirements';
 import { githubApi } from '@/lib/github';
@@ -17,6 +17,7 @@ import { isUuid } from '@/lib/uuid';
 import { livingSpecCriteriaOf, selectedScope } from './selected-scope';
 import { foldMissionSpec, verdictIsCurrent, type MissionSpecFold, type MissionTarget, type MissionVerdictRow } from './mission-outcome-fold';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
+import { settleVerdictSource } from './verdict-source';
 import { revisionCriterionHashes } from './criteria';
 
 /**
@@ -106,12 +107,12 @@ export async function resolveMissionTarget(mission: MissionRow, candidateHeads: 
 }
 
 async function missionRows(missionId: string, specRevisionId: string, hashes: ReadonlyMap<string, string>): Promise<MissionVerdictRow[]> {
-  const rows = await db.select({ id: specOutcomeVerdicts.id, criterionId: specOutcomeVerdicts.criterionId, verdict: specOutcomeVerdicts.verdict, headSha: specOutcomeVerdicts.headSha, at: specOutcomeVerdicts.createdAt, textHash: specOutcomeVerdicts.criterionTextHash })
+  const rows = await db.select({ id: specOutcomeVerdicts.id, criterionId: specOutcomeVerdicts.criterionId, verdict: specOutcomeVerdicts.verdict, headSha: specOutcomeVerdicts.headSha, at: specOutcomeVerdicts.createdAt, textHash: specOutcomeVerdicts.criterionTextHash, evidence: specOutcomeVerdicts.evidence })
     .from(specOutcomeVerdicts)
     .where(and(eq(specOutcomeVerdicts.missionId, missionId), eq(specOutcomeVerdicts.specRevisionId, specRevisionId)))
     .orderBy(asc(specOutcomeVerdicts.createdAt));
   // A verdict on another wording does not count for this one (R-13); one recorded before wordings were kept does.
-  return rows.filter((r) => !r.textHash || r.textHash === hashes.get(r.criterionId)).map(({ textHash: _t, ...r }) => r) as MissionVerdictRow[];
+  return rows.filter((r) => !r.textHash || r.textHash === hashes.get(r.criterionId)).map(({ textHash: _t, evidence, ...r }) => ({ ...r, source: verdictSourceOfEvidence(evidence) })) as MissionVerdictRow[];
 }
 
 export type MissionSpecStanding = MissionSpecFold & { target: MissionTarget; scope: RequirementRef[]; title: string };
@@ -223,6 +224,7 @@ export async function recordMissionSpecVerdict(caller: SpecCaller, missionId: un
     headSha: headSha.toLowerCase(),
     evidence: { refs, readIds, ...(observed ? { observed } : {}), ...(reaffirms ? { reaffirms } : {}), recordedBy },
   }).returning({ id: specOutcomeVerdicts.id });
+  await settleVerdictSource(row.id);
   return { ok: true, verdictId: row.id, standing: await readMissionSpecStanding(mission, c, api) };
 }
 
@@ -254,6 +256,7 @@ export async function recordMissionVerdictServer(missionId: string, input: {
     headSha: input.headSha.toLowerCase(),
     evidence: { ...input.evidence, recordedBy: input.recordedBy },
   }).returning({ id: specOutcomeVerdicts.id });
+  await settleVerdictSource(row.id);
   return { ok: true, verdictId: row.id };
 }
 

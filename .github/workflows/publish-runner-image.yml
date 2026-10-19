@@ -260,10 +260,12 @@ jobs:
       # Cloudflare Containers pulls from its own registry, Docker Hub, ECR and
       # Google Artifact Registry, not GHCR, so a server-side cloud runner
       # deploy (Settings → Runners → Cloudflare → Deploy) needs a public Docker
-      # Hub copy. Optional: set the repo variable DOCKERHUB_IMAGE
-      # (<namespace>/<repo>) and the secrets DOCKERHUB_USERNAME and
-      # DOCKERHUB_TOKEN. Without them the release bundle records no image and
-      # that deploy stops at its container step, saying so.
+      # Hub copy. Required: the repo variable DOCKERHUB_IMAGE
+      # (<namespace>/<repo>, a public repository) and the secrets
+      # DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (read/write access token).
+      # Without them this run fails and no release bundle is attached: a bundle
+      # with no image is one no owner can deploy. The GHCR push above has
+      # already happened; rerun this job once the mirror is configured.
       - name: Mirror to Docker Hub
         id: dockerhub
         env:
@@ -273,9 +275,13 @@ jobs:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${DOCKERHUB_IMAGE:-}" ] || [ -z "${DOCKERHUB_USERNAME:-}" ] || [ -z "${DOCKERHUB_TOKEN:-}" ]; then
-            echo "::warning::No Docker Hub mirror (DOCKERHUB_IMAGE, DOCKERHUB_USERNAME, DOCKERHUB_TOKEN). The Settings Deploy button cannot deploy this release's runner."
-            exit 0
+          MISSING=""
+          [ -n "${DOCKERHUB_IMAGE:-}" ] || MISSING="$MISSING variable DOCKERHUB_IMAGE,"
+          [ -n "${DOCKERHUB_USERNAME:-}" ] || MISSING="$MISSING secret DOCKERHUB_USERNAME,"
+          [ -n "${DOCKERHUB_TOKEN:-}" ] || MISSING="$MISSING secret DOCKERHUB_TOKEN,"
+          if [ -n "$MISSING" ]; then
+            echo "::error::No Docker Hub mirror: set the repo${MISSING%,}. Cloudflare cannot pull GHCR, so without it ${TAG}'s cloud runner cannot be deployed from Settings. Rerun this job once they are set."
+            exit 1
           fi
           echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
           docker tag "$IMAGE:$TAG" "docker.io/$DOCKERHUB_IMAGE:$TAG"
@@ -318,5 +324,5 @@ jobs:
         run: |
           set -euo pipefail
           OUT="$RUNNER_TEMP/cloud-runner-$TAG.json"
-          bun apps/cloud-runner/scripts/build-release-bundle.ts --tag "$TAG" --out "$OUT" ${DOCKERHUB_REF:+--image "$DOCKERHUB_REF"}
+          bun apps/cloud-runner/scripts/build-release-bundle.ts --tag "$TAG" --out "$OUT" --image "$DOCKERHUB_REF"
           gh release upload "$TAG" "$OUT" --clobber --repo "$GITHUB_REPOSITORY"

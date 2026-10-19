@@ -46,7 +46,6 @@ import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MAX_CONFLICT_ITERATIONS, isAutoResolveMergeConflictsEnabled } from '@/lib/conflict-retry';
-import HomeAutoRefresh from './HomeAutoRefresh';
 import { Suspense } from 'react';
 import PrActionSheet from './PrActionSheet';
 import { parsePrParam, prSheetSignInHref } from './pr-sheet';
@@ -58,8 +57,8 @@ import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveRev
 import type { ReviewerGateResult, ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
-import { HomeBody } from './HomeBody';
-import { groupQuietCauses, quietCauseOf, selectHomeMilestones, type MissionDeliveryRow, type QuietMissionCause } from '@/lib/delivery-projection';
+import HomeLive, { type HomeRegion } from './HomeLive';
+import { deliveryAtRead, groupQuietCauses, quietCauseOf, selectHomeMilestones, type MissionDeliveryRow, type QuietMissionCause } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
 import type { HomeListedMission } from '@/lib/home-attention';
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
@@ -193,6 +192,14 @@ export default async function HomePage({
   const filteredActionQueue = initFilter
     ? view.actionQueue.filter((i) => i.initiativeId === initFilter)
     : view.actionQueue;
+  // What a live event re-reads (HomeLive): the queue and the moving missions.
+  // Everything else on the page stays as this render drew it.
+  async function loadRegion(): Promise<HomeRegion | null> {
+    'use server';
+    const viewer = await getCurrentUser();
+    if (!viewer) return null;
+    return homeRegionOf(await loadHomeView(viewer.id, { wsFilter: wsFilter ?? null, now: Date.now() }), initFilter);
+  }
   // One ordered getting-started list (lib/getting-started.ts), from real data.
   // Shown until a runner, an agent key and a task that succeeded all exist; a lookup that
   // did not run or failed never shows it.
@@ -206,7 +213,8 @@ export default async function HomePage({
   const showGettingStarted = gettingStarted?.visible === true;
 
   // The one list of what needs you, at every width: the headline counts it.
-  const { items: attention, inProgress: reviewsInProgress } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: view.listed, questions: view.questions, held: view.held, isActionable: isActionableChip, status: view.serviceStatus.needsYou });
+  const region = homeRegionOf(view, initFilter);
+  const attention = region.items;
   const { chatPlacement, chatTeamId, teamWorkspaces } = view;
   // Chat is where work starts, and it has its own tab. On a phone a team with
   // chat keeps the composer under the headline; desktop gets one quiet link.
@@ -243,12 +251,10 @@ export default async function HomePage({
       )}
     </>
   ) : null;
-  const counts = { openMissions: view.openMissions, executingMissions: 0, liveAgents: 0, slots: { used: 0, total: 0 } };
   const { discrepancyOverflowCount } = view;
 
   return (
     <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
-      <HomeAutoRefresh workspaceIds={view.refreshWorkspaceIds} />
       {sheetPr && user && (
         <Suspense fallback={null}>
           <PrActionSheet prNumber={sheetPr} token={prToken} userId={user.id} />
@@ -269,17 +275,13 @@ export default async function HomePage({
           <ModelUpgradeNotice teamId={view.modelUpgradeTeamId} />
         </div>
       )}
-      <div className="mx-auto max-w-[1320px]">
-        <HomeBody
-          items={attention}
+      <HomeLive
+          region={region}
+          load={loadRegion}
+          workspaceIds={view.refreshWorkspaceIds}
           ask={ask}
           setup={setup}
           runnerConnected={view.runnerConnected}
-          counts={counts}
-          milestones={view.milestones}
-          quietMissions={view.quietMissions}
-          quietCauses={view.quietCauses}
-          inProgress={reviewsInProgress}
           agents={view.agents ? (
             // The fleet lanes and the day's occupancy stream in after the page shows (R-12).
             <Suspense fallback={<section data-testid="home-agents" aria-busy="true" style={{ gridArea: 'agents' }} className="min-w-0 min-h-24" />}>
@@ -301,9 +303,22 @@ export default async function HomePage({
             </p>
           )}
         />
-      </div>
     </main>
   );
+}
+
+/** The data HomeBody renders from, derived from one load: also what a live event re-reads. */
+function homeRegionOf(view: HomeView, initFilter: string | undefined): HomeRegion {
+  const queue = initFilter ? view.actionQueue.filter((i) => i.initiativeId === initFilter) : view.actionQueue;
+  const { items, inProgress } = deriveHomeNeedsYou({ queue, missions: view.listed, questions: view.questions, held: view.held, isActionable: isActionableChip, status: view.serviceStatus.needsYou });
+  return {
+    items,
+    inProgress,
+    counts: { openMissions: view.openMissions, executingMissions: 0, liveAgents: 0, slots: { used: 0, total: 0 } },
+    milestones: view.milestones,
+    quietMissions: view.quietMissions,
+    quietCauses: view.quietCauses,
+  };
 }
 
 /**
@@ -1025,8 +1040,8 @@ function applyMissions(view: HomeView, input: {
   view.quietCauses = groupQuietCauses(causes);
   view.quietMissions = view.quietCauses.reduce((n, c) => n + c.count, 0);
   view.milestones = selectHomeMilestones([
-    ...input.moving.map(m => ({ ...m.home.delivery, open: open(m) })),
-    ...liveOpen.map(m => m.home.delivery),
+    ...input.moving.map(m => ({ ...deliveryAtRead(m.home.delivery, now), open: open(m) })),
+    ...liveOpen.map(m => deliveryAtRead(m.home.delivery, now)),
   ]);
 
   const recentDone = (m: MissionReading) => m.status === 'completed' && isRecentlyDelivered({ completedAt: m.completedAt }, now, RECENT_DONE_MS);

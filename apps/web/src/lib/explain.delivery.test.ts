@@ -74,7 +74,7 @@ mock.module('@/lib/mission-pr', () => ({ evaluateMissionWorkState: mock(async ()
 mock.module('@/lib/runner-heartbeats', () => ({ loadBrowserRunnerHeartbeats: mock(async () => []) }));
 
 // Imported AFTER the mocks (as explain.test.ts does).
-import { explainMission, explainTask } from './explain';
+import { explainMission, explainPr, explainTask } from './explain';
 
 const MERGED_AT = new Date('2026-10-01T00:00:00.000Z');
 
@@ -184,5 +184,64 @@ describe('AC-26: a worker row that says merged, a delivery that says in review',
     taskRows[0]!.workers[0] = worker({ prNumber: 7, prUrl: 'https://github.com/acme/app/pull/7', prLifecycleStatus: 'pr_open' });
     const answer = (await explainTask('task-1', { userId: 'u' }))!.subjects[0]!;
     expect(answer.because.some(b => b.derivedFrom === 'DeliveryView.state vs workers.mergedAt')).toBe(false);
+  });
+});
+
+/**
+ * Task fa37ed4b (#4996): a PR resolves to its newest worker, which is the last
+ * review-fix attempt's. That attempt owns no delivery, so explain read its
+ * worker columns (completed, PR unmerged) as "ready to merge" while the kernel
+ * held the PR ESCALATED after a third request for changes.
+ */
+describe('a fix attempt of a delivery whose latest verdict is request-changes is never ready to merge', () => {
+  const PR = 42;
+  const prUrl = `https://github.com/acme/app/pull/${PR}`;
+  const rc = (round: number, head: string) => ({
+    id: `r${round}`, round, head_sha: head, kind: 'full', status: 'decided', verdict: 'request_changes', effective_verdict: 'request_changes', failure_count: 0,
+  });
+
+  beforeEach(() => {
+    missionRow = { id: 'mission-1', title: 'Kernel', workspaceId: 'ws-1', status: 'active', schedule: null };
+    taskRows = [
+      task({ id: 'owner', workers: [worker({ id: 'wo', prNumber: PR, prUrl, prLifecycleStatus: 'pr_open' })] }),
+      task({ id: 'fix', title: '[builder · after review #2] Wire the route', taskClass: 'attempt', parentTaskId: 'owner',
+        workers: [worker({ id: 'wf', prNumber: PR, prUrl, prLifecycleStatus: 'pr_open' })] }),
+    ];
+    const row = deliveryRow('owner', PR, 'ESCALATED', { state_reason: 'review_exhausted', current_round: 3, current_head_sha: 'H3' });
+    row.rounds = [rc(1, 'H1'), rc(2, 'H2'), rc(3, 'H3')];
+    row.last_transition = { command: 'ReviewVerdictRecorded', from_state: 'AWAITING_REVIEW', to_state: 'ESCALATED', evidence: {}, created_at: '2026-10-17T13:38:18.043Z' };
+    row.attempt_tasks = [
+      { id: 'owner', role: 'owner', status: 'completed', created_at: '2026-01-01T00:00:00.000Z' },
+      { id: 'fix', role: 'fix', status: 'completed', created_at: '2026-01-02T00:00:00.000Z' },
+    ];
+    deliveryRows = [row];
+  });
+
+  const notReady = (answer: { state: string; waitingOn: unknown; situation: unknown; because: Array<{ claim: string }> }) => {
+    expect(answer.state).not.toBe('awaiting_merge');
+    expect((answer.waitingOn as { kind?: string } | null)?.kind).not.toBe('merge');
+    expect(JSON.stringify([answer.waitingOn, answer.situation, answer.because.map(b => b.claim)])).not.toMatch(/ready to merge|has not merged/i);
+  };
+
+  it('explain on the attempt reads its PR from the delivery', async () => {
+    const answer = (await explainTask('fix', { userId: 'u' }))!.subjects[0]!;
+    notReady(answer);
+    expect(answer.delivery).toMatchObject({ state: 'ESCALATED', needsYou: true });
+  });
+
+  it('explain on the PR answers for the delivery owner, not the attempt its newest worker ran', async () => {
+    const answer = (await explainPr({
+      id: 'wf', taskId: 'fix', workspaceId: 'ws-1', prNumber: PR, prUrl, branch: null, prBaseRef: 'dev', prLifecycleStatus: 'pr_open',
+      conflictDetectedAt: null, prOpenedBaseSha: null, mergedAt: null, observedTouches: null, createdAt: null,
+    }, { userId: 'u' }))!.subjects[0]!;
+    notReady(answer);
+    expect(answer.subject).toMatchObject({ scope: 'pr', id: String(PR), taskId: 'owner', prNumber: PR });
+    expect(answer.delivery).toMatchObject({ state: 'ESCALATED', needsYou: true });
+  });
+
+  it('the owner itself still reads the escalation', async () => {
+    const answer = (await explainTask('owner', { userId: 'u' }))!.subjects[0]!;
+    notReady(answer);
+    expect(answer.delivery).toMatchObject({ state: 'ESCALATED' });
   });
 });

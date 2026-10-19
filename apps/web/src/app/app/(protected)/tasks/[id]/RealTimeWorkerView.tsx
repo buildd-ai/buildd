@@ -1,7 +1,7 @@
 'use client';
 
 import { resolvePrDisplayState, type PrDisplayState } from '@/lib/pr-presentation';
-import { isOpenAsk } from '@/lib/open-ask';
+import { isOpenAsk, recoveredRepairTaskId } from '@/lib/open-ask';
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
@@ -12,6 +12,8 @@ import NowStrip, { PausedBar } from './NowStrip';
 import StatRow, { formatTokens } from './StatRow';
 import TaskQuestion from '@/components/tasks/TaskQuestion';
 import { buildAgentTree, flattenAgentTree, type AgentProgressEntry } from '@/lib/agent-tree';
+import { useRegionRefresher, useRegionValue } from '@/components/LiveRegion';
+import type { TaskLiveRegion } from '@/lib/task-live-region';
 import { requestRefresh, flushRefresh } from './coalesced-refresh';
 import { formatElapsed } from './format-elapsed';
 import { deriveNow, touchedFiles, countToolCalls, formatOffset } from './task-activity';
@@ -146,12 +148,17 @@ interface Props {
 // trees can be reconstructed; see @/lib/agent-tree.
 type TaskProgressEntry = AgentProgressEntry;
 
-export default function RealTimeWorkerView({ initialWorker, outputRequirement, deliverableArtifactCount, usesReviewer, reviewState, taskId, taskStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp, delivery = null, focusAnswer = false, refresh }: Props) {
+export default function RealTimeWorkerView({ initialWorker: renderedWorker, outputRequirement, deliverableArtifactCount, usesReviewer, reviewState, taskId, taskStatus: renderedStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp, delivery = null, focusAnswer = false, refresh }: Props) {
+  // On the task page a live event re-reads the worker and the task's status
+  // (LiveData); a read of this worker wins over what the page rendered.
+  const region = useRegionValue<TaskLiveRegion>();
+  const initialWorker = region?.worker?.id === renderedWorker.id ? region.worker : renderedWorker;
+  const taskStatus = region && region.worker?.id === renderedWorker.id ? region.taskStatus : renderedStatus;
   const questionRef = useRef<HTMLDivElement>(null);
   // Once, on the first render that shows the question: a later refresh never
   // pulls focus back from wherever the reader went.
   const focusedAnswerRef = useRef(false);
-  const nextRouter = useRouter();
+  const nextRouter = useRegionRefresher(useRouter());
   const router = useMemo(() => (refresh ? { refresh } : nextRouter), [refresh, nextRouter]);
   const [worker, setWorker] = useState<LiveWorker>(initialWorker);
   useEffect(() => {
@@ -307,9 +314,26 @@ export default function RealTimeWorkerView({ initialWorker, outputRequirement, d
     return (
       <div data-testid="worker-view" data-state="platform-owned" className="space-y-5">
         <div data-testid="worker-platform-owned-banner" className="border border-border-strong px-4 py-3">
-          <p className="font-mono text-[11px] text-text-muted">buildd is handling this</p>
+          <p className="font-mono text-chip text-text-muted">buildd is handling this</p>
           <p className="mt-1 text-sm font-semibold text-text-primary">{delivery.headline}</p>
           {delivery.detail && <p className="mt-1 text-sm text-text-secondary">{delivery.detail}</p>}
+        </div>
+      </div>
+    );
+  }
+
+  // Parked `recovered`: the gate filed a repair instead of asking, and the
+  // task resumes when it completes. Nothing here for a person to answer.
+  const repairTaskId = isOpenAsk(taskStatus, worker.status) ? recoveredRepairTaskId(worker.waitingFor) : null;
+  if (repairTaskId) {
+    return (
+      <div data-testid="worker-view" data-state="recovered" className="space-y-5">
+        <div data-testid="worker-recovered-banner" className="border border-border-strong px-4 py-3">
+          <p className="font-mono text-chip text-text-muted">buildd is handling this</p>
+          <p className="mt-1 text-sm font-semibold text-text-primary">
+            Waiting on <a href={`/app/tasks/${repairTaskId}`} className="underline hover:no-underline">repair task {repairTaskId.slice(0, 8)}</a>
+          </p>
+          <p className="mt-1 text-sm text-text-secondary">A platform problem stopped this task. It resumes when the repair completes.</p>
         </div>
       </div>
     );

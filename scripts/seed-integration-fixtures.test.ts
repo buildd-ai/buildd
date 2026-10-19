@@ -14,7 +14,7 @@ type Account = { id: string; api_key: string; team_id: string | null; level: str
 function fakeDb() {
   const teams: Array<{ id: string; slug: string }> = [];
   const accounts: Account[] = [];
-  const workspaces: Array<{ id: string; team_id: string; name: string }> = [];
+  const workspaces: Array<{ id: string; team_id: string; name: string; git_config?: Record<string, unknown> }> = [];
   const links: Array<{ account_id: string; workspace_id: string; can_create: boolean }> = [];
   let nextId = 1;
   const newId = () => `id-${nextId++}`;
@@ -51,6 +51,12 @@ function fakeDb() {
       const [teamId] = values as string[];
       const row = { id: newId(), team_id: teamId, name: 'integration-test-workspace' };
       workspaces.push(row);
+      return [{ id: row.id }];
+    }
+    if (text.includes('UPDATE workspaces')) {
+      const row = workspaces.find(w => w.id === values[0]);
+      if (!row || row.git_config?.isolationPolicy === 'trusted_local') return [];
+      row.git_config = { ...row.git_config, isolationPolicy: 'trusted_local' };
       return [{ id: row.id }];
     }
     if (text.includes('INSERT INTO account_workspaces')) {
@@ -194,6 +200,7 @@ describe('seedFixtures', () => {
       if (text.includes('INSERT INTO accounts')) return [];
       if (text.includes('SELECT id FROM workspaces')) return [];
       if (text.includes('INSERT INTO workspaces')) return [{ id: 'workspace-1' }];
+      if (text.includes('UPDATE workspaces')) return [];
       if (text.includes('INSERT INTO account_workspaces')) return [{ account_id: 'raced-in-1' }, { account_id: 'raced-in-2' }];
       throw new Error(`unhandled query: ${text}`);
     };
@@ -202,4 +209,14 @@ describe('seedFixtures', () => {
 
     expect(result).toEqual({ seeded: true });
   });
+});
+
+test('fixture workspace explicitly permits trusted local execution on new and repeated seeds', async () => {
+  const db = fakeDb();
+  await seedFixtures(db.sql, API_KEY, ADMIN_API_KEY);
+  expect(db.workspaces[0].git_config?.isolationPolicy).toBe('trusted_local');
+  db.workspaces[0].git_config = { isolationPolicy: 'protected', baseBranch: 'dev' };
+  await seedFixtures(db.sql, API_KEY, ADMIN_API_KEY);
+  expect(db.workspaces[0].git_config).toEqual({ isolationPolicy: 'trusted_local', baseBranch: 'dev' });
+  expect(await seedFixtures(db.sql, API_KEY, ADMIN_API_KEY)).toEqual({ seeded: false });
 });

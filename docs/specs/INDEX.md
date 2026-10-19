@@ -171,7 +171,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### tasks (18)
 
-- [Agent Question Protocol](./agent-question-protocol.md) · @max — verified 2026-10-17
+- [Agent Question Protocol](./agent-question-protocol.md) · @max — verified 2026-10-19
   An agent question MUST include an actionable brief, pass the question gate and park only when human input is required.
 - [Artifacts and Sharing](./artifacts-and-sharing.md) · @max — verified 2026-10-12
   Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.
@@ -232,7 +232,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 - [Workflow Kernel Library and Single Host](./workflow-kernel-library.md) · @max — verified 2026-10-18
   Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
-- [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-13
+- [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-19
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 
 ## Superseded (7)

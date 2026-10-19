@@ -8,6 +8,7 @@
  * Pure and client-safe.
  */
 import type { MissionBoardModel } from './mission-board';
+import { displayTaskTitle } from './task-title';
 
 export type FeedEventKind =
   | 'filed' | 'plan' | 'claim' | 'pr' | 'merged' | 'done' | 'question' | 'answered' | 'failed' | 'friction' | 'mission';
@@ -27,8 +28,16 @@ export interface FeedEvent {
   at: number;
   /** `09:14`, in the team's zone. */
   time: string;
-  /** Who or what: a task's scope/label, "orchestrator", "you", "mission". */
+  /** Who or what: a task's scope/label, "orchestrator", "you", "mission". Secondary context, never the headline. */
   actor: string;
+  /**
+   * The headline: the task's own title from the board model (its source), or
+   * a plain event-type fallback when the task has none. Never generated text;
+   * a conventional-commit scope such as `kernel` or `copy` is `actor`, not this.
+   */
+  title: string;
+  /** A retry claim: History draws the retry glyph for it. */
+  retry?: boolean;
   detail: string;
   /** Opens the task's sheet. */
   taskId: string | null;
@@ -71,9 +80,15 @@ function hhmm(ms: number, tz: string | undefined): string {
 
 const clip = (s: string, n = 90) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
+/** What a row says when nothing in the source names its subject. */
+const FALLBACK_TITLE: Record<FeedEventKind, string> = {
+  filed: 'Mission filed', plan: 'Orchestrator', claim: 'Task', pr: 'Task', merged: 'Pull request', done: 'Task',
+  question: 'Question for you', answered: 'Your answer', failed: 'Task', friction: 'Friction report', mission: 'Mission',
+};
+
 export function buildMissionEventFeed({ model, notes = [], completionText = null, timeZone }: MissionEventFeedInput): FeedDay[] {
   const tz = timeZone ?? undefined;
-  const raw: Array<Omit<FeedEvent, 'time'>> = [];
+  const raw: Array<Omit<FeedEvent, 'time' | 'title'>> = [];
   const tagOf = (taskId: string | null) => {
     const t = taskId ? model.tasks[taskId] : undefined;
     return t ? t.scope ?? t.label : null;
@@ -95,7 +110,7 @@ export function buildMissionEventFeed({ model, notes = [], completionText = null
       continue;
     }
     const tag = tagOf(b.taskId) ?? b.scope ?? b.label;
-    raw.push({ id: `claim:${b.id}`, kind: 'claim', at: b.start, actor: tag, detail: `${b.retry ? `${b.label} ` : ''}claimed by ${b.runner}`, taskId: b.taskId, nest: !!b.retry });
+    raw.push({ id: `claim:${b.id}`, kind: 'claim', at: b.start, actor: tag, detail: `${b.retry ? `${b.label} ` : ''}claimed by ${b.runner}`, taskId: b.taskId, nest: !!b.retry, retry: !!b.retry });
     if (b.tone === 'stopped' && b.end != null) {
       raw.push({ id: `stop:${b.id}`, kind: 'failed', at: b.end, actor: tag, detail: 'run stopped without a PR', taskId: b.taskId, nest: true });
     }
@@ -128,23 +143,40 @@ export function buildMissionEventFeed({ model, notes = [], completionText = null
     raw.push({ id: 'mission', kind: 'mission', at: model.endedAt, actor: 'mission', detail: completionText ? `completed · ${clip(completionText.split('\n')[0], 160)}` : 'completed', taskId: null });
   }
 
-  raw.sort((a, b) => a.at - b.at || KIND_ORDER[a.kind] - KIND_ORDER[b.kind]);
+  const titled: Array<Omit<FeedEvent, 'time'>> = raw.map(e => {
+    const source = e.taskId ? model.tasks[e.taskId]?.title : null;
+    const own = source ? displayTaskTitle(source) : '';
+    return { ...e, title: own || FALLBACK_TITLE[e.kind] };
+  });
+  titled.sort((a, b) => a.at - b.at || KIND_ORDER[a.kind] - KIND_ORDER[b.kind]);
 
-  const days: FeedDay[] = [];
+  return groupIntoDays(titled, model.now, tz).map(d => ({
+    key: d.key, label: d.label, quietDays: d.quietDays,
+    events: d.items.map(e => ({ ...e, time: hhmm(e.at, tz) })),
+  }));
+}
+
+export interface DayGroup<T> { key: string; label: string; quietDays: number; items: T[] }
+
+/** Items (any with an `at`, already in time order) grouped by the zone's calendar day, with the quiet stretch before each. */
+export function groupIntoDays<T extends { at: number }>(items: readonly T[], now: number, tz: string | undefined): DayGroup<T>[] {
+  const days: DayGroup<T>[] = [];
   let prevDayStart: number | null = null;
-  for (const e of raw) {
+  for (const e of items) {
     const key = dayKey(e.at, tz);
     let day = days[days.length - 1];
     if (!day || day.key !== key) {
       const start = Date.parse(`${key}T00:00:00Z`);
-      day = { key, label: dayLabel(e.at, model.now, tz), quietDays: prevDayStart == null ? 0 : Math.max(0, Math.round((start - prevDayStart) / DAY_MS) - 1), events: [] };
+      day = { key, label: dayLabel(e.at, now, tz), quietDays: prevDayStart == null ? 0 : Math.max(0, Math.round((start - prevDayStart) / DAY_MS) - 1), items: [] };
       prevDayStart = start;
       days.push(day);
     }
-    day.events.push({ ...e, time: hhmm(e.at, tz) });
+    day.items.push(e);
   }
   return days;
 }
+
+export { hhmm as formatClock };
 
 /** Tie-break for events at the same instant: the order they happen in. */
 const KIND_ORDER: Record<FeedEventKind, number> = {

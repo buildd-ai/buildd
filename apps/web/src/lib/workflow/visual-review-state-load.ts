@@ -6,14 +6,14 @@
  * writers stay `ensureMissionSurfaceAudit` / `requestMissionSurfaceAudit`.
  */
 import 'server-only';
-import { and, desc, eq, inArray, like, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, like, or, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { sqlWhere, sqlOrderBy } from '@buildd/core/db/relational-sql';
 import { isTerminalTaskStatus } from '@buildd/shared';
 import { missions, tasks as tasksTable, workflowDeliveries, workspaces } from '@buildd/core/db/schema';
-import { SURFACE_AUDIT_TITLE_PREFIX, surfaceAuditRound } from '@buildd/core/surface-audit';
+import { SURFACE_AUDIT_TITLE_PREFIX, isMissionAuditTask, surfaceAuditRound } from '@buildd/core/surface-audit';
 import { dependencyFailureOf } from '@buildd/core/dependency-failure';
-import { visualReviewPolicyOf } from '@buildd/shared';
+import { visualReviewPolicyOf, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, loadSurfaceAuditWaiver, type SurfaceAuditGateTask } from '@/lib/mission-surface-audit-gate';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import type { VisualReviewModel } from '@buildd/shared';
@@ -56,7 +56,7 @@ export async function loadMissionAuditLedgers(missionIds: readonly string[]): Pr
       createdAt: tasksTable.createdAt,
     })
     .from(tasksTable)
-    .where(and(inArray(tasksTable.missionId, [...missionIds]), like(tasksTable.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`)))
+    .where(and(inArray(tasksTable.missionId, [...missionIds]), or(like(tasksTable.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`), eq(tasksTable.roleSlug, VISUAL_AUDITOR_ROLE_SLUG))))
     .orderBy(desc(tasksTable.createdAt));
   for (const r of rows) {
     if (!r.missionId) continue;
@@ -162,7 +162,7 @@ export async function getMissionVisualReviewState(
     }
   }
 
-  const uiBuilders = tasks.filter(t => t.taskClass === 'work' && t.roleSlug !== 'visual-auditor');
+  const uiBuilders = tasks.filter(t => t.taskClass === 'work' && !isMissionAuditTask(t));
   const ledger = opts.ledger ?? await loadMissionAuditLedger(missionId);
   const latestAudit = ledger.find(a => a.id === model.audit?.id) ?? null;
   const failedOnHead = headSha ? ledger.filter(a => a.status === 'failed' && !a.dependencyFailed && a.headSha === headSha).length : 0;
