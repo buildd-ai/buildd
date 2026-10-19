@@ -12,6 +12,7 @@ import {
   determiningVerdict, foldGovernedOutcome, verdictSourceOf, verifiedByOf, verifiedByOfEvidence,
 } from '../../../../packages/spec-contract/src/outcome';
 import { HEAD, OLD, review, test_ } from './fixtures/verdict-cases';
+import { classifyBaseline, type BaselineVerdict } from '../../src/lib/baseline-validator';
 
 /** A baseline verdict: taken on the base head (OLD), ranked as a review. */
 const baseline = (c: string, v: Parameters<typeof review>[1], at: number, h: string | null = OLD) => review(c, v, at, h);
@@ -106,5 +107,44 @@ describe('regression: passes at baseline, fails on the branch', () => {
   it('a later fix restores the criterion', () => {
     const out = foldGovernedOutcome(['R-1'], [baseline('R-1', 'pass', 1), test_('R-1', 'fail', 2), test_('R-1', 'pass', 3)], HEAD);
     expect(out.outcome).toBe('verified');
+  });
+});
+
+describe('classifyBaseline', () => {
+  const base = (c: string, v: Parameters<typeof review>[1], at: number): BaselineVerdict => ({ ...baseline(c, v, at), verifiedBy: 'baseline' });
+  const state = (rows: BaselineVerdict[], ids = ['R-1']) => classifyBaseline(ids, rows).map((c) => c.state);
+
+  it('empty inputs classify nothing, or everything as no-baseline', () => {
+    expect(classifyBaseline([], [])).toEqual([]);
+    expect(state([])).toEqual(['no-baseline']);
+  });
+
+  it('branch rows without a baseline are no-baseline', () => {
+    expect(state([test_('R-1', 'fail', 1)])).toEqual(['no-baseline']);
+  });
+
+  it('an inconclusive baseline is no baseline', () => {
+    expect(state([base('R-1', 'inconclusive', 1)])).toEqual(['no-baseline']);
+  });
+
+  it('red at baseline stays baseline-red until the branch passes it', () => {
+    expect(state([base('R-1', 'fail', 1)])).toEqual(['baseline-red']);
+    expect(state([base('R-1', 'fail', 1), test_('R-1', 'fail', 2)])).toEqual(['baseline-red']);
+    expect(state([base('R-1', 'fail', 1), test_('R-1', 'pass', 2)])).toEqual(['fixed']);
+  });
+
+  it('green at baseline is already-satisfied, not regressed', () => {
+    expect(state([base('R-1', 'pass', 1)])).toEqual(['already-satisfied']);
+    expect(state([base('R-1', 'pass', 1), test_('R-1', 'pass', 2)])).toEqual(['already-satisfied']);
+  });
+
+  it('passes at baseline, fails on the branch: regressed', () => {
+    const [c] = classifyBaseline(['R-1'], [base('R-1', 'pass', 1), test_('R-1', 'fail', 2)]);
+    expect(c).toEqual({ criterionId: 'R-1', state: 'regressed', branch: 'fail' });
+  });
+
+  it('a test outranks a later review, and criteria are independent', () => {
+    expect(state([base('R-1', 'pass', 1), test_('R-1', 'fail', 2), review('R-1', 'pass', 3)])).toEqual(['regressed']);
+    expect(state([base('R-1', 'fail', 1), base('R-2', 'pass', 1), test_('R-2', 'fail', 2)], ['R-1', 'R-2'])).toEqual(['baseline-red', 'regressed']);
   });
 });
