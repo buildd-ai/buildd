@@ -1282,7 +1282,7 @@ export async function cleanupStuckWaitingInput(
       .set({
         status: 'failed',
         error: superseded
-          ? `${SUPERSEDED_BY_RECOVERY}: the failure this question was about is owned by an incident's recovery; the question is kept as history`
+          ? `${SUPERSEDED_BY_RECOVERY}: the failure this question was about is owned by a recovery (an incident's, or the repair task it was parked on); the question is kept as history`
           : interactive && !fileRetry
             ? `Question from an interactive session went unanswered for ${hours}+ hours; the task was not retried on a runner. Claim it again from your session, or retry it from the task page.`
             : `Worker timed out waiting for user input (${hours}+ hours)`,

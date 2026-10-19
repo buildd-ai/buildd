@@ -225,6 +225,12 @@ export interface LocalWorker {
    * recorded tool call (see `lastToolWasDeniedByRunner`).
    */
   lastToolDenial?: { toolUseId?: string; kind: string; runnerAttributed: boolean; ts: number };
+  /**
+   * The agent's latest `complete_task` call and whether it failed on the
+   * transport (completion-replay.ts). A transient failure is replayed by the
+   * runner at session end instead of being read as a session that delivered nothing.
+   */
+  lastCompleteTaskAttempt?: import('./completion-replay').CompleteTaskAttempt;
   output: string[];  // Recent output lines
   toolCalls: ToolCall[];  // Track tool calls for post-execution summary
   messages: ChatMessage[];  // Unified chronological timeline
