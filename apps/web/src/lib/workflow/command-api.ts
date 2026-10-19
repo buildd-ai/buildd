@@ -621,12 +621,20 @@ async function execute(cmd: CommandRequest, token: string, ledger: CommandLedger
   }
 }
 
+/**
+ * Commands whose effect drain runs after the answer is stored, not inside the command: their effects
+ * (a reviewer dispatch, a CI-fix task filed from the failure logs, a GitHub comment) are durable rows
+ * that a slow GitHub call must not hold the caller's request open for. `attempt_ended` and
+ * `observe_ci_failure` ran 6-10 s on the control plane with the drain inline.
+ */
+const DEFERRED_DRAIN_OPS: ReadonlySet<string> = new Set(['request_review', 'record_review_verdict', 'attempt_ended', 'observe_ci_failure']);
+
 async function executeHeld(cmd: CommandRequest, token: string, ledger: CommandLedger, deps: CommandServerDeps, host: 'control-plane' | 'web'): Promise<Response> {
   let result: unknown;
   let drains = new Map<string, () => Promise<unknown>>();
   try {
     const run = () => (deps.run ?? runKernelOp)(cmd.op, cmd.input as never);
-    if (cmd.op === 'request_review' || cmd.op === 'record_review_verdict') {
+    if (DEFERRED_DRAIN_OPS.has(cmd.op)) {
       const deferred = await withDeferredEffectDrains(run);
       result = deferred.value;
       drains = deferred.drains;

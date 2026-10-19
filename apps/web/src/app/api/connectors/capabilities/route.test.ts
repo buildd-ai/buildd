@@ -71,6 +71,16 @@ describe('GET /api/connectors/capabilities', () => {
     expect(mockLoadDiscoveryInput).toHaveBeenCalledWith(WORKSPACE_ID, 'builder');
   });
 
+  it('shows one provider at an access, whatever its category', async () => {
+    const res = await GET(makeRequest({ workspaceId: WORKSPACE_ID, provider: 'axiom', access: 'write', roleSlug: 'builder' }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.capability).toBe('axiom:write');
+    expect(body.candidates).toHaveLength(1);
+    expect(body.candidates[0]).toMatchObject({ provider: { slug: 'axiom' }, access: 'permitted', risk: { requested: 'write' } });
+    expect((await GET(makeRequest({ workspaceId: WORKSPACE_ID, provider: 'axiom', access: 'query' }))).status).toBe(400);
+  });
+
   it('lists capabilities when none is named', async () => {
     const body = await (await GET(makeRequest())).json();
     expect(body.capabilities.map((c: { capability: string }) => c.capability)).toContain('observability:query');

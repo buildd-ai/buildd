@@ -35,7 +35,7 @@
  * Every candidate ends up exactly once in `selected` or `skipped`, with a reason.
  */
 
-import type { DecisionRequest, DecisionSource } from '@builddai/ai-kit/decide';
+import type { DecisionRequest, DecisionSource } from '@buildd/ai-kit/decide';
 import {
   SCOUT_PROBE_DECISIONS,
   SCOUT_PROBE_SELECTION_CONFIG,

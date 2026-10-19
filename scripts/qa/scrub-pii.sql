@@ -683,6 +683,11 @@ UPDATE visual_shot_reviews SET
   note = pg_temp.qa_text(note),
   reviewer_label = pg_temp.qa_hash('Reviewer ', reviewer_label);
 
+-- Move proposals contain task-authored reasons and evidence. Refusals carry only ids
+-- and fixed capabilities; clear both since the clone has no pending decisions.
+DELETE FROM schedule_moves;
+DELETE FROM schedule_refusals;
+
 UPDATE task_schedules ts SET
   name = pg_temp.qa_title('Schedule', s.n, ts.name),
   task_template = pg_temp.qa_json(ts.task_template),

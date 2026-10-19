@@ -31,7 +31,7 @@ import {
   type DecisionKindConfig,
   type DecisionQuestion,
   type DecisionQuestions,
-} from '@builddai/ai-kit/decide';
+} from '@buildd/ai-kit/decide';
 import { activePrompt, notePromptRejected, promptShapeMismatch, registerPrompt, resolvedPromptVersion, type ActivePrompt } from './prompts';
 
 /** Why an override's questions do not fit the default's shape, or null when they do. */

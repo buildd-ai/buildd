@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ROUTES, ROUTE_IDS } from '@builddai/ai-kit/models/routes';
-import { PROVIDER_KEY_CAPABILITIES } from '@builddai/ai-kit/models/provider-keys';
+import { ROUTES, ROUTE_IDS } from '@buildd/ai-kit/models/routes';
+import { PROVIDER_KEY_CAPABILITIES } from '@buildd/ai-kit/models/provider-keys';
 import {
   PROVIDER_IDS,
   PROVIDER_REGISTRY,

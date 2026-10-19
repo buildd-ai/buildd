@@ -2,11 +2,11 @@
  * A refused turn comes back as JSON with a 4xx instead of a stream
  * (`ChatUnavailableResponse`). The AI SDK surfaces the body as the error's
  * message; the kit's `parseChatUnavailable` / `chatErrorLine`
- * (@builddai/ai-kit/chat/contract) read it back. buildd keeps its own words and
+ * (@buildd/ai-kit/chat/contract) read it back. buildd keeps its own words and
  * the typed fields of its refusal body. Pure.
  */
 import type { ChatUnavailableResponse } from '@buildd/shared';
-import { chatErrorLine as kitChatErrorLine, parseChatUnavailable as kitParse, type ChatErrorLines } from '@builddai/ai-kit/chat/contract';
+import { chatErrorLine as kitChatErrorLine, parseChatUnavailable as kitParse, type ChatErrorLines } from '@buildd/ai-kit/chat/contract';
 
 /** buildd's wording where a refusal carries no message of its own. */
 export const BUILDD_CHAT_ERROR_LINES: Partial<ChatErrorLines> = {

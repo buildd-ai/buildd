@@ -15,10 +15,10 @@ describe('requiredWorkspaceDirs', () => {
   test('follows workspace dependencies transitively, by package name, and ignores registry deps', () => {
     const m = new Map([
       ['apps/runner', pkg('@buildd/runner', { '@buildd/core': 'workspace:*', '@buildd/shared': 'workspace:*', zod: '^4' })],
-      ['packages/core', pkg('@buildd/core', { '@buildd/spec-contract': 'workspace:*', '@builddai/ai-kit': 'workspace:*' })],
+      ['packages/core', pkg('@buildd/core', { '@buildd/spec-contract': 'workspace:*', '@buildd/ai-kit': 'workspace:*' })],
       ['packages/shared', pkg('@buildd/shared')],
       ['packages/spec-contract', pkg('@buildd/spec-contract')],
-      ['packages/ai-kit', pkg('@builddai/ai-kit', { '@buildd/shared': 'workspace:*' })],
+      ['packages/ai-kit', pkg('@buildd/ai-kit', { '@buildd/shared': 'workspace:*' })],
       ['packages/web-only', pkg('@buildd/web-only')],
     ]);
     expect(requiredWorkspaceDirs(m)).toEqual(['packages/ai-kit', 'packages/core', 'packages/shared', 'packages/spec-contract']);

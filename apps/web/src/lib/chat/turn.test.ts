@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
-import { APPROVAL_ROW_CAP, approvalRowOutcome, CHANGED_SINCE_SHOWN, isHeldBack, isSystemDenied, ONE_CARD_PER_TURN_REASON, ROW_CAP_REASON } from '@builddai/ai-kit/chat/contract';
+import { APPROVAL_ROW_CAP, approvalRowOutcome, CHANGED_SINCE_SHOWN, isHeldBack, isSystemDenied, ONE_CARD_PER_TURN_REASON, ROW_CAP_REASON } from '@buildd/ai-kit/chat/contract';
 import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 
 // Model-tier ceilings (docs/specs/model-tier-ceilings.md): the real rule over
@@ -1605,7 +1605,7 @@ describe('one cap for the composer and the server', () => {
   it('the turn and the kit accept exactly the shared CHAT_MAX_MESSAGE_CHARS', async () => {
     const { MAX_USER_TEXT } = await import('./turn');
     const { CHAT_MAX_MESSAGE_CHARS } = await import('@buildd/shared');
-    const { DEFAULT_TURN_LIMITS } = await import('@builddai/ai-kit/chat/server');
+    const { DEFAULT_TURN_LIMITS } = await import('@buildd/ai-kit/chat/server');
     expect(MAX_USER_TEXT).toBe(CHAT_MAX_MESSAGE_CHARS);
     expect(DEFAULT_TURN_LIMITS.maxUserText).toBe(CHAT_MAX_MESSAGE_CHARS);
   });

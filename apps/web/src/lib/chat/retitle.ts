@@ -20,7 +20,7 @@
 
 import { createHash } from 'node:crypto';
 import type { UIMessage } from 'ai';
-import { titleConversation } from '@builddai/ai-kit/chat/server';
+import { titleConversation } from '@buildd/ai-kit/chat/server';
 import { recordDecision, type DecisionLedgerInput } from '@buildd/core/decision-ledger';
 import { resolveChatModel } from './models';
 import { pingConversation, replaceAutoTitle, type ConversationRow } from './store';

@@ -26,7 +26,7 @@
  * Pure (no I/O). Uses node:crypto for the fingerprint, so server-only.
  */
 import { createHash } from 'node:crypto';
-import type { DecisionRun } from '@builddai/ai-kit/decide';
+import type { DecisionRun } from '@buildd/ai-kit/decide';
 import type { ESCALATION_GATE_QUESTIONS } from './escalation-gate-decision';
 import { detectIrreversibleAction } from './question-gate';
 

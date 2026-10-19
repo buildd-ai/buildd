@@ -22,7 +22,7 @@
 
 import { hasConcretePathManifest, pathsOverlap } from '@buildd/core/path-overlap';
 import { evaluateReviewVerdictGate } from './review-verdict-gate';
-import type { DecisionVerdict } from '@builddai/ai-kit/decide';
+import type { DecisionVerdict } from '@buildd/ai-kit/decide';
 
 /** The only decision these rules ever produce: clear to start now. */
 export type EarlyReleaseDecision = 'start_now';

@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { runDecisionKind, type DecisionResponse, type DecisionRoute } from '@builddai/ai-kit/decide';
+import { runDecisionKind, type DecisionResponse, type DecisionRoute } from '@buildd/ai-kit/decide';
 import { listBuilddDecisionKinds } from '@buildd/core/decision-kinds';
 import { toDecisionLedgerInput } from '@buildd/core/decision-policy';
 import { OPT_IN_CAPABILITIES, INFERENCE_CAPABILITIES } from '@buildd/core/inference-policy';

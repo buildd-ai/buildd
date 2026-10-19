@@ -1,6 +1,6 @@
 /**
  * The docked object's state: whether it's closed and what's pinned. The
- * reducer is the kit's (`paneReducer` from @builddai/ai-kit/chat/react) over
+ * reducer is the kit's (`paneReducer` from @buildd/ai-kit/chat/react) over
  * buildd's refs; buildd keeps where Pop out goes.
  */
 import {
@@ -8,7 +8,7 @@ import {
   paneReducer as kitPaneReducer,
   type PaneAction as KitPaneAction,
   type PaneState as KitPaneState,
-} from '@builddai/ai-kit/chat/react';
+} from '@buildd/ai-kit/chat/react';
 import type { BuilddObjectRef } from './chat-contract';
 import { taskPageHref } from '@/lib/mission-task-href';
 

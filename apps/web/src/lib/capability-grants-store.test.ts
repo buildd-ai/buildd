@@ -87,7 +87,7 @@ mock.module('./connector-capabilities-store', () => ({ loadDiscoveryInput: async
 const realCaps = await import('./connector-capabilities');
 mock.module('./connector-capabilities', () => ({
   ...realCaps,
-  resolveCapability: (_i: any, cap: string) => ({ capability: cap, role: null, candidates: candidate ? [candidate] : [], operator: null, unclassifiedConnectors: [], runtime: '', summary: '' }),
+  resolveProviderAccess: (_i: any, provider: string, access: string) => ({ capability: `${provider}:${access}`, role: null, candidates: candidate ? [candidate] : [], operator: null, unclassifiedConnectors: [], runtime: '', summary: '' }),
 }));
 
 const { requestCapability, decideCapabilityRequest, authorizeCapabilityUse, capabilityGrantSource, loadGrant } = await import('./capability-grants-store');
@@ -103,7 +103,7 @@ const OTHER_WS = '55555555-5555-4555-8555-555555555555';
 const FOREIGN_WS = '66666666-6666-4666-8666-666666666666';
 const PRINCIPAL = { kind: 'agent_run' as const, via: 'task_token' as const, workerId: WORKER, taskId: TASK, workspaceId: WS, teamId: TEAM, accountId: 'acct-1' };
 const ADMIN = { userId: 'user-admin' };
-const USE = { capability: 'observability:query', provider: 'axiom', connectorId: AXIOM, tool: 'queryApl', resource: null, environment: null };
+const USE = { capability: 'axiom:read', provider: 'axiom', connectorId: AXIOM, tool: 'queryApl', resource: null, environment: null };
 
 function axiom(over: Record<string, unknown> = {}) {
   return {
@@ -133,7 +133,7 @@ beforeEach(() => {
 });
 
 async function pending() {
-  const out = await requestCapability(PRINCIPAL, ask({ capability: 'observability:query' }));
+  const out = await requestCapability(PRINCIPAL, ask({ provider: 'axiom', access: 'read' }));
   if (!out.ok || !out.grant) throw new Error('expected a pending request');
   expect(out.resolution.kind).toBe('pending_approval');
   return (await loadGrant(out.grant.id))!;
@@ -144,10 +144,10 @@ async function pending() {
 describe('requestCapability', () => {
   it('no role mounts it: a pending request, deduped on repeat and on concurrent asks', async () => {
     const [a, b] = await Promise.all([
-      requestCapability(PRINCIPAL, ask({ capability: 'observability:query' })),
-      requestCapability(PRINCIPAL, ask({ capability: 'observability:query' })),
+      requestCapability(PRINCIPAL, ask({ provider: 'axiom', access: 'read' })),
+      requestCapability(PRINCIPAL, ask({ provider: 'axiom', access: 'read' })),
     ]);
-    const c = await requestCapability(PRINCIPAL, ask({ capability: 'observability:query' }));
+    const c = await requestCapability(PRINCIPAL, ask({ provider: 'axiom', access: 'read' }));
     const ids = [a, b, c].map(o => (o.ok ? o.grant?.id : null));
     expect(new Set(ids).size).toBe(1);
     expect(T.grants).toHaveLength(1);
@@ -156,7 +156,7 @@ describe('requestCapability', () => {
 
   it('auto-grants a read another role mounts, with a TTL', async () => {
     candidate = axiom({ access: 'auto_grant', roles: { evaluated: { slug: 'builder', mounts: false }, withAccess: ['researcher'] } });
-    const out = await requestCapability(PRINCIPAL, ask({ capability: 'observability:query', ttlSeconds: 600 }));
+    const out = await requestCapability(PRINCIPAL, ask({ provider: 'axiom', access: 'read', ttlSeconds: 600 }));
     expect(out.ok && out.resolution.kind).toBe('auto_granted');
     expect(T.grants[0]).toMatchObject({ status: 'granted', decidedBy: 'policy', ttlSeconds: 600 });
     expect(T.grants[0].expiresAt.getTime()).toBeGreaterThan(Date.now());
@@ -165,7 +165,7 @@ describe('requestCapability', () => {
 
   it('blocked but installed: forbidden, nothing stored, audited', async () => {
     candidate = axiom({ access: 'forbidden', reasons: ['catalog_blocked'] });
-    const out = await requestCapability(PRINCIPAL, ask({ capability: 'observability:query' }));
+    const out = await requestCapability(PRINCIPAL, ask({ provider: 'axiom', access: 'read' }));
     expect(out.ok && out.resolution.kind).toBe('forbidden');
     expect(T.grants).toHaveLength(0);
     expect(audit.at(-1)).toMatchObject({ capability: 'capability.request', decision: 'refused', reasonCode: 'forbidden:catalog_blocked' });
@@ -173,14 +173,14 @@ describe('requestCapability', () => {
 
   it('refuses a request from an ended task', async () => {
     T.tasks[0].status = 'completed';
-    const out = await requestCapability(PRINCIPAL, ask({ capability: 'observability:query' }));
+    const out = await requestCapability(PRINCIPAL, ask({ provider: 'axiom', access: 'read' }));
     expect(out).toMatchObject({ ok: false, code: 'task_not_live' });
   });
 
   it('a denied ask is not re-opened by asking again', async () => {
     const g = await pending();
     await decideCapabilityRequest(g, 'deny', ADMIN);
-    const out = await requestCapability(PRINCIPAL, ask({ capability: 'observability:query' }));
+    const out = await requestCapability(PRINCIPAL, ask({ provider: 'axiom', access: 'read' }));
     expect(out.ok && out.resolution.kind).toBe('denied');
     expect(T.grants).toHaveLength(1);
   });
@@ -217,7 +217,7 @@ describe('decideCapabilityRequest', () => {
 
   it('an elevated (write) request can be approved by a person, not past a forbid', async () => {
     candidate = axiom({ access: 'permitted', roles: { evaluated: { slug: 'builder', mounts: true }, withAccess: ['builder'] } });
-    const out = await requestCapability(PRINCIPAL, ask({ capability: 'observability:write' }));
+    const out = await requestCapability(PRINCIPAL, ask({ provider: 'axiom', access: 'write' }));
     expect(out.ok && out.resolution.kind).toBe('pending_approval');
     const g = (await loadGrant(out.ok ? out.grant!.id : ''))!;
     T.policies = [{ id: 'r1', teamId: TEAM, provider: 'axiom', risk: 'write', workspaceId: null, roleSlug: null, environment: null, resource: null, effect: 'forbidden', maxTtlSeconds: null }];
@@ -303,7 +303,7 @@ describe('capabilityGrantSource (model.inference)', () => {
 // ── tasks:create: filing in another workspace of the team ────────────────────
 
 describe('tasks:create requests', () => {
-  const fileThere = (resource = OTHER_WS) => requestCapability(PRINCIPAL, ask({ capability: 'tasks:create', resource, reason: 'file the follow-ups the owner asked for' }));
+  const fileThere = (resource = OTHER_WS) => requestCapability(PRINCIPAL, ask({ provider: 'buildd', access: 'write', resource, reason: 'file the follow-ups the owner asked for' }));
   const delegation = () => T.tasks[0].delegation;
 
   it('asks a person, keeps the run alive, and a repeat ask is the same request', async () => {
@@ -356,9 +356,39 @@ describe('tasks:create requests', () => {
   });
 
   it('needs a workspace UUID, and never a connector', () => {
-    expect(parseCapabilityRequest({ capability: 'tasks:create' }).ok).toBe(false);
-    expect(parseCapabilityRequest({ capability: 'tasks:create', resource: 'buildd' }).ok).toBe(false);
-    expect(parseCapabilityRequest({ capability: 'tasks:create', resource: OTHER_WS, provider: 'axiom' }).ok).toBe(false);
-    expect(parseCapabilityRequest({ capability: 'tasks:create', resource: OTHER_WS, tool: 'createTask' }).ok).toBe(false);
+    expect(parseCapabilityRequest({ provider: 'buildd', access: 'write' }).ok).toBe(false);
+    expect(parseCapabilityRequest({ provider: 'buildd', access: 'write', resource: 'buildd' }).ok).toBe(false);
+    expect(parseCapabilityRequest({ resource: OTHER_WS, provider: 'axiom', access: 'write', capability: 'tasks:create' }).ok).toBe(false);
+    expect(parseCapabilityRequest({ provider: 'buildd', access: 'write', resource: OTHER_WS, tool: 'createTask' }).ok).toBe(false);
+  });
+});
+
+// ── analytics:read: reading another workspace's analytics ─────────────────────
+
+describe('analytics:read requests (provider buildd, access read)', () => {
+  const readThere = (resource = OTHER_WS) => requestCapability(PRINCIPAL, ask({ provider: 'buildd', access: 'read', resource, reason: 'compare failure rates' }));
+
+  it('is a person-decided request, never auto-granted, even though it is a read', async () => {
+    const out = await readThere();
+    expect(out.ok && out.resolution.kind).toBe('pending_approval');
+    expect(T.grants[0]).toMatchObject({ capability: 'analytics:read', provider: 'buildd', resource: OTHER_WS, risk: 'read', status: 'pending' });
+  });
+
+  it('an approval writes the task delegation, so "grant read and retry" is one action; a repeat ask is existing', async () => {
+    const out = await readThere();
+    const row = (await loadGrant(out.ok ? out.grant!.id : ''))!;
+    expect((await decideCapabilityRequest(row, 'approve', ADMIN)).ok).toBe(true);
+    expect(T.tasks[0].delegation).toMatchObject({ grants: [{ workspaceId: OTHER_WS, capabilities: ['analytics:read'] }], capabilityGrantIds: [row.id] });
+    const again = await readThere();
+    expect(again.ok && again.resolution.kind).toBe('existing');
+    await decideCapabilityRequest((await loadGrant(row.id))!, 'revoke', ADMIN);
+    expect(T.tasks[0].delegation).toBeNull();
+  });
+
+  it('another team is forbidden; the legacy capability name still maps to provider buildd', async () => {
+    const out = await readThere(FOREIGN_WS);
+    expect(out.ok && out.resolution.kind).toBe('forbidden');
+    expect(parseCapabilityRequest({ capability: 'analytics:read', resource: OTHER_WS })).toMatchObject({ ok: true, request: { provider: 'buildd', access: 'read', capability: 'analytics:read' } });
+    expect(parseCapabilityRequest({ capability: 'analytics:read', access: 'write', resource: OTHER_WS }).ok).toBe(false);
   });
 });

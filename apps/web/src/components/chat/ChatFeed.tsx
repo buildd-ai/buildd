@@ -2,7 +2,7 @@
 
 /**
  * The conversation: your messages on the right, the agent's turns on the
- * left. The list is the kit's `ChatThread` (@builddai/ai-kit/chat/react) with
+ * left. The list is the kit's `ChatThread` (@buildd/ai-kit/chat/react) with
  * `compose="turn"`: every assistant turn has the same fixed regions, so a
  * streamed word, a tool finishing or a card loading never moves what is
  * already on screen (docs/specs/chat-stream-composition.md):
@@ -40,8 +40,8 @@
  * (knowledge-base: buildd/design/chat-canvas.md). Styles: globals.css, "Thread on the kit".
  */
 import { memo, useMemo, useState } from 'react';
-import { ChatThread, ToolCallGroup, thinkingSteps, type ChatStatus, type ThreadMessageContext, type TurnFold, type TurnPhase } from '@builddai/ai-kit/chat/react';
-import type { AttachmentData, ChatMessage as KitMessage, ChatTextPart, FileData, StepData } from '@builddai/ai-kit/chat/contract';
+import { ChatThread, ToolCallGroup, thinkingSteps, type ChatStatus, type ThreadMessageContext, type TurnFold, type TurnPhase } from '@buildd/ai-kit/chat/react';
+import type { AttachmentData, ChatMessage as KitMessage, ChatTextPart, FileData, StepData } from '@buildd/ai-kit/chat/contract';
 import { AttachmentReader } from './AttachmentReader';
 import MarkdownContent from '@/components/MarkdownContent';
 import { ZonedTime } from '@/components/DisplayTimezone';

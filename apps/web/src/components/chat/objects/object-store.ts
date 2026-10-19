@@ -1,7 +1,7 @@
 /**
  * One live copy of each object the conversation references.
  *
- * The mechanism is the kit's `createObjectStore` (@builddai/ai-kit/chat/react):
+ * The mechanism is the kit's `createObjectStore` (@buildd/ai-kit/chat/react):
  * the inline card, the pinned strip and the docked pane for the same ref read
  * the same entry, so they share one fetch and one Pusher subscription and
  * can't show two states; an entry loads on first use, refetches when its
@@ -21,7 +21,7 @@ import {
   type ObjectEventEffect,
   type ObjectSource as KitObjectSource,
   type ObjectStore as KitObjectStore,
-} from '@builddai/ai-kit/chat/react';
+} from '@buildd/ai-kit/chat/react';
 import {
   classifyMissionEvent,
   createMissionLiveStore,
@@ -32,7 +32,7 @@ import { VISUAL_REVIEW_EVENT } from '@buildd/shared';
 import type { BuilddObjectRef } from '../chat-contract';
 import type { ObjectView } from './object-views';
 
-export { OBJECT_REFRESH_WINDOW_MS } from '@builddai/ai-kit/chat/react';
+export { OBJECT_REFRESH_WINDOW_MS } from '@buildd/ai-kit/chat/react';
 
 /**
  * Mission-channel events a chat object listens for on top of the mission

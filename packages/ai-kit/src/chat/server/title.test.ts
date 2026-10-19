@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { MockLanguageModelV4 } from 'ai/test';
-import type { UsageReceipt } from '@builddai/ai-kit/models';
+import type { UsageReceipt } from '@buildd/ai-kit/models';
 import {
   DEFAULT_TITLE_LIMITS,
   normalizeTitle,

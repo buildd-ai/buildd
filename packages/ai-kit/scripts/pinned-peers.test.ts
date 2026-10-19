@@ -8,7 +8,7 @@ const LOCK = `{
   "lockfileVersion": 1,
   "packages": {
     "@ai-sdk/react": ["@ai-sdk/react@4.0.119", "", { "dependencies": {} }, "sha512-x"],
-    "@builddai/ai-kit/react": ["react@19.1.0", "", {}, "sha512-nested"],
+    "@buildd/ai-kit/react": ["react@19.1.0", "", {}, "sha512-nested"],
     "ai": ["ai@7.0.116", "", { "dependencies": {} }, "sha512-y"],
     "react": ["react@19.2.7", "", {}, "sha512-z"],
     "old": ["old@1.2.3", "", {}, "sha512-o"],

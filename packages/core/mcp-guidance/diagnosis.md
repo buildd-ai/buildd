@@ -49,6 +49,18 @@ When a platform action errors unexpectedly, a tool limit forces a detour, or
 something costs real time through confusion, file it instead of working
 around it silently:
 
+Classify before filing:
+
+- Friction about your own repo (its code, CI, tests, docs) is a normal
+  `[friction]` task in your workspace and stays there.
+- Friction about buildd itself (a buildd MCP tool or route, or an error with a
+  traced signature) is a platform signal. Include `frictionSignature`, plus
+  `frictionTool` and `frictionErrorCode` when you have them. It is deduplicated
+  by signature across teams and carries only signature, tool, error code,
+  buildd version and count, never task content; operators open the fix task.
+- `frictionExcerpt` is attached only when the team has opted in to excerpts.
+  Keep task content, code and secrets out of it either way.
+
 `buildd action=create_task params={ title, description, priority, kind, context }`
 
 - `title`: `[friction] <short description>`. `description`: what broke, what

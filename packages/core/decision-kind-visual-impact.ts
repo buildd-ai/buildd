@@ -19,8 +19,8 @@
  * Features are bounded counters and closed enums: no paths, no code, no text.
  */
 
-import { choice } from '@builddai/ai-kit/decide';
-import type { DecisionKindConfig, FeatureParse } from '@builddai/ai-kit/decide';
+import { choice } from '@buildd/ai-kit/decide';
+import type { DecisionKindConfig, FeatureParse } from '@buildd/ai-kit/decide';
 import { defineBuilddDecisionKind, type BuilddDecisionKindBinding } from './decision-kinds';
 
 export const VISUAL_IMPACT_KIND = 'buildd.visual_impact' as const;

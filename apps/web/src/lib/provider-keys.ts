@@ -22,7 +22,7 @@ import {
   type ProviderKeySummary,
 } from '@buildd/shared';
 
-import { PERSONAL_KEY_PROVIDERS, PROVIDER_KEY_CAPABILITIES, providerKeyCapability } from '@builddai/ai-kit/models/provider-keys';
+import { PERSONAL_KEY_PROVIDERS, PROVIDER_KEY_CAPABILITIES, providerKeyCapability } from '@buildd/ai-kit/models/provider-keys';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type Source = MaskedProviderKey['source'];

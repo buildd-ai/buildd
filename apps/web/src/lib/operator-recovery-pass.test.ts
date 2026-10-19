@@ -5,7 +5,7 @@
  * synthetic (team-a, repo-a).
  */
 import { describe, expect, it } from 'bun:test';
-import type { DecisionResponse } from '@builddai/ai-kit/decide';
+import type { DecisionResponse } from '@buildd/ai-kit/decide';
 import { OPERATOR_REPAIR_KINDS } from '@buildd/core/decision-kind-operator-recovery';
 import type { FailureIncidentRecovery } from '@buildd/shared';
 import { buildRecoveryPanel, type QueueFacts, type QueueIncident } from './admin/recovery/queue';

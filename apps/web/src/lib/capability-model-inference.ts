@@ -42,7 +42,7 @@ import {
   type DecisionAnswers,
   type DecisionEndpoint,
   type DecisionQuestions,
-} from '@builddai/ai-kit/decide';
+} from '@buildd/ai-kit/decide';
 import type { AgentPrincipal } from '@/lib/agent-capabilities/principal';
 import { sqlWhereFn } from '@buildd/core/db/relational-sql';
 

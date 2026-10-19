@@ -48,7 +48,7 @@ import {
   type DecisionText,
   type DecideResult,
   type QuestionOutcome,
-} from '@builddai/ai-kit/decide';
+} from '@buildd/ai-kit/decide';
 import { gateOnMeasurement, loadMeasurementsSafe, measurementFor, type StoredMeasurement } from './decision-model-measurements';
 import type { DecisionAccess, DecisionResult, DecisionCallParams } from './decision-client';
 import type { InferenceCapability } from './inference-policy';

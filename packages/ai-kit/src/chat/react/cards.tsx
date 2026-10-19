@@ -21,7 +21,7 @@ import {
   type HandoffData,
   toolNameOf,
   type StepData,
-} from '@builddai/ai-kit/chat/contract';
+} from '@buildd/ai-kit/chat/contract';
 import { greeting, humanizeToolName, liveStep, pinnedStep, stepGroups, stepWeight, THINKING_TAIL, THINKING_TAIL_ID } from './model';
 
 // ── Thinking ──────────────────────────────────────────────────────────────────

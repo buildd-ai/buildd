@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/task-token-auth';
+import { noteScheduleRefusal } from '@/lib/schedule-move';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
 import { db } from '@buildd/core/db';
@@ -214,6 +215,8 @@ export async function GET(req: NextRequest) {
         columns: { id: true, teamId: true },
       });
       if (!ws || !teamIds.includes(ws.teamId) || (account && !taskScopeAllowsDelegated(account, ws.id, 'analytics:read'))) {
+        // A schedule-spawned run refused on a workspace of its team counts toward proposing the move (I-29).
+        if (ws && account) await noteScheduleRefusal(account, ws.id, 'analytics:read');
         return NextResponse.json({ error: 'Workspace not found or not in your team' }, { status: 404 });
       }
       scopedWsIds = [workspaceId];

@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { inArray } from 'drizzle-orm';
 import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/task-token-auth';
+import { noteScheduleRefusal } from '@/lib/schedule-move';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { fetchCoordinationStats } from '@/lib/coordination-stats-query';
@@ -33,7 +34,11 @@ export async function GET(req: NextRequest) {
   }) : [];
   const allowed = account ? teamWorkspaces.filter(w => taskScopeAllowsDelegated(account, w.id, 'analytics:read')) : teamWorkspaces;
   const workspace = params.get('workspaceId') ?? params.get('workspace');
-  if (workspace && !allowed.some(w => w.id === workspace)) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+  if (workspace && !allowed.some(w => w.id === workspace)) {
+    // A schedule-spawned run refused on a workspace of its team counts toward proposing the move (I-29).
+    if (account) await noteScheduleRefusal(account, workspace, 'analytics:read');
+    return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+  }
   const filters = {
     workspaceIds: workspace ? [workspace] : allowed.map(w => w.id),
     missionId,

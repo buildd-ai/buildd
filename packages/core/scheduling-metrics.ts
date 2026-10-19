@@ -21,7 +21,7 @@
  * slots. `codex_single_flight` deferrals are reported distinctly from the
  * three primary reasons, never folded into the per-claim rate.
  */
-import { percentile } from '@builddai/ai-kit/decide';
+import { percentile } from '@buildd/ai-kit/decide';
 
 export type SchedulingPlannerMode = 'off' | 'record' | 'apply';
 export type AgentBackend = 'claude' | 'codex';
