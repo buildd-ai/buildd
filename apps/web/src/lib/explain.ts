@@ -375,9 +375,13 @@ function iso(d: Date | string | null | undefined): string | null {
  */
 export function historyPrStateOf(
   w: Pick<LoadedTask['workers'][number], 'prNumber' | 'prLifecycleStatus' | 'mergedAt'> | undefined,
-  delivery?: Pick<DeliveryView, 'prState' | 'prNumber'> | null,
+  delivery?: (Pick<DeliveryView, 'prState' | 'prNumber'> & { state?: DeliveryView['state'] }) | null,
 ): HistoryNode['prState'] {
   if (!w?.prNumber && !(delivery?.prState && delivery.prNumber != null)) return 'none';
+  // A delivery that has not projected a PR state yet is "open", not the worker
+  // row's: that column is the fact cache of a past CI run (a head ago), which
+  // is how an approved PR with green checks read ci_failed in its own history.
+  if (delivery && delivery.prNumber != null && !delivery.prState && delivery.state && !deliverySettled({ state: delivery.state })) return 'open';
   const state = resolvePrDisplayState({ delivery, prLifecycleStatus: w?.prLifecycleStatus, mergedAt: w?.mergedAt });
   switch (state) {
     case 'merged': case 'closed': case 'conflict': case 'ci_failed': return state;
