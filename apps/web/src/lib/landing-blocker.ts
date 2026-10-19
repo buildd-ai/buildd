@@ -12,16 +12,17 @@
  *
  * Pure, and stored facts only: explain never calls GitHub (see explain.ts).
  * Precedence, newest authority first:
- *  1. the kernel delivery — ESCALATED, BLOCKED_ON_TRUNK, or a conflict on
- *     its current head (checked before any delivery state). Conflicts always
- *     block landing, even while awaiting review;
- *  2. a delivery that has not been approved on its current head
- *     (AWAITING_REVIEW, CHANGES_REQUESTED, FIXING, AWAITING_PUSH): the
- *     platform owes the next step, whatever round or attempt number it has
- *     reached. REPAIRING states are handled within the conflict/collision case;
- *  3. the newest `pr_landing` gate row, when it is about the current head (kernel)
+ *  1. the kernel delivery — ESCALATED, BLOCKED_ON_TRUNK;
+ *  2. a conflict on the current head (checked before most delivery states except
+ *     REPAIRING, which uses its currentAttempt). Conflicts always block landing,
+ *     even while awaiting review;
+ *  3. a delivery that has not been approved on its current head
+ *     (AWAITING_REVIEW, CHANGES_REQUESTED, FIXING, AWAITING_PUSH, REPAIRING): the
+ *     platform owes the next step, whatever round or attempt number it has reached.
+ *     REPAIRING uses its currentAttempt to determine repair_running vs repair_queued;
+ *  4. the newest `pr_landing` gate row, when it is about the current head (kernel)
  *     or no repair has completed since it was written (legacy);
- *  4. the legacy conflict fact (`workers.prLifecycleStatus = 'conflict'`).
+ *  5. the legacy conflict fact (`workers.prLifecycleStatus = 'conflict'`).
  * An open repair attempt upgrades a conflict or collision to queued / running.
  */
 import type { DeliveryView } from '@/lib/workflow/projections';
@@ -110,7 +111,8 @@ export function deriveLandingBlocker(p: {
 
     // Check for conflicts on the current head — a conflict always blocks landing,
     // even while awaiting review, changes requested, or any other state.
-    if (d.prState === 'conflict') {
+    // Skip this block for REPAIRING states, which handle conflicts with d.currentAttempt.
+    if (d.prState === 'conflict' && d.state !== 'REPAIRING') {
       if (openRepair) {
         return {
           ...base,
