@@ -3279,6 +3279,82 @@ export const specOutcomeVerdicts = pgTable('spec_outcome_verdicts', {
 }));
 
 /**
+ * Which signal currently decides each criterion's verdict: one row per subject
+ * (task or mission), spec revision and criterion, replaced as verdicts arrive.
+ * `source` is `test` (a criterion check run) or `review` (a person, final
+ * verification or visual audit); a test result outranks a review whenever the
+ * review was recorded (determiningVerdict in packages/spec-contract). Derived
+ * from spec_outcome_verdicts, which stays the log; `overriddenReviews` counts
+ * the review verdicts a test result outranks.
+ */
+export const specVerdictSources = pgTable('spec_verdict_sources', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }),
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
+  criterionId: text('criterion_id').notNull(),
+  source: text('source').notNull().$type<'test' | 'review'>(),
+  verdictId: uuid('verdict_id').references(() => specOutcomeVerdicts.id, { onDelete: 'cascade' }).notNull(),
+  verdict: text('verdict').notNull().$type<'pass' | 'fail' | 'inconclusive' | 'unsupported'>(),
+  overriddenReviews: integer('overridden_reviews').notNull().default(0),
+  decidedAt: timestamp('decided_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskCriterionUnique: uniqueIndex('spec_verdict_sources_task_unique').on(t.taskId, t.specRevisionId, t.criterionId).where(sql`task_id IS NOT NULL`),
+  missionCriterionUnique: uniqueIndex('spec_verdict_sources_mission_unique').on(t.missionId, t.specRevisionId, t.criterionId).where(sql`mission_id IS NOT NULL`),
+  oneSubject: check('spec_verdict_sources_one_subject', sql`(${t.taskId} IS NULL) <> (${t.missionId} IS NULL)`),
+}));
+
+/**
+ * Links one verdict to the spec_criteria row it judged, keyed on the stable
+ * criterion id (AC-n, R-n) so each criterion is tracked on its own. One row per
+ * verdict. `verifiedBy` is what produced it: `test` (a criterion check run),
+ * `review` (a person or agent) or `baseline` (the state held before the work).
+ * Written best-effort after a verdict is recorded (apps/web/src/lib/specs/verdict-source.ts);
+ * spec_outcome_verdicts stays the log the folds read.
+ */
+export const verdictCriteria = pgTable('verdict_criteria', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  verdictId: uuid('verdict_id').references(() => specOutcomeVerdicts.id, { onDelete: 'cascade' }).notNull(),
+  specCriterionId: uuid('spec_criterion_id').references(() => specCriterionRecords.id, { onDelete: 'cascade' }).notNull(),
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
+  criterionId: text('criterion_id').notNull(),
+  verifiedBy: text('verified_by').notNull().$type<'test' | 'review' | 'baseline'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  verdictUnique: uniqueIndex('verdict_criteria_verdict_idx').on(t.verdictId),
+  criterionIdx: index('verdict_criteria_criterion_idx').on(t.specRevisionId, t.criterionId, t.verifiedBy),
+  specCriterionIdx: index('verdict_criteria_spec_criterion_idx').on(t.specCriterionId),
+  verifiedByCheck: check('verdict_criteria_verified_by', sql`${t.verifiedBy} IN ('test', 'review', 'baseline')`),
+}));
+
+/**
+ * One piece of evidence behind one verdict, kept both ways: from a criterion
+ * (R-n, AC-n) to the tests, tasks, PRs and commits that back it, and from any of
+ * those back to the criteria it speaks for (regression provenance, spec
+ * conformance audits). `kind` is what `ref` names: `test` (the check command or
+ * test path), `task` (the task that created the test or ran the check), `pr`
+ * (the PR number that delivered it) or `commit` (the head SHA it judged).
+ * Written best-effort after a verdict is recorded
+ * (apps/web/src/lib/specs/verdict-provenance.ts); spec_outcome_verdicts.evidence
+ * stays the blob the folds read.
+ */
+export const verdictEvidence = pgTable('verdict_evidence', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  verdictId: uuid('verdict_id').references(() => specOutcomeVerdicts.id, { onDelete: 'cascade' }).notNull(),
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
+  criterionId: text('criterion_id').notNull(),
+  kind: text('kind').notNull().$type<'test' | 'task' | 'pr' | 'commit'>(),
+  ref: text('ref').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  itemUnique: uniqueIndex('verdict_evidence_item_idx').on(t.verdictId, t.kind, t.ref),
+  criterionIdx: index('verdict_evidence_criterion_idx').on(t.specRevisionId, t.criterionId),
+  refIdx: index('verdict_evidence_ref_idx').on(t.kind, t.ref),
+  kindCheck: check('verdict_evidence_kind', sql`${t.kind} IN ('test', 'task', 'pr', 'commit')`),
+}));
+
+/**
  * A human's decision on one visual-audit screenshot
  * (docs/design/visual-qa-human-review.md). Append-only: a new decision or an
  * undo sets `supersededAt` on the active row, then inserts. Kept out of

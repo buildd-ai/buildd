@@ -2,7 +2,7 @@ import { db } from '@buildd/core/db';
 import { artifactReads, specDiscrepancies, specOutcomeVerdicts, specRevisions, specs, tasks } from '@buildd/core/db/schema';
 import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import {
-  VERIFICATION_VERDICTS, boundEvidenceRefs, foldGovernedOutcome,
+  VERIFICATION_VERDICTS, boundEvidenceRefs, foldGovernedOutcome, verdictSourceOfEvidence,
   type GovernedOutcomeReadout, type VerificationVerdict,
 } from '@buildd/core/verification-check';
 import { isUuid } from '@/lib/uuid';
@@ -11,6 +11,7 @@ import { pinnedReadOf, readPinnedSpecRevision, readPinnedSpecRevisions } from '.
 import { specCriteria, type RequirementRef } from '@buildd/spec-contract/requirements';
 import { inScope } from '@buildd/spec-contract/scope';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
+import { settleVerdictSource } from './verdict-source';
 import { criterionHashes } from './criteria';
 
 /**
@@ -120,14 +121,14 @@ async function loadGoverned(caller: SpecCaller | null, taskId: unknown, mode: Mo
 }
 
 async function fold(l: Loaded): Promise<OutcomeView> {
-  const all = await db.select({ criterionId: specOutcomeVerdicts.criterionId, verdict: specOutcomeVerdicts.verdict, headSha: specOutcomeVerdicts.headSha, at: specOutcomeVerdicts.createdAt, textHash: specOutcomeVerdicts.criterionTextHash })
+  const all = await db.select({ criterionId: specOutcomeVerdicts.criterionId, verdict: specOutcomeVerdicts.verdict, headSha: specOutcomeVerdicts.headSha, at: specOutcomeVerdicts.createdAt, textHash: specOutcomeVerdicts.criterionTextHash, evidence: specOutcomeVerdicts.evidence })
     .from(specOutcomeVerdicts)
     .where(and(eq(specOutcomeVerdicts.taskId, l.task.id), eq(specOutcomeVerdicts.specRevisionId, l.specRevisionId)))
     .orderBy(asc(specOutcomeVerdicts.createdAt));
   // A verdict on another wording of a criterion does not count for this one (R-13); one recorded before wordings were kept does.
   const rows = all.filter((r) => !r.textHash || r.textHash === l.hashes.get(r.criterionId));
   const head = await currentPrHeadSha(l.task.id);
-  const r = foldGovernedOutcome(l.criteria.map((c) => c.id), rows, head);
+  const r = foldGovernedOutcome(l.criteria.map((c) => c.id), rows.map((x) => ({ ...x, source: verdictSourceOfEvidence(x.evidence) })), head);
   const text = new Map(l.criteria.map((c) => [c.id, c.text]));
   return { ...r, specId: l.specId, specRevisionId: l.specRevisionId, revision: l.revision, criteria: r.criteria.map((c) => ({ ...c, text: text.get(c.criterionId) ?? '' })) };
 }
@@ -149,7 +150,7 @@ export async function readGovernedOutcome(caller: SpecCaller | null, taskId: unk
  * resolve is absent.
  */
 export type TaskVerdictRow = {
-  taskId: string | null; specRevisionId: string; criterionId: string; verdict: string; headSha: string | null; at: Date; textHash: string | null;
+  taskId: string | null; specRevisionId: string; criterionId: string; verdict: string; headSha: string | null; at: Date; textHash: string | null; evidence?: unknown;
 };
 
 /** Every verdict on these tasks, oldest first, for governedOutcomesFor (and anything else that reads the same rows). */
@@ -187,7 +188,7 @@ export async function governedOutcomesFor(
     const rowsFor = verdicts
       .filter((r) => r.taskId === id && r.specRevisionId === l.specRevisionId)
       .filter((r) => !r.textHash || r.textHash === l.hashes.get(r.criterionId));
-    const r = foldGovernedOutcome(l.criteria.map((c) => c.id), rowsFor as never, heads.get(id) ?? null);
+    const r = foldGovernedOutcome(l.criteria.map((c) => c.id), rowsFor.map((x) => ({ ...x, source: verdictSourceOfEvidence(x.evidence) })) as never, heads.get(id) ?? null);
     const text = new Map(l.criteria.map((c) => [c.id, c.text]));
     out.set(id, { ...r, specId: l.specId, specRevisionId: l.specRevisionId, revision: l.revision, criteria: r.criteria.map((c) => ({ ...c, text: text.get(c.criterionId) ?? '' })) });
   }
@@ -237,6 +238,7 @@ export async function recordSpecVerdict(caller: SpecCaller, taskId: unknown, inp
     headSha: headSha.toLowerCase(),
     evidence: { refs, readIds, ...(observed ? { observed } : {}), recordedBy },
   }).returning({ id: specOutcomeVerdicts.id });
+  await settleVerdictSource(row.id);
   return { ok: true, verdictId: row.id, outcome: await fold(l) };
 }
 
@@ -265,6 +267,7 @@ export async function recordCheckVerdict(taskId: string, input: {
     headSha: input.headSha.toLowerCase(),
     evidence: { ...input.evidence, verificationTaskId: input.verificationTaskId, recordedBy: `check:${input.verificationTaskId}` },
   }).returning({ id: specOutcomeVerdicts.id });
+  await settleVerdictSource(row.id);
   return { ok: true, verdictId: row.id };
 }
 
@@ -294,6 +297,7 @@ export async function recordAuditedVerdict(taskId: string, input: {
     headSha: input.headSha.toLowerCase(),
     evidence: { ...input.evidence, auditTaskId: input.auditTaskId, recordedBy: `visual:${input.auditTaskId}` },
   }).returning({ id: specOutcomeVerdicts.id });
+  await settleVerdictSource(row.id);
   return { ok: true, verdictId: row.id, outcome: await fold(l) };
 }
 

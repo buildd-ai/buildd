@@ -17,6 +17,7 @@ import type { DuplicateCheckDeps } from '@/lib/spec-duplicate-decision';
 import { sameDesign } from '@buildd/spec-contract/design';
 import { recordManualPlacement } from './filings';
 import { retiredIdRefusal, writeCriterionRecords } from './criteria';
+import { acceptanceRoleRefusal } from './verdict-guards';
 
 /**
  * Living Specs store (G1): create a draft, revise it under a version check,
@@ -164,6 +165,8 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   const repoRefs = readRefsInput(input.repoRefs);
   if (isError(repoRefs)) return repoRefs;
   if (!(await reach(caller, workspaceId, true))) return fail(404, 'Workspace not found');
+  const roleRefusal = await acceptanceRoleRefusal(caller);
+  if (roleRefusal) return roleRefusal;
   if (parentSpecId !== undefined && parentSpecId !== null) {
     if (typeof parentSpecId !== 'string' || !isUuid(parentSpecId)) return fail(400, 'parentSpecId must be a UUID');
     const [parent] = await db.select({ workspaceId: specs.workspaceId }).from(specs).where(eq(specs.id, parentSpecId)).limit(1);
@@ -234,6 +237,8 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   if (isError(refsInput)) return refsInput;
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   if (!spec || !(await reach(caller, spec.workspaceId, true))) return fail(404, 'Spec not found');
+  const roleRefusal = await acceptanceRoleRefusal(caller);
+  if (roleRefusal) return roleRefusal;
   if (spec.status === 'retired' || spec.status === 'superseded') return fail(409, `A ${spec.status} spec is not revised`);
   if (!opts.imported) {
     const refused = importedRefusal(spec);

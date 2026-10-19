@@ -3269,6 +3269,8 @@ export interface LivingSpecGoalCriterion {
 
 /** One criterion's standing under a `living_spec` goal criterion, for UI and MCP. */
 export interface LivingSpecCriterionStanding {
+  /** Deciding signal; older stored standings may omit it (review). */
+  source?: 'test' | 'review';
   criterionId: string;
   standing: 'pass' | 'fail' | 'inconclusive' | 'unsupported' | 'missing' | 'stale' | 'waived';
   headSha: string | null;
