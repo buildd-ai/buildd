@@ -8,7 +8,7 @@
  * called, which arguments count as key, which calls are read-only, and the
  * result line. The defaults read only the contract (`ToolResult`).
  */
-import { toolNameOf, type ChatToolPart } from '@builddai/ai-kit/chat/contract';
+import { toolNameOf, type ChatToolPart } from '@buildd/ai-kit/chat/contract';
 
 /** The row's state. Finer than `toolRowState`: an approved write still running is `approved`. */
 export type ToolCallState = 'running' | 'awaiting' | 'approved' | 'done' | 'failed' | 'denied';

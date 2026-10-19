@@ -15,7 +15,7 @@
  * question text go to the model and nowhere else.
  */
 import { decisionCall } from '@buildd/core/decision-client';
-import type { DecisionEndpoint } from '@builddai/ai-kit/decide';
+import type { DecisionEndpoint } from '@buildd/ai-kit/decide';
 import {
   DEFAULT_MIN_LABELLED,
   DEFAULT_TARGET_PRECISION,

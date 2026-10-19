@@ -16,7 +16,7 @@ import {
   type ProviderKeyCapability,
 } from '@buildd/shared';
 
-import { PERSONAL_KEY_PROVIDERS, providerKeyCapability, isPersonalKeyProvider } from '@builddai/ai-kit/models/provider-keys';
+import { PERSONAL_KEY_PROVIDERS, providerKeyCapability, isPersonalKeyProvider } from '@buildd/ai-kit/models/provider-keys';
 
 export type { ChatProvider, ChatUses };
 

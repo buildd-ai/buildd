@@ -7,11 +7,11 @@
  * through the standalone model policy (`model-policy.ts`).
  *
  * The defaults themselves are not written here: they are the policy's bundled
- * fallback (`DEFAULT_MODEL_POLICY`, @builddai/ai-kit/policy), read through its
+ * fallback (`DEFAULT_MODEL_POLICY`, @buildd/ai-kit/policy), read through its
  * resolver. One list of tier models, one resolver.
  */
 
-import { resolveModelPolicy } from '@builddai/ai-kit/policy';
+import { resolveModelPolicy } from '@buildd/ai-kit/policy';
 import type { TierPolicyMeta } from './model-policy';
 
 export type Tier = 'premium-plus' | 'premium' | 'standard' | 'budget';

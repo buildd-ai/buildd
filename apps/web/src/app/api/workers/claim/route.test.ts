@@ -596,7 +596,7 @@ mock.module('@/lib/hosted-runner-usage-store', () => ({
 }));
 import { POST } from './route';
 import { planPersonalWorkspaceLinks } from '@/lib/personal-workspace-links-plan';
-import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
+import { choice as choiceQ, defineDecision as defineD } from '@buildd/ai-kit/decide';
 import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
 import { capturedWhere } from '@buildd/core/db/relational-sql';
 import { claudeLoginSeatKey, runnerSeatKey } from '@/lib/runner-seat-wall';

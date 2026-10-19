@@ -11,7 +11,7 @@
  * (`GET /api/tasks/[id]/messages`), not a conversation transcript.
  *
  * The box, the message list with sent / delivered, the header and the
- * presence strip are the kit's `SteerComposer` (@builddai/ai-kit/chat/react).
+ * presence strip are the kit's `SteerComposer` (@buildd/ai-kit/chat/react).
  * buildd keeps the instruct route, the refresh, who may steer, and the
  * presence it shows (`steerPresence`: runner, last heartbeat, current action).
  *
@@ -22,7 +22,7 @@
  * a hidden tab reads nothing until it is shown again (hooks/useLiveListen.ts).
  */
 import { useCallback, useEffect, useState } from 'react';
-import { SteerComposer, steerTitle, type SteerMessage, type SteerPresenceItem } from '@builddai/ai-kit/chat/react';
+import { SteerComposer, steerTitle, type SteerMessage, type SteerPresenceItem } from '@buildd/ai-kit/chat/react';
 import { taskDisplayLabel } from '@buildd/core/task-label';
 import type { InstructionHistoryEntry, MessageDeliveryState } from '@/lib/worker-instructions';
 import { messageDeliveryStatus } from '@/lib/worker-instructions';

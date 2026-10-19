@@ -1,7 +1,7 @@
 /**
  * Provider registry, as buildd's server code imports it.
  *
- * The registry itself is `@builddai/ai-kit/models/provider-registry`: core
+ * The registry itself is `@buildd/ai-kit/models/provider-registry`: core
  * depends on ai-kit (never the reverse), and ai-kit's
  * `PROVIDER_KEY_CAPABILITIES` derives from the registry, so the pure module
  * has to live there. This file re-exports it and pins its string unions to
@@ -17,7 +17,7 @@ import type {
   AgentBackendId,
   ModelCredentialPurpose,
   TierProviderId,
-} from '@builddai/ai-kit/models/provider-registry';
+} from '@buildd/ai-kit/models/provider-registry';
 
 export {
   BACKEND_SURFACE,
@@ -36,7 +36,7 @@ export {
   surfaceSupport,
   tierProviderSurfaces,
   tierUsedBy,
-} from '@builddai/ai-kit/models/provider-registry';
+} from '@buildd/ai-kit/models/provider-registry';
 export type {
   AgentBackendId,
   CredentialScope,
@@ -50,7 +50,7 @@ export type {
   TierProviderId,
   TierProviderOption,
   TierUsedBy,
-} from '@builddai/ai-kit/models/provider-registry';
+} from '@buildd/ai-kit/models/provider-registry';
 
 // ── Compile-time agreement with core's own unions ────────────────────────────
 

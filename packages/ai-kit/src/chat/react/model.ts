@@ -16,7 +16,7 @@ import {
   type ChatToolPart,
   type StepData,
   defaultTierName,
-} from '@builddai/ai-kit/chat/contract';
+} from '@buildd/ai-kit/chat/contract';
 
 /**
  * The checklist for one assistant message: its `data-step` parts, newest state

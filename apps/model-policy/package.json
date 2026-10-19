@@ -10,7 +10,7 @@
     "type-check": "bunx tsc --noEmit"
   },
   "dependencies": {
-    "@builddai/ai-kit": "workspace:*"
+    "@buildd/ai-kit": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261019.1",

@@ -9,8 +9,8 @@
  * only reported against a service-issued plan.
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import type { PolicyClient, PolicyDecision, PolicyRequest, OutcomeReport } from '@builddai/ai-kit/policy';
-import { DEFAULT_MODEL_POLICY, resolveModelPolicy } from '@builddai/ai-kit/policy';
+import type { PolicyClient, PolicyDecision, PolicyRequest, OutcomeReport } from '@buildd/ai-kit/policy';
+import { DEFAULT_MODEL_POLICY, resolveModelPolicy } from '@buildd/ai-kit/policy';
 
 const mockFindMany = mock();
 mock.module('../db/client', () => ({ db: { query: { modelTierRegistry: { findMany: mockFindMany } } } }));

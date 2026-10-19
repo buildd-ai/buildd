@@ -1,5 +1,5 @@
 /**
- * Types for `@builddai/ai-kit/policy`: the standalone model-policy protocol.
+ * Types for `@buildd/ai-kit/policy`: the standalone model-policy protocol.
  *
  * The caller contract is deliberately small: the app declares its `surface`
  * (`chat | coding`) and requests a `tier`; the policy picks provider, model

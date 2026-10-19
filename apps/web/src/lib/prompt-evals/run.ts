@@ -53,7 +53,7 @@ import type { RegisteredPrompt } from '@buildd/core/prompts';
 import { withPromptOverlay } from '@buildd/core/prompt-overlay';
 import { DEFAULT_DECISION_MODEL, type decisionCall } from '@buildd/core/decision-client';
 import { isJevModel, type DecisionModelConfig } from '@buildd/core/decision-model';
-import type { DecisionEndpoint } from '@builddai/ai-kit/decide';
+import type { DecisionEndpoint } from '@buildd/ai-kit/decide';
 import { findPromptLeaks, runPrivatePromptEval, type EvalReport, type SetReport } from './eval-core';
 import { SETS } from './benchmark-sets';
 import { promptSurface } from './surfaces';

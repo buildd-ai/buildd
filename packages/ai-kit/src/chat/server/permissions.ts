@@ -17,7 +17,7 @@
  * `createChatTurn` (./turn) does exactly that.
  */
 
-import type { ToolPermissionMode, ToolPermissionRow } from '@builddai/ai-kit/chat/contract';
+import type { ToolPermissionMode, ToolPermissionRow } from '@buildd/ai-kit/chat/contract';
 
 // ── Taint ─────────────────────────────────────────────────────────────────────
 

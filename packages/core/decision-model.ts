@@ -5,7 +5,7 @@
  * name any model behind an OpenAI-compatible API, reached through OpenRouter's
  * chat API or the team's LiteLLM gateway (`litellm-gateway.ts`). The chat
  * endpoint answers the same typed questions with confidence from token
- * logprobs (`@builddai/ai-kit/decide`, `endpoint: { kind: 'chat' }`).
+ * logprobs (`@buildd/ai-kit/decide`, `endpoint: { kind: 'chat' }`).
  *
  * `via: 'cloudflare'` runs a System One model on the team's Cloudflare
  * credential (`cloudflare-ai-gateway.ts`): Cloudflare's Clef (`clef`,
