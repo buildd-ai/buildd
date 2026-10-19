@@ -49,6 +49,23 @@ describe('decide request', () => {
     expect(JEV_MODEL).toMatch(/^typesafe\/jev-\d+\.\d+$/);
   });
 
+  it('sends a large state as plain JSON, never zstd-compressed', async () => {
+    let seen: RequestInit | null = null;
+    const ticket = 'Checkout is blank. '.repeat(200);
+    const res = await call({
+      state: { ticket },
+      fetch: async (_url: string, init: RequestInit) => { seen = init; return jsonResponse(OK); },
+    });
+    expect(res.ok).toBe(true);
+    expect(new Headers(seen!.headers).get('content-encoding')).toBeNull();
+    expect(JSON.parse(seen!.body as string).state).toEqual({ ticket });
+  });
+
+  it('reads the answer body on Bun, where a released reader marks a body used', async () => {
+    const res = await call({ fetch: async () => jsonResponse(OK) });
+    expect(res).toMatchObject({ ok: true, attempts: 1 });
+  });
+
   it('returns typed answers, the versioned model, usage and cost', async () => {
     const res = await call({ fetch: async () => jsonResponse(OK) });
     if (!res.ok) throw new Error('expected ok');
