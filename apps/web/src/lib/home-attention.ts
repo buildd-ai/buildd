@@ -199,6 +199,14 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
       // A pending capability request (lib/capability-grants-needs-you.ts): what was asked is the title,
       // who asked and why is the sentence. The card approves or denies in place; the link is the fallback.
       return make({ label: 'access request', tone: 'warning', title: text(i.accessAsk), sentence: text(i.failureMessage), actionType: 'access', primary: { label: text(i.fixLabel) ?? 'Review', href: text(i.fixHref) ?? '' }, details: taskHref ? { label: 'View task', href: taskHref } : null });
+    case 'SCHEDULE_MOVE': {
+      // A run of a schedule asked for the schedule to start in another workspace (lib/schedule-move-needs-you.ts).
+      // The card answers it in place; the link is the fallback.
+      const m = i.scheduleMove;
+      if (!m) return null;
+      const why = text(m.reason);
+      return make({ label: 'schedule move', tone: 'warning', title: `Move "${m.scheduleName}" to ${m.toWorkspaceName}?`, sentence: `${m.origin === 'auto' ? 'Its runs keep being refused there' : 'A run asked for it'}: now in ${m.fromWorkspaceName}.${why ? ` "${why}"` : ''}`, actionType: 'decide', primary: { label: 'Review', href: text(i.fixHref) ?? '' } });
+    }
     case 'FAILED':
       return make({ label: 'failed', tone: 'error', title: subject, sentence: text(i.failureMessage), actionType: 'view', primary: { label: 'View task', href: taskHref ?? subjectHref ?? '' } });
     default:

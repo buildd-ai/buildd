@@ -8,6 +8,7 @@ import {
 } from '@buildd/core/orchestration-decision-ledger';
 import { computeFeatureHealth, featureHealthByCapability } from '@buildd/core/decision-feature-health';
 import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/task-token-auth';
+import { noteScheduleRefusal } from '@/lib/schedule-move';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { healthObjectiveLookup } from '@/lib/decision-health-objectives';
@@ -55,7 +56,11 @@ export async function GET(req: NextRequest) {
   }) : [];
   const allowed = account ? teamWorkspaces.filter(w => taskScopeAllowsDelegated(account, w.id, 'analytics:read')) : teamWorkspaces;
   const match = allowed.find(w => w.id === workspaceId);
-  if (!match) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+  if (!match) {
+    // A schedule-spawned run refused on a workspace of its team counts toward proposing the move (I-29).
+    if (account) await noteScheduleRefusal(account, workspaceId, 'analytics:read');
+    return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+  }
 
   const windowParam = params.get('window') ?? '7d';
   if (!(windowParam in WINDOWS)) return NextResponse.json({ error: 'Invalid window' }, { status: 400 });

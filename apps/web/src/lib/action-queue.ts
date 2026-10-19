@@ -40,7 +40,7 @@ import { isMissionPrTask } from '@buildd/core/mission-integration';
  */
 
 export type ActionChip =
-  | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'FAILED' | 'REVIEW' | 'QUESTION' | 'ACCESS' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
+  | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'FAILED' | 'REVIEW' | 'QUESTION' | 'ACCESS' | 'SCHEDULE_MOVE' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
   | 'STALE'
   | 'RESOLVING' | 'FIXING_CI' | 'FIXING_REVIEW' | 'CI_RUNNING' | 'REVIEW_RUNNING' | 'AUTO_MERGE' | 'FIXING_SPEC';
 
@@ -253,8 +253,24 @@ export function partitionEscalations<T extends { prLifecycleStatus: string | nul
   return { active, resolved };
 }
 
+/** An open schedule move proposal (lib/schedule-move-needs-you.ts): the schedule, its two homes and why. */
+export interface ScheduleMoveCard {
+  proposalId: string;
+  scheduleId: string;
+  scheduleName: string;
+  fromWorkspaceId: string;
+  fromWorkspaceName: string;
+  toWorkspaceId: string;
+  toWorkspaceName: string;
+  reason: string | null;
+  /** Who proposed it: a run of the schedule, or the schedule's own refusals. */
+  origin: 'task' | 'auto';
+}
+
 export interface WaitingOnYouRawItem {
-  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy' | 'failed' | 'access' | 'spec_provisional';
+  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy' | 'failed' | 'access' | 'schedule_move' | 'spec_provisional';
+  /** kind === 'schedule_move' — a task of a schedule proposed moving it to another workspace. */
+  scheduleMove?: ScheduleMoveCard;
   prUrl?: string;
   prNumber?: number;
   prLifecycleStatus?: 'open' | 'merged' | 'closed' | 'unresolvable' | null;
@@ -587,6 +603,8 @@ export interface ActionQueueItem {
   failureMessage?: string;
   /** Set when chip === 'APPROVE' for a spec with merged work built ahead of approval (living-specs.md §20, R-42). */
   specProvisional?: { specId: string; specTitle: string };
+  /** Set when chip === 'SCHEDULE_MOVE' — the open proposal to move a schedule. */
+  scheduleMove?: ScheduleMoveCard;
   /** Set when chip === 'ACCESS' — the capability request, the ask and the lease asked for. */
   accessRequestId?: string;
   accessAsk?: string;
@@ -696,7 +714,7 @@ export interface ActionQueueItem {
 // ACCESS sits with QUESTION: a live agent run is waiting on a person's
 // approve or deny, and the request closes itself when the run ends.
 const CHIP_ORDER: ActionChip[] = [
-  'MERGE', 'BLOCKED', 'RECONNECT', 'FAILED', 'REVIEW', 'QUESTION', 'ACCESS', 'DECIDE', 'DISCREPANCY', 'APPROVE',
+  'MERGE', 'BLOCKED', 'RECONNECT', 'FAILED', 'REVIEW', 'QUESTION', 'ACCESS', 'SCHEDULE_MOVE', 'DECIDE', 'DISCREPANCY', 'APPROVE',
   'STALE',
   'RESOLVING', 'FIXING_CI', 'FIXING_REVIEW', 'CI_RUNNING', 'REVIEW_RUNNING', 'AUTO_MERGE', 'FIXING_SPEC',
 ];
@@ -1585,6 +1603,22 @@ export function buildActionQueue(
           taskTitle: item.taskTitle,
           workspaceId: item.workspaceId,
           workspaceName: item.workspaceName ?? undefined,
+          failureMessage: item.failureMessage,
+          fixHref: item.fixHref,
+          fixLabel: item.fixLabel,
+        });
+      }
+    } else if (item.kind === 'schedule_move') {
+      // One open proposal per schedule, re-read from the row on every build (lib/schedule-move-needs-you.ts):
+      // once answered it is no longer open and the card drops out by itself.
+      const key = `schedule-move:${item.scheduleMove?.proposalId}`;
+      if (item.scheduleMove && !map.has(key)) {
+        map.set(key, {
+          subjectKey: key,
+          chip: 'SCHEDULE_MOVE',
+          scheduleMove: item.scheduleMove,
+          workspaceId: item.scheduleMove.fromWorkspaceId,
+          workspaceName: item.scheduleMove.fromWorkspaceName,
           failureMessage: item.failureMessage,
           fixHref: item.fixHref,
           fixLabel: item.fixLabel,
