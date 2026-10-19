@@ -24,7 +24,7 @@ import { isRoundTrigger } from '@buildd/workflow-kernel/delta-approval';
 import type { CommandResult, DeliveryRef } from '@buildd/workflow-kernel/ports';
 import type { ApplyDecision, AttemptOp, Command, DeliveryPatch, FindingOp, RecordOnly, RoundOp } from './commands';
 import { postgresStore } from './postgres-store';
-import { prFactProjectionSql } from '@buildd/core/pr-fact-sql';
+import { prFactProjectionSql, prLiveProjectionSql } from '@buildd/core/pr-fact-sql';
 import { prRowOfDeliverySql } from './pr-fact-scope';
 import { attemptEndTaskProjectionCtes, escalationTaskProjectionCtes, mergeTaskPayloadSql, mergeTaskProjectionCtes, reopenTaskProjectionCtes, requeueTaskProjectionCtes, startTaskProjectionCtes, withdrawTaskProjectionCtes } from './task-projection';
 import { kernelHost } from './kernel-host';
@@ -249,8 +249,8 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   const ctes: SQL[] = [];
   const patch = patchEntries(d.patch);
   const projected = prRowProjection(d);
-  // The projection reads the PR identity and merge instant from the delivery row it just wrote.
-  const returning = projected ? sql`RETURNING id, version, workspace_id, repo_full_name, pr_number, merged_at` : sql`RETURNING id, version`;
+  // The projections read the PR identity, the merge instant and the head's readings from the delivery row it just wrote.
+  const returning = sql`RETURNING id, version, state, workspace_id, repo_full_name, pr_number, merged_at, current_head_sha, ci, ci_head_sha, mergeable, mergeable_head_sha`;
 
   if (d.create) {
     const cols: SQL[] = [sql`workspace_id`, sql`owner_task_id`, sql`state`, sql`version`, sql`max_rounds`, sql`last_transition_at`];
@@ -337,6 +337,10 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   // `d`, which is empty on a CAS miss), and with the funnel's terminal-wins guard.
   if (projected) {
     ctes.push(sql`w_proj AS (\n${prFactProjectionSql({ kind: projected }, { from: sql`d`, where: prRowOfDeliverySql('d'), mergedAt: sql`d.merged_at` })}\n)`);
+  } else {
+    // AC-1, the non-terminal half: every other transition projects the PR's live status (open, CI,
+    // conflict) from the delivery's own readings at its head. The fact funnel defers these rows to it.
+    ctes.push(sql`w_live AS (\n${prLiveProjectionSql({ from: sql`d`, where: prRowOfDeliverySql('d') })}\n)`);
   }
 
   if (ref.factId) {
