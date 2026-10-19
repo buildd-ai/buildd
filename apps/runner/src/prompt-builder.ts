@@ -551,6 +551,17 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
   }
   addSection('task-description', `## Task\n${taskDescription}`, descriptionTruncated);
 
+  // R-82: keep the explanation on the acceptance task, where reviewers can
+  // read it, rather than treating an untestable check as silently covered.
+  addSection('untestable-acceptance-checks', (task.context?.acceptanceTests != null || /^\[acceptance[ -]tests\]/i.test(task.title))
+    ? '## Untestable acceptance checks\n' +
+      'For every acceptance check that cannot be tested, record its criterion id, why an executable test cannot check it, ' +
+      'and whether code review or screenshots will check it instead. ' +
+      'Use create_artifact to save this per-check list on this task and include it in your complete_task summary. ' +
+      'If every check can be tested, say so explicitly. An untestable check is judged separately from tested checks; do not invent a passing test for it.'
+    : null);
+
+
   addSection('design-source', designSourceSection(
     (task.context ?? null) as Record<string, unknown> | null,
     worker.claudeAiArtifacts ?? 'off',
