@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-18
 summary: Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 domain: tasks
-surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
+surfaces: [apps/web/src/lib/override-permission.ts, apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/review-verdict-authority.test.ts, apps/web/tests/db/escalation-decisions.test.ts, packages/workflow-kernel/src/decision-refusal.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/pr-landing-adoption.test.ts, apps/web/tests/db/merge-adoption.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts, apps/web/src/lib/workflow/fix-completion-gate.test.ts, apps/web/tests/db/workflow-seam.test.ts]
+verified_by: [apps/web/src/lib/workflow/kernel-telemetry.test.ts, apps/control-plane/src/axiom-export.test.ts, packages/workflow-kernel/src/review-verdict-authority.test.ts, apps/web/src/lib/override-permission.test.ts, apps/web/src/app/api/prs/[prNumber]/approve-override/route.test.ts, apps/web/tests/db/escalation-decisions.test.ts, packages/workflow-kernel/src/decision-refusal.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/pr-landing-adoption.test.ts, apps/web/tests/db/merge-adoption.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts, apps/web/src/lib/workflow/fix-completion-gate.test.ts, apps/web/tests/db/workflow-seam.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -719,6 +719,99 @@ are AC-70 to AC-78 (31 to 70, 32 to 71, 33 to 72, 34 to 73, 35 to 74, 36 to 75, 
 38 to 77, 39 to 78), each with a `replaces:` line. A test tagged AC-31 to AC-42 now means the
 Living Spec's criterion of that number.
 
+### Observability
+
+The kernel reports to Axiom, dataset `buildd-traces`, where monitors page the
+owner by email and Pushover. Each thing worth an alert is one span with a
+stable name and a fixed attribute set (`kernel-telemetry.ts`, pinned by
+`kernel-telemetry.test.ts`). On the web host the spans go through the
+OpenTelemetry API that `instrumentation.ts` registers (service `buildd-web`).
+The control plane has no OpenTelemetry SDK, so its entry installs a sink
+(`apps/control-plane/src/axiom-export.ts`) that posts the same spans as
+OTLP/HTTP JSON to Axiom's traces endpoint after the response, into the same
+dataset, as service `buildd-control-plane`. The sink is installed only when the
+Worker holds the secret `AXIOM_INGEST_TOKEN` (an Axiom token with ingest rights
+on the dataset). Without it the control plane's spans go to the no-op tracer
+and nothing is sent. `AXIOM_TRACES_DATASET` and `AXIOM_OTLP_URL` override the
+dataset and the endpoint.
+
+Emitting never throws and never waits. A door call costs one span start and
+end, so the claim path's overhead does not change measurably. Custom attributes
+are under `['attributes.custom']`; numbers are integers, and ms are rounded.
+
+| Span `name` | When | Attributes |
+|---|---|---|
+| `kernel.door` | every door call (`door`, the short doors, `doorOrHereOnSkew`), on whichever host ran the door | `kernel.op`; `kernel.outcome` = `applied` \| `parked` \| `unavailable` \| `breaker_open` \| `skew_fallback` \| `refused` \| `failed`; `kernel.latency_ms`; `kernel.budget_ms` (the door's budget, cut to its pass's and, inside a webhook request, to the webhook door cap; a door the webhook does not cap keeps its own); `breaker_open` is a door its breaker skipped (a webhook door is still parked, `kernel.error_code` = `parked`); `kernel.caller` = `webhook` \| `claim` \| `patch` \| `cron` \| `mcp` \| `api` \| `dashboard` \| `other`; `kernel.host` = `web` \| `control-plane`; `kernel.pass` (when inside a budget pass); `kernel.error_code` (the refusal's code, `not_applied`/`unknown` for an unavailable control plane, or `command_failed`) |
+| `kernel.breaker` | a breaker opening (the first unanswered door) and closing (the first answered door after it): the AttemptStarted breaker, or the webhook doors' breaker (`withWebhookBudget`) | `kernel.breaker.state` = `open` \| `closed`; `kernel.breaker` = `attempt_start` \| `webhook`; `kernel.op`; `kernel.breaker.skip_ms`; `kernel.breaker.open_ms` (on close); `kernel.host` |
+| `kernel.web_command` | a kernel command the web host ran itself through the command client | `kernel.op`; `kernel.reason` = `no_command_key` \| `shadow` \| `not_host` \| `unconfigured` \| `skew`; `kernel.mode` (`own` for the last three: a regression); `kernel.latency_ms`; `kernel.host` = `web` |
+| `kernel.pass` | a control-plane budget pass (`withControlPlaneBudget`: a sweep, a webhook) that ran out: a door refused unsent or a drain left to the floor. Not emitted for the short doors' own scope | `kernel.pass`; `kernel.budget_ms`; `kernel.pass.submitted`; `kernel.pass.refused`; `kernel.pass.drains_skipped`; `kernel.pass.waited_ms`; `kernel.host` |
+| `kernel.floor` | once per kernel floor run (`runKernelFloor`, either host), after the pass | `kernel.host`; `kernel.outbox.parked` and `kernel.outbox.parked_oldest_age_s` (pending door commands); `kernel.outbox.effects_due` and `kernel.outbox.effects_oldest_age_s` (effects due or past their lease); `kernel.outbox.unread` = true instead when the depth read failed; `kernel.floor.repairs.facts_imported`, `.effects_enqueued`, `.trunk_recovered`, `.treadmill_restarted`, `.parked_answered`, `.parked_dead`, `.total`; `kernel.floor.errors` |
+| `kernel.command` | each request the control plane's command endpoint answers | `kernel.op` (`unknown` before the body parsed); `kernel.outcome` = `applied` \| `replayed` \| `failed` \| `refused` \| `unavailable` \| `in_progress`; `kernel.status`; `kernel.error_code`; `kernel.latency_ms`; `kernel.host` = `control-plane` |
+
+The caller is the door's own `DoorCall.caller` when it names one. Otherwise it
+is taken from the request's route (the control plane names it per request; on
+the web host it comes from the request span), then the budget pass, then the
+principal. A door with none of these reads `other`.
+
+Every failed span carries OpenTelemetry status ERROR (`error == true` in
+Axiom), except `skew_fallback`, whose command was applied.
+
+Recommended monitors. Each query returns one value `v`, in the style of the
+existing `buildd-traces` monitors:
+
+1. **Control plane not answering doors** (threshold: above 10, every 5 min over 15 min):
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.door" | extend outcome = tostring(['attributes.custom']['kernel.outcome']) | summarize n = count(), bad = countif(outcome in ("unavailable", "parked", "breaker_open")) | extend v = iff(bad >= 3 and n > 0, 100.0 * bad / n, 0.0) | project v
+   ```
+2. **A breaker opened** (AttemptStarted or webhook; above 0, every 5 min over 10 min; group by `kernel.breaker` to tell them apart):
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.breaker" and tostring(['attributes.custom']['kernel.breaker.state']) == "open" | summarize v = count()
+   ```
+3. **Kernel command ran on the web host** (above 0, every 10 min over 30 min). This also fires during a deliberate rollback to shadow. To catch only own-mode regressions, add `and tostring(['attributes.custom']['kernel.mode']) == "own"`:
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.web_command" | summarize v = count()
+   ```
+4. **Doors slow** (p95 above 5000 ms, every 5 min over 15 min; the claim's start is bounded by its own budget and the breaker):
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.door" and tostring(['attributes.custom']['kernel.caller']) != "claim" | extend ms = toint(['attributes.custom']['kernel.latency_ms']) | summarize n = count(), p = percentile(ms, 95) | extend v = iff(n >= 5, p, 0.0) | project v
+   ```
+5. **Doors refused or failing** (a bug, not an outage; above 2, every 10 min over 30 min):
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.door" and tostring(['attributes.custom']['kernel.outcome']) in ("refused", "failed") | summarize v = count()
+   ```
+6. **Parked door commands waiting** (oldest above 7200 s, every 15 min over 75 min, so the last hourly floor is always in range):
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.floor" | summarize v = max(toint(['attributes.custom']['kernel.outbox.parked_oldest_age_s']))
+   ```
+7. **Kernel effects backed up** (oldest due above 1800 s, every 15 min over 75 min):
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.floor" | summarize v = max(toint(['attributes.custom']['kernel.outbox.effects_oldest_age_s']))
+   ```
+8. **Floor repairing missed events** (above 3, every 15 min over 75 min; each is a webhook or effect row the live path lost):
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.floor" | summarize v = max(toint(['attributes.custom']['kernel.floor.repairs.facts_imported']) + toint(['attributes.custom']['kernel.floor.repairs.effects_enqueued']))
+   ```
+9. **Parked commands given up, or the floor failing** (above 0, every 15 min over 75 min):
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.floor" | summarize v = max(toint(['attributes.custom']['kernel.floor.repairs.parked_dead']) + toint(['attributes.custom']['kernel.floor.errors']))
+   ```
+10. **Floor not running** (below 1, every 30 min over 130 min; needs the control plane's token, since the floor runs there in own mode):
+    ```
+    ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.floor" | summarize v = count()
+    ```
+11. **Control-plane commands failing** (above 3, every 5 min over 15 min):
+    ```
+    ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.command" and tostring(['attributes.custom']['kernel.outcome']) in ("failed", "unavailable") | summarize v = count()
+    ```
+12. **Control-plane commands slow** (p95 above 5000 ms, every 5 min over 15 min):
+    ```
+    ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.command" and tostring(['attributes.custom']['kernel.outcome']) in ("applied", "replayed") | extend ms = toint(['attributes.custom']['kernel.latency_ms']) | summarize n = count(), p = percentile(ms, 95) | extend v = iff(n >= 5, p, 0.0) | project v
+    ```
+
+Monitors 2, 6 to 12, and the door monitors for doors the control plane runs
+itself (claims, worker PATCH and webhooks served there), report nothing until
+the Worker holds `AXIOM_INGEST_TOKEN`.
+
 ## 4. One landing authority
 
 **Capability statement**: Every path by which a PR reaches trunk MUST pass the
@@ -786,6 +879,11 @@ recorded as such, never as an approval.
   reviewer already approved is reported as a finding, never absorbed; the
   reviewer prompt asks for edge-case tracing and every blocking issue in the
   one review, to keep rounds to what is new.
+- A person's approve-and-override (§7) is a human approval of exactly the
+  current head, so `Buildd / Review approval` is `success` for that head and
+  says so: "Ready to merge: <sha> approved by a person over N open findings".
+  A later push starts it `pending` again, like any approval. The findings
+  stay as they were; only the check and the landing read the approval.
 - A merge GitHub holds on a required check is a wait, never a person's (merge
   holds). GitHub's 405 "Required status check ... is expected / in progress /
   pending" is the outcome `held`, not a refusal: the delivery stays `LANDING`
@@ -1526,6 +1624,23 @@ derive it from the delivery, so the task page, mission page, Home, `get_pr`,
   refused (`decision_head_stale`, `human_required`, `no_merge_permission`),
   nothing moves or is dispatched, the note stays, and the door answers with a
   plain sentence that names what was wrong and what to do, never a bare code.
+- AC-81 (implements Living Spec criteria AC-45/AC-46, follow-up 22): GIVEN a
+  review escalation with required findings still open or awaiting
+  verification WHEN a person whom the merge policy allows, with an owner or
+  admin team role and merge permission on the repo on GitHub, chooses
+  "Approve and override" THEN it is one `HumanResolve(approve)` bound to the
+  head (and version) they saw, through the person-only `approve_override` op;
+  the delivery is `APPROVED` on the basis `human` for that head, the bypass
+  names the person, their reason and the findings it went past, the findings
+  stay listed, `Buildd / Review approval` turns `success` for that head, the
+  escalation note clears, and the landing merges it once; the same decision
+  again is answered by the first and changes nothing.
+- AC-82 (failure): GIVEN the same escalation WHEN the head moved since, an
+  agent, an API key or a task token asks, the person lacks merge permission,
+  or the merge policy or their role does not allow an override THEN it is
+  refused (`decision_head_stale`, `human_required`, `no_merge_permission`,
+  `override_not_permitted`, or the door's own `policy_off` / `role`), in a
+  plain sentence, and nothing moves.
 - AC-69 (implements Living Spec criterion AC-47): GIVEN findings in every
   disposition WHEN `get_pr`, the task page, the activity comment and the
   DeliveryView count them THEN each required finding is counted once, in one
@@ -1553,7 +1668,31 @@ same groups (`open`, `addressedAwaitingVerification`, `resolved`, `waived`,
 `deferred`), their `totals`, and `decisionHead { headSha, version }` for the
 card to send back. Whether the brief offers approve-and-override is whatever
 the surface passes as `escalationPermissions` per workspace
-(`getDeliveryViewsForTasks`); absent, the override is not offered.
+(`getDeliveryViewsForTasks`, asked only for a delivery escalated for a review
+reason); absent, the override is not offered.
+
+Approve and override (follow-up 22, task 90898aca). Who may take it comes from
+three readings, none a list in code (`apps/web/src/lib/override-permission.ts`):
+the workspace merge policy's `reviewOverride` (`admins`, the default, or
+`off`), the person's team role in the team that owns the workspace (owner or
+admin), and their GitHub permission on the workspace repo through its
+installation (write, maintain or admin; `users.githubId` resolved to a login,
+as `member-repo-access.ts` does). Anything unconfirmed is no. The task page
+passes the viewer's answer to the brief (`loadTaskDeliveryContext(taskId,
+viewerId)`), with the refusal as a sentence, so the card offers the action
+only to someone who can take it. The door is `POST
+/api/prs/[prNumber]/approve-override` (`{ headSha, version?, reason?,
+workspaceId? }`), from a dashboard session or the person's own OAuth session
+(MCP `approve_pr_override`); a key, a task token or an agent grant is refused
+before anything is read. It re-reads the permission at the click, then
+submits `approve_override` (`approveOverrideThroughKernel`): the live head is
+recorded first, then `HumanResolve(approve)` with `decision
+approve_override:<head>:v<version>`, `commitId`, `hasMergePermission` and
+`overridePermitted`. The kernel refuses an approval past required findings
+that are open or addressed without `overridePermitted` (`override_not_permitted`)
+and records `overriddenFindings` on the bypass. On `applied` (or a replay
+while the PR no longer waits on a person) the escalation note clears; a
+replay on a PR escalated again is `decision_already_answered`.
 
 How (S7, task c16eb202). The review line ("2 rounds · latest: changes
 requested · 1 open finding, 1 verified resolved") and a repair's phase are pure readings in the
@@ -1575,6 +1714,8 @@ as a candidate whatever its worker row says.
 | Repair phases | `packages/workflow-kernel/src/delivery-summary.test.ts`; `apps/web/src/lib/task-checks.test.ts` › "repair phase (§7)" |
 | Criterion AC-67 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "r7 AC-45"; `apps/web/tests/db/escalation-decisions.test.ts` › "AC-45 / AC-46"; `apps/web/src/app/api/prs/[prNumber]/re-review/route.test.ts` › "Living Spec r7"; `apps/web/src/app/api/prs/[prNumber]/apply-recommendation/route.test.ts` › "Living Spec r7" |
 | Criterion AC-68 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "r7 AC-46"; `packages/workflow-kernel/src/decision-refusal.test.ts`; `apps/web/src/app/api/prs/[prNumber]/re-review/route.test.ts` › "AC-46" |
+| Criterion AC-81 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "approve and override: a person with merge permission"; `apps/web/tests/db/escalation-decisions.test.ts` › "approve and override"; `apps/web/src/app/api/prs/[prNumber]/approve-override/route.test.ts`; `packages/workflow-kernel/src/reducer.test.ts` › "over open findings needs overridePermitted"; `apps/web/src/lib/workflow/delivery-view.test.ts` › "read only for a review escalation" |
+| Criterion AC-82 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "approve and override is refused"; `apps/web/src/lib/override-permission.test.ts`; `apps/web/src/app/api/prs/[prNumber]/approve-override/route.test.ts` › "refused"; `packages/workflow-kernel/src/escalation-brief.test.ts` › "host's sentence" |
 | Criterion AC-69 | `packages/workflow-kernel/src/findings.test.ts` › "findingTotals"; `packages/workflow-kernel/src/escalation-brief.test.ts` › "AC-47"; `packages/workflow-kernel/src/delivery-summary.test.ts` › "AC-47"; `apps/web/src/lib/projections-agree.test.tsx`; `apps/web/src/lib/workflow/delivery-view.test.ts` › "follow-up 22" |
 | Criterion AC-72 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "6900a317"; `packages/workflow-kernel/src/reducer.test.ts` › "CiObserved"; `apps/web/src/lib/workflow/github-facts.test.ts` › "a re-run supersedes"; `apps/web/tests/db/workflow-seam.test.ts` › "6900a317"; `apps/web/src/app/app/(protected)/tasks/[id]/PrDetailsCard.test.tsx` › "re-run replaced" |
 
@@ -2000,6 +2141,7 @@ column outside the kernel; S3 and S4 remove or route each one.
 - `apps/web/src/lib/workflow/` (moves to the package in S1–S2)
 - `apps/control-plane/src/` (hosts the kernel in S3: the command route and the cron trigger)
 - `apps/web/src/lib/workflow/command-api.ts`, `command-ledger.ts`, `kernel-client.ts`, `kernel-floor.ts`, `kernel-host.ts` (S3)
+- `apps/web/src/lib/workflow/kernel-telemetry.ts`, `apps/control-plane/src/axiom-export.ts` (Observability, §3)
 - `apps/web/src/modules.ts` (handler composition replaced in S2)
 - `apps/web/src/lib/mission-branch-refresh.ts`, `mission-pr.ts` (S6)
 - `apps/web/src/lib/release-executor.ts`, `release/compose-actions.ts` (S3)

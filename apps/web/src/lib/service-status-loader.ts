@@ -28,7 +28,7 @@ const ACTIVE_WINDOW_MS = 24 * 3_600_000;
 export async function serviceStatusReads(teamId: string, now: number = Date.now()) {
   const { db } = await import('@buildd/core/db');
   const { accounts, rootCauses, secrets, tasks, teamMembers, workers, workspaces } = await import('@buildd/core/db/schema');
-  const { and, eq, gte, inArray, isNull, ne, sql } = await import('drizzle-orm');
+  const { and, eq, exists, gte, inArray, isNull, ne, sql } = await import('drizzle-orm');
   const { teamCredentialWhere } = await import('@buildd/core/secrets/team-scope');
   const { toRootCauseRecord } = await import('./root-cause-record');
   const { AGENT_CREDENTIAL_PURPOSES } = await import('./getting-started');
@@ -63,9 +63,13 @@ export async function serviceStatusReads(teamId: string, now: number = Date.now(
     const records = recordRows.map(toRootCauseRecord);
     const taskIds = [...new Set(records.flatMap(r => r.affectedTaskIds))];
     // One read: whether a task has a live run is an EXISTS beside its columns.
+    // Built with exists() so both sides of the correlation render qualified; a
+    // raw template in a select field renders bare names, and `task_id = id`
+    // then compares the worker with itself and is never true.
     const taskRows = taskIds.length === 0 ? [] : await db.select({
       id: tasks.id, title: tasks.title, workspaceId: tasks.workspaceId, status: tasks.status, createdByUserId: tasks.createdByUserId,
-      hasLiveRun: sql<boolean>`exists (select 1 from ${workers} where ${workers.taskId} = ${tasks.id} and ${inArray(workers.status, [...LIVE_WORKER_STATUSES])})`,
+      hasLiveRun: sql<boolean>`${exists(db.select({ one: sql`1` }).from(workers)
+        .where(and(eq(workers.taskId, tasks.id), inArray(workers.status, [...LIVE_WORKER_STATUSES]))))}`,
     }).from(tasks).where(inArray(tasks.id, taskIds));
     const claimed = new Set(claimRows.map(w => w.accountId));
     return {

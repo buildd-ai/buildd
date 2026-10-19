@@ -108,6 +108,7 @@ export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   resolve_capability: 'read',
   request_capability: 'write',
   close_pr: 'write',
+  approve_pr_override: 'write',
   update_pr: 'write',
   request_pr_review: 'write',
   update_artifact: 'write',

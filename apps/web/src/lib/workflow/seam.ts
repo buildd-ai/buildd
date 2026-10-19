@@ -387,7 +387,7 @@ export async function kernelDeliveryOfPr(p: { workspaceId: string; prNumber: num
  * retried request, a door re-sent after an unknown outcome) carries the same id, so the kernel
  * answers it with the transition it already made.
  */
-export function humanDecision(action: 'request_fix' | 'force_re_review', headSha: string, version: number): { id: string; headSha: string } {
+export function humanDecision(action: 'request_fix' | 'force_re_review' | 'approve_override', headSha: string, version: number): { id: string; headSha: string } {
   return { id: `${action}:${headSha}:v${version}`, headSha };
 }
 
@@ -460,6 +460,56 @@ export async function applyRecommendationThroughKernel(p: {
     current: await currentOf(),
     attempt: human ? { id: human.id, attemptNo: human.attemptNo, maxAttempts: human.maxAttempts, taskId: human.taskId } : null,
   };
+}
+
+/**
+ * "Approve and override" on a kernel-owned PR's review escalation (Living Spec r7 AC-45/AC-46):
+ * one T23 HumanResolve(approve) of the head the person decided on, at the version they saw,
+ * past the required findings still open or awaiting verification. The door proves who may
+ * (`hasMergePermission`, `overridePermitted`: lib/override-permission.ts); the kernel
+ * refuses without them, refuses a moved head (`decision_head_stale`) and answers a replay with
+ * the first transition (`duplicate`). On success the inline drain publishes `Buildd / Review
+ * approval` success for that head ("approved by a person over N open findings"), and the
+ * merge follows the workspace policy. Null = not the kernel's PR.
+ */
+export async function approveOverrideThroughKernel(p: {
+  workspaceId: string; prNumber: number; actor: string;
+  /** The head the person decided on, and the delivery version they saw (absent = the version read now). */
+  decision: { headSha: string; version?: number | null };
+  reason?: string | null;
+  hasMergePermission: boolean; overridePermitted: boolean;
+}, deps: SeamDeps = {}): Promise<{ result: CommandResult; current: CurrentView & { stateReason: string | null } } | null> {
+  const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
+  if (!repo) return null;
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, repo.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return null;
+  const currentOf = async (): Promise<CurrentView & { stateReason: string | null }> => {
+    const d = (await loadView({ deliveryId }, deps.exec)).delivery;
+    return { state: d?.state ?? null, stateReason: d?.stateReason ?? null, version: d?.version ?? 0, head: d?.currentHeadSha ?? null, round: d?.currentRound ?? 0 };
+  };
+  // Read before the live head is recorded, so a push that lands mid-click still makes the click stale.
+  const version = p.decision.version ?? (await loadView({ deliveryId }, deps.exec)).delivery?.version ?? 0;
+  // A head GitHub has that no webhook delivered yet is recorded first, so an approval of the
+  // older head is refused rather than applied to a head the person never saw.
+  const reader = readerFor(deps, repo.installationId);
+  const live = await reader.readPr(repo.repoFullName, p.prNumber);
+  if (!live) {
+    const current = await currentOf();
+    return { result: { result: 'rejected', reason: 'live_read_failed', current: { state: current.state, version: current.version, head: current.head, round: current.round } }, current };
+  }
+  await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.actor}:approve_override`, repoFullName: repo.repoFullName, prNumber: p.prNumber },
+    { exec: deps.exec, github: { ...reader, readPr: async () => live } });
+  const result = await applyCommand(
+    {
+      type: 'HumanResolve', actor: p.actor, choice: 'approve', expectedVersion: version,
+      commitId: p.decision.headSha, hasMergePermission: p.hasMergePermission, overridePermitted: p.overridePermitted,
+      reason: p.reason?.trim() || undefined,
+      decision: humanDecision('approve_override', p.decision.headSha, version),
+    },
+    { ref: { deliveryId }, exec: deps.exec },
+  );
+  if (result.result === 'applied') await drainDelivery(deliveryId, deps);
+  return { result, current: await currentOf() };
 }
 
 // ── a90fc99b: the escalation gate's policy-merge rule ───────────────────────
