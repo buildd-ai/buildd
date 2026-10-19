@@ -86,19 +86,19 @@ export function foldMissionSpec(input: {
 
   const standings: LivingSpecCriterionStanding[] = input.scope.map((criterionId) => {
     const row = newest.get(criterionId);
-    if (waived.has(criterionId)) return { criterionId, standing: 'waived', headSha: row?.headSha ?? null, ...(row ? { verdictId: row.id } : {}) };
+    if (waived.has(criterionId)) return { criterionId, standing: 'waived', headSha: row?.headSha ?? null, ...(row ? { verdictId: row.id, source: row.source ?? 'review' } : {}) };
     if (!row) return { criterionId, standing: 'missing', headSha: null };
     // A fail stands while it judged the target as it is now. Once the target
     // moves past it (a repair or any other mission PR merged), it is stale and
     // checked again, like a pass (c5a2c67b R-4). With no known target it stands.
     if (row.verdict === 'fail' && (input.target.kind === 'unknown' || verdictIsCurrent(input.target, row.headSha))) {
-      return { criterionId, standing: 'fail', headSha: row.headSha, verdictId: row.id };
+      return { criterionId, standing: 'fail', headSha: row.headSha, verdictId: row.id, source: row.source ?? 'review' };
     }
     if (!verdictIsCurrent(input.target, row.headSha)) {
       if (row.verdict === 'fail') staleFails.add(criterionId);
-      return { criterionId, standing: 'stale', headSha: row.headSha, verdictId: row.id };
+      return { criterionId, standing: 'stale', headSha: row.headSha, verdictId: row.id, source: row.source ?? 'review' };
     }
-    return { criterionId, standing: row.verdict, headSha: row.headSha, verdictId: row.id };
+    return { criterionId, standing: row.verdict, headSha: row.headSha, verdictId: row.id, source: row.source ?? 'review' };
   });
 
   const judged = standings.filter((s) => s.standing !== 'waived');
