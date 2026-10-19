@@ -84,8 +84,7 @@ import { legacyRepairCompletionGate, legacyReviewFixCompletionGate, type LegacyR
 import { legacyDiffTouchesFindings, fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, notOwnerTaskSql, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { endedAtOf, isOwnerTask, reopenOwner, withdrawOwner } from '@/lib/workflow/owner-attempt';
 // T4 and T6 are applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
-import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, attemptRequeued as workflowAttemptRequeued, kernelPrincipalOf, type KernelPrincipal } from '@/lib/workflow/kernel-client';
-import { submitReviewVerdict } from '@/lib/workflow/review-verdict-door';
+import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, attemptRequeued as workflowAttemptRequeued, kernelPrincipalOf, recordReviewVerdict, submitReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
 import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
@@ -6222,7 +6221,7 @@ async function handleReviewerOutcomeIfNeeded(
       confidence: output.confidence,
       evidenceSha,
       output,
-    }, { principal });
+    }, { principal, record: recordReviewVerdict });
     if (sent.status !== 'answered') {
       const detail = sent.status === 'parked' ? `parked for the floor to re-send (${sent.why})` : `not recorded; the floor fails the round once the reviewer has ended a while (${sent.error})`;
       console.error(`[reviewer] workflow kernel did not answer the verdict for PR #${prNumber}: ${detail}`);
