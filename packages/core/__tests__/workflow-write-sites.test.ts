@@ -86,7 +86,10 @@ const KERNEL_ENTRY_POINTS = new Set(['kernel-client', 'command-api', 'command-ke
   'owner-attempt',
   // The platform operator's kernel view (Health, operator only): bounded SELECTs over the log and the
   // parked commands, plus the PR timeline through loadView; no command, so it cannot assign a state.
-  'operator-view']);
+  'operator-view',
+  // §6: the mission epochs' outbox. The refresh triggers owe the writable epoch's refresh row and drain
+  // it; it writes only workflow_effects rows owned by an epoch, never a delivery or an epoch's state.
+  'epoch-effects']);
 const COMPOSITION_ROOT = 'apps/web/src/modules.ts';
 // The package is matched too: importing `@buildd/workflow-kernel/reducer` is importing the reducer, and its
 // root (`@buildd/workflow-kernel`, every module at once) reads as `index`, which is no entry point.

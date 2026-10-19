@@ -7,7 +7,8 @@ import { describe, expect, it } from 'bun:test';
 import {
   shippedEpochOf, unsettledEpochs, deliveryBranchFinished, finishedBranchWhy,
   adoptionOf, classifySettlement, epochBranchName, epochCompletionHold, isPriorEpochBranch, pendingEpochSteps,
-  reduceMissionEpochs, writableEpoch, type MissionEpochCommand, type MissionEpochView,
+  reduceMissionEpochs, writableEpoch, owedRefresh, epochEffectIsCurrent, REFRESH_EFFECT_WINDOW_MS,
+  type MissionEpochCommand, type MissionEpochView,
 } from './delivery-epochs';
 import { EpochConflict, MemoryEpochStore } from './memory/delivery-epochs';
 
@@ -356,6 +357,63 @@ describe('review round 3', () => {
 // Task fbc93ebd (kernel audit F6): an integration PR closed unmerged does not by
 // itself retire its branch, so a refresh onto it can still be valid. These are
 // the only ways a delivery branch is finished.
+describe('the refresh is an effect the writable epoch owes (§6)', () => {
+  const NOW = Date.parse(AT);
+  const owes = (v: MissionEpochView, trigger: 'start' | 'backstop' = 'start', nowMs = NOW) => owedRefresh(v, { trigger, nowMs });
+  function inFlight() {
+    const h = harness();
+    h.run({ ...base, type: 'Adopt' });
+    h.run({ ...base, type: 'PrBound', prNumber: 10, repoFullName: 'o/r', ownerTaskId: 'owner-1', headRef: ROOT });
+    return h;
+  }
+
+  it('the writable epoch owes one refresh of its own branch', () => {
+    const h = inFlight();
+    const [e1] = h.view().epochs;
+    expect(owes(h.view())).toEqual({
+      epochId: e1.id, kind: 'refresh_mission_branch',
+      dedupeKey: `refresh_mission_branch:${e1.id}:start:${Math.floor(NOW / REFRESH_EFFECT_WINDOW_MS)}`,
+      payload: { branch: ROOT, trigger: 'start' },
+    });
+  });
+
+  it('a merged epoch owes none; its successor owes one once its branch is cut', () => {
+    const h = inFlight();
+    h.run(merged(10, { mergedAt: AT }));
+    const [, e2] = h.view().epochs;
+    expect(owes(h.view())).toBeNull();
+    h.run({ ...base, type: 'BranchReady', epochId: e2.id });
+    expect(owes(h.view())).toMatchObject({ epochId: e2.id, payload: { branch: e2.branch } });
+  });
+
+  it('a merged epoch with nothing left, or a closed mission, owes none', () => {
+    const h = inFlight();
+    h.setWork({ unfinishedTasks: 0, openTaskPrs: 0 });
+    h.run(merged(10));
+    expect(writableEpoch(h.view())).toBeNull();
+    expect(owes(h.view())).toBeNull();
+    const t = inFlight();
+    t.setTerminal(true);
+    expect(owes(t.view())).toBeNull();
+  });
+
+  it('asks of one trigger in one window are one row; the other trigger and the next window are another', () => {
+    const v = inFlight().view();
+    const key = (trigger: 'start' | 'backstop', at: number) => owes(v, trigger, at)!.dedupeKey;
+    const start = Math.floor(NOW / REFRESH_EFFECT_WINDOW_MS) * REFRESH_EFFECT_WINDOW_MS;
+    expect(key('start', start)).toBe(key('start', start + REFRESH_EFFECT_WINDOW_MS - 1));
+    expect(key('start', start)).not.toBe(key('backstop', start));
+    expect(key('start', start)).not.toBe(key('start', start + REFRESH_EFFECT_WINDOW_MS));
+  });
+
+  it('a row queued before its epoch merged is not current; neither is one for another branch', () => {
+    expect(epochEffectIsCurrent({ state: 'open', branch: ROOT }, { branch: ROOT })).toBe(true);
+    expect(epochEffectIsCurrent({ state: 'merged', branch: ROOT }, { branch: ROOT })).toBe(false);
+    expect(epochEffectIsCurrent({ state: 'open', branch: `${ROOT}-delivery-2` }, { branch: ROOT })).toBe(false);
+    expect(epochEffectIsCurrent(null, { branch: ROOT })).toBe(false);
+  });
+});
+
 describe('deliveryBranchFinished', () => {
   const closed = { prClosedUnmerged: true, supersededBy: null, containedInTrunk: null, successorOpen: false };
   function openWithPr(pr = 40) {
