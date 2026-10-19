@@ -5,6 +5,7 @@ import { createHash } from 'crypto';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { githubApi, checkSuitesAllPassed, type CheckSuiteSummary } from '@/lib/github';
 import { appBaseUrl } from '@/lib/app-url';
+import { flattenVerifiedBy } from '@buildd/spec-contract/acceptance-tests';
 import { renderRepoCopy, specShortId, verifyRepoCopy, type RepoCopy } from '@buildd/spec-contract/repo-copy';
 import {
   buildSpecIndex, crossCheckSpecs, lintSpecFile, parseSpecFrontmatter, readDomainList, SPEC_META_FILES, withDomain, type IndexedSpec,
@@ -122,7 +123,7 @@ export async function buildSpecRepoCopy(spec: SpecRow, opts: { revision?: number
   const approvedOn = (rev.approvedAt ?? opts.now ?? new Date()).toISOString().slice(0, 10);
   const copy = await renderRepoCopy({
     shortId, revision: n, title: spec.title, body, metadata, domain: area.domain,
-    status: (metadata.verified_by ?? []).length ? 'active' : 'draft',
+    status: flattenVerifiedBy(metadata.verified_by).length ? 'active' : 'draft',
     defaultOwner: 'buildd', defaultLastVerified: approvedOn,
   });
   if (!copy.ok) return { ok: false, reason: 'unrenderable', message: copy.message };
