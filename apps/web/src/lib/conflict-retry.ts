@@ -51,6 +51,7 @@ import { isRepairRole, projectRequeue, type ConflictSeen } from '@/lib/workflow/
 import { attemptRequeued, observeConflict, systemPrincipal } from '@/lib/workflow/kernel-client';
 import { kernelDeliveryForPr } from '@/lib/workflow/authority';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { resolveTaskWorkspace, withWorkspaceRouting, withoutWorkspaceRouting, routedFrom } from './workspace-routing';
 
 /** Public default; read the live value with `policyValue('maxConflictIterations')`. */
 export const DEFAULT_MAX_CONFLICT_ITERATIONS = POLICY_DEFAULTS.maxConflictIterations;
@@ -1373,7 +1374,12 @@ export async function dispatchConflictRetry(
       parentTaskId: retryTask.parentTaskId,
       missionId: retryTask.missionId,
       ...identity,
-      context: retryTask.context,
+      // A fresh record: the attempt continues the task it retries, so that task's
+      // home is the source; its own recorded routing is not inherited.
+      context: withWorkspaceRouting(
+        withoutWorkspaceRouting(retryTask.context as Record<string, unknown> | null),
+        routedFrom(retryTask.workspaceId, 'source', 'it retries a task, which lives here'),
+      ),
       creationSource: retryTask.creationSource,
       taskClass: 'attempt',
       conflictRetryPrNumber: retryTask.conflictRetryPrNumber,

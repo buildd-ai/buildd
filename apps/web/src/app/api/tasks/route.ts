@@ -744,6 +744,13 @@ export async function POST(req: NextRequest) {
       if (missionId && isUuid(missionId) && !apiAccount?.taskScope) {
         const m = await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, missionId)), columns: { workspaceId: true } }).catch(() => null);
         missionHome = m?.workspaceId ?? null;
+        // A mission's home is a workspace like any other: the caller must be
+        // able to file there, or the mission link would reach across teams.
+        if (missionHome) {
+          const r = await resolveRef(missionHome);
+          if (typeof r !== 'string') return r;
+          missionHome = r;
+        }
       }
       let callerDefault: string | undefined;
       if (rawWorkspaceId) {

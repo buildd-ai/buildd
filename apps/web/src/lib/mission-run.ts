@@ -31,6 +31,7 @@ import {
   recordSubjectMatchObserved,
 } from '@/lib/subject-anchor-observer';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { resolveTaskWorkspace, withWorkspaceRouting, withoutWorkspaceRouting, routedFrom } from './workspace-routing';
 
 // One durable note per mission, not one per organizer cycle. Matched by
 // title, so this string is load-bearing — the dedupe query reads it.
@@ -693,7 +694,13 @@ export async function runMission(
       roleSlug,
       runnerPreference: template?.runnerPreference || 'any',
       requiredCapabilities: template?.requiredCapabilities || [],
-      context: taskContext,
+      context: withWorkspaceRouting(withoutWorkspaceRouting(taskContext), (() => {
+        const r = resolveTaskWorkspace({
+          mission: mission.workspaceId ? { workspaceId: mission.workspaceId } : null,
+          callerDefault: { workspaceId, reason: 'the mission has no workspace, so its coordination workspace' },
+        });
+        return r.ok ? r.routing : routedFrom(workspaceId, 'caller_default', 'coordination workspace');
+      })()),
       creationSource: 'orchestrator',
       ...(heartbeatTickAnchor ? { heartbeatTickAnchor } : {}),
       missionId: mission.id,

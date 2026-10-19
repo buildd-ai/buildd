@@ -19,6 +19,7 @@ import { withDispatchHint } from '@buildd/core/dispatch-outbox';
 import { recordPathDeclaration, manifestShape } from '@/lib/path-declaration-ledger';
 import { scheduleCreationManifestShadow } from './task-manifest-prediction';
 import { scheduleTaskEstimate } from './task-estimate-hook';
+import { resolveTaskWorkspace, withWorkspaceRouting, withoutWorkspaceRouting, routedFrom } from './workspace-routing';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
@@ -419,7 +420,7 @@ export async function approvePlan(
             subjectPrNumbers: intentInfo.prNumbers,
           } satisfies TaskSubjectAnchor,
         } : {}),
-        context: {
+        context: withWorkspaceRouting({
           ...(step.model ? { model: step.model } : {}),
           ...(step.skillSlugs?.length ? { skillSlugs: step.skillSlugs } : {}),
           ...(options?.autoApproved ? { autoApproved: true } : {}),
@@ -434,7 +435,7 @@ export async function approvePlan(
             : {}),
           ...(integrationBase ? { baseBranch: integrationBase } : {}),
           ...(stepPrReach ? { prReach: stepPrReach } : {}),
-        },
+        }, planChildRouting(task)),
       })
       .returning());
 
@@ -614,4 +615,12 @@ export function detectCircularDeps(
     if (cycle) return cycle;
   }
   return null;
+}
+
+/** A plan step continues its planning task, so it lives where that task lives (routing spec §4: source object). */
+function planChildRouting(task: { workspaceId: string | null; missionId?: string | null }) {
+  const r = resolveTaskWorkspace({
+    sourceObject: task.workspaceId ? { workspaceId: task.workspaceId, kind: 'plan' } : null,
+  });
+  return r.ok ? r.routing : routedFrom(task.workspaceId ?? '', 'source', 'it continues a plan, which lives here');
 }

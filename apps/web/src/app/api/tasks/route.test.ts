@@ -1204,6 +1204,38 @@ describe('POST /api/tasks', () => {
     });
   });
 
+  describe('mission-derived workspace, user session', () => {
+    const MISSION = '00000000-0000-4000-8000-0000000000d4';
+    const HOME = '00000000-0000-4000-8000-0000000000e5';
+    const fileInMission = () => POST(createMockRequest({
+      method: 'POST', body: { missionId: MISSION, title: 'Mission work' },
+    }));
+
+    it('refuses with 403 and inserts nothing when the mission home is unreachable', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockMissionsFindFirst.mockResolvedValue({ id: MISSION, workspaceId: HOME, teamId: 'team-2' });
+      mockResolveWorkspace.mockResolvedValue(null);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: HOME });
+      const response = await fileInMission();
+      expect(response.status).toBe(403);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
+
+    it('records source=mission when the mission home is reachable', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockMissionsFindFirst.mockResolvedValue({ id: MISSION, workspaceId: HOME, teamId: 'team-1' });
+      mockResolveWorkspace.mockResolvedValue({ id: HOME, teamId: 'team-1', accessMode: 'restricted' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: HOME, teamId: 'team-1' });
+      const values = mock((v: any) => ({ returning: mock(() => [{ id: 'task-m', ...v }]) }));
+      mockTasksInsert.mockReturnValue({ values });
+      const response = await fileInMission();
+      expect(response.status).toBe(200);
+      const row = (values.mock.calls[0] as any[])[0];
+      expect(row.workspaceId).toBe(HOME);
+      expect(row.context.workspaceRouting).toMatchObject({ workspaceId: HOME, source: 'mission' });
+    });
+  });
+
   describe('workspace reach (shared rule with listing and mission create)', () => {
     const WS = '20000000-0000-4000-8000-000000000001';
     const account = { id: 'acct-a', name: 'runner', apiKey: 'bld_xxx', teamId: 'team-a' };

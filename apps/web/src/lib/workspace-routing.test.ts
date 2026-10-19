@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import {
-  resolveTaskWorkspace, withWorkspaceRouting, withoutWorkspaceRouting, WORKSPACE_ROUTING_SOURCES,
+  resolveTaskWorkspace, withWorkspaceRouting, withoutWorkspaceRouting, routedFrom, WORKSPACE_ROUTING_SOURCES,
 } from './workspace-routing';
 
 const ids = { a: 'ws-a', b: 'ws-b', c: 'ws-c', d: 'ws-d', e: 'ws-e', f: 'ws-f' };
@@ -56,5 +56,21 @@ describe('context stamping', () => {
   });
   it('drops a caller copy', () => {
     expect(withoutWorkspaceRouting({ workspaceRouting: 1, k: 2 })).toEqual({ k: 2 });
+  });
+});
+
+describe('creator routing records', () => {
+  it('a source object beats the mission, and a mission beats the caller default', () => {
+    const src = resolveTaskWorkspace({ sourceObject: { workspaceId: 'a', kind: 'plan' }, mission: { workspaceId: 'b' }, callerDefault: { workspaceId: 'c' } });
+    expect(src.ok && src.routing).toMatchObject({ workspaceId: 'a', source: 'source' });
+    const mis = resolveTaskWorkspace({ mission: { workspaceId: 'b' }, callerDefault: { workspaceId: 'c' } });
+    expect(mis.ok && mis.routing).toMatchObject({ workspaceId: 'b', source: 'mission' });
+  });
+
+  it('a retry stamps a fresh record rather than the inherited one', () => {
+    const inherited = { workspaceRouting: { workspaceId: 'old', source: 'explicit', reason: 'old' }, keep: 1 };
+    const ctx = withWorkspaceRouting(withoutWorkspaceRouting(inherited), routedFrom('ws', 'source', 'it retries a task, which lives here')) as any;
+    expect(ctx.keep).toBe(1);
+    expect(ctx.workspaceRouting).toEqual({ workspaceId: 'ws', source: 'source', reason: 'it retries a task, which lives here' });
   });
 });

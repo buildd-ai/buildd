@@ -235,6 +235,7 @@ describe('the owner\'s examples', () => {
     expect(approvalHeadline(preview)).toBe('New task in: Multi-currency checkout');
     expect(preview.changes.map(approvalChangeLine)).toEqual([
       'Title: + JPY e2e test', 'Brief: + Cover zero-decimal JPY through checkout.', 'After: + checkout · Stripe in currency',
+      "Workspace: + harborline-web (it is the mission's workspace)",
     ]);
     expect(writes).toEqual([`POST /api/tasks {"missionId":"${MISSION}","dependsOn":["${T_STRIPE}"],"creationSource":"dashboard"}`]);
   });
@@ -253,6 +254,26 @@ describe('the owner\'s examples', () => {
     const { preview } = await proposeAndApprove('create_task', { title: 'Add to this', description: 'More work.' });
     expect(approvalHeadline(preview)).toBe('New task in: Multi-currency checkout');
     expect(writes[0]).toContain(`"missionId":"${MISSION}"`);
+  });
+
+  it('an inherited mission still names the destination workspace and why', async () => {
+    const p = await buildPreview('create_task', { title: 'Add to this', description: 'More work.' }, docked);
+    expect(p.ok).toBe(true);
+    if (p.ok) {
+      const line = p.preview.changes.find((c: any) => c.label === 'Workspace');
+      expect(line?.after).toBe("harborline-web (it is the mission's workspace)");
+    }
+  });
+
+  it('an explicit workspace plus a mission says the caller named it', async () => {
+    const p = await buildPreview('create_task', { title: 'x', description: 'y', workspaceId: WS }, docked);
+    expect(p.ok).toBe(true);
+    if (p.ok) expect(p.preview.changes.find((c: any) => c.label === 'Workspace')?.after).toBe('harborline-web (you named it)');
+  });
+
+  it('a destination whose name cannot be loaded is not approved as "this workspace"', async () => {
+    const p = await buildPreview('create_task', { title: 'x', description: 'y', workspaceId: id(99), missionId: null }, docked);
+    expect(p.ok).toBe(false);
   });
 
   it('"Run a visual review on this mission" as a visual-auditor task → no card, no write: sent to the mission\'s Visual review', async () => {

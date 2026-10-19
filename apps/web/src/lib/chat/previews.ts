@@ -293,12 +293,14 @@ const createTask: Builder = async (input, env) => {
   const paths = listOf(input.pathManifest).filter((p): p is string => typeof p === 'string');
   if (paths.length) changes.push({ label: 'Paths', before: null, after: clip(paths.join(', '), 200)! });
   if (standalone) changes.push({ label: 'Mission', before: null, after: 'none' });
-  const workspaceId = str(input.workspaceId) ?? mission?.workspaceId ?? env.scope.workspaceId ?? null;
+  const workspaceId = str(input.workspaceId) ?? (mission?.workspaceId ? String(mission.workspaceId) : null) ?? env.scope.workspaceId ?? null;
   // The card names the home and why, never "this workspace" (routing spec I-17).
   const home = await workspaceOf(env, workspaceId);
   const homeName = home?.name ?? null;
+  // A destination we cannot name is never approved as "this workspace".
+  if (workspaceId && !homeName) return question('That workspace isn\'t available here. Ask the user which workspace the task belongs in.');
   const why = str(input.workspaceId) ? 'you named it' : mission ? "it is the mission's workspace" : 'this conversation is in it';
-  if (homeName && !mission) changes.push({ label: 'Workspace', before: null, after: `${homeName} (${why})` });
+  if (homeName) changes.push({ label: 'Workspace', before: null, after: `${homeName} (${why})` });
   // An inferred subject is a suggestion on the card, never applied alone (D-4).
   let suggestion: string | null = null;
   if (!str(input.workspaceId) && !mission) {
