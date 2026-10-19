@@ -16,7 +16,7 @@ import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth } from '@buildd/core/mission-helpers';
-import { isSurfaceAuditTask, surfaceAuditHeadline } from '@buildd/core/surface-audit';
+import { isSurfaceAuditTask, isSurfaceFixTask, surfaceAuditHeadline } from '@buildd/core/surface-audit';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
@@ -70,6 +70,8 @@ import { loadFleetCapacity } from '@/lib/home-fleet';
 import { parseMissionLayout } from '@/lib/mission-layout';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
 import { loadVisualReview } from '@/lib/visual-review-load';
+import { emptyVisualReviewModel } from '@/lib/visual-review-model';
+import type { SurfaceAuditGateTask } from '@/lib/mission-surface-audit-gate';
 import type { VisualReviewModel } from '@buildd/shared';
 import { MissionVisualReviewProvider } from './MissionVisualReview';
 import { MissionSurfaceAuditWaiverProvider } from './MissionSurfaceAuditWaiver';
@@ -99,6 +101,7 @@ import { DisplayTimezoneProvider } from '@/components/DisplayTimezone';
 import { getTeamTimezoneSetting } from '@/lib/team-timezone';
 import { displayTaskTitle } from '@/lib/task-title';
 import { observeMergeStateOnRender } from '@/lib/pr-state-refresh';
+import { missionPrStateStale, unseenMergeCandidates, type PrStateRow } from '@/lib/mission-pr-staleness';
 import { loadReleaseFooterData } from '@/lib/release-footer';
 import { loadMissionCarryingReleaseId } from '@/lib/mission-carrying-release';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
@@ -121,6 +124,7 @@ import { resolveEffectiveRoles } from '@/lib/effective-roles';
 import MissionSituationBlock, { affordanceFor, MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { readRound } from '@/lib/read-round';
 
 export const dynamic = 'force-dynamic';
 
@@ -138,65 +142,107 @@ export default async function MissionDetailPage({
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
-  const teamIds = await getUserTeamIds(user.id);
+  // The protected layout's reads, shared per request (React cache()).
+  const [teamIds, wsIds] = await Promise.all([getUserTeamIds(user.id), getUserWorkspaceIds(user.id)]);
+  // Only the layout on screen is built (spec 3ef37387 R-18), with the reads only it shows.
+  const layout = parseMissionLayout(layoutParam, listViewParam);
 
-  // S7 / AC-18: the shared shape selects no artifact `content`, task `result`
-  // or task `context`; the few fields the page reads from those two JSON
-  // columns arrive as a projected digest, read alongside (mission-page-query.ts).
-  const [missionRow, digestRows] = await Promise.all([
-    db.query.missions.findFirst({
+  // ── Round 1: everything that needs only the mission id and the viewer, in
+  // one round trip (spec 3ef37387 R-3). S7 / AC-18: the shared shape selects
+  // no artifact `content`, task `result` or task `context`; the few fields the
+  // page reads from those two JSON columns arrive as a projected digest
+  // (mission-page-query.ts). Task-scoped reads name the mission's tasks by a
+  // subquery, so none waits for the mission row.
+  const missionTaskIdsSql = db.select({ id: tasks.id }).from(tasks).where(eq(tasks.missionId, id));
+  const onMissionOrItsTasks = or(eq(missionNotes.missionId, id), inArray(missionNotes.taskId, missionTaskIdsSql));
+  const r1 = await readRound({
+    mission: db.query.missions.findFirst({
       where: sqlWhere(eq(missions.id, id)),
       with: MISSION_DETAIL_WITH,
     }),
-    db.select(TASK_DIGEST_SELECTION).from(tasks).where(taskDigestWhere(id)),
-  ]);
-  let mission = missionRow;
-  const taskDigests = indexTaskDigests(digestRows);
+    digest: db.select(TASK_DIGEST_SELECTION).from(tasks).where(taskDigestWhere(id)),
+    // Roles and workspaces for this user (the quick-add chips, the schedule
+    // wizard), over the layout's workspace scope.
+    roles: wsIds.length > 0 ? db.query.workspaceSkills.findMany({
+      where: sqlWhere(and(inArray(workspaceSkills.workspaceId, wsIds), eq(workspaceSkills.enabled, true))),
+      columns: { slug: true, name: true, color: true },
+      orderBy: sqlOrderBy([desc(workspaceSkills.createdAt)]),
+    }) : null,
+    teamWorkspaces: wsIds.length > 0 ? db.query.workspaces.findMany({
+      where: sqlWhere(inArray(workspaces.teamId, teamIds)),
+      columns: { id: true, name: true },
+    }) : null,
+    // Human-authored mission notes — the flight-strip steering rail's "human
+    // touch" diamonds (mission-steering-events.ts). Task-scoped notes (a reply
+    // or guidance posted against one task) are written with `missionId: null`
+    // (apps/web/src/app/api/tasks/[id]/notes/route.ts) — a human touch on this
+    // mission's work, so both arms must be read or most human steering marks
+    // would silently vanish from the rail.
+    steeringNotes: db.query.missionNotes.findMany({
+      where: sqlWhere(and(onMissionOrItsTasks, eq(missionNotes.authorType, 'user'))),
+      columns: { id: true, authorType: true, createdAt: true },
+    }),
+    // The Flow tab's expected task sizes (newest prediction per task).
+    // Best-effort: without one, a task's bar uses the fixed default.
+    sizePredictions: layout === 'flow'
+      ? db.select({ taskId: orchestrationManifestPredictions.taskId, expectedSize: orchestrationManifestPredictions.expectedSize })
+          .from(orchestrationManifestPredictions)
+          .where(and(inArray(orchestrationManifestPredictions.taskId, missionTaskIdsSql), isNotNull(orchestrationManifestPredictions.expectedSize)))
+          .orderBy(desc(orchestrationManifestPredictions.createdAt))
+      : null,
+    // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
+    // so users see the parent initiative even when navigating directly to the mission.
+    breadcrumbInitiative: from === 'initiative' && initiativeId
+      ? db.query.initiatives.findFirst({ where: sqlWhere(eq(initiatives.id, initiativeId)), columns: { title: true } })
+      : null,
+    // The initiative selector's options (an open mission's ⋯ sheet).
+    initiativeOptions: db.query.initiatives.findMany({
+      where: sqlWhere(and(inArray(initiatives.teamId, teamIds), inArray(initiatives.status, ['active', 'paused']))),
+      columns: { id: true, title: true, status: true },
+      orderBy: sqlOrderBy([desc(initiatives.priority), desc(initiatives.createdAt)]),
+      limit: 50,
+    }),
+    // D3: the completion summary reads the mission's own completion record,
+    // never the latest task's summary (a completed mission only).
+    completionNote: db.query.missionNotes.findFirst({
+      where: sqlWhere(and(eq(missionNotes.missionId, id), eq(missionNotes.title, MISSION_COMPLETED_NOTE_TITLE))),
+      columns: { body: true, createdAt: true },
+      orderBy: sqlOrderBy(desc(missionNotes.createdAt)),
+    }),
+    // The stored "What shipped" record (a completed mission only).
+    shippedRow: db.query.artifacts.findFirst({
+      where: sqlWhere(and(eq(artifacts.missionId, id), eq(artifacts.key, shippedArtifactKey(id)))),
+      columns: { metadata: true },
+    }),
+    // The Feed's escalations and answers: agent questions and human replies,
+    // on the mission or on any of its tasks (task-scoped notes carry no missionId).
+    feedNotes: layout === 'feed' ? db.query.missionNotes.findMany({
+      where: sqlWhere(and(onMissionOrItsTasks, or(eq(missionNotes.type, 'question' as any), eq(missionNotes.authorType, 'user')))),
+      columns: { id: true, type: true, authorType: true, title: true, taskId: true, createdAt: true },
+      orderBy: sqlOrderBy(desc(missionNotes.createdAt)),
+      limit: 200,
+    }) : null,
+  });
+  let mission = r1.mission;
+  const taskDigests = indexTaskDigests(r1.digest);
   const digestOf = (taskId: string) => taskDigests.get(taskId) ?? { result: null, context: null };
 
   if (!mission || !teamIds.includes(mission.teamId)) {
     notFound();
   }
 
-  // Read-through PR fact import: any completed worker whose PR merge webhook
-  // was missed is re-checked against GitHub after this response.
-  if (mission.workspaceId) {
-    const staleWorkers = (mission.tasks ?? []).flatMap(t => {
-      if (t.status !== 'completed') return [];
-      const w = (t.workers as any[])?.[0];
-      if (!w?.prNumber || w?.mergedAt || !w?.prUrl) return [];
-      // Each worker's own workspace: a mission's tasks can live in several.
-      return [{ id: w.id as string, prNumber: w.prNumber as number, prUrl: w.prUrl as string, workspaceId: (w.workspaceId as string | undefined) ?? mission.workspaceId! }];
-    });
-    if (staleWorkers.length > 0) {
-      const wsWithInstall = await db.query.workspaces.findFirst({
-        where: sqlWhere(eq(workspaces.id, mission.workspaceId)),
-        columns: {},
-        with: { githubInstallation: { columns: { installationId: true } } },
-      });
-      const installId = wsWithInstall?.githubInstallation?.installationId;
-      if (installId) {
-        // Enqueued after the response, never written during the render (spec
-        // workflow-state-kernel §11): this render shows what is stored.
-        // AC-3: a delivery-owned task records at most a fact here; no lifecycle write.
-        after(() => observeMergeStateOnRender(staleWorkers, installId)
-          .catch((err) => console.error('[mission-page] PR fact import failed (non-fatal):', err)));
-      }
-    }
-  }
-
   // Everything from here to the merge-policy chip reads off the mission row
   // that is already in hand, and nothing in the group consumes another entry's
   // result — so it is one wait instead of five serial neon-http round trips
-  // (roles/workspaces, size predictions, steering notes, policy workspace,
-  // follow-ups). The derived, purely-computed values follow the group.
+  // (roles/workspaces, size predictions, steering notes, follow-ups). The
+  // merge policy reads the workspace's gitConfig off the mission row. The
+  // derived, purely-computed values follow the group.
   const allMissionTaskIds = (mission.tasks || []).map(t => t.id);
+  // An audit or a fix from one, by role or title: only then is there a visual review to read.
+  const hasVisualAudit = (mission.tasks ?? []).some(t =>
+    t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG || isSurfaceAuditTask(t.title ?? '') || isSurfaceFixTask(t.title));
 
   const [
-    scopeResult,
-    sizePredictions,
-    humanSteeringNotes,
-    workspaceForPolicy,
     missionFollowupTasks,
     runnerHeartbeats,
     fleetCapacity,
@@ -204,67 +250,6 @@ export default async function MissionDetailPage({
     visualModel,
     deliveryViews,
   ] = await Promise.all([
-    // Roles and workspaces for this user. getUserWorkspaceIds is React
-    // cache()-wrapped, so the protected layout has normally already resolved
-    // this scope and only the two reads below are new round trips.
-    (async () => {
-      const wsIds = await getUserWorkspaceIds(user.id);
-      if (wsIds.length === 0) {
-        return {
-          roles: [] as { slug: string; name: string; color: string }[],
-          teamWorkspaces: [] as { id: string; name: string }[],
-        };
-      }
-      const [rolesResult, workspacesResult] = await Promise.all([
-        db.query.workspaceSkills.findMany({
-          where: sqlWhere(and(
-            inArray(workspaceSkills.workspaceId, wsIds),
-            eq(workspaceSkills.enabled, true),
-          )),
-          columns: { slug: true, name: true, color: true },
-          orderBy: sqlOrderBy([desc(workspaceSkills.createdAt)]),
-        }),
-        db.query.workspaces.findMany({
-          where: sqlWhere(inArray(workspaces.teamId, teamIds)),
-          columns: { id: true, name: true },
-        }),
-      ]);
-      return { roles: rolesResult, teamWorkspaces: workspacesResult };
-    })(),
-    // The Flow tab's expected task sizes (newest prediction per task).
-    // Best-effort: without one, a task's bar uses the fixed default.
-    allMissionTaskIds.length > 0
-      ? db.select({ taskId: orchestrationManifestPredictions.taskId, expectedSize: orchestrationManifestPredictions.expectedSize })
-          .from(orchestrationManifestPredictions)
-          .where(and(inArray(orchestrationManifestPredictions.taskId, allMissionTaskIds), isNotNull(orchestrationManifestPredictions.expectedSize)))
-          .orderBy(desc(orchestrationManifestPredictions.createdAt))
-          .catch(() => [])
-      : [],
-    // Human-authored mission notes — the flight-strip steering rail's "human
-    // touch" diamonds (mission-steering-events.ts). Task-scoped notes (a reply
-    // or guidance posted against one task) are written with `missionId: null`
-    // (apps/web/src/app/api/tasks/[id]/notes/route.ts) — a human touch on this
-    // mission's work, so both arms must be read or most human steering marks
-    // would silently vanish from the rail.
-    allMissionTaskIds.length > 0
-      ? db.query.missionNotes.findMany({
-          where: sqlWhere(and(
-            or(eq(missionNotes.missionId, id), inArray(missionNotes.taskId, allMissionTaskIds)),
-            eq(missionNotes.authorType, 'user'),
-          )),
-          columns: { id: true, authorType: true, createdAt: true },
-        })
-      : db.query.missionNotes.findMany({
-          where: sqlWhere(and(eq(missionNotes.missionId, id), eq(missionNotes.authorType, 'user'))),
-          columns: { id: true, authorType: true, createdAt: true },
-        }),
-    // BT-21: the workspace row behind the effective merge policy tier.
-    mission.workspaceId
-      ? db.query.workspaces.findFirst({
-          where: sqlWhere(eq(workspaces.id, mission.workspaceId)),
-          columns: { id: true, gitConfig: true },
-        })
-      : Promise.resolve(null),
     // Steering-cost visibility: how much of this mission a human had to write
     // directly, and how much leaked in after it was marked done. One accessor
     // computes both — see computeMissionAuthorshipHealth's docstring.
@@ -277,8 +262,7 @@ export default async function MissionDetailPage({
     loadRunnerHeartbeats((mission.tasks || []).flatMap(t => (t.workers ?? []) as Array<{ runner?: string | null; localUiUrl?: string | null; accountId?: string | null }>)),
     // The Lanes band's "LIVE n/N slots": N is the team's fleet capacity, the
     // same number Home's "AGENTS LIVE n/N" prints (not the slots drawn here).
-    (async () => loadFleetCapacity({ teamId: mission.teamId ?? null, wsIds: await getUserWorkspaceIds(user.id), now: Date.now() }))()
-      .catch(() => null),
+    loadFleetCapacity({ teamId: mission.teamId ?? null, wsIds, now: Date.now() }).catch(() => null),
     // The quick-add picker offers only roles a task in this mission's
     // workspace can carry (role-routing §1 row 3, §3.1).
     mission.workspaceId
@@ -290,7 +274,7 @@ export default async function MissionDetailPage({
     // itself, only when a claimable audit has waited past the window. A
     // mission with no audit skips it. A failed read hides the review rather
     // than the page.
-    (mission.tasks ?? []).some(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG)
+    hasVisualAudit
       ? loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId ?? null }).catch((err): VisualReviewModel | null => {
           console.error('[mission-page] visual review load failed', err);
           return null;
@@ -306,15 +290,53 @@ export default async function MissionDetailPage({
   // delivery says (merged, open, closed), derived on read and never written,
   // so progress, "awaiting merge", blockers and the feed agree with the kernel.
   // A task with no delivery keeps its worker rows.
+  // The raw rows (before that overlay) with their context/result digest are
+  // what the mission's state and completion gate read (explainMission), so
+  // neither loads the tasks again (spec 3ef37387 R-11).
+  const decisionTasks = (mission.tasks ?? []).map(t => ({ ...t, context: digestOf(t.id).context, result: digestOf(t.id).result }));
   (mission as { tasks?: unknown }).tasks = overlayDeliveryLifecycle(mission.tasks ?? [], deliveryViews);
 
-  const { roles, teamWorkspaces } = scopeResult;
+  // Read-through PR fact import: a completed task whose PR merge webhook may
+  // have been missed is re-checked against GitHub after this response, a few
+  // at a time (observeMergeStateOnRender caps it), the installation looked up
+  // there too. Enqueued after the response, never written during the render
+  // (spec workflow-state-kernel §11): this render shows what is stored.
+  // AC-3: a delivery-owned task records at most a fact here; no lifecycle write.
+  const prCheckedAt = Date.now();
+  const unseenMerges = mission.workspaceId
+    ? unseenMergeCandidates((mission.tasks ?? []) as unknown as PrStateRow[], prCheckedAt, mission.workspaceId)
+    : [];
+  if (unseenMerges.length > 0) {
+    const workspaceId = mission.workspaceId!;
+    after(async () => {
+      try {
+        const ws = await db.query.workspaces.findFirst({
+          where: sqlWhere(eq(workspaces.id, workspaceId)),
+          columns: {},
+          with: { githubInstallation: { columns: { installationId: true } } },
+        });
+        const installId = ws?.githubInstallation?.installationId;
+        if (installId) await observeMergeStateOnRender(unseenMerges, installId);
+      } catch (err) {
+        console.error('[mission-page] PR fact import failed (non-fatal):', err);
+      }
+    });
+  }
+  // Opening the page reconciles PR state only when some PR could be wrong (R-12).
+  const reconcileOnOpen = missionPrStateStale((mission.tasks ?? []) as unknown as PrStateRow[], prCheckedAt);
 
+  const roles = r1.roles ?? [];
+  const teamWorkspaces = r1.teamWorkspaces ?? [];
+  const humanSteeringNotes = r1.steeringNotes;
+  const sizePredictions = r1.sizePredictions ?? [];
+
+  // BT-21: the workspace row behind the effective merge policy tier.
+  const workspaceForPolicy = (mission.workspace as { gitConfig: unknown } | null | undefined) ?? null;
   const effectivePolicy = resolvePolicy(
-    workspaceForPolicy ?? { gitConfig: null },
+    (workspaceForPolicy ?? { gitConfig: null }) as Parameters<typeof resolvePolicy>[0],
     { mergePolicy: (mission as any).mergePolicy ?? null },
   );
-  const workspaceDefaultPolicy = resolvePolicy(workspaceForPolicy ?? { gitConfig: null });
+  const workspaceDefaultPolicy = resolvePolicy((workspaceForPolicy ?? { gitConfig: null }) as Parameters<typeof resolvePolicy>[0]);
   const hasPolicyOverride = (mission as any).mergePolicy != null;
   const policyTierLabel: Record<string, string> = {
     'auto-threshold': 'Auto-merge',
@@ -444,10 +466,46 @@ export default async function MissionDetailPage({
   // start alongside the explain accessor rather than waiting behind it.
   const costBudgetUsd = (mission as any).costBudgetUsd as string | null ?? null;
 
-  // explainMission, the mission spend and the tracker links share no inputs
-  // beyond the mission id, so they are one wait instead of three.
+  // The visual review state, once per render (spec 3ef37387 R-11, R-12): from
+  // the rows above, the model read once, and the gate reading stored evidence
+  // only (never GitHub). Explain, the checks and the footer all read this one.
+  const waiverLoad = loadSurfaceAuditWaiver(id).catch(() => null);
+  const visualModelForState = visualModel ?? (hasVisualAudit ? undefined : emptyVisualReviewModel(id, Date.now()));
+  const visualReviewLoad = getMissionVisualReviewState(id, {
+    render: true,
+    waiver: waiverLoad,
+    model: visualModelForState,
+    mission: {
+      id, status: mission.status, workspaceId: mission.workspaceId ?? null,
+      autoSurfaceAudit: (mission as { autoSurfaceAudit?: boolean | null }).autoSurfaceAudit ?? null,
+      workingBranch: (mission as { workingBranch?: string | null }).workingBranch ?? null,
+      primaryPrNumber: (mission as { primaryPrNumber?: number | null }).primaryPrNumber ?? null,
+    },
+    gitConfig: workspaceForPolicy?.gitConfig ?? null,
+    tasks: decisionTasks as unknown as SurfaceAuditGateTask[],
+    ...(decisionTasks.some(t => isSurfaceAuditTask(t.title ?? '')) ? {} : { ledger: [] }),
+  }).catch((err) => {
+    console.error('[mission-page] visual review state load failed', err);
+    return null;
+  });
+
+  // explainMission (over what this page loaded: no second read of the
+  // mission or its tasks), the mission spend and the tracker links are one wait.
   const [explained, spendUsd, trackerLinks, teamTimezone] = await Promise.all([
-    explainMission(id),
+    visualReviewLoad.then(visualReviewState => explainMission(id, {
+      inputs: {
+        mission: mission as unknown as Record<string, unknown>,
+        // Oldest first, as explain reads its own rows: where several PRs qualify, it names the same one.
+        tasks: [...decisionTasks].sort((x, y) => new Date(x.createdAt).getTime() - new Date(y.createdAt).getTime()) as unknown as Array<Record<string, unknown>>,
+        deliveries: deliveryViews,
+        missionDeliveries,
+        foreignDeps,
+        supersededMap,
+        visualReviewState,
+        ...(visualModelForState ? { visualModel: visualModelForState } : {}),
+      },
+      history: false,
+    })),
     costBudgetUsd != null ? getMissionSpendUsd(id) : Promise.resolve(null),
     // Linear Phase 2: only mount the tracking panel if this mission has a linear link.
     getLinksForEntity(db, 'mission', id),
@@ -655,34 +713,15 @@ export default async function MissionDetailPage({
 
   // The breadcrumb initiative, the initiative-selector options, the release
   // footer and the completion note are mutually independent.
-  const waiverLoad = loadSurfaceAuditWaiver(id).catch(() => null);
-  const visualReviewLoad = getMissionVisualReviewState(id).catch((err) => {
-    console.error('[mission-page] visual review state load failed', err);
-    return null;
-  });
   // The selected outcome specs' titles, for the line under the rail (R-40). Scoped to the
   // mission's workspace; a failed read only costs the titles, the lines still show.
   const outcomeSpecIds = goalCriteria.flatMap(c => (c.type === 'living_spec' ? [c.specId] : []));
-  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow, surfaceAuditWaiver, visualReviewState, estimateRows, outcomeSpecTitles, waiverNames] = await Promise.all([
-    // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
-    // so users see the parent initiative even when navigating directly to the mission.
-    (from === 'initiative' && initiativeId)
-      ? db.query.initiatives.findFirst({
-          where: sqlWhere(eq(initiatives.id, initiativeId)),
-          columns: { title: true },
-        }).then(row => row?.title)
-      : Promise.resolve(undefined),
-    isTerminal
-      ? Promise.resolve([] as InitiativeOption[])
-      : db.query.initiatives.findMany({
-          where: sqlWhere(and(
-            inArray(initiatives.teamId, teamIds),
-            inArray(initiatives.status, ['active', 'paused']),
-          )),
-          columns: { id: true, title: true, status: true },
-          orderBy: sqlOrderBy([desc(initiatives.priority), desc(initiatives.createdAt)]),
-          limit: 50,
-        }).then(rows => rows.map(r => ({ id: r.id, title: r.title, status: r.status, progress: 0 }))),
+  const initiativeName = r1.breadcrumbInitiative?.title;
+  const teamInitiativeOptions: InitiativeOption[] = isTerminal ? [] : r1.initiativeOptions.map(r => ({ id: r.id, title: r.title, status: r.status, progress: 0 }));
+  const completionNote = mission.status === 'completed' ? r1.completionNote ?? null : null;
+  const shippedRow = mission.status === 'completed' ? r1.shippedRow ?? null : null;
+  const feedNoteRows = r1.feedNotes ?? [];
+  const [releaseFooterData, carryingReleaseId, surfaceAuditWaiver, visualReviewState, estimateRows, outcomeSpecTitles, waiverNames] = await Promise.all([
     // The mission reads only its own Shipped fact from this (D6); the
     // workspace queue and the Release now trigger are not rendered here.
     shouldQueryRelease(releaseArchetype) && releaseWorkspace
@@ -691,38 +730,11 @@ export default async function MissionDetailPage({
           name: releaseWorkspace.name,
           gitConfig: releaseWorkspace.gitConfig,
           releaseConfig: releaseWorkspace.releaseConfig,
-        })
-      : Promise.resolve(null),
-    // D3: the completion summary reads the mission's own completion record,
-    // never the latest task's summary.
-    mission.status === 'completed'
-      ? db.query.missionNotes.findFirst({
-          where: sqlWhere(and(eq(missionNotes.missionId, id), eq(missionNotes.title, MISSION_COMPLETED_NOTE_TITLE))),
-          columns: { body: true, createdAt: true },
-          orderBy: sqlOrderBy(desc(missionNotes.createdAt)),
-        }).then(row => row ?? null)
+        }, { render: true })
       : Promise.resolve(null),
     // F6: the Shipped link opens the release carrying THIS mission's work
     // (release_tasks attribution), not the workspace's latest release.
     shouldQueryRelease(releaseArchetype) ? loadMissionCarryingReleaseId(id) : Promise.resolve(null),
-    // The Feed's escalations and answers: agent questions and human replies,
-    // on the mission or on any of its tasks (task-scoped notes carry no missionId).
-    db.query.missionNotes.findMany({
-      where: sqlWhere(and(
-        allMissionTaskIds.length > 0 ? or(eq(missionNotes.missionId, id), inArray(missionNotes.taskId, allMissionTaskIds)) : eq(missionNotes.missionId, id),
-        or(eq(missionNotes.type, 'question' as any), eq(missionNotes.authorType, 'user')),
-      )),
-      columns: { id: true, type: true, authorType: true, title: true, taskId: true, createdAt: true },
-      orderBy: sqlOrderBy(desc(missionNotes.createdAt)),
-      limit: 200,
-    }),
-    // The stored "What shipped" record. A read failure only costs the header.
-    mission.status === 'completed'
-      ? db.query.artifacts.findFirst({
-          where: sqlWhere(and(eq(artifacts.missionId, id), eq(artifacts.key, shippedArtifactKey(id)))),
-          columns: { metadata: true },
-        }).then(row => row ?? null, () => null)
-      : Promise.resolve(null),
     // The person-set "Waive visual audit" record, if any. A failed read only
     // costs the record line; the waiver action stays.
     waiverLoad,
@@ -730,11 +742,11 @@ export default async function MissionDetailPage({
     visualReviewLoad,
     // The build-only estimate reads the same frozen estimates as the Plan page (spec f7f67f1a R-23).
     // Only for a team with the task-estimates switch on, the Plan page's gate.
-    loadBuildEstimateRows({ teamId: mission.teamId, taskIds: allMissionTaskIds, finished: isTerminal }).catch((err) => {
+    layout !== 'board' ? Promise.resolve([]) : loadBuildEstimateRows({ teamId: mission.teamId, taskIds: allMissionTaskIds, finished: isTerminal }).catch((err) => {
       console.error('[mission-page] estimate load failed', err);
       return [];
     }),
-    outcomeSpecIds.length > 0 && mission.workspaceId
+    layout === 'board' && outcomeSpecIds.length > 0 && mission.workspaceId
       ? db.select({ id: specs.id, title: specs.title }).from(specs)
           .where(and(inArray(specs.id, outcomeSpecIds), eq(specs.workspaceId, mission.workspaceId)))
           .then(rows => Object.fromEntries(rows.map(r => [r.id, r.title])) as Record<string, string>, () => ({} as Record<string, string>))
@@ -1139,7 +1151,7 @@ export default async function MissionDetailPage({
   const boardModel = buildMissionBoard({
     runnerHeartbeats,
     fleetCapacity,
-    tasks: allTasks.map(t => toBoardTaskInput({ ...t, delivery: deliveryDisplays.get(t.id) ?? null } as unknown as Parameters<typeof toBoardTaskInput>[0])),
+    tasks: allTasks.map(t => toBoardTaskInput({ ...t, resultDigest: digestOf(t.id).result, delivery: deliveryDisplays.get(t.id) ?? null } as unknown as Parameters<typeof toBoardTaskInput>[0])),
     roles,
     now: renderedAt,
     missionCreatedAt: new Date((mission as any).createdAt).getTime(),
@@ -1156,7 +1168,7 @@ export default async function MissionDetailPage({
   // Flow: the same-files waits Buildd added, and each task's expected size.
   const flowSameFiles = sameFilesFromRows(allTasks as Array<{ id: string; pathDeclaration?: unknown }>);
   const flowExpectedMinutes = expectedMinutesFromPredictions(sizePredictions);
-  // The drawer's per-task Build › Audit › Land and audit/repair evidence: the
+  // The drawer's per-task Build › Verify › Deliver and audit/repair evidence: the
   // shared delivery projection over the same rows (Home, Missions, Activity).
   const taskDeliveries = missionTaskDeliveries({
     mission: { id, title: mission.title, status: mission.status, isHeld, armedAt, integrationBranch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true },
@@ -1354,15 +1366,15 @@ export default async function MissionDetailPage({
         workerStatuses={renderedWorkerStatuses}
         renderedAt={renderedAt}
       >
-      <MissionReconcileOnOpen missionId={id} />
+      {reconcileOnOpen && <MissionReconcileOnOpen missionId={id} />}
 
       <MissionVisualReviewProvider missionId={id} visual={boardVisual}>
       <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
-        initial={parseMissionLayout(layoutParam, listViewParam)}
-        board={boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} checks={overviewChecks} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} {...boardLink} {...boardStrip} />)}
-        flow={boardHeader(<FlowTimeline model={boardModel} sameFiles={flowSameFiles} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
-        feed={boardHeader(
+        initial={layout}
+        board={layout !== 'board' ? null : boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} checks={overviewChecks} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} {...boardLink} {...boardStrip} />)}
+        flow={layout !== 'flow' ? null : boardHeader(<FlowTimeline model={boardModel} sameFiles={flowSameFiles} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
+        feed={layout !== 'feed' ? null : boardHeader(
           <MissionFeedLayout
             model={boardModel}
             notes={feedNotes}

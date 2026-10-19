@@ -8,12 +8,21 @@
  * Design: docs/prototypes/cross-surface-delivery (`#missions`).
  */
 import type { StateKey } from '@/components/ui/states';
+import { RECENTLY_DELIVERED_WINDOW_MS, isRecentlyDelivered } from './recently-delivered';
 import { deliveryCounts, type DeliveryCounts, type DeliveryKind, type MissionDelivery } from './delivery-projection';
 import { sectionOf, type MissionSectionKey } from './mission-sections';
 
+/**
+ * What a portfolio row reads of the delivery projection, and all the list
+ * loads of it (lib/mission-list-load.ts): no per-task rows, focus, milestones
+ * or visual-audit detail.
+ */
+export type PortfolioDelivery = Pick<MissionDelivery,
+  'id' | 'title' | 'href' | 'kind' | 'startState' | 'open' | 'landed' | 'total' | 'evidence' | 'next' | 'remaining' | 'reconciling' | 'repairRounds'>;
+
 /** One portfolio row: the projection plus the list's own sort and filter facts. */
 export interface PortfolioRow {
-  delivery: MissionDelivery;
+  delivery: PortfolioDelivery;
   /** `missions.status`. */
   status: string;
   workspaceId: string | null;
@@ -36,7 +45,7 @@ export interface PortfolioRow {
 }
 
 /** Completed missions inside this window show in the history disclosure; older ones sit behind "show older". */
-export const COMPLETED_HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+export const COMPLETED_HISTORY_WINDOW_MS = RECENTLY_DELIVERED_WINDOW_MS;
 
 export function splitPortfolio(rows: readonly PortfolioRow[], now: number) {
   const open: PortfolioRow[] = [];
@@ -45,7 +54,7 @@ export function splitPortfolio(rows: readonly PortfolioRow[], now: number) {
   // archived mission is history, not an open row the counter skips.
   for (const r of rows) (r.delivery.open ? open : done).push(r);
   done.sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0) || a.delivery.id.localeCompare(b.delivery.id));
-  const recent = (r: PortfolioRow) => r.completedAt != null && now - r.completedAt < COMPLETED_HISTORY_WINDOW_MS;
+  const recent = (r: PortfolioRow) => isRecentlyDelivered({ completedAt: r.completedAt }, now, COMPLETED_HISTORY_WINDOW_MS);
   return { open, recentDone: done.filter(recent), olderDone: done.filter(r => !recent(r)) };
 }
 
@@ -57,7 +66,7 @@ export type PortfolioSort = 'attention' | 'recent' | 'closest' | 'priority';
 export const PORTFOLIO_SORTS: ReadonlyArray<{ key: PortfolioSort; label: string; title: string }> = [
   { key: 'attention', label: 'Attention', title: 'Needs attention' },
   { key: 'recent', label: 'Recent', title: 'Recently advanced' },
-  { key: 'closest', label: 'Closest', title: 'Closest to landing' },
+  { key: 'closest', label: 'Closest', title: 'Closest to merging' },
   { key: 'priority', label: 'Priority', title: 'Priority' },
 ];
 
@@ -91,9 +100,9 @@ export type PortfolioStatusFilter = 'all' | MissionSectionKey;
 export const PORTFOLIO_STATUS_FILTERS: ReadonlyArray<{ key: PortfolioStatusFilter; label: string; title: string }> = [
   { key: 'all', label: 'All', title: 'Every open mission' },
   { key: 'needs', label: 'Waiting on you', title: 'A decision only a person can make' },
-  { key: 'motion', label: 'In motion', title: 'buildd is building, auditing, repairing or landing it' },
-  { key: 'waiting', label: 'Waiting', title: 'Waiting on capacity or earlier work, held, or unplanned' },
-  { key: 'landed', label: 'Landed', title: 'Landed. A goal criterion hasn’t passed.' },
+  { key: 'motion', label: 'In motion', title: 'buildd is building, checking, fixing or merging it' },
+  { key: 'waiting', label: 'Waiting', title: 'Waiting for capacity, earlier work, a start or a plan' },
+  { key: 'landed', label: 'Done', title: 'Every task is done. A goal criterion hasn’t passed.' },
 ];
 
 const MATCH: Record<PortfolioStatusFilter, (r: PortfolioRow) => boolean> = {

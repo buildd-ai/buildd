@@ -26,6 +26,11 @@ describe('deliveryViewsSql', () => {
     expect(q.sql).toContain("e.kind = 'refresh_branch' AND e.status = 'pending' AND e.outcome LIKE $2::text");
     expect(q.sql).toContain('AS lane_wait');
   });
+  test('reads the workspace git config and owner task only for an APPROVED delivery: the merge rule\'s inputs (spec 3ef37387 R-11)', () => {
+    const q = dialect.sqlToQuery(deliveryViewsSql(['t1']));
+    expect(q.sql).toMatch(/CASE WHEN d\.state = 'APPROVED' THEN \(SELECT jsonb_build_object\('git_config', w\.git_config\)[\s\S]*?END AS workspace/);
+    expect(q.sql).toMatch(/CASE WHEN d\.state = 'APPROVED' THEN \(SELECT jsonb_build_object\('requires_review'[\s\S]*?END AS owner_task/);
+  });
 });
 
 describe('kernelDeliveryForWorkerSql (list_prs, §7)', () => {
@@ -75,7 +80,7 @@ describe('rowToDeliveryView', () => {
       delivery: { ...row.delivery, state: 'REPAIRING', state_reason: 'behind', base_ref: 'dev' },
       lane_wait: 'parked:lane_busy:#41',
     };
-    expect(rowToDeliveryView(parked, NOW)).toMatchObject({ headline: 'Waiting to update branch', detail: 'PR #41 is landing on dev first' });
+    expect(rowToDeliveryView(parked, NOW)).toMatchObject({ headline: 'Waiting to update branch', detail: 'PR #41 is merging into dev first' });
     expect(rowToDeliveryView({ ...parked, lane_wait: null }, NOW)?.headline).toBe('Updating branch');
   });
   // §7 / AC-24: the reader carries the findings and each attempt's proven push head.
@@ -95,6 +100,40 @@ describe('rowToDeliveryView', () => {
     const lean = dialect.sqlToQuery(deliveryViewsSql(['t1'])).sql;
     expect(lean).not.toContain('workflow_findings');
     expect(lean).toContain("'[]'::jsonb AS findings");
+  });
+  test('r7 follow-up 22: override availability comes from the permissions a surface passes for the workspace, never a default yes', async () => {
+    const escalated = {
+      ...row,
+      delivery: { ...row.delivery, state: 'ESCALATED', state_reason: 'review_exhausted' },
+      rounds: [{ id: 'r1', round: 1, head_sha: 'H1', kind: 'full', status: 'decided', verdict: 'request_changes', effective_verdict: 'request_changes', failure_count: 0 }],
+      findings: [{ id: 'r1:0', origin_round_id: 'r1', origin_round: 1, origin_head_sha: 'H1', ordinal: 0, path: 'a.ts', line: 3, title: 'rename it', required: true, status: 'open', last_round: 1 }],
+    };
+    const override = (v: ReturnType<typeof rowToDeliveryView>) => v!.escalation!.actions.find((x) => x.id === 'approve_override')!;
+    expect(override(rowToDeliveryView(escalated, NOW)).available).toBe(false);
+    expect(override(rowToDeliveryView(escalated, NOW, undefined, { overridePermitted: true, hasMergePermission: true })).available).toBe(true);
+    const asked: string[] = [];
+    const views = await getDeliveryViewsForTasks(['t1'], async () => ({ rows: [escalated] }), () => false, {
+      withFindings: true, escalationPermissions: (ws) => { asked.push(ws); return { overridePermitted: true, hasMergePermission: false }; },
+    });
+    expect(asked).toEqual(['w1']);
+    expect(override(views.get('t1')!).unavailableReason).toContain('merge permission');
+  });
+  test('the viewer\'s permissions are read only for a review escalation, and may be async', async () => {
+    const asked: string[] = [];
+    const perms = async (ws: string) => { asked.push(ws); return { overridePermitted: true, hasMergePermission: true }; };
+    await getDeliveryViewsForTasks(['t1'], async () => ({ rows: [row] }), () => false, { escalationPermissions: perms });
+    expect(asked).toEqual([]);
+    const escalated = {
+      ...row,
+      delivery: { ...row.delivery, state: 'ESCALATED', state_reason: 'review_exhausted' },
+      findings: [{ id: 'r1:0', origin_round_id: 'r1', origin_round: 1, origin_head_sha: 'H1', ordinal: 0, path: 'a.ts', line: 3, title: 'rename it', required: true, status: 'open', last_round: 1 }],
+    };
+    const views = await getDeliveryViewsForTasks(['t1'], async () => ({ rows: [escalated] }), () => false, { withFindings: true, escalationPermissions: perms });
+    expect(asked).toEqual(['w1']);
+    expect(views.get('t1')!.escalation!.actions.find((x) => x.id === 'approve_override')!.available).toBe(true);
+    // A permission read that throws offers no override; the page still renders.
+    const failing = await getDeliveryViewsForTasks(['t1'], async () => ({ rows: [escalated] }), () => false, { withFindings: true, escalationPermissions: async () => { throw new Error('github down'); } });
+    expect(failing.get('t1')!.escalation!.actions.find((x) => x.id === 'approve_override')!.available).toBe(false);
   });
   test('maps a row to a platform-owned view with its attempts', () => {
     const v = rowToDeliveryView(row, NOW)!;

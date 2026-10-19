@@ -130,6 +130,10 @@ const mockReadMissionSpecStanding = mock(async (_m: any, _c: any) => specStandin
 const mockEnsureFinalVerification = mock(async (_id: string, _c: any, _s: any) => ({ kind: 'dispatched', taskId: 'final-verify-1' }) as any);
 mock.module('./specs/mission-outcome', () => ({ readMissionSpecStanding: mockReadMissionSpecStanding }));
 mock.module('./specs/mission-verification', () => ({ ensureFinalVerification: mockEnsureFinalVerification }));
+// Filing a new final verification is work filed against the blocking criterion:
+// it clears an escalation through the single writer (criteria-escalation.ts).
+const mockResolveCriteriaEscalation = mock(async (_id: string, _reason: string, _actor: any) => ({ cleared: true }));
+mock.module('@/lib/criteria-escalation', () => ({ resolveCriteriaEscalation: mockResolveCriteriaEscalation }));
 
 // Real @buildd/core/mission-helpers: the mechanical evaluator and the folding
 // rule are the thing under test, not a stub of them.
@@ -1402,6 +1406,7 @@ describe('living_spec criterion (mission-selected outcome spec)', () => {
     specStanding = null;
     mockReadMissionSpecStanding.mockClear();
     mockEnsureFinalVerification.mockClear();
+    mockResolveCriteriaEscalation.mockClear();
   });
 
   it('every PR merged and reviewed, one requirement inconclusive at the target: the mission does not pass (AC-38, AC-13)', async () => {
@@ -1442,6 +1447,26 @@ describe('living_spec criterion (mission-selected outcome spec)', () => {
     expect(state!.criteria[1].verdict).toBe('PENDING');
     expect(state!.criteria[1].workerTaskId).toBe('final-verify-1');
     expect(state!.overall).not.toBe('pass');
+  });
+
+  // c5a2c67b R-4 / AC-2: after a repair merges, a new verification clears the escalation the old fail raised.
+  it('a newly filed final verification clears an escalation as work filed', async () => {
+    mission({ goalCriteria: [{ type: 'no_open_tasks' }, SEL] });
+    taskRows = [{ id: 't1', status: 'completed', title: 'Build it', taskClass: 'work', mode: 'execution', result: null }];
+    specStanding = standing('UNVERIFIED');
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+    expect(mockResolveCriteriaEscalation).toHaveBeenCalledTimes(1);
+    expect(mockResolveCriteriaEscalation.mock.calls[0][0]).toBe('m1');
+    expect(mockResolveCriteriaEscalation.mock.calls[0][1]).toBe('work_filed');
+  });
+
+  it('an already-open final verification does not touch the escalation', async () => {
+    mission({ goalCriteria: [{ type: 'no_open_tasks' }, SEL] });
+    taskRows = [{ id: 't1', status: 'completed', title: 'Build it', taskClass: 'work', mode: 'execution', result: null }];
+    specStanding = standing('UNVERIFIED');
+    mockEnsureFinalVerification.mockImplementationOnce(async () => ({ kind: 'open', taskId: 'final-verify-1' }) as any);
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+    expect(mockResolveCriteriaEscalation).not.toHaveBeenCalled();
   });
 
   it('waits for the build before filing the final verification', async () => {

@@ -1,6 +1,9 @@
 import { db } from '@buildd/core/db';
 import { artifacts, specRevisions, specs, SPEC_SCOPES, type SpecMetadataBlock, type SpecRevisionImport, type SpecScope } from '@buildd/core/db/schema';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
+import { cache } from 'react';
+import { workspaces } from '@buildd/core/db/schema';
+import { getUserTeamIds } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
 import { resolveWorkspaceAccess, type WorkspaceAccessCaller } from '@/lib/workspace-access';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
@@ -13,6 +16,7 @@ import { parseDuplicateOverride, type DuplicateCandidate, type DuplicateCheck } 
 import type { DuplicateCheckDeps } from '@/lib/spec-duplicate-decision';
 import { sameDesign } from '@buildd/spec-contract/design';
 import { recordManualPlacement } from './filings';
+import { retiredIdRefusal, writeCriterionRecords } from './criteria';
 
 /**
  * Living Specs store (G1): create a draft, revise it under a version check,
@@ -53,9 +57,31 @@ export const author = (c: SpecCaller) => (c.kind === 'user'
 export type SpecError = { ok: false; status: 400 | 403 | 404 | 409 | 502; error: string; currentVersion?: number; code?: string; duplicates?: DuplicateCandidate[] };
 export const fail = (status: SpecError['status'], error: string, extra: Partial<SpecError> = {}): SpecError => ({ ok: false, status, error, ...extra });
 
+/**
+ * A person's reach on one workspace by id: the workspace is one of their
+ * teams' (resolveWorkspaceAccess's rule for a person, where read and write
+ * reach are the same membership check). Memoized for the request, so a page
+ * that asks several times reads it once, and returns the two columns the
+ * pages show (name, and the Living Specs settings) instead of the whole row.
+ */
+export type ReachedWorkspace = { id: string; name: string; teamId: string; livingSpecs: unknown };
+export const personReach = cache(async (userId: string, workspaceId: string): Promise<ReachedWorkspace | null> => {
+  if (!isUuid(workspaceId)) return null;
+  const teamIds = await getUserTeamIds(userId);
+  if (teamIds.length === 0) return null;
+  const [row] = await db.select({
+    id: workspaces.id, name: workspaces.name, teamId: workspaces.teamId,
+    // Of the git config, only the Living Specs settings (approvers, repo copies).
+    livingSpecs: sql<unknown>`${workspaces.gitConfig}->'livingSpecs'`,
+  }).from(workspaces)
+    .where(and(eq(workspaces.id, workspaceId), inArray(workspaces.teamId, teamIds))).limit(1);
+  return row ?? null;
+});
+
 /** Read (or, with `write`, create and revise) access to a workspace's specs. */
 export async function reach(caller: SpecCaller, workspaceId: string, write: boolean): Promise<boolean> {
   if (caller.kind === 'account' && caller.account.taskScope && caller.account.taskScope.workspaceId !== workspaceId) return false;
+  if (caller.kind === 'user' && isUuid(workspaceId)) return !!(await personReach(caller.userId, workspaceId));
   return (await resolveWorkspaceAccess(workspaceId, accessCaller(caller), write ? 'canCreate' : undefined)).ok;
 }
 
@@ -96,6 +122,26 @@ export const importedRefusal = (spec: Pick<SpecRow, 'repoSource'>): SpecError | 
   ? fail(409, `This spec is imported from ${spec.repoSource.path} and waiting for confirmation, so the repo file is still its source. Change the file and run import again, or have a person confirm the import first.`, { code: 'spec_imported' })
   : null);
 export type SpecRevisionRow = typeof specRevisions.$inferSelect;
+
+/** Test seam: runs after a revise has inserted its revision, before that revision's criteria are derived. */
+export const specStoreDeps: { afterRevisionInsert: (specId: string) => Promise<void> } = {
+  afterRevisionInsert: async () => {},
+};
+
+/**
+ * After a revision is written: its criterion records and its kept reviews
+ * ("Reviewing a spec revision" R-8, R-11). Fail-open: the revision stands
+ * either way, and a later read derives whatever is missing from the body.
+ */
+async function afterRevisionWritten(spec: SpecRow, revision: SpecRevisionRow, body: string): Promise<void> {
+  try {
+    await writeCriterionRecords(spec.id, revision, body);
+    const { keepRevisionReviews } = await import('./revision-changes');
+    await keepRevisionReviews(spec, revision.revision, body);
+  } catch (err) {
+    console.error(`[specs] keeping the criteria of ${spec.id} revision ${revision.revision} failed:`, err);
+  }
+}
 
 export async function createSpecDraft(caller: SpecCaller, input: {
   workspaceId: unknown; title: unknown; scope?: unknown; parentSpecId?: unknown; body: unknown; changeSummary?: unknown; repoRefs?: unknown; design?: unknown;
@@ -170,6 +216,7 @@ export async function createSpecDraft(caller: SpecCaller, input: {
     design: design ?? null,
     imported: opts.imported ? importOf(opts.imported) : null,
   }).returning();
+  await afterRevisionWritten(spec, revision, body);
   return { ok: true, spec, revision, duplicateCheck };
 }
 
@@ -210,6 +257,12 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
     const bad = await checkRepoRefs(spec.workspaceId, newRepoRefs(repoRefs, head.repoRefs));
     if (bad) return bad;
   }
+  // R-14: an id a revision retired is never given new words. A re-import is
+  // exempt: until confirmed the repo file is the source, as written.
+  if (hash !== head.contentHash && !opts.imported) {
+    const reused = await retiredIdRefusal(spec, head.revision, body);
+    if (reused) return fail(409, reused, { code: 'criterion_id_retired' });
+  }
   const refsJson = repoRefs ? JSON.stringify(repoRefs) : null;
   const designJson = design ? JSON.stringify(design) : null;
   const importJson = opts.imported ? JSON.stringify(importOf(opts.imported)) : null;
@@ -246,7 +299,8 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
     INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary, repo_refs, design, imported)
     SELECT up.id, up.head_revision, body.current_revision, ${hash}, ${who.authorKind}, ${who.authorId}, ${summary}, ${refsJson}::jsonb, ${designJson}::jsonb, ${importJson}::jsonb FROM up, body
     RETURNING id`);
-  if (((rows as { rows?: unknown[] }).rows ?? []).length === 0) {
+  const inserted = ((rows as { rows?: Array<Record<string, unknown>> }).rows ?? [])[0] as { id: string } | undefined;
+  if (!inserted) {
     const [now] = await db.select({ version: specs.version }).from(specs).where(eq(specs.id, specId)).limit(1);
     if (now?.version === spec.version && hash !== head.contentHash) {
       const [art] = await db.select({ currentRevision: artifacts.currentRevision }).from(artifacts).where(eq(artifacts.id, spec.bodyArtifactId)).limit(1);
@@ -258,8 +312,15 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
     }
     return fail(409, `The spec changed while you were revising it: it is now at version ${now?.version ?? spec.version}. Re-read it, merge, then revise on top.`, { currentVersion: now?.version ?? spec.version });
   }
+  // The revision this write inserted, by its RETURNING id: another revise can
+  // land between the insert and these reads, so the head is not necessarily
+  // ours, and deriving from it would keep this body's words under its revision.
+  await specStoreDeps.afterRevisionInsert(specId);
+  const [revision] = await db.select().from(specRevisions).where(eq(specRevisions.id, inserted.id)).limit(1);
+  // The spec as this write left it: the version the CAS matched, plus one.
+  // A later revise moves the head on, never what this revision was written against.
+  await afterRevisionWritten({ ...spec, version: spec.version + 1, headRevision: revision.revision }, revision, body);
   const [after] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
-  const [revision] = await db.select().from(specRevisions).where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, after.headRevision))).limit(1);
   return { ok: true, spec: after, revision, unchanged: false };
 }
 
@@ -310,11 +371,13 @@ export interface SpecView {
   revision: SpecRevisionRow;
   body: string;
   requirements: RequirementRef[];
+  revisionsHasMore: boolean;
+  revisionsNextCursor: number | null;
   revisions: Array<Pick<SpecRevisionRow, 'revision' | 'contentHash' | 'authorKind' | 'changeSummary' | 'approvedAt' | 'createdAt'>>;
 }
 
 /** A spec at its head, or at `revision`, exactly as that revision was written. */
-export async function getSpec(caller: SpecCaller, specId: string, opts: { revision?: number } = {}): Promise<{ ok: true; view: SpecView } | SpecError> {
+export async function getSpec(caller: SpecCaller, specId: string, opts: { revision?: number; revisionsLimit?: number; revisionsBefore?: number } = {}): Promise<{ ok: true; view: SpecView } | SpecError> {
   if (!isUuid(specId)) return fail(404, 'Spec not found');
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   if (!spec || !(await reach(caller, spec.workspaceId, false))) return fail(404, 'Spec not found');
@@ -322,11 +385,35 @@ export async function getSpec(caller: SpecCaller, specId: string, opts: { revisi
   const [revision] = await db.select().from(specRevisions).where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, n))).limit(1);
   if (!revision) return fail(404, `Spec has no revision ${n}`);
   const body = (await getArtifactRevision(spec.bodyArtifactId, revision.artifactRevision))?.content ?? '';
+  const revisionsLimit = Math.max(1, Math.min(100, opts.revisionsLimit ?? 20));
   const revisions = await db.select({
     revision: specRevisions.revision, contentHash: specRevisions.contentHash, authorKind: specRevisions.authorKind,
     changeSummary: specRevisions.changeSummary, approvedAt: specRevisions.approvedAt, createdAt: specRevisions.createdAt,
-  }).from(specRevisions).where(eq(specRevisions.specId, specId)).orderBy(desc(specRevisions.revision));
-  return { ok: true, view: { spec, revision, body, requirements: requirementIds(body), revisions } };
+  }).from(specRevisions).where(and(eq(specRevisions.specId, specId), opts.revisionsBefore === undefined ? undefined : lt(specRevisions.revision, opts.revisionsBefore))).orderBy(desc(specRevisions.revision)).limit(revisionsLimit + 1);
+  const revisionsHasMore = revisions.length > revisionsLimit;
+  const page = revisions.slice(0, revisionsLimit);
+  return { ok: true, view: { spec, revision, body, requirements: requirementIds(body), revisions: page, revisionsHasMore, revisionsNextCursor: revisionsHasMore ? page.at(-1)!.revision : null } };
+}
+
+/** What the specs index shows of each spec: never a body, metadata or repo copy, only the import state. */
+export const SPEC_INDEX_COLUMNS = {
+  id: specs.id, workspaceId: specs.workspaceId, title: specs.title, scope: specs.scope, parentSpecId: specs.parentSpecId,
+  status: specs.status, approvedRevision: specs.approvedRevision, headRevision: specs.headRevision, updatedAt: specs.updatedAt,
+  bodyArtifactId: specs.bodyArtifactId,
+  repoSourceState: sql<string | null>`${specs.repoSource}->>'state'`,
+} as const;
+export type SpecIndexRow = Pick<SpecRow, 'id' | 'workspaceId' | 'title' | 'scope' | 'parentSpecId' | 'status' | 'approvedRevision' | 'headRevision' | 'updatedAt' | 'bodyArtifactId'>
+  & { repoSourceState: string | null };
+
+/** Specs one index reads at most; a workspace past this lists its most recently changed. */
+export const MAX_INDEX_SPECS = 1000;
+
+/** The workspace's specs as the index shows them, newest change first, bounded. */
+export async function listSpecIndexRows(caller: SpecCaller, workspaceId: string): Promise<{ ok: true; specs: SpecIndexRow[] } | SpecError> {
+  if (!isUuid(workspaceId) || !(await reach(caller, workspaceId, false))) return fail(404, 'Workspace not found');
+  const rows = await db.select(SPEC_INDEX_COLUMNS).from(specs).where(eq(specs.workspaceId, workspaceId))
+    .orderBy(desc(specs.updatedAt)).limit(MAX_INDEX_SPECS);
+  return { ok: true, specs: rows as SpecIndexRow[] };
 }
 
 export async function listSpecs(caller: SpecCaller, workspaceId: string): Promise<{ ok: true; specs: SpecRow[] } | SpecError> {

@@ -20,7 +20,7 @@ describe('evidence rail', () => {
     expect(html).not.toContain('70%');
   });
 
-  it('the phase evidence sits behind a 44px disclosure, closed by default, naming the head phase as n of m', () => {
+  it('the phase evidence sits behind a 44px disclosure, closed by default, naming the head phase as step n of m (never a bare n of m, which reads as code-review progress)', () => {
     const now = live();
     const html = renderToStaticMarkup(<NowStrip now={now} nowMs={20} />);
     const rail = html.slice(html.indexOf('data-testid="run-evidence-rail"'));
@@ -30,7 +30,7 @@ describe('evidence rail', () => {
     const phases = now.evidence.phases.filter(p => p.state !== 'skipped');
     const i = phases.findIndex(p => p.state === 'current');
     expect(i).toBeGreaterThanOrEqual(0);
-    expect(html).toMatch(new RegExp(`data-testid="run-evidence-head"[^>]*>.*${phases[i].label}.*· ${i + 1} of ${phases.length}`));
+    expect(html).toMatch(new RegExp(`data-testid="run-evidence-head"[^>]*>.*${phases[i].label}.*· step ${i + 1} of ${phases.length}`));
     expect(html).not.toContain('run-evidence-list');
   });
 
@@ -53,7 +53,7 @@ describe('evidence rail', () => {
   });
 });
 
-describe('runLifecycleState: the run evidence on the Build → Audit → Land track', () => {
+describe('runLifecycleState: the run evidence on the Build → Verify → Deliver track', () => {
   const ev = (over: Record<string, unknown>) => deriveRunEvidence({ status: 'running', createdAt: new Date(0).toISOString(), ...over } as never).phases;
 
   it('no PR yet: building, or waiting when paused', () => {
@@ -91,7 +91,7 @@ describe('Now strip before the first update', () => {
   it('does not restate the status', () => {
     const now = deriveNow([], { status: 'running', currentAction: null, startMs: 0, nowMs: 20, prUrl: null, filesChanged: 0, commitCount: 0 } as never);
     const html = renderToStaticMarkup(<NowStrip now={now} nowMs={20} />);
-    expect(html).not.toContain('Working');
+    expect(html).not.toMatch(/worker-now-headline[^>]*>[^<]*Working/);
     expect(html).toContain('worker-now-headline');
   });
 });

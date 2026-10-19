@@ -105,8 +105,21 @@ function scalar(v: AssertionValue): string {
   return SAFE_SCALAR.test(v) && !/^(true|false|null|yes|no|~)$/i.test(v) && !/^[\d.]+$/.test(v) && !v.endsWith(' ') ? v : JSON.stringify(v);
 }
 
+/**
+ * A repo-relative file path: no leading slash, no `..`, no comma or whitespace.
+ * Next.js route groups `(protected)` and dynamic segments `[id]` are allowed:
+ * the repo's own specs list such test files in `verified_by`.
+ */
+export const REPO_PATH = /^(?!\/)(?!.*\.\.)[A-Za-z0-9_./[\]()@+-]+$/;
+export const isRepoPath = (p: string): boolean => REPO_PATH.test(p);
+
+/**
+ * A one-line YAML-style list, as the repo specs write it. The repo parsers
+ * strip the outer brackets and split on commas, so an item may hold brackets
+ * (`[id]`) but never a comma or a newline.
+ */
 function list(items: readonly string[] | undefined): string {
-  for (const i of items ?? []) if (/[,[\]\n]/.test(i)) throw new Error(`a list item may not contain a comma, a bracket or a newline: ${i}`);
+  for (const i of items ?? []) if (/[,\n]/.test(i)) throw new Error(`a list item may not contain a comma or a newline: ${i}`);
   return `[${(items ?? []).join(', ')}]`;
 }
 
@@ -155,7 +168,7 @@ export function metadataBlock(input: Pick<RepoCopyInput, 'metadata' | 'domain' |
   };
   const lines = [`status: ${input.status}`];
   if (!skip.has('owner')) lines.push(`owner: ${one(m.owner ?? input.defaultOwner, 'owner')}`);
-  if (!skip.has('title')) lines.push(`title: ${one(input.title, 'title')}`);
+  if (!skip.has('title')) lines.push(`title: ${quoted(one(input.title, 'title'))}`);
   // specs:lint requires a summary; a native body rarely states one in its own frontmatter.
   if (!skip.has('summary')) {
     const summary = m.summary?.trim() || firstProseSentence(input.body) || input.title.trim();

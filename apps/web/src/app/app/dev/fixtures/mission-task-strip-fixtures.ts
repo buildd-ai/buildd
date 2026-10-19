@@ -12,7 +12,7 @@
  *   &variant=wide         one root, 30 dependents (§7.10)
  *   &variant=delivery     35 tasks in a chain, 33 landed; 34 on its second
  *                         automatic repair, 35 held behind it. The drawer's
- *                         Build › Audit › Land row and its Audit and repair
+ *                         Build › Verify › Deliver row and its Audit and repair
  *                         disclosure (`missionTaskDeliveries`).
  *   &variant=overview-2|overview-10|overview-20|overview-64
  *                         the Overview tab's Done / In progress / Waiting groups
@@ -382,7 +382,7 @@ export const isHandoffVariant = (v: string): v is HandoffVariant => v.startsWith
 
 function visualState(over: Partial<MissionVisualReviewState>): MissionVisualReviewState {
   return {
-    status: 'running', blocksCompletion: true, blocksMerge: true, pendingVerification: true, staleEvidence: false, nextActor: 'system',
+    status: 'running', blocksCompletion: true, blocksMerge: true, pendingVerification: true, staleEvidence: false, passedOnEarlierCommit: false, evidenceSha: null, nextActor: 'system',
     policy: { mode: 'automatic', origin: 'workspace', waiverAllowed: true, locked: false },
     scope: { screens: 8, uiFiles: 4, source: 'diff', workLanded: true },
     progress: { captured: 6, expected: 8 },

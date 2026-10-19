@@ -19,7 +19,7 @@ import {
   findTransitionSql, loadViewSql, recordOnlySql, toAttemptSnapshot, toDeliverySnapshot, toFindingSnapshot, toRoundSnapshot, transitionSql, type Exec,
 } from './kernel';
 import {
-  ackEffectSql, claimDueEffectsSql, failEffectSql, insertFollowupEffectSql, parkEffectSql, renewEffectLeaseSql,
+  ackEffectSql, claimDueEffectsSql, failEffectSql, insertFollowupEffectSql, parkEffectSql, renewEffectLeaseSql, wakeHeldMergesSql, carryOpenFindingsSql,
 } from './effects';
 import { releaseSql } from './authority';
 import { acquireLaneSql, laneHolderSql, releaseSettledLanesSql, wakeNextWaiterSql } from './landing-lane';
@@ -62,6 +62,7 @@ export function toClaimedEffect(r: Row): ClaimedEffect {
     dedupeKey: String(r.dedupe_key),
     payload: (r.payload as Record<string, unknown>) ?? {},
     attemptCount: Number(r.attempt_count ?? 0),
+    ...(r.age_ms != null && Number.isFinite(Number(r.age_ms)) ? { ageMs: Math.max(0, Number(r.age_ms)) } : {}),
     ...toSnapshot(r),
   };
 }
@@ -189,6 +190,14 @@ export function postgresStore(exec: Exec): Store {
     async wakeNextLaneWaiter(k) {
       const w = (await rows(exec, wakeNextWaiterSql(k)))[0] as { delivery_id?: string } | undefined;
       return w?.delivery_id ? String(w.delivery_id) : null;
+    },
+
+    async carryOpenFindings(fromDeliveryId, toDeliveryId) {
+      return (await rows(exec, carryOpenFindingsSql(fromDeliveryId, toDeliveryId))).map((r) => String(r.id));
+    },
+
+    async wakeHeldMerges(deliveryId, headSha) {
+      return (await rows(exec, wakeHeldMergesSql(deliveryId, headSha))).length;
     },
   };
 }

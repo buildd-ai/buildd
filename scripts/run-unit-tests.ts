@@ -27,6 +27,7 @@ const UNIT_TEST_ROOTS = [
   'packages/ai-kit/',
   'packages/dispatch-contract/',
   'packages/spec-contract/',
+  'packages/shared/',
   'packages/workflow-kernel/',
   'scripts/',
 ] as const;
@@ -414,16 +415,54 @@ export function getFileWallTimeoutMs(configured: string | undefined): number {
   return Math.floor(n);
 }
 
+/**
+ * Host-aware admission. The 1-minute load average is already the runner's
+ * oversubscription signal (see formatHeartbeat); when it is past 1.5x the
+ * logical CPUs, other builds are competing and piling more test processes on
+ * only pushes subprocess-heavy files past their deadlines. Halve the number of
+ * files in flight until the load drops. One file always runs, so the suite
+ * still finishes. `BUILDD_TEST_ADMISSION=off` restores the fixed concurrency.
+ */
+export function isHostOversubscribed(load1: number, cpuCount: number): boolean {
+  return load1 > cpuCount * 1.5;
+}
+
+/** Past 3x the CPUs, halving is not enough (load 12 on 4 CPUs still timed out fixtures): quarter it. */
+export function isHostSeverelyOversubscribed(load1: number, cpuCount: number): boolean {
+  return load1 > cpuCount * 3;
+}
+
+export function admissionLimit(concurrency: number, load1: number, cpuCount: number): number {
+  if (isHostSeverelyOversubscribed(load1, cpuCount)) return Math.max(1, Math.floor(concurrency / 4));
+  return isHostOversubscribed(load1, cpuCount) ? Math.max(1, Math.floor(concurrency / 2)) : concurrency;
+}
+
+const ADMISSION_POLL_MS = 2_000;
+
 export async function runWithConcurrency<T>(
   items: readonly T[],
   concurrency: number,
   run: (item: T) => Promise<void>,
+  options: { limit?: () => number; pollMs?: number } = {},
 ): Promise<void> {
   let next = 0;
+  let active = 0;
+  const pollMs = options.pollMs ?? ADMISSION_POLL_MS;
 
   async function worker(): Promise<void> {
     while (next < items.length) {
-      await run(items[next++]);
+      // `active` counts files in flight; wait while at the current limit.
+      while (options.limit && active >= Math.max(1, options.limit()) && next < items.length) {
+        await new Promise(r => setTimeout(r, pollMs));
+      }
+      if (next >= items.length) return;
+      const item = items[next++];
+      active++;
+      try {
+        await run(item);
+      } finally {
+        active--;
+      }
     }
   }
 
@@ -947,6 +986,9 @@ async function main(): Promise<void> {
   process.once('SIGTERM', onKill);
   process.once('SIGINT', onKill);
 
+  const admission = process.env.BUILDD_TEST_ADMISSION === 'off'
+    ? {}
+    : { limit: () => admissionLimit(concurrency, loadavg()[0], cpus().length) };
   await runWithConcurrency(files, concurrency, async file => {
     running.add(file);
     const result = await runTestFile(file);
@@ -958,13 +1000,19 @@ async function main(): Promise<void> {
     } else {
       failures.push(result);
       if (!process.stdout.isTTY) console.log(`[failed] ${file}`);
+      // Failure output is usable before the suite ends: a run that is killed or
+      // still going on a loaded host leaves its failures in the log so far.
+      try {
+        const partial = failures.map(f => `--- ${f.file} ---\n${f.output.trim()}\n`).join('\n');
+        writeFileSync(process.env.BUILDD_TEST_LOG ?? '.test-report.log', `INCOMPLETE RUN (in progress: ${passed + failures.length}/${files.length} files done)\n\n${partial}`);
+      } catch {}
     }
     // Carriage-return progress is unreadable once redirected to a file, and the
     // log is what agents grep. Only animate on a TTY.
     if (process.stdout.isTTY) {
       process.stdout.write(`\rUnit test files: ${passed} passed, ${failures.length} failed, ${files.length - passed - failures.length} remaining`);
     }
-  });
+  }, admission);
   if (heartbeat) clearInterval(heartbeat);
   if (process.stdout.isTTY) process.stdout.write('\n');
   process.off('SIGTERM', onKill);

@@ -211,4 +211,67 @@ describe('deriveMissionIntegrationPr with delivery records', () => {
     expect(deriveMissionProgressSubline({ missionStatus: 'active', totalTasks: 4, completedTasks: 2, awaitingMerge: 0, integrationPr: v }))
       .toBe('2 of 4 tasks complete · delivery 1 shipped');
   });
+
+  it('delivery 1 with a single open delivery uses delivery-specific wording', () => {
+    const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [], deliveries: [d(1, 'open', 11)] })!;
+    expect(v).toMatchObject({ state: 'open', delivery: 1, prNumber: 11 });
+    const words = describeMissionDelivery(v);
+    expect(words.heading).toBe('Delivery 1');
+    expect(words.line).toContain("Delivery 1's work ships in this PR");
+    expect(words.earlier).toBeNull();
+  });
+});
+
+// Task fbc93ebd (kernel audit F6): a closed integration PR whose work is
+// recorded as landed elsewhere says where. Whether the branch is finished also
+// needs "no successor is open", which these rows cannot tell (review of #5021,
+// finding 2), so the surface never claims it.
+describe('a closed mission PR whose work landed elsewhere', () => {
+  const owner = (supersededByPrNumber: number | null): MissionPrTaskLike => ({
+    id: 'task-mission-pr', title: 'Ship mission: Ship the thing', taskClass: 'bookkeeping',
+    workers: [{ prUrl: 'https://github.com/acme/app/pull/40', prNumber: 40, mergedAt: null, prLifecycleStatus: 'closed', supersededByPrNumber }],
+  });
+  const delivery = { epoch: 1, branch: BRANCH, state: 'open' as const, prNumber: 40, repoFullName: 'acme/app' };
+
+  it('names where the work landed', () => {
+    const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [owner(61)], deliveries: [delivery] })!;
+    expect(v).toMatchObject({ state: 'closed', landedIn: 61 });
+    expect(describeMissionDelivery(v).line).toBe("Delivery 1's PR closed without merging and its work landed in #61.");
+    expect(deriveMissionProgressSubline({ missionStatus: 'active', totalTasks: 2, completedTasks: 2, awaitingMerge: 0, integrationPr: v }))
+      .toBe('2 of 2 tasks complete · mission PR #40 closed, work landed in #61');
+  });
+
+  it('a successor PR may be open from the same branch: the surface never says the branch is finished', () => {
+    // A second mission PR from the branch, open: the rows cannot tie it to this delivery.
+    const successor: MissionPrTaskLike = {
+      id: 'task-mission-pr-2', title: 'Ship mission: Ship the thing', taskClass: 'bookkeeping',
+      workers: [{ prUrl: 'https://github.com/acme/app/pull/70', prNumber: 70, mergedAt: null, prLifecycleStatus: 'pr_open' }],
+    };
+    for (const v of [
+      deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [owner(61), successor], deliveries: [delivery] })!,
+      deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [owner(61), successor] })!,
+    ]) {
+      const words = describeMissionDelivery(v);
+      expect(`${words.line} ${words.earlier ?? ''}`).not.toMatch(/finished|nothing more ships/i);
+    }
+  });
+
+  it('closed with nothing recorded: the old words', () => {
+    const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [owner(null)], deliveries: [delivery] })!;
+    expect(v.state).toBe('closed');
+    expect(v.landedIn).toBeUndefined();
+    expect(describeMissionDelivery(v).line).toBe("Delivery 1's PR was closed without merging, so its work is only on this branch.");
+  });
+
+  it('without delivery records the owner row says the same', () => {
+    const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [owner(61)] })!;
+    expect(v).toMatchObject({ state: 'closed', landedIn: 61 });
+    expect(describeMissionDelivery(v).line).toBe('The mission PR closed without merging and its work landed in #61.');
+  });
+});
+
+describe('a merged mission PR never reads open (spec 3ef37387 R-24)', () => {
+  it('lifecycle merged with no merge stamp yet reads merged', () => {
+    expect(deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [missionPrTask({ mergedAt: null, prLifecycleStatus: 'merged' })] })!.state).toBe('merged');
+  });
 });

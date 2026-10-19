@@ -9,6 +9,10 @@
  * missions module rather than on GET /api/tasks so core never imports the
  * mission projection (scripts/module-boundaries.test.ts).
  *
+ * Read from each mission's stored summary (spec 3ef37387 R-13,
+ * lib/mission-stage-read.ts): one row per mission, not its tasks and workers;
+ * a mission not yet summarised is derived live and its summary queued.
+ *
  * Scoped to the caller's reachable workspaces: a mission in another workspace,
  * or an unknown id, is simply absent from `stages`. A runner key or a signed-in
  * user; per-task tokens are not accepted.
@@ -17,12 +21,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
-import { loadMissionStages } from '@/lib/mission-stage-load';
+import { listCallerKey, withChangeVersion } from '@/lib/change-version';
+import { loadMissionStagesFromSummaries } from '@/lib/mission-stage-read';
 import { isUuid } from '@/lib/uuid';
 import type { MissionStage } from '@buildd/shared';
-
-/** The task list holds at most 200 tasks, so far fewer missions; the cap bounds the batched reads. */
-const MAX_MISSION_IDS = 100;
+import { MAX_STAGE_MISSION_IDS as MAX_MISSION_IDS } from '@/lib/mission-stage';
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -45,11 +48,16 @@ export async function GET(req: NextRequest) {
   if (ids.length === 0) return NextResponse.json({ stages: {} });
 
   try {
-    const workspaceIds = await listReachableWorkspaceIds(apiAccount ? { account: apiAccount } : { userId: user!.id });
-    const stages = await loadMissionStages(ids, workspaceIds);
-    const out: Record<string, MissionStage> = {};
-    for (const [id, stage] of stages) out[id] = stage;
-    return NextResponse.json({ stages: out });
+    const accessCaller = apiAccount ? { account: apiAccount } : { userId: user!.id };
+    const caller = listCallerKey(accessCaller);
+    const workspaceIds = await listReachableWorkspaceIds(accessCaller);
+    // R-20/R-35: unchanged since this caller's last read → 304, or the cached body.
+    return await withChangeVersion(req, { scopes: workspaceIds, caller }, async () => {
+      const stages = await loadMissionStagesFromSummaries(ids, workspaceIds);
+      const out: Record<string, MissionStage> = {};
+      for (const [id, stage] of stages) out[id] = stage;
+      return NextResponse.json({ stages: out });
+    });
   } catch (err) {
     console.error('[missions/stages] failed:', err);
     return NextResponse.json({ error: 'Failed to load mission stages' }, { status: 500 });

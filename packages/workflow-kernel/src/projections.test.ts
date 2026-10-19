@@ -96,7 +96,8 @@ describe('release composition', () => {
   test('a composition head that is no longer current claims nothing', () => {
     const v = view({ view: V(D({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['OLD'] })) });
     expect(v.compositionVerified).toBe(false);
-    expect(v.headline).toBe('Approved · awaiting merge');
+    // Approval alone is not a merge promise: the required checks have not reported on this head.
+    expect(v.headline).toBe('Approved · checking');
   });
 });
 
@@ -107,8 +108,15 @@ describe('task-page state vocabulary (docs/specs/task-page.md, State mapping)', 
     expect(v.headline).not.toContain('Repairing');
   });
 
-  test('an approved PR reads Approved · awaiting merge until the merge fact', () => {
-    expect(view({ view: V(D({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] })) }).headline).toBe('Approved · awaiting merge');
+  test('copy catalog: a superseded PR reads Merged in #N, never Shipped', () => {
+    expect(view({ view: V(D({ state: 'SUPERSEDED', supersededByPr: 77 })) }).headline).toBe('Merged in #77');
+  });
+
+  test('an approved PR never reads Ready or Merging until checks pass and the merge fact', () => {
+    const approved = { state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] } as const;
+    expect(view({ view: V(D({ ...approved })) }).headline).toBe('Approved · checking');
+    expect(view({ view: V(D({ ...approved, ci: 'red', ciHeadSha: 'H1abcdef' })) }).headline).toBe('Approved · checks failing');
+    expect(view({ view: V(D({ ...approved, ci: 'green', ciHeadSha: 'H1abcdef' })) }).headline).toBe('Ready to merge');
     expect(view({ view: V(D({ state: 'MERGED' })) }).headline).toBe('Merged');
   });
 
@@ -307,8 +315,8 @@ describe('a behind refresh says what it is doing, and whom it waits for in the l
   });
 
   test('parked in the lane: names the PR landing first', () => {
-    expect(behind({ laneWait: { behindPr: 7 } })).toMatchObject({ headline: 'Waiting to update branch', detail: 'PR #7 is landing on dev first', needsYou: false });
-    expect(behind({ laneWait: { behindPr: null } }).detail).toBe('another PR is landing on dev first');
+    expect(behind({ laneWait: { behindPr: 7 } })).toMatchObject({ headline: 'Waiting to update branch', detail: 'PR #7 is merging into dev first', needsYou: false });
+    expect(behind({ laneWait: { behindPr: null } }).detail).toBe('another PR is merging into dev first');
   });
 
   test('other repairs keep their copy', () => {
@@ -321,20 +329,65 @@ describe('landing_needs_human says which refusal it was (88318f31)', () => {
 
   test('the base keeps changing what the PR changes: names the files', () => {
     expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3, cause: 'refresh_unsafe', files: ['src/a.ts', 'bun.lock'] })))
-      .toEqual({ headline: 'Landing held: the base keeps changing what this PR changes', detail: 'the base changed src/a.ts, bun.lock' });
+      .toEqual({ headline: 'Merge held: the base keeps changing what this PR changes', detail: 'the base changed src/a.ts, bun.lock' });
+  });
+
+  // dc4436aa: release version bumps were reported as "the base keeps changing what this PR changes".
+  test('a risky path in the gap is not the base changing this PR\'s files', () => {
+    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3, cause: 'refresh_unsafe', deltaBasis: 'risky_path', files: ['apps/web/package.json'] })))
+      .toEqual({ headline: 'Merge held: the base or this PR touches a migration, lockfile, manifest or CI file', detail: 'the gap touches apps/web/package.json' });
+    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3, cause: 'refresh_unsafe', deltaBasis: 'overlap', files: ['src/a.ts'] })))
+      .toEqual({ headline: 'Merge held: the base keeps changing what this PR changes', detail: 'the base changed src/a.ts' });
+    // Evidence recorded before deltaBasis existed: the rule's own words tell them apart.
+    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, cause: 'refresh_unsafe', deltaReason: 'the gap involves a migration, schema, lockfile, manifest, CI workflow or repo-wide test (bun.lock)', files: ['bun.lock'] })).headline)
+      .toBe('Merge held: the base or this PR touches a migration, lockfile, manifest or CI file');
+    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, cause: 'refresh_unsafe', deltaReason: 'the base changed files this PR changes (src/a.ts)', files: ['src/a.ts'] })).headline)
+      .toBe('Merge held: the base keeps changing what this PR changes');
   });
 
   test('the base only kept moving: the refresh count and the gap', () => {
     expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3, cause: 'refresh_exhausted', behindBy: 25 })))
-      .toEqual({ headline: 'Landing held: the base kept moving faster than CI', detail: 'refreshed 3 times, 25 commits behind' });
+      .toEqual({ headline: 'Merge held: the base kept moving faster than CI', detail: 'refreshed 3 times, 25 commits behind' });
     // An escalation recorded before the base delta was read is the same kind.
-    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3 })).headline).toBe('Landing held: the base kept moving faster than CI');
+    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3 })).headline).toBe('Merge held: the base kept moving faster than CI');
   });
 
   test('GitHub refusing the merge and a refresh that kept failing are each named', () => {
     expect(landingEscalationCopy(t('MergeCallResult', { outcome: 'refused', detail: 'Required review missing' })))
-      .toEqual({ headline: 'GitHub refused the merge; a person has to land it', detail: 'Required review missing' });
-    expect(landingEscalationCopy(t('MechanicalRepairFailed', { reason: 'update-branch: 422' })).headline).toBe('Updating the branch kept failing; a person has to land it');
-    expect(landingEscalationCopy(null).headline).toBe('Merge refused; a person has to land it');
+      .toEqual({ headline: 'GitHub refused the merge; a person has to merge it', detail: 'Required review missing' });
+    expect(landingEscalationCopy(t('MechanicalRepairFailed', { reason: 'update-branch: 422' })).headline).toBe('Updating the branch kept failing; a person has to merge it');
+    expect(landingEscalationCopy(null).headline).toBe('Merge blocked: a person has to merge it');
+  });
+});
+
+// c1d66a6a: "Review budget spent without an approval" was shown for a PR approved twice, and a fix
+// pushed after the escalation was invisible: the person saw only "open" findings.
+describe('c1d66a6a: the review-exhausted copy says what happened', () => {
+  const dec = (round: number, verdict: 'approve' | 'request_changes') => R({ id: `r${round}`, round, headSha: `H${round}`, status: 'decided', verdict, effectiveVerdict: verdict });
+  const esc = (rounds: RoundSnapshot[], findings: KernelView['findings'] = []) =>
+    view({ view: { ...V(D({ state: 'ESCALATED', stateReason: 'review_exhausted', currentRound: rounds.length }), rounds), findings } });
+  const finding = (id: string, status: 'open' | 'addressed') => ({
+    id, originRoundId: 'r6', originRound: 6, originHeadSha: 'H6', ordinal: 0, path: `${id}.ts`, line: null, title: 'x', required: true,
+    status, lastRound: 6, addressedBySha: status === 'addressed' ? 'H7' : null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null,
+  });
+
+  test('never approved: the budget ran out without an approval', () => {
+    expect(esc([dec(1, 'request_changes'), dec(2, 'request_changes'), dec(3, 'request_changes')]).headline).toBe('Review budget spent without an approval');
+  });
+
+  test('approved, then later changes refused: it says so, in words', () => {
+    const v = esc([dec(1, 'request_changes'), dec(2, 'request_changes'), dec(3, 'approve'), dec(4, 'approve'), dec(5, 'request_changes'), dec(6, 'request_changes')]);
+    expect(v.headline).toBe('Approved twice, then a later change was refused twice');
+    expect(esc([dec(1, 'approve'), dec(2, 'request_changes')]).headline).toBe('Approved, then a later change was refused');
+  });
+
+  test('the last verdict an approval that left findings unverified: it says so, not "without an approval"', () => {
+    expect(esc([dec(1, 'request_changes'), dec(2, 'request_changes'), dec(3, 'approve')]).headline).toBe('Approved, but findings it left unverified ran out of review rounds');
+  });
+
+  test('a fix pushed after the escalation shows as waiting for a re-review', () => {
+    const v = esc([dec(1, 'request_changes'), dec(2, 'request_changes'), dec(3, 'request_changes')], [finding('a', 'addressed'), finding('b', 'open')]);
+    expect(v.detail).toContain('one of two findings has a fix waiting for a re-review');
+    expect(v.addressedFindings).toBe(1);
   });
 });

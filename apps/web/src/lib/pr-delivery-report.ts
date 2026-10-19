@@ -8,9 +8,7 @@
  * and the PR activity comment print, so the three agree (AC-24). GitHub review
  * counts stay in `reviews` for a PR that has no delivery.
  */
-import { REPAIR_PHASE_WORDS, repairPhaseOf, reviewSummaryLine, reviewSummaryOf, type DeliveryView, type RepairPhase, type ReviewSummary } from '@/lib/workflow/projections';
-
-const FAMILY_LABEL: Record<DeliveryView['ledger'][number]['family'], string> = { review_fix: 'Review fix', ci: 'CI fix', conflict: 'Conflict fix', migration: 'Migration fix', trunk: 'Base fix' };
+import { REPAIR_PHASE_WORDS, repairLabelOf, repairPhaseOf, reviewSummaryLine, reviewSummaryOf, type DeliveryView, type RepairPhase, type ReviewSummary } from '@/lib/workflow/projections';
 
 export interface PrDeliveryReport {
   state: DeliveryView['state'];
@@ -19,17 +17,21 @@ export interface PrDeliveryReport {
   needsYou: boolean;
   review: (ReviewSummary & { line: string }) | null;
   repairs: Array<{ label: string; phase: RepairPhase; words: string; taskId: string | null }>;
+  /** R-43: the `Buildd / Review approval` status on the head, apart from CI; null when none is published. */
+  reviewApproval: { state: 'success' | 'failure' | 'pending'; description: string } | null;
 }
 
 export function prDeliveryReport(v: DeliveryView): PrDeliveryReport {
   const summary = reviewSummaryOf(v);
   // Agent repairs only: a mechanical attempt is the platform updating the branch.
-  const repairs = (v.ledger ?? [])
+  const ledger = v.ledger ?? [];
+  const repairs = ledger
     .filter(a => a.mode === 'agent')
     .sort((a, b) => a.family.localeCompare(b.family) || a.attemptNo - b.attemptNo)
     .map(a => {
       const phase = repairPhaseOf(a, v);
-      return { label: `${FAMILY_LABEL[a.family]} ${a.attemptNo} of ${a.maxAttempts}`, phase, words: REPAIR_PHASE_WORDS[phase], taskId: a.taskId };
+      // get_pr says "of up to" (#5006); N counts the attempts that ran (295486ba).
+      return { label: repairLabelOf(a, ledger, { upTo: true }), phase, words: REPAIR_PHASE_WORDS[phase], taskId: a.taskId };
     });
   return {
     state: v.state,
@@ -38,5 +40,6 @@ export function prDeliveryReport(v: DeliveryView): PrDeliveryReport {
     needsYou: v.needsYou,
     review: summary ? { ...summary, line: reviewSummaryLine(summary) } : null,
     repairs,
+    reviewApproval: v.reviewApproval ?? null,
   };
 }

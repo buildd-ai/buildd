@@ -10,7 +10,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Agent Capabilities](./agent-capabilities.md) · @max — verified 2026-10-11
   An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
-- [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-10-15
+- [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-10-16
   Inbound credentials MUST resolve to an account and apply claim limits according to how the runner pays for model usage.
 - [Capability Requests and Grants](./capability-requests.md) · @max — verified 2026-10-12
   An agent MUST get access it lacked at start only by asking for a semantic need, resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
@@ -19,7 +19,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Credential Refresh Lifecycle](./credential-refresh-lifecycle.md) · @max — verified 2026-10-16
   A rotating OAuth credential MUST be refreshed by one holder at a time from the runner, not the control plane, and a rotation whose outcome was never learned MUST end in one reconnect signal, not a retry loop.
 - [Deployment Actions](./deployment-actions.md) · @max — verified 2026-10-05
-  A deploy MUST run server-side with a credential named by reference, authorized against the task role's workspace grant or an admin key, audited before use, never returning the credential.
+  A deploy MUST run server-side with a credential named by reference, authorized against the task role's workspace grant, an admin key, or a signed-in team owner/admin, audited before use, never returning the credential.
 - [Model Inference Agent Capability](./model-inference-agent-capability.md) · @max — verified 2026-10-11
   A running agent MUST get a brokered decision-model answer only under a live task-scoped model.inference grant and a reserved budget, never seeing a key or choosing an endpoint, and failing closed.
 - [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-10-15
@@ -71,13 +71,13 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Mission Branch Refresh](./mission-branch-refresh.md) · @max — verified 2026-10-14
   A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
-- [Mission State and Completion](./mission-completion.md) · @max — verified 2026-10-15
+- [Mission State and Completion](./mission-completion.md) · @max — verified 2026-10-17
   Missions MUST derive health from live work and refuse completion without passing goal criteria and required reviews.
 - [Mission Goal Criteria Quality (Advisory Verdict)](./mission-goal-criteria-quality.md) · @max — verified 2026-10-03
   A mission's goal criteria MUST be graded advisorily on write (noticeable outcome, checkable proof) without ever blocking, rewriting or changing the stored goal; fails open; surfaces an advisory by default.
 - [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-10-15
   A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
-- [Mission Surface Audit](./mission-surface-audit.md) · @max — verified 2026-10-15
+- [Mission Surface Audit](./mission-surface-audit.md) · @max — verified 2026-10-17
   A mission touching UI surfaces MUST receive a dependent surface audit and enforce its visual review policy before shipping.
 - [Organizer Context](./organizer-context.md) · @max — verified 2026-10-15
   Organizer prompts MUST include prior work and bounded current workspace context while degrading safely on retrieval failure.
@@ -90,7 +90,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Every committed migration MUST execute exactly once, recognised by its folder name (legacy history by its exact-ms journal time) and never by a high-water mark for post-cutover files; a missing tracking row for legacy history MUST be backfilled on evidence, never replayed.
 - [Mission Release Gate](./mission-release-gate.md) · @max — verified 2026-10-15
   For a mission with an integration base, canCompleteMission and the on_mission_complete release trigger MUST gate on the mission PR's merge into trunk through one shared accessor.
-- [Release Flow](./release-flow.md) · @max — verified 2026-10-15
+- [Release Flow](./release-flow.md) · @max — verified 2026-10-17
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
 ### runners (14)
@@ -105,13 +105,13 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The Codex worker backend MUST drive the shared worker loop by mapping Codex thread events into Claude-shaped SDK messages, emitting exactly one complete and one aggregate result per run, and resuming by thread id.
 - [Live Sibling Conflict Probe](./live-sibling-conflict-probe.md) · @max — verified 2026-10-08
   Two live workers whose touches share a file MUST be trial-merged on a runner, and a real conflict MUST reach both workers once per pair, naming files, hunks and who rebases.
-- [Local Agent Presence](./local-agent-presence.md) · @max — verified 2026-10-15
+- [Local Agent Presence](./local-agent-presence.md) · @max — verified 2026-10-18
   A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
 - [Provider Failover](./provider-failover.md) · @max — verified 2026-10-14
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
 - [Runner Failure Alerts](./runner-failure-alerts.md) · @max — verified 2026-10-15
   Systemic runner failures MUST alert operations only when enabled and MUST never block claiming work.
-- [Runner Heartbeat and Version](./runner-heartbeat.md) · @max — verified 2026-10-15
+- [Runner Heartbeat and Version](./runner-heartbeat.md) · @max — verified 2026-10-18
   A runner heartbeat MUST report current presence and version information without exposing its local UI token.
 - [Runner Pre-Merge, Derived Files and Mergiraf](./runner-pre-merge.md) · @max — verified 2026-10-10
   Before a conflict agent starts, the runner MUST merge the right base with derived-file and mergiraf drivers, MUST record every file mergiraf resolved, and MUST NOT push mergiraf's work without an agent.
@@ -177,15 +177,15 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.
 - [Base Refresh Classification](./base-refresh-classification.md) · @max — verified 2026-10-01
   A behind-only PR MUST be refreshed agent-free via a head-pinned branch update; only a verified textual conflict dispatches a conflict agent, and an unknown semantic verdict never clears a merge.
-- [Claim Gate Legibility](./claim-gate-legibility.md) · @max — verified 2026-10-15
+- [Claim Gate Legibility](./claim-gate-legibility.md) · @max — verified 2026-10-18
   Every condition withholding a pending task MUST have an observable claim-gate reason.
-- [Claim Ordering (Batch Planner)](./claim-ordering.md) · @max — verified 2026-10-12
+- [Claim Ordering (Batch Planner)](./claim-ordering.md) · @max — verified 2026-10-18
   The claim route MUST order auto-claims through planClaimBatch only when a workspace opts in, MUST never co-schedule across a hard edge, and MUST use predicted scope only above pinned, evidence-backed thresholds.
 - [Decision Kinds (First-Party Adapters and Migration Seam)](./decision-kinds.md) · @max — verified 2026-10-11
   A decision call site MUST target a typed decision kind that owns its features, override, fallback and objective, while routes, ledger rows, outcomes and the readout come from one shared substrate.
 - [Failure Incident Recovery](./failure-incident-recovery.md) · @max — verified 2026-10-16
   A failure incident MUST carry one fresh, versioned recovery assessment that is re-checked before any repair, resolved only by a passing check, and shown identically on every surface.
-- [Force Start Past a Coordination Wait](./force-start.md) · @max — verified 2026-10-12
+- [Force Start Past a Coordination Wait](./force-start.md) · @max — verified 2026-10-18
   A dashboard Start MUST name the real waiting reasons, and Force start MUST lift exactly the confirmed forceable ones through one audited, single-use intent a runner's claim honours.
 - [Human Answer Delivery](./human-answer-delivery.md) · @max — verified 2026-10-15
   An authorised human answer MUST reach a live session or create durable retry work, and MUST never be applied twice or silently dropped.
@@ -203,8 +203,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   When a workspace opts in, a PR touching a serialized surface MUST wait behind an earlier open PR on the same surface and base branch, and MUST merge inside an atomic per-surface reservation.
 - [Task Dispatch Authority](./task-dispatch-authority.md) · @max — verified 2026-10-11
   Every state change that may make a task runnable MUST leave a durable dispatch intent, delivered at least once through one authority, while the claim route stays the only scheduling decision.
-- [Task Estimates (Rollout and Team Switch)](./task-estimates.md) · @max — verified 2026-10-15
-  Frozen forecasts use shared evidence-aware display and auditable sample selection; estimates follow the team's switch or a quality-gated default and never order work.
+- [Task Estimates (Availability and Calibration)](./task-estimates.md) · @max — verified 2026-10-17
+  Eligible teams receive frozen evidence-aware forecasts by default; calibration gates numeric confidence, team health stays compact, and forecasts never order work.
 - [Task and Worker State Machines](./task-state-machine.md) · @max — verified 2026-10-15
   Task and worker transitions MUST preserve output requirements, terminal-state guards and dependency resolution.
 
@@ -212,8 +212,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Bug Intake and Quality](./bug-intake-and-quality.md) · @max — verified 2026-10-11
   Every defect report MUST land as one report on one failure incident, every incident above noise MUST have exactly one owner, and every resolved defect MUST trace to the change, release and agent that introduced it.
-- [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-17
-  Overlapping work MUST start by default; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, workspace hard surfaces) and only while its holder is live work.
+- [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-18
+  Overlapping work MUST start by default, undeclared scope included; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, hard surfaces) and only while its holder is live.
 - [Commercial Licensing Foundation](./commercial-licensing.md) · @builder — verified 2026-10-09
   The public core MUST verify a signed license offline and answer scoped capability checks for future commercial modules, denying only the premium capability and never core features or data.
 - [Decision Model Selection (Per-Decision Model, Measured Thresholds, Signal Collection)](./decision-model-selection.md) · @max — verified 2026-10-16
@@ -230,7 +230,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Context: a runner already uses its machine's own Claude login when the claim brings no credential (`host-seat.ts`), and its own `codex login` for Codex tasks (`decideCodexSeat`).
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-10-15
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
-- [Workflow Kernel Library and Single Host](./workflow-kernel-library.md) · @max — verified 2026-10-14
+- [Workflow Kernel Library and Single Host](./workflow-kernel-library.md) · @max — verified 2026-10-18
   Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 - [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-13
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.

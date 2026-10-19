@@ -30,14 +30,14 @@
  * - The actions are `TaskActionZone`, the renderer the task sheet and the
  *   task page mount, from the board model already loaded (no fetch on select).
  * - Two progress readings, kept apart: the strip is the mission's dependency
- *   progress (landed n/m, what holds what); the drawer's Build › Audit › Land
+ *   progress (landed n/m, what holds what); the drawer's Build › Verify › Deliver
  *   row is the selected task's own delivery flow (`deliveries`, from the
  *   shared projection). Its "Audit and repair" disclosure lists that task's
  *   revisions, gates and repair rounds: attempts and review runs are evidence
  *   inside their task's drawer, never cells or cards of their own.
  */
 import { CLAIM_ROW_BTN } from '@/components/tasks/ClaimTaskHint';
-import { displayTaskTitle } from '@/lib/task-title';
+import { TERMS } from '@buildd/shared';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { SurfaceAuditWaiverTile } from './MissionSurfaceAuditWaiver';
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
@@ -60,6 +60,7 @@ import { DeliveryEvidence } from '@/components/delivery/DeliveryParts';
 import { lifecycleState } from '@/components/delivery/lifecycle-state';
 import Lifecycle from '@/components/ui/Lifecycle';
 import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
+import { TaskTitle } from '@/components/tasks/TaskTitle';
 
 /** The situation block's task, handed to the drawer (its reason is the accessor's sentence). */
 export interface StripFocus {
@@ -76,13 +77,13 @@ export interface LandedStripProps {
   focus: StripFocus | null;
   /** The big "9 of 10", drawn by the band. */
   count: ReactNode;
-  /** Each deliverable's own Build › Audit › Land and evidence, by task id (`missionTaskDeliveries`). Absent: no stage row. */
+  /** Each deliverable's own Build › Verify › Deliver and evidence, by task id (`missionTaskDeliveries`). Absent: no stage row. */
   deliveries?: Readonly<Record<string, TaskDeliveryDetail>> | null;
 }
 
 const STATUS_PILL: Record<StripState, string> = {
-  landed: 'Landed', review: 'In review', running: 'Running', waiting: 'Has a question',
-  ci_failed: 'CI failed', fixing: 'Fixing', failed: 'Failed', ready: 'Ready', blocked: 'Blocked', queued: 'Queued',
+  landed: TERMS['pr.merged'].word, review: 'In review', running: TERMS['work.working'].word, waiting: 'Has a question',
+  ci_failed: 'CI failed', fixing: 'Fixing', failed: 'Failed', ready: 'Ready', blocked: 'Blocked', queued: TERMS['work.blocked'].word,
 };
 
 /**
@@ -138,14 +139,14 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
   const nextOpenLabel = open.length > 0
     ? (target === sel ? `Only open task · ${stripTick(sel)}` : `Next open · ${stripTick(target!)}`)
     : counts.failed > 0 ? `Nothing open · ${counts.failed} failed`
-    : held > 0 ? `Nothing open · ${held} waiting` : 'All tasks landed';
+    : held > 0 ? `Nothing open · ${held} waiting` : 'All tasks merged';
   const gap = n > DENSE_STRIP_CELLS ? '[--strip-gap:1px]' : `[--strip-gap:4px] ${compact ? '' : 'md:[--strip-gap:6px]'}`;
   const openJumpLabel = stripCountsLabel(counts);
 
   return (
     <div data-testid="landed-strip-band" data-cells={n} className={`flex flex-col gap-1.5 ${gap}`}>
       <div className="flex min-h-11 items-center justify-between">
-        <SectionLabel>Landed</SectionLabel>
+        <SectionLabel>{TERMS['pr.merged'].word}</SectionLabel>
         {(open.length > 0 || counts.failed > 0 || held > 0) && (
           <button
             type="button"
@@ -249,7 +250,7 @@ export function stripReason(t: BoardTask, executor: MissionExecutor | null): str
     case 'failed': return 'The last attempt failed.';
     case 'ready':
       return executor === 'local'
-        ? 'Ready to start. Claim it from a local session.'
+        ? 'Ready to start. Claim it from your session.'
         : 'Next in line for a runner.';
   }
 }
@@ -260,7 +261,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
   const pill = stripDrawerPill(t, state, executor);
   const meta = [
     t.pr ? `PR #${t.pr.number}` : null,
-    landed && t.endedAt != null ? `landed ${formatAge(now - t.endedAt)} ago` : null,
+    landed && t.endedAt != null ? `merged ${formatAge(now - t.endedAt)} ago` : null,
     t.id.slice(0, 8),
   ].filter(Boolean).join(' · ');
   // One column at every width: the title and reason take the drawer's full
@@ -292,7 +293,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
             </span>
           )}
         </div>
-        <p className={`font-mono font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] ${compact ? 'text-lede' : 'text-lede'}`} title={t.title}>{displayTaskTitle(t.title)}</p>
+        <p className={`font-mono font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] ${compact ? 'text-lede' : 'text-lede'}`} title={t.title}><TaskTitle short title={t.title} /></p>
         {why && <p data-testid="landed-strip-drawer-reason" className="font-mono text-body leading-normal text-text-secondary [overflow-wrap:anywhere]">{why}</p>}
         {delivery && <DrawerDelivery key={t.id} delivery={delivery} />}
         <p className="font-mono text-meta text-text-muted">{meta}</p>
@@ -341,12 +342,14 @@ export function StripTaskActions({ task: t, state, link, workspaceId, executor, 
             backend={t.backend}
             lastError={null}
             failureKind={t.failureKind}
+            waitingOn={t.failedDependency ?? null}
             auditTaskId={t.failureKind === 'verification' && isSurfaceAuditTask(t.title) ? t.id : null}
             worker={t.workerId ? { id: t.workerId, waitingFor: t.waitingFor } : null}
             historyHref={taskPageHref({ taskId: t.id, missionId: link.missionId })}
             roleSlug={t.roleSlug}
             missionExecutor={executor}
             hideQueuedNote={!!why}
+            deliveryReading={t.delivery?.label ?? null}
             framed={false}
             taskTitle={t.title}
             onChanged={onChanged}
@@ -397,7 +400,7 @@ export function StripTaskActions({ task: t, state, link, workspaceId, executor, 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
 
 /**
- * The selected task's own delivery: its Build › Audit › Land row, then an
+ * The selected task's own delivery: its Build › Verify › Deliver row, then an
  * "Audit and repair" disclosure over its revisions and repair rounds. Closed
  * by default; it starts open while the task is repairing, which is when the
  * evidence is the point. Re-keyed per task, so it never carries over.
@@ -478,7 +481,7 @@ const FoldDrawer = memo(function FoldDrawer({ ref, slot, index, tone, caret, lin
       />
       <span className="font-mono text-meta font-semibold tabular-nums text-text-primary">{stripTick(index)}</span>
       <p className="font-mono text-lede font-semibold text-text-primary">
-        {`${k} ${slot.state === 'landed' ? 'landed' : 'queued'} tasks`}
+        {`${k} ${slot.state === 'landed' ? 'merged' : 'queued'} tasks`}
       </p>
       <a
         href={`/app/missions/${link.missionId}?view=timeline`}

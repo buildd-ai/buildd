@@ -1,7 +1,7 @@
 import type { ActionQueueItem } from './action-queue';
+import { CRITERIA_ESCALATION_NOTE_TITLE } from './escalation-note-title';
 import { MISSION_START_COPY } from './mission-start-state';
 import type { HomeQuestion, HomeHeldMission } from '@/app/app/(protected)/home/NeedsYouCards';
-import type { HomeMissionRow } from '@/app/app/(protected)/home/HomeMissionsSummary';
 import type { StrandCta } from './mission-list-card';
 import type { WorkerWaitingFor } from '@buildd/core/db/schema';
 import { unifyWorkerQuestion, type UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
@@ -168,6 +168,11 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
     case 'QUESTION':
       return make({ label: 'question', tone: 'warning', title: text(i.question) ?? subject, sentence: text(i.question) && subject ? `Asked while working on ${subject}.` : 'An agent is waiting for your answer.', actionType: 'answer', primary: { label: 'Answer', href: taskHref ?? subjectHref ?? '' } });
     case 'DECIDE': {
+      // A criteria escalation's note title is the same sentence on every mission, so as the card title it
+      // made N escalated missions read as one duplicated ask. The mission is the subject; the verdict is the why.
+      if (i.noteTitle === CRITERIA_ESCALATION_NOTE_TITLE && text(i.missionTitle) && text(i.recommendation)) {
+        return make({ label: 'decision', tone: 'warning', title: text(i.missionTitle), sentence: text(i.recommendation), actionType: 'decide', primary: { label: 'Review criteria', href: subjectHref ?? '' } });
+      }
       const title = text(i.noteTitle) ?? text(i.escalationReason) ?? text(i.recommendation);
       return make({ label: 'decision', tone: 'warning', title, sentence: text(i.recommendation) && title !== text(i.recommendation) ? `Recommended: ${text(i.recommendation)}` : subject ? `Mission: ${subject}` : 'The mission is waiting on your choice.', actionType: 'decide', primary: { label: 'Choose…', href: subjectHref ?? '' } });
     }
@@ -201,12 +206,18 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
   }
 }
 
+/** A listed mission as the inbox reads it: its name and link, and whether it is stranded. */
+export interface HomeListedMission {
+  view: { id: string; title: string; href: string };
+  model: { strand: StrandCta | null };
+}
+
 /** One owner decision per subject. PR identity includes the workspace because numbers are repository-local. */
 export function deriveHomeAttention({ queue, missions, questions, held, isActionable, status = [] }: {
   /** Supplied by Home, where the action queue and core UI are composed. */
   isActionable: (chip: ActionQueueItem['chip']) => boolean;
   queue: readonly ActionQueueItem[];
-  missions: readonly HomeMissionRow[];
+  missions: readonly HomeListedMission[];
   questions: readonly HomeQuestion[];
   held: readonly HomeHeldMission[];
   /** Service-status cards, already only the action holder's (lib/service-status.ts `statusAttentionItems`). */
@@ -246,7 +257,7 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
     if (!model.strand) continue;
     const key = `mission:${view.id}`;
     const hours = Math.floor(model.strand.quietMs / 3600000);
-    items.set(key, { key, kind: 'stranded', label: 'stranded', tone: 'warning', title: view.title, sentence: hours > 0 ? `No local session for ${hours} hour${hours === 1 ? '' : 's'}.` : 'The local session has stopped.', meta: 'local', href: view.href, actionType: 'stranded', owner: 'human', strand: model.strand });
+    items.set(key, { key, kind: 'stranded', label: 'stranded', tone: 'warning', title: view.title, sentence: hours > 0 ? `No session for ${hours} hour${hours === 1 ? '' : 's'}.` : 'The session has stopped.', meta: 'local', href: view.href, actionType: 'stranded', owner: 'human', strand: model.strand });
   }
   for (const m of held) {
     const key = `mission:${m.id}`;

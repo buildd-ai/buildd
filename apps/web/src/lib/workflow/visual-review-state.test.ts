@@ -166,3 +166,26 @@ describe('integrationPrFromDeliveryState', () => {
     expect(integrationPrFromDeliveryState(1, 'AWAITING_REVIEW')).toMatchObject({ ready: false, blocked: false });
   });
 });
+
+describe('deriveMissionVisualReview: evidence on an earlier commit', () => {
+  const merged = { number: 9, state: 'merged' as const, ready: true, blocked: false };
+  const stale = { audit: audit({ status: 'completed' }), review: review(), auditedSha: 'aaaaaaa', branch: { headSha: 'bbbbbbb', base: 'dev', integrationPr: merged, workLanded: true } };
+
+  it('an active mission owes a new review: the old pass is not evidence', () => {
+    const s = deriveMissionVisualReview(base(stale));
+    expect(s).toMatchObject({ status: 'needed', staleEvidence: true, passedOnEarlierCommit: false, pendingVerification: true, nextActor: 'system' });
+  });
+
+  it('a closed mission keeps the pass as its record and says which commit it judged', () => {
+    const s = deriveMissionVisualReview(base({ ...stale, missionClosed: true }));
+    expect(s).toMatchObject({
+      status: 'passed', staleEvidence: true, passedOnEarlierCommit: true, evidenceSha: 'aaaaaaa',
+      pendingVerification: false, blocksCompletion: false, nextActor: 'none',
+    });
+  });
+
+  it('a closed mission whose pass is on the delivered commit is a plain pass', () => {
+    const s = deriveMissionVisualReview(base({ ...stale, auditedSha: 'bbbbbbb', missionClosed: true }));
+    expect(s).toMatchObject({ status: 'passed', staleEvidence: false, passedOnEarlierCommit: false });
+  });
+});

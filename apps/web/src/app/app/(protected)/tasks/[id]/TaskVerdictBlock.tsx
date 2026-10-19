@@ -2,7 +2,7 @@
  * The task page's one outcome row, from the record (lib/task-verdict.ts):
  * the state's word, the headline only where it adds to that word, and the
  * cause when there is one (docs/specs/task-page.md). It sits under the
- * Build → Audit → Land track, which carries where the delivery is; this says
+ * Build → Verify → Deliver track, which carries where the delivery is; this says
  * what the run on screen came to.
  *
  * Compact by default: a chip and a line. It becomes a card only when it asks
@@ -12,9 +12,10 @@
  */
 import Chip, { type ChipTone } from '@/components/ui/Chip';
 import type { TaskVerdict, VerdictState } from '@/lib/task-verdict';
+import { TERMS } from '@buildd/shared';
 
 const STATE: Record<VerdictState, { label: string; tone: ChipTone }> = {
-  shipped: { label: 'Shipped', tone: 'success' },
+  shipped: { label: TERMS['pr.merged'].word, tone: 'success' },
   done: { label: 'Done', tone: 'success' },
   blocked: { label: 'Blocked', tone: 'error' },
   failed: { label: 'Failed', tone: 'error' },

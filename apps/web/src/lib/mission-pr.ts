@@ -29,7 +29,6 @@
  * ready to open the mission PR.
  */
 
-import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import {
   githubRepos,
@@ -46,6 +45,7 @@ import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
 import { decideReadyToMerge, readyToMergeReason } from '@/lib/ready-to-merge';
+import type { MissionVisualReviewState } from '@/lib/workflow/visual-review-state';
 import {
   isMissionIntegrationBase,
   isMissionPrTask,
@@ -53,6 +53,13 @@ import {
   missionIntegrationBase,
 } from '@buildd/core/mission-integration';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import {
+  DEAD_PR_LIFECYCLE, isDeliverableMissionTask, latestWorkerByTask, missionWorkHolder, missionWorkStateFromRows,
+  type MissionWorkerRow, type MissionWorkState,
+} from '@/lib/mission-work-state';
+import { noteWorkChanged } from '@/lib/work-changed';
+
+export type { MissionWorkState, UnfinishedMissionTask, UnmergedMissionPr } from '@/lib/mission-work-state';
 
 /**
  * The mission-PR task identity, re-exported rather than reimplemented.
@@ -75,9 +82,6 @@ export async function ensureMissionWritableBranch(missionId: string, reason: str
 export async function reconcileMissionDeliveries(missionId: string): Promise<string[]> {
   return (await import('@/lib/mission-epoch-door')).reconcileMissionDeliveries(missionId);
 }
-
-/** Statuses in which a task still represents unlanded deliverable work. */
-const UNFINISHED_TASK_STATUSES = OPEN_TASK_STATUSES;
 
 /**
  * The branches a *mission-level* PR can target: the workspace's own trunk.
@@ -162,53 +166,6 @@ export async function claimMissionPrimaryPr(
     .where(and(eq(missions.id, missionId), isNull(missions.primaryPrNumber)));
 }
 
-/**
- * Worker states in which a PR row still represents work waiting to land.
- *
- * A PR that was closed unmerged, or given up on, will never merge — so it must
- * not count as outstanding. Every other gate in this codebase carries this
- * exclusion (`claim/route.ts`, `claim/deps-gate.ts`, `mission-run.ts`); this one
- * did not, and a single superseded retry PR or one human-closed PR pinned the
- * mission at `prs_unmerged` permanently.
- */
-const DEAD_PR_LIFECYCLE = new Set(['closed', 'merged', 'unresolvable']);
-
-interface WorkerRow {
-  taskId: string | null;
-  prUrl: string | null;
-  prNumber: number | null;
-  prBaseRef: string | null;
-  mergedAt: Date | null;
-  prLifecycleStatus: string | null;
-  startedAt: Date | null;
-  createdAt: Date;
-}
-
-/**
- * The newest worker per task.
- *
- * Ordered in JS rather than by SQL `orderBy` on purpose: `workers.startedAt` is
- * nullable with no default, and Postgres `DESC` sorts NULLs *first*, so a
- * never-started worker would outrank the real one. Falls back to `createdAt`.
- */
-function latestWorkerByTask(rows: WorkerRow[]): Map<string, WorkerRow> {
-  const rank = (w: WorkerRow) => (w.startedAt ?? w.createdAt)?.valueOf() ?? 0;
-  const out = new Map<string, WorkerRow>();
-  for (const w of rows) {
-    if (!w.taskId) continue;
-    const seen = out.get(w.taskId);
-    if (!seen || rank(w) >= rank(seen)) out.set(w.taskId, w);
-  }
-  return out;
-}
-
-/** Does this worker hold a PR that is still expected to merge? */
-function holdsLivePr(w: WorkerRow | undefined): boolean {
-  if (!w?.prUrl) return false;
-  if (w.mergedAt) return false;
-  return !DEAD_PR_LIFECYCLE.has(w.prLifecycleStatus ?? '');
-}
-
 /** One deliverable task's branch/PR state, as the mission PR body reports it. */
 export interface TaskBranchSummary {
   taskId: string;
@@ -242,11 +199,11 @@ export async function describeMissionIntegrationTopology(missionId: string): Pro
       taskId: true, branch: true, prUrl: true, prNumber: true,
       mergedAt: true, prLifecycleStatus: true, startedAt: true, createdAt: true,
     },
-  })) ?? []) as Array<WorkerRow & { branch: string | null }>;
+  })) ?? []) as Array<MissionWorkerRow & { branch: string | null }>;
   const latest = latestWorkerByTask(allWorkers);
 
   return deliverable.map(t => {
-    const w = latest.get(t.id) as (WorkerRow & { branch: string | null }) | undefined;
+    const w = latest.get(t.id) as (MissionWorkerRow & { branch: string | null }) | undefined;
     const state: TaskBranchSummary['state'] = !w?.prNumber
       ? 'no_pr'
       : w.mergedAt
@@ -264,76 +221,10 @@ export async function describeMissionIntegrationTopology(missionId: string): Pro
   });
 }
 
-/** A deliverable task that can still produce a PR, named so a refusal can say so. */
-export interface UnfinishedMissionTask {
-  id: string;
-  title: string;
-  status: string;
-}
-
-/** A deliverable task whose PR is open and still expected to merge. */
-export interface UnmergedMissionPr {
-  id: string;
-  title: string;
-  prNumber: number | null;
-}
-
-export interface MissionWorkState {
-  /** Every deliverable task has landed, and none is still waiting on a PR. */
-  complete: boolean;
-  /**
-   * Why not, when `complete` is false. `no_deliverable_work` is the honest
-   * "there is nothing to ship" verdict and is deliberately NOT complete: an
-   * empty set must not open an empty PR.
-   */
-  reason: 'complete' | 'no_deliverable_work' | 'tasks_unfinished' | 'prs_unmerged';
-  unfinishedTaskCount: number;
-  unmergedPrCount: number;
-  /**
-   * Both lists are populated on EVERY answer, not only the one `reason` names.
-   *
-   * `reason` is a precedence verdict — "tasks unfinished" outranks "PRs open"
-   * because the task is the actionable blocker — and it used to zero the other
-   * side's count on the way out. A caller reading one field then saw "no PRs
-   * open" on a mission that had barely started, which is precisely how the
-   * merge gate came to allow merging a mission PR over unstarted work.
-   */
-  unfinishedTasks: UnfinishedMissionTask[];
-  unmergedPrs: UnmergedMissionPr[];
-  /**
-   * Deliverable tasks whose PR merged into this mission's integration branch.
-   * Zero means the mission has nothing for a mission PR to carry — the honest
-   * "nothing to ship" signal, and the reason a mission whose work was all
-   * cancelled must not be held open waiting for a PR that would be empty.
-   */
-  landedOnIntegrationCount: number;
-  /**
-   * Every deliverable task PR that merged, with the base it merged into and
-   * when (a delivery's branch, or trunk for a task that predates the branch). The
-   * completion gate reads it per delivery (`epochCompletionHold`): after a
-   * rotation the current branch is not the one earlier work landed on.
-   */
-  landedOnIntegration: Array<{ taskId: string; baseRef: string; mergedAt: string | null }>;
-}
-
 /**
  * Is this mission's deliverable work all landed on the integration branch?
- *
- * Counts only deliverable tasks — the organizer's planning task and the
- * bookkeeping row that owns the mission PR are excluded, because including
- * either makes the predicate self-referential.
- *
- * **Landedness is read from `workers`, not from `tasks.status`.** A task whose
- * PR has merged has landed, whatever its row currently says. That matters
- * because the webhook stamps `workers.mergedAt` *before* `tasks.status`, so two
- * of a mission's last task PRs merging concurrently would each see the other's
- * task still `in_progress` and both decline to open the mission PR — and since
- * the webhook is the trigger, both declining means it never opens.
- *
- * Note what this deliberately does NOT do: it never returns `complete` for a
- * mission with zero deliverable tasks. A "green over an empty set" answer here
- * would open a PR with no commits on it, which is the failure mode this
- * codebase keeps rediscovering.
+ * Reads the mission, its tasks and their workers; the verdict is
+ * `missionWorkStateFromRows` (lib/mission-work-state.ts).
  */
 export async function evaluateMissionWorkState(
   missionId: string,
@@ -348,7 +239,6 @@ export async function evaluateMissionWorkState(
     assumeCompletedTaskIds?: string[];
   },
 ): Promise<MissionWorkState> {
-  const assumeCompleted = new Set(opts?.assumeCompletedTaskIds ?? []);
   const mission = await db.query.missions.findFirst({
     where: sqlWhere(eq(missions.id, missionId)),
     columns: { workingBranch: true, integrationBranchEnabled: true },
@@ -357,84 +247,15 @@ export async function evaluateMissionWorkState(
     where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: { id: true, title: true, status: true, mode: true, taskClass: true },
   })) ?? [];
-
-  const deliverable = missionTasks.filter(
-    t => t.mode !== 'planning' && t.taskClass === 'work',
-  );
-  const empty = {
-    complete: false as const,
-    unfinishedTaskCount: 0,
-    unmergedPrCount: 0,
-    unfinishedTasks: [] as UnfinishedMissionTask[],
-    unmergedPrs: [] as UnmergedMissionPr[],
-    landedOnIntegrationCount: 0,
-    landedOnIntegration: [] as MissionWorkState['landedOnIntegration'],
-  };
-  if (deliverable.length === 0) {
-    return { ...empty, reason: 'no_deliverable_work' };
-  }
-
-  const allWorkers = ((await db.query.workers.findMany({
+  const deliverable = missionTasks.filter(isDeliverableMissionTask);
+  const allWorkers = deliverable.length === 0 ? [] : ((await db.query.workers.findMany({
     where: sqlWhere(inArray(workers.taskId, deliverable.map(t => t.id))),
     columns: {
       taskId: true, prUrl: true, prNumber: true, prBaseRef: true,
       mergedAt: true, prLifecycleStatus: true, startedAt: true, createdAt: true,
     },
-  })) ?? []) as WorkerRow[];
-  const latest = latestWorkerByTask(allWorkers);
-
-  const landedOnIntegrationCount = deliverable.filter(t => {
-    const w = latest.get(t.id);
-    return !!w?.mergedAt && isMissionIntegrationBase({ baseRef: w.prBaseRef, mission });
-  }).length;
-  // Every merged deliverable PR with its base; a reader keeps the bases that are deliveries' branches.
-  const landedOnIntegration = deliverable.flatMap(t => {
-    const w = latest.get(t.id);
-    if (!w?.mergedAt || !w.prBaseRef) return [];
-    return [{ taskId: t.id, baseRef: w.prBaseRef, mergedAt: w.mergedAt.toISOString() }];
-  });
-
-  // Waiting on a PR: the task's live worker holds one that is still expected to
-  // merge. Checked before the status sweep so a `completed` task with an open PR
-  // reports the PR, which is the actionable blocker.
-  const awaitingPr = deliverable.filter(t => holdsLivePr(latest.get(t.id)));
-
-  // Unfinished: a non-terminal task that has not already landed a PR. A merged
-  // PR outranks the row's status — see the note above.
-  const unfinished = deliverable.filter(t => {
-    if (assumeCompleted.has(t.id)) return false;
-    if (latest.get(t.id)?.mergedAt) return false;
-    return (UNFINISHED_TASK_STATUSES as readonly string[]).includes(t.status);
-  });
-
-  const unfinishedTasks: UnfinishedMissionTask[] = unfinished.map(t => ({
-    id: t.id,
-    title: t.title,
-    status: t.status,
-  }));
-  const unmergedPrs: UnmergedMissionPr[] = awaitingPr.map(t => ({
-    id: t.id,
-    title: t.title,
-    prNumber: latest.get(t.id)?.prNumber ?? null,
-  }));
-  // Both sides are reported on every answer — see MissionWorkState.
-  const counts = {
-    unfinishedTaskCount: unfinished.length,
-    unmergedPrCount: awaitingPr.length,
-    unfinishedTasks,
-    unmergedPrs,
-    landedOnIntegrationCount,
-    landedOnIntegration,
-  };
-
-  if (unfinished.length > 0) {
-    return { ...counts, complete: false, reason: 'tasks_unfinished' };
-  }
-  if (awaitingPr.length > 0) {
-    return { ...counts, complete: false, reason: 'prs_unmerged' };
-  }
-
-  return { ...counts, complete: true, reason: 'complete' };
+  })) ?? []) as MissionWorkerRow[];
+  return missionWorkStateFromRows(mission, missionTasks, allWorkers, opts);
 }
 
 export type OpenMissionPrResult =
@@ -715,7 +536,7 @@ export async function openMissionIntegrationPr(
       updatedAt: new Date(),
     })
     .where(eq(workers.id, ownerWorker.id));
-  await recordPrFact({ workerId: ownerWorker.id }, { kind: 'open' });
+  await recordPrFact({ workerId: ownerWorker.id }, { kind: 'open' }, { scope: factFunnelScope });
 
   await claimMissionPrimaryPr(missionId, prNumber, prUrl, {
     baseRef: recordedBaseRef,
@@ -724,11 +545,19 @@ export async function openMissionIntegrationPr(
   });
   // The open delivery's PR, recorded by the kernel (§6).
   const ownerRow = await db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, ownerWorker.id)), columns: { taskId: true } });
-  const { bindMissionDeliveryPr } = await import('@/lib/mission-epoch-door');
+  const { bindMissionDeliveryPr, openMissionPrDelivery } = await import('@/lib/mission-epoch-door');
   await bindMissionDeliveryPr({
     missionId, workspaceId: workspace.id, prNumber, repoFullName: repo.fullName,
     ownerTaskId: ownerRow?.taskId ?? null, headRef: branch,
   });
+  // The PR's kernel delivery, owned by the same bookkeeping task (§6). Not left to the
+  // opened webhook: that reaches the kernel only for a review-tier policy (#4686).
+  if (ownerRow?.taskId) {
+    await openMissionPrDelivery({
+      workspaceId: workspace.id, ownerTaskId: ownerRow.taskId, repoFullName: repo.fullName,
+      prNumber, installationId,
+    });
+  }
 
   await db.insert(missionNotes).values({
     missionId,
@@ -810,6 +639,8 @@ async function ensureMissionPrOwnerRows(args: {
       priority: 0,
     })
     .returning({ id: tasks.id });
+  // A new task in the workspace's lists (spec 3ef37387 R-20).
+  if (!reusableTask && ownerTask) noteWorkChanged({ taskIds: [ownerTask.id], missionIds: [missionId] });
 
   // An owner worker with no `prUrl` is a previous attempt that never reached
   // GitHub — attach to it instead of adding another.
@@ -1037,10 +868,10 @@ export async function findMissionPrOwner(missionId: string): Promise<MissionPrOw
       id: true, taskId: true, prNumber: true, prUrl: true,
       mergedAt: true, prLifecycleStatus: true, startedAt: true, createdAt: true,
     },
-  })) ?? []) as Array<WorkerRow & { id: string }>;
+  })) ?? []) as Array<MissionWorkerRow & { id: string }>;
   if (rows.length === 0) return null;
 
-  const rank = (w: WorkerRow) => (w.startedAt ?? w.createdAt)?.valueOf() ?? 0;
+  const rank = (w: MissionWorkerRow) => (w.startedAt ?? w.createdAt)?.valueOf() ?? 0;
   const newest = rows.reduce((a, b) => (rank(b) >= rank(a) ? b : a));
 
   const state: MissionPrState = newest.mergedAt
@@ -1181,16 +1012,14 @@ export type MissionPrMergeGate =
       /** Why, as codes (`ready-to-merge.ts`); doors that only show `reason` ignore it. */
       codes?: string[];
       nextActor?: 'system' | 'jev' | 'owner' | 'none';
+      /**
+       * It will not clear by waiting: only a person (or a new fact, like a
+       * retarget) changes it. The kernel's merge-time rails escalate a lasting
+       * refusal once (T16) instead of leaving the approval for the sweep to retry.
+       */
+      lasting?: boolean;
     };
 
-/** How many held items a refusal names before it summarises the rest. */
-const REFUSAL_NAME_LIMIT = 5;
-
-function nameHolders(labels: string[]): string {
-  if (labels.length <= REFUSAL_NAME_LIMIT) return labels.join(', ');
-  const shown = labels.slice(0, REFUSAL_NAME_LIMIT);
-  return `${shown.join(', ')} and ${labels.length - REFUSAL_NAME_LIMIT} more`;
-}
 
 /**
  * May this task's PR merge right now?
@@ -1223,9 +1052,46 @@ function nameHolders(labels: string[]): string {
  * work will not happen, not an absence of one; a cancelled task holding the
  * gate forever is how a mission becomes unmergeable by hand.
  */
+type GuardTask = { id?: string | null; title?: string | null; taskClass?: string | null; missionId?: string | null; context?: unknown };
+
+/** How far `deliveryOwnerTask` follows `parentTaskId`; attempts of attempts are rare and shallow. */
+const OWNER_WALK_LIMIT = 5;
+
+/**
+ * The task a PR's delivery belongs to. A repair attempt (reviewer, CI-fix,
+ * conflict retry) pushes to its parent's PR and carries none of its parent's
+ * meaning (a refresh's `requireMergeCommit`, a mission PR's title), so every
+ * question about the PR is asked of the task it was opened for. Doors that pick
+ * the PR's newest worker get the attempt; the kernel's rails read the delivery
+ * owner. Before this, the two disagreed on #4909: the sweep passed it and the
+ * merge-time rails refused it, every 15-20 minutes.
+ *
+ * Anything that is not an attempt is returned as given. An unreadable or
+ * missing parent returns the last task read.
+ */
+export async function deliveryOwnerTask<T extends GuardTask>(task: T): Promise<T | GuardTask> {
+  let cur: GuardTask = task;
+  for (let i = 0; i < OWNER_WALK_LIMIT && cur.taskClass === 'attempt' && cur.id; i++) {
+    const self = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, cur.id)), columns: { parentTaskId: true } });
+    const parentId = (self as { parentTaskId?: string | null } | undefined)?.parentTaskId;
+    if (!parentId) break;
+    const parent = await db.query.tasks.findFirst({
+      where: sqlWhere(eq(tasks.id, parentId)),
+      columns: { id: true, title: true, taskClass: true, missionId: true, context: true },
+    });
+    if (!parent) break;
+    cur = parent as GuardTask;
+  }
+  return cur;
+}
+
 export async function guardMissionPrMerge(
-  task: { id?: string | null; title?: string | null; taskClass?: string | null; missionId?: string | null; context?: unknown } | null | undefined,
+  given: GuardTask | null | undefined,
 ): Promise<MissionPrMergeGate> {
+  const task = given ? await deliveryOwnerTask(given).catch((err) => {
+    console.warn('[mission-pr] delivery owner unreadable (judging the task as given):', err instanceof Error ? err.message : err);
+    return given;
+  }) : given;
   // A PR lands only where its work can still reach trunk (a11abc4b R-3, AC-5;
   // workflow-kernel-library §6): a refresh on the delivery it was filed for, and
   // no task PR on a delivery branch that already shipped. Every merge door asks this.
@@ -1237,30 +1103,17 @@ export async function guardMissionPrMerge(
         return null;
       })
     : null;
-  if (targetHold) return { blocks: true, reason: targetHold.reason, codes: [targetHold.code], nextActor: targetHold.code === 'delivery_shipped' ? 'system' : 'owner' };
+  if (targetHold) {
+    return {
+      blocks: true, reason: targetHold.reason, codes: [targetHold.code],
+      nextActor: targetHold.lasting ? 'owner' : 'system',
+      ...(targetHold.lasting ? { lasting: true } : {}),
+    };
+  }
   if (!task || !isMissionPrTask(task) || !task.missionId) return { blocks: false };
   const work = await evaluateMissionWorkState(task.missionId);
 
-  const holders: string[] = [];
-  if (work.unmergedPrs.length > 0) {
-    const named = nameHolders(
-      work.unmergedPrs.map(p => (p.prNumber ? `PR #${p.prNumber} (${p.title})` : `an open PR on ${p.title}`)),
-    );
-    holders.push(
-      `${work.unmergedPrCount} task PR(s) still open on the integration branch: ${named}`,
-    );
-  }
-  if (work.unfinishedTasks.length > 0) {
-    const named = nameHolders(work.unfinishedTasks.map(t => `${t.title} [${t.status}]`));
-    holders.push(
-      `${work.unfinishedTaskCount} mission task(s) that have not opened a PR yet: ${named}`,
-    );
-  }
-  const workHolder = holders.length === 0
-    ? null
-    : `This mission's work is not finished — ${holders.join('; and ')}. Merging the mission PR `
-      + `now would delete the integration branch out from under work that still needs it. `
-      + `Cancel the remaining task(s), or let them land, then merge.`;
+  const workHolder = missionWorkHolder(work);
 
   // The same decision for every door. Opening the mission PR never comes through
   // here, so reviewing the branch is still possible while this blocks landing it.
@@ -1270,19 +1123,39 @@ export async function guardMissionPrMerge(
       console.error('[mission-pr] visual review state unreadable (refusing the merge):', err);
       return null;
     });
-  const decision = decideReadyToMerge({ kind: 'mission_integration_pr', workHolder, visual });
-  if (decision.scheduleVisualReview) {
+  const { gate, scheduleVisualReview } = missionPrMergeDecision(workHolder, visual);
+  if (scheduleVisualReview) {
     // Whoever tried to land the branch also gets the review on its way; best-effort and idempotent.
     void import('@/lib/workflow/visual-review-schedule-run')
       .then(m => m.scheduleMissionVisualReview(task.missionId!))
       .catch(err => console.error('[mission-pr] could not schedule the visual review:', err));
   }
-  if (decision.ready) return { blocks: false };
+  return gate;
+}
+
+/**
+ * The mission PR's merge decision from its work holder (`missionWorkHolder`)
+ * and its visual review state, however they were read: live by
+ * `guardMissionPrMerge`, or from the stored mission summary by a page, which
+ * must not read GitHub or start anything while it renders. Pure.
+ * `scheduleVisualReview`: the review is owed and nothing has filed it; the
+ * caller files it (a page, after its response).
+ */
+export function missionPrMergeDecision(
+  workHolder: string | null,
+  visual: MissionVisualReviewState | null,
+): { gate: MissionPrMergeGate; scheduleVisualReview: boolean } {
+  const decision = decideReadyToMerge({ kind: 'mission_integration_pr', workHolder, visual });
+  const scheduleVisualReview = !!decision.scheduleVisualReview;
+  if (decision.ready) return { gate: { blocks: false }, scheduleVisualReview };
   return {
-    blocks: true,
-    reason: readyToMergeReason(decision),
-    codes: decision.blockers.map(b => b.code),
-    nextActor: decision.blockers[0]?.nextActor,
+    gate: {
+      blocks: true,
+      reason: readyToMergeReason(decision),
+      codes: decision.blockers.map(b => b.code),
+      nextActor: decision.blockers[0]?.nextActor,
+    },
+    scheduleVisualReview,
   };
 }
 
@@ -1300,12 +1173,12 @@ export async function guardMissionPrMerge(
  */
 async function deliveryTargetHold(
   task: { id?: string | null; missionId?: string | null; context?: unknown } | null | undefined,
-): Promise<{ code: 'refresh_target_mismatch' | 'delivery_shipped'; reason: string } | null> {
+): Promise<{ code: 'refresh_target_mismatch' | 'delivery_shipped'; reason: string; lasting: boolean } | null> {
   if (!task?.id || !task.missionId) return null;
   const rows = ((await db.query.workers.findMany({
     where: sqlWhere(and(eq(workers.taskId, task.id), isNotNull(workers.prNumber))),
     columns: { prBaseRef: true, startedAt: true, createdAt: true, taskId: true, prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
-  })) ?? []) as WorkerRow[];
+  })) ?? []) as MissionWorkerRow[];
   const prBase = latestWorkerByTask(rows).get(task.id)?.prBaseRef ?? null;
   const { missionEpochsOf, writableEpoch, shippedEpochOf } = await import('@/lib/workflow/delivery-ship');
   const epochs = await missionEpochsOf(task.missionId);
@@ -1314,18 +1187,38 @@ async function deliveryTargetHold(
   if (context === undefined) {
     context = (await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, task.id)), columns: { context: true } }))?.context;
   }
-  const { integrationRefreshOf } = await import('@/lib/integration-refresh');
-  const filedFor = integrationRefreshOf(context) ? (context as Record<string, unknown>).baseBranch : null;
-  if (typeof filedFor === 'string' && filedFor) {
-    if (prBase && prBase !== filedFor) {
-      return {
-        code: 'refresh_target_mismatch',
-        reason: `This refresh PR now targets \`${prBase}\`, not the mission branch it was filed for (\`${filedFor}\`). `
-          + `A refresh only ever lands on that branch; close it, or retarget it there if that delivery is still open.`,
-      };
-    }
-    if (epochs.length > 0 && writableEpoch({ epochs })?.branch !== filedFor) {
-      return { code: 'refresh_target_mismatch', reason: `The delivery this refresh was for (\`${filedFor}\`) already shipped, so there is nothing left for it to refresh. Close it.` };
+  const { integrationRefreshOf, refreshFiledFor } = await import('@/lib/integration-refresh');
+  const refresh = integrationRefreshOf(context);
+  if (refresh) {
+    // Every refresh refusal is lasting: a person closes the PR or retargets it (a new fact).
+    const writable = epochs.length > 0 ? writableEpoch({ epochs })?.branch ?? null : null;
+    const filedFor = refreshFiledFor(context);
+    if (filedFor) {
+      if (prBase && prBase !== filedFor) {
+        return {
+          code: 'refresh_target_mismatch', lasting: true,
+          reason: `This refresh PR now targets \`${prBase}\`, not the mission branch it was filed for (\`${filedFor}\`). `
+            + `A refresh only ever lands on that branch; close it, or retarget it there if that delivery is still open.`,
+        };
+      }
+      if (epochs.length > 0 && writable !== filedFor) {
+        return { code: 'refresh_target_mismatch', lasting: true, reason: `The delivery this refresh was for (\`${filedFor}\`) already shipped, so there is nothing left for it to refresh. Close it.` };
+      }
+    } else if (prBase) {
+      // The filed-for branch was lost (a requeue overwrote it, #4909): the PR's own base must be
+      // the writable delivery's branch, and never trunk, which is where GitHub retargets it.
+      if (refresh.trunk && prBase === refresh.trunk) {
+        return {
+          code: 'refresh_target_mismatch', lasting: true,
+          reason: `This refresh PR now targets trunk (\`${prBase}\`), not a mission branch. A refresh only ever lands on the mission branch it merges trunk into; close it.`,
+        };
+      }
+      if (epochs.length > 0 && writable !== prBase) {
+        return {
+          code: 'refresh_target_mismatch', lasting: true,
+          reason: `This refresh PR targets \`${prBase}\`, which is not this mission's open delivery${writable ? ` (\`${writable}\`)` : ''}, so there is nothing left for it to refresh. Close it.`,
+        };
+      }
     }
   }
   const shipped = epochs.length > 0 ? shippedEpochOf({ epochs }, prBase) : null;
@@ -1333,6 +1226,8 @@ async function deliveryTargetHold(
     const current = writableEpoch({ epochs });
     return {
       code: 'delivery_shipped',
+      // Settlement moves it when there is a current delivery; with none, a person decides.
+      lasting: !current,
       reason: `This PR is based on delivery ${shipped.epoch}'s branch (\`${shipped.branch}\`), which already reached trunk, so merging it there would ship nothing. `
         + (current ? `buildd moves it to delivery ${current.epoch} (\`${current.branch}\`); merge it there.` : `Close it, or file the work again so it goes out in a new delivery.`),
     };

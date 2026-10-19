@@ -45,7 +45,7 @@ import { githubApi } from '@/lib/github';
 import {
   WORKSPACE_INSTALLATION_WITH,
   pickWorkspaceRepoIdentity,
-  installationIdForRepo,
+  createTeamInstallationResolver,
 } from '@/lib/workspace-installation';
 import { repoFullNameFromPrUrl, resolvePrRepo } from '@/lib/repo-scope';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
@@ -132,12 +132,13 @@ export async function refreshWorkerMergeStateIfStale(
  */
 async function recordMergeWithKernel(workspaceId: string, repoFullName: string, prNumber: number, installationId: number, pull: unknown, observeOnly: boolean): Promise<void> {
   try {
-    const seam = await import('@/lib/workflow/seam');
     if (observeOnly) {
-      await seam.recordPrStateObserved({ workspaceId, repoFullName, prNumber, pull, source: 'render:merge-state' });
+      const { recordPrStateObserved } = await import('@/lib/workflow/seam');
+      await recordPrStateObserved({ workspaceId, repoFullName, prNumber, pull, source: 'render:merge-state' });
       return;
     }
-    await seam.observePrState({ workspaceId, repoFullName, prNumber, installationId, source: 'dependency-gate', pull });
+    const { observePrState, systemPrincipal } = await import('@/lib/workflow/kernel-client');
+    await observePrState({ workspaceId, repoFullName, prNumber, installationId, source: 'dependency-gate', pull }, { principal: systemPrincipal('system:dependency-gate') });
   } catch (err) {
     console.warn(`[pr-reconcile] kernel merge import for ${repoFullName}#${prNumber} did not apply (a fast heal is scheduled when the kernel owns it):`, err);
   }
@@ -151,8 +152,8 @@ async function recordMergeWithKernel(workspaceId: string, repoFullName: string, 
 async function importClosureToKernel(workspaceId: string | null | undefined, repoFullName: string, prNumber: number, installationId: number, pull?: unknown): Promise<boolean> {
   if (!workspaceId) return false;
   try {
-    const { observePrState } = await import('@/lib/workflow/seam');
-    return await observePrState({ workspaceId, repoFullName, prNumber, installationId, source: 'sweep:pr-reconcile', pull });
+    const { observePrState, systemPrincipal } = await import('@/lib/workflow/kernel-client');
+    return await observePrState({ workspaceId, repoFullName, prNumber, installationId, source: 'sweep:pr-reconcile', pull }, { principal: systemPrincipal('system:sweep:pr-reconcile') });
   } catch (err) {
     console.error(`[pr-reconcile] kernel close import failed for ${repoFullName}#${prNumber}:`, err);
     return false;
@@ -366,7 +367,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
     const terminal = shouldMarkUnresolvable({ failureCount, prOpenedAt, now: new Date() });
 
     await recordCheck(worker.id, { prCheckFailureCount: failureCount }).catch(() => {});
-    if (terminal) await recordPrFact({ workerId: worker.id }, { kind: 'unresolvable', reason }).catch(() => {});
+    if (terminal) await recordPrFact({ workerId: worker.id }, { kind: 'unresolvable', reason }, { scope: factFunnelScope }).catch(() => {});
 
     if (terminal) {
       result.unresolvable++;
@@ -381,16 +382,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
    * batch (a workspace's PRs, an org's sibling repos), and this is a DB round
    * trip per miss.
    */
-  const installationByRepo = new Map<string, number | null>();
-  const resolveInstallationCached = async (repo: string): Promise<number | null> => {
-    if (!installationByRepo.has(repo)) {
-      installationByRepo.set(
-        repo,
-        await installationIdForRepo(repo).catch(() => null),
-      );
-    }
-    return installationByRepo.get(repo) ?? null;
-  };
+  const installations = createTeamInstallationResolver();
 
   // Group by workspace so we share one installation token per workspace
   const byWorkspace = new Map<string, Candidate[]>();
@@ -413,7 +405,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
   for (const [workspaceId, wsWorkers] of byWorkspace) {
     const workspace = await db.query.workspaces.findFirst({
       where: sqlWhere(eq(workspaces.id, workspaceId)),
-      columns: { repo: true },
+      columns: { repo: true, teamId: true },
       with: WORKSPACE_INSTALLATION_WITH,
     });
 
@@ -442,10 +434,13 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
 
       // The workspace pointer only answers for the workspace's own repo; for
       // anything else the covering installation has to be looked up by repo.
-      const installationId =
-        (repo === workspaceRepo ? workspaceInstallationId : null)
-        ?? await resolveInstallationCached(repo)
-        ?? workspaceInstallationId;
+      // Only the team's own installation: one covering the repo for another team is refused.
+      const picked = await installations.resolve(
+        repo,
+        { teamId: workspace?.teamId, fullName: workspaceRepo, installationId: workspaceInstallationId },
+        { fallbackToWorkspace: true },
+      );
+      const installationId = picked.installationId;
 
       if (!installationId) {
         // Unreconcilable, and NOT transient. The old code recorded a bare
@@ -453,7 +448,9 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
         // forever. Count it as a failure so the row eventually retires to
         // `unresolvable` and shows up on Health.
         result.skipped++;
-        await recordFailure(worker, `No usable GitHub App installation for ${repo}`);
+        await recordFailure(worker, picked.reason === 'installation_not_team_owned'
+          ? `The GitHub App installation covering ${repo} is not this workspace's team's`
+          : `No usable GitHub App installation for ${repo}`);
         continue;
       }
 
@@ -517,12 +514,12 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
             // reading "Waiting for mission X PRs to merge" until something
             // unrelated poked it.
             //
-            // Ordered AFTER the opener, deliberately: the helper re-checks
-            // `missionHasUnmergedWork`, so the mission's own PR must already
-            // exist — and be unmerged — before it is asked. Reversing these two
-            // would unblock dependents on a task-PR merge, before the mission's
-            // review gate had even opened. Idempotent: its only write is guarded
-            // on `dependencyMetAt IS NULL`.
+            // Ordered AFTER the opener: the helper re-checks the mission-wide
+            // predicate (`evaluateUpstreamGate`), which on a mission branch
+            // also requires the mission PR merged, so a task-PR merge alone can
+            // never unblock dependents. Idempotent: its only write is guarded
+            // on `dependencyMetAt IS NULL`. `isMissionBlocked` reads the same
+            // predicate live, so a gap here no longer strands a dependent.
             await checkAndUnblockDependentMissions(missionId, 'merged').catch(err =>
               console.error(`[pr-reconcile] mission unblock failed for mission ${missionId}:`, err),
             );
@@ -577,7 +574,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
           // never overwrite an existing conflictDetectedAt — matching the
           // webhook's own guard.
           const newlyConflicted = pr.mergeable_state === 'dirty' && !worker.conflictDetectedAt;
-          if (newlyConflicted) await recordPrFact({ workerId: worker.id }, { kind: 'conflict' });
+          if (newlyConflicted) await recordPrFact({ workerId: worker.id }, { kind: 'conflict' }, { scope: factFunnelScope });
           await recordCheck(worker.id, { prCheckFailureCount: 0 }, { verified: true });
           if (newlyConflicted) result.conflictsDetected++;
           result.skipped++;

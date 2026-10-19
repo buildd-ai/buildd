@@ -48,6 +48,7 @@ import {
 } from '@/lib/pr-review-status';
 import { requestingPerson } from '@/lib/request-person';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { decisionRefusalReason } from '@buildd/workflow-kernel/decision-refusal';
 
 type Account = { id: string; teamId: string; taskScope?: TaskScope; sessionUserId?: string | null } & GrantScopedAccount;
 
@@ -294,7 +295,7 @@ export async function POST(req: NextRequest) {
     const r = kernel.result;
     const accepted = kernelAccepted;
     if (!accepted && r.result !== 'applied') {
-      return bad(`Review not requested: ${r.reason}`, 409, {
+      return bad(`Review not requested: ${decisionRefusalReason(r.reason)}`, 409, {
         code: r.reason, current: r.current, kernel: true,
         ...(r.reason === 'force_requires_human' ? { hint: FORCE_NEEDS_PERSON } : {}),
         ...(r.reason === 'escalation_needs_human' ? { hint: 'this PR is escalated to a person for a reason another review does not answer; the owner resolves it from the dashboard' } : {}),
@@ -344,7 +345,7 @@ export async function POST(req: NextRequest) {
   if (force && !person && !inFlight) {
     const prior = resolvePriorVerdict(existingReview);
     if (prior && prior.headSha === (pr.head?.sha ?? '')) {
-      return bad('Review not requested: force_requires_human', 409, { code: 'force_requires_human', hint: FORCE_NEEDS_PERSON });
+      return bad(`Review not requested: ${decisionRefusalReason('force_requires_human')}`, 409, { code: 'force_requires_human', hint: FORCE_NEEDS_PERSON });
     }
   }
 
@@ -352,7 +353,7 @@ export async function POST(req: NextRequest) {
   // judged head or a moved one; a person asks from the PR's page (the dashboard re-review route).
   if (force && !inFlight && existingReview
     && isReviewBudgetSpent(derivePrReviewStatus({ reviewTask: existingReview, worker: existingWorker ?? null, autoMergeExpected: false }))) {
-    return bad('Review not requested: review_budget_spent', 409, { code: 'review_budget_spent', hint: REVIEW_BUDGET_SPENT_HINT });
+    return bad(`Review not requested: ${decisionRefusalReason('review_budget_spent')}`, 409, { code: 'review_budget_spent', hint: REVIEW_BUDGET_SPENT_HINT });
   }
 
   // Idempotency: one reviewer per PR at a time. `force` re-reviews a finished

@@ -80,10 +80,12 @@ mock.module('@/lib/pr-reconcile', () => ({ refreshWorkerMergeStateIfStale: mockR
 // The seam: its read-side helpers for real (they are the statements under test),
 // observePrState (the webhook's apply-and-drain door) as a spy that must stay unused for owned rows.
 const renderObservation = await import('./workflow/render-observation');
-const mockObservePrState = mock(async (_p: unknown) => false);
+const mockObservePrState = mock(async (_p: unknown, _c?: unknown) => false);
 mock.module('@/lib/workflow/seam', () => ({ ...renderObservation, observePrState: mockObservePrState }));
+const realKernelClient = await import('./workflow/kernel-client');
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, observePrState: mockObservePrState }));
 
-const { refreshStaleWorkersForWorkspaces, refreshStaleWorkers, observeMergeStateOnRender, _resetFailureBackoffForTests } = await import('./pr-state-refresh');
+const { refreshStaleWorkersForWorkspaces, refreshStaleWorkers, observeMergeStateOnRender, RENDER_OBSERVE_MAX, _resetFailureBackoffForTests } = await import('./pr-state-refresh');
 
 /** An UPDATE to tasks or workers that sets a delivery lifecycle column. */
 const LIFECYCLE_COLUMNS = /\b(status|result|merged_at|pr_lifecycle_status|pr_url|pr_number)"?\s*=/i;
@@ -224,6 +226,19 @@ describe('read-through refresh of a task with no delivery (unchanged)', () => {
     expect(byUrl.length).toBeGreaterThan(0);
     // The scope (pr-fact-scope.ts factFunnelScope) sits in the statement's own WHERE.
     for (const s of byUrl) expect(s).toContain('NOT EXISTS (SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw');
+  });
+
+  it('one render checks at most RENDER_OBSERVE_MAX PRs, once each (spec 3ef37387 R-12)', async () => {
+    const rows = Array.from({ length: RENDER_OBSERVE_MAX + 7 }, (_, i) => ({
+      id: `w${i}`, prNumber: 100 + (i % (RENDER_OBSERVE_MAX + 3)), prUrl: `https://github.com/owner/repo/pull/${100 + (i % (RENDER_OBSERVE_MAX + 3))}`, workspaceId: 'ws1',
+    }));
+    await observeMergeStateOnRender(rows, 123);
+
+    const checked = mockRefreshWorkerMergeState.mock.calls.map(c => (c[0] as { prUrl: string }).prUrl);
+    expect(checked).toHaveLength(RENDER_OBSERVE_MAX);
+    expect(new Set(checked).size).toBe(RENDER_OBSERVE_MAX);
+    // In the caller's order: the first rows are the ones checked.
+    expect(checked[0]).toBe(rows[0].prUrl);
   });
 
   it('the task and mission page import still runs the merge-state refresh', async () => {

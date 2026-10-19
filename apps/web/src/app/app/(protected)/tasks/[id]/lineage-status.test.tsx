@@ -72,9 +72,9 @@ describe('lineageWorkerHistory', () => {
   it('numbers each row by attempt once there is more than one', () => {
     const rows = lineageWorkerHistory([w('first', 0)], [{ workers: [w('retry1', 20)] }, { workers: [w('retry2', 40)] }]);
     expect(rows.map(r => [r.worker.id, r.attemptLabel])).toEqual([
-      ['retry2', 'attempt 3 · CI fix'],
-      ['retry1', 'attempt 2 · CI fix'],
-      ['first', 'attempt 1'],
+      ['retry2', 'CI fix 2'],
+      ['retry1', 'CI fix 1'],
+      ['first', 'first run'],
     ]);
   });
 
@@ -97,10 +97,10 @@ describe('lineageWorkerHistory', () => {
     const key = (rows: ReturnType<typeof lineageWorkerHistory>) => rows.map(r => `${r.worker.id}|${r.attemptLabel}`);
     const expected = key(lineageWorkerHistory(own, attempts));
     expect(expected).toEqual([
-      'retry-z|attempt 2 · CI fix',
-      'retry-y|attempt 2 · CI fix',
-      'own-b|attempt 1',
-      'own-a|attempt 1',
+      'retry-z|CI fix 1',
+      'retry-y|CI fix 1',
+      'own-b|first run',
+      'own-a|first run',
     ]);
     let seed = 7;
     const shuffle = <T,>(xs: readonly T[]) => {
@@ -132,8 +132,9 @@ describe('HeaderStatusPill — kernel DeliveryView', () => {
     expect(html).toContain('data-owner="human"');
   });
   it('maps approved PRs owned by platform to live tone with label from deliveryReading', () => {
-    const html = renderToStaticMarkup(<HeaderStatusPill status="completed" merged={false} delivery={d({ headline: 'APPROVED', owner: 'landing', stage: 'approved' })} />);
-    expect(html).toContain('Approved · merging');
+    const html = renderToStaticMarkup(<HeaderStatusPill status="completed" merged={false} delivery={d({ headline: 'APPROVED', owner: 'landing', stage: 'approved', prState: 'ci_passed' })} />);
+    expect(html).toContain('Ready to merge');
+    expect(html).not.toContain('merging');
     expect(html).toContain('text-accent-text');
     expect(html).toContain('bg-accent-soft');
     expect(html).not.toContain('text-status-success');
@@ -166,7 +167,7 @@ describe('HeaderStatusPill — kernel DeliveryView', () => {
     expect(mergedHtml).toContain('bg-status-success/10');
 
     // SUPERSEDED should also be success green (landed tone)
-    const supersededHtml = renderToStaticMarkup(<HeaderStatusPill status="completed" merged={false} delivery={d({ headline: 'Shipped elsewhere', owner: 'platform', stage: 'superseded', state: 'SUPERSEDED' })} />);
+    const supersededHtml = renderToStaticMarkup(<HeaderStatusPill status="completed" merged={false} delivery={d({ headline: 'Merged in #9', owner: 'platform', stage: 'superseded', state: 'SUPERSEDED' })} />);
     expect(supersededHtml).toContain('text-status-success');
     expect(supersededHtml).toContain('bg-status-success/10');
   });
@@ -177,12 +178,12 @@ describe('HeaderStatusPill — kernel DeliveryView', () => {
       { stage: 'review', state: 'AWAITING_REVIEW', owner: 'reviewer', headline: 'In review', expectedLabel: 'In review', shouldBeSuccess: false, shouldBeLive: true, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
       { stage: 'fixing', state: 'FIXING', owner: 'worker', headline: 'Fixing', expectedLabel: 'Fixing', shouldBeSuccess: false, shouldBeLive: true, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
       { stage: 'repairing', state: 'REPAIRING', owner: 'platform', headline: 'Fixing CI', expectedLabel: 'Fixing CI', shouldBeSuccess: false, shouldBeLive: true, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
-      { stage: 'approved', state: 'APPROVED', owner: 'landing', headline: 'APPROVED', expectedLabel: 'Approved · merging', shouldBeSuccess: false, shouldBeLive: true, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
+      { stage: 'approved', state: 'APPROVED', owner: 'landing', headline: 'APPROVED', expectedLabel: 'Approved', shouldBeSuccess: false, shouldBeLive: true, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
       { stage: 'approved', state: 'APPROVED', owner: 'human', headline: 'APPROVED', expectedLabel: 'Ready to merge', shouldBeSuccess: false, shouldBeLive: false, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
       { stage: 'landing', state: 'LANDING', owner: 'platform', headline: 'Merging', expectedLabel: 'Merging', shouldBeSuccess: false, shouldBeLive: true, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
       { stage: 'merged', state: 'MERGED', owner: 'landing', headline: 'MERGED', expectedLabel: 'Merged', shouldBeSuccess: true, shouldBeLive: false, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
-      { stage: 'superseded', state: 'SUPERSEDED', owner: 'platform', headline: 'Shipped elsewhere', expectedLabel: 'Shipped elsewhere', shouldBeSuccess: true, shouldBeLive: false, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
-      { stage: 'closed', state: 'CLOSED_UNMERGED', owner: 'worker', headline: 'Closed', expectedLabel: 'Closed', shouldBeSuccess: false, shouldBeLive: false, shouldBeStalled: false, shouldBeClosed: true, shouldBeFailed: false },
+      { stage: 'superseded', state: 'SUPERSEDED', owner: 'platform', headline: 'Merged in #9', expectedLabel: 'Merged in another PR', shouldBeSuccess: true, shouldBeLive: false, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
+      { stage: 'closed', state: 'CLOSED_UNMERGED', owner: 'worker', headline: 'Closed', expectedLabel: 'Closed without merging', shouldBeSuccess: false, shouldBeLive: false, shouldBeStalled: false, shouldBeClosed: true, shouldBeFailed: false },
       { stage: 'failed', state: 'FAILED', owner: 'platform', headline: 'Failed', expectedLabel: 'Failed', shouldBeSuccess: false, shouldBeLive: false, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: true },
       { stage: 'blocked', state: 'BLOCKED_ON_TRUNK', owner: 'platform', headline: 'Blocked on base', expectedLabel: 'Blocked on base', shouldBeSuccess: false, shouldBeLive: false, shouldBeStalled: true, shouldBeClosed: false, shouldBeFailed: false },
     ];

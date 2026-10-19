@@ -14,7 +14,7 @@ import { visualReviewRoundOf } from '@/lib/visual-review-rounds';
 import type { VisualReviewModel } from '@buildd/shared';
 import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock, isTerminalTaskStatus } from '@buildd/shared';
 import { describeBackendRouting } from '@buildd/core/backend-policy';
-import { loadTaskFailureKind } from '@/lib/task-failure-kind-load';
+import { loadTaskFailure, type TaskFailure } from '@/lib/task-failure-kind-load';
 import { loadTaskDeliveryContext } from '@/lib/task-delivery-context';
 import type { WaitingFor } from '@buildd/shared';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
@@ -29,6 +29,7 @@ import { deriveTaskModel } from '@/lib/model-presentation';
 import type { TaskDeliverablesResult } from '@/components/task/TaskDeliverables';
 import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { runnerDisplayResolver } from '@/lib/runner-display';
+import { taskPrOf, withTaskPr } from '@/lib/workflow/task-pr';
 
 /** One record the task produced, as the sheet lists it (W4 "Records"). */
 export interface TaskSummaryRecord {
@@ -242,9 +243,10 @@ export async function GET(
     // worker.
     const questionNote = view.questionNote;
 
-    let failureKind: Awaited<ReturnType<typeof loadTaskFailureKind>> = null;
+    let failureKind: TaskFailure['kind'] = null;
+    let failureWaitingOn: TaskFailure['waitingOn'] = null;
     try {
-      failureKind = await loadTaskFailureKind(task);
+      ({ kind: failureKind, waitingOn: failureWaitingOn } = await loadTaskFailure(task));
     } catch (err) {
       console.error('Task summary: failure kind load failed', err);
     }
@@ -358,7 +360,8 @@ export async function GET(
           }
         : null,
       // The shared Deliverables block (components/task/TaskDeliverables).
-      deliverables: (result ?? null) as TaskDeliverablesResult | null,
+      // Its PR derived on read (workflow/task-pr.ts), not a stored snapshot.
+      deliverables: withTaskPr((result ?? null) as Record<string, unknown> | null, await taskPrOf(task.id)) as TaskDeliverablesResult | null,
       delivery: sections.delivery,
       checks: sections.checks,
       live,
@@ -367,6 +370,7 @@ export async function GET(
       access: accessItems,
       blockedByCount,
       failureKind,
+      failureWaitingOn,
       records,
       origin,
       visual,

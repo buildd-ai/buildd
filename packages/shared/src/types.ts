@@ -480,9 +480,19 @@ export interface MergePolicy {
    * Destructive DDL, rewritten migrations and mixed PRs are unaffected.
    */
   dataMigrations?: DataMigrationsPolicy;
+
+  /**
+   * Who may approve a PR past review findings that are still open or awaiting
+   * verification ("Approve and override" on a review escalation). 'admins'
+   * (default): a team owner or admin who also holds merge permission on the repo
+   * on GitHub. 'off': nobody; the findings have to be fixed, waived or deferred.
+   */
+  reviewOverride?: ReviewOverridePolicy;
 }
 
 export type DataMigrationsPolicy = 'person' | 'agent-review';
+export type ReviewOverridePolicy = 'admins' | 'off';
+export const VALID_REVIEW_OVERRIDE: ReviewOverridePolicy[] = ['admins', 'off'];
 const VALID_DATA_MIGRATIONS: DataMigrationsPolicy[] = ['person', 'agent-review'];
 
 /**
@@ -577,7 +587,7 @@ export function visualReviewPolicyOf(gitConfig: unknown): VisualReviewPolicyMode
 }
 
 const VALID_TIERS: MergePolicyTier[] = ['auto-threshold', 'agent-review', 'human'];
-const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations']);
+const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations', 'reviewOverride']);
 const KNOWN_THRESHOLD_KEYS = new Set(['maxLines', 'maxSourceLines', 'denyPaths']);
 const KNOWN_AGENT_REVIEW_KEYS = new Set(['reviewerRole', 'escalateToPaths', 'maxConfidenceThreshold', 'gateCondition']);
 
@@ -670,6 +680,14 @@ export function parseMergePolicy(val: unknown): MergePolicyParseResult {
       ok: false,
       error: `mergePolicy.dataMigrations must be one of: ${VALID_DATA_MIGRATIONS.join(', ')}`,
       field: 'dataMigrations',
+    };
+  }
+
+  if (obj.reviewOverride !== undefined && !VALID_REVIEW_OVERRIDE.includes(obj.reviewOverride as ReviewOverridePolicy)) {
+    return {
+      ok: false,
+      error: `mergePolicy.reviewOverride must be one of: ${VALID_REVIEW_OVERRIDE.join(', ')}`,
+      field: 'reviewOverride',
     };
   }
 
@@ -1361,6 +1379,12 @@ export interface WorkerEnvironment {
    */
   hold?: RunnerHold | null;
   /**
+   * How this runner's own logins share its slots (./runner-login-mode, spec
+   * 34a48877 R-14): balanced, claude-first or codex-first. Absent on runner
+   * builds that predate it, which behave as claude-first.
+   */
+  loginMode?: import('./runner-login-mode').LoginMode;
+  /**
    * The confinement this runner can apply, per backend and mode, from this
    * process's own probe (./runner-isolation). Absent on runner builds that
    * predate it: readers then fall back to the legacy `sandboxEnabled` boolean,
@@ -1593,6 +1617,19 @@ export interface ClaimTasksInput {
   // ambiguous claim (the 2026-05-25 misroute class), which stays rejected.
   claimAcrossAccessible?: boolean;
   /**
+   * A person chose this named task for this runner (`c` in top, a task aimed
+   * at it). With a taskId, the account-wide worker count does not refuse it:
+   * the runner claims only into a free slot of its own.
+   */
+  requestedByPerson?: boolean;
+  /**
+   * Which Claude login this runner's agents run on, when it is the machine's
+   * own `claude login`: a one-way hash of the CLI profile's account id (32 hex
+   * characters, never a credential). A limit another runner on the same login
+   * hit holds this runner too (apps/web/src/lib/runner-seat-wall.ts).
+   */
+  claudeLoginId?: string;
+  /**
    * Protocol features this runner build implements, so the server does not send
    * a payload field an older runner would silently ignore.
    */
@@ -1604,8 +1641,7 @@ export interface ClaimTasksInput {
    * dependencies, a held mission, a dead subject, a future startAt, mission
    * concurrency and pacing, path overlap and the workspace cap. Never skips a
    * live worker, a person's hold on the task, the mission budget,
-   * scope-undeclared serialization, role/runner routing, provider walls or
-   * account limits. Ignored otherwise. Audited on the task and the gate ledger.
+   * role/runner routing, provider walls or account limits. Ignored otherwise. Audited on the task and the gate ledger.
    */
   forceOverride?: boolean;
   /**
@@ -1796,7 +1832,7 @@ export interface ClaimDiagnostics {
     connector_mismatch?: number;
     subject_dead?: number;
     path_overlap?: number;
-    /** Scope-undeclared ('**') task held behind a sibling in the same mission. */
+    /** Retired: undeclared scope no longer holds a task. Always 0; kept for older readers. */
     advisory_manifest?: number;
     /**
      * Declared scope overlaps an in-flight task's only softly (directory
@@ -1823,6 +1859,17 @@ export interface ClaimDiagnostics {
      * live revalidation could not run and the claim was rolled back.
      */
     fix_not_needed?: number;
+    /**
+     * Workflow-kernel fix claim rolled back to pending because the kernel could not answer: the
+     * control plane did not respond in time, or the claim request's control-plane budget was spent.
+     * Retried on the next poll.
+     */
+    kernel_unavailable?: number;
+    /**
+     * Workflow-kernel fix claim rolled back to pending because the control plane refused it (auth, the
+     * claiming account's reach, a malformed input): not an outage, so a retry gets the same answer.
+     */
+    kernel_refused?: number;
     /**
      * Claim planner in `apply` mode ordered this task behind a picked, in-flight
      * or open-PR node it would collide with. Replaces the per-poll
@@ -2659,6 +2706,8 @@ export function visualReviewRelation(agentVerdict: VisualQaVerdict, decision: Vi
 export const VISUAL_REVIEW_PHASES = [
   'off',
   'waiting_deps',
+  /** The latest audit never ran: build work it depends on failed (spec 072de598 I-14). `waitingOn` names it. */
+  'waiting_on_failed_work',
   'queued',
   'no_browser_runner',
   'capturing',
@@ -2981,6 +3030,8 @@ export interface VisualReviewModel {
   resolvedElsewhere?: VisualReviewResolvedElsewhere[];
   /** Failed audits a later completed audit replaced. Still in `audits`, never the phase. */
   replacedAudits?: VisualReviewReplacedAudit[];
+  /** For `waiting_on_failed_work`: the failed build task the audit waits on; its recovery is there. */
+  waitingOn?: { taskId: string; title: string | null } | null;
   generatedAt: string;
 }
 
@@ -3279,6 +3330,105 @@ export interface MissionProgressCell {
 }
 
 /**
+ * Bumped whenever `computeMissionSummary` (apps/web/src/lib/mission-summary.ts)
+ * changes what it derives. A stored summary of another version is read as
+ * missing: readers derive live, and the reconcile job rewrites it first.
+ */
+export const MISSION_SUMMARY_VERSION = 3;
+
+/** The mission's current delivery: its mission PR, else the newest deliverable task PR. */
+export interface MissionSummaryDelivery {
+  source: 'mission_pr' | 'task_pr';
+  prNumber: number | null;
+  prUrl: string | null;
+  state: 'not_opened' | 'open' | 'merged' | 'closed';
+}
+
+/**
+ * A mission's state as every list surface shows it, stored when its work
+ * changes (`mission_summaries`, spec 3ef37387 R-13, R-24) rather than worked
+ * out from its tasks and workers on every read. One derivation writes it:
+ * `computeMissionSummary`. Time-dependent readings (a schedule gone stale, an
+ * auto-merge grace) are as of `computedAt`; the reconcile job refreshes them.
+ */
+export interface MissionSummary {
+  v: number;
+  /** The Build / Verify / Deliver rail's step and progress cells (`missionStage`, `taskRowsProgress`). */
+  stage: MissionStage;
+  /** Build deliverables landed of those counted: the card's `n/N` (`missionCardProgress`). */
+  progress: { done: number; total: number; percent: number };
+  /** `deriveMissionHealth`: active, on-schedule, stalled, shipped, paused, idle, budget-exhausted, held, escalated. */
+  health: string;
+  /** `deriveTaskHealthSignal`: NOMINAL, BLOCKED, FAILING, STALLED. */
+  healthSignal: string;
+  /** The card's state kind (`deriveMissionStateView`) and whether its next step is the owner's. */
+  stateKind: string;
+  needsYou: boolean;
+  /** The list section (`missionCardGroup`): running, attention, review, scheduled, paused, completed. */
+  group: string;
+  liveWorkers: number;
+  hasPendingDeliverableWork: boolean;
+  /** Every task of the mission by `tasks.status`, attempts and bookkeeping included. */
+  taskCounts: Record<string, number>;
+  delivery: MissionSummaryDelivery | null;
+  /** The latest task start or task update, else the mission's own update. ISO. */
+  lastActivityAt: string | null;
+  /** What Home shows of the mission: its delivery row, quiet cause and card facts. */
+  home: MissionSummaryHome;
+  /** What the missions list shows beside Home's reading: the row's strip, last advance and next run. */
+  list: MissionSummaryList;
+  /**
+   * The visual review state (`getMissionVisualReviewState`), read only while
+   * the review can still say something: an open audit or fix, or an open
+   * mission with an integration branch. Null otherwise.
+   */
+  visualReview: Record<string, unknown> | null;
+  /**
+   * An open mission with an integration branch: why its mission PR may not
+   * merge yet because of its work (`missionWorkHolder`), else null.
+   */
+  missionPrWorkHolder: string | null;
+}
+
+/**
+ * The missions list's reading of one mission, beside Home's (spec 3ef37387
+ * R-13): the row's delivery is `home.delivery`, the same card Home shows.
+ */
+export interface MissionSummaryList {
+  /** One display state per task in strip order (`taskRowsStripProjection`, a `StateKey` each). */
+  strip: string[];
+  /** The latest task update or task start; null when the mission has neither. ISO. */
+  lastAdvancedAt: string | null;
+  /** A recurring open mission (a schedule that is not the check-in): its next run, ISO. Null otherwise. */
+  nextRunAt: string | null;
+}
+
+/**
+ * Home's reading of one mission (spec 3ef37387 R-13). The precise shapes live
+ * with their derivations in apps/web (`MissionDeliveryRow` in
+ * lib/delivery-projection.ts, the list card in lib/mission-list-card.ts).
+ */
+export interface MissionSummaryHome {
+  /** The delivery projection without its per-task rows, plus each task's kind for the strip. */
+  delivery: { kind: string; open: boolean; [key: string]: unknown };
+  /** Open and not moving (waiting, held, planning): what it waits on. Null otherwise. */
+  quietCause: string | null;
+  card: {
+    /** The list card's kind: active, recurring, held, scheduled, paused, done. */
+    kind: string;
+    /** Recurring, live or held: Home lists it (a mission done in the last 12h is listed too). */
+    listed: boolean;
+    done: number;
+    total: number;
+    /** Merged PRs of a done mission, else null. */
+    donePrs: number | null;
+    held: { ready: number; roles: string[]; since: string | null; startState: string } | null;
+    /** A stranded local mission's call to action; `quietMs` as of `computedAt`. */
+    strand: { missionId: string; quietMs: number; taskId: string | null; claimable: number; blockedReason: string | null; order: string } | null;
+  };
+}
+
+/**
  * One mission as `GET /api/missions/recent` sends it (spec c7410e76 R-24):
  * open missions and those finished in the last 7 days, in the caller's
  * reachable workspaces. All open missions are included; only recent deliveries
@@ -3306,7 +3456,9 @@ export type RunnerQueueHold =
   | 'task_held'
   | 'workspace_paused'
   | 'workspace_cap'
-  | 'runner_cooldown';
+  | 'runner_cooldown'
+  /** Its mission already runs a task that, like it, declares no files: the claim starts one such task per mission at a time. */
+  | 'advisory_manifest';
 
 /** Why waiting work is never this runner's to take (R-26 "Not for this runner"). */
 export type RunnerQueueExclusion =
@@ -3346,7 +3498,19 @@ export interface RunnerQueueTask {
    * overlaps nothing, or overlaps something that holds it.
    */
   alongside?: { prNumber: number | null; holderTaskId: string | null } | null;
+  /** With the `advisory_manifest` hold: the task it waits for, running or ahead of it in this queue. */
+  holderTaskId?: string | null;
+  /**
+   * Whose work it is (spec c7410e76 R-58): the task's owner (who filed it, else
+   * its mission's, else its schedule's) against the person behind the runner's
+   * key, never the runner or login that runs it. Absent from an older server.
+   */
+  owner?: RunnerQueueOwner;
+  /** With owner 'teammate': their first name, when buildd knows it. */
+  ownerName?: string;
 }
+
+export type RunnerQueueOwner = 'you' | 'teammate' | 'unattributed';
 
 export interface RunnerQueueTeam {
   teamId: string;
@@ -4064,6 +4228,8 @@ export interface FleetSlotWorker {
   startedAt: string | null;
   /** Set while the worker is parked on a question. */
   question: string | null;
+  /** Whether the viewer owns this run: true/false, or null when its owner is unknown. Absent when no viewer was given. */
+  mine?: boolean | null;
 }
 
 export interface FleetSlot {
@@ -4074,7 +4240,7 @@ export interface FleetSlot {
    * is the task's own short label (null when it has none worth showing);
    * `scope` the one-word chip; `at` when it ended (epoch ms).
    */
-  last: { label: string | null; scope: string | null; prNumber: number | null; fix: boolean; failed?: boolean; at?: number | null } | null;
+  last: { label: string | null; scope: string | null; prNumber: number | null; fix: boolean; failed?: boolean; at?: number | null; mine?: boolean | null } | null;
   lane: Lane;
 }
 

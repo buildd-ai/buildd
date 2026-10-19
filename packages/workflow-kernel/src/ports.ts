@@ -83,6 +83,11 @@ export interface ClaimedEffect extends EffectSnapshot {
   dedupeKey: string;
   payload: Record<string, unknown>;
   attemptCount: number;
+  /**
+   * How long ago the row was written, by the store's own clock (ms). The merge effect
+   * bounds a merge hold by it; absent (a store that does not say) never ends a hold by age.
+   */
+  ageMs?: number;
 }
 
 export interface FollowupEffect {
@@ -161,6 +166,12 @@ export interface Store {
   /** §14: hand a kernel delivery to legacy. false = it was not the kernel's. */
   releaseToLegacy(deliveryId: string): Promise<boolean>;
 
+  /**
+   * §5: move the open findings (`open`, `addressed`) of one delivery to another, ids kept. Closed ones
+   * stay where they were decided. Returns the ids moved; a replay finds none left.
+   */
+  carryOpenFindings(fromDeliveryId: string, toDeliveryId: string): Promise<string[]>;
+
   /** Take the lane, or renew it for its holder. true only when this delivery holds it afterwards. */
   acquireLane(k: LaneKey & { deliveryId: string; headSha: string; holdMs: number }): Promise<boolean>;
   laneHolder(k: LaneKey): Promise<{ deliveryId: string; prNumber: number | null } | null>;
@@ -168,16 +179,32 @@ export interface Store {
   releaseSettledLanes(deliveryId: string): Promise<LaneKey[]>;
   /** Make the oldest parked refresh on this lane due now; returns its delivery. */
   wakeNextLaneWaiter(k: LaneKey): Promise<string | null>;
+  /**
+   * §4 merge holds: make this delivery's held `merge_call` for `headSha` (a pending row
+   * whose outcome is `held:…`) due now. Returns how many rows it woke.
+   */
+  wakeHeldMerges(deliveryId: string, headSha: string): Promise<number>;
 }
 
 // ── GitHub ──────────────────────────────────────────────────────────────────
+
+/** The check runs on one commit, as `GithubFactReader.checkRuns` reads them (§6.10). */
+export interface CheckRunsRead {
+  complete: boolean;
+  /** The failing check runs' names. */
+  failing: string[];
+  /** The failing entries at test level (`trunk-signature.ts`); only when asked for and readable. */
+  tests?: string[];
+  /** The names of the runs not completed yet; only when asked for `tests` and the whole list was read. */
+  pending?: string[];
+}
 
 /** Live reads the kernel acts on (R2: never a webhook payload). Every optional read answers null when it cannot tell. */
 export interface GithubFactReader {
   /** Live `GET /repos/{repo}/pulls/{n}`; null when it cannot be read. */
   readPr(repoFullName: string, prNumber: number): Promise<LivePr | null>;
   /** The latest commit status of `context` on `sha` (state and description); null = none or unreadable. */
-  statusOf?(repoFullName: string, sha: string, context: string): Promise<{ state: string; description: string } | null>;
+  statusOf?(repoFullName: string, sha: string, context: string): Promise<{ state: string; description: string; targetUrl?: string | null } | null>;
   /** Compare API: is `ancestorSha` contained in `headSha`? */
   contains?(repoFullName: string, ancestorSha: string, headSha: string): Promise<boolean>;
   /**
@@ -187,9 +214,12 @@ export interface GithubFactReader {
   ciGreen?(repoFullName: string, headSha: string): Promise<boolean | null>;
   /**
    * The check runs on `sha` (§6.10 signatures): the names of the failing ones,
-   * and whether every run has completed. null = unreadable.
+   * and whether every run has completed. null = unreadable. With `tests`, a
+   * host that can read a failing check's tests also answers `tests`: the
+   * failing entries at test level (`trunk-signature.ts`), which is what a
+   * signature is taken from when present, and `pending`.
    */
-  checkRuns?(repoFullName: string, sha: string): Promise<{ complete: boolean; failing: string[] } | null>;
+  checkRuns?(repoFullName: string, sha: string, opts?: { tests?: boolean }): Promise<CheckRunsRead | null>;
   /** The head commit of branch `ref` now; null = unreadable. */
   branchHead?(repoFullName: string, ref: string): Promise<string | null>;
   /**
@@ -244,6 +274,8 @@ export interface MergeAnswer {
   detail?: string;
   /** A transient answer (rate limit, 5xx): when GitHub said to call again (ISO); null or absent = no wait asked. */
   retryAt?: string | null;
+  /** `held`: the required check GitHub named as not passed yet; null when it gave only a count. */
+  check?: string | null;
 }
 
 export interface PostedReview {
@@ -258,7 +290,8 @@ export interface GithubWrites {
   /**
    * Merge only if the PR's head is still `headSha`. The host reads GitHub's
    * answer into the outcome (a moved head or a rate limit is `not_merged`, a
-   * lost or 5xx answer `indeterminate`, an out-of-date branch `behind`); the
+   * lost or 5xx answer `indeterminate`, an out-of-date branch `behind`, a
+   * required check that has not passed yet `held` with the check); the
    * kernel verifies anything but a definite refusal with a live read.
    */
   mergeAtHead(p: { repoFullName: string; prNumber: number; headSha: string; method?: 'squash' | 'merge' | 'rebase' }): Promise<MergeAnswer>;
@@ -344,6 +377,18 @@ export interface Work {
   cancelPending(p: { deliveryId: string; role: string; reason: string; summary: string; keepTaskId?: string | null }): Promise<number>;
   /** Tell a filed task (and whoever runs it now) what it was not filed with. Idempotent per `marker`. */
   steer(taskId: string, p: { marker: string; note: string }): Promise<void>;
+}
+
+// ── Links ───────────────────────────────────────────────────────────────────
+
+/** Where in the host a person acts on a delivery. */
+export interface Links {
+  /**
+   * The page showing this delivery's review and its findings: the
+   * `Buildd / Review approval` status's target, so GitHub's Details link goes
+   * somewhere a person can act. Null publishes the status without one.
+   */
+  review(d: DeliverySnapshot): string | null;
 }
 
 // ── Notify ──────────────────────────────────────────────────────────────────
@@ -675,6 +720,8 @@ export interface KernelPorts {
   handOff?: HandOff;
   /** The merge rails the `merge_call` effect reads at merge time. Required to merge: without it the effect refuses (and retries). */
   rails?: Rails;
+  /** Where a person acts on a delivery; absent publishes the review status with no link. */
+  links?: Links;
 }
 
 /** The GitHub to act on for a workspace's delivery, or null when the host has none for it. */

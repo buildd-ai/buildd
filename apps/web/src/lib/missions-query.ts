@@ -1,14 +1,16 @@
 import { missions } from '@buildd/core/db/schema';
-import { and, desc, eq, lt, ne, or, type SQL } from 'drizzle-orm';
+import { and, desc, ne, type SQL } from 'drizzle-orm';
 import type { FlightStripTask, FlightStripWorker } from '@buildd/core/mission-helpers';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
- * Query-shape helpers for the missions list (docs/design/mission-flight-strip.md
- * Rules P-2 and P-4). Split out from the page component so the `with` shape
- * itself is assertable in a unit test (AC-12) without a database — the
- * completed-missions query must SKIP the extra flight-strip fan-out columns
- * by construction, not by a runtime branch that happens to not use them.
+ * Query-shape helpers for the mission views that read tasks and workers
+ * (the Plan page, initiative cards, the Health lanes), and the completed
+ * page's keyset paging (docs/design/mission-flight-strip.md Rule P-4). The
+ * missions list itself reads stored summaries (lib/mission-list-load.ts).
+ * Each caller adds what it renders on top of the base columns: none carries
+ * `tasks.result` (spec 3ef37387 R-11); a card that shows a run's summary reads
+ * it projected ({@link MISSION_TASK_RESULT_SUMMARY_EXTRAS}).
  */
 
 export const COMPLETED_MISSIONS_PAGE_SIZE = 20;
@@ -32,8 +34,17 @@ export const MISSION_TASK_REFRESH_EXTRAS = {
   isIntegrationRefresh: (t: any, { sql }: any) => sql`coalesce((${t.context} ->> 'requireMergeCommit') = 'true', false)`.as('is_integration_refresh'),
 };
 
+/**
+ * `result` as `{ summary }` only: what a recurring mission's card shows of its
+ * last run (`buildMissionListCard`'s `lastSummary`). The column holds the
+ * agent's whole output.
+ */
+export const MISSION_TASK_RESULT_SUMMARY_EXTRAS = {
+  result: (t: any, { sql }: any) => sql`case when ${t.result} is null then null else jsonb_strip_nulls(jsonb_build_object('summary', ${t.result} -> 'summary')) end`.as('result_summary'),
+};
+
 export const MISSION_TASK_BASE_COLUMNS = {
-  id: true, title: true, status: true, result: true, createdAt: true, updatedAt: true, kind: true,
+  id: true, title: true, status: true, createdAt: true, updatedAt: true, kind: true,
   mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true,
   scheduleId: true, startAt: true, loopIteration: true, taskClass: true, createdByWorkerId: true,
   createdByAccountId: true,
@@ -55,8 +66,9 @@ const taskOrderBy = (t: any, { desc }: any) => [desc(t.updatedAt)];
 const workerOrderBy = (w: any, { desc }: any) => [desc(w.startedAt), desc(w.updatedAt)];
 
 /**
- * Rule P-3 governs cost here (bounded by workspace maxConcurrentTasks), so
- * this half is deliberately NOT limited. Adds `roleSlug` (tasks) and
+ * The Plan page's missions (lib/mission-plan-source.ts): every open mission
+ * with its tasks and their newest workers. Rule P-3 governs cost here
+ * (bounded by workspace maxConcurrentTasks), so it is deliberately NOT limited. Adds `roleSlug` (tasks) and
  * `exitCause` (workers) on top of the base columns — the two fields the
  * live flight-strip computation needs (Rule A-1/A-2) that nothing else on
  * this page reads — plus the phase fields that order the card's pulse.
@@ -107,44 +119,6 @@ export function decodeCompletedCursor(raw: string | undefined | null): Completed
     // Malformed/tampered cursor — treat as no cursor (first page) rather than 500.
   }
   return null;
-}
-
-/**
- * Rule P-2: completed missions read `flightStripCache` directly and skip the
- * flight-strip fan-out entirely — `roleSlug`/`exitCause` are absent from this
- * query's `with` shape by construction (AC-12), not filtered out after the
- * fact. Rule P-4: bounded + keyset-paginated on (completedAt, id) descending,
- * requesting one extra row so the caller can detect `hasMore` without a
- * second count query.
- */
-export function buildCompletedMissionsQueryArgs(missionsWhere: SQL | undefined, cursor: CompletedMissionCursor | null) {
-  const cursorClause = cursor
-    ? or(
-        lt(missions.completedAt, new Date(cursor.completedAt)),
-        and(eq(missions.completedAt, new Date(cursor.completedAt)), lt(missions.id, cursor.id)),
-      )
-    : undefined;
-  return {
-    where: sqlWhere(and(missionsWhere, eq(missions.status, 'completed'), cursorClause)),
-    orderBy: sqlOrderBy([desc(missions.completedAt), desc(missions.id)]),
-    limit: COMPLETED_MISSIONS_PAGE_SIZE + 1,
-    columns: { ...MISSION_BASE_COLUMNS, flightStripCache: true },
-    with: {
-      ...MISSION_WITH_SHARED,
-      tasks: {
-        columns: MISSION_TASK_BASE_COLUMNS,
-        extras: MISSION_TASK_REFRESH_EXTRAS,
-        orderBy: sqlOrderByFn(taskOrderBy),
-        with: {
-          workers: {
-            columns: MISSION_WORKER_BASE_COLUMNS,
-            limit: 5,
-            orderBy: sqlOrderByFn(workerOrderBy),
-          },
-        },
-      },
-    },
-  };
 }
 
 /** Adapts the nested `tasks -> workers` shape either query returns into the

@@ -297,6 +297,33 @@ mock.module('@/lib/workflow/delivery-ship', () => ({
   latestEpoch: (v: { epochs: Array<{ epoch: number }> }) => v.epochs.reduce((a: any, b: any) => (!a || b.epoch > a.epoch ? b : a), null),
 }));
 
+// The epochs' outbox (lib/workflow/epoch-effects.ts). `legacy` = a mission with no epoch rows, refreshed
+// by the direct call. An owed row is drained by running the real handler on it, unless its epoch
+// stopped being the open one on that branch (`epochNow`), which skips it as the drain does.
+const epochOutbox = { epochNow: { state: 'open', branch: '' } as { state: string; branch: string } | null };
+const mockOweMissionRefresh = mock((_missionId: string, _p: { trigger: string }) => Promise.resolve({ owed: 'legacy' } as any));
+const mockDrainEpochEffects = mock(async (o: { handlers: Record<string, (e: any) => Promise<any>>; effectIds?: string[] | null }) => {
+  const ran: any[] = [];
+  for (const id of o.effectIds ?? []) {
+    const owed = mockOweMissionRefresh.mock.results.at(-1);
+    const answer = owed ? await owed.value : null;
+    const payload = { branch: answer?.branch, trigger: answer?.trigger };
+    const epoch = epochOutbox.epochNow ? { ...epochOutbox.epochNow, missionId: 'm-1' } : null;
+    if (!epoch || epoch.state !== 'open' || epoch.branch !== payload.branch) { ran.push({ effectId: id, outcome: 'skipped:superseded' }); continue; }
+    try {
+      const res = await o.handlers.refresh_mission_branch({ id, epochId: answer.epochId, kind: 'refresh_mission_branch', payload, attemptCount: 1, epoch });
+      ran.push({ effectId: id, outcome: res.outcome, value: res.value, park: res.park });
+    } catch (err) {
+      ran.push({ effectId: id, outcome: `error:${(err as Error).message}` });
+    }
+  }
+  return { claimed: ran.length, done: 0, skipped: 0, failed: 0, lost: 0, dead: 0, ran };
+});
+mock.module('@/lib/workflow/epoch-effects', () => ({
+  oweMissionRefresh: (...args: any[]) => mockOweMissionRefresh(...(args as [string, { trigger: string }])),
+  drainEpochEffects: (...args: any[]) => mockDrainEpochEffects(...(args as [any])),
+}));
+
 mock.module('@/lib/repo-scope', () => ({
   workspaceRepoMatches: (...args: any[]) => mockWorkspaceRepoMatches(...args),
 }));
@@ -305,7 +332,9 @@ const {
   refreshMissionIntegrationBranch,
   sweepMissionBranchRefresh,
   refreshMissionBranchesBeforeStart,
+  refreshEffectAnswer,
   BRANCH_REFRESH_BACKSTOP_MS,
+  REFRESH_IN_FLIGHT_PARK_MS,
 } = await import('./mission-branch-refresh');
 
 function githubError(status: number, body: unknown): Error {
@@ -505,7 +534,7 @@ describe('refreshMissionIntegrationBranch', () => {
 
     expect(outcome).toEqual({ kind: 'conflict', conflictTaskId: 'reserved-by-dead-caller', dispatched: true });
     expect(insertedTasks).toHaveLength(1);
-    expect(insertedTasks[0].context).toMatchObject({ requireMergeCommit: true, refreshTrunkSha: 'dev-new' });
+    expect(insertedTasks[0].context).toMatchObject({ requireMergeCommit: true, refreshTrunkSha: 'dev-new', refreshBranch: 'mission/example-slug-0a1b2c3d' });
     // The reservation is evidence of the 409: finishing it makes no second merge attempt.
     expect(merges).toBe(0);
     expect(missionRow.branchRefreshLeaseUntil).toBeNull();
@@ -954,6 +983,90 @@ describe('sweepMissionBranchRefresh (the daily backstop)', () => {
   it('is a no-op when nothing is eligible', async () => {
     mockMissionsFindMany.mockResolvedValue([]);
     expect(await sweepMissionBranchRefresh()).toEqual({ scanned: 0, merged: 0, conflicts: 0, skipped: 0, errors: 0 });
+  });
+});
+
+// §6 (workflow-kernel-library.md): the refresh is an outbox row the writable epoch owes. Both
+// triggers owe it and drain it; a merged epoch owes none, and a row queued before its epoch
+// merged is skipped when claimed. AC-21 at the trigger: nothing is merged and nothing is filed.
+describe('the refresh as an effect of the writable epoch', () => {
+  const BRANCH = 'mission/example-slug-0a1b2c3d';
+  const owedRow = (trigger: string) => ({ owed: 'effect', effectId: 'fx-1', epochId: 'e1', fresh: true, branch: BRANCH, trigger });
+  let calls: { merges: number };
+  beforeEach(() => {
+    resetFixtures();
+    missionRow.workingBranch = BRANCH;
+    mockTaskInsert.mockReset();
+    mockTaskInsert.mockResolvedValue(undefined);
+    mockMissionsFindMany.mockReset();
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm-1', workingBranch: BRANCH, integrationBranchEnabled: true }]);
+    mockFindMissionPrOwner.mockReset();
+    mockFindMissionPrOwner.mockResolvedValue({ state: 'open', prNumber: 7, prUrl: 'x', workerId: 'w', taskId: 't', mergedAt: null });
+    mockEnsureMissionIntegrationBranch.mockReset();
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: BRANCH, created: false });
+    mockMissionEpochsOf.mockResolvedValue([{ id: 'e1', epoch: 1, branch: BRANCH, state: 'open' }]);
+    mockOweMissionRefresh.mockClear();
+    mockDrainEpochEffects.mockClear();
+    epochOutbox.epochNow = { state: 'open', branch: BRANCH };
+    calls = { merges: 0 };
+    mockGithubApi.mockReset();
+    mockGithubApi.mockImplementation(((_i: number, path: string, opts?: any) => {
+      if (path.endsWith('/git/ref/heads/dev')) return Promise.resolve({ object: { sha: 'dev-sha-current' } });
+      if (path.endsWith('/merges') && opts?.method === 'POST') { calls.merges++; return Promise.reject(githubError(409, 'conflict')); }
+      return Promise.resolve(null);
+    }) as any);
+  });
+  afterEach(() => {
+    mockOweMissionRefresh.mockReset();
+    mockOweMissionRefresh.mockResolvedValue({ owed: 'legacy' });
+    mockMissionEpochsOf.mockReset();
+    mockMissionEpochsOf.mockResolvedValue([]);
+  });
+
+  it('AC-21: a merged epoch owes none: neither a claim nor the backstop merges or files anything', async () => {
+    mockOweMissionRefresh.mockResolvedValue({ owed: 'none', reason: 'epoch_merged' });
+    expect(await refreshMissionBranchesBeforeStart([{ missionId: 'm-1', context: { baseBranch: BRANCH } }]))
+      .toEqual({ 'm-1': { kind: 'skipped', reason: 'mission_pr_merged' } });
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm-1', branchRefreshedAt: null }]);
+    expect(await sweepMissionBranchRefresh()).toMatchObject({ scanned: 1, skipped: 1, merged: 0, conflicts: 0 });
+    expect(mockOweMissionRefresh.mock.calls.map((c) => c[1].trigger)).toEqual(['start', 'backstop']);
+    expect(mockDrainEpochEffects).not.toHaveBeenCalled();
+    expect(calls.merges).toBe(0);
+    expect(insertedTasks).toHaveLength(0);
+  });
+
+  it('the writable epoch owes the refresh; the asking request drains that one row and acts on it', async () => {
+    mockOweMissionRefresh.mockResolvedValue(owedRow('start'));
+    const out = await refreshMissionBranchesBeforeStart([{ missionId: 'm-1', context: { baseBranch: BRANCH } }]);
+    expect(out['m-1']).toMatchObject({ kind: 'conflict', dispatched: true });
+    expect(mockDrainEpochEffects.mock.calls[0]![0].effectIds).toEqual(['fx-1']);
+    expect(calls.merges).toBe(1);
+    expect(insertedTasks).toHaveLength(1);
+  });
+
+  it('a row owed before its epoch merged is skipped when claimed: no merge, no refresh task', async () => {
+    mockOweMissionRefresh.mockResolvedValue(owedRow('backstop'));
+    epochOutbox.epochNow = { state: 'merged', branch: BRANCH };
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm-1', branchRefreshedAt: null }]);
+    expect(await sweepMissionBranchRefresh()).toMatchObject({ scanned: 1, skipped: 1, merged: 0 });
+    expect(calls.merges).toBe(0);
+    expect(insertedTasks).toHaveLength(0);
+  });
+
+  it('a row already claimed elsewhere is not run twice: the ask reads in flight', async () => {
+    mockOweMissionRefresh.mockResolvedValue({ ...owedRow('start'), fresh: false });
+    mockDrainEpochEffects.mockImplementationOnce(async () => ({ claimed: 0, done: 0, skipped: 0, failed: 0, lost: 0, dead: 0, ran: [] }));
+    expect(await refreshMissionBranchesBeforeStart([{ missionId: 'm-1', context: { baseBranch: BRANCH } }]))
+      .toEqual({ 'm-1': { kind: 'skipped', reason: 'in_flight' } });
+    expect(calls.merges).toBe(0);
+  });
+
+  it('what a drained row records: an outcome, a wait on another lease, or a failed attempt that backs off', () => {
+    expect(refreshEffectAnswer({ kind: 'merged', headSha: 's' }).outcome).toBe('merged');
+    expect(refreshEffectAnswer({ kind: 'conflict', conflictTaskId: 't', dispatched: true }).outcome).toBe('conflict:dispatched');
+    expect(refreshEffectAnswer({ kind: 'skipped', reason: 'already_current' })).toMatchObject({ outcome: 'skipped:already_current' });
+    expect(refreshEffectAnswer({ kind: 'skipped', reason: 'in_flight' }).park).toEqual({ delayMs: REFRESH_IN_FLIGHT_PARK_MS });
+    expect(() => refreshEffectAnswer({ kind: 'error', detail: 'could not read dev' })).toThrow('could not read dev');
   });
 });
 

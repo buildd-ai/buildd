@@ -142,6 +142,9 @@ mock.module('@/lib/subject-sweep', () => ({
 const mockGithubApi = mock(() => Promise.resolve({ state: 'open', merged: false, merged_at: null }));
 
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
+// Whether a repo's covering installation is the workspace's team's (tests/db pins the real rule).
+let installationIsTeams = true;
+mock.module('@/lib/github-installation-access', () => ({ installationBelongsToTeam: async () => installationIsTeams }));
 
 // Sibling-row merge stamp; its predicate is covered in pr-merge-stamp.test.ts.
 // By default the stamp wrote one row (the sweep counts only real writes, S4a); a test that needs
@@ -167,9 +170,15 @@ mock.module('@buildd/core/pr-facts', () => ({
 }));
 
 // Kernel import on merge/close is best-effort; no real kernel code runs here.
-const mockObservePrState = mock(async (_input: any) => false);
+const mockObservePrState = mock(async (_input: any, _call?: any) => false);
 const mockRecordPrStateObserved = mock(async (_input: any) => true);
-mock.module('@/lib/workflow/seam', () => ({ observePrState: mockObservePrState, recordPrStateObserved: mockRecordPrStateObserved }));
+// T17 to T19 go through the kernel client (AC-9); the seam keeps only the render's fact record.
+mock.module('@/lib/workflow/seam', () => ({
+  observePrState: mock(async () => { throw new Error('called the seam\'s observePrState, not the kernel client\'s'); }),
+  recordPrStateObserved: mockRecordPrStateObserved,
+}));
+const realKernelClient = await import('@/lib/workflow/kernel-client');
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, observePrState: mockObservePrState }));
 
 // G6 (failure-incident-recovery): a healed merge releases the PR's paths,
 // like the webhook's merge work does.
@@ -472,7 +481,7 @@ describe('reconcileStalePrWorkers', () => {
     // A lost webhook: the kernel-owned delivery imports the same fact.
     expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'ws1', repoFullName: 'owner/repo', prNumber: 42, installationId: 123, source: 'sweep:pr-reconcile',
-    }));
+    }), { principal: { kind: 'system', id: 'system:sweep:pr-reconcile' } });
   });
 
   it('G6: healing a missed merge releases the task\'s paths', async () => {
@@ -552,7 +561,7 @@ describe('reconcileStalePrWorkers', () => {
     expect(written.prLastCheckedAt).toBeInstanceOf(Date);
     expect(written.prLastVerifiedAt).toBeInstanceOf(Date);
     expect(written.prLifecycleStatus).toBeUndefined();
-    expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 99, source: 'sweep:pr-reconcile' }));
+    expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 99, source: 'sweep:pr-reconcile' }), expect.anything());
   });
 
   it('leaves an open PR open, recording only that it was checked', async () => {
@@ -606,7 +615,7 @@ describe('reconcileStalePrWorkers', () => {
     expect(result.conflictsDetected).toBe(1);
     expect(result.skipped).toBe(1);
     // The funnel sets prLifecycleStatus=conflict and a first-seen conflictDetectedAt.
-    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'conflict' }, opts: undefined }]);
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'conflict' }, opts: { scope: expect.objectContaining({ defers: expect.any(Function) }) } }]);
     const written = setMock.mock.calls[0][0] as Record<string, unknown>;
     expect(written.prLifecycleStatus).toBeUndefined();
     expect(written.conflictDetectedAt).toBeUndefined();
@@ -1479,6 +1488,7 @@ describe('reconcileStalePrWorkers repo resolution', () => {
       },
     ]);
     mockWorkspacesFindFirst.mockResolvedValue({
+      teamId: 'team-1',
       repo: 'https://github.com/owner/repo',
       githubRepo: { installation: { installationId: 123 } },
     });
@@ -1488,6 +1498,25 @@ describe('reconcileStalePrWorkers repo resolution', () => {
 
     // The PR's own repo, with the installation that actually covers it.
     expect(mockGithubApi).toHaveBeenCalledWith(456, '/repos/owner/sibling-ios/pulls/25');
+  });
+
+  it('does not read a PR through an installation that is not the workspace\'s team\'s', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 25, workspaceId: 'ws1', prUrl: 'https://github.com/other/app/pull/25', prCheckFailureCount: 0 },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue({
+      teamId: 'team-1',
+      repo: 'https://github.com/owner/repo',
+      githubRepo: { installation: { installationId: 123 } },
+    });
+    mockGithubReposFindFirst.mockResolvedValue({ installation: { installationId: 456 } });
+    installationIsTeams = false;
+    try {
+      await reconcileStalePrWorkers();
+    } finally {
+      installationIsTeams = true;
+    }
+    expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
   it('reconciles a worker whose workspace has no repo, using its prUrl', async () => {
@@ -1502,7 +1531,7 @@ describe('reconcileStalePrWorkers repo resolution', () => {
       },
     ]);
     // A coordination workspace: no repo, no installation pointer of its own.
-    mockWorkspacesFindFirst.mockResolvedValue({ repo: '', githubInstallation: null });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', repo: '', githubInstallation: null });
     mockGithubReposFindFirst.mockResolvedValue({ installation: { installationId: 789 } });
     mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-06-05T22:43:47Z' });
 

@@ -161,7 +161,7 @@ describe('F1: a paused mission whose open tasks stalled under a failing criterio
     expect(detail?.kind).toBe('blockers');
     if (detail?.kind !== 'blockers') throw new Error('unreachable');
     expect(detail.items.map(b => b.taskId)).toEqual(['b', 'c']);
-    expect(detail.items[0].status).toBe('queued');
+    expect(detail.items[0].status).toBe('ready');
   });
 
   it('a held mission in the same shape stays PAUSED / HELD (arming is a start)', () => {

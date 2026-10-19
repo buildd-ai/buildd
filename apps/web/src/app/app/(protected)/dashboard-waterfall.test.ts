@@ -21,14 +21,10 @@ import { describe, it, expect } from 'bun:test';
  */
 const CEILINGS: Record<string, number> = {
   // Shared shell for every /app route. force-dynamic, so it re-runs on every
-  // navigation: user -> { teams, workspace ids, active-team scope }. The scope
-  // resolver's own depth (two rounds, timezone included) is pinned in
-  // lib/team-access.test.ts; the guard below keeps the layout from chaining a
-  // third lookup onto it. The third wait is chat availability (nav): it needs
-  // the resolved team, and for a team without the `chat` capability — the
-  // default — it is one column read (lib/chat-availability.ts), run alongside
-  // the role lookup.
-  'layout.tsx': 3,
+  // navigation and live refresh: user -> the shell's one cached read
+  // (lib/app-chrome.ts: teams + workspaces, two statements in one round).
+  // Chat availability is read from its cache, never awaited (spec 3ef37387 R-17).
+  'layout.tsx': 2,
   'missions/page.tsx': 11,
   'missions/[id]/page.tsx': 15,
   // 21: the plan-chain eyebrow (runner online count) landed alongside the
@@ -93,7 +89,7 @@ describe('task detail keeps GitHub off the critical path', () => {
   it('streams the PR panel behind a boundary whose fallback is the stored card', () => {
     const source = page();
     expect(source).toContain('<Suspense fallback={<StoredPrCard {...storedPrFacts} />}>');
-    expect(source).toContain('<PrDetailsCard workspaceId={task.workspaceId} {...storedPrFacts} />');
+    expect(source).toContain('<PrDetailsCard workspaceId={task.workspaceId} headSha={prWorker?.lastCommitSha ?? null} {...storedPrFacts} />');
   });
 });
 
@@ -115,20 +111,22 @@ describe('every dashboard surface has loading UI', () => {
   }
 });
 
-describe('protected layout degrades per-surface, not all-or-nothing', () => {
+describe('protected layout: shared chrome is one cached read (spec 3ef37387 R-17)', () => {
   const layout = () => sources.get('layout.tsx')!;
 
-  it('resolves teams, workspace scope and cookies as one group', () => {
-    expect(layout()).toContain('await Promise.all([');
+  it('reads teams, workspaces and the active team through loadAppChrome, and still renders when it fails', () => {
+    const source = layout();
+    expect(source).toContain('loadAppChrome(user.id,');
+    // A failure renders the shell with no teams, not an error page.
+    expect(source).toMatch(/loadAppChrome\(user\.id, [^\n]*\n\s*\.catch\(\(\) => null\)/);
+    for (const old of ['getUserTeamsWithDetails(', 'getUserWorkspaceIds(', 'resolveActiveTeamScope(']) {
+      expect(source).not.toContain(old);
+    }
   });
 
-  it('gives each loader its own catch, so one failure does not blank the shell', () => {
-    // Before these ran concurrently each had its own try/catch: a teams failure
-    // still rendered the page, a workspace-scope failure only cost
-    // notifications. A bare Promise.all would reject the whole group on the
-    // first error and lose that, so the isolation is per-entry .catch now.
+  it('never waits on chat availability: it peeks the cached answer', () => {
     const source = layout();
-    expect(source).toContain('getUserTeamsWithDetails(user.id).catch(');
-    expect(source).toContain('getUserWorkspaceIds(user.id).catch(');
+    expect(source).toContain('peekChatAvailability(user.id, currentTeamId)');
+    expect(source).not.toContain('getChatAvailability(');
   });
 });

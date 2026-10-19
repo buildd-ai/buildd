@@ -8,10 +8,11 @@ import type { Outbox } from './outbox';
 import type { PromptBundlesPayload } from './session-prompt-bundles';
 import type { ClaimHandoffSnapshot } from './claim-handoff';
 import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics, DerivedFileRule, MissionStage, RecentMission, RunnerQueueResponse } from '@buildd/shared';
-import { CLOUD_EXECUTOR, stripClaimCredentials } from '@buildd/shared';
+import { CLOUD_EXECUTOR, stripClaimCredentials, type RunnerLoginUse } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
 import { ServerRefusalError, isServerRefusal } from './server-refusal';
+import { ReadBackoff, heldRefusalBody } from './read-backoff';
 import { TRACKED_BRANCH, type RunnerUpdateSnapshot } from './updater';
 import type { CodexAuthSource, ModelAuthReport } from './host-seat';
 import { claimHealth, describeClaimErrorBody } from './claim-budget-signals';
@@ -68,6 +69,8 @@ export class BuilddClient {
   private config: LocalUIConfig;
   private outbox: Outbox | null = null;
   private transport: BuilddTransport;
+  /** Endpoints the server's read rate limit told us to leave alone until Retry-After (read-backoff.ts). */
+  private readBackoff = new ReadBackoff();
 
   constructor(config: LocalUIConfig) {
     this.config = config;
@@ -86,6 +89,11 @@ export class BuilddClient {
 
   private async fetch(endpoint: string, options: RequestInit = {}, allowedErrors: number[] = []) {
     const method = options.method || 'GET';
+    const isRead = method === 'GET' || method === 'HEAD';
+    if (isRead) {
+      const held = this.readBackoff.remainingSec(endpoint);
+      if (held > 0) throw ServerRefusalError.from({ status: 429, raw: heldRefusalBody(held), method, endpoint });
+    }
 
     try {
       const res = await this.transport.request(endpoint, {
@@ -99,6 +107,8 @@ export class BuilddClient {
 
       // Got an HTTP response → the server is reachable (even a 4xx counts).
       lastServerContactAt = Date.now();
+
+      if (res.status === 429 && isRead) this.readBackoff.note(endpoint, res.headers?.get?.('retry-after'));
 
       if (!res.ok && !allowedErrors.includes(res.status)) {
         // Queue server errors (5xx) via outbox before throwing
@@ -146,8 +156,56 @@ export class BuilddClient {
     }
   }
 
+  /** Last 200 body and ETag per list endpoint, for `getIfChanged`. Bounded; oldest dropped first. */
+  private listCache = new Map<string, { etag: string; body: any }>();
+  private static readonly LIST_CACHE_MAX = 64;
+
+  /**
+   * GET a list or polling endpoint conditionally (spec 3ef37387 R-20): send
+   * the ETag of the last answer as If-None-Match, and on 304 return that
+   * answer again without the server reading the list. Endpoints that send no
+   * ETag (or a server without Redis) behave exactly like a plain GET.
+   *
+   * The one helper for every conditional read: listTasks, listMissionStages,
+   * listRecentMissions and listQueue use it, and `buildd top`'s fallback reads
+   * reach the server through those.
+   */
+  async getIfChanged(endpoint: string): Promise<any> {
+    const held = this.readBackoff.remainingSec(endpoint);
+    if (held > 0) throw ServerRefusalError.from({ status: 429, raw: heldRefusalBody(held), method: 'GET', endpoint });
+    const cached = this.listCache.get(endpoint);
+    const res = await this.transport.request(endpoint, {
+      method: 'GET',
+      headers: cached ? { 'If-None-Match': cached.etag } : undefined,
+    });
+    lastServerContactAt = Date.now();
+    if (res.status === 304 && cached) {
+      // Refresh recency so a hot endpoint is not the one dropped.
+      this.listCache.delete(endpoint);
+      this.listCache.set(endpoint, cached);
+      return structuredClone(cached.body);
+    }
+    if (res.status === 429) this.readBackoff.note(endpoint, res.headers?.get?.('retry-after'));
+    if (!res.ok) {
+      const raw = await res.text();
+      throw ServerRefusalError.from({ status: res.status, raw, method: 'GET', endpoint });
+    }
+    const body = await res.json();
+    const etag = res.headers?.get?.('etag');
+    this.listCache.delete(endpoint);
+    if (etag) {
+      this.listCache.set(endpoint, { etag, body: structuredClone(body) });
+      while (this.listCache.size > BuilddClient.LIST_CACHE_MAX) {
+        const oldest = this.listCache.keys().next().value;
+        if (oldest === undefined) break;
+        this.listCache.delete(oldest);
+      }
+    }
+    return body;
+  }
+
   async listTasks(): Promise<BuilddTask[]> {
-    const data = await this.fetch('/api/tasks');
+    const data = await this.getIfChanged('/api/tasks');
     return data.tasks || [];
   }
 
@@ -158,13 +216,13 @@ export class BuilddClient {
    */
   async listMissionStages(missionIds: string[]): Promise<Record<string, MissionStage>> {
     if (missionIds.length === 0) return {};
-    const data = await this.fetch(`/api/missions/stages?ids=${missionIds.map(encodeURIComponent).join(',')}`);
+    const data = await this.getIfChanged(`/api/missions/stages?ids=${missionIds.map(encodeURIComponent).join(',')}`);
     return data?.stages && typeof data.stages === 'object' ? data.stages : {};
   }
 
   /** Open missions and those delivered in the last 7 days across the key's workspaces (R-24), from GET /api/missions/recent. */
   async listRecentMissions(): Promise<RecentMission[]> {
-    const data = await this.fetch('/api/missions/recent');
+    const data = await this.getIfChanged('/api/missions/recent');
     return Array.isArray(data?.missions) ? data.missions : [];
   }
 
@@ -173,13 +231,14 @@ export class BuilddClient {
     const p = new URLSearchParams({ executor: process.env.BUILDD_EXECUTOR || 'host' });
     if (q.runner) p.set('runner', q.runner);
     if (q.skills?.length) p.set('skills', q.skills.join(','));
-    const data = await this.fetch(`/api/workers/queue?${p}`);
+    const data = await this.getIfChanged(`/api/workers/queue?${p}`);
     return { teams: Array.isArray(data?.teams) ? data.teams : [], truncated: !!data?.truncated };
   }
 
   async getTask(id: string): Promise<BuilddTask | null> {
     try {
-      return await this.fetch(`/api/tasks/${id}`);
+      // The whole row: the claim path and park restore read context and the workspace config.
+      return await this.fetch(`/api/tasks/${id}?include=full`);
     } catch {
       return null;
     }
@@ -212,7 +271,7 @@ export class BuilddClient {
     return data;
   }
 
-  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
+  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment, opts: { byPerson?: boolean; claudeLoginId?: string | null; loginUse?: RunnerLoginUse } = {}): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
     const body: Record<string, unknown> = {
       maxTasks, workspaceId, taskId, runner: runner || 'runner',
       // AGENT_ENDPOINT_RUNNER_FEATURE: this build applies modelEndpoint
@@ -249,6 +308,24 @@ export class BuilddClient {
     // workspaces when no specific workspaceId is targeted (the autonomous poll).
     if (claimAcrossAccessible && !workspaceId) {
       body.claimAcrossAccessible = true;
+    }
+    // A person chose this task for this runner (`c` in top, or a task aimed
+    // at it): the server lets it past the account-wide worker count, since
+    // this runner only claims into a free slot of its own.
+    if (opts.byPerson) {
+      body.requestedByPerson = true;
+    }
+    // Which Claude login this machine's agents run on (host-seat.ts
+    // claudeLoginIdentity, a one-way hash): a limit another runner on the same
+    // login hit holds this runner's claims too.
+    if (opts.claudeLoginId) {
+      body.claudeLoginId = opts.claudeLoginId;
+    }
+    // How this runner's own logins share its slots, with its live agents per
+    // backend (spec 34a48877 R-15): the server picks the backend for work
+    // nothing ties to one from it. Absent = an older runner's behaviour.
+    if (opts.loginUse) {
+      body.loginUse = opts.loginUse;
     }
     // BUILDD_EXECUTOR=cloud is set by apps/cloud-runner for the container. It
     // is sent verbatim so the server can refuse a value it does not know
@@ -352,6 +429,10 @@ export class BuilddClient {
      * when it is absent (docs/specs/real-and-virtual-cost.md).
      */
     costBasis?: 'real' | 'virtual' | 'unknown';
+    /** Which Claude login the run used; a machine login's wall holds only this runner. */
+    claudeLoginUsed?: 'machine_login' | 'machine_token' | 'stored';
+    /** That login's identity (host-seat.ts claudeLoginIdentity), a one-way hash. */
+    claudeLoginId?: string;
     /**
      * The model the session actually ran on. Feeds task_outcomes.actual_model.
      * Optional: an older runner simply omits it and the server falls back to
@@ -706,6 +787,16 @@ export class BuilddClient {
     return data.workspaces || [];
   }
 
+  /** `buildd top`'s talk session: the server's explain answer for a mission or task; null when it cannot be read. */
+  async getExplain(kind: 'mission' | 'task', id: string): Promise<any | null> {
+    try { return await this.fetch(`/api/explain?${kind}Id=${encodeURIComponent(id)}`); } catch { return null; }
+  }
+
+  /** A mission's own row (description, goal criteria and their last grading); null when this key cannot read it. */
+  async getMission(id: string): Promise<any | null> {
+    try { return await this.fetch(`/api/missions/${encodeURIComponent(id)}?include=details`); } catch { return null; }
+  }
+
   async getWorkspaceConfig(workspaceId: string): Promise<{
     gitConfig?: {
       defaultBranch: string;
@@ -995,11 +1086,14 @@ export class BuilddClient {
   async getBatchObservations(workspaceId: string, ids: string[]): Promise<Array<{ id: string; title: string; type: string; content: string; files?: string[]; concepts?: string[] }>> {
     if (ids.length === 0) return [];
     try {
-      // The memory proxy returns full content, so just re-fetch by query
-      // Since we don't have a batch endpoint on the proxy, fetch all and filter
-      const data = await this.fetch(`/api/workspaces/${workspaceId}/memory?limit=50`);
-      const memories = data.memories || [];
+      // Hydrate the search hits directly, including hits older than the
+      // workspace's most recent page. This also avoids fetching the same
+      // unfiltered page already used by getCompactObservations at task start.
       const idSet = new Set(ids);
+      const params = new URLSearchParams();
+      for (const id of idSet) params.append('ids', id);
+      const data = await this.fetch(`/api/workspaces/${workspaceId}/memory?${params}`);
+      const memories = data.memories || [];
       return memories
         .filter((m: any) => idSet.has(m.id))
         .map((m: any) => ({

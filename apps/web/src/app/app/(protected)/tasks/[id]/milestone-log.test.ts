@@ -138,6 +138,18 @@ describe('buildMilestoneLog — tool-call preambles', () => {
     expect(log[0].toolCount).toBe(1);
   });
 
+  test('"Ran commands" names the command when the run recorded it, and stays generic when it did not', () => {
+    const phase = { type: 'phase' as const, label: 'Now let me run the tests', toolCount: 1, ops: ['Bash'], ts: T0 };
+    const named = buildMilestoneLog([phase, { type: 'action', tool: 'Bash', cmd: 'bun run test', label: 'Ran: bun run test', ts: T0 + 1_000 }], { nowMs: T0 + 5_000, live: false });
+    expect(named[0].actionLabel).toBe('Ran bun run test');
+    const two = buildMilestoneLog([phase, { type: 'action', tool: 'Bash', cmd: 'bun run test', ts: T0 + 1_000 }, { type: 'action', tool: 'Bash', cmd: 'git push', ts: T0 + 2_000 }], { nowMs: T0 + 5_000, live: false });
+    expect(two[0].actionLabel).toBe('Ran bun run test and git push');
+    const none = buildMilestoneLog([phase], { nowMs: T0 + 5_000, live: false });
+    expect(none[0].actionLabel).toBe('Ran commands');
+    const mixed = buildMilestoneLog([{ ...phase, ops: ['Read', 'Bash'] }, { type: 'action', tool: 'Bash', cmd: 'bun run test', ts: T0 + 1_000 }], { nowMs: T0 + 5_000, live: false });
+    expect(mixed[0].actionLabel).toBe('Read files and ran bun run test');
+  });
+
   test('adjacent phases that did the same thing merge into one entry', () => {
     const log = buildMilestoneLog([
       { type: 'phase', label: 'Now let me save a knowledge entry', toolCount: 1, ops: ['learn'], ts: T0 },

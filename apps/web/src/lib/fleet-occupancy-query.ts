@@ -5,10 +5,11 @@
  */
 
 import { db } from '@buildd/core/db';
-import { workers, workspaces } from '@buildd/core/db/schema';
+import { users, accounts, tasks, teamMembers, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, or, type SQL } from 'drizzle-orm';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
-import { buildOccupancySeries, occupancyBuckets, type OccupancySeries, type OccupancyWindow, type OccupancyWorkerRow } from './fleet-occupancy';
+import { classifyRunnerOwnership } from './runner-ownership';
+import { buildOccupancySeries, occupancyBuckets, scopeMembers, type OccupancySeries, type OccupancyWindow, type OccupancyWorkerRow } from './fleet-occupancy';
 
 /** The team's workspace ids: the scope every occupancy read is limited to. */
 export async function teamWorkspaceIds(teamId: string): Promise<string[]> {
@@ -44,17 +45,28 @@ export async function fetchOccupancyRows(workspaceIds: string[], since: Date, no
   const rows = await db
     .select({
       runner: workers.runner,
+      ownerId: workers.claimedByUserId,
+      taskOwnerId: tasks.createdByUserId,
+      managedRunner: accounts.managedRunner,
+      hostRunner: accounts.hostRunner,
+      accountOwnerId: accounts.createdByUserId,
+      hasAccount: accounts.id,
       status: workers.status,
       startedAt: workers.startedAt,
       completedAt: workers.completedAt,
       updatedAt: workers.updatedAt,
     })
     .from(workers)
+    .leftJoin(tasks, eq(tasks.id, workers.taskId))
+    .leftJoin(accounts, eq(accounts.id, workers.accountId))
     .where(occupancyWhere(workspaceIds, since, now))
     .orderBy(desc(workers.startedAt))
     .limit(OCCUPANCY_ROW_LIMIT);
-  return (rows as Array<{ runner: string | null; status: string; startedAt: Date | null; completedAt: Date | null; updatedAt: Date | null }>).map(r => ({
+  return (rows as Array<{ runner: string | null; ownerId: string | null; taskOwnerId: string | null; managedRunner: boolean | null; hostRunner: boolean | null; accountOwnerId: string | null; hasAccount: string | null; status: string; startedAt: Date | null; completedAt: Date | null; updatedAt: Date | null }>).map(r => ({
     runner: r.runner,
+    ownerId: r.ownerId,
+    taskOwnerId: r.taskOwnerId,
+    runnerClass: classifyRunnerOwnership(r.hasAccount ? { managedRunner: r.managedRunner, hostRunner: r.hostRunner, createdByUserId: r.accountOwnerId } : null),
     status: r.status,
     startedAt: ms(r.startedAt),
     completedAt: ms(r.completedAt),
@@ -62,8 +74,19 @@ export async function fetchOccupancyRows(workspaceIds: string[], since: Date, no
   }));
 }
 
-export async function loadOccupancySeries(workspaceIds: string[], window: OccupancyWindow, now = Date.now(), tzOffsetMs = 0): Promise<OccupancySeries & { truncated: boolean }> {
+export async function loadOccupancySeries(workspaceIds: string[], window: OccupancyWindow, now = Date.now(), tzOffsetMs = 0, viewerId: string | null = null, teamId: string | null = null): Promise<OccupancySeries & { truncated: boolean }> {
   const { from } = occupancyBuckets(window, now, tzOffsetMs);
   const rows = await fetchOccupancyRows(workspaceIds, new Date(from), new Date(now));
-  return { ...buildOccupancySeries({ window, now, workers: rows, tzOffsetMs }), truncated: rows.length >= OCCUPANCY_ROW_LIMIT };
+  let series = buildOccupancySeries({ window, now, workers: rows, tzOffsetMs, viewerId });
+  if (teamId) {
+    const found = (await db.select({ userId: teamMembers.userId }).from(teamMembers).where(eq(teamMembers.teamId, teamId))) as { userId: string }[];
+    series = scopeMembers(series, new Set(found.map(m => m.userId)));
+  }
+  const ids = (series.members ?? []).map(m => m.id);
+  if (ids.length > 0) {
+    const found = (await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, ids))) as { id: string; name: string | null }[];
+    const label = new Map(found.map(u => [u.id, u.name]));
+    series.members = series.members!.map(m => ({ ...m, name: label.get(m.id) ?? null }));
+  }
+  return { ...series, truncated: rows.length >= OCCUPANCY_ROW_LIMIT };
 }

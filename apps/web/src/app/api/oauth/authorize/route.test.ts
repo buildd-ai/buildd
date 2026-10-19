@@ -174,14 +174,14 @@ describe('OAuth authorize redirect URI scheme validation', () => {
     ).toBe(false);
   });
 
-  it('still accepts https, loopback and private-use schemes', () => {
+  it('accepts https and loopback but rejects private-use schemes', () => {
     expect(isRegisteredRedirectUri(['https://example.com/cb'], 'https://example.com/cb')).toBe(true);
     expect(
       isRegisteredRedirectUri(['http://localhost:41776/cb'], 'http://127.0.0.1:41776/cb'),
     ).toBe(true);
     expect(
       isRegisteredRedirectUri(['com.example.app://cb'], 'com.example.app://cb'),
-    ).toBe(true);
+    ).toBe(false);
   });
 });
 
@@ -246,7 +246,7 @@ describe('GET /api/oauth/authorize — resource routing', () => {
   it('ChatGPT at the canonical address gets the team-grouped picker, without internal workspaces', async () => {
     const res = await GET(authorizeRequest('https://chatgpt.com/connector_platform_oauth_redirect', { resource: 'https://buildd.dev/api/mcp' }));
     const html = await res.text();
-    expect(html).toContain('<h1>Authorize ChatGPT</h1>');
+    expect(html).toContain('<h1>Authorize chatgpt.com</h1>');
     expect(html).toContain('Choose the teams and workspaces ChatGPT can access.');
     expect(html).toContain('data-team="team-1"');
     expect(html).toContain('data-team="team-2"');
@@ -413,18 +413,10 @@ describe('POST /api/oauth/authorize — authorized interstitial', () => {
     registeredUris = [hostileUri];
 
     const consent = await GET(authorizeRequest(hostileUri));
-    expect(consent.status).toBe(200);
+    expect(consent.status).toBe(400);
     expect(await consent.text()).not.toContain('cb</script>');
-
-    const res = await approve(hostileUri);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-
-    expect(html).not.toContain('cb</script>');
-    expect(html).toContain('cb&lt;/script&gt;');
-    for (const body of inlineScripts(html)) {
-      expect(body).not.toContain('cb');
-    }
+    expect((await approve(hostileUri)).status).toBe(400);
+    expect(authCodeInserts).toBe(0);
   });
 
   it('still renders and navigates for a normal https redirect', async () => {

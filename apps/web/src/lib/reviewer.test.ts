@@ -214,6 +214,9 @@ mock.module('@/lib/github', () => ({
 let kernelOwner: string | null = null;
 const mockKernelDeliveryForPr = mock(async (..._a: unknown[]) => kernelOwner);
 mock.module('./workflow/authority', () => ({ kernelDeliveryForPr: mockKernelDeliveryForPr }));
+// The open-PR status event door (AC-78), through the composition root: recorded, never run.
+const mockRepublishPrHeads = mock(async (..._args: unknown[]) => {});
+mock.module('@/modules', () => ({ republishPrHeads: mockRepublishPrHeads }));
 
 import {
   buildReviewerContext,
@@ -289,6 +292,25 @@ describe('createReviewerTask — workflow kernel ownership', () => {
       expect(mockKernelDeliveryForPr).not.toHaveBeenCalled();
       expect(insertedTask).toMatchObject({ deliveryId: 'delivery-77', deliveryRole: 'review' });
       expect((insertedTask?.context as any).workflowRoundId).toBe('round-2');
+    } finally {
+      kernelOwner = null;
+    }
+  });
+
+  it('a stored review request republishes the head\'s approval status, candidates only (R-41, AC-78)', async () => {
+    insertedTask = undefined;
+    mockRepublishPrHeads.mockClear();
+    await createReviewerTask(base);
+    expect(insertedTask).toBeDefined();
+    expect(mockRepublishPrHeads).toHaveBeenCalledWith(1, 'buildd-ai/buildd', [{ number: 77, sha: 'k1' }], { candidatesOnly: true });
+  });
+
+  it('a request refused because the kernel owns the PR republishes nothing', async () => {
+    kernelOwner = 'delivery-77';
+    mockRepublishPrHeads.mockClear();
+    try {
+      await createReviewerTask(base);
+      expect(mockRepublishPrHeads).not.toHaveBeenCalled();
     } finally {
       kernelOwner = null;
     }
@@ -1366,16 +1388,27 @@ describe('enforceServerSideEscalation', () => {
   });
 
   it('escalates approve when the file list could not be read', () => {
-    // A real PR always has files, so an empty list means the GitHub fetch
-    // failed. Failing open here would let a transient 502 grant a merge.
+    // Failing open here would let a transient 502 grant a merge.
+    const result = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: null,
+      policy: OPEN_POLICY,
+    });
+
+    expect(result.verdict).toBe('escalate');
+    expect(result.overrideReason).toContain('could not');
+  });
+
+  it('#4913: a file list that was read and is empty is a PR that changes nothing, not an unreadable one', () => {
+    // A redundant refresh (its base already has everything) has no files. No gate can apply to
+    // no files; escalating it as "could not read the file list" sent a person a false alarm.
     const result = enforceServerSideEscalation({
       verdict: 'approve',
       prFiles: [],
       policy: OPEN_POLICY,
     });
 
-    expect(result.verdict).toBe('escalate');
-    expect(result.overrideReason).toContain('could not');
+    expect(result).toEqual({ verdict: 'approve', overrideReason: null });
   });
 
   it('leaves request-changes alone even on a migration', () => {

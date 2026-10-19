@@ -1,15 +1,17 @@
+import { repairPathManifest, readRepairPrFiles } from '@/lib/repair-manifest';
 import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-completion';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
+import { withLoaderLabel } from '@buildd/core/db/query-label';
 import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/model-policy';
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules, reviewFeedback } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
 import { integrationRefreshOf, isAncestor, encodeRef } from '@/lib/integration-refresh';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
-import { triggerEvent, channels, events } from '@/lib/pusher';
+import { triggerEvent, channels, events, hasVisibleWorkerChange } from '@/lib/pusher';
 import { keepsParkClock, recordInteractiveSessionSeen } from '@/lib/interactive-worker-liveness';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
@@ -27,6 +29,7 @@ import { disposeParkedWaitingFor } from '@/lib/park-disposition';
 import { gateEnabledFromGitConfig, hardRailContextFromGitConfig } from '@/lib/question-gate-check';
 import { sendTaskCallback } from '@/lib/task-callback';
 import { emit } from '@/lib/core-emit';
+import { noteWorkChanged } from '@/lib/work-changed';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 import { recordRunnerOutcome } from '@buildd/core/runner-health';
@@ -41,7 +44,7 @@ import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, isCredentialExpiredError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
-import { resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
+import { parseClaudeLoginId, parseRunLoginUsed, resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
 import { backendLabel, claimedBackendOf, isBackendPinned } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContractFailure } from '@/lib/auto-merge';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
@@ -60,7 +63,7 @@ import {
   type DispatchProposal,
   type SubjectEvent,
 } from '@/lib/supersession';
-import { parseReviewerOutput, applyConfidenceGate, REVIEWER_VERDICTS } from '@/lib/reviewer-output';
+import { parseReviewerOutput, applyConfidenceGate, applyEvidenceGate, reviewerEvidenceSha, REVIEWER_VERDICTS } from '@/lib/reviewer-output';
 import { attemptIdentityFrom } from '@/lib/attempt-identity';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import type { MigrationSafety } from '@/lib/migration-safety';
@@ -76,8 +79,11 @@ import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
-import { legacyRepairCompletionGate, type LegacyRepairGateDeps } from '@/lib/repair-completion';
-import { adoptReviewVerdict, fixedElsewhereOf, noopEvidenceOf, attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+import { legacyRepairCompletionGate, legacyReviewFixCompletionGate, type LegacyRepairGateDeps, type LegacyReviewFixGateDeps } from '@/lib/repair-completion';
+import { legacyDiffTouchesFindings, fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, notOwnerTaskSql, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+import { endedAtOf, isOwnerTask, reopenOwner, withdrawOwner } from '@/lib/workflow/owner-attempt';
+// T4 and T6 are applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
+import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, attemptRequeued as workflowAttemptRequeued, kernelPrincipalOf, recordReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
 import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
@@ -87,6 +93,7 @@ import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
 import { resolveDispatchedReview } from '@/lib/verdict-provenance';
 import { kernelDeliveryForPr } from '@/lib/workflow/authority';
 import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
+import { taskPrOf } from '@/lib/workflow/task-pr';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity, type AuthErrorSeverity } from '@buildd/core/auth-error-classifier';
@@ -97,11 +104,11 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import type { LoopVerdict } from '@/lib/completion-policy';
 import type { HeldOutcomeAnalytics, SlotFailure } from '@/lib/core-events';
-import { COMPLETION_POLICIES, MISSION_SHIPPING_PR_MERGED, RECOVERABLE_BLOCKER_REPAIR } from '@/modules';
+import { COMPLETION_POLICIES, MISSION_SHIPPING_PR_MERGED, RECOVERABLE_BLOCKER_REPAIR, republishPrHeads } from '@/modules';
 import type { TaskHandoff, PathCollisionNotice } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { reportWorkerModelIncident } from '@/lib/model-compatibility-incident';
-import { classifyReportedFailure, isConcurrencyConflictError, isModelIdRejectedError, isSilentStartShape, isUnrecognizedModelError, MODEL_REJECTION_CONTEXT_KEY, rejectedModelId, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
+import { classifyReportedFailure, isConcurrencyConflictError, isModelIdRejectedError, isSilentStartShape, isUnrecognizedModelError, isWorktreeSetupTimeoutError, MODEL_REJECTION_CONTEXT_KEY, rejectedModelId, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { hasUnfinishedDependent } from '@/lib/handoff-gate';
 import { releaseAndNotify } from '@/lib/path-claim-release';
@@ -133,6 +140,37 @@ import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { holdsPathClaim } from '@/lib/sibling-conflict-probe';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { settleWorkChanges } from '@/lib/settle-work-changes';
+import { clearTeamCache } from '@/lib/team-cache';
+import { readRound } from '@/lib/read-round';
+import { changedFields, livenessWriteDue, markWorkerHeartbeat, markParkedWorkerSeen, INTERACTIVE_SESSION_SEEN_WRITE_MS } from '@/lib/worker-patch-diff';
+
+/**
+ * Work that does not change the reply runs after it is sent (spec 3ef37387
+ * R-33): `after()` inside a request, inline outside one (tests, scripts), so
+ * nothing is lost where no response is being sent. Never throws.
+ */
+function deferredReplyWork() {
+  const pending: Array<{ label: string; fn: () => Promise<unknown> }> = [];
+  let scheduled = false;
+  return async (label: string, fn: () => Promise<unknown>): Promise<void> => {
+    const run = async () => {
+      for (const item of pending.splice(0)) {
+        try { await withLoaderLabel(`workers.patch.after.${item.label}`, item.fn); }
+        catch (err) { console.error(`[workers PATCH] ${item.label} failed:`, err); }
+      }
+    };
+    pending.push({ label, fn });
+    if (scheduled) return;
+    try {
+      after(run);
+      scheduled = true;
+    } catch {
+      // Direct invocation (scripts/unit tests) has no request lifetime.
+      await run();
+    }
+  };
+}
 
 /**
  * Worker statuses from which no further live update is legal. Every optimistic
@@ -620,6 +658,97 @@ async function recordPostSupersessionError(
 // `since`: when a pause began (a timestamp, not prose), for "Paused for 40m" (R-38).
 const SENSITIVE_PARK_FIELDS: ReadonlySet<string> = new Set(['disposition', 'dispositionBy', 'gateOutcome', 'rail', 'repairTaskId', 'since']);
 
+/** The task fields a requeue reads: its delivery, if it has one, decides who moves it. */
+interface RequeueTask { id: string; workspaceId: string; deliveryId: string | null; deliveryRole: string | null; context: unknown }
+
+/**
+ * AC-1 slice 6 (workflow-kernel-library.md §9): the owner attempt of a kernel delivery is put
+ * back in the queue by the kernel (AttemptRequeued), never by this route's own status write. The
+ * door submits it where the kernel is hosted; then the route projects it here too
+ * (`projectRequeue`), so a control plane that is down, refusing or too old still leaves the task
+ * pending. Both carry the same guard: only an open task, only while `workerId` is its current
+ * attempt, never over a kernel-merged completion. Answers whether the task is back in the queue.
+ */
+async function requeueOwnerAttempt(p: { task: RequeueTask; workerId: string; reason: string; principal: KernelPrincipal | null }): Promise<boolean> {
+  const { task } = p;
+  try {
+    const r = await workflowAttemptRequeued({ task, workerId: p.workerId, reason: p.reason, source: 'runner' }, { principal: p.principal });
+    if (r.requeued) return true;
+  } catch (err) {
+    console.error(`[Worker ${p.workerId}] AttemptRequeued(${p.reason}) for task ${task.id} did not reach the kernel; projecting it here:`, err);
+    void reportOps({ source: 'worker-completion:workflow-attempt-requeued', severity: 'error', message: 'workflow-attempt-requeued failed', detail: err instanceof Error ? err.message : String(err) });
+  }
+  return projectRequeue({ deliveryId: task.deliveryId!, taskId: task.id, workerId: p.workerId }).catch((err) => {
+    console.error(`[Worker ${p.workerId}] requeue projection failed for task ${task.id}:`, err);
+    return false;
+  });
+}
+
+/**
+ * The worker PATCH's requeues that are not a completion (a budget wall, a codex deferral, a sandbox
+ * mount gap, an auth failover): the worker's task goes back to `pending` with the fields `set`
+ * (context, backend, start floor). A task with no delivery (or not its owner) keeps this route's
+ * one write. A kernel owner's fields land under the requeue's own guard, then the kernel moves its
+ * status (`requeueOwnerAttempt`). Never a cancelled task, never one the kernel finished.
+ * Answers whether the task is back in the queue.
+ */
+async function requeueWorkerTask(p: {
+  taskId: string; workerId: string; reason: string; principal: KernelPrincipal | null;
+  set?: Partial<Pick<typeof tasks.$inferInsert, 'context' | 'backend' | 'startAt'>>;
+}): Promise<boolean> {
+  // Read here, not from the request's earlier reads: whether the task has a delivery decides the writer.
+  const row = await db.query.tasks.findFirst({
+    where: sqlWhere(eq(tasks.id, p.taskId)),
+    columns: { id: true, workspaceId: true, deliveryId: true, deliveryRole: true, context: true },
+  });
+  const task: RequeueTask = { id: p.taskId, workspaceId: row?.workspaceId ?? '', deliveryId: row?.deliveryId ?? null, deliveryRole: row?.deliveryRole ?? null, context: row?.context ?? null };
+  if (!task.deliveryId || task.deliveryRole !== 'owner') {
+    await db
+      .update(tasks)
+      .set({ ...(p.set ?? {}), status: 'pending', claimedBy: null, claimedAt: null, expiresAt: null, updatedAt: new Date() })
+      .where(and(eq(tasks.id, task.id), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()));
+    // As before this helper: the caller already skipped a cancelled task, so the requeue is assumed.
+    return true;
+  }
+  if (p.set && Object.keys(p.set).length > 0) {
+    const kept = await db
+      .update(tasks)
+      .set({ ...p.set, updatedAt: new Date() })
+      .where(and(eq(tasks.id, task.id), notKernelMergedTaskSql(), requeueingAttemptIsCurrentSql(p.workerId, 'tasks')))
+      .returning({ id: tasks.id });
+    // Not the task's current attempt any more (a late report after a re-claim): nothing to requeue.
+    if (kept.length === 0) return false;
+  }
+  return requeueOwnerAttempt({ task, workerId: p.workerId, reason: p.reason, principal: p.principal });
+}
+
+/**
+ * AC-1 slice 8: a refusal that ends a delivery owner's attempt for good (the silent-completion
+ * retry spent) is the attempt's failed end, and the kernel projects it (`t_attempt`). The end goes
+ * where the kernel is hosted; then the route projects it here too (`projectOwnerEnd`), so a control
+ * plane that is down or too old still leaves the task failed. Both carry the current-attempt guard.
+ * Answers whether the task is failed now.
+ */
+async function endOwnerAttemptFailed(p: {
+  task: RequeueTask; workerId: string; principal: KernelPrincipal | null;
+  worker: { lastCommitSha?: string | null; commitCount?: number | null };
+}): Promise<boolean> {
+  const { task } = p;
+  try {
+    await workflowAttemptEnded({
+      task, workerId: p.workerId, status: 'failed',
+      localHeadSha: p.worker.lastCommitSha ?? null, commitCount: p.worker.commitCount ?? 0, source: 'runner',
+    }, { principal: p.principal });
+  } catch (err) {
+    console.error(`[Worker ${p.workerId}] AttemptEnded(failed) for task ${task.id} did not reach the kernel; projecting it here:`, err);
+    void reportOps({ source: 'worker-completion:workflow-attempt-ended', severity: 'error', message: 'workflow-attempt-ended failed', detail: err instanceof Error ? err.message : String(err) });
+  }
+  await projectOwnerEnd({ deliveryId: task.deliveryId!, taskId: task.id, workerId: p.workerId, status: 'failed' })
+    .catch((err) => console.error(`[Worker ${p.workerId}] owner end projection failed for task ${task.id}:`, err));
+  const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, task.id)), columns: { status: true } });
+  return row?.status === 'failed';
+}
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -653,8 +782,8 @@ export async function GET(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  // The workspace row carries the webhook dispatch bearer token; neither a
-  // team member reading a worker nor a cloud container has any use for it.
+  // The workspace row carries the webhook dispatch bearer token; no reader of
+  // a worker has any use for it, the owning account's key included.
   const redacted = () => ({ ...worker, workspace: withoutDispatchToken(worker.workspace) });
 
   if (!account) {
@@ -673,15 +802,27 @@ export async function GET(
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  return NextResponse.json(account.taskScope ? redacted() : worker);
+  return NextResponse.json(redacted());
 }
 
 // PATCH /api/workers/[id] - Update worker status
 export async function PATCH(
   req: NextRequest,
+  context: { params: Promise<{ id: string }> },
+) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
+  return await withLoaderLabel('workers.patch', () => patchWorker(req, context));
+  } finally { await settleWorkChanges(); }
+}
+
+async function patchWorker(
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const afterReply = deferredReplyWork();
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -696,9 +837,37 @@ export async function PATCH(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  const worker = await db.query.workers.findFirst({
-    where: sqlWhere(eq(workers.id, id)),
-  });
+  // One round trip for the worker, its workspace and its task (spec 3ef37387
+  // R-33): the workspace and task are addressed through the worker row in SQL,
+  // so nothing waits on the worker read. The task fields are the ones a
+  // progress report reads (pending worker messages, note scope, park context,
+  // lease category); a terminal report re-reads what it needs after its writes.
+  // The same round reads the secrets redaction scrubs (below), scoped the way
+  // it always was: the worker's team, its workspace or team-wide, its account
+  // or account-agnostic.
+  const workerOf = (col: typeof workers.workspaceId | typeof workers.taskId | typeof workers.accountId) =>
+    sql`(SELECT ${col} FROM ${workers} WHERE ${workers.id} = ${id})`;
+  const workerTeam = sql`(SELECT ${workspaces.teamId} FROM ${workspaces} WHERE ${workspaces.id} = ${workerOf(workers.workspaceId)})`;
+  const opening = await withLoaderLabel('workers.patch.load', () => readRound({
+    worker: db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, id)) }),
+    workspace: db.query.workspaces.findFirst({
+      where: sqlWhere(eq(workspaces.id, workerOf(workers.workspaceId))),
+      columns: { dataClass: true, teamId: true, gitConfig: true },
+    }),
+    task: db.query.tasks.findFirst({
+      where: sqlWhere(eq(tasks.id, workerOf(workers.taskId))),
+      columns: { context: true, missionId: true, title: true, pathManifest: true, category: true },
+    }),
+    secrets: db.query.secrets.findMany({
+      where: sqlWhere(and(
+        eq(secretsTable.teamId, workerTeam),
+        or(isNull(secretsTable.workspaceId), eq(secretsTable.workspaceId, workerOf(workers.workspaceId))),
+        or(isNull(secretsTable.accountId), eq(secretsTable.accountId, workerOf(workers.accountId))),
+      )),
+      columns: { encryptedValue: true, label: true, purpose: true },
+    }),
+  }));
+  const worker = opening.worker;
 
   if (!worker) {
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
@@ -711,13 +880,10 @@ export async function PATCH(
   }
 
   // Resolve workspace sensitivity once — used throughout the handler to redact prose.
-  const wsForSensitivity = worker.workspaceId
-    ? await db.query.workspaces.findFirst({
-        where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
-        columns: { dataClass: true, teamId: true, gitConfig: true },
-      })
-    : null;
+  const wsForSensitivity = worker.workspaceId ? opening.workspace ?? null : null;
   const isSensitive = wsForSensitivity?.dataClass === 'sensitive';
+  // The task as it stood when this report arrived (null when the worker has none).
+  const openingTask = worker.taskId ? opening.task ?? null : null;
 
   let body = await req.json();
 
@@ -727,17 +893,7 @@ export async function PATCH(
   const secretValues: Array<{ label: string; value: string }> = [];
   try {
     if (worker.workspaceId && wsForSensitivity?.teamId) {
-      const credRows = await db.query.secrets.findMany({
-        where: sqlWhere(and(
-          eq(secretsTable.teamId, wsForSensitivity.teamId),
-          or(isNull(secretsTable.workspaceId), eq(secretsTable.workspaceId, worker.workspaceId)),
-          worker.accountId
-            ? or(isNull(secretsTable.accountId), eq(secretsTable.accountId, worker.accountId))
-            : isNull(secretsTable.accountId),
-        )),
-        columns: { encryptedValue: true, label: true, purpose: true },
-      });
-      for (const row of credRows) {
+      for (const row of opening.secrets ?? []) {
         try {
           const val = decrypt(row.encryptedValue);
           if (val) secretValues.push(...collectSecretValues(row.label || row.purpose, val));
@@ -976,6 +1132,7 @@ export async function PATCH(
     siblingProbeResults,
     siblingProbe: supportsSiblingProbe,
   } = body;
+
   // Stamped by the server with how it arrived (lib/verification-provenance.ts):
   // a task token is the agent's credential, not the runner's, on host and cloud alike.
   const verificationEvidence = stampEvidence(rawVerificationEvidence, {
@@ -1058,7 +1215,12 @@ export async function PATCH(
     // The same poll is the session's heartbeat: /respond sends the answer
     // cold once it goes stale (the terminal closed mid-wait). Its own write,
     // so neither the park clock nor a just-cleared question is touched.
-    if (declaredConsumer === 'agent') await recordInteractiveSessionSeen(id);
+    // At most once a minute: /respond reads it on a 5-minute window.
+    const seenAt = Date.parse(String((worker.waitingFor as { sessionSeenAt?: unknown } | null)?.sessionSeenAt ?? ''));
+    if (declaredConsumer === 'agent' && !(await markParkedWorkerSeen(id))
+      && !(Date.now() - seenAt < INTERACTIVE_SESSION_SEEN_WRITE_MS)) {
+      await recordInteractiveSessionSeen(id);
+    }
   }
 
   // Record the runner's protocol capability so /instruct and /cmd know whether a
@@ -1070,7 +1232,9 @@ export async function PATCH(
   if (status) updates.status = status;
   if (error !== undefined) updates.error = error;
   if (typeof costUsd === 'number') updates.costUsd = costUsd.toString();
-  if (carriesUsage) updates.costBasis = costBasisWrite(reportedBasis ?? 'unknown') as unknown as CostBasis;
+  if (carriesUsage && combineCostBasis(worker.costBasis, reportedBasis ?? 'unknown') !== worker.costBasis) {
+    updates.costBasis = costBasisWrite(reportedBasis ?? 'unknown') as unknown as CostBasis;
+  }
   if (typeof inputTokens === 'number') updates.inputTokens = inputTokens;
   if (typeof outputTokens === 'number') updates.outputTokens = outputTokens;
   if (typeof turns === 'number') updates.turns = turns;
@@ -1117,6 +1281,13 @@ export async function PATCH(
       ? merged.map(m => ({ type: m.type, ts: m.ts, ...(m.origin === 'agent' && { origin: 'agent' }) }))
       : merged;
   }
+  // Telemetry rows (error traces, action events, prompt builds) change nothing
+  // in the reply, so a progress report writes them after it. A terminal report
+  // writes them first: its own failure handling below reads the traces.
+  const reportIsTerminal = reportedStatus === 'completed' || reportedStatus === 'failed' || reportedStatus === 'error';
+  const telemetryWrite = (label: string, fn: () => Promise<unknown>) => reportIsTerminal
+    ? fn().then(() => {}, err => console.error(`[workers PATCH] ${label} failed:`, err))
+    : afterReply(label, fn);
   // appendMcpCalls: merge new MCP tool calls into existing log
   if (appendMcpCalls && Array.isArray(appendMcpCalls)) {
     const existing = (worker.mcpCalls as any[]) || [];
@@ -1145,11 +1316,7 @@ export async function PATCH(
         source: typeof t.source === 'string' ? t.source.slice(0, 50) : null,
       }));
     if (rows.length > 0) {
-      try {
-        await db.insert(workerErrorTraces).values(rows);
-      } catch (err) {
-        console.error('[workers PATCH] failed to insert error traces', err);
-      }
+      await telemetryWrite('insert error traces', () => db.insert(workerErrorTraces).values(rows));
     }
   }
   // appendActionEvents: insert per-call buildd MCP action events into
@@ -1169,11 +1336,7 @@ export async function PATCH(
         ts: new Date(e.ts),
       }));
     if (rows.length > 0) {
-      try {
-        await db.insert(workerActionEvents).values(rows);
-      } catch (err) {
-        console.error('[workers PATCH] failed to insert action events', err);
-      }
+      await telemetryWrite('insert action events', () => db.insert(workerActionEvents).values(rows));
     }
   }
   // appendPromptCompositionEvents: insert one row per prompt build into
@@ -1234,11 +1397,7 @@ export async function PATCH(
         sections: Array.isArray(e.sections) ? e.sections.slice(0, 32) : null,
       }));
     if (rows.length > 0) {
-      try {
-        await db.insert(workerPromptCompositionEvents).values(rows).onConflictDoNothing();
-      } catch (err) {
-        console.error('[workers PATCH] failed to insert prompt composition events', err);
-      }
+      await telemetryWrite('insert prompt composition events', () => db.insert(workerPromptCompositionEvents).values(rows).onConflictDoNothing());
     }
   }
   // Branch: persist actual checkout branch when resume branch was used
@@ -1292,9 +1451,7 @@ export async function PATCH(
     // platform blocker to a repair task instead of a person.
     let stored = briefed;
     if (briefed) {
-      const parkTask = worker.taskId
-        ? await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, worker.taskId)), columns: { title: true, pathManifest: true, missionId: true } })
-        : null;
+      const parkTask = openingTask;
       const gitConfig = wsForSensitivity?.gitConfig ?? null;
       const parked = await disposeParkedWaitingFor({
         waitingFor: briefed as Record<string, unknown>,
@@ -1481,11 +1638,25 @@ export async function PATCH(
     // the status its merge gave it. Its own completion PATCH records the result; a failure or
     // requeue of the follow-up cannot reopen shipped work (S4b review: kept guarded, see the
     // write-site guard's ATTEMPT_MERGED_GUARD).
+    // AC-1 slice 9: a kernel delivery's owner task is reopened by the kernel (AttemptReopened to
+    // `assigned`), naming this worker and the end it resumes from, so a resume that lands after the
+    // task was claimed again moves nothing.
     if (worker.taskId) {
-      await db
-        .update(tasks)
-        .set({ status: 'assigned', updatedAt: new Date() })
-        .where(and(eq(tasks.id, worker.taskId), notKernelMergedTaskSql()));
+      const reopenTask = await db.query.tasks.findFirst({
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
+        columns: { id: true, workspaceId: true, deliveryId: true, deliveryRole: true, context: true },
+      });
+      if (isOwnerTask(reopenTask)) {
+        await reopenOwner({
+          task: { ...reopenTask, deliveryId: reopenTask.deliveryId }, workerId: id, endedAt: endedAtOf(worker.completedAt),
+          to: 'assigned', reason: 'resumed', source: 'runner', principal: kernelPrincipalOf({ account }),
+        });
+      } else {
+        await db
+          .update(tasks)
+          .set({ status: 'assigned', updatedAt: new Date() })
+          .where(and(eq(tasks.id, worker.taskId), notKernelMergedTaskSql(), notOwnerTaskSql()));
+      }
     }
   }
   // Enforce output requirement based on task.outputRequirement
@@ -1695,16 +1866,18 @@ export async function PATCH(
     if (worker.taskId) {
       // The sample plus this sync's paths plus what the task actually holds:
       // the leases are the complete set, the sample may be truncated.
+      const observedTaskId = worker.taskId;
+      await afterReply('terminal touched paths', async () => {
       const observed = Array.isArray(worker.observedTouches) ? (worker.observedTouches as string[]) : [];
-      const owned = worker.workspaceId ? await terminalOwnedPaths(worker.workspaceId, worker.taskId) : [];
+      const owned = worker.workspaceId ? await terminalOwnedPaths(worker.workspaceId, observedTaskId) : [];
       const finalPaths = [...new Set([...observed, ...reportedTouches, ...owned])];
-      await recordTaskAreaOutcome(worker.taskId, finalPaths);
+      await recordTaskAreaOutcome(observedTaskId, finalPaths);
       // Final touched-file label for orchestration decisions (conflict-aware
       // orchestration §5), from the same observation, before the clear. Writes
       // only for a task a decision looked at; never throws into this PATCH.
       try {
         await recordOrchestrationTouchLabel({
-          taskId: worker.taskId,
+          taskId: observedTaskId,
           workspaceId: worker.workspaceId,
           workerId: worker.id,
           workerStatus: status,
@@ -1716,6 +1889,7 @@ export async function PATCH(
       } catch (err) {
         console.warn(`[Worker ${id}] orchestration touch label failed (non-fatal):`, err);
       }
+      });
     }
     updates.observedTouches = null;
   } else if (reportedTouches.length > 0) {
@@ -1743,7 +1917,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber, conflictRetryPrNumber: tasks.conflictRetryPrNumber, conflictRetryHeadSha: tasks.conflictRetryHeadSha, subjectHeadSha: tasks.subjectHeadSha, dependsOn: tasks.dependsOn, deliveryId: tasks.deliveryId, deliveryRole: tasks.deliveryRole })
+        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, reviewerRetryHeadSha: tasks.reviewerRetryHeadSha, ciRetryPrNumber: tasks.ciRetryPrNumber, conflictRetryPrNumber: tasks.conflictRetryPrNumber, conflictRetryHeadSha: tasks.conflictRetryHeadSha, subjectHeadSha: tasks.subjectHeadSha, dependsOn: tasks.dependsOn, deliveryId: tasks.deliveryId, deliveryRole: tasks.deliveryRole })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1979,6 +2153,40 @@ export async function PATCH(
           frictionSignature,
           boundHeadSha: refusal.boundHeadSha,
           liveHeadSha: refusal.liveHeadSha,
+        }, { status: 400 });
+      }
+    }
+
+    // §13.13 rule 4 for a LEGACY review fix (a PR with no delivery): the head has to move, and the
+    // push has to change something near what the review names. Without this a no-op repair on a PR
+    // the kernel does not own still read as "Fix n of m finished".
+    if (worker.taskId && terminalTaskRow[0] && !terminalTaskRow[0].deliveryId && terminalTaskRow[0].reviewerRetryPrNumber != null) {
+      const refusal = await legacyReviewFixCompletionGate({
+        task: { workspaceId: worker.workspaceId, ...terminalTaskRow[0] },
+        localHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
+        noopClaimed: noopEvidenceOf(body.structuredOutput) != null,
+        fixedElsewhere: legacyFixedElsewhereOf(body.structuredOutput),
+      }, legacyReviewFixGateDeps()).catch((err) => {
+        console.error(`[review-fix] legacy completion gate failed for worker ${worker.id} (allowing):`, err);
+        return null;
+      });
+      if (refusal) {
+        await applyMetricsOnlyPatch(id, worker, body, reportedBasis).catch(() => null);
+        const frictionSignature = fireGateEvent({
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'rejected',
+          reason: `completion refused: ${refusal.code}`,
+          workspaceId: worker.workspaceId,
+          missionId: taskMissionId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+          detail: { code: refusal.code, boundHeadSha: refusal.boundHeadSha, liveHeadSha: refusal.liveHeadSha },
+        });
+        return NextResponse.json({
+          error: refusal.error, hint: refusal.hint, code: refusal.code, gate: GATE_SLUGS.OUTPUT_REQUIREMENT, frictionSignature,
+          boundHeadSha: refusal.boundHeadSha, liveHeadSha: refusal.liveHeadSha,
         }, { status: 400 });
       }
     }
@@ -2394,17 +2602,34 @@ export async function PATCH(
         if (worker.taskId) {
           const previousContext = (terminalTaskRow[0]?.context ?? {}) as Record<string, unknown>;
           const next = silentCompletionRetryContext(previousContext);
-          const settled = await db.update(tasks).set({
-            status: next.retry ? 'pending' : 'failed', context: next.context,
-            claimedBy: null, claimedAt: null, startAt: null,
+          // AC-1 slice 8 (workflow-kernel-library.md §9): the owner task of a delivery is moved by
+          // the kernel, not here. Its retry is a requeue (AttemptRequeued) and its last refusal the
+          // attempt's failed end (AttemptEnded), so this statement writes its context and result,
+          // and only while this worker is still the open task's current attempt: a late report
+          // after the task was claimed again moves nothing.
+          const silentRow = terminalTaskRow[0]!;
+          const ownerAttempt = !!silentRow.deliveryId && silentRow.deliveryRole === 'owner';
+          const wrote = await db.update(tasks).set({
+            ...(ownerAttempt ? {} : { status: next.retry ? 'pending' as const : 'failed' as const, claimedBy: null, claimedAt: null }),
+            context: next.context,
+            startAt: null,
             result: { summarySource: 'fallback' },
             updatedAt: new Date(),
           }).where(and(
             eq(tasks.id, worker.taskId),
-            eq(tasks.status, terminalTaskRow[0]!.status),
+            eq(tasks.status, silentRow.status),
             sql`COALESCE(${tasks.context}->>'silentCompletionRetryCount', '0') = ${String(previousContext.silentCompletionRetryCount ?? 0)}`,
             notKernelMergedTaskSql(),
+            ...(ownerAttempt ? [requeueingAttemptIsCurrentSql(id, 'tasks')] : []),
           )).returning({ id: tasks.id });
+          let settled = wrote;
+          if (ownerAttempt && wrote.length) {
+            const ownerTask = { id: worker.taskId, workspaceId: worker.workspaceId, deliveryId: silentRow.deliveryId, deliveryRole: silentRow.deliveryRole ?? null, context: silentRow.context };
+            const moved = next.retry
+              ? await requeueOwnerAttempt({ task: ownerTask, workerId: id, reason: 'silent_completion', principal: kernelPrincipalOf({ account }) })
+              : await endOwnerAttemptFailed({ task: ownerTask, workerId: id, worker, principal: kernelPrincipalOf({ account }) });
+            if (!moved) settled = [];
+          }
           if (settled.length && !next.retry) {
             await db.insert(missionNotes).values({
               missionId: taskMissionId, taskId: worker.taskId,
@@ -2874,6 +3099,10 @@ export async function PATCH(
   // login or key, and the claim delivered none (model credentials spec R-5).
   // The machine's setup, not the task: it rides the infra retry budget below,
   // so the task goes back to the queue for a runner that has a login.
+  // The runner timed out creating the session's worktree. Nothing ran; rides
+  // the infra retry budget so a reviewer or any non-mission task is requeued
+  // with backoff instead of staying failed (a green PR stuck in review_failed).
+  const isWorktreeSetupTimeout = status === 'failed' && isWorktreeSetupTimeoutError(error);
   const isModelAuthMissing = status === 'failed' && body.modelAuthMissing === true;
   // The CLI's model version gate: this runner cannot serve the model the task
   // was routed to. A deterministic 400 before the first turn, so it is infra
@@ -2900,6 +3129,7 @@ export async function PATCH(
       taskCancelled: taskCancelledUnderSession,
       crashReconciled: isCrashReconciled,
       githubThrottled: isGithubThrottled,
+      worktreeSetupTimeout: isWorktreeSetupTimeout,
       modelAuthMissing: isModelAuthMissing,
       unrecognizedModel: isUnrecognizedModel,
       needsInput: isNeedsInput,
@@ -2954,10 +3184,7 @@ export async function PATCH(
       columns: { status: true },
     });
     if (deferralTask?.status !== 'cancelled') {
-      await db
-        .update(tasks)
-        .set({ status: 'pending', claimedBy: null, claimedAt: null, expiresAt: null, updatedAt: new Date() })
-        .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()));
+      await requeueWorkerTask({ taskId: worker.taskId, workerId: id, reason: 'codex_deferral', principal: kernelPrincipalOf({ account }) });
       // An enforce-mode path collision: make the requeue wait for the holder
       // (collided path joins the manifest, so the claim route's lease
       // backstop defers it) and resume from the pushed checkpoint.
@@ -3060,6 +3287,12 @@ export async function PATCH(
       accountId: account.id,
       teamId,
       workspaceId: taskForBudget?.workspaceId,
+      // Which Claude login this run used, as its runner reports it (newer
+      // runners): a machine login walls only that runner.
+      loginUsed: parseRunLoginUsed(body.claudeLoginUsed),
+      // The login's identity (a one-way hash), so the wall holds every runner
+      // on the same login, not only this one.
+      loginId: parseClaudeLoginId(body.claudeLoginId),
     });
     const runnerSeatWall = seatWall.seatKey;
     if (runnerSeatWall) {
@@ -3236,14 +3469,12 @@ export async function PATCH(
       // An explicit deferral floor already on the task still wins.
       return taskForBudget?.startAt && taskForBudget.startAt > wakeAt ? taskForBudget.startAt : wakeAt;
     })();
-    if (taskForBudget?.status !== 'cancelled') await db
-      .update(tasks)
-      .set({
-        status: 'pending',
-        claimedBy: null,
-        claimedAt: null,
-        expiresAt: null,
-        updatedAt: new Date(),
+    if (taskForBudget?.status !== 'cancelled') await requeueWorkerTask({
+      taskId: worker.taskId,
+      workerId: id,
+      reason: 'budget',
+      principal: kernelPrincipalOf({ account }),
+      set: {
         ...(failoverBackend && { backend: failoverBackend }),
         ...(budgetStartAt && { startAt: budgetStartAt }),
         context: {
@@ -3257,8 +3488,8 @@ export async function PATCH(
           previousWorkerId: id,
           ...(failoverBackend && { failedOverFrom: taskForBudget?.backend || 'claude', failoverReason: 'budget_exhausted' }),
         },
-      })
-      .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()));
+      },
+    });
 
     // A failover is claimable on the other provider now. A deferral wakes at
     // the reset and not before: an instant wake would re-claim straight into
@@ -3338,11 +3569,9 @@ export async function PATCH(
 
     if (!sandboxGapMissionExhausted) {
       if (gapTask?.status !== 'cancelled') {
-        await db
-          .update(tasks)
-          .set({ status: 'pending', claimedBy: null, claimedAt: null, updatedAt: new Date() })
-          .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()));
-        await wakeTask(worker.taskId, 'task.requeued');
+        if (await requeueWorkerTask({ taskId: worker.taskId, workerId: id, reason: 'mount_gap', principal: kernelPrincipalOf({ account }) })) {
+          await wakeTask(worker.taskId, 'task.requeued');
+        }
       }
       isBudgetReset = true; // reuse hold-for-retry UX: skip fail notification, re-broadcast pending
     }
@@ -3416,15 +3645,13 @@ export async function PATCH(
             });
             const authFailoverBackend = authDecision.backend;
             if (authFailoverBackend) {
-              await db
-                .update(tasks)
-                .set({
-                  status: 'pending',
+              await requeueWorkerTask({
+                taskId: worker.taskId,
+                workerId: id,
+                reason: 'auth_failover',
+                principal: kernelPrincipalOf({ account }),
+                set: {
                   backend: authFailoverBackend,
-                  claimedBy: null,
-                  claimedAt: null,
-                  expiresAt: null,
-                  updatedAt: new Date(),
                   context: {
                     ...authTaskCtx,
                     authFailoverApplied: true,
@@ -3432,8 +3659,8 @@ export async function PATCH(
                     failoverReason: 'auth_failure',
                     previousWorkerId: id,
                   },
-                })
-                .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()));
+                },
+              });
 
               // Another provider can carry it now; no delay to honour.
               await wakeTask(worker.taskId, 'task.requeued');
@@ -3465,7 +3692,7 @@ export async function PATCH(
     try {
       const heldTask = await db.query.tasks.findFirst({
         where: sqlWhere(eq(tasks.id, worker.taskId)),
-        columns: { backend: true, workspaceId: true, context: true, status: true },
+        columns: { backend: true, workspaceId: true, context: true, status: true, deliveryId: true, deliveryRole: true },
         with: { workspace: { columns: { teamId: true } } },
       });
       if (heldTask && heldTask.status !== 'cancelled') {
@@ -3477,14 +3704,26 @@ export async function PATCH(
           workspaceId: heldTask.workspaceId ?? null,
           backend: heldTask.backend ?? null,
         });
+        // AC-1 slice 8: a delivery owner's hold is a requeue the kernel makes (AttemptRequeued).
+        const heldTaskId = worker.taskId;
+        const heldOwner = !!heldTask.deliveryId && heldTask.deliveryRole === 'owner';
         const hold = await holdTaskForCredential({
-          taskId: worker.taskId,
+          taskId: heldTaskId,
           context: (heldTask.context ?? {}) as Record<string, unknown>,
           credential,
           workerId: id,
           branch: worker.branch ?? null,
           lastCommitSha: worker.lastCommitSha ?? null,
           error: error ?? null,
+          ...(heldOwner ? {
+            ownerAttempt: {
+              guard: requeueingAttemptIsCurrentSql(id, 'tasks'),
+              requeue: () => requeueOwnerAttempt({
+                task: { id: heldTaskId, workspaceId: heldTask.workspaceId, deliveryId: heldTask.deliveryId, deliveryRole: heldTask.deliveryRole ?? null, context: heldTask.context },
+                workerId: id, reason: 'credential_hold', principal: kernelPrincipalOf({ account }),
+              }),
+            },
+          } : {}),
         });
         if (hold) {
           isCredentialHold = true;
@@ -3623,7 +3862,7 @@ export async function PATCH(
         // failed every in-flight non-mission task. A model version-gate 400
         // rides it too: bounded, backed off, and uncharged. So does a clone GitHub
         // throttled: the backoff is the point, GitHub needs time.
-        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isGithubThrottled || isModelAuthMissing || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
+        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isGithubThrottled || isWorktreeSetupTimeout || isModelAuthMissing || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
           const infraRetryCount = (taskCtxForRetry.infraRetryCount as number) || 0;
           if (infraRetryCount < MAX_INFRA_RETRIES_PATCH) {
             shouldAutoRetry = true;
@@ -4117,11 +4356,6 @@ export async function PATCH(
         const waitingForData = worker.waitingFor as { prompt?: string } | null;
         const lastQuestion = waitingForData?.prompt || undefined;
 
-        // Re-read worker to pick up auto-detected PR fields
-        const freshWorker = await db.query.workers.findFirst({
-          where: sqlWhere(eq(workers.id, id)),
-        });
-
         taskUpdate.result = {
           summary,
           ...(summarySource && { summarySource }),
@@ -4131,8 +4365,8 @@ export async function PATCH(
           files: filesChanged ?? worker.filesChanged ?? 0,
           added: linesAdded ?? worker.linesAdded ?? 0,
           removed: linesRemoved ?? worker.linesRemoved ?? 0,
-          prUrl: freshWorker?.prUrl ?? worker.prUrl ?? undefined,
-          prNumber: freshWorker?.prNumber ?? worker.prNumber ?? undefined,
+          // No prUrl / prNumber: a task's PR is derived on read from its delivery or its
+          // attempt's worker row (workflow/task-pr.ts), never snapshotted by an attempt's end.
           ...(phases.length > 0 && { phases }),
           ...(lastQuestion && { lastQuestion }),
           // Structured output from SDK (validated JSON matching task.outputSchema)
@@ -4185,18 +4419,44 @@ export async function PATCH(
         }
       }
 
+      // AC-1 (workflow-kernel-library.md §9): a kernel delivery's owner task gets no status from this
+      // statement. Its end (slice 3), including a contract or loop failure overriding what the worker
+      // reported (slice 9: the end sent is `failed`), is the kernel's to project (`t_attempt`); its
+      // requeue (a retry, a loop hold: slice 6) is AttemptRequeued (`requeueOwnerAttempt` below), so
+      // its claim stays too, and its context, start floor and loop fields land under the requeue's
+      // own guard. Every other task keeps this statement's status.
+      const terminalRow = terminalTaskRow[0];
+      const ownerTask = !!terminalRow?.deliveryId && terminalRow.deliveryRole === 'owner';
+      const { status: intendedTaskStatus, ...taskFields } = taskUpdate;
+      const ownerEndProjects = ownerTask && !shouldAutoRetry;
+      const ownerRequeue = ownerTask && intendedTaskStatus === 'pending';
+      if (ownerRequeue) {
+        delete taskFields.claimedBy;
+        delete taskFields.claimedAt;
+        delete taskFields.expiresAt;
+      }
+
       // Guard: a cancelled task must not be re-queued (shouldAutoRetry path) nor have
       // its terminal status overridden by a worker that was aborted mid-flight. Nor may a
       // late failure or retry move a task the kernel already finished (completed, its
       // delivery MERGED): S4b review. A completion over it still records its result.
       await db
         .update(tasks)
-        .set(taskUpdate)
+        .set({ ...taskFields, ...(ownerTask ? {} : { status: intendedTaskStatus as typeof tasks.$inferInsert['status'] }) })
         .where(and(
           eq(tasks.id, worker.taskId),
           not(eq(tasks.status, 'cancelled')),
-          ...(taskUpdate.status === 'completed' ? [] : [notKernelMergedTaskSql()]),
+          ...(intendedTaskStatus === 'completed' ? [] : [notKernelMergedTaskSql()]),
+          ...(ownerRequeue ? [requeueingAttemptIsCurrentSql(id, 'tasks')] : []),
         ));
+      if (ownerRequeue) {
+        await requeueOwnerAttempt({
+          task: { id: worker.taskId, workspaceId: worker.workspaceId, deliveryId: terminalRow!.deliveryId, deliveryRole: terminalRow!.deliveryRole ?? null, context: terminalRow!.context },
+          workerId: id,
+          reason: loop?.kind === 'hold' ? 'loop_hold' : 'retry',
+          principal: kernelPrincipalOf({ account }),
+        });
+      }
 
       // The routing-outcome analytics row this report produces, minus the
       // outcome. Built here so a release held for CI can keep it on the task:
@@ -4218,12 +4478,15 @@ export async function PATCH(
         workerId: id,
       };
 
+      const completedTaskId = worker.taskId;
+      await afterReply('completion follow-up', async () => {
       // Run release sequence on successful completion.
       // IMPORTANT: a failed release overrides the task status to 'failed' — the
       // task is not truly done until the release PR lands and prod is healthy.
       // Skip when skipRelease is set (artifact_required satisfied by artifact, no PR).
-      if (status === 'completed' && !shouldAutoRetry && !skipRelease && loop?.kind !== 'fail') {
-        const releaseInput = { taskId: worker.taskId, workerId: id, workspaceId: worker.workspaceId, missionId: taskMissionId };
+      const releaseRuns = status === 'completed' && !shouldAutoRetry && !skipRelease && loop?.kind !== 'fail';
+      const releaseInput = { taskId: completedTaskId, workerId: id, workspaceId: worker.workspaceId, missionId: taskMissionId };
+      if (releaseRuns) {
         try {
           const release = await COMPLETION_POLICIES.release.evaluate(releaseInput);
           const releaseResult = release.record;
@@ -4235,15 +4498,17 @@ export async function PATCH(
           if (release.kind === 'fail') {
             // Release explicitly failed (CI red, merge conflict, no PR found…) —
             // flip the task to FAILED so it never shows as "completed" successfully.
+            // AC-1 slice 9: a kernel owner's attempt end below is sent `failed` (slotFailure), and
+            // the kernel projects it; this statement writes its record only.
             await db
               .update(tasks)
               .set({
-                status: 'failed',
+                ...(ownerTask ? {} : { status: 'failed' as const }),
                 releaseResult,
                 result: resultWithRelease,
                 updatedAt: new Date(),
               })
-              .where(and(eq(tasks.id, worker.taskId), notKernelMergedTaskSql()));
+              .where(and(eq(tasks.id, completedTaskId), notKernelMergedTaskSql()));
             taskUpdate.result = resultWithRelease;
             slotFailure = { slot: 'release', label: 'Release failed', reason: release.reason };
 
@@ -4253,7 +4518,7 @@ export async function PATCH(
               title: 'Release failed',
               message: `${release.reason}${prLink}`,
               priority: 1,
-              url: release.prUrl || `https://buildd.dev/app/tasks/${worker.taskId}`,
+              url: release.prUrl || `https://buildd.dev/app/tasks/${completedTaskId}`,
               urlTitle: release.prUrl ? 'Open PR' : 'View task',
             });
           } else if (release.kind === 'hold') {
@@ -4265,7 +4530,7 @@ export async function PATCH(
               await db
                 .select({ context: tasks.context })
                 .from(tasks)
-                .where(eq(tasks.id, worker.taskId))
+                .where(eq(tasks.id, completedTaskId))
                 .limit(1)
             )[0]?.context as Record<string, unknown> | null ?? {};
             await db
@@ -4284,22 +4549,85 @@ export async function PATCH(
                 },
                 updatedAt: new Date(),
               })
-              .where(eq(tasks.id, worker.taskId));
+              .where(eq(tasks.id, completedTaskId));
             taskUpdate.result = resultWithRelease;
           } else {
             await db
               .update(tasks)
               .set({ releaseResult, result: resultWithRelease, updatedAt: new Date() })
-              .where(eq(tasks.id, worker.taskId));
+              .where(eq(tasks.id, completedTaskId));
             taskUpdate.result = resultWithRelease;
           }
         } catch (releaseErr) {
           console.error(`[Worker ${id}] Release execution failed:`, releaseErr);
         }
-        // Whatever the verdict: the release policy's follow-up (the mission-level
-        // release once every mission task is terminal). Fire-and-forget.
-        COMPLETION_POLICIES.release.settled(releaseInput);
       }
+
+      // Workflow kernel T4 (docs/specs/workflow-state-kernel.md §6.5): the owner
+      // or fix attempt of a kernel delivery ended. The kernel decides what is
+      // next (review round, push recovery, re-dispatch, escalation) from a live
+      // GitHub read; an infra requeue is not an attempt end (§5.7 rule 2).
+      const workflowAttemptEnd = async () => {
+        // A runner hand-off failure says `outcome: 'unproven'` (S30, §6.6); an old runner omits it.
+        const row = terminalTaskRow[0];
+        const end = attemptEndFromPatch({
+          status: (contractViolation || slotFailure ? 'failed' : status) === 'completed' ? 'completed' : 'failed',
+          outcome: body.outcome, localHeadSha: body.localHeadSha, commitCount,
+          fallbackLocalHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
+          fallbackCommitCount: worker.commitCount ?? 0,
+        });
+        // A loop hold sets shouldAutoRetry to requeue the TASK, not the delivery:
+        // a completed owner worker still ended its kernel attempt, or a verdict
+        // recorded while the delivery was WORKING is never re-entered. A
+        // non-completed end under a hold stays the loop's to retry.
+        const loopHold = loop?.kind === 'hold';
+        if (loopHold && end.status !== 'completed') return;
+        const retryCovers = !loopHold && taskRetryCoversAttemptEnd(end, shouldAutoRetry, row?.deliveryRole ?? null);
+        if (!row?.deliveryId || retryCovers || releaseHeld) return;
+        await workflowAttemptEnded({
+          task: { id: completedTaskId!, workspaceId: worker.workspaceId, deliveryId: row.deliveryId, deliveryRole: row.deliveryRole ?? null, context: row.context },
+          workerId: id,
+          ...end,
+          source: 'runner',
+          taskRetryBudgetLeft: shouldAutoRetry && !loopHold,
+          ...(kernelReviewFailure ? { reviewFailure: kernelReviewFailure } : {}),
+          ...(noopEvidenceOf(body.structuredOutput) ? { noopEvidence: noopEvidenceOf(body.structuredOutput) } : {}),
+        }, { principal: kernelPrincipalOf({ account }) });
+      };
+
+      // AC-1 slice 3: an owner's end goes to the kernel here, before anything in
+      // this request reads the task's status (the mission release below, the
+      // terminal evidence record, dependency resolution, mission completion), so
+      // they read the status the end projected. A repair's or reviewer's end
+      // keeps its place after the reviewer outcome.
+      if (terminalRow?.deliveryRole === 'owner') {
+        try {
+          await workflowAttemptEnd();
+        } catch (endErr) {
+          const msg = endErr instanceof Error ? endErr.message : String(endErr);
+          console.error(`[Worker ${id}] post-completion workflow-attempt-ended failed:`, endErr);
+          void reportOps({ source: 'worker-completion:workflow-attempt-ended', severity: 'error', message: 'workflow-attempt-ended failed', detail: msg });
+        }
+      }
+      // The status this statement left out: when the end did not reach a
+      // control plane that projects it (down, refusing, an older build), or no
+      // end was sent (a release held for CI), project it here from the
+      // kernel's recorded end, else this report's. A no-op once it is settled.
+      if (ownerEndProjects && terminalRow?.deliveryId) {
+        try {
+          await projectOwnerEnd({
+            deliveryId: terminalRow.deliveryId, taskId: completedTaskId, workerId: id,
+            status: contractViolation || slotFailure || status !== 'completed' ? 'failed' : 'completed',
+          });
+        } catch (projErr) {
+          console.error(`[Worker ${id}] owner end projection failed:`, projErr);
+          void reportOps({ source: 'worker-completion:owner-end-projection', severity: 'error', message: 'owner end projection failed', detail: projErr instanceof Error ? projErr.message : String(projErr) });
+        }
+      }
+
+      // Whatever the verdict: the release policy's follow-up (the mission-level
+      // release once every mission task is terminal). Fire-and-forget.
+      if (releaseRuns) COMPLETION_POLICIES.release.settled(releaseInput);
 
       // The outcome is settled: not going back to the queue, and not a release
       // still waiting on CI (its resolution emits this, once, when the status
@@ -4307,7 +4635,7 @@ export async function PATCH(
       // Subscribers (the evidence record) are awaited — a serverless function
       // may freeze an un-awaited write — and isolated by emit, which never throws.
       if (!shouldAutoRetry && loop?.kind !== 'hold' && !releaseHeld) {
-        await emit({ type: 'task.terminal', taskId: worker.taskId, workerId: id, workspaceId: worker.workspaceId, sensitive: isSensitive });
+        await emit({ type: 'task.terminal', taskId: completedTaskId, workerId: id, workspaceId: worker.workspaceId, sensitive: isSensitive });
       }
 
       // Record routing outcome for analytics/calibration. Skipped on retry
@@ -4318,11 +4646,11 @@ export async function PATCH(
       const effectiveOutcome = contractViolation || slotFailure ? 'failed' : status;
       if (!shouldAutoRetry) {
         if (!releaseHeld) {
-          recordTaskOutcome({ ...outcomeAnalytics, taskId: worker.taskId, outcome: effectiveOutcome }).catch(() => {});
+          recordTaskOutcome({ ...outcomeAnalytics, taskId: completedTaskId, outcome: effectiveOutcome }).catch(() => {});
         }
         // Model policy: the run's duration and cost against the policy decision
         // the claim stored. A no-op unless a policy service issued it.
-        await reportTaskPolicyOutcome(worker.taskId, codingRunObservations({
+        await reportTaskPolicyOutcome(completedTaskId, codingRunObservations({
           durationMs,
           costUsd: updates.costUsd ?? worker.costUsd ?? null,
         }));
@@ -4337,8 +4665,8 @@ export async function PATCH(
       // Each step is guarded independently so one failure can't mask the others,
       // and every silent failure pages via reportOps instead of dying in logs.
       // Capture under the active non-null narrowing: inside the closures below,
-      // control-flow narrowing of worker.taskId (string | null) is dropped.
-      const taskId = worker.taskId;
+      // control-flow narrowing of completedTaskId (string | null) is dropped.
+      const taskId = completedTaskId;
       const runStep = async (label: string, fn: () => Promise<void>) => {
         try {
           await fn();
@@ -4543,43 +4871,14 @@ export async function PATCH(
         // Skip for loop requeue — reviewer logic only applies to terminal completions.
         // A kernel round that broke its contract has no verdict to act on (T27 below).
         if (status !== 'completed' || loop?.kind === 'hold' || kernelReviewFailure) return;
-        await handleReviewerOutcomeIfNeeded(taskId, worker.workspaceId, body.structuredOutput);
+        await handleReviewerOutcomeIfNeeded(taskId, worker.workspaceId, body.structuredOutput, kernelPrincipalOf({ account }));
         // AFTER the outcome is applied, so an on=merge callback sees the merge
         // this verdict may just have triggered. Single-fire and best-effort.
         await deliverReviewCallbackIfRequested(taskId, worker.workspaceId);
       });
 
-      // Workflow kernel T4 (docs/specs/workflow-state-kernel.md §6.5): the owner
-      // or fix attempt of a kernel delivery ended. The kernel decides what is
-      // next (review round, push recovery, re-dispatch, escalation) from a live
-      // GitHub read; an infra requeue is not an attempt end (§5.7 rule 2).
-      await runStep('workflow-attempt-ended', async () => {
-        // A runner hand-off failure says `outcome: 'unproven'` (S30, §6.6); an old runner omits it.
-        const row = terminalTaskRow[0];
-        const end = attemptEndFromPatch({
-          status: (contractViolation || slotFailure ? 'failed' : status) === 'completed' ? 'completed' : 'failed',
-          outcome: body.outcome, localHeadSha: body.localHeadSha, commitCount,
-          fallbackLocalHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
-          fallbackCommitCount: worker.commitCount ?? 0,
-        });
-        // A loop hold sets shouldAutoRetry to requeue the TASK, not the delivery:
-        // a completed owner worker still ended its kernel attempt, or a verdict
-        // recorded while the delivery was WORKING is never re-entered. A
-        // non-completed end under a hold stays the loop's to retry.
-        const loopHold = loop?.kind === 'hold';
-        if (loopHold && end.status !== 'completed') return;
-        const retryCovers = !loopHold && taskRetryCoversAttemptEnd(end, shouldAutoRetry, row?.deliveryRole ?? null);
-        if (!row?.deliveryId || retryCovers || releaseHeld) return;
-        await workflowAttemptEnded({
-          task: { id: taskId, workspaceId: worker.workspaceId, deliveryId: row.deliveryId, deliveryRole: row.deliveryRole ?? null, context: row.context },
-          workerId: id,
-          ...end,
-          source: 'runner',
-          taskRetryBudgetLeft: shouldAutoRetry && !loopHold,
-          ...(kernelReviewFailure ? { reviewFailure: kernelReviewFailure } : {}),
-          ...(noopEvidenceOf(body.structuredOutput) ? { noopEvidence: noopEvidenceOf(body.structuredOutput) } : {}),
-        });
-      });
+      // T4 for a repair or a reviewer (an owner's end went to the kernel above).
+      if (terminalRow?.deliveryRole !== 'owner') await runStep('workflow-attempt-ended', workflowAttemptEnd);
 
       // Notify on task completion/failure — routed to the OWNING team's channel.
       await runStep('notify', async () => {
@@ -4605,7 +4904,7 @@ export async function PATCH(
           // trigger's scheduled row instead of spending an immediate no-op one.
           const retryAt = taskRecord.startAt ? new Date(taskRecord.startAt) : null;
           const deferred = retryAt && retryAt.getTime() > Date.now() ? retryAt : undefined;
-          await wakeTask(worker.taskId!, 'task.requeued', deferred ? { notBefore: deferred } : {});
+          await wakeTask(completedTaskId!, 'task.requeued', deferred ? { notBefore: deferred } : {});
         }
         const notifyTeamId = (taskRecord?.workspace as { teamId?: string } | undefined)?.teamId;
         if (taskRecord && notifyTeamId) {
@@ -4645,6 +4944,7 @@ export async function PATCH(
       // Root causes: an auth failure records its runner's cause; a completed run
       // is the capability check that clears causes on its runner and workspace.
       await runStep('root-cause', () => recordRootCauseForOutcome({ taskId, accountId: worker.accountId, status, error }));
+      });
     }
   }
 
@@ -4694,14 +4994,10 @@ export async function PATCH(
     // the next check-in serves the queue again, and the runner skips text it
     // has already injected.
     if (queuedInstructions && instructionAckText.includes(queuedInstructions)) {
-      const [cleared] = await db
-        .update(workers)
-        .set({ pendingInstructions: null })
-        .where(and(eq(workers.id, id), eq(workers.pendingInstructions, queuedInstructions)))
-        .returning({ id: workers.id });
-      if (!cleared) {
-        console.log(`[workers PATCH] worker ${id}: instruction queue changed during delivery — keeping it queued`);
-      }
+      updates.pendingInstructions = sql`CASE
+        WHEN ${workers.pendingInstructions} = ${queuedInstructions} THEN NULL
+        ELSE ${workers.pendingInstructions} END` as unknown as string;
+
     }
   } else if (queuedInstructions) {
     if (!agentExcluded) pendingInstructions = queuedInstructions;
@@ -4733,14 +5029,58 @@ export async function PATCH(
       ? eq(workers.status, worker.status)
       : not(inArray(workers.status, TERMINAL_WORKER_STATUSES));
 
-  const [updated] = await db
-    .update(workers)
-    .set(updates)
-    .where(and(eq(workers.id, id), finalWriteGuard))
-    .returning();
+  // A progress report writes only what it changes, and a report that changes
+  // nothing writes nothing (spec 3ef37387 R-33): the runner re-sends its whole
+  // view every ~10 s. Redis records liveness; without it, updated_at moves on
+  // a safe floor, except under an interactive park, whose clock it is. A terminal transition
+  // or a reactivation writes as it always has.
+  const progressReport = !terminalTransitionReserved && !reactivatingTerminalWorker;
+  let writeSet: Partial<typeof workers.$inferInsert> | null = updates;
+  if (progressReport) {
+    const changed = changedFields(updates as Record<string, unknown>, worker as Record<string, unknown>);
+    if (changed.length > 0) {
+      writeSet = { updatedAt: updates.updatedAt };
+      if (updates.turns !== undefined) writeSet.turns = updates.turns;
+      for (const key of changed) (writeSet as Record<string, unknown>)[key] = (updates as Record<string, unknown>)[key];
+    } else if (!keepsParkClock(worker, { status, waitingFor })
+      && !(await markWorkerHeartbeat(id)) && livenessWriteDue(worker)) {
+      writeSet = { updatedAt: updates.updatedAt };
+    } else {
+      writeSet = null;
+    }
+  }
 
-  if (!updated) {
-    return workerConflictResponse(id);
+  let updated: typeof workers.$inferSelect;
+  if (writeSet) {
+    const [row] = await db
+      .update(workers)
+      .set(writeSet)
+      .where(and(eq(workers.id, id), finalWriteGuard))
+      .returning();
+    if (!row) {
+      return workerConflictResponse(id);
+    }
+    updated = row;
+  } else {
+    // Nothing to write. The write's guard is what told a runner its worker was
+    // ended under it; without one, the row read above says the same.
+    if (isTerminalWorkerStatus(worker.status)) {
+      return workerConflictResponse(id);
+    }
+    updated = worker;
+  }
+
+  // A question asked, answered or dropped changes the team's questions
+  // waiting: the cached list (lib/team-cache.ts) goes now, before the reply.
+  if (writeSet && ('waitingFor' in writeSet || (worker.status !== updated.status && (worker.status === 'waiting_input' || updated.status === 'waiting_input')))) {
+    await clearTeamCache(wsForSensitivity?.teamId, 'questions');
+  }
+
+  await afterReply('worker follow-up', async () => {
+  // A runner repeats status and PR fields on every sync. Only actual writes
+  // invalidate derived summaries; noteWorkChanged coalesces their listeners.
+  if (writeSet && ['status', 'waitingFor', 'prUrl', 'prNumber'].some(key => key in writeSet)) {
+    noteWorkChanged({ workerIds: [id] });
   }
 
   // Subscriptions ledger: "tell me when this task needs input". Only after the
@@ -4896,22 +5236,41 @@ export async function PATCH(
       // pending row would be skipped forever by the claim loop. Preserve the
       // authoritative budget-over-requeue precedence by making the failure visible.
       if (missionBudgetExhausted && isSandboxMountGap && worker.taskId) {
-        await db
-          .update(tasks)
-          .set({ status: 'failed', updatedAt: new Date() })
-          .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()));
+        // AC-1 slice 9: a kernel owner was requeued through the kernel above, and its attempt ran no
+        // further: the queued task is refused through the kernel too (AttemptWithdrawn, no claim).
+        const gapTask = await db.query.tasks.findFirst({
+          where: sqlWhere(eq(tasks.id, worker.taskId)),
+          columns: { id: true, workspaceId: true, deliveryId: true, deliveryRole: true, context: true },
+        });
+        if (isOwnerTask(gapTask)) {
+          await withdrawOwner({
+            task: { ...gapTask, deliveryId: gapTask.deliveryId }, claim: null, outcome: 'failed',
+            reason: 'mission_budget', source: 'runner', principal: kernelPrincipalOf({ account }),
+          });
+        } else {
+          await db
+            .update(tasks)
+            .set({ status: 'failed', updatedAt: new Date() })
+            .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql(), notOwnerTaskSql()));
+        }
       }
     } catch (err) {
       console.error(`[Worker ${id}] Mission budget check failed:`, err);
     }
   }
 
+  });
+
   // Detect heartbeat-ok suppression: silent completion for heartbeat tasks with status "ok"
+  // A progress report uses the opening read; a terminal one re-reads, since its
+  // own writes above may have moved the context.
   const taskContext = worker.taskId
-    ? (await db.query.tasks.findFirst({
-        where: sqlWhere(eq(tasks.id, worker.taskId)),
-        columns: { context: true },
-      }))?.context as Record<string, unknown> | null
+    ? (isTerminalStatus
+        ? (await db.query.tasks.findFirst({
+            where: sqlWhere(eq(tasks.id, worker.taskId)),
+            columns: { context: true },
+          }))?.context
+        : openingTask?.context) as Record<string, unknown> | null
     : null;
 
   // Serve pending worker-to-worker messages in the response. Written by
@@ -4998,10 +5357,7 @@ export async function PATCH(
       ? [...new Set((touchedPaths as unknown[]).filter((p): p is string => typeof p === 'string'))]
       : newlyObservedPaths;
   if (workingSetDelta && worker.workspaceId && worker.taskId && !isTerminalStatus) {
-    const leaseTask = await db.query.tasks.findFirst({
-      where: sqlWhere(eq(tasks.id, worker.taskId)),
-      columns: { category: true, context: true },
-    }).catch(() => null);
+    const leaseTask = openingTask;
     const applied = await applyWorkingSetSync({
       worker: { id, workspaceId: worker.workspaceId, taskId: worker.taskId },
       delta: workingSetDelta,
@@ -5012,10 +5368,7 @@ export async function PATCH(
   }
   if (offeredPaths.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
     try {
-      const leaseTask = await db.query.tasks.findFirst({
-        where: sqlWhere(eq(tasks.id, worker.taskId)),
-        columns: { category: true, context: true },
-      });
+      const leaseTask = openingTask;
       const { inserted: leased, blocked } = isReadOnlyReview(leaseTask?.category, leaseTask?.context)
         ? { inserted: [] as string[], blocked: [] as Array<{ path: string; blockingTaskId: string; blockingPath: string }> }
         : await acquireObservedPaths(worker.workspaceId, worker.taskId, offeredPaths);
@@ -5089,12 +5442,16 @@ export async function PATCH(
   // §6d Passive overlap detection: compare accumulated observedTouches against active siblings.
   // Advisory-only — never rejects the update_progress call.
   const accumulatedTouches = (updates.observedTouches as string[] | null | undefined) ?? null;
-  if (accumulatedTouches && accumulatedTouches.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
-    try {
+  // Advisory and reply-independent: it runs after the reply (R-33). The ack of
+  // served worker messages below stays in the request.
+  const overlapWorkspaceId = worker.workspaceId;
+  const overlapTaskId = worker.taskId;
+  if (accumulatedTouches && accumulatedTouches.length > 0 && overlapWorkspaceId && overlapTaskId && !isTerminalStatus) {
+    await afterReply('passive overlap detection', async () => {
       const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const siblings = await db.query.workers.findMany({
         where: sqlWhere(and(
-          eq(workers.workspaceId, worker.workspaceId),
+          eq(workers.workspaceId, overlapWorkspaceId),
           not(eq(workers.id, id)),
           not(inArray(workers.status, TERMINAL_WORKER_STATUSES)),
           isNull(workers.mergedAt),
@@ -5170,7 +5527,7 @@ export async function PATCH(
         // Emit Pusher event on workspace channel.
         const overlapEvent = {
           detectedWorkerId: id,
-          detectedTaskId: worker.taskId,
+          detectedTaskId: overlapTaskId,
           siblingWorkerId: sibling.id,
           siblingTaskId: sibling.taskId,
           overlappingPaths: contended,
@@ -5178,7 +5535,7 @@ export async function PATCH(
           detectedByBranch: updated.branch ?? worker.branch,
           detectedBySha: updated.lastCommitSha ?? worker.lastCommitSha ?? null,
         };
-        await triggerEvent(channels.workspace(worker.workspaceId), 'path_overlap_detected', overlapEvent);
+        await triggerEvent(channels.workspace(overlapWorkspaceId), 'path_overlap_detected', overlapEvent);
 
         // Deliver structured WorkerMessage to sibling's task via pendingWorkerMessages.
         // One atomic append (capped in SQL): the sibling is checking in and
@@ -5203,7 +5560,7 @@ export async function PATCH(
         if (contended.length > 0) {
           await deliver(buildWorkerMessage({
             type: 'path_blocked_on_you',
-            fromTaskId: worker.taskId,
+            fromTaskId: overlapTaskId,
             toTaskId: sibling.taskId!,
             body: {
               overlappingPaths: contended,
@@ -5216,7 +5573,7 @@ export async function PATCH(
         if (regenerable.length > 0) {
           await deliver(buildWorkerMessage({
             type: 'path_regenerable_overlap',
-            fromTaskId: worker.taskId,
+            fromTaskId: overlapTaskId,
             toTaskId: sibling.taskId!,
             body: {
               overlappingPaths: regenerable.map(r => r.path),
@@ -5239,20 +5596,11 @@ export async function PATCH(
           .set({
             context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('notifiedOverlaps', ${JSON.stringify([...notifiedOverlaps, ...newNotifications])}::jsonb)`,
           })
-          .where(eq(tasks.id, worker.taskId));
+          .where(eq(tasks.id, overlapTaskId));
       }
-      if (deliveredMessageIds.length > 0) {
-        await clearWorkerMessages(worker.taskId, deliveredMessageIds);
-      }
-    } catch (err) {
-      console.error(`[Worker ${id}] Passive overlap detection failed:`, err);
-      // Fall through — an ack still has to be honoured.
-      if (deliveredMessageIds.length > 0) {
-        await clearWorkerMessages(worker.taskId, deliveredMessageIds);
-      }
-    }
-  } else if (deliveredMessageIds.length > 0 && worker.taskId) {
-    // No overlap detection this tick — honour the delivery ack on its own.
+    });
+  }
+  if (deliveredMessageIds.length > 0 && worker.taskId) {
     await clearWorkerMessages(worker.taskId, deliveredMessageIds);
   }
 
@@ -5266,6 +5614,7 @@ export async function PATCH(
   // row. The full row can exceed Pusher's 10 KB limit (instructionHistory,
   // mcpCalls, milestones). Clients that need fresh row data call router.refresh()
   // or re-fetch; clients that only need status use the fields below.
+  const isTerminalEvent = status === 'completed' || status === 'failed';
   const eventName = status === 'completed' ? events.WORKER_COMPLETED
     : status === 'failed' ? events.WORKER_FAILED
     : events.WORKER_PROGRESS;
@@ -5291,10 +5640,33 @@ export async function PATCH(
     pusherPayload.heartbeatOk = true;
   }
 
-  await triggerEvent(channels.worker(id), eventName, pusherPayload);
+  // ── No-op suppression ──────────────────────────────────────────────────
+  // Terminal events always fire (completions/failures need to reach the
+  // dashboard immediately). WORKER_PROGRESS events are suppressed when
+  // nothing visible to subscribers has changed — this is the single biggest
+  // lever for daily Pusher message volume, since runners sync every ~30 s
+  // even when idle within a task.
+  // A report that leaves the current action alone (a bare delivery
+  // acknowledgement) has not cleared it.
+  const shouldPublish = isTerminalEvent || hasVisibleWorkerChange(
+    { status: worker.status, currentAction: worker.currentAction },
+    { status: updated.status, currentAction: updates.currentAction !== undefined ? updates.currentAction : worker.currentAction },
+    taskProgress,
+  );
+  // A human message moved to delivered or read. The task's steering
+  // conversation listens on the worker channel for it; nothing on the
+  // workspace channel shows delivery.
+  const deliveryMoved = !!writeSet && ('instructionHistory' in writeSet || 'pendingInstructions' in writeSet);
 
-  if (worker.workspaceId) {
-    await triggerEvent(channels.workspace(worker.workspaceId), eventName, pusherPayload);
+  await afterReply('publish worker changes', async () => {
+  if (shouldPublish) {
+    await triggerEvent(channels.worker(id), eventName, pusherPayload);
+
+    if (worker.workspaceId) {
+      await triggerEvent(channels.workspace(worker.workspaceId), eventName, pusherPayload);
+    }
+  } else if (deliveryMoved) {
+    await triggerEvent(channels.worker(id), events.WORKER_PROGRESS, { ...pusherPayload, delivery: true });
   }
 
   // Broadcast budget-reset task status change for dashboard visibility.
@@ -5337,10 +5709,15 @@ export async function PATCH(
         const durationMs = startedAt && completedAt
           ? new Date(completedAt as any).getTime() - new Date(startedAt as any).getTime()
           : null;
+        // The PR is derived on read (workflow/task-pr.ts); the result no longer stores it. Read only
+        // when there is a callback to send it to.
+        const taskPr = (taskForNotify.context as { callback?: unknown } | null)?.callback
+          ? await taskPrOf(worker.taskId)
+          : null;
         sendTaskCallback(taskForNotify as any, {
           status,
           summary: isSensitive ? undefined : result?.summary,
-          prUrl: result?.prUrl,
+          prUrl: taskPr?.prUrl ?? result?.prUrl,
           structuredOutput: isSensitive ? undefined : (result as any)?.structuredOutput,
         }, {
           turns: updates.turns ?? worker.turns,
@@ -5359,6 +5736,8 @@ export async function PATCH(
       console.error('Notification dispatch error:', err);
     }
   }
+
+  });
 
   // ── Deliver undelivered user replies / mission guidance to this worker ──────
   //
@@ -5394,30 +5773,40 @@ export async function PATCH(
   let noteInstructions = '';
   if (instructionConsumer && status !== 'completed' && status !== 'failed' && worker.taskId) {
     try {
-      const taskForNotes = await db.query.tasks.findFirst({
-        where: sqlWhere(eq(tasks.id, worker.taskId)),
-        columns: { missionId: true },
-      });
       // Task-scoped notes (a task with no mission) are addressed by taskId. The
       // block used to require a missionId, so replies on mission-less tasks were
       // never delivered at all.
-      const noteScope = taskForNotes?.missionId
-        ? eq(missionNotes.missionId, taskForNotes.missionId)
+      const noteScope = openingTask?.missionId
+        ? eq(missionNotes.missionId, openingTask.missionId)
         : and(isNull(missionNotes.missionId), eq(missionNotes.taskId, worker.taskId));
       // Not yet handed to THIS worker.
       const undeliveredToWorker = sql`NOT (COALESCE(${missionNotes.deliveredTo}, '[]'::jsonb) @> ${JSON.stringify([id])}::jsonb)`;
       const servedNoteIds: string[] = [];
 
-      // Find this worker's answered questions
-      const workerQuestions = await db.query.missionNotes.findMany({
-        where: sqlWhere(and(
-          noteScope,
-          eq(missionNotes.workerId, id),
-          eq(missionNotes.type, 'question'),
-          eq(missionNotes.status, 'answered'),
-        )),
-        columns: { id: true, title: true },
+      // This worker's answered questions and the mission guidance it has not
+      // seen, in one round trip; replies are read only when a question exists.
+      const noteReads = await readRound({
+        questions: db.query.missionNotes.findMany({
+          where: sqlWhere(and(
+            noteScope,
+            eq(missionNotes.workerId, id),
+            eq(missionNotes.type, 'question'),
+            eq(missionNotes.status, 'answered'),
+          )),
+          columns: { id: true, title: true },
+        }),
+        guidance: db.query.missionNotes.findMany({
+          where: sqlWhere(and(
+            noteScope,
+            eq(missionNotes.type, 'guidance'),
+            eq(missionNotes.status, 'open'),
+            undeliveredToWorker,
+          )),
+          orderBy: sqlOrderBy([desc(missionNotes.createdAt)]),
+          limit: 5,
+        }),
       });
+      const workerQuestions = noteReads.questions ?? [];
 
       if (workerQuestions.length > 0) {
         // Fetch the undelivered replies to those questions
@@ -5444,17 +5833,7 @@ export async function PATCH(
       }
 
       // Also deliver mission-wide guidance notes this worker has not seen
-      const guidance = await db.query.missionNotes.findMany({
-        where: sqlWhere(and(
-          noteScope,
-          eq(missionNotes.type, 'guidance'),
-          eq(missionNotes.status, 'open'),
-          undeliveredToWorker,
-        )),
-        orderBy: sqlOrderBy([desc(missionNotes.createdAt)]),
-        limit: 5,
-      });
-
+      const guidance = noteReads.guidance ?? [];
       if (guidance.length > 0) {
         const guidanceLines = guidance.map(g => `- ${g.title}${g.body ? `: ${g.body}` : ''}`);
         servedNoteIds.push(...guidance.map(g => g.id));
@@ -5573,6 +5952,8 @@ async function handleReviewerOutcomeIfNeeded(
   reviewerTaskId: string,
   workspaceId: string,
   structuredOutput: unknown,
+  /** Who reported the verdict: the principal its kernel command is submitted for (AC-9). */
+  principal: KernelPrincipal | null,
 ): Promise<void> {
   const reviewerTask = await db.query.tasks.findFirst({
     where: sqlWhere(eq(tasks.id, reviewerTaskId)),
@@ -5668,9 +6049,10 @@ async function handleReviewerOutcomeIfNeeded(
   // escalationReason, which is downstream of an untrusted diff.
   let effectiveVerdict = output.verdict;
   let serverOverrideReason: string | null = null;
-  let serverOverrideSource: 'files' | 'confidence' | null = null;
+  let serverOverrideSource: 'files' | 'confidence' | 'evidence' | null = null;
   if (output.verdict === 'approve' && reviewPolicy) {
-    let currentFiles: Array<{ filename: string }> = [];
+    // Null until read: an unreadable list escalates, an empty one (nothing changed) does not.
+    let currentFiles: Array<{ filename: string }> | null = null;
     let migrationSafety: MigrationSafety | undefined;
     try {
       const { githubApi } = await import('@/lib/github');
@@ -5691,11 +6073,11 @@ async function handleReviewerOutcomeIfNeeded(
         repoFullName,
         prNumber,
         headSha,
-        files: currentFiles as never,
+        files: (currentFiles ?? []) as never,
         ...(deltaBase ? { deltaBase, baseRef: gatedWorker?.prBaseRef ?? null } : {}),
       });
     } catch (err) {
-      // Leave currentFiles empty: the helper treats an unreadable file list as
+      // Leave currentFiles null: the helper treats an unreadable file list as
       // grounds to escalate, so a transient GitHub failure cannot grant a merge.
       console.warn(`[reviewer] Could not re-check PR #${prNumber} files at verdict time:`, err);
     }
@@ -5771,9 +6153,33 @@ async function handleReviewerOutcomeIfNeeded(
     }).catch((err: unknown) => console.warn(`[reviewer] copy review note for PR #${prNumber} not posted:`, err));
   }
 
+  // The reviewer's evidence: the commit its checkout was at when it judged. It is
+  // recorded with the verdict, and a verdict read at any other commit than the
+  // round's head (or with none reported) is inconclusive: it never approves.
+  // Checked last, so it wins over every other reason: no gate above judged the
+  // head the reviewer actually read. A kernel round's reducer applies the same
+  // rule to `evidenceSha` and asks a reviewer again at the head (T6 → T27).
+  const evidenceSha = reviewerEvidenceSha(output);
+  const evidenceGate = applyEvidenceGate({ verdict: effectiveVerdict, evidenceSha, headSha });
+  await db
+    .update(tasks)
+    .set({
+      result: sql`COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('evidenceSha', ${evidenceSha}::text, 'evidenceAtHead', ${evidenceGate.overrideReason === null}::boolean)`,
+      updatedAt: new Date(),
+    })
+    .where(eq(tasks.id, reviewerTaskId))
+    .catch((err: unknown) =>
+      console.error(`[reviewer] could not record the evidence commit for PR #${prNumber}:`, err),
+    );
+  if (evidenceGate.overrideReason) {
+    effectiveVerdict = evidenceGate.verdict;
+    serverOverrideReason = evidenceGate.overrideReason;
+    serverOverrideSource = 'evidence';
+  }
+
   if (serverOverrideReason) {
     console.warn(
-      `[reviewer] PR #${prNumber}: model said approve, server escalated — ${serverOverrideReason}`,
+      `[reviewer] PR #${prNumber}: model said ${output.verdict}, server escalated — ${serverOverrideReason}`,
     );
     // Persist the verdict that ACTUALLY applies, alongside (never over) the
     // agent's own output. Without this the stored review still reads
@@ -5792,6 +6198,9 @@ async function handleReviewerOutcomeIfNeeded(
       );
   }
 
+  // The verdict is stored: a release candidate's approval status follows it now, not at the hourly floor (AC-78).
+  await republishPrHeads(installationId, repoFullName, [{ number: prNumber, sha: headSha }]);
+
   // ── Workflow kernel (docs/specs/workflow-state-kernel.md T6) ────────────
   // A review round of a kernel delivery: the verdict is recorded against the
   // round's own head. Only an APPLIED verdict acts; a verdict for a superseded
@@ -5802,13 +6211,15 @@ async function handleReviewerOutcomeIfNeeded(
   if (reviewerTask.deliveryId && ctx.workflowRoundId) {
     kernelOwnsVerdict = true;
     const kv = await recordReviewVerdict({
+      workspaceId,
       reviewerTask: { id: reviewerTaskId, deliveryId: reviewerTask.deliveryId, context: ctx },
       verdict: output.verdict,
       effectiveVerdict,
       headSha,
       confidence: output.confidence,
+      evidenceSha,
       output,
-    }).catch((err) => {
+    }, { principal }).catch((err) => {
       console.error(`[reviewer] workflow kernel could not record the verdict for PR #${prNumber}:`, err);
       void reportOps({ source: 'workflow-kernel:verdict', severity: 'error', message: `verdict not recorded for PR #${prNumber}`, detail: err instanceof Error ? err.message : String(err) });
       return null;
@@ -5838,8 +6249,8 @@ async function handleReviewerOutcomeIfNeeded(
       // 00d288fd: not dropped. The kernel keeps a verdict at its current head as that head's
       // review (applied when the owner ends, never asked for again); any other head's is stale.
       const adopted = await adoptReviewVerdict({
-        deliveryId: authority.deliveryId, reviewerTaskId, verdict: output.verdict, effectiveVerdict, headSha, confidence: output.confidence, output,
-      }).catch((err: unknown) => {
+        workspaceId, deliveryId: authority.deliveryId, reviewerTaskId, verdict: output.verdict, effectiveVerdict, headSha, confidence: output.confidence, evidenceSha, output,
+      }, { principal }).catch((err: unknown) => {
         console.error(`[reviewer] PR #${prNumber}: the workflow kernel could not adopt the verdict:`, err);
         return null;
       });
@@ -5898,7 +6309,9 @@ async function handleReviewerOutcomeIfNeeded(
       // A server override says so explicitly: the reviewer's own summary would
       // otherwise read as an approval on a card that escalated.
       body: (serverOverrideReason
-        ? `The reviewer approved this PR, but the server escalated it to a human (${serverOverrideSource === 'confidence' ? 'the approval is below the confidence bar' : 'the file list requires a human'}): ${serverOverrideReason}.\n\nReviewer summary: ${output.summary}`
+        ? serverOverrideSource === 'evidence'
+          ? `The reviewer's verdict (${output.verdict}) was read at another commit than this PR's head, so it counts for nothing and the server escalated the PR to a human: ${serverOverrideReason}.\n\nReviewer summary: ${output.summary}`
+          : `The reviewer approved this PR, but the server escalated it to a human (${serverOverrideSource === 'confidence' ? 'the approval is below the confidence bar' : 'the file list requires a human'}): ${serverOverrideReason}.\n\nReviewer summary: ${output.summary}`
         : (output.feedback ?? output.escalationReason ?? output.summary))
         + ledeNote
         + (effectiveVerdict === 'escalate' && output.recommendation
@@ -6228,6 +6641,8 @@ async function handleReviewerOutcomeIfNeeded(
       });
       const reviewerLastCommitSha = priorWorker?.lastCommitSha ?? null;
 
+      const repairFiles = await readRepairPrFiles((path) => githubApi(installationId, path), { repoFullName, prNumber, headSha });
+
       // Insert with dedup guard — reviewerRetryPrNumber + reviewerRetryHeadSha form a
       // partial unique index so a second reviewer completion on the same headSha is a
       // no-op. A new headSha after the fix push starts a fresh cycle (new row).
@@ -6272,7 +6687,7 @@ async function handleReviewerOutcomeIfNeeded(
             workerBranch,
             ...lineageStamp(originalTask, [prNumber]),
           },
-          pathManifest: originalTask.pathManifest,
+          pathManifest: repairPathManifest(originalTask.pathManifest as string[] | null, repairFiles),
           release: 'false',
           priority: 8,
           status: 'pending',
@@ -6355,6 +6770,32 @@ async function handleReviewerOutcomeIfNeeded(
  * a live PR read, and the migration inspector, ignoring the PR's own recorded
  * predecessors (spec workflow-state-kernel §13.11 rules 2 and 5).
  */
+/** A legacy PR has no finding ids, so a claim needs only the files and the reason. */
+function legacyFixedElsewhereOf(output: unknown): { files: string[]; reason: string } | null {
+  const o = (output && typeof output === 'object' ? (output as Record<string, unknown>).fixedElsewhere : null) as Record<string, unknown> | null | undefined;
+  if (!o || typeof o !== 'object') return null;
+  const files = Array.isArray(o.files) ? o.files.filter((x): x is string => typeof x === 'string' && !!x.trim()) : [];
+  const reason = typeof o.reason === 'string' ? o.reason.trim() : '';
+  return files.length && reason ? { files, reason } : null;
+}
+
+function legacyReviewFixGateDeps(): LegacyReviewFixGateDeps {
+  const base = legacyRepairGateDeps();
+  return {
+    diffTouches: legacyDiffTouchesFindings,
+    repoFor: base.repoFor,
+    readPr: base.readPr,
+    changedPaths: async (p) => (await import('@/lib/workflow/github-facts')).githubReader(p.installationId).changedPaths?.(p.repoFullName, p.fromSha, p.toSha) ?? null,
+    findingPaths: async (p) => {
+      const rows = await db.select({ path: reviewFeedback.path }).from(reviewFeedback).where(and(
+        eq(reviewFeedback.workspaceId, p.workspaceId), eq(reviewFeedback.repoFullName, p.repoFullName),
+        eq(reviewFeedback.prNumber, p.prNumber), eq(reviewFeedback.kind, 'inline_comment'), eq(reviewFeedback.headSha, p.headSha),
+      ));
+      return [...new Set(rows.map((r) => r.path).filter((x): x is string => !!x))];
+    },
+  };
+}
+
 function legacyRepairGateDeps(): LegacyRepairGateDeps {
   return {
     repoFor: async (workspaceId) => (await import('@/lib/workflow/github-facts')).workspaceRepo(workspaceId),

@@ -29,6 +29,7 @@ import { canCompleteMission } from '@/lib/mission-completion';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { notifyTeamOf } from '@/lib/notify';
 import { recordAndDispatchRelease } from '@/lib/release/record';
+import { amendCandidateOnFixMerge } from '@/lib/release/candidate-amend';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import { buildWorkflowRunOutcome, hasOpenReleasePr, isConfiguredReleaseRun, mapWorkflowConclusionToReleaseState } from '@/lib/release/workflow-run';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
@@ -75,6 +76,26 @@ function recordProdMerge(e: EventOf<'pr.merged'>): void {
   }).catch(err =>
     console.error(`[webhook] advanceGatedReleaseOnPrMerge failed for PR #${pr.number} on ${repository.full_name}:`, err),
   );
+}
+
+/**
+ * The dev-side fix for a red frozen candidate merged: amend the candidate
+ * (lib/release/candidate-amend.ts). A merge found by reconciliation carries no
+ * delivery; the amendment then looks up the installation and the base itself.
+ */
+async function amendCandidateOnFix(e: EventOf<'pr.merged'>): Promise<void> {
+  const d = e.delivery;
+  const out = await amendCandidateOnFixMerge({
+    repoFullName: e.repoFullName,
+    prNumber: e.prNumber,
+    ...(d ? { baseRef: d.baseRef, installationId: d.installationId } : {}),
+  });
+  if (out.kind === 'dispatch_failed') {
+    console.error(`[release-amend] PR #${e.prNumber} on ${e.repoFullName}: ${out.error}`);
+  } else if (out.kind === 'skipped' && out.reason !== 'not_a_candidate_fix') {
+    // A candidate fix that did not amend: say why, so a missing amendment can be traced.
+    console.log(`[release-amend] PR #${e.prNumber} on ${e.repoFullName}: skipped (${out.reason})${d ? '' : ' [reconciled merge]'}`);
+  }
 }
 
 async function releaseOnTaskPrMerge(e: EventOf<'task.pr_merged'>): Promise<void> {
@@ -559,7 +580,7 @@ async function readBackWorkflowRun(e: EventOf<'workflow_run.completed'>): Promis
   if (!succeeded) {
     void notifyTeamOf({ taskId: matchingTask.id }, 'needsAttention', {
       title: `Release workflow failed: ${run.name}`,
-      message: `Conclusion: ${run.conclusion ?? 'unknown'}. Prod has not shipped. Check the run for details.`,
+      message: `Conclusion: ${run.conclusion ?? 'unknown'}. Nothing was released to production. Check the run for details.`,
       url: run.html_url,
       urlTitle: 'View workflow run',
       priority: 1,
@@ -569,6 +590,7 @@ async function readBackWorkflowRun(e: EventOf<'workflow_run.completed'>): Promis
 
 export const releaseSubscribers: readonly AnySubscriber[] = [
   subscriber('releases', 'pr.merged', 'release-record-prod-merge', recordProdMerge),
+  subscriber('releases', 'pr.merged', 'release-candidate-amend-on-fix', amendCandidateOnFix),
   subscriber('releases', 'task.pr_merged', 'release-path-b-trigger', releaseOnTaskPrMerge),
   subscriber('releases', 'workflow_run.completed', 'release-workflow-run-readback', readBackWorkflowRun),
 ];

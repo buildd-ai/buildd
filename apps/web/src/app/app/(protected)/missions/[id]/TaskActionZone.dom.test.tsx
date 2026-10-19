@@ -106,13 +106,31 @@ describe('TaskActionZone — Run now frame', () => {
   });
 });
 
+describe('TaskActionZone — queued line names its subject', () => {
+  it('a plain queued task keeps the plain line', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount();
+    await flush();
+    expect(container.textContent).toContain('Waiting for a runner to claim it.');
+  });
+
+  it('a queued row whose delivery is already moving says the NEXT RUN waits, not the delivery', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ deliveryReading: 'Approved · checking' });
+    await flush();
+    const text = container.textContent ?? '';
+    expect(text).toContain('Approved · checking. The next run is waiting for a runner to claim it.');
+    expect(text).not.toContain('Waiting for a runner to claim it.');
+  });
+});
+
 describe('TaskActionZone — inline Force start', () => {
   it('a bypassable 422 offers Force start, and pressing it posts forceOverride exactly once', async () => {
     stubFetch({ status: 422, body: { gateReason: 'mission_local', canForce: true, blockClass: 'policy' } });
     await mount();
     await act(async () => { button('Run now')!.click(); });
     await flush();
-    expect(container.textContent).toContain('Runs from a local session');
+    expect(container.textContent).toContain('Runs from your session');
     const force = button('Force start');
     expect(force).toBeDefined();
     await act(async () => { force!.click(); });
@@ -344,7 +362,7 @@ describe('TaskActionZone — overrides carry through a chain of refusals', () =>
     await flush();
     await act(async () => { button('Start anyway')!.click(); });
     await flush();
-    expect(container.textContent).toContain('Runs from a local session');
+    expect(container.textContent).toContain('Runs from your session');
     await act(async () => { button('Force start')!.click(); });
     await flush();
     expect(startCalls().at(-1)!.body).toEqual({ forceOverride: true, capExempt: true });
@@ -417,7 +435,7 @@ describe('TaskActionZone — failure kind routes recovery', () => {
     stubFetch({ status: 200, body: {} });
     await mount({ phase: 'failed', failureKind: 'execution', lastError: { excerpt: 'Tests failed: 3 of 12' }, historyHref: '/h' });
     await flush();
-    expect(container.textContent).toContain('Worker failed');
+    expect(container.textContent).toContain('Agent failed');
     expect(button('Retry on Claude')).toBeDefined();
     expect(button('Switch to Codex')).toBeDefined();
     expect(container.textContent).not.toContain('verification failed');
@@ -435,7 +453,7 @@ describe('TaskActionZone — failure kind routes recovery', () => {
     expect(button('Retry')).toBeUndefined();
     expect(button('Switch to Codex')).toBeUndefined();
     expect(text).not.toContain('Retry on Claude');
-    expect(text).not.toContain('Worker failed');
+    expect(text).not.toContain('Agent failed');
     expect(text.length).toBeLessThan(120);
     expect(dupes(text)).toBeLessThan(3);
   });
@@ -449,11 +467,46 @@ describe('TaskActionZone — failure kind routes recovery', () => {
     expect(text).toContain('Implementation complete, verification failed');
     expect(button('Retry on Claude')).toBeUndefined();
     expect(button('Switch to Codex')).toBeUndefined();
-    expect(text).not.toContain('Worker failed');
+    expect(text).not.toContain('Agent failed');
     expect(text).not.toContain('Skip this audit');
     await act(async () => { button('Retry the audit')!.click(); });
     await flush();
     expect(calls.some(c => c.url === '/api/tasks/t1/reassign?force=true')).toBe(true);
+  });
+
+  it('an audit that never ran because its prerequisite failed offers no retry, only the failed task (072de598 AC-13)', async () => {
+    // As the phone mission focus card mounts it: unframed, with the strip's Task link trailing.
+    codexConfigured = true;
+    stubFetch({ status: 200, body: {} });
+    await mount({
+      phase: 'failed', failureKind: 'dependency', framed: false, historyHref: '/h',
+      taskTitle: '[surface audit] Kernel mission',
+      waitingOn: { taskId: 'build-1', title: 'Make PR review decisions commit-scoped and truthful' },
+      lastError: { excerpt: 'Blocked: dependency "Make PR review decisions commit-scoped and truthful" (build-1) failed' },
+      trailing: <a href="/sheet">Task →</a>,
+    });
+    await flush();
+    const zone = container.querySelector('[data-testid="task-action-zone"]')!;
+    expect(zone.getAttribute('data-actions')).toBe('waiting_on_failed history');
+    const text = container.textContent ?? '';
+    expect(text).toContain('Waiting on failed work');
+    expect(text).toContain('This starts once it completes.');
+    for (const label of ['Retry on Claude', 'Switch to Codex', 'Retry the audit', 'Run now']) expect(button(label)).toBeUndefined();
+    expect(text).not.toContain('Agent failed');
+    expect(text).not.toContain('Skip this audit');
+    const link = container.querySelector('[data-action="open_failed_dependency"]') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('/app/tasks/build-1');
+    // Nothing is fetched to offer a backend switch it will never show.
+    expect(calls.some(c => c.url.endsWith('/backends'))).toBe(false);
+    expect(calls.some(c => c.url.includes('/reassign'))).toBe(false);
+  });
+
+  it('a builder that never ran says it can run again once the failed task completes', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', failureKind: 'dependency', taskTitle: 'Second builder', waitingOn: { taskId: 'build-1', title: 'Build it' }, lastError: null });
+    await flush();
+    expect(container.textContent).toContain('It can run again once that task completes.');
+    expect(button('Retry on Claude')).toBeUndefined();
   });
 
   it('an execution failure never offers audit recovery', async () => {

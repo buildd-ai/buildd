@@ -60,7 +60,7 @@ describe('MissionOverview, 11 tasks with delivery', () => {
   const f = compact.missionDetailCompactFixture('eleven', null);
   const out = renderToStaticMarkup(<MissionOverview model={f.model} deliveries={f.deliveries} missionId="mission-1" workspaceId="ws-1" />);
 
-  it('draws Build › Audit › Land once (the Lifecycle line), not a second stage grid', () => {
+  it('draws Build › Verify › Deliver once (the Lifecycle line), not a second stage grid', () => {
     expect(out.match(/data-testid="lifecycle"/g)).toHaveLength(1);
     expect(out).not.toContain('data-testid="delivery-stages"');
   });
@@ -98,7 +98,9 @@ describe('MissionOverview groups', () => {
     expect(out).toContain('data-wait="slot"');
     expect(out).toContain('data-wait="hold"');
     expect(out).toMatch(/aria-label="\d\d Next in line: /);
-    expect(out).toMatch(/aria-label="\d\d Held: /);
+    // A hold names its cause (terms catalog); with no cause known it reads Waiting, never Held.
+    expect(out).toMatch(/aria-label="\d\d Waiting: /);
+    expect(out).not.toMatch(/aria-label="\d\d Held: /);
   });
 
   it('the legend says the groups in words', () => {

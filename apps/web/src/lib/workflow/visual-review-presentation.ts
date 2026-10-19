@@ -95,6 +95,15 @@ function queuedHold(state: MissionVisualReviewState): string | null {
   return phrase ? `${phrase[0].toUpperCase()}${phrase.slice(1)}.` : null;
 }
 
+/** A closed mission's pass on an earlier commit, naming both commits when known. */
+export function earlierCommitDetail(state: Pick<MissionVisualReviewState, 'evidenceSha' | 'branch'>): string {
+  const short = (sha: string | null) => (sha ? sha.slice(0, 7) : null);
+  const judged = short(state.evidenceSha);
+  const delivered = short(state.branch.headSha);
+  const passed = judged ? `It passed on ${judged} before the mission completed.` : 'It passed before the mission completed, on a commit the check did not record.';
+  return `${passed} The delivered commit${delivered ? ` ${delivered}` : ''} was not checked again.`;
+}
+
 export function presentVisualReview(state: MissionVisualReviewState, opts: PresentOptions = {}): VisualReviewPresentation {
   const pr = state.branch.integrationPr;
   const prStage = pr?.stage ?? null;
@@ -128,6 +137,13 @@ export function presentVisualReview(state: MissionVisualReviewState, opts: Prese
 
   if (state.status === 'passed') {
     const passedRecord: VisualReviewRecord = { kind: 'passed', text: 'Visual check passed', detail: state.scope.screens ? `${plural(state.scope.screens, 'screen')} checked.` : null };
+    if (state.passedOnEarlierCommit) {
+      const detail = earlierCommitDetail(state);
+      return {
+        ...quiet, ...common, stage: prStage === 'merged' ? 'merged' : 'none', tone: 'neutral', label: 'Visual check passed on an earlier commit',
+        detail, showPanel: !!pr, record: { ...passedRecord, text: 'Visual check passed on an earlier commit', detail },
+      };
+    }
     if (prStage === 'merged') {
       return { ...quiet, ...common, stage: 'merged', tone: 'success', label: 'Merged', detail: 'Visual check passed before the merge.', showPanel: true, record: passedRecord };
     }
@@ -191,6 +207,15 @@ export function presentVisualReview(state: MissionVisualReviewState, opts: Prese
     return {
       ...quiet, ...common, stage: 'verifying', tone: 'info', label: `Deciding on ${plural(Math.max(f.undecided, f.issues, 1), 'flagged screen')}`,
       detail: 'No action needed from you.', showPanel: true, problem: 'product', findings,
+    };
+  }
+
+  // Never ran: build work it checks failed. Not a system problem, and nothing to retry here (spec 072de598 I-14).
+  if (state.status === 'queued' && state.waitingOn) {
+    const title = state.waitingOn.title?.trim();
+    return {
+      ...quiet, ...common, stage: 'verifying', tone: 'neutral', label: 'Waiting on failed work', showPanel: true,
+      detail: `${title ? `“${title}”` : 'Build work it checks'} failed. The visual check starts once it completes.`,
     };
   }
 

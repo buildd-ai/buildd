@@ -40,7 +40,7 @@ const memClient = {
   }),
   delete: mock(async (id: string) => { deleted.push(id); return { success: true }; }),
   search: mock(async () => ({ results: [], total: 0 })),
-  batch: mock(async () => ({ memories: [] })),
+  batch: mock(async (ids: string[]) => ({ memories: rows.filter(r => ids.includes(r.id)).map(full) })),
 };
 
 // The recall index dashboard writes mirror into.
@@ -200,6 +200,28 @@ describe('GET: listed under the workspace memory key only', () => {
     new NextRequest(`http://localhost/api/workspaces/${WS}/memory${qs}`),
     { params: Promise.resolve({ id: WS }) },
   );
+
+  it('hydrates explicit ids without scanning a recent page, excluding other projects', async () => {
+    const res = await list('?ids=mem-own&ids=mem-foreign&ids=mem-teamwide&ids=mem-own');
+    const data = await res.json();
+    expect(data.memories.map((m: any) => m.id)).toEqual(['mem-own']);
+    expect(data.total).toBe(1);
+    expect(memClient.batch).toHaveBeenCalledWith(['mem-own', 'mem-foreign', 'mem-teamwide']);
+    expect(memClient.search).not.toHaveBeenCalled();
+  });
+
+  it('does not hydrate ids when workspace memory is disabled', async () => {
+    workspaceKey = null;
+    const res = await list('?ids=mem-own');
+    expect(await res.json()).toEqual({ memories: [], total: 0, memoryUnavailable: true });
+    expect(memClient.batch).not.toHaveBeenCalled();
+  });
+
+  it('rejects an oversized id batch rather than silently dropping requested hits', async () => {
+    const res = await list('?' + new URLSearchParams(Array.from({ length: 51 }, (_, i) => ['ids', `memory-${i}`])));
+    expect(res.status).toBe(400);
+    expect(memClient.batch).not.toHaveBeenCalled();
+  });
 
   it('searches under the resolved key', async () => {
     const res = await list('?search=auth');

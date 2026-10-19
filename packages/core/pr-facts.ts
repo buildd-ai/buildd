@@ -32,9 +32,12 @@
  * closed) handed to this funnel therefore carries a `PrFactScope`, minted only
  * in the kernel (`apps/web/src/lib/workflow/pr-fact-scope.ts`), whose predicate
  * keeps a kernel-owned row out unless its delivery already says the same thing.
- * The type requires the scope and the funnel refuses a terminal fact without
- * one. Non-terminal facts (open, CI, conflict, unresolvable) are unscoped until
- * S4b.
+ * Non-terminal facts (open, CI, conflict, unresolvable) carry one too: its
+ * `defers` predicate names the kernel-owned rows, whose live status every
+ * kernel transition projects from the delivery's own readings
+ * (`prLiveProjectionSql`, kernel.ts `w_live`). The funnel reports those rows
+ * (`deferred: true`) and writes none of them. The type requires a scope for
+ * every fact and the funnel refuses a fact without one.
  *
  * The write-site guards (`packages/core/__tests__/pr-fact-write-sites.test.ts`,
  * and the S4a block of `workflow-write-sites.test.ts`) fail any other module
@@ -44,7 +47,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from './db';
 import { CLOSED_OR_UNRESOLVABLE, PR_FACT_SCOPE, guardSql, setSql, type PrFactScope } from './pr-fact-sql';
 
-export { PR_FACT_SCOPE, prFactProjectionSql, unscopedPrFactScope, type PrFactScope, type TerminalPrFactKind } from './pr-fact-sql';
+export { PR_FACT_SCOPE, prFactProjectionSql, prLiveProjectionSql, unscopedPrFactScope, type NonTerminalPrFactKind, type PrFactScope, type TerminalPrFactKind } from './pr-fact-sql';
 
 export type PrCiStatus = 'ci_running' | 'ci_failed' | 'ci_green';
 
@@ -97,6 +100,8 @@ export interface RecordedPrFactRow {
   workspaceId: string | null;
   /** The status the row held before this fact applied. */
   previousStatus: string | null;
+  /** A delivery-owned row: the fact is new for it, but its column is the kernel transition's to write, so nothing was written. */
+  deferred: boolean;
 }
 
 /**
@@ -135,12 +140,31 @@ function targetSql(t: PrFactTarget): SQL | null {
  * One statement: apply `fact` to every targeted row the guard allows and
  * return those rows (with the status each held before). Null when the target
  * names no PR identity or the fact is about an old head: nothing to write.
+ * `defer` (a non-terminal fact's scope) names rows the guard allows that are
+ * reported, flagged `deferred`, and left unwritten.
  */
-export function recordPrFactSql(target: PrFactTarget, fact: PrFact, bookkeeping: PrFactBookkeeping = {}, scope: SQL | null = null): SQL | null {
+export function recordPrFactSql(target: PrFactTarget, fact: PrFact, bookkeeping: PrFactBookkeeping = {}, scope: SQL | null = null, defer: SQL | null = null): SQL | null {
   const target_ = targetSql(target);
   if (!target_ || staleCiFact(fact)) return null;
   // The scope sits in both the row lock and the UPDATE's own WHERE, like the guard.
   const guard = scope ? sql`${guardSql(fact)} AND ${scope}` : guardSql(fact);
+  if (defer) {
+    return sql`-- pr-facts:record
+WITH prev AS (
+  SELECT w.id, w.task_id, w.workspace_id, w.pr_lifecycle_status AS previous_status, ${defer} AS deferred
+  FROM workers w
+  WHERE ${target_} AND ${guard}
+  FOR UPDATE
+), upd AS (
+  UPDATE workers w SET ${setSql(fact, bookkeeping)}
+  FROM prev
+  WHERE w.id = prev.id AND NOT prev.deferred AND ${guard}
+  RETURNING w.id
+)
+SELECT prev.id, prev.task_id, prev.workspace_id, prev.previous_status, prev.deferred
+FROM prev
+WHERE prev.deferred OR prev.id IN (SELECT id FROM upd)`;
+  }
   return sql`-- pr-facts:record
 WITH prev AS (
   SELECT w.id, w.pr_lifecycle_status AS previous_status
@@ -160,33 +184,53 @@ const dbExec: PrFactExec = (q) => db.execute(q) as unknown as Promise<{ rows?: u
 export interface RecordPrFactOptions {
   bookkeeping?: PrFactBookkeeping;
   exec?: PrFactExec;
-  /** Required for a terminal fact (merged, closed); see `PrFactScope`. */
-  scope?: PrFactScope;
+  /** Required for every fact; see `PrFactScope`. */
+  scope: PrFactScope;
 }
 
 /**
  * Record a PR fact on the fact cache. Idempotent: a replay, or a fact the
  * cache already holds a terminal answer to, writes nothing and returns [].
- * A terminal fact needs a scope (S4a): without one it is refused, not written.
+ * Every fact needs a scope (S4a, AC-1): without one it is refused, not written.
+ * A row the scope defers comes back `deferred: true`, unwritten.
  */
-export async function recordPrFact(target: PrFactTarget, fact: NonTerminalPrFact, opts?: RecordPrFactOptions): Promise<RecordedPrFactRow[]>;
-export async function recordPrFact(target: PrFactTarget, fact: PrFact, opts: RecordPrFactOptions & { scope: PrFactScope }): Promise<RecordedPrFactRow[]>;
 export async function recordPrFact(
   target: PrFactTarget,
   fact: PrFact,
-  opts: RecordPrFactOptions = {},
+  opts: RecordPrFactOptions,
 ): Promise<RecordedPrFactRow[]> {
-  if (isTerminal(fact) && !opts.scope?.[PR_FACT_SCOPE]) {
+  const scope = opts?.scope;
+  if (!scope?.[PR_FACT_SCOPE]) {
     throw new Error(`recordPrFact: a ${fact.kind} fact needs a scope (packages/core/pr-facts.ts PrFactScope, minted in apps/web/src/lib/workflow/pr-fact-scope.ts)`);
   }
-  const q = recordPrFactSql(target, fact, opts.bookkeeping, isTerminal(fact) ? opts.scope!.where(fact.kind) : null);
+  const q = isTerminal(fact)
+    ? recordPrFactSql(target, fact, opts.bookkeeping, scope.where(fact.kind))
+    : recordPrFactSql(target, fact, opts.bookkeeping, null, scope.defers?.(fact.kind) ?? null);
   if (!q) return [];
   const res = await (opts.exec ?? dbExec)(q);
   const rows = (Array.isArray(res) ? res : (res as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>;
-  return rows.map((r) => ({
+  const recorded = rows.map((r) => ({
     id: String(r.id),
     taskId: r.task_id == null ? null : String(r.task_id),
     workspaceId: r.workspace_id == null ? null : String(r.workspace_id),
     previousStatus: r.previous_status == null ? null : String(r.previous_status),
+    deferred: r.deferred === true,
   }));
+  const written = recorded.filter((r) => !r.deferred);
+  if (written.length > 0 && recordedHook) {
+    try { recordedHook(written); } catch { /* a listener never fails the write */ }
+  }
+  return recorded;
+}
+
+let recordedHook: ((rows: RecordedPrFactRow[]) => void) | null = null;
+
+/**
+ * Told the worker rows each `recordPrFact` wrote, after the write. The web app
+ * sets it (apps/web/src/lib/work-changed.ts) so state derived from a PR's
+ * lifecycle, the stored mission summary, is refreshed; it must not throw or
+ * wait. One hook: setting it again replaces it.
+ */
+export function setPrFactsRecordedHook(hook: ((rows: RecordedPrFactRow[]) => void) | null): void {
+  recordedHook = hook;
 }

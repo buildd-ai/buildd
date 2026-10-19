@@ -2,7 +2,7 @@
 title: Force Start Past a Coordination Wait
 status: active
 owner: max
-last_verified: 2026-10-12
+last_verified: 2026-10-18
 summary: A dashboard Start MUST name the real waiting reasons, and Force start MUST lift exactly the confirmed forceable ones through one audited, single-use intent a runner's claim honours.
 domain: tasks
 surfaces: [apps/web/src/app/api/tasks/[id]/start/route.ts, packages/core/waiting-reason.ts, apps/web/src/lib/force-start.ts, apps/web/src/lib/coordination-probe.ts]
@@ -64,7 +64,6 @@ producer, `lib/coordination-probe.ts`, read by `/start` and `GET /api/tasks/[id]
 | soft overlap (`pathDeclaration.softOverlaps`): migration / hard surface | `serialized_surface` | yes | claim-loop key `soft_overlap` |
 | soft overlap: same file / prefix, last verdict HOLD | `soft_overlap` | yes | claim-loop key `soft_overlap` |
 | mission concurrency cap / pacing | `mission_concurrent`, `mission_paced` | yes | claim-loop keys |
-| one scope-undeclared task per mission | `scope_undeclared_mutex` | yes (human only) | claim-loop key `advisory_manifest` |
 | planner order | `ordered_behind` (soft) | yes (human only) | claim planner off for the task |
 | local-session mission | `mission_local` | yes | `bypassHeldGate` (the claim's local prefilter) |
 | declared `dependsOn` | `dep_declared` | **never** | — |
@@ -87,8 +86,10 @@ claim's own per-edge SQL predicate (`dependencySatisfied`).
   the id to be in `pathDeclaration.inferredDependsOn`.
 - Forcing an inferred or migration overlap changes claim order only. The edit-time path lease
   (including the migration anchor) still applies, so migration numbering stays serialized.
-- The admin MCP `claim_task {force: true}` keeps its own gate set; it does not lift
-  `advisory_manifest`.
+- The admin MCP `claim_task {force: true}` keeps its own gate set.
+- Declaring no files is not a waiting reason, so there is nothing to force for it
+  (`claim-overlap-scheduling` I-46). The retired `scope_undeclared_mutex` kind stays in
+  the model only so older recorded reasons still render.
 - Declared dependencies and coordination-only holds are counted apart in every headline:
   incidental overlap ordering reads "Waiting on migration slot · N tasks also editing {area}",
   never "waiting on N dependencies".

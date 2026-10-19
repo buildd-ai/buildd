@@ -11,6 +11,7 @@ import { accountReachesWorkspace } from './workspace-reach';
 import { roleHas, type Permission, type TeamScopeCaller } from './permissions';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { readReachLink } from './granted-links';
+import { isPersonalTeamOf } from './personal-team';
 
 /**
  * Builds the two scope subqueries below without a db handle, so the predicate
@@ -147,7 +148,7 @@ export type { TeamScopeCaller };
  * one cost a separate HTTP round trip for a predicate Postgres can evaluate in
  * a single pass. The two arms are unchanged and still OR'd:
  *
- *   1. the personal team (slug = personal-{userId}), which is the fallback for
+ *   1. the personal team (teams.personal_user_id = userId), which is the fallback for
  *      accounts predating teamMembers enforcement; and
  *   2. every team the user actually has a teamMembers row for.
  *
@@ -155,11 +156,29 @@ export type { TeamScopeCaller };
  * `accountWorkspaces` is intentionally not consulted here — that is the API-key
  * account path (verifyAccountWorkspaceAccess), not the session-user path.
  *
- * Two invariants this leans on. `teams.slug` is UNIQUE (schema.ts), so the
+ * Two invariants this leans on. `teams.personal_user_id` is UNIQUE (schema.ts), so the
  * personal-team subquery matches at most one row — exactly what the old
  * findFirst did, not a widening. And the return value is an unordered set, as
  * it always was: neither of the old findMany calls carried an ORDER BY either.
  */
+/**
+ * The session user's workspace scope as a WHERE predicate on `workspaces`:
+ * their personal team's workspaces plus every team they are a member of. A
+ * query that scopes to it reads only this user's rows (spec 3ef37387 R-23).
+ */
+export function userWorkspaceScope(userId: string) {
+  return or(
+    inArray(
+      workspaces.teamId,
+      qb.select({ id: teams.id }).from(teams).where(eq(teams.personalUserId, userId)),
+    ),
+    inArray(
+      workspaces.teamId,
+      qb.select({ teamId: teamMembers.teamId }).from(teamMembers).where(eq(teamMembers.userId, userId)),
+    ),
+  );
+}
+
 export const getUserWorkspaceIds = cache(async (userId: string): Promise<string[]> => {
   const rows = await db
     .selectDistinct({ id: workspaces.id })
@@ -169,7 +188,7 @@ export const getUserWorkspaceIds = cache(async (userId: string): Promise<string[
         // 1. Workspaces via personal team (for users missing team_members rows)
         inArray(
           workspaces.teamId,
-          qb.select({ id: teams.id }).from(teams).where(eq(teams.slug, `personal-${userId}`)),
+          qb.select({ id: teams.id }).from(teams).where(eq(teams.personalUserId, userId)),
         ),
         // 2. Workspaces via team membership
         inArray(
@@ -199,7 +218,7 @@ export const getTeamWorkspaceIds = cache(async (teamId: string): Promise<string[
 
 /**
  * Get all team IDs a user belongs to, including their personal team.
- * Falls back to the personal team (slug = personal-{userId}) so that
+ * Falls back to the personal team (teams.personal_user_id) so that
  * accounts created before teamMembers enforcement still resolve their
  * own missions and workspaces — mirrors the getUserWorkspaceIds fallback.
  *
@@ -217,7 +236,7 @@ export const getUserTeamIds = cache(async (userId: string): Promise<string[]> =>
     }),
     // Personal-team fallback for accounts missing a teamMembers row
     db.query.teams.findFirst({
-      where: sqlWhere(eq(teams.slug, `personal-${userId}`)),
+      where: sqlWhere(eq(teams.personalUserId, userId)),
       columns: { id: true },
     }),
   ]);
@@ -253,7 +272,7 @@ export async function resolveAccountTeamIds(
 
 /**
  * The user's current role on a team, or null when they do not belong to it.
- * A user's own personal team (slug = personal-{userId}) counts as owner even
+ * A user's own personal team (teams.personal_user_id) counts as owner even
  * without a teamMembers row, mirroring the getUserTeamIds fallback.
  *
  * Cached per-request via React cache() (primitive args).
@@ -267,21 +286,21 @@ export const getUserTeamRole = cache(async (userId: string, teamId: string): Pro
 
   const team = await db.query.teams.findFirst({
     where: sqlWhere(eq(teams.id, teamId)),
-    columns: { slug: true },
+    columns: { personalUserId: true },
   });
-  if (team?.slug === `personal-${userId}`) return 'owner';
+  if (isPersonalTeamOf(team, userId)) return 'owner';
   return null;
 });
 
 /**
  * Get the user's default (personal) team ID.
- * This is the team with slug 'personal-{userId}'.
+ * This is the team whose personal_user_id is the user (set at sign-up).
  *
  * Cached per-request via React cache() so layout + page share the same result.
  */
 export const getUserDefaultTeamId = cache(async (userId: string): Promise<string | null> => {
   const team = await db.query.teams.findFirst({
-    where: sqlWhere(eq(teams.slug, `personal-${userId}`)),
+    where: sqlWhere(eq(teams.personalUserId, userId)),
     columns: { id: true },
   });
 
@@ -335,14 +354,29 @@ const pickDefaultTeam = cache(async (userId: string): Promise<DefaultTeamPick | 
   const [teamRows, rows] = await Promise.all([
     db.query.teams.findMany({
       where: sqlWhere(inArray(teams.id, teamIds)),
-      columns: { id: true, slug: true, timezone: true },
+      columns: { id: true, personalUserId: true, timezone: true },
     }),
     db.query.workspaces.findMany({
       where: sqlWhere(inArray(workspaces.teamId, teamIds)),
       columns: { id: true, name: true, teamId: true },
     }),
   ]);
-  const personalId = teamRows.find((t) => t.slug === `personal-${userId}`)?.id ?? null;
+  return chooseDefaultTeam(userId, teamIds, teamRows, rows);
+});
+
+/**
+ * The default-team rule, pure: the first team with workspaces, personal
+ * preferred, then personal, then the first team by id. pickDefaultTeam and the
+ * app shell's cached loader (lib/app-chrome.ts) both apply it, so the header
+ * and Home pick the same team from the same rows.
+ */
+export function chooseDefaultTeam(
+  userId: string,
+  teamIds: string[],
+  teamRows: { id: string; personalUserId: string | null; timezone: string | null }[],
+  rows: { id: string; name: string; teamId: string | null }[],
+): DefaultTeamPick {
+  const personalId = teamRows.find((t) => isPersonalTeamOf(t, userId))?.id ?? null;
   const others = teamIds.filter((id) => id !== personalId).sort();
   const order = personalId && teamIds.includes(personalId) ? [personalId, ...others] : others;
   const teamId = order.find((id) => rows.some((w) => w.teamId === id)) ?? order[0];
@@ -352,7 +386,7 @@ const pickDefaultTeam = cache(async (userId: string): Promise<DefaultTeamPick | 
     workspaces: rows.filter((w) => w.teamId === teamId).map((w) => ({ id: w.id, name: w.name })),
     timezone: isValidTimezone(tz) ? tz : null,
   };
-});
+}
 
 export type ActiveTeamScope = {
   /** The resolved active team, or null when the user belongs to no team. */
@@ -408,6 +442,8 @@ export type UserTeam = {
   id: string;
   name: string;
   slug: string;
+  /** Set when this is a user's personal team: that user's id (lib/personal-team). */
+  personalUserId: string | null;
   role: string;
   memberCount: number;
   /** Owners on the team, for the last-owner rule on Leave. Absent when the count failed. */
@@ -424,7 +460,7 @@ export const getUserTeamsWithDetails = cache(async (userId: string): Promise<Use
     // Explicit column list — `team: true` selects every column in schema.ts.
     // This runs in the cached app-layout path, so a schema change reaching it
     // during a deploy takes the whole shell down.
-    with: { team: { columns: { id: true, name: true, slug: true, plan: true } } },
+    with: { team: { columns: { id: true, name: true, slug: true, personalUserId: true, plan: true } } },
   });
 
   const validMemberships = memberships.filter(m => m.team != null);
@@ -457,6 +493,7 @@ export const getUserTeamsWithDetails = cache(async (userId: string): Promise<Use
       id: m.team.id,
       name: m.team.name,
       slug: m.team.slug,
+      personalUserId: m.team.personalUserId ?? null,
       role: m.role,
       memberCount: countMap.get(m.teamId) || 1,
       ownerCount: ownerMap.get(m.teamId),

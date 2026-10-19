@@ -149,7 +149,7 @@ import { makeWaitingReason, type WaitingReason } from '@buildd/core/waiting-reas
 /** The shapes the probe produces for a local mission and for dependency edges (lib/coordination-probe.ts). */
 const localReason = (): WaitingReason => makeWaitingReason('mission_local', {
   because: "its mission runs in a person's own session, so runners do not pick up its tasks",
-  blocker: { type: 'mission', id: 'mission-1', label: 'a local-session mission' },
+  blocker: { type: 'mission', id: 'mission-1', label: 'a mission run from your session' },
   provenance: { source: 'probe', derivedFrom: "missions.executor='local'" },
 });
 const migrationEdge = (id: string): WaitingReason => makeWaitingReason('dep_inferred', {
@@ -1546,7 +1546,6 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     activeClaims: null,
     mission: null,
     missionActiveCount: 0,
-    missionAdvisoryInFlight: null,
     orderedBehind: null,
     liveTaskIds: new Set(),
     now: new Date(),
@@ -1650,23 +1649,18 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
-  it('a human Force start lifts one scope-undeclared task per mission (human force only)', async () => {
+  it('a scope-undeclared task starts with no Force start: undeclared scope is not a wait', async () => {
     const task = { ...overlapTask, missionId: 'm-1', pathManifest: ['**'] };
     mockTasksFindFirst.mockResolvedValue(task);
     probeWith(snapshot({
       openPrTasks: [],
       mission: { status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null },
-      missionAdvisoryInFlight: new Set(['task-peer']),
+      missionActiveCount: 1,
     }));
-    const refused = await (await callHandler(createMockRequest(), 'task-123')).json();
-    expect(refused.waitingReasons[0].kind).toBe('scope_undeclared_mutex');
-    expect(refused.canForce).toBe(true);
-    const res = await callHandler(createMockRequest({
-      body: { force: { kinds: ['scope_undeclared_mutex'], reasonsDigest: refused.reasonsDigest } },
-    }), 'task-123');
+    const res = await callHandler(createMockRequest(), 'task-123');
     expect(res.status).toBe(200);
-    const ctx = (mockDbUpdate.set.mock.calls.at(-1) as any)[0].context;
-    expect(ctx.forceStart.loopKeys).toEqual(['advisory_manifest']);
+    const body = await res.json();
+    expect(body.waitingReasons ?? []).toEqual([]);
   });
 
   it('a non-forceable reason (declared dependency) offers no Force start and refuses one', async () => {
@@ -1703,7 +1697,7 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     const refused = await (await callHandler(createMockRequest(), 'task-123')).json();
     expect(refused.canForce).toBe(true);
     // The local mission leads; the five overlap edges are ordering, never "dependencies".
-    expect(refused.error).toContain('Waiting on a local-session mission');
+    expect(refused.error).toContain('Waiting on a mission run from your session');
     expect(refused.error).not.toMatch(/dependenc/);
     expect(refused.force.kinds.sort()).toEqual(['dep_inferred', 'mission_local']);
     expect(refused.force.checklist).toHaveLength(6);

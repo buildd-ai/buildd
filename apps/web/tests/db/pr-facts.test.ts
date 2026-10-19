@@ -17,7 +17,7 @@ let prSeq = 7300;
  * scope (S4a); the delivery-owned half is tests/db/kernel-pr-projection.test.ts.
  */
 const NO_DELIVERY = unscopedPrFactScope('tests/db/pr-facts: rows with no delivery');
-const recordPrFact = (t: PrFactTarget, f: PrFact, o: RecordPrFactOptions = {}) => record(t, f, { scope: NO_DELIVERY, ...o });
+const recordPrFact = (t: PrFactTarget, f: PrFact, o: Partial<RecordPrFactOptions> = {}) => record(t, f, { scope: NO_DELIVERY, ...o });
 
 beforeAll(async () => {
   assertDbConfigured();

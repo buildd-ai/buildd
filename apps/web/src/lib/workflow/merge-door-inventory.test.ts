@@ -32,9 +32,8 @@ const INVENTORY: Record<string, { what: string; calls: number }> = {
   'apps/web/src/app/api/github/pr/route.ts': { what: 'D5: merge_pr; `force` never skips the review verdict', calls: 1 },
   'apps/web/src/app/api/prs/[prNumber]/merge/route.ts': { what: 'D6: the dashboard merge (a person may override, recorded)', calls: 1 },
   'apps/web/src/lib/held-pr-tasks.ts': { what: 'D7: release PR on green CI (webhook and the held-release sweep); a kernel PR lands through the kernel', calls: 1 },
-  'apps/web/src/lib/release/pinned-merge.ts': { what: 'D8/D9/D10: the release doors, review gate + pinned to the verified head', calls: 1 },
+  'apps/web/src/lib/release/pinned-merge.ts': { what: 'D8/D9/D10: the release doors, review gate + pinned to the verified head (release-executor.ts holds no merge call of its own: a branch with no PR is refused, never merged)', calls: 1 },
   'apps/web/src/lib/specs/repo-copy.ts': { what: 'D14: a Living Spec\'s generated repo copy, only the generator\'s own commit, pinned (living-specs R-35)', calls: 1 },
-  'apps/web/src/lib/release-executor.ts': { what: 'not a door: a branch-to-prod merge with no PR (POST /merges)', calls: 1 },
   'apps/web/src/lib/mission-branch-refresh.ts': { what: 'not a door: a base refresh into a mission branch (POST /merges)', calls: 1 },
   'apps/web/src/lib/workflow/delivery-epochs.ts': { what: 'not a door: the settlement tree probe, a test merge onto a scratch ref deleted in the same step (POST /merges, workflow-kernel-library §6)', calls: 1 },
 };
@@ -88,11 +87,60 @@ describe('merge door inventory (§13.13)', () => {
     expect(counts).toEqual(Object.fromEntries(Object.entries(INVENTORY).map(([f, v]) => [f, v.calls])));
   });
 
+  test('D8/D9: the release executor holds no merge call of its own; both arms merge through release/pinned-merge.ts', () => {
+    // It used to POST /merges a worker branch with no PR into the prod branch, past the review
+    // gate, CI and any head pin (task d932a5b4). That arm is now a refusal.
+    const src = stripComments(readFileSync(join(ROOT, 'apps/web/src/lib/release-executor.ts'), 'utf8'));
+    expect(src.match(CALL) ?? []).toEqual([]);
+    expect(Object.values(PATTERNS).some((re) => re.test(src))).toBe(false);
+    expect(src.match(/\bmergeReleasePrPinned\(/g)?.length).toBe(2);
+  });
+
   test('no GraphQL merge and no GitHub auto-merge anywhere', () => {
     const files: string[] = [];
     for (const r of ROOTS) walk(r, files);
     const gql = files.filter((f) => PATTERNS.graphql_merge!.test(stripComments(readFileSync(join(ROOT, f), 'utf8'))));
     expect(gql).toEqual([]);
+  });
+
+  /**
+   * AC-13 (§4): a PR with no delivery is adopted (open_delivery) before a worker door decides who
+   * owns it, so the door lands it through the kernel's gate; a refused adoption merges nothing.
+   * Each door asks `adoptBeforeMerge` before its kernel-ownership read and before its legacy merge
+   * call, and its legacy merge call is reachable only on the adoption's `legacy` answer (kill switch
+   * off, or a delivery released to legacy). The release doors D7–D10 keep the release gate (§4).
+   */
+  const ADOPTING_DOORS: Record<string, { door: string; ownership: RegExp }> = {
+    'apps/web/src/lib/pr-landing.ts': { door: 'D2/D3', ownership: /kernelView = await kernelStatus\(\);\n\s*if \(kernelView\?\.current\.state === 'REPAIRING'\)/ },
+    'apps/web/src/lib/auto-merge.ts': { door: 'D4', ownership: /const kernelLand = / },
+    'apps/web/src/app/api/github/pr/route.ts': { door: 'D5', ownership: /const kernelView = await kernelLandingView\(worker\.workspaceId, repo\.fullName, prNumber\)/ },
+    'apps/web/src/app/api/prs/[prNumber]/merge/route.ts': { door: 'D6', ownership: /const kernelView = await kernelLandingView\(worker\.workspaceId, repoFullName, prNumber\)/ },
+  };
+  for (const [file, { door, ownership }] of Object.entries(ADOPTING_DOORS)) {
+    test(`${door}: a PR with no delivery is adopted before the door reads who owns it or merges it`, () => {
+      const src = stripComments(readFileSync(join(ROOT, file), 'utf8'));
+      const adopt = src.indexOf('adoptBeforeMerge(');
+      expect(adopt, `${file} must call adoptBeforeMerge`).toBeGreaterThan(-1);
+      expect(src.match(/adoptBeforeMerge\(/g)?.length, `${file}: one adoption per door`).toBe(1);
+      const own = src.search(ownership);
+      expect(own, `${file}: the kernel-ownership read moved; update ADOPTING_DOORS`).toBeGreaterThan(-1);
+      expect(adopt, `${file}: adoption comes before the ownership read`).toBeLessThan(own);
+      expect(adopt, `${file}: adoption comes before the legacy merge call`).toBeLessThan(src.indexOf('mergePullRequest('));
+      // A refused adoption returns before anything else runs.
+      expect(src.slice(adopt, adopt + 1200)).toMatch(/adoption\.kind === 'refused'/);
+      // A release PR or a dependency bot's PR (adoption answers `gate`) opens no delivery and merges
+      // through the release gate, never the unpinned legacy call (review of #5167).
+      const gate = src.search(/adoption\??\.kind === 'gate'/);
+      expect(gate, `${file}: the gate answer must be routed`).toBeGreaterThan(adopt);
+      expect(gate).toBeLessThan(src.indexOf('mergePullRequest('));
+      expect(src.slice(gate, gate + 600)).toMatch(/mergeOutsideKernel|outside\(/);
+    });
+  }
+
+  test('the release doors D7–D10 do not adopt: their bookkeeping lives outside the kernel (§4)', () => {
+    for (const f of ['apps/web/src/lib/held-pr-tasks.ts', 'apps/web/src/lib/release/pinned-merge.ts', 'apps/web/src/lib/release-executor.ts']) {
+      expect(stripComments(readFileSync(join(ROOT, f), 'utf8')).includes('adoptBeforeMerge('), f).toBe(false);
+    }
   });
 
   test('every door D1–D13 names the test that proves it reaches the gate, and that test exists', () => {

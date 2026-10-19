@@ -86,14 +86,14 @@ export function buildLineage({
   attempts.forEach((a, i) => {
     const n = i + 1;
     const who = [a.roleName, a.runner].filter(Boolean).join(' on ');
-    const tail = i === 0 ? 'PR opened' : 'same branch';
+    const tail = i === 0 ? 'PR opened' : 'pushed to the same branch';
     // The attempt that opened the PR pushed at least one commit, so a 0 there
     // is an unrecorded count; leave it out rather than state it.
     const count = a.commits == null || (i === 0 && a.commits === 0) ? null : plural(a.commits, 'commit');
     steps.push({
       kind: 'attempt',
       n,
-      title: `Attempt ${n}`,
+      title: i === 0 ? 'First run' : `CI fix ${i}`,
       sub: `${who ? `${who} · ` : ''}${count ? `${count}, ${tail}` : tail}`,
       at: a.startedAt != null && a.completedAt != null
         ? formatOffset(a.completedAt - a.startedAt)
@@ -147,7 +147,7 @@ export function buildLineage({
       steps.push({
         kind: 'merged',
         title: 'Merged',
-        sub: 'PR landed',
+        sub: 'into its target branch',
         at: pr.mergedAt != null && lastDone != null ? `+${formatOffset(pr.mergedAt - lastDone)}` : null,
       });
     }

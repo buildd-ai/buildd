@@ -1,19 +1,18 @@
 import { db } from '@buildd/core/db';
 import { accountWorkspaces, accounts, teamMembers, workerHeartbeats, workers } from '@buildd/core/db/schema';
-import { and, desc, eq, gt, inArray } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, or, sql } from 'drizzle-orm';
 import { accountReachesWorkspace, type ReachWorkspace } from './workspace-reach';
 import type { BrowserRunnerHeartbeat } from './visual-audit-runner';
 import {
   isPushOnlyRunner,
-  isSharedRunner,
   mountAllowlistEnforcedFrom,
-  selectRelevantRunnerAccounts,
   RUNNER_ONLINE_WINDOW_MS,
   type RunnerHeartbeat,
 } from './runner-heartbeats-shared';
 import { heartbeatAccountIds, type RunnerHeartbeatLike, type RunnerWorkerLike } from './runner-display';
 import { RUNNER_STALE_CUTOFF_MS, resolveWorkspaceExecutor, runnerFleetIdentity, readIsolationRecord } from '@buildd/shared';
-import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { runnerLiveCandidateCutoff, withLiveRunnerBeats } from './runner-beats';
+import { classifyRunnerOwnership } from './runner-ownership';
 import { liveLinkCondition } from './granted-links';
 
 // Pure helpers and types live in ./runner-heartbeats-shared so client
@@ -40,64 +39,64 @@ export {
 export async function getRunnerHeartbeats(
   teamId: string,
   workspaceIds: string[],
+  viewerUserId: string | null = null,
 ): Promise<RunnerHeartbeat[]> {
   if (workspaceIds.length === 0) return [];
 
   // "Not dead" window — see the window table in @buildd/shared runner-liveness.
+  // Relevance (selectRelevantRunnerAccounts) is decided in the query itself
+  // (spec 3ef37387 R-23): the account is this team's, holds a live claim link
+  // to a scoped workspace, or has worked in one. Only the columns the page
+  // shows come back; of the environment, only the two keys it reads.
   const cutoff = new Date(Date.now() - RUNNER_STALE_CUTOFF_MS);
-  const hbs = await db.query.workerHeartbeats.findMany({
-    where: sqlWhere(gt(workerHeartbeats.lastHeartbeatAt, cutoff)),
-    orderBy: sqlOrderBy(desc(workerHeartbeats.lastHeartbeatAt)),
-    with: { account: { columns: { name: true, teamId: true } } },
-  });
-  if (hbs.length === 0) return [];
-
-  const hbAccountIds = [...new Set((hbs as any[]).map((hb: any) => hb.accountId as string))];
-
-  const [links, worked] = await Promise.all([
-    db
-      .select({ accountId: accountWorkspaces.accountId })
-      .from(accountWorkspaces)
-      .where(and(
-        inArray(accountWorkspaces.accountId, hbAccountIds),
-        inArray(accountWorkspaces.workspaceId, workspaceIds),
-        liveLinkCondition(),
-      )),
-    db
-      .selectDistinct({ accountId: workers.accountId })
-      .from(workers)
-      .where(and(
-        inArray(workers.accountId, hbAccountIds),
-        inArray(workers.workspaceId, workspaceIds),
-      )),
-  ]);
-
-  const relevant = selectRelevantRunnerAccounts(
-    (hbs as any[]).map((hb: any) => ({
-      accountId: hb.accountId as string,
-      accountTeamId: (hb.account?.teamId as string | undefined) ?? null,
-    })),
-    {
-      teamId,
-      linkedAccountIds: new Set((links as any[]).map((r: any) => r.accountId as string)),
-      workedAccountIds: new Set(
-        (worked as any[]).map((r: any) => r.accountId as string | null).filter(Boolean) as string[],
+  const wsList = sql.join(workspaceIds.map(id => sql`${id}::uuid`), sql`, `);
+  const rows = await db
+    .select({
+      id: workerHeartbeats.id,
+      accountId: workerHeartbeats.accountId,
+      localUiUrl: workerHeartbeats.localUiUrl,
+      lastHeartbeatAt: workerHeartbeats.lastHeartbeatAt,
+      activeWorkerCount: workerHeartbeats.activeWorkerCount,
+      maxConcurrentWorkers: workerHeartbeats.maxConcurrentWorkers,
+      sandboxEnabled: workerHeartbeats.sandboxEnabled,
+      sandboxProbeAt: workerHeartbeats.sandboxProbeAt,
+      modelAuthSource: workerHeartbeats.modelAuthSource,
+      codexAuthSource: workerHeartbeats.codexAuthSource,
+      // isSharedRunner in SQL: more than one person across the runner's own
+      // team and the team it serves here.
+      shared: sql<boolean>`(select count(distinct ${teamMembers.userId}) from ${teamMembers} where ${teamMembers.teamId} in (${accounts.teamId}, ${teamId}::uuid)) > 1`,
+      environment: sql<{ envKeys?: string[]; isolation?: unknown } | null>`jsonb_build_object('envKeys', ${workerHeartbeats.environment}->'envKeys', 'isolation', ${workerHeartbeats.environment}->'isolation')`,
+      account: {
+        name: accounts.name,
+        teamId: accounts.teamId,
+        createdByUserId: accounts.createdByUserId,
+        managedRunner: accounts.managedRunner,
+        hostRunner: accounts.hostRunner,
+        authType: accounts.authType,
+      },
+    })
+    .from(workerHeartbeats)
+    .innerJoin(accounts, eq(accounts.id, workerHeartbeats.accountId))
+    .where(and(
+      gt(workerHeartbeats.lastHeartbeatAt, cutoff),
+      or(
+        eq(accounts.teamId, teamId),
+        sql`exists (select 1 from ${accountWorkspaces} where ${accountWorkspaces.accountId} = ${workerHeartbeats.accountId} and ${accountWorkspaces.workspaceId} in (${wsList}) and ${liveLinkCondition()})`,
+        sql`exists (select 1 from ${workers} where ${workers.accountId} = ${workerHeartbeats.accountId} and ${workers.workspaceId} in (${wsList}))`,
       ),
-    },
-  );
+    ))
+    .orderBy(desc(workerHeartbeats.lastHeartbeatAt));
+  if (rows.length === 0) return [];
 
-  const kept = (hbs as any[]).filter((hb: any) => relevant.has(hb.accountId));
-  const membersByTeam = await teamMemberIds([
-    teamId,
-    ...kept.map((hb: any) => hb.account?.teamId as string | undefined).filter(Boolean) as string[],
-  ]);
+  // A stored beat can be one write interval old; the Redis beat is "now" (lib/runner-beats.ts).
+  const kept = await withLiveRunnerBeats(rows);
 
   return kept
     .map((hb: any) => ({
       id: hb.id,
       accountId: hb.accountId,
       accountName: hb.account?.name ?? null,
-      lastHeartbeatAt: hb.lastHeartbeatAt.toISOString(),
+      lastHeartbeatAt: new Date(hb.lastHeartbeatAt).toISOString(),
       activeWorkerCount: hb.activeWorkerCount,
       maxConcurrentWorkers: hb.maxConcurrentWorkers,
       connectivity: isPushOnlyRunner(hb.localUiUrl) ? 'push_only' as const : 'reachable' as const,
@@ -108,27 +107,13 @@ export async function getRunnerHeartbeats(
       // capability only. See deriveSandboxPosture.
       mountAllowlistEnforced: mountAllowlistEnforcedFrom(hb.environment as { envKeys?: string[] } | null),
       isolation: readIsolationRecord(hb.environment),
-      shared: isSharedRunner(membersByTeam, hb.account?.teamId ?? null, teamId),
+      modelAuthSource: hb.modelAuthSource ?? null,
+      codexAuthSource: hb.codexAuthSource ?? null,
+      shared: hb.shared !== false,
+      runnerClass: classifyRunnerOwnership(hb.account),
+      authType: hb.account?.authType === 'oauth' || hb.account?.authType === 'api' ? hb.account.authType : undefined,
+      mine: viewerUserId != null && hb.account?.createdByUserId === viewerUserId,
     }));
-}
-
-/** Members of each team, for isSharedRunner. On failure every runner reads as shared. */
-async function teamMemberIds(teamIds: string[]): Promise<Map<string, Set<string>> | null> {
-  const ids = [...new Set(teamIds)];
-  try {
-    const rows = await db
-      .select({ teamId: teamMembers.teamId, userId: teamMembers.userId })
-      .from(teamMembers)
-      .where(inArray(teamMembers.teamId, ids));
-    const byTeam = new Map<string, Set<string>>();
-    for (const r of rows) {
-      if (!byTeam.has(r.teamId)) byTeam.set(r.teamId, new Set());
-      byTeam.get(r.teamId)!.add(r.userId);
-    }
-    return byTeam;
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -177,8 +162,8 @@ export async function loadBrowserRunnerHeartbeats(
   now: number,
 ): Promise<BrowserRunnerHeartbeat[] | null> {
   try {
-    const cutoff = new Date(now - RUNNER_ONLINE_WINDOW_MS);
-    const hbs = await db
+    const cutoff = runnerLiveCandidateCutoff(now, RUNNER_ONLINE_WINDOW_MS);
+    const candidates = await db
       .select({
         accountId: workerHeartbeats.accountId,
         localUiUrl: workerHeartbeats.localUiUrl,
@@ -189,6 +174,8 @@ export async function loadBrowserRunnerHeartbeats(
       .from(workerHeartbeats)
       .innerJoin(accounts, eq(accounts.id, workerHeartbeats.accountId))
       .where(gt(workerHeartbeats.lastHeartbeatAt, cutoff));
+    const hbs = (await withLiveRunnerBeats(candidates))
+      .filter(h => now - h.lastHeartbeatAt.getTime() < RUNNER_ONLINE_WINDOW_MS);
     if (hbs.length === 0) return [];
     const accountIds = [...new Set(hbs.map(h => h.accountId))];
     const links = await db

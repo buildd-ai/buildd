@@ -8,7 +8,7 @@ domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/tasks/[id]/page.tsx, apps/web/src/lib/task-checks.ts, apps/web/src/lib/task-result.ts, apps/web/src/lib/workflow/projections.ts]
 related: [workflow-state-kernel, mission-task-lifecycle, surface-ia-home-missions-initiatives]
 keywords: [task detail, mobile header, show full title, review queued, no findings yet, review of PR, what shipped, why this, verdict block, review approved, updating branch, awaiting merge, repair 1, checks list, review round, attempt, reviewer task, fix attempt, structured output, technical summary, raw output, lifecycle track]
-verified_by: [apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx, apps/web/src/lib/task-view.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, apps/web/src/lib/task-sections.test.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskPanel.sections.test.tsx, apps/web/src/app/app/(protected)/missions/[id]/TaskPanel.page-body.test.tsx, apps/web/src/lib/task-live-view.test.ts, apps/web/src/lib/mission-board.test.ts]
+verified_by: [packages/workflow-kernel/src/escalation-brief.test.ts, apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx, apps/web/src/lib/task-view.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, apps/web/src/lib/task-sections.test.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskPanel.sections.test.tsx, apps/web/src/app/app/(protected)/missions/[id]/TaskPanel.page-body.test.tsx, apps/web/src/lib/task-live-view.test.ts, apps/web/src/lib/mission-board.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -406,6 +406,29 @@ with the title expanded and with Code review opened.
 No Why this, no duplicated Done, no "Repairing" for a refresh, no "What
 shipped" before a merge, no "This review run" as detail, no horizontal scroll
 in Raw output or at 320px.
+
+## Review escalation decision
+
+A delivery parked in `ESCALATED` for a review-family reason (`review_escalated`,
+`review_exhausted`, `review_unavailable`) never reads as a bare "Waiting on you":
+
+- The state label, on the verdict row, the header pill and every `deliveryReading`
+  surface, is the cause: `Automated fixes exhausted · n of m used` when the fix
+  ledger is spent with findings left, otherwise `Review required`
+  (`deriveEscalationBrief`, workflow-kernel).
+- The verdict's call to action opens `#task-decision`, a card on the page, not a
+  GitHub link. It counts the remaining required findings as open, fix awaiting
+  verification (a push touched the path; no review has verified it; marked when
+  that push is not the current head) and resolved, and lists each action with what
+  it does and what it needs: review findings, request another fix, request a forced
+  re-review, approve and override.
+- Nothing is authorized by showing it. A spent budget stays held (workflow-state-kernel
+  T5/T7): request another fix is T23 with a recorded human extension of one attempt,
+  a forced re-review is a `human:` T5, and approve and override stays unavailable
+  unless policy permits it and the viewer holds merge permission. The routes
+  re-check access; the card refreshes the page so the verdict reconciles.
+- Other escalations (`landing_needs_human`, CI or conflict budgets, policy) keep the
+  generic wording until they get a brief of their own.
 
 ## Out of scope
 

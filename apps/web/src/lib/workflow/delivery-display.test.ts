@@ -24,6 +24,7 @@ import { dockToneForDelivery, taskDockModel } from '@/components/chat/dock-model
 import { taskState, taskStateForDelivery } from '@/components/chat/objects/TaskObject';
 import type { TaskObjectView } from '@/components/chat/objects/object-views';
 import { HeaderStatusPill } from '@/app/app/(protected)/tasks/[id]/TaskSidePanel';
+import { TERMS, bannedWordsIn } from '@buildd/shared';
 
 const D = (o: Partial<DeliverySnapshot> = {}): DeliverySnapshot => ({
   id: 'd1', workspaceId: 'w1', ownerTaskId: 't1', repoFullName: 'acme/widgets', prNumber: 7, baseRef: 'dev',
@@ -160,18 +161,27 @@ const TABLE: Row[] = [
     input: V({ state: 'REPAIRING', stateReason: 'conflict' }, { remediation: { taskId: 'cf-1', family: 'conflict', taskStatus: 'in_progress', stalled: false } }),
   },
   { name: 'CI fix in flight', input: V({ state: 'REPAIRING', stateReason: 'ci', ci: 'red', ciHeadSha: 'H1abcdef' }), label: 'Fixing CI', tone: 'live' },
-  { name: 'composition verified, a person merges', input: V({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1abcdef'] }, { approvedNeedsPerson: true }), label: 'Ready to merge', tone: 'needs' },
-  { name: 'approved, a person merges (human tier, approve-only, open handoff)', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }, { approvedNeedsPerson: true }), label: 'Ready to merge', tone: 'needs' },
-  { name: 'approved, the landing path merges (approve-and-merge, auto-threshold)', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }), label: 'Approved · merging', tone: 'live' },
-  { name: 'escalated', input: V({ state: 'ESCALATED', stateReason: 'review_escalated' }), label: 'Waiting on you', tone: 'needs' },
+  { name: 'composition verified, a person merges', input: V({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1abcdef'], ci: 'green', ciHeadSha: 'H1abcdef' }, { approvedNeedsPerson: true }), label: 'Ready to merge', tone: 'needs' },
+  { name: 'approved, a person merges (human tier, approve-only, open handoff)', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'], ci: 'green', ciHeadSha: 'H1abcdef' }, { approvedNeedsPerson: true }), label: 'Ready to merge', tone: 'needs' },
+  // Approval is not a merge: the words follow the checks on this head, and only
+  // LANDING (the merge operation) reads Merging.
+  { name: 'approved, checks green, the landing path merges next', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'], ci: 'green', ciHeadSha: 'H1abcdef' }), label: 'Ready to merge', tone: 'live' },
+  { name: 'approved, checks still running', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }), label: 'Approved · checking', tone: 'live' },
+  { name: 'approved, a green run on an older head does not count', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'], ci: 'green', ciHeadSha: 'H0older' }), label: 'Approved · checking', tone: 'live' },
+  { name: 'approved, checks failed', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'], ci: 'red', ciHeadSha: 'H1abcdef' }), label: 'Approved · checks failing', tone: 'stalled' },
+  { name: 'approved, a person merges, checks still running', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }, { approvedNeedsPerson: true }), label: 'Approved · checking', tone: 'needs' },
+  // A review escalation names its cause (escalation-brief); a non-review one keeps the generic words.
+  { name: 'escalated', input: V({ state: 'ESCALATED', stateReason: 'review_escalated' }), label: 'Review required', tone: 'needs' },
+  { name: 'escalated, not a review', input: V({ state: 'ESCALATED', stateReason: 'landing_needs_human' }), label: 'Waiting on you', tone: 'needs' },
   { name: 'in review', input: V({ state: 'AWAITING_REVIEW' }), label: 'In review', tone: 'live' },
   { name: 'changes requested', input: V({ state: 'CHANGES_REQUESTED' }), label: 'Changes requested', tone: 'live' },
   { name: 'fixing review feedback', input: V({ state: 'FIXING' }), label: 'Fixing', tone: 'live' },
   { name: 'red base', input: V({ state: 'BLOCKED_ON_TRUNK' }), label: 'Blocked on base', tone: 'stalled' },
   { name: 'merging', input: V({ state: 'LANDING' }), label: 'Merging', tone: 'live' },
   { name: 'merged', input: V({ state: 'MERGED' }), label: 'Merged', tone: 'landed' },
-  { name: 'superseded', input: V({ state: 'SUPERSEDED', supersededByPr: 9 }), label: 'Shipped elsewhere', tone: 'landed' },
-  { name: 'closed', input: V({ state: 'CLOSED_UNMERGED' }), label: 'Closed', tone: 'closed' },
+  { name: 'superseded', input: V({ state: 'SUPERSEDED', supersededByPr: 9 }), label: 'Merged in another PR', tone: 'landed' },
+  { name: 'closed', input: V({ state: 'CLOSED_UNMERGED' }), label: 'Closed without merging', tone: 'closed' },
+  { name: 'abandoned', input: V({ state: 'ABANDONED' }), label: 'Closed without merging', tone: 'closed' },
   { name: 'failed', input: V({ state: 'FAILED', stateReason: 'attempt_failed' }), label: 'Failed', tone: 'failed' },
 ];
 
@@ -250,7 +260,7 @@ describe('S17: each canonical state reads the same label, tone and counts on eve
       // landing path is still merging.
       const headerHtml = renderToStaticMarkup(HeaderStatusPill({
         status: 'running', merged: false,
-        delivery: { headline: d.headline, owner: d.owner, needsYou: r.needsYou, stage: d.stage, detail: d.detail, state: d.state },
+        delivery: { headline: d.headline, owner: d.owner, needsYou: r.needsYou, stage: d.stage, detail: d.detail, state: d.state, escalationTitle: d.escalationTitle, prState: d.prState },
       }));
       expect(headerHtml.replace(/<[^>]+>/g, '')).toBe(r.label);
       const pillClasses = new Set(headerHtml.match(/class="([^"]*)"/)![1].split(/\s+/));
@@ -262,7 +272,7 @@ describe('S17: each canonical state reads the same label, tone and counts on eve
   }
 
   test('the fixture deliveries: Home and the mission agree on who needs you and on nothing failed', () => {
-    const rows = TABLE.filter(t => ['awaiting push', 'stalled conflict fix', 'composition verified, a person merges', 'approved, the landing path merges (approve-and-merge, auto-threshold)', 'escalated', 'CI fix in flight', 'merged'].includes(t.name));
+    const rows = TABLE.filter(t => ['awaiting push', 'stalled conflict fix', 'composition verified, a person merges', 'approved, checks green, the landing path merges next', 'escalated', 'CI fix in flight', 'merged'].includes(t.name));
     const displays = rows.map(t => toDeliveryDisplay(deriveDeliveryView(t.input)!));
     const model = buildMissionBoard({ now: 10_000, missionCreatedAt: 0, missionStatus: 'active', tasks: displays.map(boardInput) });
     expect(model.needsYou.length).toBe(2);
@@ -290,8 +300,8 @@ describe('legacy-owned rows keep the fact-cache projection', () => {
   test('chat dock: a completed task whose PR is still open is in review, not landed (§17.5)', () => {
     const legacy = (w: Partial<NonNullable<TaskObjectView['worker']>>): TaskObjectView => ({ ...taskView(display('MERGED')), delivery: null, worker: { ...taskView(display('MERGED')).worker!, ...w } });
     expect(taskDockModel(legacy({ prLifecycleStatus: 'ci_green', mergedAt: null })).badge.label).toBe('In review');
-    expect(taskDockModel(legacy({ prLifecycleStatus: 'merged', mergedAt: null })).badge.label).toBe('Landed');
-    expect(taskDockModel(legacy({ prNumber: null, prUrl: null, prLifecycleStatus: null })).badge.label).toBe('Landed');
+    expect(taskDockModel(legacy({ prLifecycleStatus: 'merged', mergedAt: null })).badge.label).toBe('Merged');
+    expect(taskDockModel(legacy({ prNumber: null, prUrl: null, prLifecycleStatus: null })).badge.label).toBe('Done');
     expect(taskDockModel(legacy({ prLifecycleStatus: 'ci_failed' })).badge.label).toBe('CI failed');
   });
 });
@@ -338,5 +348,34 @@ describe('S35: the failed-task count and the delivery reading agree', () => {
 
   test('a task with no view is never replaced (legacy, or the view read failed)', () => {
     expect(replacedFailedTaskIds(new Map(), ['t1']).size).toBe(0);
+  });
+});
+
+// The kernel imports nothing of buildd (no-buildd-imports.test.ts), so its
+// display table keeps literals. They must stay the terms catalog's words.
+describe('deliveryReading speaks the terms catalog', () => {
+  const label = (o: Partial<DeliverySnapshot>, extra: Partial<DeliveryViewInput> = {}) => deliveryReading(toDeliveryDisplay(deriveDeliveryView(V(o, extra))!))!.label;
+
+  test('each 1:1 label equals its catalog word', () => {
+    expect(label({ state: 'AWAITING_PUSH' })).toBe(TERMS['pr.waiting_push'].word);
+    expect(label({ state: 'AWAITING_REVIEW' })).toBe(TERMS['pr.in_review'].word);
+    expect(label({ state: 'CHANGES_REQUESTED' })).toBe(TERMS['pr.changes_requested'].word);
+    expect(label({ state: 'FIXING' })).toBe(TERMS['pr.fixing'].word);
+    expect(label({ state: 'BLOCKED_ON_TRUNK' })).toBe(TERMS['pr.blocked_on_base'].word);
+    expect(label({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'], ci: 'green', ciHeadSha: 'H1abcdef' }, { approvedNeedsPerson: true })).toBe(TERMS['pr.ready_to_merge'].word);
+    expect(label({ state: 'LANDING' })).toBe(TERMS['pr.merging'].word);
+    expect(label({ state: 'ESCALATED', stateReason: 'landing_needs_human' })).toBe(TERMS['decision.waiting_on_you'].word);
+    expect(label({ state: 'MERGED' })).toBe(TERMS['pr.merged'].word);
+    expect(label({ state: 'SUPERSEDED' })).toBe(TERMS['pr.merged_elsewhere'].word);
+    expect(label({ state: 'CLOSED_UNMERGED' })).toBe(TERMS['pr.closed'].word);
+    expect(label({ state: 'ABANDONED' })).toBe(TERMS['pr.closed'].word);
+    expect(label({ state: 'FAILED', stateReason: 'attempt_failed', prNumber: null })).toBe(TERMS['work.failed'].word);
+  });
+
+  test('no label is a banned word', () => {
+    for (const state of DELIVERY_STATES) {
+      const r = deliveryReading(toDeliveryDisplay(deriveDeliveryView(V({ state, stateReason: REASON[state] ?? null, supersededByPr: state === 'SUPERSEDED' ? 9 : null }))!));
+      if (r) expect({ state, banned: bannedWordsIn(r.label).map((b) => String(b.word)) }).toEqual({ state, banned: [] });
+    }
   });
 });

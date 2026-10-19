@@ -18,6 +18,7 @@
 
 import { stripTaskTitlePrefixes } from '@buildd/core/task-title';
 import { CONVENTIONAL_PREFIX_RE } from '@buildd/core/task-label';
+import { displayTitle } from '@buildd/shared';
 
 export { stripTaskTitlePrefixes, CONVENTIONAL_PREFIX_RE };
 
@@ -75,7 +76,8 @@ const SCOPED_PREFIX = /^[a-z][\w-]*\([^)]*\)!?:\s*/i;
 const LEADING_TAG = /^\s*\[[^\]]*\]\s*/;
 
 function stripAllTags(title: string): string {
-  let t = stripTaskTitlePrefixes(title);
+  // The retry key reads as the attempt (`taskAttempt`), from the terms catalog.
+  let t = stripTaskTitlePrefixes(displayTitle(title).title);
   let prev: string;
   do {
     prev = t;
@@ -106,6 +108,14 @@ export function displayTaskTitle(title: string | null | undefined): string {
   const prefix = CONVENTIONAL_PREFIX_RE.exec(t) ?? SCOPED_PREFIX.exec(t);
   const bare = (prefix ? t.slice(prefix[0].length) : t).trim();
   return bare ? capitalise(bare) : t;
+}
+
+/**
+ * The attempt a retry title carries, as the terms catalog words it
+ * ("Fix 1 · CI failed"); undefined for a first try. Shown beside the title.
+ */
+export function taskAttempt(title: string | null | undefined): string | undefined {
+  return displayTitle(title).attempt;
 }
 
 const SHORT_NAME_MAX = 40;

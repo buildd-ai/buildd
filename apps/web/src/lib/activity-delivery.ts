@@ -53,6 +53,13 @@ export interface ActivityTaskInput {
   waitingPrompt?: string | null;
 }
 
+/**
+ * What Activity reads of a mission: its header (chip, landed n/m, next step)
+ * and its tasks' deliveries. A `MissionDelivery` is one; the page builds it
+ * from the stored summary and the projection over the rows in view.
+ */
+export type ActivityMission = Pick<MissionDelivery, 'id' | 'title' | 'kind' | 'landed' | 'total' | 'next' | 'tasks'>;
+
 // ── Shared shapes ───────────────────────────────────────────────────────────
 
 export type RepairReason = 'ci' | 'conflict' | 'review';
@@ -234,14 +241,17 @@ function foldDeliveries(tasks: readonly ActivityTaskInput[], rules: MissionTaskR
  * mission projection applies (attempt folding, repair count, best status):
  * a one-task mission. No second derivation exists to drift.
  */
-function projectStandalone(d: Delivery, rules: MissionTaskRules): TaskDelivery {
+function projectStandalone(d: Delivery, rules: MissionTaskRules): TaskDelivery | null {
   // The root stands as the deliverable even when it is an attempt whose parent is not loaded.
   // The mission projection drops cancelled roots, so a cancelled one is projected as
   // failed; History names it "not landed" and adds a Cancelled step.
   const root = { ...d.root, parentTaskId: null, taskClass: 'work', status: d.root.status === 'cancelled' ? 'failed' : d.root.status };
   const rows = [root, ...d.reviews, ...d.repairs].map(t => ({ ...t, dependsOn: undefined, missionId: undefined }));
   const m = projectMissionDelivery({ id: d.root.id, title: d.root.title, status: 'active', href: '', tasks: rows }, rules);
-  return m.tasks.find(t => t.id === d.root.id)!.delivery;
+  // null: the projection hides this task on purpose (a surface audit observes and
+  // opens no PR; a superseded refresh chore is noise). Missions and Home hide it
+  // too, so Activity has no delivery to show for it, rather than a missing one.
+  return m.tasks.find(t => t.id === d.root.id)?.delivery ?? null;
 }
 
 /** The PR a delivery is about, and the head it is on now. */
@@ -411,8 +421,8 @@ function lineFor(d: Delivery, delivery: TaskDelivery, prNumber: number | null, r
     case 'landing': return 'Approved and green on its latest revision. Merging.';
     case 'unavailable': return 'The audit could not run. It retries on its own.';
     case 'needs': return d.root.waitingPrompt?.trim() || 'Waiting on a decision.';
-    case 'notlanded': return prNumber ? `Finished, but ${pr} closed without merging.` : 'Stopped without landing.';
-    case 'waiting': return delivery.waitingOn === 'dependency' ? 'Starts when the work it depends on lands.' : 'Next in line for a runner.';
+    case 'notlanded': return prNumber ? `Finished, but ${pr} closed without merging.` : 'Stopped without a change to merge.';
+    case 'waiting': return delivery.waitingOn === 'dependency' ? 'Starts when the work it depends on finishes.' : 'Next in line for a runner.';
     default: return DELIVERY_KIND[delivery.kind].label;
   }
 }
@@ -443,7 +453,7 @@ function toRow(d: Delivery, delivery: TaskDelivery, now: number): NowRow {
 export function buildActivityNow(input: {
   tasks: readonly ActivityTaskInput[];
   /** The projection Missions and Home read, for every mission in view. */
-  missions: readonly MissionDelivery[];
+  missions: readonly ActivityMission[];
   rules: MissionTaskRules;
   now: number;
 }): ActivityNow {
@@ -458,6 +468,7 @@ export function buildActivityNow(input: {
     const mission = d.root.missionId ? missionById.get(d.root.missionId) : undefined;
     // A mission task reads the mission's own task projection, never a second one.
     const delivery = mission?.tasks.find(t => t.id === d.root.id)?.delivery ?? projectStandalone(d, input.rules);
+    if (!delivery) continue;
     // Now is work in motion. A finished delivery, landed or not, is History's.
     if (!isInMotionKind(delivery.kind)) continue;
     // Open tasks of a completed mission are regrouped as standalone.
@@ -502,12 +513,12 @@ export function buildActivityNow(input: {
 
 // ── Mission detail: one task's delivery ─────────────────────────────────────
 
-/** Build › Audit › Land, one short phrase per stage, for the Landed strip's drawer. */
+/** Build › Verify › Deliver, one short phrase per stage, for the Landed strip's drawer. */
 export interface StageNotes { build: string; audit: string; land: string }
 
 /**
  * A mission task's own delivery, for mission detail's drawer: where it is on
- * Build › Audit › Land and the evidence behind it. Mission dependency progress
+ * Build › Verify › Deliver and the evidence behind it. Mission dependency progress
  * (landed n/m, what unblocks what) stays the strip's; this is one task's flow.
  */
 export interface TaskDeliveryDetail {
@@ -541,10 +552,10 @@ function stageNotes(delivery: TaskDelivery, prNumber: number | null, evidence: r
   } else if (delivery.kind === 'unavailable') audit = 'Could not run; retries on its own';
   else if (delivery.kind === 'needs') audit = 'Waiting on a decision';
   else audit = (cur && gateLine(cur.gates) ? `${gateLine(cur.gates)}${onHead}` : null)
-    ?? (at === 1 ? `Review and CI${onHead}` : prNumber ? 'No review recorded' : 'No PR to audit');
-  const land = at < 2 ? 'After Audit'
+    ?? (at === 1 ? `Review and CI${onHead}` : prNumber ? 'No review recorded' : 'No PR to verify');
+  const land = at < 2 ? 'After Verify'
     : delivery.kind === 'landing' ? 'Merging'
-    : delivery.kind === 'notlanded' ? (prNumber ? 'Closed without merging' : 'Stopped without landing')
+    : delivery.kind === 'notlanded' ? (prNumber ? 'Closed without merging' : 'Stopped without a change to merge')
     : prNumber ? 'Merged' : 'Nothing to merge';
   return { build, audit, land };
 }
@@ -615,10 +626,10 @@ function stepsFor(d: Delivery, delivery: TaskDelivery): EpisodeStep[] {
     else if (r.review?.verdict === 'escalate') add(at, 'Review asked a person to decide', 'ink');
     else if (r.status === 'completed' || r.status === 'failed') add(at, 'Review could not run', 'warning');
   }
-  if (owner?.mergedAt) add(ms(owner.mergedAt as string), 'Landed', 'success');
-  else if (owner?.supersededByPrNumber) add(ms(owner.updatedAt), `Landed via PR #${owner.supersededByPrNumber}`, 'success');
+  if (owner?.mergedAt) add(ms(owner.mergedAt as string), 'Merged', 'success');
+  else if (owner?.supersededByPrNumber) add(ms(owner.updatedAt), `Merged in #${owner.supersededByPrNumber}`, 'success');
   else if (delivery.kind === 'notlanded') {
-    add(ms(owner?.updatedAt ?? d.root.updatedAt), owner?.prUrl ? (owner.abandonedAt ? 'PR closed and set aside' : 'PR closed without merging') : 'Stopped without landing', 'error');
+    add(ms(owner?.updatedAt ?? d.root.updatedAt), owner?.prUrl ? (owner.abandonedAt ? 'PR closed and set aside' : 'PR closed without merging') : 'Stopped without a change to merge', 'error');
   } else if (!owner && d.root.status === 'completed') add(ms(d.root.updatedAt), 'Finished; nothing to merge', 'success');
   if (d.root.status === 'cancelled') add(ms(d.root.updatedAt), 'Cancelled', 'muted');
   if (raw.length === 0) add(ms(d.root.createdAt), 'Queued', 'muted');
@@ -627,7 +638,7 @@ function stepsFor(d: Delivery, delivery: TaskDelivery): EpisodeStep[] {
 
 export function buildActivityHistory(input: {
   tasks: readonly ActivityTaskInput[];
-  missions: readonly MissionDelivery[];
+  missions: readonly ActivityMission[];
   rules: MissionTaskRules;
 }): Episode[] {
   const missionById = new Map(input.missions.map(m => [m.id, m]));
@@ -635,6 +646,7 @@ export function buildActivityHistory(input: {
     .flatMap(d => {
       const mission = d.root.missionId ? missionById.get(d.root.missionId) : undefined;
       const delivery = mission?.tasks.find(t => t.id === d.root.id)?.delivery ?? projectStandalone(d, input.rules);
+      if (!delivery) return [];
       const kind = d.root.status === 'cancelled' ? 'notlanded' as const : delivery.kind;
       // History is finished work only; in-flight deliveries are Now's.
       if (!FINISHED.has(kind)) return [];

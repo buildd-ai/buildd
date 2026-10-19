@@ -27,7 +27,8 @@ import ClaimTaskHint, { CLAIM_ROW_BTN } from '@/components/tasks/ClaimTaskHint';
 import RunnerPicker from '@/components/tasks/RunnerPicker';
 import Disclosure from '@/components/ui/Disclosure';
 import type { TaskFailureKind } from '@/lib/task-failure-kind';
-import { verificationFailedCopy } from '@/lib/task-failure-kind';
+import { verificationFailedCopy, waitingOnFailedCopy } from '@/lib/task-failure-kind';
+import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { explainProviderAuthFailure } from '@/lib/provider-auth-failure';
 import EntitlementBlockedNotice from '@/components/entitlements/EntitlementBlockedNotice';
 import CredentialBlockedNotice from '@/components/credentials/CredentialBlockedNotice';
@@ -83,6 +84,8 @@ export interface TaskActionZoneProps {
   failureKind?: TaskFailureKind | null;
   /** Set when this task IS the surface audit: a verification failure then offers "Retry the audit". */
   auditTaskId?: string | null;
+  /** For a `dependency` failure: the failed task it waits on (`failedDependencyOf`). */
+  waitingOn?: { taskId: string; title: string | null } | null;
   worker: {
     id: string;
     waitingFor: Pick<WaitingFor, 'prompt' | 'options' | 'context' | 'recommended' | 'where'> | null;
@@ -106,6 +109,12 @@ export interface TaskActionZoneProps {
   entitlementBlock?: EntitlementBlock | null;
   /** Why a queued task cannot be claimed: its backend has no key (task context `credentialBlock`). */
   credentialBlock?: CredentialBlock | null;
+  /**
+   * What the task's delivery is doing while this task row waits (the kernel's
+   * reading, "Approved · checking"). The queued line then names its subject, the
+   * task's next run, so it never reads as the whole delivery being unclaimed.
+   */
+  deliveryReading?: string | null;
   /** The task's title, named in the Force start confirmation. */
   taskTitle?: string | null;
   onChanged?: () => void | Promise<void>;
@@ -127,6 +136,7 @@ const SECONDARY_BTN = 'inline-flex min-h-11 items-center justify-center gap-1.5 
 const QUIET_BTN = 'inline-flex min-h-11 items-center px-3 font-mono text-meta text-text-secondary hover:bg-surface-3 hover:text-text-primary disabled:opacity-50';
 
 export default function TaskActionZone({
+  deliveryReading = null,
   taskId,
   workspaceId,
   phase,
@@ -136,6 +146,7 @@ export default function TaskActionZone({
   lastError,
   failureKind = null,
   auditTaskId = null,
+  waitingOn = null,
   worker,
   historyHref,
   roleSlug,
@@ -161,7 +172,8 @@ export default function TaskActionZone({
   const otherBackend = otherBackendOf(backend);
   const [otherBackendAvailable, setOtherBackendAvailable] = useState(false);
   useEffect(() => {
-    if (phase !== 'failed' || !otherBackend || !workspaceId) return;
+    // A task that never ran has no backend switch to offer (`dependency`).
+    if (phase !== 'failed' || failureKind === 'dependency' || !otherBackend || !workspaceId) return;
     let cancelled = false;
     fetch(`/api/workspaces/${workspaceId}/backends`)
       .then((r) => (r.ok ? r.json() : null))
@@ -171,7 +183,7 @@ export default function TaskActionZone({
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [phase, otherBackend, workspaceId]);
+  }, [phase, failureKind, otherBackend, workspaceId]);
 
   const actions = taskActionSet({
     phase,
@@ -293,10 +305,33 @@ export default function TaskActionZone({
         </div>
       )}
 
+      {/* Never ran: a task it depends on failed → name it, nothing of its own to retry (spec 072de598 I-14) */}
+      {has('waiting_on_failed') && (() => {
+        const copy = waitingOnFailedCopy(waitingOn, { requeuesItself: isSurfaceAuditTask(taskTitle ?? '') });
+        return (
+          <div data-testid="task-waiting-on-failed" className="space-y-3 border-2 border-status-warning p-4">
+            <p className="font-mono text-meta font-semibold text-status-warning">{copy.state}</p>
+            <p className="font-mono text-meta text-text-secondary [overflow-wrap:anywhere]">{copy.cause}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              {waitingOn && (
+                <Link href={`/app/tasks/${encodeURIComponent(waitingOn.taskId)}`} data-action="open_failed_dependency" className={SECONDARY_BTN}>
+                  Open the failed task
+                </Link>
+              )}
+              {has('history') && historyHref && (
+                <Link href={historyHref} data-action="history" className={QUIET_BTN}>
+                  View history
+                </Link>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Failed → why + retry */}
       {has('retry') && (
         <div className="space-y-3 border-2 border-status-error p-4">
-          <p className="font-mono text-meta font-semibold text-status-error">Worker failed</p>
+          <p className="font-mono text-meta font-semibold text-status-error">Agent failed</p>
           {authFailure && lastError ? (
             <div className="space-y-2" data-testid="task-auth-failure">
               <p className="text-body text-text-primary">{authFailure.message}</p>
@@ -390,8 +425,10 @@ export default function TaskActionZone({
             </WaitingLine>
           ) : !hideQueuedNote && <p className="font-mono text-meta text-text-secondary">
             {local
-              ? 'Ready to start. Claim it from a local session.'
-              : 'Waiting for a runner to claim it.'}
+              ? 'Ready to start. Claim it from your session.'
+              : deliveryReading
+                ? `${deliveryReading}. The next run is waiting for a runner to claim it.`
+                : 'Waiting for a runner to claim it.'}
           </p>}
           {runnerPicker && workspaceId && (
             <RunnerPicker workspaceId={workspaceId} value={target} onChange={setTarget} disabled={starting} />

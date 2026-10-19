@@ -75,6 +75,21 @@ export function resolvePrDisplayState(input: {
   return derivePrDisplayState(input.prLifecycleStatus, input.mergedAt);
 }
 
+/** A PR's ending, coarse: merged, closed unmerged, or still open (whatever its CI). */
+export type PrOutcome = 'open' | 'merged' | 'closed';
+
+/**
+ * The one coarse reading of a PR's state (spec 3ef37387 R-24): the display
+ * state folded to merged, closed or open. Surfaces that only need those three
+ * (the stored mission summary, the mission PR) ask this, never the worker
+ * columns, so a merge seen by lifecycle alone (stamp not written yet) reads
+ * merged everywhere.
+ */
+export function prOutcome(input: Parameters<typeof resolvePrDisplayState>[0]): PrOutcome {
+  const d = resolvePrDisplayState(input);
+  return d === 'merged' ? 'merged' : d === 'closed' ? 'closed' : 'open';
+}
+
 /** The lifecycle words `list_prs` speaks (the fact-cache column's own vocabulary). */
 export type PrListStatus = 'pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | 'unresolvable';
 

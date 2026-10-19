@@ -41,15 +41,26 @@ const view: KernelView = {
   ],
 };
 const dv = deriveDeliveryView({ view })!;
-const LINE = '2 rounds · latest: changes requested · 2 open findings';
+// AC-47: each finding counted once: the required open one, the verified one, the optional one apart.
+const LINE = '2 rounds · latest: changes requested · 1 open finding, 1 verified resolved, 1 advisory';
 
 describe('AC-24: the three surfaces agree on a delivery with two review rounds', () => {
   test('get_pr', () => {
     const report = prDeliveryReport(dv);
-    expect(report.review).toMatchObject({ rounds: 2, latestVerdict: 'request_changes', openFindings: 2 });
+    expect(report.review).toMatchObject({ rounds: 2, latestVerdict: 'request_changes', findings: { open: 1, addressedAwaitingVerification: 0, verifiedResolved: 1, waived: 0, deferred: 0, total: 2, advisory: 1 } });
     // No GitHub reviews: it still never says "Reviews: none".
     const { reviewLine } = formatGetPrDelivery({ reviews: { approved: 0, changesRequested: 0 }, delivery: report });
     expect(reviewLine).toBe(`Reviews: ${LINE}`);
+  });
+
+  test('R-43: get_pr names the Review approval apart from CI, in plain review terms', () => {
+    const report = prDeliveryReport(dv);
+    expect(report.reviewApproval).toEqual({ state: 'failure', description: 'Unresolved review finding: src/a.ts:3: rename the flag' });
+    const { approvalLine } = formatGetPrDelivery({ reviews: { approved: 0, changesRequested: 0 }, delivery: report });
+    expect(approvalLine).toBe('Review approval: Unresolved review finding: src/a.ts:3: rename the flag');
+    expect(approvalLine).not.toMatch(/\bCI\b|\bland/);
+    // A PR with no delivery says nothing about it rather than guessing.
+    expect(formatGetPrDelivery({ reviews: null, delivery: null }).approvalLine).toBe('');
   });
 
   test('the task page: the checks list and the PR card', () => {

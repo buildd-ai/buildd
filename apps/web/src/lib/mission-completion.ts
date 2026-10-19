@@ -66,7 +66,10 @@ export {
 } from '@buildd/core/mission-completion-codes';
 export type { CompletionDecisionCode } from '@buildd/core/mission-completion-codes';
 import type { CompletionDecisionCode } from '@buildd/core/mission-completion-codes';
-import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { sqlExtras, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+// Subpath, as relational-sql does: route tests mock 'drizzle-orm' without `sql`.
+import { sql as rawSql } from 'drizzle-orm/sql/sql';
+import { noteWorkChanged } from './work-changed';
 
 /** Which caller asked. Recorded on the decision event for diagnosis. */
 export type CompletionPath =
@@ -297,6 +300,79 @@ const BLOCK_NOTE_WINDOW_MS = 6 * 60 * 60 * 1000;
 export const AWAITING_VERIFICATION_NOTE_TITLE = 'Mission awaiting verification';
 
 /**
+ * The `result` and `context` keys the gate reads, picked in SQL (spec "Fast at
+ * any size", R-25): `result.errorType` (the infra_stalled refusal), and the
+ * context keys that say what kind of deliverable a row is (`isTrunkRefreshTask`,
+ * `deliverableRole`). Both columns are KBs per task and the gate reads every
+ * task of the mission, on every heartbeat that proposes completion. A NULL
+ * column stays NULL; an absent key reads as null, which every reader treats
+ * as absent. The mission page hands the gate a wider digest of the same
+ * columns (`opts.loaded`), which covers these keys.
+ */
+export const COMPLETION_RESULT_KEYS = ['errorType'] as const;
+// DELIVERABLE_ROLE_CONTEXT_KEYS' values and object markers, spelled out: several
+// route tests stub mission-helpers without it (a test pins the two equal).
+export const COMPLETION_CONTEXT_KEYS = ['requireMergeCommit', 'refreshTrunk', 'finalVerification', 'surfaceFix', 'specRepair'] as const;
+
+function completionTaskExtras() {
+  const pick = (col: unknown, keys: readonly string[]) =>
+    rawSql`CASE WHEN ${col} IS NULL THEN NULL ELSE jsonb_build_object(${rawSql.join(keys.map(k => rawSql`${k}::text, ${col}->${k}::text`), rawSql`, `)}) END`;
+  return sqlExtras({
+    result: pick(tasks.result, COMPLETION_RESULT_KEYS),
+    context: pick(tasks.context, COMPLETION_CONTEXT_KEYS),
+  });
+}
+
+/** The mission's tasks as the gate reads them, each with its newest worker. */
+function loadCompletionTasks(missionId: string) {
+  return db.query.tasks.findMany({
+    where: sqlWhere(eq(tasks.missionId, missionId)),
+    columns: {
+      id: true, status: true, title: true, mode: true, kind: true,
+      taskClass: true, creationSource: true, category: true,
+      // Finds the visual audit, so a mission without one skips the hold check.
+      roleSlug: true,
+      // The surface-audit gate reads the declared paths and each PR's repo.
+      workspaceId: true, pathManifest: true,
+      // Attempt lineage for derived supersession (pr-shipped.ts).
+      parentTaskId: true,
+    },
+    // `result` and `context`: only the keys above.
+    extras: completionTaskExtras(),
+    with: {
+      // Latest worker only — enough to answer "did this deliverable's PR merge?"
+      workers: {
+        columns: {
+          prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true,
+          supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
+          abandonedAt: true, abandonedReason: true, supersessionScan: true,
+        },
+        orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.startedAt)]),
+        limit: 1,
+      },
+    },
+  });
+}
+
+const MISSION_COMPLETION_COLUMNS = {
+  id: true,
+  title: true,
+  status: true,
+  goalCriteria: true,
+  goalCriteriaState: true,
+  autoVerify: true,
+  // Option A′ — see the mission-integration-PR gate below.
+  workingBranch: true,
+  integrationBranchEnabled: true,
+  // The visual review hold reads the model, which scopes by workspace.
+  workspaceId: true,
+  autoSurfaceAudit: true,
+  // A local-executor mission's audit goes to the owner (no runner claims it).
+  executor: true,
+} as const;
+type MissionForCompletion = Pick<typeof missions.$inferSelect, keyof typeof MISSION_COMPLETION_COLUMNS>;
+
+/**
  * Decide whether a mission may be marked `completed`.
  *
  * Checks, in order — the first failure is the reported reason:
@@ -335,28 +411,29 @@ export async function canCompleteMission(
      * empty mission would close itself.
      */
     proposed?: boolean;
+    /**
+     * A page is rendering (spec 3ef37387 R-12): the surface-audit gate reads
+     * stored evidence only, never GitHub. Implies a display read.
+     */
+    render?: boolean;
+    /**
+     * Rows the caller already loaded, so a page reads them once: the mission
+     * (at least the columns read below), its tasks (each with its workers
+     * newest first and the `context` / `result` keys read here), and the
+     * visual review model when it holds one.
+     */
+    loaded?: {
+      mission: Record<string, unknown> & { id: string; status: string };
+      tasks: ReadonlyArray<Record<string, unknown>>;
+      visualModel?: VisualReviewModel;
+    };
   } = {},
 ): Promise<MissionCompletionDecision> {
   const evaluateCriteria = opts.evaluateCriteria !== false;
 
-  const mission = await db.query.missions.findFirst({
+  const mission = (opts.loaded?.mission as MissionForCompletion | undefined) ?? await db.query.missions.findFirst({
     where: sqlWhere(eq(missions.id, missionId)),
-    columns: {
-      id: true,
-      title: true,
-      status: true,
-      goalCriteria: true,
-      goalCriteriaState: true,
-      autoVerify: true,
-      // Option A′ — see the mission-integration-PR gate below.
-      workingBranch: true,
-      integrationBranchEnabled: true,
-      // The visual review hold reads the model, which scopes by workspace.
-      workspaceId: true,
-      autoSurfaceAudit: true,
-      // A local-executor mission's audit goes to the owner (no runner claims it).
-      executor: true,
-    },
+    columns: MISSION_COMPLETION_COLUMNS,
   });
 
   const base = {
@@ -411,32 +488,7 @@ export async function canCompleteMission(
   }
   base.criteriaEvaluatedAt = storedState?.evaluatedAt ?? null;
 
-  const allTasks = await db.query.tasks.findMany({
-    where: sqlWhere(eq(tasks.missionId, missionId)),
-    columns: {
-      id: true, status: true, title: true, mode: true, kind: true,
-      taskClass: true, creationSource: true, category: true, result: true,
-      // Finds the visual audit, so a mission without one skips the hold check.
-      roleSlug: true,
-      // The surface-audit gate reads the declared paths and each PR's repo,
-      // and context to recognise a trunk-refresh task.
-      workspaceId: true, pathManifest: true, context: true,
-      // Attempt lineage for derived supersession (pr-shipped.ts).
-      parentTaskId: true,
-    },
-    with: {
-      // Latest worker only — enough to answer "did this deliverable's PR merge?"
-      workers: {
-        columns: {
-          prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true,
-          supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
-          abandonedAt: true, abandonedReason: true, supersessionScan: true,
-        },
-        orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.startedAt)]),
-        limit: 1,
-      },
-    },
-  });
+  const allTasks = (opts.loaded?.tasks as unknown as Awaited<ReturnType<typeof loadCompletionTasks>> | undefined) ?? await loadCompletionTasks(missionId);
 
   base.pendingAllTasks = allTasks.filter(t => !TERMINAL_TASK_STATUSES.has(t.status)).length;
 
@@ -491,8 +543,10 @@ export async function canCompleteMission(
   // Read at most once per decision, and only for a mission with an audit: the
   // replaced-audit check below and the visual review hold share it.
   let modelLoad: Promise<VisualReviewModel> | null = null;
-  const loadModel = () => (modelLoad ??= import('@/lib/visual-review-load').then(({ loadVisualReview }) =>
-    loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId ?? null })));
+  const loadModel = () => (modelLoad ??= opts.loaded?.visualModel
+    ? Promise.resolve(opts.loaded.visualModel)
+    : import('@/lib/visual-review-load').then(({ loadVisualReview }) =>
+        loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId ?? null })));
   const isAuditRow = (t: { roleSlug?: string | null }) => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG;
 
   let infraStalled = deliverables.filter(
@@ -763,6 +817,9 @@ export async function canCompleteMission(
   const surfaceGate = await evaluateSurfaceAuditGate(
     mission as { id: string; autoSurfaceAudit?: boolean | null; workspaceId?: string | null },
     allTasks as unknown as Parameters<typeof evaluateSurfaceAuditGate>[1],
+    // A deciding caller may record a merged PR's missing file evidence; a display read never does,
+    // and a render reads stored evidence only.
+    { fillMergedEvidence: opts.evaluateCriteria !== false && !opts.render, render: opts.render },
   ).catch(err => {
     console.error(`[surface-audit-gate] ${mission.id.slice(0, 8)} check failed (not blocking):`, err);
     return null;
@@ -903,6 +960,8 @@ export async function completeMissionIfVerified(
     authorTaskId?: string;
   },
 ): Promise<CompleteMissionResult> {
+  // Whichever way it decides, the attempt may move the mission's status: its stored summary is refreshed after the response.
+  noteWorkChanged({ missionIds: [missionId] });
   // S4b: the delivery records the decision reads, fingerprinted before it reads them, so the write
   // below lands only on the epoch state it was decided on (workflow/mission-completion-write.ts).
   const epochFingerprint = await readMissionEpochFingerprint(missionId);

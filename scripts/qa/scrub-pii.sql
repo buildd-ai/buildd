@@ -297,6 +297,7 @@ DELETE FROM mcp_oauth_grants;
 DELETE FROM oauth_clients;
 DELETE FROM system_cache;
 DELETE FROM prompts;              -- private prompt text; the clone runs on public defaults
+DELETE FROM mission_summaries;     -- derived (PR urls, rail wording); the reconcile cron rebuilds it from scrubbed rows
 DELETE FROM cron_runs;
 DELETE FROM gate_events;
 -- Failure incident ledger: titles and evidence refs echo task/PR titles and
@@ -332,6 +333,7 @@ DELETE FROM task_dispatch_outbox;
 DELETE FROM landing_lanes;
 -- The command API's idempotency ledger: stored answers carry the same payloads.
 DELETE FROM workflow_commands;
+DELETE FROM workflow_command_outbox;
 DELETE FROM workflow_effects;
 DELETE FROM workflow_transitions;
 DELETE FROM workflow_facts;
@@ -656,7 +658,15 @@ UPDATE spec_revisions SET approved_attachments = (
 WHERE approved_attachments IS NOT NULL;
 -- Outcome verdicts: the evidence holds what a reviewer observed (prose), file
 -- refs and who recorded it; criterion ids and head SHAs are not content.
-UPDATE spec_outcome_verdicts SET evidence = pg_temp.qa_json(evidence);
+UPDATE spec_outcome_verdicts SET evidence = pg_temp.qa_json(evidence), criterion_text_hash = NULL;
+-- Criterion records and kept reviews are derived from the bodies, which are
+-- scrubbed above, so they hold the old words: deleted, and every revision marked
+-- underived so the app derives them again from the placeholder bodies. The
+-- verdicts' wording hashes above name the old words too, so they read as
+-- recorded before wordings were kept.
+DELETE FROM spec_criteria;
+DELETE FROM spec_revision_reviews;
+UPDATE spec_revisions SET criteria_count = NULL;
 -- Spec neighbours: the reason detail names repo paths and criterion ids; kind and source are fixed words.
 UPDATE spec_neighbors SET detail = pg_temp.qa_json(detail);
 -- Spec filings: a proposed new area's title and charter (spec prose) ride in

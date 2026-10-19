@@ -7,7 +7,8 @@
 import { missionStartState } from './mission-start-state';
 import { db } from '@buildd/core/db';
 import { releases, taskEstimates } from '@buildd/core/db/schema';
-import { and, desc, gte, inArray, type SQL } from 'drizzle-orm';
+import { ESTIMATOR_VERSION } from '@buildd/core/task-estimate';
+import { and, desc, eq, gte, inArray, type SQL } from 'drizzle-orm';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { projectMissionDelivery, type DeliveryKind } from './delivery-projection';
 import { buildActiveMissionsQueryArgs } from './missions-query';
@@ -84,7 +85,7 @@ export async function loadMissionPlan(missionsWhere: SQL | undefined, now: numbe
     taskIds.length === 0 ? [] : db
       .select({ taskId: taskEstimates.taskId, p50Minutes: taskEstimates.p50Minutes, p80Minutes: taskEstimates.p80Minutes })
       .from(taskEstimates)
-      .where(inArray(taskEstimates.taskId, taskIds))
+      .where(and(inArray(taskEstimates.taskId, taskIds), eq(taskEstimates.estimatorVersion, ESTIMATOR_VERSION)))
       .orderBy(desc(taskEstimates.createdAt)),
     workspaceIds.length === 0 ? [] : db
       .select({ workspaceId: releases.workspaceId, version: releases.version, createdAt: releases.createdAt })
@@ -93,7 +94,7 @@ export async function loadMissionPlan(missionsWhere: SQL | undefined, now: numbe
       .orderBy(desc(releases.createdAt)),
   ]);
 
-  // Newest estimate per task: rows arrive newest first.
+  // Newest estimate per task from the calibrated running version; older versions stay unavailable.
   const estimates = new Map<string, { p50Minutes: number; p80Minutes: number }>();
   for (const e of estimateRows) if (!estimates.has(e.taskId)) estimates.set(e.taskId, e);
 

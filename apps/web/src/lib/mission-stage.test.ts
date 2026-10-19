@@ -71,6 +71,10 @@ describe('visual verification (review of #4778): the list never says delivered p
     expect(direct([{ status: 'failed' }])).toEqual({ step: 'verifying', waitingOn: 'unable to run' });
   });
 
+  it('an audit failed only because build work it checks failed waits on that work, never "unable to run" (072de598 I-14)', () => {
+    expect(direct([{ status: 'failed', dependencyFailed: true }])).toEqual({ step: 'verifying', waitingOn: 'waiting on failed work' });
+  });
+
   it('a queued audit stays verifying: queued', () => {
     expect(direct([{ status: 'pending' }])).toEqual({ step: 'verifying', waitingOn: 'queued' });
   });
@@ -103,7 +107,7 @@ describe('visual verification (review of #4778): the list never says delivered p
 describe('missionStage', () => {
   it('is building while build work has not landed, waiting on the rail\'s build count', () => {
     const s = missionStage(input({ tasks: [task({ prs: [mergedPr] }), task({ status: 'in_progress' })] }));
-    expect(s).toEqual({ step: 'building', waitingOn: '1 of 2 landed' });
+    expect(s).toEqual({ step: 'building', waitingOn: '1 of 2 done' });
   });
 
   it('a completed task whose PR has not merged has not landed', () => {

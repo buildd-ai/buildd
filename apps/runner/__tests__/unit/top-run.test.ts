@@ -10,7 +10,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { serveRunnerSocket, type RunnerSocketServer } from '../../src/runner-socket';
 import { OSC11_QUERY, createPalette, stripAnsi } from '../../src/terminal-palette';
-import { EXIT_NOT_A_TERMINAL, EXIT_NO_RUNNER, LEAVE_SCREEN, runTop, type TopTerminal } from '../../src/top/run';
+import { EXIT_NOT_A_TERMINAL, EXIT_NO_RUNNER, IDLE_PAUSE_MS, LEAVE_SCREEN, MISSION_REFRESH_MS, TASK_EVENT_MIN_MS, TASK_REFRESH_MS, runTop, type TopTerminal } from '../../src/top/run';
 import { TASKS, WORKERS } from './top-fixture';
 
 let dir: string;
@@ -19,7 +19,15 @@ let server: RunnerSocketServer | null = null;
 let sse: ReadableStreamDefaultController<Uint8Array> | null = null;
 const posts: Array<{ path: string; body: any }> = [];
 let missionFetches = 0;
+let taskFetches = 0;
+let tasksServed = 0;
 let serveMissions = false;
+/** Hold /api/tasks and /api/missions/recent until this resolves (a slow server read). */
+let slowReads: Promise<void> | null = null;
+/** The next N task-list reads answer 429 (the server's read rate limit, passed through). */
+let rateLimitTasks = 0;
+/** The next N /api/config reads fail (a runner too busy to answer the first load). */
+let failConfig = 0;
 
 function push(event: unknown) {
   sse?.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
@@ -30,7 +38,12 @@ beforeEach(() => {
   sock = join(dir, 'runner.sock');
   posts.length = 0;
   missionFetches = 0;
+  taskFetches = 0;
+  tasksServed = 0;
   serveMissions = false;
+  slowReads = null;
+  rateLimitTasks = 0;
+  failConfig = 0;
   sse = null;
 });
 
@@ -47,19 +60,29 @@ function serveFakeRunner() {
       const body = await req.json().catch(() => ({}));
       posts.push({ path, body });
       if (path === '/api/workers/w-hint/answer') return Response.json({ ok: true });
+      if (path === '/api/talk-context') return Response.json({ cwd: '/work/repo', server: 'https://buildd.example', apiKey: 'bld_secret', explain: null, mission: null });
       return Response.json({ error: 'Worker is not running' }, { status: 409 });
     }
     switch (path) {
       case '/api/runner': return Response.json({ pid: 4242, version: '0.340.0' });
-      case '/api/config': return Response.json({ maxConcurrent: 3, builddServer: 'http://127.0.0.1:1' });
+      case '/api/config':
+        if (failConfig > 0) { failConfig--; return Response.json({ error: 'busy' }, { status: 503 }); }
+        return Response.json({ maxConcurrent: 3, builddServer: 'http://127.0.0.1:1' });
       case '/api/workers': return Response.json({ workers: WORKERS });
-      case '/api/tasks': return Response.json({ tasks: TASKS });
+      case '/api/tasks':
+        taskFetches++; if (slowReads) await slowReads;
+        if (rateLimitTasks > 0) {
+          rateLimitTasks--;
+          return Response.json({ error: 'The server is rate limiting reads; retrying after 1s.', retryAfterSec: 1, tasks: [] }, { status: 429, headers: { 'Retry-After': '1' } });
+        }
+        tasksServed++; return Response.json({ tasks: TASKS });
       case '/api/workspaces': return Response.json({ workspaces: [
         { id: 'ws-a', name: 'alpha', teamId: 'team-1', teamName: 'Team One' },
         { id: 'ws-b', name: 'bravo', teamId: 'team-2', teamName: 'Team Two' },
       ] });
       case '/api/missions/recent':
         missionFetches++;
+        if (slowReads) await slowReads;
         return Response.json({ missions: !serveMissions ? [] : [
           { id: 'm-quiet', title: 'Quiet mission', workspaceId: 'ws-b', status: 'active', isHeld: false, executor: 'runner', completedAt: null, stage: { step: 'building', waitingOn: null } },
         ] });
@@ -160,6 +183,47 @@ describe('runTop', () => {
     expect(t.raw).toEqual([true, false]);
   });
 
+  test('s hands the terminal to claude and takes it back (talk session)', async () => {
+    serveFakeRunner();
+    const t = fakeTerminal();
+    const ran: any[] = [];
+    const done = runTop({
+      socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {}, env: {},
+      talk: { loggedIn: async () => true, run: async (l) => { ran.push(l); t.writes.push('<<claude>>'); return 0; } },
+    });
+    await until(() => t.screen().includes('name override'));
+    t.type('s');
+    await until(() => ran.length === 1);
+    expect(posts.at(-1)?.path).toBe('/api/talk-context');
+    expect(ran[0].cwd).toBe('/work/repo');
+    expect(ran[0].mode).toBe('suspend');
+    // top left its screen before claude and came back after it.
+    const i = t.writes.indexOf('<<claude>>');
+    expect(t.writes.slice(0, i).some(w => w.includes('\x1b[?1049l'))).toBe(true);
+    await until(() => t.writes.slice(i).some(w => w.includes('\x1b[?1049h')));
+    expect(t.raw).toEqual([true, false, true]);
+    await until(() => t.screen().includes('Back from Claude'));
+    t.type('q');
+    expect(await done).toBe(0);
+  });
+
+  test('s without a claude login says so in one line and opens nothing', async () => {
+    serveFakeRunner();
+    const t = fakeTerminal();
+    let ran = 0;
+    const done = runTop({
+      socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {}, env: {},
+      talk: { loggedIn: async () => false, run: async () => { ran++; return 0; } },
+    });
+    await until(() => t.screen().includes('name override'));
+    t.type('s');
+    await until(() => t.screen().includes("Claude isn't logged in on this machine: run claude login"));
+    expect(ran).toBe(0);
+    expect(posts.some(p => p.path === '/api/talk-context')).toBe(false);
+    t.type('q');
+    await done;
+  });
+
   test('asks the terminal for its background before the first frame: white means Day (R-17, AC-6)', async () => {
     serveFakeRunner();
     const t = fakeTerminal(true, '\x1b]11;rgb:ffff/ffff/ffff\x07');
@@ -228,7 +292,7 @@ describe('runTop', () => {
     await done;
   });
 
-  test('each minute timer refreshes missions even when its clock is slightly early', async () => {
+  test('each mission timer refreshes missions even when its clock is slightly early', async () => {
     serveFakeRunner();
     const intervals: Array<{ callback: () => void; ms: number }> = [];
     const realInterval = globalThis.setInterval;
@@ -242,10 +306,14 @@ describe('runTop', () => {
     try {
       await until(() => intervals.length === 4 && missionFetches === 1);
       const now = Date.now();
-      clock = spyOn(Date, 'now').mockReturnValue(now + 59_900);
+      // The keyboard stays busy, so the idle pause never applies here.
+      t.type('j');
+      clock = spyOn(Date, 'now').mockReturnValue(now + MISSION_REFRESH_MS - 100);
+      t.type('k');
       intervals[2].callback();
       await until(() => missionFetches === 2);
-      clock.mockReturnValue(now + 119_800);
+      clock.mockReturnValue(now + 2 * MISSION_REFRESH_MS - 200);
+      t.type('j');
       intervals[2].callback();
       await until(() => missionFetches === 3);
     } finally {
@@ -256,7 +324,78 @@ describe('runTop', () => {
     }
   });
 
-  test('lists the missions the server names, and never fetches them faster than once a minute (R-24)', async () => {
+  test('timers poll the server no faster than every 2 minutes (tasks) and 5 (missions)', () => {
+    // Pushed events refetch sooner; the timers are only the backstop.
+    expect(TASK_REFRESH_MS).toBeGreaterThanOrEqual(120_000);
+    expect(MISSION_REFRESH_MS).toBeGreaterThanOrEqual(300_000);
+    expect(TASK_EVENT_MIN_MS).toBeGreaterThanOrEqual(10_000);
+    expect(IDLE_PAUSE_MS).toBeGreaterThanOrEqual(5 * 60_000);
+  });
+
+  test('a burst of queue events refetches the task list once, after the event floor', async () => {
+    serveFakeRunner();
+    const t = fakeTerminal();
+    const done = runTop({ socketPath: sock, terminal: t.term, palette: createPalette('night', 'none'), processHooks: false, timing: { taskEventMinMs: 1_500 } });
+    await until(() => taskFetches === 1 && sse !== null);
+    for (let i = 0; i < 3; i++) { push({ type: 'task_assigned' }); await Bun.sleep(300); }
+    // Without the floor each event would have refetched: 1 + 3.
+    expect(taskFetches).toBe(1);
+    await until(() => taskFetches === 2, 2_500);
+    await Bun.sleep(400);
+    expect(taskFetches).toBe(2);
+    t.type('q');
+    await done;
+  });
+
+  test('a 429 from the server holds task-list reads for Retry-After, says so, then catches up once', async () => {
+    serveFakeRunner();
+    rateLimitTasks = 1;
+    const t = fakeTerminal();
+    const done = runTop({ socketPath: sock, terminal: t.term, palette: createPalette('night', 'none'), processHooks: false, timing: { taskEventMinMs: 50 } });
+    await until(() => taskFetches === 1 && sse !== null);
+    await until(() => /rate limit/i.test(t.screen()));
+    // Queue events during the hold do not ask again (no hot retry).
+    for (let i = 0; i < 3; i++) { push({ type: 'task_assigned' }); await Bun.sleep(100); }
+    expect(taskFetches).toBe(1);
+    // After Retry-After, one catch-up read.
+    await until(() => taskFetches === 2, 2_500);
+    await until(() => t.screen().includes('name override'));
+    t.type('q');
+    await done;
+  });
+
+  test('left idle, top stops asking the server, says so, and catches up on the next key', async () => {
+    serveFakeRunner();
+    const intervals: Array<{ callback: () => void; ms: number }> = [];
+    const realInterval = globalThis.setInterval;
+    const timer = spyOn(globalThis, 'setInterval').mockImplementation(((callback: () => void, ms: number) => {
+      intervals.push({ callback, ms });
+      return realInterval(() => {}, 1_000_000);
+    }) as typeof setInterval);
+    const t = fakeTerminal();
+    const done = runTop({ socketPath: sock, terminal: t.term, palette: createPalette('night', 'none'), processHooks: false, timing: { idlePauseMs: 200 } });
+    try {
+      await until(() => intervals.length === 4 && taskFetches === 1 && missionFetches === 1 && sse !== null);
+      await Bun.sleep(300);
+      intervals[1].callback();
+      intervals[2].callback();
+      push({ type: 'task_assigned' });
+      await Bun.sleep(400);
+      intervals[0].callback();
+      await until(() => /paused/i.test(t.screen()));
+      expect(taskFetches).toBe(1);
+      expect(missionFetches).toBe(1);
+      t.type('j');
+      await until(() => taskFetches === 2 && missionFetches === 2);
+      await until(() => !/paused/i.test(t.screen()));
+    } finally {
+      timer.mockRestore();
+      t.type('q');
+      await done;
+    }
+  });
+
+  test('lists the missions the server names, and never fetches them faster than the mission timer (R-24)', async () => {
     serveMissions = true;
     serveFakeRunner();
     const t = fakeTerminal();
@@ -287,9 +426,44 @@ describe('runTop', () => {
     const t2 = fakeTerminal();
     const done2 = runTop({ socketPath: sock, terminal: t2.term, hostname: 'h', team: 'team two', palette: createPalette('night', 'none'), processHooks: false });
     await until(() => t2.screen().includes('t team: Team Two · w workspace: all'));
+    // The header draws before the first missions fetch lands; wait for it.
+    await until(() => t2.screen().includes('Quiet mission'));
     expect(t2.screen()).toContain('Quiet mission');
     t2.type('q');
     await done2;
+  });
+
+  test('first load: says loading, then the stream fills the header while the task list is still loading', async () => {
+    let release!: () => void;
+    slowReads = new Promise<void>(r => { release = r; });
+    serveFakeRunner();
+    const t = fakeTerminal();
+    const done = runTop({ socketPath: sock, terminal: t.term, hostname: 'test-host', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {} });
+
+    await until(() => t.screen().length > 0);
+    const first = t.screen().split('\n')[0];
+    expect(first).not.toContain('reconnecting');
+    // The event stream opens beside the snapshot: online with the real slots before the slow reads answer.
+    await until(() => t.screen().split('\n')[0].includes('of 3 slots in use · ● online'));
+    // Nothing has answered the task list yet: the header did not wait for it.
+    expect(tasksServed).toBe(0);
+
+    release();
+    await until(() => tasksServed > 0);
+    t.type('q');
+    expect(await done).toBe(0);
+  });
+
+  test('a first load the runner did not answer is taken again, while the stream stays up', async () => {
+    failConfig = 1;
+    serveFakeRunner();
+    const t = fakeTerminal();
+    const done = runTop({ socketPath: sock, terminal: t.term, hostname: 'test-host', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {} });
+    // Never stuck on the defaults: the snapshot is retried and the real slots arrive.
+    await until(() => t.screen().split('\n')[0].includes('of 3 slots in use'), 8_000);
+    expect(failConfig).toBe(0);
+    t.type('q');
+    expect(await done).toBe(0);
   });
 
   test('ctrl-c restores the terminal too', async () => {

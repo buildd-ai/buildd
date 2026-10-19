@@ -6,12 +6,13 @@
 import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
-import { githubApi } from '@/lib/github';
+import { githubApi, githubApiText } from '@/lib/github';
+import { failingEntries, failingTestsFromLog } from './failing-tests';
 import { isBaseDiffEquivalent, isContentEquivalentHead, readReviewedDelta } from '@/lib/pr-content-equivalence';
-import { FAILING_CONCLUSIONS, PASSING_CONCLUSIONS, listAllCheckRuns } from '@/lib/ci-verdict';
+import { FAILING_CONCLUSIONS, PASSING_CONCLUSIONS, latestRunPerName, listAllCheckRuns } from '@/lib/ci-verdict';
 import type { LivePr } from './commands';
 import type { GithubFactReader } from './facts';
-import type { BaseDeltaFact } from './base-delta';
+import { versionBumpManifests, type BaseDeltaFact } from './base-delta';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 interface GithubPull {
@@ -59,13 +60,89 @@ export function ciGreenFromSuites(suites: Array<{ status?: string; conclusion?: 
 
 const FAILING = FAILING_CONCLUSIONS;
 
-/** §6.10: which check runs fail on a commit, and whether all of them finished. null = no runs. */
-export function checkRunsSummary(runs: Array<{ name?: string; status?: string; conclusion?: string | null }> | null | undefined): { complete: boolean; failing: string[] } | null {
+/** A check run as the kernel reads it: enough to order re-runs and find the suite it belongs to. */
+export interface CheckRunRow {
+  id?: number;
+  name?: string;
+  status?: string;
+  conclusion?: string | null;
+  started_at?: string | null;
+  check_suite?: { id?: number } | null;
+  app?: { id?: number | null; slug?: string | null } | null;
+}
+
+/**
+ * 6900a317: the runs that still speak for the head. A workflow triggered twice on one
+ * commit (a re-run, or a PR-body edit re-running a gate) leaves the first run's failure
+ * attached to the same SHA beside the run that replaced it; GitHub's merge box and the
+ * landing door (latestRunPerName) read the newest run per check name, and so does the
+ * kernel. Unorderable same-name runs are both kept, so an unorderable failure still counts.
+ */
+export function currentCheckRuns<T extends CheckRunRow>(runs: T[]): T[] {
+  const rows = runs.map((r) => ({ ...r, name: String(r.name ?? 'unnamed'), status: String(r.status ?? ''), conclusion: r.conclusion ?? null, __row: r }));
+  return latestRunPerName(rows).map((r) => r.__row);
+}
+
+/**
+ * The suites still to count: a suite every one of whose runs a newer same-name run
+ * replaced (in another suite) no longer decides anything. A suite with no runs, or any
+ * run still current, stays: a startup failure has no runs and is still red. Without a
+ * complete run read nothing is dropped (fails closed).
+ */
+export function currentSuites<S extends { id?: number }>(suites: S[], runs: CheckRunRow[] | null): S[] {
+  if (!runs) return suites;
+  const current = new Set(currentCheckRuns(runs));
+  return suites.filter((s) => {
+    const own = runs.filter((r) => s.id != null && r.check_suite?.id === s.id);
+    return own.length === 0 || own.some((r) => current.has(r));
+  });
+}
+
+/** §6.10: the current check runs that failed on a commit. Superseded re-runs are dropped first. */
+export function failingCheckRuns<T extends CheckRunRow>(runs: T[]): T[] {
+  return currentCheckRuns(runs).filter((r) => r.status === 'completed' && FAILING.has(String(r.conclusion ?? '')));
+}
+
+/** §6.10: which check runs fail on a commit, and whether all of them finished. null = no runs. Superseded re-runs are dropped first. */
+export function checkRunsSummary(runs: CheckRunRow[] | null | undefined): { complete: boolean; failing: string[] } | null {
   if (!runs || runs.length === 0) return null;
+  const live = currentCheckRuns(runs);
   return {
-    complete: runs.every((r) => r.status === 'completed'),
-    failing: runs.filter((r) => r.status === 'completed' && FAILING.has(String(r.conclusion ?? ''))).map((r) => String(r.name ?? 'unnamed')),
+    complete: live.every((r) => r.status === 'completed'),
+    failing: failingCheckRuns(runs).map((r) => String(r.name ?? 'unnamed')),
   };
+}
+
+/** The current runs on a commit not completed yet, by name. */
+export function pendingCheckRuns(runs: CheckRunRow[]): string[] {
+  return currentCheckRuns(runs).filter((r) => r.status !== 'completed').map((r) => String(r.name ?? 'unnamed'));
+}
+
+/** Failing jobs whose logs one test-level read fetches at most; the rest read as unread. */
+export const MAX_TEST_LOG_READS = 6;
+
+/**
+ * §6.10 at test level: each failing run's entries (`failing-tests.ts`). An
+ * Actions job's tests come from its log; another app's check has no log to
+ * read and stands as its name; a log that cannot be read (or past the read
+ * cap) is unread, which never matches.
+ */
+export async function failingTestEntries(
+  runs: CheckRunRow[], readLog: (jobId: number) => Promise<string>,
+): Promise<string[]> {
+  let reads = 0;
+  const out: string[] = [];
+  for (const r of failingCheckRuns(runs)) {
+    const name = String(r.name ?? 'unnamed');
+    if (r.app?.slug !== 'github-actions' || typeof r.id !== 'number') { out.push(name); continue; }
+    let tests: string[] | null = null;
+    if (reads < MAX_TEST_LOG_READS) {
+      reads++;
+      tests = await readLog(r.id).then(failingTestsFromLog, () => null);
+    }
+    out.push(...failingEntries(name, tests));
+  }
+  return out;
 }
 
 /** The distinct names of failed workflow runs and check runs. */
@@ -78,8 +155,12 @@ export function failingNames(rows: Array<{ name?: string | null; conclusion?: st
  * request): a caller with a budget, like the fast heal (kernel-heal.ts), never waits on a slow
  * GitHub past it. A timed-out read reads as failed (null), like any other failed read.
  */
-export function githubReader(installationId: number, rawApi: typeof githubApi = githubApi, opts: { timeoutMs?: number } = {}): GithubFactReader {
+export function githubReader(
+  installationId: number, rawApi: typeof githubApi = githubApi,
+  opts: { timeoutMs?: number; textApi?: (installationId: number, path: string) => Promise<string> } = {},
+): GithubFactReader {
   const timeoutMs = opts.timeoutMs;
+  const textApi = opts.textApi ?? githubApiText;
   const api: typeof githubApi = timeoutMs
     ? (id, path, init = {}) => rawApi(id, path, { ...init, signal: AbortSignal.timeout(timeoutMs) })
     : rawApi;
@@ -95,27 +176,40 @@ export function githubReader(installationId: number, rawApi: typeof githubApi = 
     async statusOf(repoFullName, sha, context) {
       try {
         // The combined status lists the latest status per context.
-        const data = await api(installationId, `/repos/${repoFullName}/commits/${sha}/status?per_page=100`) as { statuses?: Array<{ context?: string; state?: string; description?: string | null }> } | null;
+        const data = await api(installationId, `/repos/${repoFullName}/commits/${sha}/status?per_page=100`) as { statuses?: Array<{ context?: string; state?: string; description?: string | null; target_url?: string | null }> } | null;
         const st = (data?.statuses ?? []).find((x) => x.context === context);
-        return st?.state ? { state: st.state, description: st.description ?? '' } : null;
+        return st?.state ? { state: st.state, description: st.description ?? '', targetUrl: st.target_url ?? null } : null;
       } catch {
         return null;
       }
     },
     async ciGreen(repoFullName, headSha) {
       try {
-        const data = await api(installationId, `/repos/${repoFullName}/commits/${headSha}/check-suites`) as { check_suites?: Array<{ status?: string; conclusion?: string | null }> } | null;
-        return ciGreenFromSuites(data?.check_suites);
+        const [data, runs] = await Promise.all([
+          api(installationId, `/repos/${repoFullName}/commits/${headSha}/check-suites`) as Promise<{ check_suites?: Array<{ id?: number; status?: string; conclusion?: string | null }> } | null>,
+          // The runs only ever drop a superseded suite; an unreadable or partial list drops nothing.
+          listAllCheckRuns<CheckRunRow>(api, installationId, repoFullName, headSha).catch(() => null),
+        ]);
+        const suites = data?.check_suites;
+        return ciGreenFromSuites(suites ? currentSuites(suites, runs?.complete ? runs.items : null) : suites);
       } catch {
         return null;
       }
     },
-    async checkRuns(repoFullName, sha) {
+    async checkRuns(repoFullName, sha, o) {
       try {
-        const read = await listAllCheckRuns<{ name?: string; status?: string; conclusion?: string | null }>(api, installationId, repoFullName, sha);
+        const read = await listAllCheckRuns<CheckRunRow>(api, installationId, repoFullName, sha);
         const summary = checkRunsSummary(read.items);
+        if (!summary) return null;
         // A read short of total_count is unknown, never "complete".
-        return summary && !read.complete ? { ...summary, complete: false } : summary;
+        const known = read.complete ? summary : { ...summary, complete: false };
+        if (!o?.tests) return known;
+        // The signature read (§6.10): what is still going (only when the list is whole), and the failing tests.
+        // A check run of GitHub Actions is its job: the run id is the job id.
+        const tests = summary.failing.length
+          ? await failingTestEntries(read.items, (jobId) => textApi(installationId, `/repos/${repoFullName}/actions/jobs/${jobId}/logs`))
+          : [];
+        return { ...known, tests, ...(read.complete ? { pending: pendingCheckRuns(read.items) } : {}) };
       } catch {
         return null;
       }
@@ -195,8 +289,8 @@ const names = (files: unknown): string[] | null => (Array.isArray(files)
 
 /**
  * S15's base delta (base-delta.ts), read live: `compare/{head}...{base}` gives the
- * commits the base gained since the head's merge-base (`ahead_by`) and the files
- * they changed; the PR's own files come from `pulls/{n}/files`. A list that may
+ * commits the base gained since the head's merge-base (`ahead_by`), the files
+ * they changed and which of those are only a version bump; the PR's own files come from `pulls/{n}/files`. A list that may
  * be truncated, or a read that fails, is null on that side.
  */
 export async function readBaseDelta(
@@ -207,15 +301,17 @@ export async function readBaseDelta(
   const baseCommits = typeof cmp?.ahead_by === 'number' ? cmp.ahead_by : null;
   let baseFiles = names(cmp?.files);
   if (baseFiles && baseFiles.length >= COMPARE_FILE_LIMIT) baseFiles = null;
+  const bumps = baseFiles ? versionBumpManifests(cmp?.files) : [];
+  const base = { baseCommits, baseFiles, ...(bumps.length ? { versionBumpFiles: bumps } : {}) };
   const prFiles: string[] = [];
   for (let page = 1; page <= PR_FILES_MAX_PAGES; page++) {
     const batch = names(await get(`/repos/${repoFullName}/pulls/${prNumber}/files?per_page=${PR_FILES_PAGE}&page=${page}`).catch(() => null));
-    if (!batch) return { baseCommits, baseFiles, prFiles: null };
+    if (!batch) return { ...base, prFiles: null };
     prFiles.push(...batch);
-    if (batch.length < PR_FILES_PAGE) return { baseCommits, baseFiles, prFiles };
+    if (batch.length < PR_FILES_PAGE) return { ...base, prFiles };
   }
   // Every page was full: there may be more than we read.
-  return { baseCommits, baseFiles, prFiles: null };
+  return { ...base, prFiles: null };
 }
 
 export interface WorkspaceRepo {

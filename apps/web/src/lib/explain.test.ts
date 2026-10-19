@@ -425,16 +425,16 @@ describe('explainMission', () => {
 describe('explainTask', () => {
   // executor='local' (task 09ed6675): a queued task in a local mission is the
   // person's session's to claim — never "stalled, dispatch a worker".
-  it('a pending task in a local mission is waiting for a local session to claim it', async () => {
+  it('a pending task in a local mission is waiting for your session to claim it', async () => {
     missionRow = { id: 'mission-1', executor: 'local', isHeld: false };
     taskRows = [task({ id: 'task-1', status: 'pending' })];
     const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
     expect(answer.chip.label).toBe('LOCAL');
-    expect(answer.situation.headline).toBe('Ready to start from a local session.');
+    expect(answer.situation.headline).toBe('Ready to start from your session.');
     expect(answer.situation.headline).not.toMatch(/stall/i);
     expect(answer.situation.nextAction ?? '').toContain('claim_task');
     expect(answer.situation.nextAction ?? '').not.toMatch(/Dispatch a worker/);
-    expect(answer.because.map(l => l.claim).join(' ')).toContain('is ready to start. Claim it from a local session.');
+    expect(answer.because.map(l => l.claim).join(' ')).toContain('is ready to start. Claim it from your session.');
     expect(answer.because.map(l => l.claim).join(' ')).not.toMatch(/waiting for a runner|nothing is running it/);
   });
 
@@ -840,6 +840,28 @@ describe('explainPr — a dirty mission PR', () => {
   it('refuses a PR with no task attached rather than inventing a subject', async () => {
     expect(await explainPr({ ...subject, taskId: null }, ACTOR)).toBeNull();
   });
+
+  it('a PR resolved through a cancelled fix attempt\'s worker answers for the task that opened it, never "complete"', async () => {
+    taskRows[0].workers[0].prLifecycleStatus = 'pr_open';
+    taskRows.push(task({
+      id: 'task-ci-fix', title: '[builder · after CI #1] Mission PR', status: 'cancelled', taskClass: 'attempt',
+      parentTaskId: 'task-mission-pr', creationSource: 'ci_retry',
+      workers: [worker({ id: 'worker-ci-fix', prNumber: 101, branch: 'mission/build-auth', prLifecycleStatus: 'pr_open' })],
+    }));
+    const answer = (await explainPr({ ...subject, id: 'worker-ci-fix', taskId: 'task-ci-fix', prLifecycleStatus: 'pr_open' }, ACTOR))!.subjects[0];
+    expect(answer.subject.taskId).toBe('task-mission-pr');
+    expect(answer.state).not.toBe('complete');
+    expect(answer.because.map(l => l.claim).join('\n')).not.toContain('No task, PR, check or decision is open');
+  });
+
+  it('an attempt that opened a PR of its own stays that PR\'s subject', async () => {
+    taskRows.push(task({
+      id: 'task-own-pr', title: '[builder · after CI #2] its own PR', status: 'completed', taskClass: 'attempt',
+      parentTaskId: 'task-mission-pr', workers: [worker({ id: 'worker-own', prNumber: 202 })],
+    }));
+    const answer = (await explainPr({ ...subject, id: 'worker-own', taskId: 'task-own-pr', prNumber: 202, prLifecycleStatus: 'pr_open' }, ACTOR))!.subjects[0];
+    expect(answer.subject.taskId).toBe('task-own-pr');
+  });
 });
 
 // ─── Workspace scope ──────────────────────────────────────────────────────────
@@ -1026,5 +1048,16 @@ describe('visual task browser claimability explanation', () => {
     const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
     expect(answer.because.map(l => l.claim).join(' ')).not.toContain('needs a runner with a browser');
     browserHeartbeats = [];
+  });
+});
+
+describe('isInfraFailedTask', () => {
+  it('flags a worktree setup failure that refused the shared clone', async () => {
+    const { isInfraFailedTask } = await import('./explain');
+    const error = 'Worktree setup failed for branch b in /repo; refusing to run in the shared clone: git worktree add failed (timed out): x';
+    expect(isInfraFailedTask({ result: { error } })).toBe(true);
+    expect(isInfraFailedTask({ context: { failureContext: { summary: error } } })).toBe(true);
+    expect(isInfraFailedTask({ result: { errorType: 'infra_stalled' } })).toBe(true);
+    expect(isInfraFailedTask({ result: { error: 'tests failed' } })).toBe(false);
   });
 });

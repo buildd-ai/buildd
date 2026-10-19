@@ -1,0 +1,120 @@
+/** Head-bound patches for live PRs; permanent merged evidence written by the close subscriber. */
+import { db } from '@buildd/core/db';
+import { systemCache } from '@buildd/core/db/schema';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { eq, inArray } from 'drizzle-orm';
+import { isRenderedSurfaceChange } from '@buildd/core/surface-audit';
+import type { ImpactFile } from './workflow/visual-review-impact';
+
+type Repo = { installationId: number; fullName: string };
+type Evidence = { headSha: string; files: ImpactFile[] };
+const keyFor = (repo: Repo, pr: number, head: string) =>
+  `surface-files:v1:${repo.installationId}:${repo.fullName.toLowerCase()}#${pr}@${head}`;
+
+async function read(key: string): Promise<Evidence | null> {
+  try {
+    return evidenceOf(await db.query.systemCache.findFirst({ where: sqlWhere(eq(systemCache.key, key)) }));
+  } catch { return null; }
+}
+
+async function write(key: string, value: Evidence, permanent: boolean): Promise<void> {
+  const updatedAt = new Date();
+  const expiresAt = permanent ? null : new Date(Date.now() + 30 * 86400_000);
+  await db.insert(systemCache).values({ key, value, updatedAt, expiresAt })
+    .onConflictDoUpdate({ target: systemCache.key, set: { value, updatedAt, expiresAt } });
+}
+
+async function current(repo: Repo, pr: number): Promise<{ head: { sha: string }; merged: boolean }> {
+  const { githubApi } = await import('@/lib/github');
+  const result = await githubApi(repo.installationId, `/repos/${repo.fullName}/pulls/${pr}`) as { head?: { sha?: string }; merged?: boolean };
+  if (!result?.head?.sha || typeof result.merged !== 'boolean') throw new Error('PR head unavailable');
+  return result as { head: { sha: string }; merged: boolean };
+}
+
+async function changedFiles(repo: Repo, pr: number): Promise<ImpactFile[] | null> {
+  const { githubApi } = await import('@/lib/github');
+  const out: ImpactFile[] = [];
+  for (let page = 1; page <= 3; page++) {
+    const files = await githubApi(repo.installationId, `/repos/${repo.fullName}/pulls/${pr}/files?per_page=100&page=${page}`);
+    if (!Array.isArray(files)) return null;
+    for (const f of files as Array<{ filename?: string; previous_filename?: string; patch?: string }>) {
+      if (!f.filename) return null;
+      if (isRenderedSurfaceChange(f.filename)) out.push({ path: f.filename, patch: f.patch ?? null });
+      if (f.previous_filename && isRenderedSurfaceChange(f.previous_filename)) out.push({ path: f.previous_filename, patch: null });
+    }
+    if (files.length < 100) return out;
+  }
+  // A capped list is not evidence of absence. Let the caller use declared scope.
+  return null;
+}
+
+function evidenceOf(row: { value: unknown; expiresAt: Date | null } | undefined): Evidence | null {
+  if (!row || (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now())) return null;
+  const value = row.value as Evidence;
+  return typeof value?.headSha === 'string' && Array.isArray(value.files)
+    && value.files.every(f => typeof f.path === 'string' && (f.patch === null || typeof f.patch === 'string')) ? value : null;
+}
+
+/**
+ * A render's read (spec 3ef37387 R-12): the durable merged evidence of each
+ * PR, all in one query, never GitHub. A PR with none recorded is absent; an
+ * open PR is not asked here at all (its head is GitHub's, see loadPrSurfaceFiles).
+ */
+export async function loadMergedSurfaceEvidence(repo: Repo, prs: readonly number[]): Promise<Map<number, ImpactFile[]>> {
+  const out = new Map<number, ImpactFile[]>();
+  if (prs.length === 0) return out;
+  const keys = new Map(prs.map(pr => [keyFor(repo, pr, 'merged'), pr] as const));
+  try {
+    const rows = await db.query.systemCache.findMany({
+      where: sqlWhere(inArray(systemCache.key, [...keys.keys()])),
+      columns: { key: true, value: true, expiresAt: true },
+    });
+    for (const row of rows) {
+      const ev = evidenceOf(row);
+      const pr = keys.get(row.key);
+      if (ev && pr != null) out.set(pr, ev.files);
+    }
+  } catch { /* unreadable storage: every PR answers by its declared manifest */ }
+  return out;
+}
+
+/** Rendering never fills merged evidence, even on cold/expired/unavailable storage. */
+export async function loadPrSurfaceFiles(repo: Repo, pr: number, knownMerged = false): Promise<ImpactFile[] | null> {
+  const mergedKey = keyFor(repo, pr, 'merged');
+  const durable = await read(mergedKey);
+  if (durable) return durable.files;
+  if (knownMerged) return null;
+  const before = await current(repo, pr);
+  if (before.merged) return null;
+  const key = keyFor(repo, pr, before.head.sha);
+  const hit = await read(key);
+  if (hit?.headSha === before.head.sha) return hit.files;
+  const files = await changedFiles(repo, pr);
+  if (!files) return null;
+  // GitHub's files endpoint is mutable: never label a racing response with an older SHA.
+  const after = await current(repo, pr);
+  if (after.head.sha !== before.head.sha || after.merged) return null;
+  try { await write(key, { headSha: before.head.sha, files }, false); }
+  catch (err) { console.warn('[surface-evidence] open evidence write failed:', err); }
+  return files;
+}
+
+/**
+ * Idempotent merge-event writer (the `pr.closed` subscriber, and a completion decision that finds
+ * a merged PR recorded before this existed). Kept outside every rendering path. The merged key is
+ * not head-bound, so it is written only once GitHub itself reports the PR merged (its head can no
+ * longer move) and, when the caller knows the merged head, only for that head.
+ */
+export async function persistMergedSurfaceEvidence(repo: Repo, pr: number, expectedHeadSha?: string | null): Promise<void> {
+  const key = keyFor(repo, pr, 'merged');
+  if (await read(key)) return;
+  const state = await current(repo, pr);
+  if (!state.merged) return;
+  if (expectedHeadSha && state.head.sha.toLowerCase() !== expectedHeadSha.toLowerCase()) {
+    console.warn(`[surface-evidence] PR #${pr} merged head ${state.head.sha.slice(0, 8)} is not the reported ${expectedHeadSha.slice(0, 8)}; not recorded`);
+    return;
+  }
+  const files = await changedFiles(repo, pr);
+  if (!files) return;
+  await write(key, { headSha: state.head.sha, files }, true);
+}

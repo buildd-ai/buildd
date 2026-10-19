@@ -53,7 +53,7 @@ export async function loadDocked(
   try {
     if (about?.kind === 'task') {
       const t = await read(`/api/tasks/${about.id}`);
-      const m = t?.missionId ? await read(`/api/missions/${t.missionId}`).catch(() => null) : null;
+      const m = t?.missionId ? await read(`/api/missions/${t.missionId}?include=details`).catch(() => null) : null;
       return {
         kind: 'task', id: String(t.id), title: String(t.title ?? 'task'), status: t.status ?? null,
         workspaceId: t.workspaceId ?? null, missionId: m?.id ?? null, missionTitle: m?.title ?? null,
@@ -62,7 +62,7 @@ export async function loadDocked(
     }
     const missionId = about?.kind === 'mission' ? about.id : linkedMissionId;
     if (!missionId) return null;
-    const m = await read(`/api/missions/${missionId}`);
+    const m = await read(`/api/missions/${missionId}?include=details`);
     return {
       kind: 'mission', id: String(m.id), title: String(m.title ?? 'mission'), status: m.isHeld ? missionStartWord(m) : m.executor === 'local' ? 'local' : (m.status ?? null),
       workspaceId: m.workspaceId ?? null, missionId: String(m.id), missionTitle: String(m.title ?? 'mission'),

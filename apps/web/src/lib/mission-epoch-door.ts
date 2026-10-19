@@ -17,7 +17,7 @@ import { eq } from 'drizzle-orm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { missionIntegrationBase, isMissionPrTask } from '@buildd/core/mission-integration';
 import { githubApi } from '@/lib/github';
-import { submitKernelCommand } from '@/lib/workflow/kernel-client';
+import { submitKernelCommand, openKernelDelivery } from '@/lib/workflow/kernel-client';
 import { missionEpochsOf, writableEpoch } from '@/lib/workflow/delivery-ship';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
 
@@ -110,6 +110,26 @@ export async function bindMissionDeliveryPr(p: { missionId: string; workspaceId:
     await submitKernelCommand('mission_epoch', { action: 'bind_pr', ...p, actor: 'system:mission_pr_opened' }, { principal: SYSTEM, withDelivery: false });
   } catch (err) {
     console.error(`[mission-epochs] binding PR #${p.prNumber} to mission ${p.missionId}'s delivery failed:`, err);
+  }
+}
+
+/**
+ * The mission PR just opened: the kernel takes it as a delivery owned by the
+ * mission's bookkeeping task (§6: "a mission's integration PR is a delivery of
+ * role mission"). Opened here, from the open itself, rather than left to the
+ * `pull_request.opened` webhook: that path only reaches the kernel for a
+ * review-tier policy, and can arrive before the owner row carries the PR, so a
+ * mission PR under the default policy had no delivery and no kernel gate (#4686).
+ * Idempotent against the webhook door (one delivery per PR and per owner).
+ * Best effort: the hourly floor and the webhook are the backstops.
+ */
+export async function openMissionPrDelivery(p: { workspaceId: string; ownerTaskId: string; repoFullName: string; prNumber: number; installationId: number }): Promise<{ owned: boolean; reason?: string }> {
+  try {
+    const r = await openKernelDelivery({ ...p, source: 'mission_pr:opened' }, { principal: SYSTEM });
+    return { owned: r.owned, reason: r.reason };
+  } catch (err) {
+    console.error(`[mission-epochs] opening a kernel delivery for mission PR #${p.prNumber} failed:`, err);
+    return { owned: false, reason: 'error' };
   }
 }
 

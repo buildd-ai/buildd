@@ -94,16 +94,17 @@ function taskTone(view: TaskObjectView): { label: string; tone: DockTone; stoppe
   const kernel = view.delivery ? dockToneForDelivery(view.delivery) : null;
   if (kernel) return { ...kernel, kernel: true };
   // Legacy-owned: the one fact-cache mapping. A completed task whose PR is
-  // still open is in review, not landed (§17.5: "Landed" is no longer
-  // `mergedAt || status === 'completed'`).
+  // still open is in review, not merged (§17.5: Merged is no longer
+  // `mergedAt || status === 'completed'`). A completed task with no PR is Done.
   const pr = w?.prNumber ? derivePrDisplayState(w.prLifecycleStatus, w.mergedAt) : null;
-  if (pr === 'merged' || (!pr && view.status === 'completed')) return { label: 'Landed', tone: 'landed', stopped: false };
+  if (pr === 'merged') return { label: 'Merged', tone: 'landed', stopped: false };
+  if (!pr && view.status === 'completed') return { label: 'Done', tone: 'landed', stopped: false };
   if (view.status === 'failed' || w?.status === 'failed' || w?.status === 'error') return { label: 'Stopped', tone: 'needs', stopped: true };
   if (pr === 'ci_failed') return { label: 'CI failed', tone: 'needs', stopped: true };
-  if (w && LIVE_WORKER.has(w.status)) return { label: 'Running', tone: 'live', stopped: false };
+  if (w && LIVE_WORKER.has(w.status)) return { label: 'Working', tone: 'live', stopped: false };
   if (pr === 'closed' || pr === 'unresolvable') return { label: 'Closed', tone: 'idle', stopped: false };
   if (pr) return { label: 'In review', tone: 'live', stopped: false };
-  return { label: 'Queued', tone: 'idle', stopped: false };
+  return { label: 'Ready', tone: 'idle', stopped: false };
 }
 
 export function taskDockModel(view: TaskObjectView): TaskDockModel {

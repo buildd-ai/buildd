@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { COPY_RULES, copyViolations, settingsDescriptionProblems } from '../packages/core/copy-rules';
-import { extractCopy, extractNotifyCopy, findRegressions, inScope, parseBaseline, readSources, scanSources, serializeBaseline, updatedBaseline } from './copy-check';
+import { extractCopy, extractNotifyCopy, findRegressions, inScope, parseBaseline, readSources, scanSources, serializeBaseline, updatedBaseline, vocabularyInScope } from './copy-check';
 
 const OLD = 'apps/web/src/app/app/(protected)/settings/old.tsx';
 const NEW = 'apps/web/src/app/app/(protected)/settings/new.tsx';
@@ -202,7 +202,45 @@ describe('extractCopy', () => {
   it('the tree has tagged lib/ copy modules, and readSources picks them up', () => {
     const libs = readSources().filter((s) => s.path.startsWith('apps/web/src/lib/'));
     expect(libs.map((s) => s.path)).toContain('apps/web/src/lib/mission-portfolio.ts');
-    expect(libs.every((s) => s.content.includes('@ui-copy') || s.content.includes('notifyTeamOf('))).toBe(true);
+    expect(libs.every((s) => s.content.includes('@ui-copy') || s.content.includes('notifyTeamOf(') || vocabularyInScope(s.path))).toBe(true);
+  });
+});
+
+describe('vocabulary surfaces (catalog-word)', () => {
+  const TOP = 'apps/runner/src/top/state.ts';
+  const KERNEL = 'packages/workflow-kernel/src/delivery-display.ts';
+
+  it('reads top, runner CLI output, MCP replies, the kernel display table and PR comments', () => {
+    for (const p of [TOP, 'apps/runner/src/runner-hold.ts', 'apps/runner/src/claim-words.ts', 'packages/core/mcp-tools.ts', KERNEL, 'apps/web/src/lib/pr-activity-comment.ts']) {
+      expect(vocabularyInScope(p)).toBe(true);
+    }
+    expect(vocabularyInScope('apps/runner/src/workers.ts')).toBe(false);
+    expect(vocabularyInScope('apps/runner/src/top/state.test.ts')).toBe(false);
+    const paths = readSources().map((s) => s.path);
+    expect(paths).toContain(TOP);
+    expect(paths).toContain(KERNEL);
+  });
+
+  it('applies only the vocabulary rules there', () => {
+    const src = "export const a = 'mission is on hold';\nexport const b = 'Nothing to configure here, simply wait.';";
+    const { counts } = scanSources([{ path: TOP, content: src }]);
+    expect(counts['catalog-word'][TOP]).toBe(1);
+    expect(counts['state-jargon'][TOP]).toBe(1);
+    expect(counts.reassurance[TOP]).toBeUndefined();
+  });
+
+  it('counts a one-word label for catalog-word only, and a word under a case label', () => {
+    const src = "export function f(s: string) {\n  switch (s) {\n    case 'landed': return 'Landed';\n    case 'x': return 'Shipped elsewhere';\n  }\n  return s ? ' [HELD]' : 'Paused';\n}";
+    expect(extractCopy(KERNEL, src).map((c) => c.text)).toEqual(['Landed', 'Shipped elsewhere', '[HELD]', 'Paused']);
+    expect(scanSources([{ path: KERNEL, content: src }]).counts['catalog-word'][KERNEL]).toBe(3);
+    // Lower-case keys never read as labels.
+    expect(extractCopy(KERNEL, "export const k = { state: 'landed' };")).toEqual([]);
+  });
+  it('reads MCP replies as an agent does: worker is allowed there, seat and LOCAL are not', () => {
+    const MCP = 'packages/core/mcp-tools.ts';
+    const src = "export const a = 'Use the worker ID to report progress.';\nexport const b = '[LOCAL]';\nexport const c = 'on a subscription seat';";
+    expect(scanSources([{ path: MCP, content: src }]).counts['catalog-word'][MCP]).toBe(2);
+    expect(scanSources([{ path: TOP, content: src }]).counts['catalog-word'][TOP]).toBe(3);
   });
 });
 

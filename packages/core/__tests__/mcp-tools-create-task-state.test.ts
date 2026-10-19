@@ -10,19 +10,19 @@ describe('describeCreatedTaskState', () => {
 
   it('does not report an undelivered wake as dispatched or delivered', () => {
     const s = describeCreatedTaskState({ status: 'pending', dispatch: { status: 'pending' } });
-    expect(s).toContain('wake not yet delivered');
-    expect(s).not.toMatch(/handed off|wake delivered/);
+    expect(s).toContain('wake not yet received');
+    expect(s).not.toMatch(/handed off|wake received|delivered/);
   });
 
   it('never implies a container started from a hand-off alone', () => {
     const s = describeCreatedTaskState({ status: 'pending', dispatch: { status: 'handed_off' } });
-    expect(s).toContain('not yet confirmed delivered');
+    expect(s).toContain('not yet confirmed received');
     expect(s).not.toMatch(/started|running|claimed/i);
   });
 
   it('reports a delivered wake as not a claim', () => {
     const s = describeCreatedTaskState({ status: 'pending', dispatch: { status: 'delivered', deliveredAt: 'x', deliveredVia: 'webhook' } });
-    expect(s).toContain('wake delivered via webhook');
+    expect(s).toContain('wake received via webhook');
     expect(s).toContain('not a claim');
   });
 

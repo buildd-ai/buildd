@@ -21,8 +21,10 @@
  * Pure: no `db` import. The page runs the queries.
  */
 import { sql, eq, type SQL } from 'drizzle-orm';
-import { tasks } from '@buildd/core/db/schema';
-import { sqlOrderByFn } from '@buildd/core/db/relational-sql';
+import { tasks, workers } from '@buildd/core/db/schema';
+import { sqlExtras, sqlOrderByFn } from '@buildd/core/db/relational-sql';
+import { BOARD_MILESTONES_MAX, BOARD_MILESTONE_LABEL_MAX } from '@/lib/mission-board-limits';
+import { DELIVERABLE_ROLE_CONTEXT_KEYS } from '@buildd/core/mission-helpers';
 
 // ── The relational query ─────────────────────────────────────────────────────
 
@@ -64,13 +66,12 @@ export const MISSION_WORKER_COLUMNS = {
   commitCount: true,
   filesChanged: true,
   // Board (MissionBoard): the runner a worker ran on
-  // (fleet slots), its milestones (a tile's notches), and its diff size
-  // (landed rows, completion record).
+  // (fleet slots) and its diff size (landed rows, completion record). Its
+  // milestones (a tile's notches) arrive projected (MISSION_WORKER_EXTRAS).
   runner: true,
   // With runner, joins the runner's heartbeat for its hostname (runner-display).
   accountId: true,
   localUiUrl: true,
-  milestones: true,
   linesAdded: true,
   linesRemoved: true,
   // The Landed drawer's audit evidence: the head this worker pushed, which a
@@ -78,6 +79,11 @@ export const MISSION_WORKER_COLUMNS = {
   lastCommitSha: true,
   // The after() PR fact import records a fact in the worker's own workspace (AC-3).
   workspaceId: true,
+  // The mission's state (explainMission) and completion gate read these from
+  // the page's rows instead of loading the tasks again (spec 3ef37387 R-11).
+  prBaseRef: true,
+  abandonedReason: true,
+  supersessionScan: true,
 } as const;
 
 export const MISSION_TASK_COLUMNS = {
@@ -122,7 +128,40 @@ export const MISSION_TASK_COLUMNS = {
   label: true,
   // Board: the Landed drawer's task actions (Retry on / Switch to).
   backend: true,
+  // The mission's state and completion gate (explainMission, canCompleteMission)
+  // read these from the page's rows: the PR a review targets, and each PR's repo.
+  subjectPrNumber: true,
+  workspaceId: true,
 } as const;
+
+/**
+ * A worker's milestones as the board reads them (`selectMilestones`): the
+ * newest {@link BOARD_MILESTONES_MAX} status entries with a numeric time and a
+ * label, the label cut one past {@link BOARD_MILESTONE_LABEL_MAX} so the board
+ * still marks it cut. The column is the session's whole progress log; the
+ * board draws a tail of it. Same order and ties as `selectMilestones`.
+ */
+export const BOARD_MILESTONES_SQL = sql`coalesce((
+  select jsonb_agg(m.v order by m.t, m.o) from (
+    select jsonb_build_object('ts', coalesce(e->'ts', e->'timestamp'), 'label', left(e->>'label', ${BOARD_MILESTONE_LABEL_MAX + 1}::int)) as v,
+      (coalesce(e->'ts', e->'timestamp'))::numeric as t, o
+    from jsonb_array_elements(case when jsonb_typeof(${workers.milestones}) = 'array' then ${workers.milestones} else '[]'::jsonb end) with ordinality as x(e, o)
+    where jsonb_typeof(e) = 'object'
+      and (not (e ? 'type') or e->>'type' = 'status')
+      and jsonb_typeof(coalesce(e->'ts', e->'timestamp')) = 'number'
+      and coalesce(e->>'label', '') <> ''
+    order by t desc, o desc
+    limit ${BOARD_MILESTONES_MAX}::int
+  ) m
+), '[]'::jsonb)`;
+
+/** The first line of a worker's error, as the mission's state names a failure (`errorSignature`). */
+export const WORKER_ERROR_LINE_SQL = sql`left(split_part(${workers.error}, E'\n', 1), 200)`;
+
+export const MISSION_WORKER_EXTRAS = sqlExtras({
+  milestones: sql<Array<{ ts: number; label: string }>>`${BOARD_MILESTONES_SQL}`,
+  error: sql<string | null>`${WORKER_ERROR_LINE_SQL}`,
+});
 
 /** `mission.tasks` for the detail page: newest first, three workers each, five artifacts per worker. */
 export const MISSION_TASKS_WITH = {
@@ -131,6 +170,7 @@ export const MISSION_TASKS_WITH = {
   with: {
     workers: {
       columns: MISSION_WORKER_COLUMNS,
+      extras: MISSION_WORKER_EXTRAS,
       orderBy: sqlOrderByFn((w: any, { desc }: any) => [desc(w.startedAt)]),
       limit: 3,
       with: {
@@ -172,7 +212,12 @@ export {
  * reviewer run's verdict (`reviewOf`: `effectiveVerdict`, else
  * `structuredOutput.verdict`) for the Landed drawer's audit evidence.
  */
-export const RESULT_DIGEST_KEYS = ['summary', 'summarySource', 'reaperAutoCompleted', 'effectiveVerdict'] as const;
+export const RESULT_DIGEST_KEYS = [
+  'summary', 'summarySource', 'reaperAutoCompleted', 'effectiveVerdict',
+  // The mission's state and completion gate: an infrastructure failure
+  // (`isInfraFailedTask`, the `infra_stalled` refusal).
+  'errorType', 'error',
+] as const;
 export const RESULT_STRUCTURED_OUTPUT_KEYS = ['status', 'summary', 'verdict'] as const;
 
 /**
@@ -201,8 +246,17 @@ export const CONTEXT_DIGEST_KEYS = [
   'triggerTaskId',
   // The head a reviewer run read (`reviewOf`): binds its verdict to a commit.
   'headSha',
+  // The mission's state (explainMission): a reviewer a runner can claim, and
+  // the waits a provider pause or an infrastructure retry set (mission-wait.ts).
+  'reviewerFor',
+  'budgetExhausted',
+  'infraRetryCount',
+  // Which kind of deliverable a task is (`deliverableRole`, with `isTrunkRefreshTask`).
+  ...DELIVERABLE_ROLE_CONTEXT_KEYS.values,
 ] as const;
-export const CONTEXT_FAILURE_KEYS = ['errorType'] as const;
+/** Object markers `deliverableRole` reads only for being objects: each arrives as `{}`. */
+export const CONTEXT_MARKER_KEYS = DELIVERABLE_ROLE_CONTEXT_KEYS.objectMarkers;
+export const CONTEXT_FAILURE_KEYS = ['errorType', 'summary'] as const;
 
 type Json = Record<string, unknown>;
 
@@ -232,6 +286,10 @@ export function digestTaskResult(result: unknown): Json | null {
 export function digestTaskContext(context: unknown): Json | null {
   if (context == null) return null;
   const out = pick(context, CONTEXT_DIGEST_KEYS);
+  for (const k of CONTEXT_MARKER_KEYS) {
+    const v = (context as Json)[k];
+    if (v && typeof v === 'object' && !Array.isArray(v)) out[k] = {};
+  }
   const failure = pick((context as Json).failureContext, CONTEXT_FAILURE_KEYS);
   if (Object.keys(failure).length > 0) out.failureContext = failure;
   return out;
@@ -246,15 +304,21 @@ function pairs(col: SQL, keys: readonly string[]): SQL {
   return sql.join(keys.map(k => sql`${k}::text, ${col}->${k}::text`), sql`, `);
 }
 
+/** `'k', '{}'` for each key that holds an object, else `'k', null` (stripped). */
+function markers(col: SQL, keys: readonly string[]): SQL {
+  return sql.join(keys.map(k => sql`${k}::text, case when jsonb_typeof(${col}->${k}::text) = 'object' then '{}'::jsonb end`), sql`, `);
+}
+
 /** An empty nested object becomes SQL NULL, so the outer `jsonb_strip_nulls` drops its key. */
-function digestSql(col: SQL, keys: readonly string[], nestedKey: string, nestedKeys: readonly string[]): SQL {
+function digestSql(col: SQL, keys: readonly string[], nestedKey: string, nestedKeys: readonly string[], markerKeys: readonly string[] = []): SQL {
   const nestedCol = sql`(${col}->${nestedKey}::text)`;
   const nested = sql`nullif(jsonb_strip_nulls(jsonb_build_object(${pairs(nestedCol, nestedKeys)})), '{}'::jsonb)`;
-  return sql`case when ${col} is null then null else jsonb_strip_nulls(jsonb_build_object(${pairs(col, keys)}, ${nestedKey}::text, ${nested})) end`;
+  const marked = markerKeys.length > 0 ? sql`, ${markers(col, markerKeys)}` : sql``;
+  return sql`case when ${col} is null then null else jsonb_strip_nulls(jsonb_build_object(${pairs(col, keys)}, ${nestedKey}::text, ${nested}${marked})) end`;
 }
 
 export const RESULT_DIGEST_SQL = digestSql(sql`${tasks.result}`, RESULT_DIGEST_KEYS, 'structuredOutput', RESULT_STRUCTURED_OUTPUT_KEYS);
-export const CONTEXT_DIGEST_SQL = digestSql(sql`${tasks.context}`, CONTEXT_DIGEST_KEYS, 'failureContext', CONTEXT_FAILURE_KEYS);
+export const CONTEXT_DIGEST_SQL = digestSql(sql`${tasks.context}`, CONTEXT_DIGEST_KEYS, 'failureContext', CONTEXT_FAILURE_KEYS, CONTEXT_MARKER_KEYS);
 
 /** Selection for the per-task digest read: the id plus the two projections. */
 export const TASK_DIGEST_SELECTION = {

@@ -7,6 +7,7 @@ import { hostname } from 'os';
 import { resolveBuilddHome } from './buildd-home';
 import { resolveBuilddServer } from './server-url';
 import type { LocalUIConfig, LLMProvider, LocalWorker, ProviderConfig } from './types';
+import { DEFAULT_LOGIN_MODE, parseLoginMode } from '@buildd/shared';
 import { BuilddClient, getLastServerContactAt } from './buildd';
 import { WorkerManager, getIsolationRecord } from './workers';
 import { toPublicEvent, toPublicWorker, toPublicWorkers } from './public-worker';
@@ -36,8 +37,9 @@ import { sweepStaleSessionPromptFiles } from './session-prompt-files';
 import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
 import { bannerPalette, renderBanner } from './banner';
-import { checkSingleInstance, decideStart, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
+import { checkSingleInstance, createSocketWatchdog, decideStart, enqueueEvent, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, socketHealthCheck, SOCKET_WATCHDOG_INTERVAL_MS, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
 import { withMissionStages } from './mission-stages';
+import { rateLimitedRetryAfterSec } from './read-backoff';
 import { consumeRestartMarker, shouldAutoOpenBrowser, writeRestartMarker } from './browser-open';
 import { claimEntryWords } from './claim-words';
 
@@ -112,6 +114,16 @@ if (CLI.kind === 'slots') {
   process.exit(r.code);
 }
 
+// `buildd logins [<mode>]`: how this runner's own logins share its slots (runner-logins.ts).
+if (CLI.kind === 'logins') {
+  const { runLoginsCommand } = await import('./runner-logins');
+  const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
+  const r = await runLoginsCommand(CLI.cmd, { configFile: CONFIG_FILE, socketPath: socketPathFor(BUILDD_DIR) });
+  if (r.stdout) console.log(r.stdout);
+  if (r.stderr) console.error(r.stderr);
+  process.exit(r.code);
+}
+
 // `buildd web`: open the running runner's web UI, or say in one line how to
 // turn it on. It never starts or restarts a runner (runner-web.ts).
 if (CLI.kind === 'web') {
@@ -133,7 +145,10 @@ if (process.argv.includes('--doctor')) {
   const doctor = await import('./doctor');
   const doFix = process.argv.includes('--fix');
 
-  const report = doctor.runDiagnostics();
+  // Find the runner the way `buildd top` does: through its socket.
+  const { probeRunnerSocket: probe, runnerSocketPath: socketPathFor, runnerProcessFromProbe } = await import('./runner-socket');
+  const socketPath = socketPathFor(BUILDD_DIR);
+  const report = doctor.runDiagnostics({ runnerProcess: runnerProcessFromProbe(await probe(socketPath), socketPath) });
 
   const RED = '\x1b[31m';
   const GREEN = '\x1b[32m';
@@ -264,7 +279,11 @@ if (ONCE_TASK_ID === null) {
         return Response.json(runnerIdentity());
       }
       return socketHandler ? socketHandler(req) : Response.json({ error: 'starting' }, { status: 503 });
-    }, { error: (err) => localServerError(err) });
+    }, {
+      error: (err) => localServerError(err),
+      // Manual update runs git + install + a health probe, minutes by design.
+      noDeadline: (req) => new URL(req.url).pathname === '/api/update',
+    });
   } catch (err: any) {
     // Lost a race with another start that bound first: that one is the runner.
     // serveRunnerSocket never unlinks an existing file, so the bind fails here
@@ -373,6 +392,7 @@ interface SavedConfig {
   serverless?: boolean;
   model?: string;
   maxConcurrent?: number; // Max concurrent workers (default: 3)
+  loginMode?: string; // How this runner's own logins share its slots (runner-logins.ts; default balanced)
   acceptRemoteTasks?: boolean; // Accept task assignments from dashboard (default: true)
   bypassPermissions?: boolean; // Bypass permission prompts (dangerous commands still blocked)
   openBrowser?: boolean; // Auto-open browser on startup
@@ -407,6 +427,7 @@ function loadSavedConfig(): SavedConfig {
         serverless: data.serverless,
         model: data.model,
         maxConcurrent: data.maxConcurrent,
+        loginMode: data.loginMode,
         acceptRemoteTasks: data.acceptRemoteTasks,
         bypassPermissions: data.bypassPermissions,
         openBrowser: data.openBrowser,
@@ -641,6 +662,8 @@ const config: LocalUIConfig = {
   builddServer: resolveBuilddServer({ env: process.env, saved: savedConfig.builddServer }),
   apiKey: resolvedApiKey,
   maxConcurrent: savedConfig.maxConcurrent || parseInt(process.env.MAX_CONCURRENT || '3'),
+  // How this runner's own logins share its slots (spec 34a48877 R-14).
+  loginMode: parseLoginMode(savedConfig.loginMode) ?? DEFAULT_LOGIN_MODE,
   model: process.env.MODEL || savedConfig.model || bundledTierEntry('standard').model,
   // LLM provider (OpenRouter, etc.)
   llmProvider: buildProviderConfig(),
@@ -1078,13 +1101,10 @@ const sseClients = new Set<ReadableStreamDefaultController>();
 // Broadcast to all SSE clients
 function broadcast(event: any) {
   // Never serialise credential material — see public-worker.ts.
-  const data = `data: ${JSON.stringify(toPublicEvent(event))}\n\n`;
+  const data = new TextEncoder().encode(`data: ${JSON.stringify(toPublicEvent(event))}\n\n`);
   for (const controller of sseClients) {
-    try {
-      controller.enqueue(new TextEncoder().encode(data));
-    } catch {
-      sseClients.delete(controller);
-    }
+    // A reader that stopped reading is closed, not queued for forever (runner-socket.ts).
+    if (!enqueueEvent(controller, data)) sseClients.delete(controller);
   }
 }
 
@@ -1561,6 +1581,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         ...routeStatus,
         model: config.model,
         maxConcurrent: config.maxConcurrent,
+        // How this runner's own logins share its slots (spec 34a48877 R-14); top's header says it (c7410e76 R-60).
+        loginMode: config.loginMode,
         acceptRemoteTasks: config.acceptRemoteTasks !== false,
         bypassPermissions: config.bypassPermissions || false,
         openBrowser: savedConfig.openBrowser !== false, // default true
@@ -1921,6 +1943,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
           projectRoots: config.projectRoots,
           builddServer: config.builddServer,
           maxConcurrent: config.maxConcurrent,
+          loginMode: config.loginMode,
           model: config.model,
           bypassPermissions: config.bypassPermissions || false,
           acceptRemoteTasks: config.acceptRemoteTasks !== false,
@@ -1994,6 +2017,11 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
           saveConfig({ apiKey: '' });
           return Response.json({ error: 'API key invalid', needsSetup: true }, { status: 401, headers: corsHeaders });
         }
+        // The server's read rate limit: hand `buildd top` the wait so it holds instead of asking again.
+        const wait = rateLimitedRetryAfterSec(err);
+        if (wait !== null) {
+          return Response.json({ error: err.message, retryAfterSec: wait, tasks: [] }, { status: 429, headers: { ...corsHeaders, 'Retry-After': String(wait) } });
+        }
         console.error('Failed to list tasks:', err.message);
         return Response.json({ error: err.message || 'Failed to load tasks', tasks: [] }, { status: 502, headers: corsHeaders });
       }
@@ -2009,12 +2037,39 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       }
     }
 
+    // `buildd top`'s talk session (talk.ts): where the workspace's checkout is,
+    // what to connect to, and what the server says about the mission or task.
+    // Owner-only socket, so the key may travel to the `buildd top` process; it
+    // goes into a 0600 file there, never onto a command line.
+    if (path === '/api/talk-context' && req.method === 'POST') {
+      try {
+        const body = await req.json().catch(() => ({})) as { kind?: string; id?: string; workspaceId?: string };
+        if ((body.kind !== 'mission' && body.kind !== 'task') || !body.id) {
+          return Response.json({ error: 'kind (mission or task) and id are required' }, { status: 400, headers: corsHeaders });
+        }
+        const [workspaces, explain, mission] = await Promise.all([
+          buildd!.listWorkspaces(),
+          buildd!.getExplain(body.kind, body.id),
+          body.kind === 'mission' ? buildd!.getMission(body.id) : Promise.resolve(null),
+        ]);
+        const ws = workspaces.find((w: any) => w.id === (body.workspaceId ?? mission?.workspaceId));
+        const cwd = ws ? await resolver.resolveAsync?.({ id: ws.id, name: ws.name, repo: ws.repo, defaultBranch: ws.gitConfig?.defaultBranch ?? null }, null, { maxAgeMs: 60_000 }) ?? null : null;
+        return Response.json({ cwd, server: config.builddServer, apiKey: config.apiKey ?? null, explain, mission }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message || 'Failed to read the context' }, { status: 502, headers: corsHeaders });
+      }
+    }
+
     // The missions `buildd top` lists (R-24): open, and delivered in the last 7 days.
     if (path === '/api/missions/recent' && req.method === 'GET') {
       try {
         const missions = await buildd!.listRecentMissions();
         return Response.json({ missions }, { headers: corsHeaders });
       } catch (err: any) {
+        const wait = rateLimitedRetryAfterSec(err);
+        if (wait !== null) {
+          return Response.json({ error: err.message, retryAfterSec: wait, missions: [] }, { status: 429, headers: { ...corsHeaders, 'Retry-After': String(wait) } });
+        }
         console.error('Failed to list missions:', err.message);
         return Response.json({ error: err.message || 'Failed to load missions', missions: [] }, { status: 502, headers: corsHeaders });
       }
@@ -2055,6 +2110,26 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       if (!runnerHold) return Response.json({ error: 'This runner runs one task and cannot be held.' }, { status: 409, headers: corsHeaders });
       const was = runnerHold.resume();
       return Response.json({ hold: null, wasHeld: was !== null, running: liveAgentCount() }, { headers: corsHeaders });
+    }
+
+    // `buildd logins` / b in top (runner-logins.ts, spec 34a48877 R-14, R-19).
+    if (path === '/api/logins' && req.method === 'GET') {
+      const { loginUseFor } = await import('./runner-logins');
+      const use = loginUseFor(config.loginMode ?? DEFAULT_LOGIN_MODE, config.maxConcurrent, (workerManager?.getWorkers() ?? []) as any[]);
+      return Response.json(use, { headers: corsHeaders });
+    }
+    if (path === '/api/logins' && req.method === 'POST') {
+      const { applyLoginMode } = await import('./runner-logins');
+      const body = await parseBody(req).catch(() => ({}));
+      const wm = workerManager;
+      const result = applyLoginMode(body, {
+        setLoginMode: (mode) => {
+          saveConfig({ loginMode: mode });
+          if (wm) wm.setLoginMode(mode);
+          else { config.loginMode = mode; broadcast({ type: 'logins', loginMode: mode }); }
+        },
+      });
+      return Response.json(result.body, { status: result.status, headers: corsHeaders });
     }
 
     // `buildd slots` / + and - in top (runner-slots.ts, R-43..R-46).
@@ -2122,7 +2197,9 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         }
         return Response.json({ worker: toPublicWorker(worker) }, { headers: corsHeaders });
       } catch (err: any) {
-        return Response.json({ error: err.message || 'Failed to claim' }, { status: 400, headers: corsHeaders });
+        // The refusal's own fields, so top can say why in words (top/claim-refusal.ts).
+        const { claimRefusalBody } = await import('./top/claim-refusal');
+        return Response.json(claimRefusalBody(err), { status: 400, headers: corsHeaders });
       }
     }
 
@@ -2919,16 +2996,16 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
     if (path === '/api/doctor' && req.method === 'GET') {
       const { runDiagnostics } = await import('./doctor');
       // This process's own isolation record, the one its heartbeat carries.
-      const report = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord() }));
+      const report = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord(), runnerProcess: ownRunnerProcessCheck() }));
       return Response.json(report, { headers: corsHeaders });
     }
 
     if (path === '/api/doctor/fix' && req.method === 'POST') {
       const { runDiagnostics, autoFix } = await import('./doctor');
-      const report = runDiagnostics();
+      const report = runDiagnostics({ runnerProcess: ownRunnerProcessCheck() });
       const fixes = autoFix(report);
       // Re-run diagnostics after fixes
-      const afterReport = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord() }));
+      const afterReport = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord(), runnerProcess: ownRunnerProcessCheck() }));
       return Response.json({ fixes, report: afterReport }, { headers: corsHeaders });
     }
 
@@ -2976,6 +3053,19 @@ const server = DEBUG_MODE ? Bun.serve({
 // The runner socket (bound at startup, above) now answers everything the
 // --debug server does, in headless mode too.
 socketHandler = (req) => handleLocalRequest(req, { remoteAddr: null, viaSocket: true });
+
+// Socket watchdog: the runner asks its own socket for /health every minute. A
+// socket that accepts and never answers cuts `buildd top`, `hold` and `stop`
+// off from a runner that is otherwise working, so a miss is logged with the
+// requests still open, and two in a row rebind the socket.
+const socketWatchdog = runnerSocket ? createSocketWatchdog({
+  server: runnerSocket,
+  log: (m) => console.log(m),
+  warn: (m) => console.error(m),
+}) : null;
+if (socketWatchdog) setInterval(() => { void socketWatchdog.tick(); }, SOCKET_WATCHDOG_INTERVAL_MS);
+/** The doctor's runner-process line, run by this runner on itself. */
+const ownRunnerProcessCheck = () => socketHealthCheck(socketWatchdog?.state() ?? null);
 
 const localUrl = `http://localhost:${PORT}`;
 
@@ -3384,7 +3474,8 @@ setInterval(async () => {
 
   try {
     const { runDiagnostics, autoFix } = await import('./doctor');
-    const report = runDiagnostics();
+    // This process is the runner: its line is whether its socket answers, not a ps match.
+    const report = runDiagnostics({ runnerProcess: ownRunnerProcessCheck() });
     const fixable = report.checks.filter(c => c.status !== 'ok' && c.fixable);
     if (fixable.length > 0) {
       console.log(`[self-heal] ${fixable.length} issue(s) detected: ${fixable.map(c => c.name).join(', ')}`);

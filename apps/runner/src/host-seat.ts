@@ -22,6 +22,7 @@ import { existsSync, readFileSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import * as childProcess from 'child_process';
+import { createHash } from 'crypto';
 import { codexAuthJsonKind } from './cost-basis';
 
 export type MachineLogin = 'env' | 'login';
@@ -138,6 +139,47 @@ export function detectMachineLogin(probe: MachineLoginProbe = {}): MachineLogin 
   const platform = probe.platform ?? process.platform;
   if (platform === 'darwin' && (probe.macKeychainHasLogin ?? defaultMacKeychainHasLogin)()) return 'login';
   return null;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+let identityCache: { path: string; mtimeMs: number; value: string | null } | undefined;
+
+/**
+ * Which Claude login this machine's `claude login` is, as a non-secret id the
+ * server can key a limit on (apps/web/src/lib/runner-seat-wall.ts): two runners
+ * on one login share its session and weekly limits.
+ *
+ * Read offline from the CLI's own profile, `~/.claude.json` `oauthAccount.
+ * accountUuid` (what `claude auth status` reports), and sent only as a one-way
+ * hash of it. The account, not the organisation: seats in one organisation
+ * each have their own limits. Never read from a token or the credentials file.
+ *
+ * Null (the server falls back to the runner id) when nothing says for sure:
+ * - a CLAUDE_CODE_OAUTH_TOKEN, which names no account without a network call,
+ *   and the profile on disk may belong to a different login;
+ * - no `claude login` (a stub profile alone is not a login);
+ * - CLAUDE_CONFIG_DIR set, so the CLI's profile lives somewhere else;
+ * - a missing, unreadable or malformed profile.
+ */
+export function claudeLoginIdentity(probe: MachineLoginProbe = {}): string | null {
+  const env = probe.env ?? process.env;
+  if ((env.CLAUDE_CONFIG_DIR ?? '').trim()) return null;
+  if (detectMachineLogin({ ...probe, env }) !== 'login') return null;
+  const path = join(probe.home ?? homedir(), '.claude.json');
+  let mtimeMs: number;
+  try { mtimeMs = statSync(path).mtimeMs; } catch { return null; }
+  if (identityCache && identityCache.path === path && identityCache.mtimeMs === mtimeMs) return identityCache.value;
+  let value: string | null = null;
+  try {
+    const id = JSON.parse(readFileSync(path, 'utf-8'))?.oauthAccount?.accountUuid;
+    if (typeof id === 'string' && UUID_RE.test(id)) {
+      value = createHash('sha256').update(`buildd-claude-login:v1:${id.toLowerCase()}`).digest('hex').slice(0, 32);
+    }
+  } catch {
+    value = null;
+  }
+  identityCache = { path, mtimeMs, value };
+  return value;
 }
 
 export interface MachineLoginDecision {

@@ -67,6 +67,14 @@ let releasedIds: string[] = [];
 const mockReleaseCredentialHolds = mock(async (_input: any) => releasedIds);
 mock.module('@/lib/task-recovery-hold', () => ({ releaseCredentialHolds: mockReleaseCredentialHolds }));
 
+// AC-1 slice 9: a delivery owner is reopened through the kernel (owner-attempt.ts, covered against a
+// real Postgres in tests/db/attempt-writers-slice9.test.ts); this file covers every other task's write.
+const mockReopenFailedOwners = mock(async (_ids: string[], _p: unknown): Promise<string[]> => []);
+mock.module('@/lib/workflow/owner-attempt', () => ({
+  reopenFailedOwners: mockReopenFailedOwners,
+  notOwnerTaskSql: () => ({ __notOwner: true }),
+}));
+
 import { requeueAuthFailedTasks, requeueFailedTasks, MAX_REQUEUE } from './credential-recovery';
 
 const AUTH_ERR = 'Your access token could not be refreshed because you have since logged out or signed in to another account.';

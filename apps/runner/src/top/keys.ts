@@ -3,11 +3,13 @@
  * effects run.ts carries out (a socket action, opening a URL, quitting).
  * Pure, so every key is unit-tested (top-keys.test.ts).
  */
+import { TERMS, nextLoginMode, type LoginMode } from '@buildd/shared';
 import {
-  busySlots, currentMission, currentTeam, foldKey, heldNow, holdRunningWords, currentWorkspace, cycleTeam, cycleWorkspace, missionList, scopedWorkspaces, selectedRow, taskRows, teamCount, teamList, workspaceList,
+  isLooseKey, busySlots, currentMission, isFoldKey, currentTeam, foldKey, heldNow, holdRunningWords, currentWorkspace, cycleTeam, cycleWorkspace, missionList, scopedWorkspaces, selectedRow, taskRows, teamCount, teamList, workspaceList,
   type TaskRow, type TopState,
 } from './state';
 import { queueRowList, selectedQueueRow } from './queue';
+import { claimRefusalWords } from './claim-refusal';
 
 export type Key =
   | { name: 'up' | 'down' | 'left' | 'right' | 'enter' | 'escape' | 'backspace' | 'tab' | 'ctrl-c' }
@@ -149,6 +151,10 @@ export type Effect =
   | { type: 'action'; action: 'answer' | 'message' | 'pause' | 'stop'; workerId: string; taskId: string; title: string; message?: string }
   | { type: 'claim'; taskId: string; title: string }
   | { type: 'open'; taskId: string }
+  /** `s`: an interactive `claude` session about this mission or task, on this machine (talk.ts). */
+  | { type: 'talk'; kind: 'mission' | 'task'; id: string; title: string }
+  /** `o` on a mission with no task picked: its page on buildd. */
+  | { type: 'openMission'; missionId: string }
   /** The runner's page on buildd.dev, where its workspaces are set (R-20). */
   | { type: 'openRunner' }
   /** `h`: hold this runner (`on`) or resume it (R-33). */
@@ -158,6 +164,8 @@ export type Effect =
    * after a lower: pause the most recently started extras (R-45).
    */
   | { type: 'slots'; slots: number; extras?: 'pause' }
+  /** `b`: set how the runner's own logins share its slots (spec 34a48877 R-14). */
+  | { type: 'logins'; mode: LoginMode }
   /** Read the queue now: the Queue view just opened (R-26). */
   | { type: 'refreshQueue' }
   | { type: 'quit' };
@@ -217,10 +225,28 @@ function moveRow(state: TopState, delta: number, now: number): TopState {
   return { ...state, rowCursor: Math.max(0, Math.min(n - 1, cur + delta)) };
 }
 
+/** `c` on a task of a mission managed from a local session: no runner takes it, and where that changes. */
+export const LOCAL_CLAIM_WORDS = 'Its mission runs from your session, so no runner takes it. o opens it on buildd, where the mission can go to runners.';
+
+/** The mission a key opens when no task is picked; null for loose tasks and the fold row. */
+function openableMission(state: TopState, now: number): string | null {
+  const m = currentMission(state, now);
+  return isLooseKey(m.key) || m.fold ? null : m.key;
+}
+
 function actOnRow(state: TopState, ch: string, now: number): KeyResult {
   const row = targetRow(state, now);
   const none = { state: refuse(state, 'Pick a task first (→ moves to the task list).'), effects: [] };
-  if (!row) return none;
+  if (!row) {
+    // `o` with no task picked opens the mission itself.
+    const missionId = ch === 'o' ? openableMission(state, now) : null;
+    if (missionId) return { state: info(state, `Opening "${currentMission(state, now).title}" on buildd…`), effects: [{ type: 'openMission', missionId }] };
+    return none;
+  }
+  if (row.elsewhere && 'ampx'.includes(ch)) {
+    const where = row.elsewhere === 'local' ? 'in your session' : 'on another runner';
+    return { state: refuse(state, `"${row.title}" runs ${where}; top acts only on this runner's agents. o opens it on buildd.`), effects: [] };
+  }
 
   switch (ch) {
     case 'a': {
@@ -248,6 +274,7 @@ function actOnRow(state: TopState, ch: string, now: number): KeyResult {
       return { state: refuse(state, `No agent is running on "${row.title}".`), effects: [] };
     }
     case 'c': {
+      if (row.elsewhere === 'local') return { state: refuse(state, LOCAL_CLAIM_WORDS), effects: [] };
       if (row.kind === 'waiting') {
         return { state: info(state, `Claiming "${row.title}" onto this runner…`), effects: [{ type: 'claim', taskId: row.taskId, title: row.title }] };
       }
@@ -326,6 +353,7 @@ export function handleKey(state: TopState, key: Key, now: number): KeyResult {
   }
   // `+` / `-` (R-43): one more or one fewer slot, from any list or detail view.
   if (key.name === 'char' && (key.ch === '+' || key.ch === '=' || key.ch === '-')) return slotKey(state, key.ch === '-' ? -1 : 1);
+  if (key.name === 'char' && key.ch === 'b') return loginKey(state);
   // `h` (R-33): hold or resume, no confirmation, from any list or detail view.
   if (key.name === 'char' && key.ch === 'h') {
     const on = !heldNow(state, now);
@@ -338,6 +366,7 @@ export function handleKey(state: TopState, key: Key, now: number): KeyResult {
     const q = queueKey({ ...state, status: null }, key, now);
     if (q) return q;
   }
+  if (key.name === 'char' && key.ch === 's') return talkKey({ ...state, status: null }, now);
   if (key.name === 'char' && 'ampxco'.includes(key.ch)) return actOnRow({ ...state, status: null }, key.ch, now);
 
   if (mode.kind === 'detail') return { state, effects: [] };
@@ -420,11 +449,32 @@ function queueKey(state: TopState, key: Key, now: number): KeyResult | null {
     const row = selectedQueueRow(state, now);
     if (!row) return { state: refuse(state, 'Nothing in the queue to pick.'), effects: [] };
     if (key.ch === 'o') return { state: info(state, `Opening "${row.title}" on buildd…`), effects: [{ type: 'open', taskId: row.taskId }] };
-    if (row.position === null && !row.held) return { state: refuse(state, `"${row.title}" is not for this runner: ${row.reason}.`), effects: [] };
+    if (row.position === null && !row.held) {
+      return { state: refuse(state, row.exclusion === 'local_session' ? LOCAL_CLAIM_WORDS : `Not for this runner: ${row.reason}.`), effects: [] };
+    }
     return { state: info(state, `Claiming "${row.title}" onto this runner…`), effects: [{ type: 'claim', taskId: row.taskId, title: row.title }] };
   }
   if ('ampx'.includes(key.ch)) return { state: info(state, 'Tab back to Missions to act on running work.'), effects: [] };
   return null;
+}
+
+/**
+ * `s`: talk to the selected mission's planner, or steer the selected task's
+ * agent. In the missions pane the mission is the target; in the task list (or
+ * a task's detail) the task is.
+ */
+function talkKey(state: TopState, now: number): KeyResult {
+  if (state.view === 'queue' || state.mode.kind !== 'list' && state.mode.kind !== 'detail') {
+    return { state: refuse(state, 'Tab back to Missions to talk to one.'), effects: [] };
+  }
+  if (state.mode.kind === 'list' && state.focus === 'missions') {
+    const m = currentMission(state, now);
+    if (isLooseKey(m.key) || isFoldKey(m.key)) return { state: refuse(state, 'Pick a mission to talk to (↑↓), or → for a task.'), effects: [] };
+    return { state: info(state, `Opening Claude on "${m.title}"…`), effects: [{ type: 'talk', kind: 'mission', id: m.key, title: m.title }] };
+  }
+  const row = targetRow(state, now);
+  if (!row) return { state: refuse(state, 'Pick a task first (→ moves to the task list).'), effects: [] };
+  return { state: info(state, `Opening Claude on "${row.title}"…`), effects: [{ type: 'talk', kind: 'task', id: row.taskId, title: row.title }] };
 }
 
 const fromOf = (state: TopState): 'detail' | undefined => (state.mode.kind === 'detail' ? 'detail' : undefined);
@@ -445,7 +495,7 @@ export function actionResultText(effect: Effect, result: { status: number; body:
     if (!ok) return { text: `${effect.on ? 'Hold' : 'Resume'} refused: ${refusalReason(result)}`, tone: 'error' };
     const running = typeof (result.body as any)?.running === 'number' ? (result.body as any).running : 0;
     return effect.on
-      ? { text: `On hold: nothing new starts, ${holdRunningWords(running)}. h resumes.`, tone: 'ok' }
+      ? { text: `${TERMS['runner.paused'].word}: nothing new starts, ${holdRunningWords(running)}. h resumes.`, tone: 'ok' }
       : { text: 'Resumed: looking for work now.', tone: 'ok' };
   }
   if (effect.type === 'slots') {
@@ -455,6 +505,12 @@ export function actionResultText(effect: Effect, result: { status: number; body:
     if (failed.length > 0) return { text: failed[0], tone: 'error' };
     return { text: typeof b?.line === 'string' ? b.line : `Slots now ${effect.slots}.`, tone: 'ok' };
   }
+  if (effect.type === 'logins') {
+    if (!ok) return { text: `Login mode refused: ${refusalReason(result)}`, tone: 'error' };
+    const line = (result.body as { line?: unknown } | null)?.line;
+    return { text: typeof line === 'string' ? line : `Login mode now ${effect.mode}.`, tone: 'ok' };
+  }
+  if (effect.type === 'talk') return ok ? { text: 'Back from Claude.', tone: 'ok' } : { text: refusalReason(result), tone: 'error' };
   const title = 'title' in effect ? effect.title : '';
   const done: Record<string, string> = {
     answer: `Answer sent to "${title}". The agent picks it up from here.`,
@@ -466,6 +522,7 @@ export function actionResultText(effect: Effect, result: { status: number; body:
   const verb: Record<string, string> = { answer: 'Answer', message: 'Message', pause: 'Pause', stop: 'Stop', claim: 'Claim' };
   const kind = effect.type === 'action' ? effect.action : effect.type;
   if (ok) return { text: done[kind] ?? 'Done.', tone: 'ok' };
+  if (kind === 'claim') return { text: `Not claimed: ${claimRefusalWords(result.body, result.status)}.`, tone: 'error' };
   return { text: `${verb[kind] ?? 'Action'} refused: ${refusalReason(result)}`, tone: 'error' };
 }
 
@@ -474,6 +531,18 @@ export function refusalReason(result: { status: number; body: unknown }): string
   const reason = typeof b === 'string' ? b : b?.error ?? b?.message ?? b?.reason;
   if (typeof reason === 'string' && reason.trim()) return `${reason.trim()} (HTTP ${result.status})`;
   return `HTTP ${result.status}`;
+}
+
+/**
+ * `b`: the next login mode (balanced → claude-first → codex-first), shown at
+ * once; the runner saves it and its next claim follows it (AC-44, R-19).
+ */
+function loginKey(state: TopState): KeyResult {
+  const cur = state.runner.loginMode;
+  if (!cur) return { state: refuse(state, 'The runner running now does not know login modes yet (update it).'), effects: [] };
+  const mode = nextLoginMode(cur);
+  const next: TopState = { ...state, runner: { ...state.runner, loginMode: mode } };
+  return { state: info(next, `Login mode now ${mode}. Running agents keep their login; the next claim follows it.`), effects: [{ type: 'logins', mode }] };
 }
 
 /** Slots a person may set from top (runner-slots.ts bounds). */

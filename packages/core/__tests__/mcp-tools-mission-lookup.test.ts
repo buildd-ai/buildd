@@ -74,7 +74,7 @@ describe('manage_missions get by title', () => {
     const qs = qsOf(calls[0].url);
     expect(qs.get('q')).toBe('desktop chat');
     expect(qs.has('status')).toBe(false); // every status: done missions are findable
-    expect(calls[1].url).toBe('/api/missions/m-7');
+    expect(calls[1].url).toBe('/api/missions/m-7?include=details');
     expect(textOf(r)).toContain('ID: m-7');
   });
 
@@ -84,7 +84,7 @@ describe('manage_missions get by title', () => {
         ? { missions: [M('m-1', 'Chat v3 follow-ups'), M('m-2', 'Chat v3')], total: 2 }
         : { ...M('m-2', 'Chat v3'), tasks: [] });
     await handleBuilddAction(fn, 'manage_missions', { action: 'get', query: 'chat v3' }, ctx);
-    expect(calls[1].url).toBe('/api/missions/m-2');
+    expect(calls[1].url).toBe('/api/missions/m-2?include=details');
   });
 
   it('several matches → short list with ids, no detail fetch', async () => {
@@ -176,7 +176,7 @@ describe('a title passed as missionId is looked up, not fetched as an id', () =>
     const { fn, calls } = api(routes);
     const r = await handleBuilddAction(fn, 'manage_missions', { action: 'get', missionId: 'Memory done right' }, ctx);
     expect(qsOf(calls[0].url).get('q')).toBe('Memory done right');
-    expect(calls[1].url).toBe('/api/missions/m-9');
+    expect(calls[1].url).toBe('/api/missions/m-9?include=details');
     expect(textOf(r)).toContain('ID: m-9');
   });
 
@@ -207,6 +207,6 @@ describe('exact title beats newer partial matches', () => {
         ? { missions: [M('m-exact', 'Memory', 'completed'), ...partial], total: 11 }
         : { ...M('m-exact', 'Memory', 'completed'), tasks: [] });
     await handleBuilddAction(fn, 'manage_missions', { action: 'get', title: 'memory' }, ctx);
-    expect(calls[1].url).toBe('/api/missions/m-exact');
+    expect(calls[1].url).toBe('/api/missions/m-exact?include=details');
   });
 });

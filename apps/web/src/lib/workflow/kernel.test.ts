@@ -75,7 +75,8 @@ describe('transitionSql (§7.1: one statement)', () => {
     const { sql: text, params } = render(transitionSql(d));
     expect(text).toContain('d AS (\n  INSERT INTO workflow_deliveries (workspace_id, owner_task_id, state, version, max_rounds, last_transition_at)');
     expect(text).toContain('ON CONFLICT (workspace_id, owner_task_id) DO NOTHING');
-    expect(text).not.toContain('e AS (');
+    // No effects CTE (`w_live`, the worker-row projection, is a different CTE).
+    expect(text).not.toContain('\ne AS (');
     expect(params).toEqual(expect.arrayContaining(['w1', 't1', 'WORKING', 3]));
   });
 
@@ -251,7 +252,8 @@ describe('S4a: the merge and the close reach the worker rows inside the transiti
   test('T17: one statement updates the delivery and every worker row of its PR, terminal-wins', () => {
     const { sql: text } = render(transitionSql(merged(), { deliveryId: 'd1' }));
     // The delivery CTE hands the PR identity and merge instant to the projection.
-    expect(text).toContain('RETURNING id, version, workspace_id, repo_full_name, pr_number, merged_at');
+    expect(text).toContain('RETURNING id, version, state, workspace_id, repo_full_name, pr_number, merged_at, current_head_sha, ci, ci_head_sha, mergeable, mergeable_head_sha');
+    expect(text).not.toContain('w_live AS (');
     expect(text).toContain('w_proj AS (\nUPDATE workers w SET updated_at = now(), pr_lifecycle_status = \'merged\', merged_at = COALESCE(w.merged_at, d.merged_at, now())');
     // Every row of the delivery's workspace carrying the PR, by its URL and number.
     expect(text).toContain("FROM d\nWHERE w.workspace_id = d.workspace_id AND w.pr_number = d.pr_number AND lower(w.pr_url) = lower('https://github.com/' || d.repo_full_name || '/pull/' || d.pr_number::text)");
@@ -268,10 +270,14 @@ describe('S4a: the merge and the close reach the worker rows inside the transiti
     expect(text).toContain('w.merged_at IS NULL AND (w.pr_lifecycle_status IS NULL OR w.pr_lifecycle_status NOT IN (');
   });
 
-  test('a transition that does not merge or close the PR writes no worker row', () => {
+  test('AC-1: any other transition projects only the live status (open, CI, conflict) from the delivery\'s readings', () => {
     const d = decision({ type: 'ReviewVerdictRecorded', actor: 'reviewer', roundId: 'r1', verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' });
     const text = render(transitionSql(d, { deliveryId: 'd1' })).sql;
-    expect(text).not.toContain('UPDATE workers');
-    expect(text).toContain('RETURNING id, version\n)');
+    expect(text).not.toContain('w_proj AS (');
+    expect(text).not.toContain('merged_at = ');
+    expect(text).toContain('w_live AS (\nUPDATE workers w SET updated_at = now(), pr_lifecycle_status = (CASE');
+    expect(text).toContain("WHEN d.ci = 'red' AND d.ci_head_sha = d.current_head_sha THEN 'ci_failed'");
+    expect(text).toContain("FROM d\nWHERE w.workspace_id = d.workspace_id AND w.pr_number = d.pr_number AND lower(w.pr_url) = lower('https://github.com/' || d.repo_full_name || '/pull/' || d.pr_number::text)");
+    expect(text.indexOf('w_live AS (')).toBeLessThan(text.indexOf('SELECT t.id AS transition_id'));
   });
 });

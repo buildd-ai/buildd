@@ -7,6 +7,7 @@ describe('releasePill', () => {
     const pill = releasePill({ state: 'failed', failureReason: 'superseded by release newer (PR merged)' });
     expect(pill.label).toBe('Superseded');
     expect(STATES[pill.state].tone).toBe('q');
+    expect(pill.title).toBe('A newer release carried these commits to production');
   });
 
   it('keeps an ordinary failure red', () => {
@@ -18,8 +19,12 @@ describe('releasePill', () => {
   it('maps every release state to a sentence-case word', () => {
     for (const state of ['pending_external', 'dispatched', 'deploying', 'healthy', 'degraded', 'failed']) {
       const { label } = releasePill({ state, failureReason: null });
-      expect(label).toMatch(/^[A-Z][a-z]+$/);
+      expect(label).toMatch(/^[A-Z][a-z]+( [a-z]+)*$/);
     }
+  });
+
+  it('a deploying release reads Releasing', () => {
+    expect(releasePill({ state: 'deploying', failureReason: null }).label).toBe('Releasing');
   });
 
   it('keeps an unknown state word on a neutral pill', () => {

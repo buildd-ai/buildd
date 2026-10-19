@@ -74,7 +74,7 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   create_pr: 'tasks:write', record_pr_supersession: 'workers:write', send_agent_message: 'workers:admin', answer_question: 'workers:admin',
   emit_event: 'tasks:write', query_events: 'tasks:read', post_note: 'tasks:write', suggest_schedule_update: 'workers:write',
   list_prs: 'tasks:read', get_pr: 'tasks:read', get_pr_review: 'tasks:read',
-  merge_pr: 'tasks:write', close_pr: 'tasks:write', update_pr: 'tasks:write', request_pr_review: 'tasks:write',
+  merge_pr: 'tasks:write', close_pr: 'tasks:write', update_pr: 'tasks:write', request_pr_review: 'tasks:write', approve_pr_override: 'tasks:write',
   list_artifacts: 'tasks:read', get_artifact: 'tasks:read', list_artifact_templates: 'tasks:read',
   create_artifact: 'tasks:write', upload_artifact: 'tasks:write', update_artifact: 'tasks:write', link_artifact: 'tasks:write', list_artifact_links: 'tasks:read',
   manage_specs: 'tasks:write',
@@ -98,7 +98,7 @@ export function requiredScopeForAction(action: string, params: Record<string, un
   if (['manage_missions', 'manage_initiatives', 'manage_workspaces'].includes(action) && ['list', 'get', 'get_criteria_state'].includes(String(params.action))) return 'tasks:read';
   // Readiness is a read-only GET of /api/workspaces/[id]/readiness, which the route policy maps to tasks:read.
   if (action === 'manage_workspaces' && params.action === 'readiness') return 'tasks:read';
-  if (action === 'manage_specs' && ['list', 'get', 'outcome', 'read_ref', 'diff', 'comments', 'attachments'].includes(String(params.action))) return 'tasks:read';
+  if (action === 'manage_specs' && ['list', 'get', 'outcome', 'read_ref', 'diff', 'comments', 'attachments', 'history'].includes(String(params.action))) return 'tasks:read';
   // metadata without changes only reads the block (a GET).
   if (action === 'manage_specs' && params.action === 'metadata' && params.changes === undefined) return 'tasks:read';
   if (action === 'manage_experiments' && ['list', 'get', 'readout'].includes(String(params.action))) return 'analytics:read';

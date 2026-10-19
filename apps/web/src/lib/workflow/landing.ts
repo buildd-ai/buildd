@@ -67,7 +67,10 @@ export interface LandingInput {
 export type LandingOutcome =
   /** GitHub accepted the merge, or the live read shows the PR merged. */
   | 'merged'
-  /** The merge call's answer was lost; the kernel verifies with a live read before anything re-calls it. */
+  /**
+   * The merge call's answer was lost; the kernel verifies with a live read before anything re-calls it.
+   * Or (`reason: merge_held`) GitHub is holding the merge on a required check; it is called again when one reports.
+   */
   | 'landing'
   /** GitHub refused because the branch is behind; a mechanical refresh was queued (REPAIRING(behind)). */
   | 'behind'
@@ -213,6 +216,19 @@ ORDER BY to_version DESC LIMIT 1`)).rows ?? [])[0] as { outcome: string | null; 
   return row ?? null;
 }
 
+/**
+ * §4 merge holds: what the delivery's parked merge call waits on (its `held:<why>:<check>` outcome),
+ * when the newest merge call for `headSha` is held. Null: not held.
+ */
+async function heldMerge(deliveryId: string, headSha: string, exec: Exec): Promise<{ why: string; check: string | null } | null> {
+  const row = ((await exec(sql`-- workflow:held_merge
+SELECT outcome FROM workflow_effects
+WHERE delivery_id = ${deliveryId}::uuid AND kind = 'merge_call' AND status = 'pending' AND payload->>'headSha' = ${headSha}::text
+ORDER BY created_at DESC LIMIT 1`)).rows ?? [])[0] as { outcome?: string | null } | undefined;
+  const m = /^held:([^:]+):(.*)$/.exec(row?.outcome ?? '');
+  return m ? { why: m[1]!, check: m[2] === 'unnamed' ? null : m[2]! } : null;
+}
+
 function current(view: Awaited<ReturnType<typeof loadView>>): CurrentView {
   const d = view.delivery;
   return d ? { state: d.state, version: d.version, head: d.currentHeadSha, round: d.currentRound } : NOT_LOADED;
@@ -277,14 +293,6 @@ export async function landThroughKernel(p: LandingInput, deps: LandingDeps): Pro
     door: p.door,
     headSha: p.headSha,
     live: live as LivePr,
-    // The kernel no longer trusts this (workflow-kernel-library.md §4): the merge effect reads
-    // CI, protected paths, size and the holds itself, against a fresh read, when it runs; a
-    // passing reading is ignored, a failing one still refuses. It is still sent because the
-    // control plane deploys after the web host, and a Worker on the release before this one
-    // reads `cmd.rails.redCi` unguarded: without it every landing would throw there.
-    // TODO(S3b follow-up): stop sending it in the release after the one that ships S3b (#4786),
-    // once both hosts run a reducer that reads `rails` as optional.
-    rails: { passed: true },
     ...(p.override ? { override: p.override } : {}),
     ...(p.mergeMethod ? { mergeMethod: p.mergeMethod } : {}),
     ...(p.expectedVersion !== undefined ? { expectedVersion: p.expectedVersion } : {}),
@@ -314,6 +322,14 @@ export async function landThroughKernel(p: LandingInput, deps: LandingDeps): Pro
     return { ...base, merged: true, outcome: 'merged', reason: 'merge_accepted', message: detail || 'Pull request merged' };
   }
   if (d.state === 'LANDING') {
+    const held = d.currentHeadSha ? await heldMerge(deliveryId, d.currentHeadSha, exec) : null;
+    if (held) {
+      const what = held.check ? `required check "${held.check}"` : 'its required checks';
+      const message = held.why === 'own_status'
+        ? `The merge waits for GitHub to show buildd's review approval on this head; it merges once it does. Nothing to do.`
+        : `GitHub is holding the merge until ${what} passes; it merges once it does. Nothing to do.`;
+      return { ...base, merged: false, outcome: 'landing', reason: 'merge_held', message };
+    }
     return { ...base, merged: false, outcome: 'landing', indeterminate: true, reason: last?.outcome ?? 'merge_pending', message: detail || 'The merge was requested; its result is being verified.' };
   }
   if (d.state === 'REPAIRING' && (d.stateReason === 'behind' || d.stateReason === 'conflict' || d.stateReason === 'migration')) {
@@ -321,7 +337,7 @@ export async function landThroughKernel(p: LandingInput, deps: LandingDeps): Pro
     return { ...base, merged: false, outcome, reason: d.stateReason, message: detail || (outcome === 'behind' ? 'The branch is behind its base; it is being updated.' : 'The PR has merge conflicts; a fix is queued.') };
   }
   // §4: the gate, asked again when the merge effect ran, refused before any merge call.
-  if (last?.outcome === 'gate_refused') return { ...base, merged: false, outcome: 'rejected', reason: 'gate_refused', message: detail || 'The landing check refused the merge when it ran; nothing was merged.' };
+  if (last?.outcome === 'gate_refused') return { ...base, merged: false, outcome: 'rejected', reason: 'gate_refused', message: detail || 'The review approval check refused the merge when it ran; nothing was merged.' };
   if (last?.outcome === 'not_merged') return { ...base, merged: false, outcome: 'not_merged', reason: 'not_merged', message: detail || 'Nothing was merged.' };
   return { ...base, merged: false, outcome: 'refused', reason: d.stateReason ?? last?.outcome ?? 'refused', message: detail || 'GitHub refused the merge; a person needs to look at it.' };
 }

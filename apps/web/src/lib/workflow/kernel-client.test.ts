@@ -19,7 +19,10 @@ const input = { workspaceId: WS, installationId: 1, repoFullName: 'acme/w', prNu
 const principal = { kind: 'user' as const, id: USER };
 const OWN = { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s3cret' };
 
-afterEach(() => resetKernelModeCache());
+afterEach(async () => {
+  resetKernelModeCache();
+  (await import('./kernel-client')).resetAttemptStartBreaker();
+});
 
 /** Node's fetch when the connection is refused: `fetch failed` with the socket error as its cause. */
 const refusedErr = (code = 'ECONNREFUSED') => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(code), { code }) });
@@ -298,7 +301,7 @@ describe('the client and the endpoint agree', () => {
     };
     let runs = 0;
     const endpoint = (url: string, init: RequestInit) => handleCommandRequest(new Request(url, init), {
-      env: OWN, host: () => 'control-plane', ledger, reaches: async () => true,
+      env: OWN, host: () => 'control-plane', ledger, reaches: async () => true, installationOf: async () => ({ installationId: 1 }),
       run: (async () => { runs++; return { merged: true }; }) as never, deliveryAfter: async () => ({ id: DELIVERY, version: 6 }),
     });
     const l = local();
@@ -415,6 +418,615 @@ describe('the doors\' functions', () => {
       globalThis.fetch = realFetch;
       process.env = saved;
     }
+  });
+});
+
+describe('T4 is a door too (AC-9): an attempt\'s end from the web host', () => {
+  const end = {
+    task: { id: 't-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'owner', context: null },
+    workerId: 'w-1', status: 'completed' as const, localHeadSha: 'H1', commitCount: 1, source: 'runner',
+  };
+
+  it('in own mode it is submitted to the control plane, the task\'s workspace on the input for the reach check, and nothing runs here', async () => {
+    const { attemptEnded } = await import('./kernel-client');
+    const l = local();
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op: 'attempt_ended', result: { handled: true } }); }) as unknown as typeof fetch;
+    const r = await attemptEnded(end, { principal: { kind: 'account', id: USER, grant: null }, idempotencyKey: 'attempt_ended:k-0001', deps: { ...l.deps, env: OWN, fetch: fetchSpy } });
+    expect(r).toEqual({ handled: true });
+    expect(l.ran).toEqual([]);
+    expect(bodies).toEqual([{ v: 1, op: 'attempt_ended', input: { ...end, workspaceId: WS }, principal: { kind: 'account', id: USER, grant: null }, idempotencyKey: 'attempt_ended:k-0001' }]);
+  });
+
+  it('in shadow the web host runs it itself, as before', async () => {
+    const { attemptEnded, systemPrincipal } = await import('./kernel-client');
+    const l = local();
+    await attemptEnded(end, { principal: systemPrincipal('system:sweep:stale-workers'), deps: { ...l.deps, env: {} } });
+    expect(l.ran).toEqual(['attempt_ended']);
+  });
+
+  it('release skew: a control plane that does not know the op (it predates it) refused it, so the web host applies it itself', async () => {
+    const { attemptEnded } = await import('./kernel-client');
+    const l = local();
+    let sent = 0;
+    // What an older control plane answers for an op it does not know: commandProblem's refusal, verbatim.
+    const { commandProblem } = await import('./command-api');
+    const why = commandProblem({ v: 1, op: 'attempt_ended_from_the_future', idempotencyKey: 'k-00000001', principal, input: { workspaceId: WS } })!;
+    expect(why).toBe('unknown op "attempt_ended_from_the_future"');
+    const older = (async () => { sent++; return Response.json({ v: 1, code: 'bad_request', error: why.replace('attempt_ended_from_the_future', 'attempt_ended') }, { status: 400 }); }) as unknown as typeof fetch;
+    const errors: unknown[] = [];
+    const realError = console.error;
+    console.error = (...a: unknown[]) => { errors.push(a.join(' ')); };
+    try {
+      await attemptEnded(end, { principal: { kind: 'account', id: USER, grant: null }, deps: { ...l.deps, env: OWN, fetch: older } });
+    } finally {
+      console.error = realError;
+    }
+    expect(sent).toBe(1);
+    expect(l.ran).toEqual(['attempt_ended']);
+    expect(String(errors[0])).toContain('SKEW');
+  });
+
+  it('release skew only: any other refusal (forbidden, a malformed input) stays a refusal and nothing runs here', async () => {
+    const { attemptEnded, refusedAsUnknownOp } = await import('./kernel-client');
+    for (const [status, code, error] of [[403, 'forbidden', 'account does not reach this workspace'], [400, 'bad_request', 'input.workspaceId must be a uuid'], [400, 'bad_request', 'unknown op "land"']] as const) {
+      const l = local();
+      const refusing = (async () => Response.json({ v: 1, code, error }, { status })) as unknown as typeof fetch;
+      const err = await attemptEnded(end, { principal: { kind: 'account', id: USER, grant: null }, deps: { ...l.deps, env: OWN, fetch: refusing } }).catch((e) => e);
+      expect(err).toBeInstanceOf(KernelCommandRefusedError);
+      expect(refusedAsUnknownOp(err, 'attempt_ended')).toBe(false);
+      expect(l.ran).toEqual([]);
+    }
+  });
+
+  it('the host applies an end only for a task of the workspace the reach check judged', async () => {
+    const { runKernelOp } = await import('./command-api');
+    const OTHER = '44444444-4444-4444-8444-444444444444';
+    await expect(runKernelOp('attempt_ended', { ...end, workspaceId: OTHER })).rejects.toThrow(/not the task's workspace/);
+  });
+});
+
+describe('AttemptRequeued is a door too (AC-1 slice 6): a requeue from the web host', () => {
+  const requeue = {
+    task: { id: 't-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'owner', context: null },
+    workerId: 'w-1', reason: 'retry', source: 'runner',
+  };
+  const runner = { kind: 'account' as const, id: USER, grant: null };
+
+  it('in own mode it is submitted to the control plane, the task\'s workspace on the input, and nothing runs here', async () => {
+    const { attemptRequeued } = await import('./kernel-client');
+    const l = local();
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op: 'attempt_requeued', result: { handled: true, requeued: true } }); }) as unknown as typeof fetch;
+    const r = await attemptRequeued(requeue, { principal: runner, idempotencyKey: 'attempt_requeued:k-0001', deps: { ...l.deps, env: OWN, fetch: fetchSpy } });
+    expect(r).toEqual({ handled: true, requeued: true });
+    expect(l.ran).toEqual([]);
+    expect(bodies).toEqual([{ v: 1, op: 'attempt_requeued', input: { ...requeue, workspaceId: WS }, principal: runner, idempotencyKey: 'attempt_requeued:k-0001' }]);
+  });
+
+  it('in shadow the web host runs it itself', async () => {
+    const { attemptRequeued } = await import('./kernel-client');
+    const l = local();
+    await attemptRequeued(requeue, { principal: runner, deps: { ...l.deps, env: {} } });
+    expect(l.ran).toEqual(['attempt_requeued']);
+  });
+
+  it('release skew: an older control plane refuses it as unknown, so the web host applies it and says so; any other refusal stays one', async () => {
+    const { attemptRequeued } = await import('./kernel-client');
+    const l = local();
+    const older = (async () => Response.json({ v: 1, code: 'bad_request', error: 'unknown op "attempt_requeued"' }, { status: 400 })) as unknown as typeof fetch;
+    const errors: unknown[] = [];
+    const realError = console.error;
+    console.error = (...a: unknown[]) => { errors.push(a.join(' ')); };
+    try {
+      await attemptRequeued(requeue, { principal: runner, deps: { ...l.deps, env: OWN, fetch: older } });
+    } finally {
+      console.error = realError;
+    }
+    expect(l.ran).toEqual(['attempt_requeued']);
+    expect(String(errors[0])).toContain('SKEW');
+    const r2 = local();
+    const refusing = (async () => Response.json({ v: 1, code: 'forbidden', error: 'account does not reach this workspace' }, { status: 403 })) as unknown as typeof fetch;
+    expect(await attemptRequeued(requeue, { principal: runner, deps: { ...r2.deps, env: OWN, fetch: refusing } }).catch((e) => e)).toBeInstanceOf(KernelCommandRefusedError);
+    expect(r2.ran).toEqual([]);
+  });
+
+  it('the host requeues only a task of the workspace the reach check judged, and the endpoint knows the op', async () => {
+    const { runKernelOp, isKernelOp } = await import('./command-api');
+    const OTHER = '44444444-4444-4444-8444-444444444444';
+    await expect(runKernelOp('attempt_requeued', { ...requeue, workspaceId: OTHER })).rejects.toThrow(/not the task's workspace/);
+    expect(isKernelOp('attempt_requeued')).toBe(true);
+  });
+});
+
+describe('AttemptStarted is a door too (AC-1 slice 7): a claim of a kernel owner task from the web host', () => {
+  const start = {
+    task: { id: 't-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'owner', context: null },
+    claimedBy: USER, claimedAt: '2026-10-18 08:00:00.123456+00', source: 'claim',
+  };
+  const runner = { kind: 'account' as const, id: USER, grant: null };
+
+  it('in own mode it is submitted to the control plane, the task\'s workspace on the input, and nothing runs here', async () => {
+    const { attemptStarted } = await import('./kernel-client');
+    const l = local();
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op: 'attempt_started', result: { handled: true, started: true } }); }) as unknown as typeof fetch;
+    const r = await attemptStarted(start, { principal: runner, idempotencyKey: 'attempt_started:k-0001', deps: { ...l.deps, env: OWN, fetch: fetchSpy } });
+    expect(r).toEqual({ handled: true, started: true });
+    expect(l.ran).toEqual([]);
+    expect(bodies).toEqual([{ v: 1, op: 'attempt_started', input: { ...start, workspaceId: WS }, principal: runner, idempotencyKey: 'attempt_started:k-0001' }]);
+  });
+
+  it('in shadow the web host runs it itself', async () => {
+    const { attemptStarted } = await import('./kernel-client');
+    const l = local();
+    await attemptStarted(start, { principal: runner, deps: { ...l.deps, env: {} } });
+    expect(l.ran).toEqual(['attempt_started']);
+  });
+
+  it('release skew: an older control plane refuses it as unknown, and the web host still never runs it (the claim projects the start instead)', async () => {
+    const { attemptStarted } = await import('./kernel-client');
+    const l = local();
+    const older = (async () => Response.json({ v: 1, code: 'bad_request', error: 'unknown op "attempt_started"' }, { status: 400 })) as unknown as typeof fetch;
+    expect(await attemptStarted(start, { principal: runner, deps: { ...l.deps, env: OWN, fetch: older } }).catch((e) => e)).toBeInstanceOf(KernelCommandRefusedError);
+    expect(l.ran).toEqual([]);
+    const r2 = local();
+    const refusing = (async () => Response.json({ v: 1, code: 'forbidden', error: 'account does not reach this workspace' }, { status: 403 })) as unknown as typeof fetch;
+    expect(await attemptStarted(start, { principal: runner, deps: { ...r2.deps, env: OWN, fetch: refusing } }).catch((e) => e)).toBeInstanceOf(KernelCommandRefusedError);
+    expect(r2.ran).toEqual([]);
+  });
+
+  it('its own small budget at the default: a control plane answering 503, or hanging, costs a start well under a second and a half, not the claim\'s 5 s', async () => {
+    const { attemptStarted, resetAttemptStartBreaker, ATTEMPT_START_BUDGET_MS } = await import('./kernel-client');
+    expect(ATTEMPT_START_BUDGET_MS).toBeLessThanOrEqual(1_000);
+    const unavailable = (async () => Response.json({ v: 1, code: 'unavailable' }, { status: 503 })) as unknown as typeof fetch;
+    const hanging = ((_u: string, init: RequestInit) => new Promise((_res, rej) => { init.signal?.addEventListener('abort', () => rej(init.signal!.reason)); })) as unknown as typeof fetch;
+    for (const f of [unavailable, hanging]) {
+      resetAttemptStartBreaker();
+      const t0 = Date.now();
+      const err = await attemptStarted(start, { principal: runner, deps: { ...local().deps, sleep: undefined, env: OWN, fetch: f } }).catch((e) => e);
+      expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+      expect(Date.now() - t0).toBeLessThan(1_500);
+    }
+  });
+
+  it('a start left unanswered opens a short breaker: the next starts skip the door at once, until it closes', async () => {
+    const { attemptStarted, resetAttemptStartBreaker, ATTEMPT_START_SKIP_MS } = await import('./kernel-client');
+    expect(ATTEMPT_START_SKIP_MS).toBeGreaterThanOrEqual(30_000);
+    expect(ATTEMPT_START_SKIP_MS).toBeLessThanOrEqual(60_000);
+    resetAttemptStartBreaker();
+    let t = 1_000_000;
+    let sent = 0;
+    const down = (async () => { sent++; throw refusedErr(); }) as unknown as typeof fetch;
+    const deps = { ...local().deps, env: OWN, fetch: down, now: () => t, sleep: async (ms: number) => { t += ms + 5_000; } };
+    expect(await attemptStarted(start, { principal: runner, deps }).catch((e) => e)).toBeInstanceOf(ControlPlaneUnavailableError);
+    const afterFirst = sent;
+    expect(afterFirst).toBeGreaterThan(0);
+    const skipped = await attemptStarted(start, { principal: runner, deps }).catch((e) => e);
+    expect(skipped).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(sent).toBe(afterFirst);
+    t += ATTEMPT_START_SKIP_MS + 1;
+    const answered = (async () => answer({ op: 'attempt_started', result: { handled: true, started: true } })) as unknown as typeof fetch;
+    expect(await attemptStarted(start, { principal: runner, deps: { ...deps, fetch: answered } })).toEqual({ handled: true, started: true });
+    resetAttemptStartBreaker();
+  });
+
+  it('the door itself never parks a start (the claim route parks what it projected, after its response)', async () => {
+    const { attemptStarted } = await import('./kernel-client');
+    const l = local();
+    const down = (async () => { throw refusedErr(); }) as unknown as typeof fetch;
+    let t = 0;
+    const parked: unknown[] = [];
+    const err = await attemptStarted(start, {
+      principal: runner,
+      deps: { ...l.deps, env: OWN, fetch: down, now: () => t, sleep: async (ms: number) => { t += ms + 5_000; }, park: (async (p: unknown) => { parked.push(p); return true; }) as never },
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.parked).not.toBe(true);
+    expect(parked).toEqual([]);
+    expect(l.ran).toEqual([]);
+  });
+
+  it('its retry sleeps are cut to the start deadline: a hang or refusal never overruns the budget by a backoff', async () => {
+    const { attemptStarted, resetAttemptStartBreaker } = await import('./kernel-client');
+    resetAttemptStartBreaker();
+    let t = 0;
+    const slept: number[] = [];
+    const down = (async () => { throw refusedErr(); }) as unknown as typeof fetch;
+    const err = await attemptStarted(start, { principal: runner, deps: { ...local().deps, env: { ...OWN, KERNEL_START_BUDGET_MS: '300' }, fetch: down, now: () => t, sleep: async (ms: number) => { slept.push(ms); t += ms; } } }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(t).toBeLessThanOrEqual(300);
+    expect(slept.every((ms) => ms <= 300)).toBe(true);
+    resetAttemptStartBreaker();
+  });
+
+  it('a start projected without a kernel answer is parked under one key per claim, valid as a command key', async () => {
+    const { parkAttemptStart, attemptStartKey } = await import('./kernel-client');
+    const key = attemptStartKey('t-1', '2026-10-18 08:00:00.123456+00');
+    expect(key).toMatch(/^[A-Za-z0-9:._-]{8,200}$/);
+    expect(key).toBe(attemptStartKey('t-1', '2026-10-18 08:00:00.123456+00'));
+    const parked: Array<Record<string, unknown>> = [];
+    const ok = await parkAttemptStart({ input: start, principal: runner, why: 'x' }, { park: (async (p: Record<string, unknown>) => { parked.push(p); return true; }) as never });
+    expect(ok).toBe(true);
+    expect(parked[0]).toMatchObject({ key, op: 'attempt_started', input: { ...start, workspaceId: WS }, principal: runner });
+    expect(await parkAttemptStart({ input: start, principal: null, why: 'x' })).toBe(false);
+  });
+
+  it('the host starts only a task of the workspace the reach check judged, and the endpoint knows the op', async () => {
+    const { runKernelOp, isKernelOp } = await import('./command-api');
+    const OTHER = '44444444-4444-4444-8444-444444444444';
+    await expect(runKernelOp('attempt_started', { ...start, workspaceId: OTHER })).rejects.toThrow(/not the task's workspace/);
+    expect(isKernelOp('attempt_started')).toBe(true);
+  });
+});
+
+describe('AttemptReopened and AttemptWithdrawn are doors too (AC-1 slice 9)', () => {
+  const task = { id: 't-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'owner', context: null };
+  const reopen = { task, workerId: 'w-1', endedAt: '2026-10-18T08:00:00.000Z', to: 'pending' as const, reason: 'credential_restored', source: 'credential-recovery' };
+  const withdraw = { task, claim: { claimedBy: USER, claimedAt: '2026-10-18 08:00:00.123456+00' }, outcome: 'requeued' as const, reason: 'claim_rollback', source: 'claim' };
+  const runner = { kind: 'account' as const, id: USER, grant: null };
+  const ops = [
+    ['attempt_reopened', async (deps: never) => (await import('./kernel-client')).attemptReopened(reopen, { principal: runner, deps }), reopen],
+    ['attempt_withdrawn', async (deps: never) => (await import('./kernel-client')).attemptWithdrawn(withdraw, { principal: runner, deps }), withdraw],
+  ] as const;
+
+  for (const [op, call, input] of ops) {
+    it(`${op}: in own mode it is submitted with the task's workspace on the input, and nothing runs here`, async () => {
+      (await import('./kernel-client')).resetAttemptStartBreaker();
+      const l = local();
+      const bodies: Array<Record<string, unknown>> = [];
+      const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op, result: { handled: true } }); }) as unknown as typeof fetch;
+      await call({ ...l.deps, env: OWN, fetch: fetchSpy } as never);
+      expect(l.ran).toEqual([]);
+      expect(bodies[0]).toMatchObject({ op, input: { ...input, workspaceId: WS } });
+    });
+
+    it(`${op}: in shadow the web host runs it itself`, async () => {
+      const l = local();
+      await call({ ...l.deps, env: {} } as never);
+      expect(l.ran).toEqual([op]);
+    });
+
+    it(`${op}: release skew is one more door error: an older control plane refuses it and the web host never runs it, and nothing parks`, async () => {
+      (await import('./kernel-client')).resetAttemptStartBreaker();
+      const l = local();
+      const parked: unknown[] = [];
+      const older = (async () => Response.json({ v: 1, code: 'bad_request', error: `unknown op "${op}"` }, { status: 400 })) as unknown as typeof fetch;
+      expect(await call({ ...l.deps, env: OWN, fetch: older, park: (async (p: unknown) => { parked.push(p); return true; }) } as never).catch((e) => e)).toBeInstanceOf(KernelCommandRefusedError);
+      let t = 0;
+      const down = (async () => { throw refusedErr(); }) as unknown as typeof fetch;
+      const err = await call({ ...l.deps, env: OWN, fetch: down, now: () => t, sleep: async (ms: number) => { t += ms + 5_000; }, park: (async (p: unknown) => { parked.push(p); return true; }) } as never).catch((e) => e);
+      expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+      expect({ ran: l.ran, parked }).toEqual({ ran: [], parked: [] });
+      (await import('./kernel-client')).resetAttemptStartBreaker();
+    });
+
+    it(`${op}: the host moves only a task of the workspace the reach check judged, and the endpoint knows the op`, async () => {
+      const { runKernelOp, isKernelOp } = await import('./command-api');
+      await expect(runKernelOp(op, { ...input, workspaceId: '44444444-4444-4444-8444-444444444444' } as never)).rejects.toThrow(/not the task's workspace/);
+      expect(isKernelOp(op)).toBe(true);
+    });
+  }
+});
+
+describe('T10 from a sweep is a door too (AC-9): the CI-red sweep\'s and the landing path\'s CI failure', () => {
+  const seen = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, headSha: 'H1', signature: 'ci_failed', maxAttempts: 3, source: 'cron:ci-red' };
+  const sweep = { kind: 'system' as const, id: 'system:cron:ci-red' };
+
+  it('in own mode it is submitted to the control plane as buildd\'s own sweep, and nothing runs here', async () => {
+    const { observeCiFailure } = await import('./kernel-client');
+    const l = local();
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op: 'observe_ci_failure', result: { handled: false } }); }) as unknown as typeof fetch;
+    const r = await observeCiFailure(seen, { principal: sweep, idempotencyKey: 'observe_ci_failure:k-0001', deps: { ...l.deps, env: OWN, fetch: fetchSpy } });
+    expect(r).toEqual({ handled: false });
+    expect(l.ran).toEqual([]);
+    expect(bodies).toEqual([{ v: 1, op: 'observe_ci_failure', input: seen, principal: sweep, idempotencyKey: 'observe_ci_failure:k-0001' }]);
+  });
+
+  it('in shadow the web host runs it itself, as before', async () => {
+    const { observeCiFailure } = await import('./kernel-client');
+    const l = local();
+    await observeCiFailure({ ...seen, source: 'landing' }, { principal: { kind: 'system', id: 'system:landing' }, deps: { ...l.deps, env: {} } });
+    expect(l.ran).toEqual(['observe_ci_failure']);
+  });
+
+  it('release skew: a control plane that predates the op refused it as unknown, so the web host applies it itself and says so', async () => {
+    const { observeCiFailure } = await import('./kernel-client');
+    const l = local();
+    const older = (async () => Response.json({ v: 1, code: 'bad_request', error: 'unknown op "observe_ci_failure"' }, { status: 400 })) as unknown as typeof fetch;
+    const errors: unknown[] = [];
+    const realError = console.error;
+    console.error = (...a: unknown[]) => { errors.push(a.join(' ')); };
+    try {
+      await observeCiFailure(seen, { principal: sweep, deps: { ...l.deps, env: OWN, fetch: older } });
+    } finally {
+      console.error = realError;
+    }
+    expect(l.ran).toEqual(['observe_ci_failure']);
+    expect(String(errors[0])).toContain('SKEW');
+    expect(String(errors[0])).toContain('observe_ci_failure');
+  });
+
+  it('release skew only: any other refusal stays a refusal and nothing runs here', async () => {
+    const { observeCiFailure } = await import('./kernel-client');
+    for (const [status, code, error] of [[403, 'forbidden', 'principal refused'], [400, 'bad_request', 'unknown op "land"']] as const) {
+      const l = local();
+      const refusing = (async () => Response.json({ v: 1, code, error }, { status })) as unknown as typeof fetch;
+      const err = await observeCiFailure(seen, { principal: sweep, deps: { ...l.deps, env: OWN, fetch: refusing } }).catch((e) => e);
+      expect(err).toBeInstanceOf(KernelCommandRefusedError);
+      expect(l.ran).toEqual([]);
+    }
+  });
+
+  it('the command endpoint knows the op', async () => {
+    const { isKernelOp } = await import('./command-api');
+    expect(isKernelOp('observe_ci_failure')).toBe(true);
+  });
+});
+
+describe('a green head from the check_suite webhook is a door too (AC-9): CiGreenObserved, or a CiObserved reading', () => {
+  const green = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, headSha: 'H1', source: 'webhook:check_suite' };
+  const webhook = { kind: 'system' as const, id: 'system:webhook:check_suite' };
+
+  it('in own mode it is submitted to the control plane as buildd\'s own webhook, and nothing runs here', async () => {
+    const { observeCiGreen } = await import('./kernel-client');
+    const l = local();
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op: 'observe_ci_green', result: { handled: false } }); }) as unknown as typeof fetch;
+    const r = await observeCiGreen(green, { principal: webhook, idempotencyKey: 'observe_ci_green:k-0001', deps: { ...l.deps, env: OWN, fetch: fetchSpy } });
+    expect(r).toEqual({ handled: false });
+    expect(l.ran).toEqual([]);
+    expect(bodies).toEqual([{ v: 1, op: 'observe_ci_green', input: green, principal: webhook, idempotencyKey: 'observe_ci_green:k-0001' }]);
+  });
+
+  it('in shadow the web host runs it itself, as before', async () => {
+    const { observeCiGreen } = await import('./kernel-client');
+    const l = local();
+    await observeCiGreen(green, { principal: webhook, deps: { ...l.deps, env: {} } });
+    expect(l.ran).toEqual(['observe_ci_green']);
+  });
+
+  it('release skew: a control plane that predates the op refused it as unknown, so the web host applies it itself and says so', async () => {
+    const { observeCiGreen } = await import('./kernel-client');
+    const l = local();
+    const older = (async () => Response.json({ v: 1, code: 'bad_request', error: 'unknown op "observe_ci_green"' }, { status: 400 })) as unknown as typeof fetch;
+    const errors: unknown[] = [];
+    const realError = console.error;
+    console.error = (...a: unknown[]) => { errors.push(a.join(' ')); };
+    try {
+      await observeCiGreen(green, { principal: webhook, deps: { ...l.deps, env: OWN, fetch: older } });
+    } finally {
+      console.error = realError;
+    }
+    expect(l.ran).toEqual(['observe_ci_green']);
+    expect(String(errors[0])).toContain('SKEW');
+    expect(String(errors[0])).toContain('observe_ci_green');
+  });
+
+  it('release skew only: any other refusal stays a refusal and nothing runs here', async () => {
+    const { observeCiGreen } = await import('./kernel-client');
+    for (const [status, code, error] of [[403, 'forbidden', 'principal refused'], [400, 'bad_request', 'unknown op "land"']] as const) {
+      const l = local();
+      const refusing = (async () => Response.json({ v: 1, code, error }, { status })) as unknown as typeof fetch;
+      const err = await observeCiGreen(green, { principal: webhook, deps: { ...l.deps, env: OWN, fetch: refusing } }).catch((e) => e);
+      expect(err).toBeInstanceOf(KernelCommandRefusedError);
+      expect(l.ran).toEqual([]);
+    }
+  });
+
+  it('the command endpoint knows the op', async () => {
+    const { isKernelOp } = await import('./command-api');
+    expect(isKernelOp('observe_ci_green')).toBe(true);
+  });
+});
+
+describe('AC-74: a door command the control plane never answered is parked for the floor, under its own key', () => {
+  const end = {
+    task: { id: 't-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } },
+    workerId: 'w-1', status: 'completed' as const, localHeadSha: 'H1', commitCount: 1, source: 'runner',
+  };
+  const runner = { kind: 'account' as const, id: USER, grant: null };
+  const down = (async () => { throw refusedErr(); }) as unknown as typeof fetch;
+  /** A clock the door's backoff moves, so a door that never gets an answer runs out its budget at once. */
+  const clock = () => { let t = 0; return { now: () => t, sleep: async (ms: number) => { t += ms + 5_000; } }; };
+  const parker = () => {
+    const parked: Array<Record<string, unknown>> = [];
+    return { parked, park: async (p: Record<string, unknown>) => { parked.push(p); return true; } };
+  };
+
+  it('an attempt end that never got an answer is parked with the door\'s key, op, input and principal, and the door still answers unavailable', async () => {
+    const { attemptEnded } = await import('./kernel-client');
+    const l = local();
+    const k = parker();
+    const err = await attemptEnded(end, { principal: runner, idempotencyKey: 'attempt_ended:k-park-1', deps: { ...l.deps, ...clock(), env: OWN, fetch: down, park: k.park as never } }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.parked).toBe(true);
+    expect(k.parked).toEqual([{ key: 'attempt_ended:k-park-1', op: 'attempt_ended', input: { ...end, workspaceId: WS }, principal: runner, priorUnknown: false, why: err.why }]);
+    expect(l.ran).toEqual([]);
+  });
+
+  it('an unknown outcome is parked as such, so the floor never runs it on the web host without the ledger\'s word', async () => {
+    const { observeCiGreen, systemPrincipal } = await import('./kernel-client');
+    const k = parker();
+    let t = 0;
+    const timeout = (async () => { throw Object.assign(new Error('t'), { name: 'TimeoutError' }); }) as unknown as typeof fetch;
+    const green = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, headSha: 'H1', source: 'webhook:check_suite' };
+    const err = await observeCiGreen(green, {
+      principal: systemPrincipal('system:webhook:check_suite'),
+      deps: { ...local().deps, env: OWN, fetch: timeout, now: () => t, sleep: async (ms: number) => { t += ms + 5_000; }, park: k.park as never },
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.outcome).toBe('unknown');
+    expect(k.parked).toHaveLength(1);
+    expect(k.parked[0]).toMatchObject({ op: 'observe_ci_green', priorUnknown: true, key: err.idempotencyKey });
+  });
+
+  it('only ops nothing else re-sends: a landing that got no answer is the caller\'s to retry, and is not parked', async () => {
+    const { landThroughKernel } = await import('./kernel-client');
+    const k = parker();
+    const err = await landThroughKernel(input, { principal, deps: { ...local().deps, ...clock(), env: OWN, fetch: down, park: k.park as never } }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.parked).toBe(false);
+    expect(k.parked).toEqual([]);
+  });
+
+  it('an answer is never parked: a refusal, the command\'s own failure, or a skew fallback', async () => {
+    const { attemptEnded, KernelCommandFailedError } = await import('./kernel-client');
+    const answers: Array<[() => Response, unknown]> = [
+      [() => Response.json({ v: 1, code: 'forbidden', error: 'no reach' }, { status: 403 }), KernelCommandRefusedError],
+      [() => Response.json({ v: 1, code: 'command_failed', error: 'boom' }, { status: 500 }), KernelCommandFailedError],
+    ];
+    for (const [reply, kind] of answers) {
+      const k = parker();
+      const err = await attemptEnded(end, { principal: runner, deps: { ...local().deps, env: OWN, fetch: (async () => reply()) as unknown as typeof fetch, park: k.park as never } }).catch((e) => e);
+      expect(err).toBeInstanceOf(kind as never);
+      expect(k.parked).toEqual([]);
+    }
+    const k = parker();
+    const l = local();
+    const older = (async () => Response.json({ v: 1, code: 'bad_request', error: 'unknown op "attempt_ended"' }, { status: 400 })) as unknown as typeof fetch;
+    const realError = console.error;
+    console.error = () => {};
+    try {
+      await attemptEnded(end, { principal: runner, deps: { ...l.deps, env: OWN, fetch: older, park: k.park as never } });
+    } finally {
+      console.error = realError;
+    }
+    expect(l.ran).toEqual(['attempt_ended']);
+    expect(k.parked).toEqual([]);
+  });
+
+  it('a door with no principal is never parked (it is refused before sending), and a park that fails still answers unavailable', async () => {
+    const { attemptEnded } = await import('./kernel-client');
+    const k = parker();
+    const refused = await attemptEnded(end, { principal: null, deps: { ...local().deps, ...clock(), env: OWN, fetch: down, park: k.park as never } }).catch((e) => e);
+    expect(refused).toBeInstanceOf(KernelCommandRefusedError);
+    expect(k.parked).toEqual([]);
+    const realError = console.error;
+    const logged: string[] = [];
+    console.error = (...a: unknown[]) => { logged.push(a.join(' ')); };
+    try {
+      const err = await attemptEnded(end, { principal: runner, deps: { ...local().deps, ...clock(), env: OWN, fetch: down, park: async () => { throw new Error('db down'); } } }).catch((e) => e);
+      expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+      expect(err.parked).toBe(false);
+    } finally {
+      console.error = realError;
+    }
+    expect(logged.join('\n')).toContain('could not be parked');
+  });
+
+  it('a reviewer\'s verdict that got no answer is parked; a fix claim never is (its claim is rolled back and claimed afresh)', async () => {
+    const { recordReviewVerdict, claimFix } = await import('./kernel-client');
+    const verdict = { workspaceId: WS, reviewerTask: { id: 'rv-1', deliveryId: DELIVERY, context: { workflowRoundId: 'r-1' } }, verdict: 'approve', effectiveVerdict: 'approve', headSha: 'H1', confidence: 0.9 };
+    const k = parker();
+    const err = await recordReviewVerdict(verdict, { principal: runner, idempotencyKey: 'record_review_verdict:k-park-3', deps: { ...local().deps, ...clock(), env: OWN, fetch: down, park: k.park as never } }).catch((e) => e);
+    expect(err.parked).toBe(true);
+    expect(k.parked).toMatchObject([{ key: 'record_review_verdict:k-park-3', op: 'record_review_verdict', input: verdict }]);
+
+    const c = parker();
+    const fixTask = { id: 'fix-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } };
+    const claimErr = await claimFix(fixTask, { principal: runner, deps: { ...local().deps, ...clock(), env: OWN, fetch: down, park: c.park as never } }).catch((e) => e);
+    expect(claimErr).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(claimErr.parked).toBe(false);
+    expect(c.parked).toEqual([]);
+  });
+
+  it('every op is classified, and the doors without another re-sender are the parked ones', async () => {
+    const { PARK_ON_UNAVAILABLE } = await import('./command-outbox');
+    const { KERNEL_OPS } = await import('./command-api');
+    expect(Object.keys(PARK_ON_UNAVAILABLE).sort()).toEqual([...KERNEL_OPS].sort());
+    expect(KERNEL_OPS.filter((op) => PARK_ON_UNAVAILABLE[op]).sort()).toEqual(['adopt_review_verdict', 'attempt_ended', 'attempt_requeued', 'observe_base', 'observe_ci_green', 'observe_head', 'record_review_verdict']);
+    // A fix claim is rolled back and claimed afresh when unanswered: its old command is never re-sent.
+    expect(PARK_ON_UNAVAILABLE.claim_fix).toBe(false);
+    // AC-1 slice 7: nor a start: the claim projects it on its own host, and a late re-send could start a claim that moved on.
+    expect(PARK_ON_UNAVAILABLE.attempt_started).toBe(false);
+  });
+
+  it('the door\'s 503 says it was parked', async () => {
+    const { doorErrorAnswer } = await import('./kernel-client');
+    const e = new ControlPlaneUnavailableError('unreachable', 'not_applied', 'attempt_ended:k-park-2');
+    expect(doorErrorAnswer(e).body.parked).toBeUndefined();
+    e.parked = true;
+    expect(doorErrorAnswer(e).body).toMatchObject({ parked: true, idempotencyKey: 'attempt_ended:k-park-2', retryable: true });
+  });
+});
+
+describe('T6 and T9 are doors too (AC-9): a review verdict (recorded or adopted) and a fix claim from the web host', () => {
+  const OTHER = '44444444-4444-4444-8444-444444444444';
+  const runner = { kind: 'account' as const, id: USER, grant: null };
+  const verdict = { workspaceId: WS, reviewerTask: { id: 'rv-1', deliveryId: DELIVERY, context: { workflowRoundId: 'r-1' } }, verdict: 'approve', effectiveVerdict: 'approve', headSha: 'H1', confidence: 0.9 };
+  const adopted = { workspaceId: WS, deliveryId: DELIVERY, reviewerTaskId: 'rv-2', verdict: 'request-changes', effectiveVerdict: 'request-changes', headSha: 'H1', confidence: 0.8 };
+  const fixTask = { id: 'fix-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } };
+  type Door = 'recordReviewVerdict' | 'adoptReviewVerdict' | 'claimFix';
+  const cases: Array<{ fn: Door; op: string; arg: unknown; sent: unknown }> = [
+    { fn: 'recordReviewVerdict', op: 'record_review_verdict', arg: verdict, sent: verdict },
+    { fn: 'adoptReviewVerdict', op: 'adopt_review_verdict', arg: adopted, sent: adopted },
+    // The task's workspace rides on the input for the reach check, as attempt_ended's does.
+    { fn: 'claimFix', op: 'claim_fix', arg: fixTask, sent: { task: fixTask, workspaceId: WS } },
+  ];
+  const call = async (fn: Door, arg: unknown, c: Record<string, unknown>) => {
+    const client = await import('./kernel-client');
+    return (client[fn] as (a: unknown, c: unknown) => Promise<unknown>)(arg, c);
+  };
+
+  for (const { fn, op, arg, sent } of cases) {
+    it(`${op}: in own mode it is submitted to the control plane for its caller, and nothing runs here`, async () => {
+      const l = local();
+      const bodies: Array<Record<string, unknown>> = [];
+      const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op, result: { handled: false } }); }) as unknown as typeof fetch;
+      expect(await call(fn, arg, { principal: runner, idempotencyKey: `${op}:k-0001`, deps: { ...l.deps, env: OWN, fetch: fetchSpy } })).toEqual({ handled: false });
+      expect(l.ran).toEqual([]);
+      expect(bodies).toEqual([{ v: 1, op, input: sent, principal: runner, idempotencyKey: `${op}:k-0001` }]);
+    });
+
+    it(`${op}: in shadow the web host runs it itself, as before`, async () => {
+      const l = local();
+      await call(fn, arg, { principal: runner, deps: { ...l.deps, env: {} } });
+      expect(l.ran).toEqual([op]);
+    });
+
+    it(`${op}: release skew, a control plane that predates the op refused it as unknown, so the web host applies it itself and says so`, async () => {
+      const l = local();
+      const older = (async () => Response.json({ v: 1, code: 'bad_request', error: `unknown op "${op}"` }, { status: 400 })) as unknown as typeof fetch;
+      const errors: unknown[] = [];
+      const realError = console.error;
+      console.error = (...a: unknown[]) => { errors.push(a.join(' ')); };
+      try {
+        await call(fn, arg, { principal: runner, deps: { ...l.deps, env: OWN, fetch: older } });
+      } finally {
+        console.error = realError;
+      }
+      expect(l.ran).toEqual([op]);
+      expect(String(errors[0])).toContain('SKEW');
+      expect(String(errors[0])).toContain(op);
+    });
+
+    it(`${op}: release skew only, any other refusal stays a refusal and nothing runs here`, async () => {
+      for (const [status, code, error] of [[403, 'forbidden', 'account does not reach this workspace'], [400, 'bad_request', 'unknown op "land"']] as const) {
+        const l = local();
+        const refusing = (async () => Response.json({ v: 1, code, error }, { status })) as unknown as typeof fetch;
+        const err = await call(fn, arg, { principal: runner, deps: { ...l.deps, env: OWN, fetch: refusing } }).catch((e) => e);
+        expect(err).toBeInstanceOf(KernelCommandRefusedError);
+        expect(l.ran).toEqual([]);
+      }
+    });
+
+    it(`${op}: the command endpoint knows the op`, async () => {
+      const { isKernelOp } = await import('./command-api');
+      expect(isKernelOp(op)).toBe(true);
+    });
+  }
+
+  it('claim_fix: the host claims a fix only for a task of the workspace the reach check judged', async () => {
+    const { runKernelOp } = await import('./command-api');
+    await expect(runKernelOp('claim_fix', { task: fixTask, workspaceId: OTHER })).rejects.toThrow(/not the task's workspace/);
+  });
+
+  it('a verdict names its workspace: without one the endpoint refuses it as malformed before any check', async () => {
+    const { commandProblem } = await import('./command-api');
+    const { workspaceId: _ws, ...noWorkspace } = verdict;
+    expect(commandProblem({ v: 1, op: 'record_review_verdict', idempotencyKey: 'k-00000001', principal: runner, input: noWorkspace })).toBe('input.workspaceId must be a uuid');
   });
 });
 
@@ -711,7 +1323,7 @@ describe('time spent before the ledger claim', () => {
       requests++;
       clock.t += 300;
       try {
-        return await handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => true, sleep: async () => {} });
+        return await handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => true, installationOf: async () => ({ installationId: 1 }), sleep: async () => {} });
       } catch {
         return new Response('error code: 1101', { status: 500 });
       }
@@ -768,7 +1380,7 @@ describe('a reach check the control plane could not make', () => {
     const fetchImpl = (async (url: string, init: RequestInit) => {
       requests++;
       clock.t += 300;
-      return handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => { throw new Error('db down'); }, sleep: async () => {} });
+      return handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => { throw new Error('db down'); }, installationOf: async () => ({ installationId: 1 }), sleep: async () => {} });
     }) as unknown as typeof fetch;
     const err = await landThroughKernel(input, {
       principal,
@@ -779,4 +1391,438 @@ describe('a reach check the control plane could not make', () => {
     expect(requests).toBe(2);
     expect(clock.t).toBeLessThan(1_000);
   });
+});
+
+describe('an installation the control plane could not read', () => {
+  it('is answered 503 installation_unavailable; the client retries once and fails not_applied, nothing ran', async () => {
+    const { landThroughKernel } = await import('./kernel-client');
+    const clock = { t: 0 };
+    let requests = 0;
+    const ledger: CommandLedger = {
+      claim: async () => { throw new Error('the installation should be read first'); },
+      renew: async () => false, complete: async () => false, release: async () => {}, read: async () => null, prune: async () => 0,
+    };
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      requests++;
+      clock.t += 300;
+      return handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => true, installationOf: async () => { throw new Error('db down'); }, sleep: async () => {} });
+    }) as unknown as typeof fetch;
+    const err = await landThroughKernel(input, {
+      principal,
+      deps: { env: OWN, host: () => 'web', now: () => clock.t, sleep: async (ms) => { clock.t += ms; }, fetch: fetchImpl, run: (async () => { throw new Error('ran locally'); }) as never },
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect([err.outcome, err.why]).toEqual(['not_applied', 'answered 503 installation_unavailable']);
+    expect(requests).toBe(2);
+  });
+});
+
+describe('T12 from the conflict door is a door too (AC-9)', () => {
+  const seen = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, hint: 'dirty' as const, isDependencyBot: false, maxAgentAttempts: 3, source: 'door:conflict' };
+  const sweep = { kind: 'system' as const, id: 'system:door-conflict' };
+
+  it('in own mode it is submitted to the control plane, and nothing runs here', async () => {
+    const { observeConflict } = await import('./kernel-client');
+    const l = local();
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op: 'observe_conflict', result: { handled: false } }); }) as unknown as typeof fetch;
+    const r = await observeConflict(seen, { principal: sweep, idempotencyKey: 'observe_conflict:k-0001', deps: { ...l.deps, env: OWN, fetch: fetchSpy } });
+    expect(r).toEqual({ handled: false });
+    expect(l.ran).toEqual([]);
+    expect(bodies).toEqual([{ v: 1, op: 'observe_conflict', input: seen, principal: sweep, idempotencyKey: 'observe_conflict:k-0001' }]);
+  });
+
+  it('in shadow the web host runs it itself, as before', async () => {
+    const { observeConflict } = await import('./kernel-client');
+    const l = local();
+    await observeConflict(seen, { principal: sweep, deps: { ...l.deps, env: {} } });
+    expect(l.ran).toEqual(['observe_conflict']);
+  });
+
+  it('release skew: a control plane that predates the op is refused as unknown, so the web host applies it itself and says so', async () => {
+    const { observeConflict } = await import('./kernel-client');
+    const l = local();
+    const older = (async () => Response.json({ v: 1, code: 'bad_request', error: 'unknown op "observe_conflict"' }, { status: 400 })) as unknown as typeof fetch;
+    const errors: unknown[] = [];
+    const realError = console.error;
+    console.error = (...a: unknown[]) => { errors.push(a.join(' ')); };
+    try {
+      await observeConflict(seen, { principal: sweep, deps: { ...l.deps, env: OWN, fetch: older } });
+    } finally {
+      console.error = realError;
+    }
+    expect(l.ran).toEqual(['observe_conflict']);
+    expect(String(errors[0])).toContain('SKEW');
+  });
+
+  it('the command endpoint knows the op', async () => {
+    const { isKernelOp } = await import('./command-api');
+    expect(isKernelOp('observe_conflict')).toBe(true);
+  });
+});
+
+describe('T17 to T19, T3 and T29 from the webhook and the sweeps are doors too (AC-9)', () => {
+  const closed = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, source: 'webhook:closed' };
+  const pushed = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, hintedHeadSha: 'H2', source: 'webhook:synchronize' };
+  const retargeted = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, hintedFromBase: 'dev', source: 'webhook:edited' };
+  const webhook = { kind: 'system' as const, id: 'system:webhook:closed' };
+  const down = (async () => { throw refusedErr(); }) as unknown as typeof fetch;
+  const clock = () => { let t = 0; return { now: () => t, sleep: async (ms: number) => { t += ms + 5_000; } }; };
+  const replying = (result: unknown, bodies: Array<Record<string, unknown>> = []) =>
+    (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ result }); }) as unknown as typeof fetch;
+  /** GitHub's pull object, with more than the kernel reads. */
+  const pull = {
+    number: 7, state: 'closed', merged: true, merged_at: '2026-10-17T00:00:00Z', merge_commit_sha: 'M1', updated_at: '2026-10-17T00:00:01Z',
+    mergeable_state: 'clean', draft: false, merged_by: { login: 'a-person', id: 9, avatar_url: 'x' }, body: 'a long body'.repeat(200),
+    head: { sha: 'H1', ref: 'feat/x', repo: { full_name: 'acme/w', owner: { login: 'acme' } } }, base: { ref: 'dev', repo: { full_name: 'acme/w' } },
+  };
+
+  it('a close in own mode is submitted with GitHub\'s pull cut to what the kernel reads, and nothing runs here', async () => {
+    const { observePrState } = await import('./kernel-client');
+    const l = local();
+    const bodies: Array<Record<string, unknown>> = [];
+    const owned = await observePrState({ ...closed, pull }, { principal: webhook, idempotencyKey: 'observe_pr_state:k-0001', deps: { ...l.deps, env: OWN, fetch: replying({ owned: true }, bodies) } });
+    expect(owned).toBe(true);
+    expect(l.ran).toEqual([]);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({ op: 'observe_pr_state', principal: webhook, idempotencyKey: 'observe_pr_state:k-0001' });
+    expect((bodies[0].input as Record<string, unknown>).pull).toEqual({
+      state: 'closed', merged: true, merged_at: '2026-10-17T00:00:00Z', merge_commit_sha: 'M1', updated_at: '2026-10-17T00:00:01Z',
+      mergeable_state: 'clean', draft: false, merged_by: { login: 'a-person' },
+      head: { sha: 'H1', ref: 'feat/x', repo: { full_name: 'acme/w' } }, base: { ref: 'dev' },
+    });
+    const { toLivePr } = await import('./github-facts');
+    expect(toLivePr((bodies[0].input as { pull: never }).pull)).toEqual(toLivePr(pull as never));
+  });
+
+  it('the control plane\'s failed live read comes back as KernelObservationFailed, as the seam threw it', async () => {
+    const { observePrState, KernelObservationFailed } = await import('./kernel-client');
+    const err = await observePrState(closed, { principal: webhook, deps: { ...local().deps, env: OWN, fetch: replying({ owned: true, observationFailed: { deliveryId: DELIVERY, reason: 'github 502' } }) } }).catch((e) => e);
+    expect(err).toBeInstanceOf(KernelObservationFailed);
+    expect(err).toMatchObject({ name: 'KernelObservationFailed', deliveryId: DELIVERY, reason: 'github 502' });
+  });
+
+  it('not the kernel\'s PR: false, so legacy decides', async () => {
+    const { observePrState } = await import('./kernel-client');
+    expect(await observePrState(closed, { principal: webhook, deps: { ...local().deps, env: OWN, fetch: replying({ owned: false }) } })).toBe(false);
+  });
+
+  it('the control plane down on a kernel-owned close: recorded unapplied here and healed, KernelObservationFailed, never parked', async () => {
+    const { observePrState, KernelObservationFailed } = await import('./kernel-client');
+    const l = local();
+    const recorded: Array<[string, Record<string, unknown>]> = [];
+    const parked: unknown[] = [];
+    const err = await observePrState({ ...closed, pull }, {
+      principal: webhook,
+      deps: {
+        ...l.deps, ...clock(), env: OWN, fetch: down, park: (async (p: unknown) => { parked.push(p); return true; }) as never,
+        kernelDeliveryOf: async () => DELIVERY,
+        recordUnapplied: async (id, p) => { recorded.push([id, p as Record<string, unknown>]); },
+      },
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(KernelObservationFailed);
+    expect(err.deliveryId).toBe(DELIVERY);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0][0]).toBe(DELIVERY);
+    expect(recorded[0][1]).toMatchObject({ ...closed, pull: { state: 'closed', merged: true } });
+    expect(parked).toEqual([]);
+    expect(l.ran).toEqual([]);
+  });
+
+  it('the control plane down on a PR the kernel does not own: false, nothing recorded', async () => {
+    const { observePrState } = await import('./kernel-client');
+    const recorded: unknown[] = [];
+    const owned = await observePrState(closed, {
+      principal: webhook,
+      deps: { ...local().deps, ...clock(), env: OWN, fetch: down, kernelDeliveryOf: async () => null, recordUnapplied: async (...a) => { recorded.push(a); } },
+    });
+    expect(owned).toBe(false);
+    expect(recorded).toEqual([]);
+  });
+
+  /** Answers that are not an outage: a refused installation (4xx) and the command's own failure (500). */
+  const refusing = (async () => Response.json({ v: 1, code: 'installation_unresolved', error: 'no installation' }, { status: 422 })) as unknown as typeof fetch;
+  const failing = (async () => Response.json({ v: 1, code: 'command_failed', error: 'boom' }, { status: 500 })) as unknown as typeof fetch;
+
+  it('regression: a refused or failed door on a kernel-owned close is never read as "not the kernel\'s PR": recorded unapplied and healed, KernelObservationFailed', async () => {
+    const { observePrState, KernelObservationFailed } = await import('./kernel-client');
+    const realError = console.error;
+    console.error = () => {};
+    try {
+      for (const fetch of [refusing, failing]) {
+        const recorded: Array<[string, unknown]> = [];
+        const err = await observePrState({ ...closed, pull }, { principal: webhook, deps: { ...local().deps, env: OWN, fetch, kernelDeliveryOf: async () => DELIVERY, recordUnapplied: async (id, p) => { recorded.push([id, p]); } } }).catch((e) => e);
+        expect(err).toBeInstanceOf(KernelObservationFailed);
+        expect(err.deliveryId).toBe(DELIVERY);
+        expect(recorded.map(([id]) => id)).toEqual([DELIVERY]);
+      }
+    } finally {
+      console.error = realError;
+    }
+  });
+
+  it('a refused or failed door on a PR the kernel does not own: false, so legacy decides, nothing recorded', async () => {
+    const { observePrState } = await import('./kernel-client');
+    for (const fetch of [refusing, failing]) {
+      const recorded: unknown[] = [];
+      expect(await observePrState(closed, { principal: webhook, deps: { ...local().deps, env: OWN, fetch, kernelDeliveryOf: async () => null, recordUnapplied: async (...a) => { recorded.push(a); } } })).toBe(false);
+      expect(recorded).toEqual([]);
+    }
+  });
+
+  it('regression: a refused or failed push or retarget reads ownership here, so legacy never re-reviews a kernel PR', async () => {
+    const { observeHead, observeBase } = await import('./kernel-client');
+    const realError = console.error;
+    console.error = () => {};
+    try {
+      for (const [fn, p] of [[observeHead, pushed], [observeBase, retargeted]] as const) {
+        for (const fetch of [refusing, failing]) {
+          const call = fn as (p: unknown, c: unknown) => Promise<boolean>;
+          expect(await call(p, { principal: webhook, deps: { ...local().deps, env: OWN, fetch, kernelDeliveryOf: async () => DELIVERY } })).toBe(true);
+          expect(await call(p, { principal: webhook, deps: { ...local().deps, env: OWN, fetch, kernelDeliveryOf: async () => null } })).toBe(false);
+        }
+      }
+    } finally {
+      console.error = realError;
+    }
+  });
+
+  it('in shadow the web host runs all three itself, as before', async () => {
+    const { observePrState, observeHead, observeBase } = await import('./kernel-client');
+    const l = local();
+    const run = (async (op: string) => { l.ran.push(op); return op === 'observe_pr_state' ? { owned: true } : true; }) as ClientDeps['run'];
+    expect(await observePrState(closed, { principal: webhook, deps: { ...l.deps, run, env: {} } })).toBe(true);
+    expect(await observeHead(pushed, { principal: webhook, deps: { ...l.deps, run, env: {} } })).toBe(true);
+    expect(await observeBase(retargeted, { principal: webhook, deps: { ...l.deps, run, env: {} } })).toBe(true);
+    expect(l.ran).toEqual(['observe_pr_state', 'observe_head', 'observe_base']);
+  });
+
+  it('a push and a retarget in own mode are submitted, and nothing runs here', async () => {
+    const { observeHead, observeBase } = await import('./kernel-client');
+    const l = local();
+    const bodies: Array<Record<string, unknown>> = [];
+    expect(await observeHead(pushed, { principal: webhook, deps: { ...l.deps, env: OWN, fetch: replying(true, bodies) } })).toBe(true);
+    expect(await observeBase(retargeted, { principal: webhook, deps: { ...l.deps, env: OWN, fetch: replying(false, bodies) } })).toBe(false);
+    expect(bodies.map((b) => [b.op, b.input])).toEqual([['observe_head', pushed], ['observe_base', retargeted]]);
+    expect(l.ran).toEqual([]);
+  });
+
+  it('GitHub sends a push and a retarget once: with the control plane down they are parked under their key, and ownership is read here', async () => {
+    const { observeHead, observeBase } = await import('./kernel-client');
+    for (const [fn, p, op] of [[observeHead, pushed, 'observe_head'], [observeBase, retargeted, 'observe_base']] as const) {
+      const parked: Array<Record<string, unknown>> = [];
+      const l = local();
+      const deps = { ...l.deps, ...clock(), env: OWN, fetch: down, park: (async (x: Record<string, unknown>) => { parked.push(x); return true; }) as never };
+      expect(await (fn as (p: unknown, c: unknown) => Promise<boolean>)(p, { principal: webhook, idempotencyKey: `${op}:k-park-1`, deps: { ...deps, kernelDeliveryOf: async () => DELIVERY } })).toBe(true);
+      expect(parked).toEqual([expect.objectContaining({ key: `${op}:k-park-1`, op, input: p, principal: webhook })]);
+      // A PR the kernel does not own: legacy acts (false).
+      expect(await (fn as (p: unknown, c: unknown) => Promise<boolean>)(p, { principal: webhook, deps: { ...deps, kernelDeliveryOf: async () => null } })).toBe(false);
+      expect(l.ran).toEqual([]);
+    }
+  });
+
+  it('release skew: an older control plane refuses each as unknown, so the web host applies it itself', async () => {
+    const { observePrState, observeHead, observeBase } = await import('./kernel-client');
+    const realError = console.error;
+    console.error = () => {};
+    try {
+      for (const [fn, p, op] of [[observePrState, closed, 'observe_pr_state'], [observeHead, pushed, 'observe_head'], [observeBase, retargeted, 'observe_base']] as const) {
+        const l = local();
+        const run = (async (o: string) => { l.ran.push(o); return o === 'observe_pr_state' ? { owned: true } : true; }) as ClientDeps['run'];
+        const older = (async () => Response.json({ v: 1, code: 'bad_request', error: `unknown op "${op}"` }, { status: 400 })) as unknown as typeof fetch;
+        expect(await (fn as (p: unknown, c: unknown) => Promise<boolean>)(p, { principal: webhook, deps: { ...l.deps, run, env: OWN, fetch: older } })).toBe(true);
+        expect(l.ran).toEqual([op]);
+      }
+    } finally {
+      console.error = realError;
+    }
+  });
+
+  it('the endpoint knows the ops; a close is not parked (it is recorded and healed), a push and a retarget are', async () => {
+    const { isKernelOp, INSTALLATION_OPS } = await import('./command-api');
+    const { shouldPark } = await import('./command-outbox');
+    for (const op of ['observe_pr_state', 'observe_head', 'observe_base'] as const) {
+      expect(isKernelOp(op)).toBe(true);
+      expect(INSTALLATION_OPS.has(op)).toBe(true);
+    }
+    expect([shouldPark('observe_pr_state'), shouldPark('observe_head'), shouldPark('observe_base')]).toEqual([false, true, true]);
+  });
+});
+
+describe('a person-only op is refused for any other caller, on this host too', () => {
+  const disposeInput = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, actor: `human:${USER}`, findingId: 'r1:0', disposition: 'waived' as const, reason: 'covered' };
+  it('an account, a system caller or no principal never reaches the kernel', async () => {
+    for (const p of [{ kind: 'account' as const, id: '44444444-4444-4444-8444-444444444444' }, { kind: 'system' as const, id: 'sweep' }, null]) {
+      const { ran, deps } = local();
+      await expect(submitKernelCommand('dispose_finding', disposeInput, { principal: p, deps })).rejects.toBeInstanceOf(KernelCommandRefusedError);
+      expect(ran).toEqual([]);
+    }
+  });
+  it('a person acting as someone else is refused; as themselves it runs', async () => {
+    const { ran, deps } = local();
+    await expect(submitKernelCommand('dispose_finding', { ...disposeInput, actor: 'human:other' }, { principal, deps })).rejects.toBeInstanceOf(KernelCommandRefusedError);
+    expect(ran).toEqual([]);
+    await submitKernelCommand('dispose_finding', disposeInput, { principal, deps });
+    expect(ran).toEqual(['dispose_finding']);
+  });
+});
+
+describe('a webhook request answers inside GitHub\'s timeout when the control plane hangs', () => {
+  const webhook = { kind: 'system' as const, id: 'system:webhook:check_suite' };
+  const hanging = ((_u: string, init: RequestInit) => new Promise((_res, rej) => { init.signal?.addEventListener('abort', () => rej(init.signal!.reason)); })) as unknown as typeof fetch;
+  const greenFor = (prNumber: number) => ({ workspaceId: WS, repoFullName: 'acme/w', prNumber, installationId: 1, headSha: 'H1', source: 'webhook:check_suite' });
+  const parker = () => {
+    const parked: Array<Record<string, unknown>> = [];
+    return { parked, park: (async (p: Record<string, unknown>) => { parked.push(p); return true; }) as never };
+  };
+
+  afterEach(async () => { (await import('./kernel-client')).resetWebhookBreaker(); });
+
+  it('the budgets sit well under the ten seconds GitHub allows', async () => {
+    const { WEBHOOK_BUDGET_MS, WEBHOOK_DOOR_BUDGET_MS } = await import('./kernel-client');
+    expect(WEBHOOK_DOOR_BUDGET_MS).toBeLessThanOrEqual(WEBHOOK_BUDGET_MS);
+    expect(WEBHOOK_BUDGET_MS).toBeLessThanOrEqual(7_000);
+  });
+
+  it('three doors against a hanging control plane: back within the bound, the first waits its budget, the rest skip it, and every green is parked under a key from the delivery', async () => {
+    const { observeCiGreen, withWebhookBudget } = await import('./kernel-client');
+    const k = parker();
+    let sent = 0;
+    const counting = ((u: string, init: RequestInit) => { sent++; return (hanging as unknown as (u: string, i: RequestInit) => Promise<Response>)(u, init); }) as unknown as typeof fetch;
+    const deps = { ...local().deps, sleep: undefined, env: OWN, fetch: counting, park: k.park };
+    const t0 = Date.now();
+    const errs = await withWebhookBudget('delivery-abc', async () => {
+      const out: unknown[] = [];
+      for (const n of [1, 2, 3]) out.push(await observeCiGreen(greenFor(n), { principal: webhook, deps }).catch((e) => e));
+      return out;
+    });
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    for (const e of errs) expect(e).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(sent).toBe(1);
+    expect(k.parked).toHaveLength(3);
+    for (const p of k.parked) expect(p).toMatchObject({ op: 'observe_ci_green', principal: webhook });
+    expect(new Set(k.parked.map((p) => p.key)).size).toBe(3);
+    for (const p of k.parked) expect(String(p.key)).toMatch(/^webhook:delivery-abc:observe_ci_green:[0-9a-f]{16}$/);
+  }, 15_000);
+
+  it('a push and a retarget are parked the same way (and ownership is still read here)', async () => {
+    const { observeHead, observeBase, withWebhookBudget } = await import('./kernel-client');
+    const k = parker();
+    const deps = { ...local().deps, sleep: undefined, env: { ...OWN, KERNEL_WEBHOOK_DOOR_BUDGET_MS: '200' }, fetch: hanging, park: k.park, kernelDeliveryOf: async () => DELIVERY };
+    const t0 = Date.now();
+    const [head, base] = await withWebhookBudget('delivery-def', async () => [
+      await observeHead({ workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, hintedHeadSha: 'H2', source: 'webhook:synchronize' }, { principal: webhook, deps }),
+      await observeBase({ workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, hintedFromBase: 'dev', source: 'webhook:edited' }, { principal: webhook, deps }),
+    ], { env: deps.env });
+    expect(Date.now() - t0).toBeLessThan(3_000);
+    expect([head, base]).toEqual([true, true]);
+    expect(k.parked.map((p) => p.op)).toEqual(['observe_head', 'observe_base']);
+  });
+
+  it('a close is recorded unapplied for the fast heal, and the caller is told the read failed', async () => {
+    const { observePrState, withWebhookBudget, KernelObservationFailed } = await import('./kernel-client');
+    const recorded: Array<[string, unknown]> = [];
+    const deps = {
+      ...local().deps, sleep: undefined, env: { ...OWN, KERNEL_WEBHOOK_DOOR_BUDGET_MS: '200' }, fetch: hanging,
+      kernelDeliveryOf: async () => DELIVERY, recordUnapplied: async (d: string, p: unknown) => { recorded.push([d, p]); },
+    };
+    const t0 = Date.now();
+    const err = await withWebhookBudget('delivery-ghi', () => observePrState(
+      { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, source: 'webhook:closed', pull: { number: 7, state: 'closed', merged: true } },
+      { principal: { kind: 'system', id: 'system:webhook:closed' }, deps },
+    ), { env: deps.env }).catch((e) => e);
+    expect(Date.now() - t0).toBeLessThan(3_000);
+    expect(err).toBeInstanceOf(KernelObservationFailed);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0][0]).toBe(DELIVERY);
+  });
+
+  it('a door with no durable fallback (open_delivery, land) is not capped, never trips the breaker and is not refused by a spent request budget', async () => {
+    const { openKernelDelivery, landThroughKernel, observeCiGreen, withWebhookBudget, WEBHOOK_CAPPED_OPS } = await import('./kernel-client');
+    expect([...WEBHOOK_CAPPED_OPS].sort()).toEqual(['observe_base', 'observe_ci_failure', 'observe_ci_green', 'observe_conflict', 'observe_head', 'observe_pr_state']);
+    const sent: string[] = [];
+    // Answers after 400 ms: far past the 100 ms cap below, so a capped door would give up and legacy would take the PR.
+    const slow = ((_u: string, init: RequestInit) => {
+      const op = JSON.parse(String(init.body)).op as string;
+      sent.push(op);
+      return new Promise((res) => setTimeout(() => res(answer({ op, result: op === 'open_delivery' ? { owned: true } : { merged: true } })), 400));
+    }) as unknown as typeof fetch;
+    const env = { ...OWN, KERNEL_WEBHOOK_DOOR_BUDGET_MS: '100', KERNEL_WEBHOOK_BUDGET_MS: '100' };
+    const deps = { ...local().deps, sleep: undefined, env, fetch: slow, park: parker().park };
+    const opened = { workspaceId: WS, ownerTaskId: 't-1', repoFullName: 'acme/w', prNumber: 7, installationId: 1, source: 'webhook:opened' };
+    const out = await withWebhookBudget('delivery-open', async () => {
+      const first = await openKernelDelivery(opened as never, { principal: webhook, deps });
+      const landed = await landThroughKernel(input as never, { principal: webhook, deps });
+      // The request's own budget is spent by now; the uncapped doors still ran, and the breaker is closed.
+      const green = await observeCiGreen(greenFor(7), { principal: webhook, deps }).catch((e) => e);
+      return { first, landed, green };
+    }, { env });
+    expect(out.first).toEqual({ owned: true });
+    expect(out.landed).toEqual({ merged: true });
+    expect(sent.slice(0, 2)).toEqual(['open_delivery', 'land']);
+    // The capped door is the one that gave up (and is parked); the uncapped ones did not open the breaker beforehand.
+    expect(out.green).toBeInstanceOf(ControlPlaneUnavailableError);
+  });
+
+  it('outside a webhook the door keeps its own budget (no cap, no breaker)', async () => {
+    const { observeCiGreen, withWebhookBudget } = await import('./kernel-client');
+    const down = (async () => { throw refusedErr(); }) as unknown as typeof fetch;
+    // A webhook door that fails opens the breaker...
+    let t = 0;
+    const now = () => t;
+    await withWebhookBudget('delivery-x', () => observeCiGreen(greenFor(1), { principal: webhook, deps: { ...local().deps, env: OWN, fetch: down, now, sleep: async (ms: number) => { t += ms + 5_000; }, park: parker().park } }).catch(() => null), { now });
+    // ...but a sweep's door call is not skipped by it.
+    let sent = 0;
+    const ok = (async () => { sent++; return answer({ op: 'observe_ci_green', result: { handled: false } }); }) as unknown as typeof fetch;
+    expect(await observeCiGreen(greenFor(2), { principal: webhook, deps: { ...local().deps, env: OWN, fetch: ok, now } })).toEqual({ handled: false });
+    expect(sent).toBe(1);
+  });
+
+  it('a redelivery after a slow apply that succeeded is a no-op: same key, one apply, and the floor\'s replay of the parked row is the same command', async () => {
+    const { observeCiGreen, withWebhookBudget } = await import('./kernel-client');
+    const { drainParkedCommands, resubmitFromWeb } = await import('./command-outbox');
+    // A control plane with a ledger: it applies a command once per key and answers a repeat with what was done.
+    const ledger = new Map<string, unknown>();
+    let applied = 0;
+    let slow = true;
+    const controlPlane = ((_u: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { idempotencyKey: string };
+      const seen = ledger.has(body.idempotencyKey);
+      if (!seen) { applied++; ledger.set(body.idempotencyKey, { handled: true }); }
+      if (slow && !seen) return new Promise((_r, rej) => { init.signal?.addEventListener('abort', () => rej(init.signal!.reason)); });
+      return Promise.resolve(answer({ op: 'observe_ci_green', idempotencyKey: body.idempotencyKey, result: ledger.get(body.idempotencyKey), replayed: seen }));
+    }) as unknown as typeof fetch;
+    const k = parker();
+    const deps = { ...local().deps, sleep: undefined, env: { ...OWN, KERNEL_WEBHOOK_DOOR_BUDGET_MS: '150' }, fetch: controlPlane, park: k.park };
+    const deliver = () => withWebhookBudget('delivery-redo', () => observeCiGreen(greenFor(7), { principal: webhook, deps }).catch((e) => e), { env: deps.env });
+
+    // First delivery: applied, but the answer came too late. It is parked under the delivery's key.
+    expect(await deliver()).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(applied).toBe(1);
+    expect(k.parked).toHaveLength(1);
+    const key = String(k.parked[0].key);
+    const { resetWebhookBreaker } = await import('./kernel-client');
+    resetWebhookBreaker();
+
+    // GitHub's redelivery: the same key, answered from the ledger.
+    slow = false;
+    expect(await deliver()).toEqual({ handled: true });
+    expect(applied).toBe(1);
+    expect(k.parked).toHaveLength(1);
+
+    // The floor's replay of the parked row: still the same command.
+    const row = { key, op: 'observe_ci_green', input: k.parked[0].input as Record<string, unknown>, principal: webhook, priorUnknown: true, attempt: 1 };
+    const log: string[] = [];
+    await drainParkedCommands({
+      outbox: {
+        park: async () => true, claimDue: async () => [row],
+        settle: async (_r, outcome) => { log.push(outcome); return true; }, retry: async () => true, bury: async () => true, prune: async () => 0,
+      },
+      ledger: { read: async () => null } as never,
+      host: () => 'web',
+      resubmit: (r) => resubmitFromWeb(r, { priorUnknown: r.priorUnknown, deps: { ...deps, env: OWN } }),
+    });
+    expect(applied).toBe(1);
+    expect(log).toEqual(['replayed:answered']);
+  }, 15_000);
 });

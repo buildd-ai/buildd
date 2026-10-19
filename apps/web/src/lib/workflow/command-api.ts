@@ -21,6 +21,12 @@
  *   workspace it acts on (team membership for a person, workspace reach for an
  *   API account). The door already authorised the action; this re-checks who it
  *   is for, so a signed request can act only for someone who could have.
+ * - Its own installation: an op that acts on GitHub runs with the installation
+ *   of the repo it names, read here (command-installation.ts, in parallel with
+ *   the reach check): the workspace's for its own repo, the repo's for another
+ *   repo in the workspace's or its missions' scope. A repo outside that scope,
+ *   or a request carrying a different `installationId`, is refused; a request
+ *   without one gets the resolved one.
  * - Idempotent: the key is claimed in Postgres (`workflow_commands`,
  *   command-ledger.ts) before anything runs. A second request with the key
  *   waits for the first and gets its stored answer (`replayed: true`); the
@@ -36,6 +42,8 @@ import { verifyRequest } from '@buildd/dispatch-contract';
 import { commandKeyRing } from './command-keys';
 import type { DrainSummary } from './effects';
 import { kernelHost } from './kernel-host';
+import { KERNEL_SPAN, commandOutcomeOf, commandSpanAttributes, emitKernelSpan } from './kernel-telemetry';
+import type { InstallationResolution } from './command-installation';
 import { COMMAND_HEARTBEAT_MS, postgresCommandLedger, type CommandLedger, type StoredAnswer } from './command-ledger';
 
 export const COMMAND_API_VERSION = 1;
@@ -71,13 +79,70 @@ export interface KernelOps {
   request_ci_retry: { input: Parameters<Seam['requestCiRetry']>[0]; result: Awaited<ReturnType<Seam['requestCiRetry']>> };
   record_supersession: { input: Parameters<Seam['recordSupersession']>[0]; result: Awaited<ReturnType<Seam['recordSupersession']>> };
   abandon: { input: Parameters<Seam['abandonDelivery']>[0]; result: Awaited<ReturnType<Seam['abandonDelivery']>> };
+  /** §5: a person waives or defers one finding. Person-only: see PERSON_OPS. */
+  dispose_finding: { input: Parameters<Seam['disposeFinding']>[0]; result: Awaited<ReturnType<Seam['disposeFinding']>> };
+  /** r7 AC-45: a person approves the head past remaining findings. Person-only: see PERSON_OPS. */
+  approve_override: { input: Parameters<Seam['approveOverrideThroughKernel']>[0]; result: Awaited<ReturnType<Seam['approveOverrideThroughKernel']>> };
   open_delivery: { input: Parameters<Seam['openKernelDelivery']>[0]; result: Awaited<ReturnType<Seam['openKernelDelivery']>> };
   /** Drain one delivery's due effects: what a web-host caller asks for instead of draining inline. */
   drain: { input: { deliveryId: string }; result: DrainSummary | null };
+  /**
+   * The fast heal of one delivery (kernel-heal.ts): its floor pass, run where the kernel is hosted.
+   * What the web host's heal tick asks for instead of reconciling (and so applying T17 to T19) itself.
+   */
+  heal: { input: { deliveryId: string }; result: Awaited<ReturnType<Seam['reconcileKernelDeliveries']>> };
   /** A mission delivery epoch transition (§6): merged, ensure_writable, bind_pr, reconcile. */
   mission_epoch: { input: Parameters<Seam['missionEpochCommand']>[0]; result: Awaited<ReturnType<Seam['missionEpochCommand']>> };
   /** A task added to a mission: its scope decision, recorded once (§6 scope amendments). */
   mission_scope: { input: Parameters<Seam['missionScopeCommand']>[0]; result: Awaited<ReturnType<Seam['missionScopeCommand']>> };
+  /**
+   * T4: an attempt of a delivery ended (the worker PATCH, the reaper, a cancel, a reviewer takeover).
+   * `workspaceId` is the task's, carried at the top level so the reach check reads it like every op's.
+   */
+  attempt_ended: { input: Parameters<Seam['attemptEnded']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptEnded']>> };
+  /**
+   * AC-1 slice 6: an attempt's task goes back to the queue (the worker PATCH's retries and loop
+   * holds, its budget, mount, auth and codex requeues, the conflict-fix recovery). As attempt_ended,
+   * the task's workspace rides at the top level for the reach check.
+   */
+  attempt_requeued: { input: Parameters<Seam['attemptRequeued']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptRequeued']>> };
+  /**
+   * AC-1 slice 7: the claim route's compare-and-set won a kernel owner task; the kernel starts its
+   * attempt (the task to `assigned`). As attempt_ended, the task's workspace rides at the top level.
+   */
+  attempt_started: { input: Parameters<Seam['attemptStarted']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptStarted']>> };
+  /** AC-1 slice 9: a settled owner task opens again (recovery, a resumed session). As attempt_ended, the task's workspace rides at the top level. */
+  attempt_reopened: { input: Parameters<Seam['attemptReopened']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptReopened']>> };
+  /** AC-1 slice 9: a claim that runs no attempt gives its start back, or a queued task is refused. */
+  attempt_withdrawn: { input: Parameters<Seam['attemptWithdrawn']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptWithdrawn']>> };
+  /** T10 from buildd's own CI doors: the red-PR sweep, the landing path and the check_suite subscriber saw a red head. */
+  observe_ci_failure: { input: Parameters<Seam['observeCiFailure']>[0]; result: Awaited<ReturnType<Seam['observeCiFailure']>> };
+  /** CiGreenObserved (ends a CI repair) or a CiObserved reading, from the check_suite success webhook. */
+  observe_ci_green: { input: Parameters<Seam['observeCiGreen']>[0]; result: Awaited<ReturnType<Seam['observeCiGreen']>> };
+  /** T6: a kernel review round's verdict, reported by the worker PATCH. Only a delivery of `workspaceId` is acted on. */
+  record_review_verdict: { input: Parameters<Seam['recordReviewVerdict']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['recordReviewVerdict']>> };
+  /** A verdict from a reviewer outside the kernel's rounds on a PR the kernel owns (00d288fd), adopted. Same workspace rule. */
+  adopt_review_verdict: { input: Parameters<Seam['adoptReviewVerdict']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['adoptReviewVerdict']>> };
+  /** T12: a conflict (or migration collision) a door saw on a kernel-owned PR; the control plane reads the live PR and applies ConflictObserved. */
+  observe_conflict: { input: Parameters<Seam['observeConflict']>[0]; result: Awaited<ReturnType<Seam['observeConflict']>> };
+  /** T9: a fix claimed by the claim route, revalidated live (§10.5). The task's workspace rides at the top level, as attempt_ended's. */
+  claim_fix: { input: { task: Parameters<Seam['claimFix']>[0]; workspaceId: string }; result: Awaited<ReturnType<Seam['claimFix']>> };
+  /**
+   * T17 to T19: a PR closed, merged or reopened (the webhook, the reconcile and refresh sweeps, the
+   * dependency gate). The control plane reads the live PR. A failed read is an answer, not a throw:
+   * the caller's `pull` is recorded unapplied, the fast heal scheduled, and `observationFailed` says so.
+   */
+  observe_pr_state: { input: Parameters<Seam['observePrState']>[0]; result: PrStateObservation };
+  /** T3: the PR head moved (webhook `synchronize`). True = the kernel owns the PR; legacy must not act. */
+  observe_head: { input: Parameters<Seam['observeHead']>[0]; result: Awaited<ReturnType<Seam['observeHead']>> };
+  /** T29: the PR's base changed (webhook `edited` with `changes.base`). True = the kernel owns the PR. */
+  observe_base: { input: Parameters<Seam['observeBase']>[0]; result: Awaited<ReturnType<Seam['observeBase']>> };
+}
+
+/** `owned` false: not the kernel's PR. `observationFailed`: the kernel owns it but its live read failed (S4a). */
+export interface PrStateObservation {
+  owned: boolean;
+  observationFailed?: { deliveryId: string; reason: string };
 }
 export type KernelOp = keyof KernelOps;
 
@@ -89,14 +154,98 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
   request_ci_retry: (s, i) => s.requestCiRetry(i),
   record_supersession: (s, i) => s.recordSupersession(i),
   abandon: (s, i) => s.abandonDelivery(i),
+  dispose_finding: (s, i) => s.disposeFinding(i),
+  approve_override: (s, i) => s.approveOverrideThroughKernel(i),
   open_delivery: (s, i) => s.openKernelDelivery(i),
   drain: (s, i) => s.drainDelivery(i.deliveryId),
+  heal: async (_s, i) => (await import('./kernel-heal')).healHere([i.deliveryId]),
   mission_epoch: (s, i) => s.missionEpochCommand(i),
   mission_scope: (s, i) => s.missionScopeCommand(i),
+  attempt_ended: (s, { workspaceId, ...p }) => {
+    // The reach check judged `workspaceId`: the end it applies must be for a task of that workspace.
+    if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_ended: input.workspaceId is not the task\'s workspace');
+    return s.attemptEnded(p);
+  },
+  attempt_requeued: (s, { workspaceId, ...p }) => {
+    // As attempt_ended: the requeue it applies must be for a task of the workspace the reach check judged.
+    if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_requeued: input.workspaceId is not the task\'s workspace');
+    return s.attemptRequeued(p);
+  },
+  attempt_started: (s, { workspaceId, ...p }) => {
+    // As attempt_ended: the start it applies must be for a task of the workspace the reach check judged.
+    if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_started: input.workspaceId is not the task\'s workspace');
+    return s.attemptStarted(p);
+  },
+  attempt_reopened: (s, { workspaceId, ...p }) => {
+    if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_reopened: input.workspaceId is not the task\'s workspace');
+    return s.attemptReopened(p);
+  },
+  attempt_withdrawn: (s, { workspaceId, ...p }) => {
+    if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_withdrawn: input.workspaceId is not the task\'s workspace');
+    return s.attemptWithdrawn(p);
+  },
+  observe_ci_failure: (s, i) => s.observeCiFailure(i),
+  observe_ci_green: (s, i) => s.observeCiGreen(i),
+  // The reach check judged `workspaceId`; the seam acts only on a delivery of that workspace.
+  record_review_verdict: (s, i) => s.recordReviewVerdict(i),
+  adopt_review_verdict: (s, i) => s.adoptReviewVerdict(i),
+  observe_conflict: (s, i) => s.observeConflict(i),
+  claim_fix: (s, { task, workspaceId }) => {
+    // As attempt_ended: the claim it revalidates must be for a task of that workspace (and the seam then
+    // reads only that workspace's delivery).
+    if (task?.workspaceId !== workspaceId) throw new Error('claim_fix: input.workspaceId is not the task\'s workspace');
+    return s.claimFix(task);
+  },
+  observe_pr_state: async (s, i) => {
+    // A throw would reach the door as `command_failed`; the failed read is the answer itself.
+    try {
+      return { owned: await s.observePrState(i) };
+    } catch (err) {
+      if (err instanceof s.KernelObservationFailed) return { owned: true, observationFailed: { deliveryId: err.deliveryId, reason: err.reason } };
+      throw err;
+    }
+  },
+  observe_head: (s, i) => s.observeHead(i),
+  observe_base: (s, i) => s.observeBase(i),
 };
 
 export const KERNEL_OPS = Object.keys(RUN) as KernelOp[];
+
+/** `drain` and `heal`: buildd's own upkeep of one delivery, by id, with no workspace on the input and only a `system` principal. */
+const isSystemDeliveryOp = (op: unknown): op is 'drain' | 'heal' => op === 'drain' || op === 'heal';
+/**
+ * Ops only a signed-in person may submit, as `human:<their id>`: an agent, an API key or a grant
+ * session is refused here, before the reach check, whatever actor string its input names.
+ */
+export const PERSON_OPS: ReadonlySet<KernelOp> = new Set<KernelOp>(['dispose_finding', 'approve_override']);
+/** Why `principal` may not submit `op`, or null: a person-only op needs a `user` whose id is the input's `human:` actor. */
+export function personOpRefusal(op: KernelOp, input: unknown, principal: KernelPrincipal | null): string | null {
+  if (!PERSON_OPS.has(op)) return null;
+  if (principal?.kind !== 'user') return `${op} is for a signed-in person; an agent or API key cannot submit it.`;
+  if ((input as { actor?: unknown } | null)?.actor !== `human:${principal.id}`) return `${op}'s actor must be the signed-in person.`;
+  return null;
+}
 export const isKernelOp = (v: unknown): v is KernelOp => typeof v === 'string' && Object.prototype.hasOwnProperty.call(RUN, v);
+
+/** The ops whose input names a GitHub App installation (`installationId`). */
+type InstallationOp = { [K in KernelOp]: 'installationId' extends keyof KernelOps[K]['input'] ? K : never }[KernelOp];
+// A record, so the type check fails when an op gains or loses an installationId and this list does not follow.
+const INSTALLATION_OP: Record<InstallationOp, true> = {
+  land: true, request_review: true, request_ci_retry: true, record_supersession: true, abandon: true, open_delivery: true, observe_ci_failure: true, observe_ci_green: true, observe_conflict: true,
+  observe_pr_state: true, observe_head: true, observe_base: true,
+};
+/**
+ * The control plane acts through the installation it resolves for the command's workspace and repo,
+ * not the one the request carries: a request whose installation differs is refused, and one without
+ * it gets the resolved one.
+ */
+export const INSTALLATION_OPS: ReadonlySet<KernelOp> = new Set(Object.keys(INSTALLATION_OP) as KernelOp[]);
+
+async function defaultInstallationOf(workspaceId: string, repoFullName: string): Promise<InstallationResolution> {
+  return (await import('./command-installation')).expectedInstallation(workspaceId, repoFullName);
+}
+
+const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 /** Run one operation on this host: the code both the endpoint and a shadow-mode door run. */
 export async function runKernelOp<K extends KernelOp>(op: K, input: KernelOps[K]['input']): Promise<KernelOps[K]['result']> {
@@ -115,7 +264,7 @@ export async function deliveryAfter(op: KernelOp, input: unknown, result: unknow
     const d = (await loadView({ deliveryId })).delivery;
     return d ? { id: d.id, version: d.version } : null;
   };
-  if (op === 'drain' && typeof i.deliveryId === 'string') return byId(i.deliveryId);
+  if (isSystemDeliveryOp(op) && typeof i.deliveryId === 'string') return byId(i.deliveryId);
   if (op === 'open_delivery') {
     const id = (result as { deliveryId?: unknown } | null)?.deliveryId;
     if (typeof id === 'string') return byId(id);
@@ -182,9 +331,11 @@ export function commandProblem(body: unknown): string | null {
   if (!isPrincipal(b.principal)) return 'principal must be { kind: user|account|grant (uuid id) | system, id }';
   const input = b.input as Record<string, unknown> | null;
   if (!input || typeof input !== 'object') return 'input must be an object';
-  if (b.op === 'drain') return typeof input.deliveryId === 'string' && UUID.test(input.deliveryId) ? null : 'drain needs input.deliveryId (uuid)';
+  if (isSystemDeliveryOp(b.op)) return typeof input.deliveryId === 'string' && UUID.test(input.deliveryId) ? null : `${b.op} needs input.deliveryId (uuid)`;
   if (typeof input.workspaceId !== 'string' || !UUID.test(input.workspaceId)) return 'input.workspaceId must be a uuid';
   if ('prNumber' in input && !(Number.isInteger(input.prNumber) && (input.prNumber as number) > 0)) return 'input.prNumber must be a positive integer';
+  if (INSTALLATION_OPS.has(b.op) && !(typeof input.repoFullName === 'string' && REPO.test(input.repoFullName))) return 'input.repoFullName must be owner/name';
+  if (input.installationId !== undefined && !(Number.isInteger(input.installationId) && (input.installationId as number) > 0)) return 'input.installationId must be a positive integer';
   return null;
 }
 
@@ -218,6 +369,8 @@ export interface CommandServerDeps {
   deliveryAfter?: typeof deliveryAfter;
   /** Whether the principal still reaches the workspace. */
   reaches?: (principal: KernelPrincipal, workspaceId: string | null) => Promise<boolean>;
+  /** The installation a command on this workspace and repo acts through, or why it may not act. */
+  installationOf?: (workspaceId: string, repoFullName: string) => Promise<InstallationResolution>;
   env?: Record<string, string | undefined>;
   host?: () => 'control-plane' | 'web';
   newToken?: () => string;
@@ -289,6 +442,29 @@ export async function principalReaches(principal: KernelPrincipal, workspaceId: 
 
 /** `POST /v1/commands`. Never throws: every outcome is a response. */
 export async function handleCommandRequest(req: Request, deps: CommandServerDeps = {}): Promise<Response> {
+  // The command's span (kernel-telemetry.ts `kernel.command`): op, outcome, status, latency, on the control plane.
+  const startedAt = Date.now();
+  const seen: { op?: string } = {};
+  const res = await handleCommandRequestUnreported(req, deps, seen);
+  if ((deps.host ?? kernelHost)() === 'control-plane') await reportCommand(res, seen.op ?? null, startedAt);
+  return res;
+}
+
+async function reportCommand(res: Response, op: string | null, startedAt: number): Promise<void> {
+  try {
+    const body = (await res.clone().json().catch(() => null)) as { code?: unknown; replayed?: unknown } | null;
+    const outcome = commandOutcomeOf(res.status, body);
+    const latencyMs = Date.now() - startedAt;
+    emitKernelSpan({
+      name: KERNEL_SPAN.command, startMs: startedAt, durationMs: latencyMs, error: outcome !== 'applied' && outcome !== 'replayed',
+      attributes: commandSpanAttributes({ op, status: res.status, outcome, code: typeof body?.code === 'string' ? body.code : null, latencyMs }),
+    });
+  } catch {
+    // Telemetry never reaches the answer.
+  }
+}
+
+async function handleCommandRequestUnreported(req: Request, deps: CommandServerDeps, seen: { op?: string }): Promise<Response> {
   const env = deps.env ?? process.env;
   const host = (deps.host ?? kernelHost)();
   if (req.method !== 'POST') return refuse(405, 'method_not_allowed', 'POST only');
@@ -308,20 +484,66 @@ export async function handleCommandRequest(req: Request, deps: CommandServerDeps
   try { body = JSON.parse(text); } catch { return refuse(400, 'bad_request', 'body is not JSON'); }
   const problem = commandProblem(body);
   if (problem) return refuse(400, 'bad_request', problem);
-  const cmd = body as CommandRequest;
-  const workspaceId = cmd.op === 'drain' ? null : String((cmd.input as { workspaceId: string }).workspaceId);
-  if (cmd.op === 'drain' && cmd.principal.kind !== 'system') return refuse(403, 'forbidden', 'drain is a system operation');
+  seen.op = (body as CommandRequest).op;
+  return applyCommandRequest(body as CommandRequest, deps);
+}
+
+/**
+ * A well-formed command on the host that applies it: the reach check, the installation, then the
+ * ledger claim and the run. The endpoint calls it after the signature and shape checks; the floor
+ * calls it for a parked command (command-outbox.ts), which the web host wrote and signed nothing for,
+ * so the principal's reach is re-checked here exactly as for a request.
+ */
+export async function applyCommandRequest(cmd: CommandRequest, deps: CommandServerDeps = {}): Promise<Response> {
+  const host = (deps.host ?? kernelHost)();
+  if (host !== 'control-plane' || executionModeOf((deps.env ?? process.env).EXECUTION_MODE) !== 'own') {
+    return refuse(409, 'not_host', 'This host does not apply kernel commands in the current mode; the web host runs them.', { host });
+  }
+  const workspaceId = isSystemDeliveryOp(cmd.op) ? null : String((cmd.input as { workspaceId: string }).workspaceId);
+  if (isSystemDeliveryOp(cmd.op) && cmd.principal.kind !== 'system') return refuse(403, 'forbidden', `${cmd.op} is a system operation`);
+  const notPerson = personOpRefusal(cmd.op, cmd.input, cmd.principal);
+  if (notPerson) return refuse(403, 'person_only', notPerson, { applied: false });
   // A reach check that could not be made (the database did not answer) is not a refusal: nothing ran,
-  // retry. Only an answered "no" is a 403.
-  const reaches = await (deps.reaches ?? principalReaches)(cmd.principal, workspaceId).catch((err: unknown) => {
-    console.error(`[kernel-command] ${cmd.op} ${cmd.idempotencyKey}: the reach check did not answer:`, err);
-    return null;
-  });
+  // retry. Only an answered "no" is a 403. The workspace's installation is read alongside it, so it
+  // adds no round trip of its own.
+  const [reaches, installation] = await Promise.all([
+    (deps.reaches ?? principalReaches)(cmd.principal, workspaceId).catch((err: unknown) => {
+      console.error(`[kernel-command] ${cmd.op} ${cmd.idempotencyKey}: the reach check did not answer:`, err);
+      return null;
+    }),
+    workspaceId && INSTALLATION_OPS.has(cmd.op)
+      ? (deps.installationOf ?? defaultInstallationOf)(workspaceId, String((cmd.input as { repoFullName: string }).repoFullName)).catch((err: unknown) => {
+        console.error(`[kernel-command] ${cmd.op} ${cmd.idempotencyKey}: the installation could not be resolved:`, err);
+        return 'unread' as const;
+      })
+      : Promise.resolve(undefined),
+  ]);
   if (reaches === null) {
     return refuse(503, 'reach_unavailable', 'Whether the principal reaches the workspace could not be read; nothing was run. Retry with the same key.', { retryable: true, applied: false });
   }
   if (!reaches) {
     return refuse(403, 'forbidden', `${principalKey(cmd.principal)} does not reach this workspace`);
+  }
+  // The command runs with the resolved installation; the request's may only agree with it.
+  let run = cmd;
+  if (installation !== undefined) {
+    if (installation === 'unread') {
+      return refuse(503, 'installation_unavailable', 'The GitHub installation could not be read; nothing was run. Retry with the same key.', { retryable: true, applied: false });
+    }
+    if ('refused' in installation) {
+      if (installation.refused === 'repo_out_of_scope') {
+        return refuse(403, 'repo_out_of_scope', 'The repo is not in this workspace\'s or its missions\' repo scope.', { applied: false });
+      }
+      if (installation.refused === 'installation_not_team_owned') {
+        return refuse(403, 'installation_not_team_owned', 'The GitHub App installation that covers this repo is not one of this workspace\'s team\'s installations.', { applied: false });
+      }
+      return refuse(403, 'no_installation', 'No GitHub App installation covers this repo for this workspace.', { applied: false });
+    }
+    const sent = (cmd.input as { installationId?: number }).installationId;
+    if (sent !== undefined && sent !== installation.installationId) {
+      return refuse(403, 'installation_mismatch', 'The request\'s installationId is not the one that covers this repo for this workspace.', { applied: false });
+    }
+    run = { ...cmd, input: { ...(cmd.input as object), installationId: installation.installationId } as never };
   }
 
   const ledger = deps.ledger ?? postgresCommandLedger();
@@ -344,11 +566,11 @@ export async function handleCommandRequest(req: Request, deps: CommandServerDeps
     let claimed: boolean;
     try { claimed = await ledger.claim({ ...claim, token }); } catch (err) { return ledgerDown(err); }
     if (claimed) {
-      const run = execute(cmd, token, ledger, deps, host);
+      const running = execute(run, token, ledger, deps, host);
       // A caller that times out disconnects, and a Worker cancels a request whose client is gone:
       // without this the command stops mid-way and its claim stays `running` until the lease runs out.
-      deps.waitUntil?.(run);
-      return run;
+      deps.waitUntil?.(running);
+      return running;
     }
     let row: Awaited<ReturnType<CommandLedger['read']>>;
     try { row = await ledger.read(cmd.idempotencyKey); } catch (err) { return ledgerDown(err); }

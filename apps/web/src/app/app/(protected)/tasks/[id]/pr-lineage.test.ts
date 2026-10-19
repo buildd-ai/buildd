@@ -12,11 +12,11 @@ describe('buildLineage', () => {
   test('failed → retried → green → merged reads as one chain', () => {
     const l = buildLineage({ attempts: [attempt1, attempt2], retries: [retry], pr: { lifecycle: 'merged', mergedAt: s(834) } });
     expect(l.steps.map(x => x.kind)).toEqual(['attempt', 'ci_failed', 'retry', 'attempt', 'ci_green', 'merged']);
-    expect(l.steps[0]).toMatchObject({ title: 'Attempt 1', sub: 'Builder on cedar · 4 commits, PR opened', at: '8:26' });
+    expect(l.steps[0]).toMatchObject({ title: 'First run', sub: 'Builder on cedar · 4 commits, PR opened', at: '8:26' });
     expect(l.steps[1]).toMatchObject({ title: 'CI failed', sub: 'unit · invoice.snapshot.test.tsx', at: '1:51 after push' });
     expect(l.steps[2]).toMatchObject({ title: 'Retry sent', sub: 'A new builder got the failure excerpt' });
-    expect(l.steps[3]).toMatchObject({ title: 'Attempt 2', sub: 'Builder on birch · 1 commit, same branch', at: '3:11' });
-    expect(l.steps[5]).toMatchObject({ title: 'Merged', at: '+0:20' });
+    expect(l.steps[3]).toMatchObject({ title: 'CI fix 1', sub: 'Builder on birch · 1 commit, pushed to the same branch', at: '3:11' });
+    expect(l.steps[5]).toMatchObject({ title: 'Merged', sub: 'into its target branch', at: '+0:20' });
     expect(l.totals).toEqual({ add: 425, rem: 70, files: 13, commits: 5, attempts: 2, claimToMerge: '13:54', claimToMergeMs: 834_000 });
   });
 
@@ -89,6 +89,6 @@ describe('unrecorded commit stats', () => {
 
   test('a later attempt with no recorded count says nothing about commits', () => {
     const l = buildLineage({ attempts: [attempt1, { ...attempt2, commits: null }], retries: [retry], pr: { lifecycle: 'merged', mergedAt: s(834) } });
-    expect(l.steps[3].sub).toBe('Builder on birch · same branch');
+    expect(l.steps[3].sub).toBe('Builder on birch · pushed to the same branch');
   });
 });

@@ -77,9 +77,9 @@ describe('overviewCounts', () => {
   // counts only PR-bearing tasks. Calling both "merged" put two different
   // merged counts on one screen (task fc1f5a94).
   it('prints landed (not merged), then criteria when there are any', () => {
-    expect(overviewCounts({ landed: { done: 2, total: 7 }, criteria: [], criteriaPassed: 0 } as never)).toBe('2 of 7 landed');
-    expect(overviewCounts({ landed: { done: 2, total: 7 }, criteria: [{}, {}, {}, {}], criteriaPassed: 1 } as never)).toBe('2 of 7 landed · 1 of 4 criteria');
-    expect(overviewCounts({ landed: { done: 2, total: 7 }, criteria: [{}, {}, {}, {}], criteriaPassed: 1 } as never, { criteria: false })).toBe('2 of 7 landed');
+    expect(overviewCounts({ landed: { done: 2, total: 7 }, criteria: [], criteriaPassed: 0 } as never)).toBe('2 of 7 done');
+    expect(overviewCounts({ landed: { done: 2, total: 7 }, criteria: [{}, {}, {}, {}], criteriaPassed: 1 } as never)).toBe('2 of 7 done · 1 of 4 criteria');
+    expect(overviewCounts({ landed: { done: 2, total: 7 }, criteria: [{}, {}, {}, {}], criteriaPassed: 1 } as never, { criteria: false })).toBe('2 of 7 done');
     expect(overviewCounts({ landed: { done: 0, total: 0 }, criteria: [], criteriaPassed: 0 } as never)).toBe('No tasks');
   });
 });
@@ -177,7 +177,8 @@ describe('overviewCells', () => {
     const layout = overviewLayout(ten);
     const cells = overviewCells(ten, layout.order);
     const held = cells.find(c => c.wait === 'hold')!;
-    expect(held.word).toBe('Held');
+    // A hold names its cause from the terms catalog (here a mission budget), never "Held".
+    expect(held.word).toBe('Budget reached');
     expect(cells.find(c => c.wait === 'tasks')!.word).toBe('Waiting on tasks');
     expect(cells.find(c => c.wait === 'slot')!.word).toBe('Next in line');
     expect(cells.find(c => c.wait === 'unknown')!.word).toBe('Waiting');

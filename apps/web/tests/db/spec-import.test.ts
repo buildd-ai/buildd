@@ -17,6 +17,7 @@ const { updateSpecMetadata } = await import('../../src/lib/specs/metadata');
 const { organizeDeps } = await import('../../src/lib/specs/organize');
 const repoCopy = await import('../../src/lib/specs/repo-copy');
 const { importRepoSpecs, confirmImportedSpecs } = await import('../../src/lib/specs/import');
+const { specPageView, specReviewView } = await import('../../src/lib/specs/page-view');
 const { db } = await import('@buildd/core/db');
 const { specs } = await import('@buildd/core/db/schema');
 
@@ -346,6 +347,21 @@ describe('AC-77: one person-only confirmation over a batch', () => {
     const three = rows.get(ids['docs/specs/three.md']!)!;
     expect(three.approved_revision).toBeNull();
     expect(three.repo_source.state).toBe('imported');
+  });
+
+  test('a confirmation naming the revision the person read skips a spec re-imported since, and approves nothing for it', async () => {
+    const { w, gh, ids } = await threeImported();
+    const one = ids['docs/specs/one.md']!;
+    gh.edit('one.md', spec('One', 'ops').replace('every widget', 'every widget, changed'));
+    await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, gh.deps));
+    const c = await ok(confirmImportedSpecs(user(admin), { workspaceId: w, specIds: [one], expectedRevisions: { [one]: 1 } }, gh.deps));
+    expect(c.confirmed).toEqual([]);
+    expect(c.skipped).toEqual([expect.objectContaining({ specId: one, reason: 'conflict' })]);
+    const row = (await importedRows(w)).find((r) => r.id === one)!;
+    expect([row.approved_revision, row.repo_source.state, row.repo_source.revision]).toEqual([null, 'imported', 2]);
+    const again = await ok(confirmImportedSpecs(user(admin), { workspaceId: w, specIds: [one], expectedRevisions: { [one]: 2 } }, gh.deps));
+    expect(again.confirmed.map((x) => [x.specId, x.revision])).toEqual([[one, 2]]);
+    expect(await confirmImportedSpecs(user(admin), { workspaceId: w, specIds: [one], expectedRevisions: { [one]: 'two' } }, gh.deps)).toMatchObject({ ok: false, status: 400 });
   });
 
   test('an agent token or an API key is refused with a 403 and nothing is approved; an OAuth session gets a link, not an approval', async () => {
@@ -729,5 +745,45 @@ describe('import: a retired imported spec is skipped', () => {
 
     const real = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, gh.deps));
     expect(real.files[0]).toMatchObject({ action: 'skip', reason: 'superseded' });
+  });
+});
+
+describe('the spec page of an imported spec: confirm the baseline, then review amendments against it', () => {
+  test('unconfirmed: confirming is the one act, nothing waits for approval and there is no review; confirmed: approved, nothing proposed; amended: the review compares with the confirmed baseline', async () => {
+    const w = await freshWs();
+    const gh = fakeGitHub({ 'flow.md': spec('Flow', 'ops') });
+    const r = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, gh.deps));
+    const id = r.files[0]!.specId!;
+
+    const unconfirmed = await specPageView(admin, id, { review: true });
+    if (unconfirmed.state !== 'ok') throw new Error('not found');
+    expect(unconfirmed.importConfirmation).toMatchObject({ revision: 1, path: 'docs/specs/flow.md', canConfirm: true, batchHref: `/app/workspaces/${w}/specs#imported`, previous: null });
+    expect([unconfirmed.canApprove, unconfirmed.waiting, unconfirmed.review, unconfirmed.repoChecks]).toEqual([false, null, null, false]);
+    expect(unconfirmed.standing).toBe('imported, awaiting confirmation');
+    expect(unconfirmed.body).toContain('Flow holds for every widget');
+    expect(await specReviewView(user(admin), id)).toMatchObject({ ok: false, status: 409, code: 'spec_imported' });
+    const asMember = await specPageView(member, id);
+    expect(asMember.state === 'ok' && asMember.importConfirmation?.canConfirm).toBe(false);
+
+    // A changed file re-imports as revision 2: still one confirmation, naming the earlier import to compare with.
+    gh.edit('flow.md', spec('Flow', 'ops').replace('every widget', 'every widget, changed'));
+    await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, gh.deps));
+    const reimported = await specPageView(admin, id);
+    expect(reimported.state === 'ok' && reimported.importConfirmation).toMatchObject({ revision: 2, previous: 1 });
+    expect(reimported.state === 'ok' && reimported.canApprove).toBe(false);
+
+    await ok(confirmImportedSpecs(user(admin), { workspaceId: w, specIds: [id], expectedRevisions: { [id]: 2 } }, gh.deps));
+    const confirmed = await specPageView(admin, id);
+    if (confirmed.state !== 'ok') throw new Error('not found');
+    expect([confirmed.importConfirmation, confirmed.canApprove, confirmed.waiting, confirmed.spec.approvedRevision]).toEqual([null, false, null, 2]);
+
+    const [row] = await db.select().from(specs).where(eq(specs.id, id));
+    const amended = await reviseSpecDraft(user(admin), id, { expectedVersion: row!.version, body: '# Flow\n\n- R-1: Flow holds for every widget, changed.\n- R-2: Tapping a task shows its detail without scrolling.\n', changeSummary: 'Add R-2' });
+    if (!amended.ok) throw new Error(amended.error);
+    const waiting = await specPageView(admin, id, { review: true });
+    if (waiting.state !== 'ok') throw new Error('not found');
+    expect([waiting.importConfirmation, waiting.canApprove, waiting.waiting]).toEqual([null, true, 3]);
+    expect(waiting.review?.replaces).toBe(2);
+    expect(waiting.review?.changes?.lines.map((l) => l.kind === 'added-range' ? l.kind : `${l.kind}:${l.id}`)).toEqual(['added:R-2']);
   });
 });

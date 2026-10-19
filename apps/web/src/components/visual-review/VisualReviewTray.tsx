@@ -18,6 +18,7 @@
  * failed audit.
  */
 import { useState } from 'react';
+import Link from 'next/link';
 import type { VisualReviewCell, VisualReviewMarker, VisualReviewModel } from '@buildd/shared';
 import { awaitingCapture, describeVisualPhase, screensToReview } from '@/lib/visual-review-model';
 import ShotImage, { VERDICT_DOT, VIEWPORT_LABEL, viewportAspect } from './ShotImage';
@@ -144,6 +145,11 @@ function EmptyPhase({ model, actions }: { model: VisualReviewModel; actions?: Vi
   } else if (model.phase === 'stalled' || model.phase === 'failed') {
     if (a.onRetry) buttons.push(<ActionButton key="retry" testId="visual-review-action-retry" tone="primary" onAction={a.onRetry} onError={setError}>Retry the audit</ActionButton>);
     if (a.onSkip) buttons.push(<ActionButton key="skip" testId="visual-review-action-skip" onAction={a.onSkip} onError={setError}>Skip this audit</ActionButton>);
+  }
+  // It never ran: nothing of its own to retry. The way on is the failed task (spec 072de598 I-14).
+  const waitingOn = model.phase === 'waiting_on_failed_work' ? model.waitingOn ?? null : null;
+  if (waitingOn) {
+    buttons.push(<Link key="open" data-testid="visual-review-action-open-failed" href={`/app/tasks/${encodeURIComponent(waitingOn.taskId)}`} className={`${BTN_BASE} ${BTN_SIZE} ${BTN_SECONDARY}`}>Open the failed task</Link>);
   }
   const boot = model.phase === 'boot_failed' ? model.bootFailure : null;
   return (

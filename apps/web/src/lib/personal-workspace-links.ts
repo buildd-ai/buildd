@@ -18,10 +18,11 @@ import { accounts, accountWorkspaces, teamMembers, teams, workspaces } from '@bu
 import { and, eq } from 'drizzle-orm';
 import { invalidateAccountWorkspaceCache } from './account-workspace-cache';
 import { roleHas } from './permissions';
-import { personalTeamSlug, planPersonalWorkspaceLinks } from './personal-workspace-links-plan';
+import { planPersonalWorkspaceLinks } from './personal-workspace-links-plan';
+import { isPersonalTeamOf } from './personal-team';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
-export { personalTeamSlug, planPersonalWorkspaceLinks } from './personal-workspace-links-plan';
+export { planPersonalWorkspaceLinks } from './personal-workspace-links-plan';
 export type { PersonalLinkInput, PlannedLink } from './personal-workspace-links-plan';
 
 
@@ -44,9 +45,9 @@ export async function linkAccountToPersonalWorkspaces(args: {
     if (!account) return 0;
     const team = await db.query.teams.findFirst({
       where: sqlWhere(eq(teams.id, account.teamId)),
-      columns: { id: true, slug: true },
+      columns: { id: true, personalUserId: true },
     });
-    if (!team || team.slug !== personalTeamSlug(args.userId)) return 0;
+    if (!team || !isPersonalTeamOf(team, args.userId)) return 0;
     const membership = await db.query.teamMembers.findFirst({
       where: sqlWhere(and(eq(teamMembers.teamId, team.id), eq(teamMembers.userId, args.userId))),
       columns: { role: true },
@@ -71,7 +72,7 @@ export async function linkAccountToPersonalWorkspaces(args: {
     });
     if (planned.length === 0) return 0;
     await db.insert(accountWorkspaces).values(planned).onConflictDoNothing();
-    invalidateAccountWorkspaceCache(account.id);
+    await invalidateAccountWorkspaceCache(account.id);
     return planned.length;
   } catch (err) {
     console.error('[personal-workspace-links] failed to link account to personal workspaces:', err);

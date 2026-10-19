@@ -45,7 +45,7 @@ export type CheckStatus = 'queued' | 'in_progress' | 'completed' | 'waiting' | '
 export type CommitStatusState = 'success' | 'failure' | 'error' | 'pending';
 export type CheckConclusion = 'success' | 'failure' | 'neutral' | 'cancelled' | 'skipped' | 'timed_out' | 'action_required' | 'startup_failure' | null;
 
-interface CheckRun { id: number; name: string; headSha: string; status: CheckStatus; conclusion: CheckConclusion; suiteId: number; workflow: string; startedAt: string; completedAt: string | null }
+interface CheckRun { id: number; name: string; headSha: string; status: CheckStatus; conclusion: CheckConclusion; suiteId: number; workflow: string; startedAt: string; completedAt: string | null; log: string }
 
 interface CommitStatus { context: string; sha: string; state: CommitStatusState; description: string; updatedAt: string }
 
@@ -526,7 +526,7 @@ export class FakeGithub {
   }
 
   /** Create or update a check run on `sha`; completing the last run of a suite also sends `check_suite.completed`. */
-  setCheck(repoName: string, sha: string, name: string, s: { status?: CheckStatus; conclusion?: CheckConclusion; workflow?: string } = {}): void {
+  setCheck(repoName: string, sha: string, name: string, s: { status?: CheckStatus; conclusion?: CheckConclusion; workflow?: string; log?: string } = {}): void {
     const repo = this.repo(repoName);
     const head = this.resolve(repo, sha);
     const status = s.status ?? (s.conclusion ? 'completed' : 'in_progress');
@@ -535,9 +535,11 @@ export class FakeGithub {
     const suiteId = repo.checkRuns.find((r) => r.headSha === head && r.workflow === workflow)?.suiteId ?? this.nextId();
     const created = !run;
     if (!run) {
-      run = { id: this.nextId(), name, headSha: head, status, conclusion: null, suiteId, workflow, startedAt: this.tick(), completedAt: null };
+      run = { id: this.nextId(), name, headSha: head, status, conclusion: null, suiteId, workflow, startedAt: this.tick(), completedAt: null, log: '' };
       repo.checkRuns.push(run);
     }
+    // The job's log (`GET /actions/jobs/{id}/logs`): where its failing tests are named.
+    if (s.log !== undefined) run.log = s.log;
     run.status = status;
     run.conclusion = status === 'completed' ? (s.conclusion ?? 'success') : null;
     run.completedAt = status === 'completed' ? this.tick() : null;
@@ -892,9 +894,16 @@ export class FakeGithub {
     return res.json();
   };
 
+  /** The `githubApiText` signature (a job log). */
+  readonly text = async (_installationId: number, path: string): Promise<string> => {
+    const res = await this.fetch(`https://api.github.com${path}`);
+    if (!res.ok) throw new Error(`GitHub API error: ${res.status} ${await res.text()}`);
+    return res.text();
+  };
+
   /** The production `githubReader` over this fake. */
   reader(installationId = this.installationId): GithubFactReader {
-    return githubReader(installationId, this.api);
+    return githubReader(installationId, this.api, { textApi: this.text });
   }
 
   /** Route `https://api.github.com/*` fetches here (everything else passes through). Returns the restore. */
@@ -932,6 +941,15 @@ export class FakeGithub {
         const base = query.get('base');
         const list = [...repo.pulls.values()].filter((p) => (state === 'all' || p.state === state) && (!head || p.headRef === head) && (!base || p.baseRef === base));
         return { body: list.map((p) => this.prJson(repo, p, false)) };
+      }
+      if (!b1 && method === 'POST') {
+        // POST /pulls: the PR a caller opens through the API (the mission PR), as `openPr` makes it.
+        if (typeof b.head !== 'string' || !repo.branches.has(b.head)) throw new HttpError(422, 'Validation Failed');
+        if ([...repo.pulls.values()].some((p) => p.state === 'open' && p.headRef === b.head && p.baseRef === (b.base ?? repo.defaultBranch))) {
+          throw new HttpError(422, 'Validation Failed: A pull request already exists');
+        }
+        const n = this.openPr(repo.fullName, { head: b.head, base: b.base, title: b.title, body: b.body, draft: b.draft, user: this.appLogin });
+        return { status: 201, body: this.prJson(repo, this.pullOf(repo, n), false) };
       }
       const pr = this.pullOf(repo, Number(b1));
       if (!c && method === 'GET') {
@@ -1003,6 +1021,12 @@ export class FakeGithub {
         return { body: { state, sha, total_count: sts.length, statuses: slice(sts).map((x) => ({ context: x.context, state: x.state, description: x.description, updated_at: x.updatedAt })) } };
       }
       return this.unsupportedRoute(method, fullPath);
+    }
+
+    if (a === 'actions' && b1 === 'jobs' && c && d === 'logs' && method === 'GET') {
+      const run = repo.checkRuns.find((r) => r.id === Number(c));
+      if (!run) throw new HttpError(404, 'Not Found');
+      return { body: run.log, headers: { 'content-type': 'text/plain' } };
     }
 
     if (a === 'actions' && b1 === 'runs' && !c && method === 'GET') {

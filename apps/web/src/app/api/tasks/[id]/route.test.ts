@@ -203,6 +203,17 @@ const mockResolveTaskDelegationWrite = mock(async (input: unknown, _ws: string, 
     : { ok: false, status: 403, error: 'Only a person can grant a task delegation' });
 mock.module('@/lib/task-delegation-checks', () => ({ resolveTaskDelegationWrite: mockResolveTaskDelegationWrite }));
 
+// Change version: a deleted task's scopes are read before the row goes, then bumped.
+const deleteOrder: string[] = [];
+const mockScopesOfDeletedTasks = mock(async (ids: readonly string[]) => { deleteOrder.push(`scopes:${ids.join(',')}`); return ['ws-1', 'team:team-1']; });
+const mockBumpChangeVersions = mock(async (scopes: Iterable<string | null | undefined>) => { deleteOrder.push(`bump:${[...scopes].join(',')}`); });
+const actualChangeVersion = await import('@/lib/change-version');
+mock.module('@/lib/change-version', () => ({
+  ...actualChangeVersion,
+  scopesOfDeletedTasks: mockScopesOfDeletedTasks,
+  bumpChangeVersions: mockBumpChangeVersions,
+}));
+
 import { GET, PATCH, DELETE } from './route';
 
 // Helper to create mock NextRequest
@@ -260,6 +271,39 @@ describe('GET /api/tasks/[id]', () => {
     expect(response.status).toBe(401);
     const data = await response.json();
     expect(data.error).toBe('Unauthorized');
+  });
+
+  it('selects lean fields by default and skips heavy derived reads for status polls', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123' });
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', status: 'pending' });
+    await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
+    const lean = mockTasksFindFirst.mock.calls[0][0];
+    expect(lean).toMatchObject({
+      columns: { context: false, result: false, categoryDecision: false, verdictDecision: false },
+      with: { workspace: { columns: { id: true, name: true, repo: true } } },
+    });
+    // The blobs come back as the projections get_task renders, under their own names.
+    expect(Object.keys(lean.extras)).toEqual(['leanContext', 'leanResult']);
+    mockTasksFindFirst.mockClear();
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', status: 'pending', leanContext: { specSource: { specId: 's' } }, leanResult: { summary: 'done' } });
+    const leanBody = await (await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID)).json();
+    expect(leanBody.context).toEqual({ specSource: { specId: 's' } });
+    expect(leanBody.result).toMatchObject({ summary: 'done' });
+    expect(leanBody).not.toHaveProperty('leanContext');
+    mockTasksFindFirst.mockClear();
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', status: 'pending' });
+    await callHandler(GET, createMockRequest({ search: '?include=full', headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
+    const full = mockTasksFindFirst.mock.calls[0][0];
+    expect(full.columns).toBeUndefined();
+    expect(full.extras).toBeUndefined();
+    expect(full.with.workspace).toBe(true);
+    mockTasksFindFirst.mockClear();
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', status: 'pending' });
+    const response = await callHandler(GET, createMockRequest({ search: '?view=status', headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
+    expect(await response.json()).toEqual({ id: TASK_ID, workspaceId: 'ws-1', status: 'pending' });
+    expect(mockTasksFindFirst.mock.calls[0][0].with).toBeUndefined();
+    expect(mockTasksFindFirst.mock.calls[0][0].columns.context).toBeUndefined();
   });
 
   it('returns task for API key auth', async () => {
@@ -2586,6 +2630,25 @@ describe('DELETE /api/tasks/[id]', () => {
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.success).toBe(true);
+  });
+
+  it('bumps the deleted task\'s change-version scopes, read before the row is deleted', async () => {
+    const mockTask = {
+      id: TASK_ID,
+      title: 'Test Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    deleteOrder.length = 0;
+    mockTasksDelete.mockReturnValue({ where: mock(() => { deleteOrder.push('delete'); return Promise.resolve(); }) });
+
+    const response = await callHandler(DELETE, createMockRequest({ method: 'DELETE' }), TASK_ID);
+
+    expect(response.status).toBe(200);
+    expect(deleteOrder).toEqual([`scopes:${TASK_ID}`, 'delete', 'bump:ws-1,team:team-1']);
   });
 
   it('deletes assigned task successfully', async () => {

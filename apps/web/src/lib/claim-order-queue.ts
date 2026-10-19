@@ -18,9 +18,12 @@
  */
 import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
+import { taskEstimatesDefaultOn } from '@buildd/core/task-estimate-rollout';
+import { ESTIMATOR_VERSION } from '@buildd/core/task-estimate';
 import { db } from '@buildd/core/db';
-import { missions, taskEstimates, tasks, teams, workspaces } from '@buildd/core/db/schema';
-import type { RunnerExecutor, RunnerQueueExclusion, RunnerQueueHold, RunnerQueueHoldCause, RunnerQueueResponse, RunnerQueueTask, RunnerQueueTeam } from '@buildd/shared';
+import { missions, taskEstimates, tasks, taskSchedules, teams, users, workspaces } from '@buildd/core/db/schema';
+import { alias } from 'drizzle-orm/pg-core';
+import type { RunnerExecutor, RunnerQueueExclusion, RunnerQueueHold, RunnerQueueHoldCause, RunnerQueueOwner, RunnerQueueResponse, RunnerQueueTask, RunnerQueueTeam } from '@buildd/shared';
 import { claimOrderBy } from '@/lib/claim-order';
 import { claimCandidateWhere, type ClaimCandidateInput, type ClaimGateName } from '@/lib/claim-candidate-where';
 import { findBlockingPr, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
@@ -134,7 +137,19 @@ export interface RunnerQueueRow {
   /** For the alongside read (`queueAlongside`); never sent to the runner. */
   pathManifest?: string[] | null;
   gitConfig?: unknown;
+  /** The task's owner: who filed it, else its mission's, else its schedule's (R-58). */
+  ownerUserId?: string | null;
+  /** That person's name; only its first word is sent. */
+  ownerName?: string | null;
   [gate: `g_${string}`]: unknown;
+}
+
+/** Whose work a row is, against the person behind the runner's key (R-58); never the runner or login. */
+export function ownerOf(row: RunnerQueueRow, viewerUserId: string | null): { owner: RunnerQueueOwner; ownerName?: string } {
+  if (!row.ownerUserId) return { owner: 'unattributed' };
+  if (viewerUserId && row.ownerUserId === viewerUserId) return { owner: 'you' };
+  const first = row.ownerName?.trim().split(/\s+/)[0];
+  return first ? { owner: 'teammate', ownerName: first } : { owner: 'teammate' };
 }
 
 /** What set a task's start time, from the context flags the read carries. */
@@ -147,7 +162,7 @@ export function holdCauseOf(row: RunnerQueueRow): RunnerQueueHoldCause {
 }
 
 /** One read row as a queue entry: its exclusion (never for this runner) or its holds. */
-export function classifyRunnerQueueRow(row: RunnerQueueRow): { task: RunnerQueueTask; exclusion: RunnerQueueExclusion | null } {
+export function classifyRunnerQueueRow(row: RunnerQueueRow, viewerUserId: string | null = null): { task: RunnerQueueTask; exclusion: RunnerQueueExclusion | null } {
   const has = (g: QueueGateName) => `g_${g}` in row;
   const failed = (g: QueueGateName) => has(g) && gateFailed(row[`g_${g}`]);
   const exclusion = EXCLUSION_ORDER.find(([g]) => failed(g))?.[1] ?? null;
@@ -173,12 +188,13 @@ export function classifyRunnerQueueRow(row: RunnerQueueRow): { task: RunnerQueue
       holdUntil,
       holdCause: holds.includes('deferred') ? holdCauseOf(row) : null,
       estimateMinutes: null,
+      ...ownerOf(row, viewerUserId),
     },
   };
 }
 
 /** Rows already in claim order -> teams, each keeping that order; teams by name. */
-export function groupRunnerQueue(rows: RunnerQueueRow[]): RunnerQueueTeam[] {
+export function groupRunnerQueue(rows: RunnerQueueRow[], viewerUserId: string | null = null): RunnerQueueTeam[] {
   const byTeam = new Map<string, RunnerQueueTeam>();
   for (const row of rows) {
     let team = byTeam.get(row.teamId);
@@ -186,7 +202,7 @@ export function groupRunnerQueue(rows: RunnerQueueRow[]): RunnerQueueTeam[] {
       team = { teamId: row.teamId, teamName: row.teamName ?? row.teamId.slice(0, 8), estimatesOn: false, queue: [], notForRunner: [] };
       byTeam.set(row.teamId, team);
     }
-    const { task, exclusion } = classifyRunnerQueueRow(row);
+    const { task, exclusion } = classifyRunnerQueueRow(row, viewerUserId);
     if (exclusion) team.notForRunner.push({ ...task, reason: exclusion });
     else team.queue.push(task);
   }
@@ -200,8 +216,10 @@ export interface QueueOverlapState {
 }
 
 export interface RunnerQueueDeps {
+  calibrated?: () => boolean;
   read?: (opts: { workspaceIds: string[]; gates: Partial<Record<QueueGateName, SQL>> }) => Promise<RunnerQueueRow[]>;
   estimates?: (teamId: string, taskIds: string[]) => Promise<EstimateRow[] | null>;
+  workspaceConfigs?: (workspaceIds: string[]) => Promise<Array<{ id: string; gitConfig: unknown }>>;
   overlaps?: (workspaceIds: string[]) => Promise<QueueOverlapState>;
 }
 
@@ -241,6 +259,10 @@ async function readOverlaps(workspaceIds: string[]): Promise<QueueOverlapState> 
   return { openPrs, leases: new Map(leaseList) };
 }
 
+const ownerUser = alias(users, 'owner_user');
+/** Who owns a task: who filed it, else its mission's creator, else its schedule's. */
+const taskOwnerId = sql<string | null>`coalesce(${tasks.createdByUserId}, ${missions.createdByUserId}, ${taskSchedules.createdByUserId})`;
+
 /** The read, on any select builder (the db, or a QueryBuilder to render it in a test). */
 export function buildRunnerQueueQuery(builder: { select: typeof db.select }, opts: { workspaceIds: string[]; gates: Partial<Record<QueueGateName, SQL>> }) {
   return builder
@@ -264,36 +286,44 @@ export function buildRunnerQueueQuery(builder: { select: typeof db.select }, opt
       ctxBudgetExhausted: sql<string | null>`${tasks.context}->>'budgetExhausted'`,
       ctxCredentialHold: sql<string | null>`${tasks.context}->'credentialHold' IS NOT NULL`,
       pathManifest: tasks.pathManifest,
-      gitConfig: workspaces.gitConfig,
+      ownerUserId: taskOwnerId,
+      ownerName: ownerUser.name,
       ...runnerQueueGateColumns(opts.gates),
     })
     .from(tasks)
     .innerJoin(workspaces, eq(workspaces.id, tasks.workspaceId))
     .leftJoin(teams, eq(teams.id, workspaces.teamId))
     .leftJoin(missions, eq(missions.id, tasks.missionId))
+    .leftJoin(taskSchedules, eq(taskSchedules.id, tasks.scheduleId))
+    .leftJoin(ownerUser, sql`${ownerUser.id} = ${taskOwnerId}`)
     .where(runnerQueueWhere(opts.workspaceIds))
     // The claim candidate query's own ORDER BY.
     .orderBy(...claimOrderBy(tasks, { desc, asc }))
     .limit(RUNNER_QUEUE_LIMIT + 1);
 }
 
+async function readWorkspaceConfigs(workspaceIds: string[]) {
+  return db.select({ id: workspaces.id, gitConfig: workspaces.gitConfig }).from(workspaces).where(inArray(workspaces.id, workspaceIds));
+}
+
 async function readRows(opts: { workspaceIds: string[]; gates: Partial<Record<QueueGateName, SQL>> }): Promise<RunnerQueueRow[]> {
   return (await buildRunnerQueueQuery(db, opts)) as unknown as RunnerQueueRow[];
 }
 
-export type EstimateRow = { taskId: string; p50Minutes: number };
+export type EstimateRow = { estimatorVersion: string; taskId: string; p50Minutes: number };
 
 /**
  * Teams with task estimates on get each queued task's frozen p50, from the
  * same rows the mission Overview and Plan page read, under the same team
- * switch; a team with them off gets none (null). Newest row first.
+ * availability; numeric projections additionally require calibrated running
+ * version rows. A team with them off gets none (null). Newest row first.
  */
 async function readEstimates(teamId: string, taskIds: string[]): Promise<EstimateRow[] | null> {
   if (taskIds.length === 0 || !(await taskEstimatesEnabled(teamId))) return null;
   return db
-    .select({ taskId: taskEstimates.taskId, p50Minutes: taskEstimates.p50Minutes })
+    .select({ taskId: taskEstimates.taskId, estimatorVersion: taskEstimates.estimatorVersion, p50Minutes: taskEstimates.p50Minutes })
     .from(taskEstimates)
-    .where(and(eq(taskEstimates.teamId, teamId), inArray(taskEstimates.taskId, taskIds)))
+    .where(and(eq(taskEstimates.teamId, teamId), eq(taskEstimates.estimatorVersion, ESTIMATOR_VERSION), inArray(taskEstimates.taskId, taskIds)))
     .orderBy(desc(taskEstimates.createdAt));
 }
 
@@ -315,7 +345,7 @@ export async function fetchBroadClaimCandidateIds(
 }
 
 export async function loadRunnerQueue(
-  input: { workspaceIds: string[]; caller: RunnerQueueCaller; now?: Date },
+  input: { workspaceIds: string[]; caller: RunnerQueueCaller; now?: Date; /** The person behind the runner's key (accounts.createdByUserId), for R-58's "you". */ viewerUserId?: string | null },
   deps: RunnerQueueDeps = {},
 ): Promise<RunnerQueueResponse> {
   if (input.workspaceIds.length === 0) return { teams: [], truncated: false };
@@ -324,13 +354,22 @@ export async function loadRunnerQueue(
   const rows = await (deps.read ?? readRows)({ workspaceIds: input.workspaceIds, gates });
   const truncated = rows.length > RUNNER_QUEUE_LIMIT;
   const kept = rows.slice(0, RUNNER_QUEUE_LIMIT);
-  const teamsOut = groupRunnerQueue(kept);
+  const teamsOut = groupRunnerQueue(kept, input.viewerUserId ?? null);
   // Overlaps are read only when some queued task declares files; a failed
   // read leaves every row without `alongside`.
   const declaring = kept.filter(r => Array.isArray(r.pathManifest) && r.pathManifest.length > 0);
   if (declaring.length > 0) {
-    const state = await (deps.overlaps ?? readOverlaps)([...new Set(declaring.map(r => r.workspaceId))]).catch(() => null);
-    if (state) {
+    const workspaceIds = [...new Set(declaring.map(r => r.workspaceId))];
+    const [state, configs] = await Promise.all([
+      (deps.overlaps ?? readOverlaps)(workspaceIds).catch(() => null),
+      (deps.workspaceConfigs ?? readWorkspaceConfigs)(workspaceIds).catch(() => null),
+    ]);
+    // A failed configuration read must not weaken the workspace overlap policy.
+    if (configs) {
+      const byWorkspace = new Map(configs.map(r => [r.id, r.gitConfig]));
+      for (const row of declaring) row.gitConfig = byWorkspace.get(row.workspaceId) ?? null;
+    }
+    if (state && configs) {
       const byId = new Map(declaring.map(r => [r.id, r]));
       for (const team of teamsOut) for (const t of team.queue) {
         const r = byId.get(t.id);
@@ -341,13 +380,13 @@ export async function loadRunnerQueue(
   }
   const estimates = deps.estimates ?? readEstimates;
   await Promise.all(teamsOut.map(async (team) => {
-    if (team.queue.length === 0) return;
+    if (team.queue.length === 0 || !(deps.calibrated ?? taskEstimatesDefaultOn)()) return;
     const est = await estimates(team.teamId, team.queue.map(t => t.id)).catch(() => null);
     if (!est) return;
     team.estimatesOn = true;
     // Newest first: the first row per task is its estimate.
     const first = new Map<string, number>();
-    for (const r of est) if (!first.has(r.taskId)) first.set(r.taskId, r.p50Minutes);
+    for (const r of est) if (r.estimatorVersion === ESTIMATOR_VERSION && !first.has(r.taskId)) first.set(r.taskId, r.p50Minutes);
     for (const t of team.queue) t.estimateMinutes = first.has(t.id) ? Math.round(first.get(t.id)!) : null;
   }));
   return { teams: teamsOut, truncated };

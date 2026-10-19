@@ -6,7 +6,8 @@ import { isMissionBlocked } from './mission-dependency';
 import { extractResetTime, SESSION_WINDOW_MS, WEEKLY_WINDOW_MS } from '@buildd/core/reset-time';
 import { CLAUDE_WEEKLY_LIMIT_PATTERN } from '@buildd/core/budget-error-classifier';
 import { NON_TERMINAL_STATUSES, classifySingleTaskWait, classifyMissionWait, type WaitClassifiableTask, type MissionWaitResult } from './mission-wait';
-import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { sqlExtras, sqlWhere } from '@buildd/core/db/relational-sql';
+import { taskPrsFor } from './workflow/task-pr';
 
 export { QUEUED_ATTEMPT_GRACE_MS, classifyMissionWait, type WaitClassifiableTask, type MissionWaitResult } from './mission-wait';
 
@@ -118,22 +119,39 @@ export function computeStateKey(state: HeartbeatMissionState): string {
 }
 
 /**
+ * The context and result keys the prepass reads, nothing else: `budgetExhausted`
+ * and `infraRetryCount` (mission-wait.ts), `prUrl` (the PR count) and
+ * `errorType` / `error` (the last cycle's budget wall). A NULL column stays
+ * NULL, and an absent key reads as null, which every reader treats as absent.
+ */
+const PREPASS_TASK_EXTRAS = sqlExtras({
+  context: sql<Record<string, unknown> | null>`CASE WHEN ${tasks.context} IS NULL THEN NULL ELSE jsonb_build_object('budgetExhausted', ${tasks.context}->'budgetExhausted', 'infraRetryCount', ${tasks.context}->'infraRetryCount') END`,
+  result: sql<Record<string, unknown> | null>`CASE WHEN ${tasks.result} IS NULL THEN NULL ELSE jsonb_build_object('prUrl', ${tasks.result}->'prUrl', 'errorType', ${tasks.result}->'errorType', 'error', ${tasks.result}->'error') END`,
+});
+
+type PrepassTaskRow = WaitClassifiableTask & { id: string; title: string; result: unknown; createdAt: Date };
+
+/**
  * Query the current mission state needed for heartbeat prepass decisions.
  * Returns both the state counts and the raw task list (for deliverable checks).
  */
 async function loadHeartbeatMissionState(missionId: string): Promise<{
   state: HeartbeatMissionState;
-  allTasks: Array<WaitClassifiableTask & { title: string; result: unknown; createdAt: Date }>;
+  allTasks: PrepassTaskRow[];
 }> {
   const [allTasks, artifactCountResult, noteCountResult] = await Promise.all([
     db.query.tasks.findMany({
       where: sqlWhere(eq(tasks.missionId, missionId)),
       columns: {
-        status: true, title: true, mode: true, result: true,
-        taskClass: true, context: true, startAt: true, loopConfig: true, loopState: true,
+        id: true, status: true, title: true, mode: true,
+        taskClass: true, startAt: true, loopConfig: true, loopState: true,
         createdAt: true,
       },
-    }),
+      // Only the keys the decisions below read, picked in SQL (spec "Fast at
+      // any size", R-25): a mission's task context and result are KBs each,
+      // and every heartbeat tick loads every task of the mission.
+      extras: PREPASS_TASK_EXTRAS,
+    }) as Promise<Array<PrepassTaskRow>>,
     db.select({ count: sql<number>`count(*)::int` })
       .from(artifacts)
       .where(eq(artifacts.missionId, missionId)),
@@ -150,9 +168,12 @@ async function loadHeartbeatMissionState(missionId: string): Promise<{
     t => t.status !== 'completed' && t.status !== 'failed' && t.status !== 'cancelled'
   ).length;
 
+  // A task's PR is derived on read (workflow/task-pr.ts): its delivery, its attempt's worker row,
+  // else what its result stored.
+  const prs = await taskPrsFor(allTasks.map(t => t.id));
   const prCount = allTasks.filter(t => {
     const result = t.result as Record<string, unknown> | null;
-    return result?.prUrl != null;
+    return prs.has(t.id) ? !!prs.get(t.id)!.prUrl : result?.prUrl != null;
   }).length;
 
   return {

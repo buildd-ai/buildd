@@ -22,6 +22,18 @@ describe('reducer', () => {
     expect(s.workers['w-name']).toBeDefined();
   });
 
+  test('a late worker snapshot keeps the stream\'s newer copy of the workers it names (fresher)', () => {
+    let s = fixtureState();
+    s = reduce(s, { type: 'worker_update', worker: { ...WORKERS[1], currentAction: 'Pushed just now' } });
+    s = reduce(s, { type: 'workers', workers: [{ ...WORKERS[1], currentAction: 'Old snapshot' }, WORKERS[0]], fresher: [WORKERS[1].id] });
+    expect(s.workers[WORKERS[1].id].currentAction).toBe('Pushed just now');
+    expect(s.workers[WORKERS[0].id]).toBeDefined();
+    // Without fresher the snapshot replaces the list, as before.
+    s = reduce(s, { type: 'workers', workers: [{ ...WORKERS[1], currentAction: 'Old snapshot' }] });
+    expect(s.workers[WORKERS[1].id].currentAction).toBe('Old snapshot');
+    expect(Object.keys(s.workers)).toEqual([WORKERS[1].id]);
+  });
+
   test('a claimed task appears under running from one worker_update, no refetch needed (AC-2)', () => {
     let s: TopState = { ...fixtureState(), selectedMission: NO_MISSION };
     expect(rowsByTitle(s)['fix flaky test'].group).toBe('waiting');
@@ -57,13 +69,15 @@ describe('reducer', () => {
 });
 
 describe('missions pane (R-2)', () => {
-  test('missions with work, done/total, (no mission) last; a person-run mission is left out', () => {
+  test('missions with work, done/total, Other tasks last; a mission managed from a local session is listed too, marked local', () => {
     const rows = missionRows(fixtureState());
     expect(rows.map(r => [r.title, `${r.done}/${r.total}`])).toEqual([
       ['Runner TUI', '2/8'],
+      ['Local only', '0/1'],
       ['Specs import', '1/2'],
-      ['(no mission)', '0/1'],
+      ['Other tasks', '0/1'],
     ]);
+    expect(rows.find(r => r.title === 'Local only')).toMatchObject({ local: true });
   });
 
   test('done/total comes from the server count, so work finished outside the list window still counts', () => {
@@ -95,15 +109,15 @@ describe('missions pane (R-2)', () => {
     expect(missionStageLine(plain)).toBeNull();
   });
 
-  test('stage words are the rail\'s: on hold in two words, no waiting-on line when there is none', () => {
+  test('stage words are the terms catalog\'s: on_hold reads paused, delivering merging, delivered done; no waiting-on line when there is none', () => {
     const row = (step: any, waitingOn: string | null = null) => ({ key: 'm', title: 'M', done: 0, total: 0, running: 0, planning: false, stage: { step, waitingOn } });
-    expect(missionStageWord(row('on_hold'))).toBe('on hold');
-    expect(missionStageLine(row('delivered'))).toBe('delivered');
-    expect(missionStageLine(row('delivering', 'approve the mission PR'))).toBe('delivering: approve the mission PR');
-    expect(missionStageLine(row('building', '3 of 5 landed'))).toBe('building: 3 of 5 landed');
+    expect(missionStageWord(row('on_hold'))).toBe('paused');
+    expect(missionStageLine(row('delivered'))).toBe('done');
+    expect(missionStageLine(row('delivering', 'approve the mission PR'))).toBe('merging: approve the mission PR');
+    expect(missionStageLine(row('building', '3 of 5 landed'))).toBe('building: 3 of 5 merged');
   });
 
-  test('(no mission) is there even with no loose tasks', () => {
+  test('Other tasks is there even with no loose tasks', () => {
     const s = reduce(fixtureState(), { type: 'tasks', tasks: TASKS.filter(t => t.missionId) });
     expect(missionRows(s).at(-1)).toMatchObject({ key: NO_MISSION, total: 0 });
   });
@@ -121,9 +135,10 @@ describe('rows (R-3)', () => {
       ['running', 'running', 'name override'],
       ['running', 'asking', 'installer hint'],
       ['running', 'running', 'single instance'],
+      // Another runner's: running, so the mission shows all its live work.
+      ['running', 'running', 'heartbeat name'],
       ['waiting', 'waiting', 'buildd top'],
       ['waiting', 'waiting', 'docs page'],
-      ['waiting', 'waiting', 'heartbeat name'],
       ['done', 'done', 'spec draft'],
     ]);
   });
@@ -143,9 +158,10 @@ describe('rows (R-3)', () => {
     const r = rowsByTitle(fixtureState());
     expect(r['buildd top'].reason).toBe('waits on: name override');
     expect(r['docs page'].reason).toBe('starts in 2h');
-    expect(r['heartbeat name'].reason).toBe('another runner has it');
+    expect(r['heartbeat name']).toMatchObject({ group: 'running', elsewhere: 'runner', action: 'running on another runner' });
+    expect(r['heartbeat name'].workerId).toBeUndefined();
     const spec = { ...fixtureState(), selectedMission: 'm-spec-0000-0000' };
-    expect(rowsByTitle(spec)['import repo specs'].reason).toBe('mission is on hold');
+    expect(rowsByTitle(spec)['import repo specs'].reason).toBe('mission is paused');
   });
 
   test('a full runner, and room to start', () => {
@@ -153,7 +169,7 @@ describe('rows (R-3)', () => {
     const loose = TASKS.find(t => t.id === 't-loose')!;
     expect(waitingReason(loose, s, NOW)).toBe('not tried yet');
     const full = reduce(s, { type: 'config', maxConcurrent: 2 });
-    expect(waitingReason(loose, full, NOW)).toBe('runner is full (2 of 2 busy)');
+    expect(waitingReason(loose, full, NOW)).toBe('runner is full (2 of 2 slots in use)');
   });
 
   test('a dependency that is done no longer holds the task', () => {
@@ -241,11 +257,11 @@ describe('workspaces (R-19, AC-8)', () => {
 
   test('the missions pane shows only the selected workspace', () => {
     let s = wsState();
-    expect(missionRows(s).map(r => r.title)).toEqual(['Alpha mission', 'Bravo mission', 'Charlie mission', '(no mission)']);
+    expect(missionRows(s).map(r => r.title)).toEqual(['Alpha mission', 'Bravo mission', 'Charlie mission', 'Other tasks']);
     s = cycleWorkspace(cycleWorkspace(cycleWorkspace(s))); // charlie
-    expect(missionRows(s).map(r => [r.title, r.total])).toEqual([['Charlie mission', 1], ['(no mission)', 1]]);
+    expect(missionRows(s).map(r => [r.title, r.total])).toEqual([['Charlie mission', 1], ['Other tasks', 1]]);
     s = cycleWorkspace(cycleWorkspace(s)); // all, then alpha
-    expect(missionRows(s).map(r => r.title)).toEqual(['Alpha mission', '(no mission)']);
+    expect(missionRows(s).map(r => r.title)).toEqual(['Alpha mission']);
     expect(taskRows(s, NOW).map(r => r.title)).toEqual(['alpha work']);
   });
 

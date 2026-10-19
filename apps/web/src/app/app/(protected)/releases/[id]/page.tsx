@@ -13,6 +13,7 @@ import type { StateTone } from '@/components/ui/states';
 import { isSupersededRelease, releasePill, supersededById } from '../release-display';
 import ReleaseAutoRefresh from './ReleaseAutoRefresh';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { readRound } from '@/lib/read-round';
 
 export const dynamic = 'force-dynamic';
 
@@ -57,32 +58,52 @@ export default async function ReleaseDetailPage({
 
   if (!ws || !teamIds.includes(ws.teamId)) notFound();
 
-  let repoFullName: string | null = null;
-  if (ws.githubRepoId) {
-    const repoRow = await db.query.githubRepos.findFirst({
-      where: sqlWhere(eq(githubRepos.id, ws.githubRepoId)),
-      columns: { fullName: true },
-    });
-    repoFullName = repoRow?.fullName ?? null;
-  }
+  const superseded = isSupersededRelease(release);
+  const successorId = superseded ? supersededById(release.failureReason) : null;
+  // One round trip for every read that needs only the release and its
+  // workspace (readRound); the attributed missions need the task edges.
+  const round = await readRound({
+    repo: ws.githubRepoId
+      ? db.select({ fullName: githubRepos.fullName }).from(githubRepos).where(eq(githubRepos.id, ws.githubRepoId)).limit(1)
+      : null,
+    edges: db
+      .select({
+        taskId: releaseTasks.taskId,
+        prNumber: releaseTasks.prNumber,
+        commitSha: releaseTasks.commitSha,
+        taskTitle: tasks.title,
+        taskStatus: tasks.status,
+        missionId: tasks.missionId,
+      })
+      .from(releaseTasks)
+      .leftJoin(tasks, eq(releaseTasks.taskId, tasks.id))
+      .where(eq(releaseTasks.releaseId, id)),
+    // Scoped to the release's workspace and served by tasks_degradation_release_idx
+    // (same expressions), never a scan of every team's tasks.
+    degradation: db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(and(
+        eq(tasks.workspaceId, ws.id),
+        sql`(${tasks.context}->>'releaseId') = ${id}`,
+        sql`(${tasks.context}->>'type') = 'degradation'`,
+      ))
+      .limit(1),
+    successor: successorId
+      ? db
+          .select({ id: releases.id, version: releases.version })
+          .from(releases)
+          .where(and(eq(releases.id, successorId), eq(releases.workspaceId, ws.id)))
+          .limit(1)
+      : null,
+  });
+  const repoFullName = round.repo?.[0]?.fullName ?? null;
+  const edges = round.edges;
 
   const commitRangeUrl =
     repoFullName && release.previousSha && release.headSha
       ? `https://github.com/${repoFullName}/compare/${release.previousSha}...${release.headSha}`
       : null;
-
-  const edges = await db
-    .select({
-      taskId: releaseTasks.taskId,
-      prNumber: releaseTasks.prNumber,
-      commitSha: releaseTasks.commitSha,
-      taskTitle: tasks.title,
-      taskStatus: tasks.status,
-      missionId: tasks.missionId,
-    })
-    .from(releaseTasks)
-    .leftJoin(tasks, eq(releaseTasks.taskId, tasks.id))
-    .where(eq(releaseTasks.releaseId, id));
 
   const missionIds = [...new Set(edges.map((e) => e.missionId).filter(Boolean) as string[])];
   const missionRows =
@@ -93,15 +114,7 @@ export default async function ReleaseDetailPage({
           .where(inArray(missions.id, missionIds))
       : [];
 
-  const [degradationTaskRow] = await db
-    .select({ id: tasks.id })
-    .from(tasks)
-    .where(and(
-      sql`${tasks.context}->>'releaseId' = ${id}`,
-      sql`${tasks.context}->>'type' = 'degradation'`,
-    ))
-    .limit(1);
-  const degradationTaskId = degradationTaskRow?.id ?? null;
+  const degradationTaskId = round.degradation[0]?.id ?? null;
 
   // Same window the cron actually probes with, derived from its cadence.
   const WATCH_WINDOW_MS = releaseWatchWindowMinutes() * 60 * 1000;
@@ -111,15 +124,7 @@ export default async function ReleaseDetailPage({
 
   const pill = releasePill(release);
   const ciPill = release.ciStateAtDispatch ? CI_PILL[release.ciStateAtDispatch] ?? null : null;
-  const superseded = isSupersededRelease(release);
-  const successorId = superseded ? supersededById(release.failureReason) : null;
-  const [successor] = successorId
-    ? await db
-        .select({ id: releases.id, version: releases.version })
-        .from(releases)
-        .where(and(eq(releases.id, successorId), eq(releases.workspaceId, ws.id)))
-        .limit(1)
-    : [];
+  const [successor] = round.successor ?? [];
 
   const attributionState = deriveReleaseAttributionState({
     commitsAheadAtDispatch: release.commitsAheadAtDispatch,
@@ -220,7 +225,7 @@ export default async function ReleaseDetailPage({
             ) : release.commitsAheadAtDispatch != null ? (
               <span className="text-text-muted">
                 {attributionState === 'clean'
-                  ? 'Nothing shipped in this range'
+                  ? 'Nothing merged in this range'
                   : `Commit range unavailable${release.headSha ? ` (${release.headSha.slice(0, 7)})` : ''}`}
               </span>
             ) : null}

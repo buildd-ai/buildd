@@ -18,6 +18,7 @@
  *    supersession of the open fix, the escalation notice.
  *  - `reviewEscalate` (`Escalate`, family `review_fix`).
  */
+import { repairPathManifest, readRepairPrFiles } from '@/lib/repair-manifest';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { missionNotes, missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
@@ -41,6 +42,7 @@ import { refreshDeltaBase } from '@/lib/integration-refresh';
 import type { Exec } from './kernel';
 import { ingestFact } from './facts';
 import { collectComposition, compositionConstituentBase } from './review-composition';
+import { compositionBlock, withCompositionBlock } from './composition-description';
 import { workspaceRepo } from './github-facts';
 import { repairBranchContext } from '@buildd/core/repair-target';
 import { isCoordinationOwner, REPAIR_BUILDER_ROLE } from './repair-builder';
@@ -229,6 +231,7 @@ export const fixWork: WorkBuilder = async (req) => {
   // mission branch far ahead of trunk. Unreadable: the legacy fields stay the worker's branch.
   const pull = await githubApi(repo.installationId, `/repos/${repoFullName}/pulls/${prNumber}`).catch(() => null) as { head?: { ref?: string } ; base?: { ref?: string } } | null;
   const target = repairBranchContext({ prNumber, workerBranch: branch, headRef: pull?.head?.ref ?? null, headSha, baseRef: pull?.base?.ref ?? prw?.prBaseRef ?? req.target.baseRef ?? null });
+  const repairFiles = await readRepairPrFiles((path) => githubApi(repo.installationId, path), { repoFullName, prNumber, headSha });
   const identity = attemptIdentityFrom(owner);
   const pinned = pinnedFixDescription({
     prNumber, round: typeof detail.round === 'number' ? detail.round : null, headRef: target.repairTarget?.headRef ?? (branch || null), headSha,
@@ -271,7 +274,7 @@ export const fixWork: WorkBuilder = async (req) => {
         workflowRoundId: detail.roundId,
         ...lineageStamp(owner as never, [prNumber]),
       },
-      pathManifest: owner.pathManifest,
+      pathManifest: repairPathManifest(owner.pathManifest as string[] | null, repairFiles),
       release: 'false',
       priority: 8,
       status: 'pending',
@@ -359,6 +362,20 @@ async function attestComposition(d: DeliverySnapshot, round: RoundSnapshot): Pro
     if (res.result !== 'applied' && res.result !== 'duplicate') {
       console.log(`[workflow] composition of ${d.repoFullName}#${d.prNumber} not accepted: ${(res as { reason?: string }).reason ?? res.result}; full review`);
       return null;
+    }
+    // §13.13 rule 1: the PR description says which part is reviewed constituent work, which is
+    // composition proof, which is the uncovered delta and what the final gate still decides.
+    // Best effort: the description is a report of the kernel's decision, never an input to it.
+    try {
+      const block = compositionBlock({
+        attestation: built.attestation, novelCommits: built.novelCommits,
+        deltaReview: built.attestation.novelDelta.result === 'none' ? 'not_owed' : 'pending',
+        gate: { state: res.result === 'applied' ? (built.attestation.novelDelta.result === 'none' ? 'APPROVED' : 'AWAITING_REVIEW') : d.state, openFindings: 0 },
+      });
+      const next = withCompositionBlock(pull?.body, block);
+      if (next !== (pull?.body ?? '')) await githubApi(repo.installationId, `/repos/${d.repoFullName}/pulls/${d.prNumber}`, { method: 'PATCH', body: JSON.stringify({ body: next }) });
+    } catch (err) {
+      console.warn(`[workflow] composition block for ${d.repoFullName}#${d.prNumber} not written:`, err instanceof Error ? err.message : err);
     }
     return built.attestation.novelDelta.result === 'none' ? 'ok:composition_attested' : 'skipped:composition_delta';
   } catch (err) {

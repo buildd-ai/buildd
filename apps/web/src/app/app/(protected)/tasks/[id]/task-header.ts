@@ -1,4 +1,5 @@
 import { taskDisplayLabel } from '@buildd/core/task-label';
+import { displayTitle } from '@buildd/shared';
 import { CONVENTIONAL_PREFIX_RE, displayTaskTitle } from '@/lib/task-title';
 import type { StateKey } from '@/components/ui/states';
 import type { DeliveryView } from '@/lib/workflow/projections';
@@ -9,13 +10,16 @@ const BRACKET_RE = /^\s*\[([^\]]*)\]\s*/;
  * The task page header: the conventional-commit type and scope (scope as
  * `taskDisplayLabel` reads it, so chips and the page agree) plus the role move
  * into the eyebrow. The heading is `displayTaskTitle` of the title with its
- * retry bracket peeled off, so it reads the same as every other surface; the
- * bracket ("[builder · after CI #1]") keeps only its qualifier, in the eyebrow.
+ * retry bracket peeled off, so it reads the same as every other surface; a
+ * retry key ("[builder · after CI #1]") reads as its attempt ("Fix 1 · CI
+ * failed", the terms catalog's `displayTitle`) in the eyebrow, and any other
+ * bracket keeps only its qualifier.
  */
 export function taskHeading(task: { title: string; label?: string | null }, roleName: string | null): { eyebrow: string[]; heading: string } {
-  let rest = task.title.trim();
-  let qualifier: string | null = null;
-  const bracket = BRACKET_RE.exec(rest);
+  const attempt = displayTitle(task.title);
+  let rest = attempt.title.trim();
+  let qualifier: string | null = attempt.attempt ?? null;
+  const bracket = attempt.attempt ? null : BRACKET_RE.exec(rest);
   if (bracket) {
     rest = rest.slice(bracket[0].length);
     const parts = bracket[1].split('·').map(s => s.trim()).filter(Boolean);
@@ -36,7 +40,7 @@ export function taskHeading(task: { title: string; label?: string | null }, role
 export type LifecycleInput = Pick<DeliveryView, 'stage' | 'state' | 'stateReason' | 'prState' | 'headSha' | 'rounds'> & { headline?: string };
 
 /**
- * Where the delivery sits on the one Lifecycle track (Build → Audit → Land),
+ * Where the delivery sits on the one Lifecycle track (Build → Verify → Deliver),
  * and the short phrase its current step carries, for the header of a task
  * that is not running (a live run's own view leads with the track already).
  * The vocabulary is docs/specs/task-page.md's State mapping, shared with the
@@ -64,7 +68,13 @@ export function headerLifecycle(v: LifecycleInput | null | undefined): { state: 
       return at('fixing', 'repairing');
     case 'blocked': return at('recovering', 'base branch is red');
     case 'needs_you': return at('needs_you');
-    case 'approved': return at('landing', v.prState === 'awaiting_ci' ? 'approved · checking' : 'awaiting merge');
+    // Approved is a Verify fact. The track enters Deliver only when the required
+    // checks on this head passed; until then the merge is not what it waits on.
+    case 'approved':
+      if (v.prState === 'awaiting_ci' || v.prState === 'ci_running') return at('review', 'approved · checking');
+      if (v.prState === 'ci_failed') return at('review', 'approved · checks failing');
+      if (v.prState === 'conflict') return at('review', 'approved · merge conflict');
+      return at('landing', v.prState === 'ci_passed' ? 'ready to merge' : 'approved');
     case 'landing': return at('landing', 'merging');
     case 'merged': return at('landed');
     case 'closed':

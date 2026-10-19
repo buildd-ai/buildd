@@ -217,7 +217,8 @@ describe('projectIncident: one state word, sentence and owner per assessment', (
 describe('incidentCause: the headline says what is wrong, in plain words', () => {
   it('names the refined path-overlap causes without PR or task numbers', () => {
     expect(incidentCause('path_overlap.cycle', 'path_overlap_stall')).toBe('Two pieces of work are waiting on each other');
-    expect(incidentCause('path_overlap.blocker_open', 'path_overlap_stall')).toBe('A task is waiting for a change to the same files to land');
+    expect(incidentCause('path_overlap.blocker_open', 'path_overlap_stall')).toBe('A task is waiting for a change to the same files to merge');
+    expect(incidentCause('path_overlap.blocker_merged_unreleased', 'path_overlap_stall')).toBe('A change merged but still holds its files');
     expect(incidentCause('something.new', 'retry_fork', 'Same failure across tasks')).toBe('Same failure across tasks');
     // An infrastructure cause never reads as the family's rule name.
     expect(incidentCause('infrastructure_failure.visual_qa.scrub', 'path_overlap_stall')).toBe('A step in Buildd\'s own machinery keeps failing');

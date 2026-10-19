@@ -21,8 +21,9 @@ const layout = code(await Bun.file(new URL('./layout.tsx', import.meta.url)).tex
 const home = code(await Bun.file(new URL('./home/page.tsx', import.meta.url)).text());
 
 describe('one active-team resolver for the shell and Home', () => {
-  it('layout resolves the team via resolveActiveTeamScope, with no first-team default of its own', () => {
-    expect(layout).toContain('resolveActiveTeamScope(');
+  it('layout resolves the team via loadAppChrome, which applies the same default rule, with none of its own', () => {
+    // lib/app-chrome.ts and resolveActiveTeamScope's pickDefaultTeam share chooseDefaultTeam.
+    expect(layout).toContain('loadAppChrome(');
     expect(layout).not.toMatch(/userTeams\[0\]/);
   });
 
@@ -31,8 +32,9 @@ describe('one active-team resolver for the shell and Home', () => {
     expect(home).not.toContain('getUserWorkspaceIds(');
   });
 
-  it("Home's empty state is decided by rightNowState over the queried workspace set", () => {
-    expect(home).toContain('rightNowState(');
+  it("Home's empty state is decided over the active team's workspace set", () => {
+    expect(home).toContain('workspaceCount: teamWsIds.length');
+    expect(home).toContain('const createWorkspace = view.workspaceCount === 0;');
     expect(home).not.toMatch(/teamWorkspaces\.length === 0 \?/);
   });
 });
@@ -47,12 +49,11 @@ describe('the headline counts the same set as the Needs-you list', () => {
   });
 });
 
-describe('Home does not await bookkeeping writes during render', () => {
-  it('the initiative-progress snapshot upsert goes through recordBestEffort', () => {
-    const upsertAt = home.indexOf('.insert(initiativeProgressSeen)');
-    expect(upsertAt).toBeGreaterThan(-1);
-    const before = home.slice(Math.max(0, upsertAt - 300), upsertAt);
-    expect(before).toContain('recordBestEffort(');
-    expect(before).not.toMatch(/await\s+db\s*$/);
+describe('Home writes nothing during render (spec 3ef37387 R-15)', () => {
+  it('no insert, update or delete in the page; bookkeeping runs in after()', () => {
+    expect(home).not.toMatch(/\bdb\s*\.\s*(insert|update|delete)\(/);
+    expect(home).toContain('after(() => refreshStaleWorkersForWorkspaces(wsIds)');
+    expect(home).toContain('after(() => ACCESS.expire()');
+    // The database test (tests/db/home-budget.test.ts) checks the statements themselves.
   });
 });

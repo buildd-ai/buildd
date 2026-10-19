@@ -1,16 +1,12 @@
-import { isTerminalTaskStatus } from '@buildd/shared';
-import { NextResponse } from 'next/server';
-import { db } from '@buildd/core/db';
-import { tasks, workers } from '@buildd/core/db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserWorkspaceIds } from '@/lib/team-access';
-import { admitsToNeedsYou } from '@buildd/core/needs-you';
-import type { WaitingFor } from '@buildd/shared';
-import { loadSupersededQuestionTaskIds } from '@/lib/incident-recovery-load';
-import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { loadWaitingInput } from '@/lib/waiting-input';
 
-export async function GET() {
+/**
+ * GET /api/tasks/waiting-input[?fresh=1]: the questions waiting on the signed-in
+ * user, scoped to their teams in SQL and kept 30 s (lib/waiting-input.ts).
+ */
+export async function GET(req?: NextRequest) {
   const user = await getCurrentUser();
 
   if (!user) {
@@ -18,69 +14,8 @@ export async function GET() {
   }
 
   try {
-    const wsIds = await getUserWorkspaceIds(user.id);
-    if (wsIds.length === 0) {
-      return NextResponse.json({ tasks: [] });
-    }
-
-    // Find workers in waiting_input state for user's workspaces
-    const waitingWorkers = await db.query.workers.findMany({
-      where: sqlWhere(eq(workers.status, 'waiting_input')),
-      columns: { taskId: true, waitingFor: true, workspaceId: true },
-    });
-
-    // Filter to user's workspaces. Needs You admission: a worker still holding
-    // a question counts only when its disposition hands it to a person (not a
-    // hold before its deadline, not a recovered blocker, not undisposed). One
-    // whose answer was already sent (waitingFor cleared) is kept as answerSent.
-    const now = Date.now();
-    const relevantWorkers = waitingWorkers.filter(
-      w => w.taskId && w.workspaceId && wsIds.includes(w.workspaceId)
-        && (!w.waitingFor || admitsToNeedsYou(w.waitingFor as Record<string, unknown>, now))
-    );
-
-    if (relevantWorkers.length === 0) {
-      return NextResponse.json({ tasks: [] });
-    }
-
-    // A question recovery has superseded (its task carries an incident ref and
-    // the incident's assessment owns the next step) is not a banner or a
-    // Needs You row: the incident's own status says what is happening.
-    const superseded = await loadSupersededQuestionTaskIds(relevantWorkers.map(w => w.taskId!));
-    const taskIds = relevantWorkers.map(w => w.taskId!).filter(id => !superseded.has(id));
-    if (taskIds.length === 0) {
-      return NextResponse.json({ tasks: [] });
-    }
-    const waitingTasks = await db.query.tasks.findMany({
-      where: sqlWhere(inArray(tasks.id, taskIds)),
-      columns: { id: true, title: true, status: true, workspaceId: true, missionId: true },
-    });
-
-    const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
-
-    // Only include non-terminal tasks
-    const activeTasks = waitingTasks
-      .filter(t => !isTerminalTaskStatus(t.status))
-      .map(t => {
-        // A worker still holding its question wins over one already answered.
-        const mine = relevantWorkers.filter(w => w.taskId === t.id);
-        const worker = mine.find(w => w.waitingFor) ?? mine[0];
-        return {
-          id: t.id,
-          title: t.title,
-          workspaceId: t.workspaceId,
-          // Lets the banner open the task in its mission (mission-task-href.ts).
-          missionId: t.missionId ?? null,
-          waitingFor: worker?.waitingFor as WaitingFor | null,
-          // Answered on the resume path: `waitingFor` is cleared at once, but
-          // the worker stays waiting_input until the runner resumes it. The
-          // answer is on its way, so this no longer needs the person.
-          answerSent: !worker?.waitingFor,
-          actionUrl: `${appBaseUrl}/app/tasks/${t.id}?respond=1`,
-        };
-      });
-
-    return NextResponse.json({ tasks: activeTasks });
+    const fresh = req?.nextUrl?.searchParams.get('fresh') === '1';
+    return NextResponse.json({ tasks: await loadWaitingInput(user.id, { fresh }) });
   } catch (error) {
     console.error('Error fetching waiting-input tasks:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

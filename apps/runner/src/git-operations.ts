@@ -60,6 +60,10 @@ export type ExecAsync = (command: string, opts: ExecAsyncOptions) => Promise<str
 /** No call here runs without a timeout; this only backs an options bag that forgot one. */
 const DEFAULT_EXEC_TIMEOUT_MS = 30_000;
 
+// Materializing a checkout can exceed the metadata-command budget on a busy
+// host. Killing it mid-copy fails healthy claims and leaves a partial tree.
+const CHECKOUT_TIMEOUT_MS = 180_000;
+
 const realExecAsync: ExecAsync = async (command, opts) => {
   try {
     return await gitShellAsync(command, {
@@ -1329,15 +1333,16 @@ export async function setupWorktree(
     emitPhase('worktree_start');
     emitWorktreeMode(cloud ? 'clone' : 'worktree');
     step('Creating the worktree');
+    const checkoutOpts = { ...execOpts, timeout: CHECKOUT_TIMEOUT_MS, stdio: ['pipe', 'pipe', 'pipe'] };
     try {
       if (cloud) {
         await execAsync(checkoutExistingBranch
           ? `git checkout "${actualBranch}"`
-          : `git checkout -B "${actualBranch}" "${base}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+          : `git checkout -B "${actualBranch}" "${base}"`, checkoutOpts);
       } else if (checkoutExistingBranch) {
-        await execAsync(`git worktree add "${worktreePath}" "${actualBranch}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+        await execAsync(`git worktree add "${worktreePath}" "${actualBranch}"`, checkoutOpts);
       } else {
-        await execAsync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+        await execAsync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, checkoutOpts);
         // `worktree add -b <new> <path> origin/<base>` makes git track the BASE
         // (branch.autoSetupMerge), so a plain `git push` fails with "upstream
         // branch name differs" — the push target must be the task's own branch.
@@ -1358,8 +1363,14 @@ export async function setupWorktree(
       const detail = holder
         ? `branch "${actualBranch}" is already checked out in worktree ${holder}`
         : `branch "${actualBranch}" could not be created at ${worktreePath}`;
+      // A timeout is said FIRST: the stored error is cut to 400 chars and the
+      // git command line in the cause (branch + two paths) can push the
+      // "timed out" marker past the cut, so the server could no longer tell a
+      // slow disk from a real failure and classified it as a code failure.
+      const cause = err instanceof Error ? err.message : String(err);
+      const timedOut = (err as { timedOut?: boolean } | null)?.timedOut === true || /timed out|etimedout/i.test(cause);
       throw new Error(
-        `${cloud ? 'git checkout' : 'git worktree add'} failed: ${detail} (base ${base}): ${err instanceof Error ? err.message : String(err)}`,
+        `${cloud ? 'git checkout' : 'git worktree add'} failed${timedOut ? ' (timed out)' : ''}: ${detail} (base ${base}): ${cause}`,
       );
     } finally {
       emitPhase('worktree_end');

@@ -437,8 +437,9 @@ describe('mission sheet (the summoned canvas over a mission)', () => {
     expect(q('[data-testid="chat-column"]')?.className).toContain('bg-[var(--chat-bar)]');
   });
 
-  it('the context card: status badge, LANDED and GOAL counts, an insight line', async () => {
+  it('the context card: status badge, DONE and GOAL counts, an insight line', async () => {
     await render(overlay());
+    expect(q('[data-testid="mission-context-landed"] span')?.textContent).toBe('Done');
     expect(q('[data-testid="mission-context-status"]')?.textContent).toContain('Waiting on you');
     expect(q('[data-testid="mission-context-landed-count"]')?.textContent).toMatch(/^\d+\/\d+$/);
     expect(q('[data-testid="mission-context-goal-count"]')?.textContent).toMatch(/^\d+\/\d+$/);

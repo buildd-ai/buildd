@@ -2,7 +2,7 @@
 title: Local Agent Presence
 status: active
 owner: max
-last_verified: 2026-10-15
+last_verified: 2026-10-18
 summary: A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
 domain: runners
 surfaces: [apps/web/src/lib/local-session.ts, apps/web/src/app/api/workers/local-sessions/route.ts, packages/shared/src/local-session.ts, apps/runner/plugin/scripts/buildd-hook.mjs]
@@ -73,12 +73,13 @@ agent loop it runs in.
 - A presence is owned by exactly one of an account (API key) or a person (presence token), enforced by a check constraint.
 - Every event is idempotent: a replayed `start`/`touch` refreshes, a replayed `bind` answers `already_bound`, a replayed `end` answers `already_ended`.
 - The hook script exits 0 on every path (no key, buildd down, non-2xx, timeout, bad payload, unknown client) within its 3 s request timeout, and prints nothing except an optional one-line nudge.
-- Writes are coalesced to one a minute per session: on the client (state file per session; a `Stop` touch is exempt, it is the turn's last chance to learn a message waits) and on the server (`last_seen_at < now - 60s` guard).
+- Writes are coalesced to one a minute per session on the client (state file per session; a `Stop` touch is exempt, it is the turn's last chance to learn a message waits). On the server a touch is a beat in Redis (`apps/web/src/lib/liveness.ts`): `last_seen_at` and the held workers' `updated_at` are written on `start`, `bind`, `end` and a turn-state flip, and otherwise at most once per `LIVENESS_DB_WRITE_INTERVAL_MS` (5 minutes) per session, so an hour of touches every 30 s writes at most 13 times. Every window that reads them (online 10 minutes, the interactive reaper's 2 h) is longer than that staleness, and the session list reads `last_seen_at` raised to the Redis beat. Without Redis every touch writes under the `last_seen_at < now - 60s` guard (fail open).
 
 **Acceptance criteria**:
 - AC-1: WHEN a body carries a field outside the contract (e.g. `prompt`) THEN the endpoint answers 400 and writes nothing.
 - AC-2: GIVEN buildd is unreachable WHEN the hook runs THEN it exits 0 with empty stdout.
 - AC-3: GIVEN a touch less than a minute after the last write WHEN it arrives THEN nothing is written (`coalesced`).
+- AC-3a: GIVEN a session touching every 30 s for an hour with nothing else changing WHEN Redis is available THEN the database is written at most 13 times (`local-session.test.ts`).
 
 **Code surface**: `POST /api/workers/local-sessions` (`apps/web/src/app/api/workers/local-sessions/route.ts`), `parseLocalSessionEvent` (`packages/shared/src/local-session.ts`), `handleLocalSessionEvent` (`apps/web/src/lib/local-session.ts`), `apps/runner/plugin/scripts/buildd-hook.mjs`.
 

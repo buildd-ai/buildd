@@ -9,6 +9,7 @@ import {
   FLEET_ONLINE_WINDOW_MS,
   runnerIdentity,
   runnerNameFromUrl,
+  runnerBusyLine,
   startOfDayInZone,
   type FleetHeartbeatRow,
   type FleetWorkerRow,
@@ -533,7 +534,8 @@ describe('fleet online window', () => {
   it('is the window Home and Settings load the fleet with', async () => {
     const src = await Bun.file(new URL('./home-fleet.ts', import.meta.url)).text();
     expect(src).not.toMatch(/onlineThresholdMs:\s*RUNNER_ONLINE_THRESHOLD_MS/);
-    expect(src.match(/onlineThresholdMs:\s*FLEET_ONLINE_WINDOW_MS/g)?.length).toBe(4);
+    // Home's Needs-you questions name their runner from the same window.
+    expect(src.match(/onlineThresholdMs:\s*FLEET_ONLINE_WINDOW_MS/g)?.length).toBe(5);
   });
 });
 
@@ -554,5 +556,40 @@ describe('a held runner (buildd hold, R-35)', () => {
     expect(by.atlas.hold).toEqual({ since, until: null });
     expect(by.birch.hold).toBeUndefined();
     expect(by.cedar.hold).toBeUndefined();
+  });
+});
+
+describe('one runner, one count (Settings, Health and list_runners agree)', () => {
+  const hb = (id: string, max: number): FleetHeartbeatRow => ({
+    id, accountId: 'acct', localUiUrl: 'http://atlas.local:8766', maxConcurrentWorkers: max, lastHeartbeatAt: new Date(NOW - 10_000),
+    environment: { labels: { hostname: 'atlas' } },
+  });
+  const live = (id: string, start: number, over: Partial<FleetWorkerRow> = {}): FleetWorkerRow => ({
+    id, accountId: 'acct', runner: 'http://atlas.local:8766', status: 'running', startedAt: min(start),
+    task: { id: `t-${id}`, title: `feat(${id}): x` }, ...over,
+  });
+
+  it('slots are what the runner advertises, even when its history overlapped more', () => {
+    const done = { status: 'completed', completedAt: min(5) } as const;
+    const s = buildFleetSnapshot(
+      [hb('h1', 3)],
+      [live('a', 20), live('b', 40, done), live('c', 40, done), live('d', 40, done)],
+      { now: NOW },
+    );
+    const r = s.runners[0];
+    expect(r.maxSlots).toBe(3);
+    // The lanes still have a row for every run that overlapped.
+    expect(r.slots.length).toBeGreaterThanOrEqual(4);
+    expect(runnerBusyLine(r)).toBe('1 of 3 busy');
+  });
+
+  it('more running than slots is said in words, never "6 of 5 busy"', () => {
+    const s = buildFleetSnapshot([hb('h1', 5)], Array.from({ length: 6 }, (_, i) => live(`w${i}`, 10 + i)), { now: NOW });
+    expect(runnerBusyLine(s.runners[0])).toBe('6 running, over its 5 slots');
+  });
+
+  it('an offline runner says so instead of a count', () => {
+    const s = buildFleetSnapshot([{ ...hb('h1', 2), lastHeartbeatAt: min(30) }], [], { now: NOW });
+    expect(runnerBusyLine(s.runners[0])).toBe('Offline');
   });
 });

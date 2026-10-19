@@ -37,9 +37,9 @@ const ago = (minutes: number) => new Date(NOW - minutes * 60_000);
 const RUNNER_URL = 'http://runner-one.local:8766';
 
 /** One runner with a running task, and `sessions` claims from people's own sessions. */
-function lanes(sessions: number) {
+function lanes(sessions: number, viewerId?: string) {
   const workers = [
-    { id: 'w-run', accountId: 'acct', runner: RUNNER_URL, status: 'running', startedAt: ago(30), task: { id: 't-run', title: 'fix: keep captions readable', roleSlug: 'builder', missionId: null } },
+    { id: 'w-run', ownerId: 'someone-else', accountId: 'acct', runner: RUNNER_URL, status: 'running', startedAt: ago(30), task: { id: 't-run', title: 'fix: keep captions readable', roleSlug: 'builder', missionId: null } },
     { id: 'w-done', accountId: 'acct', runner: RUNNER_URL, status: 'completed', startedAt: ago(90), completedAt: ago(60), task: { id: 't-done', title: 'feat: add a header', roleSlug: 'builder', missionId: null } },
     ...Array.from({ length: sessions }, (_, i) => ({
       id: `w-s${i}`, accountId: 'acct', runner: 'mcp', status: 'running', startedAt: ago(10 + i),
@@ -47,7 +47,7 @@ function lanes(sessions: number) {
     })),
   ];
   return {
-    fleet: buildFleetSnapshot([{ id: 'hb-1', accountId: 'acct', localUiUrl: RUNNER_URL, maxConcurrentWorkers: 3, lastHeartbeatAt: ago(0) }], workers, { now: NOW }),
+    fleet: buildFleetSnapshot([{ id: 'hb-1', accountId: 'acct', localUiUrl: RUNNER_URL, maxConcurrentWorkers: 3, lastHeartbeatAt: ago(0) }], workers, { now: NOW, viewerId }),
     idle: [],
     missions: {},
   };
@@ -69,6 +69,7 @@ const realFetch = globalThis.fetch;
 beforeEach(() => {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
+    if (url.includes('/proxy')) return new Response('{}', { status: 404 });
     const body = url.startsWith('/api/fleet/occupancy') ? occupancy : {};
     return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
   }) as typeof fetch;
@@ -83,13 +84,15 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-async function mount(sessions: number) {
+const DEFAULT_RUNNERS = [{ id: 'hb-1', accountId: 'acct', accountName: 'Runner one', lastHeartbeatAt: ago(0).toISOString(), activeWorkerCount: 1, maxConcurrentWorkers: 3 }];
+
+async function mount(sessions: number, runners: object[] = DEFAULT_RUNNERS, view: { viewerId?: string; seesTeamWork?: boolean } = {}) {
   await act(async () => {
     root.render(
       <HealthClient
         page="runners"
         orphanedPrs={[]}
-        runners={[{ id: 'hb-1', accountId: 'acct', accountName: 'Runner one', lastHeartbeatAt: ago(0).toISOString(), activeWorkerCount: 1, maxConcurrentWorkers: 3 } as never]}
+        runners={runners as never}
         usageStats={null}
         consumption={null}
         schedules={[]}
@@ -103,7 +106,8 @@ async function mount(sessions: number) {
         subagentDelegation={null}
         errorPatterns={null}
         now={NOW}
-        runnerLanes={lanes(sessions) as never}
+        runnerLanes={lanes(sessions, view.viewerId) as never}
+        seesTeamWork={view.seesTeamWork}
         {...({} as never)}
       />,
     );
@@ -151,6 +155,19 @@ describe('Health › Runners at first glance', () => {
     expect(location.href).toBe(href);
   });
 
+  it('the runner list names and counts each runner the way Running now does', async () => {
+    await mount(1);
+    const group = qa('running-now-group').find(g => !g.textContent?.includes('Your sessions'))!;
+    expect(group.textContent).toContain('runner-one');
+    expect(group.textContent).toContain('1 of 3 busy');
+    const row = q('health-runner-row')!;
+    expect(row.querySelector('[data-testid="health-runner-name"]')!.textContent).toBe('runner-one');
+    // The token's own name is secondary, so the row can still be found under Runner tokens.
+    expect(row.textContent).toContain('Runner one');
+    expect(row.textContent).toContain('1 of 3 busy');
+    expect(row.textContent).not.toContain('agents running');
+  });
+
   it('the per-slot timeline stays folded until opened', async () => {
     await mount(1);
     expect(q('runner-lanes-chart')).toBeNull();
@@ -158,5 +175,92 @@ describe('Health › Runners at first glance', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     await act(async () => { toggle.click(); });
     expect(q('runner-lanes-chart')).not.toBeNull();
+  });
+});
+
+describe('Health › Runner row detail (R-5)', () => {
+  it('is folded by default and expands on demand to slots, current work, connectivity and failures', async () => {
+    await mount(0);
+    const row = q('health-runner-row')!;
+    expect(row.querySelector('[data-testid="health-runner-detail"]')).toBeNull();
+    const btn = [...row.querySelectorAll('button')].find(b => b.textContent === 'Details') as HTMLButtonElement;
+    await act(async () => { btn.click(); });
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    const detail = row.querySelector('[data-testid="health-runner-detail"]')!;
+    expect(detail).not.toBeNull();
+    expect(detail.querySelectorAll('[data-testid="health-runner-slot"]').length).toBe(3);
+    expect(detail.textContent).toContain('Working · ');
+    expect(detail.textContent).toContain('Keep captions readable');
+    expect(detail.querySelector('[data-testid="health-runner-connectivity"]')!.textContent).toContain('Connected');
+    expect(detail.querySelector('[data-testid="health-runner-failures"]')).not.toBeNull();
+  });
+
+  it('keeps runner owner type, work principal and effective route as three separate lines (R-9)', async () => {
+    await mount(0, [{ ...DEFAULT_RUNNERS[0], runnerClass: 'managed', modelAuthSource: 'machine_login', codexAuthSource: null } as any]);
+    const row = q('health-runner-row')!;
+    const btn = [...row.querySelectorAll('button')].find(b => b.textContent === 'Details') as HTMLButtonElement;
+    await act(async () => { btn.click(); });
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    const detail = row.querySelector('[data-testid="health-runner-detail"]')!;
+    expect(detail.querySelector('[data-testid="health-runner-owner"]')!.textContent).toBe('managed');
+    expect(detail.querySelector('[data-testid="health-runner-route"]')!.textContent).toBe('Claude: local plan login · Codex: not reported');
+  });
+});
+
+describe('Health › Runner row detail (R-7)', () => {
+  const open = async (view: Parameters<typeof mount>[2]) => {
+    await mount(0, DEFAULT_RUNNERS, view);
+    const row = q('health-runner-row')!;
+    const btn = [...row.querySelectorAll('button')].find(b => b.textContent === 'Details') as HTMLButtonElement;
+    await act(async () => { btn.click(); });
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    return row.querySelector('[data-testid="health-runner-detail"]')!;
+  };
+
+  it("names a teammate's run only to someone who may read the team's work", async () => {
+    const detail = await open({ viewerId: 'me', seesTeamWork: false });
+    expect(detail.textContent).toContain("A teammate's work");
+    expect(detail.textContent).not.toContain('Keep captions readable');
+    expect(detail.querySelectorAll('[data-testid="health-runner-slot"]').length).toBe(3);
+  });
+
+  it('names it for a team viewer, and a member keeps their own', async () => {
+    expect((await open({ viewerId: 'me', seesTeamWork: true })).textContent).toContain('Keep captions readable');
+    await act(async () => { root.unmount(); });
+    root = createRoot(container);
+    expect((await open({ viewerId: 'someone-else', seesTeamWork: false })).textContent).toContain('Keep captions readable');
+  });
+});
+
+describe('Health › Runners ownership', () => {
+  const hb = (id: string, name: string, mine: boolean) => ({ id, accountId: id, accountName: name, lastHeartbeatAt: ago(0).toISOString(), activeWorkerCount: 0, maxConcurrentWorkers: 2, mine });
+
+  it('lists the viewer\'s runners under "Your runners" and teammates\' under "Team runners"', async () => {
+    await mount(0, [hb('a', 'Mine one', true), hb('b', 'Teammate box', false)]);
+    const mine = q('health-runners-mine');
+    const team = q('health-runners-team');
+    expect(mine!.textContent).toContain('Your runners');
+    expect(mine!.textContent).toContain('Mine one');
+    expect(mine!.textContent).not.toContain('Teammate box');
+    expect(team!.textContent).toContain('Team runners');
+    expect(team!.textContent).toContain('Teammate box');
+  });
+
+  it('labels managed, team-host and personal runners by their recorded class', async () => {
+    await mount(0, [
+      { ...hb('a', 'Mine one', true), runnerClass: 'personal' },
+      { ...hb('b', 'Cloud', false), runnerClass: 'managed' },
+      { ...hb('c', 'Host', false), runnerClass: 'team' },
+    ]);
+    expect(q('health-runners-mine')!.textContent).toContain('personal');
+    const team = q('health-runners-team')!.textContent!;
+    expect(team).toContain('managed');
+    expect(team).toContain('team host');
+  });
+
+  it('omits a section with no runners', async () => {
+    await mount(0, [hb('a', 'Mine one', true)]);
+    expect(q('health-runners-mine')).not.toBeNull();
+    expect(q('health-runners-team')).toBeNull();
   });
 });

@@ -9,9 +9,9 @@
  */
 import RunnerInstallSteps from '@/components/RunnerInstallSteps';
 import type { ReactNode } from 'react';
-import type { FleetRunner, FleetSnapshot } from '@buildd/shared';
+import { TERMS, slotsInUse, type FleetRunner, type FleetSnapshot } from '@buildd/shared';
 import { SlotMeter } from '@/components/fleet/SlotMeter';
-import { fleetLabel, type HeadlinePart } from '@/lib/fleet-view';
+import { fleetLabel, runnerBusyLine, type HeadlinePart } from '@/lib/fleet-view';
 import SettingsSection from '../SettingsSection';
 import { StatusChip } from '../_components/ConnectionRow';
 import { ZonedTime } from '@/components/DisplayTimezone';
@@ -31,14 +31,15 @@ export function fleetOverviewHeadline(fleet: FleetSnapshot, teamName?: string | 
   const busy = fleet.runners.filter(r => r.online).reduce((n, r) => n + busyOn(r), 0);
   const stale = offline.reduce((n, r) => n + busyOn(r), 0);
   const heldCount = fleet.runners.filter(r => r.online && r.hold).length;
-  const held: HeadlinePart[] = heldCount > 0 ? [{ text: ` ${heldCount} on hold.` }] : [];
+  const held: HeadlinePart[] = heldCount > 0 ? [{ text: ` ${heldCount} paused.` }] : [];
   if (offline.length === fleet.runners.length) {
     if (stale === 0) return [{ text: 'All runners offline.' }];
     return [{ text: `All runners offline. ${agents(stale)} ${stale === 1 ? 'was' : 'were'} working at the last check-in.` }];
   }
   const tail: HeadlinePart[] = offline.length === 0 ? []
     : [{ text: stale > 0 ? ` ${offline.length} offline, with ${agents(stale)} working at the last check-in.` : ` ${offline.length} offline.` }];
-  if (busy > 0) return [{ text: `${busy} of ${fleet.capacity} slots busy.` }, ...held, ...tail];
+  if (busy > fleet.capacity) return [{ text: `${agents(busy)} running, over the ${fleet.capacity} slot${fleet.capacity === 1 ? '' : 's'} online.` }, ...held, ...tail];
+  if (busy > 0) return [{ text: `${slotsInUse(busy, fleet.capacity)}.` }, ...held, ...tail];
   return [{ text: `No agents working. ${fleet.capacity} slot${fleet.capacity === 1 ? '' : 's'} free.` }, ...held, ...tail];
 }
 
@@ -58,7 +59,7 @@ function RunnerRow({ runner }: { runner: FleetRunner }) {
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2.5">
           <span title={runner.name} className="min-w-0 truncate text-sm font-semibold text-text-primary">{runner.name}</span>
-          <StatusChip tone={hold ? 'idle' : runner.online ? 'ok' : 'warn'}>{hold ? 'On hold' : runner.online ? 'Online' : 'Offline'}</StatusChip>
+          <StatusChip tone={hold ? 'idle' : runner.online ? 'ok' : 'warn'}>{hold ? TERMS['runner.paused'].word : runner.online ? 'Online' : 'Offline'}</StatusChip>
         </div>
         <div className="mt-0.5 truncate text-xs text-text-muted">
           {runner.machine ?? 'Host runner'}
@@ -66,7 +67,7 @@ function RunnerRow({ runner }: { runner: FleetRunner }) {
         </div>
         {hold && (
           <div data-testid="fleet-runner-hold" className="mt-0.5 text-xs text-text-secondary">
-            Nothing new starts here; running agents finish. On hold since <ZonedTime value={hold.since} format="time" />
+            Nothing new starts here; running agents finish. Paused since <ZonedTime value={hold.since} format="time" />
             {hold.until ? <>, resumes at <ZonedTime value={hold.until} format="time" />.</> : <>, until someone runs buildd resume.</>}
           </div>
         )}
@@ -79,7 +80,10 @@ function RunnerRow({ runner }: { runner: FleetRunner }) {
       ) : (
         <div className="flex shrink-0 flex-col items-end gap-1.5">
           <span data-testid="fleet-runner-busy" className="font-mono text-[12px] tabular-nums text-text-secondary">
-            <b className={busy > 0 ? 'text-accent-text' : 'text-text-primary'}>{busy}</b>/{runner.maxSlots} busy
+            {busy > runner.maxSlots
+              // Slots lowered while agents ran: say it, never "6/5 busy" (lib/fleet-view.ts runnerBusyLine).
+              ? <b className="text-accent-text">{runnerBusyLine({ ...runner, online: true })}</b>
+              : <><b className={busy > 0 ? 'text-accent-text' : 'text-text-primary'}>{busy}</b>/{runner.maxSlots} busy</>}
           </span>
           <SlotMeter live={busy} max={runner.maxSlots} />
         </div>
@@ -114,6 +118,12 @@ export default function FleetOverview({ fleet, cloud, teamName }: { fleet: Fleet
             {fleet.runners.map(r => <RunnerRow key={r.id} runner={r} />)}
             {cloud}
           </ul>
+        )}
+        {/* A runner's slots are its own setting, changed on that machine; the claim limit follows them. */}
+        {fleet.runners.some(r => !r.elastic) && (
+          <p data-testid="fleet-slots-hint" className="text-meta text-text-muted">
+            Change a runner&apos;s slots on that machine: <code className="font-mono">buildd slots &lt;n&gt;</code>, or + and − in buildd top.
+          </p>
         )}
       </div>
     </SettingsSection>

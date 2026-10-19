@@ -287,6 +287,15 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
         ...(liveChecksOf(E.liveChecks) ? { liveChecks: liveChecksOf(E.liveChecks) } : {}),
       });
     }
+    case 'CiObserved': {
+      // cifact:{delivery}:{head}:{verdict}@v{n}
+      const parts = keyParts(t.idempotencyKey, 'cifact');
+      const h = parts?.[1];
+      const verdict = str(E.verdict);
+      const checks = liveChecksOf(E.liveChecks);
+      if (!h || (verdict !== 'red' && verdict !== 'green' && verdict !== 'running') || !checks) return miss('no head, verdict or live read');
+      return ok({ type: 'CiObserved', actor, headSha: h, verdict, liveChecks: checks, ...(E.allPassing === true ? { allPassing: true } : {}) });
+    }
     case 'ConflictObserved': {
       const parts = keyParts(t.idempotencyKey, 'conflict');
       const h = parts?.[1];
@@ -328,11 +337,12 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
     case 'LandingRequested': {
       const parts = keyParts(t.idempotencyKey, 'merge');
       const h = parts && parts.length >= 3 ? parts[parts.length - 2] : null;
-      if (!h || !E.door || !E.rails) return miss('no head, door or rails');
+      if (!h || !E.door) return miss('no head or door');
       const call = fx.find((e) => e.kind === 'merge_call');
       return ok({
         type: 'LandingRequested', actor, door: String(E.door), headSha: h, live: synthLive(view, h),
-        rails: E.rails as { passed: boolean },
+        // Recordings from before S3b carry the door's reading; later ones carry none.
+        ...(E.rails ? { rails: E.rails as { passed: boolean } } : {}),
         override: B ? { reason: str(B.reason) ?? '', ...(B.kinds ? { kinds: B.kinds as never } : {}), ...(B.grantedBy ? { grantedBy: String(B.grantedBy) } : {}) } : null,
         ...(call?.payload.mergeMethod ? { mergeMethod: call.payload.mergeMethod as 'merge' | 'squash' | 'rebase' } : {}),
       });
@@ -380,11 +390,15 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
       if (!B?.choice || !d) return miss('no choice in bypass');
       const choice = B.choice as 'approve' | 'request_changes' | 'apply_recommendation' | 'dismiss';
       const instr = fx.find((e) => e.kind === 'dispatch_fix')?.payload.humanInstructions;
+      // An approval that named overridden findings was an override the policy allowed at the click.
+      const overrode = Array.isArray(B.overriddenFindings) && B.overriddenFindings.length > 0;
+      const decisionId = str(B.decisionId), decisionHead = str(B.headSha);
       return ok({
         type: 'HumanResolve', actor, choice, expectedVersion: d.version,
         ...(B.reason != null ? { reason: String(B.reason) } : {}),
         ...(typeof instr === 'string' ? { instructions: instr } : {}),
-        ...(choice === 'approve' ? { commitId: str(E.commitId) ?? undefined, hasMergePermission: true } : {}),
+        ...(decisionId && decisionHead ? { decision: { id: decisionId, headSha: decisionHead } } : {}),
+        ...(choice === 'approve' ? { commitId: str(E.commitId) ?? undefined, hasMergePermission: true, ...(overrode ? { overridePermitted: true } : {}) } : {}),
       });
     }
     case 'DeliveryFailed': {

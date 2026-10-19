@@ -13,9 +13,10 @@ import { tasks, workers, workspaces, workerErrorTraces } from '@buildd/core/db/s
 import type { TaskEvidence, TaskMismatch } from '@buildd/shared';
 import { githubApi } from '@/lib/github';
 import { resolvePrRepo } from '@/lib/repo-scope';
-import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, installationIdForRepo } from '@/lib/workspace-installation';
+import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, createTeamInstallationResolver } from '@/lib/workspace-installation';
 import { buildTaskEvidence, summarizeCheckRuns, type EvidenceTrace } from '@/lib/task-evidence';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { taskPrOf } from '@/lib/workflow/task-pr';
 
 const TRACE_LIMIT = 200;
 const CI_LOOKUP_TIMEOUT_MS = 4000;
@@ -85,21 +86,26 @@ export async function persistTaskEvidence(
           .limit(TRACE_LIMIT);
     const traces: EvidenceTrace[] = rows;
 
-    const prNumber = (typeof result.prNumber === 'number' ? result.prNumber : null) ?? worker?.prNumber ?? null;
-    const prUrl = (typeof result.prUrl === 'string' ? result.prUrl : null) ?? worker?.prUrl ?? null;
+    // The task's PR, derived on read (workflow/task-pr.ts); the stored result and this worker's row
+    // only when that read has nothing.
+    const taskPr = await taskPrOf(taskId);
+    const prNumber = taskPr?.prNumber ?? (typeof result.prNumber === 'number' ? result.prNumber : null) ?? worker?.prNumber ?? null;
+    const prUrl = taskPr?.prUrl ?? (typeof result.prUrl === 'string' ? result.prUrl : null) ?? worker?.prUrl ?? null;
 
     let ciChecks: TaskEvidence['ciChecks'] | null = null;
     if (prNumber != null) {
       const ws = await db.query.workspaces.findFirst({
         where: sqlWhere(eq(workspaces.id, task.workspaceId)),
-        columns: { repo: true },
+        columns: { repo: true, teamId: true },
         with: WORKSPACE_INSTALLATION_WITH,
       });
       const identity = pickWorkspaceRepoIdentity(ws);
       const repo = resolvePrRepo({ prUrl, workspaceRepo: identity.fullName });
       if (repo) {
-        const installationId =
-          (repo === identity.fullName ? identity.installationId : null) ?? (await installationIdForRepo(repo));
+        // Only the task's own team's installation.
+        const { installationId } = await createTeamInstallationResolver().resolve(
+          repo, { teamId: ws?.teamId, fullName: identity.fullName, installationId: identity.installationId },
+        );
         if (installationId) {
           ciChecks = await (opts.fetchChecks ?? fetchPrChecks)({ repo, prNumber, installationId });
         }

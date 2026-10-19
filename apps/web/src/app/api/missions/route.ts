@@ -1,3 +1,6 @@
+import { MISSION_SUMMARY_COLUMNS, missionReadOptions, missionSummaryResponse } from '@/lib/mission-read-shape';
+import { readMissionSummaries, refreshMissionSummary } from '@/lib/mission-summary-store';
+import { listCallerKey, teamChangeScope, withChangeVersion } from '@/lib/change-version';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -32,6 +35,8 @@ import { GATE_SLUGS, fireGateEventForWorkspaceRef, gateCallerOrigin } from '@/li
 import { buildMissionListWhere, missionListOrderBy, parseMissionListSort } from '@/lib/mission-list-query';
 import { withGoalQualityAdvisory } from '@/lib/goal-criteria-quality-shadow';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { settleWorkChanges } from '@/lib/settle-work-changes';
+import { noteWorkChanged } from '@/lib/work-changed';
 
 // GET /api/missions — list missions for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -45,6 +50,8 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    // Resolved fresh on every read, never cached: a team removal drops the team's missions from the very next read.
+    const caller = `teams:${apiAccount ? listCallerKey({ account: apiAccount }) : listCallerKey({ userId: user!.id })}`;
     const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
     if (teamIds.length === 0) {
@@ -66,10 +73,10 @@ export async function GET(req: NextRequest) {
       scopedTeamIds = [teamIdFilter];
     }
 
-    // Opt-in cap: every mission carries all its tasks, so an unbounded list
-    // grows with the team's whole history. Unset keeps the dashboard's full list.
-    const limitParam = Number(searchParams.get('limit'));
-    const limit = Number.isInteger(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : undefined;
+    // R-20/R-35: listed by team, so versioned on each team's scope. Unchanged since
+    // this caller's last read → 304, or the cached body, before any mission row is read.
+    return await withChangeVersion(req, { scopes: scopedTeamIds.map(teamChangeScope), caller }, async () => {
+    const { details, limit } = missionReadOptions(searchParams);
     const q = searchParams.get('q');
     const where = buildMissionListWhere({
       teamIds: scopedTeamIds,
@@ -78,10 +85,29 @@ export async function GET(req: NextRequest) {
       q,
     });
 
+    if (!details) {
+      const rows = await db.query.missions.findMany({
+        where: sqlWhere(where), columns: MISSION_SUMMARY_COLUMNS,
+        with: { workspace: { columns: { id: true, name: true } } },
+        orderBy: sqlOrderBy(missionListOrderBy(parseMissionListSort(searchParams.get('sort')), q)),
+        limit: limit + 1,
+      });
+      const page = rows.slice(0, limit);
+      const hasMore = rows.length > limit;
+      const [summaries, total] = await Promise.all([
+        readMissionSummaries(page.map(r => r.id), page.flatMap(r => r.workspaceId ? [r.workspaceId] : [])),
+        hasMore ? db.$count(missions, where) : page.length,
+      ]);
+      return NextResponse.json({
+        missions: page.map(row => ({ ...missionSummaryResponse(row, summaries.get(row.id)?.summary ?? null), workspace: row.workspace ?? null })),
+        total, hasMore,
+      });
+    }
+
     const results = await db.query.missions.findMany({
       where: sqlWhere(where),
       orderBy: sqlOrderBy(missionListOrderBy(parseMissionListSort(searchParams.get('sort')), q)),
-      ...(limit ? { limit } : {}),
+      limit,
       with: {
         workspace: { columns: { id: true, name: true } },
         tasks: {
@@ -133,6 +159,7 @@ export async function GET(req: NextRequest) {
     // total: how many match before the cap, so a capped page can say "N of M".
     const total = limit && results.length >= limit ? await db.$count(missions, where) : results.length;
     return NextResponse.json({ missions: missionsWithProgress, total });
+    });
   } catch (error) {
     console.error('List missions error:', error);
     return NextResponse.json({ error: 'Failed to list missions' }, { status: 500 });
@@ -141,6 +168,9 @@ export async function GET(req: NextRequest) {
 
 // POST /api/missions — create mission
 export async function POST(req: NextRequest) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -406,6 +436,10 @@ export async function POST(req: NextRequest) {
         } : {}),
       })
       .returning();
+    // Stored summary, and through it the mission lists' change version (R-13, R-20).
+    refreshMissionSummary(mission.id);
+    // Bumped before the response too (settleWorkChanges), so the creator's next list read sees it.
+    noteWorkChanged({ missionIds: [mission.id] });
 
     // Every new auto mission gets a check-in (heartbeat) schedule by default.
     // Events plan its next step as work finishes; the check-in is the hourly
@@ -600,4 +634,5 @@ export async function POST(req: NextRequest) {
     console.error('Create mission error:', error);
     return NextResponse.json({ error: 'Failed to create mission' }, { status: 500 });
   }
+  } finally { await settleWorkChanges(); }
 }

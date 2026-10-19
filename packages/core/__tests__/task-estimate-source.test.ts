@@ -19,6 +19,7 @@ const fake = {
   estimates: [] as Array<{ taskId: string; estimatorVersion: string; [k: string]: unknown }>,
   inserts: [] as any[],
   conflictTargets: [] as any[],
+  priorQueries: [] as any[],
   insertThrows: null as Error | null,
   taskThrows: null as Error | null,
   teamThrows: null as Error | null,
@@ -53,7 +54,7 @@ mock.module('../db/client', () => ({
         },
       }),
     }),
-    execute: async () => ({ rows: [] }),
+    execute: async (query: any) => { fake.priorQueries.push(query); return { rows: [] }; },
   },
 }));
 
@@ -92,14 +93,16 @@ beforeEach(() => {
 afterEach(() => { console.warn = realWarn; });
 
 describe('writeTaskEstimate', () => {
-  it('skips when the team has not opted in (NULL, missing key, or anything but enabled: true)', async () => {
-    const loadInputs = mock(async () => inputs() as any);
-    for (const team of [{ taskEstimates: null }, { taskEstimates: {} }, { taskEstimates: { enabled: 'true' } }, { taskEstimates: { enabled: false } }, null]) {
-      fake.team = team;
-      expect(await src.writeTaskEstimate(TASK, { loadInputs })).toBe('skipped');
+  it('writes by default for existing teams without a choice, preserving explicit opt-out', async () => {
+    for (const taskEstimates of [null, {}, { enabled: 'true' }]) {
+      fake.team = { taskEstimates };
+      fake.estimates = [];
+      expect(await src.writeTaskEstimate(TASK, { loadInputs: async () => inputs() as any })).toBe('written');
     }
-    expect(loadInputs).not.toHaveBeenCalled();
-    expect(fake.inserts).toHaveLength(0);
+    fake.team = { taskEstimates: { enabled: false } };
+    expect(await src.writeTaskEstimate(TASK, { loadInputs: async () => inputs() as any })).toBe('skipped');
+    fake.team = null;
+    expect(await src.writeTaskEstimate(TASK, { loadInputs: async () => inputs() as any })).toBe('skipped');
   });
 
   it('skips a task that does not exist, or is not a work task', async () => {
@@ -177,10 +180,10 @@ describe('writeTaskEstimate', () => {
 });
 
 describe('readTaskEstimatesSetting', () => {
-  it('while the gate is no-go, only a literal enabled: true is on', () => {
+  it('defaults on independently of calibration, preserving explicit opt-out', () => {
     expect(src.readTaskEstimatesSetting({ enabled: true })).toBe(true);
-    for (const v of [null, undefined, {}, { enabled: false }, { enabled: 1 }, { enabled: 'true' }, [true], 'enabled']) {
-      expect(src.readTaskEstimatesSetting(v)).toBe(false);
+    for (const v of [null, undefined, {}, { enabled: 1 }, { enabled: 'true' }, [true], 'enabled']) {
+      expect(src.readTaskEstimatesSetting(v)).toBe(true);
     }
   });
 
@@ -194,7 +197,7 @@ describe('loadTaskEstimatesState', () => {
   it('names who decided: the team, or the default for a team that never chose', async () => {
     expect(await src.loadTaskEstimatesState(TEAM)).toMatchObject({ enabled: true, source: 'team' });
     fake.team = { taskEstimates: null };
-    expect(await src.loadTaskEstimatesState(TEAM)).toMatchObject({ enabled: false, source: 'default', defaultOn: false });
+    expect(await src.loadTaskEstimatesState(TEAM)).toMatchObject({ enabled: true, source: 'default', defaultOn: true });
   });
 
   it('a failed team read is off and flagged, so pages show an error rather than "off"', async () => {
@@ -257,6 +260,27 @@ describe('priorAggregateQuery (rendered)', () => {
   const cutoff = new Date('2026-10-01T00:00:00Z');
   const q = new PgDialect().sqlToQuery(priorAggregateQuery(cutoff));
   const text = q.sql.replace(/\s+/g, ' ').toLowerCase();
+
+  it('excludes the held-out workspace from prior training without exposing its strings', () => {
+    const heldOut = new PgDialect().sqlToQuery(priorAggregateQuery(cutoff, WS));
+    expect(heldOut.sql).toContain('t.workspace_id <>');
+    expect(heldOut.params).toContain(WS);
+    expect(heldOut.sql).not.toContain(WS);
+  });
+
+  it('bypasses global prior cache for held-out evaluation and preserves the live cache', async () => {
+    src.resetTaskEstimateCaches();
+    const start = fake.priorQueries.length;
+    await src.loadPriorTable(cutoff);
+    await src.loadPriorTable(cutoff, undefined, WS);
+    await src.loadPriorTable(cutoff, undefined, WS);
+    await src.loadPriorTable(cutoff);
+    expect(fake.priorQueries.length - start).toBe(3);
+    const rendered = fake.priorQueries.slice(start).map(query => new PgDialect().sqlToQuery(query));
+    expect(rendered[0].params).not.toContain(WS);
+    expect(rendered[1].params).toContain(WS);
+    expect(rendered[2].params).toContain(WS);
+  });
 
   it('reads completed work tasks only, created and finished before the cutoff', () => {
     expect(text).toContain("t.task_class = 'work'");
@@ -322,6 +346,16 @@ describe('frozen evidence availability', () => {
     const seen: string[] = [];
     await Promise.all([src.loadPriorTable(older, at => seen.push(at.toISOString())), src.loadPriorTable(newer, at => seen.push(at.toISOString()))]);
     expect(seen.sort()).toEqual([older.toISOString(), newer.toISOString()]);
+  });
+
+  it('threads held-out training exclusion through the replay input loader', async () => {
+    const start = fake.priorQueries.length;
+    await src.loadEstimateInputs(taskRow(), {
+      excludedPriorWorkspaceId: WS,
+      storeFactory: async () => { throw new Error('UnavailableStore'); },
+    });
+    const queries = fake.priorQueries.slice(start).map(query => new PgDialect().sqlToQuery(query));
+    expect(queries.some(query => query.sql.includes('t.workspace_id <>') && query.params.includes(WS))).toBe(true);
   });
 
   it('reports the older cutoff of a reused model separately from the task cutoff', async () => {

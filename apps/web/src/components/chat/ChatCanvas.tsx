@@ -30,7 +30,7 @@ import { useHideNeedsInputBanner } from '@/lib/needs-input-hidden';
 import { useAskButtonHidden } from '@/lib/ask-button-hidden';
 import { askAboutHref, conversationHref, type ChatAbout } from '@/lib/chat/entry-points';
 import { canvasPresentation, canvasScopeFromPath, isCanvasToggle, showsAskButton, type CanvasScope } from '@/lib/chat/canvas-scope';
-import { COMPOSER_INPUT_ID } from './ChatEntry';
+import { COMPOSER_INPUT_ID, useChatEntry } from './ChatEntry';
 
 import { CanvasContext, type ChatCanvasApi } from './canvas-context';
 
@@ -44,8 +44,9 @@ function aboutRef(about: ChatAbout): BuilddObjectRef {
 
 interface Shell { agent: ChatAgent; canManageTeamKeys: boolean }
 
-export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, children }: {
-  available: boolean;
+export function ChatCanvasProvider({ available: availableProp, teamId, workspaces, viewerName, children }: {
+  /** Defaults to the chat entry's answer (ChatEntryProvider), which may arrive after paint. */
+  available?: boolean;
   teamId: string | null;
   workspaces: readonly ComposerWorkspace[];
   viewerName: string | null;
@@ -53,6 +54,8 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
 }) {
   const pathname = usePathname();
   const router = useRouter();
+  const chatEntry = useChatEntry();
+  const available = availableProp ?? chatEntry.available;
   const [isOpen, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [scope, setScope] = useState<CanvasScope>({ about: null, workspaceId: null, steer: null });

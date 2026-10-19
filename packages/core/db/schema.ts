@@ -36,6 +36,13 @@ export const teams = pgTable('teams', {
   name: text('name').notNull(),
   slug: text('slug').notNull().unique(),
 
+  // Set on the one team created for a user at sign-up: that user's personal
+  // team. NULL = an ordinary team. This column, never the slug, is what marks
+  // a team as personal (apps/web/src/lib/personal-team.ts); the `personal-`
+  // slug prefix is reserved and refused on create and rename. Unique, so a
+  // user has at most one personal team.
+  personalUserId: uuid('personal_user_id').references(() => users.id, { onDelete: 'set null' }).unique('teams_personal_user_id_unique'),
+
   // The team's canonical working zone (IANA, e.g. 'America/New_York'). NULL = UTC, so
   // teams that never set one behave exactly as before. Used for anything rendered to a
   // shared or external surface — PR activity comments, new schedule defaults, mission
@@ -1482,6 +1489,29 @@ export const missions = pgTable('missions', {
   conversationIdx: index('missions_conversation_idx').on(t.conversationId),
 }));
 
+// A mission's stored summary (spec 3ef37387 R-13): stage, progress, health,
+// task counts, current delivery and last activity, written by
+// `refreshMissionSummary` (apps/web/src/lib/mission-summary-store.ts) when a
+// write changes the mission's work, so list surfaces read one row instead of
+// every task and worker. Its own table, not columns on `missions`: the
+// frequent summary write never touches a mission row other writers fence on.
+// No row, or a row of another `version`, reads as missing: the reader derives
+// live and the reconcile cron (oldest `computed_at` first) writes it. That is
+// also the backfill: nothing to copy, every mission starts missing.
+export const missionSummaries = pgTable('mission_summaries', {
+  missionId: uuid('mission_id').primaryKey().references(() => missions.id, { onDelete: 'cascade' }),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  version: integer('version').notNull(),
+  summary: jsonb('summary').$type<import('@buildd/shared').MissionSummary>().notNull(),
+  lastActivityAt: timestamp('last_activity_at', { withTimezone: true }),
+  // When the inputs were read, not when the row was written: a write only
+  // replaces a row computed from older reads (the optimistic fence).
+  computedAt: timestamp('computed_at', { withTimezone: true }).notNull(),
+}, (t) => ({
+  workspaceIdx: index('mission_summaries_workspace_idx').on(t.workspaceId),
+  computedAtIdx: index('mission_summaries_computed_at_idx').on(t.computedAt),
+}));
+
 // Denormalized initiative rollup. Shape mirrors InitiativeProgress in
 // mission-helpers.ts (kept as a local interface to avoid a schema→helpers import).
 export interface InitiativeProgressCache {
@@ -1745,6 +1775,13 @@ export const tasks = pgTable('tasks', {
   releaseRunIdIdx: index('tasks_release_run_id_idx')
     .on(sql`((release_result->>'runId'))`)
     .where(sql`release_result IS NOT NULL`),
+  // The release page's "a degradation task was filed for this release"
+  // lookup (releases/[id]): partial, so it holds only the release watcher's
+  // degradation tasks, and keyed by the release they name, so the page reads
+  // one index entry instead of scanning tasks (spec 3ef37387 R-23).
+  degradationReleaseIdx: index('tasks_degradation_release_idx')
+    .on(t.workspaceId, sql`((context->>'releaseId'))`)
+    .where(sql`(context->>'type') = 'degradation'`),
   ciRetryEventIdx: uniqueIndex('tasks_ci_retry_event_unique')
     .on(t.workspaceId, t.ciRetryPrNumber, t.ciRetryHeadSha)
     .where(sql`${t.creationSource} = 'webhook' AND ${t.ciRetryPrNumber} IS NOT NULL AND ${t.ciRetryHeadSha} IS NOT NULL`),
@@ -2821,7 +2858,7 @@ export type SpecStatus = (typeof SPEC_STATUSES)[number];
 /** A spec's metadata block (living-specs.md §18, R-14). `domain` is derived from the filed area, never stored. */
 export interface SpecMetadataBlock {
   owner?: string;
-  /** The repo copy's `summary`, from an imported file's frontmatter. */
+  /** The repo copy's `summary`: one sentence, at most 220 characters; editable or imported. */
   summary?: string;
   last_verified?: string;
   surfaces?: string[];
@@ -2866,8 +2903,13 @@ export interface SpecPublicationDecision {
   publish: boolean;
   source: 'rule' | 'model' | 'fallback' | 'person';
   reasonCode: string;
+  /** The sentence as worded when decided; the page words it afresh (publicationSentence). */
   reason: string;
   line?: string;
+  /** rule_prod_data: the hit it named. */
+  hit?: string;
+  /** rule_marked_private: whose mark it was. */
+  markFrom?: 'spec' | 'area';
   policyVersion: string | null;
   confidence?: number | null;
   model?: string | null;
@@ -2993,12 +3035,63 @@ export const specRevisions = pgTable('spec_revisions', {
   // approving statement, next to approved_at; reference attachments are never
   // in it. NULL: not approved, or approved before attachments existed.
   approvedAttachments: jsonb('approved_attachments').$type<SpecApprovedAttachment[]>(),
+  // How many spec_criteria rows were derived from this revision's body; NULL
+  // until they are (a revision with no criteria reads 0, not missing).
+  criteriaCount: integer('criteria_count'),
   // Set once by a person's approval (G2); never for an agent.
   approvedBy: text('approved_by'),
   approvedAt: timestamp('approved_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   specRevisionIdx: uniqueIndex('spec_revisions_spec_revision_idx').on(t.specId, t.revision),
+}));
+
+/**
+ * One criterion (R-n or AC-n) of one spec revision, derived from the body when
+ * the revision is written ("Reviewing a spec revision" R-11): its words, their
+ * sha256, the heading path it sits under, and its check, screen and replaces
+ * lines. Never edited on its own: the body is the source, and a missing row is
+ * derived again from it. A criterion's history, verdicts on a wording and the
+ * Review change list read these. Only apps/web/src/lib/specs/criteria.ts writes it.
+ */
+export const specCriterionRecords = pgTable('spec_criteria', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
+  revision: integer('revision').notNull(),
+  criterionId: text('criterion_id').notNull(),
+  position: integer('position').notNull(),
+  text: text('text').notNull(),
+  textHash: text('text_hash').notNull(),
+  section: text('section').notNull(),
+  checks: jsonb('checks').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  screens: jsonb('screens').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  replaces: jsonb('replaces').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  revisionCriterionIdx: uniqueIndex('spec_criteria_revision_criterion_idx').on(t.specRevisionId, t.criterionId),
+  specCriterionIdx: index('spec_criteria_spec_criterion_idx').on(t.specId, t.criterionId, t.revision),
+}));
+
+/**
+ * What one revision changes against another, computed once and kept
+ * ("Reviewing a spec revision" R-8): the per-criterion change list, the other
+ * text by section, the summary check and the capped line diff. Written when the
+ * later revision is written (against the one before it and the approved one),
+ * or on first read of a pair. `from_revision` 0 is the empty text (nothing
+ * approved yet). `algo` is the version of the computation: a row of an older
+ * one is computed again.
+ */
+export const specRevisionReviews = pgTable('spec_revision_reviews', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  fromRevision: integer('from_revision').notNull(),
+  toRevision: integer('to_revision').notNull(),
+  algo: integer('algo').notNull(),
+  review: jsonb('review').$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pairIdx: uniqueIndex('spec_revision_reviews_pair_idx').on(t.specId, t.fromRevision, t.toRevision, t.algo),
 }));
 
 // Derived neighbours of a Living Spec (living-specs.md §14, decisions D-11/D-12):
@@ -3172,6 +3265,9 @@ export const specOutcomeVerdicts = pgTable('spec_outcome_verdicts', {
   specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
   criterionId: text('criterion_id').notNull(),
   verdict: text('verdict').notNull().$type<'pass' | 'fail' | 'inconclusive' | 'unsupported'>(),
+  // sha256 of the criterion's words it judged (spec_criteria.text_hash). A
+  // verdict counts only for that wording; NULL: recorded before wordings were kept.
+  criterionTextHash: text('criterion_text_hash'),
   headSha: text('head_sha'),
   // The check's evidence refs and the artifact reads (F4 ledger ids) behind it.
   evidence: jsonb('evidence').$type<Record<string, unknown>>(),
@@ -3348,6 +3444,9 @@ export const evidenceObjects = pgTable('evidence_objects', {
   // Task lineage: find all evidence for a task and its retry chain
   taskLineageIdx: index('evidence_objects_task_lineage_idx').on(t.workspaceId, t.rootTaskId, t.taskId),
   scoutRunIdx: index('evidence_objects_scout_run_idx').on(t.scoutRunId),
+  // One row per (object, task). A retried CI job log capture writes the same
+  // object and upserts on this; Scout rows (task_id NULL) never collide.
+  objectTaskUnique: uniqueIndex('evidence_objects_object_task_unique').on(t.objectKey, t.taskId),
   oneOwner: check(
     'evidence_objects_one_owner',
     sql`(${t.scoutRunId} IS NULL AND ${t.taskId} IS NOT NULL AND ${t.rootTaskId} IS NOT NULL AND ${t.workerId} IS NOT NULL)
@@ -3606,6 +3705,8 @@ export const githubInstallations = pgTable('github_installations', {
 }, (t) => ({
   installationIdIdx: uniqueIndex('github_installations_installation_id_idx').on(t.installationId),
   accountLoginIdx: index('github_installations_account_login_idx').on(t.accountLogin),
+  // installationBelongsToTeam / getInstallationOwnerTeamIds: a reinstall on the same account.
+  accountIdIdx: index('github_installations_account_id_idx').on(t.accountId),
   installedByIdx: index('github_installations_installed_by_idx').on(t.installedByUserId),
 }));
 
@@ -5636,6 +5737,8 @@ export const workflowTransitions = pgTable('workflow_transitions', {
 }, (t) => ({
   idempotencyUnique: uniqueIndex('workflow_transitions_idempotency_unique').on(t.deliveryId, t.idempotencyKey),
   versionUnique: uniqueIndex('workflow_transitions_version_unique').on(t.deliveryId, t.toVersion),
+  // The platform operator's kernel view reads the log by time (recent transitions, the count on host=web).
+  createdIdx: index('workflow_transitions_created_idx').on(t.createdAt),
 }));
 
 export type WorkflowTransitionRow = typeof workflowTransitions.$inferSelect;
@@ -5668,12 +5771,46 @@ export const workflowCommands = pgTable('workflow_commands', {
 
 export type WorkflowCommandRow = typeof workflowCommands.$inferSelect;
 
+// §3 of docs/specs/workflow-kernel-library.md — a door command the control plane
+// never answered, kept by its idempotency key so the kernel floor re-submits it
+// (the same key, so the ledger above applies it once) until it is answered.
+// Only ops with no other re-sender are kept (command-outbox.ts `PARK_ON_UNAVAILABLE`).
+export const workflowCommandOutbox = pgTable('workflow_command_outbox', {
+  idempotencyKey: text('idempotency_key').primaryKey(),
+  op: text('op').notNull(),
+  /** The op's input, as the door sent it. */
+  commandInput: jsonb('command_input').$type<Record<string, unknown>>().notNull(),
+  /** The principal the door vouched for, as sent: the control plane re-checks its reach on every re-submission. */
+  principal: jsonb('principal').$type<Record<string, unknown>>().notNull(),
+  status: text('status').default('pending').notNull().$type<'pending' | 'done' | 'dead'>(),
+  /** A submission may have reached the control plane: never run on the web host without the ledger's word. */
+  priorUnknown: boolean('prior_unknown').default(false).notNull(),
+  /** What the answer said: the kernel's result (applied, duplicate, stale, rejected), `replayed`, or why it was given up. */
+  outcome: text('outcome'),
+  attemptCount: integer('attempt_count').default(0).notNull(),
+  notBefore: timestamp('not_before', { withTimezone: true }).defaultNow().notNull(),
+  leaseUntil: timestamp('lease_until', { withTimezone: true }),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+}, (t) => ({
+  dueIdx: index('workflow_command_outbox_due_idx').on(t.notBefore).where(sql`${t.status} = 'pending'`),
+  createdIdx: index('workflow_command_outbox_created_idx').on(t.createdAt),
+}));
+
+export type WorkflowCommandOutboxRow = typeof workflowCommandOutbox.$inferSelect;
+
 // §5.5 — transactional outbox: inserted by the statement that applied the
 // transition, drained at least once by apps/web/src/lib/workflow/effects.ts.
+// A row is owed by a PR delivery (delivery + transition) or by a mission epoch
+// (workflow-kernel-library.md §6: the writable epoch's branch refresh, drained
+// by apps/web/src/lib/workflow/epoch-effects.ts). Never both, never neither.
 export const workflowEffects = pgTable('workflow_effects', {
   id: uuid('id').primaryKey().defaultRandom(),
-  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
-  transitionId: uuid('transition_id').references(() => workflowTransitions.id, { onDelete: 'cascade' }).notNull(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }),
+  transitionId: uuid('transition_id').references(() => workflowTransitions.id, { onDelete: 'cascade' }),
+  epochId: uuid('epoch_id').references(() => workflowMissionEpochs.id, { onDelete: 'cascade' }),
   kind: text('kind').notNull(),
   dedupeKey: text('dedupe_key').notNull(),
   payload: jsonb('payload').$type<Record<string, unknown>>().default({}).notNull(),
@@ -5689,6 +5826,8 @@ export const workflowEffects = pgTable('workflow_effects', {
   dedupeUnique: uniqueIndex('workflow_effects_dedupe_unique').on(t.dedupeKey),
   dueIdx: index('workflow_effects_due_idx').on(t.notBefore).where(sql`${t.status} IN ('pending', 'delivering')`),
   deliveryIdx: index('workflow_effects_delivery_idx').on(t.deliveryId, t.createdAt),
+  epochIdx: index('workflow_effects_epoch_idx').on(t.epochId, t.createdAt).where(sql`${t.epochId} IS NOT NULL`),
+  oneOwner: check('workflow_effects_one_owner', sql`(${t.epochId} IS NULL AND ${t.deliveryId} IS NOT NULL AND ${t.transitionId} IS NOT NULL) OR (${t.epochId} IS NOT NULL AND ${t.deliveryId} IS NULL AND ${t.transitionId} IS NULL)`),
 }));
 
 export type WorkflowEffectRow = typeof workflowEffects.$inferSelect;
@@ -6234,9 +6373,12 @@ export const deploymentAuditEvents = pgTable('deployment_audit_events', {
   taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
   workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  // The signed-in person, for principal 'user'.
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
   // 'operator': an agent role acting under its workspace grant.
   // 'admin': a human's admin API key, the escape hatch.
-  principal: text('principal').notNull().$type<'operator' | 'admin'>(),
+  // 'user': a team owner or admin signed in (the Settings Deploy button).
+  principal: text('principal').notNull().$type<'operator' | 'admin' | 'user'>(),
   roleSlug: text('role_slug'),
   operation: text('operation').notNull(),
   capabilities: jsonb('capabilities').$type<string[]>().notNull(),

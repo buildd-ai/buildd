@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 
-const SAVE_FAILED = 'Could not save the worker limit.';
+const SAVE_FAILED = 'Could not save the slot limit.';
 
 interface MaxConcurrentWorkersEditorProps {
   accountId: string;
@@ -70,15 +70,16 @@ export default function MaxConcurrentWorkersEditor({
       <span
         onClick={() => canEdit && setIsEditing(true)}
         className={canEdit ? 'cursor-pointer hover:text-accent' : ''}
+        title="Agents this token's runners run at once when a runner does not report its own slots"
       >
-        Workers: {value}
+        Default slots: {value}
       </span>
     );
   }
 
   return (
     <div className="inline-flex items-center gap-2">
-      <span>Workers:</span>
+      <span>Default slots:</span>
       <input
         type="number"
         min="1"

@@ -50,14 +50,14 @@ describe('deriveTaskVerdict', () => {
   it('merged → shipped, whatever an earlier check said', () => {
     const v = deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'merged', merged: true } }))!;
     expect(v.state).toBe('shipped');
-    expect(v.headline).toBe('Shipped · PR #12 merged');
+    expect(v.headline).toBe('Merged · PR #12');
   });
 
   // Surface audit (task 3c538a39): a merged PR was stated three times. The
   // status row is the one place that names it, so it also carries the time.
   it('merged → the status row carries the claim-to-merge time, in words', () => {
     const v = deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'merged', merged: true }, claimToMerge: '2h 14m' }))!;
-    expect(v.headline).toBe('Shipped · PR #12 merged');
+    expect(v.headline).toBe('Merged · PR #12');
     expect(v.cause).toBe('2h 14m from claim to merge.');
     expect(verdictLinksPr(v, PR.url)).toBe(true);
     expect(verdictLinksPr(v, 'https://github.com/acme/app/pull/13')).toBe(false);
@@ -216,5 +216,24 @@ describe('verdictRepeatsOpenQuestion', () => {
   it('any other verdict stays', () => {
     const live = deriveTaskVerdict(input({ taskStatus: 'in_progress', live: { status: 'running', waitingForInput: false } }))!;
     expect(verdictRepeatsOpenQuestion(live, { questionOnPage: true })).toBe(false);
+  });
+});
+
+describe('review escalation verdict (PR #4996 shape)', () => {
+  const pr = { url: 'https://github.com/acme/widgets/pull/7', number: 7, lifecycle: null, merged: false };
+  const base: VerdictInput = { taskStatus: 'completed', live: null, openQuestion: false, pr, checks: null, openAttempt: null };
+  const escalation = { title: 'Automated fixes exhausted · 2 of 2 used', summary: 'The automatic fix budget is spent. Nothing runs again until you choose.', open: 1, awaitingVerification: 2, resolved: 3 };
+
+  it('names the cause and counts instead of "Waiting on you", and points at the decision card', () => {
+    const v = deriveTaskVerdict({ ...base, escalation })!;
+    expect(v.state).toBe('needs_you');
+    expect(v.label).toBe('Automated fixes exhausted · 2 of 2 used');
+    expect(v.headline).toContain('1 open, 2 awaiting verification, 3 resolved');
+    expect(v.cause).toContain('Nothing runs again until you choose');
+    expect(v.actions[0]).toMatchObject({ href: '#task-decision', external: false, tone: 'primary' });
+  });
+
+  it('without an escalation the generic PR reading is unchanged', () => {
+    expect(deriveTaskVerdict({ ...base })!.causeKey).toBe('needs_you:pr_open');
   });
 });

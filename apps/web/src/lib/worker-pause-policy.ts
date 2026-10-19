@@ -19,7 +19,7 @@ export function pauseRefusal(worker: PausableWorker): PauseRefusal | null {
     return { code: 'already_paused', status: 409, error: 'This run is already paused. Resume it from the task page.' };
   }
   if (worker.runner === INTERACTIVE_WORKER_RUNNER) {
-    return { code: 'interactive', status: 400, error: 'This run is a local session on someone’s own machine; buildd can’t pause it.' };
+    return { code: 'interactive', status: 400, error: 'This run is in a person’s own session on their machine; buildd can’t pause it.' };
   }
   if (worker.status !== 'running') {
     return { code: 'not_running', status: 409, error: `Only a running agent can be paused (this one is ${worker.status}).` };

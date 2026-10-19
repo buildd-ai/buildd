@@ -22,10 +22,11 @@ describe('waiting reasons from the last claim (R-25)', () => {
     const inTwoHours = new Date(NOW + 2 * 3_600_000).toISOString();
     const cases: Array<[Partial<ClaimOutcome>, string | RegExp]> = [
       [{ exclusion: 'runner_cooldown' }, 'cooldown, 1 min'],
-      [{ exclusion: 'mission_local' }, 'local session'],
-      [{ exclusion: 'mission_held' }, 'mission is on hold'],
-      [{ exclusion: 'task_held' }, 'held by a person'],
-      [{ exclusion: 'task_reserved' }, 'reserved by a local session'],
+      [{ exclusion: 'mission_local' }, 'your session'],
+      [{ exclusion: 'mission_held' }, 'mission is paused'],
+      [{ exclusion: 'task_held' }, 'paused by a person'],
+      [{ exclusion: 'budget_paused' }, 'usage limit'],
+      [{ exclusion: 'task_reserved' }, 'taken by your session'],
       [{ exclusion: 'already_claimed' }, 'another runner has it'],
       [{ exclusion: 'active_worker' }, 'another runner has it'],
       [{ exclusion: 'workspace_cap' }, 'workspace is at its task limit'],
@@ -41,7 +42,9 @@ describe('waiting reasons from the last claim (R-25)', () => {
       [{ reason: 'context_paused', until: new Date(NOW + 5 * 60_000).toISOString() }, 'paused after repeated failures, 5m'],
       [{ reason: 'refused', status: 409, refusal: 'path overlap with another task' }, 'refused: path overlap with another task'],
       [{ reason: 'budget_exhausted', exclusion: 'budget_paused', walls: [{ kind: 'account_seat', backend: 'claude', resetsAt: reset }] }, /^plan limit/],
-      [{ reason: 'budget_exhausted', exclusion: 'budget_paused', walls: [{ kind: 'provider_pause', backend: 'claude', resetsAt: reset }] }, /^rate limit/],
+      [{ reason: 'budget_exhausted', exclusion: 'budget_paused', walls: [{ kind: 'provider_pause', backend: 'claude', resetsAt: reset }] }, /^shared limit/],
+      // Spec "A runner" R-12: this machine's own login, never a team-wide word.
+      [{ reason: 'budget_exhausted', exclusion: 'budget_paused', walls: [{ kind: 'runner_seat', backend: 'claude', resetsAt: reset }] }, /^login limit/],
       [{ exclusion: 'some_future_gate', detail: 'A new gate said no. More words here.' }, 'A new gate said no'],
     ];
     for (const [o, want] of cases) {
@@ -93,7 +96,7 @@ describe('waiting reasons from the last claim (R-25)', () => {
 
   test("init carries the runner's outcomes so a fresh top starts with them", () => {
     const s = reduce(fixtureState(), { type: 'init', claimOutcomes: { tasks: { 't-loose': { at: NOW - 1000, reason: 'no_pending_tasks', exclusion: 'mission_local' } }, broad: null } });
-    expect(waitingReason(loose(), s, NOW)).toBe('local session');
+    expect(waitingReason(loose(), s, NOW)).toBe('your session');
   });
 
   test('a claim outcome refetches the task list', () => {
@@ -109,7 +112,7 @@ describe('one provider limit, said once (R-25, AC-11)', () => {
 
   test('the broad claim held by the Claude limit: one header hold, short rows, no Claude task reads ready', () => {
     const s = walled();
-    expect(providerHolds(s, NOW)).toEqual([{ backend: 'claude', provider: 'Claude', word: 'plan limit', resetsAt: reset }]);
+    expect(providerHolds(s, NOW)).toEqual([{ backend: 'claude', provider: 'Claude', kind: 'account_seat', word: 'plan limit', resetsAt: reset }]);
     expect(waitingReason(loose(), s, NOW)).toBe('plan limit');
     for (const key of ['m-tui-0000-0000', 'm-spec-0000-0000', NO_MISSION]) {
       for (const r of taskRows({ ...s, selectedMission: key }, NOW)) {
@@ -164,7 +167,7 @@ describe('what the last claim did not see (R-25, AC-11)', () => {
 
   test('a broad claim that takes some other task does not erase a Claude limit that has not lifted', () => {
     const s = broad(broad(fixtureState(), walledOutcome), { reason: 'claimed' });
-    expect(providerHolds(s, NOW)).toEqual([{ backend: 'claude', provider: 'Claude', word: 'plan limit', resetsAt: reset }]);
+    expect(providerHolds(s, NOW)).toEqual([{ backend: 'claude', provider: 'Claude', kind: 'account_seat', word: 'plan limit', resetsAt: reset }]);
     expect(waitingReason(loose(), s, NOW)).toBe('plan limit');
   });
 
@@ -196,14 +199,16 @@ describe('what the last claim did not see (R-25, AC-11)', () => {
       expect(got).not.toMatch(/budget paused|oauth parallelism|duplicate worker|sibling retry/);
     }
     const s = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { budget_paused: 3 } });
-    expect(waitingReason(loose(), s, NOW)).toBe('held at the last claim (runner-wide): held by a usage limit');
+    expect(waitingReason(loose(), s, NOW)).toBe('skipped at the last claim (runner-wide): usage limit');
+    const unknown = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { a_code_from_the_future: 2 } });
+    expect(waitingReason(loose(), unknown, NOW)).toBe('skipped at the last claim (runner-wide): reason unknown');
   });
 
   test('a row keeps its own reason, and a mixed deferral is not pinned on a row it may not describe', () => {
     let s = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { budget_paused: 5, workspace_cap: 1 } });
-    expect(waitingReason(loose(), s, NOW)).toBe('held at the last claim, for reasons it did not tie to this task');
+    expect(waitingReason(loose(), s, NOW)).toBe('skipped at the last claim, for reasons it did not tie to this task');
     s = reduce(s, { type: 'claim_outcome', taskId: 't-loose', outcome: { at: NOW - 500, reason: 'no_pending_tasks', exclusion: 'mission_local' } });
-    expect(waitingReason(loose(), s, NOW)).toBe('local session');
+    expect(waitingReason(loose(), s, NOW)).toBe('your session');
   });
 
   test('a server clock ahead of this machine does not drop a fresh outcome', () => {
@@ -211,7 +216,7 @@ describe('what the last claim did not see (R-25, AC-11)', () => {
     let s = reduce(fixtureState(), { type: 'tasks', tasks: TASKS.map(t => t.id === 't-loose' ? { ...t, updatedAt: ahead } : t) });
     s = withOutcome({ exclusion: 'mission_local' }, 't-loose', s);
     s = reduce(s, { type: 'tasks', tasks: s.tasks });
-    expect(waitingReason(s.tasks.find(t => t.id === 't-loose')!, s, NOW)).toBe('local session');
+    expect(waitingReason(s.tasks.find(t => t.id === 't-loose')!, s, NOW)).toBe('your session');
     // A later change on the server still retires it.
     s = reduce(s, { type: 'tasks', tasks: s.tasks.map(t => t.id === 't-loose' ? { ...t, updatedAt: new Date(NOW + 7_200_000).toISOString() } : t) });
     expect(s.claimOutcomes.tasks['t-loose']).toBeUndefined();

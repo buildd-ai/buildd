@@ -20,7 +20,10 @@ import { isPlatformOperatorCaller, operatorOnlyResponse } from '@/lib/admin/plat
 import type { AnySubscriber } from '@/lib/core-events';
 import { decisionSubscribers } from '@/lib/decision-subscribers';
 import { startDecisionReplayStore } from '@/lib/decision-replay-store';
-import { loadAccessNeedsYou } from '@/lib/capability-grants-needs-you';
+import { accessNeedsYouRead } from '@/lib/capability-grants-needs-you';
+import { homeMissionSummaries } from '@/lib/mission-summary-home';
+import { loadMissionStagesFromSummaries } from '@/lib/mission-stage-read';
+import { MAX_STAGE_MISSION_IDS } from '@/lib/mission-stage';
 import { probeDecisionModel } from '@buildd/core/decision-probe';
 import type { CompletionPolicies } from '@/lib/completion-policy';
 import { visualAuditEvidencePolicy } from '@/lib/visual-audit-evidence-policy';
@@ -28,6 +31,8 @@ import { loopPolicy } from '@/lib/loop-dispatcher-policy';
 import { releasePolicy } from '@/lib/release-completion-policy';
 import { knowledgeSubscribers } from '@/lib/knowledge-subscribers';
 import { missionSubscribers } from '@/lib/mission-subscribers';
+import { refreshMissionSummariesFor } from '@/lib/mission-summary-store';
+import type { WorkChangeListener } from '@/lib/work-changed';
 import { reviewSubscribers } from '@/lib/review-subscribers';
 import { reviewerSubscribers, reviewerDispatchOnOpen } from '@/lib/reviewer-subscribers';
 import { specCheckSubscribers } from '@/lib/spec-check-subscribers';
@@ -110,6 +115,18 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // Last: the verdict recompute reads the evidence record the knowledge
   // module wrote and the CI/PR state the reviews module settled.
   ...verdictSubscribers,
+];
+
+/**
+ * Told every write of work (lib/work-changed.ts): a task's status or mission,
+ * a worker's status or PR, a delivery, a review, and every core event's ids.
+ * The missions module refreshes the stored summary of each mission they
+ * belong to, after the response (spec 3ef37387 R-13). (Before these run,
+ * core itself bumps the change version of the batch's workspaces:
+ * lib/work-changed.ts, R-20.)
+ */
+export const WORK_CHANGE_LISTENERS: readonly WorkChangeListener[] = [
+  async (batch) => { await refreshMissionSummariesFor(batch); },
 ];
 
 /**
@@ -209,6 +226,26 @@ export function workflowKernelHooks(opts: { exec?: Parameters<typeof handOffHost
 }
 
 /**
+ * The open-PR status sweep's review reads (lib/workflow/open-pr-status.ts): whether a
+ * review was asked for on a PR no delivery owns, and a release candidate's gate at its SHA.
+ * The releases module's (lib/release/open-pr-review.ts); lazy, so the floor loads it only when it runs.
+ */
+export async function openPrReviewReads(): Promise<import('@/lib/release/open-pr-review').OpenPrReviewReads> {
+  return (await import('@/lib/release/open-pr-review')).openPrReviewReads();
+}
+
+/**
+ * The event doors of `Buildd / Review approval` on an open PR head (lib/workflow/open-pr-events.ts):
+ * the GitHub webhook, the worker route's recorded verdict and a stored review request call it, so the
+ * status follows the event instead of the hourly floor. Lazy, so a route loads it only when it runs.
+ */
+export async function republishPrHeads(
+  ...args: Parameters<typeof import('@/lib/workflow/open-pr-events').republishPrHeads>
+): Promise<void> {
+  return (await import('@/lib/workflow/open-pr-events')).republishPrHeads(...args);
+}
+
+/**
  * The question gate's recover slot (lib/question-gate-check.ts): a recoverable
  * blocker an agent tried to ask about is filed as a repair task instead.
  */
@@ -238,10 +275,26 @@ export const ESCALATION_GATE_READ_DEPS = escalationGateReadDeps;
 
 /**
  * The connectors module's slot for Home (lib/capability-grants-needs-you.ts):
- * pending capability requests the escalation gate gives to a person, for the
- * teams where the viewer can decide them. A fixed rule; no model call.
+ * pending capability requests the escalation gate gives to a person, as one
+ * statement for Home's batch. A fixed rule; no model call, no write.
  */
-export const ACCESS_NEEDS_YOU = loadAccessNeedsYou;
+export const ACCESS_NEEDS_YOU = accessNeedsYouRead;
+
+/**
+ * The missions module's slot for Home (lib/mission-summary-home.ts): live
+ * readings for missions with no stored summary yet, the after-response
+ * summary write, and filing a visual review a mission PR owes.
+ */
+export const HOME_MISSION_SUMMARIES = homeMissionSummaries;
+
+/**
+ * The missions module's slot for GET /api/tasks?include=missionStages
+ * (`buildd top`'s one combined read): each named mission's stage from its
+ * stored summary, scoped to the caller's workspaces, at most
+ * MAX_STAGE_MISSION_IDS missions, the same reader GET /api/missions/stages uses.
+ */
+export const TASK_LIST_MISSION_STAGES = (missionIds: string[], workspaceIds: string[]) =>
+  loadMissionStagesFromSummaries(missionIds.slice(0, MAX_STAGE_MISSION_IDS), workspaceIds);
 
 /**
  * The decisions module's slot for the team settings route

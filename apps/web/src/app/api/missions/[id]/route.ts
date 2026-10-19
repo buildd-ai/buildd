@@ -1,6 +1,8 @@
+import { MISSION_SUMMARY_COLUMNS, missionReadOptions, missionSummaryResponse } from '@/lib/mission-read-shape';
+import { readMissionSummaries } from '@/lib/mission-summary-store';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { cancelWaivedSurfaceAudits } from '@/lib/surface-audit-waiver-cancel';
-import { NextRequest, NextResponse, after } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { missions, tasks, taskSchedules, initiatives, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -16,7 +18,6 @@ import { computeMissionProgress, outcomeSpecWriteRefusal, validateGoalCriteria }
 import { computeAndStoreFlightStripCache } from '@buildd/core/flight-strip-store';
 import { isMissionBlocked, wouldCreateCycle } from '@/lib/mission-dependency';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
-import { refreshStaleWorkers } from '@/lib/pr-state-refresh';
 import { mergePolicySchema } from '@/lib/merge-policy';
 import { GATE_SLUGS, fireGateEvent, gateCallerOrigin } from '@/lib/gate-ledger';
 import {
@@ -51,6 +52,8 @@ import type { SpecCaller } from '@/lib/specs/store';
 import { missionStatusNoteBody, MISSION_COMPLETED_MARKER, MISSION_STATUS_CHANGE_TITLES } from '@/lib/mission-status-note';
 import { missionEpochsOf, scopeAmendmentsOf } from '@/lib/workflow/delivery-ship';
 import { armedAtForStartGate } from '@/lib/mission-start-state';
+import { noteWorkChanged } from '@/lib/work-changed';
+import { settleWorkChanges } from '@/lib/settle-work-changes';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -113,11 +116,20 @@ export async function GET(
   try {
     const teamIds = await resolveTeamIds(user, apiAccount);
 
+    const { details, limit } = missionReadOptions(new URL(req.url).searchParams);
+    if (!details) {
+      const row = await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, id)), columns: MISSION_SUMMARY_COLUMNS });
+      if (!row || !(await hasMissionAccess(row, teamIds, apiAccount?.id))) return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+      const summaries = await readMissionSummaries([id], row.workspaceId ? [row.workspaceId] : []);
+      return NextResponse.json(missionSummaryResponse(row, summaries.get(id)?.summary ?? null));
+    }
+
     const mission = await db.query.missions.findFirst({
       where: sqlWhere(eq(missions.id, id)),
       with: {
         workspace: { columns: { id: true, name: true } },
         tasks: {
+          limit,
           columns: { id: true, title: true, status: true, priority: true, roleSlug: true, createdAt: true, result: true, updatedAt: true, kind: true, mode: true, category: true, parentTaskId: true, creationSource: true, taskClass: true },
           orderBy: sqlOrderByFn((tasks, { desc }) => [desc(tasks.createdAt)]),
           with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, prLastCheckedAt: true, supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true, abandonedAt: true }, orderBy: sqlOrderByFn((w: any, { desc }: any) => [desc(w.startedAt)]), limit: 1 } },
@@ -168,47 +180,36 @@ export async function GET(
       }
     }
 
-    const blockStatus = await isMissionBlocked({
-      id: mission.id,
-      dependsOnMissionId: mission.dependsOnMissionId ?? null,
-      gateCondition: mission.gateCondition,
-      dependencyMetAt: mission.dependencyMetAt ?? null,
-    });
-
-    // Stale-while-revalidate: fire PR state refresh in the background so the
-    // open view gets corrected state via WORKER_PROGRESS without blocking render.
-    const prCandidates = (mission.tasks || []).flatMap((task: any) =>
-      (task.workers || []).map((w: any) => ({
-        id: w.id as string,
-        prNumber: (w.prNumber ?? null) as number | null,
-        // Carries the repo the PR is actually in — the mission's tasks can span
-        // repos, so the workspace repo is not a safe substitute.
-        prUrl: (w.prUrl ?? null) as string | null,
-        workspaceId: mission.workspaceId as string,
-        taskId: task.id as string,
-        prLifecycleStatus: (w.prLifecycleStatus ?? null) as string | null,
-        prLastCheckedAt: (w.prLastCheckedAt ?? null) as Date | null,
-      }))
-    );
-    if (prCandidates.length > 0) {
-      try {
-        after(() =>
-          refreshStaleWorkers(prCandidates).catch(err =>
-            console.error('[pr-state-refresh] mission detail refresh failed:', err)
-          )
-        );
-      } catch {
-        // after() unavailable outside request scope (tests/build)
-      }
-    }
-
     // Delivery records and scope decisions (workflow-kernel-library.md §6): the
     // mission's state and its deliveries' states are separate facts.
-    const [deliveryRows, scopeRows] = await Promise.all([missionEpochsOf(id), scopeAmendmentsOf(id)]);
-    const deliveries = deliveryRows.map((e) => ({
-      delivery: e.epoch, branch: e.branch, state: e.state, prNumber: e.prNumber, mergedAt: e.mergedAt,
-      scopeVersion: e.scopeVersion, retired: e.retiredAt != null, held: e.settlement?.held?.map((h) => h.prNumber) ?? [],
-    }));
+    const [blockStatus, deliveryRows, scopeRows] = await Promise.all([
+      isMissionBlocked({
+        id: mission.id,
+        dependsOnMissionId: mission.dependsOnMissionId ?? null,
+        gateCondition: mission.gateCondition,
+        dependencyMetAt: mission.dependencyMetAt ?? null,
+      }),
+      missionEpochsOf(id),
+      scopeAmendmentsOf(id),
+    ]);
+    const deliveries = deliveryRows.map((e) => {
+      // Find the owner task and its worker to get prLifecycleStatus
+      const ownerTask = e.ownerTaskId ? (mission.tasks || []).find((t: any) => t.id === e.ownerTaskId) : null;
+      const ownerWorker = ownerTask?.workers?.[0];
+      return {
+        delivery: e.epoch,
+        branch: e.branch,
+        state: e.state,
+        prNumber: e.prNumber,
+        mergedAt: e.mergedAt,
+        scopeVersion: e.scopeVersion,
+        retired: e.retiredAt != null,
+        held: e.settlement?.held?.map((h) => h.prNumber) ?? [],
+        repoFullName: e.repoFullName,
+        ownerTaskId: e.ownerTaskId,
+        prLifecycleStatus: ownerWorker?.prLifecycleStatus ?? null,
+      };
+    });
     const scopeUpdates = scopeRows.filter((r) => r.status !== 'recorded').map((r) => ({
       taskId: r.sourceTaskId, decision: r.decision, status: r.status, scopeVersion: r.scopeVersionAfter, reason: r.reason, at: r.createdAt,
     }));
@@ -245,6 +246,9 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   const { id } = await params;
   if (!isUuid(id)) {
     return NextResponse.json({ error: `Invalid mission id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
@@ -510,7 +514,7 @@ export async function PATCH(
       // same request or already on the mission. Archiving is not gated — it
       // also means "abandoned", and claims nothing shipped.
       if (status === 'completed' && !wasAlreadyClosed && !surfaceWaiverReason) {
-        const gate = await evaluateSurfaceAuditGate(existing, await loadSurfaceAuditGateTasks(id)).catch(err => {
+        const gate = await evaluateSurfaceAuditGate(existing, await loadSurfaceAuditGateTasks(id), { fillMergedEvidence: true }).catch(err => {
           console.error(`[missions] surface-audit gate check failed for ${id.slice(0, 8)} (not blocking):`, err);
           return null;
         });
@@ -878,6 +882,8 @@ export async function PATCH(
       .set(updateData)
       .where(eq(missions.id, id))
       .returning();
+    // Status, hold, schedule or criteria: the summary reads them (lib/work-changed.ts).
+    if (updated) noteWorkChanged({ missionIds: [id] });
 
     // A mission change that lifts a claim gate leaves its tasks `pending`, so
     // the outbox trigger sees nothing; wake them here or they wait for a poll.
@@ -1122,6 +1128,7 @@ export async function PATCH(
     console.error('Update mission error:', error);
     return NextResponse.json({ error: 'Failed to update mission' }, { status: 500 });
   }
+  } finally { await settleWorkChanges(); }
 }
 
 // DELETE /api/missions/[id]
@@ -1129,6 +1136,9 @@ export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   const { id } = await params;
   if (!isUuid(id)) {
     return NextResponse.json({ error: `Invalid mission id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
@@ -1169,4 +1179,5 @@ export async function DELETE(
     console.error('Delete mission error:', error);
     return NextResponse.json({ error: 'Failed to delete mission' }, { status: 500 });
   }
+  } finally { await settleWorkChanges(); }
 }

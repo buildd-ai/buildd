@@ -26,7 +26,7 @@ describe('taskHeading', () => {
   test('retry bracket prefixes are peeled into the eyebrow, not the heading', () => {
     const h = taskHeading({ title: '[builder · after CI #1] feat(invoices): render invoices', label: null }, 'Builder');
     expect(h.heading).toBe('Render invoices');
-    expect(h.eyebrow).toEqual(['feat', 'invoices', 'Builder', 'after CI #1']);
+    expect(h.eyebrow).toEqual(['feat', 'invoices', 'Builder', 'Fix 1 · CI failed']);
   });
 });
 
@@ -48,7 +48,7 @@ describe('taskHeading names the role once (docs/specs/task-page.md AC-9)', () =>
     expect(h.eyebrow.filter(e => e.toLowerCase() === 'reviewer')).toHaveLength(1);
   });
   test('a qualifier that is not the role stays', () => {
-    expect(taskHeading({ title: '[builder · after CI #1] fix: x', label: null }, 'Builder').eyebrow).toContain('after CI #1');
+    expect(taskHeading({ title: '[builder · after CI #1] fix: x', label: null }, 'Builder').eyebrow).toContain('Fix 1 · CI failed');
   });
 });
 
@@ -70,10 +70,17 @@ describe('headerLifecycle (docs/specs/task-page.md, State mapping)', () => {
     expect(headerLifecycle(V({ rounds: [{ ...r, status: 'queued' }] }))).toEqual({ state: 'review', phrase: 'awaiting review' });
     expect(headerLifecycle(V({ state: 'CHANGES_REQUESTED' }))).toEqual({ state: 'review', phrase: 'changes requested' });
   });
-  test('approved waits on the merge; checks pending say so', () => {
-    expect(headerLifecycle(V({ stage: 'approved', state: 'APPROVED', prState: 'ci_passed' }))).toEqual({ state: 'landing', phrase: 'awaiting merge' });
-    expect(headerLifecycle(V({ stage: 'approved', state: 'APPROVED', prState: 'awaiting_ci' }))).toEqual({ state: 'landing', phrase: 'approved · checking' });
+  test('approved is a Verify fact: Deliver starts only when the checks passed', () => {
+    expect(headerLifecycle(V({ stage: 'approved', state: 'APPROVED', prState: 'ci_passed' }))).toEqual({ state: 'landing', phrase: 'ready to merge' });
+    expect(headerLifecycle(V({ stage: 'approved', state: 'APPROVED', prState: 'awaiting_ci' }))).toEqual({ state: 'review', phrase: 'approved · checking' });
+    expect(headerLifecycle(V({ stage: 'approved', state: 'APPROVED', prState: 'ci_running' }))).toEqual({ state: 'review', phrase: 'approved · checking' });
+    expect(headerLifecycle(V({ stage: 'approved', state: 'APPROVED', prState: 'ci_failed' }))).toEqual({ state: 'review', phrase: 'approved · checks failing' });
+    expect(headerLifecycle(V({ stage: 'approved', state: 'APPROVED', prState: 'conflict' }))).toEqual({ state: 'review', phrase: 'approved · merge conflict' });
+    expect(headerLifecycle(V({ stage: 'approved', state: 'APPROVED', prState: null }))).toEqual({ state: 'landing', phrase: 'approved' });
+  });
+  test('the merge operation is Deliver · merging, and the merge fact lands it', () => {
     expect(headerLifecycle(V({ stage: 'landing', state: 'LANDING' }))).toEqual({ state: 'landing', phrase: 'merging' });
+    expect(headerLifecycle(V({ stage: 'merged', state: 'MERGED' }))).toEqual({ state: 'landed', phrase: null });
   });
   test('merged only on the merge fact; closed is not landed', () => {
     expect(headerLifecycle(V({ stage: 'merged', state: 'MERGED' }))).toEqual({ state: 'landed', phrase: null });

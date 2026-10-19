@@ -1,4 +1,5 @@
 import { ciLifecycleFromSuites } from '@/lib/ci-lifecycle';
+import { latestRunPerName, listAllCheckRuns } from '@/lib/ci-verdict';
 import { createHmac, timingSafeEqual } from 'crypto';
 
 // GitHub App configuration
@@ -327,7 +328,7 @@ export async function postPrReview(params: {
       // A verdict that went up as a comment review (own PR, below) is matched by its body.
       const duplicate = existing.find(
         (r: { commit_id?: string; state?: string; body?: string }) =>
-          r.commit_id === headSha && (r.state === state || (r.state === 'COMMENTED' && r.body === body)),
+          r.commit_id === headSha && (r.state === state || (r.state === 'COMMENTED' && (r.body === body || r.body === withOwnPrNote(body)))),
       );
       if (duplicate) {
         return { posted: false, reason: 'a matching review already exists for this commit' };
@@ -351,7 +352,7 @@ export async function postPrReview(params: {
     // not this review, so the same text goes up as a comment review instead.
     if (isOwnPrReviewRefusal(reason)) {
       try {
-        const result = await post('COMMENT');
+        const result = await githubApi(installationId, path, { method: 'POST', body: JSON.stringify({ commit_id: headSha, event: 'COMMENT', body: withOwnPrNote(body) }) });
         return { posted: true, reviewId: result?.id, commentedOwnPr: true };
       } catch (commentErr) {
         reason = commentErr instanceof Error ? commentErr.message : 'unknown error';
@@ -362,12 +363,24 @@ export async function postPrReview(params: {
   }
 }
 
+/**
+ * What a verdict posted as a comment says about itself. GitHub shows such a review as COMMENTED
+ * whatever the verdict was, so the body states the limit: the review's state is not the decision.
+ */
+export const OWN_PR_REVIEW_NOTE =
+  "Posted as a comment: GitHub does not let the account that opened a PR approve it or request changes on it, so this review's state reads COMMENTED whatever the verdict. The verdict is the one buildd recorded for the commit named above, published as the `Buildd / Review approval` commit status, and a merge is gated on that, never on this text.";
+
+function withOwnPrNote(body: string): string {
+  return `${body}\n\n${OWN_PR_REVIEW_NOTE}`;
+}
+
 /** GitHub's 422 for an approve or request-changes review by the PR's own author. */
 export function isOwnPrReviewRefusal(message: string): boolean {
   return /GitHub API error: 422\b/.test(message) && /Can not (approve|request changes on) your own pull request/i.test(message);
 }
 
 export interface CheckSuiteSummary {
+  id?: number;
   status: string;
   conclusion: string | null;
   app?: { slug?: string } | null;
@@ -397,6 +410,32 @@ export function checkSuitesAllPassed(suites: CheckSuiteSummary[]): boolean {
   );
 }
 
+interface SuiteRun {
+  id?: number;
+  name?: string;
+  status?: string;
+  conclusion?: string | null;
+  started_at?: string | null;
+  check_suite?: { id?: number } | null;
+}
+
+/**
+ * Drop the suites a re-run replaced. A workflow run twice on one commit leaves the
+ * first run's failed suite beside the run that replaced it; GitHub's merge box reads
+ * the newest run per check name, so a suite all of whose runs a newer same-name run
+ * superseded no longer decides anything. A suite with no runs (a startup failure) or
+ * any current run stays. Without a complete run read nothing is dropped (fails closed).
+ */
+export function dropSupersededSuites<S extends { id?: number }>(suites: S[], runs: SuiteRun[] | null): S[] {
+  if (!runs) return suites;
+  const rows = runs.map((r) => ({ ...r, name: String(r.name ?? 'unnamed'), status: String(r.status ?? ''), conclusion: r.conclusion ?? null, __row: r }));
+  const current = new Set(latestRunPerName(rows).map((r) => r.__row));
+  return suites.filter((s) => {
+    const own = runs.filter((r) => s.id != null && r.check_suite?.id === s.id);
+    return own.length === 0 || own.some((r) => current.has(r));
+  });
+}
+
 // Check if all check suites on a commit have passed
 export async function allCheckSuitesPassed(
   installationId: number,
@@ -404,12 +443,13 @@ export async function allCheckSuitesPassed(
   headSha: string
 ): Promise<boolean> {
   try {
-    const data = await githubApi(
-      installationId,
-      `/repos/${repoFullName}/commits/${headSha}/check-suites`
-    );
+    const [data, runs] = await Promise.all([
+      githubApi(installationId, `/repos/${repoFullName}/commits/${headSha}/check-suites`),
+      // The runs only ever drop a superseded suite; an unreadable or partial list drops nothing.
+      listAllCheckRuns<SuiteRun>(githubApi, installationId, repoFullName, headSha).catch(() => null),
+    ]);
 
-    return checkSuitesAllPassed(data.check_suites ?? []);
+    return checkSuitesAllPassed(dropSupersededSuites<CheckSuiteSummary>(data.check_suites ?? [], runs?.complete ? runs.items : null));
   } catch (error) {
     console.warn(`Failed to check suites for ${repoFullName}@${headSha}:`, error);
     return false;

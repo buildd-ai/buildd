@@ -54,6 +54,13 @@ describe('GET /api/prs', () => {
     expect(mockListPrs.mock.calls[1][0].workspaceIds).toEqual([]);
   });
 
+  it('a query failure is a 500 with a JSON error body, never an empty one', async () => {
+    mockListPrs.mockRejectedValue(new Error('boom'));
+    const res = await GET(req());
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toContain('boom');
+  });
+
   it('refuses closed with a pointer to get_pr', async () => {
     const res = await GET(req('?state=closed'));
     expect(res.status).toBe(400);
@@ -68,9 +75,9 @@ describe('GET /api/prs', () => {
     expect(before - since.getTime()).toBeLessThan(7 * 864e5 + 60_000);
   });
 
-  it('heals stale PR state for the listed workspaces after responding', async () => {
+  it('starts no GitHub refresh per poll (R-24: the webhook and pr-reconcile cron heal PR state)', async () => {
     await GET(req('?workspaceId=ws-a'));
-    expect(mockRefresh.mock.calls[0][0]).toEqual(['ws-a']);
+    expect(mockRefresh).not.toHaveBeenCalled();
   });
 });
 
@@ -94,7 +101,6 @@ describe('per-task token', () => {
     expect(res.status).toBe(200);
     expect(mockListReachable).not.toHaveBeenCalled();
     expect(mockListPrs.mock.calls[0][0]).toMatchObject({ workspaceIds: ['ws-a'], limit: 30 });
-    expect(mockRefresh.mock.calls[0][0]).toEqual(['ws-a']);
   });
 
   it('retains its bound workspace when absent from account reach', async () => {

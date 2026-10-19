@@ -1,6 +1,7 @@
+import { cache } from 'react';
 import { db } from '@buildd/core/db';
 import { missionNotes, tasks, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import {
   SURFACE_AUDIT_WAIVER_NOTE_TITLE,
   isRenderedSurfaceChange,
@@ -19,6 +20,7 @@ import {
   type VisualImpactAssessment,
 } from './workflow/visual-review-impact';
 import { resolveVisualReviewPolicy } from './workflow/visual-review-policy';
+import { loadMergedSurfaceEvidence, loadPrSurfaceFiles, persistMergedSurfaceEvidence } from '@/lib/pr-surface-evidence';
 
 /**
  * The completion side of the per-mission surface audit.
@@ -34,6 +36,14 @@ import { resolveVisualReviewPolicy } from './workflow/visual-review-policy';
 
 /** Cap on PR diffs fetched per check; a mission this large is audited by hand. */
 const MAX_PRS_CHECKED = 25;
+/** PR evidence reads in flight at once: a cache hit is one DB read, a live miss a few GitHub calls. */
+export const PR_READ_CONCURRENCY = 4;
+
+async function forEachBounded<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const lane = async () => { while (next < items.length) await fn(items[next++]); };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+}
 
 export interface SurfaceAuditGateTask {
   id: string;
@@ -45,7 +55,8 @@ export interface SurfaceAuditGateTask {
   pathManifest?: string[] | null;
   /** Read only to recognise a trunk-refresh task (`isTrunkRefreshTask`). */
   context?: unknown;
-  workers?: Array<{ prNumber?: number | null }>;
+  /** `mergedAt` set: the PR is merged, so its files come only from durable evidence, never GitHub. */
+  workers?: Array<{ prNumber?: number | null; mergedAt?: Date | string | null }>;
 }
 
 export type SurfaceAuditGate =
@@ -113,19 +124,42 @@ async function hasWaiver(missionId: string): Promise<boolean> {
  */
 export async function loadSurfaceAuditWaiver(
   missionId: string,
-): Promise<{ reason: string; actorLabel: string | null; at: string } | null> {
-  const notes = await db.query.missionNotes.findMany({
-    where: sqlWhere(and(eq(missionNotes.missionId, missionId), eq(missionNotes.title, SURFACE_AUDIT_WAIVER_NOTE_TITLE))),
-    columns: { authorType: true, body: true, actorLabel: true, createdAt: true },
-    orderBy: sqlOrderBy([desc(missionNotes.createdAt)]),
-    limit: 20,
-  });
-  const latest = notes
-    .filter(n => (n.authorType === 'user' || n.authorType === 'mcp') && (n.body ?? '').trim().length > 0)
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-  if (!latest) return null;
-  return { reason: (latest.body ?? '').trim(), actorLabel: latest.actorLabel ?? null, at: new Date(latest.createdAt).toISOString() };
+): Promise<SurfaceAuditWaiver | null> {
+  return (await loadSurfaceAuditWaivers([missionId])).get(missionId) ?? null;
 }
+
+export type SurfaceAuditWaiver = { reason: string; actorLabel: string | null; at: string };
+
+/** Per-mission notes `loadSurfaceAuditWaiver` looks through, newest first. */
+const WAIVER_NOTES_PER_MISSION = 20;
+
+/** `loadSurfaceAuditWaiver` for several missions in one query: each mission's newest waiver, absent when none. */
+export async function loadSurfaceAuditWaivers(missionIds: readonly string[]): Promise<Map<string, SurfaceAuditWaiver>> {
+  const out = new Map<string, SurfaceAuditWaiver>();
+  if (missionIds.length === 0) return out;
+  const notes = await db.query.missionNotes.findMany({
+    where: sqlWhere(and(inArray(missionNotes.missionId, [...missionIds]), eq(missionNotes.title, SURFACE_AUDIT_WAIVER_NOTE_TITLE))),
+    columns: { missionId: true, authorType: true, body: true, actorLabel: true, createdAt: true },
+    orderBy: sqlOrderBy([desc(missionNotes.createdAt)]),
+  });
+  const byMission = new Map<string, typeof notes>();
+  for (const n of notes) {
+    if (!n.missionId) continue;
+    const list = byMission.get(n.missionId) ?? [];
+    if (list.length < WAIVER_NOTES_PER_MISSION) list.push(n);
+    byMission.set(n.missionId, list);
+  }
+  for (const [missionId, list] of byMission) {
+    const latest = list
+      .filter(n => (n.authorType === 'user' || n.authorType === 'mcp') && (n.body ?? '').trim().length > 0)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+    if (latest) out.set(missionId, { reason: (latest.body ?? '').trim(), actorLabel: latest.actorLabel ?? null, at: new Date(latest.createdAt).toISOString() });
+  }
+  return out;
+}
+
+/** `repoFor`, read once per request: a page's render asks the gate more than once. */
+const repoForRequest = cache((workspaceId: string) => repoFor(workspaceId));
 
 export async function repoFor(workspaceId: string): Promise<{ installationId: number; fullName: string } | null> {
   const ws = await db.query.workspaces.findFirst({
@@ -143,22 +177,6 @@ export async function repoFor(workspaceId: string): Promise<{ installationId: nu
   return fullName && installationId ? { installationId, fullName } : null;
 }
 
-/** A PR's changed files with their patches (the classifier reads the hunks). A renamed file's old name carries no patch. */
-async function changedFiles(installationId: number, fullName: string, prNumber: number): Promise<ImpactFile[]> {
-  const { githubApi } = await import('@/lib/github');
-  const out: ImpactFile[] = [];
-  for (let page = 1; page <= 3; page++) {
-    const files = await githubApi(installationId, `/repos/${fullName}/pulls/${prNumber}/files?per_page=100&page=${page}`);
-    if (!Array.isArray(files)) break;
-    for (const f of files as Array<{ filename?: string; previous_filename?: string; patch?: string }>) {
-      if (f.filename) out.push({ path: f.filename, patch: f.patch ?? null });
-      if (f.previous_filename) out.push({ path: f.previous_filename, patch: null });
-    }
-    if (files.length < 100) break;
-  }
-  return out;
-}
-
 /**
  * Whether the mission still owes a surface audit, and under which Visual
  * Review policy. Cheapest evidence first: the policy, a completed audit and a
@@ -168,6 +186,16 @@ async function changedFiles(installationId: number, fullName: string, prNumber: 
  * widens to trunk's whole diff) and the mission-PR bookkeeping row are not
  * builders. A builder's PR diff, with patches, is the truth; its declared
  * manifest stands in only when there is no PR to read or it could not be read.
+ * The diff comes from `loadPrSurfaceFiles` (lib/pr-surface-evidence.ts): an
+ * open PR's files are cached per authoritative head, a merged PR's are read
+ * only from the durable evidence the merge wrote, so evaluating a merged
+ * mission makes no GitHub file-list call. A merged PR without that evidence
+ * (merged before it was recorded) falls back to its declared manifest, unless
+ * the caller is a completion decision (`fillMergedEvidence`), which records it
+ * first. Rendering callers never pass it; they pass `render`, which never
+ * calls GitHub (spec 3ef37387 R-12): a merged PR's durable evidence is read
+ * for every PR in one query, and an open PR (whose head only GitHub knows)
+ * answers by its declared manifest.
  * The rendered-surface files are then handed to the visual impact classifier
  * (`assessVisualImpact`, deterministic rules only, see `NO_MODEL`): a change it
  * proves cannot render (comments, types, server-only code) owes nothing, and
@@ -180,10 +208,21 @@ async function changedFiles(installationId: number, fullName: string, prNumber: 
 export async function evaluateSurfaceAuditGate(
   mission: { id: string; autoSurfaceAudit?: boolean | null; workspaceId?: string | null },
   tasks: SurfaceAuditGateTask[],
+  opts: {
+    fillMergedEvidence?: boolean;
+    render?: boolean;
+    /** The workspace's policy override (`visualReviewPolicyOf`) when the caller already read it; absent reads it. */
+    workspacePolicy?: VisualReviewPolicyMode | null;
+    /** Whether a person waived it (`loadSurfaceAuditWaiver` found one) when the caller already read it. */
+    waived?: boolean;
+    /** A repo-link memo the caller shares across many gate calls (a sweep), keyed by workspace. */
+    repos?: Map<string, Promise<{ installationId: number; fullName: string } | null>>;
+  } = {},
 ): Promise<SurfaceAuditGate> {
   // Without a workspace there is nothing to read: the legacy opt-out alone decides, at no cost.
   const policy = resolveVisualReviewPolicy({
-    workspace: mission.workspaceId ? await workspacePolicy(mission.workspaceId) : null,
+    workspace: opts.workspacePolicy !== undefined ? opts.workspacePolicy
+      : mission.workspaceId ? await workspacePolicy(mission.workspaceId) : null,
     mission: { autoSurfaceAudit: mission.autoSurfaceAudit },
   });
   if (policy.mode === 'off') return { required: false, why: 'opted_out' };
@@ -194,32 +233,62 @@ export async function evaluateSurfaceAuditGate(
   if (builders.length === 0) return { required: false, why: 'no_ui_change' };
 
   // Strict forbids waiving, so a recorded waiver does not count there.
-  if (policy.waiverAllowed && await hasWaiver(mission.id)) return { required: false, why: 'waived' };
+  if (policy.waiverAllowed && (opts.waived ?? await hasWaiver(mission.id))) return { required: false, why: 'waived' };
 
-  const prs = new Map<number, string>();
+  const prs = new Map<number, { workspaceId: string; merged: boolean }>();
   for (const t of builders) {
-    const n = t.workers?.[0]?.prNumber;
-    if (typeof n === 'number' && t.workspaceId && !prs.has(n)) prs.set(n, t.workspaceId);
+    const w = t.workers?.[0];
+    const n = w?.prNumber;
+    if (typeof n === 'number' && t.workspaceId && !prs.has(n)) prs.set(n, { workspaceId: t.workspaceId, merged: w?.mergedAt != null });
   }
 
-  const repos = new Map<string, { installationId: number; fullName: string } | null>();
+  const repos = opts.repos ?? new Map<string, Promise<{ installationId: number; fullName: string } | null>>();
+  const repoOf = (workspaceId: string) => {
+    if (!repos.has(workspaceId)) repos.set(workspaceId, repoForRequest(workspaceId));
+    return repos.get(workspaceId)!;
+  };
   const read = new Set<number>();
   const diffFiles: ImpactFile[] = [];
   let unreadable = false;
-  for (const [prNumber, workspaceId] of [...prs].slice(0, MAX_PRS_CHECKED)) {
-    try {
-      if (!repos.has(workspaceId)) repos.set(workspaceId, await repoFor(workspaceId));
-      const repo = repos.get(workspaceId);
-      if (!repo) { unreadable = true; continue; }
-      for (const f of await changedFiles(repo.installationId, repo.fullName, prNumber)) {
-        if (isRenderedSurfaceChange(f.path)) diffFiles.push(f);
+  const take = (prNumber: number, files: ImpactFile[]) => {
+    for (const f of files) if (isRenderedSurfaceChange(f.path)) diffFiles.push(f);
+    read.add(prNumber);
+  };
+  if (opts.render) {
+    const byWorkspace = new Map<string, number[]>();
+    for (const [prNumber, { workspaceId, merged }] of [...prs].slice(0, MAX_PRS_CHECKED)) {
+      if (!merged) { unreadable = true; continue; }
+      byWorkspace.set(workspaceId, [...(byWorkspace.get(workspaceId) ?? []), prNumber]);
+    }
+    await Promise.all([...byWorkspace].map(async ([workspaceId, numbers]) => {
+      const repo = await repoOf(workspaceId).catch(() => null);
+      if (!repo) { unreadable = true; return; }
+      const evidence = await loadMergedSurfaceEvidence(repo, numbers);
+      for (const n of numbers) {
+        const files = evidence.get(n);
+        if (files) take(n, files);
+        else unreadable = true;
       }
-      read.add(prNumber);
+    }));
+  }
+  if (!opts.render) await forEachBounded([...prs].slice(0, MAX_PRS_CHECKED), PR_READ_CONCURRENCY, async ([prNumber, { workspaceId, merged }]) => {
+    try {
+      const repo = await repoOf(workspaceId);
+      if (!repo) { unreadable = true; return; }
+      let files = await loadPrSurfaceFiles(repo, prNumber, merged);
+      if (!files && merged && opts.fillMergedEvidence) {
+        await persistMergedSurfaceEvidence(repo, prNumber);
+        files = await loadPrSurfaceFiles(repo, prNumber, true);
+      }
+      // No evidence (a merged PR never recorded, a capped list, a head that moved mid-read):
+      // its declared manifest answers for it, and the result says it could not be checked.
+      if (!files) { unreadable = true; return; }
+      take(prNumber, files);
     } catch (err) {
       unreadable = true;
       console.error(`[surface-audit-gate] could not read PR #${prNumber} files (not blocking on it):`, err);
     }
-  }
+  });
   if (prs.size > MAX_PRS_CHECKED) unreadable = true;
 
   // A builder whose PR was read is answered by its diff; the rest by what they declared.
@@ -254,13 +323,39 @@ export async function evaluateSurfaceAuditGate(
   };
 }
 
+/**
+ * The columns the gate reads. `context` is projected to the two keys
+ * `isTrunkRefreshTask` reads, never the whole blob (spec 3ef37387 R-11, R-25):
+ * a mission's tasks carry kilobytes of context each and nothing here reads
+ * any other key.
+ */
+const GATE_TASK_COLUMNS = { id: true, missionId: true, title: true, status: true, taskClass: true, roleSlug: true, workspaceId: true, pathManifest: true } as const;
+const GATE_TASK_EXTRAS = {
+  context: (t: any, { sql: s }: any) => s`jsonb_build_object('requireMergeCommit', ${t.context} -> 'requireMergeCommit', 'refreshTrunk', ${t.context} -> 'refreshTrunk')`.as('trunk_refresh_context'),
+};
+
 /** The mission's tasks in the shape the gate reads, for callers that do not already hold them. */
 export async function loadSurfaceAuditGateTasks(missionId: string): Promise<SurfaceAuditGateTask[]> {
-  return db.query.tasks.findMany({
-    where: sqlWhere(eq(tasks.missionId, missionId)),
-    columns: { id: true, title: true, status: true, taskClass: true, roleSlug: true, workspaceId: true, pathManifest: true, context: true },
+  return (await loadSurfaceAuditGateTasksByMission([missionId])).get(missionId) ?? [];
+}
+
+/** `loadSurfaceAuditGateTasks` for several missions in one query, keyed by mission. */
+export async function loadSurfaceAuditGateTasksByMission(missionIds: readonly string[]): Promise<Map<string, SurfaceAuditGateTask[]>> {
+  const out = new Map<string, SurfaceAuditGateTask[]>();
+  if (missionIds.length === 0) return out;
+  const rows = await db.query.tasks.findMany({
+    where: sqlWhere(inArray(tasks.missionId, [...missionIds])),
+    columns: GATE_TASK_COLUMNS,
+    extras: GATE_TASK_EXTRAS,
     with: {
-      workers: { columns: { prNumber: true }, orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.startedAt)]), limit: 1 },
+      workers: { columns: { prNumber: true, mergedAt: true }, orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.startedAt)]), limit: 1 },
     },
-  });
+  }) as Array<SurfaceAuditGateTask & { missionId: string | null }>;
+  for (const r of rows) {
+    if (!r.missionId) continue;
+    const list = out.get(r.missionId) ?? [];
+    list.push(r);
+    out.set(r.missionId, list);
+  }
+  return out;
 }

@@ -17,6 +17,7 @@
  */
 import type { DeliverableRole } from '@buildd/core/mission-helpers';
 import { pickTaskView } from './task-view-pick';
+import { BOARD_MILESTONES_MAX, BOARD_MILESTONE_LABEL_MAX } from './mission-board-limits';
 import { TERMINAL_TASK_STATUSES, type VisualReviewModel } from '@buildd/shared';
 import { screensToReview } from './visual-review-model';
 import { assignSlots, occupiedSlots } from '@/components/fleet/slot-lanes-layout';
@@ -34,7 +35,7 @@ import { deriveWorkKind, LIVE_WORKER_STATUSES, reduceToFrontier } from './task-p
 import { buildMissionAdjacency, type AdjacencyGateRow } from './condensed-timeline';
 import type { DepReleaseArm } from './dep-gate-contract';
 import type { WaitingKind } from '@buildd/core/waiting-reason';
-import { classifyTaskFailure, type TaskFailureKind } from './task-failure-kind';
+import { classifyTaskFailure, failedDependencyOf, type TaskFailureKind } from './task-failure-kind';
 import { boardTaskLabel } from './mission-board-label';
 import { resolveRunnerDisplay, runnerKey, type RunnerDisplay, type RunnerHeartbeatLike } from './runner-display';
 import { activeWorkMs, formatDuration } from './mission-duration';
@@ -86,6 +87,8 @@ export interface BoardTaskInput extends MissionFeedTaskInput {
   backend?: string | null;
   /** Newest first, as the mission query orders them. */
   workers: BoardWorkerInput[];
+  /** The task's `result` digest (`errorType`, `error`): a dependency failure is read from it. */
+  result?: unknown;
 }
 
 export interface BoardRoleInput {
@@ -280,6 +283,8 @@ export interface BoardTask {
   backend: 'claude' | 'codex' | null;
   /** `classifyTaskFailure` over the mission's rows; null unless the task failed. */
   failureKind: TaskFailureKind | null;
+  /** For a `dependency` failure: the failed task it waits on (`failedDependencyOf`). */
+  failedDependency?: { taskId: string; title: string | null } | null;
 }
 
 export interface BoardPhase {
@@ -462,7 +467,7 @@ export function formatAge(ms: number): string {
  * (`status` entries), in time order. Checkpoints and the runner's audit
  * entries are bookkeeping, not progress.
  */
-export function selectMilestones(raw: unknown, max = 24): BoardMilestone[] {
+export function selectMilestones(raw: unknown, max = BOARD_MILESTONES_MAX): BoardMilestone[] {
   if (!Array.isArray(raw)) return [];
   const out: BoardMilestone[] = [];
   for (const m of raw) {
@@ -472,7 +477,7 @@ export function selectMilestones(raw: unknown, max = 24): BoardMilestone[] {
     const ts = num(r.ts) ?? num(r.timestamp);
     const label = str(r.label);
     if (ts == null || !label) continue;
-    out.push({ ts, label: label.length > 160 ? `${label.slice(0, 159)}…` : label });
+    out.push({ ts, label: label.length > BOARD_MILESTONE_LABEL_MAX ? `${label.slice(0, BOARD_MILESTONE_LABEL_MAX - 1)}…` : label });
   }
   out.sort((a, b) => a.ts - b.ts);
   return out.slice(-max);
@@ -540,6 +545,8 @@ export function toBoardTaskInput(t: Record<string, unknown> & { id: string; titl
     outputRequirement: str(t.outputRequirement),
     ciRetryPrNumber: num(t.ciRetryPrNumber),
     backend: str(t.backend),
+    // The page's digest under its own key: a caller that loads no result (Home's cards) never touches `result`.
+    result: t.resultDigest ?? null,
     delivery: (t.delivery as DeliveryDisplay | null | undefined) ?? null,
     worker: w0
       ? {
@@ -815,6 +822,7 @@ export function buildBoardCells(
       workerStatus: own?.status ?? null,
       backend: t.backend === 'claude' || t.backend === 'codex' ? t.backend : null,
       failureKind: classifyTaskFailure(t, input.tasks),
+      failedDependency: failedDependencyOf(t, input.tasks),
     };
   }
 

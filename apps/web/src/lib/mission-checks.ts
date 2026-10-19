@@ -12,7 +12,7 @@
  */
 import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
-import { presentVisualReview } from './workflow/visual-review-presentation';
+import { earlierCommitDetail, presentVisualReview } from './workflow/visual-review-presentation';
 import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import type { MissionIntegrationPrView } from './mission-integration-pr';
 import type { MissionReleaseStatus } from './mission-delivery';
@@ -128,6 +128,8 @@ export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: 
   if (state.status === 'optional' && state.scope.impact === 'unknown') return idle('not checked', 'Could not tell whether any screens changed, so nothing was captured.');
   if (state.status === 'optional') return idle('optional', 'Visual review is optional for this mission.');
   if (state.status === 'passed') {
+    // Closed: the pass stands as the record, and the row says which commit it judged.
+    if (state.passedOnEarlierCommit) return row('stale', 'passed on an earlier commit', earlierCommitDetail(state), 'none');
     if (state.staleEvidence) return row('stale', 'out of date', 'The branch changed after the last pass. It checks again.', 'system');
     return row('passed', 'passed', p.record?.detail ?? p.detail, 'none');
   }
@@ -139,6 +141,13 @@ export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: 
     return row('finding', plural(Math.max(state.findings.issues, 1), 'finding'), sentence(p.label, p.detail));
   }
   if (p.owner) return row('owner', p.owner.label, p.detail);
+  // I-14: queued behind failed build work, named, with no action of its own; the failed task holds the recovery.
+  if (state.status === 'queued' && state.waitingOn) {
+    return {
+      ...row('queued', 'waiting on failed work', p.detail, 'none'),
+      evidence: [...base.evidence, { label: 'Open the failed task', href: `/app/tasks/${encodeURIComponent(state.waitingOn.taskId)}` }],
+    };
+  }
   if (state.staleEvidence) return row('stale', 'out of date', 'The branch changed after the last check. It checks again.');
   if (state.status === 'running') {
     const pr = state.progress;
@@ -237,7 +246,7 @@ export function missionPrCheck(pr: MissionIntegrationPrView, ctx: { mergeTier: M
   const row = (status: CheckStatus, text: string, detail: string, actor: CheckActor, extra: Partial<CheckRow> = {}): CheckRow => ({ ...base, status, state: text, detail, actor, ...extra });
   switch (pr.state) {
     case 'merged': return row('passed', 'merged', `Merged into ${into}.`, 'none');
-    case 'closed': return row('unable', 'closed', 'Closed without merging, so none of this work has shipped.', 'owner', { problem: 'product' });
+    case 'closed': return row('unable', 'closed', `Closed without merging, so none of this work reached ${into}.`, 'owner', { problem: 'product' });
     case 'not_opened':
       return row('queued', 'not open', ctx.buildComplete ? 'Opens when the last task PR merges.' : 'Opens when the build is done.', 'system');
     default:
@@ -257,10 +266,10 @@ export function releaseCheck(status: MissionReleaseStatus, label?: string | null
   const row = (s: CheckStatus, text: string, detail: string, actor: CheckActor, problem: CheckRow['problem'] = null): CheckRow => ({ ...base, status: s, state: text, detail, actor, problem });
   switch (status) {
     case 'waiting': return row('queued', 'waiting', 'Starts after the merge.', 'system');
-    case 'dispatched': return row('running', 'started', 'Shows delivered once production is healthy.', 'system');
-    case 'deploying': return row('running', 'deploying', 'Shows delivered once production is healthy.', 'system');
+    case 'dispatched': return row('running', 'started', 'Released once production is healthy.', 'system');
+    case 'deploying': return row('running', 'releasing', 'Released once production is healthy.', 'system');
     case 'healthy': return row('passed', 'healthy', 'Production is healthy.', 'none');
-    case 'failed': return row('finding', 'deploy failed', 'Not delivered until a deploy is healthy.', 'owner', 'system');
+    case 'failed': return row('finding', 'deploy failed', 'Not released until a deploy is healthy.', 'owner', 'system');
     default: return row('unable', 'unknown', 'The release state could not be read.', 'system', 'system');
   }
 }
@@ -299,7 +308,7 @@ export function missionChecks(input: MissionChecksInput): MissionChecks {
     ? { key: 'build', label: 'Build', state: 'todo', text: 'no tasks' }
     : buildComplete
       ? { key: 'build', label: 'Build', state: 'done', text: `${build.done} of ${build.total}` }
-      : { key: 'build', label: 'Build', state: 'now', text: `${build.done} of ${build.total} landed` };
+      : { key: 'build', label: 'Build', state: 'now', text: `${build.done} of ${build.total} done` };
 
   const passedCount = verifyRows.filter(r => r.status === 'passed').length;
   const counted = verifyRows.filter(r => r.status !== 'not_applicable').length;

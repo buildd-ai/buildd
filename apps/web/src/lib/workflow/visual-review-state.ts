@@ -48,6 +48,8 @@ export interface VisualReviewStateInput {
     needsYouReason: 'question' | 'unsure' | 'round_cap' | null;
     captured: number;
     expected: number | null;
+    /** For `waiting_on_failed_work`: the failed build task the audit waits on. */
+    waitingOn?: { taskId: string; title: string | null } | null;
   } | null;
   /** The newest waiver a person recorded. */
   waiver: { reason: string; actorLabel: string | null; at: string } | null;
@@ -68,6 +70,13 @@ export interface VisualReviewStateInput {
    * commit, and an audit that recorded none cannot prove it.
    */
   auditedSha?: string | null;
+  /**
+   * The mission is completed or archived. Its completion gate already ran, and
+   * the scheduler files nothing for a closed mission, so a pass on an earlier
+   * commit is reported as exactly that (`passedOnEarlierCommit`), never as a
+   * check that will run again.
+   */
+  missionClosed?: boolean;
 }
 
 export interface MissionVisualReviewState {
@@ -80,6 +89,15 @@ export interface MissionVisualReviewState {
   pendingVerification: boolean;
   /** The audit passed on an older commit than the branch head now is: a new review is owed, the old pass is not evidence. */
   staleEvidence: boolean;
+  /**
+   * A closed mission whose last pass judged an earlier commit than the one it
+   * delivered. Status stays `passed` (the completion gate accepted it and
+   * nothing re-checks a closed mission) and `staleEvidence` stays true: the
+   * delivered commit was not checked, and every surface says so.
+   */
+  passedOnEarlierCommit: boolean;
+  /** The commit the latest audit judged, when it recorded one. */
+  evidenceSha: string | null;
   nextActor: VisualReviewNextActor;
   policy: Pick<ResolvedVisualReviewPolicy, 'mode' | 'origin' | 'waiverAllowed' | 'locked'>;
   scope: { screens: number | null; uiFiles: number; source: 'manifest' | 'diff' | null; workLanded: boolean; /** What the impact read said: `unknown` when the builders' files could not be read. */ impact?: 'yes' | 'no' | 'unknown' };
@@ -88,6 +106,12 @@ export interface MissionVisualReviewState {
   blocked?: { cause: VisualReviewBlockedCause; causeOwner: 'buildd' | 'workspace' | 'unknown'; autoRetriesLeft: number };
   waiver?: { reason: string; actorLabel: string | null; at: string; supersededBy: string | null };
   auditTaskId: string | null;
+  /**
+   * A queued audit that never ran because build work it depends on failed
+   * (spec 072de598 I-14): that task. Not a check failure, so `blocked` is
+   * absent and nothing here offers a retry; the recovery is on this task.
+   */
+  waitingOn?: { taskId: string; title: string | null };
   /** The claim loop's newest refusal reason for a queued audit (gate_events), when the loader read one. */
   holdReason?: string | null;
   branch: {
@@ -142,6 +166,8 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
   let blocked: MissionVisualReviewState['blocked'];
   let blockedActor: VisualReviewNextActor | null = null;
   let staleEvidence = false;
+  let passedOnEarlierCommit = false;
+  let waitingOn: MissionVisualReviewState['waitingOn'];
 
   const hasAudit = !!audit && !(review && review.phase === 'off');
   if (waiverActive) {
@@ -153,6 +179,10 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
       status = 'blocked';
       blocked = { ...b, autoRetriesLeft: retries };
       blockedActor = b.causeOwner === 'workspace' || retries <= 0 ? 'owner' : 'system';
+    } else if (review.phase === 'waiting_on_failed_work') {
+      // Waits on the failed task, whose own recovery is the way on: no actor here.
+      status = 'queued';
+      waitingOn = review.waitingOn ?? undefined;
     } else if (review.phase === 'waiting_deps' || review.phase === 'queued') {
       status = 'queued';
       nextActor = 'system';
@@ -175,8 +205,14 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
     } else if (input.auditedSha !== undefined && input.uiChange.state !== 'no' && branch.headSha && input.auditedSha !== branch.headSha) {
       // Same-commit evidence only: a pass on another commit (or on none we can name) is not a pass for this head.
       staleEvidence = true;
-      status = 'needed';
-      nextActor = policy.mode === 'ask' ? 'owner' : 'system';
+      if (input.missionClosed) {
+        // Closed: nothing re-checks it. Say what was checked, never that it checks again.
+        passedOnEarlierCommit = true;
+        status = 'passed';
+      } else {
+        status = 'needed';
+        nextActor = policy.mode === 'ask' ? 'owner' : 'system';
+      }
     } else {
       status = 'passed';
     }
@@ -206,6 +242,8 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
     blocksMerge: pendingVerification && !!pr && !merged && prStage !== 'closed',
     pendingVerification,
     staleEvidence,
+    passedOnEarlierCommit,
+    evidenceSha: input.auditedSha ?? null,
     nextActor: required || status === 'waived' || status === 'passed' ? nextActor : 'none',
     policy: { mode: policy.mode, origin: policy.origin, waiverAllowed: policy.waiverAllowed, locked: policy.locked },
     scope: {
@@ -222,6 +260,7 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
       ? { waiver: { ...input.waiver, supersededBy: waiverActive ? null : (audit?.id ?? null) } }
       : {}),
     auditTaskId: audit?.id ?? null,
+    ...(waitingOn ? { waitingOn } : {}),
     branch: {
       headSha: branch.headSha,
       base: branch.base,

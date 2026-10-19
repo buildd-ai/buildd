@@ -10,12 +10,18 @@
  * branch refresh is not one either.
  */
 import { TaskStatus } from '@buildd/shared';
-import { repairPhaseOf, reviewSummaryLine, reviewSummaryOf, type DeliveryView, type RepairPhase } from './workflow/projections';
+import { repairLabelOf, repairPhaseOf, reviewSummaryLine, reviewSummaryOf, type DeliveryView, type RepairPhase } from './workflow/projections';
+
+/**
+ * The element id of the Code review row's findings on the task page. GitHub's Details link on the
+ * `Buildd / Review approval` status (kernel-ports.ts `links.review`) ends in `#review-findings`, and
+ * the id sits inside the row's <details>, so following the link opens it to the findings (R-43).
+ */
+export const REVIEW_FINDINGS_ANCHOR = 'review-findings';
 
 // The kernel's snapshots, read through the view (only its read model is imported outside the kernel).
 type RoundSnapshot = DeliveryView['rounds'][number];
 type AttemptSnapshot = DeliveryView['ledger'][number];
-type AttemptFamily = AttemptSnapshot['family'];
 
 export type CheckState = 'passed' | 'failed' | 'running' | 'pending' | 'blocked' | 'closed' | 'skipped';
 
@@ -64,10 +70,8 @@ export interface TaskChecks {
 export type ChecksInput = Pick<DeliveryView, 'state' | 'stateReason' | 'prNumber' | 'headSha' | 'prState' | 'rounds' | 'ledger' | 'approvedCurrentHead' | 'approvalBasis'>
   & Partial<Pick<DeliveryView, 'findings'>>;
 
-const FAMILY_LABEL: Record<AttemptFamily, string> = { review_fix: 'Review fix', ci: 'CI fix', conflict: 'Conflict fix', migration: 'Migration fix', trunk: 'Base fix' };
-
 function repairOf(a: AttemptSnapshot, v: ChecksInput): CheckRepair {
-  return { label: `${FAMILY_LABEL[a.family]} ${a.attemptNo} of ${a.maxAttempts}`, status: repairPhaseOf(a, v), taskId: a.taskId };
+  return { label: repairLabelOf(a, v.ledger), status: repairPhaseOf(a, v), taskId: a.taskId };
 }
 
 /** The head an attempt put on the PR, when it proved one. */
@@ -145,7 +149,7 @@ function mergeRow(v: ChecksInput): CheckRow | null {
     case 'APPROVED': return { ...base, state: 'pending', result: 'Awaiting merge' };
     case 'CLOSED_UNMERGED':
     case 'ABANDONED': return { ...base, state: 'closed', result: 'Closed without merging' };
-    case 'SUPERSEDED': return { ...base, state: 'closed', result: 'Landed in another PR' };
+    case 'SUPERSEDED': return { ...base, state: 'closed', result: 'Merged in another PR' };
     case 'REPAIRING': {
       if (v.stateReason === 'behind') return { ...base, state: 'running', result: 'Updating branch' };
       if (v.stateReason === 'conflict' || v.stateReason === 'migration') {

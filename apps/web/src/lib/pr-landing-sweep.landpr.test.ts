@@ -6,7 +6,11 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 // The workflow kernel's landing (lib/workflow/landing.ts): no kernel delivery here, so the
 // sweep's legacy merge path runs. The kernel path is S10/S15 in tests/db/workflow-matrix.test.ts.
+// The real seam is loaded before landing is mocked: conflict-retry used to pull it in at import, and the
+// code under test imports it lazily, where a partial landing mock would fail its re-exports.
+await import('@/lib/workflow/seam');
 mock.module('@/lib/workflow/landing', () => ({ landThroughKernel: async () => null, kernelLandingView: async () => null, staleLandingVersion: async () => null }));
+mock.module('@/lib/pr-landing-adoption', () => ({ adoptBeforeMerge: async () => ({ kind: 'legacy', reason: 'kernel_off' }) }));
 mock.module('@/lib/notify', () => ({ notifyTeamOf: async () => {} }));
 mock.module('@/lib/pushover', () => ({ notifyOperator: mock(() => undefined) }));
 

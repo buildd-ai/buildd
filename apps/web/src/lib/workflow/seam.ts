@@ -25,7 +25,7 @@ import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { settleLanes } from './landing-lane';
 import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
-import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
+import { kernelDeliveryById, kernelDeliveryForPr, kernelDeliveryInWorkspace, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
 import { githubReader, workspaceRepo } from './github-facts';
 import { policyValue } from '@/lib/policy-overrides';
 import { preflightMissOf } from './preflight-miss';
@@ -39,13 +39,17 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import type { KernelView, PolicyOutcome, Verdict } from './types';
 import {
   UNKNOWN_CI_SIGNATURE, blockedOnResolvedSql, classifyCiFailure, openOrJoinIncidentSql, repairingCiOnBaseSql,
-  resolveIncidentSql, trunkExplains, trunkRecovered, unresolvedIncidentsSql, type TrunkClassification,
+  resolveIncidentSql, touchIncidentSql, trunkExplains, trunkRecoveredOnRuns, unresolvedIncidentsSql, type TrunkClassification,
 } from './trunk';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
 import { recordPrStateObserved } from './render-observation';
+import { endingWorkerIsCurrentSql, isAttemptRow, notOwnerTaskSql, ownerAttemptEndOf, ownerClaimOpenSql, projectAttemptStartSql, projectLoopExitSql, projectOwnerEndSql, projectReopenSql, projectRequeueSql, projectWithdrawSql, requeueingAttemptIsCurrentSql } from './task-projection';
+import { isTerminalWorkerStatus } from '@buildd/shared';
 import { scheduleKernelHeal } from './kernel-heal';
+import { KernelObservationFailed } from './kernel-observation';
 import { diffTouchesFindings, isTaskId, openFindings, openRequiredFindings, pathsNamedIn } from '@buildd/workflow-kernel/findings';
+import { wakeHeldMergesOn } from '@buildd/workflow-kernel/merge-hold';
 
 const seamExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -64,6 +68,8 @@ export interface SeamDeps {
   reader?: (installationId: number) => GithubFactReader;
   repoFor?: typeof workspaceRepo;
   drain?: (deliveryId: string) => Promise<DrainSummary | null>;
+  /** Wake the landing sweep for `workspaceId:prNumber` (the due queue). */
+  markLandingDue?: (member: string) => Promise<void>;
 }
 
 const readerFor = (deps: SeamDeps, installationId: number): GithubFactReader => (deps.reader ?? githubReader)(installationId);
@@ -283,30 +289,72 @@ export function reviewOwedWhileOwnerRuns(task: { kind?: string | null }, live: L
 }
 
 /**
- * bb6a3a56: the owner end the kernel is owed, rebuilt from the task and
- * workers rows. Stamps `tasks.delivery_id` when it is missing (a crash between
- * the open's transitions and its stamp), then, when the owner task is terminal
- * and its latest worker ended, sends that worker's AttemptEnded. Safe to repeat:
- * the reducer keys an end by its worker (`end:<workerId>`), so one the kernel
- * already has answers `duplicate`. Answers whether an end was sent.
+ * AC-1 slice 3 (task-projection.ts `projectOwnerEndSql`): project an owner attempt's end onto its
+ * task outside a transition. The seam runs it after every owner end; the worker PATCH runs it
+ * after handing the end to the kernel, so a control plane that is down, or one too old to
+ * project, still leaves the task settled. Moves only an open owner task. Answers the status
+ * written, or null when nothing moved.
+ */
+export async function projectOwnerEnd(
+  p: { deliveryId: string; taskId: string; workerId: string; status: 'completed' | 'failed' | 'lost' | 'unproven' },
+  exec: Exec = seamExec,
+): Promise<'completed' | 'failed' | null> {
+  const fallback = p.status === 'completed' ? 'completed' : 'failed';
+  const rows = ((await exec(projectOwnerEndSql({ deliveryId: p.deliveryId, taskId: p.taskId, workerId: p.workerId, fallback }))).rows ?? []) as Array<{ status?: string }>;
+  const s = rows[0]?.status;
+  return s === 'completed' || s === 'failed' ? s : null;
+}
+
+/**
+ * AC-1 slice 3: an owner task still open whose latest worker ended (`ownerAttemptEndOf`, the
+ * floor's own settle rule) gets that end projected, for a delivery that already moved past WORKING.
+ * Answers the status written, or null.
+ */
+async function settleOwnerTask(p: { ownerTaskId: string; deliveryId: string }, deps: SeamDeps): Promise<'completed' | 'failed' | null> {
+  const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, p.ownerTaskId)), columns: { status: true, claimedAt: true } });
+  if (!task || (task.status !== 'assigned' && task.status !== 'in_progress')) return null;
+  const rows = await db.query.workers.findMany({
+    where: sqlWhere(eq(workers.taskId, p.ownerTaskId)),
+    columns: { id: true, runner: true, status: true, createdAt: true, updatedAt: true },
+    orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
+  });
+  // Only attempt rows: a placeholder (a second PR's sibling row) is no attempt and no end.
+  const attempts = rows.filter(isAttemptRow);
+  // A live attempt is still running the task: nothing to settle.
+  if (attempts.some((r) => !isTerminalWorkerStatus(r.status))) return null;
+  const latest = attempts[0];
+  const end = latest ? ownerAttemptEndOf(task, latest) : null;
+  if (!latest || !end) return null;
+  return projectOwnerEnd({ deliveryId: p.deliveryId, taskId: p.ownerTaskId, workerId: latest.id, status: end }, deps.exec);
+}
+
+/**
+ * bb6a3a56: the owner end the kernel is owed, rebuilt from the workers row.
+ * Stamps `tasks.delivery_id` when it is missing (a crash between the open's
+ * transitions and its stamp), then, when the owner's latest worker ended, sends
+ * that worker's AttemptEnded. The end is the worker row's (AC-1 slice 2,
+ * `ownerAttemptEndOf`), not `tasks.status`: a task left `assigned` because its
+ * end never arrived still gets it re-sent once the worker row has settled. Safe to repeat: the reducer keys an
+ * end by its worker (`end:<workerId>`), so one the kernel already has answers
+ * `duplicate`. Answers whether an end was sent.
  */
 async function forwardOwnerEnd(p: { workspaceId: string; ownerTaskId: string; deliveryId: string; source: string }, deps: SeamDeps): Promise<boolean> {
   await db.update(tasks)
     .set({ deliveryId: p.deliveryId, deliveryRole: 'owner' })
     .where(and(eq(tasks.id, p.ownerTaskId), sql`${tasks.deliveryId} IS NULL`));
-  const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, p.ownerTaskId)), columns: { status: true, deliveryId: true, deliveryRole: true } });
+  const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, p.ownerTaskId)), columns: { status: true, claimedAt: true, deliveryId: true, deliveryRole: true } });
   if (!task || task.deliveryId !== p.deliveryId || task.deliveryRole !== 'owner') return false;
-  if (task.status !== 'completed' && task.status !== 'failed') return false;
   const latest = await db.query.workers.findFirst({
     where: sqlWhere(eq(workers.taskId, p.ownerTaskId)),
-    columns: { id: true, status: true, lastCommitSha: true, commitCount: true },
+    columns: { id: true, status: true, lastCommitSha: true, commitCount: true, createdAt: true, updatedAt: true },
     orderBy: sqlOrderBy([desc(workers.createdAt)]),
   });
-  if (!latest || (latest.status !== 'completed' && latest.status !== 'failed' && latest.status !== 'error')) return false;
+  const end = latest ? ownerAttemptEndOf(task, latest) : null;
+  if (!latest || !end) return false;
   await attemptEnded({
     task: { id: p.ownerTaskId, workspaceId: p.workspaceId, deliveryId: p.deliveryId, deliveryRole: 'owner', context: null },
     workerId: latest.id,
-    status: latest.status === 'completed' ? 'completed' : 'failed',
+    status: end,
     localHeadSha: latest.lastCommitSha ?? null,
     commitCount: latest.commitCount ?? 0,
     source: p.source,
@@ -333,6 +381,21 @@ export async function kernelDeliveryOfPr(p: { workspaceId: string; prNumber: num
   return { deliveryId, state: d?.state ?? null, stateReason: d?.stateReason ?? null, version: d?.version ?? 0 };
 }
 
+/**
+ * Living Spec r7 AC-45: the id of a person's decision on an escalation: the action, the head
+ * and the delivery version they decided at. The same decision submitted again (a double tap, a
+ * retried request, a door re-sent after an unknown outcome) carries the same id, so the kernel
+ * answers it with the transition it already made.
+ */
+export function humanDecision(action: 'request_fix' | 'force_re_review' | 'approve_override', headSha: string, version: number): { id: string; headSha: string } {
+  return { id: `${action}:${headSha}:v${version}`, headSha };
+}
+
+/** AC-45 for one finding: the same finding on the same head and version is one decision; a restated one is a new one. */
+export function findingDisposalDecision(findingId: string, headSha: string, version: number): { id: string; headSha: string } {
+  return { id: `dispose_finding:${findingId}:${headSha}:v${version}`, headSha };
+}
+
 // ── T23: a person applies an escalation's recommendation ────────────────────
 
 export interface HumanApplyOutcome {
@@ -353,6 +416,12 @@ export interface HumanApplyOutcome {
  */
 export async function applyRecommendationThroughKernel(p: {
   workspaceId: string; prNumber: number; actor: string; expectedVersion?: number | null; instructions?: string | null;
+  /**
+   * Living Spec r7 AC-45: the head the person decided on (with `expectedVersion`, the version
+   * they saw). Given, the fix is one decision bound to that head: a second submission of it is
+   * answered by the first (`duplicate`), and a head that moved refuses it (`decision_head_stale`).
+   */
+  decisionHeadSha?: string | null;
 }, deps: SeamDeps = {}): Promise<HumanApplyOutcome | null> {
   const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
   if (!repo) return null;
@@ -373,7 +442,10 @@ export async function applyRecommendationThroughKernel(p: {
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.actor}:apply_recommendation`, repoFullName: repo.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: { ...reader, readPr: async () => live } });
   const result = await applyCommand(
-    { type: 'HumanResolve', actor: p.actor, choice: 'apply_recommendation', expectedVersion, instructions: p.instructions ?? undefined },
+    {
+      type: 'HumanResolve', actor: p.actor, choice: 'apply_recommendation', expectedVersion, instructions: p.instructions ?? undefined,
+      ...(p.decisionHeadSha ? { decision: humanDecision('request_fix', p.decisionHeadSha, expectedVersion) } : {}),
+    },
     { ref: { deliveryId }, exec: deps.exec },
   );
   if (result.result === 'applied') await drainDelivery(deliveryId, deps);
@@ -388,6 +460,56 @@ export async function applyRecommendationThroughKernel(p: {
     current: await currentOf(),
     attempt: human ? { id: human.id, attemptNo: human.attemptNo, maxAttempts: human.maxAttempts, taskId: human.taskId } : null,
   };
+}
+
+/**
+ * "Approve and override" on a kernel-owned PR's review escalation (Living Spec r7 AC-45/AC-46):
+ * one T23 HumanResolve(approve) of the head the person decided on, at the version they saw,
+ * past the required findings still open or awaiting verification. The door proves who may
+ * (`hasMergePermission`, `overridePermitted`: lib/override-permission.ts); the kernel
+ * refuses without them, refuses a moved head (`decision_head_stale`) and answers a replay with
+ * the first transition (`duplicate`). On success the inline drain publishes `Buildd / Review
+ * approval` success for that head ("approved by a person over N open findings"), and the
+ * merge follows the workspace policy. Null = not the kernel's PR.
+ */
+export async function approveOverrideThroughKernel(p: {
+  workspaceId: string; prNumber: number; actor: string;
+  /** The head the person decided on, and the delivery version they saw (absent = the version read now). */
+  decision: { headSha: string; version?: number | null };
+  reason?: string | null;
+  hasMergePermission: boolean; overridePermitted: boolean;
+}, deps: SeamDeps = {}): Promise<{ result: CommandResult; current: CurrentView & { stateReason: string | null } } | null> {
+  const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
+  if (!repo) return null;
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, repo.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return null;
+  const currentOf = async (): Promise<CurrentView & { stateReason: string | null }> => {
+    const d = (await loadView({ deliveryId }, deps.exec)).delivery;
+    return { state: d?.state ?? null, stateReason: d?.stateReason ?? null, version: d?.version ?? 0, head: d?.currentHeadSha ?? null, round: d?.currentRound ?? 0 };
+  };
+  // Read before the live head is recorded, so a push that lands mid-click still makes the click stale.
+  const version = p.decision.version ?? (await loadView({ deliveryId }, deps.exec)).delivery?.version ?? 0;
+  // A head GitHub has that no webhook delivered yet is recorded first, so an approval of the
+  // older head is refused rather than applied to a head the person never saw.
+  const reader = readerFor(deps, repo.installationId);
+  const live = await reader.readPr(repo.repoFullName, p.prNumber);
+  if (!live) {
+    const current = await currentOf();
+    return { result: { result: 'rejected', reason: 'live_read_failed', current: { state: current.state, version: current.version, head: current.head, round: current.round } }, current };
+  }
+  await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.actor}:approve_override`, repoFullName: repo.repoFullName, prNumber: p.prNumber },
+    { exec: deps.exec, github: { ...reader, readPr: async () => live } });
+  const result = await applyCommand(
+    {
+      type: 'HumanResolve', actor: p.actor, choice: 'approve', expectedVersion: version,
+      commitId: p.decision.headSha, hasMergePermission: p.hasMergePermission, overridePermitted: p.overridePermitted,
+      reason: p.reason?.trim() || undefined,
+      decision: humanDecision('approve_override', p.decision.headSha, version),
+    },
+    { ref: { deliveryId }, exec: deps.exec },
+  );
+  if (result.result === 'applied') await drainDelivery(deliveryId, deps);
+  return { result, current: await currentOf() };
 }
 
 // ── a90fc99b: the escalation gate's policy-merge rule ───────────────────────
@@ -412,6 +534,158 @@ export async function policyMergeThroughKernel(p: {
   );
   if (result.result === 'applied') await drainDelivery(deliveryId, deps);
   return result;
+}
+
+// ── AC-1 slice 7: a claim starts the owner attempt ─────────────────────────
+
+/**
+ * The claim's compare-and-set guard for a kernel owner task, beside `status = 'pending'`: no other
+ * claim in flight on it (task-projection.ts). Not a command: the claim route's own race.
+ */
+export { ownerClaimOpenSql };
+
+/**
+ * Project a start onto its task outside a transition (task-projection.ts `projectAttemptStartSql`),
+ * then answer whether the task is now `assigned` under exactly this claim: moved here, or already
+ * by `t_start`. False means the claim was lost after its compare-and-set (a cancel, a requeue, a
+ * stale takeover), and the caller gives the claim back.
+ */
+export async function projectAttemptStart(
+  p: { deliveryId: string; taskId: string; claimedBy: string; claimedAt: string },
+  exec: Exec = seamExec,
+): Promise<boolean> {
+  if (((await exec(projectAttemptStartSql(p))).rows ?? []).length > 0) return true;
+  const r = await exec(sql`SELECT 1 AS ok FROM tasks tk
+    WHERE tk.id = ${p.taskId}::uuid AND tk.status = 'assigned'
+      AND tk.claimed_by::text = ${p.claimedBy}::text AND tk.claimed_at = ${p.claimedAt}::timestamptz`);
+  return (r.rows ?? []).length > 0;
+}
+
+/**
+ * AttemptStarted from the claim route: the claim's compare-and-set won a kernel owner task (it
+ * stamped claimed_by / claimed_at and left the status `pending`), and the kernel moves the task to
+ * `assigned` in the transition's own statement (`t_start`). A start the reducer does not bind (the
+ * delivery moved on, as a loop task's next iteration does, a duplicate, a released delivery) is
+ * still projected under the same guard, so the task starts exactly when it still carries this
+ * claim. No inline drain: the start's effects are the floor's, never the claim's hot path.
+ * `handled` false: the task has no delivery to start through (the caller writes it itself).
+ */
+export async function attemptStarted(p: {
+  task: AttemptTask;
+  claimedBy: string;
+  /** tasks.claimed_at as Postgres renders it (`::text`, microseconds kept). */
+  claimedAt: string;
+  source: string;
+}, deps: SeamDeps = {}): Promise<{ handled: boolean; started: boolean; result?: CommandResult }> {
+  if (!p.task.deliveryId || p.task.deliveryRole !== 'owner') return { handled: false, started: false };
+  const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec, p.task.workspaceId);
+  let result: CommandResult | undefined;
+  if (deliveryId) {
+    result = await applyCommand(
+      { type: 'AttemptStarted', actor: p.source, taskId: p.task.id, claimedBy: p.claimedBy, claimedAt: p.claimedAt },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+    if (result.result !== 'applied' && result.result !== 'duplicate') {
+      console.log(`[workflow] AttemptStarted for task ${p.task.id}: ${result.result} (${result.reason})`);
+    }
+  }
+  const started = await projectAttemptStart({ deliveryId: p.task.deliveryId, taskId: p.task.id, claimedBy: p.claimedBy, claimedAt: p.claimedAt }, deps.exec);
+  return { handled: true, started, ...(result ? { result } : {}) };
+}
+
+// ── AC-1 slice 9: a settled owner task reopens; a claim withdraws its start ──
+
+/** The predicate an attempt writer's own (non-owner) status write carries (task-projection.ts). */
+export { notOwnerTaskSql };
+
+/**
+ * Project a reopen onto its task outside a transition (task-projection.ts `projectReopenSql`), then
+ * answer whether the task is open again as `to` says: moved here, or already by `t_reopen`.
+ */
+export async function projectReopen(
+  p: { deliveryId: string; taskId: string; workerId: string | null; endedAt: string | null; to: 'pending' | 'assigned' },
+  exec: Exec = seamExec,
+): Promise<boolean> {
+  if (((await exec(projectReopenSql(p))).rows ?? []).length > 0) return true;
+  const r = await exec(sql`SELECT 1 AS ok FROM tasks tk WHERE tk.id = ${p.taskId}::uuid AND tk.status = ${p.to}::text`);
+  return (r.rows ?? []).length > 0;
+}
+
+/**
+ * AttemptReopened from the recovery doors (credential, GitHub access, an incident's recovery) and
+ * the worker PATCH's resume: the owner task's ended attempt is opened again, for a new attempt
+ * (`pending`) or the same worker running again (`assigned`), the move the kernel makes in the
+ * transition's own statement (`t_reopen`). A reopen the reducer does not bind (the delivery handed
+ * on, or is terminal) is still projected under the same guard, so the task moves exactly when the
+ * named worker is still its latest attempt and its end is the one named. `handled` false: the task
+ * is no delivery's owner (the caller writes it itself).
+ */
+export async function attemptReopened(p: {
+  task: AttemptTask;
+  workerId: string | null;
+  endedAt: string | null;
+  to: 'pending' | 'assigned';
+  reason: string;
+  source: string;
+}, deps: SeamDeps = {}): Promise<{ handled: boolean; reopened: boolean; result?: CommandResult }> {
+  if (!p.task.deliveryId || p.task.deliveryRole !== 'owner') return { handled: false, reopened: false };
+  const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec, p.task.workspaceId);
+  let result: CommandResult | undefined;
+  if (deliveryId) {
+    result = await applyCommand(
+      { type: 'AttemptReopened', actor: p.source, taskId: p.task.id, workerId: p.workerId, endedAt: p.endedAt, to: p.to, reason: p.reason },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+    if (result.result !== 'applied' && result.result !== 'duplicate') {
+      console.log(`[workflow] AttemptReopened(${p.reason}) for task ${p.task.id}: ${result.result} (${result.reason})`);
+    }
+  }
+  const reopened = await projectReopen({ deliveryId: p.task.deliveryId, taskId: p.task.id, workerId: p.workerId, endedAt: p.endedAt, to: p.to }, deps.exec);
+  return { handled: true, reopened, ...(result ? { result } : {}) };
+}
+
+/**
+ * Project a withdrawal onto its task outside a transition (task-projection.ts `projectWithdrawSql`),
+ * then answer whether the task now has the outcome's status: moved here, or already by `t_withdraw`.
+ */
+export async function projectWithdraw(
+  p: { deliveryId: string; taskId: string; claim: { claimedBy: string; claimedAt: string } | null; outcome: 'requeued' | 'failed'; reason?: string | null },
+  exec: Exec = seamExec,
+): Promise<boolean> {
+  if (((await exec(projectWithdrawSql(p))).rows ?? []).length > 0) return true;
+  const r = await exec(sql`SELECT 1 AS ok FROM tasks tk WHERE tk.id = ${p.taskId}::uuid AND tk.status = ${p.outcome === 'requeued' ? 'pending' : 'failed'}::text`);
+  return (r.rows ?? []).length > 0;
+}
+
+/**
+ * AttemptWithdrawn from the claim route (the account cap refused the claim's worker; a workspace
+ * that lacks the task's project), the cleanup route (a claim with no attempt row) and the worker
+ * PATCH (a mount gap that ran its mission out of budget): a claim that runs no attempt gives its
+ * start back or ends the task, or a queued task is refused, the move the kernel makes in the
+ * transition's own statement (`t_withdraw`). Projected under the same guard when not bound.
+ * `handled` false: the task is no delivery's owner.
+ */
+export async function attemptWithdrawn(p: {
+  task: AttemptTask;
+  claim: { claimedBy: string; claimedAt: string } | null;
+  outcome: 'requeued' | 'failed';
+  reason: string;
+  source: string;
+}, deps: SeamDeps = {}): Promise<{ handled: boolean; withdrawn: boolean; result?: CommandResult }> {
+  if (!p.task.deliveryId || p.task.deliveryRole !== 'owner') return { handled: false, withdrawn: false };
+  const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec, p.task.workspaceId);
+  let result: CommandResult | undefined;
+  if (deliveryId) {
+    result = await applyCommand(
+      { type: 'AttemptWithdrawn', actor: p.source, taskId: p.task.id, claim: p.claim, outcome: p.outcome, reason: p.reason },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+    if (result.result !== 'applied' && result.result !== 'duplicate') {
+      console.log(`[workflow] AttemptWithdrawn(${p.reason}) for task ${p.task.id}: ${result.result} (${result.reason})`);
+    }
+  }
+  const withdrawn = await projectWithdraw({ deliveryId: p.task.deliveryId, taskId: p.task.id, claim: p.claim, outcome: p.outcome, reason: p.reason }, deps.exec);
+  return { handled: true, withdrawn, ...(result ? { result } : {}) };
 }
 
 // ── T4: an attempt ended ────────────────────────────────────────────────────
@@ -449,6 +723,8 @@ export async function attemptEnded(p: {
   source: string;
   /** The task's own retry is queued (its retry count, not a ledger): an owner end with nothing local stays WORKING. */
   taskRetryBudgetLeft?: boolean;
+  /** 295486ba: the end is the task being cancelled; a CI repair nobody claimed then spends nothing. */
+  cancelled?: boolean;
   /**
    * A reviewer that completed but broke its output contract (§6.6): `prose_verdict`
    * (a verdict written as prose, never applied) or `no_verdict`. Absent = infra.
@@ -570,6 +846,7 @@ export async function attemptEnded(p: {
     live,
     ...(proof ? { proof } : {}),
     ...(p.taskRetryBudgetLeft ? { taskRetryBudgetLeft: true } : {}),
+    ...(p.cancelled ? { cancelled: true } : {}),
     // The kernel owns only deliveries whose policy dispatched a review (§14 Slice A).
     reviewRequired: true,
     ...(ci ? { ci } : {}),
@@ -581,6 +858,13 @@ export async function attemptEnded(p: {
   if (result.result !== 'applied' && result.result !== 'duplicate') {
     console.log(`[workflow] AttemptEnded(${attemptKind}) for task ${p.task.id}: ${result.result} (${result.reason})`);
   }
+  // AC-1 slice 3: an applied owner end set the task in its own statement (`t_attempt`). One that
+  // applied nothing (a duplicate, a stale end) still projects, from the ledger's recorded end, so
+  // the task never strands open. A no-op once the task is settled; a requeue (the task's own
+  // retry is queued) is no end to project.
+  if (attemptKind === 'owner' && !p.taskRetryBudgetLeft) {
+    await projectOwnerEnd({ deliveryId, taskId: p.task.id, workerId: p.workerId, status: p.status }, deps.exec);
+  }
   if (trunk?.incident && live && result.result === 'applied' && TRUNK_SOURCE_STATES.has(result.decision.toState)) {
     await applyCommand(
       { type: 'TrunkRedObserved', actor: p.source, incidentId: trunk.incident.id, signature: trunk.signature, headSha: live.headSha, thresholdMet: true },
@@ -591,7 +875,87 @@ export async function attemptEnded(p: {
     }
   }
   await drainDelivery(deliveryId, deps);
+  // An end that leaves the delivery APPROVED (a verdict kept while the owner worked, now applied)
+  // is the moment landing becomes possible: the landing door deferred while the delivery was WORKING
+  // and nothing else wakes it, so ask the landing sweep to look at this PR now.
+  if (result.result === 'applied' && result.decision.toState === 'APPROVED' && d.prNumber != null) {
+    await (deps.markLandingDue ?? markLandingDue)(`${p.task.workspaceId}:${d.prNumber}`).catch((err) => console.warn('[workflow] could not mark landing due:', err));
+  }
   return { handled: true, result };
+}
+
+async function markLandingDue(member: string): Promise<void> {
+  const [{ markDue }, { PR_LANDING_DUE_QUEUE }] = await Promise.all([import('@/lib/redis'), import('@/lib/landing-due-queue')]);
+  await markDue(PR_LANDING_DUE_QUEUE, member, Date.now());
+}
+
+// ── AC-1 slice 6: an attempt's task goes back to the queue ─────────────────
+
+/**
+ * The guard a requeue's own write of its other fields (context, backend, start floor) carries,
+ * so it lands only where the requeue itself would: an open task whose current attempt is
+ * `workerId`. `task` names the tasks row (`tasks` inside a drizzle `update(tasks)`).
+ */
+export { requeueingAttemptIsCurrentSql };
+
+/**
+ * Project a requeue onto its task outside a transition (task-projection.ts `projectRequeueSql`):
+ * for a requeue that applied nothing, or never reached the kernel. Answers whether the task is
+ * back in the queue for this attempt now (moved here, or already by `t_requeue`).
+ */
+export async function projectRequeue(
+  p: { deliveryId: string; taskId: string; workerId: string; attemptId?: string | null },
+  exec: Exec = seamExec,
+): Promise<boolean> {
+  const moved = ((await exec(projectRequeueSql(p))).rows ?? []).length > 0;
+  if (moved) return true;
+  const r = await exec(sql`SELECT 1 AS ok FROM tasks tk WHERE tk.id = ${p.taskId}::uuid AND tk.status = 'pending' AND ${endingWorkerIsCurrentSql(p.workerId)}`);
+  return (r.rows ?? []).length > 0;
+}
+
+/**
+ * AttemptRequeued from the worker PATCH and the conflict-fix recovery: the attempt is retried on
+ * the same task, so the task goes back to `pending`, the move the kernel makes in the transition's
+ * own statement (`t_requeue`). A requeue the reducer does not bind (the delivery moved on while
+ * the task kept running, a re-send) is still projected under the same guard, so the task moves
+ * exactly when its requeuing worker is still its current attempt, kernel-owned or not.
+ * `handled` false: the task has no delivery to requeue through (the caller writes it itself).
+ */
+export async function attemptRequeued(p: {
+  task: AttemptTask;
+  workerId: string;
+  /** A short tag: `retry`, `loop_hold`, `budget`, `codex_deferral`, `mount_gap`, `auth_failover`, `conflict_recovery`. */
+  reason: string;
+  source: string;
+}, deps: SeamDeps = {}): Promise<{ handled: boolean; requeued: boolean; result?: CommandResult }> {
+  const attemptKind = p.task.deliveryRole;
+  if (!p.task.deliveryId || (attemptKind !== 'owner' && !isRepairRole(attemptKind))) return { handled: false, requeued: false };
+  const attemptId = attemptKind === 'owner' ? null : ((ctxOf(p.task).workflowAttemptId as string | undefined) ?? null);
+  if (attemptKind !== 'owner' && !attemptId) return { handled: false, requeued: false };
+  const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec);
+  let result: CommandResult | undefined;
+  if (deliveryId) {
+    result = await applyCommand(
+      { type: 'AttemptRequeued', actor: p.source, workerId: p.workerId, reason: p.reason, ...(attemptId ? { attemptId } : { taskId: p.task.id }) },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+    if (result.result !== 'applied' && result.result !== 'duplicate') {
+      console.log(`[workflow] AttemptRequeued(${attemptKind}) for task ${p.task.id}: ${result.result} (${result.reason})`);
+    }
+  }
+  const requeued = await projectRequeue({ deliveryId: p.task.deliveryId, taskId: p.task.id, workerId: p.workerId, attemptId }, deps.exec);
+  if (deliveryId && result?.result === 'applied') await drainDelivery(deliveryId, deps);
+  return { handled: true, requeued, ...(result ? { result } : {}) };
+}
+
+/**
+ * AC-1 slice 8 (task-projection.ts `projectLoopExitSql`): a loop task's exit condition held (its
+ * PR's checks went green) while the loop parked its owner task in the queue. The loop exit sends
+ * the held attempt's end first (through the kernel client), then this moves the task to
+ * `completed` under the projection's guard. Answers whether it moved.
+ */
+export async function projectLoopExit(p: { deliveryId: string; taskId: string }, exec: Exec = seamExec): Promise<boolean> {
+  return ((await exec(projectLoopExitSql(p))).rows ?? []).length > 0;
 }
 
 // ── §14: switch-off hands a never-reviewed delivery to legacy ──────────────
@@ -666,6 +1030,12 @@ export function fixedElsewhereOf(output: unknown): { findingIds: string[]; files
   const files = strs(o.files);
   const reason = typeof o.reason === 'string' ? o.reason.trim() : '';
   return findingIds.length && files.length && reason ? { findingIds, files, reason } : null;
+}
+
+/** The relevance rule of §13.13 rule 4 for a review fix on a PR with no delivery: false only when the diff plainly misses every named path. */
+export function legacyDiffTouchesFindings(p: { named: string[]; changed: string[] | null; feedback: string | null }): boolean | null {
+  const view = { findings: p.named.map((path, i) => ({ id: `legacy-${i}`, path, required: true, status: 'open' })) } as unknown as Parameters<typeof diffTouchesFindings>[0];
+  return diffTouchesFindings(view, p.changed, pathsNamedIn(p.feedback));
 }
 
 export async function fixCompletionGate(p: {
@@ -752,7 +1122,8 @@ export type ClaimDecision = { action: 'proceed' } | { action: 'cancel'; reason: 
  */
 export async function claimFix(task: AttemptTask, deps: SeamDeps = {}): Promise<ClaimDecision> {
   if (!task.deliveryId || !isRepairRole(task.deliveryRole)) return { action: 'proceed' };
-  const deliveryId = await kernelDeliveryById(task.deliveryId, deps.exec);
+  // Only the task's own workspace's delivery: the command's input names the workspace it was checked for.
+  const deliveryId = await kernelDeliveryById(task.deliveryId, deps.exec, task.workspaceId);
   if (!deliveryId) return { action: 'proceed' };
   const attemptId = ctxOf(task).workflowAttemptId as string | undefined;
   if (!attemptId) return { action: 'proceed' };
@@ -806,17 +1177,29 @@ export function toKernelVerdict(v: string): Verdict {
  * escalation notices — is an effect the kernel already ran.
  */
 export async function recordReviewVerdict(p: {
+  /** The workspace the verdict is for: a delivery of any other is not this round's (AC-9's reach check judged this one). */
+  workspaceId?: string;
   reviewerTask: { id: string; deliveryId: string | null; context: unknown };
   verdict: string;
   effectiveVerdict: string;
   headSha: string;
   confidence: number | null;
+  /**
+   * The commit the reviewer's checkout was at (`null`: none reported). A verdict read
+   * at any other commit than `headSha` is inconclusive: the round fails (T27), never decided.
+   * Absent = not attested (a caller that predates it).
+   */
+  evidenceSha?: string | null;
   /** What the reviewer said about findings (§5): its structured output, read defensively. */
   output?: unknown;
 }, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; toState: string | null }> {
   const roundId = ctxOf(p.reviewerTask).workflowRoundId as string | undefined;
   if (!p.reviewerTask.deliveryId || !roundId) return { handled: false };
-  const deliveryId = await kernelDeliveryById(p.reviewerTask.deliveryId, deps.exec);
+  // Fail closed: a delivery of another workspace throws, never `handled: false`, which the PATCH reads
+  // as a release to legacy and would answer with a GitHub review and possibly a merge.
+  const deliveryId = p.workspaceId
+    ? await kernelDeliveryInWorkspace(p.reviewerTask.deliveryId, p.workspaceId, deps.exec)
+    : await kernelDeliveryById(p.reviewerTask.deliveryId, deps.exec);
   if (!deliveryId) return { handled: false };
   const result = await applyCommand({
     type: 'ReviewVerdictRecorded',
@@ -826,6 +1209,7 @@ export async function recordReviewVerdict(p: {
     effectiveVerdict: toKernelVerdict(p.effectiveVerdict),
     headBound: p.headSha,
     confidence: p.confidence,
+    ...(p.evidenceSha !== undefined ? { evidenceSha: p.evidenceSha, reviewerTaskId: p.reviewerTask.id, maxContractRetries: REVIEW_CONTRACT_RETRIES } : {}),
     ...(await resolveDeferralTasks(verdictFindingsOf(p.output), deliveryId, deps.exec ?? seamExec)),
   }, { ref: { deliveryId }, exec: deps.exec });
   await drainDelivery(deliveryId, deps);
@@ -840,15 +1224,21 @@ export async function recordReviewVerdict(p: {
  * reviewed a second time. A verdict for another head is stale and does nothing.
  */
 export async function adoptReviewVerdict(p: {
+  /** The workspace the verdict is for: a delivery of any other is not adopted. */
+  workspaceId?: string;
   deliveryId: string;
   reviewerTaskId: string;
   verdict: string;
   effectiveVerdict: string;
   headSha: string;
   confidence: number | null;
+  /** As `recordReviewVerdict`'s: a verdict read at another commit than `headSha` is never adopted. */
+  evidenceSha?: string | null;
   output?: unknown;
 }, deps: SeamDeps = {}): Promise<CommandResult | null> {
-  const deliveryId = await kernelDeliveryById(p.deliveryId, deps.exec);
+  const deliveryId = p.workspaceId
+    ? await kernelDeliveryInWorkspace(p.deliveryId, p.workspaceId, deps.exec)
+    : await kernelDeliveryById(p.deliveryId, deps.exec);
   if (!deliveryId) return null;
   const result = await applyCommand({
     type: 'ReviewVerdictAdopted',
@@ -858,6 +1248,7 @@ export async function adoptReviewVerdict(p: {
     effectiveVerdict: toKernelVerdict(p.effectiveVerdict),
     headBound: p.headSha,
     confidence: p.confidence,
+    ...(p.evidenceSha !== undefined ? { evidenceSha: p.evidenceSha } : {}),
     ...(await resolveDeferralTasks(verdictFindingsOf(p.output), deliveryId, deps.exec ?? seamExec)),
   }, { ref: { deliveryId }, exec: deps.exec });
   await drainDelivery(deliveryId, deps);
@@ -976,17 +1367,7 @@ export async function observeBase(p: {
 // AC-3 (workflow-kernel-library.md §1): a page render, MCP read or explain records at most a fact.
 export { deliveryOwnedWorkers, recordPrStateObserved } from './render-observation';
 
-/**
- * A kernel-owned PR whose close or merge the kernel could not take in (S4a): its own live read
- * of GitHub failed, so no transition ran. A fast heal is scheduled (kernel-heal.ts); the caller
- * must not take a legacy path for the PR (the kernel still owns it) and must not report success.
- */
-export class KernelObservationFailed extends Error {
-  constructor(readonly deliveryId: string, readonly reason: string) {
-    super(`kernel could not observe the PR of delivery ${deliveryId}: ${reason}`);
-    this.name = 'KernelObservationFailed';
-  }
-}
+export { KernelObservationFailed } from './kernel-observation';
 
 /**
  * Webhook `closed` / `reopened`: T17 / T18 / T19 from a live read. Legacy keeps its post-merge work (Slice C).
@@ -1069,6 +1450,34 @@ export async function abandonDelivery(p: {
   return { handled: true, deliveryId, result };
 }
 
+// ── §5: a person waives or defers one finding ───────────────────────────────
+
+/**
+ * FindingDisposed from the dashboard door: a person closes exactly one finding, recorded with who
+ * and why (the reducer refuses a non-person actor, an empty reason and a deferral without a full
+ * task id). `handled: false` = the PR is not the kernel's.
+ */
+export async function disposeFinding(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; actor: string;
+  findingId: string; disposition: 'waived' | 'deferred'; reason: string; deferredToTaskId?: string | null;
+  /** The head and delivery version the person's screen showed (absent = not bound to a decision). */
+  decision?: { headSha: string; version: number };
+}, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; findingStatus: string | null }> {
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return { handled: false };
+  const result = await applyCommand(
+    { type: 'FindingDisposed', actor: p.actor, findingId: p.findingId, disposition: p.disposition, reason: p.reason, deferredToTaskId: p.deferredToTaskId ?? null,
+      ...(p.decision ? { decision: findingDisposalDecision(p.findingId, p.decision.headSha, p.decision.version), expectedVersion: p.decision.version } : {}) },
+    { ref: { deliveryId }, exec: deps.exec },
+  );
+  if (result.result === 'applied') await drainDelivery(deliveryId, deps);
+  // A duplicate is a success only if the finding is closed the way the person asked now.
+  const findingStatus = result.result === 'duplicate'
+    ? ((await loadView({ deliveryId }, deps.exec)).findings ?? []).find((f) => f.id === p.findingId)?.status ?? null
+    : null;
+  return { handled: true, result, findingStatus };
+}
+
 // ── T5: a person or agent asks for a review ─────────────────────────────────
 
 /**
@@ -1077,6 +1486,12 @@ export async function abandonDelivery(p: {
  */
 export async function requestReview(p: {
   workspaceId: string; repoFullName: string; prNumber: number; installationId: number; forced: boolean; actor: string;
+  /**
+   * Living Spec r7 AC-45: a person's forced review, decided on this head at this version. Given,
+   * the request is one decision bound to the head: replayed, it is answered by the first; with
+   * the head moved since, it is refused (`decision_head_stale`) and nothing is queued.
+   */
+  decision?: { headSha: string; version: number } | null;
 }, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; reviewTaskId: string | null }> {
   const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
   if (!deliveryId) return { handled: false };
@@ -1090,7 +1505,11 @@ export async function requestReview(p: {
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.actor}:review_request`, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: { ...reader, readPr: async () => live } });
   const result = await applyCommand(
-    { type: 'ReviewRequested', actor: p.actor, headSha: live.headSha, live, forced: p.forced },
+    {
+      type: 'ReviewRequested', actor: p.actor, headSha: live.headSha, live, forced: p.forced,
+      // AC-45: bound to the version the person saw too, as the fix door is.
+      ...(p.decision ? { decision: humanDecision('force_re_review', p.decision.headSha, p.decision.version), expectedVersion: p.decision.version } : {}),
+    },
     { ref: { deliveryId }, exec: deps.exec },
   );
   if (result.result === 'rejected' && result.reason === 'review_in_flight' && !(await roundReviewerAt(deliveryId, live.headSha, deps.exec))) {
@@ -1228,10 +1647,38 @@ export async function observeCiFailure(p: {
   if (notRed && liveChecks?.complete && d?.state === 'REPAIRING' && d.stateReason === 'ci' && d.currentHeadSha === p.headSha
     && reader.ciGreen && (await reader.ciGreen(p.repoFullName, p.headSha).catch(() => null)) === true) {
     await applyCommand({ type: 'CiGreenObserved', actor: `${p.source}:ci_green`, headSha: p.headSha, liveChecks, allPassing: true }, { ref: { deliveryId }, exec: deps.exec });
+  } else if (result.result !== 'applied' && liveChecks && live.headSha === p.headSha) {
+    // 6900a317: T10 did not act (a fix still in flight, a state CI does not move, a re-run
+    // already green): the head's reading is still recorded, so it never reads "Checking".
+    await recordCiReading({ deliveryId, headSha: p.headSha, liveChecks, source: p.source, reader, repoFullName: p.repoFullName }, deps);
   }
   await drainDelivery(deliveryId, deps);
   if (incident?.opened && d) await joinRepairingDeliveries({ incident, workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: live.baseRef ?? d.baseRef ?? '', excludeDeliveryId: deliveryId }, deps);
   return { handled: true, result, attemptTaskId: await attemptTaskOf(deliveryId, result, deps.exec) };
+}
+
+/**
+ * 6900a317: record the head's CI reading (CiObserved) from a live read. Red when a current
+ * run fails (superseded re-runs are already dropped by the reader), so a failure outranks
+ * runs still going; green only when every run completed, none fails and every suite passed;
+ * running (nothing failing, not finished) withdraws a red on this head that a re-run replaced.
+ * An unreadable suite read records nothing.
+ */
+async function recordCiReading(p: {
+  deliveryId: string; headSha: string; liveChecks: { complete: boolean; failing: string[] }; source: string;
+  reader: GithubFactReader; repoFullName: string;
+}, deps: SeamDeps): Promise<CommandResult | null> {
+  const ref = { ref: { deliveryId: p.deliveryId }, exec: deps.exec };
+  if (p.liveChecks.failing.length > 0) {
+    return applyCommand({ type: 'CiObserved', actor: `${p.source}:ci_reading`, headSha: p.headSha, verdict: 'red', liveChecks: p.liveChecks }, ref);
+  }
+  if (!p.liveChecks.complete) {
+    return applyCommand({ type: 'CiObserved', actor: `${p.source}:ci_reading`, headSha: p.headSha, verdict: 'running', liveChecks: p.liveChecks }, ref);
+  }
+  if (!p.reader.ciGreen) return null;
+  const allPassing = (await p.reader.ciGreen(p.repoFullName, p.headSha).catch(() => null)) === true;
+  if (!allPassing) return null;
+  return applyCommand({ type: 'CiObserved', actor: `${p.source}:ci_reading`, headSha: p.headSha, verdict: 'green', liveChecks: p.liveChecks, allPassing }, ref);
 }
 
 const TRUNK_SOURCE_STATES: ReadonlySet<string> = new Set(['AWAITING_REVIEW', 'APPROVED', 'LANDING']);
@@ -1249,11 +1696,24 @@ export async function observeCiGreen(p: {
   const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
   if (!deliveryId) return { handled: false };
   const d = (await loadView({ deliveryId }, deps.exec)).delivery;
-  // Only a CI repair at this head is answered by a green; anything else needs no command.
-  if (!d || d.state !== 'REPAIRING' || d.stateReason !== 'ci' || d.currentHeadSha !== p.headSha) return { handled: true, result: null };
+  // A green for another head (a late or out-of-order webhook) says nothing about this one.
+  if (!d || d.currentHeadSha !== p.headSha) return { handled: true, result: null };
+  // §4 merge holds: a check reported on the head that is landing. The merge GitHub held on a
+  // required check is made due and runs now; a reading is not recorded in LANDING anyway.
+  if (d.state === 'LANDING') {
+    const { postgresStore } = await import('./postgres-store');
+    if (await wakeHeldMergesOn(postgresStore(deps.exec ?? seamExec), deliveryId, p.headSha)) await drainDelivery(deliveryId, deps);
+    return { handled: true, result: null };
+  }
   const reader = readerFor(deps, p.installationId);
   const liveChecks = reader.checkRuns ? await reader.checkRuns(p.repoFullName, p.headSha).catch(() => null) : null;
   if (!liveChecks) return { handled: true, result: null };
+  // 6900a317: outside a CI repair the green is a reading on the head, recorded without moving the delivery.
+  if (d.state !== 'REPAIRING' || d.stateReason !== 'ci') {
+    const result = await recordCiReading({ deliveryId, headSha: p.headSha, liveChecks, source: p.source, reader, repoFullName: p.repoFullName }, deps);
+    if (result) await drainDelivery(deliveryId, deps);
+    return { handled: true, result };
+  }
   // The check runs say nothing failed; only GitHub's passing allow-list (every suite completed
   // and passed) says everything passed. A cancelled or stale run is not green.
   const allPassing = reader.ciGreen ? (await reader.ciGreen(p.repoFullName, p.headSha).catch(() => null)) === true : false;
@@ -1288,33 +1748,54 @@ async function joinRepairingDeliveries(p: {
 
 export interface TrunkSweepSummary { checked: number; resolved: number; recovered: number; stillRed: number; errors: number }
 
+/** Pages of unresolved incidents one sweep reads at most (see `reconcileTrunkIncidents`). */
+export const TRUNK_SWEEP_PAGES = 4;
+
 /**
  * Re-read the base head of every unresolved trunk incident. Once the base no
- * longer fails the incident's checks (and every run on it completed), the
+ * longer fails the incident's checks (and they finished on it), the
  * incident resolves and each delivery blocked on it re-enters its resume state
  * (T26), with a mechanical refresh when its head predates the fix. A
  * delivery left blocked on an already-resolved incident (an interrupted pass)
  * is recovered too. Runs on the pr-reconcile floor tick.
+ *
+ * Least recently rechecked first, and every incident left unresolved goes to
+ * the back. An incident whose workspace has no repo costs no GitHub read, so
+ * the pass reads further pages (at most `TRUNK_SWEEP_PAGES`) until `limit`
+ * incidents had their base read: a pile of unreadable ones never keeps a
+ * newer incident on a green base from resolving.
  */
 export async function reconcileTrunkIncidents(deps: SeamDeps = {}, limit = 25): Promise<TrunkSweepSummary> {
   const exec = deps.exec ?? seamExec;
   const s: TrunkSweepSummary = { checked: 0, resolved: 0, recovered: 0, stillRed: 0, errors: 0 };
-  const incidents = ((await exec(unresolvedIncidentsSql(limit))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string }>;
-  for (const inc of incidents) {
-    s.checked++;
-    try {
-      const repo = await (deps.repoFor ?? workspaceRepo)(String(inc.workspace_id));
-      if (!repo) continue;
-      const reader = readerFor(deps, repo.installationId);
-      const head = reader.branchHead ? await reader.branchHead(inc.repo_full_name, inc.base_ref) : null;
-      const runs = head && reader.checkRuns ? await reader.checkRuns(inc.repo_full_name, head) : null;
-      // Unknown or still running is never read as recovered.
-      if (!runs || !runs.complete || !trunkRecovered(inc.signature, runs.failing)) { s.stillRed++; continue; }
-      const won = ((await exec(resolveIncidentSql(String(inc.id)))).rows ?? []).length > 0;
-      if (won) s.resolved++;
-    } catch (err) {
-      s.errors++;
-      console.error(`[workflow] trunk incident ${inc.id} recheck failed:`, err);
+  const seen = new Set<string>();
+  let read = 0;
+  for (let page = 0; page < TRUNK_SWEEP_PAGES && read < limit; page++) {
+    const rows = ((await exec(unresolvedIncidentsSql(limit))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string }>;
+    const incidents = rows.filter((r) => !seen.has(String(r.id)));
+    if (incidents.length === 0) break;
+    for (const inc of incidents) {
+      seen.add(String(inc.id));
+      s.checked++;
+      try {
+        const repo = await (deps.repoFor ?? workspaceRepo)(String(inc.workspace_id));
+        const reader = repo ? readerFor(deps, repo.installationId) : null;
+        if (reader) read++;
+        const head = reader?.branchHead ? await reader.branchHead(inc.repo_full_name, inc.base_ref) : null;
+        const runs = head && reader?.checkRuns ? await reader.checkRuns(inc.repo_full_name, head, { tests: true }) : null;
+        // Unknown, or the incident's checks still running, is never read as recovered.
+        if (trunkRecoveredOnRuns(inc.signature, runs)) {
+          const won = ((await exec(resolveIncidentSql(String(inc.id)))).rows ?? []).length > 0;
+          if (won) s.resolved++;
+          continue;
+        }
+        s.stillRed++;
+      } catch (err) {
+        s.errors++;
+        console.error(`[workflow] trunk incident ${inc.id} recheck failed:`, err);
+      }
+      // Still unresolved (red, unreadable, no repo, or an error): to the back of the queue.
+      await exec(touchIncidentSql(String(inc.id))).catch(() => undefined);
     }
   }
   const blocked = ((await exec(blockedOnResolvedSql(limit * 8))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string | null; current_head_sha: string | null; trunk_incident_id: string; base_ref: string }>;
@@ -1409,6 +1890,10 @@ export async function reconcileKernelDeliveries(
           view = await loadView({ deliveryId }, deps.exec);
           if (view.delivery?.state !== 'WORKING') s.imported++;
         }
+      } else if (view.delivery) {
+        // AC-1 slice 3: past WORKING the kernel has the end, but the task may not: an older control
+        // plane applied it without projecting and the route's own projection failed. Settle it.
+        await settleOwnerTask({ ownerTaskId: view.delivery.ownerTaskId, deliveryId }, deps);
       }
       // 75c04d5d: a mechanical refresh pinned to a head the delivery already left. The head read
       // above is a duplicate (the delivery holds it), so nothing else ever ends the row.

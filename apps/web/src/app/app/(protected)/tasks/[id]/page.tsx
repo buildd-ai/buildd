@@ -1,6 +1,6 @@
 import { taskEstimatePayload } from '@buildd/core/task-estimate-rollout';
 import TaskTimeRow from '@/components/TaskTimeRow';
-import { getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
+import { isDeliverableArtifact } from '@/lib/worker-deliverables';
 import { cancellationLine } from '@/lib/task-cancellation';
 import { taskRecoverySentence } from '@/lib/task-recovery-hold';
 import { ANSWER_IN_CHAT, RUN_PROGRESS_READERS } from '@/modules';
@@ -11,13 +11,15 @@ import { compareTasksChrono, compareWorkersChrono, newestFirst, oldestFirst } fr
 import { getRunnerHeartbeats, isRunnerOnline, loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, releases, missions, taskEstimates } from '@buildd/core/db/schema';
-import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
+import { readTaskEstimatesSetting } from '@buildd/core/task-estimate-source';
+import { isValidTimezone } from '@buildd/core/timezone';
 import { buildTimeRow } from '@/lib/task-time-row';
 import { eq, desc, inArray, asc, ne, and, isNotNull, sql } from 'drizzle-orm';
 import { deriveTaskEyebrow, taskEyebrowText } from '@/lib/task-eyebrow';
 import { deriveDisplayStatus, deriveTaskPhase, isSubjectDead, isGateSatisfied, findBlockingPrWorker } from '@/lib/task-presentation';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
-import { loadTaskView } from '@/lib/task-view';
+import { loadTaskViewRecovery, pickTaskView, taskViewReads, TASK_VIEW_UNREAD_WORKER_COLUMNS } from '@/lib/task-view';
+import { batchReads } from '@/lib/batch-reads';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -43,7 +45,6 @@ import { getModelDisplayName, primaryModelFromUsage, compareAssignedActual } fro
 import TaskAutoRefresh from './TaskAutoRefresh';
 import { DisplayTimezoneProvider, ZonedTime } from '@/components/DisplayTimezone';
 import { blockedHeadline, gateName, lastForceStart } from '@buildd/core/waiting-reason';
-import { getTeamTimezoneSetting } from '@/lib/team-timezone';
 import SwitchBackendButton, { type BackendOption } from './SwitchBackendButton';
 import TaskQuestionFeed from './TaskQuestionFeed';
 import CollapsibleDescription from './CollapsibleDescription';
@@ -58,7 +59,7 @@ import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import { visualReviewRoundOf } from '@/lib/visual-review-rounds';
 import { toTaskArtifactItem, taskVisibleArtifacts } from './task-artifact-items';
-import { observeMergeStateOnRender } from '@/lib/pr-state-refresh';
+import { observeWorkspaceMergeStateOnRender } from '@/lib/pr-state-refresh';
 import { getBackendAvailability, teamEnabledBackends } from '@/lib/backend-failover';
 import { backendLabel, failoverCandidates } from '@buildd/core/backend-policy';
 import { deriveTaskModel } from '@/lib/model-presentation';
@@ -72,15 +73,16 @@ import PrDetailsCard from './PrDetailsCard';
 import { StoredPrCard } from '@/components/task/StoredPrCard';
 import TaskDeliverables, { type TaskDeliverablesResult } from '@/components/task/TaskDeliverables';
 import { taskPrFacts, taskHeaderMerged, taskDeliverySections } from '@/lib/task-sections';
-import { loadOpenAttempt } from '@/lib/explain';
+import { openAttemptOf, openAttemptQuery } from '@/lib/explain';
 import TaskEvidenceCard from './TaskEvidenceCard';
 import { plainWorkerError } from '@/lib/provider-auth-failure';
 import TaskEvidenceFiles from './TaskEvidenceFiles';
 import { listTaskEvidenceObjects, toEvidenceObjectSummary } from '@/lib/evidence-read';
 import { evidenceViewOf } from '@/lib/task-evidence';
+import { TaskTitle as TaskTitleText } from '@/components/tasks/TaskTitle';
 import MissionContextBar from './MissionContextBar';
 import TaskPageActionZone from './TaskPageActionZone';
-import { auditTaskIdFor, loadTaskFailureKind } from '@/lib/task-failure-kind-load';
+import { auditTaskIdFor, loadTaskFailure } from '@/lib/task-failure-kind-load';
 import RunnerReachBanner from './RunnerReachBanner';
 import { loadServiceStatus } from '@/lib/service-status-loader';
 import { ServiceStatusList } from '@/components/service-status/ServiceStatusList';
@@ -89,13 +91,13 @@ import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import TaskOverflowMenu from './TaskOverflowMenu';
 import { AskAboutLink } from '@/components/chat/ChatEntry';
 import { missionContextBarFor, missionContextDeliveryTaskIds, type MissionContextBarData } from './mission-context-bar';
+import { missionContextReads, missionContextRowOf } from './mission-context-load';
 import { truncateExcerpt } from './error-excerpt';
 import { attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, isMeaningfulPlan, partitionChildTasks, selectExecutionPlan } from './execution-plan';
-import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFRESH_EXTRAS } from '@/lib/mission-card-views';
 import type { MissionCardRow } from '@/lib/mission-card-view';
 import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
 import WorkerSteerPanel from './WorkerSteerPanel';
-import { HeaderStatusPill, FactSheet, SideDescription, runnerFactRow, branchFactRow, type FactRow } from './TaskSidePanel';
+import { HeaderStatusPill, deliveryPillLabel, FactSheet, SideDescription, runnerFactRow, branchFactRow, type FactRow } from './TaskSidePanel';
 import { findTaskRole } from './role-lookup';
 import { headerLifecycle, taskHeading } from './task-header';
 import TaskChecksSection from '@/components/task/TaskChecksSection';
@@ -120,10 +122,11 @@ import { taskRunnerLine } from '@/lib/hosted-runner-usage';
 import { TaskShippedDetails } from './TaskShippedHeader';
 import { formatElapsed } from './format-elapsed';
 import TaskVerdictBlock from './TaskVerdictBlock';
+import EscalationDecision from '@/components/EscalationDecision';
 import TaskErrorEvidence from './TaskErrorEvidence';
 import { buildErrorEvidenceItems } from './error-evidence';
 import { nonDiffActions } from './attempt-actions';
-import { bookkeepingAttemptRetry } from './bookkeeping-attempt';
+import { groupAttemptHistory, isBookkeepingAttempt } from './bookkeeping-attempt';
 import BookkeepingAttemptRow from './BookkeepingAttemptRow';
 import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision, verdictLinksPr, verdictRepeatsOpenQuestion } from '@/lib/task-verdict';
 import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
@@ -136,10 +139,22 @@ import { statusPill } from '@/components/ui/states';
 import DiagnosticsDisclosure, { DiagnosticsAudienceProvider } from '@/components/ui/DiagnosticsDisclosure';
 import { canSeeDiagnostics } from '@/lib/diagnostics-audience';
 import { isPlatformOperator } from '@/lib/platform-operator';
+import { taskPrOf, withTaskPr } from '@/lib/workflow/task-pr';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
 const BADGED_EXIT_CAUSES = new Set(['budget_limited', 'infra_failure', 'never_started', 'silent_start']);
+
+/** A plan chain row's one fact from `context`: whether its role was inferred. */
+const ROLE_INFERRED_EXTRAS = {
+  roleInferred: (t: any, _ops?: unknown) => sql<boolean>`(${t.context}->'roleInferred') is not null`.as('role_inferred'),
+};
+
+
+/** Characters of an artifact body the page sends for its card; the viewer loads the rest on open. */
+const ARTIFACT_PREVIEW_CHARS = 600;
+/** A summary artifact read whole, to tell whether it only repeats the result's summary. */
+const SUMMARY_WHOLE_MAX_CHARS = 8000;
 
 /** The task's mission executor, for the action zone's `claim_task` hint. */
 function missionExecutorOf(row: { executor?: string | null } | null | undefined): 'runner' | 'local' | null {
@@ -179,7 +194,12 @@ export default async function TaskDetailPage({
   const task = await db.query.tasks.findFirst({
     where: sqlWhere(eq(tasks.id, id)),
     with: {
-      workspace: true,
+      // The workspace fields the page reads, not its memory/projects JSON; its
+      // team's zone and estimate switch ride along instead of two more reads.
+      workspace: {
+        columns: { id: true, teamId: true, name: true, repo: true, accessMode: true, dataClass: true, gitConfig: true },
+        with: { team: { columns: { timezone: true, taskEstimates: true } } },
+      },
       // Explicit allowlist, like every sibling relation in this shape: the two
       // fields the page reads off an account rather than the whole row.
       account: { columns: { name: true } },
@@ -187,9 +207,10 @@ export default async function TaskDetailPage({
         columns: { id: true, title: true, status: true },
         with: { initiative: { columns: { id: true, title: true } } },
       },
-      parentTask: { columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true, context: true } },
+      parentTask: { columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true }, extras: ROLE_INFERRED_EXTRAS },
       // taskClass/mode/title tell a subtask from an attempt at this task (D9).
-      subTasks: { columns: { id: true, title: true, status: true, taskClass: true, mode: true, parentTaskId: true, createdAt: true }, orderBy: sqlOrderBy([asc(tasks.createdAt), asc(tasks.id)]) },
+      // roleSlug/roleInferred: a parent's plan chain is its subtasks, read here once.
+      subTasks: { columns: { id: true, title: true, status: true, taskClass: true, mode: true, parentTaskId: true, createdAt: true, roleSlug: true }, extras: ROLE_INFERRED_EXTRAS, orderBy: sqlOrderBy([asc(tasks.createdAt), asc(tasks.id)]) },
       // Provenance (U6): who created this task and by what mechanism. The
       // creating worker has no page of its own, so we carry its task instead.
       creatorAccount: { columns: { id: true, name: true } },
@@ -214,74 +235,68 @@ export default async function TaskDetailPage({
   // timings): team admins of this task's team and platform operators only.
   const diagnosticsVisible = canSeeDiagnostics({ role: access.role, operator: isPlatformOperator(user) });
 
-  // These three need nothing but the task row and the access check above, and
-  // nothing each other produces, so they are one wait rather than three serial
-  // neon-http round trips. The access gate deliberately stays *ahead* of the
-  // group rather than joining it: this is an authorization path, and reading a
-  // task's workers for a viewer who turns out not to have access is not a
-  // trade worth two round trips.
+  // Everything below needs nothing but the task row and the access check
+  // above, and nothing each other produces. The reads that are ours to batch
+  // (the task's workers and open questions, its dependencies, the mission
+  // context and the estimate) go in one round trip; the rest run beside it.
+  // The access gate deliberately stays *ahead* of the group rather than
+  // joining it: this is an authorization path, and reading a task's workers
+  // for a viewer who turns out not to have access is not a trade worth two
+  // round trips.
   const depTaskIds = (task.dependsOn as string[] | undefined) || [];
-  const [taskView, depTasks, missionContextRow, taskEstimate, answerInChat] = await Promise.all([
-    // The task's workers, open question notes and any failure recovery holding
-    // it, picked the way the sheet picks them (lib/task-view.ts): one worker
-    // and one question on both surfaces. A mission task's questions carry its
-    // missionId too; they are still this task's, so no mission gate (S6).
-    loadTaskView(task, { userId: user.id, teamId: (task.workspace as { teamId?: string } | null)?.teamId ?? null }),
-    // Dependency tasks, if dependsOn has entries
-    depTaskIds.length > 0
-      ? db.query.tasks.findMany({
-          where: sqlWhere(inArray(tasks.id, depTaskIds)),
-          columns: { id: true, title: true, status: true, result: true },
-          with: {
-            workers: {
-              columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
-              // Every worker, newest first — NOT limit 1. The gate asks whether
-              // ANY worker holds an open PR, the same read the list and the
-              // claim route make; the newest alone hid an older open PR.
-              orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
-            },
+  const viewer = { userId: user.id, teamId: (task.workspace as { teamId?: string } | null)?.teamId ?? null };
+  // Dependency tasks, if dependsOn has entries
+  const depQuery = depTaskIds.length > 0
+    ? db.query.tasks.findMany({
+        where: sqlWhere(inArray(tasks.id, depTaskIds)),
+        columns: { id: true, title: true, status: true, result: true },
+        with: {
+          workers: {
+            columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
+            // Every worker, newest first — NOT limit 1. The gate asks whether
+            // ANY worker holds an open PR, the same read the list and the
+            // claim route make; the newest alone hid an older open PR.
+            orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
           },
+        },
         })
-      : Promise.resolve([]),
-    // Mission context bar (W6): the mission row and its tasks' light columns —
-    // the same selection a Home card makes, so no result/context/artifact
-    // content — fed through the builders every mission surface shares.
-    task.missionId
-      ? db.query.missions.findFirst({
-          where: sqlWhere(eq(missions.id, task.missionId)),
-          columns: {
-            id: true, title: true, status: true, orchestrationMode: true, dependsOnMissionId: true,
-            dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, armedAt: true, executor: true, startAt: true,
-            goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true,
-            integrationBranchEnabled: true, mergePolicy: true, requiresReview: true,
-          },
-          with: {
-            tasks: {
-              columns: MISSION_CARD_TASK_COLUMNS,
-                extras: MISSION_TASK_REFRESH_EXTRAS,
-              with: { workers: MISSION_CARD_WORKERS_WITH },
-            },
-            schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true } },
-          },
-        })
-      : Promise.resolve(null),
-    // The frozen estimate, only for a team that has the switch on.
-    (async () => {
-      const teamId = (task.workspace as { teamId?: string } | null)?.teamId;
-      if (!teamId) return null;
-      // Gate and row read side by side: one wait, not two.
-      return Promise.all([
-        taskEstimatesEnabled(teamId),
-        db.query.taskEstimates.findFirst({
-          where: sqlWhere(eq(taskEstimates.taskId, id)),
-          orderBy: sqlOrderBy(desc(taskEstimates.createdAt)),
-        }),
-      ]).then(([enabled, row]) => (enabled ? row ?? null : null));
-    })(),
+    : null;
+  // Mission context bar (W6): the mission row and its tasks' light columns —
+  // the same selection a Home card makes, so no result/context/artifact
+  // content — fed through the builders every mission surface shares.
+  const missionReads = task.missionId ? missionContextReads(task.missionId) : null;
+  // The frozen estimate, only for a team that has the switch on (read with the task).
+  const estimateQuery = task.workspace?.team && readTaskEstimatesSetting(task.workspace.team.taskEstimates)
+    ? db.query.taskEstimates.findFirst({
+        where: sqlWhere(eq(taskEstimates.taskId, id)),
+        orderBy: sqlOrderBy(desc(taskEstimates.createdAt)),
+      })
+    : null;
+  // The task's workers and open question notes, as the sheet reads them (lib/task-view.ts).
+  const [viewWorkersQuery, viewQuestionsQuery] = taskViewReads(task.id);
+  const [round1, recovery, answerInChat, taskPr] = await Promise.all([
+    batchReads([viewWorkersQuery, viewQuestionsQuery, depQuery, ...(missionReads ?? []), estimateQuery]),
+    loadTaskViewRecovery(task, viewer),
     // An answer link for a mission filed from the reader's own conversation
     // opens that conversation instead, when chat is on for them.
     focusAnswer && task.missionId ? ANSWER_IN_CHAT(id, user.id).catch(() => null) : Promise.resolve(null),
+    // The task's PR, derived on read (workflow/task-pr.ts), for the Deliverables block.
+    taskPrOf(task.id),
   ]);
+  const depTasks = (round1(depQuery) ?? []) as Awaited<NonNullable<typeof depQuery>>;
+  const missionContextRow = missionReads
+    ? missionContextRowOf(...(missionReads.map(r => round1(r) ?? []) as [never, never, never]))
+    : null;
+  const taskEstimate = (round1(estimateQuery) ?? null) as Awaited<NonNullable<typeof estimateQuery>> | null;
+  // One worker and one question, picked the way the sheet picks them: the same
+  // on both surfaces. A mission task's questions carry its missionId too; they
+  // are still this task's, so no mission gate (S6).
+  const taskView = pickTaskView({
+    task,
+    workers: (round1(viewWorkersQuery) ?? []) as Awaited<typeof viewWorkersQuery>,
+    openQuestions: (round1(viewQuestionsQuery) ?? []) as Awaited<typeof viewQuestionsQuery>,
+    recovery,
+  });
   if (answerInChat) redirect(answerInChat);
   // Newest first by (createdAt, id).
   const taskWorkers = taskView.ordered;
@@ -304,18 +319,11 @@ export default async function TaskDetailPage({
   if (task.status === 'completed' && task.workspaceId) {
     const latestWorker = taskWorkers[0];
     if (latestWorker?.prNumber && !latestWorker?.mergedAt && latestWorker?.prUrl) {
-      const wsWithInstall = await db.query.workspaces.findFirst({
-        where: sqlWhere(eq(workspaces.id, task.workspaceId)),
-        columns: {},
-        with: { githubInstallation: { columns: { installationId: true } } },
-      });
-      const installId = wsWithInstall?.githubInstallation?.installationId;
-      if (installId) {
-        // AC-3: a delivery-owned task records at most a fact here; no lifecycle write.
-        const stale = { id: latestWorker.id, prNumber: latestWorker.prNumber, prUrl: latestWorker.prUrl, workspaceId: latestWorker.workspaceId ?? task.workspaceId };
-        after(() => observeMergeStateOnRender([stale], installId).catch((err) =>
-          console.error('[task-page] PR fact import failed (non-fatal):', err)));
-      }
+      // AC-3: a delivery-owned task records at most a fact here; no lifecycle write.
+      const stale = { id: latestWorker.id, prNumber: latestWorker.prNumber, prUrl: latestWorker.prUrl, workspaceId: latestWorker.workspaceId ?? task.workspaceId };
+      // The installation is read after the response too: the render reads nothing for this.
+      after(() => observeWorkspaceMergeStateOnRender([stale], task.workspaceId).catch((err) =>
+        console.error('[task-page] PR fact import failed (non-fatal):', err)));
     }
   }
 
@@ -349,24 +357,81 @@ export default async function TaskDetailPage({
   // Cloud runs only: its time on the hosted runner, all attempts. Started
   // here, awaited below, so it adds no round trip of its own.
   const hostedRunnerUsagePromise = taskHostedRunnerUsage(id).catch(() => null);
-  // The team's service status for this viewer, kept to the causes this task waits on. Never throws.
-  const serviceStatusPromise = loadServiceStatus({ userId: user?.id, teamId: (task.workspace as { teamId?: string } | null)?.teamId })
-    .then((v) => v.statuses.filter((s) => s.work.some((w) => w.taskId === task.id)));
-  const [evidenceReview, evidenceArtifactCount, taskArtifacts, errorTraces, ship, teamTimezone, roleRow, ciAttemptRows, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw, livingSpec, taskServiceStatus] = await Promise.all([
-    prWorker?.prNumber ? RUN_PROGRESS_READERS.review({ workspaceId: task.workspaceId, prNumber: prWorker.prNumber }).catch(() => null) : Promise.resolve(null),
-    taskWorkers.find(w => isLiveWorkerStatus(w.status)) ? getWorkerDeliverableArtifactCount(taskWorkers.find(w => isLiveWorkerStatus(w.status))!.id) : Promise.resolve(0),
-    // Artifacts for all workers on this task
-    workerIds.length > 0
-      ? db.query.artifacts.findMany({ where: sqlWhere(inArray(artifacts.workerId, workerIds)) })
-      : Promise.resolve([]),
-    // Agent error traces (pattern-matched failures from tool output).
-    // Captured by the runner's error-trace-scanner — see apps/runner/src/error-trace-scanner.ts.
-    // Cap to most recent 50 here; full list available via /api/tasks/[id]/error-traces.
-    db.query.workerErrorTraces.findMany({
-      where: sqlWhere(eq(workerErrorTraces.taskId, id)),
-      orderBy: sqlOrderBy([desc(workerErrorTraces.ts)]),
-      limit: 50,
-    }),
+  // The team's service status for this viewer, kept to the causes this task
+  // waits on. A finished task waits on nothing, so it reads none. Never throws.
+  const serviceStatusPromise = isTerminalTaskStatus(task.status)
+    ? Promise.resolve([] as Awaited<ReturnType<typeof loadServiceStatus>>['statuses'])
+    : loadServiceStatus({ userId: user?.id, teamId: (task.workspace as { teamId?: string } | null)?.teamId })
+      .then((v) => v.statuses.filter((s) => s.work.some((w) => w.taskId === task.id)));
+  // Artifacts for all workers on this task, each body cut to the card's
+  // preview (a summary read whole when short, for the duplicate check).
+  const artifactsQuery = workerIds.length > 0
+    ? db.select({
+        id: artifacts.id, workerId: artifacts.workerId, type: artifacts.type, title: artifacts.title,
+        storageKey: artifacts.storageKey, shareToken: artifacts.shareToken, visibility: artifacts.visibility,
+        metadata: artifacts.metadata, key: artifacts.key, createdAt: artifacts.createdAt,
+        content: sql<string | null>`case when ${artifacts.type} = 'summary' and length(${artifacts.content}) <= ${SUMMARY_WHOLE_MAX_CHARS}
+          then ${artifacts.content} else left(${artifacts.content}, ${ARTIFACT_PREVIEW_CHARS}) end`,
+        contentLength: sql<number | null>`length(${artifacts.content})`.mapWith(Number),
+      }).from(artifacts).where(inArray(artifacts.workerId, workerIds))
+    : null;
+  // Agent error traces (pattern-matched failures from tool output).
+  // Captured by the runner's error-trace-scanner — see apps/runner/src/error-trace-scanner.ts.
+  // Cap to most recent 50 here; full list available via /api/tasks/[id]/error-traces.
+  const errorTracesQuery = db.query.workerErrorTraces.findMany({
+    where: sqlWhere(eq(workerErrorTraces.taskId, id)),
+    orderBy: sqlOrderBy([desc(workerErrorTraces.ts)]),
+    limit: 50,
+  });
+  // CI-retry attempts at this task's PR: each is a fresh worker handed the
+  // failure excerpt, on the same branch. They make "How it landed".
+  const ciAttemptsQuery = prWorker?.prNumber
+    ? db.query.tasks.findMany({
+        where: sqlWhere(and(eq(tasks.parentTaskId, id), eq(tasks.ciRetryPrNumber, prWorker.prNumber), isNotNull(tasks.ciRetryHeadSha))),
+        columns: { id: true, title: true, status: true, createdAt: true, ciRetryHeadSha: true, result: true },
+        // The one context fact the lineage reads: the failure it was handed.
+        extras: { context: (t: any, _ops?: unknown) => sql<Record<string, unknown> | null>`jsonb_build_object('failureContext', ${t.context}->'failureContext')`.as('attempt_context') },
+        with: {
+          // The rows taskWorkers carry, for Worker history, less what only the
+          // live worker's steer panel reads: an attempt's worker is never this
+          // task's active one.
+          workers: {
+            columns: { ...TASK_VIEW_UNREAD_WORKER_COLUMNS, instructionHistory: false, pendingInstructions: false, observedTouches: false },
+            orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
+            with: { account: { columns: { name: true } } },
+          },
+        },
+        orderBy: sqlOrderBy([asc(tasks.createdAt), asc(tasks.id)]),
+      })
+    : null;
+  // What this task unblocks, once it has landed.
+  const dependentsQuery = task.status === 'completed'
+    ? db.query.tasks.findMany({
+        where: sqlWhere(and(eq(tasks.workspaceId, task.workspaceId), sql`${tasks.dependsOn} @> ${JSON.stringify([id])}::jsonb`)),
+        columns: { id: true, title: true, label: true, status: true },
+        limit: 6,
+      })
+    : null;
+  // The canonical "is a fix attempt open on this task" fact — same
+  // predicate explain.ts and Home's action queue use (mission-state-view.ts
+  // rule 6½). Only while the task's PR is open.
+  const openAttemptRead = prWorker?.prUrl && prWorker.prNumber && prWorker.prLifecycleStatus !== 'closed'
+    ? openAttemptQuery(task.id)
+    : null;
+  // Those five in one round trip.
+  const round2 = batchReads([artifactsQuery, errorTracesQuery, ciAttemptsQuery, dependentsQuery, openAttemptRead]);
+  // The delivery this task belongs to, started with round 2: the review status
+  // below reads the same view when this task owns the PR, so it is read once.
+  const deliveryContextPromise = loadTaskDeliveryContext(task.id, user.id);
+  deliveryContextPromise.catch(() => {});
+  const [evidenceReview, reads2, ship, teamTimezone, roleRow, runnerHeartbeats, auditVisual, evidenceFiles, runnerReachRaw, accessItems, failureRaw, livingSpec, taskServiceStatus] = await Promise.all([
+    prWorker?.prNumber
+      ? RUN_PROGRESS_READERS.review({
+          workspaceId: task.workspaceId, prNumber: prWorker.prNumber,
+          knownDelivery: { taskId: task.id, view: deliveryContextPromise.then((c) => c.view) },
+        }).catch(() => null)
+      : Promise.resolve(null),
+    round2,
     (async () => {
       // Ship state (§10.3) — whether this task is attributed to a healthy release.
       const shippedRelease = await resolveShippedRelease(task.id);
@@ -388,33 +453,9 @@ export default async function TaskDetailPage({
     // Stamps on this page render in the task's own team zone (the same zone
     // its PR activity comment uses), not the layout's current-team zone.
     // Null → the viewer's browser zone; never the server's UTC. Never throws.
-    getTeamTimezoneSetting((task.workspace as any)?.teamId as string | undefined),
+    isValidTimezone(task.workspace?.team?.timezone) ? task.workspace!.team!.timezone : null,
     // Role name/colour come from the workspace's role row, never a local map.
     findTaskRole({ workspaceId: task.workspaceId, teamId: (task.workspace as any)?.teamId, slug: task.roleSlug }),
-    // CI-retry attempts at this task's PR: each is a fresh worker handed the
-    // failure excerpt, on the same branch. They make "How it landed".
-    prWorker?.prNumber
-      ? db.query.tasks.findMany({
-          where: sqlWhere(and(eq(tasks.parentTaskId, id), eq(tasks.ciRetryPrNumber, prWorker.prNumber), isNotNull(tasks.ciRetryHeadSha))),
-          columns: { id: true, status: true, createdAt: true, ciRetryHeadSha: true, context: true, result: true },
-          with: {
-            // Full rows, same shape as taskWorkers: Worker history lists them.
-            workers: {
-              orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
-              with: { account: { columns: { name: true } } },
-            },
-          },
-          orderBy: sqlOrderBy([asc(tasks.createdAt), asc(tasks.id)]),
-        })
-      : Promise.resolve([]),
-    // What this task unblocks, once it has landed.
-    task.status === 'completed'
-      ? db.query.tasks.findMany({
-          where: sqlWhere(and(eq(tasks.workspaceId, task.workspaceId), sql`${tasks.dependsOn} @> ${JSON.stringify([id])}::jsonb`)),
-          columns: { id: true, title: true, label: true, status: true },
-          limit: 6,
-        })
-      : Promise.resolve([]),
     // Heartbeats of this task's runner accounts: names its runners (and its
     // CI retries' sibling runners) by hostname.
     loadRunnerHeartbeats(taskWorkers),
@@ -429,23 +470,29 @@ export default async function TaskDetailPage({
           .catch(() => null)
       : Promise.resolve(null),
     evidenceFilesPromise,
-    // The canonical "is a fix attempt open on this task" fact — same
-    // predicate explain.ts and Home's action queue use (mission-state-view.ts
-    // rule 6½). Joined onto this group, not a fifth serial step.
-    prWorker?.prUrl && prWorker.prNumber && prWorker.prLifecycleStatus !== 'closed'
-      ? loadOpenAttempt(task.id)
-      : Promise.resolve(null),
     runnerReachLoad,
     // What this task's runs were given and refused (agent_capability_decisions).
     // A read failure hides the section; it never fails the page.
     loadTaskAccess(id).catch(() => []),
     // Worker vs verification failure. Costs no query unless the task failed;
     // joined here rather than awaited after the phase is derived.
-    loadTaskFailureKind({ id: task.id, title: task.title, status: task.status, missionId: task.missionId ?? null }).catch(() => null),
+    loadTaskFailure({ id: task.id, title: task.title, status: task.status, missionId: task.missionId ?? null }).catch(() => null),
     // The Living Spec the task is pinned to, with its outcome. No query unless it names one.
     livingSpecLoad(task.id, task.context),
     serviceStatusPromise,
   ]);
+  const taskArtifacts = (reads2(artifactsQuery) ?? []) as Awaited<NonNullable<typeof artifactsQuery>>;
+  // The live worker's deliverables, counted from the rows above: no read of its own.
+  const liveWorkerId = taskWorkers.find(w => isLiveWorkerStatus(w.status))?.id;
+  const evidenceArtifactCount = liveWorkerId
+    ? taskArtifacts.filter(a => a.workerId === liveWorkerId && isDeliverableArtifact(a)).length
+    : 0;
+  const errorTraces = reads2(errorTracesQuery) as Awaited<typeof errorTracesQuery>;
+  const ciAttemptRows = (reads2(ciAttemptsQuery) ?? []) as Awaited<NonNullable<typeof ciAttemptsQuery>>;
+  const dependentTasks = (reads2(dependentsQuery) ?? []) as Awaited<NonNullable<typeof dependentsQuery>>;
+  const openAttempt = openAttemptRead
+    ? openAttemptOf(reads2(openAttemptRead) as Awaited<NonNullable<typeof openAttemptRead>>)
+    : null;
   // CI-retry attempts numbered by (createdAt, id): "attempt N" never swaps.
   const ciAttemptTasks = oldestFirst(ciAttemptRows, compareTasksChrono)
     .map(t => ({ ...t, workers: newestFirst(t.workers, compareWorkersChrono) }));
@@ -528,24 +575,30 @@ export default async function TaskDetailPage({
   let planOnlineRunners = 0;
 
   if (planParentId) {
-    const chainBase = await db.query.tasks.findMany({
-      where: sqlWhere(eq(tasks.parentTaskId, planParentId)),
-      columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true, context: true },
-      orderBy: sqlOrderBy([asc(tasks.createdAt), asc(tasks.id)]),
-    });
+    // A parent's chain is its subtasks, already read with it; a child's is its siblings.
+    const chainBase = planParentId === task.id
+      ? (task.subTasks ?? []).map(({ createdAt: _createdAt, ...t }) => t)
+      : await db.query.tasks.findMany({
+          where: sqlWhere(eq(tasks.parentTaskId, planParentId)),
+          columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true },
+          extras: ROLE_INFERRED_EXTRAS,
+          orderBy: sqlOrderBy([asc(tasks.createdAt), asc(tasks.id)]),
+        });
 
     if (chainBase.length > 0) {
       // If current task is a child, prepend the parent to the chain
       let chainTasksToFetch = chainBase;
       if (task.parentTaskId && task.parentTask) {
         chainTasksToFetch = [
-          { id: task.parentTaskId, title: task.parentTask.title, status: task.parentTask.status, roleSlug: task.parentTask.roleSlug, taskClass: task.parentTask.taskClass, mode: task.parentTask.mode, parentTaskId: task.parentTask.parentTaskId, context: task.parentTask.context },
+          { id: task.parentTaskId, title: task.parentTask.title, status: task.parentTask.status, roleSlug: task.parentTask.roleSlug, taskClass: task.parentTask.taskClass, mode: task.parentTask.mode, parentTaskId: task.parentTask.parentTaskId, roleInferred: task.parentTask.roleInferred },
           ...chainBase
         ];
       }
       // D9: a reviewer pass or a retry is an attempt at its parent, never a
       // step of an execution plan — and an attempt's page shows no plan.
       chainTasksToFetch = selectExecutionPlan(task, chainTasksToFetch);
+      // A chain of one is no plan (below): read nothing more for it.
+      if (!isMeaningfulPlan(chainTasksToFetch)) chainTasksToFetch = [];
 
       const chainIds = chainTasksToFetch.map(t => t.id);
 
@@ -575,12 +628,12 @@ export default async function TaskDetailPage({
         artsByWorker.get(a.workerId)!.push(a);
       }
 
-      planChain = chainTasksToFetch.map(({ context, ...t }) => {
+      planChain = chainTasksToFetch.map(({ roleInferred, ...t }) => {
         const w = latestWorker.get(t.id) ?? null;
         return {
           ...t,
           taskClass: t.taskClass ?? null,
-          roleInferred: (context as Record<string, unknown> | null)?.roleInferred != null,
+          roleInferred: roleInferred === true,
           worker: w ? {
             prUrl: w.prUrl, prNumber: w.prNumber, turns: w.turns, branch: w.branch,
             status: w.status, mergedAt: w.mergedAt, prLifecycleStatus: w.prLifecycleStatus,
@@ -630,7 +683,7 @@ export default async function TaskDetailPage({
   // or PR-less tasks get null and keep today's status.
   // The same load carries the review rounds' findings and the deliverable's
   // title for the page's checks list and attempt framing (docs/specs/task-page.md).
-  const deliveryContext = await loadTaskDeliveryContext(task.id);
+  const deliveryContext = await deliveryContextPromise;
   const deliveryView = deliveryContext.view;
   // §7 (workflow-kernel-library.md): the PR's merged/open/closed reading is the
   // delivery's when it owns this PR, never a worker row that disagrees (AC-26).
@@ -810,7 +863,9 @@ export default async function TaskDetailPage({
     isSubjectDead: subjectDead,
     isMissionBudgetExhausted: missionBudgetExhausted,
   });
-  const failureKind = phase === 'failed' ? failureKindRaw : null;
+  const failureKind = phase === 'failed' ? failureRaw?.kind ?? null : null;
+  // Never ran: a task it depends on failed. Its action zone names that task instead of offering a retry (spec 072de598 I-14).
+  const failureWaitingOn = failureKind === 'dependency' ? failureRaw?.waitingOn ?? null : null;
   // Triage metadata (priority / runner / backend) only earns top-level space in
   // the pending family; everywhere else it demotes into the Details disclosure.
   const isPendingFamily = phase === 'pending' || phase === 'blocked' || phase === 'budget_paused' || phase === 'assigned' || phase === 'subject_dead' || phase === 'mission_budget_exhausted';
@@ -916,6 +971,16 @@ export default async function TaskDetailPage({
     // §17.5: a kernel-owned PR's state is the delivery's, not the columns'.
     deliveryPrState: deliveryView?.prState ?? null,
   }), review: reviewOutcome,
+    waitingOnFailed: failureWaitingOn,
+    escalation: deliveryView?.escalation
+      ? {
+          title: deliveryView.escalation.title,
+          summary: deliveryView.escalation.summary,
+          open: deliveryView.escalation.findings.open.length,
+          awaitingVerification: deliveryView.escalation.findings.addressedAwaitingVerification.length,
+          resolved: deliveryView.escalation.findings.resolved.length,
+        }
+      : null,
     // The platform updating the branch or merging: in progress, not "ready to merge".
     deliveryActivity: deliveryView && ((deliveryView.state === 'REPAIRING' && deliveryView.stateReason === 'behind') || deliveryView.state === 'LANDING') ? deliveryView.headline : null,
     // A merged PR is stated once, on the status row, and the time goes with it.
@@ -1011,12 +1076,12 @@ export default async function TaskDetailPage({
     ...(prOutcome && ciAttemptWorkers.length > 0 && prWorker && !shippedViewShown
       ? [{
           key: 'workers',
-          label: 'Workers',
+          label: 'Agents',
           value: (
             <ul>
               {[prWorker, ...ciAttemptWorkers].map((w, i) => (
                 // One line each: the runner, then its attempt number. "(retry)"
-                // is what "attempt 2" already says, and it wrapped on its own.
+                // is what "CI fix 1" already says, and it wrapped on its own.
                 <li key={w.id} className="flex min-w-0 min-h-11 md:min-h-0 items-center md:items-baseline gap-2">
                   <span className="min-w-0 truncate">{runnerLabel(w)}</span>
                   <span className="shrink-0 whitespace-nowrap text-text-muted">attempt {i + 1}</span>
@@ -1053,7 +1118,7 @@ export default async function TaskDetailPage({
                     <span className={ok ? 'text-status-success' : stalled ? 'text-status-warning' : 'text-text-muted'} aria-label={ok ? 'resolved' : dep.status}>
                       {ok ? '✓' : stalled ? '!' : '○'}
                     </span>
-                    <Link href={taskPageHref({ taskId: dep.id })} className="min-w-0 truncate hover:underline" title={dep.title}>{displayTaskTitle(dep.title)}</Link>
+                    <Link href={taskPageHref({ taskId: dep.id })} className="min-w-0 truncate hover:underline" title={dep.title}><TaskTitleText short title={dep.title} /></Link>
                     {stalled && <span className="shrink-0 text-[11px] text-status-warning">infra stalled</span>}
                   </li>
                 );
@@ -1102,7 +1167,7 @@ export default async function TaskDetailPage({
               )}
               {origin.shipped && (
                 <div data-testid="task-origin-shipped" className="text-text-secondary">
-                  Shipped in <Link href={origin.shipped.href} className="text-status-success hover:underline">{origin.shipped.label}</Link>
+                  Released in <Link href={origin.shipped.href} className="text-status-success hover:underline">{origin.shipped.label}</Link>
                 </div>
               )}
             </div>
@@ -1135,7 +1200,9 @@ export default async function TaskDetailPage({
     const runWorkers = workerHistory.map(h => h.worker);
     const runners = [...new Set(runWorkers.map(w => runnerLabel(w)).filter((n): n is string => !!n))];
     if (runners.length > 0) runDetails.push({ label: 'Runner', value: runners.join(', ') });
-    if (runWorkers.length > 1) runDetails.push({ label: 'Attempts', value: String(runWorkers.length) });
+    // A claim no session ran is bookkeeping, not an attempt.
+    const ranWorkers = runWorkers.filter(w => !isBookkeepingAttempt(w));
+    if (ranWorkers.length > 1) runDetails.push({ label: 'Attempts', value: String(ranWorkers.length) });
     const turns = runWorkers.reduce((n, w) => n + (w.turns ?? 0), 0);
     if (turns > 0) runDetails.push({ label: 'Turns', value: String(turns) });
     const starts = runWorkers.map(w => w.startedAt?.getTime()).filter((t): t is number => t != null);
@@ -1161,20 +1228,27 @@ export default async function TaskDetailPage({
               Attempts
             </div>
             <div className="border border-border-default overflow-hidden">
-              {workerHistory.map(({ worker, attemptLabel }) => {
-                const iconStyle = TASK_ICONS[worker.status] || DEFAULT_ICON;
-                const bookkeepingRetry = bookkeepingAttemptRetry(worker, task);
-                if (bookkeepingRetry) {
-                  const shownError = plainWorkerError(worker.error, taskBackend);
+              {groupAttemptHistory(workerHistory, task).map((item) => {
+                if (item.kind === 'bookkeeping') {
+                  const head = item.entries[0];
                   return (
-                    <BookkeepingAttemptRow key={worker.id} workerId={worker.id} retry={bookkeepingRetry} attemptLabel={attemptLabel}>
-                      <p>Runner: {runnerLabel(worker) ?? worker.name}{worker.account && ` \u00B7 ${worker.account.name}`}</p>
-                      <p className="font-mono">Branch: <span title={worker.branch}>{displayBranchName(worker.branch)}</span></p>
-                      {shownError && <p className="font-mono" title={shownError.raw}>{shownError.text}</p>}
-                      <p className="font-mono" title={worker.id}>{attemptLabel ?? 'Attempt'} · {worker.turns} turns</p>
+                    <BookkeepingAttemptRow key={head.worker.id} workerId={head.worker.id} retry={item.retry} attemptLabel={head.attemptLabel} count={item.entries.length} undelivered={item.undelivered}>
+                      {item.entries.map(({ worker, attemptLabel }) => {
+                        const shownError = plainWorkerError(worker.error, taskBackend);
+                        return (
+                          <div key={worker.id} className="space-y-1">
+                            <p>Runner: {runnerLabel(worker) ?? worker.name}{worker.account && ` \u00B7 ${worker.account.name}`}</p>
+                            <p className="font-mono">Branch: <span title={worker.branch}>{displayBranchName(worker.branch)}</span></p>
+                            {shownError && <p className="font-mono" title={shownError.raw}>{shownError.text}</p>}
+                            <p className="font-mono" title={worker.id}>{attemptLabel ?? 'Attempt'} · {worker.turns} turns</p>
+                          </div>
+                        );
+                      })}
                     </BookkeepingAttemptRow>
                   );
                 }
+                const { worker, attemptLabel } = item.entry;
+                const iconStyle = TASK_ICONS[worker.status] || DEFAULT_ICON;
                 return (
                   // Below md the badge + PR link wrap onto their own line under the
                   // text (the text column takes the rest of the first line, and
@@ -1522,6 +1596,9 @@ export default async function TaskDetailPage({
         {verdict && !verdictRepeatsOpenQuestion(verdict, { questionOnPage: !!activeWorker?.waitingFor }) && (
           <TaskVerdictBlock verdict={verdict} displayStatus={displayStatus} />
         )}
+        {deliveryView?.escalation && deliveryView.prNumber != null && subject.kind === 'deliverable' && (
+          <EscalationDecision brief={deliveryView.escalation} prNumber={deliveryView.prNumber} workspaceId={task.workspaceId} />
+        )}
 
         {/* Checks on the delivery's current head, by round (task-page spec). */}
         {checksSection && <TaskChecksSection section={checksSection} currentTaskId={task.id} />}
@@ -1539,7 +1616,9 @@ export default async function TaskDetailPage({
               isBlocked={isBlocked}
               blockedByCount={unresolvedDeps.length}
               backend={(task.backend as 'claude' | 'codex' | null) ?? null}
+              deliveryReading={deliveryPillLabel(deliveryPill)}
               failureKind={failureKind}
+              waitingOn={failureWaitingOn}
               auditTaskId={auditTaskIdFor(task, failureKind)}
               lastError={failedExcerpt ? { excerpt: failedExcerpt, raw: taskWorkers[0]?.error ?? null } : null}
               worker={null}
@@ -1661,7 +1740,7 @@ export default async function TaskDetailPage({
                         {w.prNumber ? `Merge PR #${w.prNumber}` : 'PR open'} ↗
                       </a>
                       <span className="text-[12px] text-text-muted" title={dep.title}>
-                        {displayTaskTitle(dep.title)}
+                        <TaskTitleText short title={dep.title} />
                       </span>
                     </div>
                   );
@@ -1700,7 +1779,7 @@ export default async function TaskDetailPage({
                   {task.mission.title}
                 </Link>
               ) : 'this mission'}{' '}
-              is on hold. Raise the mission budget to release them, or force-start this task.
+              waits for more budget. Raise the mission budget to start them, or force-start this task.
             </p>
           </div>
         )}
@@ -1867,6 +1946,12 @@ export default async function TaskDetailPage({
             hideAction: !!shippedView,
             statedAbove: prStatedAbove,
             openAttempt,
+            repairLinks: {
+              parent: deliverableLink && subject.kind === 'fix'
+                ? { taskId: deliverableLink.taskId, title: deliverableLink.title ? displayTaskTitle(deliverableLink.title) : null }
+                : null,
+              fixes: ciAttemptTasks.map(t => ({ taskId: t.id, title: t.title ? displayTaskTitle(t.title) : null })),
+            },
             // AC-24: the delivery's rounds, the same line the checks list and get_pr print.
             reviewRounds: checksSection?.checks.review ?? null,
           };
@@ -1878,7 +1963,7 @@ export default async function TaskDetailPage({
                   the same card rendered from stored state, so the PR is
                   readable and linkable on first paint. */}
               <Suspense fallback={<StoredPrCard {...storedPrFacts} />}>
-                <PrDetailsCard workspaceId={task.workspaceId} {...storedPrFacts} />
+                <PrDetailsCard workspaceId={task.workspaceId} headSha={prWorker?.lastCommitSha ?? null} {...storedPrFacts} />
               </Suspense>
             </div>
           );
@@ -1907,7 +1992,7 @@ export default async function TaskDetailPage({
         {!shippedView && (
           <TaskDeliverables
             taskId={task.id}
-            result={task.result as TaskDeliverablesResult | null}
+            result={withTaskPr(task.result as Record<string, unknown> | null, taskPr) as TaskDeliverablesResult | null}
             prCard={!!prOutcome}
             summaryInPrCard
             suppressedSummary={suppressedSummaryArtifact}
@@ -1919,7 +2004,11 @@ export default async function TaskDetailPage({
             (queued, no browser runner, boot failed, stalled), with its actions. */}
         {(visibleArtifacts.length > 0 || auditVisual) && (
           <TaskArtifactsSection
-            artifacts={visibleArtifacts.map(toTaskArtifactItem)}
+            artifacts={visibleArtifacts.map(a => ({
+              ...toTaskArtifactItem({ ...a, content: a.content?.slice(0, ARTIFACT_PREVIEW_CHARS) ?? null }),
+              // The body past the preview loads when the viewer opens.
+              truncated: (a.contentLength ?? 0) > Math.min(a.content?.length ?? 0, ARTIFACT_PREVIEW_CHARS),
+            }))}
             taskId={task.id}
             baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
             initialOpenArtifactId={initialOpenArtifactId}
@@ -2016,7 +2105,7 @@ export default async function TaskDetailPage({
               <dt>Runner preference</dt><dd>{task.runnerPreference}</dd>
               {task.backend && <><dt>Backend</dt><dd>{task.backend}</dd></>}
               <dt>Claimed by</dt><dd className="truncate">{task.account?.name || '-'}</dd>
-              <dt>Workers</dt><dd>{taskWorkers.length}</dd>
+              <dt>Agents</dt><dd>{taskWorkers.length}</dd>
               {task.claimedAt && <><dt>Claimed at</dt><dd><ZonedTime value={task.claimedAt} format="datetime" /></dd></>}
             </dl>
           </DiagnosticsDisclosure>

@@ -72,6 +72,8 @@ mock.module('@buildd/core/db/schema', () => ({
 
 const mockGithubApi = mock(() => Promise.resolve({} as any));
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
+// The repo's covering installation is the workspace's team's (tests/db pins the real rule).
+mock.module('@/lib/github-installation-access', () => ({ installationBelongsToTeam: async () => true }));
 
 const mockBuildConflictRetryTask = mock(() => null as any);
 const mockDispatchConflictRetry = mock(async (_p: any): Promise<any> => ({ dispatched: false }));
@@ -181,7 +183,7 @@ describe('sweepDeadZonePrs repo resolution', () => {
     // The prUrl here is a compare url naming a DIFFERENT repo, so it must be
     // rejected and the workspace's URL-shaped column normalized instead.
     mockWorkersFindMany.mockResolvedValue([deadZoneWorker({ prUrl: COMPARE_URL })]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       id: 'ws1',
       repo: 'https://github.com/owner/repo',
       gitConfig: {},
@@ -197,7 +199,7 @@ describe('sweepDeadZonePrs repo resolution', () => {
     mockWorkersFindMany.mockResolvedValue([
       deadZoneWorker({ prUrl: 'https://github.com/owner/sibling-ios/pull/42' }),
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       id: 'ws1',
       repo: 'https://github.com/owner/repo',
       gitConfig: {},
@@ -213,7 +215,7 @@ describe('sweepDeadZonePrs repo resolution', () => {
   it('hands the conflict retry a slug repoFullName, not a url', async () => {
     // This value lands in the instructions given to a resolving agent.
     mockWorkersFindMany.mockResolvedValue([deadZoneWorker({ prUrl: COMPARE_URL })]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       id: 'ws1',
       repo: 'https://github.com/owner/repo',
       gitConfig: {},
@@ -226,14 +228,14 @@ describe('sweepDeadZonePrs repo resolution', () => {
       expect.objectContaining({ repoFullName: 'owner/repo' }),
     );
     // A dirty PR is a conflict fact on the fact cache, for this worker.
-    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'conflict' }, opts: undefined }]);
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'conflict' }, opts: { scope: expect.objectContaining({ defers: expect.any(Function) }) } }]);
   });
 
   it('sweeps a worker whose workspace has no repo, using its prUrl', async () => {
     mockWorkersFindMany.mockResolvedValue([
       deadZoneWorker({ workspaceId: 'ws-coord', prUrl: 'https://github.com/owner/repo/pull/42' }),
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       id: 'ws-coord', repo: null, gitConfig: {}, githubInstallation: null,
     });
     mockGithubReposFindFirst.mockResolvedValue({ installation: { installationId: 789 } });
@@ -245,7 +247,7 @@ describe('sweepDeadZonePrs repo resolution', () => {
 
   it('takes the fallback repo from the linked row, not the stale text column', async () => {
     mockWorkersFindMany.mockResolvedValue([deadZoneWorker({ prUrl: COMPARE_URL })]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       id: 'ws1',
       repo: 'https://github.com/owner/old-name',
       gitConfig: {},
@@ -264,7 +266,7 @@ describe('sweepDeadZonePrs repo resolution', () => {
     mockWorkersFindMany.mockResolvedValue([
       deadZoneWorker({ workspaceId: 'ws-coord', prUrl: COMPARE_URL }),
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       id: 'ws-coord', repo: null, gitConfig: {}, githubInstallation: null,
     });
 
@@ -292,7 +294,7 @@ describe('sweepDeadZonePrs retry identity', () => {
     // role-routing §1 row 8: this insert hand-enumerated its columns and
     // dropped the role that conflict-retry.ts's own insert carries.
     mockWorkersFindMany.mockResolvedValue([deadZoneWorker()]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       id: 'ws1', repo: 'owner/repo', gitConfig: {},
       githubRepo: { installation: { installationId: 123 } },
     });
@@ -346,7 +348,7 @@ describe('sweepDeadZonePrs PR facts', () => {
     expect(recordedFacts).toEqual([{
       target: { workerId: 'w1' },
       fact: { kind: 'ci', status: 'ci_failed', headSha: 'cafe01', currentHeadSha: 'cafe01' },
-      opts: undefined,
+      opts: { scope: expect.objectContaining({ defers: expect.any(Function) }) },
     }]);
     expect(recordedFacts.some((r) => (r.fact as { kind: string }).kind === 'conflict')).toBe(false);
   });

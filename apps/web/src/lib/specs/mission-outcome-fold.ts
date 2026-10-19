@@ -11,7 +11,8 @@ import type { CriterionVerdict, LivingSpecCriterionStanding } from '@buildd/shar
  * result instead of one task's PR head:
  *  - pass only when every in-scope, unwaived criterion's newest verdict is
  *    `pass` on the current target;
- *  - fail when any such criterion's newest verdict is `fail`;
+ *  - fail when any such criterion's newest verdict is `fail` on the current
+ *    target (a fail on a commit the target has moved past is re-checked);
  *  - otherwise not a pass: a criterion with no verdict, an `inconclusive` or
  *    `unsupported` one, a pass on a commit the target has moved past, or no
  *    known target at all.
@@ -79,14 +80,22 @@ export function foldMissionSpec(input: {
     if (!prev || new Date(r.at).getTime() >= new Date(prev.at).getTime()) newest.set(r.criterionId, r);
   }
   const targetSha = input.target.kind === 'integration' ? input.target.headSha : null;
+  const staleFails = new Set<string>();
 
   const standings: LivingSpecCriterionStanding[] = input.scope.map((criterionId) => {
     const row = newest.get(criterionId);
     if (waived.has(criterionId)) return { criterionId, standing: 'waived', headSha: row?.headSha ?? null, ...(row ? { verdictId: row.id } : {}) };
     if (!row) return { criterionId, standing: 'missing', headSha: null };
-    // A fail stands until someone re-checks it, at whatever commit it judged.
-    if (row.verdict === 'fail') return { criterionId, standing: 'fail', headSha: row.headSha, verdictId: row.id };
-    if (!verdictIsCurrent(input.target, row.headSha)) return { criterionId, standing: 'stale', headSha: row.headSha, verdictId: row.id };
+    // A fail stands while it judged the target as it is now. Once the target
+    // moves past it (a repair or any other mission PR merged), it is stale and
+    // checked again, like a pass (c5a2c67b R-4). With no known target it stands.
+    if (row.verdict === 'fail' && (input.target.kind === 'unknown' || verdictIsCurrent(input.target, row.headSha))) {
+      return { criterionId, standing: 'fail', headSha: row.headSha, verdictId: row.id };
+    }
+    if (!verdictIsCurrent(input.target, row.headSha)) {
+      if (row.verdict === 'fail') staleFails.add(criterionId);
+      return { criterionId, standing: 'stale', headSha: row.headSha, verdictId: row.id };
+    }
     return { criterionId, standing: row.verdict, headSha: row.headSha, verdictId: row.id };
   });
 
@@ -97,7 +106,7 @@ export function foldMissionSpec(input: {
   const waivedNote = waived.size > 0 ? ` ${count(standings.length - judged.length)} waived by a person.` : '';
 
   if (failed.length > 0) {
-    return { verdict: 'fail', targetSha, standings, evidence: `${failed.map((s) => s.criterionId).join(', ')} failed. ${describeOpen(open.filter((s) => s.standing !== 'fail'))}${waivedNote}`.trim() };
+    return { verdict: 'fail', targetSha, standings, evidence: `${failed.map((s) => s.criterionId).join(', ')} failed. ${describeOpen(open.filter((s) => s.standing !== 'fail'), staleFails)}${waivedNote}`.trim() };
   }
   if (input.target.kind === 'unknown') {
     return { verdict: 'UNVERIFIED', targetSha, standings, evidence: `No integrated target to verify against: ${input.target.reason}.${waivedNote}` };
@@ -113,18 +122,21 @@ export function foldMissionSpec(input: {
     verdict: 'UNVERIFIED',
     targetSha,
     standings,
-    evidence: `${capital(count(passing.length))} of ${count(judged.length)} pass ${where}. ${describeOpen(open)}${waivedNote}`.trim(),
+    evidence: `${capital(count(passing.length))} of ${count(judged.length)} pass ${where}. ${describeOpen(open, staleFails)}${waivedNote}`.trim(),
   };
 }
 
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-function describeOpen(open: LivingSpecCriterionStanding[]): string {
+function describeOpen(open: LivingSpecCriterionStanding[], staleFails: ReadonlySet<string> = new Set()): string {
   if (open.length === 0) return '';
   const by = (k: LivingSpecCriterionStanding['standing']) => open.filter((s) => s.standing === k).map((s) => s.criterionId);
   const parts: string[] = [];
-  const missing = by('missing'); const stale = by('stale'); const inconclusive = by('inconclusive'); const unsupported = by('unsupported');
+  const missing = by('missing'); const inconclusive = by('inconclusive'); const unsupported = by('unsupported');
+  const staleAll = by('stale');
+  const staleFailed = staleAll.filter((id) => staleFails.has(id)); const stale = staleAll.filter((id) => !staleFails.has(id));
   if (missing.length) parts.push(`${list(missing)} ${missing.length === 1 ? 'has' : 'have'} no verdict`);
+  if (staleFailed.length) parts.push(`${list(staleFailed)} failed on an older commit`);
   if (stale.length) parts.push(`${list(stale)} passed on an older commit`);
   if (inconclusive.length) parts.push(`${list(inconclusive)} ${inconclusive.length === 1 ? 'is' : 'are'} inconclusive`);
   if (unsupported.length) parts.push(`${list(unsupported)} could not be checked here`);

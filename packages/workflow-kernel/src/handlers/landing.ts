@@ -14,8 +14,9 @@
  */
 import { applyCommandOn } from '../command-runner';
 import { EFFECT_MAX_ATTEMPTS, type EffectHandler, type EffectHandlers } from '../effects';
-import { LANDING_STATUS_CONTEXT, landingStatusOf, landingStatusUnknown, reviewGate } from '../landing-gate';
-import { githubOf, type KernelPorts } from '../ports';
+import { LANDING_STATUS_CONTEXT, LANDING_STATUS_CONTEXTS, landingStatusOf, landingStatusUnknown, reviewGate, type LandingStatus } from '../landing-gate';
+import { heldOutcome, MERGE_HOLD_MAX_MS, mergeHoldDelayMs } from '../merge-hold';
+import { githubOf, type GithubFacts, type GithubWrites, type KernelPorts } from '../ports';
 import { hasPr, need } from './ports-of';
 
 const NO_INSTALLATION = 'no GitHub installation for the workspace';
@@ -41,6 +42,27 @@ export function externalMergeFixDescription(p: {
     '2. Fix exactly what the review asked for above. Change nothing unrelated.',
     `3. Open a PR into \`${base}\`. It is reviewed like any other PR.`,
   ].join('\n');
+}
+
+type ShownStatus = { state: string; description: string; targetUrl?: string | null } | null;
+
+/** Whether what GitHub shows under one context is not `want` (a reader that reports the link also compares it). */
+function staleStatus(current: ShownStatus, want: LandingStatus, targetUrl: string | null): boolean {
+  return !current || current.state !== want.state || current.description !== want.description
+    // A reader that reports the link: a status published before it had one is written again.
+    || (current.targetUrl !== undefined && targetUrl !== null && current.targetUrl !== targetUrl);
+}
+
+/** What GitHub shows on `want.sha` under every name the kernel publishes (null where it cannot read). */
+function shownStatuses(github: GithubFacts, repoFullName: string, want: LandingStatus): Promise<ShownStatus[]> {
+  return Promise.all(LANDING_STATUS_CONTEXTS.map((c) => (github.statusOf ? github.statusOf(repoFullName, want.sha, c).catch(() => null) : null)));
+}
+
+/** One answer, under both names (legacy first) until nothing reads the old one. */
+async function publishStatusOn(writes: GithubWrites, repoFullName: string, s: { state: 'success' | 'failure' | 'pending'; description: string; sha: string }, targetUrl: string | null): Promise<void> {
+  for (const context of LANDING_STATUS_CONTEXTS) {
+    await writes.publishStatus({ repoFullName, sha: s.sha, context, state: s.state, description: s.description, ...(targetUrl ? { targetUrl } : {}) });
+  }
 }
 
 export function landingHandlers(ports: KernelPorts): EffectHandlers {
@@ -75,20 +97,6 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
       const r = await need(ports, 'ingest', e.kind).ingest({ kind: 'head_observed', ...subject }, pinned);
       return { outcome: `skipped:head_moved:${r.result}` };
     }
-    // Deploy skew (one release): a merge_call queued by the reducer before this one carries no
-    // `fromState`; its T15 already trusted the door's rails and nothing else asked again. Such a
-    // row merges as it would have, after the fresh read above, rather than meet a gate its
-    // landing was never shaped for (a person's override would read as a missing review).
-    // TODO(S3b follow-up): remove with the `rails: { passed: true }` door compatibility.
-    if (!('fromState' in e.payload)) {
-      const method0 = (e.payload.mergeMethod as 'merge' | 'squash' | 'rebase' | undefined) ?? 'squash';
-      const ans0 = await writes.mergeAtHead({ repoFullName: d.repoFullName, prNumber: d.prNumber, headSha, method: method0 });
-      const r0 = await apply(d.id, {
-        type: 'MergeCallResult', actor: 'effect:merge_call', headSha, outcome: ans0.outcome, detail: ans0.detail,
-        ...lv, ...(ans0.retryAt ? { retryAt: ans0.retryAt } : {}),
-      });
-      return { outcome: `ok:${ans0.outcome}:${r0.result}:pre_gate_row` };
-    }
     const ov = e.payload.override;
     const override = ov && typeof ov === 'object' && !Array.isArray(ov)
       ? {
@@ -117,9 +125,47 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
     const sizeLifted = rails.sizeOnly === true && !!override?.kinds?.includes('size');
     if (!rails.passed && !sizeLifted) return refuse('rails', rails.reasons.length ? rails.reasons : ['a merge rail refused'], rails.lasting === true);
 
+    // §4 merge holds: a wait is this row parking itself, the delivery LANDING and the approval
+    // standing, until a check reports (wakeHeldMergesOn) or the backoff runs out. Only a hold past
+    // MERGE_HOLD_MAX_MS since the landing was asked, or one no wait can pass, is a person's.
+    const heldForMs = typeof e.ageMs === 'number' ? e.ageMs : 0;
+    const hold = async (check: string | null, why: string, detail: string, lastingNow = false) => {
+      if (lastingNow || (typeof e.ageMs === 'number' && e.ageMs >= MERGE_HOLD_MAX_MS)) {
+        const r = await apply(d.id, {
+          type: 'MergeCallResult', actor: 'effect:merge_call', headSha, outcome: 'held', detail, hold: { check, heldForMs, lasting: true }, ...lv,
+        });
+        return { outcome: `ok:held:lasting:${r.result}` };
+      }
+      return { outcome: heldOutcome(check, why), park: { delayMs: mergeHoldDelayMs(heldForMs) } };
+    };
+    const waited = () => `${Math.max(1, Math.round(heldForMs / 60_000))} min`;
+
+    // The head's own success is on GitHub, read back, before the merge is asked for: a rule that
+    // requires `Buildd / Review approval` must never see the merge race ahead of it.
+    const targetUrl = ports.links?.review(d) ?? null;
+    const own = landingStatusOf(view);
+    const ownReady = own?.state === 'success' && own.sha === headSha;
+    if (own && ownReady && (await shownStatuses(github, d.repoFullName, own)).some((x) => staleStatus(x, own, targetUrl))) {
+      await publishStatusOn(writes, d.repoFullName, own, targetUrl);
+      const back = github.statusOf ? await github.statusOf(d.repoFullName, headSha, LANDING_STATUS_CONTEXT).catch(() => null) : { state: 'success' };
+      if (back?.state !== 'success') {
+        return hold(LANDING_STATUS_CONTEXT, 'own_status', `GitHub has not shown "${LANDING_STATUS_CONTEXT}" as success on ${headSha.slice(0, 7)} after ${waited()} of publishing it`);
+      }
+    }
+
     const method = (e.payload.mergeMethod as 'merge' | 'squash' | 'rebase' | undefined) ?? 'squash';
     // Pinned to the head T15 approved and the gate just passed: a replay at the same head is a no-op or a clean refusal.
     const ans = await writes.mergeAtHead({ repoFullName: d.repoFullName, prNumber: d.prNumber, headSha, method });
+    if (ans.outcome === 'held') {
+      const check = ans.check ?? null;
+      const named = check ? `required check "${check}"` : 'a required check';
+      // The review check on a head the kernel has not approved (a person's override past the
+      // review): the kernel will never turn it green, so no wait passes it. GitHub's own bypass does.
+      if (check !== null && LANDING_STATUS_CONTEXTS.includes(check) && !ownReady) {
+        return hold(check, 'required_check', `GitHub requires ${named}, which buildd shows as success only on an approved head; merging past it is a GitHub bypass`, true);
+      }
+      return hold(check, 'required_check', `GitHub kept the merge waiting on ${named} for ${waited()}${ans.detail ? ` (${ans.detail})` : ''}`);
+    }
     const r = await apply(d.id, {
       type: 'MergeCallResult', actor: 'effect:merge_call', headSha, outcome: ans.outcome, detail: ans.detail,
       ...lv, ...(ans.retryAt ? { retryAt: ans.retryAt } : {}),
@@ -128,7 +174,7 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
   };
 
   /**
-   * §4: the `buildd/landing` commit status on the delivery's current head. One
+   * §4: the `Buildd / Review approval` commit status on the delivery's current head. One
    * effect per version; only the newest version's effect publishes (an older
    * one is superseded by the one its successor queued), so a late or duplicate
    * effect never overwrites a newer answer. On the last attempt a failure to
@@ -147,8 +193,9 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
     const github = await githubOf(ports, d.workspaceId);
     const writes = github?.writes;
     if (!github || !writes) throw new Error(NO_INSTALLATION);
-    const publish = (s: { state: 'success' | 'failure'; description: string; sha: string }) =>
-      writes.publishStatus({ repoFullName: d.repoFullName, sha: s.sha, context: LANDING_STATUS_CONTEXT, state: s.state, description: s.description });
+    // Details on GitHub opens the delivery's review and findings in the host (R-43), when it has a page for it.
+    const targetUrl = ports.links?.review(d) ?? null;
+    const publish = (s: { state: 'success' | 'failure' | 'pending'; description: string; sha: string }) => publishStatusOn(writes, d.repoFullName, s, targetUrl);
     let wrote = false;
     try {
       // Newest wins across drains (the cron's and a door's inline one): publish what this version
@@ -156,10 +203,10 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
       // slower drain holding an older read can never be the last write.
       let seen = d.version;
       for (let pass = 0; pass < 3; pass++) {
-        const current = github.statusOf ? await github.statusOf(d.repoFullName, status.sha, LANDING_STATUS_CONTEXT).catch(() => null) : null;
-        // Nothing to say that GitHub does not already show: no write (statuses pile up per commit).
-        if (!current || current.state !== status.state || current.description !== status.description) {
-          await publish(status);
+        // Nothing to say that GitHub does not already show, under every name: no write (statuses pile up per commit).
+        const want = status;
+        if ((await shownStatuses(github, d.repoFullName, want)).some((x) => staleStatus(x, want, targetUrl))) {
+          await publish(want);
           wrote = true;
         }
         const again = await ports.store.loadView({ deliveryId: e.deliveryId });
@@ -170,7 +217,7 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
         status = next;
       }
     } catch (err) {
-      if (e.attemptCount >= EFFECT_MAX_ATTEMPTS && status.state === 'success') {
+      if (e.attemptCount >= EFFECT_MAX_ATTEMPTS && status.state !== 'failure') {
         // Exhausted: never leave a success the kernel could not re-confirm. Best effort.
         await publish(landingStatusUnknown(status.sha)).catch(() => {});
       }

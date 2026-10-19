@@ -224,14 +224,10 @@ export function buildClaimPlanInput(src: ClaimPlanSource): ClaimPlanContext {
     }
   }
 
-  // In-flight scope-undeclared mission work: what the one-per-mission mutex
-  // holds against. Concrete in-flight scope is covered by its leases above.
-  for (const row of src.missionInFlightRows) {
-    if (!row.missionId || !row.taskId) continue;
-    if (!editsFiles(row)) continue;
-    if (concreteOf(row.pathManifest).length > 0) continue;
-    addInFlight({ id: `w:${row.taskId}`, kind: 'worker', taskId: row.taskId, missionId: row.missionId, declaredScope: null }, '', []);
-  }
+  // In-flight work with no declared scope adds no node: with no scope there
+  // is nothing to overlap, and it no longer serializes its mission (it starts
+  // and the merge settles it). Concrete in-flight scope is covered by its
+  // leases above. `missionInFlightRows` stays on the source for that reason.
 
   // Claimed earlier in this batch: in flight now, with the scope they were planned with.
   for (const t of src.claimedThisBatch) {
@@ -326,23 +322,4 @@ export function buildClaimPlanInput(src: ClaimPlanSource): ClaimPlanContext {
     },
     inFlightMeta,
   };
-}
-
-/**
- * Candidates whose predicted scope the planner treats as real scope: a usable
- * prediction (not unknown, non-empty) at or above thetaOrder, with no concrete
- * declared scope of their own. For these — and only these — the claim loop's
- * per-mission advisory_manifest mutex is replaced by the planner's edges.
- */
-export function plannerScopedTaskIds(ctx: ClaimPlanContext): Set<string> {
-  const out = new Set<string>();
-  const t = ctx.input.thresholds;
-  if (!t) return out;
-  for (const c of ctx.input.candidates) {
-    const concrete = concreteOf(c.declaredScope);
-    if (concrete.length > 0 && !(c.declaredScope ?? []).includes(REPO_WIDE_SENTINEL)) continue;
-    const usable = (c.predictedScope ?? []).filter(p => p !== REPO_WIDE_SENTINEL);
-    if (usable.length > 0 && c.setConfidence != null && c.setConfidence >= t.thetaOrder) out.add(c.id);
-  }
-  return out;
 }

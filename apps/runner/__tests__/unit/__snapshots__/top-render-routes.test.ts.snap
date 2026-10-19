@@ -1,67 +1,67 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`routes and dollars in the list view 120x40: every column, with billed and estimated dollars apart 1`] = `
-" buildd · laptop-1234                                                                 3 of 3 busy · ● online · v0.340.0 
+" buildd · laptop-1234                                                         3 of 3 slots in use · ● online · v0.340.0 
  Runs on: plan Claude, Codex · API key Anthropic (team) · gateway OpenRouter (team)                                     
  Today: $2.10 billed, ~$0.02 estimated · plans covered about $0.45 at list price                                        
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- MISSIONS                   │ Runner TUI                                                          3 running · 3 waiting 
- ▸ Runner TUI           2/8 │───────────────────────────────────────────────────────────────────────────────────────────
-   Specs import         1/2 │ RUNNING                                                                                   
-   (no mission)         0/1 │›● name override            Builder   Claude · plan               12m Edit config…  41k tok
-                            │ ● installer hint           Builder   Codex · OpenRouter (team)    9m Read run.ts    ~$0.02
-                            │ ● single instance          Builder   Claude · API key (team)      4m bun run tes…    $0.08
-                            │ WAITING                                                                                   
-                            │ ○ buildd top               Builder                                   waits on: n…         
-                            │ ○ docs page                Writer                                    starts in 2h         
-                            │ ○ heartbeat name           Builder                                   another run…         
-                            │ DONE TODAY                                                                                
-                            │ ✓ spec draft                                                         done                 
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
+ MISSIONS                     │ Runner TUI                                                        4 running · 2 waiting 
+ ▸ Runner TUI             2/8 │ 2 of 8 tasks done                                                                       
+   Local on… your session 0/1 │─────────────────────────────────────────────────────────────────────────────────────────
+   Specs import           1/2 │ Working now                                                                             
+   Other tasks         1 open │›● name override          Builder   Claude · plan               12m Edit config…  41k tok
+                              │ ● installer hint         Builder   Codex · OpenRouter (team)    9m Read run.ts    ~$0.02
+                              │ ● single instance        Builder   Claude · API key (team)      4m bun run tes…    $0.08
+                              │ ● heartbeat name         Builder                                   running on …         
+                              │ Waiting                                                                                 
+                              │ ○ buildd top             Builder                                   waits on: n…         
+                              │ ○ docs page              Writer                                    starts in 2h         
+                              │ Done today                                                                              
+                              │ ✓ spec draft                                                       done                 
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  ↑↓ move ⏎ open a answer m message x stop c claim h hold o web tab queue t team w workspace / filter ? help q quit      "
 `;
 
 exports[`routes and dollars in the list view 80x24: cost goes first, then the route words; role stays 1`] = `
-" buildd · laptop-1234                         3 of 3 busy · ● online · v0.340.0 
+" buildd · laptop-1234                 3 of 3 slots in use · ● online · v0.340.0 
  Runs on: plan Claude, Codex · API key Anthropic (team) · gateway OpenRouter (t…
  Today: $2.10 billed, ~$0.02 estimated · plans covered about $0.45 at list price
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
- MISSIONS             │ Runner TUI                        3 running · 3 waiting 
- ▸ Runner TUI     2/8 │─────────────────────────────────────────────────────────
-   Specs import   1/2 │ RUNNING                                                 
-   (no mission)   0/1 │›● name override    Builder     12m Edit config.ts       
+ MISSIONS             │ Runner TUI                        4 running · 2 waiting 
+ ▸ Runner TUI     2/8 │ 2 of 8 tasks done                                       
+   Local only     0/1 │─────────────────────────────────────────────────────────
+   Specs import   1/2 │ Working now                                             
+   Other tasks 1 open │›● name override    Builder     12m Edit config.ts       
                       │ ● installer hint   Builder      9m Read run.ts          
                       │ ● single instance  Builder      4m bun run test __tests…
-                      │ WAITING                                                 
+                      │ ● heartbeat name   Builder         running on another r…
+                      │ Waiting                                                 
                       │ ○ buildd top       Builder         waits on: name overr…
                       │ ○ docs page        Writer          starts in 2h         
-                      │ ○ heartbeat name   Builder         another runner has it
-                      │ DONE TODAY                                              
+                      │ Done today                                              
                       │ ✓ spec draft                       done                 
-                      │                                                         
                       │                                                         
                       │                                                         
                       │                                                         
@@ -71,25 +71,25 @@ exports[`routes and dollars in the list view 80x24: cost goes first, then the ro
 `;
 
 exports[`the header (R-39, AC-24) an expired Codex login says so and where to reconnect; no Codex plan reads as available 1`] = `
-" buildd · laptop-1234                         3 of 3 busy · ● online · v0.340.0 
+" buildd · laptop-1234                 3 of 3 slots in use · ● online · v0.340.0 
  Runs on: plan Claude · API key Anthropic (team) · gateway OpenRouter (team)    
  Codex plan: login expired, run codex login on this machine                     
  Today: $2.10 billed, ~$0.02 estimated · plans covered about $0.45 at list price
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
- MISSIONS             │ Runner TUI                        3 running · 3 waiting 
- ▸ Runner TUI     2/8 │─────────────────────────────────────────────────────────
-   Specs import   1/2 │ RUNNING                                                 
-   (no mission)   0/2 │›● name override    Builder     12m Edit config.ts       
+ MISSIONS             │ Runner TUI                        4 running · 2 waiting 
+ ▸ Runner TUI     2/8 │ 2 of 8 tasks done                                       
+   Local only     0/1 │─────────────────────────────────────────────────────────
+   Specs import   1/2 │ Working now                                             
+   Other tasks 2 open │›● name override    Builder     12m Edit config.ts       
                       │ ● installer hint   Builder      9m Read run.ts          
                       │ ● single instance  Builder      4m bun run test __tests…
-                      │ WAITING                                                 
+                      │ ● heartbeat name   Builder         running on another r…
+                      │ Waiting                                                 
                       │ ○ buildd top       Builder         waits on: name overr…
                       │ ○ docs page        Writer          starts in 2h         
-                      │ ○ heartbeat name   Builder         another runner has it
-                      │ DONE TODAY                                              
+                      │ Done today                                              
                       │ ✓ spec draft                       done                 
-                      │                                                         
                       │                                                         
                       │                                                         
                       │                                                         

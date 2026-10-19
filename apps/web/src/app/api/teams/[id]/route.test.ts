@@ -26,7 +26,26 @@ mock.module('@buildd/core/db', () => ({
     }),
     delete: (_t: any) => ({ where: (_c: any) => { deletedTeams++; return 'delete-team'; } }),
     batch: (stmts: any[]) => { batches.push(stmts); return Promise.resolve(stmts.map(() => [])); },
+    // The delete reads who was in the team and what it held (to clear their cached callers).
+    select: (cols: any) => ({
+      from: (_t: any) => ({ where: (_c: any) => Promise.resolve('userId' in cols ? [{ userId: 'user-1' }] : [{ id: 'ws-1' }]) }),
+    }),
   },
+}));
+
+const callerClears: string[][] = [];
+mock.module('@/lib/caller-cache', () => ({
+  clearCallerCache: async (...deps: string[]) => { callerClears.push(deps); return true; },
+  callerDep: {
+    team: (id: string) => `team:${id}`,
+    user: (id: string) => `user:${id}`,
+    workspace: (id: string) => `workspace:${id}`,
+  },
+}));
+
+const teamClears: string[] = [];
+mock.module('@/lib/team-cache', () => ({
+  clearTeamCache: async (teamId: string) => { teamClears.push(teamId); return true; },
 }));
 
 mock.module('drizzle-orm', () => ({
@@ -118,6 +137,12 @@ describe('PATCH /api/teams/[id] — timezone', () => {
     const res = await PATCH(patchReq({ timezone: 'America/New_York' }), ctx);
     expect(res.status).toBe(200);
     expect(capturedUpdates[0].timezone).toBe('America/New_York');
+  });
+
+  it('a change clears the team\'s cached reads (lib/team-cache.ts)', async () => {
+    teamClears.length = 0;
+    expect((await PATCH(patchReq({ timezone: 'Europe/Paris' }), ctx)).status).toBe(200);
+    expect(teamClears).toEqual(['11111111-1111-4111-8111-111111111111']);
   });
 
   it('accepts null to clear the zone back to UTC', async () => {
@@ -487,6 +512,14 @@ describe('DELETE /api/teams/[id]', () => {
     expect(chatCleanups).toEqual(['11111111-1111-4111-8111-111111111111']);
   });
 
+  it('deleting the team ends the cached callers of its members and workspaces', async () => {
+    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'owner' };
+    callerClears.length = 0;
+    expect((await del()).status).toBe(200);
+    expect(callerClears).toEqual([['team:11111111-1111-4111-8111-111111111111', 'user:user-1', 'workspace:ws-1']]);
+    expect(teamClears).toContain('11111111-1111-4111-8111-111111111111');
+  });
+
   it('the team delete runs in one batch with the detach of its stored files, then removes them', async () => {
     membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'owner' };
     expect((await del()).status).toBe(200);
@@ -497,7 +530,7 @@ describe('DELETE /api/teams/[id]', () => {
 
   it('an owner still cannot delete a personal team', async () => {
     membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'owner' };
-    teamRow = { ...teamRow, slug: 'personal-user-1' };
+    teamRow = { ...teamRow, slug: 'personal-user-1', personalUserId: 'user-1' };
     expect((await del()).status).toBe(400);
     expect(deletedTeams).toBe(0);
   });
@@ -569,5 +602,26 @@ describe('warm handover team settings', () => {
     await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
     expect(teamQueries[0].columns.warmHandover).toBeUndefined();
     principal = null;
+  });
+});
+
+describe('PATCH /api/teams/[id] — the personal- slug prefix is reserved', () => {
+  it('refuses renaming a team to a personal- slug and writes nothing', async () => {
+    const res = await PATCH(patchReq({ slug: 'personal-user-1' }), ctx);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('reserved');
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('a team keeping the slug it already has is not a rename', async () => {
+    teamRow = { ...teamRow, slug: 'personal-user-1', personalUserId: 'user-1' };
+    const res = await PATCH(patchReq({ slug: 'personal-user-1' }), ctx);
+    expect(res.status).toBe(200);
+  });
+
+  it('an ordinary slug still renames', async () => {
+    const res = await PATCH(patchReq({ slug: 'new-name' }), ctx);
+    expect(res.status).toBe(200);
+    expect(capturedUpdates[0].slug).toBe('new-name');
   });
 });

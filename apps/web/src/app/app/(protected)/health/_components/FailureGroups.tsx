@@ -145,7 +145,7 @@ export function FailureGroupsSection({
       )}
       {groups.landed > 0 && (
         <p className="px-4 text-meta text-text-muted" data-testid="failure-groups-landed">
-          {groups.landed} stopped because the work already landed
+          {groups.landed} stopped because the work already merged
         </p>
       )}
 

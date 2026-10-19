@@ -78,6 +78,16 @@ mock.module('@/lib/chat/mission-events', () => ({ postTaskCompletedEvent: mockPo
 // in packages/core/__tests__/pr-reverts.test.ts and lib/pr-reverts.test.ts.
 const mockRecordPrReverts = mock((_a: any) => Promise.resolve(0));
 mock.module('@/lib/pr-reverts', () => ({ recordPrReverts: mockRecordPrReverts }));
+const invalidatedApprovals: Array<[string, number]> = [];
+mock.module('@/lib/github-approval', () => ({
+  readGithubApproval: async () => ({ reviewDecision: null, humanApproved: false }),
+  readGithubApprovalCached: async () => ({ reviewDecision: null, humanApproved: false }),
+  loadGithubApprovals: async () => {},
+  githubApprovalCacheKey: (repo: string, n: number) => `${repo}#${n}`,
+  invalidateGithubApproval: async (repo: string, n: number) => { invalidatedApprovals.push([repo, n]); },
+  GITHUB_APPROVAL_TTL_SEC: 60,
+  GITHUB_APPROVAL_CONCURRENCY: 8,
+}));
 // Base-advance notices: what is matched and sent is covered in
 // lib/base-advance-notice.test.ts; here only what the webhook hands over.
 const mockRunBaseAdvanceNotice = mock((_input: any, _resolver: any) => Promise.resolve({ notified: [], debounced: [] }));
@@ -632,17 +642,19 @@ mock.module('@/lib/approval-carry-forward', () => ({ carryForwardApprovalIfUncha
 // apps/web/tests/db/workflow-seam.test.ts). Defaults: no kernel delivery, so
 // every legacy case below runs unchanged.
 const mockOpenKernelDelivery = mock(async (_p: any): Promise<any> => ({ owned: false }));
-const mockObserveHead = mock(async (_p: any): Promise<boolean> => false);
-const mockObservePrState = mock(async (_p: any): Promise<boolean> => false);
-const mockObserveBase = mock(async (_p: any): Promise<boolean> => false);
+const mockObserveHead = mock(async (_p: any, _c?: any): Promise<boolean> => false);
+const mockObservePrState = mock(async (_p: any, _c?: any): Promise<boolean> => false);
+const mockObserveBase = mock(async (_p: any, _c?: any): Promise<boolean> => false);
 const mockReleaseKernelDeliveryForPr = mock(async (..._a: any[]) => undefined);
-const mockObserveCiGreen = mock(async (_p: any): Promise<any> => ({ handled: false }));
+const mockObserveCiGreen = mock(async (_p: any, _c?: any): Promise<any> => ({ handled: false }));
 mock.module('@/lib/workflow/seam', () => ({
-  observeCiGreen: mockObserveCiGreen,
+  // The seam's own is never the webhook's door (AC-9): it would apply the green on this host.
+  observeCiGreen: mock(async () => { throw new Error('the webhook called the seam\'s observeCiGreen, not the kernel client\'s'); }),
   openKernelDelivery: mockOpenKernelDelivery,
-  observeHead: mockObserveHead,
-  observePrState: mockObservePrState,
-  observeBase: mockObserveBase,
+  // Nor are T3, T17 to T19 and T29: the kernel client's are (AC-9).
+  observeHead: mock(async () => { throw new Error('called the seam\'s observeHead, not the kernel client\'s'); }),
+  observePrState: mock(async () => { throw new Error('the webhook called the seam\'s observePrState, not the kernel client\'s'); }),
+  observeBase: mock(async () => { throw new Error('the webhook called the seam\'s observeBase, not the kernel client\'s'); }),
   observeCiFailure: mock(async () => ({ handled: false })),
   policyFindingFor: (p: any) => ({ outcome: 'human', reason: p.reason, destructive: false }),
 }));
@@ -658,10 +670,17 @@ const mockSettleHeldOnClose = mock(async (_p: any): Promise<number> => 0);
 mock.module('@/lib/held-pr-tasks', () => ({ ...realHeld, settleHeldReleasesOnClose: mockSettleHeldOnClose }));
 // The one kernel client (D7's kernel landing). Default: the kernel owns no release PR.
 import * as realKernelClient from '@/lib/workflow/kernel-client';
+// Captured before mock.module below: Bun rewrites this namespace's exports to the mocks.
+const realObserveCiGreen = realKernelClient.observeCiGreen;
 const mockKernelClientLand = mock(async (_p: any): Promise<any> => null);
-mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, landThroughKernel: mockKernelClientLand }));
+// CiGreenObserved / CiObserved go through the client too (AC-9): the control plane applies them in own mode.
+mock.module('@/lib/workflow/kernel-client', () => ({
+  ...realKernelClient, landThroughKernel: mockKernelClientLand, observeCiGreen: mockObserveCiGreen,
+  observeHead: mockObserveHead, observePrState: mockObservePrState, observeBase: mockObserveBase,
+}));
 const mockKernelDeliveryForPr = mock(async (..._a: any[]): Promise<string | null> => null);
-mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr, kernelDeliveryForPr: mockKernelDeliveryForPr }));
+const mockKernelDeliveriesLandingAt = mock(async (..._a: any[]): Promise<Array<{ deliveryId: string; workspaceId: string; prNumber: number }>> => []);
+mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr, kernelDeliveryForPr: mockKernelDeliveryForPr, kernelDeliveriesLandingAt: mockKernelDeliveriesLandingAt }));
 
 // The mission loop-on-merge and integration-PR helpers, recorded in call order
 // for the missions characterization at the end of this file. Real modules are
@@ -738,8 +757,8 @@ import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
 // route hands to GitHub, so they build fixtures with the same code path.
 import { renderPrActivityComment, SPINNER_PATH } from '@/lib/pr-activity-comment';
 
-/** A terminal fact goes to the funnel under the kernel's scope (S4a, pr-fact-scope.ts). */
-const FUNNEL_OPTS = { scope: expect.objectContaining({ where: expect.any(Function) }) };
+/** Every fact goes to the funnel under the kernel's scope (S4a, AC-1: pr-fact-scope.ts). */
+const FUNNEL_OPTS = { scope: expect.objectContaining({ where: expect.any(Function), defers: expect.any(Function) }) };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function createWebhookRequest(event: string, payload: any, validSig = true): NextRequest {
@@ -955,6 +974,19 @@ function resetAll() {
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
+
+/**
+ * A task update that fails the task: `status: 'failed'`, or the CI escalation's SQL, which fails
+ * every task but the owner of a kernel delivery bound to the PR (AC-1 slice 8, `escalateCiRedHead`).
+ */
+function failsTask(v: unknown): boolean {
+  const st = (v as { status?: unknown } | null)?.status;
+  if (st === 'failed') return true;
+  // This file's `sql` mock keeps the template's literal parts as `strings`.
+  const strings = (st as { strings?: readonly string[] } | null)?.strings;
+  return !!strings && /ELSE 'failed' END/.test(strings.join(''));
+}
+
 describe('POST /api/github/webhook', () => {
   beforeEach(resetAll);
 
@@ -1509,7 +1541,7 @@ describe('POST /api/github/webhook', () => {
       expect(body).toContain('<!-- buildd-activity -->');
       // Queued, not "fixing": the retry task has no worker until the claim.
       expect(body).toContain('CI fix 1 of 3 queued');
-      expect(body).toContain('waiting for a worker');
+      expect(body).toContain('waiting for an agent');
       expect(body).toContain('/app/tasks/');
     });
 
@@ -1574,7 +1606,7 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(0);
-      expect(updateCalls.some(c => (c.setValues as any).status === 'failed')).toBe(true);
+      expect(updateCalls.some(c => failsTask(c.setValues))).toBe(true);
       expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
     });
 
@@ -1590,7 +1622,7 @@ describe('POST /api/github/webhook', () => {
 
       await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
-      const failUpdate = updateCalls.find(c => (c.setValues as any).status === 'failed');
+      const failUpdate = updateCalls.find(c => failsTask(c.setValues));
       expect(failUpdate).toBeDefined();
       const result = (failUpdate!.setValues as any).result;
       expect(result.nextSuggestion).toBe('Backfill migration 0071 by hand, then re-run CI.');
@@ -1619,7 +1651,7 @@ describe('POST /api/github/webhook', () => {
       expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
       expect(mockWakeTask).not.toHaveBeenCalled();
       // exhausted/disabled path marks the task failed
-      expect(updateCalls.some(c => (c.setValues as any).status === 'failed')).toBe(true);
+      expect(updateCalls.some(c => failsTask(c.setValues))).toBe(true);
     });
 
     // ── Commit author never decides the budget (allocation is consumption) ──
@@ -1661,7 +1693,7 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(0);
-      expect(updateCalls.some(c => (c.setValues as any).status === 'failed')).toBe(true);
+      expect(updateCalls.some(c => failsTask(c.setValues))).toBe(true);
     });
 
     it('the disabled-retries message names the workspace switch, not who pushed', async () => {
@@ -1670,7 +1702,7 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
       expect(res.status).toBe(200);
-      const failUpdate = updateCalls.find(c => (c.setValues as any).status === 'failed');
+      const failUpdate = updateCalls.find(c => failsTask(c.setValues));
       expect(failUpdate).toBeDefined();
       const summary = (failUpdate!.setValues as any).result?.summary ?? '';
       expect(summary).toContain('CI retries are disabled');
@@ -1735,7 +1767,7 @@ describe('POST /api/github/webhook', () => {
       expect((inserted.context as any).maxIterations).toBe(3);
       expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
       expect(mockWakeTask).toHaveBeenCalledTimes(1);
-      expect(updateCalls.some(c => c.table === schemaMock.tasks && (c.setValues as any).status === 'failed')).toBe(false);
+      expect(updateCalls.some(c => c.table === schemaMock.tasks && failsTask(c.setValues))).toBe(false);
     });
 
     it('counts the budget from the CI retries already filed, not the completed owner\'s context', async () => {
@@ -1775,7 +1807,7 @@ describe('POST /api/github/webhook', () => {
       expect(insertCalls.length).toBe(0);
       expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
       expect(mockWakeTask).not.toHaveBeenCalled();
-      expect(updateCalls.some(c => c.table === schemaMock.tasks && (c.setValues as any).status === 'failed')).toBe(true);
+      expect(updateCalls.some(c => c.table === schemaMock.tasks && failsTask(c.setValues))).toBe(true);
     });
 
     for (const live of ['pending', 'in_progress'] as const) {
@@ -1793,7 +1825,7 @@ describe('POST /api/github/webhook', () => {
         expect(insertCalls.length).toBe(0);
         expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
         expect(mockWakeTask).not.toHaveBeenCalled();
-        expect(updateCalls.some(c => c.table === schemaMock.tasks && (c.setValues as any).status === 'failed')).toBe(false);
+        expect(updateCalls.some(c => c.table === schemaMock.tasks && failsTask(c.setValues))).toBe(false);
       });
     }
 
@@ -1822,7 +1854,7 @@ describe('POST /api/github/webhook', () => {
         expect(insertCalls.length).toBe(0);
         expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
         expect(mockWakeTask).not.toHaveBeenCalled();
-        expect(updateCalls.some(c => c.table === schemaMock.tasks && (c.setValues as any).status === 'failed')).toBe(false);
+        expect(updateCalls.some(c => c.table === schemaMock.tasks && failsTask(c.setValues))).toBe(false);
       });
     }
 
@@ -2468,6 +2500,34 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       expect(mockObserveCiGreen).toHaveBeenCalledTimes(1);
       expect(mockObserveCiGreen.mock.calls[0][0]).toMatchObject({ source: 'webhook:check_suite' });
+      // Through the kernel client as buildd's own webhook (AC-9), never the seam on this host.
+      expect(mockObserveCiGreen.mock.calls[0][1]).toEqual({ principal: { kind: 'system', id: 'system:webhook:check_suite' } });
+    });
+
+    it('AC-1: the green fact is recorded before the kernel sees the green, so its projection cannot hide a new fact', async () => {
+      withSuccessWorkerPr();
+      recordedFacts.length = 0;
+      let factsWhenKernelSaw = -1;
+      mockObserveCiGreen.mockImplementationOnce(async () => { factsWhenKernelSaw = factsOfKind('ci').length; return { handled: true, result: null }; });
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+      expect(res.status).toBe(200);
+      expect(factsOfKind('ci').map((r) => r.fact.status)).toEqual(['ci_green']);
+      expect(factsWhenKernelSaw).toBe(1);
+    });
+
+    it('a failed check-suite read records no green, and still reports the head to the kernel', async () => {
+      withSuccessWorkerPr();
+      recordedFacts.length = 0;
+      mockAllCheckSuitesPassed.mockReturnValue(Promise.reject(new Error('github down')));
+      mockObserveCiGreen.mockClear();
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+      expect(res.status).toBe(200);
+      expect(factsOfKind('ci')).toEqual([]);
+      expect(mockObserveCiGreen).toHaveBeenCalledTimes(1);
     });
 
     it('a green head reaches the kernel even when no worker row owns the PR (local mission)', async () => {
@@ -2924,7 +2984,7 @@ describe('POST /api/github/webhook', () => {
       }));
 
       expect(res.status).toBe(200);
-      expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws1', repoFullName: 'test-org/test-repo', prNumber: 7, source: 'webhook:closed' }));
+      expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws1', repoFullName: 'test-org/test-repo', prNumber: 7, source: 'webhook:closed' }), { principal: { kind: 'system', id: 'system:webhook:closed' } });
       expect(updateCalls.slice(before).some((c) => (c.setValues as any).status === 'completed')).toBe(false);
       expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
     });
@@ -3786,7 +3846,7 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
 
       expect(recordedFacts).toEqual([
-        { target: { workerId: 'w-open' }, fact: { kind: 'open', reopened: false }, opts: { bookkeeping: { prIsDraft: false } } },
+        { target: { workerId: 'w-open' }, fact: { kind: 'open', reopened: false }, opts: { bookkeeping: { prIsDraft: false }, ...FUNNEL_OPTS } },
       ]);
     });
 
@@ -3821,7 +3881,7 @@ describe('POST /api/github/webhook', () => {
       const open = factsOfKind('open');
       expect(open).toHaveLength(1);
       expect(open[0]!.target).toEqual({ workerId: 'w-draft' });
-      expect(open[0]!.opts).toEqual({ bookkeeping: { prIsDraft: draft } });
+      expect(open[0]!.opts).toEqual({ bookkeeping: { prIsDraft: draft }, ...FUNNEL_OPTS });
     });
 
     it('sets prLifecycleStatus=merged (and mergedAt) when PR is merged', async () => {
@@ -4122,7 +4182,7 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
 
       expect(recordedFacts).toEqual([
-        { target: { workerId: 'w-ci' }, fact: { kind: 'ci', status: 'ci_running', headSha: 'sha-ci', currentHeadSha: 'sha-ci' }, opts: undefined },
+        { target: { workerId: 'w-ci' }, fact: { kind: 'ci', status: 'ci_running', headSha: 'sha-ci', currentHeadSha: 'sha-ci' }, opts: FUNNEL_OPTS },
       ]);
     });
 
@@ -4147,7 +4207,7 @@ describe('POST /api/github/webhook', () => {
       expect(failed[0]).toEqual({
         target: { workerId: 'w-ci-fail' },
         fact: { kind: 'ci', status: 'ci_failed', headSha: 'abc123', currentHeadSha: 'abc123' },
-        opts: undefined,
+        opts: FUNNEL_OPTS,
       });
     });
 
@@ -4167,8 +4227,27 @@ describe('POST /api/github/webhook', () => {
       }));
       expect(res.status).toBe(200);
       expect(recordedFacts).toEqual([
-        { target: { workerId: 'w-conf' }, fact: { kind: 'conflict' }, opts: { bookkeeping: { prIsDraft: false } } },
+        { target: { workerId: 'w-conf' }, fact: { kind: 'conflict' }, opts: { bookkeeping: { prIsDraft: false }, ...FUNNEL_OPTS } },
       ]);
+    });
+
+    // A new head from anyone (a person, a platform base refresh) must miss
+    // Home's cached approval of the previous head.
+    it('a synchronize drops the cached GitHub approval for that PR', async () => {
+      invalidatedApprovals.length = 0;
+      mockWorkersFindFirst.mockReturnValue({ id: 'w-sync', workspaceId: 'ws1', taskId: 'task-sync', prNumber: 47 });
+      mockWorkspacesFindMany.mockReturnValue([]);
+      await POST(createWebhookRequest('pull_request', {
+        action: 'synchronize',
+        pull_request: {
+          number: 47, merged: false, draft: false,
+          head: { ref: 'buildd/abc-sync', sha: 'sha-47' },
+          html_url: 'https://github.com/test-org/test-repo/pull/47',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      }));
+      expect(invalidatedApprovals).toEqual([['test-org/test-repo', 47]]);
     });
 
     it('a reopened event is the only open fact that may lift a close (reopened: true)', async () => {
@@ -4212,7 +4291,7 @@ describe('POST /api/github/webhook', () => {
           // The door does not decide terminal-wins itself: it hands over a plain
           // open fact (never reopened) and the funnel's WHERE refuses it.
           expect(recordedFacts).toEqual([
-            { target: { workerId: 'w-late' }, fact: { kind: 'open', reopened: false }, opts: { bookkeeping: { prIsDraft: false } } },
+            { target: { workerId: 'w-late' }, fact: { kind: 'open', reopened: false }, opts: { bookkeeping: { prIsDraft: false }, ...FUNNEL_OPTS } },
           ]);
           expect(realPrFacts.prFactApplies(recordedFacts[0]!.fact, { prLifecycleStatus: 'merged', mergedAt: new Date() })).toBe(false);
           // No status/merge write slipped past the funnel.
@@ -4722,7 +4801,7 @@ describe('POST /api/github/webhook', () => {
 
       expect(mockObserveHead).toHaveBeenCalledWith(expect.objectContaining({
         workspaceId: 'ws1', repoFullName: 'test-org/test-repo', prNumber: 42, installationId: 5000, hintedHeadSha: NEW_SHA,
-      }));
+      }), { principal: { kind: 'system', id: 'system:webhook:synchronize' } });
       expect(mockCreateReviewerTask).not.toHaveBeenCalled();
       expect(mockCarryForwardApproval).not.toHaveBeenCalled();
     });
@@ -4735,7 +4814,7 @@ describe('POST /api/github/webhook', () => {
 
       await POST(createWebhookRequest('pull_request', makeSynchronizePayload({ pull_request: { draft: true } })));
 
-      expect(mockObserveHead).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 42, hintedHeadSha: NEW_SHA }));
+      expect(mockObserveHead).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 42, hintedHeadSha: NEW_SHA }), expect.anything());
       expect(mockCreateReviewerTask).not.toHaveBeenCalled();
 
       // A legacy (not kernel-owned) draft keeps its old behaviour: no re-dispatch.
@@ -5602,6 +5681,15 @@ describe('POST /api/github/webhook — pull_request_review', () => {
     expect(insertCalls).toHaveLength(0);
   });
 
+  // Home caches GitHub's approval state per PR; any review action, a dismissal
+  // included, must drop it so a withdrawn approval is not served from cache.
+  it.each(['submitted', 'dismissed', 'edited'])('drops the cached approval on a %s review', async (action) => {
+    invalidatedApprovals.length = 0;
+    workerOnMission();
+    await POST(createWebhookRequest('pull_request_review', { ...reviewPayload('approved'), action }));
+    expect(invalidatedApprovals).toEqual([['test-org/test-repo', 42]]);
+  });
+
   it('ignores non-submitted actions', async () => {
     workerOnMission();
 
@@ -5697,7 +5785,7 @@ describe('pull_request → workers.prBaseRef sync', () => {
     expect(adopted?.condition).toBeDefined();
     // The open state is a fact for the funnel, on exactly the rows the CAS bound.
     expect(adopted?.setValues).not.toHaveProperty('prLifecycleStatus');
-    expect(recordedFacts).toContainEqual({ target: { workerIds: ['row-1'] }, fact: { kind: 'open' }, opts: undefined });
+    expect(recordedFacts).toContainEqual({ target: { workerIds: ['row-1'] }, fact: { kind: 'open' }, opts: FUNNEL_OPTS });
   });
 
   it.each(['test-org/fork', null])('does not adopt a PR from a fork or deleted head repo (%s)', async headRepo => {
@@ -5757,6 +5845,8 @@ describe('pull_request → workers.prBaseRef sync', () => {
     expect(mockObserveBase.mock.calls[0][0]).toMatchObject({
       workspaceId: 'ws-9', repoFullName: 'test-org/test-repo', prNumber: 9, installationId: 12345, hintedFromBase: 'dev', source: 'webhook:edited',
     });
+    // Through the kernel client, as buildd's own (AC-9): the control plane applies it in own mode.
+    expect(mockObserveBase.mock.calls[0][1]).toEqual({ principal: { kind: 'system', id: 'system:webhook:edited' } });
   });
 
   it('does not hand a title/body edit to the kernel', async () => {
@@ -6417,6 +6507,21 @@ describe('pull_request merged — effects that belong to the merge, not the tran
   });
 });
 
+describe('release PR CI failure alert copy', () => {
+  beforeEach(() => {
+    resetAll();
+    selectTableResults = (table) => table === schemaMock.tasks
+      ? [{ id: 'release-task', workspaceId: 'ws-release', context: { releasePrPending: true, releasePrNumber: 42 } }]
+      : null;
+  });
+
+  it('says production is unchanged, never shipped', async () => {
+    await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+    const alert = mockNotifyTeamOf.mock.calls.find(c => c[1] === 'needsAttention' && String(c[2]?.title).startsWith('Release CI failed'));
+    expect(alert?.[2].message).toBe('CI is red on release PR #42. Production is unchanged.');
+  });
+});
+
 describe('release PR CI success pins the live head', () => {
   beforeEach(() => {
     resetAll();
@@ -6480,6 +6585,15 @@ describe('release PR CI success pins the live head', () => {
     expect(mockNotifyTeam.mock.calls.some((c: any[]) => String(c[2]?.title ?? '').startsWith('Release merge failed'))).toBe(false);
   });
 
+  it('§4 merge holds: GitHub holding the release PR on a required check that has not passed leaves it pending, never failed', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) }, merged: false });
+    mockMergePullRequest.mockResolvedValueOnce({ merged: false, message: 'Required status check "Buildd / Review approval" is expected.', status: 405 } as any);
+    await deliverSuccess();
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    expect(updateCalls.filter(c => c.table === schemaMock.tasks)).toHaveLength(0);
+    expect(mockNotifyTeam.mock.calls.some((c: any[]) => String(c[2]?.title ?? '').startsWith('Release merge failed'))).toBe(false);
+  });
+
   it('D7 never re-settles a task the close already settled (the guarded write found nothing held)', async () => {
     mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
     updateReturningByStatus.completed = [];
@@ -6526,6 +6640,73 @@ describe('release PR CI success pins the live head', () => {
     await deliverSuccess();
     expect(mockMergePullRequest).not.toHaveBeenCalled();
     expect(updateCalls.filter(c => c.table === schemaMock.tasks)).toHaveLength(0);
+  });
+});
+
+describe('§4 merge holds: a commit status on a head whose merge GitHub is holding wakes it', () => {
+  const statusPayload = (o: Record<string, unknown> = {}) => ({
+    sha: 'a'.repeat(40), state: 'success', context: 'build', repository: { full_name: 'test-org/test-repo' }, installation: { id: 5000 }, ...o,
+  });
+  beforeEach(() => {
+    resetAll();
+    mockObserveCiGreen.mockClear();
+    mockKernelDeliveriesLandingAt.mockReset();
+    mockKernelDeliveriesLandingAt.mockResolvedValue([{ deliveryId: 'd-1', workspaceId: 'ws-1', prNumber: 42 }]);
+  });
+
+  it('a check reporting success on a landing head goes to the kernel for that PR, as buildd\'s own webhook', async () => {
+    const res = await POST(createWebhookRequest('status', statusPayload()));
+    expect(res.status).toBe(200);
+    expect(mockKernelDeliveriesLandingAt).toHaveBeenCalledWith('test-org/test-repo', 'a'.repeat(40));
+    expect(mockObserveCiGreen).toHaveBeenCalledTimes(1);
+    expect(mockObserveCiGreen.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws-1', prNumber: 42, headSha: 'a'.repeat(40), installationId: 5000, source: 'webhook:status' });
+    expect(mockObserveCiGreen.mock.calls[0][1]).toEqual({ principal: { kind: 'system', id: 'system:webhook:status' } });
+  });
+
+  it('a hanging control plane: the response is back well inside GitHub\'s 10 s, and each green is parked for the floor', async () => {
+    const hanging = ((_u: string, init: RequestInit) => new Promise((_res, rej) => { init.signal?.addEventListener('abort', () => rej(init.signal!.reason)); })) as unknown as typeof fetch;
+    const parked: Array<Record<string, any>> = [];
+    let sent = 0;
+    mockKernelDeliveriesLandingAt.mockResolvedValue([
+      { deliveryId: 'd-1', workspaceId: 'ws-1', prNumber: 42 }, { deliveryId: 'd-2', workspaceId: 'ws-1', prNumber: 43 },
+    ]);
+    mockObserveCiGreen.mockImplementation((p: any, c?: any) => realObserveCiGreen(p, {
+      ...c,
+      deps: {
+        host: () => 'web', env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s3cret' }, sleep: undefined,
+        fetch: ((u: string, i: RequestInit) => { sent++; return (hanging as any)(u, i); }) as unknown as typeof fetch,
+        park: (async (x: any) => { parked.push(x); return true; }) as any,
+      },
+    }));
+    realKernelClient.resetWebhookBreaker();
+    try {
+      const t0 = Date.now();
+      const res = await POST(createWebhookRequest('status', statusPayload()));
+      expect(res.status).toBe(200);
+      expect(Date.now() - t0).toBeLessThan(5_000);
+      // One wait on the control plane, then the breaker: the second PR never sends.
+      expect(sent).toBe(1);
+      expect(parked.map((p) => [p.op, p.input.prNumber])).toEqual([['observe_ci_green', 42], ['observe_ci_green', 43]]);
+      expect(parked.every((p) => /^webhook:delivery-1:observe_ci_green:[0-9a-f]{16}$/.test(p.key))).toBe(true);
+    } finally {
+      realKernelClient.resetWebhookBreaker();
+      mockObserveCiGreen.mockImplementation(async () => ({ handled: false }));
+    }
+  }, 15_000);
+
+  it('nothing is woken by a pending or failing status, or by buildd\'s own review status', async () => {
+    await POST(createWebhookRequest('status', statusPayload({ state: 'pending' })));
+    await POST(createWebhookRequest('status', statusPayload({ state: 'failure' })));
+    await POST(createWebhookRequest('status', statusPayload({ context: 'Buildd / Review approval' })));
+    await POST(createWebhookRequest('status', statusPayload({ context: 'buildd/landing' })));
+    expect(mockKernelDeliveriesLandingAt).not.toHaveBeenCalled();
+    expect(mockObserveCiGreen).not.toHaveBeenCalled();
+  });
+
+  it('no delivery landing at that head: nothing reaches the kernel', async () => {
+    mockKernelDeliveriesLandingAt.mockResolvedValue([]);
+    await POST(createWebhookRequest('status', statusPayload()));
+    expect(mockObserveCiGreen).not.toHaveBeenCalled();
   });
 });
 
@@ -6597,7 +6778,7 @@ describe('held release: the release PR\'s CI emits the task\'s terminal event', 
   it('resolved red: task.failed naming the release CI; no done push, no chat post', async () => {
     await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
     await new Promise(r => setTimeout(r, 0));
-    expect(updateCalls.some(c => c.setValues.status === 'failed')).toBe(true);
+    expect(updateCalls.some(c => failsTask(c.setValues))).toBe(true);
     expect(ledger()).toEqual([{
       type: 'task.failed', taskId: 'release-task', workerId: 'w-rel', title: 'Ship it', workspaceId: 'ws-release',
       reason: 'Release CI failed: CI failed on PR #42',

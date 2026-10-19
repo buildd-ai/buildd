@@ -39,6 +39,11 @@ const realSubjectIntake = await import('@/lib/subject-intake');
 // Captured before mock.module: bun rewrites the live namespace in place.
 const realIntakeSubject = realSubjectIntake.intakeSubject as (...a: any[]) => Promise<any>;
 let intakeOverride: ((...a: any[]) => Promise<any>) | null = null;
+// The missions module's stage reader, reached through the composition root
+// only when a caller asks for include=missionStages (buildd top).
+const mockTaskListMissionStages = mock(async (_ids: string[], _ws: string[]) => new Map<string, unknown>());
+mock.module('@/modules', () => ({ TASK_LIST_MISSION_STAGES: mockTaskListMissionStages }));
+
 mock.module('@/lib/subject-intake', () => ({
   ...realSubjectIntake,
   intakeSubject: (...a: any[]) => (intakeOverride ?? realIntakeSubject)(...a),
@@ -405,6 +410,56 @@ describe('GET /api/tasks', () => {
     const data = await response.json();
     expect(data.tasks).toHaveLength(2);
     expect(data.tasks[0].id).toBe('task-1');
+  });
+
+  // `buildd top` reads its tasks and their missions' stages in one request
+  // (spec 3ef37387 AC-5), not /api/tasks then /api/missions/stages.
+  it('include=missionStages adds each listed mission\'s stage to the same reply', async () => {
+    mockTaskListMissionStages.mockReset();
+    mockTaskListMissionStages.mockResolvedValue(new Map([['m-1', { step: 'build' }]]));
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true, canCreate: false }]);
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'task-1', title: 'A', workspaceId: 'ws-1', missionId: 'm-1', workspace: { id: 'ws-1' } },
+      { id: 'task-2', title: 'B', workspaceId: 'ws-1', missionId: 'm-1', workspace: { id: 'ws-1' } },
+      { id: 'task-3', title: 'C', workspaceId: 'ws-1', missionId: null, workspace: { id: 'ws-1' } },
+    ]);
+    const res = await GET(createMockRequest({ searchParams: { include: 'missionStages' }, headers: { Authorization: 'Bearer bld_xxx' } }));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.missionStages).toEqual({ 'm-1': { step: 'build' } });
+    expect(mockTaskListMissionStages).toHaveBeenCalledTimes(1);
+    expect(mockTaskListMissionStages.mock.calls[0][0]).toEqual(['m-1']);
+    expect(mockTaskListMissionStages.mock.calls[0][1]).toContain('ws-1');
+  });
+
+  it('without include, no stages are read', async () => {
+    mockTaskListMissionStages.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true, canCreate: false }]);
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', title: 'A', workspaceId: 'ws-1', missionId: 'm-1', workspace: { id: 'ws-1' } }]);
+    const data = await (await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }))).json();
+    expect(data.missionStages).toBeUndefined();
+    expect(mockTaskListMissionStages).not.toHaveBeenCalled();
+  });
+
+  it('a stage read that fails still answers the task list, without stages', async () => {
+    mockTaskListMissionStages.mockReset();
+    mockTaskListMissionStages.mockRejectedValue(new Error('summary store down'));
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true, canCreate: false }]);
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', title: 'A', workspaceId: 'ws-1', missionId: 'm-1', workspace: { id: 'ws-1' } }]);
+    const res = await GET(createMockRequest({ searchParams: { include: 'missionStages' }, headers: { Authorization: 'Bearer bld_xxx' } }));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.tasks).toHaveLength(1);
+    expect(data.missionStages).toBeUndefined();
   });
 
   // `buildd top` groups a runner's work by mission and says why a task waits
@@ -1469,6 +1524,20 @@ describe('POST /api/tasks', () => {
       expect(res.status).toBe(200);
       expect(seen.values.context).not.toHaveProperty('finalVerification');
       expect(seen.values.context).not.toHaveProperty('specRepair');
+      expect(seen.values.context.keep).toBe(1);
+    });
+
+    it('a caller\'s release-candidate keys are dropped too (server-owned)', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'user-account-123', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const seen: { values?: any } = {};
+      mockTasksInsert.mockReturnValue({ values: mock((values: any) => { seen.values = values; return { returning: mock(() => [{ id: 'task-r', workspaceId: 'ws-1', title: 't' }]) }; }) });
+      const res = await POST(createMockRequest({ method: 'POST', body: { workspaceId: 'ws-1', title: 'Fix it', context: { releaseCandidateFix: { prNumber: 9, headSha: 'h', version: '1.0.0', branch: 'release/v1.0.0', sourceBranch: 'dev' }, releaseCandidateAmendPr: 10, keep: 1 } } }));
+      expect(res.status).toBe(200);
+      expect(seen.values.context).not.toHaveProperty('releaseCandidateFix');
+      expect(seen.values.context).not.toHaveProperty('releaseCandidateAmendPr');
       expect(seen.values.context.keep).toBe(1);
     });
   });

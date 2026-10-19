@@ -5,10 +5,12 @@ import CopyBlock from '@/components/CopyBlock';
 import { useConfirm } from '@/components/useConfirm';
 import { Select } from '@/components/ui/Select';
 import ConnectionRow, { StatusChip } from './_components/ConnectionRow';
-import { CLOUD_RUNNER_DEPLOY_COMMAND, cloudflareState } from './_lib/cloudflare-state';
+import { CLOUD_RUNNER_DEPLOY_COMMAND, CLOUD_RUNNER_DEPLOY_DOCS, cloudflareState } from './_lib/cloudflare-state';
+import Disclosure from '@/components/ui/Disclosure';
 import { useCloudflareCredential } from './_lib/use-cloudflare-credential';
 import { describeCloudflareCapability, type CloudflareCapabilities, type CloudflareCapability } from '@/lib/cloudflare-credential-shared';
 import CloudflareGatewayTokens from './CloudflareGatewayTokens';
+import CloudRunnerDeploy from './CloudRunnerDeploy';
 
 interface Team {
   id: string;
@@ -34,7 +36,8 @@ interface Props {
  *
  * One row, one next step per state (`cloudflareState`): empty → Add token,
  * stored but unchecked → Verify, rejected or unreadable → Replace, verified →
- * Deploy, which shows the deploy.ts command. The controls fold underneath and
+ * none. A verified row folds two optional blocks: the terminal deploy (needs a
+ * checkout) and the AI Gateway tokens. The controls fold underneath and
  * open from `#cloudflare` (the fleet's cloud-runner row links there).
  */
 export default function CloudflareSection({ teams, defaultTeamId, manageableTeamIds }: Props) {
@@ -173,7 +176,7 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
       meta={meta}
       open={open}
       onToggle={() => setOpen((v) => !v)}
-      action={(loading && !cred) || !canManage ? undefined : (
+      action={(loading && !cred) || !canManage || !state.next ? undefined : (
         <button
           onClick={nextStep}
           disabled={busy}
@@ -228,15 +231,27 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
             // A verified token keeps what it may not do here (Workers AI, the gateway) until the next Verify.
             <p className="text-xs text-status-error break-words">{cred.lastVerificationError}</p>
           )}
-          {state.kind === 'verified' && (
-            <div data-testid="cloudflare-deploy" className="space-y-2">
-              <p className="text-xs text-text-secondary">
-                Deploy the cloud runner from the repo root:
-              </p>
-              <CopyBlock text={CLOUD_RUNNER_DEPLOY_COMMAND} />
-            </div>
+          {state.kind === 'verified' && canManage && (
+            <CloudRunnerDeploy teamId={selectedTeamId} capabilities={capabilities} />
           )}
-          {state.kind === 'verified' && <CloudflareGatewayTokens teamId={selectedTeamId} />}
+          {state.kind === 'verified' && (
+            <Disclosure summary="Deploy from a terminal instead">
+              <div data-testid="cloudflare-deploy" className="space-y-2 pb-2">
+                <p className="text-xs text-text-secondary">
+                  Needs a checkout of the buildd repo, Docker and an admin key. The{' '}
+                  <a href={CLOUD_RUNNER_DEPLOY_DOCS} target="_blank" rel="noreferrer" className="underline">cloud runner README</a>{' '}
+                  has the steps.
+                </p>
+                <CopyBlock text={CLOUD_RUNNER_DEPLOY_COMMAND} />
+              </div>
+            </Disclosure>
+          )}
+          {state.kind === 'verified' && (
+            <Disclosure summary="AI Gateway (optional)">
+              <p className="text-xs text-text-muted pb-2">Send model and decision calls through the team&apos;s AI Gateway with tokens that can only run models.</p>
+              <CloudflareGatewayTokens teamId={selectedTeamId} />
+            </Disclosure>
+          )}
           {canManage && <div className="flex flex-wrap items-center gap-2">
             <button onClick={() => verify(cred.id)} disabled={busy} className={`btn ${state.kind === 'verified' ? '' : 'btn-primary'}`}>
               {busy ? 'Working…' : 'Verify'}

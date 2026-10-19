@@ -33,6 +33,13 @@ describe('RunningNow', () => {
     expect(html).toContain('birch');
     expect(html).toContain('Offline');
   });
+  it('a runner running more than its slots says so, never "3 of 2 busy"', () => {
+    const over = { ...fleet, sessions: null, runners: [{ ...fleet.runners[0], maxSlots: 2 }] } as unknown as FleetSnapshot;
+    const out = renderToStaticMarkup(<RunningNow fleet={over} now={NOW} />);
+    expect(out).toContain('2 of 2 busy');
+    const three = { ...over, runners: [{ ...over.runners[0], slots: [...over.runners[0].slots.slice(0, 2), { index: 2, worker: w('e'), last: null, lane: { id: '2', bars: [] } }] }] } as unknown as FleetSnapshot;
+    expect(renderToStaticMarkup(<RunningNow fleet={three} now={NOW} />)).toContain('3 running, over its 2 slots');
+  });
   it('one row per running task: name, mission, how long, and its state as a word', () => {
     expect(html).toContain('add index');
     expect(html).toContain('Ship it');
@@ -45,6 +52,13 @@ describe('RunningNow', () => {
     expect(html).toContain('Your sessions');
     expect(html).toContain('Open PR outpaced by base: PR #4191');
     expect(html).not.toContain('open_pr_outp');
+  });
+  it('a session working with no runner slot occupied is labelled claimed, not slot occupancy', () => {
+    const f = { ...fleet, runners: [{ ...fleet.runners[0], slots: [] }] } as unknown as FleetSnapshot;
+    const h = renderToStaticMarkup(<RunningNow fleet={f} now={NOW} />);
+    expect(h).toContain('1 claimed');
+    expect(h).toContain('use runner slots');
+    expect(renderToStaticMarkup(<RunningNow fleet={{ ...f, sessions: null } as unknown as FleetSnapshot} now={NOW} />)).not.toContain('use runner slots');
   });
   it('a row labelled only with a PR number reads as its title', () => {
     const f = { ...fleet, sessions: null, runners: [{ ...fleet.runners[0], slots: [{ index: 0, worker: w('d', { label: 'ci', rest: '#4066', title: '[builder · after CI #1] fix(sentinel): page once per incident' }), last: null, lane: { id: '0', bars: [] } }] }] } as unknown as FleetSnapshot;

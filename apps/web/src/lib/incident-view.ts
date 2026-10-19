@@ -58,8 +58,8 @@ export function incidentAffected(refs: FailureIncidentAffectedRefs | null | unde
 
 const CAUSE_TEXT: Record<string, string> = {
   'path_overlap.no_progress': 'Work is waiting on a change to the same files',
-  'path_overlap.blocker_open': 'A task is waiting for a change to the same files to land',
-  'path_overlap.blocker_merged_unreleased': 'A change landed but still holds its files',
+  'path_overlap.blocker_open': 'A task is waiting for a change to the same files to merge',
+  'path_overlap.blocker_merged_unreleased': 'A change merged but still holds its files',
   'path_overlap.blocker_stuck': 'A task is waiting on a change that stopped moving',
   'path_overlap.cycle': 'Two pieces of work are waiting on each other',
   'path_overlap.subject_exempt_violated': 'A task is blocked by the change it is meant to update',
@@ -291,7 +291,7 @@ export function projectIncident(
     else if (n >= 2) phase = 'retrying';
     else phase = 'repair_running';
     if (phase === 'retrying') stateWord = `Retrying (${Math.min(n, r.budget.limit)} of ${r.budget.limit})`;
-    const label = r.nextAction?.label ?? 'Buildd is repairing this.';
+    const label = r.nextAction?.label ?? 'Buildd is fixing this.';
     sentence = nextCheckAt ? `${label} Buildd checks the result at ${at(nextCheckAt)}.` : label;
   } else {
     // waiting

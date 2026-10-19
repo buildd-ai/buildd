@@ -251,7 +251,8 @@ describe('createPathClaimHook — enforce denies confirmed holders', () => {
     const result = await factory.createPathClaimHook(worker)(makeInput('Edit', { file_path: 'other.ts' }) as any);
 
     expect(isDeny(result)).toBe(true);
-    expect(reasonOf(result)).toContain('x.ts');
+    expect(reasonOf(result)).toContain('x.ts, which this task already changed, is being changed by task');
+    expect(reasonOf(result)).not.toMatch(/\bheld\b/);
     expect(claimPaths).not.toHaveBeenCalled();
   });
 });

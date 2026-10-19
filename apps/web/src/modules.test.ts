@@ -71,7 +71,7 @@ describe('composition root', () => {
     // A trunk merge refreshes no mission branch; a mission task starting does.
     expect(byEvent('tasks.claimed')).toEqual(['missions:refresh-mission-branches-before-start']);
     expect(byEvent('pr.merged')).toEqual([
-      'releases:release-record-prod-merge', 'notifications:ledger-pr-merged',
+      'releases:release-record-prod-merge', 'releases:release-candidate-amend-on-fix', 'notifications:ledger-pr-merged',
     ]);
     expect(byEvent('task.pr_merge_delivered')).toEqual([
       'missions:loop-advance-on-merge', 'missions:open-mission-integration-pr', 'releases:early-release-undraft-stacked',
@@ -92,14 +92,17 @@ describe('composition root', () => {
       'missions:settle-surface-intents',
       'reviews:merge-review-telemetry',
       'reviews:supersession-detect-on-close',
+      'reviews:supersession-rescan-on-merge',
       'reviews:supersession-reconcile-on-close',
       'reviews:dead-pr-shutdown',
+      // A merged PR's surface files are recorded so rendering never reads them from GitHub.
+      'visual-qa:surface-evidence-on-merge',
       // A closed blocker is a recovery moment (failure-incident-recovery §12(a)).
       'health-quality:failure-incident-recovery-on-pr-closed',
       'jev-decisions:verdict-on-close',
     ]);
     expect(byEvent('pr.close_delivered')).toEqual(['jev-decisions:merge-readiness-outcome', 'reviews:pr-activity-on-close', 'reviews:review-callback-on-close']);
-    expect(byEvent('sweep.pr_hourly')).toEqual(['jev-decisions:merge-readiness-outcome-sweep', 'jev-decisions:escalation-dispatch-sweep', 'reviews:superseded-refresh-sweep']);
+    expect(byEvent('sweep.pr_hourly')).toEqual(['jev-decisions:merge-readiness-outcome-sweep', 'jev-decisions:escalation-dispatch-sweep', 'reviews:superseded-refresh-sweep', 'reviews:orphan-pr-sweep']);
     expect(byEvent('pr.review_submitted')).toEqual(['reviews:capture-review-feedback', 'reviews:github-verdict-mission-note']);
     expect(byEvent('pr.review_comment_created')).toEqual(['reviews:capture-review-comment']);
     expect(byEvent('pr.base_changed')).toEqual(['missions:record-pr-moved-off-delivery', 'missions:retarget-surface-intents']);

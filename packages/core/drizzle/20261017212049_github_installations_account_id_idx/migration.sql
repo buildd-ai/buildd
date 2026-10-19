@@ -1,0 +1,1 @@
+CREATE INDEX "github_installations_account_id_idx" ON "github_installations" ("account_id");

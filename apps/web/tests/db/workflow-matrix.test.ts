@@ -35,6 +35,7 @@ import type { LivePr } from '../../src/lib/workflow/commands';
 import type { GithubFactReader } from '../../src/lib/workflow/facts';
 import type { EffectHandler, EffectHandlers } from '../../src/lib/workflow/effects';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
+import { ciSignature } from '../../src/lib/workflow/trunk-signature';
 
 const REPO = 'acme/matrix';
 let workspaceId: string;
@@ -49,6 +50,8 @@ interface FakePr {
   baseRef?: string; baseExists?: boolean | null;
   /** §6.10: failing check names per commit (absent = check runs unreadable), the base branch's head, and commits whose runs are still going. */
   checks?: Record<string, string[]>; baseHead?: string | null; running?: string[];
+  /** §6.10 at test level: the failing entries a test-level read answers per commit (absent = the host reads no tests). */
+  tests?: Record<string, string[]>;
   /** §8.3: `[from, to]` head pairs whose PR diff the compare API reports unchanged. */
   equivalent?: Array<[string, string]>;
   /** 58c8961e: the delta read from an approved head, keyed `from->to` (absent = unread). */
@@ -64,7 +67,9 @@ const reader: GithubFactReader = {
   readPr: async () => live(),
   contains: async (_repo, ancestor, head) => ancestor === head || (gh.ancestors[head] ?? []).includes(ancestor),
   ciGreen: async () => gh.ciGreen ?? null,
-  checkRuns: async (_repo, sha) => (gh.checks && sha in gh.checks ? { complete: !(gh.running ?? []).includes(sha), failing: gh.checks[sha] } : null),
+  checkRuns: async (_repo, sha, o) => (gh.checks && sha in gh.checks
+    ? { complete: !(gh.running ?? []).includes(sha), failing: gh.checks[sha], ...(o?.tests && gh.tests?.[sha] ? { tests: gh.tests[sha] } : {}) }
+    : null),
   branchHead: async () => gh.baseHead ?? null,
   failingChecks: async () => gh.failing ?? null,
   branchExists: async () => gh.baseExists ?? null,
@@ -166,9 +171,14 @@ const realDispatch = await import('../../src/lib/dispatch-authority');
 mock.module('../../src/lib/dispatch-authority', () => ({ ...realDispatch, announceTaskCreated: async () => {}, wakeTask: async () => {} }));
 const realScope = await import('../../src/lib/pr-scope-reconcile-trigger');
 mock.module('../../src/lib/pr-scope-reconcile-trigger', () => ({ ...realScope, schedulePrScopeReconcile: () => {} }));
-// Supersession reads find the installation for a PR's repo; every repo here is the fake one.
+// Supersession reads find the installation for a PR's repo; every repo here is the fake one,
+// under the workspace's own team's installation.
 const realInstallation = await import('../../src/lib/workspace-installation');
-mock.module('../../src/lib/workspace-installation', () => ({ ...realInstallation, installationIdForRepo: async () => 1 }));
+mock.module('../../src/lib/workspace-installation', () => ({
+  ...realInstallation,
+  installationIdForRepo: async () => 1,
+  teamInstallationIdForRepo: async () => ({ installationId: 1 }),
+}));
 const realReviewRequest = await import('../../src/lib/pr-review-request');
 mock.module('../../src/lib/pr-review-request', () => ({ ...realReviewRequest, listWorkspaceRoles: async () => [{ slug: 'reviewer' }] }));
 const realAutoMerge = await import('../../src/lib/auto-merge');
@@ -774,9 +784,9 @@ describe('S6 — out of order: closed(merged), then late synchronize / opened / 
 
     // The late deliveries the webhook and the sweeps would hand the funnel, in a hostile order.
     const target = { prUrl: prUrl(o), prNumber: o.prNumber };
-    expect(await recordPrFact(target, { kind: 'open' })).toEqual([]); // late synchronize / opened
-    expect(await recordPrFact(target, { kind: 'open', reopened: true })).toEqual([]);
-    expect(await recordPrFact(target, { kind: 'ci', status: 'ci_failed', headSha: 'H1', currentHeadSha: 'H1' })).toEqual([]); // late check_suite
+    expect(await recordPrFact(target, { kind: 'open' }, { scope: factFunnelScope })).toEqual([]); // late synchronize / opened
+    expect(await recordPrFact(target, { kind: 'open', reopened: true }, { scope: factFunnelScope })).toEqual([]);
+    expect(await recordPrFact(target, { kind: 'ci', status: 'ci_failed', headSha: 'H1', currentHeadSha: 'H1' }, { scope: factFunnelScope })).toEqual([]); // late check_suite
     expect(await recordPrFact(target, { kind: 'closed' }, { scope: factFunnelScope })).toEqual([]);
     expect(await recordPrFact(target, { kind: 'merged', mergedAt: new Date() }, { scope: factFunnelScope })).toEqual([]); // a merge door's receipt time
     // …and the kernel's own late CI fact files nothing on a merged delivery.
@@ -789,15 +799,22 @@ describe('S6 — out of order: closed(merged), then late synchronize / opened / 
     const o = await openAndHandOn();
     await q(sql`UPDATE workers SET pr_url = ${prUrl(o)} WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid`);
     await push(o, 'H2', { ancestors: ['H1'] });
-    await recordPrFact({ prUrl: prUrl(o), prNumber: o.prNumber }, { kind: 'ci', status: 'ci_green', headSha: 'H2', currentHeadSha: 'H2' });
+    // AC-1: the rows are delivery-owned, so the funnel reports the green and writes neither row.
+    const green = await recordPrFact({ prUrl: prUrl(o), prNumber: o.prNumber }, { kind: 'ci', status: 'ci_green', headSha: 'H2', currentHeadSha: 'H2' }, { scope: factFunnelScope });
+    // The target is the PR's URL and number, not the workspace: on the double run (scripts/run-db-tests.ts)
+    // it also reaches the first run's rows for the same PR, which are delivery-owned too. Pin this run's.
+    expect(green.every((r) => r.deferred)).toBe(true);
+    expect(green.filter((r) => r.workspaceId === workspaceId).map((r) => r.id).sort())
+      .toEqual((await prRows(o)).map((r) => r.id).sort());
     const before = await delivery(o.deliveryId);
     // The old suite's failure arrives late: its SHA is H1, the PR head is H2.
     expect(await ciFail(o, { head: 'H1' })).toMatchObject({ handled: true, result: { result: 'stale', reason: 'head_not_current' } });
-    expect(await recordPrFact({ prUrl: prUrl(o), prNumber: o.prNumber }, { kind: 'ci', status: 'ci_failed', headSha: 'H1', currentHeadSha: 'H2' })).toEqual([]);
+    expect(await recordPrFact({ prUrl: prUrl(o), prNumber: o.prNumber }, { kind: 'ci', status: 'ci_failed', headSha: 'H1', currentHeadSha: 'H2' }, { scope: factFunnelScope })).toEqual([]);
     expect(await delivery(o.deliveryId)).toMatchObject({ state: before.state, ci: before.ci, version: before.version, currentHeadSha: 'H2' });
     expect(await ciAttempts(o.deliveryId)).toEqual([]);
     expect(await tasksOf(o.deliveryId, 'ci_fix')).toEqual([]);
-    expect((await prRows(o)).map((r) => r.pr_lifecycle_status)).toEqual(['ci_green', 'ci_green']);
+    // The rows say what the delivery says (the push's transition projected it): no CI verdict on H2 yet.
+    expect((await prRows(o)).map((r) => r.pr_lifecycle_status)).toEqual(['pr_open', 'pr_open']);
   });
 });
 
@@ -940,19 +957,20 @@ describe('S9–S15', () => {
     expect(railsCalls).toEqual([{ headSha: 'H1', door: 'auto_merge' }]);
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', approvedHeads: ['H1'] });
     const t = (await transitions(o.deliveryId)).filter((x) => x.command === 'LandingRequested').at(-1)!;
-    // The door still sends a passing reading for one release (deploy skew); it decided nothing: the merge effect refused.
-    expect((t.evidence as Record<string, unknown>).rails).toEqual({ passed: true });
+    // The door sends no rails reading: the merge effect decided, and refused.
+    expect((t.evidence as Record<string, unknown>).rails).toBeUndefined();
     railsReading = { passed: true, reasons: [] };
     expect(await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'auto_merge', actor: 'system:auto_merge' }, deps))
       .toMatchObject({ merged: true });
     expect(mergeCalls).toEqual([{ prNumber: o.prNumber, method: 'squash', sha: 'H1' }]);
   });
 
-  test('S3b (buildd/landing on the host): the status follows the delivery, published through the GitHub App: failure under review, success once approved', async () => {
+  test('S3b (buildd/landing on the host): the status follows the delivery, published through the GitHub App: pending while review runs, success once approved', async () => {
     const o = await openAndHandOn();
-    expect(statusWrites.at(-1)).toMatchObject({ sha: 'H1', state: 'failure' });
+    expect(statusWrites.at(-1)).toMatchObject({ sha: 'H1', state: 'pending' });
+    expect(statusWrites.some((w) => w.state === 'success')).toBe(false);
     await verdict(o, 'approve');
-    expect(statusWrites.at(-1)).toEqual({ sha: 'H1', state: 'success', description: 'buildd would land H1: approved by review' });
+    expect(statusWrites.at(-1)).toEqual({ sha: 'H1', state: 'success', description: 'Ready to merge: H1 approved by review' });
     const fx = (await effects(o.deliveryId)).filter((e) => e.kind === 'publish_landing_status');
     expect(fx.every((e) => e.status === 'done')).toBe(true);
     expect(fx.filter((e) => e.outcome === 'skipped:older_version').length + fx.filter((e) => String(e.outcome).startsWith('ok:')).length).toBe(fx.length);
@@ -1031,9 +1049,9 @@ describe('S9–S15', () => {
     expect(mergeCalls).toEqual([]);
     // GitHub refusing for a reason no repair answers goes to a person.
     await verdict(o, 'approve');
-    mergeAnswer = () => ({ merged: false, message: 'Required status check "build" is expected.' });
+    mergeAnswer = () => ({ merged: false, message: 'Required status check "build" is failing.' });
     const refused = await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'auto_merge', actor: 'system:auto_merge' }, deps);
-    expect(refused).toMatchObject({ merged: false, outcome: 'refused', reason: 'landing_needs_human', message: 'Required status check "build" is expected.' });
+    expect(refused).toMatchObject({ merged: false, outcome: 'refused', reason: 'landing_needs_human', message: 'Required status check "build" is failing.' });
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'landing_needs_human' });
     // A person merges past it from the dashboard: a new landing request at the same head, recorded as a bypass.
     gh.state = 'open'; gh.merged = false;
@@ -1043,6 +1061,23 @@ describe('S9–S15', () => {
     expect(human).toMatchObject({ merged: true });
     const t15 = (await q<{ bypass: Record<string, unknown> | null }>(sql`SELECT bypass FROM workflow_transitions WHERE delivery_id = ${o.deliveryId}::uuid AND command = 'LandingRequested' ORDER BY to_version`));
     expect(t15.map((t) => t.bypass?.reason ?? null)).toEqual([null, 'checks are advisory here']);
+  });
+
+  test('S10 (doors): a required check not yet reported holds the merge — LANDING, approval standing, no person — and a check on the head lands it', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    mergeAnswer = () => ({ merged: false, message: 'Required status check "build" is expected.' });
+    const held = await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'auto_merge', actor: 'system:auto_merge' }, deps);
+    expect(held).toMatchObject({ merged: false, outcome: 'landing', reason: 'merge_held' });
+    expect(held.message).toContain('"build"');
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'LANDING' });
+    expect(mergeCalls.length).toBe(1);
+    expect((await effects(o.deliveryId, 'merge_call')).map((e) => e.status)).toEqual(['pending']);
+    // The check reports on the held head: the parked merge call is due now and lands.
+    mergeAnswer = () => { gh.state = 'closed'; gh.merged = true; return { merged: true, message: 'merged' }; };
+    await seam.observeCiGreen({ workspaceId, repoFullName: REPO, prNumber: o.prNumber, installationId: 1, headSha: 'H1', source: 'webhook:check_suite' }, deps);
+    expect(mergeCalls.map((c) => c.sha)).toEqual(['H1', 'H1']);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'MERGED' });
   });
 
   test('S11: a person merges on GitHub while AWAITING_REVIEW → MERGED from any state; open rounds superseded; classified merged_unreviewed', async () => {
@@ -1555,7 +1590,7 @@ describe('S16–S21', () => {
     expect(d.state).toBe('ESCALATED');
     const n = (await transitions(o.deliveryId)).length;
 
-    const resolve = (expectedVersion: number) => applyCommand({ type: 'HumanResolve', actor: 'human:owner', choice: 'approve', expectedVersion, commitId: 'H1', hasMergePermission: true }, { ref: { deliveryId: o.deliveryId } });
+    const resolve = (expectedVersion: number) => applyCommand({ type: 'HumanResolve', actor: 'human:owner', choice: 'approve', expectedVersion, commitId: 'H1', hasMergePermission: true, overridePermitted: true }, { ref: { deliveryId: o.deliveryId } });
     expect(await resolve(d.version - 1)).toEqual({ result: 'stale', reason: 'version_moved', current: { state: 'ESCALATED', version: d.version, head: 'H1', round: 1 } });
     expect((await transitions(o.deliveryId)).length).toBe(n);
     expect(await resolve(d.version)).toMatchObject({ result: 'applied' });
@@ -1911,6 +1946,46 @@ describe('S24–S27', () => {
     // A PR whose own failure is not the base's still gets its own attempt.
     gh.checks.H1 = ['Unit tests', 'Typecheck'];
     expect(await ciFail(a)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'REPAIRING' } } });
+  });
+
+  test('S24: a PR failing its own test in the job the base fails another test in is the PR\'s; the base going green resolves an incident behind a page of stale ones', async () => {
+    const SHARD = 'build · unit tests (1/3)';
+    // dev fails an a11y guard in shard 1/3 (and the aggregate `build`); the PR fails its own ratchet in the same shard.
+    gh.baseHead = 'BT1'; gh.checks = { BT1: [SHARD, 'build'], H1: [SHARD, 'build'] };
+    gh.tests = { BT1: [`${SHARD}::a11y guard > no native <select>`, 'build'], H1: [`${SHARD}::module boundaries ratchet`, 'build'] };
+    const own = await openAndHandOn();
+    expect(await ciFail(own)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'REPAIRING' } } });
+    expect(await delivery(own.deliveryId)).toMatchObject({ state: 'REPAIRING', trunkIncidentId: null });
+    expect((await ciAttempts(own.deliveryId)).map((x) => x.status)).toEqual(['queued']);
+
+    // A page and more of older unresolved incidents the sweep cannot settle: their workspace has no repo.
+    const stale = (await seedWorkspace()).workspaceId;
+    for (let i = 0; i < 30; i++) {
+      await q(sql`INSERT INTO trunk_incidents (workspace_id, repo_full_name, base_ref, signature, first_seen_at, updated_at)
+        VALUES (${stale}::uuid, 'acme/gone', 'dev', ${`ci:stale ${i}`}, now() - interval '2 days', now() - interval '1 day' + make_interval(secs => ${i}::int))`);
+    }
+    const noRepo = { ...deps, repoFor: async (ws: string) => (ws === stale ? null : repoFor()) };
+    try {
+      // The PR fails the base's own test: it joins the incident and waits on the trunk.
+      gh.tests.H1 = [`${SHARD}::a11y guard > no native <select>`, 'build'];
+      const blocked = await openAndHandOn();
+      expect(await ciFail(blocked, { d: noRepo })).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } });
+      const sig = ciSignature(gh.tests.H1);
+      const [inc] = await incidentsOf(sig);
+      expect(inc.status).not.toBe('resolved');
+
+      // The base is green: one pass resolves it, though 30 older incidents, more than a page, sort first.
+      gh.baseHead = 'BT2'; gh.checks.BT2 = []; gh.tests.BT2 = [];
+      override.refresh_branch = async () => ({ outcome: 'ok' });
+      await seam.reconcileTrunkIncidents(noRepo);
+      expect((await incidentsOf(sig))[0].status).toBe('resolved');
+      expect(await delivery(blocked.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', trunkIncidentId: null });
+      const left = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM trunk_incidents WHERE workspace_id = ${stale}::uuid AND status <> 'resolved'`);
+      expect(left[0].n).toBe(30);
+    } finally {
+      await q(sql`UPDATE trunk_incidents SET status = 'resolved', resolved_at = now() WHERE workspace_id = ${stale}::uuid`);
+      gh.tests = undefined;
+    }
   });
 
   test('S24: two dependency-bot PRs on a red trunk accumulate no retries, however often CI reports', async () => {
@@ -2456,7 +2531,7 @@ describe('AWAITING_PUSH — an owner delivery leaves on a push (§6.4, §9)', ()
     const o = await ownerAwaitingPush();
     gh.head = 'L5'; gh.ancestors.L5 = ['H1'];
     // What the synchronize webhook does: the open-state fact to the funnel, the head hint to the kernel.
-    await recordPrFact({ prUrl: prUrlOf(o), prNumber: o.prNumber }, { kind: 'open' });
+    await recordPrFact({ prUrl: prUrlOf(o), prNumber: o.prNumber }, { kind: 'open' }, { scope: factFunnelScope });
     expect(await push(o, 'L5', { ancestors: ['H1'] })).toBe(true);
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'L5', currentRound: 1 });
     expect((await rounds(o.deliveryId)).map((r) => [r.round, r.head_sha, r.status])).toEqual([[1, 'L5', 'queued']]);

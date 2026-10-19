@@ -87,7 +87,7 @@ export function missionDetailCompactLinks(): { label: string; href: string }[] {
 function building(prNumber: number | null): TaskDeliveryDetail {
   return {
     kind: 'build', repairRounds: 0, prNumber, revisions: 0, repairs: 0, evidence: [],
-    stages: { build: 'Agent building', audit: 'After Build', land: 'After Audit' },
+    stages: { build: 'Agent building', audit: 'After Build', land: 'After Verify' },
   };
 }
 

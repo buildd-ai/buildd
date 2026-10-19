@@ -68,6 +68,9 @@ const mockAuthenticateApiKey = mock(async () => ({ id: ACCOUNT_ID, level: 'worke
 const mockHandleBuilddAction = mock(async (..._args: any[]) => ({ content: [{ type: 'text', text: '{}' }] }));
 const mockHandleRecallAction = mock(async () => ({ content: [{ type: 'text', text: '{"recalled":true}' }] }));
 
+// Every self-call goes over (mocked) HTTP here; the in-process read path is
+// lib/mcp-local-reads.test.ts.
+mock.module('@/lib/mcp-local-reads', () => ({ runLocalRead: async () => null }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 
 mock.module('@buildd/core/db', () => ({

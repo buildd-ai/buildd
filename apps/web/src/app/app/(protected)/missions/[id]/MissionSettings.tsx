@@ -778,7 +778,7 @@ function RunOutcomeStrip({
 }) {
   if (outcome.kind === 'idle') return null;
 
-  const spinner = <Spinner size="xs" className="text-accent flex-shrink-0" aria-label="Running" />;
+  const spinner = <Spinner size="xs" className="text-accent flex-shrink-0" aria-label="Working" />;
 
   const shell = (tone: string, children: React.ReactNode) => (
     <div className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-meta ${tone}`}>

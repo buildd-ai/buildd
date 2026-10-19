@@ -260,6 +260,14 @@ mock.module('@/lib/workspace-access', () => ({
   listReachableWorkspaceIds: async () => [],
 }));
 
+// The lean GET reads the stored summary (lib/mission-summary-store.ts, tested on its own).
+const mockReadMissionSummaries = mock(async (_ids: readonly string[], _ws: readonly string[]) => new Map<string, any>());
+mock.module('@/lib/mission-summary-store', () => ({
+  readMissionSummaries: mockReadMissionSummaries,
+  refreshMissionSummary: () => {},
+  refreshMissionSummariesFor: async () => [],
+}));
+
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => args,
@@ -2480,5 +2488,171 @@ describe('PATCH /api/missions/[id] — goalCriteria cannot drop or change the ou
   it('accepts a full-list save that keeps it unchanged', async () => {
     const res = await send({ goalCriteria: [...stored, { type: 'all_prs_merged' }] });
     expect(res.status).toBe(200);
+  });
+});
+
+describe('GET /api/missions/[id] — response includes deliveries and scopeUpdates', () => {
+  const MISSION = '11111111-1111-4111-8111-111111111111';
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockMissionsFindFirst.mockReturnValue({
+      id: MISSION, teamId: 'team-1', title: 'Test Mission', workspaceId: 'ws-1', tasks: [],
+    });
+  });
+
+  it('returns empty deliveries and scopeUpdates arrays when none exist', async () => {
+    mock.module('@/lib/workflow/delivery-ship', () => ({
+      missionEpochsOf: async () => [],
+      scopeAmendmentsOf: async () => [],
+    }));
+    const { GET } = await import('./route');
+    const res = await GET(
+      new NextRequest(`http://localhost/api/missions/${MISSION}?include=details`),
+      { params: Promise.resolve({ id: MISSION }) }
+    );
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(Array.isArray(data.deliveries)).toBe(true);
+    expect(data.deliveries.length).toBe(0);
+    expect(Array.isArray(data.scopeUpdates)).toBe(true);
+    expect(data.scopeUpdates.length).toBe(0);
+  });
+
+  it('includes delivery fields including prLifecycleStatus from owner worker', async () => {
+    const mockEpoch = {
+      epoch: 1,
+      branch: 'mission/test-123456789',
+      state: 'open',
+      prNumber: 42,
+      repoFullName: 'org/repo',
+      ownerTaskId: 'owner-task-id',
+      mergedAt: null,
+      scopeVersion: 1,
+      retiredAt: null,
+      settlement: null,
+    };
+    mock.module('@/lib/workflow/delivery-ship', () => ({
+      missionEpochsOf: async () => [mockEpoch],
+      scopeAmendmentsOf: async () => [],
+    }));
+    // Mock the mission with a task that has the matching ID and a worker with prLifecycleStatus
+    mockMissionsFindFirst.mockReturnValue({
+      id: MISSION,
+      teamId: 'team-1',
+      title: 'Test Mission',
+      workspaceId: 'ws-1',
+      tasks: [{
+        id: 'owner-task-id',
+        workers: [{ prLifecycleStatus: 'open' }],
+      }],
+    });
+    const { GET } = await import('./route');
+    const res = await GET(
+      new NextRequest(`http://localhost/api/missions/${MISSION}?include=details`),
+      { params: Promise.resolve({ id: MISSION }) }
+    );
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.deliveries).toHaveLength(1);
+    const delivery = data.deliveries[0];
+    expect(delivery.delivery).toBe(1);
+    expect(delivery.prNumber).toBe(42);
+    expect(delivery.repoFullName).toBe('org/repo');
+    expect(delivery.ownerTaskId).toBe('owner-task-id');
+    expect(delivery.prLifecycleStatus).toBe('open');
+  });
+
+  it('maps scope updates and omits recorded rows', async () => {
+    const row = (over: Record<string, unknown>) => ({
+      id: 'a', missionId: MISSION, sourceTaskId: 'task-1', decision: 'narrow', status: 'applied',
+      scopeVersionBefore: 1, scopeVersionAfter: 2, reason: null, weakens: [], createdAt: '2026-01-01T00:00:00.000Z', ...over,
+    });
+    mock.module('@/lib/workflow/delivery-ship', () => ({
+      missionEpochsOf: async () => [],
+      scopeAmendmentsOf: async () => [
+        row({ id: 'r', status: 'recorded', decision: 'note' }),
+        row({ id: 'h', status: 'held', decision: 'widen', sourceTaskId: 'task-2', scopeVersionAfter: null, reason: 'needs a decision' }),
+        row({ id: 'p' }),
+      ],
+    }));
+    const { GET } = await import('./route');
+    const res = await GET(
+      new NextRequest(`http://localhost/api/missions/${MISSION}?include=details`),
+      { params: Promise.resolve({ id: MISSION }) }
+    );
+    const data = await res.json();
+    expect(data.scopeUpdates).toEqual([
+      { taskId: 'task-2', decision: 'widen', status: 'held', scopeVersion: null, reason: 'needs a decision', at: '2026-01-01T00:00:00.000Z' },
+      { taskId: 'task-1', decision: 'narrow', status: 'applied', scopeVersion: 2, reason: null, at: '2026-01-01T00:00:00.000Z' },
+    ]);
+  });
+});
+
+describe('GET /api/missions/[id] — lean default (summary row)', () => {
+  const MISSION = '11111111-1111-4111-8111-111111111111';
+  const get = (qs = '') => GET(new NextRequest(`http://localhost/api/missions/${MISSION}${qs}`), { params: makeParams(MISSION) });
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockMissionsFindFirst.mockReset();
+    mockReadMissionSummaries.mockReset();
+    mockReadMissionSummaries.mockResolvedValue(new Map());
+  });
+
+  it('reads summary columns only and answers the stored summary, never tasks', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: MISSION, teamId: 'team-1', workspaceId: 'ws-1', title: 'Lean', status: 'active',
+      // Adapters that ignore `columns` must not leak these through.
+      description: 'long body', tasks: [{ id: 't-1' }],
+    } as any);
+    const summary = { progress: { total: 4, done: 1, percent: 25 }, liveWorkers: 2, lastActivityAt: '2026-01-02T00:00:00.000Z' };
+    mockReadMissionSummaries.mockResolvedValue(new Map([[MISSION, { missionId: MISSION, summary }]]));
+
+    const res = await get();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const args = (mockMissionsFindFirst.mock.calls[0] as any[])[0];
+    expect(args.columns).toBeDefined();
+    expect(args.with).toBeUndefined();
+    expect(mockReadMissionSummaries).toHaveBeenCalledWith([MISSION], ['ws-1']);
+    expect(body.tasks).toBeUndefined();
+    expect(body.description).toBeUndefined();
+    expect(body.deliveries).toBeUndefined();
+    expect(body).toMatchObject({ id: MISSION, title: 'Lean', summary, totalTasks: 4, completedTasks: 1, progress: 25, activeAgents: 2, lastActivityAt: '2026-01-02T00:00:00.000Z' });
+  });
+
+  it('a mission with no stored summary yet answers zeros, not an error', async () => {
+    mockMissionsFindFirst.mockResolvedValue({ id: MISSION, teamId: 'team-1', workspaceId: 'ws-1', title: 'New', status: 'active' } as any);
+    const body = await (await get()).json();
+    expect(body).toMatchObject({ summary: null, totalTasks: 0, completedTasks: 0, progress: 0, activeAgents: 0, lastActivityAt: null });
+  });
+
+  it('404s a missing mission without reading summaries', async () => {
+    mockMissionsFindFirst.mockResolvedValue(undefined as any);
+    const res = await get();
+    expect(res.status).toBe(404);
+    expect(mockReadMissionSummaries).not.toHaveBeenCalled();
+  });
+
+  it("404s another team's mission without reading summaries", async () => {
+    mockMissionsFindFirst.mockResolvedValue({ id: MISSION, teamId: 'team-other', workspaceId: 'ws-9', title: 'Theirs', status: 'active' } as any);
+    const res = await get();
+    expect(res.status).toBe(404);
+    expect(mockReadMissionSummaries).not.toHaveBeenCalled();
+  });
+
+  it('include=details takes the full read with tasks, bounded by the default limit', async () => {
+    mockMissionsFindFirst.mockResolvedValue({ id: MISSION, teamId: 'team-1', title: 'Full', workspaceId: 'ws-1', tasks: [] } as any);
+    mock.module('@/lib/workflow/delivery-ship', () => ({ missionEpochsOf: async () => [], scopeAmendmentsOf: async () => [] }));
+    const res = await get('?include=details');
+    expect(res.status).toBe(200);
+    const args = (mockMissionsFindFirst.mock.calls[0] as any[])[0];
+    expect(args.with.tasks.limit).toBe(50);
+    expect(mockReadMissionSummaries).not.toHaveBeenCalled();
   });
 });

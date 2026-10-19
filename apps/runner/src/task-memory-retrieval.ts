@@ -144,9 +144,19 @@ export async function retrieveTaskMemory(
     ? { taskId: task.taskId ?? null, workerId: task.workerId ?? null }
     : undefined;
 
-  const byFiles = async (paths: string[]) => client
-    .searchObservations(task.workspaceId, '', limit, paths, attribution)
-    .catch(() => [] as TaskMemoryObservation[]);
+  // Predicted and inferred paths can describe the same area. Reuse that
+  // lookup within this retrieval without keeping stale results across tasks.
+  const fileLookups = new Map<string, Promise<TaskMemoryObservation[]>>();
+  const byFiles = (paths: string[]) => {
+    const key = JSON.stringify([...paths].sort());
+    let result = fileLookups.get(key);
+    if (!result) {
+      result = client.searchObservations(task.workspaceId, '', limit, paths, attribution)
+        .catch(() => [] as TaskMemoryObservation[]);
+      fileLookups.set(key, result);
+    }
+    return result;
+  };
 
   let pathScopeMissed = false;
   if (scopePaths.length > 0) {

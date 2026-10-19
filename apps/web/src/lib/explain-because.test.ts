@@ -11,15 +11,40 @@ const base: MissionStateInput = {
 };
 
 describe('buildStateBecause', () => {
+  describe('a mission blocked on an upstream gate', () => {
+    const view = deriveMissionStateView({ ...base, health: 'BLOCKED', dependsOnMissionId: 'up-1' });
+    const subject = { missionId: 'm', workspaceId: 'ws' };
+
+    it('names each unmet condition with its task and PR', () => {
+      const chain = buildStateBecause(view, subject, {
+        dependencyTitle: 'Upstream',
+        dependencyGate: { gate: 'merged', met: false, unmet: [{ kind: 'pr_closed_unmerged', taskId: 't-1', title: 'feat: build', prNumber: 12 }] },
+      });
+      expect(chain[0].claim).toBe('Upstream mission "Upstream" has not met this mission\'s "merged" gate.');
+      expect(chain[1].claim).toBe('Still needed: PR #12 for "feat: build" closed without merging, and no replacement PR or abandonment is recorded.');
+      expect(chain[1].refs).toMatchObject({ taskId: 't-1', prNumber: 12, missionId: 'up-1' });
+    });
+
+    it('says the gate is met when the live state meets it before the stamp', () => {
+      const chain = buildStateBecause(view, subject, { dependencyTitle: 'Upstream', dependencyGate: { gate: 'merged', met: true, unmet: [] } });
+      expect(chain[0].claim).toContain('has met this mission\'s "merged" gate');
+    });
+
+    it('keeps the generic line when the gate was not read', () => {
+      const chain = buildStateBecause(view, subject, { dependencyTitle: 'Upstream' });
+      expect(chain[0].claim).toBe('Upstream mission "Upstream" has not met this mission\'s gate condition.');
+    });
+  });
+
   // A reviewer task is runner-claimable in a local-executor mission (claim gate
   // exempts context.reviewerFor), so explain must not say runners never pick it up.
   it('does not call a runner-claimable reviewer task local-session work', () => {
     const open = { id: 'rev-1', title: 'Review PR #1', status: 'pending', runnerClaimable: true };
     const view = deriveMissionStateView({ ...base, executor: 'local', openTasks: [{ id: 'rev-1', status: 'pending', title: 'Review PR #1' }] });
     const chain = buildStateBecause(view, { missionId: 'm', workspaceId: 'ws' }, { openTasks: [open] });
-    expect(chain.map(l => l.claim).join('\n')).not.toContain('Claim it from a local session');
+    expect(chain.map(l => l.claim).join('\n')).not.toContain('Claim it from your session');
     const plain = buildStateBecause(view, { missionId: 'm', workspaceId: 'ws' }, { openTasks: [{ ...open, runnerClaimable: false }] });
-    expect(plain.map(l => l.claim).join('\n')).toContain('Claim it from a local session');
+    expect(plain.map(l => l.claim).join('\n')).toContain('Claim it from your session');
   });
 
   it('ends on the state and carries the mission ref on every link', () => {

@@ -12,6 +12,7 @@ import Link from 'next/link';
 import { useState } from 'react';
 import type { FleetRunner, FleetSlotWorker, FleetSnapshot } from '@buildd/shared';
 import { elapsedLabel } from '@/lib/home-agents';
+import { runnerBusyLine } from '@/lib/runner-busy-line';
 import { readableRunName } from '@/lib/run-name';
 import type { LaneMission } from './runner-lanes';
 
@@ -29,13 +30,18 @@ function Group({ runner, now, missions, heading }: { runner: FleetRunner; now: n
   const running = runner.slots.flatMap(s => (s.worker ? [s.worker] : []));
   const [all, setAll] = useState(false);
   const shown = all ? running : running.slice(0, ROWS_SHOWN);
-  const busy = runner.interactive ? `${running.length} claimed` : `${running.length} of ${runner.maxSlots} busy`;
+  const busy = runner.interactive ? `${running.length} claimed` : runnerBusyLine(runner);
   return (
     <section data-testid="running-now-group" className="py-3 first:pt-0">
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="text-body font-semibold text-text-primary">{heading ?? runner.name}</h3>
         <span className="text-meta text-text-muted">{runner.online ? busy : 'Offline'}</span>
       </div>
+      {runner.interactive && running.length > 0 && (
+        <p data-testid="running-now-sessions-note" className="mt-0.5 text-meta text-text-muted">
+          Your own sessions. Sessions don't use runner slots.
+        </p>
+      )}
       {running.length > 0 && (
         <ul className="mt-1 divide-y divide-border-default">
           {shown.map(w => {

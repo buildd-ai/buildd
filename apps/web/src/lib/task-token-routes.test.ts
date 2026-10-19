@@ -64,6 +64,8 @@ const OPTED_IN = [
   'apps/web/src/app/api/missions/[id]/evaluate/route.ts',
   'apps/web/src/app/api/missions/[id]/notes/route.ts',
   'apps/web/src/app/api/missions/[id]/route.ts',
+  // Refuses a task token (.taskScope): approving past open findings is a person's decision.
+  'apps/web/src/app/api/prs/[prNumber]/approve-override/route.ts',
   'apps/web/src/app/api/prs/route.ts',
   // Read-only for a task token (list, explain), its own workspace via taskScopeAllowsWorkspace; every write refuses it.
   'apps/web/src/app/api/providers/explain/route.ts',
@@ -102,6 +104,8 @@ const OPTED_IN = [
   'apps/web/src/app/api/workers/claim/route.ts',
   'apps/web/src/app/api/workers/heartbeat/route.ts',
   'apps/web/src/app/api/workspaces/[id]/artifacts/route.ts',
+  // The all-workspace lists (R-22): a task token is narrowed to its own workspace.
+  'apps/web/src/app/api/workspaces/across/[list]/route.ts',
   'apps/web/src/app/api/workspaces/[id]/config/route.ts',
   'apps/web/src/app/api/workspaces/[id]/error-traces/route.ts',
   'apps/web/src/app/api/workspaces/[id]/memory/route.ts',

@@ -6,7 +6,7 @@
 import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { sql as sqlTag, type SQL } from 'drizzle-orm';
-import { claimLegacyHandoffSql, kernelEnabled, kernelOnSql, releaseSql, unclaimLegacyHandoffSql, workspaceKernelOnSql, resolveByIdSql, resolveByOwnerSql, resolveByPrSql } from './authority';
+import { claimLegacyHandoffSql, kernelEnabled, kernelOnSql, releaseSql, unclaimLegacyHandoffSql, workspaceKernelOnSql, resolveByIdSql, resolveByOwnerSql, resolveByPrSql, landingAtHeadSql } from './authority';
 
 const render = (q: SQL) => new PgDialect().sqlToQuery(q);
 
@@ -46,10 +46,40 @@ describe('SQL', () => {
     expect(render(resolveByIdSql('d1')).params).toEqual(['d1']);
   });
 
+  test('by id for a named workspace: the same one statement says whether it is that workspace\'s, and never releases another workspace\'s', () => {
+    const { sql: text, params } = render(resolveByIdSql('d1', 'w1'));
+    expect(text).toContain('(d.workspace_id = $1::uuid) AS in_workspace');
+    expect(text).toContain('WHERE d.id = $2::uuid');
+    expect(text).toContain('AND d.switched_off AND d.in_workspace');
+    expect(params).toEqual(['w1', 'd1']);
+    expect(render(resolveByIdSql('d1')).sql).toContain('true AS in_workspace');
+  });
+
+  test('a delivery of another workspace: the fail-closed lookup throws, the lenient one reads it as no kernel delivery', async () => {
+    const { kernelDeliveryInWorkspace, kernelDeliveryById, DeliveryWorkspaceMismatchError } = await import('./authority');
+    const foreign = async () => ({ rows: [{ delivery_id: 'd1', authority: 'kernel', released: false, in_workspace: false }] });
+    const own = async () => ({ rows: [{ delivery_id: 'd1', authority: 'kernel', released: false, in_workspace: true }] });
+    await expect(kernelDeliveryInWorkspace('d1', 'w1', foreign)).rejects.toBeInstanceOf(DeliveryWorkspaceMismatchError);
+    expect(await kernelDeliveryById('d1', foreign, 'w1')).toBeNull();
+    expect(await kernelDeliveryInWorkspace('d1', 'w1', own)).toBe('d1');
+    expect(await kernelDeliveryInWorkspace('d1', 'w1', async () => ({ rows: [] }))).toBeNull();
+  });
+
   test('an explicit release only ever moves kernel → legacy', () => {
     const { sql: text, params } = render(releaseSql('d1'));
     expect(text).toContain("WHERE id = $1::uuid AND authority = 'kernel'");
     expect(params).toEqual(['d1']);
+  });
+});
+
+describe('§4 merge holds SQL', () => {
+  test('the deliveries a status on a head may release: kernel, LANDING at that head on that repo, kill switch on', () => {
+    const { sql: text, params } = render(landingAtHeadSql('o/r', 'H1'));
+    expect(text).toContain("d.authority = 'kernel' AND d.state = 'LANDING'");
+    expect(text).toContain('d.repo_full_name = $1::text');
+    expect(text).toContain('d.current_head_sha = $2::text');
+    expect(text).toContain('JOIN workspaces w ON w.id = d.workspace_id');
+    expect(params.slice(0, 2)).toEqual(['o/r', 'H1']);
   });
 });
 

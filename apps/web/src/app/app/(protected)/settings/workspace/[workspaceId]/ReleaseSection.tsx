@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import type { WorkspaceReleaseConfig, ReleaseTrigger, ReleaseStrategy } from '@buildd/core/db/schema';
 import { resolveReleaseTrigger } from '@buildd/core/release-strategy';
@@ -11,6 +11,10 @@ import { ReadOnlyFacts } from './ReadOnlyFacts';
 import { buildReleaseConfigPayload } from './release-config-payload';
 import { splitRecentReleases } from '../../_lib/recent-releases';
 import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
+import { useLiveListen } from '@/hooks/useLiveListen';
+import { CHANNEL_PREFIX } from '@/lib/pusher-client';
+
+const RELEASE_EVENTS = ['release:updated'] as const;
 
 type StrategyOption = ReleaseStrategy | 'none';
 
@@ -160,8 +164,6 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
 
   const [hasVercelToken, setHasVercelToken] = useState<boolean | null>(null);
 
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
   const fetchReleaseHistory = useCallback(async () => {
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/last-release`);
@@ -181,23 +183,19 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
     fetchReleaseHistory().finally(() => setLoadingReleases(false));
   }, [hasRepo, fetchReleaseHistory]);
 
-  // Poll when last release is in a building state
-  useEffect(() => {
-    const isBuilding = lastRelease?.releaseResult?.deployState
-      ? !TERMINAL_DEPLOY_STATES.has(lastRelease.releaseResult.deployState)
-      : false;
-
-    if (isBuilding) {
-      pollRef.current = setInterval(fetchReleaseHistory, 10_000);
-    } else {
-      if (pollRef.current) clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-  }, [lastRelease, fetchReleaseHistory]);
+  // Live: release:updated on the workspace channel says a release moved
+  // (spec 3ef37387 R-21). While a deploy is still building, a once-a-minute
+  // read covers a missed event; otherwise events only.
+  const isBuilding = lastRelease?.releaseResult?.deployState
+    ? !TERMINAL_DEPLOY_STATES.has(lastRelease.releaseResult.deployState)
+    : false;
+  useLiveListen({
+    channel: `${CHANNEL_PREFIX}workspace-${workspaceId}`,
+    events: RELEASE_EVENTS,
+    refresh: fetchReleaseHistory,
+    enabled: hasRepo,
+    fallback: isBuilding,
+  });
 
   // Fetch Vercel token status
   useEffect(() => {
@@ -362,7 +360,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                       <span className="block text-sm text-text-primary">Release candidates</span>
                       <span className="block text-xs text-text-muted mt-0.5">
                         Versioned release PRs from your release workflow skip re-review of already-reviewed changes.
-                        Shipped once production runs the merge.
+                        Released once production runs the merge.
                       </span>
                     </span>
                   </label>

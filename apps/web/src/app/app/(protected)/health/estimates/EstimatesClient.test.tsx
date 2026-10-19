@@ -19,7 +19,7 @@ const text = (html: string) => html.replace(/<[^>]+>/g, ' ');
 describe('EstimatesClient', () => {
   test('10+ scored: one lead, its sample and the limited-history count', () => {
     const html = renderToStaticMarkup(<EstimatesClient readout={readout()} canManage={false} />);
-    expect(html).toContain('9 in 10 tasks finished within the upper estimate.');
+    expect(html).toContain('Upper estimate coverage: 90% (80% target).');
     expect(html).toContain('Across 40 finished tasks.');
     expect(html).toContain('10 of these had limited comparable history in the repo.');
     expect(html).not.toMatch(/uppercase|font-mono/);
@@ -31,7 +31,7 @@ describe('EstimatesClient', () => {
         const html = renderToStaticMarkup(<EstimatesClient readout={r} canManage={canManage} />);
         expect(html).not.toMatch(/<svg|<details|<table|<ul/);
         expect(html).not.toMatch(/estimates-scatter|estimates-details|estimates-row/);
-        expect(text(html)).not.toMatch(/p50|p80|prior|cluster|blend|tokens|apps\/web\/missions|learning curve|last \d+ days|\bn \d/i);
+        expect(text(html)).not.toMatch(/prior|cluster|blend|tokens|apps\/web\/missions|learning curve|last \d+ days|\bn \d/i);
       }
     }
   });
@@ -54,16 +54,16 @@ describe('EstimatesClient', () => {
 
   test('overrun and underrun show the typical line', () => {
     expect(renderToStaticMarkup(<EstimatesClient readout={readout({ overall: score(20, 0.5, 1.5) })} canManage={false} />))
-      .toContain('Typically ran 1.5x longer than estimated.');
+      .toContain('Actual / p50: 1.5x.');
     expect(renderToStaticMarkup(<EstimatesClient readout={readout({ overall: score(20, 0.9, 0.6) })} canManage={false} />))
-      .toContain('Typically ran 1.7x shorter than estimated.');
+      .toContain('Actual / p50: 0.6x.');
   });
 
-  test('member and owner see the same numbers; only the owner gets the settings link (AC-14)', () => {
+  test('member and owner see the same numbers without settings management', () => {
     const member = renderToStaticMarkup(<EstimatesClient readout={readout()} canManage={false} />);
     const owner = renderToStaticMarkup(<EstimatesClient readout={readout()} canManage />);
     const numbers = (html: string) => text(html).match(/\d+/g);
-    expect(owner).toContain('href="/app/settings/features"');
+    expect(owner).not.toContain('href=');
     expect(member).not.toContain('href=');
     expect(numbers(owner)).toEqual(numbers(member));
   });

@@ -100,14 +100,17 @@ describe('Queue view, live', () => {
     const t = fakeTerminal();
     const done = runTop({ socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {} });
     await until(() => t.screen().includes('name override'));
-    // The Missions view never reads the queue, even when the queue changes.
+    // The Missions view reads the queue once at the start (it lists a mission's
+    // queued work the windowed task list leaves out), then once a minute: a
+    // change in the queue does not re-read it there.
+    await until(() => queueReads === 1);
     push({ type: 'task_claimed', taskId: 't-loose' });
     await Bun.sleep(400);
-    expect(queueReads).toBe(0);
+    expect(queueReads).toBe(1);
 
     t.type('\t');
-    await until(() => firstRow(t.screen()).includes('fix(kernel): review composition'));
-    expect(queueReads).toBe(1);
+    await until(() => firstRow(t.screen()).includes('fix(kernel): review compo'));
+    expect(queueReads).toBe(2);
 
     // Another runner takes position 1; the server's next answer no longer has it first.
     queue = { ...QUEUE, teams: QUEUE.teams.map((tm, i) => i === 0 ? { ...tm, queue: tm.queue.slice(1), notForRunner: [{ ...tm.queue[0], reason: 'another_runner' as const }, ...tm.notForRunner] } : tm) };

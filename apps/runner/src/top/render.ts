@@ -6,14 +6,16 @@
  * cost column goes first, then the route words, then the role column (R-7,
  * R-41), and text is cut with "…".
  */
+import { TERMS, titleWithAttempt, slotsInUse } from '@buildd/shared';
 import type { Palette, PaletteToken } from '../terminal-palette';
 import { detailDollars, runWords, workerSpend } from '../run-route';
 import { progressPieces } from './progress';
-import { queueSections, selectedQueueRow, slotsSummary, type QueueRow, type QueueSection } from './queue';
+import { queueNextLine, queueSections, selectedQueueRow, slotsSummary, type QueueRow, type QueueSection } from './queue';
 import {
-  busySlots, claimLoopLine, currentMission, currentWorkspace, deliveredDay, describeToolCall, filterLine, formatDuration, heldNow, holdLine, missionList, missionMeta, missionStageLine, missionStageWord, planOf,
-  providerHoldLine, providerHolds, routeProblemLines, runsOn, selectedRow, spendTodayLine,
-  NO_MISSION, taskRows, workerForTask, workspaceSummary, type MissionRow, type RowKind, type TaskRow, type TopState,
+  busySlots, claimLoopLine, currentMission, currentWorkspace, deliveredDay, deliveredMissions, describeToolCall, emptyMissionWords, filterLine, formatDuration, heldNow, holdLine, missionList, missionRowStage, missionStageWord, missionStatusLine, planOf,
+  DELIVERED_DAYS,
+  providerHoldLine, providerHolds, routeProblemLines, runsOn, loginsLine, selectedRow, spendTodayLine,
+  isLooseKey, taskRows, workerForTask, workspaceSummary, type MissionRow, type RowKind, type TaskRow, type TopState,
 } from './state';
 
 export interface FrameOptions {
@@ -125,7 +127,8 @@ function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette, w
     tailToken = 'text';
   } else if (row.kind === 'running') {
     tail = fit(row.action ?? '', tailW);
-    tailToken = 'text';
+    // Work another runner or a local session runs reads quieter than this runner's own.
+    tailToken = row.elsewhere ? 'muted' : 'text';
   } else {
     tail = fit(row.reason ?? '', tailW);
   }
@@ -138,7 +141,7 @@ function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette, w
   const primary: PaletteToken = selected ? 'selectedText' : 'text';
   if (tailToken === 'text') tailToken = primary;
   const line =
-    (selected ? p.fg('accent', '›') : ' ') + p.fg(g.token, g.ch) + ' ' +
+    (selected ? p.fg('accent', '›') : ' ') + p.fg(row.elsewhere && row.kind === 'running' ? 'muted' : g.token, g.ch) + ' ' +
     p.fg(primary, title) +
     p.fg('muted', role) +
     (route ? p.fg('muted', route) : '') +
@@ -155,16 +158,17 @@ function header(state: TopState, cols: number, now: number, p: Palette): string 
   // R-19: which workspaces this runner serves, e.g. "5 workspaces · Acme".
   const served = workspaceSummary(state);
   const busy = busySlots(state);
-  // R-33: a held runner reads "on hold" where "online" would be.
-  const online = !state.runner.online ? '○ reconnecting' : heldNow(state, now) ? '● on hold' : '● online';
+  // R-33: a paused runner reads "paused" where "online" would be.
+  // Before the first connection it is loading; reconnecting only once one was up and dropped.
+  const online = !state.runner.online ? (state.runner.connectedOnce ? '○ reconnecting' : '○ loading') : heldNow(state, now) ? `● ${TERMS['runner.paused'].short}` : '● online';
   const version = state.runner.version ? ` · v${state.runner.version}` : '';
   // Widest first; drop the version, then shorten the slots, then the hostname.
   const variants: Array<{ host: boolean; slots: string; version: string }> = [
-    // R-43: "3 of 6 busy".
-    { host: true, slots: `${busy} of ${state.runner.maxConcurrent} busy`, version },
-    { host: true, slots: `${busy} of ${state.runner.maxConcurrent} busy`, version: '' },
-    { host: true, slots: `${busy}/${state.runner.maxConcurrent} busy`, version: '' },
-    { host: false, slots: `${busy}/${state.runner.maxConcurrent} busy`, version: '' },
+    // R-43: "3 of 6 slots in use" (terms catalog: capacity is never "busy").
+    { host: true, slots: slotsInUse(busy, state.runner.maxConcurrent), version },
+    { host: true, slots: slotsInUse(busy, state.runner.maxConcurrent), version: '' },
+    { host: true, slots: slotsInUse(busy, state.runner.maxConcurrent, 'short'), version: '' },
+    { host: false, slots: slotsInUse(busy, state.runner.maxConcurrent, 'short'), version: '' },
   ];
   for (const v of variants) {
     const leftParts = [v.host ? host : null, served || null].filter(Boolean).join(' · ');
@@ -187,13 +191,13 @@ function rule(cols: number, p: Palette): string {
   return p.fg('faint', '─'.repeat(cols));
 }
 
-const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'h hold', '+- slots', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
+const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 's talk', 'h hold', '+- slots', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
 const HINTS_QUEUE = ['↑↓ move', 'c claim', 'h hold', '+- slots', 'o web', 'tab missions', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
 const HINTS_HELP = ['o open this runner on buildd', 'any key back', 'q quit'];
-const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 'q quit'];
+const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 's talk', 'o web', 'q quit'];
 
 /** Dropped first when the footer is too narrow; `? help`, `t`, `w` and `q quit` always stay. */
-const HINT_DROP_ORDER = ['+- slots', 'p pause', 'x stop', 'h hold', 'm message', 'c claim', 'a answer', 'tab queue', 'o web', '/ filter', '↑↓ move', '⏎ open', 'esc back'];
+const HINT_DROP_ORDER = ['b logins', 's talk', '+- slots', 'p pause', 'x stop', 'h hold', 'm message', 'c claim', 'a answer', 'tab queue', 'o web', '/ filter', '↑↓ move', '⏎ open', 'esc back'];
 
 function fitHints(hints: string[], cols: number): string {
   for (const sep of ['  ', ' ']) {
@@ -223,7 +227,7 @@ function footer(state: TopState, cols: number, p: Palette): string {
     return p.fg('accent', prefix) + p.fg('text', text) + p.fg('accent', '▏') + ' '.repeat(Math.max(0, cols - textWidth(prefix) - textWidth(text) - 1));
   }
   if (m.kind === 'confirm') {
-    const t = state.tasks.find(x => x.id === m.taskId)?.title ?? workerForTask(state, m.taskId)?.taskTitle ?? 'this task';
+    const t = titleWithAttempt(state.tasks.find(x => x.id === m.taskId)?.title ?? workerForTask(state, m.taskId)?.taskTitle) || 'this task';
     return p.fg('accent', fit(` Stop the agent on "${t}"? y stops it, any other key keeps it running`, cols));
   }
   if (state.status) {
@@ -231,35 +235,66 @@ function footer(state: TopState, cols: number, p: Palette): string {
     return p.fg(token, fit(' ' + state.status.text, cols));
   }
   const hints = m.kind === 'detail' ? HINTS_DETAIL : m.kind === 'help' ? HINTS_HELP : state.view === 'queue' ? HINTS_QUEUE : HINTS_LIST;
-  return p.fg('muted', fit(fitHints(hints, cols), cols));
+  // b only where the runner has a login mode to switch (spec 34a48877 R-14), after +- slots.
+  const withLogins = (h: string[]) => state.runner.loginMode ? h.flatMap(x => x === '+- slots' ? [x, 'b logins'] : [x]) : h;
+  return p.fg('muted', fit(fitHints(m.kind === 'detail' || m.kind === 'help' ? hints : withLogins(hints), cols), cols));
 }
 
 /** The fewest title columns a mission row keeps before it drops its stage word: two letters and "…". */
 const MIN_MISSION_TITLE = 3;
 
-function leftWidth(cols: number): number {
-  return cols >= 110 ? 28 : cols >= 90 ? 24 : 22;
+/** The most lines the selected mission's name wraps onto (R-57). */
+const MAX_NAME_LINES = 4;
+
+/**
+ * The missions pane grows with the terminal, about a quarter of it, to 48
+ * columns; while you move between missions it takes about a third, to 64 (R-57).
+ */
+function leftWidth(cols: number, focused: boolean): number {
+  if (focused) return cols >= 110 ? Math.min(64, Math.max(36, Math.floor(cols / 3))) : cols >= 90 ? 30 : 28;
+  return cols >= 110 ? Math.min(48, Math.max(28, Math.floor(cols / 4))) : cols >= 90 ? 24 : 22;
 }
 
-/** A fold row's words: "Delivered this week · 4", or "Delivered · 4" where that does not fit. */
+/**
+ * Word-wrap `s` into lines: the first `first` columns wide, the rest `rest`,
+ * at most `max` lines, the last cut with "…" when words are left over.
+ */
+function wrapName(s: string, first: number, rest: number, max: number): string[] {
+  const lines: string[] = [];
+  let line = '';
+  const words = s.replace(/\s+/g, ' ').trim().split(' ');
+  for (let i = 0; i < words.length; i++) {
+    const room = lines.length === 0 ? first : rest;
+    const next = line ? `${line} ${words[i]}` : words[i];
+    if (textWidth(next) <= room) { line = next; continue; }
+    if (lines.length === max - 1) return [...lines, fit(words.slice(i).reduce((a, w) => `${a} ${w}`, line).trim(), room).trimEnd()];
+    if (line) lines.push(line);
+    line = words[i];
+    // A single word wider than the line is cut on its own line.
+    if (textWidth(line) > (lines.length === 0 ? first : rest)) line = fit(line, lines.length === 0 ? first : rest).trimEnd();
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+/** A fold row's words: "Done this week · 4", or "Done · 4" where that does not fit. */
 function foldTitle(m: MissionRow, room: number): string {
   const full = `${m.title} · ${m.fold!.count}`;
-  return textWidth(full) <= room ? full : `Delivered · ${m.fold!.count}`;
+  return textWidth(full) <= room ? full : `${TERMS['mission.done'].word} · ${m.fold!.count}`;
 }
 
 /**
  * The missions pane (R-24): a heading row per team, then that team's open
- * missions (building and verifying first, then on hold), then one dimmed
- * "Delivered this week · N" row. Opened, it lists the missions delivered in
+ * missions (building and verifying first, then paused), then one dimmed
+ * "Done this week · N" row. Opened, it lists the missions done in
  * the last 7 days under it, dimmed, each with its day on its own row ("Oct
- * 14"), so a full pane cannot drop the day. A second, dimmed line carries
- * "local session"; when the pane is too short those lines go first (except
- * the selected mission's), then the pane scrolls to keep the selected
- * mission in view.
+ * 14"), so a full pane cannot drop the day. A mission managed from a local
+ * session says so in its stage words ("building in your session"), on its own row.
+ * When the pane is too short it scrolls to keep the selected mission in view.
  */
 function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean, lw: number, height: number, p: Palette): string[] {
   const hasTeams = missions.some(m => m.team !== null);
-  const build = (withMeta: boolean) => {
+  const build = () => {
     const lines: string[] = [];
     let selected = 0;
     missions.forEach((m, i) => {
@@ -277,26 +312,33 @@ function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean,
       // Done over total always (R-31), with the stage word beside it (R-18).
       // The title gives way first; only when it would vanish does the stage
       // word go, and the heading still says it.
-      const tally = m.key === NO_MISSION || m.total > 0 ? `${m.done}/${m.total}` : '';
-      const stage = missionStageWord(m);
-      const fullCount = [stage, tally].filter(Boolean).join(' ') || (m.held ? 'on hold' : '');
-      const count = delivered ? deliveredDay(m.deliveredAt!) : lw - 3 - (fullCount.length + 2) >= MIN_MISSION_TITLE || !tally ? fullCount : tally;
+      // Loose tasks count what is still open: their done total says nothing.
+      const tally = isLooseKey(m.key) ? (m.total > m.done ? `${m.total - m.done} open` : '') : m.total > 0 ? `${m.done}/${m.total}` : '';
+      const stage = missionRowStage(m);
+      const fullCount = [stage, tally].filter(Boolean).join(' ') || (m.held ? TERMS['mission.paused'].short : '');
+      // Widest that leaves the title room: the stage with "in your session", then without it, then the tally alone.
+      const fits = (c: string) => lw - 3 - (c.length + 2) >= MIN_MISSION_TITLE;
+      const plain = [missionStageWord(m), tally].filter(Boolean).join(' ');
+      const count = delivered ? deliveredDay(m.deliveredAt!) : [fullCount, plain, tally].find(c => c && fits(c)) ?? (tally || plain || fullCount);
       const marker = isCurrent ? '▸' : ' ';
       const titleW = lw - 3 - (count ? count.length + 2 : 1);
-      const title = p.fg(delivered ? 'muted' : 'text', fit(m.title, titleW));
-      const line = ` ${p.fg(isCurrent ? 'accent' : 'faint', marker)} ${title}${count ? ' ' + p.fg(m.running > 0 ? 'accent' : 'muted', count) : ''} `;
-      if (isCurrent) selected = lines.length;
-      lines.push(isCurrent && focused ? p.selectedBg(line) : line);
-      // A delivered mission's day is on its row already.
-      const meta = delivered ? null : missionMeta(m);
-      if (meta && (withMeta || isCurrent)) lines.push(p.fg('muted', fit('   ' + meta, lw)));
+      const countText = count ? ' ' + p.fg(m.running > 0 ? 'accent' : 'muted', count) : '';
+      const token: PaletteToken = delivered ? 'muted' : 'text';
+      // The selected mission shows its whole name, wrapped under itself (R-57).
+      const name = isCurrent ? wrapName(m.title, titleW, lw - 4, MAX_NAME_LINES) : [m.title];
+      name.forEach((part, k) => {
+        const line = k === 0
+          ? ` ${p.fg(isCurrent ? 'accent' : 'faint', marker)} ${p.fg(token, fit(part, titleW))}${countText} `
+          : `   ${p.fg(token, fit(part, lw - 4))} `;
+        lines.push(isCurrent && focused ? p.selectedBg(line) : line);
+      });
+      if (isCurrent) selected = lines.length - 1;
     });
     // Without team headings the pane keeps its MISSIONS label.
     if (!hasTeams) return { lines: [p.fg('muted', fit(' MISSIONS', lw)), ...lines], selected: selected + 1 };
     return { lines, selected };
   };
-  let built = build(true);
-  if (built.lines.length > height) built = build(false);
+  const built = build();
   let lines = built.lines;
   if (lines.length > height) {
     const offset = Math.min(Math.max(0, built.selected - height + 1), lines.length - height);
@@ -306,7 +348,7 @@ function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean,
 }
 
 function listBody(state: TopState, cols: number, height: number, now: number, p: Palette): string[] {
-  const lw = leftWidth(cols);
+  const lw = leftWidth(cols, state.focus === 'missions');
   const rw = cols - lw - 1;
   const missions = missionList(state, now);
   const mission = currentMission(state, now);
@@ -320,25 +362,29 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
   const right: string[] = [];
   const nRunning = rows.filter(r => r.group === 'running').length;
   const nWaiting = rows.filter(r => r.group === 'waiting').length;
-  // A mission with no rows has nothing to count; its heading gets the room.
-  const counts = rows.length === 0 && mission.key !== NO_MISSION ? '' : `${nRunning} running · ${nWaiting} waiting `;
+  // Live work in words, only when there is some: an empty pane says so below.
+  const counts = [nRunning > 0 ? `${nRunning} running` : null, nWaiting > 0 ? `${nWaiting} waiting` : null].filter(Boolean).join(' · ');
+  const countsCol = counts ? counts + ' ' : '';
   const filterNote = state.filter ? ` (filter: ${state.filter})` : '';
   const ws = currentWorkspace(state);
-  const meta = missionMeta(mission);
-  const status = mission.deliveredAt !== undefined && meta ? ` · ${meta}` : missionStageLine(mission) ? ` · ${missionStageLine(mission)}` : mission.planning ? ' · planning' : meta ? ` · ${meta}` : '';
-  const heading = (ws ? `${ws.name} · ` : '') + (mission.fold ? `${mission.title} · ${mission.fold.count}` : mission.title + status) + filterNote;
-  const titleW = rw - textWidth(counts) - 1;
+  const delivered = mission.fold ? deliveredMissions(state, mission, now) : [];
+  const title = mission.fold ? `${mission.fold.count} ${TERMS['mission.done'].short} in the last ${DELIVERED_DAYS} days` : mission.title;
+  const heading = (ws ? `${ws.name} · ` : '') + title + filterNote;
+  const titleW = rw - textWidth(countsCol) - 1;
   // One space always separates a cut heading from the counts (R-21).
-  right.push(' ' + p.fg('text', fit(heading, titleW - 1)) + ' ' + p.fg(nRunning > 0 ? 'accent' : 'muted', counts));
+  right.push(' ' + p.fg('text', fit(heading, titleW - 1)) + ' ' + p.fg(nRunning > 0 ? 'accent' : 'muted', countsCol));
+  // Under the title: the stage, how far it got, who runs it.
+  const statusLine = missionStatusLine(mission);
+  if (statusLine) right.push(p.fg('muted', fit(' ' + statusLine, rw)));
   // R-29: the whole mission as squares, done first, under its heading.
-  const progress = mission.key === NO_MISSION ? null : progressRow(mission, rw, p);
+  const progress = isLooseKey(mission.key) ? null : progressRow(mission, rw, p);
   if (progress) right.push(progress);
   right.push(p.fg('faint', '─'.repeat(rw)));
 
   const groups: Array<{ key: TaskRow['group']; label: string }> = [
-    { key: 'running', label: 'RUNNING' },
-    { key: 'waiting', label: 'WAITING' },
-    { key: 'done', label: 'DONE TODAY' },
+    { key: 'running', label: 'Working now' },
+    { key: 'waiting', label: 'Waiting' },
+    { key: 'done', label: 'Done today' },
   ];
   const lines: Array<{ text: string; rowIndex?: number }> = [];
   const withRoute = rows.some(r => !!r.route);
@@ -350,13 +396,11 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
       lines.push({ text: renderRow(r, rw, state.focus === 'tasks' && sel?.taskId === r.taskId, p, withRoute), rowIndex: i });
     }
   }
-  if (rows.length === 0) {
-    const empty = mission.fold ? ` Delivered in the last 7 days. ${mission.fold.open ? '⏎ or Esc folds them.' : '⏎ lists them.'}`
-      : mission.deliveredAt !== undefined ? ` Delivered ${deliveredDay(mission.deliveredAt)}. Its finished work is not listed here.`
-      : state.filter ? ' Nothing matches the filter.'
-      : mission.local ? ' A person runs this mission from their own session.'
-      : ' Nothing here yet. Work this runner takes shows up as it happens.';
-    lines.push({ text: p.fg('muted', fit(empty, rw)) });
+  if (mission.fold) {
+    // The deliveries themselves, newest first: the day, then the mission.
+    for (const m of delivered) lines.push({ text: p.fg('muted', fit(` ${fit(deliveredDay(m.deliveredAt!), 7)}`, 9)) + p.fg('text', fit(m.title, rw - 9)) });
+  } else if (rows.length === 0) {
+    lines.push({ text: p.fg('muted', fit(' ' + emptyMissionWords(mission, state.filter), rw)) });
   }
 
   // Scroll so the selected row stays in view.
@@ -401,7 +445,7 @@ function detailBody(state: TopState, taskId: string, cols: number, height: numbe
   const push = (s: string) => out.push(s);
   const line = (token: PaletteToken, s: string) => push(p.fg(token, fit(s, cols)));
 
-  const title = row?.title ?? task?.title ?? w?.taskTitle ?? taskId;
+  const title = row?.title ?? (titleWithAttempt(task?.title ?? w?.taskTitle) || taskId);
   const g = row ? GLYPH[row.kind] : GLYPH.waiting;
   const meta = [
     row?.role,
@@ -418,6 +462,8 @@ function detailBody(state: TopState, taskId: string, cols: number, height: numbe
     const dollars = detailDollars(workerSpend(w), w.resultMeta?.actualModel ?? w.sessionModel);
     line('muted', ' ' + [runWords(w.route.backend, w.route), served, dollars].filter(Boolean).join(' · '));
   }
+  // Why it runs on that backend when the claim moved it (R-40): "Routed to Codex by this runner's balanced mode."
+  if (w?.routedWhy) line('muted', ` ${w.routedWhy.charAt(0).toUpperCase()}${w.routedWhy.slice(1)}.`);
   if (w?.prUrl) line('info', ` PR ${w.prUrl}`);
   if (row?.kind === 'asking' && row.question) {
     line('warning', ` asks: "${row.question}"`);
@@ -479,7 +525,7 @@ function fitAnsi(line: string, cols: number, _p: Palette): string {
 
 const HELP_KEYS: Array<[string, string]> = [
   ['↑↓ j k', 'move; ← → switch between missions and tasks'],
-  ['⏎', 'open a task: plan, milestones, tool calls; on Delivered this week, list them'],
+  ['⏎', 'open a task: plan, milestones, tool calls; on Done this week, list them on the left too'],
   ['a', 'answer the question an agent is asking'],
   ['m', 'send a message to a running agent'],
   ['p', 'pause a running agent'],
@@ -487,10 +533,10 @@ const HELP_KEYS: Array<[string, string]> = [
   ['c', 'claim a waiting task onto this runner'],
   ['tab', 'switch between Missions and Queue (what this runner takes next)'],
   ['h', 'hold: running agents finish, nothing new starts; h again resumes'],
-  ['o', 'open the task on buildd'],
+  ['o', 'open the task on buildd, or the mission when no task is picked'],
   ['t', 'show the next team, then all of them'],
   ['w', 'show the next workspace of that team, then all of them'],
-  ['/', 'filter missions and tasks by title, delivered ones too; esc clears it'],
+  ['/', 'filter missions and tasks by title, done ones too; esc clears it'],
   ['q', 'quit (the runner keeps running)'],
 ];
 
@@ -498,7 +544,11 @@ const HELP_KEYS: Array<[string, string]> = [
 function helpBody(state: TopState, cols: number, height: number, p: Palette): string[] {
   const out: string[] = [];
   out.push(p.fg('muted', fit(' KEYS', cols)));
-  for (const [k, what] of HELP_KEYS) out.push(p.fg('accent', fit(`  ${k}`, 10)) + p.fg('text', fit(what, cols - 10)));
+  // b only where the runner has a login mode to switch (spec 34a48877 R-14).
+  const keys = state.runner.loginMode
+    ? HELP_KEYS.flatMap(e => e[0] === 'h' ? [e, ['b', 'switch which login takes new work: balanced, claude-first, codex-first'] as [string, string]] : [e])
+    : HELP_KEYS;
+  for (const [k, what] of keys) out.push(p.fg('accent', fit(`  ${k}`, 10)) + p.fg('text', fit(what, cols - 10)));
   out.push(' '.repeat(cols));
   const served = workspaceSummary(state);
   out.push(p.fg('text', fit(` This view shows only the workspaces this runner serves${served ? ` (${served})` : ''}.`, cols)));
@@ -534,8 +584,11 @@ export function renderFrame(state: TopState, opts: FrameOptions): string[] {
   // A route that does not work is a warning on its own line, with where to fix it.
   const runsOnText = runsOn(state, now);
   const todayText = spendTodayLine(state, now);
+  // R-60: what each login does now, and the login mode with b to change it.
+  const loginsText = loginsLine(state, now);
   const routeLines = [
     ...(runsOnText ? [p.fg('muted', fit(' ' + runsOnText, cols))] : []),
+    ...(loginsText ? [p.fg('muted', fit(' ' + loginsText, cols))] : []),
     ...routeProblemLines(state).map(l => p.fg('warning', fit(' ' + l, cols))),
     ...(todayText ? [p.fg('muted', fit(' ' + todayText, cols))] : []),
   ];
@@ -579,7 +632,7 @@ const QEST_W = 6;
 /** The narrowest title the queue keeps before it drops a column. */
 const QTITLE_MIN = 30;
 
-interface QueueCols { est: boolean; workspace: boolean; mission: number; starts: number; title: number }
+interface QueueCols { est: boolean; workspace: boolean; by: number; mission: number; starts: number; title: number }
 
 /**
  * The queue's columns at `cols`: est. goes first, then workspace, and below 60
@@ -587,19 +640,23 @@ interface QueueCols { est: boolean; workspace: boolean; mission: number; starts:
  * wide and never wraps.
  */
 export function queueColumnsFor(cols: number, estimatesOn: boolean): QueueCols {
-  const mission = cols < 60 ? 12 : 17;
+  const mission = cols < 60 ? 12 : cols < 110 ? 14 : 17;
+  // The by column (R-58): "you", a first name, or "-"; a long name is cut.
+  const by = cols < 110 ? 6 : 9;
   // Wide enough for "when #4 ends (same files)"; a held row's title gets more at 120.
   const starts = cols < 60 ? 10 : cols < 80 ? 13 : cols < 110 ? 26 : 36;
-  const fixed = 1 + POS_W + mission + starts;
+  // The by column stays at every width (R-58); est. and workspace give way first.
+  const fixed = 1 + POS_W + by + mission + starts;
   const est = estimatesOn && cols - fixed - QWS_W - QEST_W >= QTITLE_MIN;
   const workspace = cols - fixed - (est ? QEST_W : 0) - QWS_W >= QTITLE_MIN;
   const title = Math.max(4, cols - fixed - (workspace ? QWS_W : 0) - (est ? QEST_W : 0));
-  return { est, workspace, mission, starts, title };
+  return { est, workspace, by, mission, starts, title };
 }
 
 function queueHeading(section: QueueSection, cols: number, c: QueueCols, p: Palette): string {
   const text =
-    ' ' + fit(`${section.teamName} · next for this runner`, POS_W + c.title) +
+    ' ' + fit(`${section.teamName} · next for this runner`, POS_W + c.title - 1) + ' ' +
+    fit('by', c.by) +
     (c.workspace ? fit('workspace', QWS_W) : '') +
     fit('mission', c.mission) +
     (c.est ? fit('est.', QEST_W) : '') +
@@ -619,6 +676,7 @@ function queueRowLine(row: QueueRow, c: QueueCols, selected: boolean, p: Palette
     (selected ? p.fg('accent', '›') : ' ') +
     p.fg('muted', pos) +
     p.fg(primary, col(row.title, c.title)) +
+    p.fg('muted', col(row.by, c.by)) +
     (c.workspace ? p.fg('muted', col(row.workspace, QWS_W)) : '') +
     p.fg('muted', col(row.mission, c.mission)) +
     (c.est ? p.fg('muted', col(row.est ?? '-', QEST_W)) : '') +
@@ -636,6 +694,9 @@ function queueBody(state: TopState, cols: number, height: number, now: number, p
   } else if (sections.length === 0) {
     lines.push({ text: p.fg('muted', fit(state.filter ? ' Nothing in the queue matches the filter.' : ' Nothing is waiting for this runner.', cols)) });
   }
+  // R-59: what runs next, from the rows' own reasons.
+  const next = queueNextLine(state, now);
+  if (next) lines.push({ text: p.fg('text', fit(' ' + next, cols)) });
   for (const section of sections) {
     const c = queueColumnsFor(cols, section.estimatesOn);
     lines.push({ text: queueHeading(section, cols, c, p) });
@@ -646,7 +707,7 @@ function queueBody(state: TopState, cols: number, height: number, now: number, p
     }
     if (section.rows.length === 0) lines.push({ text: p.fg('muted', fit('    Nothing this runner takes is waiting.', cols)) });
     if (section.held.length > 0) {
-      lines.push({ text: p.fg('muted', fit(' Held, each on its own', cols)) });
+      lines.push({ text: p.fg('muted', fit(' Not yet', cols)) });
       for (const r of section.held) lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });
     }
     if (section.notFor.length > 0) {

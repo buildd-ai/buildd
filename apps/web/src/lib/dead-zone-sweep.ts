@@ -44,7 +44,7 @@ import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import {
   WORKSPACE_INSTALLATION_WITH,
   pickWorkspaceRepoIdentity,
-  installationIdForRepo,
+  createTeamInstallationResolver,
 } from '@/lib/workspace-installation';
 import { resolvePrRepo } from '@/lib/repo-scope';
 import { recordPrFact } from '@buildd/core/pr-facts';
@@ -187,14 +187,8 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
   };
   if (deadZone.length === 0) return result;
 
-  /** Repo → installation, memoized for the sweep. See pr-reconcile.ts. */
-  const installationByRepo = new Map<string, number | null>();
-  const resolveInstallationCached = async (repo: string): Promise<number | null> => {
-    if (!installationByRepo.has(repo)) {
-      installationByRepo.set(repo, await installationIdForRepo(repo).catch(() => null));
-    }
-    return installationByRepo.get(repo) ?? null;
-  };
+  /** The team's installation per repo, memoized for the sweep. See pr-reconcile.ts. */
+  const installations = createTeamInstallationResolver();
 
   // Group by workspace to share a single GitHub installation token
   const byWorkspace = new Map<string, typeof deadZone>();
@@ -206,7 +200,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
   for (const [wsId, wsWorkers] of byWorkspace) {
     const workspace = await db.query.workspaces.findFirst({
       where: sqlWhere(eq(workspaces.id, wsId)),
-      columns: { id: true, repo: true, name: true, gitConfig: true, webhookConfig: true, githubInstallationId: true, githubRepoId: true },
+      columns: { id: true, teamId: true, repo: true, name: true, gitConfig: true, webhookConfig: true, githubInstallationId: true, githubRepoId: true },
       with: WORKSPACE_INSTALLATION_WITH,
     });
 
@@ -241,10 +235,11 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
       const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo });
       if (!repo) { result.skipped++; continue; }
 
-      const installationId =
-        (repo === workspaceRepo ? workspaceInstallationId : null)
-        ?? await resolveInstallationCached(repo)
-        ?? workspaceInstallationId;
+      const { installationId } = await installations.resolve(
+        repo,
+        { teamId: workspace.teamId, fullName: workspaceRepo, installationId: workspaceInstallationId },
+        { fallbackToWorkspace: true },
+      );
       if (!installationId) { result.skipped++; continue; }
 
       const task = (worker as any).task as {
@@ -310,6 +305,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
         await recordPrFact(
           { workerId: worker.id },
           isDirty ? { kind: 'conflict' } : { kind: 'ci', status: 'ci_failed', headSha: pr.head.sha, currentHeadSha: pr.head.sha },
+          { scope: factFunnelScope },
         );
         await db.update(workers).set({ prLastCheckedAt: now, updatedAt: now }).where(eq(workers.id, worker.id));
 

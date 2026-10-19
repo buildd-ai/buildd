@@ -158,6 +158,29 @@ import { findReleasePr, executeRelease, recordDirectProdMerge, advanceGatedRelea
 // pattern release-verification.ts already uses for its retry sleeper).
 _setSleeper(() => Promise.resolve());
 
+/**
+ * A worker PR (#12) released on every_merge (D9): the prod branch head is `prev`, the PR's
+ * live head `head`, CI at it `checks` (none reported by default), and the squash commit
+ * `mergeSha`. A null `mergeSha` is an empty merge answer from GitHub followed by a PR that
+ * reads merged with no merge commit.
+ */
+function mockWorkerPrMerge(prev: string, mergeSha: string | null, opts: { head?: string; checks?: any[] } = {}) {
+  const head = opts.head ?? 'workerhead1';
+  let merged = false;
+  mockGithubApi.mockImplementation(async (_inst: number, path: string) => {
+    if (path.includes('/git/ref/heads/')) return { object: { sha: prev } };
+    if (path.includes('/check-runs')) return { check_runs: opts.checks ?? [] };
+    if (path.endsWith('/pulls/12/merge')) {
+      merged = true;
+      return mergeSha ? { sha: mergeSha, merged: true } : null;
+    }
+    if (path.endsWith('/pulls/12')) {
+      return merged ? { merged: true, state: 'closed', merge_commit_sha: mergeSha } : { merged: false, state: 'open', head: { sha: head } };
+    }
+    throw new Error(`unexpected ${path}`);
+  });
+}
+
 // ── findReleasePr ─────────────────────────────────────────────────────────────
 
 describe('findReleasePr', () => {
@@ -534,24 +557,45 @@ describe('executeRelease — worker branch', () => {
     delete process.env.VERCEL_TOKEN;
   });
 
-  it('does NOT report completed when the head is gone and nothing proves a merge', async () => {
-    // A deleted head branch is not evidence of a merge — it is equally what a
-    // branch deleted without merging looks like. With no PR to consult, the
-    // release cannot confirm prod moved, so it must not say it did.
-    setupTask();
+  // A branch with no PR has no review verdict to read, no PR head to pin and no
+  // delivery: it is not a door (workflow-state-kernel.md §13.13 D9). The executor
+  // used to POST /merges it straight into the prod branch, past every gate.
+  it('D9: a worker branch with no PR is refused, and nothing is merged into the prod branch', async () => {
+    setupTask(); // release: 'true'
+    setupWorker(); // prNumber: null
+    setupWorkspace();
+    setupRepo();
+    mockGithubApi.mockImplementation(async (_inst: number, path: string) => {
+      if (path.includes('/git/ref/heads/')) return { object: { sha: 'prevsha000' } };
+      if (path.endsWith('/merges')) return { sha: 'rawmerge999' };
+      throw new Error(`unexpected ${path}`);
+    });
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(result.status).toBe('failed');
+    expect(result.mergedAt).toBeUndefined();
+    expect(result.message).toContain('no PR');
+    const calls = mockGithubApi.mock.calls as any[];
+    expect(calls.some((c) => String(c[1]).endsWith('/merges'))).toBe(false);
+    expect(calls.some((c) => c[2]?.method && c[2].method !== 'GET')).toBe(false);
+  });
+
+  it('D9: on an inherit task, a worker branch with no PR skips the release rather than failing the task', async () => {
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', release: 'inherit' });
     setupWorker();
     setupWorkspace();
     setupRepo();
-    // previousSha ref lookup (before merge)
-    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha000' } });
-    // The /merges call throws a 404 "Head does not exist"
-    mockGithubApi.mockRejectedValueOnce(
-      new Error('GitHub API error: 404 {"message":"Head does not exist","status":"404"}')
-    );
+    mockGithubApi.mockImplementation(async (_inst: number, path: string) => {
+      if (path.endsWith('/merges')) return { sha: 'rawmerge999' };
+      return { object: { sha: 'prevsha000' } };
+    });
 
     const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
-    expect(result.status).toBe('failed');
+
+    expect(result.status).toBe('skipped');
     expect(result.mergedAt).toBeUndefined();
+    expect((mockGithubApi.mock.calls as any[]).some((c) => String(c[1]).endsWith('/merges'))).toBe(false);
   });
 
   describe('tracked PR that cannot be merged', () => {
@@ -642,6 +686,58 @@ describe('executeRelease — worker branch', () => {
       expect(result).toMatchObject({ status: 'pending_ci', releasePrNumber: 12, releaseMergeMethod: 'squash' });
     });
 
+    it('D9: red CI at the worker PR head fails the release and merges nothing', async () => {
+      setupTask();
+      setupWorkerWithPr();
+      setupWorkspace();
+      setupRepo();
+      mockWorkerPrMerge('prevsha000', 'squash777', { checks: [{ name: 'build', status: 'completed', conclusion: 'failure' }] });
+
+      const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+      expect(result.status).toBe('failed');
+      expect(result.message).toContain('build');
+      const paths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string);
+      expect(paths.some((p) => p.endsWith('/merge') || p.endsWith('/merges'))).toBe(false);
+      expect(paths.some((p) => p.includes('/commits/workerhead1/check-runs'))).toBe(true);
+    });
+
+    it('D9: CI still running at the worker PR head holds the release on the PR, merging nothing', async () => {
+      setupTask();
+      setupWorkerWithPr();
+      setupWorkspace();
+      setupRepo();
+      mockWorkerPrMerge('prevsha000', 'squash777', { checks: [{ name: 'build', status: 'in_progress', conclusion: null }] });
+
+      const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+      expect(result).toMatchObject({ status: 'pending_ci', releasePrNumber: 12, releaseMergeMethod: 'squash' });
+      const paths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string);
+      expect(paths.some((p) => p.endsWith('/merge') || p.endsWith('/merges'))).toBe(false);
+    });
+
+    it('D9: the merge is pinned to the head CI was read at; a head that moved after it is refused', async () => {
+      setupTask();
+      setupWorkerWithPr();
+      setupWorkspace();
+      setupRepo();
+      let reads = 0;
+      mockGithubApi.mockImplementation(async (_inst: number, path: string) => {
+        if (path.includes('/git/ref/heads/')) return { object: { sha: 'prevsha000' } };
+        if (path.includes('/check-runs')) return { check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] };
+        if (path.endsWith('/pulls/12/merge')) return { sha: 'squash777', merged: true };
+        // CI was green on the first head; a push lands before the merge reads it again.
+        if (path.endsWith('/pulls/12')) return { merged: false, state: 'open', head: { sha: reads++ === 0 ? 'workerhead1' : 'workerhead2' } };
+        throw new Error(`unexpected ${path}`);
+      });
+
+      const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+      expect(result.status).toBe('failed');
+      const paths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string);
+      expect(paths.some((p) => p.endsWith('/pulls/12/merge'))).toBe(false);
+    });
+
     it('a PR that GitHub reports as already merged counts, with its real merge sha', async () => {
       setupTask();
       setupWorkerWithPr();
@@ -696,13 +792,10 @@ describe('executeRelease — worker branch', () => {
 
   it('completes without Vercel verification when VERCEL_TOKEN is absent', async () => {
     setupTask();
-    setupWorker();
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', branch: 'buildd/task-branch', prNumber: 12, prUrl: null });
     setupWorkspace({ deployTarget: { type: 'vercel', projectId: 'proj_abc' } });
     setupRepo();
-    // previousSha ref lookup (before merge)
-    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha000' } });
-    // Merge succeeds
-    mockGithubApi.mockResolvedValueOnce({ sha: 'mergesha456', commit: {} });
+    mockWorkerPrMerge('prevsha000', 'mergesha456');
     // VERCEL_TOKEN is not set (cleared in beforeEach)
 
     const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
@@ -1069,9 +1162,11 @@ describe('executeRelease — trigger policy', () => {
       fullName: 'org/repo',
       installation: { installationId: 99 },
     });
+    mockWorkersFindFirst.mockResolvedValue({ branch: 'buildd/abc-feat', prNumber: 12, prUrl: null });
+    mockWorkerPrMerge('prevsha000', 'squash777');
     const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1', isMissionRelease: true });
-    // Should not be skipped due to trigger — will proceed to branch_merge logic
-    expect(result.status).not.toBe('skipped');
+    // Not skipped by the trigger: it proceeds to the branch_merge logic and lands the PR.
+    expect(result.status).toBe('completed');
   });
 });
 
@@ -1082,7 +1177,7 @@ describe('executeRelease — releases row creation', () => {
     mockTasksFindFirst.mockResolvedValue({ release: 'inherit' });
   }
   function setupWorker() {
-    mockWorkersFindFirst.mockResolvedValue({ branch: 'buildd/my-feat', prNumber: null, prUrl: null });
+    mockWorkersFindFirst.mockResolvedValue({ branch: 'buildd/my-feat', prNumber: 12, prUrl: null });
   }
   function setupRepo() {
     mockGithubReposFindFirst.mockResolvedValue({
@@ -1135,10 +1230,7 @@ describe('executeRelease — releases row creation', () => {
     setupWorker();
     setupContinuousWorkspace();
     setupRepo();
-    // ref lookup → previousSha
-    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha111' } });
-    // merge succeeds
-    mockGithubApi.mockResolvedValueOnce({ sha: 'headsha222', commit: {} });
+    mockWorkerPrMerge('prevsha111', 'headsha222');
 
     const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
     expect(result.status).toBe('completed');
@@ -1159,8 +1251,7 @@ describe('executeRelease — releases row creation', () => {
     setupWorker();
     setupContinuousWorkspace();
     setupRepo();
-    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha111' } });
-    mockGithubApi.mockResolvedValueOnce({ sha: 'headsha222', commit: {} });
+    mockWorkerPrMerge('prevsha111', 'headsha222');
 
     await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
 
@@ -1186,8 +1277,7 @@ describe('executeRelease — releases row creation', () => {
     setupRepo();
 
     // First call — insert succeeds
-    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha111' } });
-    mockGithubApi.mockResolvedValueOnce({ sha: 'headsha222', commit: {} });
+    mockWorkerPrMerge('prevsha111', 'headsha222');
     mockDbInsertReturning.mockResolvedValueOnce([{ id: 'release-abc' }]);
 
     await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
@@ -1196,8 +1286,7 @@ describe('executeRelease — releases row creation', () => {
     expect(mockAttributeRelease).toHaveBeenCalledTimes(1);
 
     // Second call — ON CONFLICT DO NOTHING → no rows returned
-    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha111' } });
-    mockGithubApi.mockResolvedValueOnce({ sha: 'headsha222', commit: {} });
+    mockWorkerPrMerge('prevsha111', 'headsha222');
     mockDbInsertReturning.mockResolvedValueOnce([]);
 
     await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
@@ -1333,8 +1422,7 @@ describe('executeRelease — releases row creation', () => {
     });
     mockDetectArchetype.mockReturnValue('continuous');
     setupRepo();
-    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha111' } });
-    mockGithubApi.mockResolvedValueOnce({ sha: 'headsha222', commit: {} });
+    mockWorkerPrMerge('prevsha111', 'headsha222');
 
     await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
 
@@ -1381,10 +1469,8 @@ describe('executeRelease — releases row creation', () => {
     setupWorker();
     setupContinuousWorkspace();
     setupRepo();
-    // ref lookup
-    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha111' } });
-    // merge returns no sha (already up-to-date, 204 path)
-    mockGithubApi.mockResolvedValueOnce(null);
+    // the merge answers empty and the PR reads merged with no merge commit
+    mockWorkerPrMerge('prevsha111', null);
 
     await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
     await new Promise((r) => setTimeout(r, 0));
@@ -1422,7 +1508,7 @@ describe('executeRelease — healthy promotion on deploy success', () => {
     mockTasksFindFirst.mockResolvedValue({ release: 'inherit' });
   }
   function setupWorker() {
-    mockWorkersFindFirst.mockResolvedValue({ branch: 'buildd/my-feat', prNumber: null, prUrl: null });
+    mockWorkersFindFirst.mockResolvedValue({ branch: 'buildd/my-feat', prNumber: 12, prUrl: null });
   }
   function setupRepo() {
     mockGithubReposFindFirst.mockResolvedValue({
@@ -1448,8 +1534,7 @@ describe('executeRelease — healthy promotion on deploy success', () => {
   }
   // ref lookup → previousSha, then the merge itself.
   function setupMerge() {
-    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha111' } });
-    mockGithubApi.mockResolvedValueOnce({ sha: 'headsha222', commit: {} });
+    mockWorkerPrMerge('prevsha111', 'headsha222');
   }
 
   beforeEach(() => {

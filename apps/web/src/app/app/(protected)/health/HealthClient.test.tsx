@@ -240,7 +240,57 @@ describe('HealthClient — Problems', () => {
     expect(html).toContain('All systems healthy');
     expect(html).not.toContain('data-testid="problem-isolation"');
     expect(html).toContain('data-testid="runner-isolation"');
-    expect(html).toContain('only its operator');
+    expect(html).toContain('Sandbox disabled by its operator');
+    expect(html).not.toContain('needs attention');
+  });
+
+  // The Oct 18 report: an operator's BUILDD_DISABLE_SANDBOX=1 on their own runner.
+  it('names your own opt-out "Sandbox disabled by you", closed, with the waiting tasks it refuses', () => {
+    const optOut = { ...isolation('linux', none('opt_out')), reducedOptIn: true };
+    const html = render({
+      runners: [runner({ lastHeartbeatAt: ago(60 * 1000), shared: false, mine: true, isolation: optOut, isolationBlocked: { protected: 2, trustedLocal: 0 } })],
+      protectedWorkPending: true,
+    });
+    expect(html).toContain('Sandbox disabled by you');
+    expect(html).toContain('data-state="opted_out"');
+    expect(html).toContain('2 waiting can&#x27;t run here');
+    expect(html).not.toContain('needs attention');
+    expect(html).not.toContain('never confirmed');
+    expect(html).not.toContain('data-testid="problem-isolation"');
+    // Closed: the warning steps are behind the line, not spelled out in the row.
+    expect(html).not.toContain('runner-isolation-eligibility');
+  });
+
+  it('flags waiting tasks no online runner can take for isolation, once for the fleet', () => {
+    const html = render({ runners: [runner({ lastHeartbeatAt: ago(60 * 1000) })], isolationStranded: 3 });
+    expect(html).toContain('3 tasks need a sandbox no online runner has');
+    expect(html).not.toContain('All systems healthy');
+  });
+
+  it('opens a lost sandbox with what the runner takes and who fixes it', () => {
+    const html = render({ runners: [runner({ lastHeartbeatAt: ago(60 * 1000), mine: true, isolation: isolation('linux', none('bwrap_missing')) })] });
+    expect(html).toContain('data-state="failed"');
+    expect(html).toContain('Takes no tasks');
+    expect(html).toContain('You fix this');
+  });
+
+  it('drops the redundant working / idle label from an online runner row', () => {
+    const html = render({ runners: [runner({ lastHeartbeatAt: ago(60 * 1000) })] });
+    expect(html).not.toMatch(/>working</);
+    expect(html).not.toMatch(/>idle</);
+    expect(render({ runners: [runner()] })).toMatch(/>offline</);
+  });
+
+  it('keeps a confined runner row to identity, platform, capacity and heartbeat', () => {
+    const html = render({
+      runners: [runner({ lastHeartbeatAt: ago(60 * 1000), isolation: isolation('darwin', { mechanism: 'seatbelt', scope: ['write'] }) })],
+    });
+    expect(html).toContain('macOS');
+    expect(html).toContain('sandboxed');
+    expect(html).not.toContain('data-testid="runner-isolation"');
+    expect(html).not.toContain('Seatbelt');
+    expect(html).not.toContain('Check health');
+    expect(html).not.toMatch(/>checked |checked \d|checked just/);
   });
 
   it('flags the same opt-out on a runner other people use', () => {

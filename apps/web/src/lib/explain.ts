@@ -24,13 +24,14 @@ import { isOpenAsk, missionOpenQuestions } from './open-ask';
 import { loadTaskAccess } from './agent-capabilities/access-log';
 import { BACKEND_ROUTING_KEY, describeBackendRouting } from '@buildd/core/backend-policy';
 import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES, VISUAL_AUDITOR_ROLE_SLUG, type TaskEvidence, type TaskMismatch } from '@buildd/shared';
+import { isWorktreeSetupTimeoutError } from '@/lib/worker-exit-taxonomy';
 import { collectLineage } from '@/lib/attempt-lineage';
 import { evidenceHint } from '@/lib/task-evidence';
 import { loadInlineEvidence, type InlineEvidenceObject } from '@/lib/evidence-inline';
 import type { EvidenceActor } from '@/lib/evidence-audit';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, gateEvents, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNotNull, ne, sql } from 'drizzle-orm';
 import { deriveCriteriaGatePresentation, attachAttempts, isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, unmetDependencyIds, unmetDependencyPrs, type DependencyRow } from '@/lib/mission-helpers';
 import { continueOnRunnerBlockedReason, deriveLocalStrand } from '@/lib/local-strand';
@@ -41,6 +42,7 @@ import type { DeliveryView } from '@/lib/workflow/projections';
 import { GATE_SLUGS } from '@buildd/core/gate-slugs';
 import { deriveLandingBlocker, type LandingBlocker } from '@/lib/landing-blocker';
 import { canCompleteMission } from '@/lib/mission-completion';
+import { evaluateMissionGate } from '@/lib/mission-dependency';
 import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-prepass';
 import { evaluateMissionWorkState } from '@/lib/mission-pr';
 import { deriveMissionStateView, type MissionStateInput, type MissionStateView } from '@/lib/mission-state-view';
@@ -270,6 +272,21 @@ function hasOpenAsk(t: { status: string; workers?: Array<{ status: string }> | n
 }
 
 /** The canonical "is a fix attempt open on this task" descriptor — see mission-state-view.ts rule 6½. */
+/**
+ * A failed task whose failure is the host's, not the work's: retries spent on
+ * infra (`infra_stalled`), or the runner could not build the session's
+ * worktree (it refuses the shared clone, so nothing ran). Read from the error
+ * text as well as `errorType`, because a setup failure reported before the
+ * retry budget is spent carries only the text.
+ */
+export function isInfraFailedTask(t: { result?: unknown; context?: unknown }): boolean {
+  const result = (t.result ?? null) as Record<string, unknown> | null;
+  if (result?.errorType === 'infra_stalled') return true;
+  const ctx = (t.context ?? null) as { failureContext?: { summary?: unknown } } | null;
+  const texts = [result?.error, ctx?.failureContext?.summary];
+  return texts.some(x => typeof x === 'string' && (isWorktreeSetupTimeoutError(x) || /Worktree setup failed for branch .*refusing to run in the shared clone/s.test(x)));
+}
+
 export interface OpenAttemptInfo {
   taskId: string;
   title: string;
@@ -310,19 +327,40 @@ function deriveOpenAttempt(attempts: LoadedTask[]): OpenAttemptInfo | null {
 }
 
 /**
+ * The read behind {@link loadOpenAttempt}: `taskId`'s open attempts with only
+ * what `deriveOpenAttempt` reads (two context keys, the workers' status), not
+ * the full rows `viewForTask` loads. A page batches it and hands the rows to
+ * {@link openAttemptOf}.
+ */
+export function openAttemptQuery(taskId: string) {
+  return db.query.tasks.findMany({
+    where: sqlWhere(and(
+      eq(tasks.parentTaskId, taskId),
+      eq(tasks.taskClass, 'attempt'),
+      inArray(tasks.status, [...SHARED_OPEN_TASK_STATUSES]),
+    )),
+    columns: { id: true, title: true, status: true, taskClass: true, category: true, createdAt: true },
+    extras: {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      context: (t: any, _ops?: unknown) => sql<Record<string, unknown>>`jsonb_build_object('iteration', ${t.context}->'iteration', 'maxIterations', ${t.context}->'maxIterations')`.as('attempt_context'),
+    },
+    with: { workers: { columns: { status: true } } },
+  });
+}
+
+/** The open-attempt fact from {@link openAttemptQuery}'s rows. */
+export function openAttemptOf(rows: Awaited<ReturnType<typeof openAttemptQuery>>): OpenAttemptInfo | null {
+  return deriveOpenAttempt(rows as unknown as LoadedTask[]);
+}
+
+/**
  * Convenience wrapper for a caller that only wants the open-attempt fact, not
  * a full `explainTask` answer (history, gate history, evidence objects, …).
- * One extra query — children of `taskId` with their latest worker — reading
- * the exact same columns and the exact same predicate `viewForTask` uses.
+ * One extra query — open children of `taskId` with their workers' status —
+ * under the same predicate `viewForTask` applies.
  */
 export async function loadOpenAttempt(taskId: string): Promise<OpenAttemptInfo | null> {
-  const attempts = (await db.query.tasks.findMany({
-    where: sqlWhere(eq(tasks.parentTaskId, taskId)),
-    columns: TASK_COLUMNS,
-    with: { workers: WORKER_WITH },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  })) as any as LoadedTask[];
-  return deriveOpenAttempt(attempts);
+  return openAttemptOf(await openAttemptQuery(taskId));
 }
 
 function iso(d: Date | string | null | undefined): string | null {
@@ -413,7 +451,25 @@ function touchSetOf(
  * Assemble the accessor's inputs for a mission by running each derivation
  * exactly once, then hand them to `deriveMissionStateView`.
  */
-async function viewForMission(missionId: string): Promise<{
+/**
+ * What a page already loaded for this mission (spec 3ef37387 R-11): explain
+ * reads none of it again. `tasks` are the raw rows (no delivery overlay), each
+ * with its workers newest first and the `context` / `result` keys the
+ * accessor reads; `visualReviewState` is the page's one read of it.
+ */
+export interface MissionExplainInputs {
+  mission: Record<string, unknown>;
+  tasks: ReadonlyArray<Record<string, unknown>>;
+  deliveries: Map<string, DeliveryView>;
+  missionDeliveries: Awaited<ReturnType<typeof missionEpochsOf>>;
+  foreignDeps: Map<string, DependencyRow>;
+  supersededMap: Awaited<ReturnType<typeof computeSupersededFailedTasks>>;
+  visualReviewState: import('@/lib/workflow/visual-review-state').MissionVisualReviewState | null;
+  /** The completion gate's own read of the visual review model, when the page holds it. */
+  visualModel?: import('@buildd/shared').VisualReviewModel;
+}
+
+async function viewForMission(missionId: string, inputs?: MissionExplainInputs): Promise<{
   view: MissionStateView;
   mission: Record<string, unknown>;
   loaded: LoadedTask[];
@@ -422,13 +478,13 @@ async function viewForMission(missionId: string): Promise<{
   disagreements: DeliveryDisagreement[];
   deliveries: Map<string, DeliveryView>;
 } | null> {
-  const mission = await db.query.missions.findFirst({
+  const mission = inputs?.mission ?? await db.query.missions.findFirst({
     where: sqlWhere(eq(missions.id, missionId)),
     with: { schedule: true },
   });
   if (!mission) return null;
 
-  const rawLoaded = (await db.query.tasks.findMany({
+  const rawLoaded = (inputs?.tasks ?? await db.query.tasks.findMany({
     where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: TASK_COLUMNS,
     with: { workers: WORKER_WITH },
@@ -440,10 +496,12 @@ async function viewForMission(missionId: string): Promise<{
   // stands is its delivery's, and a mission PR's is its delivery records'
   // (§6). One load each; the worker rows below carry the delivery's lifecycle
   // (derived on read, nothing written), and a row that disagrees is named.
-  const [deliveries, missionDeliveries] = await Promise.all([
-    getDeliveryViewsForTasks(rawLoaded.map(t => t.id)),
-    m.integrationBranchEnabled === true ? missionEpochsOf(missionId) : Promise.resolve([]),
-  ]);
+  const [deliveries, missionDeliveries] = inputs
+    ? [inputs.deliveries, m.integrationBranchEnabled === true ? inputs.missionDeliveries : []]
+    : await Promise.all([
+        getDeliveryViewsForTasks(rawLoaded.map(t => t.id)),
+        m.integrationBranchEnabled === true ? missionEpochsOf(missionId) : Promise.resolve([]),
+      ]);
   const loaded = overlayDeliveryLifecycle(rawLoaded, deliveries);
   const disagreements = deliveryDisagreements(rawLoaded, deliveries);
   const schedule = m.schedule as { lastDeferralReason?: string | null; nextRunAt?: Date | null } | null;
@@ -454,10 +512,10 @@ async function viewForMission(missionId: string): Promise<{
 
   // Dependencies outside this mission are judged from their own rows, never
   // guessed (unknown is not unmet): one query by id list.
-  const foreignDeps = await loadDependencyRows(foreignDependencyIds(loaded));
+  const foreignDeps = inputs?.foreignDeps ?? await loadDependencyRows(foreignDependencyIds(loaded));
   const deliverables = loaded.filter(isDeliverableTask);
   const failedDeliverables = deliverables.filter(t => t.status === 'failed');
-  const supersededMap = await computeSupersededFailedTasks(
+  const supersededMap = inputs?.supersededMap ?? await computeSupersededFailedTasks(
     missionId,
     (m.workspaceId as string | null) ?? null,
     failedDeliverables.map(t => ({
@@ -502,17 +560,20 @@ async function viewForMission(missionId: string): Promise<{
 
   // evaluateCriteria: false — a read must never dispatch a verification task or
   // spend a token to answer "what is this waiting on".
-  const completion = await canCompleteMission(missionId, { evaluateCriteria: false });
+  // A page's render reads stored evidence only and passes the rows it holds.
+  const completion = await canCompleteMission(missionId, inputs
+    ? { evaluateCriteria: false, render: true, loaded: { mission: m as never, tasks: rawLoaded as never, visualModel: inputs.visualModel } }
+    : { evaluateCriteria: false });
   // A missing visual review is the owner's to run only when the policy asks. Read
   // the canonical state only then, so every other explain stays one query lighter.
   // An open audit row also needs it: the header follows the visual review state
   // (waived, blocked, running), not the audit task row (spec 8e137fdb I-1, I-5).
   const openAudit = loaded.some(t => OPEN_TASK_STATUSES.has(t.status) && isSurfaceAuditTask(t.title ?? ''));
-  const visualReviewState = completion.code === 'surface_audit_missing' || openAudit
-    ? await import('@/lib/workflow/visual-review-state-load')
+  const visualReviewState = !(completion.code === 'surface_audit_missing' || openAudit) ? null
+    : inputs ? inputs.visualReviewState
+    : await import('@/lib/workflow/visual-review-state-load')
         .then(m => m.getMissionVisualReviewState(missionId))
-        .catch(() => null)
-    : null;
+        .catch(() => null);
   const visualReviewActor = completion.code === 'surface_audit_missing' ? visualReviewState?.nextActor ?? null : null;
   const visualReview = summarizeVisualReview(visualReviewState);
 
@@ -624,7 +685,7 @@ async function viewForMission(missionId: string): Promise<{
     failedTasks: failedTasks.map(t => ({
       id: t.id,
       title: t.title,
-      infra: (t.result as Record<string, unknown> | null)?.errorType === 'infra_stalled',
+      infra: isInfraFailedTask(t),
     })),
     deferrals,
     // `merged` carries no outstanding fact — the mission is on its way to
@@ -708,18 +769,34 @@ function answerFrom(
   };
 }
 
-export async function explainMission(missionId: string): Promise<ExplainResult | null> {
-  const loadedMission = await viewForMission(missionId);
+/**
+ * `inputs`: what a page already loaded (spec 3ef37387 R-11), so the mission
+ * and its tasks are read once per render. `history: false` leaves out the
+ * attempt history a page does not show.
+ */
+export async function explainMission(
+  missionId: string,
+  opts: { inputs?: MissionExplainInputs; history?: boolean } = {},
+): Promise<ExplainResult | null> {
+  const loadedMission = await viewForMission(missionId, opts.inputs);
   if (!loadedMission) return null;
   const { view, mission, loaded, answerExtras, disagreements, deliveries } = loadedMission;
 
-  // Name the upstream mission rather than pointing at a UUID.
+  // Name the upstream mission, and the exact condition its gate still lacks,
+  // rather than pointing at a UUID. A read: the gate is not stamped from here.
   if (view.waitingOn?.kind === 'dependency') {
-    const upstream = await db.query.missions.findFirst({
-      where: sqlWhere(eq(missions.id, view.waitingOn.missionId)),
-      columns: { title: true },
-    });
-    answerExtras.dependencyTitle = upstream?.title ?? null;
+    const gate = (mission as { gateCondition?: string | null }).gateCondition === 'completed' ? 'completed' : 'merged';
+    const verdict = await evaluateMissionGate(view.waitingOn.missionId, gate).catch(() => null);
+    if (verdict) {
+      answerExtras.dependencyTitle = verdict.title;
+      answerExtras.dependencyGate = { gate, met: verdict.met, unmet: verdict.unmet };
+    } else {
+      const upstream = await db.query.missions.findFirst({
+        where: sqlWhere(eq(missions.id, view.waitingOn.missionId)),
+        columns: { title: true },
+      });
+      answerExtras.dependencyTitle = upstream?.title ?? null;
+    }
   }
 
   const subject: ExplainAnswer['subject'] = {
@@ -738,7 +815,7 @@ export async function explainMission(missionId: string): Promise<ExplainResult |
     answerExtras,
   ), disagreements, { missionId, workspaceId: subject.workspaceId });
 
-  return { scope: 'mission', subjects: [answerFrom(view, subject, buildHistory(loaded, deliveries), because)] };
+  return { scope: 'mission', subjects: [answerFrom(view, subject, opts.history === false ? [] : buildHistory(loaded, deliveries), because)] };
 }
 
 // ─── Task scope ───────────────────────────────────────────────────────────────
@@ -988,7 +1065,7 @@ async function viewForTask(taskId: string): Promise<{
     failedTasks: failedTasks.map(t => ({
       id: t.id,
       title: t.title,
-      infra: (t.result as Record<string, unknown> | null)?.errorType === 'infra_stalled',
+      infra: isInfraFailedTask(t),
     })),
     wait: classifyMissionWait(family as unknown as WaitClassifiableTask[]),
     landingBlocked,
@@ -1169,9 +1246,37 @@ async function loadBaseSideMerges(input: {
 }
 
 /**
- * Explain a PR. The state answer is its task's (a PR is not a separate subject
- * with its own lifecycle — it is how a task ships), and when the PR is
- * conflicted the conflict chain is prepended so `because[]` opens on the cause.
+ * The task a PR ships: the owner of its kernel delivery, else the task that
+ * opened it. Every fix attempt on the PR (a CI fix, a review fix) records the
+ * same PR number on its own worker, so the worker a PR number resolves to can
+ * be an attempt's; read as the subject, a cancelled CI fix reported an open,
+ * red PR as complete. An attempt that opened a PR of its own keeps it.
+ */
+export async function prOwnerTaskId(taskId: string, prNumber: number): Promise<string> {
+  const dv = (await getDeliveryViewsForTasks([taskId])).get(taskId);
+  if (dv && dv.prNumber === prNumber) return dv.ownerTaskId;
+  let id = taskId;
+  for (let hop = 0; hop < 8; hop++) {
+    const t = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, id)), columns: { id: true, parentTaskId: true, taskClass: true } });
+    if (!t?.parentTaskId || t.taskClass !== 'attempt') break;
+    const parent = (await db.query.tasks.findFirst({
+      where: sqlWhere(eq(tasks.id, t.parentTaskId)),
+      columns: { id: true },
+      with: { workers: { columns: { prNumber: true } } },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    })) as any as { id: string; workers?: Array<{ prNumber: number | null }> } | undefined;
+    if (!parent?.workers?.some(w => w.prNumber === prNumber)) break;
+    id = parent.id;
+  }
+  return id;
+}
+
+/**
+ * Explain a PR. The state answer is its owner task's (a PR is not a separate
+ * subject with its own lifecycle — it is how a task ships; `prOwnerTaskId`),
+ * and when the PR is conflicted the conflict chain is prepended so `because[]`
+ * opens on the cause. A kernel-owned PR carries its delivery's reading, owner
+ * included.
  */
 export async function explainPr(worker: {
   id: string;
@@ -1190,9 +1295,10 @@ export async function explainPr(worker: {
 }, actor: EvidenceActor): Promise<ExplainResult | null> {
   if (!worker.taskId || worker.prNumber == null) return null;
 
-  const loaded = await viewForTask(worker.taskId);
+  const taskId = await prOwnerTaskId(worker.taskId, worker.prNumber);
+  const loaded = await viewForTask(taskId);
   if (!loaded) return null;
-  const { view, task, lineage, answerExtras, workspaceId, missionId } = loaded;
+  const { view, task, lineage, answerExtras, workspaceId, missionId, ownDelivery } = loaded;
 
   const subject: ExplainAnswer['subject'] = {
     scope: 'pr',
@@ -1200,11 +1306,11 @@ export async function explainPr(worker: {
     label: `PR #${worker.prNumber}: ${task.title}`,
     workspaceId: workspaceId ?? worker.workspaceId,
     missionId,
-    taskId: worker.taskId,
+    taskId,
     prNumber: worker.prNumber,
   };
 
-  let because = buildStateBecause(view, { taskId: worker.taskId, missionId, workspaceId }, answerExtras);
+  let because = buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras);
 
   // `mergeable: dirty` is stored locally as prLifecycleStatus='conflict'
   // (kept live by the GitHub webhook), so naming the cause needs no API call.
@@ -1225,7 +1331,7 @@ export async function explainPr(worker: {
 
     const conflict: ConflictSubject = {
       prNumber: worker.prNumber,
-      taskId: worker.taskId,
+      taskId,
       branch: worker.branch,
       baseRef: worker.prBaseRef,
       lifecycleStatus: worker.prLifecycleStatus,
@@ -1247,9 +1353,9 @@ export async function explainPr(worker: {
 
   // A PR ships through its task, so its gate ledger (merge_base_freshness
   // rejections, review_verdict deferrals) is the task's.
-  const gateHistory = await loadGateHistory(worker.taskId);
-  const evidenceObjects = await loadInlineEvidence(worker.workspaceId, worker.taskId, { surface: 'explain', actor });
-  return { scope: 'pr', subjects: [withBackendRouting(answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects), task)] };
+  const gateHistory = await loadGateHistory(taskId);
+  const evidenceObjects = await loadInlineEvidence(worker.workspaceId, taskId, { surface: 'explain', actor });
+  return { scope: 'pr', subjects: [withDelivery(withBackendRouting(answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects), task), ownDelivery ?? null)] };
 }
 
 // ─── Workspace scope ──────────────────────────────────────────────────────────

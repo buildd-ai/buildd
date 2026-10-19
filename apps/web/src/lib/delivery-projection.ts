@@ -1,6 +1,6 @@
 /**
  * The one delivery projection every surface reads: where a task or a mission
- * stands on Build → Audit → Land, how many repair rounds it took, and whether
+ * stands on Build → Verify → Deliver, how many repair rounds it took, and whether
  * anything genuinely waits on a person. Pure.
  *
  * Contract: knowledge-base `cross-surface-delivery-spec` (v2), approved in the
@@ -22,7 +22,7 @@
 import type { computeMissionProgress, deriveTaskType, isAttempt } from '@buildd/core/mission-helpers';
 import { prShipState } from '@buildd/core/pr-shipped';
 import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/member-scoped-deps';
-import { LIVE_WORKER_STATUSES, OPEN_TASK_STATUSES } from '@buildd/shared';
+import { LIVE_WORKER_STATUSES, OPEN_TASK_STATUSES, TERMS } from '@buildd/shared';
 import type { StateKey } from '@/components/ui/states';
 import { displayTaskTitle } from './task-title';
 import { claimHoldPhrase } from './claim-hold-phrase';
@@ -49,17 +49,18 @@ export type DeliveryTone = 'success' | 'info' | 'warning' | 'ink' | 'muted' | 'e
 
 /** Glyph + word for every kind: never colour alone. */
 export const DELIVERY_KIND: Record<DeliveryKind, { label: string; glyph: string; tone: DeliveryTone }> = {
-  landed: { label: 'Landed', glyph: '■', tone: 'success' },
-  landing: { label: 'Landing', glyph: '▲', tone: 'success' },
+  // The PR words come from the terms catalog (packages/shared/src/terms.ts).
+  landed: { label: TERMS['pr.merged'].word, glyph: '■', tone: 'success' },
+  landing: { label: TERMS['pr.merging'].word, glyph: '▲', tone: 'success' },
   audit: { label: 'In audit', glyph: '◐', tone: 'info' },
   repair: { label: 'Repairing', glyph: '↻', tone: 'warning' },
   build: { label: 'Building', glyph: '▶', tone: 'ink' },
   waiting: { label: 'Waiting', glyph: '◇', tone: 'muted' },
   // A held start gate; deliveryKindLabel says Paused for one that ran before.
-  held: { label: 'Not started', glyph: '‖', tone: 'muted' },
+  held: { label: TERMS['mission.not_started'].word, glyph: '‖', tone: 'muted' },
   planning: { label: 'Planning', glyph: '○', tone: 'muted' },
   unavailable: { label: 'Audit can’t run', glyph: '⊘', tone: 'warning' },
-  notlanded: { label: 'Not landed', glyph: '✕', tone: 'error' },
+  notlanded: { label: TERMS['pr.closed'].word, glyph: '✕', tone: 'error' },
   needs: { label: 'Waiting on you', glyph: '!', tone: 'ink' },
 };
 
@@ -77,10 +78,10 @@ const STATUS_OF: Record<DeliveryKind, DeliveryStatus> = {
   unavailable: 'audit_unavailable', notlanded: 'not_landed', needs: 'needs_human',
 };
 
-export const DELIVERY_STAGES = ['Build', 'Audit', 'Land'] as const;
+export const DELIVERY_STAGES = ['Build', 'Verify', 'Deliver'] as const;
 
 /**
- * Position on the Build › Audit › Land track: 0..2 is the current stage, 3 is
+ * Position on the Build › Verify › Deliver track: 0..2 is the current stage, 3 is
  * past Land, -1 is not on the track yet (waiting, held, planning). Repair is
  * Audit with a round count, never a fourth stage.
  */
@@ -550,8 +551,8 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
     else if (focus.delivery.kind === 'unavailable') exception = { tone: 'warning', text: `The audit for ${displayTaskTitle(focus.title)} could not run; it retries on its own` };
     else if (kind === 'waiting') {
       exception = focus.delivery.waitingOn === 'dependency' ? { tone: 'muted', text: 'Waiting on earlier work, not on you' }
-        : m.localStrand?.stranded ? { tone: 'warning', text: 'No local session is running it' }
-        : m.localStrand ? { tone: 'muted', text: 'Waiting for a local session' }
+        : m.localStrand?.stranded ? { tone: 'warning', text: 'No session is running it' }
+        : m.localStrand ? { tone: 'muted', text: 'Waiting for your session' }
         : { tone: 'muted', text: 'Next in line for a runner, not waiting on you' };
     }
   }
@@ -646,8 +647,8 @@ function describe(kind: DeliveryKind, focus: MissionDelivery['tasks'][number] | 
     case 'waiting':
       if (d?.waitingOn !== 'dependency' && m.localStrand) {
         return m.localStrand.stranded
-          ? { evidence: `${t} has not started.`, next: `Waiting for a local session (none for ${quietLabel(m.localStrand.quietMs)})` }
-          : { evidence: `${t} has not started.`, next: 'Waiting for a local session' };
+          ? { evidence: `${t} has not started.`, next: `Waiting for your session (none for ${quietLabel(m.localStrand.quietMs)})` }
+          : { evidence: `${t} has not started.`, next: 'Waiting for your session' };
       }
       return { evidence: `${t} has not started.`, next: d?.waitingOn === 'dependency' ? `After its dependencies land` : 'Next in line for a runner' };
     case 'held':
@@ -676,32 +677,46 @@ export function deliveryKindLabel(d: { kind: DeliveryKind; startState?: MissionS
 
 // ── Home selection ──────────────────────────────────────────────────────────
 
+/** A delivery without its per-task projections: what a list reads. */
+export type MissionDeliveryHead = Omit<MissionDelivery, 'tasks'>;
+
+/**
+ * A delivery as a list row keeps it (the stored mission summary): the head,
+ * and each task's kind for the row's strip.
+ */
+export type MissionDeliveryRow = MissionDeliveryHead & { strip: DeliveryKind[] };
+
+export function toDeliveryRow(d: MissionDelivery): MissionDeliveryRow {
+  const { tasks, ...head } = d;
+  return { ...head, strip: tasks.map(t => t.delivery.kind) };
+}
+
 /** Closest to a delivery milestone first. Waiting, held, planning and exceptions never move. */
-const MOVING: Partial<Record<DeliveryKind, number>> = { landing: 0, audit: 1, repair: 2, build: 3 };
+export const MOVING_DELIVERY_RANK: Partial<Record<DeliveryKind, number>> = { landing: 0, audit: 1, repair: 2, build: 3 };
 
 /**
  * Home's "Moving toward delivery": up to `limit` open missions, chosen by how
  * close they are to their next delivery milestone — not by agent activity.
  */
-export function selectHomeMilestones(missions: readonly MissionDelivery[], limit = 3): MissionDelivery[] {
-  const share = (m: MissionDelivery) => (m.total > 0 ? m.landed / m.total : 0);
+export function selectHomeMilestones<T extends MissionDeliveryHead>(missions: readonly T[], limit = 3): T[] {
+  const share = (m: T) => (m.total > 0 ? m.landed / m.total : 0);
   return missions
-    .filter(m => m.open && MOVING[m.kind] != null)
-    .sort((a, b) => MOVING[a.kind]! - MOVING[b.kind]! || share(b) - share(a) || a.id.localeCompare(b.id))
+    .filter(m => m.open && MOVING_DELIVERY_RANK[m.kind] != null)
+    .sort((a, b) => MOVING_DELIVERY_RANK[a.kind]! - MOVING_DELIVERY_RANK[b.kind]! || share(b) - share(a) || a.id.localeCompare(b.id))
     .slice(0, limit);
 }
 
 /** Open missions that are waiting or held: named on Home as "not listed, moves on its own". */
-const isQuiet = (m: MissionDelivery) => m.open && (m.kind === 'waiting' || m.kind === 'held' || m.kind === 'planning');
+const isQuiet = (m: MissionDeliveryHead) => m.open && (m.kind === 'waiting' || m.kind === 'held' || m.kind === 'planning');
 
-export function countQuietMissions(missions: readonly MissionDelivery[]): number {
+export function countQuietMissions(missions: readonly MissionDeliveryHead[]): number {
   return missions.filter(isQuiet).length;
 }
 
 /** What one quiet mission waits on, as a predicate after "is"/"are" (spec 8e137fdb I-4). */
 export interface QuietMissionCause { cause: string; count: number }
 
-function quietCause(m: MissionDelivery): string {
+function quietCause(m: MissionDeliveryHead): string {
   if (m.kind === 'planning') return 'being planned';
   if (m.kind === 'held') return MISSION_START_COPY[m.startState ?? 'not_started'].label.toLowerCase();
   // `next` is the line the mission's card shows: read it, never re-derive it, so
@@ -711,16 +726,26 @@ function quietCause(m: MissionDelivery): string {
     return m.visualOpen.hold ? `waiting on visual review (${m.visualOpen.hold})` : 'waiting on visual review';
   }
   if (m.next.startsWith('After its dependencies')) return 'waiting on earlier work';
-  if (m.next.startsWith('Waiting for a local session')) return 'waiting for a local session';
+  if (m.next.startsWith('Waiting for your session')) return 'waiting for your session';
   if (m.next === 'Next in line for a runner') return 'next in line for a runner';
   return 'waiting';
 }
 
-/** The quiet missions grouped by what each waits on, largest group first (ties keep first-seen order). */
-export function quietMissionCauses(missions: readonly MissionDelivery[]): QuietMissionCause[] {
+/** A quiet mission's cause, or null when it is not quiet (it is listed, or closed). */
+export function quietCauseOf(m: MissionDeliveryHead): string | null {
+  return isQuiet(m) ? quietCause(m) : null;
+}
+
+/** Group causes, largest group first (ties keep first-seen order). */
+export function groupQuietCauses(causes: Iterable<string | null>): QuietMissionCause[] {
   const groups = new Map<string, number>();
-  for (const m of missions) if (isQuiet(m)) { const c = quietCause(m); groups.set(c, (groups.get(c) ?? 0) + 1); }
+  for (const c of causes) if (c != null) groups.set(c, (groups.get(c) ?? 0) + 1);
   return [...groups].map(([cause, count]) => ({ cause, count })).sort((a, b) => b.count - a.count);
+}
+
+/** The quiet missions grouped by what each waits on, largest group first (ties keep first-seen order). */
+export function quietMissionCauses(missions: readonly MissionDeliveryHead[]): QuietMissionCause[] {
+  return groupQuietCauses(missions.map(quietCauseOf));
 }
 
 // ── Count contracts ─────────────────────────────────────────────────────────

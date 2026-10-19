@@ -37,7 +37,7 @@ import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import {
   WORKSPACE_INSTALLATION_WITH,
   pickWorkspaceRepoIdentity,
-  installationIdForRepo,
+  createTeamInstallationResolver,
 } from '@/lib/workspace-installation';
 import { resolvePrRepo } from '@/lib/repo-scope';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
@@ -267,11 +267,19 @@ async function recordObservedClosure(p: { workspaceId: string; repo: string; prN
  * with no delivery runs `refreshWorkerMergeStateIfStale` as before; a
  * delivery-owned row is read and, if GitHub says it closed, recorded as a fact
  * only (AC-3).
+ *
+ * Bounded (spec 3ef37387 R-12): each PR once, and at most
+ * {@link RENDER_OBSERVE_MAX} per render, in the caller's order. The rest wait
+ * for the next render or the hourly sweep.
  */
+export const RENDER_OBSERVE_MAX = 5;
+
 export async function observeMergeStateOnRender(
-  stale: Array<{ id: string; prNumber: number; prUrl: string; workspaceId: string }>,
+  rows: Array<{ id: string; prNumber: number; prUrl: string; workspaceId: string }>,
   installationId: number,
 ): Promise<void> {
+  const seen = new Set<string>();
+  const stale = rows.filter(w => !seen.has(w.prUrl) && !!seen.add(w.prUrl)).slice(0, RENDER_OBSERVE_MAX);
   if (stale.length === 0) return;
   const ownerOf = await deliveryOwnership(stale.map((w) => w.id));
   for (const w of stale) {
@@ -302,14 +310,8 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
 
   const ownerOf = await deliveryOwnership(candidates.map((c) => c.id));
 
-  /** Repo → installation, memoized for the batch. See pr-reconcile.ts. */
-  const installationByRepo = new Map<string, number | null>();
-  const resolveInstallationCached = async (repo: string): Promise<number | null> => {
-    if (!installationByRepo.has(repo)) {
-      installationByRepo.set(repo, await installationIdForRepo(repo).catch(() => null));
-    }
-    return installationByRepo.get(repo) ?? null;
-  };
+  /** The team's installation per repo, memoized for the batch. See pr-reconcile.ts. */
+  const installations = createTeamInstallationResolver();
 
   // Group by workspace to share one installation token per workspace.
   const byWorkspace = new Map<string, _Candidate[]>();
@@ -321,7 +323,7 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
   for (const [workspaceId, wsWorkers] of byWorkspace) {
     const ws = await db.query.workspaces.findFirst({
       where: sqlWhere(eq(workspaces.id, workspaceId)),
-      columns: { repo: true },
+      columns: { repo: true, teamId: true },
       with: WORKSPACE_INSTALLATION_WITH,
     });
 
@@ -339,10 +341,11 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
       const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo });
       if (!repo) continue;
 
-      const installationId =
-        (repo === workspaceRepo ? workspaceInstallationId : null)
-        ?? await resolveInstallationCached(repo)
-        ?? workspaceInstallationId;
+      const { installationId } = await installations.resolve(
+        repo,
+        { teamId: ws?.teamId, fullName: workspaceRepo, installationId: workspaceInstallationId },
+        { fallbackToWorkspace: true },
+      );
       if (!installationId) continue;
 
       if (i > 0) {
@@ -415,7 +418,7 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
           if (headSha) {
             const liveStatus = await fetchCiLifecycleStatus(installationId, repo, headSha);
             if (liveStatus !== null && liveStatus !== worker.prLifecycleStatus) {
-              await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: liveStatus, headSha, currentHeadSha: headSha });
+              await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: liveStatus, headSha, currentHeadSha: headSha }, { scope: factFunnelScope });
             }
           }
         }
@@ -424,8 +427,8 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
         await db.update(workers).set({ ...bookkeeping, updatedAt: now }).where(eq(workers.id, worker.id));
         if (pr.state === 'closed' && worker.prNumber != null) {
           // §11: a kernel-owned delivery imports the same close/merge from its own live read.
-          await import('@/lib/workflow/seam')
-            .then(({ observePrState }) => observePrState({ workspaceId, repoFullName: repo, prNumber: worker.prNumber!, installationId, source: 'sweep:pr-state-refresh' }))
+          await import('@/lib/workflow/kernel-client')
+            .then(({ observePrState, systemPrincipal }) => observePrState({ workspaceId, repoFullName: repo, prNumber: worker.prNumber!, installationId, source: 'sweep:pr-state-refresh' }, { principal: systemPrincipal('system:sweep:pr-state-refresh') }))
             .catch((err) => console.error(`[pr-state-refresh] kernel close import failed for PR #${worker.prNumber}:`, err));
         }
         failedAt.delete(worker.id);
@@ -466,4 +469,22 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
       }
     }
   }
+}
+
+/**
+ * `observeMergeStateOnRender` for a page that has not read the workspace's
+ * GitHub installation: it is read here, after the response, so the render
+ * reads nothing for the import. No installation, nothing to observe.
+ */
+export async function observeWorkspaceMergeStateOnRender(
+  rows: Array<{ id: string; prNumber: number; prUrl: string; workspaceId: string }>,
+  workspaceId: string,
+): Promise<void> {
+  const ws = await db.query.workspaces.findFirst({
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
+    columns: {},
+    with: { githubInstallation: { columns: { installationId: true } } },
+  });
+  const installId = ws?.githubInstallation?.installationId;
+  if (installId) await observeMergeStateOnRender(rows, installId);
 }

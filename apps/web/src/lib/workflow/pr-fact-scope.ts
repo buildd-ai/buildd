@@ -1,5 +1,5 @@
 /**
- * Which worker rows a terminal PR fact may reach (docs/specs/workflow-kernel-library.md §1, S4a).
+ * Which worker rows a PR fact may reach (docs/specs/workflow-kernel-library.md §1, S4a, AC-1).
  *
  * For a delivery-owned task, `workers.merged_at` and `workers.pr_lifecycle_status` are the
  * kernel's projection: T17 / T18 write them in the transition's own statement (kernel.ts
@@ -13,6 +13,10 @@
  *    a merge; CLOSED_UNMERGED, SUPERSEDED or ABANDONED for a close). That is the read-through and
  *    sweep heals of a row the transition never saw (a retry that adopted the PR after the merge),
  *    and never a contradiction: a merge fact for an ABANDONED delivery writes nothing (AC-4).
+ *  - a non-terminal fact (open, CI, conflict, unresolvable) never writes a kernel-owned row: every
+ *    kernel transition projects the row's live status from the delivery's own readings (kernel.ts
+ *    `w_live`). The funnel reports the row as deferred, so a caller's side effects (a CI pill
+ *    refresh, the model-policy outcome) still see a fact that is new for it.
  *
  * The scope brand is minted here and nowhere else in deployed code (the S4a write-site guard).
  */
@@ -53,14 +57,15 @@ const AGREES: Record<TerminalPrFactKind, string[]> = {
   closed: ['CLOSED_UNMERGED', 'SUPERSEDED', 'ABANDONED'],
 };
 
-/** The scope every funnel caller outside the kernel passes with a terminal fact. */
+/** The scope every funnel caller outside the kernel passes with every fact. */
 export const factFunnelScope: PrFactScope = {
   [PR_FACT_SCOPE]: 'fact_funnel',
   where: (kind) => sql`NOT ${kernelOwnedRowSql(sql`kd.state NOT IN (SELECT jsonb_array_elements_text(${JSON.stringify(AGREES[kind])}::jsonb))`)}`,
+  defers: () => kernelOwnedRowSql(),
 };
 
 /** The kernel's own projection (`stamp_pr_rows`, the backstop of the transition's): it is the writer. */
-export const kernelProjectionScope: PrFactScope = { [PR_FACT_SCOPE]: 'kernel_projection', where: () => null };
+export const kernelProjectionScope: PrFactScope = { [PR_FACT_SCOPE]: 'kernel_projection', where: () => null, defers: () => null };
 
 /**
  * S4b: the one definition of "delivery-owned" for a task (§1), the task-side twin of
@@ -84,6 +89,15 @@ export function deliveryOwnedTaskSql(
       opts.live ? sql` AND kd.state NOT IN (SELECT jsonb_array_elements_text(${JSON.stringify([...TERMINAL_STATES])}::jsonb))` : sql``}${
       opts.states ? sql` AND kd.state IN (SELECT jsonb_array_elements_text(${JSON.stringify([...opts.states])}::jsonb))` : sql``}${
       opts.pr ? sql` AND kd.pr_number = ${opts.pr.prNumber}::int AND lower(kd.repo_full_name) = lower(${opts.pr.repoFullName}::text)` : sql``})`;
+}
+
+/**
+ * AC-1 slice 8: the negation, for an attempt writer whose status write is for tasks with no kernel
+ * delivery only (a reviewer's round, a loop wait the kernel does not expire): it skips the owner of
+ * a delivery-owned task in its own WHERE, so the guard can see it never moves one.
+ */
+export function notDeliveryOwnedTaskSql(t: { id: SQL; workspaceId: SQL } = taskCols()): SQL {
+  return sql`NOT ${deliveryOwnedTaskSql(t)}`;
 }
 
 /** The `tasks` table's own columns, for a Drizzle statement over `tasks` (built per call: modules mocked in tests load this file). */

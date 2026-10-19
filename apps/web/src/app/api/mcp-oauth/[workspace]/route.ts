@@ -51,6 +51,7 @@ import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { verifyAccessToken } from '@/lib/oauth/tokens';
 import { MCP_SESSION_ID_HEADER, mintMcpSessionId, verifyMcpSessionId } from '@/lib/interactive-session';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { cachedCaller, callerDep } from '@/lib/caller-cache';
 import { scheduleInteractiveTouch, isInitializeOnlyRequest } from '@/lib/interactive-worker-liveness';
 import { scheduleActiveDay } from '@/lib/active-days';
 import { INTERACTIVE_SESSION_HEADER, signInteractiveSession } from '@/lib/interactive-session';
@@ -326,11 +327,12 @@ async function handle(req: Request, workspace: string): Promise<Response> {
   });
   scheduleActiveDay((account as { sessionUserId?: string }).sessionUserId ?? claims.sub ?? null, 'mcp');
 
-  // Verify workspace exists and grab its team for memory routing.
-  const ws = await db.query.workspaces.findFirst({
+  // Verify workspace exists and grab its team for memory routing. Cached for
+  // at most 60 s and cleared when the workspace changes (lib/caller-cache.ts).
+  const ws = await cachedCaller(`ws-row:${workspace}`, () => db.query.workspaces.findFirst({
     where: sqlWhere(eq(workspaces.id, workspace)),
     columns: { id: true, teamId: true, dataClass: true, repo: true, name: true },
-  });
+  }), { known: [callerDep.workspace(workspace)] });
   if (!ws) return new Response('Workspace not found', { status: 404 });
 
   const selfOrigin = resolveSelfOrigin(req);

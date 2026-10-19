@@ -1,8 +1,10 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { clearWorkspaceSettingsCache } from '@/lib/team-cache';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces, githubInstallations, githubRepos } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
+import { installationBelongsToTeam } from '@/lib/github-installation-access';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
@@ -85,11 +87,19 @@ export async function POST(
 
     if (!workspace.githubInstallationId) {
       // Try to find an installation matching the org if provided
+      // Only one of the workspace's own team's installations on that account.
       let installation = null;
       if (org) {
-        installation = await db.query.githubInstallations.findFirst({
-          where: sqlWhere(eq(githubInstallations.accountLogin, org)),
+        const onAccount = await db.query.githubInstallations.findMany({
+          where: sqlWhere(sql`lower(${githubInstallations.accountLogin}) = ${String(org).toLowerCase()}`),
+          limit: 10,
         });
+        for (const candidate of onAccount) {
+          if (!candidate.suspendedAt && await installationBelongsToTeam(candidate.installationId, workspace.teamId)) {
+            installation = candidate;
+            break;
+          }
+        }
       }
 
       if (!installation) {
@@ -210,4 +220,5 @@ async function linkRepoToWorkspace(
       updatedAt: new Date(),
     })
     .where(eq(workspaces.id, workspaceId));
+  await clearWorkspaceSettingsCache(workspaceId);
 }

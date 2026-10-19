@@ -64,6 +64,8 @@ mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
   fetchCiLifecycleStatus: mockFetchCiLifecycleStatus,
 }));
+// The repo's covering installation is the workspace's team's (tests/db pins the real rule).
+mock.module('@/lib/github-installation-access', () => ({ installationBelongsToTeam: async () => true }));
 
 // ─── Pusher mock ──────────────────────────────────────────────────────────────
 
@@ -101,11 +103,14 @@ mock.module('@buildd/core/pr-facts', () => ({
 }));
 
 // Kernel import on merge/close is best-effort; no real kernel code runs here.
-const mockObservePrState = mock(async (_input: any) => false);
+const mockObservePrState = mock(async (_input: any, _call?: any) => false);
+// T17 to T19 go through the kernel client (AC-9).
+const realKernelClient = await import('@/lib/workflow/kernel-client');
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, observePrState: mockObservePrState }));
 // No row here has a workflow delivery: these cases pin the legacy read-through
 // (delivery-owned rows: pr-state-refresh-delivery-owned.test.ts).
 mock.module('@/lib/workflow/seam', () => ({
-  observePrState: mockObservePrState,
+  observePrState: mock(async () => { throw new Error('called the seam\'s observePrState, not the kernel client\'s'); }),
   deliveryOwnedWorkers: async () => new Set<string>(),
   recordPrStateObserved: async () => false,
 }));
@@ -278,7 +283,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     // A kernel-owned delivery imports the same close from its own live read.
     expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'ws1', prNumber: 99, installationId: 123, source: 'sweep:pr-state-refresh',
-    }));
+    }), { principal: { kind: 'system', id: 'system:sweep:pr-state-refresh' } });
     expect(mockCheckDependsOnResolved).not.toHaveBeenCalled();
   });
 
@@ -302,7 +307,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 1, workspaceId: 'ws-no-gh', taskId: 't1' },
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       repo: null,
       githubRepo: null,
       githubInstallation: null,
@@ -321,7 +326,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 'task1' },
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       repo: 'owner/repo',
       githubRepo: { installation: { installationId: 90000002 } },
       githubInstallation: { installationId: 90000001 },
@@ -338,7 +343,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 'task1' },
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       repo: 'owner/repo',
       githubRepo: null,
       githubInstallation: { installationId: 90000001 },
@@ -538,7 +543,7 @@ describe('refreshStaleWorkers', () => {
     expect(recordedFacts).toEqual([{
       target: { workerId: 'w-ci-fail' },
       fact: { kind: 'ci', status: 'ci_green', headSha: 'sha-abc', currentHeadSha: 'sha-abc' },
-      opts: undefined,
+      opts: { scope: expect.objectContaining({ defers: expect.any(Function) }) },
     }]);
     expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
   });
@@ -564,7 +569,7 @@ describe('refreshStaleWorkers', () => {
     expect(recordedFacts).toEqual([{
       target: { workerId: 'w-ci-green' },
       fact: { kind: 'ci', status: 'ci_failed', headSha: 'sha-def', currentHeadSha: 'sha-def' },
-      opts: undefined,
+      opts: { scope: expect.objectContaining({ defers: expect.any(Function) }) },
     }]);
     expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
   });
@@ -594,7 +599,7 @@ describe('refreshStaleWorkers', () => {
     expect(recordedFacts).toEqual([{
       target: { workerId: 'w-2010' },
       fact: { kind: 'ci', status: 'ci_failed', headSha: 'sha-2010', currentHeadSha: 'sha-2010' },
-      opts: undefined,
+      opts: { scope: expect.objectContaining({ defers: expect.any(Function) }) },
     }]);
     expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
   });
@@ -671,7 +676,7 @@ describe('pr-state-refresh repo resolution', () => {
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 't1', prUrl: null, prLifecycleStatus: 'pr_open' },
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       repo: 'https://github.com/owner/repo',
       githubRepo: { installation: { installationId: 123 } },
     });
@@ -693,7 +698,7 @@ describe('pr-state-refresh repo resolution', () => {
         prLifecycleStatus: 'pr_open',
       },
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       repo: 'https://github.com/owner/repo',
       githubRepo: { installation: { installationId: 123 } },
     });
@@ -716,7 +721,7 @@ describe('pr-state-refresh repo resolution', () => {
         prLifecycleStatus: null,
       },
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({ repo: null, githubInstallation: null });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', repo: null, githubInstallation: null });
     mockGithubReposFindFirst.mockResolvedValue({ installation: { installationId: 789 } });
     mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-06-05T22:43:47Z', head: { sha: 'abc' } });
     const setMock = makeSetMock();
@@ -738,7 +743,7 @@ describe('pr-state-refresh repo resolution', () => {
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 't1', prUrl: null, prLifecycleStatus: 'pr_open' },
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       repo: 'https://github.com/owner/old-name',
       githubRepo: { fullName: 'owner/new-name', repoId: 12345, installation: { installationId: 123 } },
     });
@@ -762,7 +767,7 @@ describe('pr-state-refresh repo resolution', () => {
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 1, workspaceId: 'ws-coord', taskId: 't1', prUrl: null, prLifecycleStatus: null },
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({ repo: null, githubInstallation: null });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', repo: null, githubInstallation: null });
     makeSetMock();
 
     await refreshStaleWorkersForWorkspaces(['ws-coord']);

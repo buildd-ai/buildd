@@ -323,9 +323,6 @@
     "apps/web/src/lib/home-fleet.ts": {
       "apps/web/src/lib/fleet-view.ts": "health-quality"
     },
-    "apps/web/src/lib/home-ticker.ts": {
-      "apps/web/src/lib/mission-task-href.ts": "missions"
-    },
     "apps/web/src/lib/local-strand.ts": {
       "apps/web/src/lib/mission-helpers.ts": "missions"
     },
@@ -567,17 +564,8 @@
       "apps/web/src/lib/mission-duration.ts": "missions",
       "apps/web/src/lib/mission-list-card.ts": "missions"
     },
-    "apps/web/src/app/app/(protected)/home/InFlightGroupCard.tsx": {
-      "apps/web/src/lib/action-card-context.ts": "missions"
-    },
     "apps/web/src/app/app/(protected)/home/NeedsYouCards.tsx": {
       "apps/web/src/components/missions/MissionListCards.tsx": "missions"
-    },
-    "apps/web/src/app/app/(protected)/home/NeedsYouStack.tsx": {
-      "apps/web/src/lib/mission-duration.ts": "missions"
-    },
-    "apps/web/src/app/app/(protected)/home/ReleaseWidget.tsx": {
-      "apps/web/src/lib/release-readiness.ts": "releases"
     },
     "apps/web/src/app/app/(protected)/home/page.tsx": {
       "apps/web/src/components/chat/HomeChatCard.tsx": "chat",
@@ -591,7 +579,6 @@
       "apps/web/src/lib/criteria-rearm.ts": "missions",
       "apps/web/src/lib/dependency-bot-pr.ts": "reviews-merge",
       "apps/web/src/lib/fleet-view.ts": "health-quality",
-      "apps/web/src/lib/initiative-list.ts": "missions",
       "apps/web/src/lib/merge-policy.ts": "reviews-merge",
       "apps/web/src/lib/mission-card-view.ts": "missions",
       "apps/web/src/lib/mission-card-views.ts": "missions",
@@ -602,7 +589,6 @@
       "apps/web/src/lib/reviewer-gate.ts": "reviews-merge",
       "apps/web/src/lib/reviewer-stall-facts.ts": "reviews-merge",
       "apps/web/src/lib/strand-choice-shadow.ts": "jev-decisions",
-      "packages/core/mission-helpers.ts": "missions",
       "packages/core/mission-integration.ts": "missions"
     },
     "apps/web/src/app/app/(protected)/layout.tsx": {
@@ -671,10 +657,10 @@
     },
     "apps/web/src/app/app/(protected)/tasks/[id]/page.tsx": {
       "apps/web/src/app/app/(protected)/tasks/[id]/mission-context-bar.ts": "missions",
+      "apps/web/src/app/app/(protected)/tasks/[id]/mission-context-load.ts": "missions",
       "apps/web/src/components/chat/ChatEntry.tsx": "chat",
       "apps/web/src/lib/evidence-read.ts": "knowledge",
       "apps/web/src/lib/explain.ts": "health-quality",
-      "apps/web/src/lib/mission-card-views.ts": "missions",
       "apps/web/src/lib/mission-shipped.ts": "missions",
       "apps/web/src/lib/mission-task-href.ts": "missions",
       "apps/web/src/lib/mission-visual-review.ts": "visual-qa",

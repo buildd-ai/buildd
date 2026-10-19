@@ -46,7 +46,7 @@ import { recordPrSupersession } from '@/lib/pr-supersession';
 import { deferralOf, isOutageAnswer, nextDeferral, type DeferralState } from '@/lib/control-plane-deferral';
 import { verifyByContent, type DiffFile } from '@/lib/pr-supersession-verify';
 import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
-import { installationIdForRepo } from '@/lib/workspace-installation';
+import { createTeamInstallationResolver } from '@/lib/workspace-installation';
 
 export const REFRESH_SUPERSESSION_ACTOR = 'system:refresh-supersession';
 export const REFRESH_SUPERSESSION_MARKER = '<!-- buildd-refresh-superseded -->';
@@ -182,8 +182,10 @@ export async function retireSupersededRefreshPr(opts: {
   older: RefreshPr;
   newer: RefreshPr;
   api?: Api;
+  clearDeferral?: (taskId: string) => Promise<void>;
 }): Promise<RetireOutcome> {
   const api = opts.api ?? githubApi;
+  const clearDeferral = opts.clearDeferral ?? clearRefreshDeferral;
   const { installationId, older, newer } = opts;
   const keep = (reason: string, transient = false): RetireOutcome => {
     if (!transient) {
@@ -240,6 +242,8 @@ export async function retireSupersededRefreshPr(opts: {
     }
     // 409 = an edge (or a merge) is already there: a prior run finished the job.
     if (!recorded.ok && recorded.status !== 409) throw new Error(`record refused: ${recorded.error}`);
+    // Clear the deferral on successful record, so future outages start fresh
+    if (older.taskId) await clearDeferral(older.taskId).catch((err) => console.error(`[pr-supersession-refresh] #${older.prNumber}: could not clear its deferral:`, err));
   } catch (err) {
     const reason = `retire failed: ${err instanceof Error ? err.message : String(err)}`;
     console.error(`[pr-supersession-refresh] #${older.prNumber}: ${reason}`);
@@ -282,6 +286,11 @@ export interface RefreshSupersessionSweepResult {
   deferralExhausted: number;
 }
 
+/** Returns true if a PR's exhausted deferral should prevent the sweep from retrying. */
+export function shouldSkipExhaustedRefreshPr(ctx: Record<string, unknown>): boolean {
+  return !!ctx[REFRESH_DEFERRAL_EXHAUSTED_KEY];
+}
+
 /** Open (or closed-without-an-edge) and merged refresh PRs, from our own rows. */
 async function loadRefreshPrs(now: Date): Promise<{ open: RefreshPr[]; merged: RefreshPr[] }> {
   const rows = await db
@@ -310,7 +319,7 @@ async function loadRefreshPrs(now: Date): Promise<{ open: RefreshPr[]; merged: R
     if (!refresh || !repo || !r.missionId || typeof r.prNumber !== 'number') continue;
     const ctx = (r.context ?? {}) as Record<string, unknown>;
     // A retirement whose deferral ran out is a person's now; the sweep does not retry it.
-    if (ctx[REFRESH_DEFERRAL_EXHAUSTED_KEY]) continue;
+    if (shouldSkipExhaustedRefreshPr(ctx)) continue;
     const pr: RefreshPr = { workerId: r.workerId, taskId: r.taskId, workspaceId: r.workspaceId, missionId: r.missionId, repo, prNumber: r.prNumber, refresh, deferral: deferralOf(ctx[REFRESH_DEFERRAL_KEY]) };
     if (r.mergedAt) merged.push(pr);
     else if (r.supersededBy == null && !r.abandonedAt && r.lifecycle !== 'unresolvable') open.push(pr);
@@ -326,15 +335,22 @@ async function loadRefreshPrs(now: Date): Promise<{ open: RefreshPr[]; merged: R
 export async function sweepSupersededRefreshPrs(
   now: Date = new Date(),
   deps: {
-    load?: typeof loadRefreshPrs; installation?: (repo: string) => Promise<number | null>; api?: Api;
+    load?: typeof loadRefreshPrs;
+    /** The installation for a PR of this workspace's: only its own team's (`createTeamInstallationResolver`). */
+    installation?: (repo: string, workspaceId: string | null) => Promise<number | null>; api?: Api;
     /** Keep a PR's deferral on its task (and, once it ran out, the flag that stops the sweep retrying). */
     saveDeferral?: (taskId: string, state: DeferralState, exhausted: boolean) => Promise<void>;
+    /** Clear a PR's deferral when a tick succeeds, so future outages start fresh. */
+    clearDeferral?: (taskId: string) => Promise<void>;
   } = {},
 ): Promise<RefreshSupersessionSweepResult> {
   const result: RefreshSupersessionSweepResult = { candidates: 0, retired: 0, kept: 0, skipped: 0, deferred: 0, deferralExhausted: 0 };
   const saveDeferral = deps.saveDeferral ?? saveRefreshDeferral;
+  const clearDeferral = deps.clearDeferral ?? clearRefreshDeferral;
   const { open, merged } = await (deps.load ?? loadRefreshPrs)(now);
-  const installation = deps.installation ?? ((repo: string) => installationIdForRepo(repo).catch(() => null));
+  const teamInstallations = createTeamInstallationResolver();
+  const installation = deps.installation
+    ?? (async (repo: string, workspaceId: string | null) => (await teamInstallations.forWorkspace(repo, workspaceId)).installationId);
   const cache = new Map<string, number | null>();
 
   for (const older of open.slice(0, REFRESH_SWEEP_CAP)) {
@@ -345,14 +361,14 @@ export async function sweepSupersededRefreshPrs(
     if (successors.length === 0) continue;
     result.candidates++;
 
-    const key = older.repo.toLowerCase();
-    if (!cache.has(key)) cache.set(key, await installation(older.repo));
+    const key = `${older.workspaceId}:${older.repo.toLowerCase()}`;
+    if (!cache.has(key)) cache.set(key, await installation(older.repo, older.workspaceId));
     const installationId = cache.get(key);
     if (!installationId) { result.skipped++; continue; }
 
     let done = false;
     for (const newer of successors) {
-      const out = await retireSupersededRefreshPr({ installationId, older, newer, api: deps.api }).catch((err): RetireOutcome => {
+      const out = await retireSupersededRefreshPr({ installationId, older, newer, api: deps.api, clearDeferral }).catch((err): RetireOutcome => {
         console.error(`[pr-supersession-refresh] sweep failed for #${older.prNumber}:`, err);
         return { outcome: 'kept', prNumber: older.prNumber, reason: 'error' };
       });
@@ -387,4 +403,9 @@ export async function sweepSupersededRefreshPrs(
 async function saveRefreshDeferral(taskId: string, state: DeferralState, exhausted: boolean): Promise<void> {
   const patch = JSON.stringify({ [REFRESH_DEFERRAL_KEY]: state, ...(exhausted ? { [REFRESH_DEFERRAL_EXHAUSTED_KEY]: true } : {}) });
   await db.update(tasks).set({ context: sql`coalesce(${tasks.context}, '{}'::jsonb) || ${patch}::jsonb` }).where(eq(tasks.id, taskId));
+}
+
+/** Clear the refresh deferral when a tick succeeds, so future outages start fresh. */
+async function clearRefreshDeferral(taskId: string): Promise<void> {
+  await db.update(tasks).set({ context: sql`coalesce(${tasks.context}, '{}'::jsonb) - ${REFRESH_DEFERRAL_KEY}` }).where(eq(tasks.id, taskId));
 }

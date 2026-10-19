@@ -17,7 +17,7 @@
  * socket, Start on the dashboard aimed at this runner) still runs (R-34).
  */
 import { existsSync, readFileSync } from 'fs';
-import { isRunnerHoldActive, parseRunnerHold, type RunnerHold, type WorkerEnvironment } from '@buildd/shared';
+import { TERMS, isRunnerHoldActive, parseRunnerHold, type RunnerHold, type WorkerEnvironment } from '@buildd/shared';
 import { writeSecretJsonFile } from './secure-file';
 import { UnreadableConfigError } from './runner-name';
 import type { SocketProbe } from './runner-socket';
@@ -260,14 +260,14 @@ function agents(n: number, verb: 'finish' | 'running'): string {
 /** What `buildd hold` prints. */
 export function holdLine(hold: RunnerHold, running: number, now: number): string {
   const until = hold.until ? ` until ${holdClock(hold.until, now)}` : '';
-  return `On hold${until}: nothing new starts. ${agents(running, 'finish')} buildd resume lifts it${hold.until ? ' sooner' : ''}.`;
+  return `${TERMS['runner.paused'].word}${until}: nothing new starts. ${agents(running, 'finish')} buildd resume lifts it${hold.until ? ' sooner' : ''}.`;
 }
 
 /** What `buildd resume` prints. */
 export function resumeLine(wasHeld: boolean, running: number): string {
   return wasHeld
     ? `Resumed: looking for work now. ${agents(running, 'running')}`
-    : `This runner was not on hold, so nothing changed. ${agents(running, 'running')}`;
+    : `This runner was not ${TERMS['runner.paused'].short}, so nothing changed. ${agents(running, 'running')}`;
 }
 
 // ── the CLI ─────────────────────────────────────────────────────────────────
@@ -358,7 +358,7 @@ export async function runHoldCommand(cmd: HoldCommand, deps: HoldCommandDeps): P
       throw err;
     }
     const what = hold
-      ? `the next start is on hold ${hold.until ? `until ${holdClock(hold.until, t)}` : 'until buildd resume'}`
+      ? `nothing new starts ${hold.until ? `until ${holdClock(hold.until, t)}` : 'until buildd resume'}`
       : 'the next start takes new work';
     return { code: 0, stdout: `${prefix} Saved: ${what}.`, stderr: '' };
   };
@@ -535,8 +535,8 @@ export async function runStopCommand(cmd: { yes: boolean; abort?: boolean }, dep
     }
   }
   const tail = abort
-    ? 'On hold: nothing new starts until buildd resume.'
-    : 'On hold: nothing new starts. buildd resume lifts it and continues the paused agents.';
+    ? `${TERMS['runner.paused'].word}: nothing new starts until buildd resume.`
+    : `${TERMS['runner.paused'].word}: nothing new starts. buildd resume lifts it and continues the paused agents.`;
   if (targets.length === 0) return { code: 0, stdout: `Nothing is running. ${tail}`, stderr: '' };
   return { code: failed ? 1 : 0, stdout: [...lines, tail].join('\n'), stderr: '' };
 }

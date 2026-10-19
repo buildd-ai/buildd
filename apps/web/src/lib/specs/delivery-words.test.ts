@@ -53,9 +53,9 @@ describe('standingSentence', () => {
 
 describe('deliveredSentence', () => {
   it('says the revision and whether it shipped, and nothing about a verdict', () => {
-    expect(deliveredSentence({ builtTo: 2, provisional: false, delivered: true })).toBe('Built to revision 2 and delivered.');
-    expect(deliveredSentence({ builtTo: 2, provisional: false, delivered: false })).toBe('Built to revision 2 and not delivered.');
-    expect(deliveredSentence({ builtTo: 4, provisional: true, delivered: false })).toBe('Built to revision 4 ahead of its approval and not delivered.');
+    expect(deliveredSentence({ builtTo: 2, provisional: false, delivered: true })).toBe('Built to revision 2. Done.');
+    expect(deliveredSentence({ builtTo: 2, provisional: false, delivered: false })).toBe('Built to revision 2. Not done.');
+    expect(deliveredSentence({ builtTo: 4, provisional: true, delivered: false })).toBe('Built to revision 4 ahead of its approval. Not done.');
   });
 });
 

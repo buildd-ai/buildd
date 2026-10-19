@@ -1,11 +1,18 @@
 import 'server-only';
 import { db } from '@buildd/core/db';
-import { workspaces, tasks, workers, workspaceSkills, taskSchedules, missions, secrets, workerErrorTraces } from '@buildd/core/db/schema';
-import { and, eq, inArray, desc, sql, or, isNull } from 'drizzle-orm';
+import { workspaces, tasks, workers, workspaceSkills, taskSchedules, missions, secrets, workerErrorTraces, teamMembers } from '@buildd/core/db/schema';
+import { and, count, eq, inArray, desc, sql, or, isNull } from 'drizzle-orm';
 import { cookies } from 'next/headers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { can } from '@/lib/permissions';
 import { getRunnerHeartbeats, type RunnerHeartbeat } from '@/lib/runner-heartbeats';
+import { isRunnerOnline } from '@/lib/runner-heartbeats-shared';
+import {
+  isolationBlockedCounts,
+  isolationStrandedCount,
+  pendingIsolationTask,
+  type PendingIsolationTask,
+} from '@/lib/runner-isolation-health';
 import { getBudgetForecast, type BudgetForecast } from '@/lib/budget-forecast';
 import {
   computeUsageStats,
@@ -21,12 +28,15 @@ import {
 import { fetchUsageRows, USAGE_ROW_LIMIT } from '@/lib/usage-stats-query';
 import {
   getFailureAnalytics,
+  getFailureTotals,
   parseFailureWindow,
+  type FailureHeadline,
   type FailureAnalytics,
   type FailureWindow,
 } from '@/lib/failure-analytics';
 import { getGateAnalytics } from '@/lib/gate-analytics-query';
 import { getBackendStrandSummary } from '@/lib/backend-strand';
+import type { ClaimBlocker } from '@/lib/claim-blocker-projection';
 import { buildSubagentDelegationPanel, type SubagentMetrics } from '@/lib/subagent-time';
 import type { DerivedMetric } from '@buildd/core/derived-metric';
 import { fetchSubagentTimeRows, SUBAGENT_TIME_CAPTURED_SINCE, SUBAGENT_TIME_ROW_LIMIT } from '@/lib/subagent-time-query';
@@ -40,6 +50,8 @@ import {
 import { countWorkersInWindow, fetchActionEvents } from '@/lib/action-events';
 import { loadHealthExperiments } from '@/lib/health-experiments';
 import { getDispatchHealth } from '@/lib/dispatch-health';
+import { loadClaimPlanHealth } from '@/lib/claim-plan-health-query';
+import type { ClaimPlanHealth } from '@/lib/claim-plan-health';
 import { loadAgentAccessReport, type AgentAccessReport } from '@/lib/agent-capabilities/access-log';
 import { buildFailureGroups, type FailureGroupsView } from '@/lib/health-failure-groups';
 import { FAILED_WORKER_STATUSES, type FleetSnapshot } from '@buildd/shared';
@@ -49,8 +61,9 @@ import { loadLaneMissions } from './lane-missions';
 import type { IdleStretch } from '@/lib/idle-while-queued';
 import { CLAUDE_CREDENTIAL_PURPOSES, isBackendHealthRow } from '@/lib/claude-credential-rows';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { readRound } from '@/lib/read-round';
 
-export type { BudgetForecast, FailureAnalytics, FailureWindow };
+export type { BudgetForecast, FailureAnalytics, FailureHeadline, FailureWindow };
 export type { GateAnalytics } from '@buildd/shared';
 export type { SubagentMetrics };
 export type SubagentDelegationPanel = DerivedMetric<SubagentMetrics>;
@@ -163,7 +176,7 @@ export interface StrandedBackendRow {
   label: string;
   strandedPending: number;
   enabledForTeam: boolean;
-  sampleTasks: Array<{ id: string; title: string; workspaceName: string | null }>;
+  sampleTasks: Array<{ id: string; title: string; workspaceName: string | null; claim?: ClaimBlocker; route?: { requested: string; effective: string } }>;
 }
 
 export interface CredentialHealthItem {
@@ -192,7 +205,8 @@ export type HealthDataKey =
   | 'runners' | 'usageStats' | 'schedules' | 'recentFailures' | 'credentials'
   | 'budgetForecast' | 'consumption' | 'failureAnalytics' | 'gateAnalytics'
   | 'strandedBackends' | 'subagentDelegation' | 'errorPatterns'
-  | 'runnerLanes' | 'dispatchHealth' | 'orphanedPrs' | 'experiments' | 'failureGroups' | 'agentAccess';
+  | 'runnerLanes' | 'claimPlans' | 'dispatchHealth' | 'orphanedPrs' | 'experiments' | 'failureGroups' | 'agentAccess'
+  | 'failureHeadline';
 
 export type HealthPageKey = 'overview' | 'failures' | 'runners' | 'operator';
 
@@ -203,8 +217,8 @@ export const HEALTH_PAGE_DATA: Record<HealthPageKey, ReadonlySet<HealthDataKey>>
   // agentAccess: access problems count on Overview and are listed on Failures.
   overview: new Set(['runners', 'schedules', 'credentials', 'strandedBackends', 'failureGroups', 'budgetForecast', 'agentAccess']),
   // failureAnalytics stays for the headline rate (failed / finished).
-  failures: new Set(['failureAnalytics', 'failureGroups', 'agentAccess']),
-  runners: new Set(['runners', 'runnerLanes', 'budgetForecast', 'credentials']),
+  failures: new Set(['failureHeadline', 'failureGroups', 'agentAccess']),
+  runners: new Set(['runners', 'runnerLanes', 'claimPlans', 'budgetForecast', 'credentials']),
   operator: new Set([
     'dispatchHealth', 'gateAnalytics', 'experiments', 'subagentDelegation',
     'usageStats', 'orphanedPrs', 'errorPatterns', 'consumption', 'failureAnalytics',
@@ -213,6 +227,10 @@ export const HEALTH_PAGE_DATA: Record<HealthPageKey, ReadonlySet<HealthDataKey>>
 
 /** Failed workers read for the grouped view. Newest first; older ones drop past the cap. */
 export const FAILURE_GROUP_WORKER_LIMIT = 500;
+/** Characters of each failed worker's error read for grouping and the sample shown. */
+export const FAILURE_ERROR_CHARS = 1000;
+/** Failing schedules listed; more than this many is one problem, not a list. */
+const SCHEDULE_PROBLEM_LIMIT = 50;
 
 export interface HealthData {
   orphanedPrs: OrphanedPrRow[];
@@ -226,6 +244,8 @@ export interface HealthData {
   wsFilter: string | null;
   budgetForecast: BudgetForecast | null;
   failureAnalytics: FailureAnalytics | null;
+  /** Failures' headline: the rate over finished workers in the window, counted in SQL. */
+  failureHeadline: FailureHeadline | null;
   gateAnalytics: import('@buildd/shared').GateAnalytics | null;
   window: FailureWindow;
   subagentDelegation: SubagentDelegationPanel | null;
@@ -236,12 +256,20 @@ export interface HealthData {
   failureGroups: (FailureGroupsView & { truncated: boolean }) | null;
   /** Grants and refusals for agent runs in the scoped workspaces (lib/agent-capabilities/access-log.ts). */
   agentAccess: AgentAccessReport | null;
-  /** A task waits in the scoped workspaces; every task needs protection by default. */
+  /** A task waits in the scoped workspaces; a runner with no current sandbox check refuses it. */
   protectedWorkPending: boolean;
+  /** Pending tasks every online runner refuses for isolation (isolationStrandedCount). */
+  isolationStranded: number;
   /** Runners page: the fleet with lane history and its idle-while-queued stretches. */
   runnerLanes: { fleet: FleetSnapshot; idle: IdleStretch[]; missions: Record<string, LaneMission> } | null;
+  /** Whether the viewer may read teammates' work in expanded runner detail (view_team_usage); a member sees only their own. */
+  seesTeamWork: boolean;
+  /** Claim-planner ledger summary (claimability), apart from slot occupancy; null hides the section. */
+  claimPlans: ClaimPlanHealth | null;
   /** The workspaces `runnerLanes` reads, so the page can re-render on their worker events. */
   laneWorkspaceIds: string[];
+  /** The active team's workspaces whose new starts are paused now (raw names), for the Runners page's banners. */
+  pausedWorkspaces: Array<{ id: string; name: string; pausedUntil: string }>;
   now: number;
 }
 
@@ -279,7 +307,7 @@ export async function loadHealth({
 
   // Workspaces for the active team
   const teamWorkspaceRows = await db
-    .select({ id: workspaces.id, name: workspaces.name, teamId: workspaces.teamId })
+    .select({ id: workspaces.id, name: workspaces.name, teamId: workspaces.teamId, pausedUntil: workspaces.newStartsPausedUntil })
     .from(workspaces)
     .where(eq(workspaces.teamId, activeTeamId));
 
@@ -309,6 +337,7 @@ export async function loadHealth({
     budgetForecast,
     consumption,
     failureAnalytics,
+    failureHeadline,
     gateAnalytics,
     strandSummary,
     subagentDelegation,
@@ -316,11 +345,11 @@ export async function loadHealth({
     dispatchHealth,
     failureGroups,
     agentAccess,
-    protectedWorkPending,
+    pendingIsolation,
   ] = await Promise.all([
     // Runner heartbeats relevant to the scoped workspaces
     need('runners')
-      ? getRunnerHeartbeats(activeTeamId, scopedWsIds).catch(() => [] as RunnerHeartbeat[])
+      ? getRunnerHeartbeats(activeTeamId, scopedWsIds, userId).catch(() => [] as RunnerHeartbeat[])
       : [] as RunnerHeartbeat[],
 
     // Task-keyed totals over the page window (was a fixed 30d role rollup).
@@ -352,31 +381,39 @@ export async function loadHealth({
     })().catch(() => null)
       : null,
 
-    // Schedules across the scoped workspaces, with mission linkage
+    // Failing schedules across the scoped workspaces, with mission linkage.
+    // Health shows a schedule only while its error is live (enabled, with a
+    // last error: isScheduleErrorLive), so the query reads only those, and of
+    // the task template only its title and heartbeat flag, never its body.
     need('schedules')
-      ? (async () => {
-      const schedules = await db
-        .select()
-        .from(taskSchedules)
-        .where(inArray(taskSchedules.workspaceId, scopedWsIds));
-      if (schedules.length === 0) return [] as (typeof schedules[number] & { missionTitle: string | null; missionId: string | null })[];
-
-      const linkedMissions = await db
-        .select({ scheduleId: missions.scheduleId, title: missions.title, id: missions.id })
-        .from(missions)
-        .where(inArray(missions.scheduleId, schedules.map((s: any) => s.id as string)));
-      const missionBySchedule = new Map(
-        (linkedMissions as any[])
-          .filter((m: any) => m.scheduleId)
-          .map((m: any) => [m.scheduleId as string, { title: m.title as string, id: m.id as string }] as const),
-      );
-      return (schedules as any[]).map((s: any) => ({
-        ...s,
-        missionTitle: missionBySchedule.get(s.id)?.title ?? null,
-        missionId: missionBySchedule.get(s.id)?.id ?? null,
-        isHeartbeat: !!(s.taskTemplate?.context?.heartbeat),
-      }));
-    })().catch(() => [] as any[])
+      ? db
+          .select({
+            id: taskSchedules.id,
+            workspaceId: taskSchedules.workspaceId,
+            name: taskSchedules.name,
+            cronExpression: taskSchedules.cronExpression,
+            timezone: taskSchedules.timezone,
+            enabled: taskSchedules.enabled,
+            nextRunAt: taskSchedules.nextRunAt,
+            lastRunAt: taskSchedules.lastRunAt,
+            lastError: taskSchedules.lastError,
+            consecutiveFailures: taskSchedules.consecutiveFailures,
+            totalRuns: taskSchedules.totalRuns,
+            createdAt: taskSchedules.createdAt,
+            taskTemplate: sql<{ title?: string } | null>`jsonb_build_object('title', ${taskSchedules.taskTemplate}->>'title')`,
+            heartbeat: sql<unknown>`${taskSchedules.taskTemplate}->'context'->'heartbeat'`,
+            missionTitle: missions.title,
+            missionId: missions.id,
+          })
+          .from(taskSchedules)
+          .leftJoin(missions, eq(missions.scheduleId, taskSchedules.id))
+          .where(and(
+            inArray(taskSchedules.workspaceId, scopedWsIds),
+            eq(taskSchedules.enabled, true),
+            sql`${taskSchedules.lastError} is not null and ${taskSchedules.lastError} <> ''`,
+          ))
+          .limit(SCHEDULE_PROBLEM_LIMIT)
+          .catch(() => [] as any[])
       : [] as any[],
 
     // Recent worker failures across scoped workspaces (past 24h)
@@ -458,7 +495,9 @@ export async function loadHealth({
       : [] as CredentialHealthItem[],
 
     // Budget forecast
-seesTeamSpend ? getBudgetForecast(activeTeamId, scopedWsIds).catch(() => null as BudgetForecast | null) : null,
+    // Overview shows the month's spend and whether a provider is paused; the
+    // full forecast (seats, mission budgets) is the Runners page's.
+    seesTeamSpend ? getBudgetForecast(activeTeamId, scopedWsIds, { summaryOnly: page === 'overview' }).catch(() => null as BudgetForecast | null) : null,
     // Consumption: tokens / cost / turns / tool calls per task, by role. TREND —
     // obeys the page window (it used to be pinned to 7d while the section above
     // it was pinned to 30d, so the page published two windows and named neither).
@@ -506,6 +545,8 @@ seesTeamSpend ? getBudgetForecast(activeTeamId, scopedWsIds).catch(() => null as
 
     // Aggregated worker failure analytics for the selected window
 need('failureAnalytics') ? getFailureAnalytics(scopedWsIds, window).catch(() => null as FailureAnalytics | null) : null,
+    // Failures' headline rate: three counts in SQL, not the whole report.
+    need('failureHeadline') ? getFailureTotals(scopedWsIds, window).catch(() => null) : null,
     // The gate ledger over the same window — server-side refusals, deferrals,
     // advisory warnings and bypasses. Disjoint from the failures above by
     // construction: a caller the platform refused never became a worker, so it
@@ -575,37 +616,41 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
     need('failureGroups')
       ? (async (): Promise<(FailureGroupsView & { truncated: boolean }) | null> => {
       const windowStart = new Date(Date.now() - parseWindowMs(window));
-      const failed = await db.query.workers.findMany({
-        where: sqlWhere(and(
+      // One read: each failed worker with its task's title and the error-trace
+      // patterns seen on it. The error is bounded: a cause is named from the
+      // start of the text, and the drill-down shows a sample, never a whole
+      // log (spec 3ef37387 R-9).
+      const failed = await db
+        .select({
+          id: workers.id,
+          taskId: workers.taskId,
+          workspaceId: workers.workspaceId,
+          exitCause: workers.exitCause,
+          completedAt: workers.completedAt,
+          error: sql<string | null>`left(${workers.error}, ${FAILURE_ERROR_CHARS})`,
+          taskTitle: tasks.title,
+          patterns: sql<string[]>`(select coalesce(jsonb_agg(distinct ${workerErrorTraces.pattern}), '[]'::jsonb) from ${workerErrorTraces} where ${workerErrorTraces.workerId} = ${workers.id})`,
+        })
+        .from(workers)
+        .leftJoin(tasks, eq(tasks.id, workers.taskId))
+        .where(and(
           inArray(workers.workspaceId, scopedWsIds),
           inArray(workers.status, [...FAILED_WORKER_STATUSES]),
           sql`${workers.completedAt} >= ${windowStart}`,
-        )),
-        columns: { id: true, taskId: true, workspaceId: true, error: true, exitCause: true, completedAt: true },
-        with: { task: { columns: { title: true } } },
-        orderBy: sqlOrderBy([desc(workers.completedAt)]),
-        limit: FAILURE_GROUP_WORKER_LIMIT,
-      });
-      const ids = (failed as Array<{ id: string }>).map(w => w.id);
-      const [traces] = await Promise.all([
-        ids.length
-          ? db
-              .selectDistinct({ workerId: workerErrorTraces.workerId, pattern: workerErrorTraces.pattern })
-              .from(workerErrorTraces)
-              .where(inArray(workerErrorTraces.workerId, ids))
-          : [],
-      ]);
+        ))
+        .orderBy(desc(workers.completedAt))
+        .limit(FAILURE_GROUP_WORKER_LIMIT);
       const view = buildFailureGroups({
-        failures: (failed as any[]).map(w => ({
+        failures: failed.map(w => ({
           workerId: w.id,
           taskId: w.taskId ?? null,
-          taskTitle: (w.task as { title: string } | null)?.title ?? null,
+          taskTitle: w.taskTitle ?? null,
           workspaceName: wsById.get(w.workspaceId) ?? '(unknown)',
           error: w.error ?? null,
           exitCause: w.exitCause ?? null,
           completedAt: (w.completedAt ?? new Date()).toISOString(),
         })),
-        traces: traces as Array<{ workerId: string; pattern: string }>,
+        traces: failed.flatMap(w => (Array.isArray(w.patterns) ? w.patterns : []).map(pattern => ({ workerId: w.id, pattern }))),
       });
       return { ...view, truncated: failed.length >= FAILURE_GROUP_WORKER_LIMIT };
     })().catch(() => null)
@@ -614,17 +659,17 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
     // Agent runs' access: grant failures with their fix, refusals by reason.
     // A read failure hides the section, never the page.
     need('agentAccess') ? loadAgentAccessReport(scopedWsIds).catch(() => null) : null,
-    // Any pending task: every task needs protection until per-task isolation
-    // requirements exist, so an unconfirmed sandbox is a Problem only while
-    // one waits (runner-isolation-health.ts).
+    // Pending tasks as the claim's isolation gate sees them, so each runner's
+    // detail can say how many it refuses (runner-isolation-health.ts).
     need('runners')
-      ? db.select({ id: tasks.id }).from(tasks)
-        .where(and(inArray(tasks.workspaceId, scopedWsIds), eq(tasks.status, 'pending')))
-        .limit(1)
-        .then(rows => rows.length > 0)
-        .catch(() => false)
-      : false,
+      ? loadPendingIsolationTasks(scopedWsIds, activeTeamId).catch(() => [] as PendingIsolationTask[])
+      : [] as PendingIsolationTask[],
   ]);
+  // An unknown or stale probe refuses every task, so any waiting one makes it a Problem.
+  const protectedWorkPending = pendingIsolation.length > 0;
+  const onlineRunners = runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now));
+  const isolationStranded = isolationStrandedCount(onlineRunners.map(r => r.isolation), pendingIsolation);
+  for (const r of runners) r.isolationBlocked = isolationBlockedCounts(r.isolation, pendingIsolation);
 
   const strandedBackends: StrandedBackendRow[] = (strandSummary?.backends ?? [])
     .filter((b) => b.strandedPending > 0)
@@ -652,10 +697,12 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       totalRuns: s.totalRuns,
       createdAt: s.createdAt ? s.createdAt.toISOString() : null,
       taskTitle: s.taskTemplate?.title ?? '',
+      // The join can repeat a schedule linked from two missions; the first wins below.
       missionTitle: s.missionTitle,
       missionId: s.missionId ?? null,
-      isHeartbeat: !!s.isHeartbeat,
+      isHeartbeat: !!s.heartbeat,
     }))
+    .filter((s: ScheduleRow, i: number, all: ScheduleRow[]) => all.findIndex(o => o.id === s.id) === i)
     .sort((a: ScheduleRow, b: ScheduleRow) => {
       if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
       return (a.nextRunAt ?? '9999') < (b.nextRunAt ?? '9999') ? -1 : 1;
@@ -698,9 +745,13 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
   // Team experiments (model routing A/B). Operator-only rows are dropped for
   // everyone else inside the loader; a failure hides the section, never the page.
   const runnerLanes = need('runnerLanes')
-    ? await loadRunnersFleet({ teamId: activeTeamId, wsIds: scopedWsIds, now })
+    ? await loadRunnersFleet({ teamId: activeTeamId, wsIds: scopedWsIds, now, viewerId: userId })
       .then(async lanes => ({ ...lanes, missions: await loadLaneMissions(lanes.fleet, activeTeamId).catch(() => ({})) }))
       .catch(() => null)
+    : null;
+
+  const claimPlans = need('claimPlans')
+    ? await loadClaimPlanHealth({ workspaceIds: scopedWsIds, since: new Date(now - parseWindowMs(window)) }).catch(() => null)
     : null;
 
   const experiments = need('experiments') ? await loadHealthExperiments(activeTeamId, userId, operator).catch(() => null) : null;
@@ -719,6 +770,7 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       wsFilter: wsFilter ?? null,
       budgetForecast: budgetForecast ?? null,
       failureAnalytics: failureAnalytics ?? null,
+      failureHeadline: failureHeadline ?? null,
       gateAnalytics: gateAnalytics ?? null,
       window,
       subagentDelegation: subagentDelegation ?? null,
@@ -728,9 +780,17 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       failureGroups: failureGroups ?? null,
       agentAccess: agentAccess ?? null,
       runnerLanes,
+      seesTeamWork: need('runnerLanes')
+        ? await can({ kind: 'user', userId }, 'view_team_usage', activeTeamId).catch(() => false)
+        : false,
+      claimPlans,
       protectedWorkPending,
+      isolationStranded,
       // The workspaces the lanes read, for the page's live refresh.
       laneWorkspaceIds: runnerLanes ? scopedWsIds : [],
+      pausedWorkspaces: (teamWorkspaceRows as Array<{ id: string; name: string; pausedUntil: Date | null }>)
+        .filter(w => w.pausedUntil && w.pausedUntil.getTime() > now)
+        .map(w => ({ id: w.id, name: w.name, pausedUntil: w.pausedUntil!.toISOString() })),
       now,
     },
   };
@@ -744,4 +804,39 @@ function countActions(rows: ReadonlyArray<{ action: string | null }>): { totalCa
     .map(([action, calls]) => ({ action, calls }))
     .sort((a, b) => b.calls - a.calls || a.action.localeCompare(b.action));
   return { totalCalls: actions.reduce((sum, a) => sum + a.calls, 0), actions };
+}
+
+/** Enough pending tasks to count what blocks them; a larger backlog reads as at least this many. */
+const PENDING_ISOLATION_LIMIT = 500;
+
+/**
+ * Pending tasks in the scoped workspaces, resolved as the claim's isolation
+ * gate resolves them. The scoped workspaces all belong to the active team, so
+ * one team size serves the single-owner default (isolation-policy.ts).
+ */
+async function loadPendingIsolationTasks(workspaceIds: string[], teamId: string): Promise<PendingIsolationTask[]> {
+  const { rows, team } = await readRound({
+    rows: db.select({
+      backend: tasks.backend,
+      kind: tasks.kind,
+      sandboxMode: sql<string | null>`${tasks.context}->>'sandboxMode'`,
+      isolationPolicy: sql<string | null>`${workspaces.gitConfig}->>'isolationPolicy'`,
+      accessMode: workspaces.accessMode,
+    })
+      .from(tasks)
+      .innerJoin(workspaces, eq(workspaces.id, tasks.workspaceId))
+      .where(and(inArray(tasks.workspaceId, workspaceIds), eq(tasks.status, 'pending')))
+      .limit(PENDING_ISOLATION_LIMIT),
+    team: db.select({ n: count() }).from(teamMembers).where(eq(teamMembers.teamId, teamId)),
+  });
+  const teamSize = team ? Number(team[0]?.n ?? 0) : null;
+  return rows.map(r => pendingIsolationTask({
+    backend: r.backend,
+    kind: r.kind,
+    context: { sandboxMode: r.sandboxMode },
+    // A JSON null reads as no policy, as the claim's undefined does.
+    isolationPolicy: r.isolationPolicy ?? undefined,
+    accessMode: r.accessMode,
+    // The claim reads the team size only when the workspace sets no policy.
+  }, r.isolationPolicy == null ? teamSize : null));
 }

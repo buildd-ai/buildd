@@ -22,7 +22,7 @@ mock.module('@buildd/core/db/schema', () => ({
   githubInstallations: { installationId: 'installationId' },
 }));
 
-import { postPrReview, mergePullRequest, checkSuitesAllPassed, retryAfterFromHeaders, githubApi } from './github';
+import { postPrReview, OWN_PR_REVIEW_NOTE, mergePullRequest, checkSuitesAllPassed, dropSupersededSuites, allCheckSuitesPassed, retryAfterFromHeaders, githubApi } from './github';
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
@@ -160,7 +160,7 @@ describe('postPrReview on a PR buildd itself opened', () => {
     postPrReview({ installationId: 5000, repoFullName: 'org/repo', prNumber: 42, headSha: 'sha-1', event, body });
 
   for (const [event, refusal] of [['APPROVE', OWN_APPROVE], ['REQUEST_CHANGES', OWN_CHANGES]] as const) {
-    it(`re-posts a refused ${event} as a COMMENT review at the same commit with the same body`, async () => {
+    it(`re-posts a refused ${event} as a COMMENT review at the same commit, saying GitHub's state is not the verdict`, async () => {
       const posts: Array<Record<string, unknown>> = [];
       global.fetch = mock(async (_url: unknown, opts?: RequestInit) => {
         if (opts?.method !== 'POST') return jsonResponse(200, []);
@@ -173,7 +173,7 @@ describe('postPrReview on a PR buildd itself opened', () => {
 
       expect(posts).toEqual([
         { commit_id: 'sha-1', event, body: 'Verdict body' },
-        { commit_id: 'sha-1', event: 'COMMENT', body: 'Verdict body' },
+        { commit_id: 'sha-1', event: 'COMMENT', body: `Verdict body\n\n${OWN_PR_REVIEW_NOTE}` },
       ]);
       expect(result).toEqual({ posted: true, reviewId: 77, commentedOwnPr: true });
     });
@@ -188,6 +188,15 @@ describe('postPrReview on a PR buildd itself opened', () => {
     const result = await call('APPROVE');
     expect(result.posted).toBe(false);
     expect(result.reason).toBe('a matching review already exists for this commit');
+  });
+
+  it('does not stack a second comment review when the earlier one carries the own-PR note', async () => {
+    global.fetch = mock(async (_url: unknown, opts?: RequestInit) => {
+      if (opts?.method === 'POST') throw new Error('must not POST again');
+      return jsonResponse(200, [{ id: 77, commit_id: 'sha-1', state: 'COMMENTED', body: `Verdict body\n\n${OWN_PR_REVIEW_NOTE}` }]);
+    }) as unknown as typeof fetch;
+
+    expect((await call('APPROVE')).reason).toBe('a matching review already exists for this commit');
   });
 
   it('a 422 for any other reason is not retried as a comment', async () => {
@@ -397,5 +406,48 @@ describe('githubApi request timeout (opt-in AbortSignal)', () => {
     }) as unknown as typeof fetch;
     expect(await githubApi(5000, '/repos/o/r/pulls/1')).toEqual({ ok: 1 });
     expect(seen).toEqual([undefined]);
+  });
+});
+
+describe('allCheckSuitesPassed with a superseded run', () => {
+  const failedSuite = { id: 1, app: { slug: 'github-actions' }, status: 'completed', conclusion: 'failure', latest_check_runs_count: 1 };
+  const greenSuite = { id: 2, app: { slug: 'github-actions' }, status: 'completed', conclusion: 'success', latest_check_runs_count: 1 };
+  const run = (id: number, suite: number, conclusion: string) => ({ id, name: 'build', status: 'completed', conclusion, check_suite: { id: suite } });
+
+  it('drops a suite whose only run a newer same-name run replaced', () => {
+    const kept = dropSupersededSuites([failedSuite, greenSuite], [run(10, 1, 'failure'), run(11, 2, 'success')]);
+    expect(kept.map((s) => s.id)).toEqual([2]);
+    expect(checkSuitesAllPassed(kept)).toBe(true);
+  });
+
+  it('keeps every suite when the run read is unavailable', () => {
+    const kept = dropSupersededSuites([failedSuite, greenSuite], null);
+    expect(checkSuitesAllPassed(kept)).toBe(false);
+  });
+
+  it('keeps a failed suite with no runs (startup failure)', () => {
+    const kept = dropSupersededSuites([{ ...failedSuite, latest_check_runs_count: 0 }, greenSuite], [run(11, 2, 'success')]);
+    expect(kept).toHaveLength(2);
+  });
+
+  it('still fails when the newest run is the failed one', () => {
+    const kept = dropSupersededSuites([failedSuite, greenSuite], [run(10, 2, 'success'), run(11, 1, 'failure')]);
+    expect(checkSuitesAllPassed(kept)).toBe(false);
+  });
+
+  it('reads green through the fetch path', async () => {
+    const orig = global.fetch;
+    global.fetch = mock(async (url: unknown) => {
+      const u = String(url);
+      if (u.includes('access_tokens')) return jsonResponse(201, { token: 't', expires_at: new Date(Date.now() + 3.6e6).toISOString() });
+      if (u.includes('/check-suites')) return jsonResponse(200, { check_suites: [failedSuite, greenSuite] });
+      if (u.includes('/actions/runs')) return jsonResponse(200, { total_count: 2, workflow_runs: [{ workflow_id: 7, check_suite_id: 1 }, { workflow_id: 7, check_suite_id: 2 }] });
+      return jsonResponse(200, { total_count: 2, check_runs: [run(10, 1, 'failure'), run(11, 2, 'success')] });
+    }) as unknown as typeof fetch;
+    try {
+      expect(await allCheckSuitesPassed(5001, 'org/repo', 'sha1')).toBe(true);
+    } finally {
+      global.fetch = orig;
+    }
   });
 });

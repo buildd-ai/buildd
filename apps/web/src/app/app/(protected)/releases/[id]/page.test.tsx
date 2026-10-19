@@ -44,6 +44,8 @@ mock.module('@buildd/core/db', () => ({
       githubRepos: { findFirst: async () => null },
     },
     select: (cols: Record<string, unknown>) => chain(() => ('version' in cols ? (successor ? [successor] : []) : [])),
+    // The page's independent reads go out as one batch (readRound).
+    batch: async (queries: PromiseLike<unknown>[]) => Promise.all(queries),
   },
 }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => ({ id: 'demo-user' }) }));
@@ -84,6 +86,13 @@ describe('ReleaseDetailPage', () => {
     expect(html).not.toContain('text-status-error');
     expect(html).toContain('>v1.2.4</a>');
     expect(html.replace(/<[^>]+>/g, ' ')).not.toContain(SUCCESSOR_ID);
+  });
+
+  it('an empty commit range says nothing merged, never shipped', async () => {
+    release = { ...baseRelease, commitsAheadAtDispatch: 0 as unknown as null };
+    const html = await renderPage();
+    expect(html).toContain('Nothing merged in this range');
+    expect(html).not.toMatch(/shipped/i);
   });
 
   it('keeps an ordinary failure red, shown once', async () => {

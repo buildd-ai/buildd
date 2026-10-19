@@ -24,7 +24,7 @@ import { applyCommandOn } from '../command-runner';
 import type { Command } from '../commands';
 import type { EffectHandler, EffectHandlers } from '../effects';
 import { githubOf, NO_ROLE, type ClaimedEffect, type KernelPorts, type PostedReview, type ReviewOutput } from '../ports';
-import { deltaApprovalOf, PUSH_RECOVERY_BACKOFF_MS } from '../reducer';
+import { attemptOrdinal, deltaApprovalOf, PUSH_RECOVERY_BACKOFF_MS } from '../reducer';
 import { openFindings } from '../findings';
 import type { DeliverySnapshot, KernelView, RoundSnapshot } from '../types';
 import { hasPr, need, type WithPr } from './ports-of';
@@ -33,7 +33,11 @@ const NO_INSTALLATION = 'no GitHub installation for the workspace';
 
 /** How many times a round whose reviewer could not be filed is re-queued before it is a person's (T27). */
 export const REVIEW_DISPATCH_RETRIES = 2;
-/** The wait before the n-th re-queued dispatch of such a round runs (n times this), so a retry is not spent in the same drain. */
+/**
+ * The wait before the n-th re-queued dispatch of such a round runs (n times this), so a retry is not
+ * spent in the same drain. Nothing wakes a drain for it: on a quiet PR the hourly floor runs it, so
+ * keep n times this under one floor period (`kernel-floor.test.ts`, spec §5).
+ */
 export const REVIEW_DISPATCH_BACKOFF_MS = 60_000;
 
 /**
@@ -43,6 +47,44 @@ export const REVIEW_DISPATCH_BACKOFF_MS = 60_000;
  * reviewer verdict on the whole PR.
  */
 export function postReviewBody(
+  event: 'APPROVE' | 'REQUEST_CHANGES',
+  out: { confidence?: number | null; summary?: string | null; feedback?: string | null },
+  scope: unknown,
+  at?: ReviewAt,
+): string {
+  const text = verdictText(event, out, scope);
+  return at ? `${text}\n\n${verdictTrailer(event, at)}` : text;
+}
+
+/** Where a review sits: the head and round it judged, and the earlier verdict it replaces, if any. */
+export interface ReviewAt {
+  headSha: string;
+  round: number;
+  /** The newest earlier decided round, whatever it said. */
+  prior?: { round: number; headSha: string; verdict: 'approve' | 'request_changes' | 'escalate' } | null;
+}
+
+/**
+ * The machine-checkable line under a review's prose. A review whose state GitHub shows as COMMENTED
+ * (the App opened the PR, so it cannot approve it) carries its verdict here, at the head it judged,
+ * and says outright when it replaces an approval; nothing reads the prose above it as the verdict.
+ */
+function verdictTrailer(event: 'APPROVE' | 'REQUEST_CHANGES', at: ReviewAt): string {
+  const sha = (h: string) => h.slice(0, 7);
+  const verdict = event === 'APPROVE' ? 'approve' : 'request_changes';
+  const head = `buildd verdict: ${verdict} · head ${sha(at.headSha)} · round ${at.round}`;
+  const p = at.prior;
+  if (!p) return head;
+  if (event === 'APPROVE') {
+    return p.verdict === 'approve' ? `${head} · renews the approval of ${sha(p.headSha)} (round ${p.round})`
+      : `${head} · clears the ${p.verdict === 'escalate' ? 'escalation' : 'request for changes'} of round ${p.round} at ${sha(p.headSha)}`;
+  }
+  return p.verdict === 'approve'
+    ? `${head} · supersedes the approval of ${sha(p.headSha)} (round ${p.round}): a blocking issue was found${p.headSha === at.headSha ? ' at the same commit' : ' in the changes since'}. That approval no longer allows a merge.`
+    : `${head} · still blocking (round ${p.round} at ${sha(p.headSha)} also asked for changes)`;
+}
+
+function verdictText(
   event: 'APPROVE' | 'REQUEST_CHANGES',
   out: { confidence?: number | null; summary?: string | null; feedback?: string | null },
   scope: unknown,
@@ -58,6 +100,13 @@ export function postReviewBody(
     return text.trimEnd();
   }
   return `Approved by buildd reviewer (confidence ${(out.confidence ?? 0).toFixed(2)}): ${out.summary ?? ''}`;
+}
+
+/** The newest decided round before `round`, with the verdict it stands for. */
+function priorRoundOf(rounds: ReadonlyArray<{ round: number; headSha: string; status: string; verdict?: string | null; effectiveVerdict?: string | null }>, round: { round: number }): ReviewAt['prior'] {
+  const p = rounds.filter((r) => r.status === 'decided' && r.round < round.round).sort((a, b) => b.round - a.round)[0];
+  const v = p ? (p.effectiveVerdict ?? p.verdict) : null;
+  return p && (v === 'approve' || v === 'request_changes' || v === 'escalate') ? { round: p.round, headSha: p.headSha, verdict: v } : null;
 }
 
 /**
@@ -245,7 +294,8 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       lineage: { deliveryId: d.id, attemptId: attempt.id, parentTaskId: d.ownerTaskId },
       dedupeKey: `fix:${attempt.id}`,
       detail: {
-        roundId: round.id, reviewerTaskId: round.reviewerTaskId ?? null, attemptNo: attempt.attemptNo, maxAttempts: attempt.maxAttempts, firstAtHead,
+        // "attempt N of M" counts dispatched attempts (§5.7 rule 4, 295486ba), as the checks list does.
+        roundId: round.id, reviewerTaskId: round.reviewerTaskId ?? null, attemptNo: attemptOrdinal(view.attempts, attempt) ?? attempt.attemptNo, maxAttempts: attempt.maxAttempts, firstAtHead,
         // §5 / rule 3: the repair is pinned to the round and head, and its task is the open findings.
         round: round.round, findings: openFindings(view).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title, status: f.status })),
         ...(human ? { trigger: 'human', humanInstructions, actor: humanActor } : {}),
@@ -279,7 +329,10 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       // §8.4: commit_id is the round's head, never whatever the PR shows now.
       commitId: String(e.payload.commitId ?? round.headSha),
       event,
-      body: postReviewBody(event, out, e.payload.scope),
+      body: postReviewBody(event, out, e.payload.scope, {
+        headSha: round.headSha, round: round.round,
+        prior: priorRoundOf(view.rounds, round),
+      }),
     }).catch((err: unknown): PostedReview => ({ id: null, posted: false, reason: err instanceof Error ? err.message : 'unknown error' }));
     if (res.posted === false && res.reason !== 'a matching review already exists for this commit') {
       await reviews.postFailed(d, { event, reason: res.reason ?? 'unknown error' });
@@ -318,14 +371,14 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       return { outcome: 'ok' };
     }
     if (event === 'landing_needs_human') {
-      await needsAttention(ports, e.kind, d, `PR #${d.prNumber}: landing needs a person`, String(e.payload.detail ?? 'the platform could not bring the branch up to date'));
+      await needsAttention(ports, e.kind, d, `PR #${d.prNumber}: merge needs a person`, String(e.payload.detail ?? 'the platform could not bring the branch up to date'));
       return { outcome: 'ok' };
     }
     if (event === 'effect_dead') {
       // §10.3: a critical effect went dead and the delivery escalated (67d34094).
       const what = DEAD_EFFECT_COPY[String(e.payload.effectKind)] ?? `the ${String(e.payload.effectKind)} step kept failing`;
       await needsAttention(ports, e.kind, d, `PR #${d.prNumber} needs a person: ${what}`,
-        `buildd retried ${what.replace(' kept failing', '')} until it gave up, so nothing will move this PR on its own. Check the PR and land or re-run it.`);
+        `buildd retried ${what.replace(' kept failing', '')} until it gave up, so nothing will move this PR on its own. Check the PR and merge or re-run it.`);
       return { outcome: 'ok' };
     }
     const local = (e.payload.localHeadSha as string | null) ?? null;
@@ -384,7 +437,9 @@ export async function cancelReviewAttempts(ports: KernelPorts, e: ClaimedEffect)
   if (reason === 'head_moved') {
     const work = need(ports, 'work', e.kind);
     // The transition names the tasks it made moot: only those are cancelled, never a newer one the
-    // same role filed since (a retried effect runs after it). An effect from before carries none.
+    // same role filed since (a retried effect runs after it). A mechanical repair has no task and
+    // names none (`taskIds: []`, a81a100f). An effect from before `taskIds` carries none, and nor
+    // does one for an agent row not yet linked: those keep the role-wide cancel below.
     if (Array.isArray(e.payload.taskIds)) {
       const ids = (e.payload.taskIds as unknown[]).filter((x): x is string => typeof x === 'string');
       for (const id of ids) await work.cancel(id, 'the PR head moved before the fix started');
@@ -415,8 +470,25 @@ export async function cancelReviewAttempts(ports: KernelPorts, e: ClaimedEffect)
     });
     return { outcome: 'ok:cancelled' };
   }
-  // Merge / close cancellations: the legacy supersession rules still run them.
-  return { outcome: 'skipped:legacy_owns' };
+  if (reason === 'closed' || reason === 'merged') {
+    // b6cfdbb9: the close (T18) or merge (T17) names the tasks it made moot. The legacy reconciler
+    // skips a kernel-owned PR, so this is the only place they end; before, a repair queued when the
+    // PR closed stayed pending on a PR that no longer existed. `cancel` touches only an unstarted task.
+    const work = need(ports, 'work', e.kind);
+    const why = reason === 'closed' ? 'the PR was closed without merging' : 'the PR was merged';
+    const ids = Array.isArray(e.payload.taskIds) ? (e.payload.taskIds as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+    for (const id of ids) await work.cancel(id, why);
+    // A repair not yet linked to its task: that role's unstarted tasks, but only while the PR is
+    // still where this effect left it (a reopen since may have filed new ones).
+    const roles = Array.isArray(e.payload.unlinkedRoles) ? (e.payload.unlinkedRoles as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+    let n = 0;
+    if (roles.length && d.state === (reason === 'closed' ? 'CLOSED_UNMERGED' : 'MERGED')) {
+      for (const role of roles) n += await work.cancelPending({ deliveryId: d.id, role, ...superseded(why) });
+    }
+    return { outcome: `ok:cancelled_${ids.length + n}` };
+  }
+  // A close or merge recorded before b6cfdbb9 carries no reason: nothing named, nothing to do.
+  return { outcome: 'skipped:no_reason' };
 }
 
 /** `escalate_exhaustion` for family `review_fix`: the rounds, or the fix ledger, ran out. */
@@ -425,7 +497,10 @@ export async function escalateReviewExhaustion(ports: KernelPorts, e: ClaimedEff
   const current = rounds.find((r) => r.round === d.currentRound);
   const out: ReviewOutput = current ? await need(ports, 'reviews', e.kind).output(current) : {};
   // A fix ledger spent before the rounds were (T8, 67d34094) says so; otherwise the rounds ran out.
-  const detail = e.payload.max != null ? `after ${Number(e.payload.attempts)} fix attempts` : `after ${d.currentRound} review rounds`;
+  // A held delivery reopened (79649a80) is the same spent budget coming back to the person.
+  const detail = e.payload.max != null ? `after ${Number(e.payload.attempts)} fix attempts`
+    : e.payload.reopened === true ? `reopened after ${d.currentRound} review rounds; the review budget is still spent`
+    : `after ${d.currentRound} review rounds`;
   const outcome = await need(ports, 'escalate', e.kind).exhausted(d, {
     family: 'review_fix', headSha: d.currentHeadSha, attempts: Number(e.payload.attempts ?? d.currentRound), max: Number(e.payload.max ?? d.maxRounds),
     title: 'Review fix attempts exhausted', detail, note: out.feedback ?? null,

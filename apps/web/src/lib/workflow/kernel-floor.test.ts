@@ -4,20 +4,29 @@
  * in own mode, nothing in shadow or on another host; each step isolated.
  */
 import { afterEach, describe, expect, it } from 'bun:test';
-import { kernelFloorOutcome, runKernelFloor, runScheduledKernelFloor, type KernelFloorDeps } from './kernel-floor';
+import { REVIEW_DISPATCH_BACKOFF_MS, REVIEW_DISPATCH_RETRIES } from '@buildd/workflow-kernel/handlers/review';
+import { KERNEL_FLOOR_PERIOD_MS, kernelFloorOutcome, runKernelFloor, runScheduledKernelFloor, type KernelFloorDeps } from './kernel-floor';
 import { setKernelHost } from './kernel-host';
+import { setKernelSpanSink, type KernelSpanRecord } from './kernel-telemetry';
 
-afterEach(() => setKernelHost('web'));
+afterEach(() => { setKernelHost('web'); setKernelSpanSink(null); });
 
 function steps(o: Partial<Record<keyof KernelFloorDeps, () => Promise<unknown>>> = {}) {
   const ran: string[] = [];
   const step = <T>(name: string, value: T) => async () => { ran.push(name); if (o[name as keyof KernelFloorDeps]) return o[name as keyof KernelFloorDeps]!() as Promise<T>; return value; };
   const deps: KernelFloorDeps = {
     drainDueEffects: step('drainDueEffects', { claimed: 2, done: 2, skipped: 0, failed: 0, lost: 0, dead: [] }) as KernelFloorDeps['drainDueEffects'],
+    drainDueEpochEffects: step('drainDueEpochEffects', { claimed: 1, done: 1, skipped: 0, failed: 0, lost: 0, dead: 0, ran: [] }),
     reconcileTrunkIncidents: step('reconcileTrunkIncidents', { checked: 1, resolved: 1, recovered: 1, stillRed: 0, errors: 0 }),
     reconcileKernelDeliveries: step('reconcileKernelDeliveries', { checked: 3, imported: 1, enqueued: 1, errors: 0 }),
     restartTreadmillCycles: step('restartTreadmillCycles', { checked: 1, restarted: 1, refused: 0, errors: 0 }) as KernelFloorDeps['restartTreadmillCycles'],
     pruneCommands: step('pruneCommands', 4),
+    drainParkedCommands: step('drainParkedCommands', { claimed: 2, done: 1, retried: 1, dead: 0, pruned: 0 }),
+    publishOpenPrStatuses: step('publishOpenPrStatuses', {
+      repos: 1, checked: 2, published: 1, republished: 1, unchanged: 0, candidates: 0, errors: 0,
+      coverage: { context: 'Buildd / Review approval', checked: 2, missing: [], verdict: 'covered' },
+    }) as KernelFloorDeps['publishOpenPrStatuses'],
+    readOutboxDepth: async () => ({ parked: 1, parkedOldestAgeS: 5400, effectsDue: 2, effectsOldestAgeS: 30 }),
   };
   return { ran, deps };
 }
@@ -28,8 +37,8 @@ describe('the scheduled pass', () => {
     const s = steps();
     const r = await runScheduledKernelFloor({ env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s' }, deps: s.deps });
     expect(r.ran).toBe(true);
-    expect(s.ran.sort()).toEqual(['drainDueEffects', 'pruneCommands', 'reconcileKernelDeliveries', 'reconcileTrunkIncidents', 'restartTreadmillCycles']);
-    expect(kernelFloorOutcome(r.result!)).toEqual({ processed: 7, changed: 6, errors: 0 });
+    expect(s.ran.sort()).toEqual(['drainDueEffects', 'drainDueEpochEffects', 'drainParkedCommands', 'pruneCommands', 'publishOpenPrStatuses', 'reconcileKernelDeliveries', 'reconcileTrunkIncidents', 'restartTreadmillCycles']);
+    expect(kernelFloorOutcome(r.result!)).toEqual({ processed: 12, changed: 10, errors: 0 });
   });
 
   it('does nothing in shadow, without the command key (not switched over), or on the web host whatever its mode', async () => {
@@ -64,6 +73,16 @@ describe('the treadmill cooldown', () => {
   });
 });
 
+// a81a100f: a review dispatch that cannot file a reviewer is re-queued with a backoff of n x
+// REVIEW_DISPATCH_BACKOFF_MS. Nothing wakes a drain for it, so on a quiet PR the floor runs each
+// retry. The spec's bound (review_unavailable within about two floor ticks) holds only while every
+// retry is due before the next tick.
+describe('review dispatch retries', () => {
+  it('each retry is due before the next floor tick', () => {
+    for (let n = 1; n <= REVIEW_DISPATCH_RETRIES; n++) expect(n * REVIEW_DISPATCH_BACKOFF_MS).toBeLessThan(KERNEL_FLOOR_PERIOD_MS);
+  });
+});
+
 describe('isolation', () => {
   it('one step failing never discards the others, and counts as an error', async () => {
     const s = steps({ reconcileKernelDeliveries: async () => { throw new Error('github down'); } });
@@ -72,5 +91,78 @@ describe('isolation', () => {
     expect(r.kernelOutbox).toMatchObject({ done: 2 });
     expect(r.commandsPruned).toBe(4);
     expect(kernelFloorOutcome(r).errors).toBe(1);
+  });
+
+  it('a parked door command given up counts as an error; the parked step failing is isolated like any other', async () => {
+    const buried = steps({ drainParkedCommands: async () => ({ claimed: 1, done: 0, retried: 0, dead: 1, pruned: 0 }) });
+    expect(kernelFloorOutcome(await runKernelFloor(buried.deps)).errors).toBe(1);
+    const failing = steps({ drainParkedCommands: async () => { throw new Error('db down'); } });
+    const r = await runKernelFloor(failing.deps);
+    expect(r.parkedCommands).toEqual({ error: 'db down' });
+    expect(r.kernelOutbox).toMatchObject({ done: 2 });
+    expect(kernelFloorOutcome(r).errors).toBe(1);
+  });
+});
+
+// AC-76: the open-PR status coverage is an alert that can fail: every open head still without
+// Buildd / Review approval is an error of the floor run, and a pass that read nothing is not "covered".
+describe('open PR status coverage', () => {
+  const summary = (coverage: Record<string, unknown>, errors = 0) => async () => ({
+    repos: 1, checked: 2, published: 0, republished: 0, unchanged: 2, candidates: 0, errors, coverage: { context: 'Buildd / Review approval', ...coverage },
+  });
+
+  it('each open head missing the context counts as an error', async () => {
+    const s = steps({ publishOpenPrStatuses: summary({ checked: 2, verdict: 'gaps', missing: [{ repoFullName: 'acme/app', prNumber: 4, sha: 'a'.repeat(40) }, { repoFullName: 'acme/app', prNumber: 5, sha: 'b'.repeat(40) }] }) });
+    expect(kernelFloorOutcome(await runKernelFloor(s.deps)).errors).toBe(2);
+  });
+
+  it('the step failing is isolated and counts as an error', async () => {
+    const s = steps({ publishOpenPrStatuses: async () => { throw new Error('github down'); } });
+    const r = await runKernelFloor(s.deps);
+    expect(r.openPrStatuses).toEqual({ error: 'github down' });
+    expect(r.kernelOutbox).toMatchObject({ done: 2 });
+    expect(kernelFloorOutcome(r).errors).toBe(1);
+  });
+
+  it('a pass over no open PR reports nothing_checked, which is not an error and not covered', async () => {
+    const s = steps({ publishOpenPrStatuses: summary({ checked: 0, verdict: 'nothing_checked', missing: [] }) });
+    const r = await runKernelFloor(s.deps);
+    expect(r.openPrStatuses).toMatchObject({ coverage: { verdict: 'nothing_checked' } });
+    expect(kernelFloorOutcome(r).errors).toBe(0);
+  });
+});
+
+// The floor's span (workflow-kernel-library.md, Observability): outbox depth after the pass and its repairs per kind.
+describe('the floor span', () => {
+  it('one kernel.floor span per pass, with the depth left and the repairs', async () => {
+    const spans: KernelSpanRecord[] = [];
+    setKernelSpanSink((s) => { spans.push(s); });
+    setKernelHost('control-plane');
+    await runKernelFloor(steps().deps);
+    expect(spans.map((s) => s.name)).toEqual(['kernel.floor']);
+    expect(spans[0].attributes).toMatchObject({
+      'kernel.host': 'control-plane',
+      'kernel.outbox.parked': 1, 'kernel.outbox.parked_oldest_age_s': 5400, 'kernel.outbox.effects_due': 2, 'kernel.outbox.effects_oldest_age_s': 30,
+      'kernel.floor.repairs.facts_imported': 1, 'kernel.floor.repairs.effects_enqueued': 1, 'kernel.floor.repairs.trunk_recovered': 1,
+      'kernel.floor.repairs.treadmill_restarted': 1, 'kernel.floor.repairs.parked_answered': 1, 'kernel.floor.repairs.parked_dead': 0,
+      'kernel.floor.errors': 0,
+    });
+    expect(spans[0].error).toBe(false);
+  });
+
+  it('a depth read that fails is reported unread, never as an empty outbox, and the pass still returns', async () => {
+    const spans: KernelSpanRecord[] = [];
+    setKernelSpanSink((s) => { spans.push(s); });
+    const s = steps();
+    const realError = console.error;
+    console.error = () => {};
+    try {
+      const r = await runKernelFloor({ ...s.deps, readOutboxDepth: async () => { throw new Error('db down'); } });
+      expect(r.kernelOutbox).toMatchObject({ done: 2 });
+    } finally {
+      console.error = realError;
+    }
+    expect(spans[0].attributes['kernel.outbox.unread']).toBe(true);
+    expect('kernel.outbox.parked' in spans[0].attributes).toBe(false);
   });
 });

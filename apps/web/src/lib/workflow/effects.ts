@@ -29,6 +29,7 @@ import { drainEffects, effectRetry, EFFECT_LEASE_MS, type DeadEffect, type Drain
 import type { EffectKind } from './commands';
 import type { Policy } from '@buildd/workflow-kernel/ports';
 import type { Exec } from './kernel';
+import { MERGE_HELD_OUTCOME } from '@buildd/workflow-kernel/merge-hold';
 
 // The outbox rules (lease, backoff, dead-lettering, §10.4 gating, the §14
 // kernel-only kinds) and the drain loop are the package's; this file keeps
@@ -45,7 +46,9 @@ export function claimDueEffectsSql(limit: number, leaseMs = EFFECT_LEASE_MS, del
   return sql`-- workflow:claim_effects
 WITH due AS (
   SELECT id FROM workflow_effects
-  WHERE ((status = 'pending' AND not_before <= now())
+  -- A mission epoch's rows (no delivery) are drained by epoch-effects.ts.
+  WHERE delivery_id IS NOT NULL
+    AND ((status = 'pending' AND not_before <= now())
      OR (status = 'delivering' AND lease_until < now()))
     ${deliveryId ? sql`AND delivery_id = ${deliveryId}::uuid` : sql``}
   ORDER BY not_before, id
@@ -59,6 +62,7 @@ SET status = 'delivering', attempt_count = e.attempt_count + 1,
 FROM due
 WHERE e.id = due.id
 RETURNING e.id, e.delivery_id, e.transition_id, e.kind, e.dedupe_key, e.payload, e.attempt_count, e.not_before,
+  EXTRACT(EPOCH FROM (now() - e.created_at)) * 1000 AS age_ms,
   ${effectSnapshotSql()}
 )
 -- RETURNING order is unspecified: run the batch in the order it was claimed.
@@ -125,6 +129,27 @@ SET status = 'pending', attempt_count = GREATEST(attempt_count - 1, 0), outcome 
     not_before = now() + make_interval(secs => ${delayMs}::int / 1000.0),
     lease_until = NULL, updated_at = now()
 WHERE id = ${id}::uuid AND status = 'delivering' AND attempt_count = ${attemptCount}::int
+RETURNING id`;
+}
+
+/**
+ * §4 merge holds: a check reported on `headSha`, so this delivery's held
+ * `merge_call` for that head (parked with a `held:` outcome) is due now. Whoever
+ * drains the outbox next runs it.
+ */
+export function wakeHeldMergesSql(deliveryId: string, headSha: string): SQL {
+  return sql`-- workflow:wake_held_merges
+UPDATE workflow_effects SET not_before = now(), updated_at = now()
+WHERE delivery_id = ${deliveryId}::uuid AND kind = 'merge_call' AND status = 'pending'
+  AND outcome LIKE ${`${MERGE_HELD_OUTCOME}:%`}::text AND payload->>'headSha' = ${headSha}::text
+RETURNING id`;
+}
+
+/** §5: the open findings of one delivery become another's, ids kept (a closed one stays where it was decided). */
+export function carryOpenFindingsSql(fromDeliveryId: string, toDeliveryId: string): SQL {
+  return sql`-- workflow:carry_open_findings
+UPDATE workflow_findings SET delivery_id = ${toDeliveryId}::uuid, updated_at = now()
+WHERE delivery_id = ${fromDeliveryId}::uuid AND status IN ('open', 'addressed')
 RETURNING id`;
 }
 

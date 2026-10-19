@@ -14,7 +14,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
+import { listCallerKey, withChangeVersion } from '@/lib/change-version';
 import { loadMissionStages } from '@/lib/mission-stage-load';
+import { MAX_STAGE_MISSION_IDS } from '@/lib/mission-stage';
 import { loadRecentMissions } from '@/lib/missions-recent';
 import type { RecentMission } from '@buildd/shared';
 
@@ -28,13 +30,19 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const workspaceIds = await listReachableWorkspaceIds(apiAccount ? { account: apiAccount } : { userId: user!.id });
+    const accessCaller = apiAccount ? { account: apiAccount } : { userId: user!.id };
+    const caller = listCallerKey(accessCaller);
+    const workspaceIds = await listReachableWorkspaceIds(accessCaller);
     if (workspaceIds.length === 0) return NextResponse.json({ missions: [] });
 
-    const rows = await loadRecentMissions(workspaceIds);
-    const stages = await loadMissionStages(rows.map(r => r.id), workspaceIds);
-    const out: RecentMission[] = rows.map(r => ({ ...r, stage: stages.get(r.id) ?? null }));
-    return NextResponse.json({ missions: out });
+    // R-20/R-35: unchanged since this caller's last read → 304, or the cached body.
+    return await withChangeVersion(req, { scopes: workspaceIds, caller }, async () => {
+      const rows = await loadRecentMissions(workspaceIds);
+      // Open first, newest activity first: the missions past the cap list without a stage.
+      const stages = await loadMissionStages(rows.slice(0, MAX_STAGE_MISSION_IDS).map(r => r.id), workspaceIds);
+      const out: RecentMission[] = rows.map(r => ({ ...r, stage: stages.get(r.id) ?? null }));
+      return NextResponse.json({ missions: out });
+    });
   } catch (err) {
     console.error('[missions/recent] failed:', err);
     return NextResponse.json({ error: 'Failed to load missions' }, { status: 500 });

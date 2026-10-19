@@ -4,6 +4,7 @@
  * (spec c7410e76 R-28, AC-13).
  */
 import { describe, expect, test } from 'bun:test';
+import { bannedWordsIn } from '@buildd/shared';
 import { claimEntryWords } from '../../src/claim-words';
 import { localLiftTime } from '../../src/top/state';
 
@@ -14,17 +15,17 @@ describe('claimEntryWords', () => {
   test('a plan limit names the provider and when it lifts', () => {
     const resetsAt = '2026-03-12T00:00:00.000Z';
     const w = claimEntryWords({ ...base, event: 'claim_empty', diagnosticReason: 'budget_exhausted', walls: [{ kind: 'account_seat', backend: 'claude', resetsAt }] }, NOW);
-    expect(w).toBe(`held: Claude plan limit until ${localLiftTime(resetsAt, NOW)}`);
+    expect(w).toBe(`waiting: Claude plan limit until ${localLiftTime(resetsAt, NOW)}`);
   });
 
   test('a cooldown after a failure', () => {
     const w = claimEntryWords({ ...base, event: 'claim_empty', diagnosticReason: 'no_pending_tasks', taskExclusion: 'runner_cooldown' }, NOW);
-    expect(w).toBe('held: cooldown after a failure');
+    expect(w).toBe('waiting: cooldown after a failure');
   });
 
   test('a local-session mission', () => {
     const w = claimEntryWords({ ...base, event: 'claim_empty', diagnosticReason: 'no_pending_tasks', taskExclusion: 'mission_local' }, NOW);
-    expect(w).toMatch(/^held: local[- ]session/);
+    expect(w).toMatch(/^waiting: your session/);
   });
 
   test('a refusal says the status and the server reason, not claim_rejected', () => {
@@ -47,7 +48,38 @@ describe('claimEntryWords', () => {
 
   test('all candidates deferred names a single reason', () => {
     const w = claimEntryWords({ ...base, event: 'claim_empty', diagnosticReason: 'all_candidates_deferred', deferrals: { mission_paced: 3 } as any }, NOW);
-    expect(w).toBe('held: mission is paced');
+    expect(w).toBe('waiting: mission is paced');
+  });
+
+  test('a gate the server did not name reads reason unknown, never that the server held it', () => {
+    expect(claimEntryWords({ ...base, event: 'claim_empty', taskExclusion: 'brand_new_gate' }, NOW)).toBe('Not started: reason unknown');
+    expect(claimEntryWords({ ...base, event: 'claim_empty', diagnosticReason: 'brand_new_reason' as any }, NOW)).toBe('Not started: reason unknown');
+    expect(claimEntryWords({ ...base, event: 'claim_empty', diagnosticReason: 'all_candidates_deferred', deferrals: { brand_new: 1 } as any }, NOW)).toBe('Not started: reason unknown');
+  });
+
+  test('usage limits, person and mission pauses, and a fully deferred claim use catalog words', () => {
+    expect(claimEntryWords({ ...base, event: 'claim_empty', diagnosticReason: 'budget_exhausted' }, NOW)).toBe('usage limit');
+    expect(claimEntryWords({ ...base, event: 'claim_empty', diagnosticReason: 'budget_exhausted_partial' }, NOW)).toBe('usage limit for one provider');
+    expect(claimEntryWords({ ...base, event: 'claim_empty', taskExclusion: 'budget_paused' }, NOW)).toBe('usage limit');
+    expect(claimEntryWords({ ...base, event: 'claim_empty', diagnosticReason: 'all_candidates_deferred' }, NOW)).toBe('nothing can start yet');
+    expect(claimEntryWords({ ...base, event: 'claim_empty', taskExclusion: 'task_held' }, NOW)).toBe('waiting: paused by a person');
+    expect(claimEntryWords({ ...base, event: 'claim_empty', taskExclusion: 'mission_held' }, NOW)).toBe('waiting: mission is paused');
+  });
+
+  test('no claim row uses a word the terms catalog bans', () => {
+    const entries = [
+      { event: 'claim_empty', walls: [{ kind: 'account_seat', backend: 'claude', resetsAt: null }] },
+      { event: 'claim_empty', taskExclusion: 'runner_cooldown' },
+      { event: 'claim_empty', taskExclusion: 'budget_paused' },
+      { event: 'claim_empty', taskExclusion: 'task_held' },
+      { event: 'claim_empty', taskExclusion: 'mission_held' },
+      { event: 'claim_empty', taskExclusion: 'unknown_code' },
+      { event: 'claim_empty', diagnosticReason: 'all_candidates_deferred' },
+      { event: 'claim_empty', diagnosticReason: 'budget_exhausted' },
+      { event: 'claim_empty', diagnosticReason: 'budget_exhausted_partial' },
+      { event: 'claim_empty', diagnosticReason: 'nope' },
+    ];
+    for (const e of entries) expect(bannedWordsIn(claimEntryWords({ ...base, ...e } as any, NOW))).toEqual([]);
   });
 
   test('a success and an idle streak', () => {

@@ -5,7 +5,9 @@ import { db } from '@buildd/core/db';
 import { users } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { noteSessionTenant } from './request-tenant';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { cachedCaller, callerDep } from './caller-cache';
 
 export type CurrentUser = {
   id: string;
@@ -69,20 +71,30 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   }
   if (!session?.user?.id) return null;
 
-  const user = await db.query.users.findFirst({
-    where: sqlWhere(eq(users.id, session.user.id)),
-  });
+  // Cached for at most 60 s across instances (lib/caller-cache.ts) and cleared
+  // by the writes to these fields (timezone, preferences). A missing user is
+  // never cached.
+  const sessionUserId = session.user.id;
+  const user = await cachedCaller(`session-user:${sessionUserId}`, async (): Promise<CurrentUser | null> => {
+    const row = await db.query.users.findFirst({
+      where: sqlWhere(eq(users.id, sessionUserId)),
+    });
+    if (!row) return null;
+    return {
+      id: row.id,
+      email: row.email,
+      name: row.name,
+      image: row.image,
+      timezone: row.timezone,
+      showKeyboardHints: row.showKeyboardHints === true,
+    };
+  }, { known: [callerDep.user(sessionUserId)] });
 
   if (!user) return null;
+  // Team and plan on the request's spans, and the plan for the read limiter (proxy.ts).
+  await noteSessionTenant(user.id);
 
-  return {
-    id: user.id,
-    email: user.email,
-    name: user.name,
-    image: user.image,
-    timezone: user.timezone,
-    showKeyboardHints: user.showKeyboardHints === true,
-  };
+  return user;
 });
 
 /** The API key account a request authenticated as — its own identity, never a user's. */

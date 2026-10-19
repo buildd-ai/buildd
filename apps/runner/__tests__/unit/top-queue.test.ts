@@ -6,7 +6,7 @@
  * (another runner claiming) asks for a reread.
  */
 import { describe, expect, test } from 'bun:test';
-import { handleKey } from '../../src/top/keys';
+import { LOCAL_CLAIM_WORDS, handleKey } from '../../src/top/keys';
 import { estimateWords, queueRowList, queueSections, selectedQueueRow } from '../../src/top/queue';
 import { eventChangesQueue, reduce } from '../../src/top/state';
 import { NOW, fixtureState } from './top-fixture';
@@ -22,12 +22,12 @@ describe('queue sections (R-26)', () => {
       [1, 'fix(kernel): review composition', 'alpha', 'Workflow kernel', '40m', 'Thu 00:00'],
       // One of 3 slots is free (2 agents run): the first row nothing holds starts now.
       [2, 'feat(intake): one intake door', 'alpha', 'Bug intake', '1h', 'now'],
-      [3, 'chore(web): cache /fonts', 'alpha', '(no mission)', '15m', 'when a slot frees'],
+      [3, 'chore(web): cache /fonts', 'alpha', '-', '15m', 'when a slot frees'],
       [4, 'docs: kernel commands', 'alpha', 'Workflow kernel', '-', 'after its dependency'],
     ]);
-    // A start time of its own is held, listed after the queue with its reason.
-    expect(one.held.map(r => [r.position, r.title, r.mission, r.starts])).toEqual([
-      [null, 'chore: rotate the logs', 'starts at its set time, 17:00', '17:00'],
+    // A start time of its own is held, listed after the queue: its mission, then the time and why.
+    expect(one.held.map(r => [r.position, r.title, r.mission, r.starts, r.reason])).toEqual([
+      [null, 'chore: rotate the logs', 'Workflow kernel', '17:00 · scheduled', 'scheduled, 17:00'],
     ]);
     // The organizer's planning run is not work (R-22).
     expect(one.rows.map(r => r.taskId)).not.toContain('q-plan');
@@ -67,16 +67,35 @@ describe('queue sections (R-26)', () => {
     expect(one.rows.map(r => [r.position, r.starts])).toEqual([[1, 'now'], [2, 'when a slot frees']]);
     expect(one.held).toHaveLength(1);
     expect(one.held[0].reason).toMatch(/^retries after failures, /);
+    // The time first, so a narrow column keeps it, then why.
+    expect(one.held[0].starts).toMatch(/^.+ · retries after failures$/);
     expect(one.held[0].held).toBe(true);
+  });
+
+  test('a task or mission a person paused reads paused, never held or on hold', () => {
+    const t = QUEUE.teams[0];
+    const queue = { ...QUEUE, teams: [{ ...t, queue: [
+      { ...t.queue[0], holds: ['task_held' as const] },
+      { ...t.queue[1], holds: ['mission_held' as const] },
+      t.queue[2],
+    ] }, QUEUE.teams[1]] };
+    const s = reduce({ ...queueState(), claimOutcomes: { tasks: {}, broad: null } }, { type: 'queue', queue });
+    const [one] = queueSections(s, NOW);
+    expect(one.held.map(r => [r.reason, r.starts])).toEqual([
+      ['paused by a person', 'paused · by a person'],
+      ['mission is paused', 'paused · mission is paused'],
+    ]);
   });
 
   test('"Not for this runner" names why: a local session, another runner, a role it lacks', () => {
     const [one] = queueSections(queueState(), NOW);
-    expect(one.notFor.map(r => [r.position, r.title, r.reason])).toEqual([
-      [null, 'Runner terminal: round 3 audit', 'local session'],
-      [null, 'fix(supersession): close the old PR', 'another runner'],
-      [null, 'design: the queue tab', 'needs Designer'],
+    // The why goes in the starts column; the mission column always names the mission.
+    expect(one.notFor.map(r => [r.position, r.title, r.starts, r.exclusion])).toEqual([
+      [null, 'Runner terminal: round 3 audit', 'runs from your session', 'local_session'],
+      [null, 'fix(supersession): close the old PR', 'another runner takes it', 'another_runner'],
+      [null, 'design: the queue tab', 'needs Designer', 'role_missing'],
     ]);
+    expect(one.notFor.every(r => r.mission === r.mission.trim() && !/local session|another runner/.test(r.mission))).toBe(true);
   });
 
   test('without a claim outcome holding it, position 1 starts now on the free slot', () => {
@@ -114,7 +133,7 @@ describe('the queue follows the server (AC-12)', () => {
     const next = reduce(s, { type: 'queue', queue: after });
     const [one] = queueSections(next, NOW);
     expect(one.rows[0]).toMatchObject({ position: 1, title: 'feat(intake): one intake door', starts: 'now' });
-    expect(one.notFor[0]).toMatchObject({ title: 'fix(kernel): review composition', reason: 'another runner' });
+    expect(one.notFor[0]).toMatchObject({ title: 'fix(kernel): review composition', reason: 'another runner takes it' });
   });
 
   test('a task claimed in one of its workspaces is a queue change', () => {
@@ -162,7 +181,15 @@ describe('Queue view keys', () => {
     expect(selectedQueueRow(s, NOW)?.taskId).toBe('q-other');
     const r = handleKey(s, key('c'), NOW);
     expect(r.effects).toEqual([]);
-    expect(r.state.status).toEqual({ text: '"fix(supersession): close the old PR" is not for this runner: another runner.', tone: 'error' });
+    expect(r.state.status).toEqual({ text: 'Not for this runner: another runner takes it.', tone: 'error' });
+  });
+
+  test('c on a local session\'s row says where that changes, and claims nothing', () => {
+    let s = queueState();
+    while (selectedQueueRow(s, NOW)?.exclusion !== 'local_session') s = handleKey(s, { name: 'down' }, NOW).state;
+    const r = handleKey(s, key('c'), NOW);
+    expect(r.effects).toEqual([]);
+    expect(r.state.status).toEqual({ text: LOCAL_CLAIM_WORDS, tone: 'error' });
   });
 
   test('o opens the selected queue row on buildd', () => {
