@@ -3279,6 +3279,33 @@ export const specOutcomeVerdicts = pgTable('spec_outcome_verdicts', {
 }));
 
 /**
+ * Which signal currently decides each criterion's verdict: one row per subject
+ * (task or mission), spec revision and criterion, replaced as verdicts arrive.
+ * `source` is `test` (a criterion check run) or `review` (a person, final
+ * verification or visual audit); a test result outranks a review whenever the
+ * review was recorded (determiningVerdict in packages/spec-contract). Derived
+ * from spec_outcome_verdicts, which stays the log; `overriddenReviews` counts
+ * the review verdicts a test result outranks.
+ */
+export const specVerdictSources = pgTable('spec_verdict_sources', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }),
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
+  criterionId: text('criterion_id').notNull(),
+  source: text('source').notNull().$type<'test' | 'review'>(),
+  verdictId: uuid('verdict_id').references(() => specOutcomeVerdicts.id, { onDelete: 'cascade' }).notNull(),
+  verdict: text('verdict').notNull().$type<'pass' | 'fail' | 'inconclusive' | 'unsupported'>(),
+  overriddenReviews: integer('overridden_reviews').notNull().default(0),
+  decidedAt: timestamp('decided_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskCriterionUnique: uniqueIndex('spec_verdict_sources_task_unique').on(t.taskId, t.specRevisionId, t.criterionId).where(sql`task_id IS NOT NULL`),
+  missionCriterionUnique: uniqueIndex('spec_verdict_sources_mission_unique').on(t.missionId, t.specRevisionId, t.criterionId).where(sql`mission_id IS NOT NULL`),
+  oneSubject: check('spec_verdict_sources_one_subject', sql`(${t.taskId} IS NULL) <> (${t.missionId} IS NULL)`),
+}));
+
+/**
  * A human's decision on one visual-audit screenshot
  * (docs/design/visual-qa-human-review.md). Append-only: a new decision or an
  * undo sets `supersededAt` on the active row, then inserts. Kept out of

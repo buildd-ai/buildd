@@ -1,4 +1,5 @@
 import type { CriterionVerdict, LivingSpecCriterionStanding } from '@buildd/shared';
+import { determiningVerdict, type VerdictSource } from '@buildd/spec-contract/outcome';
 
 /**
  * The mission-level half of Living Specs Slice 12 (D-19/D-20, R-49..R-53),
@@ -37,6 +38,8 @@ export interface MissionVerdictRow {
   verdict: 'pass' | 'fail' | 'inconclusive' | 'unsupported';
   headSha: string | null;
   at: Date | string;
+  /** Absent reads as a review; a test result outranks one (determiningVerdict). */
+  source?: VerdictSource;
 }
 
 export interface MissionSpecFold {
@@ -74,11 +77,10 @@ export function foldMissionSpec(input: {
   target: MissionTarget;
 }): MissionSpecFold {
   const waived = new Set(input.waived);
+  const grouped = new Map<string, MissionVerdictRow[]>();
+  for (const r of input.rows) grouped.set(r.criterionId, [...(grouped.get(r.criterionId) ?? []), r]);
   const newest = new Map<string, MissionVerdictRow>();
-  for (const r of input.rows) {
-    const prev = newest.get(r.criterionId);
-    if (!prev || new Date(r.at).getTime() >= new Date(prev.at).getTime()) newest.set(r.criterionId, r);
-  }
+  for (const [id, rows] of grouped) newest.set(id, determiningVerdict(rows)!);
   const targetSha = input.target.kind === 'integration' ? input.target.headSha : null;
   const staleFails = new Set<string>();
 
