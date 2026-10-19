@@ -131,6 +131,12 @@ export default function TaskChecks({
       {checks.review && (
         <p data-testid="task-checks-review-summary" className="py-2 text-meta text-text-secondary">Review: {checks.review}</p>
       )}
+      {checks.rounds && (
+        <p data-testid="task-checks-review-rounds" className="pb-2 text-meta text-text-muted [overflow-wrap:anywhere]">
+          {checks.rounds.line}
+          {checks.rounds.githubNote && <span className="block">{checks.rounds.githubNote}</span>}
+        </p>
+      )}
       <ul className="flex flex-col">
         {checks.current.map(row => {
           const detail = rowDetail(row, { findings, findingsUnavailable, prUrl, currentTaskId });
