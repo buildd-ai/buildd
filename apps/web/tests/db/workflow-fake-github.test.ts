@@ -176,3 +176,96 @@ describe('the kernel against the fake GitHub', () => {
     expect(gh.unsupported).toEqual([]);
   });
 });
+
+/** A PR of its own, opened, its owner ended, waiting on round 1's reviewer. */
+async function awaitingReview(branch: string) {
+  const ownerTaskId = await seedTask(workspaceId, { status: 'in_progress', title: `feat: ${branch}` });
+  ownerByBranch.set(branch, ownerTaskId);
+  const head = gh.push(REPO, branch, { [`src/${branch.replace(/\W/g, '_')}.ts`]: 'export const b = 1;\n' });
+  const prNumber = gh.openPr(REPO, { head: branch, base: 'dev', title: `feat: ${branch}` });
+  const prUrl = `https://github.com/${REPO}/pull/${prNumber}`;
+  await gh.deliverWebhooks();
+  const deliveryId = (await seam.kernelDeliveryOfPr({ workspaceId, prNumber }))!.deliveryId;
+  const [w] = await q<{ id: string }>(sql`INSERT INTO workers (workspace_id, task_id, name, runner, branch, status, last_commit_sha, pr_number, pr_url, commit_count)
+    VALUES (${workspaceId}::uuid, ${ownerTaskId}::uuid, 'w', 'test', ${branch}, 'completed', ${head}, ${prNumber}, ${prUrl}, 1) RETURNING id`);
+  await seam.attemptEnded({
+    task: { id: ownerTaskId, workspaceId, deliveryId, deliveryRole: 'owner', context: null },
+    workerId: w.id, status: 'completed', localHeadSha: head, commitCount: 1, source: 'runner',
+  });
+  expect((await loadView({ deliveryId })).delivery!.state).toBe('AWAITING_REVIEW');
+  const [reviewer] = await q<{ id: string; context: Record<string, unknown> }>(
+    sql`SELECT id, context FROM tasks WHERE delivery_id = ${deliveryId}::uuid AND delivery_role = 'review' ORDER BY created_at DESC LIMIT 1`);
+  return { deliveryId, prNumber, head, reviewer };
+}
+
+const roundsOf = (deliveryId: string) => q<{ round: number; status: string; failure_count: number; reviewer_task_id: string | null; verdict: string | null }>(
+  sql`SELECT round, status, failure_count, reviewer_task_id, verdict FROM workflow_review_rounds WHERE delivery_id = ${deliveryId}::uuid ORDER BY round`);
+
+describe('7105282e: a reviewer that ended always settles its round', () => {
+  test('a verdict the control plane did not answer is sent again under the same key, and decides the round', async () => {
+    const { deliveryId, head, reviewer } = await awaitingReview('feat/verdict-retry');
+    const { ControlPlaneUnavailableError } = await import('../../src/lib/workflow/kernel-client');
+    const { submitReviewVerdict } = await import('../../src/lib/workflow/kernel-client');
+    const keys: Array<string | undefined> = [];
+    let calls = 0;
+    const sent = await submitReviewVerdict({
+      workspaceId,
+      reviewerTask: { id: reviewer.id, deliveryId, context: reviewer.context },
+      verdict: 'approve', effectiveVerdict: 'approve', headSha: head, confidence: 0.9,
+    }, {
+      principal: { kind: 'system', id: 'test' },
+      record: async (p, c) => {
+        keys.push(c.idempotencyKey);
+        if (calls++ === 0) throw new ControlPlaneUnavailableError('timed out');
+        return seam.recordReviewVerdict(p);
+      },
+    });
+    expect(sent.status).toBe('answered');
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBeTruthy();
+    expect(keys[1]).toBe(keys[0]);
+    expect(await roundsOf(deliveryId)).toEqual([expect.objectContaining({ round: 1, status: 'decided', verdict: 'approve' })]);
+    expect((await loadView({ deliveryId })).delivery!.state).toBe('APPROVED');
+  });
+
+  test('a verdict the reducer refuses (a head the round was not for) fails the round through T27, never leaves it waiting', async () => {
+    const { deliveryId, reviewer } = await awaitingReview('feat/verdict-refused');
+    const r = await seam.recordReviewVerdict({
+      workspaceId,
+      reviewerTask: { id: reviewer.id, deliveryId, context: reviewer.context },
+      verdict: 'approve', effectiveVerdict: 'approve', headSha: 'f'.repeat(40), confidence: 0.9,
+    });
+    expect(r.handled && r.result.result).toBe('rejected');
+    // Re-queued at the same head and round number, asked again of a new reviewer.
+    const rounds = await roundsOf(deliveryId);
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0]).toMatchObject({ round: 1, failure_count: 1, verdict: null });
+    expect(['queued', 'reviewing']).toContain(rounds[0].status);
+    expect(rounds[0].reviewer_task_id).not.toBe(reviewer.id);
+    expect((await transitions(deliveryId)).map((t) => t.command)).toContain('ReviewRoundFailed');
+    expect((await loadView({ deliveryId })).delivery!.state).toBe('AWAITING_REVIEW');
+  });
+
+  test('floor: a round still waiting on a reviewer that ended past the grace period is failed (T27) and asked again', async () => {
+    const { deliveryId, reviewer } = await awaitingReview('feat/verdict-dropped');
+    // The reviewer completed, but its verdict never reached the kernel (a follow-up that never ran).
+    await q(sql`UPDATE tasks SET status = 'completed', updated_at = now() - interval '1 minute' WHERE id = ${reviewer.id}::uuid`);
+    // Inside the grace period the floor leaves it: the verdict may still be on its way.
+    await seam.reconcileKernelDeliveries({}, { only: [deliveryId], minQuietMs: 0 });
+    expect((await roundsOf(deliveryId))[0]).toMatchObject({ failure_count: 0, reviewer_task_id: reviewer.id });
+
+    await q(sql`UPDATE tasks SET updated_at = now() - interval '2 hours' WHERE id = ${reviewer.id}::uuid`);
+    await q(sql`UPDATE workflow_review_rounds SET updated_at = now() - interval '2 hours' WHERE delivery_id = ${deliveryId}::uuid`);
+    const s = await seam.reconcileKernelDeliveries({}, { only: [deliveryId], minQuietMs: 0 });
+    expect(s.errors).toBe(0);
+    const rounds = await roundsOf(deliveryId);
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0]).toMatchObject({ round: 1, failure_count: 1 });
+    expect(rounds[0].reviewer_task_id).not.toBe(reviewer.id);
+    expect((await transitions(deliveryId)).map((t) => t.command)).toContain('ReviewRoundFailed');
+
+    // A second pass over the same ended reviewer spends nothing more.
+    await seam.reconcileKernelDeliveries({}, { only: [deliveryId], minQuietMs: 0 });
+    expect((await roundsOf(deliveryId))[0].failure_count).toBe(1);
+  });
+});

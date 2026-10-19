@@ -19,6 +19,8 @@ import {
 } from './delivery-projection';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { isQuietHold, type LocalHold } from './local-session-display';
+import { deriveTaskChecks, roundReading, type CheckRow, type ChecksInput } from './task-checks';
+import { repairPhaseOf } from './workflow/projections';
 
 // ── Input ───────────────────────────────────────────────────────────────────
 
@@ -51,6 +53,21 @@ export interface ActivityTaskInput {
   review?: { verdict: ReviewEvidence['verdict']; headSha: string | null } | null;
   /** The open question, when an agent is waiting on a person. */
   waitingPrompt?: string | null;
+  /**
+   * The kernel's view of the delivery this task owns (lib/workflow/delivery-view.ts), when the
+   * kernel owns one. Its rounds and attempt ledger are the revision card's only source then:
+   * reviewer and repair task rows say what an agent reported, not what the kernel applied.
+   */
+  kernel?: KernelEvidenceInput | null;
+}
+
+/** What a revision card reads of a kernel delivery: the task page's checks input (task-checks.ts). */
+export type KernelEvidenceInput = ChecksInput;
+
+/** The kernel delivery `taskId` owns, when it owns one; an attempt's view is its owner's card, not its own. */
+export function kernelOwnedBy<V extends { ownerTaskId: string }>(views: ReadonlyMap<string, V>, taskId: string): V | null {
+  const v = views.get(taskId);
+  return v && v.ownerTaskId === taskId ? v : null;
 }
 
 /**
@@ -74,9 +91,19 @@ export interface Gate {
   why: string | null;
 }
 
+/** `ended` and `superseded` are the kernel ledger's: an attempt that ended, or whose bound head was left. */
+export type RepairStatus = 'running' | 'pushed' | 'failed' | 'queued' | 'ended' | 'superseded';
+
 export type EvidenceEntry =
-  | { type: 'revision'; sha: string | null; current: boolean; round: number; gates: Gate[] }
-  | { type: 'repair'; round: number; reason: RepairReason | null; status: 'running' | 'pushed' | 'failed' | 'queued'; sha: string | null };
+  /**
+   * `round`: the audit slot among the task's heads, or, on a kernel delivery (`kernel`), the
+   * kernel's review round at the current head (null before the first).
+   */
+  | { type: 'revision'; sha: string | null; current: boolean; round: number | null; gates: Gate[]; kernel?: true }
+  /** `round`: the repair's place among the task's attempts; null on a kernel delivery, whose one number is its review round. */
+  | { type: 'repair'; round: number | null; reason: RepairReason | null; status: RepairStatus; sha: string | null }
+  /** A kernel delivery's older review rounds, folded into one line ("Rounds 1–10: 7 approved · 3 changes requested"). */
+  | { type: 'earlier'; rounds: number; line: string };
 
 export interface NowRow {
   id: string;
@@ -136,6 +163,8 @@ export interface Episode {
   missionTitle: string | null;
   kind: DeliveryKind;
   repairRounds: number;
+  /** The PR the delivery is about (the owner worker's), when it has one. */
+  prNumber: number | null;
   /** Epoch ms of the newest step: the episode's place in the list. */
   at: number;
   /** Chronological, in the order they happened. Never re-sorted by kind. */
@@ -331,6 +360,7 @@ function reviewGate(r: ActivityTaskInput, name: string, current: boolean, curren
  * A verdict on an older head is shown struck through and never counted.
  */
 function buildEvidence(d: Delivery): EvidenceEntry[] {
+  if (d.root.kernel && d.root.kernel.prNumber != null) return buildKernelEvidence(d.root.kernel);
   // Verdicts bind to the head a worker recorded pushing, never to the head a
   // review names about itself: an unknown head reads as unbound, not passed.
   const { owner, head: currentSha } = prOf(d);
@@ -385,6 +415,77 @@ function buildEvidence(d: Delivery): EvidenceEntry[] {
   return out.reverse();
 }
 
+// ── Evidence from the kernel (7105282e) ─────────────────────────────────────
+
+/** The kernel's PR reading on its head, in the CI gate's vocabulary. */
+const KERNEL_CI: Record<string, string> = { ci_passed: 'ci_green', ci_failed: 'ci_failed', awaiting_ci: 'ci_running', ci_running: 'ci_running', conflict: 'conflict' };
+const FAMILY_REASON: Record<string, RepairReason> = { ci: 'ci', conflict: 'conflict', migration: 'conflict', review_fix: 'review' };
+
+/** The task page's Code review row as a gate: the same reading, so the two surfaces never disagree. */
+function kernelReviewGate(row: CheckRow): Gate {
+  const base = { name: 'Code review', void: false, why: null as string | null };
+  // The row reads "<word> · round N[ · …]"; the round is the card's own number, shown once.
+  const word = row.result.split(' · ')[0].toLowerCase();
+  switch (row.state) {
+    case 'passed': return {
+      ...base, ...VERDICT_GATE.passed,
+      why: row.reviewRound?.carried ? `Approved in round ${row.reviewRound.round}; still valid after a branch update.` : null,
+    };
+    case 'failed': return { ...base, glyph: '✕', tone: 'error', result: word };
+    case 'running': return { ...base, ...VERDICT_GATE.pending, result: word };
+    case 'pending': return { ...base, ...VERDICT_GATE.pending, result: word };
+    case 'blocked': return { ...base, ...VERDICT_GATE.escalated, result: word };
+    default: return { ...base, ...VERDICT_GATE.none, result: word };
+  }
+}
+
+/** A repair as the ledger has it: ended, or superseded once the head it was bound to was left. */
+export function repairStatusOf(a: KernelEvidenceInput['ledger'][number], v: KernelEvidenceInput): RepairStatus {
+  const left = !!a.boundHeadSha && !!v.headSha && a.boundHeadSha !== v.headSha;
+  switch (repairPhaseOf(a, v)) {
+    case 'queued': return 'queued';
+    case 'running': return 'running';
+    case 'awaiting_push': case 'pushed_testing': case 'awaiting_review': case 'pushed': return 'pushed';
+    case 'failed': return 'failed';
+    default: return left ? 'superseded' : 'ended';
+  }
+}
+
+/**
+ * A kernel delivery's audit evidence: the current head's card with the round the kernel holds
+ * there (task-checks.ts reads it the same way), the agent repairs as the ledger ended them, and
+ * every other round folded into one line. A reviewer row's approval the kernel never applied is
+ * not a verdict here.
+ */
+function buildKernelEvidence(v: KernelEvidenceInput): EvidenceEntry[] {
+  const checks = deriveTaskChecks(v);
+  const review = checks.current.find(r => r.key === 'review');
+  const gates: Gate[] = review ? [kernelReviewGate(review)] : [];
+  const ci = ciGate(KERNEL_CI[v.prState ?? ''] ?? null);
+  if (ci) gates.push(ci);
+  const shown = review?.reviewRound?.round ?? null;
+  const out: EvidenceEntry[] = [{ type: 'revision', sha: short(v.headSha), current: true, round: shown, gates, kernel: true }];
+  // The ledger is oldest first; evidence is newest first.
+  for (const a of [...v.ledger].reverse()) {
+    if (a.mode !== 'agent') continue;
+    const pushed = a.pushedHeadSha ?? a.reportedShas[a.reportedShas.length - 1] ?? null;
+    out.push({ type: 'repair', round: null, reason: FAMILY_REASON[a.family] ?? null, status: repairStatusOf(a, v), sha: short(pushed) });
+  }
+  const older = [...v.rounds].filter(r => r.round !== shown).sort((a, b) => a.round - b.round);
+  if (older.length > 0) {
+    const counts = new Map<string, number>();
+    for (const r of older) {
+      const w = roundReading(r).word.toLowerCase();
+      counts.set(w, (counts.get(w) ?? 0) + 1);
+    }
+    const lo = older[0].round;
+    const hi = older[older.length - 1].round;
+    const span = lo === hi ? `Round ${lo}` : `Rounds ${lo}–${hi}`;
+    out.push({ type: 'earlier', rounds: older.length, line: `${span}: ${[...counts].map(([w, n]) => `${n} ${w}`).join(' · ')}` });
+  }
+  return out;
+}
+
 // ── Now ─────────────────────────────────────────────────────────────────────
 
 /** Attention order, the same one the mission projection uses to pick its chip. */
@@ -416,7 +517,8 @@ function lineFor(d: Delivery, delivery: TaskDelivery, prNumber: number | null, r
       return delivery.verdict === 'stale' ? `${pr} is open. A verdict arrived for an older head; review runs again on the latest.` : `${pr} is open; review and CI have not both passed on its latest revision.`;
     case 'repair': {
       const why = delivery.repairReason ? { ci: 'CI failed', conflict: 'The branch conflicts with its base', review: 'Review asked for changes' }[delivery.repairReason] : 'An audit failed';
-      return `${why}. An automatic fix ${d.workers.some(agentLive) ? 'is running' : 'is queued'}${rounds > 0 ? ` (round ${rounds})` : ''}.`;
+      // A kernel delivery's one number is its review round, on the card: no second count here.
+      return `${why}. An automatic fix ${d.workers.some(agentLive) ? 'is running' : 'is queued'}${rounds > 0 && !d.root.kernel ? ` (round ${rounds})` : ''}.`;
     }
     case 'landing': return 'Approved and green on its latest revision. Merging.';
     case 'unavailable': return 'The audit could not run. It retries on its own.';
@@ -537,9 +639,9 @@ const ran = (g: Gate) => !g.void && g.result !== VERDICT_GATE.none.result;
 const gateLine = (gates: readonly Gate[]) => gates.filter(ran).map(g => `${g.name} ${g.result}`).join(' · ');
 /** Evidence worth opening: a repair, or a gate that ran (struck-through ones included). */
 const informative = (evidence: readonly EvidenceEntry[]) =>
-  evidence.some(e => e.type === 'repair' || e.gates.some(g => g.void || ran(g)));
+  evidence.some(e => e.type === 'repair' || e.type === 'earlier' || e.gates.some(g => g.void || ran(g)));
 
-function stageNotes(delivery: TaskDelivery, prNumber: number | null, evidence: readonly EvidenceEntry[]): StageNotes {
+function stageNotes(delivery: TaskDelivery, prNumber: number | null, evidence: readonly EvidenceEntry[], kernel = false): StageNotes {
   const at = deliveryStageIndex(delivery.kind);
   const cur = evidence.find((e): e is Extract<EvidenceEntry, { type: 'revision' }> => e.type === 'revision' && e.current);
   const onHead = cur?.sha ? ` on ${cur.sha}` : '';
@@ -548,7 +650,7 @@ function stageNotes(delivery: TaskDelivery, prNumber: number | null, evidence: r
   let audit: string;
   if (at < 1) audit = 'After Build';
   else if (delivery.kind === 'repair') {
-    audit = `Repair ${delivery.repairRounds || 1}${delivery.repairReason ? ` · ${REPAIR_FOR[delivery.repairReason]}` : ''}`;
+    audit = `Repair${kernel ? '' : ` ${delivery.repairRounds || 1}`}${delivery.repairReason ? ` · ${REPAIR_FOR[delivery.repairReason]}` : ''}`;
   } else if (delivery.kind === 'unavailable') audit = 'Could not run; retries on its own';
   else if (delivery.kind === 'needs') audit = 'Waiting on a decision';
   else audit = (cur && gateLine(cur.gates) ? `${gateLine(cur.gates)}${onHead}` : null)
@@ -584,7 +686,7 @@ export function buildTaskDeliveryDetails(input: {
       kind: delivery.kind,
       repairRounds: delivery.repairRounds,
       prNumber,
-      stages: stageNotes(delivery, prNumber, built),
+      stages: stageNotes(delivery, prNumber, built, !!d.root.kernel),
       evidence,
       revisions: evidence.filter(e => e.type === 'revision').length,
       repairs: evidence.filter(e => e.type === 'repair').length,
@@ -636,11 +738,16 @@ function stepsFor(d: Delivery, delivery: TaskDelivery): EpisodeStep[] {
   return raw.sort((a, b) => a.at - b.at || a.seq - b.seq).map(({ seq: _seq, ...s }) => s);
 }
 
-export function buildActivityHistory(input: {
+/**
+ * Every delivery as an episode, in flight or finished: Mission History's
+ * Highlights read this, so the story of a delivery is the one Activity tells.
+ * `buildActivityHistory` is the finished-only view of the same fold.
+ */
+export function buildActivityEpisodes(input: {
   tasks: readonly ActivityTaskInput[];
   missions: readonly ActivityMission[];
   rules: MissionTaskRules;
-}): Episode[] {
+}, opts: { finishedOnly?: boolean } = {}): Episode[] {
   const missionById = new Map(input.missions.map(m => [m.id, m]));
   return foldDeliveries(input.tasks, input.rules)
     .flatMap(d => {
@@ -649,7 +756,7 @@ export function buildActivityHistory(input: {
       if (!delivery) return [];
       const kind = d.root.status === 'cancelled' ? 'notlanded' as const : delivery.kind;
       // History is finished work only; in-flight deliveries are Now's.
-      if (!FINISHED.has(kind)) return [];
+      if (opts.finishedOnly && !FINISHED.has(kind)) return [];
       const steps = stepsFor(d, delivery);
       return [{
         id: d.root.id,
@@ -659,11 +766,20 @@ export function buildActivityHistory(input: {
         missionTitle: mission?.title ?? d.root.missionTitle ?? null,
         kind,
         repairRounds: delivery.repairRounds,
+        prNumber: prOf(d).owner?.prNumber ?? null,
         at: steps[steps.length - 1]?.at ?? 0,
         steps,
       }];
     })
     .sort((a, b) => b.at - a.at || a.id.localeCompare(b.id));
+}
+
+export function buildActivityHistory(input: {
+  tasks: readonly ActivityTaskInput[];
+  missions: readonly ActivityMission[];
+  rules: MissionTaskRules;
+}): Episode[] {
+  return buildActivityEpisodes(input, { finishedOnly: true });
 }
 
 export interface LatestTask { id: string; title: string; href: string; at: number }

@@ -8,6 +8,7 @@
  * agent, so every field is validated here and a malformed shot is dropped
  * rather than rendered half-empty.
  */
+import { isMissionAuditTask } from '@buildd/core/surface-audit';
 import { isTerminalTaskStatus } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, type VisualReviewModel } from '@buildd/shared';
 import type { DeliveryVisual } from './mission-delivery';
@@ -289,6 +290,7 @@ interface WorkerLike {
 
 interface TaskLike {
   id?: string;
+  title?: string | null;
   status: string;
   roleSlug?: string | null;
   workers?: ReadonlyArray<WorkerLike> | null;
@@ -321,7 +323,7 @@ export function auditBootFailed(tasks: readonly TaskLike[]): boolean {
   let newest: WorkerLike | null = null;
   let newestAt = -Infinity;
   for (const t of tasks) {
-    if (t.roleSlug !== VISUAL_AUDITOR_ROLE_SLUG || RESOLVED_TASK_STATUSES.includes(t.status)) continue;
+    if (!isMissionAuditTask(t) || RESOLVED_TASK_STATUSES.includes(t.status)) continue;
     for (const w of t.workers ?? []) {
       const at = w.startedAt ? new Date(w.startedAt).getTime() : -Infinity;
       if (newest === null || at > newestAt) {
@@ -381,7 +383,7 @@ export function missionVisualReview<T extends TaskLike>(
   // The task that wrote the newest current shot, else the one open audit, so
   // the Board can put the shots under that task's tile.
   const newest = run[run.length - 1];
-  const openAudit = tasks.find(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && !isTerminalTaskStatus(t.status));
+  const openAudit = tasks.find(t => isMissionAuditTask(t) && !isTerminalTaskStatus(t.status));
   const taskId = (newest && 'auditTaskId' in newest ? (newest as { auditTaskId: string | null }).auditTaskId : null)
     ?? (run.length === 0 ? openAudit?.id ?? null : null);
   return { run, summary, taskId, model };

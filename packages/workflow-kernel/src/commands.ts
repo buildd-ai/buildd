@@ -135,6 +135,14 @@ export type Command =
        * follows may be a delta review (deltaApprovalEligibility); absent is a full review.
        */
       delta?: DeltaReading | null;
+      /**
+       * AC-79 (workflow-kernel-library.md §5): the move from the head the delivery held to this
+       * one brought only base commits. `own_refresh`: the platform's own `refresh_branch`,
+       * pinned to the held head, updated the branch. `compare`: the PR's diff against the base
+       * is the same at both heads. While a review fix runs, such a push is foreign: it is never
+       * credited to the fix (§6.9). Absent is unread, never "the fix's".
+       */
+      baseOnly?: 'own_refresh' | 'compare' | null;
     })
   | (Base & {
       /**
@@ -192,6 +200,14 @@ export type Command =
        * verification round at the same head decides.
        */
       noopEvidence?: { findingIds: string[]; evidence: string } | null;
+      /**
+       * AC-79 (workflow-kernel-library.md §5): a review fix's end, read by the fact layer: the
+       * PR's diff at the live head, against the base, is the diff at the head the fix was bound
+       * to. Whatever moved the head since brought only base commits (a merge of the base), so
+       * nothing on it is the fix's own work. Absent or false (unread, or the diff changed) is
+       * not this fact.
+       */
+      baseOnly?: boolean;
     })
   | (Base & {
       /**
@@ -594,8 +610,13 @@ export type Command =
   | (Base & {
       type: 'ReviewRoundFailed';
       roundId: string;
-      /** `human_takeover` (a person interrupted the reviewer) escalates at once, never re-queued. */
-      reason: 'no_verdict' | 'prose_verdict' | 'infra' | 'human_takeover' | 'evidence_not_at_head';
+      /**
+       * `human_takeover` (a person interrupted the reviewer) escalates at once, never re-queued.
+       * `verdict_not_applied`: the reviewer's verdict reached T6 but was refused or kept stale while
+       * its round stayed open. `reviewer_ended`: the floor found the round still waiting on a reviewer
+       * task that ended a while ago with nothing recorded (7105282e).
+       */
+      reason: 'no_verdict' | 'prose_verdict' | 'infra' | 'human_takeover' | 'evidence_not_at_head' | 'verdict_not_applied' | 'reviewer_ended';
       maxContractRetries: number;
       /**
        * The reviewer task whose run failed. The failure is counted once per
@@ -634,7 +655,7 @@ export const EFFECT_KINDS = [
   'renumber_migration', 'push_recovery', 'stamp_pr_rows', 'cancel_open_attempts',
   'render_activity', 'notify', 'mission_note', 'wake_mission', 'release_attribution',
   'finalize_mission_pr', 'emit_pr_merged', 'scan_supersession', 'project_supersession',
-  'escalate_exhaustion', 'gate_event', 'capture_ci_evidence',
+  'escalate_exhaustion', 'gate_event', 'capture_ci_evidence', 'carry_findings',
   'publish_landing_status', 'dispatch_external_merge_fix',
 ] as const;
 

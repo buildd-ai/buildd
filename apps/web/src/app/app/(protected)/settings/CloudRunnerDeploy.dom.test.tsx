@@ -49,12 +49,12 @@ function installFetch(opts: { workspaces?: Array<{ id: string; name: string }>; 
   return calls;
 }
 
-async function mount(capabilities: Caps | null = null) {
+async function mount(capabilities: Caps | null = null, lastVerificationError: string | null = null) {
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
   await act(async () => {
-    root.render(<CloudRunnerDeploy teamId={TEAM} capabilities={capabilities as any} />);
+    root.render(<CloudRunnerDeploy teamId={TEAM} capabilities={capabilities as any} lastVerificationError={lastVerificationError} />);
   });
   await flush();
 }
@@ -80,6 +80,26 @@ describe('CloudRunnerDeploy', () => {
     expect(warn.textContent).toContain('Containers Edit');
     // The deploy button is disabled when permissions are missing.
     expect(host.querySelector<HTMLButtonElement>('[data-testid="cloud-deploy-btn"]')!.disabled).toBe(true);
+  });
+
+  it('on a fresh load, keeps Deploy disabled for a token whose last Verify named a missing permission', async () => {
+    // No Verify this session: only what the row stored is known.
+    installFetch();
+    await mount(null, 'Workers AI: not allowed (add Workers AI Read to this token). Containers: not allowed (add Containers Edit to this token)');
+    const warn = host.querySelector('[data-testid="cloud-deploy-perms"]')!;
+    expect(warn.textContent).toContain('Containers Edit');
+    expect(warn.textContent).not.toContain('Workers AI Read');
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="cloud-deploy-btn"]')!.disabled).toBe(true);
+  });
+
+  it('a Verify this session wins over the stored text', async () => {
+    installFetch();
+    await mount(
+      { containers: { state: 'allowed' }, workersScripts: { state: 'allowed' }, r2: { state: 'allowed' }, workersSubdomain: { state: 'allowed' } },
+      'Containers: not allowed (add Containers Edit to this token)',
+    );
+    expect(host.querySelector('[data-testid="cloud-deploy-perms"]')).toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="cloud-deploy-btn"]')!.disabled).toBe(false);
   });
 
   it('runs all five steps and shows success', async () => {

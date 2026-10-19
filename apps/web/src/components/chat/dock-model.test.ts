@@ -149,3 +149,24 @@ describe('atWorkRows', () => {
     expect(atWorkRows(board)[0]).toMatchObject({ state: 'has a question', tone: 'needs' });
   });
 });
+
+describe('taskDockModel: a repair attempt of a kernel delivery reads its ledger, not its PR (7105282e)', () => {
+  // A CI fix's worker carries the PR it pushed to, which alone used to read "In review".
+  const fix = (status: NonNullable<TaskObjectView['repair']>['status']) =>
+    taskDockModel(view({ status: 'completed', repair: { status } }, { status: 'completed', prNumber: 5, prUrl: 'https://github.com/o/r/pull/5', prLifecycleStatus: 'ci_running' })).badge;
+
+  it('a superseded repair reads replaced, an ended one done: never in review', () => {
+    expect(fix('superseded')).toEqual({ label: 'Replaced', tone: 'idle' });
+    expect(fix('ended')).toEqual({ label: 'Done', tone: 'idle' });
+  });
+
+  it('a running repair is working, a queued one waits, a failed one stopped', () => {
+    expect(fix('running')).toEqual({ label: 'Working', tone: 'live' });
+    expect(fix('queued')).toEqual({ label: 'Ready', tone: 'idle' });
+    expect(fix('failed')).toEqual({ label: 'Stopped', tone: 'needs' });
+  });
+
+  it('without a ledger reading the PR still reads in review', () => {
+    expect(taskDockModel(view({ status: 'completed' }, { status: 'completed', prNumber: 5, prUrl: 'u', prLifecycleStatus: 'ci_running' })).badge.label).toBe('In review');
+  });
+});

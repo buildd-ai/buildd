@@ -74,7 +74,7 @@ describe('GET /api/github/pr/review — delivery-owned PR', () => {
     expect(json.status).toMatchObject({
       state: 'changes_requested',
       verdict: 'request-changes',
-      iteration: 2,
+      iteration: 1,
       maxIterations: 3,
       openFindings: 2,
       reviewHeadSha: 'sha-2',
@@ -89,6 +89,26 @@ describe('GET /api/github/pr/review — delivery-owned PR', () => {
       rounds: [{ id: 'r1', round: 1, headSha: 'sha-1', status: 'reviewing', verdict: null, effectiveVerdict: null, reviewerTaskId: null }],
     })]]));
     expect((await (await GET(get())).json()).status.state).toBe('reviewing');
+  });
+
+  it('a queued round after many pushes reports the fix budget used, never "round 11 of 3"', async () => {
+    const rounds = Array.from({ length: 11 }, (_, i) => ({
+      id: `r${i + 1}`, round: i + 1, headSha: `sha-${i + 1}`, kind: 'full',
+      status: i === 10 ? 'queued' : 'superseded', verdict: null, effectiveVerdict: null, reviewerTaskId: null,
+    }));
+    mockViews.mockResolvedValue(new Map([['task-1', view({ state: 'AWAITING_REVIEW', openFindings: 0, attempts: { review_fix: { n: 2, m: 3 } }, rounds })]]));
+    const { status } = await (await GET(get())).json();
+    expect(status).toMatchObject({ state: 'queued', iteration: 2, maxIterations: 3 });
+  });
+
+  it('a queued round does not repeat an older round\'s summary as if it described this head', async () => {
+    legacyReviewRows.push({ id: 'old', status: 'completed', result: { structuredOutput: { verdict: 'approve', summary: 'The prior approval stands.' } }, context: { prNumber: 42, headSha: 'sha-1' } });
+    mockViews.mockResolvedValue(new Map([['task-1', view({
+      state: 'AWAITING_REVIEW',
+      rounds: [{ id: 'r2', round: 2, headSha: 'sha-2', status: 'queued', verdict: null, effectiveVerdict: null, reviewerTaskId: null }],
+    })]]));
+    const { status } = await (await GET(get())).json();
+    expect(status).toMatchObject({ state: 'queued', verdict: null, summary: null, reviewHeadSha: 'sha-2' });
   });
 
   it('lets the effective verdict win and holds an escalated delivery as escalated', async () => {

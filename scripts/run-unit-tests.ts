@@ -30,6 +30,9 @@ const UNIT_TEST_ROOTS = [
   'packages/shared/',
   'packages/workflow-kernel/',
   'scripts/',
+  'apps/web/tests/integration/verdict-acceptance.test.ts', // pure fold; the rest of that dir needs a live server
+  'apps/web/tests/integration/verdict-integration.test.ts', // pure integrated verdict contract
+  'apps/web/tests/integration/verdict-baseline.test.ts', // pure fold; same reason
 ] as const;
 
 export function isUnitTestFile(path: string): boolean {
@@ -438,6 +441,44 @@ export function admissionLimit(concurrency: number, load1: number, cpuCount: num
 }
 
 const ADMISSION_POLL_MS = 2_000;
+const START_GATE_DEFAULT_WAIT_MS = 60_000;
+
+/**
+ * Start gate for the whole run. Per-file admission above only thins files
+ * already in flight; a run that begins while the host is severely
+ * oversubscribed (another suite or a production build running) still puts its
+ * first files into the contention. Wait a bounded time for the load to fall
+ * under the severe line before starting, then proceed anyway (admission keeps
+ * concurrency low). Returns how long it waited. `BUILDD_TEST_ADMISSION_WAIT_MS`
+ * sets the bound; 0 disables the wait.
+ */
+export async function waitForHostRoom(options: {
+  load1: () => number;
+  cpuCount: number;
+  maxWaitMs: number;
+  pollMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  log?: (message: string) => void;
+}): Promise<number> {
+  const pollMs = options.pollMs ?? ADMISSION_POLL_MS * 5;
+  const sleep = options.sleep ?? (ms => new Promise<void>(r => setTimeout(r, ms)));
+  let waited = 0;
+  let announced = false;
+  while (waited < options.maxWaitMs && isHostSeverelyOversubscribed(options.load1(), options.cpuCount)) {
+    if (!announced) {
+      options.log?.(`[admission] load ${options.load1().toFixed(1)} on ${options.cpuCount} CPUs; waiting up to ${Math.round(options.maxWaitMs / 1000)}s for room before starting`);
+      announced = true;
+    }
+    await sleep(pollMs);
+    waited += pollMs;
+  }
+  return waited;
+}
+
+export function startGateWaitMs(env: string | undefined): number {
+  const n = Number(env);
+  return env === undefined || env.trim() === '' || !Number.isFinite(n) || n < 0 ? START_GATE_DEFAULT_WAIT_MS : Math.floor(n);
+}
 
 export async function runWithConcurrency<T>(
   items: readonly T[],
@@ -540,6 +581,8 @@ export function formatHeartbeat(opts: {
   load1: number;
   cpus: number;
   remainingHintMs: number | null;
+  /** Foreign CPU consumers, from `summarizeHostBusy`; only shown while oversubscribed. */
+  hostBusy?: string;
 }): string {
   const parts = [
     `[progress] ${opts.done}/${opts.total} files done (${opts.failed} failed)`,
@@ -548,7 +591,52 @@ export function formatHeartbeat(opts: {
   ];
   if (opts.remainingHintMs !== null) parts.push(`~${Math.round(opts.remainingHintMs / 1000)}s of hinted work left`);
   if (opts.running.length > 0) parts.push(`running: ${opts.running.slice(0, 3).join(', ')}`);
+  if (opts.hostBusy && opts.load1 > opts.cpus * 1.5) parts.push(`host busy: ${opts.hostBusy}`);
   return parts.join(' | ');
+}
+
+/**
+ * Who else is loading the host. `ps -eo pid,ppid,pcpu,args` output in, the top
+ * CPU consumers outside this run's own process tree out, as `name 129%` pairs.
+ * A load average says the box is busy but not whether it is a sibling worker's
+ * `next build`, a CI checkout's `tsc` or this suite; naming them is what turns
+ * "oversubscribed" into something you can act on. Never throws.
+ */
+export function summarizeHostBusy(psOutput: string, ownPid: number, top = 3): string {
+  const rows = psOutput.split('\n').map(line => {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+([\d.]+)\s+(.+)$/);
+    return m ? { pid: Number(m[1]), ppid: Number(m[2]), cpu: Number(m[3]), args: m[4] } : null;
+  }).filter((r): r is { pid: number; ppid: number; cpu: number; args: string } => r !== null);
+  const parentOf = new Map(rows.map(r => [r.pid, r.ppid]));
+  const isOwn = (pid: number): boolean => {
+    for (let hops = 0; pid > 1 && hops < 64; hops++) {
+      if (pid === ownPid) return true;
+      pid = parentOf.get(pid) ?? 0;
+    }
+    return false;
+  };
+  const label = (args: string): string => {
+    const words = args.split(/\s+/);
+    const exe = (words[0] ?? '').split('/').pop() ?? '';
+    // `node /path/typescript/bin/tsc ...` and `bun run x` are named by their script, not the interpreter.
+    const script = ['node', 'bun'].includes(exe) ? (words.find((w, i) => i > 0 && !w.startsWith('-') && w !== 'run') ?? exe) : exe;
+    return (script.split('/').pop() ?? script).slice(0, 40);
+  };
+  return rows
+    .filter(r => r.cpu >= 10 && !isOwn(r.pid))
+    .sort((a, b) => b.cpu - a.cpu)
+    .slice(0, top)
+    .map(r => `${label(r.args)} ${Math.round(r.cpu)}%`)
+    .join(', ');
+}
+
+function sampleHostBusy(): string {
+  try {
+    const out = Bun.spawnSync(['ps', '-eo', 'pid,ppid,pcpu,args', '--sort=-pcpu'], { stdout: 'pipe', stderr: 'ignore' });
+    return summarizeHostBusy(out.stdout.toString(), process.pid);
+  } catch {
+    return '';
+  }
 }
 
 export async function runTestFile(
@@ -968,6 +1056,7 @@ async function main(): Promise<void> {
           load1: loadavg()[0],
           cpus: cpus().length,
           remainingHintMs: known ? remaining.reduce((s, f) => s + (hints[f] ?? 0), 0) : null,
+          hostBusy: loadavg()[0] > cpus().length * 1.5 ? sampleHostBusy() : undefined,
         }));
       }, HEARTBEAT_INTERVAL_MS);
   heartbeat?.unref?.();
@@ -986,6 +1075,14 @@ async function main(): Promise<void> {
   process.once('SIGTERM', onKill);
   process.once('SIGINT', onKill);
 
+  if (process.env.BUILDD_TEST_ADMISSION !== 'off') {
+    await waitForHostRoom({
+      load1: () => loadavg()[0],
+      cpuCount: cpus().length,
+      maxWaitMs: startGateWaitMs(process.env.BUILDD_TEST_ADMISSION_WAIT_MS),
+      log: console.log,
+    });
+  }
   const admission = process.env.BUILDD_TEST_ADMISSION === 'off'
     ? {}
     : { limit: () => admissionLimit(concurrency, loadavg()[0], cpus().length) };

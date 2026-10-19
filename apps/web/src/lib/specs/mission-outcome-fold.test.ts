@@ -99,3 +99,15 @@ describe('foldMissionSpec', () => {
     expect(r.standings.find((s) => s.criterionId === 'R-2')?.standing).toBe('stale');
   });
 });
+
+describe('foldMissionSpec: a test result outranks a reviewer opinion', () => {
+  it('a later review pass cannot override a failed test', () => {
+    const rows = [{ ...row('R-1', 'fail', A, '2026-10-14T10:00:00Z'), source: 'test' as const }, { ...row('R-1', 'pass', A, '2026-10-14T11:00:00Z'), source: 'review' as const }];
+    expect(foldMissionSpec({ scope: ['R-1'], waived: [], rows, target: integration() }).verdict).toBe('fail');
+  });
+
+  it('a later test supersedes the failed one', () => {
+    const rows = [{ ...row('R-1', 'fail', A, '2026-10-14T10:00:00Z'), source: 'test' as const }, { ...row('R-1', 'pass', A, '2026-10-14T11:00:00Z'), source: 'test' as const }];
+    expect(foldMissionSpec({ scope: ['R-1'], waived: [], rows, target: integration() }).verdict).toBe('pass');
+  });
+});

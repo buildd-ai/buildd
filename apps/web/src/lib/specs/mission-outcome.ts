@@ -4,11 +4,12 @@ import { and, asc, eq, inArray } from 'drizzle-orm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
-import { VERIFICATION_VERDICTS, boundEvidenceRefs, type VerificationVerdict } from '@buildd/core/verification-check';
+import { VERIFICATION_VERDICTS, boundEvidenceRefs, verdictSourceOfEvidence, type VerificationVerdict } from '@buildd/core/verification-check';
 import type { LivingSpecGoalCriterion } from '@buildd/shared';
 import type { RequirementRef } from '@buildd/spec-contract/requirements';
 import { githubApi } from '@/lib/github';
-import { encodeRef, isAncestor } from '@/lib/integration-refresh';
+import { isAncestor } from '@/lib/integration-refresh';
+import { integrationTarget } from './mission-integration-target';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
 import { requestingPerson } from '@/lib/request-person';
 import { mergedDeliveryCommits } from '@/lib/workflow/delivery-view';
@@ -16,6 +17,7 @@ import { isUuid } from '@/lib/uuid';
 import { livingSpecCriteriaOf, selectedScope } from './selected-scope';
 import { foldMissionSpec, verdictIsCurrent, type MissionSpecFold, type MissionTarget, type MissionVerdictRow } from './mission-outcome-fold';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
+import { settleVerdictSource } from './verdict-source';
 import { revisionCriterionHashes } from './criteria';
 
 /**
@@ -69,7 +71,9 @@ async function missionRepo(mission: MissionRow): Promise<{ installationId: numbe
 
 /**
  * The mission's integrated target, as GitHub reports it now (never a runner's
- * word). mission-branch: the integration branch's head. direct: the merge
+ * word). mission-branch: the integration branch's head, or once the mission PR
+ * merged and the branch is gone, a trunk commit holding that merge
+ * (`integrationTarget`). direct: the merge
  * commits of every merged mission deliverable; a verdict's commit counts only
  * when it contains all of them (checked per candidate head in `candidateHeads`).
  * Unknown ancestry is never a pass.
@@ -78,15 +82,7 @@ export async function resolveMissionTarget(mission: MissionRow, candidateHeads: 
   const repo = await missionRepo(mission);
   if ('error' in repo) return { kind: 'unknown', reason: repo.error };
   const branch = missionIntegrationBase(mission);
-  if (branch) {
-    try {
-      const ref = await api(repo.installationId, `/repos/${repo.fullName}/git/ref/heads/${encodeRef(branch)}`);
-      const sha = typeof ref?.object?.sha === 'string' ? ref.object.sha : null;
-      return sha ? { kind: 'integration', headSha: sha.toLowerCase(), branch } : { kind: 'unknown', reason: `the integration branch ${branch} could not be read` };
-    } catch {
-      return { kind: 'unknown', reason: `the integration branch ${branch} could not be read` };
-    }
-  }
+  if (branch) return integrationTarget(repo, branch, candidateHeads, api);
   const missionTasks = await db.select({ id: tasks.id, taskClass: tasks.taskClass, kind: tasks.kind, title: tasks.title, mode: tasks.mode, creationSource: tasks.creationSource, category: tasks.category })
     .from(tasks).where(eq(tasks.missionId, mission.id));
   const deliverableIds = missionTasks.filter(isDeliverableTask).map((t) => t.id);
@@ -111,12 +107,12 @@ export async function resolveMissionTarget(mission: MissionRow, candidateHeads: 
 }
 
 async function missionRows(missionId: string, specRevisionId: string, hashes: ReadonlyMap<string, string>): Promise<MissionVerdictRow[]> {
-  const rows = await db.select({ id: specOutcomeVerdicts.id, criterionId: specOutcomeVerdicts.criterionId, verdict: specOutcomeVerdicts.verdict, headSha: specOutcomeVerdicts.headSha, at: specOutcomeVerdicts.createdAt, textHash: specOutcomeVerdicts.criterionTextHash })
+  const rows = await db.select({ id: specOutcomeVerdicts.id, criterionId: specOutcomeVerdicts.criterionId, verdict: specOutcomeVerdicts.verdict, headSha: specOutcomeVerdicts.headSha, at: specOutcomeVerdicts.createdAt, textHash: specOutcomeVerdicts.criterionTextHash, evidence: specOutcomeVerdicts.evidence })
     .from(specOutcomeVerdicts)
     .where(and(eq(specOutcomeVerdicts.missionId, missionId), eq(specOutcomeVerdicts.specRevisionId, specRevisionId)))
     .orderBy(asc(specOutcomeVerdicts.createdAt));
   // A verdict on another wording does not count for this one (R-13); one recorded before wordings were kept does.
-  return rows.filter((r) => !r.textHash || r.textHash === hashes.get(r.criterionId)).map(({ textHash: _t, ...r }) => r) as MissionVerdictRow[];
+  return rows.filter((r) => !r.textHash || r.textHash === hashes.get(r.criterionId)).map(({ textHash: _t, evidence, ...r }) => ({ ...r, source: verdictSourceOfEvidence(evidence) })) as MissionVerdictRow[];
 }
 
 export type MissionSpecStanding = MissionSpecFold & { target: MissionTarget; scope: RequirementRef[]; title: string };
@@ -228,6 +224,7 @@ export async function recordMissionSpecVerdict(caller: SpecCaller, missionId: un
     headSha: headSha.toLowerCase(),
     evidence: { refs, readIds, ...(observed ? { observed } : {}), ...(reaffirms ? { reaffirms } : {}), recordedBy },
   }).returning({ id: specOutcomeVerdicts.id });
+  await settleVerdictSource(row.id);
   return { ok: true, verdictId: row.id, standing: await readMissionSpecStanding(mission, c, api) };
 }
 
@@ -259,6 +256,7 @@ export async function recordMissionVerdictServer(missionId: string, input: {
     headSha: input.headSha.toLowerCase(),
     evidence: { ...input.evidence, recordedBy: input.recordedBy },
   }).returning({ id: specOutcomeVerdicts.id });
+  await settleVerdictSource(row.id);
   return { ok: true, verdictId: row.id };
 }
 

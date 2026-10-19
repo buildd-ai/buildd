@@ -252,6 +252,19 @@ export async function republishPrHeads(
 export const RECOVERABLE_BLOCKER_REPAIR: NonNullable<QuestionCheckDeps['fileRepair']> = fileRecoverableBlockerRepair;
 
 /**
+ * The other half of that slot (lib/recoverable-blocker-reconcile.ts): a
+ * completed task, or a park tagged with a completed repair, resumes every task
+ * parked on the repair. A no-op for any other task. Lazy, like republishPrHeads.
+ */
+export async function reconcileRecoverableBlockerRepair(
+  task: { id: string; context?: unknown; summary?: string | null },
+): Promise<void> {
+  const m = await import('@/lib/recoverable-blocker-reconcile');
+  if (task.context !== undefined && !m.isRecoverableBlockerRepair(task.context)) return;
+  await m.reconcileBlockedOnRepair(m.dbReconcilePort(), { id: task.id, summary: task.summary ?? null });
+}
+
+/**
  * The worker route's shipped-PR slot (lib/integration-refresh.ts): the missions
  * module says whether a mission's shipping PR merged, so a refresh task with
  * nothing left to ship can complete on that evidence.
@@ -264,6 +277,17 @@ export const MISSION_SHIPPING_PR_MERGED: ShippingPrMergedReader = (missionId, re
  * before epochs, and which workspace's repo holds its branches.
  */
 export const MISSION_EPOCH_HOOKS: MissionEpochHooks = missionEpochHooks;
+
+/**
+ * The scope-answer slot (docs/specs/workflow-kernel-library.md §6): the task
+ * routes record a person's answer to a held mission scope decision through the
+ * missions module's door (lib/mission-epoch-door.ts), loaded on first use.
+ */
+type ScopeAnswerInput = Parameters<typeof import('@/lib/mission-epoch-door').answerMissionTaskScope>[0];
+export const MISSION_SCOPE_ANSWER = {
+  answer: async (p: ScopeAnswerInput) => (await import('@/lib/mission-epoch-door')).answerMissionTaskScope(p),
+  answerQuietly: async (p: ScopeAnswerInput) => (await import('@/lib/mission-epoch-door')).answerMissionTaskScopeQuietly(p),
+};
 
 /**
  * The escalation gate's slots (lib/escalation-gate-check.ts): Jev, the ledger

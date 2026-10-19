@@ -15,7 +15,7 @@ import { DISPATCHABLE_BACKENDS, backendLabel, describeBackendRouting, isBackendP
 import { TIERS, isTierSurface, type Tier, type TierSurface } from './model-tier-defaults';
 import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
-import { TERMS, missionGateTerm, titleWithAttempt } from '@buildd/shared';
+import { TERMS, missionGateTerm, titleWithAttempt, githubReviewStatesLine, DECISION_LABELS } from '@buildd/shared';
 import { ARTIFACT_TYPES, isArtifactType, isTerminalWorkerStatus, isTerminalTaskStatus, INTERACTIVE_WORKER_RUNNER, isWorkspaceExecutor, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
 import { formatDispatchHealth, type DispatchHealthReport } from './dispatch-health-report';
@@ -144,14 +144,18 @@ export function pageWorkspaceExplain(data: { subjects?: any[]; considered?: numb
  * GitHub's review counts.
  */
 export function formatGetPrDelivery(data: {
-  reviews?: { approved?: number; changesRequested?: number } | null;
+  reviews?: { approved?: number; changesRequested?: number; commented?: number } | null;
   delivery?: {
     headline: string; detail: string | null;
     review: { line: string } | null;
+    /** AC-24: each round with buildd's verdict, and that GitHub lists those reviews as Commented. */
+    rounds?: { line: string; githubNote: string | null } | null;
+    /** AC-43: a review escalation's question, why automation stopped, the unresolved findings and the actions open now. */
+    decision?: { question: string; why: string; unresolved: { open: string[]; awaitingVerification: string[] }; actions: Array<{ label: string }> } | null;
     repairs: Array<{ label: string; words: string }>;
     reviewApproval?: { state: string; description: string } | null;
   } | null;
-}): { standingLine: string; reviewLine: string; repairsLine: string; approvalLine: string } {
+}): { standingLine: string; reviewLine: string; roundsLine: string; decisionLine: string; repairsLine: string; approvalLine: string } {
   const d = data.delivery;
   const r = data.reviews ?? {};
   const approved = r.approved ?? 0;
@@ -159,10 +163,26 @@ export function formatGetPrDelivery(data: {
   const github = approved > 0 || changes > 0
     ? `Reviews: ${approved} approved${changes > 0 ? `, ${changes} changes requested` : ''}`
     : 'Reviews: none';
-  if (!d) return { standingLine: '', reviewLine: github, repairsLine: '', approvalLine: '' };
+  if (!d) return { standingLine: '', reviewLine: github, roundsLine: '', decisionLine: '', repairsLine: '', approvalLine: '' };
+  const githubStates = githubReviewStatesLine(r) ?? '';
+  const dec = d.decision;
+  const decisionLine = dec
+    ? [
+        `Decision: ${dec.question} ${dec.why}`,
+        dec.unresolved.open.length > 0 ? `${DECISION_LABELS.open}: ${dec.unresolved.open.join('; ')}` : '',
+        dec.unresolved.awaitingVerification.length > 0 ? `${DECISION_LABELS.awaitingVerification}: ${dec.unresolved.awaitingVerification.join('; ')}` : '',
+        `${DECISION_LABELS.choicesOnTaskPage}: ${dec.actions.map(a => a.label).join(', ')}`,
+      ].filter(Boolean).join('\n')
+    : '';
   return {
     standingLine: `Where it stands: ${d.headline}${d.detail ? ` (${d.detail})` : ''}`,
     reviewLine: d.review ? `Reviews: ${d.review.line}` : 'Reviews: no review round yet',
+    decisionLine,
+    // AC-24: GitHub's formal states beside buildd's verdicts, never in place of them.
+    roundsLine: [
+      d.rounds ? `Review rounds: ${d.rounds.line}.${d.rounds.githubNote ? ` ${d.rounds.githubNote}` : ''}` : '',
+      githubStates,
+    ].filter(Boolean).join('\n'),
     repairsLine: d.repairs.length > 0 ? `Repairs: ${d.repairs.map(x => `${x.label} · ${x.words}`).join('; ')}` : '',
     // R-43: the review gate is its own line, never folded into CI.
     approvalLine: d.reviewApproval ? `Review approval: ${d.reviewApproval.description}` : '',
@@ -1030,7 +1050,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_workspaces: '{ offset?, limit? (default 20, max 50) } — the workspaces this connection can act in, grouped by team: id, name, repo, the level you act at there and your access (read or read-write). On an account-level connection it lists exactly the workspaces you granted it that you are still a member of, nothing else. Name one of them (id, owner/repo or name) on any other action. Read-only; nextOffset pages.',
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active"), missionId? (full UUID) } — unknown params and bad values are rejected, never ignored. "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts"|"scheduling"|"dispatch"|"milestones", default workers+artifacts; "scheduling" adds dependsOn, pathManifest/declaration, tier, verificationCommand, specSource, and the task\'s frozen estimate when its team opted into task estimates; "dispatch" adds the task\'s dispatch outbox trail, one line per wake: cause, status, transport, handed-off time, delivered via, attempts, last error; "milestones" adds each shown worker\'s milestones, one line each (ISO time, type, label), the newest 25 plus every `Pre-merge:`/`Merge:` line, which record what the runner\'s merge drivers and mergiraf did), fullDescription?, all? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts: by default the newest 3 workers, 10 artifacts and 5 loop iterations, each cut saying how many it left out; all:true returns every one (and full worker errors). Use this to follow a task to completion after create_task.',
-    claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), waitSeconds? (0-45, with taskId: reserve the task for this session and, while only an unfinished dependency blocks it, keep retrying until it frees or the wait ends; call again to keep waiting), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. A task in a mission with executor="local" is claimable ONLY this way, from your interactive session (never auto-assigned). OAuth budget pacing is skipped. From your own Claude Code session the claim runs on your plan, so the account\'s Claude session wall and the team\'s recorded provider rate-limit walls are skipped too; a runner that names a task is still held by them, and tenant work is still held by its tenant budget. A held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, scope-undeclared serialization, provider walls or account limits, and it is recorded. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason (a budget_exhausted refusal names the wall that held it and when it lifts), plus the specific gate that excluded taskId when one was given.',
+    claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), waitSeconds? (0-45, with taskId: reserve the task for this session and, while only an unfinished dependency blocks it, keep retrying until it frees or the wait ends; call again to keep waiting), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. A task in a mission with executor="local" is claimable ONLY this way, from your interactive session (never auto-assigned). OAuth budget pacing is skipped. From your own Claude Code session the claim runs on your plan, so the account\'s Claude session wall and the team\'s recorded provider rate-limit walls are skipped too; a runner that names a task is still held by them, and tenant work is still held by its tenant budget. A held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, provider walls or account limits, and it is recorded. A task that declares no files is not held for that, so there is nothing to force. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason (a budget_exhausted refusal names the wall that held it and when it lifts), plus the specific gate that excluded taskId when one was given.',
     receive_messages: '{ workerId? } — collect the messages sent to you: human steering (send_agent_message / the task page), replies to your post_note questions, mission guidance and worker→worker messages. Each is returned once and acknowledged as read. On a runner-managed worker the runner already delivers these into your session at the next turn boundary, so this returns nothing there; in an interactive or local-plugin session call it when a hook says messages are waiting. workerId auto-resolved from context if omitted.',
     update_progress: '{ workerId?, progress? (legacy self-report; never displayed), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, costUsd?, costBasis? ("real"|"virtual"|"unknown"), lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted. inputTokens/outputTokens/costUsd are self-reported usage, written as a plain overwrite (a later, smaller report replaces rather than merges with the prior value) — the only way an interactive MCP session, with no runner watching the process, gets counted in get_usage_stats. costBasis says how that usage was charged: "real" (per token, e.g. an API key) or "virtual" (a subscription plan, valued at list price); omit it when you do not know and it records as unknown.',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), alreadyShippedIn? (PR number), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]), inputTokens?, outputTokens?, costUsd?, costBasis? ("real"|"virtual"|"unknown") } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. alreadyShippedIn is for a pr_required task whose work already landed in a merged PR it does not own (another task shipped it first): pass that PR number and completion succeeds without a PR of its own once GitHub confirms it is merged in the workspace repo; any commits or edits of this worker\'s own also need discardEdits. A mission-branch refresh task (merge dev into the integration branch) whose merge was already pushed straight to the branch needs neither: completion succeeds without a PR once GitHub confirms the branch contains the dispatched trunk sha. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). inputTokens/outputTokens/costUsd are self-reported usage — same plain overwrite as update_progress (a later, smaller report replaces rather than merges with the prior value), the only way an interactive MCP session\'s cost gets counted in get_usage_stats; costBasis as in update_progress. workerId auto-resolved from context if omitted',
@@ -2152,7 +2172,10 @@ async function requireAdminLevel(ctx: ActionContext, action: string, params?: Re
   if (isPersonalRoleCall(action, params)) {
     return level === 'worker' ? null : forbiddenResult(`action '${action}' with personal: true requires a worker or admin token`, level, 'worker');
   }
-  return forbiddenResult(`action '${action}' requires admin token level`, level, 'admin');
+  const hint = action === 'send_agent_message'
+    ? '. To message a sibling worker in your workspace at worker level, call the send_worker_message tool (recipientTaskId, type, body); replies arrive via receive_messages'
+    : '';
+  return forbiddenResult(`action '${action}' requires admin token level${hint}`, level, 'admin');
 }
 
 /**
@@ -3612,7 +3635,7 @@ export async function handleBuilddAction(
         ? `Failing: ${shownFailing.map(c => (c.url ? `${c.name} (${c.url})` : c.name)).join(', ')}${omittedFailing > 0 ? ` (+${omittedFailing} more — all:true lists every one)` : ''}`
         : '';
 
-      const { standingLine, reviewLine, repairsLine, approvalLine } = formatGetPrDelivery(data);
+      const { standingLine, reviewLine, roundsLine, decisionLine, repairsLine, approvalLine } = formatGetPrDelivery(data);
 
       const mergeableLine = pr.mergeable === true ? 'Mergeable: yes'
         : pr.mergeable === false ? `Mergeable: no (${pr.mergeableState ?? 'blocked'})`
@@ -3702,6 +3725,8 @@ export async function handleBuilddAction(
         failingLine,
         approvalLine,
         reviewLine,
+        roundsLine,
+        decisionLine,
         repairsLine,
         statsLine,
         supersededLine,

@@ -19,7 +19,8 @@ mock.module('./credential-health', () => ({ recordCredentialAuthSuccess: mockRec
 const {
   parseCloudflareCredential, maskCloudflareCredential, verifyCloudflareToken, verifyCloudflareCredential,
   checkCloudflareCapabilities, describeCloudflareCapability, missingDeployPermissions, capabilityProblems,
-} = await import('./cloudflare-credential');
+  missingDeployPermissionsFromVerification,
+} =await import('./cloudflare-credential');
 
 const ACCOUNT = '0123456789abcdef0123456789abcdef';
 const TOKEN = 'cf_test_token_not_real_000000000000000000';
@@ -112,7 +113,7 @@ const CF_AUTH_ERROR = { success: false, errors: [{ code: 10000, message: 'Authen
 const ACTIVE = { success: true, result: { id: 'x', status: 'active' } };
 
 /** A fake Cloudflare: the token is active; Workers AI and the gateway answer as given. */
-function cloudflare(opts: { workersAi?: number; gateway?: number; containers?: number } = {}) {
+function cloudflare(opts: { workersAi?: number; gateway?: number; containers?: number; r2?: number } = {}) {
   const calls: string[] = [];
   const f = async (url: string) => {
     calls.push(url);
@@ -120,6 +121,7 @@ function cloudflare(opts: { workersAi?: number; gateway?: number; containers?: n
     if (url.includes('/ai/models/search')) return opts.workersAi === 200 || opts.workersAi === undefined ? json(200, { success: true, result: [] }) : json(opts.workersAi, CF_AUTH_ERROR);
     if (url.includes('/ai-gateway/gateways/')) return opts.gateway === 200 || opts.gateway === undefined ? json(200, { success: true, result: { id: 'buildd' } }) : json(opts.gateway, opts.gateway === 404 ? { success: false, errors: [{ code: 7002, message: 'Not Found' }] } : CF_AUTH_ERROR);
     if (url.includes('/containers/applications')) return opts.containers === undefined || opts.containers === 200 ? json(200, { success: true, result: [] }) : json(opts.containers, CF_AUTH_ERROR);
+    if (url.includes('/r2/buckets') && opts.r2 !== undefined && opts.r2 !== 200) return json(opts.r2, CF_AUTH_ERROR);
     if (/\/workers\/scripts$|\/r2\/buckets|\/workers\/subdomain$/.test(url)) return json(200, { success: true, result: [] });
     return json(404, {});
   };
@@ -171,6 +173,17 @@ describe('checkCloudflareCapabilities', () => {
     expect(missingDeployPermissions(caps)).toEqual(['Containers Edit']);
     expect(describeCloudflareCapability('containers', caps.containers!)).toBe('Containers: not allowed (add Containers Edit to this token)');
     expect(capabilityProblems(caps)).toBe('Containers: not allowed (add Containers Edit to this token)');
+  });
+
+  it('reads the missing deploy permissions back from the stored verification text', async () => {
+    const caps = await checkCloudflareCapabilities({ apiToken: TOKEN, accountId: ACCOUNT }, cloudflare({ containers: 403, r2: 401, workersAi: 403 }).f);
+    const stored = capabilityProblems(caps);
+    expect(missingDeployPermissionsFromVerification(stored)).toEqual(missingDeployPermissions(caps));
+    expect(missingDeployPermissionsFromVerification(stored)).toEqual(['Containers Edit', 'Workers R2 Storage Edit']);
+    // Not a deploy permission, nothing stored, or a token-level error: none named.
+    expect(missingDeployPermissionsFromVerification('Workers AI: not allowed (add Workers AI Read to this token)')).toEqual([]);
+    expect(missingDeployPermissionsFromVerification(null)).toEqual([]);
+    expect(missingDeployPermissionsFromVerification('HTTP 401: Invalid API Token')).toEqual([]);
   });
 
   it('a network error or a 5xx is unknown, not a refusal', async () => {

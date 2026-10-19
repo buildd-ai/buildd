@@ -42,7 +42,7 @@ describe('judgeBaseDelta', () => {
 
   test('shared files and risky paths are refresh_unsafe and named, whatever the gap size', () => {
     expect(judgeBaseDelta({ ...fact, baseFiles: ['src/x.ts', 'src/a.ts'] }, 20)).toMatchObject({ tolerated: false, cause: 'refresh_unsafe', files: ['src/a.ts'] });
-    expect(judgeBaseDelta({ ...fact, baseCommits: 1, baseFiles: ['packages/core/db/schema.ts'] }, 20)).toMatchObject({ cause: 'refresh_unsafe', files: ['packages/core/db/schema.ts'] });
+    expect(judgeBaseDelta({ ...fact, baseCommits: 1, prFiles: ['packages/core/db/schema.ts'] }, 20)).toMatchObject({ cause: 'refresh_unsafe', files: ['packages/core/db/schema.ts'] });
     expect(judgeBaseDelta({ ...fact, prFiles: ['bun.lock'] }, 20)).toMatchObject({ cause: 'refresh_unsafe', files: ['bun.lock'] });
   });
 
@@ -68,6 +68,35 @@ describe('judgeBaseDelta', () => {
     test('the PR\'s own manifest stays risky even when the base only bumped it', () => {
       expect(judgeBaseDelta({ ...gap, prFiles: ['apps/web/package.json'], versionBumpFiles: manifests }, 20))
         .toMatchObject({ tolerated: false, cause: 'refresh_unsafe', files: ['apps/web/package.json'] });
+    });
+  });
+
+  // 92a439a6: a migration only the base gap carries held a PR that changes no schema (#5179).
+  describe('migrations and the schema are risky only against the PR\'s own', () => {
+    const migration = 'packages/core/drizzle/20261018120000_other/migration.sql';
+
+    test('a base-only migration or schema change, with none on the PR side, is tolerated', () => {
+      expect(judgeBaseDelta({ ...fact, baseCommits: 2, baseFiles: ['src/x.ts', migration] }, 3)).toEqual({ tolerated: true, baseCommits: 2, baseFileCount: 2 });
+      expect(judgeBaseDelta({ ...fact, baseCommits: 2, baseFiles: [migration, 'packages/core/db/schema.ts'] }, 3)).toMatchObject({ tolerated: true });
+    });
+
+    test('a base migration against the PR\'s own migration or schema change is refresh_unsafe', () => {
+      const prMigration = 'packages/core/drizzle/20261018110000_mine/migration.sql';
+      expect(judgeBaseDelta({ ...fact, baseFiles: [migration], prFiles: ['src/a.ts', prMigration] }, 20))
+        .toMatchObject({ tolerated: false, cause: 'refresh_unsafe', basis: 'risky_path', files: [migration, prMigration].sort() });
+      expect(judgeBaseDelta({ ...fact, baseFiles: [migration], prFiles: ['packages/core/db/schema.ts'] }, 20))
+        .toMatchObject({ cause: 'refresh_unsafe', basis: 'risky_path', files: expect.arrayContaining([migration, 'packages/core/db/schema.ts']) });
+    });
+
+    test('a base-side lockfile, dependency change or CI workflow stays risky on its own', () => {
+      for (const f of ['bun.lock', 'apps/web/package.json', '.github/workflows/build.yml', 'scripts/skills-listed.test.ts']) {
+        expect(judgeBaseDelta({ ...fact, baseFiles: [f] }, 20)).toMatchObject({ tolerated: false, cause: 'refresh_unsafe', basis: 'risky_path', files: [f] });
+      }
+    });
+
+    test('a base-only migration still counts against the commit bound and overlap', () => {
+      expect(judgeBaseDelta({ ...fact, baseCommits: 5, baseFiles: [migration] }, 3)).toMatchObject({ tolerated: false, cause: 'refresh_exhausted' });
+      expect(judgeBaseDelta({ ...fact, baseFiles: [migration, 'src/a.ts'] }, 20)).toMatchObject({ tolerated: false, cause: 'refresh_unsafe', basis: 'overlap' });
     });
   });
 

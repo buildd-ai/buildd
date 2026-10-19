@@ -43,6 +43,21 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Hooks call this twice per commit (pre-commit, then commit-msg) and each call
+# used to rev-list every origin/mission/* ref. Cache the choice per HEAD for a
+# few minutes in the git dir so the second call (and an amend loop) is free.
+CACHE_FILE="$(git rev-parse --git-path no-prod-data-base)"
+CACHE_TTL=300
+HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo none)"
+if [ -z "$BASE_REF" ] && [ -f "$CACHE_FILE" ]; then
+  read -r c_head c_time c_base < "$CACHE_FILE" || true
+  if [ "${c_head:-}" = "$HEAD_SHA" ] && [ -n "${c_base:-}" ] \
+     && [ $(( $(date +%s) - ${c_time:-0} )) -lt "$CACHE_TTL" ] \
+     && git rev-parse --verify --quiet "$c_base" >/dev/null; then
+    BASE_REF="$c_base"
+  fi
+fi
+
 if [ -z "$BASE_REF" ]; then
   BASE_REF="origin/dev"
   best=""
@@ -55,6 +70,7 @@ if [ -z "$BASE_REF" ]; then
     fi
   done < <({ git rev-parse --verify --quiet origin/dev >/dev/null && echo origin/dev; \
              git for-each-ref --format='%(refname:short)' 'refs/remotes/origin/mission/'; } )
+  echo "$HEAD_SHA $(date +%s) $BASE_REF" > "$CACHE_FILE" 2>/dev/null || true
 fi
 
 if [ "$RESOLVE_ONLY" = 1 ]; then
@@ -63,7 +79,12 @@ if [ "$RESOLVE_ONLY" = 1 ]; then
 fi
 
 if git rev-parse --verify --quiet "$BASE_REF" >/dev/null; then
-  git fetch --quiet origin "${BASE_REF#origin/}" 2>/dev/null || true
+  # A commit hook must not wait on the network: skip the refresh when scanning
+  # the staged tree (CI and manual runs still fetch).
+  case " ${ARGS[*]-} " in
+    *" --staged "*) ;;
+    *) git fetch --quiet origin "${BASE_REF#origin/}" 2>/dev/null || true ;;
+  esac
 else
   echo "no-prod-data (local): '$BASE_REF' not found locally and could not be fetched -- skipping." >&2
   exit 0

@@ -19,10 +19,11 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import type { Command, CurrentView, LivePr, VerdictFindings } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
-import { catchUpBase, ingestFact, readDeltaForApproval, type GithubFactReader } from './facts';
+import { carryForwardReading, catchUpBase, ingestFact, projectEquivalentHeadSql, readDeltaForApproval, type GithubFactReader } from './facts';
 import { deltaApprovalSource, type DeltaReading } from '@buildd/workflow-kernel/delta-approval';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { settleLanes } from './landing-lane';
+import { scheduleEffectDrain } from './effect-timer';
 import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
 import { kernelDeliveryById, kernelDeliveryForPr, kernelDeliveryInWorkspace, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
@@ -31,7 +32,7 @@ import { policyValue } from '@/lib/policy-overrides';
 import { preflightMissOf } from './preflight-miss';
 import { landThroughKernel as landThroughKernelImpl, type KernelLanding, type LandingInput } from './landing';
 import { enqueueEffectSql, enqueueMissingEffects, existingEffectsSql } from './enqueue-missing';
-import { floorCandidatesSql, floorCheckedSql, strandedMechanicalRepair, treadmillCycleCandidatesSql, type FloorCandidate, type TreadmillCycleCandidate } from './reconcile';
+import { ENDED_REVIEWER_GRACE_MS, endedReviewerSql, floorCandidatesSql, floorCheckedSql, roundWaitingOnReviewer, strandedMechanicalRepair, treadmillCycleCandidatesSql, type FloorCandidate, type TreadmillCycleCandidate } from './reconcile';
 
 // The worker PATCH's reading of a terminal report (S30), exported here because routes reach the kernel only through the seam.
 export { attemptEndFromPatch, taskRetryCoversAttemptEnd } from './hand-off';
@@ -111,11 +112,17 @@ export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Pr
       console.error(`[workflow] landing lane release for delivery ${deliveryId} failed:`, err);
       return [] as string[];
     });
+    // What this drain parked, backed off or left pending comes due on the effect timer (effect-timer.ts),
+    // not at the next unrelated drain. The woken waiter is queued before its drain: if that drain is
+    // cut short, the next tick runs it.
+    for (const waiter of woken) if (waiter !== deliveryId) await scheduleEffectDrain(waiter, deps.exec);
+    await scheduleEffectDrain(deliveryId, deps.exec);
     for (const waiter of woken) if (waiter !== deliveryId) await drainDelivery(waiter, deps);
     return total;
   } catch (err) {
-    // The effect rows are durable; the cron drain picks up whatever this missed.
+    // The effect rows are durable; the effect timer and the floor pick up whatever this missed.
     console.error(`[workflow] inline drain for delivery ${deliveryId} failed:`, err);
+    await scheduleEffectDrain(deliveryId, deps.exec);
     return null;
   }
 }
@@ -828,12 +835,23 @@ export async function attemptEnded(p: {
   if ((p.status === 'completed' || p.commitCount === 0) && !p.localHeadSha && !proof && reported === 0 && boundHead && live && live.state === 'open' && !live.merged && live.headSha !== boundHead && d.repoFullName) {
     proof = { liveContainsLocal: false, contentDiffChanged: true };
   }
-  // 58c8961e: a repair's head on an approved delivery may be reviewed as a delta of the approval.
+  // AC-79: a review fix whose PR moved off its bound head only by a merge of the base pushed nothing of
+  // its own: the PR's diff at the live head, against the base, is the diff at the bound head.
+  const baseOnly = attemptKind === 'fix' && d.state === 'FIXING' && boundHead && d.repoFullName
+    ? await baseOnlyMove(p.task.workspaceId, d.repoFullName, boundHead, live, deps)
+    : false;
+  // T11 / §8.3 (92a439a6): a repair whose head leaves the PR's diff unchanged (an agent conflict repair
+  // that only merged the base) keeps the approval. Read here as HeadObserved reads it: when the end
+  // arrives before the push webhook, that later HeadObserved is `head_unchanged` and never reads it.
+  // A fix in FIXING (AC-79 above) never reads it: only REPAIRING carries here.
+  let carryForward: 'content_equivalent' | 'own_refresh' | null = null;
+  // 58c8961e: otherwise a repair's head on an approved delivery may be reviewed as a delta of the approval.
   let delta: DeltaReading | null = null;
-  if (attemptKind !== 'owner' && live && live.state === 'open' && !live.merged && d.repoFullName && deltaApprovalSource(view)) {
+  if (attemptKind !== 'owner' && live && live.state === 'open' && !live.merged && d.repoFullName) {
     const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
     const reader = repo ? readerFor(deps, repo.installationId) : undefined;
-    delta = await readDeltaForApproval(view, d.repoFullName, live, reader);
+    if (d.state === 'REPAIRING' && d.approvalBasis && d.approvalBasis !== 'policy') carryForward = (await carryForwardReading(view, d.repoFullName, live, deps.exec ?? seamExec, reader)).evidence;
+    if (!carryForward && deltaApprovalSource(view)) delta = await readDeltaForApproval(view, d.repoFullName, live, reader);
   }
   const cmd: Command = {
     type: 'AttemptEnded',
@@ -851,10 +869,18 @@ export async function attemptEnded(p: {
     reviewRequired: true,
     ...(ci ? { ci } : {}),
     ...(changedPaths ? { changedPaths } : {}),
+    ...(carryForward ? { carryForward } : {}),
     ...(delta ? { delta } : {}),
     ...(p.noopEvidence && attemptKind === 'fix' ? { noopEvidence: p.noopEvidence } : {}),
+    ...(baseOnly ? { baseOnly: true } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
+  if (attemptKind !== 'owner' && result.result === 'applied' && result.decision.toState === 'APPROVED' && result.decision.evidence?.carryForward && live) {
+    // §8.3: the legacy merge gate's `equivalentHeadShas`, projected after the committed carry as T13's is.
+    const from = String(result.decision.evidence.carriedFrom ?? result.decision.evidence.previousHead ?? '');
+    await (deps.exec ?? seamExec)(projectEquivalentHeadSql(deliveryId, from, live.headSha))
+      .catch((err) => console.warn(`[workflow] equivalentHeadShas projection failed for ${deliveryId}:`, err));
+  }
   if (result.result !== 'applied' && result.result !== 'duplicate') {
     console.log(`[workflow] AttemptEnded(${attemptKind}) for task ${p.task.id}: ${result.result} (${result.reason})`);
   }
@@ -990,7 +1016,7 @@ export async function handOffToLegacy(deliveryId: string, deps: SeamDeps = {}): 
 // ── §9 completion gate ──────────────────────────────────────────────────────
 
 export interface GateRefusal {
-  code: 'delivery_not_advanced' | 'repair_still_conflicted' | 'repair_still_colliding' | 'repair_unrelated_diff';
+  code: 'delivery_not_advanced' | 'repair_still_conflicted' | 'repair_still_colliding' | 'repair_unrelated_diff' | 'repair_base_only';
   error: string;
   hint: string;
   boundHeadSha: string | null;
@@ -1075,6 +1101,16 @@ export async function fixCompletionGate(p: {
     // re-review, which verifies it like any fix.
     const ctx = ctxOf(p.task);
     const human = ctx.trigger === 'human';
+    // AC-79: the head moved only by a merge of the base (the PR's diff is the bound head's): nothing on
+    // it is the fix's own work, so it cannot complete on it.
+    if (p.task.deliveryRole === 'fix' && !human && attempt.boundHeadSha && await baseOnlyMove(p.task.workspaceId, d.repoFullName, attempt.boundHeadSha, live, deps, repo)) {
+      return {
+        code: 'repair_base_only',
+        error: `PR #${d.prNumber}'s head moved only by a merge of its base since your fix started at ${attempt.boundHeadSha.slice(0, 7)}: none of the commits on it is your fix.`,
+        hint: 'Fix the findings and push your own commits, then complete again. A merge of the base does not count as the fix.',
+        boundHeadSha: attempt.boundHeadSha, liveHeadSha: live.headSha, localHeadSha: p.localHeadSha,
+      };
+    }
     const claim = p.fixedElsewhere && openFindings(view).some((f) => p.fixedElsewhere!.findingIds.includes(f.id)) ? p.fixedElsewhere : null;
     if (p.task.deliveryRole === 'fix' && !human && !claim && attempt.boundHeadSha) {
       const reader = readerFor(deps, repo.installationId);
@@ -1108,6 +1144,21 @@ export async function fixCompletionGate(p: {
     liveHeadSha: live.headSha,
     localHeadSha: p.localHeadSha,
   };
+}
+
+/**
+ * AC-79: did the PR move from `fromSha` to the live head only by base commits? True only on a read
+ * that says the PR's diff against the base is the same at both (`contentEquivalent`); unread is false.
+ */
+async function baseOnlyMove(
+  workspaceId: string, repoFullName: string, fromSha: string, live: LivePr | null, deps: SeamDeps,
+  repo?: { installationId: number } | null,
+): Promise<boolean> {
+  if (!live || live.state !== 'open' || live.merged || live.headSha === fromSha || !live.baseRef) return false;
+  const r = repo ?? await (deps.repoFor ?? workspaceRepo)(workspaceId);
+  const reader = r ? readerFor(deps, r.installationId) : null;
+  if (!reader?.contentEquivalent) return false;
+  return (await reader.contentEquivalent(repoFullName, live.baseRef, fromSha, live.headSha).catch(() => null)) === true;
 }
 
 // ── T9: a fix attempt is claimed ────────────────────────────────────────────
@@ -1192,7 +1243,7 @@ export async function recordReviewVerdict(p: {
   evidenceSha?: string | null;
   /** What the reviewer said about findings (§5): its structured output, read defensively. */
   output?: unknown;
-}, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; toState: string | null }> {
+}, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; toState: string | null; settled?: CommandResult }> {
   const roundId = ctxOf(p.reviewerTask).workflowRoundId as string | undefined;
   if (!p.reviewerTask.deliveryId || !roundId) return { handled: false };
   // Fail closed: a delivery of another workspace throws, never `handled: false`, which the PATCH reads
@@ -1212,8 +1263,20 @@ export async function recordReviewVerdict(p: {
     ...(p.evidenceSha !== undefined ? { evidenceSha: p.evidenceSha, reviewerTaskId: p.reviewerTask.id, maxContractRetries: REVIEW_CONTRACT_RETRIES } : {}),
     ...(await resolveDeferralTasks(verdictFindingsOf(p.output), deliveryId, deps.exec ?? seamExec)),
   }, { ref: { deliveryId }, exec: deps.exec });
+  // 7105282e: a completed reviewer always settles its round. A verdict T6 refused or kept stale
+  // (a head the round was not for, a round it no longer applies to) leaves an open round waiting on
+  // a reviewer that already ended, and nothing else re-asks: fail the round as T27 does. T27 itself
+  // answers stale when the round is closed, not current, or waits on another reviewer.
+  let settled: CommandResult | null = null;
+  if (result.result === 'rejected' || result.result === 'stale') {
+    settled = await applyCommand({
+      type: 'ReviewRoundFailed', actor: `reviewer:${p.reviewerTask.id}`, roundId, reason: 'verdict_not_applied',
+      maxContractRetries: REVIEW_CONTRACT_RETRIES, reviewerTaskId: p.reviewerTask.id,
+    }, { ref: { deliveryId }, exec: deps.exec });
+    if (settled.result === 'applied') console.log(`[workflow] round ${roundId}: verdict ${result.result} (${result.reason}); the round failed (T27) instead of waiting on an ended reviewer`);
+  }
   await drainDelivery(deliveryId, deps);
-  return { handled: true, result, toState: result.result === 'applied' ? result.decision.toState : null };
+  return { handled: true, result, toState: result.result === 'applied' ? result.decision.toState : null, ...(settled ? { settled } : {}) };
 }
 
 /**
@@ -1845,7 +1908,7 @@ export interface FloorSummary {
  */
 export async function reconcileKernelDeliveries(
   deps: SeamDeps = {},
-  o: { limit?: number; minQuietMs?: number; only?: string[] } = {},
+  o: { limit?: number; minQuietMs?: number; only?: string[]; reviewerGraceMs?: number } = {},
 ): Promise<FloorSummary> {
   const exec = deps.exec ?? seamExec;
   const s: FloorSummary = { checked: 0, imported: 0, enqueued: 0, errors: 0 };
@@ -1902,6 +1965,23 @@ export async function reconcileKernelDeliveries(
         const r = await applyCommand({ type: 'RepairNotNeeded', actor: source, attemptId: stranded, reason: 'head_moved', live }, { ref: { deliveryId }, exec: deps.exec });
         if (r.result === 'applied') {
           s.imported++;
+          view = await loadView({ deliveryId }, deps.exec);
+        }
+      }
+      // 7105282e: a round still waiting on a reviewer task that ended a while ago with nothing
+      // recorded (its verdict never reached the kernel) is failed as T27 fails it: asked again at
+      // the same head and round number, then review_unavailable. Keyed per reviewer, so a later
+      // pass over the same ended reviewer is a duplicate.
+      const waiting = roundWaitingOnReviewer(view);
+      if (waiting && ((await exec(endedReviewerSql({ ...waiting, graceMs: o.reviewerGraceMs ?? ENDED_REVIEWER_GRACE_MS }))).rows ?? []).length > 0) {
+        const r = await applyCommand({
+          type: 'ReviewRoundFailed', actor: source, roundId: waiting.roundId, reason: 'reviewer_ended',
+          maxContractRetries: REVIEW_CONTRACT_RETRIES, reviewerTaskId: waiting.reviewerTaskId,
+        }, { ref: { deliveryId }, exec: deps.exec });
+        if (r.result === 'applied') {
+          s.imported++;
+          console.log(`[workflow] floor ${repoFullName}#${prNumber}: round ${waiting.roundId} waited on ended reviewer ${waiting.reviewerTaskId}; failed (T27)`);
+          await drainDelivery(deliveryId, deps);
           view = await loadView({ deliveryId }, deps.exec);
         }
       }
@@ -2223,10 +2303,21 @@ export async function missionEpochCommand(p: MissionEpochInput): Promise<Mission
 }
 
 /**
- * §6 scope amendments: the scope decision for a task added to a mission,
- * recorded once (workflow/scope-amendments.ts). `workspaceId` is the task's.
+ * §6 scope amendments: the scope decision for a task added to a mission (filed
+ * into it, or linked to it), recorded once (workflow/scope-amendments.ts).
+ * `workspaceId` is the task's.
  */
-export async function missionScopeCommand(p: { workspaceId: string; taskId: string; actor: string }) {
+export async function missionScopeCommand(p: { workspaceId: string; taskId: string; actor: string; origin?: 'filed' | 'linked' }) {
   const { decideTaskScope } = await import('./scope-amendments');
-  return decideTaskScope({ taskId: p.taskId, actor: p.actor });
+  return decideTaskScope({ taskId: p.taskId, actor: p.actor, origin: p.origin });
+}
+
+/**
+ * §6 scope amendments: the answer to a held scope decision (it fits, it
+ * changes the mission, it belongs elsewhere, or the task left the mission),
+ * recorded once, releasing the hold. `workspaceId` is the task's.
+ */
+export async function missionScopeResolveCommand(p: { workspaceId: string; missionId: string; taskId: string; answer: string; actor: string }) {
+  const { resolveTaskScope } = await import('./scope-amendments');
+  return resolveTaskScope({ missionId: p.missionId, taskId: p.taskId, answer: p.answer, actor: p.actor });
 }

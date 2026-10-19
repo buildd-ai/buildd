@@ -53,6 +53,9 @@ mock.module('@buildd/core/pr-facts', () => ({
   prFactApplies: () => true,
 }));
 
+const noted: Array<{ workerIds?: string[] }> = [];
+mock.module('./work-changed', () => ({ noteWorkChanged: (c: { workerIds?: string[] }) => { noted.push(c); } }));
+
 const LOCAL_PR = { branch: 'buildd/abcd1234-change', repo: 'example/project', headRepo: 'example/project', number: 7, url: 'https://github.com/example/project/pull/7', headSha: 'head', baseRef: 'dev', draft: false };
 
 it('records an open fact for every row it bound, and never writes the status column itself', async () => {
@@ -62,7 +65,7 @@ it('records an open fact for every row it bound, and never writes the status col
   expect(setPayloads).toHaveLength(1);
   expect(setPayloads[0]).toMatchObject({ prUrl: LOCAL_PR.url, prNumber: 7 });
   expect(setPayloads[0]).not.toHaveProperty('prLifecycleStatus');
-  expect(recordedFacts).toEqual([{ target: { workerIds: ['w1', 'w2'] }, fact: { kind: 'open' }, opts: undefined }]);
+  expect(recordedFacts).toEqual([{ target: { workerIds: ['w1', 'w2'] }, fact: { kind: 'open' }, opts: { scope: expect.objectContaining({ defers: expect.any(Function) }) } }]);
 });
 
 it('records no fact when no row was bound', async () => {
@@ -71,4 +74,15 @@ it('records no fact when no row was bound', async () => {
   await registerLocalPr(LOCAL_PR);
   expect(setPayloads).toHaveLength(1);
   expect(recordedFacts).toEqual([]);
+});
+
+it('notes the bound workers so the stored mission summary picks up the PR (R-13)', async () => {
+  boundRows = [{ id: 'w1' }, { id: 'w2' }];
+  noted.length = 0;
+  await registerLocalPr(LOCAL_PR);
+  expect(noted).toEqual([{ workerIds: ['w1', 'w2'] }]);
+  boundRows = [];
+  noted.length = 0;
+  await registerLocalPr(LOCAL_PR);
+  expect(noted).toEqual([]);
 });

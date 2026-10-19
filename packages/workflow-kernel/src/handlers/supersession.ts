@@ -8,6 +8,7 @@
  *    landed. Detection only nominates; an edge it proves comes back as T20.
  *  - `project_supersession` (T20, T21): the resolution onto the host's records
  *    of the PR (§12: a projection, written only here).
+ *  - `carry_findings` (T20, §5): the closed PR's open findings move to its replacement.
  *  - `wake_mission` (T20, T21): whatever coordinates the owner may act now.
  */
 import type { EffectHandler, EffectHandlers } from '../effects';
@@ -29,6 +30,24 @@ export function supersessionHandlers(ports: KernelPorts): EffectHandlers {
     return { outcome: `skipped:state_${d.state}` };
   };
 
+  /**
+   * T20 (§5): the findings still open on the closed PR move to the PR that carries its work, so
+   * the replacement does not start clean. Nothing moves when the replacement is not a delivery of
+   * this workspace, or has none of its own to receive them: they stay where they were raised.
+   */
+  const carryFindings: EffectHandler = async (e) => {
+    const d = (await ports.store.loadView({ deliveryId: e.deliveryId })).delivery;
+    if (!hasPr(d)) return { outcome: 'skipped:no_pr' };
+    if (d.state !== 'SUPERSEDED' || d.supersededByPr == null) return { outcome: `skipped:state_${d.state}` };
+    const target = e.payload.target as { repoFullName?: string; prNumber?: number } | undefined;
+    const repoFullName = target?.repoFullName ?? d.repoFullName;
+    const next = (await ports.store.loadView({ workspaceId: d.workspaceId, repoFullName, prNumber: d.supersededByPr })).delivery;
+    if (!next) return { outcome: 'skipped:no_successor' };
+    if (next.id === d.id) return { outcome: 'skipped:same_delivery' };
+    const moved = await ports.store.carryOpenFindings(d.id, next.id);
+    return { outcome: `ok:carried_${moved.length}` };
+  };
+
   const wakeMission: EffectHandler = async (e) => {
     const d = (await ports.store.loadView({ deliveryId: e.deliveryId })).delivery;
     if (!d) return { outcome: 'skipped:no_delivery' };
@@ -47,5 +66,5 @@ export function supersessionHandlers(ports: KernelPorts): EffectHandlers {
     return { outcome: `ok:${r}` };
   };
 
-  return { scan_supersession: scanSupersession, project_supersession: projectSupersession, wake_mission: wakeMission };
+  return { scan_supersession: scanSupersession, project_supersession: projectSupersession, carry_findings: carryFindings, wake_mission: wakeMission };
 }

@@ -1641,8 +1641,7 @@ export interface ClaimTasksInput {
    * dependencies, a held mission, a dead subject, a future startAt, mission
    * concurrency and pacing, path overlap and the workspace cap. Never skips a
    * live worker, a person's hold on the task, the mission budget,
-   * scope-undeclared serialization, role/runner routing, provider walls or
-   * account limits. Ignored otherwise. Audited on the task and the gate ledger.
+   * role/runner routing, provider walls or account limits. Ignored otherwise. Audited on the task and the gate ledger.
    */
   forceOverride?: boolean;
   /**
@@ -1833,7 +1832,7 @@ export interface ClaimDiagnostics {
     connector_mismatch?: number;
     subject_dead?: number;
     path_overlap?: number;
-    /** Scope-undeclared ('**') task held behind a sibling in the same mission. */
+    /** Retired: undeclared scope no longer holds a task. Always 0; kept for older readers. */
     advisory_manifest?: number;
     /**
      * Declared scope overlaps an in-flight task's only softly (directory
@@ -3270,6 +3269,8 @@ export interface LivingSpecGoalCriterion {
 
 /** One criterion's standing under a `living_spec` goal criterion, for UI and MCP. */
 export interface LivingSpecCriterionStanding {
+  /** Deciding signal; older stored standings may omit it (review). */
+  source?: 'test' | 'review';
   criterionId: string;
   standing: 'pass' | 'fail' | 'inconclusive' | 'unsupported' | 'missing' | 'stale' | 'waived';
   headSha: string | null;
@@ -3529,6 +3530,22 @@ export interface RunnerQueueResponse {
   teams: RunnerQueueTeam[];
   /** Set when the read was cut at its row limit. */
   truncated: boolean;
+}
+
+/** One worker as `GET /api/workers/[id]?view=status` and `GET /api/workers/status` answer it. */
+export interface WorkerStatusView {
+  status: string;
+  error: string | null;
+  task: { status: string } | null;
+}
+
+/**
+ * `GET /api/workers/status?ids=…`: the caller's own workers by id, and the ids
+ * no worker row has. An id that exists but is not the caller's is in neither.
+ */
+export interface WorkerStatusesResponse {
+  workers: Record<string, WorkerStatusView>;
+  missing: string[];
 }
 
 export interface GoalCriteriaState {

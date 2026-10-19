@@ -221,3 +221,9 @@ describe('post-merge integration on dev', () => {
     expect(changes.outputs.runner).toBe('${{ steps.filter.outputs.runner }}');
   });
 });
+
+test('preview runner explicitly opts into reduced isolation for trusted test fixtures', () => {
+  const workflow = y('.github/workflows/integration.yml');
+  const step = workflow.jobs.integration.steps.find((s: any) => s.name === 'Start preview runner');
+  expect(step.run).toContain('export BUILDD_ALLOW_REDUCED_ISOLATION=1');
+});

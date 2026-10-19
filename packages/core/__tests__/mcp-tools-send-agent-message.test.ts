@@ -36,6 +36,16 @@ describe('send_agent_message', () => {
     expect(mockApi).not.toHaveBeenCalled();
   });
 
+  it('points a worker-level caller to send_worker_message', async () => {
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'send_agent_message',
+      { taskId: TASK_ID, message: 'hello' },
+      ctx({ getLevel: async () => 'worker' }),
+    );
+    expect(JSON.parse(result.content[0].text).reason).toContain('send_worker_message');
+  });
+
   it('requires taskId and message', async () => {
     await expect(
       handleBuilddAction(

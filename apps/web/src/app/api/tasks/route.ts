@@ -948,8 +948,9 @@ export async function POST(req: NextRequest) {
     // records that the filer never declared scope (visible to the organizer and
     // reviewer prompts), and workers can narrow it mid-task via check_path_claim
     // / POST /api/tasks/[id]/path-claim, which DO take real locks on concrete
-    // paths. Concurrent same-file edits between two scope-undeclared tasks are
-    // covered by those claim-time mutexes, not by stored edges.
+    // paths. Two scope-undeclared tasks start side by side; a same-file
+    // overlap between them is settled at merge (and caught by CI), not by a
+    // stored edge or a claim-time hold.
     //
     // Callers that know exactly which files they'll touch should always pass
     // pathManifest explicitly — concrete manifests still auto-serialize.

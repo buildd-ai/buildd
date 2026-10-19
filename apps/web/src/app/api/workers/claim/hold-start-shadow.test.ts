@@ -6,7 +6,6 @@ import {
   openPrStartVerdict,
   acquireGatedStartPaths,
   gatedStartApplies,
-  gatedStartReachable,
   releaseGatedStartPaths,
   resetClaimHoldMemos,
   runClaimHoldShadow,
@@ -425,23 +424,8 @@ describe('ClaimHoldCollector never throws into the claim loop', () => {
     expect(c.candidates).toHaveLength(0);
   });
 
-  it('advisory_manifest noting never throws on a bad context', () => {
-    const c = new ClaimHoldCollector();
-    expect(() => c.noteAdvisoryManifest(null as any, 'peer')).not.toThrow();
-    expect(c.skipped.error).toBe(1);
-  });
-});
-
-describe('ClaimHoldCollector.noteAdvisoryManifest', () => {
-  it('records the scope-undeclared serialization', () => {
-    const c = new ClaimHoldCollector();
-    const note = c.noteAdvisoryManifest(ctx({ missionId: 'm1' }), 'peer-task');
-    expect(note?.candidate).toMatchObject({ gate: 'advisory_manifest', scope: 'undeclared', holder: { taskId: 'peer-task', prNumber: null } });
-  });
-
-  it('a failed lease read is unknown state, not recorded', () => {
-    const c = new ClaimHoldCollector();
-    expect(c.noteAdvisoryManifest(ctx({ leaseReadFailed: true }), 'peer-task')).toBeNull();
+  it('has no scope-undeclared note: undeclared scope is not an overlap deferral', () => {
+    expect((new ClaimHoldCollector() as unknown as Record<string, unknown>).noteAdvisoryManifest).toBeUndefined();
   });
 });
 
@@ -498,7 +482,6 @@ describe('runClaimHoldShadow: records every decision; only a confident Jev START
     const h = harness();
     await runClaimHoldShadow(c.candidates, h.deps);
     expect(h.rows[0]).toMatchObject({ mode: 'gated', applied: true, effective: 'START', experimentArm: 'apply', applyingFraction: 1 });
-    expect(gatedStartReachable()).toBe(true);
   });
 
   it('a Jev START below the threshold is recorded, never applied: the task holds', async () => {
@@ -535,7 +518,6 @@ describe('runClaimHoldShadow: records every decision; only a confident Jev START
     const h = harness({ decision: GATED, applyingFraction: 0 });
     await runClaimHoldShadow(c.candidates, h.deps);
     expect(h.rows[0]).toMatchObject({ applied: false, applyingFraction: 0, experimentArm: 'observe' });
-    expect(gatedStartReachable({ decision: GATED, applyingFraction: 0 })).toBe(false);
   });
 
   it('a state-read failure falls back to the rule and is recorded as retrieval_error', async () => {
@@ -550,7 +532,7 @@ describe('runClaimHoldShadow: records every decision; only a confident Jev START
   it('a team that has not opted in costs one access check, then nothing for a while', async () => {
     const c = new ClaimHoldCollector();
     c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
-    c.noteAdvisoryManifest(ctx({ taskId: 'task-2', missionId: 'm' }), 'peer');
+    c.noteOpenPrOverlap(ctx({ taskId: 'task-2' }), ['apps/web/src/widget.ts'], [pr()], new Map());
     let access = 0;
     const dd = decisionDeps({ resolveAccess: async () => { access++; return { ok: false, error: { kind: 'capability_disabled', message: 'off' } } as any; } });
     const h = harness({}, dd);
@@ -672,7 +654,6 @@ describe('gated START', () => {
   it('a shadow definition stays unreachable whatever the fraction: no ledger lookup', async () => {
     let lookups = 0;
     const deps: ClaimHoldDeps = { decision: SHADOW, applyingFraction: 1, loadLearningPolicy: async () => ({ fraction: 1, minConfidence: .85 } as any), findAppliedStart: async () => { lookups++; return true; } };
-    expect(gatedStartReachable(deps)).toBe(false);
     expect(await gatedStartApplies(note(), deps)).toBe(false);
     expect(lookups).toBe(0);
   });

@@ -757,8 +757,8 @@ import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
 // route hands to GitHub, so they build fixtures with the same code path.
 import { renderPrActivityComment, SPINNER_PATH } from '@/lib/pr-activity-comment';
 
-/** A terminal fact goes to the funnel under the kernel's scope (S4a, pr-fact-scope.ts). */
-const FUNNEL_OPTS = { scope: expect.objectContaining({ where: expect.any(Function) }) };
+/** Every fact goes to the funnel under the kernel's scope (S4a, AC-1: pr-fact-scope.ts). */
+const FUNNEL_OPTS = { scope: expect.objectContaining({ where: expect.any(Function), defers: expect.any(Function) }) };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function createWebhookRequest(event: string, payload: any, validSig = true): NextRequest {
@@ -2504,6 +2504,32 @@ describe('POST /api/github/webhook', () => {
       expect(mockObserveCiGreen.mock.calls[0][1]).toEqual({ principal: { kind: 'system', id: 'system:webhook:check_suite' } });
     });
 
+    it('AC-1: the green fact is recorded before the kernel sees the green, so its projection cannot hide a new fact', async () => {
+      withSuccessWorkerPr();
+      recordedFacts.length = 0;
+      let factsWhenKernelSaw = -1;
+      mockObserveCiGreen.mockImplementationOnce(async () => { factsWhenKernelSaw = factsOfKind('ci').length; return { handled: true, result: null }; });
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+      expect(res.status).toBe(200);
+      expect(factsOfKind('ci').map((r) => r.fact.status)).toEqual(['ci_green']);
+      expect(factsWhenKernelSaw).toBe(1);
+    });
+
+    it('a failed check-suite read records no green, and still reports the head to the kernel', async () => {
+      withSuccessWorkerPr();
+      recordedFacts.length = 0;
+      mockAllCheckSuitesPassed.mockReturnValue(Promise.reject(new Error('github down')));
+      mockObserveCiGreen.mockClear();
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+      expect(res.status).toBe(200);
+      expect(factsOfKind('ci')).toEqual([]);
+      expect(mockObserveCiGreen).toHaveBeenCalledTimes(1);
+    });
+
     it('a green head reaches the kernel even when no worker row owns the PR (local mission)', async () => {
       withSuccessWorkerPr();
       mockWorkersFindFirst.mockReturnValue(null);
@@ -3820,7 +3846,7 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
 
       expect(recordedFacts).toEqual([
-        { target: { workerId: 'w-open' }, fact: { kind: 'open', reopened: false }, opts: { bookkeeping: { prIsDraft: false } } },
+        { target: { workerId: 'w-open' }, fact: { kind: 'open', reopened: false }, opts: { bookkeeping: { prIsDraft: false }, ...FUNNEL_OPTS } },
       ]);
     });
 
@@ -3855,7 +3881,7 @@ describe('POST /api/github/webhook', () => {
       const open = factsOfKind('open');
       expect(open).toHaveLength(1);
       expect(open[0]!.target).toEqual({ workerId: 'w-draft' });
-      expect(open[0]!.opts).toEqual({ bookkeeping: { prIsDraft: draft } });
+      expect(open[0]!.opts).toEqual({ bookkeeping: { prIsDraft: draft }, ...FUNNEL_OPTS });
     });
 
     it('sets prLifecycleStatus=merged (and mergedAt) when PR is merged', async () => {
@@ -4156,7 +4182,7 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
 
       expect(recordedFacts).toEqual([
-        { target: { workerId: 'w-ci' }, fact: { kind: 'ci', status: 'ci_running', headSha: 'sha-ci', currentHeadSha: 'sha-ci' }, opts: undefined },
+        { target: { workerId: 'w-ci' }, fact: { kind: 'ci', status: 'ci_running', headSha: 'sha-ci', currentHeadSha: 'sha-ci' }, opts: FUNNEL_OPTS },
       ]);
     });
 
@@ -4181,7 +4207,7 @@ describe('POST /api/github/webhook', () => {
       expect(failed[0]).toEqual({
         target: { workerId: 'w-ci-fail' },
         fact: { kind: 'ci', status: 'ci_failed', headSha: 'abc123', currentHeadSha: 'abc123' },
-        opts: undefined,
+        opts: FUNNEL_OPTS,
       });
     });
 
@@ -4201,7 +4227,7 @@ describe('POST /api/github/webhook', () => {
       }));
       expect(res.status).toBe(200);
       expect(recordedFacts).toEqual([
-        { target: { workerId: 'w-conf' }, fact: { kind: 'conflict' }, opts: { bookkeeping: { prIsDraft: false } } },
+        { target: { workerId: 'w-conf' }, fact: { kind: 'conflict' }, opts: { bookkeeping: { prIsDraft: false }, ...FUNNEL_OPTS } },
       ]);
     });
 
@@ -4265,7 +4291,7 @@ describe('POST /api/github/webhook', () => {
           // The door does not decide terminal-wins itself: it hands over a plain
           // open fact (never reopened) and the funnel's WHERE refuses it.
           expect(recordedFacts).toEqual([
-            { target: { workerId: 'w-late' }, fact: { kind: 'open', reopened: false }, opts: { bookkeeping: { prIsDraft: false } } },
+            { target: { workerId: 'w-late' }, fact: { kind: 'open', reopened: false }, opts: { bookkeeping: { prIsDraft: false }, ...FUNNEL_OPTS } },
           ]);
           expect(realPrFacts.prFactApplies(recordedFacts[0]!.fact, { prLifecycleStatus: 'merged', mergedAt: new Date() })).toBe(false);
           // No status/merge write slipped past the funnel.
@@ -5759,7 +5785,7 @@ describe('pull_request → workers.prBaseRef sync', () => {
     expect(adopted?.condition).toBeDefined();
     // The open state is a fact for the funnel, on exactly the rows the CAS bound.
     expect(adopted?.setValues).not.toHaveProperty('prLifecycleStatus');
-    expect(recordedFacts).toContainEqual({ target: { workerIds: ['row-1'] }, fact: { kind: 'open' }, opts: undefined });
+    expect(recordedFacts).toContainEqual({ target: { workerIds: ['row-1'] }, fact: { kind: 'open' }, opts: FUNNEL_OPTS });
   });
 
   it.each(['test-org/fork', null])('does not adopt a PR from a fork or deleted head repo (%s)', async headRepo => {

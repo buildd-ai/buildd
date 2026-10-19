@@ -39,8 +39,8 @@ export async function GET(req: NextRequest) {
   // by name; it learns nothing about the rest of the team.
   const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
-  // Fall back to session auth
-  const user = await getCurrentUser();
+  // Fall back to session auth (only without a key: a key is authoritative)
+  const user = apiAccount ? null : await getCurrentUser();
 
   if (!apiAccount && !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

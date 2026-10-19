@@ -10,6 +10,7 @@
  * branch refresh is not one either.
  */
 import { TaskStatus } from '@buildd/shared';
+import { reviewRoundsOf } from './workflow/delivery-rounds';
 import { repairLabelOf, repairPhaseOf, reviewSummaryLine, reviewSummaryOf, type DeliveryView, type RepairPhase } from './workflow/projections';
 
 /**
@@ -65,6 +66,8 @@ export interface TaskChecks {
    * Absent before the first review round.
    */
   review?: string;
+  /** AC-24: each round with buildd's verdict at its head, and the note that GitHub lists those reviews as Commented. */
+  rounds?: { line: string; githubNote: string | null };
 }
 
 export type ChecksInput = Pick<DeliveryView, 'state' | 'stateReason' | 'prNumber' | 'headSha' | 'prState' | 'rounds' | 'ledger' | 'approvedCurrentHead' | 'approvalBasis'>
@@ -88,7 +91,7 @@ const ROUND_WORD: Record<string, { state: CheckState; word: string }> = {
   escalate: { state: 'blocked', word: 'Escalated to a person' },
 };
 
-function roundReading(r: RoundSnapshot): { state: CheckState; word: string } {
+export function roundReading(r: RoundSnapshot): { state: CheckState; word: string } {
   if (r.status === 'queued') return { state: 'pending', word: 'Awaiting review' };
   if (r.status === 'reviewing') return { state: 'running', word: 'In review' };
   if (r.status === 'failed') return { state: 'failed', word: 'Review run failed' };
@@ -188,7 +191,12 @@ export function deriveTaskChecks(v: ChecksInput): TaskChecks {
       return { round: r.round, headSha: r.headSha.slice(0, 7), result: reading.word, state: reading.state, reviewTaskId: r.reviewerTaskId ?? null, repairs: caused.sort((a, b) => a.attemptNo - b.attemptNo).map(a => repairOf(a, v)) };
     });
   const summary = reviewSummaryOf(v);
-  return { current: rows, history, ...(summary ? { review: reviewSummaryLine(summary) } : {}) };
+  const read = reviewRoundsOf(v.rounds);
+  return {
+    current: rows, history,
+    ...(summary ? { review: reviewSummaryLine(summary) } : {}),
+    ...(read ? { rounds: { line: read.line, githubNote: read.githubNote } } : {}),
+  };
 }
 
 // ── What an opened Code review row says ─────────────────────────────────────

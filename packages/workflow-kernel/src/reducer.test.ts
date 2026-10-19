@@ -696,6 +696,59 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     expect(unsafe.toState).toBe('AWAITING_PUSH');
     expect(unsafe.effects.find((e) => e.kind === 'push_recovery')?.dedupeKey).toBe('push_recovery:d1:none:1');
   });
+  test('AC-79: a merge of the base while the fix runs is a foreign push, never credited, and addresses nothing', () => {
+    const findings = [{ id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'H1', ordinal: 0, path: 'src/a.ts', line: 3, title: 't', required: true, status: 'open' as const, lastRound: 1 }];
+    const v = { ...fixing(), findings } as never;
+    for (const baseOnly of ['own_refresh', 'compare'] as const) {
+      const dec = applied(run(v, { type: 'HeadObserved', actor: 'webhook', live: live('H2'), attribution: { descendsFromBound: true }, baseOnly, changedPaths: ['src/a.ts'] }));
+      expect(dec.toState).toBe('FIXING');
+      expect(dec.patch.currentHeadSha).toBe('H2');
+      expect(dec.attempts).toEqual([]);
+      expect(dec.evidence).toMatchObject({ foreignPush: true, baseOnly });
+      expect(dec.findings ?? []).toEqual([]);
+    }
+    // Without the fact the same push is the fix's (§6.9 ancestry), as before.
+    const own = applied(run(v, { type: 'HeadObserved', actor: 'webhook', live: live('H2'), attribution: { descendsFromBound: true } }));
+    expect(own.attempts[0]).toMatchObject({ attemptId: 'a1', set: { appendReportedSha: 'H2' } });
+    // A head the fix itself reported stays its own, whatever the compare says.
+    const reported = applied(run({ ...fixing({ reportedShas: ['H2'] }), findings } as never, { type: 'HeadObserved', actor: 'webhook', live: live('H2'), baseOnly: 'compare' }));
+    expect(reported.evidence.foreignPush).toBeUndefined();
+  });
+  test('AC-79: a fix that ends on a head moved only by a base merge does not complete; a delta round scoped to the refresh is queued', () => {
+    const merged = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H2' }), [decidedRC], [A({ status: 'running' })]);
+    for (const outcome of ['success', 'failed'] as const) {
+      const dec = applied(end(merged, { attemptId: 'a1', outcome, localHeadSha: null, commitCount: 0, live: live('H2'), proof: { liveContainsLocal: false, contentDiffChanged: true }, baseOnly: true, changedPaths: ['src/a.ts'] }));
+      expect(dec.toState).toBe('AWAITING_REVIEW');
+      expect(dec.evidence.proof).toBeUndefined();
+      expect(dec.attempts[0]).toMatchObject({ attemptId: 'a1', set: { status: 'ended', outcome: 'noop' } });
+      expect(dec.attempts[0]).not.toMatchObject({ set: { pushedHeadSha: 'H2' } });
+      expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, headSha: 'H2', kind: 'delta', trigger: 'base_refresh', scope: { refresh: { fromHeadSha: 'H1', toHeadSha: 'H2' } } }));
+      expect(dec.patch).toMatchObject({ currentHeadSha: 'H2', boundAttemptId: null });
+      expect(effectKinds(dec)).not.toContain('dispatch_fix');
+      expect(dec.findings ?? []).toEqual([]);
+    }
+    // A head that did not move is not this rule: the no-change end stands.
+    expect(applied(end(fixing(), { attemptId: 'a1', outcome: 'success', localHeadSha: null, commitCount: 0, live: live('H1'), baseOnly: true })).toState).toBe('AWAITING_PUSH');
+  });
+  test('AC-79 over 92a439a6: in FIXING a base-only move is never carried, whatever carry evidence the command holds', () => {
+    // Precedence: the carry (T11/T13, empty delta) is a rule of APPROVED, LANDING and REPAIRING. A review fix
+    // has an open verdict, so a base merge during it is the refresh's to review (AC-79), never the approval's
+    // to keep, even on a delivery that still lists an approved head and with evidence that would carry elsewhere.
+    const emptyDelta = { fromHeadSha: 'H1', toHeadSha: 'H2', prFilesAtFrom: ['src/a.ts'], files: [] };
+    const merged = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H2', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [decidedRC], [A({ status: 'running' })]);
+    const dec = applied(end(merged, { attemptId: 'a1', outcome: 'success', localHeadSha: null, commitCount: 0, live: live('H2'), baseOnly: true, carryForward: 'content_equivalent', delta: emptyDelta }));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.evidence.carryForward).toBeUndefined();
+    expect(dec.patch.approvedHeads).toBeUndefined();
+    expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, headSha: 'H2', trigger: 'base_refresh', scope: { refresh: { fromHeadSha: 'H1', toHeadSha: 'H2' } } }));
+    // The push itself, observed mid-fix: recorded as foreign, the approval list untouched.
+    const pre = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [decidedRC], [A({ status: 'running' })]);
+    const seen = applied(run(pre, { type: 'HeadObserved', actor: 'webhook', live: live('H2'), attribution: { descendsFromBound: true }, baseOnly: 'compare', carryForward: 'content_equivalent', delta: emptyDelta }));
+    expect(seen.toState).toBe('FIXING');
+    expect(seen.patch.approvedHeads).toBeUndefined();
+    expect(seen.evidence).toMatchObject({ foreignPush: true, baseOnly: 'compare' });
+    expect(seen.evidence.carryForward).toBeUndefined();
+  });
   const repairing =(o: Partial<AttemptSnapshot> = {}, d: Partial<DeliverySnapshot> = {}) =>
     V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1', ...d }), [], [A({ id: 'c1', family: 'ci', triggerReason: 'sig', status: 'running', ...o })]);
   test('REPAIRING: CI fix delivered → round; carry-forward → APPROVED; failed → next ledger row; exhausted', () => {
@@ -724,6 +777,77 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     const skipped = repairing({ attemptNo: 3 });
     const withSkip = { ...skipped, attempts: [A({ id: 'p1', family: 'ci', attemptNo: 1, status: 'ended' }), A({ id: 'p2', family: 'ci', attemptNo: 2, status: 'skipped' }), ...skipped.attempts] };
     expect(applied(end(withSkip, { attemptId: 'c1', outcome: 'failed' })).toState).toBe('REPAIRING');
+  });
+});
+
+// 92a439a6: a clean base merge into an approved PR is not a new review (#5164, #5155, #5179).
+describe('T11 / §8.3: an agent conflict repair that only merged the base keeps the approval', () => {
+  const end = (v: KernelView, o: Partial<Extract<Command, { type: 'AttemptEnded' }>>): Decision =>
+    run(v, { type: 'AttemptEnded', actor: 'runner', workerId: 'w9', attemptId: 'c1', outcome: 'success', localHeadSha: 'H2', commitCount: 1, live: live('H2'), ...o });
+  const approvedRound = R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' });
+  const conflictRepair = (d: Partial<DeliverySnapshot> = {}) => V(
+    D({ state: 'REPAIRING', stateReason: 'conflict', boundAttemptId: 'c1', approvedHeads: ['H1'], approvalBasis: 'verdict', currentRound: 1, ...d }),
+    [approvedRound],
+    [A({ id: 'c1', family: 'conflict', triggerReason: 'dirty', status: 'running', taskId: 'cx1' })],
+  );
+  const delta = (files: Array<{ path: string; additions?: number; deletions?: number }>) => ({
+    fromHeadSha: 'H1', toHeadSha: 'H2', prFilesAtFrom: ['src/a.ts', 'src/b.ts'],
+    files: files.map((f) => ({ status: 'modified', additions: 2, deletions: 1, ...f })),
+  });
+  const noRound = (dec: ApplyDecision) => {
+    expect(dec.rounds.filter((r) => r.op === 'insert')).toEqual([]);
+    expect(effectKinds(dec)).not.toContain('dispatch_review');
+  };
+
+  test('content-equivalent evidence on the end → APPROVED at H2, no round, no review dispatched', () => {
+    const dec = applied(end(conflictRepair(), { carryForward: 'content_equivalent' }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch).toMatchObject({ approvedHeads: ['H1', 'H2'], currentHeadSha: 'H2', boundAttemptId: null });
+    expect(dec.evidence.carryForward).toBe('content_equivalent');
+    noRound(dec);
+  });
+
+  test('an empty bounded delta is content equivalence: it carries with no reviewer round', () => {
+    const dec = applied(end(conflictRepair(), { delta: delta([]) }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch).toMatchObject({ approvedHeads: ['H1', 'H2'], currentHeadSha: 'H2' });
+    expect(dec.evidence).toMatchObject({ carryForward: 'content_equivalent', carriedFrom: 'H1', emptyDelta: true });
+    noRound(dec);
+  });
+
+  test('a conflict-resolved merge that changed a PR file gets a delta round', () => {
+    const dec = applied(end(conflictRepair(), { delta: delta([{ path: 'src/a.ts' }]) }));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, headSha: 'H2', kind: 'delta', scope: { deltaApproval: expect.objectContaining({ eligible: true }) } }));
+  });
+
+  test('an out-of-PR or oversized change, or an unread delta, gets a full round', () => {
+    for (const reading of [delta([{ path: 'src/elsewhere.ts' }]), delta([{ path: 'src/a.ts', additions: 500 }]), null]) {
+      const dec = applied(end(conflictRepair(), { delta: reading }));
+      expect(dec.toState).toBe('AWAITING_REVIEW');
+      expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, kind: 'full' }));
+    }
+  });
+
+  test('an empty delta does not carry what it cannot: open findings, or no reviewer approval', () => {
+    const f = { id: 'f1', originRoundId: 'r1', originRound: 1, originHeadSha: 'H1', ordinal: 1, path: 'src/a.ts', line: 1, title: 't', required: true, status: 'open' };
+    const withFinding = { ...conflictRepair(), findings: [f] } as unknown as KernelView;
+    expect(applied(end(withFinding, { delta: delta([]) })).toState).toBe('AWAITING_REVIEW');
+    const human = conflictRepair({ approvalBasis: 'human' });
+    expect(applied(end(human, { delta: delta([]) })).toState).toBe('AWAITING_REVIEW');
+  });
+
+  test('HeadObserved on APPROVED: an empty delta carries too (the push arrived first)', () => {
+    const v = V(D({ state: 'APPROVED', approvedHeads: ['H1'], approvalBasis: 'verdict', currentRound: 1 }), [approvedRound]);
+    const dec = applied(run(v, { type: 'HeadObserved', actor: 'webhook', live: live('H2'), delta: delta([]) }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch.approvedHeads).toEqual(['H1', 'H2']);
+    noRound(dec);
+  });
+
+  test('the push that follows a carried end is a duplicate', () => {
+    const carried = conflictRepair({ state: 'APPROVED', currentHeadSha: 'H2', approvedHeads: ['H1', 'H2'], boundAttemptId: null });
+    expectResult(run(carried, { type: 'HeadObserved', actor: 'webhook', live: live('H2') }), 'duplicate', 'head_unchanged');
   });
 });
 
@@ -857,6 +981,21 @@ describe('T6 ReviewVerdictRecorded (§8, AC-5)', () => {
     expect(ex.toState).toBe('ESCALATED');
     expect(ex.patch.stateReason).toBe('review_exhausted');
     expect(effectKinds(ex)).toContain('escalate_exhaustion');
+  });
+  test('fa37ed4b (#4996): round 2 of 3 asking for changes owes fix 2; round 3 of 3 escalates once, to a person', () => {
+    const rc = (n: number, head: string) => R({ id: `r${n}`, round: n, headSha: head, status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' });
+    const fix = (n: number, head: string) => A({ id: `a${n}`, attemptNo: n, boundHeadSha: head, triggerReason: `r${n}`, taskId: `ft${n}`, status: 'done', outcome: 'success' });
+
+    const two = applied(verdict(V(D({ state: 'AWAITING_REVIEW', currentRound: 2, currentHeadSha: 'H2' }), [rc(1, 'H1'), R({ id: 'r2', round: 2, headSha: 'H2', kind: 'delta' })], [fix(1, 'H1')]), { roundId: 'r2', headBound: 'H2' }));
+    expect(two.toState).toBe('CHANGES_REQUESTED');
+    expect(two.effects.filter((e) => e.kind === 'dispatch_fix').map((e) => e.dedupeKey)).toEqual(['dispatch_fix:d1:r2:2']);
+    expect(effectKinds(two)).not.toContain('escalate_exhaustion');
+
+    const three = applied(verdict(V(D({ state: 'AWAITING_REVIEW', currentRound: 3, currentHeadSha: 'H3' }), [rc(1, 'H1'), rc(2, 'H2'), R({ id: 'r3', round: 3, headSha: 'H3', kind: 'delta' })], [fix(1, 'H1'), fix(2, 'H2')]), { roundId: 'r3', headBound: 'H3' }));
+    expect({ to: three.toState, why: three.patch.stateReason }).toEqual({ to: 'ESCALATED', why: 'review_exhausted' });
+    expect(effectKinds(three).filter((k) => k === 'escalate_exhaustion')).toHaveLength(1);
+    expect(effectKinds(three)).not.toContain('dispatch_fix');
+    expect(effectKinds(three)).not.toContain('dispatch_review');
   });
   test('escalate and server-overridden approve → ESCALATED(review_escalated)', () => {
     expect(applied(verdict(v(), { verdict: 'escalate', effectiveVerdict: 'escalate' })).patch.stateReason).toBe('review_escalated');
@@ -1472,11 +1611,11 @@ describe('T17–T21 terminal-wins and closure (S6, S11, S12, AC-8, AC-9)', () =>
     // A superseded PR already shipped: abandoning it is refused, not a silent no-op.
     expectResult(ab(V(D({ state: 'SUPERSEDED', supersededByPr: 9 }))), 'rejected', 'not_closed_unmerged');
   });
-  test('T20 and T21 both project the edge onto the worker rows and wake the mission (Slice D)', () => {
+  test('T20 and T21 both project the edge onto the worker rows and wake the mission; only T20 carries findings (Slice D, §5)', () => {
     const c = V(D({ state: 'CLOSED_UNMERGED' }));
     const t20 = applied(run(c, { type: 'SupersessionRecorded', actor: 'agent:t2', target: { repoFullName: REPO, prNumber: 9, merged: true, url: null }, reason: 'r', authorised: true }));
     const t21 = applied(run(c, { type: 'Abandon', actor: 'human:u', reason: 'dropped' }));
-    expect(effectKinds(t20)).toEqual(['project_supersession', 'wake_mission', 'render_activity', 'publish_landing_status']);
+    expect(effectKinds(t20)).toEqual(['project_supersession', 'carry_findings', 'wake_mission', 'render_activity', 'publish_landing_status']);
     expect(effectKinds(t21)).toEqual(['project_supersession', 'wake_mission', 'render_activity', 'publish_landing_status']);
     expect(t21.patch).toMatchObject({ stateReason: 'dropped', recordedBy: 'human:u' });
   });
@@ -2007,9 +2146,20 @@ describe('S15 disjoint-delta rule (88318f31, #4283): an approved head on a busy 
   });
 
   test('risky paths on either side of the gap are never landed across', () => {
-    for (const risky of ['packages/core/drizzle/0300_x.sql', 'packages/core/db/schema.ts', 'bun.lock', 'apps/web/package.json', '.github/workflows/build.yml', 'scripts/no-em-dash-copy.test.ts']) {
+    for (const risky of ['bun.lock', 'apps/web/package.json', '.github/workflows/build.yml', 'scripts/no-em-dash-copy.test.ts']) {
       const dec = applied(behind(approved(spent), delta({ baseFiles: ['src/x.ts', risky] })));
       expect(dec.evidence).toMatchObject({ cause: 'refresh_unsafe', files: [risky] });
+      expectResult(land(approved(spent), delta({ prFiles: ['src/a.ts', risky] })), 'rejected', 'behind_not_tolerated');
+    }
+  });
+
+  // 92a439a6 (#5179): a migration only the base carries is not a reason to page a person.
+  test('a migration or schema change is risky on the base side only against the PR\'s own', () => {
+    for (const risky of ['packages/core/drizzle/0300_x.sql', 'packages/core/db/schema.ts']) {
+      expectResult(behind(approved(spent), delta({ baseFiles: ['src/x.ts', risky] })), 'rejected', 'behind_tolerated');
+      expect(applied(land(approved(spent), delta({ baseFiles: ['src/x.ts', risky] }))).toState).toBe('LANDING');
+      const both = applied(behind(approved(spent), delta({ baseFiles: ['src/x.ts', risky], prFiles: ['src/a.ts', 'packages/core/drizzle/0301_mine.sql'] })));
+      expect(both.evidence).toMatchObject({ cause: 'refresh_unsafe', deltaBasis: 'risky_path' });
       expectResult(land(approved(spent), delta({ prFiles: ['src/a.ts', risky] })), 'rejected', 'behind_not_tolerated');
     }
   });
@@ -2820,5 +2970,66 @@ describe('295486ba: a cancelled CI fix that never started spends nothing; a gree
       const dec = applied(run(exhausted({ stateReason: 'landing_needs_human' }), reading('green')));
       expect({ to: dec.toState, why: dec.patch.stateReason }).toEqual({ to: 'ESCALATED', why: undefined });
     });
+  });
+});
+
+describe('AC-31: a forced review, a verdict or a rail finding before merge_call runs stops the merge', () => {
+  // LANDING with the merge call queued (or parked on a hold): it has not gone out yet.
+  const queued = (o: Partial<DeliverySnapshot> = {}, rounds: RoundSnapshot[] = []) =>
+    V(D({ state: 'LANDING', approvedHeads: ['H1'], approvalBasis: 'verdict', currentRound: 1, ...o }), rounds);
+  const called = (rounds: RoundSnapshot[] = []) => queued({ stateReason: 'merge_called' }, rounds);
+  const approvedR1 = R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' });
+  const force = (v: KernelView, actor = 'human:owner') =>
+    run(v, { type: 'ReviewRequested', actor, headSha: 'H1', live: live('H1'), forced: true });
+  const verdict = (v: KernelView, effectiveVerdict: 'approve' | 'request_changes' | 'escalate', roundId = 'r2') =>
+    run(v, { type: 'ReviewVerdictRecorded', actor: 'reviewer', roundId, verdict: effectiveVerdict, effectiveVerdict, headBound: 'H1' });
+  const policy = (v: KernelView) =>
+    run(v, { type: 'PolicyEvidenceRecorded', actor: 'rail:migration', evidence: { headSha: 'H1', outcome: 'human', reason: 'drops a column', destructive: true } });
+
+  test('a person forcing a review leaves LANDING for AWAITING_REVIEW with a new round; the merge_call is not re-queued', () => {
+    const dec = applied(force(queued({}, [approvedR1])));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.fromState).toBe('LANDING');
+    expect(effectKinds(dec)).toContain('dispatch_review');
+    expect(effectKinds(dec)).not.toContain('merge_call');
+    expect(dec.evidence.stoppedLanding).toBe(true);
+    expect(dec.bypass).toMatchObject({ forced: true, actor: 'human:owner' });
+  });
+  test('nobody else interrupts a landing: an unforced request, or an agent forcing one, is refused', () => {
+    expectResult(run(queued(), { type: 'ReviewRequested', actor: 'human:owner', headSha: 'H1', live: live('H1') }), 'rejected', 'state_not_allowed');
+    expectResult(run(queued(), { type: 'ReviewRequested', actor: 'kernel', headSha: 'H1', live: live('H1') }), 'rejected', 'state_not_allowed');
+    expectResult(force(queued(), 'agent:t9'), 'rejected', 'state_not_allowed');
+  });
+  test('once the merge call answered merged or indeterminate, a forced review is refused: verify_merge decides', () => {
+    const m = applied(run(queued(), { type: 'MergeCallResult', actor: 'kernel', headSha: 'H1', outcome: 'merged' }));
+    expect(m.patch.stateReason).toBe('merge_called');
+    expectResult(force(called()), 'rejected', 'merge_in_flight');
+  });
+  test('a request for changes on a round still open when the door landed moves LANDING to CHANGES_REQUESTED and owes a fix', () => {
+    // A person's "Merge anyway" landed while round 2 was being reviewed.
+    const v = queued({ currentRound: 2, approvedHeads: [], approvalBasis: null }, [approvedR1, R({ id: 'r2', round: 2, status: 'reviewing' })]);
+    const dec = applied(verdict(v, 'request_changes'));
+    expect({ from: dec.fromState, to: dec.toState }).toEqual({ from: 'LANDING', to: 'CHANGES_REQUESTED' });
+    expect(effectKinds(dec)).toEqual(expect.arrayContaining(['post_review', 'dispatch_fix']));
+    expect(applied(verdict(v, 'escalate')).toState).toBe('ESCALATED');
+  });
+  test('an approval of that round leaves the queued merge queued (LANDING), with the head approved', () => {
+    const v = queued({ currentRound: 2, approvedHeads: [], approvalBasis: null }, [approvedR1, R({ id: 'r2', round: 2, status: 'reviewing' })]);
+    const dec = applied(verdict(v, 'approve'));
+    expect(dec.toState).toBe('LANDING');
+    expect(dec.patch).toMatchObject({ approvedHeads: ['H1'], approvalBasis: 'verdict' });
+  });
+  test('after the merge call, a late verdict is kept on its round and the state does not move', () => {
+    const v = V(D({ state: 'LANDING', stateReason: 'merge_called', currentRound: 2 }), [approvedR1, R({ id: 'r2', round: 2, status: 'reviewing' })]);
+    const dec = applied(verdict(v, 'request_changes'));
+    expect(dec.toState).toBe('LANDING');
+    expect(dec.evidence).toMatchObject({ heldBy: 'LANDING', deferred: true });
+  });
+  test('a rail finding on the head stops a queued merge (T28 acts as from APPROVED); after the call it is only recorded', () => {
+    const dec = applied(policy(queued()));
+    expect({ from: dec.fromState, to: dec.toState, why: dec.patch.stateReason }).toEqual({ from: 'LANDING', to: 'ESCALATED', why: 'policy_human' });
+    expect(dec.evidence.stoppedLanding).toBe(true);
+    const late = applied(policy(called()));
+    expect({ to: late.toState, recordedOnly: late.evidence.recordedOnly }).toEqual({ to: 'LANDING', recordedOnly: true });
   });
 });

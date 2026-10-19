@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-14
 summary: A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
 domain: missions
-surfaces: [apps/web/src/lib/mission-branch-refresh.ts, apps/web/src/lib/mission-subscribers.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/cron/pr-reconcile/route.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
+surfaces: [apps/web/src/lib/mission-branch-refresh.ts, apps/web/src/lib/workflow/epoch-effects.ts, apps/web/src/lib/mission-subscribers.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/cron/pr-reconcile/route.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-kernel-library, mission-release-gate, mission-task-lifecycle, workflow-state-kernel]
 keywords: [refresh settlement, redundant refresh PR, branch retirement, delivery epoch, integration branch, mission/*, merge dev into, chore(mission), branch refresh, branchRefreshHeadSha, branch_refreshed_at, refresh conflict task, requireMergeCommit, trunk merge, refresh lease, abandoned lease, conflict reservation, paused mission refresh, mission branch concurrency]
-verified_by: [apps/web/tests/db/mission-epochs.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/src/lib/mission-pr.test.ts, apps/web/src/lib/mission-branch-refresh.test.ts, apps/web/src/lib/mission-shipping-pr.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, scripts/resolve-generated-conflicts.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/integration-refresh.test.ts]
+verified_by: [apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/epoch-effects.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/src/lib/mission-pr.test.ts, apps/web/src/lib/mission-branch-refresh.test.ts, apps/web/src/lib/mission-shipping-pr.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, scripts/resolve-generated-conflicts.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/integration-refresh.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -265,6 +265,20 @@ and the mission PR merging is not the mission being released.
   statement, and the refresh pointers (`branchRefreshHeadSha`,
   `branchRefreshConflictTaskId`) are cleared with it, so the successor starts
   current by construction and with no conflict task.
+- **The refresh is an outbox effect of the writable delivery.** For a mission
+  with delivery records, both triggers ask through the kernel's outbox
+  (`refreshMission`): the writable delivery owes one `refresh_mission_branch`
+  row in `workflow_effects`, owned by the delivery's epoch row (`epoch_id`, no
+  PR delivery), one per trigger per minute (`owedRefresh`). A merged delivery,
+  a closed mission, or a successor whose branch is not cut yet owes none. The
+  asking request drains its own row inside its budget; the kernel floor drains
+  whatever is still due (a request torn down mid-refresh leaves the row leased
+  until its lease runs out, a failed attempt backs off like any effect). Just
+  before a row runs, its delivery is read again: a row owed before its delivery
+  merged, or for a branch the mission rotated away from, is done as
+  `skipped:superseded` and runs nothing. A row that meets another caller's
+  refresh lease waits a minute without spending an attempt. A mission that
+  predates delivery records is refreshed by the direct call, as before.
 
 ### Bounded start
 
@@ -567,6 +581,7 @@ list.
 | AC-34, AC-35 | `mission-branch-refresh.test.ts` › "the shipping PR merged but the owner worker row has no mergedAt"; `apps/web/src/lib/mission-shipping-pr.test.ts` |
 | AC-36 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
 | Delivery epochs: a merged delivery is never refreshed; a rotated-away branch is not | `mission-branch-refresh.test.ts` › "mission delivery records (AC-21)" |
+| The refresh as the writable delivery's outbox effect | `apps/web/tests/db/epoch-effects.test.ts`; `mission-branch-refresh.test.ts` › "the refresh as an effect of the writable epoch"; `packages/workflow-kernel/src/delivery-epochs.test.ts` › "the refresh is an effect the writable epoch owes" |
 | AC-37, AC-39, AC-40, R-2 retirement freshness | `apps/web/tests/db/mission-epochs.test.ts` › "AC-23 / a11abc4b", "scenario 2", "retirement reads GitHub fresh"; `packages/workflow-kernel/src/delivery-epochs.test.ts` › "AC-23 / a11abc4b" |
 | AC-41 | `apps/web/src/lib/mission-pr.test.ts` › "a refresh PR lands only on the delivery it was filed for" |
 
@@ -650,7 +665,9 @@ conflict retry both tell the agent to run it first.
 - `apps/web/src/lib/workflow/delivery-epochs.ts`: `reconcileMissionEpochs`,
   `contentContained`, the settlement and retirement steps.
 - `packages/workflow-kernel/src/delivery-epochs.ts`: `classifySettlement`,
-  `pendingEpochSteps`.
+  `pendingEpochSteps`, `owedRefresh`, `epochEffectIsCurrent`.
+- `apps/web/src/lib/workflow/epoch-effects.ts`: `oweMissionRefresh`,
+  `drainEpochEffects`, `drainDueEpochEffects` (the kernel floor's pass).
 - `apps/web/src/lib/mission-pr.ts`: `guardMissionPrMerge` (refresh target
   identity at every merge door).
 

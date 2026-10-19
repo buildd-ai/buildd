@@ -119,6 +119,29 @@ async function hasWaiver(missionId: string): Promise<boolean> {
 }
 
 /**
+ * Whether a person's waiver stands for this mission under its Visual Review
+ * policy (strict forbids waiving, so a note recorded there does not count).
+ * The one answer both completion and the failed-task classifier use to treat a
+ * stalled audit as history: the audit row stays failed, the waiver stays on
+ * record, and only an audit row is ever retired by it. Fails closed: a read
+ * error is "not waived".
+ */
+export async function surfaceAuditWaived(
+  mission: { id: string; autoSurfaceAudit?: boolean | null; workspaceId?: string | null },
+): Promise<boolean> {
+  try {
+    const policy = resolveVisualReviewPolicy({
+      workspace: mission.workspaceId ? await workspacePolicy(mission.workspaceId) : null,
+      mission: { autoSurfaceAudit: mission.autoSurfaceAudit },
+    });
+    return policy.waiverAllowed && await hasWaiver(mission.id);
+  } catch (err) {
+    console.error(`[surface-audit-gate] ${mission.id.slice(0, 8)} waiver check failed (stall still blocks):`, err);
+    return false;
+  }
+}
+
+/**
  * The newest waiver a person recorded (the mission page shows it): reason,
  * who set it and when. Null when none. Same person-only rule as `hasWaiver`.
  */
