@@ -361,6 +361,45 @@ describe('per-member runner usage', () => {
   });
 });
 
+describe('member principal matches runnerBy (AC-3)', () => {
+  for (const window of ['24h', '7d', '30d'] as const) {
+    it(`${window}: task owner decides the member row, not the claimer`, () => {
+      const s = buildOccupancySeries({
+        window, now: NOW, viewerId: 'me',
+        workers: [
+          row({ taskOwnerId: 'me', ownerId: 'bot', startedAt: NOW - 3 * H, completedAt: NOW - H }),
+          row({ taskOwnerId: 'you', ownerId: 'me', startedAt: NOW - 3 * H, completedAt: NOW - H }),
+        ],
+      });
+      const byId = Object.fromEntries(s.summary.runnerBy && s.members!.map(m => [m.id, m.avg]));
+      expect(Object.keys(byId).sort()).toEqual(['me', 'you']);
+      expect(byId.me).toBeCloseTo(s.summary.runnerBy.mine.avg, 9);
+      expect(byId.you).toBeCloseTo(s.summary.runnerBy.others.avg, 9);
+    });
+
+    it(`${window}: null task owner with a claimer is unattributed only, never a named member`, () => {
+      const s = buildOccupancySeries({
+        window, now: NOW, viewerId: 'me',
+        workers: [row({ taskOwnerId: null, ownerId: 'bot', startedAt: NOW - 3 * H, completedAt: NOW - H })],
+      });
+      expect(s.members).toEqual([]);
+      expect(s.summary.runnerBy.unattributed.avg).toBeGreaterThan(0);
+    });
+  }
+
+  it('absent task owner falls back to the claimer; sessions stay out of members', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [
+        row({ ownerId: 'you', startedAt: NOW - 2 * H, completedAt: NOW - H }),
+        row({ runner: 'mcp', taskOwnerId: 'me', ownerId: 'me', startedAt: NOW - 2 * H, completedAt: NOW - H }),
+      ],
+    });
+    expect(s.members!.map(m => m.id)).toEqual(['you']);
+    expect(s.summary.sessions.avg).toBeGreaterThan(0);
+  });
+});
+
 describe('scopeMembers', () => {
   const NOW = Date.UTC(2026, 9, 18, 12);
   const w = (ownerId: string) => ({ runner: 'runner-a', ownerId, taskOwnerId: ownerId, startedAt: NOW - 3_600_000, completedAt: NOW - 1_800_000, status: 'completed' });
