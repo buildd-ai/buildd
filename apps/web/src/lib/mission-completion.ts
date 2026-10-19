@@ -312,7 +312,7 @@ export const AWAITING_VERIFICATION_NOTE_TITLE = 'Mission awaiting verification';
 export const COMPLETION_RESULT_KEYS = ['errorType'] as const;
 // DELIVERABLE_ROLE_CONTEXT_KEYS' values and object markers, spelled out: several
 // route tests stub mission-helpers without it (a test pins the two equal).
-export const COMPLETION_CONTEXT_KEYS = ['requireMergeCommit', 'refreshTrunk', 'finalVerification', 'surfaceFix', 'specRepair'] as const;
+export const COMPLETION_CONTEXT_KEYS = ['requireMergeCommit', 'refreshTrunk', 'finalVerification', 'surfaceFix', 'specRepair', 'acceptanceTests'] as const;
 
 function completionTaskExtras() {
   const pick = (col: unknown, keys: readonly string[]) =>
