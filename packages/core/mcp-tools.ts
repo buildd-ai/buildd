@@ -1124,8 +1124,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_decision: '{ decisionId (required, a decision_records id from get_decision_stats with capability) } — one decision with what judging it needs: the question the feature asks, the options (answers the feature has given recently and, for role routing, the workspace\'s roles with their when-to-use), the rule\'s answer, the model\'s answer and confidence, the answer in effect and why (a fallback reason in plain words), and the subject\'s later evidence (the task\'s role and status now, its PRs and where they ended, its mission), plus any labels already on it. answers.graded says what label_decision\'s label grades. Platform operators only; a team owner or admin is refused. [admin]',
     label_decision: '{ decisionId (required), label (required: right | wrong | unsure), rationale (required, at most 280 characters: the evidence, not a restatement), ruleLabel? (right | wrong | unsure: the rule\'s answer on the same decision, so the rule gets a baseline) } — grade one decision as an auditor (source agent_audit; the rule\'s grade under agent_audit_rule). label grades the model\'s answer, or the answer in effect when the model gave none. The first grade stands: the same one again is a duplicate, a different one comes back as a conflict with the existing label. These grades are the accuracy in get_decision_stats health and the decision features readout. Platform operators only; a team owner or admin is refused. [admin]',
     get_visual_review: '{ missionTitle? | missionId?, workspaceId?, awaitingOnly? } — a mission\'s visual QA: phase; each audit task (status, times, why); per route+viewport: round, agent verdict, finding, human decision, fix task, shot links; manual shots and reports; what needs you. missionTitle is team-wide unless workspaceId. No mission: missions waiting on you. [admin]',
-    resolve_capability: '{ capability?, roleSlug?, workspaceId? } — what could satisfy a semantic need in this workspace, before choosing a role. capability is domain:verb, domain one of observability|deployment|database|analytics|work_tracking|docs|source_control, verb read|query|write (e.g. "observability:query", "deployment:read"); omit it to list every need something here serves, with what is available now. Returns ranked candidates: provider (catalog slug), installed connector or null, match exact|partial|category, access permitted|auto_grant (route to a role in roles.withAccess)|ask_admin|forbidden (team blocked it)|reconnect|unhealthy, availableNow, health, workspace enablement, compatibility (unknown_until_tested = the provider may refuse a Buildd-run client), risk (writeToolsExposed: mounting exposes every native tool, so read does not mean read-only), runtimeNeeds, nextSteps. Plus operator (Operator deploy grant, deployment needs only) and unclassifiedConnectors. roleSlug defaults to your own task\'s role under a per-task token. Read-only: installing, enabling or granting stays a team admin act. Native tool names and schemas are untouched.',
-    request_capability: '{ capability, provider?, tool?, resource?, environment?, risk?, ttlSeconds?, reason?, workerId? } — ask for access this run needs, by need not by connector: capability is domain:verb (as in resolve_capability) or model.inference (then provider openrouter|litellm, models[], budget). Or tasks:create with resource = the UUID of another workspace of your team, to file tasks there: a person approves it and it lands on your task\'s delegation, which your token re-reads on every call; while it is pending_approval keep working and ask again (same row) — do not end the run or ask_human for the same access. Never pass a connector id or credential. Returns outcome: existing (your role already has it, or a live grant covers it), auto_granted (team policy granted it now, for ttlSeconds), pending_approval (a team admin decides; asking again returns the same request), denied (a person denied this exact ask for this run), forbidden (team blocked it; not appealable here), need_connection / need_reauth / unhealthy (someone must (re)connect the provider), unavailable (nothing serves it) — plus nextSteps and alternatives (e.g. a role that already mounts it). Writes (risk write/admin) always need a person. A grant is bound to this worker, task and role and ends with them; it is re-checked on every use, so a revoke stops the next call. Credentials stay server-side.',
+    resolve_capability: '{ capability?, provider?, access?, roleSlug?, workspaceId? } — what could serve a need in this workspace, before choosing a role. With provider (a catalog slug, access read|write, default read) it shows that one provider\'s state here. capability is a category search filter, domain:verb, domain one of observability|deployment|database|analytics|work_tracking|docs|source_control, verb read|query|write (e.g. "observability:query", "deployment:read"); omit it to list every need something here serves, with what is available now. Returns ranked candidates: provider (catalog slug), installed connector or null, match exact|partial|category, access permitted|auto_grant (route to a role in roles.withAccess)|ask_admin|forbidden (team blocked it)|reconnect|unhealthy, availableNow, health, workspace enablement, compatibility (unknown_until_tested = the provider may refuse a Buildd-run client), risk (writeToolsExposed: mounting exposes every native tool, so read does not mean read-only), runtimeNeeds, nextSteps. Plus operator (Operator deploy grant, deployment needs only) and unclassifiedConnectors. roleSlug defaults to your own task\'s role under a per-task token. Read-only: installing, enabling or granting stays a team admin act. Native tool names and schemas are untouched.',
+    request_capability: '{ provider, access, tool?, resource?, environment?, risk?, ttlSeconds?, reason?, workerId? } — ask for access this run needs: provider is the catalog slug (e.g. axiom, vercel) and access is read or write; never a connector id or credential. resolve_capability { capability: "observability:query" } searches which providers serve a category. For buildd itself use provider "buildd" with resource = the UUID of another workspace of your team: access write files tasks there (tasks:create), access read reads its analytics (analytics:read). A person approves it and it lands on your task\'s delegation, which your token re-reads on every call; while it is pending_approval keep working and ask again (same row) — do not end the run or ask_human for the same access. model.inference is still { capability: "model.inference", provider openrouter|litellm, models[], budget }. Returns outcome: existing (your role already has it, or a live grant covers it), auto_granted (team policy granted it now, for ttlSeconds), pending_approval (a team admin decides; asking again returns the same request), denied (a person denied this exact ask for this run), forbidden (team blocked it; not appealable here), need_connection / need_reauth / unhealthy (someone must (re)connect the provider), unavailable (nothing serves it) — plus nextSteps and alternatives (e.g. a role that already mounts it). Writes (access write, or a write/admin tool) always need a person. A grant is bound to this worker, task and role and ends with them; it is re-checked on every use, so a revoke stops the next call. Credentials stay server-side.',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
     list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10), sinceDays? } — list releases for a workspace or mission, newest first: version, state, deploy time, head SHA, id, and the tasks/PRs each shipped. "What shipped this week" = sinceDays: 7. get_release has the full record.',
     get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus workspaceName, commitRangeUrl, degradationTaskId, attributedTasks (task title, status, prNumber, missionId), and attributedMissions.',
@@ -1997,11 +1997,19 @@ async function resolveWorkspaceId(
     throw err;
   }
   const workspaces: Array<{ id: string; name: string; repo?: string | null }> = wsData?.workspaces || [];
-  const match = workspaces.find((ws: any) =>
-    ws.name.toLowerCase() === raw.toLowerCase() ||
-    ws.repo?.toLowerCase() === raw.toLowerCase() ||
-    ws.repo?.toLowerCase().endsWith('/' + raw.toLowerCase())
-  );
+  // Several reachable workspaces can match one bare name; list order must not
+  // pick. Exact name/repo beats a repo-suffix match, then the connection's own.
+  const needle = raw.toLowerCase();
+  const rank = (ws: { id: string; name: string; repo?: string | null }): number => {
+    const exact = ws.name.toLowerCase() === needle || ws.repo?.toLowerCase() === needle;
+    const suffix = !!ws.repo?.toLowerCase().endsWith('/' + needle);
+    if (!exact && !suffix) return -1;
+    return (exact ? 2 : 0) + (ws.id === ctx.workspaceId ? 1 : 0);
+  };
+  const match = workspaces
+    .map((ws) => ({ ws, r: rank(ws) }))
+    .filter((x) => x.r >= 0)
+    .sort((a, b) => b.r - a.r)[0]?.ws;
   if (match) return match.id;
   if (explicit) throw new Error(unknownWorkspaceMessage(explicit, workspaces));
   return null;
@@ -2047,7 +2055,7 @@ export function unknownWorkspaceMessage(value: string, visible: Array<{ name: st
   const seen = names.length === 0
     ? 'This key can see no workspaces.'
     : `You can see: ${names.slice(0, MAX).join(', ')}${names.length > MAX ? ` (+${names.length - MAX} more; manage_workspaces list)` : ''}.`;
-  const next = ' A key cannot file into a workspace outside its scope, and a task filed in a different workspace is not a substitute. Either request_capability tasks:create with resource = the intended workspace\'s UUID (a person approves it), or hand the work to a person.';
+  const next = ' A key cannot file into a workspace outside its scope, and a task filed in a different workspace is not a substitute. Either request_capability { provider: "buildd", access: "write", resource: <the intended workspace\'s UUID> } (a person approves it), or hand the work to a person.';
   return `Could not resolve workspace "${value}": not visible to this key. ${seen}${next}`;
 }
 
@@ -6047,6 +6055,8 @@ export async function handleBuilddAction(
       }
       const q = new URLSearchParams({ workspaceId: wsId });
       if (typeof params.capability === 'string' && params.capability.trim()) q.set('capability', params.capability.trim());
+      if (typeof params.provider === 'string' && params.provider.trim()) q.set('provider', params.provider.trim());
+      if (typeof params.access === 'string' && params.access.trim()) q.set('access', params.access.trim());
       if (typeof params.roleSlug === 'string' && params.roleSlug.trim()) q.set('roleSlug', params.roleSlug.trim());
       const data = await api(`/api/connectors/capabilities?${q.toString()}`);
       return text(JSON.stringify(data, null, 2));
@@ -6054,7 +6064,11 @@ export async function handleBuilddAction(
 
     case 'request_capability': {
       const workerId = resolveWorkerId(params.workerId, ctx);
-      if (typeof params.capability !== 'string' || !params.capability.trim()) throw new Error('capability is required (e.g. observability:query)');
+      const asksModel = params.capability === 'model.inference';
+      const asksBuildd = typeof params.provider === 'string' && params.provider.trim().toLowerCase() === 'buildd';
+      if (!asksModel && !asksBuildd && (typeof params.provider !== 'string' || !params.provider.trim() || typeof params.access !== 'string')) {
+        throw new Error('provider and access are required (e.g. { provider: "axiom", access: "read" })');
+      }
       const { workerId: _w, ...ask } = params as Record<string, unknown>;
       const data = await api('/api/agent-capabilities/requests', {
         method: 'POST',

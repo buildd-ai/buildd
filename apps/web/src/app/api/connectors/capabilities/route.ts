@@ -6,7 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { loadDiscoveryInput } from '@/lib/connector-capabilities-store';
-import { listCapabilities, resolveCapability } from '@/lib/connector-capabilities';
+import { listCapabilities, resolveCapability, resolveProviderAccess } from '@/lib/connector-capabilities';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const ROLE_SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -14,9 +14,11 @@ const ROLE_SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 // GET /api/connectors/capabilities?workspaceId=<id>[&capability=observability:query][&roleSlug=builder]
 //
 // Read-only semantic capability discovery over the workspace's connectors,
-// roles, credential health and the team's catalog policy. With `capability`
-// it resolves one need to ranked candidates; without, it lists every need
-// something serves. Backs the resolve_capability MCP action. Same reach as
+// roles, credential health and the team's catalog policy. `capability` is a
+// category search filter (which providers serve domain:verb); it is not what
+// an agent requests or is granted (that is request_capability { provider,
+// access }). With `provider` (+ `access`, default read) it shows one provider's
+// state for this workspace; with neither it lists every category something serves. Backs the resolve_capability MCP action. Same reach as
 // /api/connectors/mounted: a per-task token sees only its own task's workspace, and defaults roleSlug to its own task's role.
 // Changes nothing: installing, enabling or granting stays an admin act.
 export async function GET(req: NextRequest) {
@@ -55,6 +57,15 @@ export async function GET(req: NextRequest) {
 
   const input = await loadDiscoveryInput(workspaceId, roleSlug);
   if (!input) return NextResponse.json({ error: 'workspace_not_found' }, { status: 404 });
+
+  const provider = params.get('provider')?.trim().toLowerCase() || null;
+  if (provider) {
+    const access = params.get('access') ?? 'read';
+    if (!/^[a-z0-9][a-z0-9-]{0,47}$/.test(provider) || (access !== 'read' && access !== 'write')) {
+      return NextResponse.json({ error: 'invalid_provider', message: 'provider is a catalog slug; access is read or write' }, { status: 400 });
+    }
+    return NextResponse.json(resolveProviderAccess(input, provider, access));
+  }
 
   const capability = params.get('capability');
   if (!capability) return NextResponse.json(listCapabilities(input));
