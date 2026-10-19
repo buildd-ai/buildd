@@ -1,6 +1,6 @@
 {
   "name": "@buildd/runner",
-  "version": "0.368.1",
+  "version": "0.369.0",
   "type": "module",
   "scripts": {
     "dev": "bun --watch src/index.ts",
