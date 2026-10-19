@@ -295,10 +295,8 @@ export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
     openFindings: delivery ? delivery.openFindings ?? 0 : null,
     // The budget is review-fix attempts, not rounds: every new head (a CI fix,
     // a base merge) opens a round, so "round 11 of 3" was a count of pushes.
-    // The round is the budget's position only while changes are being asked for.
-    iteration: fromDelivery
-      ? verdict === 'request-changes' || verdict === 'escalate' ? fromDelivery.round : fromDelivery.fixesUsed
-      : numberOrNull(ctx.iteration),
+    // Use the review-fix attempt counter for the budget position.
+    iteration: fromDelivery ? fromDelivery.fixesUsed : numberOrNull(ctx.iteration),
     maxIterations: fromDelivery ? fromDelivery.maxRounds : numberOrNull(ctx.maxIterations),
     reviewHeadSha: fromDelivery ? fromDelivery.headSha : stringOrNull(ctx.headSha),
     reviewEquivalentHeadShas: Array.isArray(ctx.equivalentHeadShas)
