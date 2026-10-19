@@ -63,6 +63,8 @@ import { missionPlanInputs } from '@/lib/mission-plan-source';
 import MissionFeedLayout from './MissionFeedLayout';
 import { missionSummaryLine } from '@/lib/mission-summary-line';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
+import { buildActivityEpisodes } from '@/lib/activity-delivery';
+import { missionHistoryInputs } from '@/lib/mission-history-input';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { missionTaskDeliveries, type MissionDeliveryTaskRow } from './mission-task-delivery';
 import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
@@ -773,6 +775,20 @@ export default async function MissionDetailPage({
     taskId: n.taskId ?? null, createdAt: new Date(n.createdAt).getTime(),
   }));
 
+  // Highlights are Activity's episodes over this mission's own tasks (the rows
+  // already carry the kernel delivery overlay), not a second fold of the board.
+  const historyEpisodes = layout === 'feed'
+    ? buildActivityEpisodes({
+        ...missionHistoryInputs({
+          mission: { id, title: mission.title, status: mission.status, isHeld: (mission as any).isHeld, armedAt: (mission as any).armedAt, integrationBranchEnabled: (mission as any).integrationBranchEnabled },
+          tasks: allTasks as never,
+          digestOf,
+          rules: missionHelpers,
+        }),
+        rules: missionHelpers,
+      })
+    : [];
+
   const dbInitiative = (mission as any).initiative as { id: string; title: string } | null | undefined;
 
   const breadcrumb = resolveMissionBreadcrumb({
@@ -1378,6 +1394,7 @@ export default async function MissionDetailPage({
           <MissionFeedLayout
             model={boardModel}
             notes={feedNotes}
+            episodes={historyEpisodes}
             completionText={completionText}
             visual={boardVisual}
             notesEntry={<MissionNotesSheet missionId={id} />}
