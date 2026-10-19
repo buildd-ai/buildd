@@ -99,8 +99,20 @@ export interface CriterionStanding {
   stale: boolean;
   /** Counts toward `verified`: a pass on the current head. */
   holds: boolean;
+  /**
+   * Model results on the same commit that a test result outranked: kept and
+   * shown beside the deciding test, never replacing it. Empty unless a test decides.
+   */
+  notes: CriterionNote[];
   /** Review verdicts a deciding test result outranks (R-85); 0 unless a test decided. */
   overriddenReviews: number;
+}
+
+export interface CriterionNote {
+  verdict: Verdict;
+  source: VerdictSource;
+  headSha: string | null;
+  at: Date | string;
 }
 
 export interface GovernedOutcomeReadout {
@@ -137,9 +149,15 @@ export function foldGovernedOutcome(
   }
   const standings: CriterionStanding[] = criteria.map((id) => {
     const v = newest.get(id);
-    if (!v) return { criterionId: id, verdict: null, source: null, headSha: null, stale: false, holds: false, overriddenReviews: 0 };
+    if (!v) return { criterionId: id, verdict: null, source: null, headSha: null, stale: false, holds: false, notes: [], overriddenReviews: 0 };
     const onHead = sameHead(v.headSha, currentHeadSha);
-    return { criterionId: id, verdict: v.verdict, source: v.source ?? 'review', headSha: v.headSha, stale: !onHead, holds: v.verdict === 'pass' && onHead, overriddenReviews: overridden.get(id) ?? 0 };
+    const notes: CriterionNote[] = v.source === 'test'
+      ? (byCriterion.get(id) ?? [])
+        .filter((x) => x.source !== 'test' && sameHead(x.headSha, v.headSha))
+        .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
+        .map((x) => ({ verdict: x.verdict, source: x.source ?? 'review', headSha: x.headSha, at: x.at }))
+      : [];
+    return { criterionId: id, verdict: v.verdict, source: v.source ?? 'review', headSha: v.headSha, stale: !onHead, holds: v.verdict === 'pass' && onHead, notes, overriddenReviews: overridden.get(id) ?? 0 };
   });
   const failed = standings.filter((s) => s.verdict === 'fail').map((s) => s.criterionId);
   if (failed.length > 0) return { outcome: 'fail', currentHeadSha, criteria: standings, reason: `${failed.join(', ')} failed` };

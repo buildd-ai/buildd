@@ -13,6 +13,7 @@ import { inScope } from '@buildd/spec-contract/scope';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 import { settleVerdictSource } from './verdict-source';
 import { criterionHashes } from './criteria';
+import { acceptanceEditOf, dropUnacceptedTestResults } from '@buildd/spec-contract/acceptance-edit';
 
 /**
  * Governed outcomes (Living Specs V1, decision D-5): whether a task's outcome
@@ -128,7 +129,7 @@ async function fold(l: Loaded): Promise<OutcomeView> {
   // A verdict on another wording of a criterion does not count for this one (R-13); one recorded before wordings were kept does.
   const rows = all.filter((r) => !r.textHash || r.textHash === l.hashes.get(r.criterionId));
   const head = await currentPrHeadSha(l.task.id);
-  const r = foldGovernedOutcome(l.criteria.map((c) => c.id), rows.map((x) => ({ ...x, source: verdictSourceOfEvidence(x.evidence) })), head);
+  const r = foldGovernedOutcome(l.criteria.map((c) => c.id), dropUnacceptedTestResults(rows.map((x) => ({ ...x, source: verdictSourceOfEvidence(x.evidence) })), acceptanceEditOf(l.task.context)), head);
   const text = new Map(l.criteria.map((c) => [c.id, c.text]));
   return { ...r, specId: l.specId, specRevisionId: l.specRevisionId, revision: l.revision, criteria: r.criteria.map((c) => ({ ...c, text: text.get(c.criterionId) ?? '' })) };
 }
@@ -184,11 +185,12 @@ export async function governedOutcomesFor(
   }
   if (!loaded.length) return out;
   const verdicts = verdictRows ?? await taskVerdictRows(loaded.map((x) => x.id));
+  const contexts = new Map(rows.map((t) => [t.id, t.context]));
   for (const { id, l } of loaded) {
     const rowsFor = verdicts
       .filter((r) => r.taskId === id && r.specRevisionId === l.specRevisionId)
       .filter((r) => !r.textHash || r.textHash === l.hashes.get(r.criterionId));
-    const r = foldGovernedOutcome(l.criteria.map((c) => c.id), rowsFor.map((x) => ({ ...x, source: verdictSourceOfEvidence(x.evidence) })) as never, heads.get(id) ?? null);
+    const r = foldGovernedOutcome(l.criteria.map((c) => c.id), dropUnacceptedTestResults(rowsFor.map((x) => ({ ...x, source: verdictSourceOfEvidence(x.evidence) })), acceptanceEditOf(contexts.get(id))) as never, heads.get(id) ?? null);
     const text = new Map(l.criteria.map((c) => [c.id, c.text]));
     out.set(id, { ...r, specId: l.specId, specRevisionId: l.specRevisionId, revision: l.revision, criteria: r.criteria.map((c) => ({ ...c, text: text.get(c.criterionId) ?? '' })) });
   }
