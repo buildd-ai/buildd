@@ -10,6 +10,7 @@ import {
   SURFACE_FIX_TITLE_PREFIX,
   buildSurfaceAuditDescription,
   isSurfaceAuditTask,
+  isMissionAuditTask,
   isSurfaceFixTask,
   isTrunkRefreshTask,
   isUiSurfacePath,
@@ -466,5 +467,14 @@ describe('surfaceAuditHeadline', () => {
 
   it('does not claim a count when the files are unknown', () => {
     expect(surfaceAuditHeadline(0)).toBe('This mission changed UI and no visual audit has run.');
+  });
+});
+
+describe('isMissionAuditTask', () => {
+  it('matches by title prefix, by visual-auditor role, and agrees on either alone', () => {
+    expect(isMissionAuditTask({ title: '[surface audit] Mission', roleSlug: null })).toBe(true);
+    expect(isMissionAuditTask({ title: 'Check the screens', roleSlug: 'visual-auditor' })).toBe(true);
+    expect(isMissionAuditTask({ title: 'Build thing', roleSlug: 'builder' })).toBe(false);
+    expect(isMissionAuditTask({ title: null })).toBe(false);
   });
 });

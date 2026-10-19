@@ -18,7 +18,7 @@ import { toTopWorkerSummaries } from './top-worker-summary';
 import { todayTotals } from './run-route';
 import { Outbox, createReplayHandler } from './outbox';
 import { parseOnceArgs, runOnceFromCli, ONCE_USAGE, EXIT_USAGE } from './run-once';
-import { classifyCliArgs, RUNNER_USAGE, EXIT_CLI_USAGE } from './cli-args';
+import { classifyCliArgs, refuseInDevCheckout, RUNNER_USAGE, EXIT_CLI_USAGE } from './cli-args';
 import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbackTo, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable, isUpdateStuck,
   buildHealthProbeSpawn, AUTO_UPDATE_RETRY_LIMIT, PKG_VERSION,
   isUpdateTargetReachable, isNoProgressUpdate, canAttemptAutoUpdate, isAutoUpdateDisabled,
@@ -62,6 +62,22 @@ if (CLI.kind === 'help') {
 if (CLI.kind === 'unknown') {
   console.error(`Unknown argument: ${CLI.arg}\n\n${RUNNER_USAGE}`);
   process.exit(EXIT_CLI_USAGE);
+}
+
+// The dev checkout (`buildd top --dev`) runs top and nothing else; `--dev` on
+// anything but top is refused. Only top has a dev build: the runner, its
+// service and its auto-update stay on the production release (top-dev.ts).
+{
+  const refusal = refuseInDevCheckout(CLI) ?? (CLI.kind === 'dev-refused' ? CLI.message : null);
+  if (refusal) {
+    console.error(refusal);
+    process.exit(EXIT_CLI_USAGE);
+  }
+}
+if (CLI.kind === 'top-dev') {
+  const { runTopDev, defaultDevDir } = await import('./top-dev');
+  // This checkout (the production install) is only read: see top-dev.ts.
+  process.exit(await runTopDev({ prodDir: join(import.meta.dir, '..', '..', '..'), devDir: defaultDevDir(), topArgs: CLI.args }));
 }
 
 // `buildd name [<name>|--clear]`: read or set the display name, then exit. It
@@ -250,8 +266,9 @@ function exitAlreadyRunning(decision: { code: number; message: string; stream: '
 
 /** Open `buildd top` on the runner holding the socket, then exit with its code. */
 async function attachTop(missionId: string | null, notice?: string, workspace: string | null = null, team: string | null = null): Promise<never> {
-  const { runTop } = await import('./top/run');
-  process.exit(await runTop({ socketPath: RUNNER_SOCKET, missionId, workspace, team, notice }));
+  const { runTop, devBuildFromEnv } = await import('./top/run');
+  const build = devBuildFromEnv(process.env);
+  process.exit(await runTop({ socketPath: RUNNER_SOCKET, missionId, workspace, team, notice: notice ?? build?.notice, build }));
 }
 
 // `buildd top`: watch the runner already running on this machine. Never starts one.
@@ -259,7 +276,8 @@ if (CLI.kind === 'top') {
   if (CLI.frame) {
     // Hidden: one frame on stdout, read-only (top/frame.ts).
     const { runFrameOnce } = await import('./top/frame');
-    process.exit(await runFrameOnce({ socketPath: RUNNER_SOCKET, missionId: CLI.missionId, workspace: CLI.workspace, team: CLI.team, ...CLI.frame }));
+    const { devBuildFromEnv } = await import('./top/run');
+    process.exit(await runFrameOnce({ socketPath: RUNNER_SOCKET, missionId: CLI.missionId, workspace: CLI.workspace, team: CLI.team, ...CLI.frame, build: devBuildFromEnv(process.env) }));
   }
   await attachTop(CLI.missionId, undefined, CLI.workspace, CLI.team);
 }

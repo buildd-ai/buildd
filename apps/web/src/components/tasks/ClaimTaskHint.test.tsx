@@ -36,4 +36,8 @@ describe('ClaimTaskHint', () => {
     expect(button).toContain('aria-label="Copy claim command"');
     expect(button).toContain('<span class="md:hidden">Copy</span>');
   });
+
+  it('keeps a polite live region beside the fixed-label button, so "Copied" is announced', () => {
+    expect(html).toMatch(/<span role="status" aria-live="polite" class="sr-only"><\/span>/);
+  });
 });

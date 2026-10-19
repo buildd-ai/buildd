@@ -59,6 +59,8 @@ export default function ClaimTaskHint({
       >
         {copied ? 'Copied' : <><span className="md:hidden">Copy</span><span className="hidden md:inline">Copy claim command</span></>}
       </button>
+      {/* The button's fixed aria-label hides its own text, so the confirmation is announced here. */}
+      <span role="status" aria-live="polite" className="sr-only">{copied ? 'Copied claim command' : ''}</span>
       {actions}
       </div>
     </div>
