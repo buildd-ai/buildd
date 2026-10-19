@@ -129,13 +129,14 @@ import MissionSituationBlock, { affordanceFor, MISSION_CRITERIA_ANCHOR } from '@
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { readRound } from '@/lib/read-round';
+import { qaHistoryNotes } from '@/lib/mission-history-qa';
 
 export const dynamic = 'force-dynamic';
 
 
 type PageProps = {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string; visualReview?: string }>;
+  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string; visualReview?: string; qaHistory?: string }>;
 };
 
 /**
@@ -160,10 +161,10 @@ async function MissionDetailBody({
 }: {
   params: Promise<{ id: string }>;
   // `?tab=` is retired: accepted and ignored, so old links still land.
-  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string; visualReview?: string }>;
+  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string; visualReview?: string; qaHistory?: string }>;
 }) {
   const { id } = await params;
-  const { from, initiativeId, artifact: initialOpenArtifactId, view: listViewParam, layout: layoutParam, visualReview: visualReviewParam } = await searchParams;
+  const { from, initiativeId, artifact: initialOpenArtifactId, view: listViewParam, layout: layoutParam, visualReview: visualReviewParam, qaHistory: qaHistoryParam } = await searchParams;
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
@@ -794,10 +795,10 @@ async function MissionDetailBody({
   const shippedView = mission.status === 'completed'
     ? buildShippedHeaderView((shippedRow?.metadata as { shipped?: unknown } | null)?.shipped, (mission as any).completedAt)
     : null;
-  const feedNotes = feedNoteRows.map(n => ({
+  const feedNotes = (qaHistoryNotes(qaHistoryParam, process.env.NODE_ENV) ?? feedNoteRows.map(n => ({
     id: n.id, type: n.type as string, authorType: n.authorType as string, title: n.title ?? null,
     taskId: n.taskId ?? null, createdAt: new Date(n.createdAt).getTime(),
-  }));
+  })));
 
   // Highlights are Activity's episodes over this mission's own tasks (the rows
   // already carry the kernel delivery overlay), not a second fold of the board.
