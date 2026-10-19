@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { repairPathManifest, readRepairPrFiles, REPAIR_MANIFEST_MAX_FILES } from './repair-manifest';
 import { declaresNoScope } from '@buildd/core/path-overlap';
-import { advisoryMutexApplies, advisoryBlockingPeer } from '@/app/api/workers/claim/coordination-gates';
 
 describe('repairPathManifest', () => {
   it('replaces a repo-wide owner scope with the PR files', () => {
@@ -23,14 +22,8 @@ describe('repairPathManifest', () => {
     expect(repairPathManifest(['**'], many)).toEqual(['**']);
   });
 
-  it('is claimable beside an in-flight scope-undeclared task (advisory_manifest gate)', () => {
-    const repair = { category: null, outputRequirement: 'auto', pathManifest: repairPathManifest(['**'], ['a.ts']) };
-    expect(declaresNoScope(repair.pathManifest)).toBe(false);
-    expect(advisoryMutexApplies(repair)).toBe(false);
-    // Today's inherited sentinel is gated behind the in-flight undeclared peer.
-    const old = { ...repair, pathManifest: ['**'] };
-    expect(advisoryMutexApplies(old)).toBe(true);
-    expect(advisoryBlockingPeer('repair', new Set(['peer']))).toBe('peer');
+  it('gives a repair of a repo-wide owner a concrete scope (precision for the overlap policy)', () => {
+    expect(declaresNoScope(repairPathManifest(['**'], ['a.ts']))).toBe(false);
   });
 });
 

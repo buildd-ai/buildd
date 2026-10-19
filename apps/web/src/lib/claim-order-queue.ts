@@ -29,7 +29,7 @@ import { claimCandidateWhere, type ClaimCandidateInput, type ClaimGateName } fro
 import { findBlockingPr, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { findHoldingLease, findHoldingOpenPr, workspaceHardSurface } from '@/app/api/workers/claim/overlap-policy';
-import { advisoryBlockingPeer, advisoryMutexApplies, type OpenPrTask } from '@/app/api/workers/claim/coordination-gates';
+import type { OpenPrTask } from '@/app/api/workers/claim/coordination-gates';
 
 /** At most this many waiting tasks are read, in claim order. */
 export const RUNNER_QUEUE_LIMIT = 300;
@@ -136,9 +136,6 @@ export interface RunnerQueueRow {
   ctxCredentialHold?: string | boolean | null;
   /** For the alongside read (`queueAlongside`); never sent to the runner. */
   pathManifest?: string[] | null;
-  /** For the one-undeclared-task-per-mission projection (`advisoryMutexApplies`); never sent to the runner. */
-  category?: string | null;
-  outputRequirement?: string | null;
   gitConfig?: unknown;
   /** The task's owner: who filed it, else its mission's, else its schedule's (R-58). */
   ownerUserId?: string | null;
@@ -224,43 +221,6 @@ export interface RunnerQueueDeps {
   estimates?: (teamId: string, taskIds: string[]) => Promise<EstimateRow[] | null>;
   workspaceConfigs?: (workspaceIds: string[]) => Promise<Array<{ id: string; gitConfig: unknown }>>;
   overlaps?: (workspaceIds: string[]) => Promise<QueueOverlapState>;
-  /** missionId → its in-flight tasks that declare no files (the claim's `missionAdvisoryInFlight`). */
-  missionInFlight?: (missionIds: string[]) => Promise<Map<string, Set<string>>>;
-}
-
-async function readMissionInFlight(missionIds: string[]): Promise<Map<string, Set<string>>> {
-  const { loadMissionCoordination } = await import('@/app/api/workers/claim/coordination-snapshot');
-  return (await loadMissionCoordination(missionIds)).missionAdvisoryInFlight;
-}
-
-/**
- * The claim's one-scope-undeclared-task-per-mission serialization
- * (advisory_manifest, claim route step 4), projected onto the queue in claim
- * order: a task it applies to waits on the mission's in-flight undeclared
- * task, else on the first such task ahead of it here that nothing else holds
- * (the claim starts that one and adds it to the set in the same batch). Rows
- * are mutated in place. One known gap: under the planner's `apply` mode a
- * task with a confident predicted scope skips the mutex at claim time, which
- * this read cannot see, so such a task may start where the queue says it waits.
- */
-export function markAdvisorySerialized(
-  teamsOut: RunnerQueueTeam[],
-  rowsById: Map<string, RunnerQueueRow>,
-  inFlight: Map<string, Set<string>>,
-): void {
-  const occupied = new Map([...inFlight].map(([m, set]) => [m, new Set(set)]));
-  for (const team of teamsOut) for (const t of team.queue) {
-    const r = rowsById.get(t.id);
-    // A task something else holds never starts, so it neither waits here nor occupies the slot.
-    if (!t.missionId || !r || t.holds.length > 0 || !advisoryMutexApplies(r)) continue;
-    const peer = advisoryBlockingPeer(t.id, occupied.get(t.missionId));
-    if (peer) {
-      t.holds = [...t.holds, 'advisory_manifest'];
-      t.holderTaskId = peer;
-    } else {
-      occupied.set(t.missionId, new Set([t.id]));
-    }
-  }
 }
 
 /**
@@ -326,8 +286,6 @@ export function buildRunnerQueueQuery(builder: { select: typeof db.select }, opt
       ctxBudgetExhausted: sql<string | null>`${tasks.context}->>'budgetExhausted'`,
       ctxCredentialHold: sql<string | null>`${tasks.context}->'credentialHold' IS NOT NULL`,
       pathManifest: tasks.pathManifest,
-      category: tasks.category,
-      outputRequirement: tasks.outputRequirement,
       ownerUserId: taskOwnerId,
       ownerName: ownerUser.name,
       ...runnerQueueGateColumns(opts.gates),
@@ -419,13 +377,6 @@ export async function loadRunnerQueue(
         if (a) t.alongside = a;
       }
     }
-  }
-  // Undeclared-scope serialization; a failed read marks nothing.
-  const undeclared = kept.filter(r => r.missionId && advisoryMutexApplies(r));
-  if (undeclared.length > 0) {
-    const missionIds = [...new Set(undeclared.map(r => r.missionId!))];
-    const inFlight = await (deps.missionInFlight ?? readMissionInFlight)(missionIds).catch(() => null);
-    if (inFlight) markAdvisorySerialized(teamsOut, new Map(kept.map(r => [r.id, r])), inFlight);
   }
   const estimates = deps.estimates ?? readEstimates;
   await Promise.all(teamsOut.map(async (team) => {
