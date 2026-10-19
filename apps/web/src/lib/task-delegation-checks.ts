@@ -103,19 +103,24 @@ export async function resolveTaskDelegationWrite(
 
 /**
  * Add one approved grant to a task's delegation (a person approved its
- * `tasks:create` capability request). Read-modify-write guarded on the value
+ * `tasks:create` capability request). The entry carries the request's expiry,
+ * so it lapses with the grant row. Read-modify-write guarded on the value
  * read, retried once: no interactive transactions on neon-http.
  */
 export async function addTaskDelegationGrant(
   taskId: string,
-  grant: { workspaceId: string; capability: ScheduleDelegationCapability },
+  grant: { workspaceId: string; capability: ScheduleDelegationCapability; expiresAt: Date },
   by: { userId: string; capabilityGrantId: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { id: true, delegation: true, updatedAt: true } });
     if (!task) return { ok: false, error: 'Task not found' };
     const current = task.delegation as TaskDelegation | null;
-    const merged = mergeDelegationGrants(readScheduleDelegation(current), [{ workspaceId: grant.workspaceId, capabilities: [grant.capability] }]);
+    const merged = mergeDelegationGrants(readScheduleDelegation(current), [{
+      workspaceId: grant.workspaceId,
+      capabilities: [grant.capability],
+      expiresAt: { [grant.capability]: grant.expiresAt.toISOString() },
+    }]);
     if (merged.overflow.length) return { ok: false, error: 'The task already delegates the maximum number of workspaces.' };
     const next: TaskDelegation = {
       grants: merged.grants,

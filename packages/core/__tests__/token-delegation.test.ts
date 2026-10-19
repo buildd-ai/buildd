@@ -130,6 +130,47 @@ describe('task delegation', () => {
     expect(inheritTaskDelegation(null)).toBeNull();
   });
 
+  describe('an expiring capability (an approved request)', () => {
+    const NOW = new Date('2026-06-01T00:00:00Z');
+    const LATER = '2026-06-01T01:00:00Z';
+    const EARLIER = '2026-05-31T23:00:00Z';
+
+    it('reads as absent past its expiry, and an unreadable expiry as already past', () => {
+      const stored = { grants: [{ workspaceId: B, capabilities: ['analytics:read', 'tasks:create'], expiresAt: { 'tasks:create': EARLIER } }] };
+      expect(readScheduleDelegation(stored, NOW)).toEqual([{ workspaceId: B, capabilities: ['analytics:read'] }]);
+      const live = { grants: [{ workspaceId: B, capabilities: ['tasks:create'], expiresAt: { 'tasks:create': LATER } }] };
+      expect(readScheduleDelegation(live, NOW)).toEqual(live.grants);
+      expect(readScheduleDelegation({ grants: [{ workspaceId: B, capabilities: ['tasks:create'], expiresAt: { 'tasks:create': 'never' } }] }, NOW)).toEqual([]);
+    });
+
+    it('delegationAllows re-checks the expiry, so a cached grant list stops at it', () => {
+      const grants = [{ workspaceId: B, capabilities: ['tasks:create'] as ScheduleDelegationCapability[], expiresAt: { 'tasks:create': LATER } }];
+      expect(delegationAllows(grants, B, 'tasks:create', NOW)).toBe(true);
+      expect(delegationAllows(grants, B, 'tasks:create', new Date('2026-06-01T02:00:00Z'))).toBe(false);
+    });
+
+    it('merging never shortens a permanent grant, and keeps the later of two expiries', () => {
+      const permanent = [{ workspaceId: B, capabilities: ['tasks:create'] as ScheduleDelegationCapability[] }];
+      const expiring = (at: string) => [{ workspaceId: B, capabilities: ['tasks:create'] as ScheduleDelegationCapability[], expiresAt: { 'tasks:create': at } }];
+      expect(mergeDelegationGrants(permanent, expiring(LATER)).grants).toEqual(permanent);
+      expect(mergeDelegationGrants(expiring(EARLIER), expiring(LATER)).grants).toEqual(expiring(LATER));
+      expect(mergeDelegationGrants([{ workspaceId: B, capabilities: ['analytics:read'] }], expiring(LATER)).grants).toEqual([
+        { workspaceId: B, capabilities: ['analytics:read', 'tasks:create'], expiresAt: { 'tasks:create': LATER } },
+      ]);
+    });
+
+    it('removing the capability removes its expiry', () => {
+      const grants = [{ workspaceId: B, capabilities: ['analytics:read', 'tasks:create'] as ScheduleDelegationCapability[], expiresAt: { 'tasks:create': LATER } }];
+      expect(removeDelegationCapability(grants, B, 'tasks:create')).toEqual([{ workspaceId: B, capabilities: ['analytics:read'] }]);
+    });
+
+    it('a continuation keeps the expiry and never inherits a lapsed grant', () => {
+      const parent = (at: string) => ({ id: 'p', delegation: { grants: [{ workspaceId: B, capabilities: ['tasks:create'], expiresAt: { 'tasks:create': at } }], grantedByUserId: 'u', grantedAt: '2026-01-01T00:00:00Z' } });
+      expect(inheritTaskDelegation(parent(LATER), NOW)?.grants).toEqual([{ workspaceId: B, capabilities: ['tasks:create'], expiresAt: { 'tasks:create': LATER } }]);
+      expect(inheritTaskDelegation(parent(EARLIER), NOW)).toBeNull();
+    });
+  });
+
   it('filing targets are workspace UUIDs, deduped, refused (not dropped) when malformed', () => {
     expect(parseFilingTargets([B, B])).toEqual({ ok: true, targets: [B] });
     expect(parseFilingTargets(undefined)).toEqual({ ok: true, targets: [] });

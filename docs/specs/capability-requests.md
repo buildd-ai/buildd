@@ -2,13 +2,13 @@
 title: Capability Requests and Grants
 status: active
 owner: max
-last_verified: 2026-10-12
+last_verified: 2026-10-19
 summary: An agent MUST get access it lacked at start only by asking for a semantic need, resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
 domain: auth
 surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/task-delegation.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/lib/connector-gateway.ts]
 related: [agent-capabilities, model-inference-agent-capability, mcp-connectors-and-roles, team-permissions]
 keywords: [connector gateway, native MCP, tools/list, tools/call, readOnlyHint, toolPolicy, connectorCeiling, request_capability, capability grant, capability policy, auto_grant, ask_human, forbidden, approve, deny, revoke, lease, TTL, provider write guard]
-verified_by: [apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts]
+verified_by: [apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/task-delegation-scenario.test.ts, packages/core/__tests__/token-delegation.test.ts, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts]
 supersedes: []
 assertions:
   - id: request-route
@@ -134,8 +134,13 @@ without naming a connector id or seeing a credential.
   The approver must reach the target themselves (`approver_lacks_reach`
   otherwise). Approval writes the grant onto the task's own delegation
   (`tasks.delegation`, lib/task-delegation.ts), which the task token re-reads
-  on every call; if that write fails the approval is undone. Revoking removes
-  it from the delegation.
+  on every call; if that write fails the approval is undone. The delegation
+  entry carries the grant's expiry (`expiresAt` per capability): past it the
+  token, the claim pre-flight and a continuation's copy all read the
+  capability as absent, whether or not the grant row has been marked
+  `expired` yet. A continuation or retry copies the expiry and never extends
+  it. Merging with a grant a person set directly never shortens theirs.
+  Revoking removes it from the delegation.
 
 **Acceptance criteria**:
 - AC-1: GIVEN Axiom installed and connected but the team has blocked it in the catalog WHEN an agent asks for `observability:query` THEN the outcome is `forbidden` (`catalog_blocked`) and no row is written.
@@ -144,6 +149,7 @@ without naming a connector id or seeing a credential.
 - AC-4: GIVEN the role mounts a provider WHEN an agent asks for `write` THEN it is `pending_approval` (`write_needs_human`), whatever the team rule says.
 - AC-5: WHEN a body names a connector id THEN the route returns 400.
 - AC-5a: GIVEN a running task with no delegation WHEN its agent asks for `tasks:create` on a same-team workspace THEN the outcome is `pending_approval`; WHEN a person who reaches that workspace approves THEN the task's delegation grants `tasks:create` there and a repeat ask is `existing`; WHEN revoked THEN the grant leaves the delegation.
+- AC-5b: GIVEN an approved `tasks:create` grant WHEN its expiry passes THEN the task token no longer carries it, the claim pre-flight holds a task that declares that target, and a continuation does not inherit it; a continuation made before then inherits the same expiry. (`apps/web/src/lib/task-delegation-scenario.test.ts`, `packages/core/__tests__/token-delegation.test.ts`)
 
 ## Team policy
 

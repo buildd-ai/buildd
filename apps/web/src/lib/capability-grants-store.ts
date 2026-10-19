@@ -372,7 +372,7 @@ export async function decideCapabilityRequest(
     .returning();
   if (!r) return settled('approve');
   if (g.capability === TASK_FILING_CAPABILITY) {
-    const landed = await landTaskFilingGrant(g, actor.userId);
+    const landed = await landTaskFilingGrant(g, actor.userId, expiresAt);
     if (!landed.ok) return landed;
   }
   audit('capability.approve', 'allowed', 'approved_by_human', expiresAt);
@@ -381,13 +381,15 @@ export async function decideCapabilityRequest(
 
 /**
  * An approved tasks:create request becomes a grant on the task's own
- * delegation, which the task token re-reads on every call. If that write
- * fails the approval is undone (no transactions on neon-http), so the ledger
- * never shows a grant the token does not carry.
+ * delegation, which the task token re-reads on every call. The entry carries
+ * the grant's expiry: the token stops honouring it then, without waiting for
+ * expireLapsed to mark the row. If that write fails the approval is undone
+ * (no transactions on neon-http), so the ledger never shows a grant the token
+ * does not carry.
  */
-async function landTaskFilingGrant(g: GrantRecord, userId: string): Promise<{ ok: true } | { ok: false; status: 409; code: string; error: string }> {
+async function landTaskFilingGrant(g: GrantRecord, userId: string, expiresAt: Date): Promise<{ ok: true } | { ok: false; status: 409; code: string; error: string }> {
   const added = g.resource
-    ? await addTaskDelegationGrant(g.taskId, { workspaceId: g.resource, capability: 'tasks:create' }, { userId, capabilityGrantId: g.id })
+    ? await addTaskDelegationGrant(g.taskId, { workspaceId: g.resource, capability: 'tasks:create', expiresAt }, { userId, capabilityGrantId: g.id })
     : { ok: false as const, error: 'The request names no workspace.' };
   if (added.ok) return { ok: true };
   await db.update(capabilityGrants)

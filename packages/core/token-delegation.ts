@@ -25,8 +25,9 @@
  *  - a schedule row: set by a team admin, for every task the schedule spawns;
  *  - a task row (`tasks.delegation`): set by a person who reaches each target,
  *    when filing the task or with update_task before it is claimed, or by a
- *    person approving the task's own `tasks:create` capability request. A
- *    continuation or retry of the task copies it.
+ *    person approving the task's own `tasks:create` capability request (that
+ *    grant carries the request's expiry and lapses with it). A continuation
+ *    or retry of the task copies it, expiries included.
  * Either way only workspaces of the owner's own team that the granting
  * principal can itself reach, recorded with who granted it and when. It is
  * read on every request, so editing or clearing it takes effect immediately,
@@ -42,6 +43,12 @@ export const SCHEDULE_DELEGATION_MAX_GRANTS = 5;
 export interface ScheduleDelegationGrant {
   workspaceId: string;
   capabilities: ScheduleDelegationCapability[];
+  /**
+   * ISO expiry per capability. Only an approved capability request sets one
+   * (its grant's `expiresAt`); a capability with no entry here never expires.
+   * Past it, the capability reads as absent everywhere.
+   */
+  expiresAt?: Partial<Record<ScheduleDelegationCapability, string>>;
 }
 
 export interface ScheduleDelegation {
@@ -112,33 +119,50 @@ export function parseScheduleDelegationInput(
   return { ok: true, grants };
 }
 
+/** Is `capability` on this grant still live at `now`? An unreadable expiry is past (fail closed). */
+function capabilityLive(g: Pick<ScheduleDelegationGrant, 'expiresAt'>, capability: ScheduleDelegationCapability, now: Date): boolean {
+  const at = g.expiresAt?.[capability];
+  if (at === undefined) return true;
+  const ms = typeof at === 'string' ? Date.parse(at) : NaN;
+  return Number.isFinite(ms) && ms > now.getTime();
+}
+
 /**
- * Read a stored delegation defensively: anything malformed grants nothing.
- * The route validates on write; this guards a hand-edited or legacy row.
+ * Read a stored delegation defensively: anything malformed grants nothing,
+ * and a capability past its expiry is dropped (the expiry of a live one is
+ * kept, so a copy never outlives the original). The route validates on write;
+ * this guards a hand-edited or legacy row.
  */
-export function readScheduleDelegation(value: unknown): ScheduleDelegationGrant[] {
+export function readScheduleDelegation(value: unknown, now: Date = new Date()): ScheduleDelegationGrant[] {
   if (!value || typeof value !== 'object') return [];
   const grants = (value as { grants?: unknown }).grants;
   if (!Array.isArray(grants)) return [];
   const out: ScheduleDelegationGrant[] = [];
   for (const g of grants.slice(0, SCHEDULE_DELEGATION_MAX_GRANTS)) {
     if (!g || typeof g !== 'object') continue;
-    const { workspaceId, capabilities } = g as { workspaceId?: unknown; capabilities?: unknown };
+    const { workspaceId, capabilities, expiresAt } = g as { workspaceId?: unknown; capabilities?: unknown; expiresAt?: unknown };
     if (typeof workspaceId !== 'string' || !UUID_RE.test(workspaceId) || !Array.isArray(capabilities)) continue;
-    const caps = capabilities.filter(isScheduleDelegationCapability);
-    if (caps.length) out.push({ workspaceId, capabilities: caps });
+    const rawExpiry = expiresAt && typeof expiresAt === 'object' && !Array.isArray(expiresAt)
+      ? expiresAt as Partial<Record<ScheduleDelegationCapability, string>>
+      : undefined;
+    const caps = capabilities.filter(isScheduleDelegationCapability).filter(c => capabilityLive({ expiresAt: rawExpiry }, c, now));
+    if (!caps.length) continue;
+    const expiry: Partial<Record<ScheduleDelegationCapability, string>> = {};
+    for (const c of caps) if (rawExpiry?.[c] !== undefined) expiry[c] = rawExpiry[c];
+    out.push(Object.keys(expiry).length ? { workspaceId, capabilities: caps, expiresAt: expiry } : { workspaceId, capabilities: caps });
   }
   return out;
 }
 
-/** Does this set of grants give `capability` on `workspaceId`? */
+/** Does this set of grants give `capability` on `workspaceId`, now? */
 export function delegationAllows(
   grants: readonly ScheduleDelegationGrant[] | null | undefined,
   workspaceId: string | null | undefined,
   capability: ScheduleDelegationCapability,
+  now: Date = new Date(),
 ): boolean {
   if (!grants || !workspaceId) return false;
-  return grants.some(g => g.workspaceId === workspaceId && g.capabilities.includes(capability));
+  return grants.some(g => g.workspaceId === workspaceId && g.capabilities.includes(capability) && capabilityLive(g, capability, now));
 }
 
 // ── Task delegation ──────────────────────────────────────────────────────────
@@ -151,25 +175,45 @@ export interface TaskDelegation extends ScheduleDelegation {
   capabilityGrantIds?: string[];
 }
 
+function copyGrant(g: ScheduleDelegationGrant): ScheduleDelegationGrant {
+  return {
+    workspaceId: g.workspaceId,
+    capabilities: [...new Set(g.capabilities)],
+    ...(g.expiresAt && Object.keys(g.expiresAt).length ? { expiresAt: { ...g.expiresAt } } : {}),
+  };
+}
+
 /**
- * Union two grant lists: one entry per workspace, capabilities merged. Never
- * longer than SCHEDULE_DELEGATION_MAX_GRANTS: a grant that would overflow is
- * reported as `overflow` instead of dropped silently.
+ * Union two grant lists: one entry per workspace, capabilities merged. A
+ * capability held without expiry on either side keeps none; held with an
+ * expiry on both, it keeps the later one. Never longer than
+ * SCHEDULE_DELEGATION_MAX_GRANTS: a grant that would overflow is reported as
+ * `overflow` instead of dropped silently.
  */
 export function mergeDelegationGrants(
   base: readonly ScheduleDelegationGrant[],
   add: readonly ScheduleDelegationGrant[],
 ): { grants: ScheduleDelegationGrant[]; overflow: string[] } {
-  const out = base.map(g => ({ workspaceId: g.workspaceId, capabilities: [...g.capabilities] }));
+  const out = base.map(copyGrant);
   const overflow: string[] = [];
   for (const g of add) {
     const hit = out.find(o => o.workspaceId === g.workspaceId);
     if (hit) {
+      const expiry: Partial<Record<ScheduleDelegationCapability, string>> = {};
+      for (const c of new Set([...hit.capabilities, ...g.capabilities])) {
+        const a = hit.capabilities.includes(c) ? (hit.expiresAt?.[c] ?? null) : undefined;
+        const b = g.capabilities.includes(c) ? (g.expiresAt?.[c] ?? null) : undefined;
+        if (a === null || b === null) continue;
+        const later = a === undefined ? b : b === undefined ? a : (Date.parse(a) >= Date.parse(b) ? a : b);
+        if (later !== undefined) expiry[c] = later;
+      }
       hit.capabilities = [...new Set([...hit.capabilities, ...g.capabilities])];
+      if (Object.keys(expiry).length) hit.expiresAt = expiry;
+      else delete hit.expiresAt;
     } else if (out.length >= SCHEDULE_DELEGATION_MAX_GRANTS) {
       overflow.push(g.workspaceId);
     } else {
-      out.push({ workspaceId: g.workspaceId, capabilities: [...new Set(g.capabilities)] });
+      out.push(copyGrant(g));
     }
   }
   return { grants: out, overflow };
@@ -182,19 +226,25 @@ export function removeDelegationCapability(
   capability: ScheduleDelegationCapability,
 ): ScheduleDelegationGrant[] {
   return grants
-    .map(g => g.workspaceId === workspaceId ? { ...g, capabilities: g.capabilities.filter(c => c !== capability) } : g)
+    .map(g => {
+      if (g.workspaceId !== workspaceId) return g;
+      const { [capability]: _dropped, ...expiry } = g.expiresAt ?? {};
+      return copyGrant({ workspaceId: g.workspaceId, capabilities: g.capabilities.filter(c => c !== capability), expiresAt: expiry });
+    })
     .filter(g => g.capabilities.length > 0);
 }
 
 /**
  * The delegation a continuation or retry of `parent` carries: the same grants
  * and the same audit (who granted, when), marked with where it came from. Null
- * when the parent has none. Only the server's own continuation and retry paths
- * call this; a caller filing a child task never inherits anything.
+ * when the parent has none. A capability that has expired is not copied, and
+ * one that expires keeps its expiry: a copy never extends a grant. Only the
+ * server's own continuation and retry paths call this; a caller filing a child
+ * task never inherits anything.
  */
-export function inheritTaskDelegation(parent: { id: string; delegation?: unknown } | null | undefined): TaskDelegation | null {
+export function inheritTaskDelegation(parent: { id: string; delegation?: unknown } | null | undefined, now: Date = new Date()): TaskDelegation | null {
   if (!parent?.delegation) return null;
-  const grants = readScheduleDelegation(parent.delegation);
+  const grants = readScheduleDelegation(parent.delegation, now);
   if (!grants.length) return null;
   const d = parent.delegation as Partial<TaskDelegation>;
   return {

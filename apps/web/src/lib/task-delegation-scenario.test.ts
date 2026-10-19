@@ -125,6 +125,29 @@ describe('a task without the grant', () => {
   });
 });
 
+describe('a grant from an approved capability request', () => {
+  const approved = (expiresAt: string) => ({
+    ...GRANT, grants: [{ workspaceId: TARGET_WS, capabilities: ['tasks:create'], expiresAt: { 'tasks:create': expiresAt } }], capabilityGrantIds: ['cg-1'],
+  });
+
+  it('is carried until its expiry', async () => {
+    taskRow = { ...taskRow, delegation: approved(new Date(Date.now() + 60 * 60_000).toISOString()) };
+    const caller = await authenticateTaskScopedCaller(token());
+    expect(taskScopeAllowsDelegated(caller!, TARGET_WS, 'tasks:create')).toBe(true);
+  });
+
+  it('lapses with it: the token ignores the entry and the claim is held, without waiting for revoke', async () => {
+    taskRow = { ...taskRow, delegation: approved(new Date(Date.now() - 1000).toISOString()) };
+    const { loadTokenDelegationsOrThrow } = await import('./task-delegation');
+    expect(await loadTokenDelegationsOrThrow(TASK, HOME_WS, account as any)).toEqual([]);
+    const caller = await authenticateTaskScopedCaller(token());
+    expect(taskScopeAllowsDelegated(caller!, TARGET_WS, 'tasks:create')).toBe(false);
+    expect(await preflightTaskDelegation(taskRow as any, account as any)).toEqual([
+      { workspaceId: TARGET_WS, capability: 'tasks:create', reason: 'not_granted' },
+    ]);
+  });
+});
+
 describe('its continuation', () => {
   const continuationOf = (parent: Record<string, unknown>) => buildContinuationTaskValues({
     task: parent as any,
@@ -153,6 +176,14 @@ describe('its continuation', () => {
     expect(description).toContain('May I file the follow-ups in the other workspace?');
     expect(description).toContain('Yes, file them there.');
     expect(description).toContain('do not ask it again');
+  });
+
+  it('keeps an approved grant\'s expiry rather than extending it, and drops one that has lapsed', () => {
+    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+    const live = { ...GRANT, grants: [{ workspaceId: TARGET_WS, capabilities: ['tasks:create'], expiresAt: { 'tasks:create': expiresAt } }] };
+    expect(continuationOf({ ...taskRow, delegation: live }).delegation?.grants).toEqual(live.grants);
+    const lapsed = { ...GRANT, grants: [{ workspaceId: TARGET_WS, capabilities: ['tasks:create'], expiresAt: { 'tasks:create': '2026-01-01T00:00:00Z' } }] };
+    expect(continuationOf({ ...taskRow, delegation: lapsed }).delegation).toBeUndefined();
   });
 
   it('a parent without a grant passes none on', () => {
