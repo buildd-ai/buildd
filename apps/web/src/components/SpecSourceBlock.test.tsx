@@ -70,5 +70,17 @@ describe('SpecSourceBlock', () => {
     expect(html).toContain('its one criterion');
     expect(html).toContain('Passed on an older commit');
   });
+
+  it('shows a reviewer result a test outranked as a note, with the check still reading fail', () => {
+    const html = renderToStaticMarkup(
+      <SpecSourceBlock specSource={{ specId: 's-1', revision: 1 }} living={living({ outcome: {
+        outcome: 'fail', reason: 'AC-26 failed',
+        criteria: [{ criterionId: 'AC-26', text: 'x', verdict: 'fail', stale: false, notes: [{ verdict: 'pass', source: 'review' }] }],
+      } })} />
+    );
+    expect(html).toContain('data-testid="task-spec-criterion-note"');
+    expect(html).toContain('reviewer says');
+    expect(html).toContain('Fails');
+  });
 });
 
