@@ -43,6 +43,7 @@ import {
 } from '@/lib/health-metric-grammar';
 import { resolveClaudeRoute } from '@/lib/claude-route-eligibility';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
+import { isOwnPersonalRunner } from '@/lib/runner-ownership';
 import { describeRunnerRoute } from '@/lib/runner-route';
 import { countOf } from '@/lib/plural';
 import { OccupancyChart } from '@/components/fleet/OccupancyChart';
@@ -845,8 +846,8 @@ export function HealthClient({
           </div>
         )}
         {[
-          { key: 'mine', title: 'Your runners', list: runners.filter(r => r.mine) },
-          { key: 'team', title: 'Team runners', list: runners.filter(r => !r.mine) },
+          { key: 'mine', title: 'Your runners', list: runners.filter(r => isOwnPersonalRunner(r)) },
+          { key: 'team', title: 'Team runners', list: runners.filter(r => !isOwnPersonalRunner(r)) },
         ].filter(g => g.list.length > 0).map(g => (
         <div key={g.key} data-testid={`health-runners-${g.key}`} className="mb-6">
         <div className="flex items-baseline justify-between gap-3 mb-3">

@@ -26,3 +26,12 @@ export function classifyRunnerOwnership(account: RunnerOwnershipInput | null | u
   if (account.createdByUserId) return 'personal';
   return 'unknown';
 }
+
+/**
+ * Whether a runner belongs in the viewer's own "Your runners" section: a
+ * personal runner they created. Creator alone is not enough: a managed or
+ * team-host key also records whoever minted it, but it is shared compute.
+ */
+export function isOwnPersonalRunner(r: { mine?: boolean | null; runnerClass?: RunnerClass }): boolean {
+  return r.mine === true && r.runnerClass === 'personal';
+}
