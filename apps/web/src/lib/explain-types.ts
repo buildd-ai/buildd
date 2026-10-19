@@ -92,7 +92,9 @@ export type CausalLinkSource =
   | 'DeliveryView.rounds'
   /** workflow-kernel-library.md §7 / AC-26: the worker row's merge columns disagree with the delivery. */
   | 'DeliveryView.state vs workers.mergedAt'
-  | 'artifacts.metadata.qa (replacedAudits)';
+  | 'artifacts.metadata.qa (replacedAudits)'
+  /** The person-recorded surface-audit waiver note on the mission. */
+  | 'mission audit waiver';
 
 export interface CausalLink {
   /** 1-based position. The chain reads cause → effect, in order. */

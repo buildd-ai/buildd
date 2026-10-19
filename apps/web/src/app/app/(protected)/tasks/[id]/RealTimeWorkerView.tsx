@@ -12,6 +12,8 @@ import NowStrip, { PausedBar } from './NowStrip';
 import StatRow, { formatTokens } from './StatRow';
 import TaskQuestion from '@/components/tasks/TaskQuestion';
 import { buildAgentTree, flattenAgentTree, type AgentProgressEntry } from '@/lib/agent-tree';
+import { useRegionRefresher, useRegionValue } from '@/components/LiveRegion';
+import type { TaskLiveRegion } from '@/lib/task-live-region';
 import { requestRefresh, flushRefresh } from './coalesced-refresh';
 import { formatElapsed } from './format-elapsed';
 import { deriveNow, touchedFiles, countToolCalls, formatOffset } from './task-activity';
@@ -146,12 +148,17 @@ interface Props {
 // trees can be reconstructed; see @/lib/agent-tree.
 type TaskProgressEntry = AgentProgressEntry;
 
-export default function RealTimeWorkerView({ initialWorker, outputRequirement, deliverableArtifactCount, usesReviewer, reviewState, taskId, taskStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp, delivery = null, focusAnswer = false, refresh }: Props) {
+export default function RealTimeWorkerView({ initialWorker: renderedWorker, outputRequirement, deliverableArtifactCount, usesReviewer, reviewState, taskId, taskStatus: renderedStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp, delivery = null, focusAnswer = false, refresh }: Props) {
+  // On the task page a live event re-reads the worker and the task's status
+  // (LiveData); a read of this worker wins over what the page rendered.
+  const region = useRegionValue<TaskLiveRegion>();
+  const initialWorker = region?.worker?.id === renderedWorker.id ? region.worker : renderedWorker;
+  const taskStatus = region && region.worker?.id === renderedWorker.id ? region.taskStatus : renderedStatus;
   const questionRef = useRef<HTMLDivElement>(null);
   // Once, on the first render that shows the question: a later refresh never
   // pulls focus back from wherever the reader went.
   const focusedAnswerRef = useRef(false);
-  const nextRouter = useRouter();
+  const nextRouter = useRegionRefresher(useRouter());
   const router = useMemo(() => (refresh ? { refresh } : nextRouter), [refresh, nextRouter]);
   const [worker, setWorker] = useState<LiveWorker>(initialWorker);
   useEffect(() => {

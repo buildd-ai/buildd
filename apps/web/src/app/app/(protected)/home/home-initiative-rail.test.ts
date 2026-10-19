@@ -47,7 +47,7 @@ describe('Home — the empty-initiative line shows only under an initiative filt
     expect(line).toContain('initFilter &&');
   });
   it('the quiet-missions line gets its causes from the delivery projection', () => {
-    expect(source).toContain('quietCauses={view.quietCauses}');
+    expect(source).toContain('quietCauses: view.quietCauses');
     // Stored per mission (`quietCauseOf`), grouped here.
     expect(source).toContain('groupQuietCauses(');
   });

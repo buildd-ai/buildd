@@ -1,5 +1,7 @@
 import { taskEstimatePayload } from '@buildd/core/task-estimate-rollout';
 import TaskTimeRow from '@/components/TaskTimeRow';
+import { LiveData } from '@/components/LiveRegion';
+import { loadTaskLiveRegion } from '@/lib/task-live-region';
 import { isDeliverableArtifact } from '@/lib/worker-deliverables';
 import { cancellationLine } from '@/lib/task-cancellation';
 import { taskRecoverySentence } from '@/lib/task-recovery-hold';
@@ -1429,9 +1431,20 @@ export default async function TaskDetailPage({
     />
   ) : null;
 
+  // The page already carries the worker as props, so the region starts without a copy of it (a duplicate in the payload is what the page's data budget counts).
+  // What a live event re-reads: the shown worker and the task's status, from
+  // the task's own rows. The page's other loaders do not run (lib/task-live-region.ts).
+  const renderedRegion = { taskId: task.id, taskStatus: task.status, workerId: activeWorker?.id ?? null, hadQuestion: !!activeWorker?.waitingFor };
+  async function loadRegion() {
+    'use server';
+    const viewer = await getCurrentUser();
+    return viewer ? loadTaskLiveRegion(viewer.id, renderedRegion) : null;
+  }
+
   return (
     <DisplayTimezoneProvider teamTimezone={teamTimezone}>
     <DiagnosticsAudienceProvider visible={diagnosticsVisible}>
+    <LiveData initial={{ taskStatus: task.status, worker: null }} load={loadRegion}>
     <div className="p-4 md:p-8 overflow-x-hidden overflow-y-auto h-full">
       <div className="max-w-[1384px] w-full">
         {/* Auto-refresh when worker claims this task or deps resolve */}
@@ -2118,6 +2131,7 @@ export default async function TaskDetailPage({
         </div>{/* end grid */}
       </div>
     </div>
+    </LiveData>
     </DiagnosticsAudienceProvider>
     </DisplayTimezoneProvider>
   );
