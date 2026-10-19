@@ -12,6 +12,7 @@ import type { ReviewFindings } from './task-checks';
 import { readableTaskResult } from './task-result';
 import { getDeliveryViewsForTasks } from './workflow/delivery-view';
 import type { DeliveryView } from './workflow/projections';
+import { escalationPermissionsOf, reviewOverridePermission } from './override-permission';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface TaskDeliveryContext {
@@ -24,9 +25,18 @@ export interface TaskDeliveryContext {
   findingsUnavailable: boolean;
 }
 
-export async function loadTaskDeliveryContext(taskId: string): Promise<TaskDeliveryContext> {
+/**
+ * `viewerId`: the signed-in person looking at the page. Given, a review escalation's decision
+ * card offers "Approve and override" only when that person may take it (the merge policy, their
+ * team role and their merge permission on GitHub, lib/override-permission.ts); absent,
+ * it is never offered.
+ */
+export async function loadTaskDeliveryContext(taskId: string, viewerId?: string | null): Promise<TaskDeliveryContext> {
   // Findings too: the checks list and the PR card print the open-finding count (§7).
-  const view = (await getDeliveryViewsForTasks([taskId], undefined, undefined, { withFindings: true })).get(taskId) ?? null;
+  const view = (await getDeliveryViewsForTasks([taskId], undefined, undefined, {
+    withFindings: true,
+    ...(viewerId ? { escalationPermissions: async (ws: string) => escalationPermissionsOf(await reviewOverridePermission(viewerId, ws)) } : {}),
+  })).get(taskId) ?? null;
   const findings = new Map<string, ReviewFindings>();
   if (!view) return { view, deliverableTitle: null, findings, findingsUnavailable: false };
   const reviewerIds = view.rounds.map(r => r.reviewerTaskId).filter((id): id is string => !!id);

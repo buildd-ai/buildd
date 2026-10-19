@@ -572,6 +572,12 @@ export type Command =
       commitId?: string;
       /** approve: the person holds merge permission on the repo (T14's evidence). */
       hasMergePermission?: boolean;
+      /**
+       * approve past remaining required findings (open or awaiting verification) is an override
+       * (Living Spec r7 AC-45): the host says whether this person may take it under the merge
+       * policy and their team role. Absent reads as not permitted (`override_not_permitted`).
+       */
+      overridePermitted?: boolean;
       /** AC-45: the decision this is and the head it was made on. */
       decision?: HumanDecision;
     })

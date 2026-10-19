@@ -672,6 +672,8 @@ export const workerActions = [
   // ...and waits for the answer: a server-side long-poll that returns it once.
   'await_answer',
   'create_pr', 'close_pr', 'update_pr', 'merge_pr', 'get_pr', 'list_prs', 'request_pr_review', 'get_pr_review',
+  // A person's own OAuth session only (the route refuses keys, task tokens and agent grants).
+  'approve_pr_override',
   'record_pr_supersession',
   'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
@@ -1037,6 +1039,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
       + `lede (required) — ${LEDE_FIELD_SPEC}\n\n`
       + 'The lede leads the PR body; `body` follows it, unchanged and uncapped, under its own headings. Nothing inspects or grades what you write — the only way `lede` can fail is by being absent, and then no PR is created and you simply call again.',
     close_pr: '{ workerId?, prNumber (required), workspaceId? (disambiguate when prNumber exists in multiple repos) } — workerId is resolved from prNumber when absent, same as merge_pr. Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
+    approve_pr_override: '{ prNumber (required), headSha (required: the head you decided on), workspaceId?, version? (the delivery version you saw), reason? } — A person approves a PR waiting on them after review, past the findings still open or awaiting verification. One audited approval of exactly that head: refused once the PR has a newer commit, and a repeat changes nothing. The findings stay listed and Buildd / Review approval turns green for that head; the merge then follows the workspace merge policy. Needs the merge policy to allow it, an owner or admin team role, and merge permission on the repo on GitHub. Only from your own signed-in session: an API key, a task token or an agent cannot use it.',
     update_pr: '{ workerId?, prNumber (required), body? , draft? (false — marks a draft PR ready for review instead of editing the body; one of body/draft is required) } — Replace a pull request\'s body, or mark it ready for review with draft:false (gh pr ready is blocked for builders) via the workspace\'s GitHub App installation, same as close_pr but rewriting content instead of state. Use this instead of the GitHub connector\'s update_pull_request (returns 403 Resource not accessible by integration on most installations) and instead of create_pr\'s dedup-adoption path for a PR create_pr did not open or was not asked to refresh — e.g. correcting a PR body after the fact (removing a disclosed URL, fixing a no-prod-data gate trip). Only an agent run or team member that owns the PR (its own worker\'s, or one its task\'s records link: a retry\'s PR, or a PR linked when the task was filed) may call this; a task token is confined to its own task\'s PR the same way close_pr is.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId?, overrides? ({ freshness?: true, size?: true }), reason? (required with overrides) } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. **Subject to the workspace merge policy:** under tier `agent-review` a self-merge is refused — the reviewer decides, so use request_pr_review and let an approve merge it; under `human` it is refused outright; under `auto-threshold` it merges only if the same safety check auto-merge uses passes (CI green, no deny paths, size cap, migration inspector). A 403 carries the reason and the tier — read it rather than retrying. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps. **overrides** is the escape hatch for a PR whose landing escalated because the base kept moving (or the size cap): it merges past base freshness / the size cap, never the review verdict, red CI or a deny path, and is recorded with the reason. A person\'s own session (OAuth MCP, chat) may use it; an agent run is refused unless a person granted it on the run\'s task at creation (create_task context.landingOverride: { prNumbers, overrides: ["freshness"|"size"] }).',
     get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments?, includeCiFailures?, all? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. When the PR has fix attempts (after CI #N / after review #N, including one that opened a PR of its own after a failed resume) they are listed with each attempt\'s errorClass, first key line and any mismatch flag (the latest 5, and the first 5 failing checks, unless all:true; each cut says how many it left out). Stored run-evidence objects (kind, size, id) are listed when the task has any; read one with read_evidence. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state. When CI is red and you need to know why, pass includeCiFailures:true: for each failing check it returns the job, the failing step and the last ~150 log lines (timestamps and escape codes stripped, secrets and production figures redacted, size-capped); a job whose log is unavailable comes back as its name and URL only.',
@@ -3426,7 +3429,8 @@ export async function handleBuilddAction(
       const headline = data.deduplicated
         ? `No new pull request was opened — an existing one for this ${params.prUrl ? 'prUrl' : 'task/head branch'} was returned (deduplicated).`
         : 'Pull request created!';
-      const created = `${headline}\n\n**PR #${data.pr.number}:** ${data.pr.title}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`;
+      const created = `${headline}\n\n**PR #${data.pr.number}:** ${data.pr.title}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}` +
+        (typeof data.supersessionHint === 'string' ? `\n\n**Other open PRs on this task** — ${data.supersessionHint}` : '');
 
       // requestReview folds "open the PR" and "ask for a review" into one call.
       // A failed review request never hides the PR — the PR exists either way,
@@ -3708,6 +3712,23 @@ export async function handleBuilddAction(
         attemptsSection,
         evidenceObjectsSection,
       ].filter(Boolean).join('\n'));
+    }
+
+    case 'approve_pr_override': {
+      if (!params.prNumber) throw new Error('prNumber is required');
+      if (typeof params.headSha !== 'string' || !params.headSha) throw new Error('headSha is required: the head you decided on');
+      const data = await api(`/api/prs/${Number(params.prNumber)}/approve-override`, {
+        method: 'POST',
+        body: JSON.stringify({
+          headSha: params.headSha,
+          ...(params.workspaceId != null ? { workspaceId: params.workspaceId } : {}),
+          ...(params.version != null ? { version: Number(params.version) } : {}),
+          ...(params.reason != null ? { reason: String(params.reason) } : {}),
+        }),
+      });
+      return text(data.replayed
+        ? `PR #${params.prNumber}: this approval was already recorded. The merge follows the workspace merge policy.`
+        : `PR #${params.prNumber}: you approved ${String(params.headSha).slice(0, 7)} over its remaining findings. The findings stay listed; the merge follows the workspace merge policy.`);
     }
 
     case 'request_pr_review': {

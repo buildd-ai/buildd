@@ -1515,6 +1515,21 @@ describe('T22–T24', () => {
     expect(ok.patch).toMatchObject({ approvedHeads: ['H2'], approvalBasis: 'human' });
     expect(ok.evidence).toMatchObject({ commitId: 'H2' });
   });
+  // Living Spec r7 AC-45/AC-46: an approval past remaining required findings is an override; the policy has to allow it.
+  test('HumanResolve(approve) over open findings needs overridePermitted, and the bypass names the findings', () => {
+    const f = (id: string, status: string, required = true) => ({ id, originRoundId: 'r1', originRound: 1, originHeadSha: 'H1', ordinal: 0, path: `${id}.ts`, line: 1, title: id, required, status, lastRound: 1 }) as never;
+    const e: KernelView = { ...V(D({ state: 'ESCALATED', stateReason: 'review_exhausted', currentHeadSha: 'H2' })), findings: [f('a', 'open'), f('b', 'addressed'), f('c', 'resolved'), f('d', 'open', false)] };
+    const hr = (o: Partial<Extract<Command, { type: 'HumanResolve' }>>) => run(e, { type: 'HumanResolve', actor: 'human:u', choice: 'approve', expectedVersion: 5, commitId: 'H2', hasMergePermission: true, ...o });
+    expectResult(hr({}), 'rejected', 'override_not_permitted');
+    expectResult(hr({ overridePermitted: false }), 'rejected', 'override_not_permitted');
+    expectResult(hr({ hasMergePermission: false, overridePermitted: true }), 'rejected', 'no_merge_permission');
+    const ok = applied(hr({ overridePermitted: true, reason: 'accepted' }));
+    expect(ok.toState).toBe('APPROVED');
+    expect(ok.bypass).toMatchObject({ choice: 'approve', actor: 'human:u', reason: 'accepted', overriddenFindings: ['a', 'b'] });
+    // Nothing left to override: a plain approval, as before.
+    const clean: KernelView = { ...e, findings: [f('c', 'resolved')] };
+    expect(applied(run(clean, { type: 'HumanResolve', actor: 'human:u', choice: 'approve', expectedVersion: 5, commitId: 'H2', hasMergePermission: true })).toState).toBe('APPROVED');
+  });
   test('DeliveryFailed: no PR only', () => {
     expectResult(run(V(D()), { type: 'DeliveryFailed', actor: 'runner', reason: 'x' }), 'rejected', 'pr_bound');
     expectResult(run(V(D({ state: 'FAILED' })), { type: 'DeliveryFailed', actor: 'runner', reason: 'x' }), 'duplicate');
