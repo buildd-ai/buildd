@@ -11,8 +11,8 @@
  *  - resolves the kill switch first (authority.ts), releasing the delivery to
  *    legacy when the `gitConfig.workflowKernel` switch is off;
  *  - takes its own live GitHub read (R2) and carries it into the command;
- *  - drains the delivery's due effects before returning, so the common path
- *    never waits for a cron (§10.3).
+ *  - requests a drain of the delivery's due effects (§10.3). The review command
+ *    API collects those drains and starts them after storing its answer.
  */
 import { and, desc, eq, or, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
@@ -21,6 +21,7 @@ import type { Command, CurrentView, LivePr, VerdictFindings } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
 import { carryForwardReading, catchUpBase, ingestFact, projectEquivalentHeadSql, readDeltaForApproval, type GithubFactReader } from './facts';
 import { deltaApprovalSource, type DeltaReading } from '@buildd/workflow-kernel/delta-approval';
+import { deferEffectDrain } from './effect-drain-context';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { settleLanes } from './landing-lane';
 import { scheduleEffectDrain } from './effect-timer';
@@ -90,6 +91,7 @@ async function effectHandlers(): Promise<EffectHandlers> {
 }
 
 export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Promise<DrainSummary | null> {
+  if (deferEffectDrain(deliveryId, () => drainDelivery(deliveryId, deps))) return null;
   if (deps.drain) return deps.drain(deliveryId);
   // workflow-kernel-library.md §3: in own mode the web host never drains an effect inline;
   // it asks the control plane to drain this delivery, and the control plane's floor is the backstop.
@@ -1225,7 +1227,7 @@ export function toKernelVerdict(v: string): Verdict {
  * (legacy decides). When handled, the caller acts on an `applied` APPROVED
  * result only (landing is still the legacy door until Slice C); everything
  * else — posting the GitHub review, the fix dispatch, exhaustion and
- * escalation notices — is an effect the kernel already ran.
+ * escalation notices — is an effect in the durable outbox.
  */
 export async function recordReviewVerdict(p: {
   /** The workspace the verdict is for: a delivery of any other is not this round's (AC-9's reach check judged this one). */
@@ -1546,9 +1548,11 @@ export async function disposeFinding(p: {
 /**
  * The human/agent review doors (`request_pr_review`, the dashboard re-review)
  * for a kernel-owned PR. `handled: false` = legacy PR, the door runs as before.
+ * A deferred dispatch answers with a null reviewTaskId until its effect files the task.
  */
 export async function requestReview(p: {
   workspaceId: string; repoFullName: string; prNumber: number; installationId: number; forced: boolean; actor: string;
+  reviewCallback?: { url: string; on: 'verdict' | 'merge' };
   /**
    * Living Spec r7 AC-45: a person's forced review, decided on this head at this version. Given,
    * the request is one decision bound to the head: replayed, it is answered by the first; with
@@ -1558,30 +1562,30 @@ export async function requestReview(p: {
 }, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; reviewTaskId: string | null }> {
   const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
   if (!deliveryId) return { handled: false };
-  const reader = readerFor(deps, p.installationId);
-  const live = await reader.readPr(p.repoFullName, p.prNumber);
-  if (!live) {
-    return { handled: true, result: { result: 'rejected', reason: 'live_read_failed', current: { state: null, version: 0, head: null, round: 0 } }, reviewTaskId: null };
-  }
-  // Record a head the webhook has not delivered yet, so the request names the current head
-  // (with the reader's §8.3 evidence, so an approval that still holds is carried, not re-reviewed).
-  await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.actor}:review_request`, repoFullName: p.repoFullName, prNumber: p.prNumber },
-    { exec: deps.exec, github: { ...reader, readPr: async () => live } });
+  // Review dispatch revalidates GitHub in the outbox. The command is bound to
+  // the recorded head and version; it does no network work before committing.
+  const headSha = (await loadView({ deliveryId }, deps.exec)).delivery?.currentHeadSha;
+  if (!headSha) return { handled: true, result: { result: 'rejected', reason: 'pr_not_bound', current: { state: null, version: 0, head: null, round: 0 } }, reviewTaskId: null };
   const result = await applyCommand(
     {
-      type: 'ReviewRequested', actor: p.actor, headSha: live.headSha, live, forced: p.forced,
+      type: 'ReviewRequested', actor: p.actor, headSha, forced: p.forced, ...(p.reviewCallback ? { reviewCallback: p.reviewCallback } : {}),
       // AC-45: bound to the version the person saw too, as the fix door is.
       ...(p.decision ? { decision: humanDecision('force_re_review', p.decision.headSha, p.decision.version), expectedVersion: p.decision.version } : {}),
     },
     { ref: { deliveryId }, exec: deps.exec },
   );
-  if (result.result === 'rejected' && result.reason === 'review_in_flight' && !(await roundReviewerAt(deliveryId, live.headSha, deps.exec))) {
+  if (result.result === 'rejected' && (result.reason === 'head_already_reviewed' || result.reason === 'review_in_flight')) {
+    // A missed push may make the recorded head look reviewed or still in flight.
+    // Catch it up on the existing heal timer, never by awaiting GitHub here.
+    await scheduleKernelHeal(deliveryId, 0);
+  }
+  if (result.result === 'rejected' && result.reason === 'review_in_flight' && !(await roundReviewerAt(deliveryId, headSha, deps.exec))) {
     // 1bd26ae7: an open round with no reviewer is not a review in flight. When every dispatch it had
     // finished without filing one, the dispatch is owed again (the floor's rule, run now for the asker).
     await reenqueueOwedEffects(deliveryId, await loadView({ deliveryId }, deps.exec), deps.exec ?? seamExec, 'review request');
   }
   await drainDelivery(deliveryId, deps);
-  return { handled: true, result, reviewTaskId: await roundReviewerAt(deliveryId, live.headSha, deps.exec) };
+  return { handled: true, result, reviewTaskId: await roundReviewerAt(deliveryId, headSha, deps.exec) };
 }
 
 /**

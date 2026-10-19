@@ -202,15 +202,33 @@ export function commandOutcomeOf(status: number, body: { code?: unknown; replaye
   return 'refused';
 }
 
-export function commandSpanAttributes(p: { op: string | null; status: number; outcome: CommandOutcome; code?: string | null; latencyMs: number }): SpanAttributes {
+export function commandSpanAttributes(p: { op: string | null; status: number; outcome: CommandOutcome; code?: string | null; latencyMs: number; caller?: CommandCaller; authFailure?: CommandAuthFailure }): SpanAttributes {
   return {
     'kernel.op': p.op ?? 'unknown',
     'kernel.outcome': p.outcome,
     'kernel.status': p.status,
+    ...(p.caller ? { 'kernel.caller': p.caller } : {}),
+    ...(p.authFailure ? { 'kernel.auth_failure': p.authFailure } : {}),
     ...(p.code ? { 'kernel.error_code': p.code } : {}),
     'kernel.latency_ms': ms(p.latencyMs),
     'kernel.host': 'control-plane',
   };
+}
+
+/** Untrusted caller hints, classified only for diagnostics; never an authentication input. */
+export type CommandCaller = 'buildd-web' | 'curl' | 'python' | 'node' | 'browser' | 'other' | 'unknown';
+export type CommandAuthFailure = 'missing' | 'unknown_key' | 'skew' | 'bad_signature';
+
+/** Never export arbitrary user-agent text, routes, identities, or credential headers to telemetry. */
+export function commandCallerOf(headers: Pick<Headers, 'get'>): CommandCaller {
+  const agent = headers.get('user-agent') ?? '';
+  if (!agent) return 'unknown';
+  if (/^buildd-kernel-client\/1$/.test(agent)) return 'buildd-web';
+  if (/^curl\//i.test(agent)) return 'curl';
+  if (/^(python-urllib|python-requests|python-httpx)\//i.test(agent)) return 'python';
+  if (/^(node|undici)(?:\/|$)/i.test(agent)) return 'node';
+  if (/^Mozilla\//.test(agent)) return 'browser';
+  return 'other';
 }
 
 // ── The caller ─────────────────────────────────────────────────────────────
