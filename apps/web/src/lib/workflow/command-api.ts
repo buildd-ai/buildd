@@ -42,6 +42,7 @@ import { verifyRequest } from '@buildd/dispatch-contract';
 import { commandKeyRing } from './command-keys';
 import type { DrainSummary } from './effects';
 import { kernelHost } from './kernel-host';
+import { KERNEL_SPAN, commandOutcomeOf, commandSpanAttributes, emitKernelSpan } from './kernel-telemetry';
 import type { InstallationResolution } from './command-installation';
 import { COMMAND_HEARTBEAT_MS, postgresCommandLedger, type CommandLedger, type StoredAnswer } from './command-ledger';
 
@@ -441,6 +442,29 @@ export async function principalReaches(principal: KernelPrincipal, workspaceId: 
 
 /** `POST /v1/commands`. Never throws: every outcome is a response. */
 export async function handleCommandRequest(req: Request, deps: CommandServerDeps = {}): Promise<Response> {
+  // The command's span (kernel-telemetry.ts `kernel.command`): op, outcome, status, latency, on the control plane.
+  const startedAt = Date.now();
+  const seen: { op?: string } = {};
+  const res = await handleCommandRequestUnreported(req, deps, seen);
+  if ((deps.host ?? kernelHost)() === 'control-plane') await reportCommand(res, seen.op ?? null, startedAt);
+  return res;
+}
+
+async function reportCommand(res: Response, op: string | null, startedAt: number): Promise<void> {
+  try {
+    const body = (await res.clone().json().catch(() => null)) as { code?: unknown; replayed?: unknown } | null;
+    const outcome = commandOutcomeOf(res.status, body);
+    const latencyMs = Date.now() - startedAt;
+    emitKernelSpan({
+      name: KERNEL_SPAN.command, startMs: startedAt, durationMs: latencyMs, error: outcome !== 'applied' && outcome !== 'replayed',
+      attributes: commandSpanAttributes({ op, status: res.status, outcome, code: typeof body?.code === 'string' ? body.code : null, latencyMs }),
+    });
+  } catch {
+    // Telemetry never reaches the answer.
+  }
+}
+
+async function handleCommandRequestUnreported(req: Request, deps: CommandServerDeps, seen: { op?: string }): Promise<Response> {
   const env = deps.env ?? process.env;
   const host = (deps.host ?? kernelHost)();
   if (req.method !== 'POST') return refuse(405, 'method_not_allowed', 'POST only');
@@ -460,6 +484,7 @@ export async function handleCommandRequest(req: Request, deps: CommandServerDeps
   try { body = JSON.parse(text); } catch { return refuse(400, 'bad_request', 'body is not JSON'); }
   const problem = commandProblem(body);
   if (problem) return refuse(400, 'bad_request', problem);
+  seen.op = (body as CommandRequest).op;
   return applyCommandRequest(body as CommandRequest, deps);
 }
 
