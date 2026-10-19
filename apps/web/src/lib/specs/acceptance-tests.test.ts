@@ -35,7 +35,8 @@ mock.module('@/lib/dispatch-authority', () => ({ announceTaskCreated: async () =
 mock.module('@/lib/effective-roles', () => ({ pickEffectiveRole: async (_ws: string, c: string[]) => { roleOffered = c; return role; } }));
 mock.module('@buildd/core/db/relational-sql', () => ({ sqlWhere: (x: unknown) => x }));
 
-const { decideAcceptanceTests, holdsForAcceptanceTests, acceptanceRoleCandidates, ensureAcceptanceTests, openAcceptanceTestsTaskId, ACCEPTANCE_TESTS_PREFIX } = await import('./acceptance-tests');
+const { decideAcceptanceTests, holdsForAcceptanceTests, acceptanceRoleCandidates, ensureAcceptanceTests, ACCEPTANCE_TESTS_PREFIX } = await import('./mission-acceptance-tests');
+const { openAcceptanceTestsTaskId } = await import('./acceptance-tests');
 
 // Spec 1dc6cc39 R-76 / AC-122.
 describe('the acceptance-tests task is filed once per outcome spec', () => {

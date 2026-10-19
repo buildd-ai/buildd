@@ -9,7 +9,7 @@ import { specCriteria } from '@buildd/spec-contract/requirements';
 import { requestingPerson } from '@/lib/request-person';
 import { isUuid } from '@/lib/uuid';
 import { pinSpecSource, readPinnedSpecRevision } from './pin';
-import { ensureAcceptanceTests } from './acceptance-tests';
+import { ensureAcceptanceTests } from './mission-acceptance-tests';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 
 /**
