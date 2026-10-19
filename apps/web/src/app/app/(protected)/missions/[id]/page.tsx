@@ -912,7 +912,13 @@ async function MissionDetailBody({
     criteriaState: goalCriteriaStateFull,
     integrationPr: missionIntegrationPr,
     release: releaseStatus,
-    evidence: visualReviewState ? { visual: [{ label: 'Open screens', href: `/app/missions/${id}?visualReview=1` }] } : undefined,
+    evidence: {
+      ...(visualReviewState ? { visual: [{ label: 'Open screens', href: `/app/missions/${id}?visualReview=1` }] } : {}),
+      // The Checks release row is the one place release state shows on the board.
+      ...(mission.workspaceId && releaseStatus !== 'not_configured'
+        ? { release: [{ label: 'Open release', href: carryingReleaseId ? `/app/releases/${carryingReleaseId}` : `/app/releases?workspace=${encodeURIComponent(mission.workspaceId)}` }] }
+        : {}),
+    },
   };
   // The Plan page's schedule over the build tasks only (P-2): Overview and Plan give the same numbers.
   const newestEstimate = new Map<string, { p50Minutes: number; p80Minutes: number }>();
@@ -1339,7 +1345,7 @@ async function MissionDetailBody({
   const footerRows = (
     <>
       {/* F6: this mission's own release status, linking to the release. */}
-      {mission.workspaceId && missionReleaseRow(shippedStep, releaseStatus) && (
+      {layout !== 'board' && mission.workspaceId && missionReleaseRow(shippedStep, releaseStatus) && (
         <div className="border-t border-border-default">
           <MissionReleaseSection step={shippedStep} status={releaseStatus} releaseId={carryingReleaseId} workspaceId={mission.workspaceId} />
         </div>

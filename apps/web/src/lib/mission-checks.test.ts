@@ -280,6 +280,10 @@ describe('missionPrCheck (R-21, AC-9)', () => {
 });
 
 describe('releaseCheck (R-22, P-3)', () => {
+  it('carries the release link as the row evidence, so the row is the only release line', () => {
+    const link = [{ label: 'Open release', href: '/app/releases/r1' }];
+    expect(releaseCheck('waiting', null, link)?.evidence).toEqual(link);
+  });
   it('only healthy passes; dispatched and deploying are in progress; failed is a hold', () => {
     expect(releaseCheck('not_configured')).toBeNull();
     expect(releaseCheck('healthy')!.status).toBe('passed');
