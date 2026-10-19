@@ -9,6 +9,7 @@ import type { UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-
 import type { NowState } from '@/app/app/(protected)/tasks/[id]/task-activity';
 import type { StrandCta } from '@/lib/mission-list-card';
 import type { DeliveryDisplay } from '@/lib/workflow/delivery-display';
+import type { RepairStatus } from '@/lib/activity-delivery';
 
 export interface MissionObjectView {
   kind: 'mission';
@@ -83,6 +84,11 @@ export interface TaskObjectView {
    * from it instead of `worker.mergedAt` / `prLifecycleStatus`. Absent: legacy.
    */
   delivery?: DeliveryDisplay | null;
+  /**
+   * A repair attempt of a kernel-owned delivery: where the kernel's attempt ledger has it
+   * (lib/activity-delivery.ts `repairStatusOf`). Absent for an owner, a reviewer or legacy work.
+   */
+  repair?: { status: RepairStatus } | null;
   /** Agent runs on this task so far (the desktop dock's TRIES cell). */
   attempts?: number;
   /** What the waiting worker asked (workers.waitingFor.prompt). */
