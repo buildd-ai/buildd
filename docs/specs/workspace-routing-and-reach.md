@@ -272,7 +272,7 @@ people and for many teams on one buildd, not only for one operator.
   signature) becomes a platform signal deduplicated by signature across
   teams, carrying only signature, tool, error code, buildd version and count,
   never task content, and an operator opens the fix task from it.
-  **Recommended: (c).** A team may opt in to attaching excerpts.
+  **Decided: (c).** A team may opt in to attaching excerpts.
 - D-2: **Who accepts a schedule move, and where it shows.**
   (a) always a person: a card on Home for the schedule's owner and holders of
   `delegate_schedule_access`, with Accept, Keep, and Accept with a read grant
@@ -281,7 +281,7 @@ people and for many teams on one buildd, not only for one operator.
   with undo;
   (c) a team policy (forbidden, ask, auto) on the existing
   `capability_policies` machinery, as provider `buildd`.
-  **Recommended: (a) now, (c) later** with ask as the default. An unanswered
+  **Decided: (a) now, (c) later** with ask as the default. An unanswered
   proposal never blocks runs: the schedule keeps its current home.
 - D-3: **One reach rule for delegated reads.**
   (a) team plus grant (the routes today);
@@ -289,7 +289,7 @@ people and for many teams on one buildd, not only for one operator.
   (the claim pre-flight today, and what `docs/SPEC.md` already states: a
   delegation "never exceeds the minting account's reach");
   (c) a grant also links the account to the target.
-  **Recommended: (b).** It is the documented invariant, and with more people
+  **Decided: (b).** It is the documented invariant, and with more people
   a restricted workspace (a client's data) stays closed to a runner that
   cannot access it, even when someone else granted the read. The routes'
   delegated check gains the account-reach test; a task held at claim is
@@ -301,25 +301,33 @@ people and for many teams on one buildd, not only for one operator.
   (as chat routing's named-workspace step does), records source `inferred`,
   and shows it on the approval card, but never files on it alone;
   (c) inferred and applied.
-  **Recommended: (a) for agents, (b) for people in chat.** An agent can always
+  **Decided: (a) for agents, (b) for people in chat.** An agent can always
   declare; a person typing in chat should not have to, but should see where
   the task will land before approving. (c) misroutes silently.
-- D-5: **What `analytics:read` means.** It names three things today: an
-  API-key scope, a delegation capability, and a connector capability
-  (connector domain `analytics`, PostHog).
-  (a) keep the strings, disambiguate by `provider`;
-  (b) rename the connector domain;
-  (c) namespace every capability string.
-  **Recommended: (a) and (b).** `analytics:read` means buildd's own
-  coordination data about a workspace: the decision ledger and stats,
-  coordination and gate stats, failure analytics, usage, dispatch health,
-  explain and error traces. It never covers task content, memory, knowledge
-  or code. The connector domain becomes `product_analytics`.
-  `request_capability { provider: buildd, capability: analytics:read,
-  resource: <workspace> }` becomes a person-decided request that writes a
-  task delegation, as `tasks:create` does today, so "grant read and retry"
-  is one real action. Without a provider, `analytics:read` resolves to buildd,
-  never to a connector.
+- D-5: **What `analytics:read` means. Decided: requests name a provider,
+  not an abstract capability.** Today the string names three things: an
+  API-key scope, a delegation capability, and a connector capability from an
+  abstract vocabulary (`domain:verb`, where domain `analytics` resolves to
+  PostHog). An agent that wants PostHog asks for PostHog, so that vocabulary
+  is an abstraction over providers that nobody needs, and it is where the
+  collision comes from.
+  - A connector request names the provider and an access level that matches
+    the gateway's existing risk classes:
+    `request_capability { provider: posthog, access: read | write }`. The
+    grant, the policy and the gateway's per-tool decision already work per
+    provider and tool, so nothing below the request changes.
+  - The `domain:verb` vocabulary stops being requestable or grantable. Its
+    categories stay only as a search filter when an agent asks which
+    connector the team has for something (`GET /api/connectors/capabilities`).
+  - buildd's own capabilities keep their names under provider `buildd`:
+    `tasks:create` and `analytics:read` on a named workspace. `analytics:read`
+    then means one thing: buildd's coordination data about that workspace
+    (decision ledger and stats, coordination and gate stats, failure
+    analytics, usage, dispatch health, explain, error traces), never task
+    content, memory, knowledge or code. Requesting it is a person decision
+    that writes a task delegation, as `tasks:create` does.
+  - capability-requests.md changes with this (its examples ask for
+    `observability:query`).
 
 ## 8. Discrepancies found while writing this
 
