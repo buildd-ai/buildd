@@ -1729,7 +1729,14 @@ column outside the kernel; S3 and S4 remove or route each one.
   own statement; a terminal fact (merged, closed) from any of these callers
   carries the kernel's scope (`pr-fact-scope.ts`), so a delivery-owned row
   takes only what its delivery already says. Their non-terminal facts
-  (`pr_open`, CI, conflict, unresolvable) stay unscoped: S4a and S4b did not take them and no open slice owns them. "Delivery-owned" has
+  (`pr_open`, CI, conflict, unresolvable) carry the same scope, which defers
+  every delivery-owned row: the funnel reports it (`deferred`, so a caller's
+  side effects still see a fact that is new for the row) and writes none.
+  Every other kernel transition projects the row's live status from the
+  delivery's own readings at its head, in its own statement (`w_live`,
+  `prLiveProjectionSql`): dirty mergeability is `conflict`, then a red or
+  green CI verdict, else `pr_open`. A funnel call with no scope is refused,
+  by type and at run time, and the write-site guard names its file. "Delivery-owned" has
   one definition (`kernelOwnedRowSql`: a kernel-authority delivery, kill switch
   on, owns the row's PR), shared by the funnel and the render read-through. A
   merge the kernel saw but could not apply (its live read failed, a render

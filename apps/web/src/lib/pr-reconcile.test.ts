@@ -615,7 +615,7 @@ describe('reconcileStalePrWorkers', () => {
     expect(result.conflictsDetected).toBe(1);
     expect(result.skipped).toBe(1);
     // The funnel sets prLifecycleStatus=conflict and a first-seen conflictDetectedAt.
-    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'conflict' }, opts: undefined }]);
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'conflict' }, opts: { scope: expect.objectContaining({ defers: expect.any(Function) }) } }]);
     const written = setMock.mock.calls[0][0] as Record<string, unknown>;
     expect(written.prLifecycleStatus).toBeUndefined();
     expect(written.conflictDetectedAt).toBeUndefined();
