@@ -1,5 +1,5 @@
 /**
- * POST /api/cron/page-budget
+ * POST /api/cron/page-budget-health
  *
  * Hourly: alert the operator about a page that has been over its speed budget
  * for the last hour (spec 3ef37387 R-31), naming the page and its heaviest

@@ -5,7 +5,7 @@
  * page wrapped in `withPageBudget` counts its own Neon round trips and bytes;
  * a load over budget leaves one short-lived `system_cache` row naming the page
  * and its heaviest loader (the `withLoaderLabel` label, or the first app frame,
- * from packages/core/db/query-label.ts). An hourly cron (`/api/cron/page-budget`)
+ * from packages/core/db/query-label.ts). An hourly cron (`/api/cron/page-budget-health`)
  * reads the trailing hour: a page with `MIN_OVER_LOADS` or more over-budget
  * loads in it is over budget "for an hour", and the operator is told which page
  * and which loader (R-42), at most once a day per page.
@@ -136,9 +136,9 @@ export async function readOverBudgetLoads(now: number): Promise<OverLoad[]> {
   const out: OverLoad[] = [];
   for (const r of rows) {
     const [page, at] = r.key.slice(OVER_KEY_PREFIX.length).split(':');
-    const v = r.value as { queries?: number; bytes?: number; loader?: string };
+    const v = r.value && typeof r.value === 'object' ? (r.value as Record<string, unknown>) : {};
     if (!(page in PAGE_BUDGETS) || !Number(at)) continue;
-    out.push({ page: page as PageName, at: Number(at), queries: v.queries ?? 0, bytes: v.bytes ?? 0, loader: v.loader ?? 'unlabelled' });
+    out.push({ page: page as PageName, at: Number(at), queries: Number(v.queries) || 0, bytes: Number(v.bytes) || 0, loader: typeof v.loader === 'string' ? v.loader : 'unlabelled' });
   }
   return out.filter(l => l.at >= now - WINDOW_MS);
 }

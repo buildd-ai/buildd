@@ -142,7 +142,7 @@
       "$comment": "Page speed-budget alert (spec 3ef37387 R-31, R-40, R-42). Pages wrapped in withPageBudget leave a short-lived system_cache row for each load over its PAGE_BUDGETS entry; this reads the trailing hour and pages the operator when a page has three or more, naming the page and its heaviest loader, at most once a day per page. The in-repo replacement for an Axiom monitor an unattended run cannot read. ALL 24 HOURS on the hour: pure indexed reads on one small table with no network except the push, and :00 lands inside the wake window the schedules tick already opens. `changed` = pages alerted (findings polarity, declared in CRON_JOB_REGISTRY).",
       "title": "Buildd: Page Budget Alert",
       "profile": "ops",
-      "path": "/api/cron/page-budget",
+      "path": "/api/cron/page-budget-health",
       "schedule": "0 * * * *",
       "method": "POST"
     },
