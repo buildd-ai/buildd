@@ -1876,10 +1876,13 @@ const AMBIGUOUS_WORKSPACE_ACTIONS = new Set<string>([
 ]);
 
 /**
- * For OAuth tokens with access to multiple workspaces, refuse ambiguous
- * mutating/aggregating actions unless workspaceId is explicit (either via
- * URL pin at OAuth time or via params). API-key tokens are workspace-scoped
- * at creation and skip this guard.
+ * For any caller that reaches more than one workspace, refuse ambiguous
+ * mutating/aggregating actions unless workspaceId is explicit (via the URL
+ * pin or via params). That includes an unrestricted account key: it reaches
+ * its team's open workspaces, and without this its create_task fell back to
+ * getWorkspaceId()'s guess (spec workspace-routing-and-reach I-16). Restricted
+ * keys and task tokens are always pinned by the MCP route, so they pass on
+ * ctx.workspaceId.
  */
 async function requireExplicitWorkspace(
   api: ApiFn,
@@ -1888,9 +1891,8 @@ async function requireExplicitWorkspace(
   ctx: ActionContext,
 ): Promise<ToolResult | null> {
   if (!AMBIGUOUS_WORKSPACE_ACTIONS.has(action)) return null;
-  if (ctx.workspaceId) return null;          // URL-pinned at OAuth time
+  if (ctx.workspaceId) return null;          // URL-pinned
   if (params.workspaceId) return null;        // explicit per-call
-  if (ctx.authType !== 'oauth') return null;  // API keys are workspace-scoped
 
   let workspaces: Array<{ id: string; name: string; repo?: string | null }> = [];
   try {
@@ -1910,7 +1912,7 @@ async function requireExplicitWorkspace(
   return {
     content: [{
       type: 'text' as const,
-      text: `This OAuth token has access to ${workspaces.length} workspaces. Action "${action}" requires an explicit workspaceId to avoid misrouting (the 2026-05-25 incident). Pass workspaceId in params — workspace name is accepted:\n${choices}`,
+      text: `This ${ctx.authType === 'oauth' ? 'OAuth token' : 'key'} has access to ${workspaces.length} workspaces. Action "${action}" requires an explicit workspaceId to avoid misrouting (the 2026-05-25 incident). Pass workspaceId in params — workspace name is accepted:\n${choices}`,
     }],
     isError: true,
   };

@@ -5,8 +5,9 @@ import { handleBuilddAction, type ApiFn, type ActionContext } from '../mcp-tools
 // to multiple workspaces called claim_task without an explicit workspaceId,
 // the resolver picked the wrong workspace, the agent flailed on a path that
 // didn't exist, and 4 workers burned in the retry loop before being killed.
-// The guard refuses ambiguous mutating/aggregating actions for OAuth tokens
-// when no workspace pin exists.
+// The guard refuses ambiguous mutating/aggregating actions for any caller
+// reaching more than one workspace (OAuth or account key) when no workspace
+// pin exists.
 
 const WS_A = '00000000-0000-0000-0000-000000000001';
 const WS_B = '00000000-0000-0000-0000-000000000002';
@@ -149,7 +150,7 @@ describe('multi-workspace guard — requireExplicitWorkspace', () => {
     expect(enumerated).toBeUndefined();
   });
 
-  it('skips the guard for API-key tokens (workspace-scoped at creation)', async () => {
+  it('skips the guard for a pinned API key (restricted keys and task tokens are always pinned)', async () => {
     mockApi.mockResolvedValue({ workers: [] });
 
     const result = await handleBuilddAction(
@@ -162,6 +163,46 @@ describe('multi-workspace guard — requireExplicitWorkspace', () => {
     expect(result.isError).toBeFalsy();
     const enumerated = mockApi.mock.calls.find((c) => c[0] === '/api/workspaces');
     expect(enumerated).toBeUndefined();
+  });
+
+  // Spec workspace-routing-and-reach I-16 / AC-8: an unrestricted account key
+  // is not workspace-scoped, so it gets the same guard as OAuth.
+  it('refuses create_task for an unpinned API key reaching two workspaces, and creates nothing', async () => {
+    mockApi.mockResolvedValueOnce({
+      workspaces: [
+        { id: WS_A, name: 'a', repo: 'org/a' },
+        { id: WS_B, name: 'b', repo: 'org/b' },
+      ],
+    });
+
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 't', description: 'd' },
+      ctxApi({ workspaceId: undefined, getWorkspaceId: async () => WS_A }),
+    );
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toMatch(/2 workspaces/);
+    expect(text).not.toMatch(/OAuth/);
+    expect(mockApi).toHaveBeenCalledTimes(1);
+    expect(mockApi.mock.calls[0][0]).toBe('/api/workspaces');
+  });
+
+  it('allows create_task for an unpinned API key that reaches one workspace', async () => {
+    mockApi.mockResolvedValueOnce({ workspaces: [{ id: WS_A, name: 'a' }] });
+    mockApi.mockResolvedValue({ id: '11111111-1111-1111-1111-111111111111', title: 't', status: 'pending' });
+
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 't', description: 'd' },
+      ctxApi({ workspaceId: undefined, getWorkspaceId: async () => WS_A }),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(mockApi.mock.calls.some((c) => String(c[0]).startsWith('/api/tasks'))).toBe(true);
   });
 
   it('skips the guard when the OAuth token only has 1 accessible workspace', async () => {

@@ -254,3 +254,15 @@ export function isSharedRunner(
   const people = new Set([...(membersByTeam.get(runnerTeamId) ?? []), ...(membersByTeam.get(viewingTeamId) ?? [])]);
   return people.size > 1;
 }
+
+/**
+ * Which Health list a runner is in. Ownership class decides, never whose task
+ * it ran: only a personal runner the viewer made is "Your runners". A managed
+ * or team-host runner is shared (even when the viewer minted its key), and
+ * another person's personal runner, from any team, is the team's to see.
+ * A runner with no recorded class keeps the creator rule.
+ */
+export function runnerSection(r: { runnerClass?: RunnerClass; mine: boolean }): 'mine' | 'team' {
+  if (r.runnerClass === 'managed' || r.runnerClass === 'team') return 'team';
+  return r.mine ? 'mine' : 'team';
+}

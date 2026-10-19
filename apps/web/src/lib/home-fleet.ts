@@ -109,7 +109,7 @@ export async function loadFleetSnapshot(input: { teamId: string | null; wsIds: s
       .select({
         id: workers.id, accountId: workers.accountId, runner: workers.runner, localUiUrl: workers.localUiUrl,
         status: workers.status, startedAt: workers.startedAt, completedAt: workers.completedAt, updatedAt: workers.updatedAt,
-        prNumber: workers.prNumber, error: workers.error,
+        prNumber: workers.prNumber, error: workers.error, modelRoute: workers.modelRoute,
         taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
         roleSlug: tasks.roleSlug, missionId: tasks.missionId, taskClass: tasks.taskClass,
       })
@@ -121,7 +121,7 @@ export async function loadFleetSnapshot(input: { teamId: string | null; wsIds: s
   ]);
   const rows: FleetWorkerRow[] = liveRows.map(r => ({
     id: r.id, accountId: r.accountId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
-    startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber, error: r.error,
+    startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber, error: r.error, modelRoute: r.modelRoute,
     task: r.taskId ? {
       id: r.taskId, title: r.taskTitle ?? '', label: r.taskLabel, mode: r.taskMode,
       roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass,
@@ -235,7 +235,7 @@ export async function loadHomeFleet(input: {
       .select({
         id: workers.id, accountId: workers.accountId, runner: workers.runner, localUiUrl: workers.localUiUrl,
         status: workers.status, startedAt: workers.startedAt, completedAt: workers.completedAt, updatedAt: workers.updatedAt,
-        mergedAt: workers.mergedAt, prNumber: workers.prNumber, waitingFor: workers.waitingFor,
+        mergedAt: workers.mergedAt, prNumber: workers.prNumber, waitingFor: workers.waitingFor, modelRoute: workers.modelRoute,
         // Only beside a question: the context fallback for a card whose brief was lost.
         error: sql<string | null>`case when ${workers.waitingFor} is not null then ${workers.error} end`,
         createdAt: workers.createdAt, milestones: workers.milestones, dirtyWorktree: workers.dirtyWorktree,
@@ -263,7 +263,7 @@ export async function loadHomeFleet(input: {
 
   const rows: FleetWorkerRow[] = workerRows.map(r => ({
     id: r.id, accountId: r.accountId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
-    startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber,
+    startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber, modelRoute: r.modelRoute,
     waitingFor: r.waitingFor as FleetWorkerRow['waitingFor'], error: r.error,
     phase: deriveRunEvidence(r).phases.filter(p => p.state === 'done' || p.state === 'current' || p.state === 'failed').at(-1)?.label ?? 'Claimed',
     task: r.taskId ? {
@@ -344,7 +344,7 @@ export async function loadRunnersFleet(input: { teamId: string | null; wsIds: st
     loadFleetHeartbeats({ teamId, wsIds, now }),
     db
       .select({
-        id: workers.id, accountId: workers.accountId, ownerId: workers.claimedByUserId, runner: workers.runner, localUiUrl: workers.localUiUrl,
+        id: workers.id, accountId: workers.accountId, ownerId: workers.claimedByUserId, taskOwnerId: tasks.createdByUserId, runner: workers.runner, localUiUrl: workers.localUiUrl,
         status: workers.status, startedAt: workers.startedAt, completedAt: workers.completedAt, updatedAt: workers.updatedAt,
         prNumber: workers.prNumber, mergedAt: workers.mergedAt, waitingFor: workers.waitingFor, error: workers.error,
         taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
@@ -369,7 +369,7 @@ export async function loadRunnersFleet(input: { teamId: string | null; wsIds: st
     .where(and(inArray(workers.taskId, taskIds), isNotNull(workers.mergedAt), isNotNull(workers.prNumber)));
   const mergedPrByTask = new Map(mergedRows.map(r => [r.taskId, r.prNumber]));
   const rows: FleetWorkerRow[] = workerRows.map(r => ({
-    id: r.id, accountId: r.accountId, ownerId: r.ownerId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
+    id: r.id, accountId: r.accountId, ownerId: r.ownerId, taskOwnerId: r.taskId ? r.taskOwnerId : undefined, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
     startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber,
     mergedAt: r.mergedAt, waitingFor: r.waitingFor as FleetWorkerRow['waitingFor'], error: r.error,
     taskMergedPr: r.taskId ? mergedPrByTask.get(r.taskId) ?? null : null,
