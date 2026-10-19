@@ -15,7 +15,7 @@ import { DISPATCHABLE_BACKENDS, backendLabel, describeBackendRouting, isBackendP
 import { TIERS, isTierSurface, type Tier, type TierSurface } from './model-tier-defaults';
 import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
-import { TERMS, missionGateTerm, titleWithAttempt } from '@buildd/shared';
+import { TERMS, missionGateTerm, titleWithAttempt, githubReviewStatesLine, DECISION_LABELS } from '@buildd/shared';
 import { ARTIFACT_TYPES, isArtifactType, isTerminalWorkerStatus, isTerminalTaskStatus, INTERACTIVE_WORKER_RUNNER, isWorkspaceExecutor, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
 import { formatDispatchHealth, type DispatchHealthReport } from './dispatch-health-report';
@@ -144,14 +144,18 @@ export function pageWorkspaceExplain(data: { subjects?: any[]; considered?: numb
  * GitHub's review counts.
  */
 export function formatGetPrDelivery(data: {
-  reviews?: { approved?: number; changesRequested?: number } | null;
+  reviews?: { approved?: number; changesRequested?: number; commented?: number } | null;
   delivery?: {
     headline: string; detail: string | null;
     review: { line: string } | null;
+    /** AC-24: each round with buildd's verdict, and that GitHub lists those reviews as Commented. */
+    rounds?: { line: string; githubNote: string | null } | null;
+    /** AC-43: a review escalation's question, why automation stopped, the unresolved findings and the actions open now. */
+    decision?: { question: string; why: string; unresolved: { open: string[]; awaitingVerification: string[] }; actions: Array<{ label: string }> } | null;
     repairs: Array<{ label: string; words: string }>;
     reviewApproval?: { state: string; description: string } | null;
   } | null;
-}): { standingLine: string; reviewLine: string; repairsLine: string; approvalLine: string } {
+}): { standingLine: string; reviewLine: string; roundsLine: string; decisionLine: string; repairsLine: string; approvalLine: string } {
   const d = data.delivery;
   const r = data.reviews ?? {};
   const approved = r.approved ?? 0;
@@ -159,10 +163,26 @@ export function formatGetPrDelivery(data: {
   const github = approved > 0 || changes > 0
     ? `Reviews: ${approved} approved${changes > 0 ? `, ${changes} changes requested` : ''}`
     : 'Reviews: none';
-  if (!d) return { standingLine: '', reviewLine: github, repairsLine: '', approvalLine: '' };
+  if (!d) return { standingLine: '', reviewLine: github, roundsLine: '', decisionLine: '', repairsLine: '', approvalLine: '' };
+  const githubStates = githubReviewStatesLine(r) ?? '';
+  const dec = d.decision;
+  const decisionLine = dec
+    ? [
+        `Decision: ${dec.question} ${dec.why}`,
+        dec.unresolved.open.length > 0 ? `${DECISION_LABELS.open}: ${dec.unresolved.open.join('; ')}` : '',
+        dec.unresolved.awaitingVerification.length > 0 ? `${DECISION_LABELS.awaitingVerification}: ${dec.unresolved.awaitingVerification.join('; ')}` : '',
+        `${DECISION_LABELS.choicesOnTaskPage}: ${dec.actions.map(a => a.label).join(', ')}`,
+      ].filter(Boolean).join('\n')
+    : '';
   return {
     standingLine: `Where it stands: ${d.headline}${d.detail ? ` (${d.detail})` : ''}`,
     reviewLine: d.review ? `Reviews: ${d.review.line}` : 'Reviews: no review round yet',
+    decisionLine,
+    // AC-24: GitHub's formal states beside buildd's verdicts, never in place of them.
+    roundsLine: [
+      d.rounds ? `Review rounds: ${d.rounds.line}.${d.rounds.githubNote ? ` ${d.rounds.githubNote}` : ''}` : '',
+      githubStates,
+    ].filter(Boolean).join('\n'),
     repairsLine: d.repairs.length > 0 ? `Repairs: ${d.repairs.map(x => `${x.label} · ${x.words}`).join('; ')}` : '',
     // R-43: the review gate is its own line, never folded into CI.
     approvalLine: d.reviewApproval ? `Review approval: ${d.reviewApproval.description}` : '',
@@ -3612,7 +3632,7 @@ export async function handleBuilddAction(
         ? `Failing: ${shownFailing.map(c => (c.url ? `${c.name} (${c.url})` : c.name)).join(', ')}${omittedFailing > 0 ? ` (+${omittedFailing} more — all:true lists every one)` : ''}`
         : '';
 
-      const { standingLine, reviewLine, repairsLine, approvalLine } = formatGetPrDelivery(data);
+      const { standingLine, reviewLine, roundsLine, decisionLine, repairsLine, approvalLine } = formatGetPrDelivery(data);
 
       const mergeableLine = pr.mergeable === true ? 'Mergeable: yes'
         : pr.mergeable === false ? `Mergeable: no (${pr.mergeableState ?? 'blocked'})`
@@ -3702,6 +3722,8 @@ export async function handleBuilddAction(
         failingLine,
         approvalLine,
         reviewLine,
+        roundsLine,
+        decisionLine,
         repairsLine,
         statsLine,
         supersededLine,

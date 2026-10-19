@@ -233,7 +233,7 @@ describe('Health › Runner row detail (R-7)', () => {
 });
 
 describe('Health › Runners ownership', () => {
-  const hb = (id: string, name: string, mine: boolean) => ({ id, accountId: id, accountName: name, lastHeartbeatAt: ago(0).toISOString(), activeWorkerCount: 0, maxConcurrentWorkers: 2, mine });
+  const hb = (id: string, name: string, mine: boolean) => ({ id, accountId: id, accountName: name, lastHeartbeatAt: ago(0).toISOString(), activeWorkerCount: 0, maxConcurrentWorkers: 2, mine, runnerClass: 'personal' as const });
 
   it('lists the viewer\'s runners under "Your runners" and teammates\' under "Team runners"', async () => {
     await mount(0, [hb('a', 'Mine one', true), hb('b', 'Teammate box', false)]);
@@ -256,6 +256,21 @@ describe('Health › Runners ownership', () => {
     const team = q('health-runners-team')!.textContent!;
     expect(team).toContain('managed');
     expect(team).toContain('team host');
+  });
+
+  it('keeps a managed or team-host runner the viewer created out of "Your runners"', async () => {
+    await mount(0, [
+      { ...hb('a', 'Mine one', true), runnerClass: 'personal' },
+      { ...hb('b', 'Cloud', true), runnerClass: 'managed' },
+      { ...hb('c', 'Host', true), runnerClass: 'team' },
+    ]);
+    const mine = q('health-runners-mine')!.textContent!;
+    expect(mine).toContain('Mine one');
+    expect(mine).not.toContain('Cloud');
+    expect(mine).not.toContain('Host');
+    const team = q('health-runners-team')!.textContent!;
+    expect(team).toContain('Cloud');
+    expect(team).toContain('Host');
   });
 
   it('omits a section with no runners', async () => {
