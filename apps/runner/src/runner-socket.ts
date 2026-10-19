@@ -28,8 +28,6 @@ import { join } from 'path';
 export const RUNNER_SOCKET_NAME = 'runner.sock';
 
 /** Path the runner listens on, and a second start probes. */
-const REBIND_DRAIN_MS = 5_000;
-
 export function runnerSocketPath(builddHome: string, env: Record<string, string | undefined> = process.env): string {
   return env.BUILDD_RUNNER_SOCKET || join(builddHome, RUNNER_SOCKET_NAME);
 }
@@ -283,12 +281,7 @@ export function serveRunnerSocket(
       // Cut every connection the old server holds (a hung request, top's
       // event stream), then take the path again. Only our own file is removed:
       // if something else holds the path now, bind() throws EADDRINUSE.
-      // Stop listening first and let in-flight requests (a talk-context POST)
-      // finish; only a connection still open after the grace is cut.
-      const old = server;
-      try { old.stop(false); } catch { /* a wedged server may not stop cleanly */ }
-      const cut = setTimeout(() => { try { old.stop(true); } catch { /* ignore */ } }, REBIND_DRAIN_MS);
-      (cut as { unref?: () => void }).unref?.();
+      try { server.stop(true); } catch { /* a wedged server may not stop cleanly */ }
       open.clear();
       removeIfOurs();
       bind();
