@@ -26,7 +26,7 @@ import { LIVE_WORKER_STATUSES, OPEN_TASK_STATUSES, TERMS } from '@buildd/shared'
 import type { StateKey } from '@/components/ui/states';
 import { displayTaskTitle } from './task-title';
 import { claimHoldPhrase } from './claim-hold-phrase';
-import { quietLabel } from './local-strand';
+import { quietLabel, strandAt } from './local-strand';
 import { MISSION_START_COPY, missionStartState, type MissionStartState } from './mission-start-state';
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
@@ -552,7 +552,7 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
     else if (kind === 'waiting') {
       exception = focus.delivery.waitingOn === 'dependency' ? { tone: 'muted', text: 'Waiting on earlier work, not on you' }
         : m.localStrand?.stranded ? { tone: 'warning', text: 'No session is running it' }
-        : m.localStrand ? { tone: 'muted', text: 'Waiting for your session' }
+        : m.localStrand ? { tone: 'muted', text: WAITING_FOR_SESSION }
         : { tone: 'muted', text: 'Next in line for a runner, not waiting on you' };
     }
   }
@@ -647,8 +647,8 @@ function describe(kind: DeliveryKind, focus: MissionDelivery['tasks'][number] | 
     case 'waiting':
       if (d?.waitingOn !== 'dependency' && m.localStrand) {
         return m.localStrand.stranded
-          ? { evidence: `${t} has not started.`, next: `Waiting for your session (none for ${quietLabel(m.localStrand.quietMs)})` }
-          : { evidence: `${t} has not started.`, next: 'Waiting for your session' };
+          ? { evidence: `${t} has not started.`, next: `${WAITING_FOR_SESSION} (none for ${quietLabel(m.localStrand.quietMs)})` }
+          : { evidence: `${t} has not started.`, next: WAITING_FOR_SESSION };
       }
       return { evidence: `${t} has not started.`, next: d?.waitingOn === 'dependency' ? `After its dependencies land` : 'Next in line for a runner' };
     case 'held':
@@ -684,11 +684,39 @@ export type MissionDeliveryHead = Omit<MissionDelivery, 'tasks'>;
  * A delivery as a list row keeps it (the stored mission summary): the head,
  * and each task's kind for the row's strip.
  */
-export type MissionDeliveryRow = MissionDeliveryHead & { strip: DeliveryKind[] };
+export type MissionDeliveryRow = MissionDeliveryHead & {
+  strip: DeliveryKind[];
+  /**
+   * A local mission's quiet-clock anchor (`LocalStrand.quietSince`), else
+   * absent. The row is stored without the clock: it reads "waiting for your
+   * session" however long that has lasted, and `deliveryAtRead` adds the
+   * elapsed-time part when the row is read.
+   */
+  quietSince?: number | null;
+};
 
-export function toDeliveryRow(d: MissionDelivery): MissionDeliveryRow {
+export function toDeliveryRow(d: MissionDelivery, quietSince?: number | null): MissionDeliveryRow {
   const { tasks, ...head } = d;
-  return { ...head, strip: tasks.map(t => t.delivery.kind) };
+  return { ...head, strip: tasks.map(t => t.delivery.kind), ...(quietSince != null ? { quietSince } : {}) };
+}
+
+const WAITING_FOR_SESSION = 'Waiting for your session';
+
+/**
+ * A stored delivery row as it reads at `now`: a local mission that has waited
+ * for a session past the quiet window reads stranded, with how long. A fresh
+ * compute at `now` (`projectMissionDelivery` with the live strand) gives the
+ * same `next` and `exception`.
+ */
+export function deliveryAtRead<T extends { next: string; exception?: MissionDelivery['exception']; quietSince?: number | null }>(d: T, now: number): T {
+  if (d.quietSince == null) return d;
+  const { stranded, quietMs } = strandAt(d.quietSince, now);
+  if (!stranded) return d;
+  return {
+    ...d,
+    next: d.next === WAITING_FOR_SESSION ? `${WAITING_FOR_SESSION} (none for ${quietLabel(quietMs)})` : d.next,
+    exception: d.exception?.text === WAITING_FOR_SESSION ? { tone: 'warning', text: 'No session is running it' } : d.exception,
+  };
 }
 
 /** Closest to a delivery milestone first. Waiting, held, planning and exceptions never move. */
