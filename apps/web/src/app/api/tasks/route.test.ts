@@ -163,6 +163,7 @@ mock.module('@buildd/core/task-estimate-source', () => ({ writeTaskEstimate: moc
 // Mock auth-helpers
 // Living Spec pinning (lib/specs/pin.ts): passes through unless a test sets an impl.
 let specPinImpl: ((ws: string, ctx: unknown) => Promise<unknown>) | null = null;
+mock.module('@/lib/specs/acceptance-tests', () => ({ openAcceptanceTestsTaskId: async () => null }));
 mock.module('@/lib/specs/pin', () => ({
   pinSpecSource: (ws: string, ctx: unknown) => (specPinImpl ? specPinImpl(ws, ctx) : Promise.resolve({ ok: true, context: ctx })),
 }));

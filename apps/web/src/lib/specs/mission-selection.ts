@@ -9,6 +9,7 @@ import { specCriteria } from '@buildd/spec-contract/requirements';
 import { requestingPerson } from '@/lib/request-person';
 import { isUuid } from '@/lib/uuid';
 import { pinSpecSource, readPinnedSpecRevision } from './pin';
+import { ensureAcceptanceTests } from './acceptance-tests';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 
 /**
@@ -150,6 +151,9 @@ export async function selectMissionSpec(caller: SpecCaller, missionId: string, i
   if (!merged.changed) return { ok: true, criterion: next, changed: false, goalCriteria: merged.criteria };
   if (merged.criteria.length > MAX_GOAL_CRITERIA) return fail(400, `A mission has at most ${MAX_GOAL_CRITERIA} goal criteria`);
   await db.update(missions).set({ goalCriteria: merged.criteria, updatedAt: now } as any).where(eq(missions.id, missionId));
+  // The mission starts with its acceptance tests (spec 1dc6cc39 R-76): filed once,
+  // every building task waits for it, and its role is never the builder's.
+  await ensureAcceptanceTests(missionId, next, [...inScope]).catch((e) => console.error(`[acceptance-tests] mission ${missionId}:`, e));
   if (input.waive !== undefined || input.unwaive !== undefined) {
     await note(missionId, caller, 'Outcome spec criteria waived', waived.map((w) => `${w.criterionId}: ${w.reason}`).join('\n') || 'No criteria are waived now.');
   }
