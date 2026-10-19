@@ -282,6 +282,17 @@ export interface CronJobRegistryEntry {
 
 export const CRON_JOB_REGISTRY: CronJobRegistryEntry[] = [
   {
+    slug: 'page-budget-over-an-hour',
+    job: 'page-budget',
+    name: 'Page over its speed budget for an hour',
+    changedPolarity: 'findings',
+    changedMeaning: 'pages found over their speed budget and alerted this run, not work performed',
+    notifyTest: {
+      file: 'apps/web/src/lib/page-budget-watch.test.ts',
+      title: 'alerts a page over budget in the hour, naming the page and loader',
+    },
+  },
+  {
     slug: 'queue-stall-gate-ladder',
     job: 'queue-stall',
     name: 'Queue-stall per-task gate ladder',

@@ -10,6 +10,7 @@ import { specHubWorkspaces } from '@/lib/specs/page-view';
 import { hubTarget } from '@/lib/specs/hub';
 import Card from '@/components/ui/Card';
 import Lede from '@/components/ui/Lede';
+import { withPageBudget } from '@/lib/page-budget-watch';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,7 +19,7 @@ export const dynamic = 'force-dynamic';
  * specs opens straight away, several are listed with what waits first. The
  * active team's workspaces first; with none there, every workspace of the reader's.
  */
-export default async function SpecsPage() {
+async function SpecsPage() {
   const user = await getCurrentUser();
   if (!user) redirect(`/app/auth/signin?callbackUrl=${encodeURIComponent('/app/specs')}`);
   const scope = await resolveActiveTeamScope(user.id, (await cookies()).get('buildd-team')?.value);
@@ -54,3 +55,5 @@ export default async function SpecsPage() {
     </main>
   );
 }
+
+export default withPageBudget('specs', SpecsPage);

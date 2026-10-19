@@ -143,6 +143,7 @@ import DiagnosticsDisclosure, { DiagnosticsAudienceProvider } from '@/components
 import { canSeeDiagnostics } from '@/lib/diagnostics-audience';
 import { isPlatformOperator } from '@/lib/platform-operator';
 import { taskPrOf, withTaskPr } from '@/lib/workflow/task-pr';
+import { withPageBudget } from '@/lib/page-budget-watch';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -164,7 +165,7 @@ function missionExecutorOf(row: { executor?: string | null } | null | undefined)
   return row?.executor === 'local' ? 'local' : row?.executor === 'runner' ? 'runner' : null;
 }
 
-export default async function TaskDetailPage({
+async function TaskDetailPage({
   params,
   searchParams,
 }: {
@@ -2136,3 +2137,5 @@ export default async function TaskDetailPage({
     </DisplayTimezoneProvider>
   );
 }
+
+export default withPageBudget('taskPage', TaskDetailPage);
