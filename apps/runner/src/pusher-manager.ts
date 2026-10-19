@@ -79,10 +79,39 @@ export interface TaskAssignment {
   byPerson?: boolean;
 }
 
+/**
+ * Task events the server already publishes on a workspace channel that change
+ * what `buildd top` lists (spec 3ef37387 R-21). The runner is subscribed to
+ * those channels for task:assigned anyway, so binding these costs no extra
+ * Pusher message; each becomes one `tasks_changed` frame and top coalesces
+ * them on its own floor. worker:progress is deliberately absent: a heartbeat
+ * is not a task-list change.
+ */
+export const WORKSPACE_TASK_EVENTS = [
+  'task:created', 'task:updated', 'task:unblocked', 'task:dependency_failed', 'task:children_completed',
+  'worker:completed', 'worker:failed',
+] as const;
+
+/** Mission-loop events (lib/mission-loop.ts) that move a mission top lists. */
+export const MISSION_LOOP_EVENTS = [
+  'mission:cycle_started', 'mission:loop_completed', 'mission:loop_stalled', 'mission:reopened',
+] as const;
+
+/** Mission channels watched at once for top, at most. */
+export const MAX_WATCHED_MISSIONS = 20;
+/**
+ * A watch not renewed in this long ends. Top renews it with every missions
+ * read (at least every 5 minutes while it is open and not idle), so a closed
+ * or idle top stops costing mission-channel deliveries on its own.
+ */
+export const MISSION_WATCH_TTL_MS = 15 * 60_000;
+
 export class PusherManager {
   private pusher?: Pusher;
   private pusherChannels = new Map<string, any>();
   private workspaceChannels = new Map<string, any>();
+  private missionChannels = new Map<string, any>();
+  private missionWatchTimer: ReturnType<typeof setTimeout> | null = null;
   private channelPrefix: string;
   private acceptRemoteTasks: boolean;
   private config: LocalUIConfig;
@@ -192,6 +221,13 @@ export class PusherManager {
             this.handleTaskAssignment(data);
           });
           channel.bind('task:claimed', (data: { task?: { id?: string; workspaceId?: string } }) => this.handleTaskClaimed(data));
+          for (const event of WORKSPACE_TASK_EVENTS) {
+            channel.bind(event, (data: any) => this.callbacks.emit({
+              type: 'tasks_changed',
+              workspaceId: ws.id,
+              taskId: typeof data?.taskId === 'string' ? data.taskId : typeof data?.task?.id === 'string' ? data.task.id : null,
+            }));
+          }
           this.workspaceChannels.set(channelName, channel);
           console.log(`Subscribed to ${channelName} for task assignments`);
         }
@@ -206,9 +242,50 @@ export class PusherManager {
     for (const [channelName, channel] of this.workspaceChannels) {
       channel.unbind('task:assigned');
       channel.unbind('task:claimed');
+      for (const event of WORKSPACE_TASK_EVENTS) channel.unbind(event);
       this.pusher?.unsubscribe(channelName);
     }
     this.workspaceChannels.clear();
+  }
+
+  /**
+   * Watch the channels of the missions `buildd top` lists for mission-loop
+   * events (spec 3ef37387 R-21): each becomes one `mission_changed` frame, so
+   * top rereads its missions when one moves instead of on a timer. Called with
+   * the open missions each time top reads them; channels for missions no
+   * longer listed are dropped, and the whole watch ends after ttlMs without a
+   * renewal. No-op without Pusher.
+   */
+  watchMissions(missionIds: string[], opts: { ttlMs?: number } = {}) {
+    if (!this.pusher) return;
+    const wanted = new Set(missionIds.filter(id => typeof id === 'string' && id).slice(0, MAX_WATCHED_MISSIONS));
+    for (const id of [...this.missionChannels.keys()]) {
+      if (!wanted.has(id)) this.unwatchMission(id);
+    }
+    for (const id of wanted) {
+      if (this.missionChannels.has(id)) continue;
+      const channel = this.pusher.subscribe(`${this.channelPrefix}mission-${id}`);
+      for (const event of MISSION_LOOP_EVENTS) {
+        channel.bind(event, () => this.callbacks.emit({ type: 'mission_changed', missionId: id }));
+      }
+      this.missionChannels.set(id, channel);
+    }
+    if (this.missionWatchTimer) clearTimeout(this.missionWatchTimer);
+    this.missionWatchTimer = null;
+    if (this.missionChannels.size > 0) {
+      this.missionWatchTimer = setTimeout(() => {
+        this.missionWatchTimer = null;
+        for (const id of [...this.missionChannels.keys()]) this.unwatchMission(id);
+      }, opts.ttlMs ?? MISSION_WATCH_TTL_MS);
+      (this.missionWatchTimer as any).unref?.();
+    }
+  }
+
+  private unwatchMission(id: string) {
+    const channel = this.missionChannels.get(id);
+    this.missionChannels.delete(id);
+    for (const event of MISSION_LOOP_EVENTS) channel?.unbind?.(event);
+    this.pusher?.unsubscribe(`${this.channelPrefix}mission-${id}`);
   }
 
   /**
@@ -431,12 +508,15 @@ export class PusherManager {
       connectionState: this.pusher?.connection.state || 'uninitialized',
       workerChannels: [...this.pusherChannels.keys()],
       workspaceChannels: [...this.workspaceChannels.keys()],
+      missionChannels: [...this.missionChannels.keys()],
       unresolvableTaskIds: [...this.unresolvableTaskIds],
     };
   }
 
   /** Disconnect Pusher and unsubscribe from all channels */
   destroy() {
+    if (this.missionWatchTimer) clearTimeout(this.missionWatchTimer);
+    this.missionWatchTimer = null;
     for (const workerId of this.pusherChannels.keys()) {
       this.unsubscribeFromWorker(workerId);
     }

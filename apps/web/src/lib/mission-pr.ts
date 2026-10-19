@@ -536,7 +536,7 @@ export async function openMissionIntegrationPr(
       updatedAt: new Date(),
     })
     .where(eq(workers.id, ownerWorker.id));
-  await recordPrFact({ workerId: ownerWorker.id }, { kind: 'open' });
+  await recordPrFact({ workerId: ownerWorker.id }, { kind: 'open' }, { scope: factFunnelScope });
 
   await claimMissionPrimaryPr(missionId, prNumber, prUrl, {
     baseRef: recordedBaseRef,

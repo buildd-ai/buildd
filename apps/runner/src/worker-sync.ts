@@ -73,6 +73,16 @@ const DUPLICATE_INJECTION_WINDOW_MS = 15 * 60 * 1000;
 export const QUIET_SYNC_INTERVAL_MS = 30_000;
 
 /**
+ * A working worker's report leaves out the fields below while they equal what
+ * the server last acknowledged (spec 3ef37387 R-33): a quiet sync then carries
+ * status, branch and the instruction consumer, and the server has nothing to
+ * compare or write. The whole report still goes at least this often, so a row
+ * another writer moved is put back within the interval.
+ */
+export const FULL_REPORT_INTERVAL_MS = 5 * 60_000;
+const QUIET_OMITTABLE = ['milestones', 'currentAction', 'localUiUrl'] as const;
+
+/**
  * Resolve the main-repo path that owns a worktree by trimming at the
  * `.buildd-worktrees/` marker. Worktrees live at
  * `<repoPath>/.buildd-worktrees/<safeBranch>`.
@@ -258,6 +268,8 @@ export class WorkerSync {
 
   /** Last successful sync per worker, for the quiet-worker fallback (B-6). */
   private lastSyncedAt = new Map<string, number>();
+  /** What the server last acknowledged per worker, for the quiet report: field fingerprints and when the full report went. */
+  private lastReported = new Map<string, { status: string; fields: Record<string, string>; fullAt: number }>();
 
   constructor(private ctx: WorkerSyncContext) {}
 
@@ -676,6 +688,14 @@ export class WorkerSync {
               ...(worker.waitingFor.since ? { since: worker.waitingFor.since } : {}),
             };
       }
+      // The quiet report: leave out what the server already holds.
+      const reportAt = Date.now();
+      const fields = Object.fromEntries(QUIET_OMITTABLE.map(k => [k, JSON.stringify((update as Record<string, unknown>)[k] ?? null)]));
+      const prior = this.lastReported.get(worker.id);
+      const lean = update.status === 'running' && prior?.status === 'running' && reportAt - prior.fullAt < FULL_REPORT_INTERVAL_MS;
+      if (lean) for (const k of QUIET_OMITTABLE) if (prior!.fields[k] === fields[k]) delete (update as Record<string, unknown>)[k];
+      // Unknown until this one is acknowledged: a failure sends the whole report next.
+      this.lastReported.delete(worker.id);
       let response: Awaited<ReturnType<BuilddClient['updateWorker']>>;
       try {
         response = await this.ctx.buildd.updateWorker(worker.id, update);
@@ -692,6 +712,10 @@ export class WorkerSync {
       }
 
       this.lastSyncedAt.set(worker.id, Date.now());
+      // The outbox answers a queued report with `{}`: not landed, so not a base to leave fields out against.
+      if (response && typeof response === 'object' && Object.keys(response).length > 0) {
+        this.lastReported.set(worker.id, { status: String(update.status), fields, fullAt: lean ? prior!.fullAt : reportAt });
+      }
       if (gitChanged) this.reportedGit.set(worker.id, { lastCommitSha: gitFacts!.lastCommitSha, commitCount: gitFacts!.commitCount });
       worker.pathClaimDegradedReported = degradedTotal;
       worker.pathClaimDegradedByCauseReported = { ...byCause };
@@ -992,6 +1016,7 @@ export class WorkerSync {
         this.ctx.workers.delete(id);
         teardownSession(this.ctx.sessions, id);
         this.lastSeenUserMessageTs.delete(id);
+        this.lastReported.delete(id);
         this.gitObservations.delete(id);
         this.reportedGit.delete(id);
         // Every terminal worker passes through here before leaving memory —
