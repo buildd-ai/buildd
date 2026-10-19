@@ -1,0 +1,139 @@
+/**
+ * Acts on `decideBuildingGate` (spec 1dc6cc39 R-78, R-79).
+ *
+ * Where the state lives: the acceptance-tests task is the mission task whose `context.acceptanceTests`
+ * is an array. It carries the tests added (with their result on the starting commit) and, in
+ * `context.acceptanceObjection`, whether the person objected. Building tasks are the mission's other
+ * open tasks; the gate holds one by putting the acceptance-tests task in its `dependsOn`, which the
+ * claim route already treats as "not claimable until that task completes".
+ */
+import { db } from '@buildd/core/db';
+import { tasks } from '@buildd/core/db/schema';
+import { and, eq, inArray } from 'drizzle-orm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { decideBuildingGate, type AcceptanceTest, type GateDecision, type StartingResult } from './acceptance-gate';
+
+export interface GateTask {
+  id: string;
+  status: string;
+  dependsOn: string[] | null;
+  context: Record<string, unknown> | null;
+}
+
+export interface GateState {
+  acceptanceTask: GateTask;
+  tests: AcceptanceTest[];
+  objected: boolean;
+  /** Open mission tasks other than the acceptance-tests task. */
+  buildingTasks: GateTask[];
+}
+
+export interface GateStore {
+  load(missionId: string): Promise<GateState | null>;
+  /** Merge a patch into the acceptance-tests task's context. */
+  patchContext(taskId: string, patch: Record<string, unknown>): Promise<void>;
+  completeAcceptanceTask(taskId: string): Promise<void>;
+  reopenAcceptanceTask(taskId: string): Promise<void>;
+  holdBuildingTask(taskId: string, dependsOn: string[]): Promise<void>;
+}
+
+const RESULTS = new Set(['fail', 'pass', 'inconclusive']);
+
+export function isAcceptanceTask(t: { context?: Record<string, unknown> | null }): boolean {
+  return Array.isArray(t.context?.acceptanceTests);
+}
+
+/** The tests recorded on a task's context; malformed entries are dropped. */
+export function testsFromContext(context: Record<string, unknown> | null | undefined): AcceptanceTest[] {
+  const raw = context?.acceptanceTests;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((r): AcceptanceTest[] => {
+    if (!r || typeof r !== 'object') return [];
+    const o = r as Record<string, unknown>;
+    if (typeof o.checkId !== 'string' || typeof o.name !== 'string') return [];
+    const startingResult = typeof o.startingResult === 'string' && RESULTS.has(o.startingResult) ? (o.startingResult as StartingResult) : null;
+    return [{ checkId: o.checkId, name: o.name, startingResult, ...(typeof o.output === 'string' ? { output: o.output } : {}) }];
+  });
+}
+
+export interface GateOutcome {
+  decision: GateDecision['action'];
+  held: string[];
+}
+
+/** Decide, then act. Idempotent: a repeat call with the same state changes nothing. */
+export async function applyBuildingGate(store: GateStore, missionId: string): Promise<GateOutcome | null> {
+  const state = await store.load(missionId);
+  if (!state) return null;
+  const decision = decideBuildingGate({ tests: state.tests, objected: state.objected });
+  const acceptanceId = state.acceptanceTask.id;
+  const held: string[] = [];
+
+  if (decision.action === 'hold') {
+    for (const t of state.buildingTasks) {
+      const deps = t.dependsOn ?? [];
+      if (deps.includes(acceptanceId)) continue;
+      await store.holdBuildingTask(t.id, [...deps, acceptanceId]);
+      held.push(t.id);
+    }
+    if (state.acceptanceTask.status !== 'pending') await store.reopenAcceptanceTask(acceptanceId);
+  } else if (decision.action === 'start') {
+    if (state.acceptanceTask.status !== 'completed') await store.completeAcceptanceTask(acceptanceId);
+  } else if (decision.sendBack.length > 0) {
+    // A test that passed on the starting commit goes back to the tests task with its output.
+    await store.patchContext(acceptanceId, { acceptanceSentBack: decision.sendBack });
+    if (state.acceptanceTask.status === 'completed') await store.reopenAcceptanceTask(acceptanceId);
+  }
+  return { decision: decision.action, held };
+}
+
+/** Record test results (matched by checkId + name; unknown ones are added), then run the gate. */
+export async function recordAcceptanceResults(store: GateStore, missionId: string, results: AcceptanceTest[]): Promise<GateOutcome | null> {
+  const state = await store.load(missionId);
+  if (!state) return null;
+  const merged = [...state.tests];
+  for (const r of results) {
+    const i = merged.findIndex((t) => t.checkId === r.checkId && t.name === r.name);
+    if (i >= 0) merged[i] = { ...merged[i], ...r }; else merged.push(r);
+  }
+  await store.patchContext(state.acceptanceTask.id, { acceptanceTests: merged });
+  return applyBuildingGate(store, missionId);
+}
+
+/** Store the person's objection (or its withdrawal) on the acceptance-tests task, then run the gate. */
+export async function recordAcceptanceObjection(store: GateStore, missionId: string, objected: boolean): Promise<GateOutcome | null> {
+  const state = await store.load(missionId);
+  if (!state) return null;
+  await store.patchContext(state.acceptanceTask.id, { acceptanceObjection: objected });
+  return applyBuildingGate(store, missionId);
+}
+
+export const dbGateStore: GateStore = {
+  async load(missionId) {
+    const rows = await db.query.tasks.findMany({
+      where: sqlWhere(eq(tasks.missionId, missionId)),
+      columns: { id: true, status: true, dependsOn: true, context: true },
+    });
+    const acceptanceTask = rows.find(isAcceptanceTask);
+    if (!acceptanceTask) return null;
+    return {
+      acceptanceTask,
+      tests: testsFromContext(acceptanceTask.context),
+      objected: acceptanceTask.context?.acceptanceObjection === true,
+      buildingTasks: rows.filter((t) => t.id !== acceptanceTask.id && ['pending', 'assigned'].includes(t.status)),
+    };
+  },
+  async patchContext(taskId, patch) {
+    const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { context: true } });
+    await db.update(tasks).set({ context: { ...(row?.context ?? {}), ...patch } }).where(eq(tasks.id, taskId));
+  },
+  async completeAcceptanceTask(taskId) {
+    await db.update(tasks).set({ status: 'completed' }).where(and(eq(tasks.id, taskId), inArray(tasks.status, ['pending', 'assigned', 'in_progress'])));
+  },
+  async reopenAcceptanceTask(taskId) {
+    await db.update(tasks).set({ status: 'pending', claimedBy: null, claimedAt: null }).where(eq(tasks.id, taskId));
+  },
+  async holdBuildingTask(taskId, dependsOn) {
+    await db.update(tasks).set({ dependsOn }).where(eq(tasks.id, taskId));
+  },
+};
