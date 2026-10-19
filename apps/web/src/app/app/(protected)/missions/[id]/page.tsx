@@ -1151,7 +1151,7 @@ export default async function MissionDetailPage({
   const boardModel = buildMissionBoard({
     runnerHeartbeats,
     fleetCapacity,
-    tasks: allTasks.map(t => toBoardTaskInput({ ...t, delivery: deliveryDisplays.get(t.id) ?? null } as unknown as Parameters<typeof toBoardTaskInput>[0])),
+    tasks: allTasks.map(t => toBoardTaskInput({ ...t, resultDigest: digestOf(t.id).result, delivery: deliveryDisplays.get(t.id) ?? null } as unknown as Parameters<typeof toBoardTaskInput>[0])),
     roles,
     now: renderedAt,
     missionCreatedAt: new Date((mission as any).createdAt).getTime(),
@@ -1168,7 +1168,7 @@ export default async function MissionDetailPage({
   // Flow: the same-files waits Buildd added, and each task's expected size.
   const flowSameFiles = sameFilesFromRows(allTasks as Array<{ id: string; pathDeclaration?: unknown }>);
   const flowExpectedMinutes = expectedMinutesFromPredictions(sizePredictions);
-  // The drawer's per-task Build › Audit › Land and audit/repair evidence: the
+  // The drawer's per-task Build › Verify › Deliver and audit/repair evidence: the
   // shared delivery projection over the same rows (Home, Missions, Activity).
   const taskDeliveries = missionTaskDeliveries({
     mission: { id, title: mission.title, status: mission.status, isHeld, armedAt, integrationBranch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true },

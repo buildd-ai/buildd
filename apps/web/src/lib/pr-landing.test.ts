@@ -17,6 +17,11 @@ mock.module('@/lib/workflow/landing', () => ({
   kernelLandingView: mockKernelLandingView,
   staleLandingVersion: async () => null,
 }));
+// AC-13: the door adopts a PR with no delivery before it merges. The default answer is the legacy
+// arm (as a workspace with the kill switch off), so the legacy-path tests below read as before.
+const mockAdoptBeforeMerge = mock(async (..._a: any[]): Promise<any> => ({ kind: 'legacy', reason: 'kernel_off' }));
+const mockMergeOutsideKernel = mock(async (..._a: any[]): Promise<any> => ({ merged: true, message: 'PR merged' }));
+mock.module('@/lib/pr-landing-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge, mergeOutsideKernel: mockMergeOutsideKernel }));
 mock.module('@/lib/notify', () => ({ notifyTeamOf: async () => {} }));
 mock.module('@/lib/pushover', () => ({ notifyOperator: mock(() => undefined) }));
 
@@ -36,6 +41,10 @@ type Gh = {
   headRef?: string;
   /** Other PRs a verdict may name: number → { state, merged }. */
   siblings?: Record<number, { state: string; merged: boolean }>;
+  /** Commit parents by SHA (`commits/{sha}`). */
+  parents?: Record<string, string[]>;
+  /** Commits the base branch holds (`compare/{sha}...{base}` answers `ahead`). */
+  onBase?: string[];
 };
 let gh: Gh;
 const freshGh = (): Gh => ({
@@ -54,6 +63,13 @@ const freshGh = (): Gh => ({
 const mockGithubApi = mock(async (_installationId: number, path: string): Promise<any> => {
   if (/\/commits\/[^/]+\/check-runs(\?|$)/.test(path)) return { check_runs: gh.checkRuns };
   if (/\/commits\/[^/]+\/status(\?|$)/.test(path)) return { total_count: 0, statuses: [] };
+  const commit = /\/commits\/([^/]+)$/.exec(path);
+  if (commit && gh.parents?.[commit[1]!]) return { sha: commit[1], parents: gh.parents[commit[1]!]!.map((sha) => ({ sha })) };
+  // Whether the base holds a commit other than the PR's head (the head's own `{head}...{base}` is the base delta, below).
+  const held = /\/compare\/([^/.]+)\.\.\.([^/]+)$/.exec(path);
+  if (held && gh.onBase && held[1] !== gh.head && decodeURIComponent(held[2]!) === gh.baseRef) {
+    return { status: gh.onBase.includes(held[1]!) ? 'ahead' : 'diverged' };
+  }
   if (/\/pulls\/42\/files/.test(path)) {
     return gh.prFiles.map((filename) => ({ filename, additions: 5, deletions: 1 }));
   }
@@ -398,6 +414,97 @@ describe('landPr — a lasting delivery-target hold (#4909, task 0427d13b)', () 
     expect(out).toMatchObject({ kind: 'waiting_ci', reason: 'two task PRs still open on the integration branch' });
     expect(calls).toHaveLength(0);
     expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+});
+
+// AC-13 (workflow-kernel-library.md §4): a PR with no delivery is adopted before landPr decides
+// who owns it, then the kernel's gate decides; a refused adoption merges nothing.
+describe('landPr — a PR with no delivery (D2/D3, AC-13)', () => {
+  const awaiting = { deliveryId: 'd-new', current: { state: 'AWAITING_REVIEW', version: 3, head: 'head1', round: 1 }, stateReason: null, treadmill: null };
+
+  it('adopts it with the owner task under the door\'s principal, then waits on the kernel\'s review; nothing merges', async () => {
+    const adopted: any[] = [];
+    const landed: any[] = [];
+    let owned = false;
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async (i: any, c: any) => { adopted.push([i, c]); owned = true; return { kind: 'kernel', deliveryId: 'd-new', adopted: true }; }) as never,
+      kernelLandingView: (async () => (owned ? awaiting : null)) as never,
+      landThroughKernel: async (i: any) => { landed.push(i); return null; },
+    };
+    const out = await land({}, d);
+    expect(adopted).toEqual([[expect.objectContaining({ workspaceId: 'ws-1', repoFullName: 'buildd-ai/buildd', prNumber: 42, taskId: 'task-1', door: 'land_pr:check_suite' }), { principal: { kind: 'system', id: 'system:check_suite' } }]]);
+    expect(out).toMatchObject({ kind: 'waiting_ci' });
+    expect((out as { reason: string }).reason).toContain('AWAITING_REVIEW');
+    expect(landed).toHaveLength(0);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a refused adoption asks a person and merges nothing; the kernel is not asked', async () => {
+    const landed: any[] = [];
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async () => ({ kind: 'refused', reason: 'adoption_failed:review_task', message: 'PR #42 has no review record in buildd and its only task is a review, so nothing was merged. Request a review of it first.' })) as never,
+      landThroughKernel: async (i: any) => { landed.push(i); return null; },
+    };
+    const out = await land({}, d);
+    expect(out).toMatchObject({ kind: 'needs_human', cause: 'unsafe_other' });
+    expect(landed).toHaveLength(0);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('an unreachable control plane is a wait, never the legacy merge', async () => {
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async () => ({ kind: 'refused', reason: 'adoption_failed:adoption_unavailable', message: 'not reachable; nothing was merged' })) as never,
+    };
+    const out = await land({}, d);
+    expect(out).toMatchObject({ kind: 'waiting_ci' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('adopted, but the kernel did not take the merge: a wait, never the legacy merge', async () => {
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async () => ({ kind: 'kernel', deliveryId: 'd-new', adopted: true })) as never,
+      landThroughKernel: async () => null,
+    };
+    const out = await land({}, d);
+    expect(out.kind).not.toBe('merged');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a release candidate (adoption answers gate) opens no delivery: the release gate merges it, never the unpinned merge', async () => {
+    const outside: any[] = [];
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async () => ({ kind: 'gate', why: 'release' })) as never,
+      landThroughKernel: async () => null,
+      mergeOutsideKernel: (async (p: any) => { outside.push(p); return { merged: true, message: 'PR merged' }; }) as never,
+    };
+    const out = await land({}, d);
+    expect(out.kind).toBe('merged');
+    expect(outside).toEqual([expect.objectContaining({ workspaceId: 'ws-1', prNumber: 42, headSha: 'head1', door: 'land_pr:check_suite' })]);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a release candidate the release gate holds (a required check) is a wait, never a failed merge', async () => {
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async () => ({ kind: 'gate', why: 'release' })) as never,
+      landThroughKernel: async () => null,
+      mergeOutsideKernel: (async () => ({ merged: false, message: 'GitHub is holding PR #42 until required check "build" passes', hold: true })) as never,
+    };
+    const out = await land({}, d);
+    expect(out).toMatchObject({ kind: 'waiting_ci' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('shadow (observe only) opens nothing', async () => {
+    const adopted: any[] = [];
+    const d: LandPrDeps = { ...deps(), adoptBeforeMerge: (async (i: any) => { adopted.push(i); return { kind: 'legacy', reason: 'kernel_off' }; }) as never };
+    await land({ mode: 'shadow' }, d);
+    expect(adopted).toHaveLength(0);
   });
 });
 
@@ -1364,6 +1471,68 @@ describe('landPr — behind base is work with an owner', () => {
     gh.baseMovement = { ahead_by: 1, files: ['x/o.ts'] };
     expect((await land()).kind).toBe('updating_branch');
     expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+  });
+
+  describe('replay #5172: update-branch answers before the branch moves', () => {
+    beforeEach(() => {
+      // GitHub accepts the update and moves the branch a moment later: the read after it still sees head1.
+      mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: true, branchUpdated: true }));
+    });
+
+    /** The refresh lands on GitHub: `head` with these parents is the live head, behind by one unrelated commit. */
+    const branchMoves = (head: string, parents: string[]) => {
+      gh.head = head;
+      gh.parents = { [head]: parents };
+      gh.onBase = ['base2'];
+      gh.behindBy = 1;
+      gh.baseMovement = { ahead_by: 1, files: ['packages/other/x.ts'] };
+      mockDispatchConflictRetry.mockClear();
+    };
+
+    it('the refresh\'s own merge commit is the platform\'s head: the bound applies and it lands, no second refresh', async () => {
+      expect(await land()).toEqual({ kind: 'updating_branch', newHeadSha: 'head1' });
+      expect(markerStore).toMatchObject({ pendingHeadSha: 'head1', refreshCount: 1 });
+
+      branchMoves('head2', ['head1', 'base2']);
+      const out = await land({ eventHeadSha: 'head2' });
+      expect(out).toEqual({ kind: 'merged', sha: 'head2' });
+      expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+      expect(mockMergePullRequest.mock.calls[0]).toEqual([7, 'buildd-ai/buildd', 42, 'squash', 'head2']);
+      expect(landingEvents().map((e: any) => e.reason)).not.toContain('this head was not produced by a platform refresh');
+    });
+
+    it('a refresh whose head the base outran is refreshed again inside the same cycle, so the budget is spent and bounded', async () => {
+      await land();
+      branchMoves('head2', ['head1', 'base2']);
+      gh.baseMovement = { ahead_by: TREADMILL_MAX_BASE_COMMITS + 1, files: ['packages/other/x.ts'] };
+      expect((await land({ eventHeadSha: 'head2' })).kind).toBe('updating_branch');
+      expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+      // Counted against the cycle, not a new cycle at 1: the treadmill ends in the bound, never forever.
+      expect(markerStore.refreshCount).toBe(2);
+    });
+
+    it('a push by anyone else (one parent) still starts a new cycle and is refreshed', async () => {
+      await land();
+      branchMoves('head2', ['head1']);
+      expect((await land({ eventHeadSha: 'head2' })).kind).toBe('updating_branch');
+      expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+      expect(markerStore.refreshCount).toBe(1);
+    });
+
+    it('a merge of a branch the base does not hold is not a refresh', async () => {
+      await land();
+      branchMoves('head2', ['head1', 'side1']);
+      expect((await land({ eventHeadSha: 'head2' })).kind).toBe('updating_branch');
+      expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+      expect(markerStore.refreshCount).toBe(1);
+    });
+
+    it('a merge on top of some other head is not this refresh', async () => {
+      await land();
+      branchMoves('head2', ['elsewhere', 'base2']);
+      expect((await land({ eventHeadSha: 'head2' })).kind).toBe('updating_branch');
+      expect(markerStore.refreshCount).toBe(1);
+    });
   });
 
   // Replay of PR #3582: approved, CI green, mergeable, and parked for good as

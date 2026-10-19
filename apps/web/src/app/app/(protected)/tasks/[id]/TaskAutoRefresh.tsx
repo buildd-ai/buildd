@@ -23,9 +23,11 @@ export function createEventHandlers(router: RouterLike, taskId: string, depTaskI
     if (eventTaskId === taskId) requestRefresh(router, taskId);
   };
 
+  // A dependency finishing is its worker's terminal event: there is no
+  // task-level completed/failed event on the workspace channel.
   const handleWorkerTerminal = (data: { taskId?: string; worker?: { taskId?: string } }) => {
     const eventTaskId = data.taskId ?? data.worker?.taskId;
-    if (eventTaskId === taskId) flushRefresh(router, taskId);
+    if (eventTaskId === taskId || (!!eventTaskId && depTaskIds.includes(eventTaskId))) flushRefresh(router, taskId);
   };
 
   const handleTaskUnblocked = (data: { taskId: string; resolvedDependency: string }) => {
@@ -34,14 +36,6 @@ export function createEventHandlers(router: RouterLike, taskId: string, depTaskI
 
   const handleChildrenCompleted = (data: { parentTaskId: string; childCount: number; completed: number; failed: number }) => {
     if (data.parentTaskId === taskId) flushRefresh(router, taskId);
-  };
-
-  const handleTaskCompleted = (data: { taskId: string }) => {
-    if (depTaskIds.includes(data.taskId)) flushRefresh(router, taskId);
-  };
-
-  const handleTaskFailed = (data: { taskId: string }) => {
-    if (depTaskIds.includes(data.taskId)) flushRefresh(router, taskId);
   };
 
   const handleTaskUpdated = (data: { task?: { id?: string } }) => {
@@ -54,8 +48,6 @@ export function createEventHandlers(router: RouterLike, taskId: string, depTaskI
     handleWorkerTerminal,
     handleTaskUnblocked,
     handleChildrenCompleted,
-    handleTaskCompleted,
-    handleTaskFailed,
     handleTaskUpdated,
   };
 }
@@ -119,8 +111,6 @@ export default function TaskAutoRefresh({
       handleWorkerTerminal,
       handleTaskUnblocked,
       handleChildrenCompleted,
-      handleTaskCompleted,
-      handleTaskFailed,
       handleTaskUpdated,
     } = createEventHandlers(router, taskId, stableDepIds);
 
@@ -133,8 +123,6 @@ export default function TaskAutoRefresh({
     channel.bind('worker:failed', handleWorkerTerminal);
     channel.bind('task:unblocked', handleTaskUnblocked);
     channel.bind('task:children_completed', handleChildrenCompleted);
-    channel.bind('task:completed', handleTaskCompleted);
-    channel.bind('task:failed', handleTaskFailed);
 
     return () => {
       channel.unbind('task:claimed', handleClaimed);
@@ -144,8 +132,6 @@ export default function TaskAutoRefresh({
       channel.unbind('worker:failed', handleWorkerTerminal);
       channel.unbind('task:unblocked', handleTaskUnblocked);
       channel.unbind('task:children_completed', handleChildrenCompleted);
-      channel.unbind('task:completed', handleTaskCompleted);
-      channel.unbind('task:failed', handleTaskFailed);
       unsubscribeFromChannel(channelName);
     };
   }, [taskId, workspaceId, taskStatus, taskMode, stableDepIds, hasSubTasks, workerHasOpenPr, router]);

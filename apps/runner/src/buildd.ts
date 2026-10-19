@@ -7,8 +7,8 @@ import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
 import type { PromptBundlesPayload } from './session-prompt-bundles';
 import type { ClaimHandoffSnapshot } from './claim-handoff';
-import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics, DerivedFileRule, MissionStage, RecentMission, RunnerQueueResponse } from '@buildd/shared';
-import { CLOUD_EXECUTOR, stripClaimCredentials } from '@buildd/shared';
+import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics, DerivedFileRule, MissionStage, RecentMission, RunnerQueueResponse, WorkerStatusesResponse } from '@buildd/shared';
+import { CLOUD_EXECUTOR, stripClaimCredentials, type RunnerLoginUse } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
 import { ServerRefusalError, isServerRefusal } from './server-refusal';
@@ -50,6 +50,17 @@ const FETCH_TIMEOUT_MS = Number(process.env.BUILDD_FETCH_TIMEOUT_MS ?? 30_000);
 // Claims include database arbitration and prompt assembly after worker creation.
 // Keep them bounded, but do not discard healthy answers at the ordinary 30s
 // ceiling. An explicit global timeout remains the operator override.
+/**
+ * How long one workspace list answers every reader (`buildd top`'s snapshot
+ * and talk context, the local UI, Pusher's channel set). The list changes when
+ * a workspace is linked or created, rarely; a create through this client drops
+ * it at once.
+ */
+export const WORKSPACES_CACHE_MS = 60_000;
+
+/** The most ids one GET /api/workers/status names (the route's own cap). */
+export const WORKER_STATUS_BATCH = 100;
+
 const CLAIM_TIMEOUT_MS = Number(process.env.BUILDD_FETCH_TIMEOUT_MS ?? 90_000);
 
 /** Outcome of one path-claim request — see BuilddClient.claimPaths. */
@@ -90,6 +101,8 @@ export class BuilddClient {
   private async fetch(endpoint: string, options: RequestInit = {}, allowedErrors: number[] = []) {
     const method = options.method || 'GET';
     const isRead = method === 'GET' || method === 'HEAD';
+    // A write to workspaces (create, clone, match) may change the list.
+    if (!isRead && endpoint.startsWith('/api/workspaces')) this.workspacesCache = null;
     if (isRead) {
       const held = this.readBackoff.remainingSec(endpoint);
       if (held > 0) throw ServerRefusalError.from({ status: 429, raw: heldRefusalBody(held), method, endpoint });
@@ -156,9 +169,72 @@ export class BuilddClient {
     }
   }
 
+  /** Last 200 body and ETag per list endpoint, for `getIfChanged`. Bounded; oldest dropped first. */
+  private listCache = new Map<string, { etag: string; body: any }>();
+  private static readonly LIST_CACHE_MAX = 64;
+
+  /**
+   * GET a list or polling endpoint conditionally (spec 3ef37387 R-20): send
+   * the ETag of the last answer as If-None-Match, and on 304 return that
+   * answer again without the server reading the list. Endpoints that send no
+   * ETag (or a server without Redis) behave exactly like a plain GET.
+   *
+   * The one helper for every conditional read: listTasks, listMissionStages,
+   * listRecentMissions and listQueue use it, and `buildd top`'s fallback reads
+   * reach the server through those.
+   */
+  async getIfChanged(endpoint: string): Promise<any> {
+    const held = this.readBackoff.remainingSec(endpoint);
+    if (held > 0) throw ServerRefusalError.from({ status: 429, raw: heldRefusalBody(held), method: 'GET', endpoint });
+    const cached = this.listCache.get(endpoint);
+    const res = await this.transport.request(endpoint, {
+      method: 'GET',
+      headers: cached ? { 'If-None-Match': cached.etag } : undefined,
+    });
+    lastServerContactAt = Date.now();
+    if (res.status === 304 && cached) {
+      // Refresh recency so a hot endpoint is not the one dropped.
+      this.listCache.delete(endpoint);
+      this.listCache.set(endpoint, cached);
+      return structuredClone(cached.body);
+    }
+    if (res.status === 429) this.readBackoff.note(endpoint, res.headers?.get?.('retry-after'));
+    if (!res.ok) {
+      const raw = await res.text();
+      throw ServerRefusalError.from({ status: res.status, raw, method: 'GET', endpoint });
+    }
+    const body = await res.json();
+    const etag = res.headers?.get?.('etag');
+    this.listCache.delete(endpoint);
+    if (etag) {
+      this.listCache.set(endpoint, { etag, body: structuredClone(body) });
+      while (this.listCache.size > BuilddClient.LIST_CACHE_MAX) {
+        const oldest = this.listCache.keys().next().value;
+        if (oldest === undefined) break;
+        this.listCache.delete(oldest);
+      }
+    }
+    return body;
+  }
+
   async listTasks(): Promise<BuilddTask[]> {
-    const data = await this.fetch('/api/tasks');
+    const data = await this.getIfChanged('/api/tasks');
     return data.tasks || [];
+  }
+
+  /**
+   * The task list and its missions' stages in one server read
+   * (`/api/tasks?include=missionStages`; spec 3ef37387 AC-5), for `buildd top`.
+   * `missionStages` is null when the server predates the include: the caller
+   * then asks GET /api/missions/stages as before.
+   */
+  async listTasksWithStages(): Promise<{ tasks: BuilddTask[]; missionStages: Record<string, MissionStage> | null }> {
+    const data = await this.getIfChanged('/api/tasks?include=missionStages');
+    const stages = data?.missionStages;
+    return {
+      tasks: data?.tasks || [],
+      missionStages: stages && typeof stages === 'object' && !Array.isArray(stages) ? stages : null,
+    };
   }
 
   /**
@@ -168,13 +244,13 @@ export class BuilddClient {
    */
   async listMissionStages(missionIds: string[]): Promise<Record<string, MissionStage>> {
     if (missionIds.length === 0) return {};
-    const data = await this.fetch(`/api/missions/stages?ids=${missionIds.map(encodeURIComponent).join(',')}`);
+    const data = await this.getIfChanged(`/api/missions/stages?ids=${missionIds.map(encodeURIComponent).join(',')}`);
     return data?.stages && typeof data.stages === 'object' ? data.stages : {};
   }
 
   /** Open missions and those delivered in the last 7 days across the key's workspaces (R-24), from GET /api/missions/recent. */
   async listRecentMissions(): Promise<RecentMission[]> {
-    const data = await this.fetch('/api/missions/recent');
+    const data = await this.getIfChanged('/api/missions/recent');
     return Array.isArray(data?.missions) ? data.missions : [];
   }
 
@@ -183,13 +259,14 @@ export class BuilddClient {
     const p = new URLSearchParams({ executor: process.env.BUILDD_EXECUTOR || 'host' });
     if (q.runner) p.set('runner', q.runner);
     if (q.skills?.length) p.set('skills', q.skills.join(','));
-    const data = await this.fetch(`/api/workers/queue?${p}`);
+    const data = await this.getIfChanged(`/api/workers/queue?${p}`);
     return { teams: Array.isArray(data?.teams) ? data.teams : [], truncated: !!data?.truncated };
   }
 
   async getTask(id: string): Promise<BuilddTask | null> {
     try {
-      return await this.fetch(`/api/tasks/${id}`);
+      // The whole row: the claim path and park restore read context and the workspace config.
+      return await this.fetch(`/api/tasks/${id}?include=full`);
     } catch {
       return null;
     }
@@ -210,8 +287,10 @@ export class BuilddClient {
    * the throw; the two current call sites already wrap this in a try/catch
    * that leaves the worker untouched on failure.
    */
-  async getWorkerRemote(id: string): Promise<{ status: string; task?: { status: string } } | null> {
-    const data = await this.fetch(`/api/workers/${id}`, {}, [404]);
+  async getWorkerRemote(id: string): Promise<{ status: string; error?: string | null; task?: { status: string } | null } | null> {
+    // view=status: status, error and the task's status, no workspace or JSON
+    // columns. A server that predates the view ignores it and answers the full row.
+    const data = await this.fetch(`/api/workers/${id}?view=status`, {}, [404]);
     // Only the 404 body (`{ error }`, no status) means gone. A worker row has
     // its own `error` column: a question park writes `needs_input: …` there,
     // and reading that as a 404 made reconcile forget every parked question.
@@ -222,7 +301,27 @@ export class BuilddClient {
     return data;
   }
 
-  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment, opts: { byPerson?: boolean; claudeLoginId?: string | null } = {}): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
+  /**
+   * Several workers' status in one read per WORKER_STATUS_BATCH ids
+   * (GET /api/workers/status), for reconcile. `missing` names ids no worker row
+   * has; an id that exists but is not this caller's is in neither, and the
+   * caller leaves it alone. Null when the server predates the route (its
+   * /api/workers/[id] answers 404 for "status"): read one by one instead.
+   * Every other failure throws, as getWorkerRemote does: unknown is not gone.
+   */
+  async getWorkerStatuses(ids: string[]): Promise<WorkerStatusesResponse | null> {
+    const out: WorkerStatusesResponse = { workers: {}, missing: [] };
+    for (let i = 0; i < ids.length; i += WORKER_STATUS_BATCH) {
+      const chunk = ids.slice(i, i + WORKER_STATUS_BATCH);
+      const data = await this.fetch(`/api/workers/status?ids=${chunk.map(encodeURIComponent).join(',')}`, {}, [404]);
+      if (!data || typeof data.workers !== 'object' || data.workers === null || !Array.isArray(data.missing)) return null;
+      Object.assign(out.workers, data.workers);
+      out.missing.push(...data.missing);
+    }
+    return out;
+  }
+
+  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment, opts: { byPerson?: boolean; claudeLoginId?: string | null; loginUse?: RunnerLoginUse } = {}): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
     const body: Record<string, unknown> = {
       maxTasks, workspaceId, taskId, runner: runner || 'runner',
       // AGENT_ENDPOINT_RUNNER_FEATURE: this build applies modelEndpoint
@@ -271,6 +370,12 @@ export class BuilddClient {
     // login hit holds this runner's claims too.
     if (opts.claudeLoginId) {
       body.claudeLoginId = opts.claudeLoginId;
+    }
+    // How this runner's own logins share its slots, with its live agents per
+    // backend (spec 34a48877 R-15): the server picks the backend for work
+    // nothing ties to one from it. Absent = an older runner's behaviour.
+    if (opts.loginUse) {
+      body.loginUse = opts.loginUse;
     }
     // BUILDD_EXECUTOR=cloud is set by apps/cloud-runner for the container. It
     // is sent verbatim so the server can refuse a value it does not know
@@ -727,9 +832,16 @@ export class BuilddClient {
     });
   }
 
+  private workspacesCache: { at: number; list: any[] } | null = null;
+
+  /** The key's workspaces; one server read per WORKSPACES_CACHE_MS, shared by every reader. */
   async listWorkspaces() {
+    const hit = this.workspacesCache;
+    if (hit && Date.now() - hit.at < WORKSPACES_CACHE_MS) return structuredClone(hit.list);
     const data = await this.fetch('/api/workspaces');
-    return data.workspaces || [];
+    const list = Array.isArray(data?.workspaces) ? data.workspaces : [];
+    this.workspacesCache = { at: Date.now(), list: structuredClone(list) };
+    return list;
   }
 
   /** `buildd top`'s talk session: the server's explain answer for a mission or task; null when it cannot be read. */
@@ -739,7 +851,7 @@ export class BuilddClient {
 
   /** A mission's own row (description, goal criteria and their last grading); null when this key cannot read it. */
   async getMission(id: string): Promise<any | null> {
-    try { return await this.fetch(`/api/missions/${encodeURIComponent(id)}`); } catch { return null; }
+    try { return await this.fetch(`/api/missions/${encodeURIComponent(id)}?include=details`); } catch { return null; }
   }
 
   async getWorkspaceConfig(workspaceId: string): Promise<{
@@ -1031,11 +1143,14 @@ export class BuilddClient {
   async getBatchObservations(workspaceId: string, ids: string[]): Promise<Array<{ id: string; title: string; type: string; content: string; files?: string[]; concepts?: string[] }>> {
     if (ids.length === 0) return [];
     try {
-      // The memory proxy returns full content, so just re-fetch by query
-      // Since we don't have a batch endpoint on the proxy, fetch all and filter
-      const data = await this.fetch(`/api/workspaces/${workspaceId}/memory?limit=50`);
-      const memories = data.memories || [];
+      // Hydrate the search hits directly, including hits older than the
+      // workspace's most recent page. This also avoids fetching the same
+      // unfiltered page already used by getCompactObservations at task start.
       const idSet = new Set(ids);
+      const params = new URLSearchParams();
+      for (const id of idSet) params.append('ids', id);
+      const data = await this.fetch(`/api/workspaces/${workspaceId}/memory?${params}`);
+      const memories = data.memories || [];
       return memories
         .filter((m: any) => idSet.has(m.id))
         .map((m: any) => ({
@@ -1195,8 +1310,21 @@ export class BuilddClient {
     return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit, leasesRenewed: data.leasesRenewed, claimsReleased: data.claimsReleased };
   }
 
-  async runCleanup(): Promise<{ cleaned: { stalledWorkers: number; orphanedTasks: number; expiredPlans: number } }> {
-    return this.fetch('/api/tasks/cleanup', { method: 'POST' });
+  /** Set once the server refuses cleanup to this key (it needs an admin key): never asked again this process. */
+  private cleanupRefused = false;
+
+  /**
+   * POST /api/tasks/cleanup, an admin-key sweep. A member key is refused every
+   * time, so after the first 401/403 this answers null without asking.
+   */
+  async runCleanup(): Promise<{ cleaned: { stalledWorkers: number; orphanedTasks: number; expiredPlans: number } } | null> {
+    if (this.cleanupRefused) return null;
+    try {
+      return await this.fetch('/api/tasks/cleanup', { method: 'POST' });
+    } catch (err) {
+      if (isServerRefusal(err) && (err.status === 401 || err.status === 403)) this.cleanupRefused = true;
+      throw err;
+    }
   }
 
   async deleteTask(taskId: string): Promise<{ success: boolean; error?: string }> {

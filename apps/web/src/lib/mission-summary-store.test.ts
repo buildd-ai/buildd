@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { MISSION_SUMMARY_VERSION } from '@buildd/shared';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from './workflow/pr-fact-scope';
 import { computeMissionSummary, summariesEqual } from './mission-summary';
 import { createMissionSummaryStore, type MissionSummaryStoreDeps, type StoredMissionSummary } from './mission-summary-store';
 import { flushWorkChanges, noteWorkChanged, setWorkChangeListenersForTests, workChangeOfEvent, workChangeOfKernelInput } from './work-changed';
@@ -23,7 +24,7 @@ let world: World;
 let clock: number;
 let table: Map<string, StoredMissionSummary>;
 let loads: string[][];
-let recorded: Array<{ event: string; fields: Record<string, number> }>;
+let recorded: Array<{ event: string; fields: Record<string, number | string> }>;
 
 function deps(): MissionSummaryStoreDeps {
   return {
@@ -153,6 +154,7 @@ describe('AC-2: stored == computed after each kind of write', () => {
     Object.assign(world.workers.find(w => w.id === 'w-b2')!, { prLifecycleStatus: 'ci_failed', updatedAt: new Date(clock) });
     await recordPrFact({ workerId: 'w-b2' }, { kind: 'ci', status: 'ci_failed' as never }, {
       exec: async () => [{ id: 'w-b2', task_id: 't-b2', workspace_id: 'ws-1', previous_status: 'pr_open' }],
+      scope: factFunnelScope,
     });
     await flushWorkChanges();
     expect(loads.flat()).toContain('m-build');
@@ -166,6 +168,22 @@ describe('AC-2: stored == computed after each kind of write', () => {
     await flushWorkChanges();
     expectStoredEqualsComputed();
     expect(summary('m-build').taskCounts.pending).toBe(2);
+  });
+
+  it('a sessionless worker settled (cancel/reap) leaves the live count; the settle notes its worker', async () => {
+    tick();
+    Object.assign(world.workers.find(w => w.id === 'w-b3')!, { status: 'failed', completedAt: new Date(clock), updatedAt: new Date(clock) });
+    noteWorkChanged({ workerIds: ['w-b3'], taskIds: ['t-b3'] });
+    await flushWorkChanges();
+    expectStoredEqualsComputed();
+  });
+
+  it('a PR attached by hand: the attach notes its task and worker', async () => {
+    tick();
+    Object.assign(world.workers.find(w => w.id === 'w-b3')!, { prUrl: 'https://github.com/acme/app/pull/14', prNumber: 14, prLifecycleStatus: 'pr_open', updatedAt: new Date(clock) });
+    noteWorkChanged({ taskIds: ['t-b3'], workerIds: ['w-b3'] });
+    await flushWorkChanges();
+    expectStoredEqualsComputed();
   });
 
   it('a mission row write: the owner holds the mission', async () => {
@@ -224,7 +242,37 @@ describe('the reconcile', () => {
     expect(counts).toMatchObject({ checked: world.missions.length, missing: 0, repaired: 1, missedWrites: 1 });
     expect(summary('m-build').progress.done).toBe(2);
     expectStoredEqualsComputed();
-    expect(recorded).toEqual([{ event: 'mission_summary.reconcile', fields: expect.objectContaining({ repaired: 1, missedWrites: 1 }) }]);
+    expect(recorded.map(r => r.event)).toEqual(['mission_summary.reconcile.missed_write', 'mission_summary.reconcile']);
+    expect(recorded[1]).toEqual({ event: 'mission_summary.reconcile', fields: expect.objectContaining({ repaired: 1, missedWrites: 1 }) });
+  });
+
+  it('records which fields differed and each source\'s newest write for a missed write', async () => {
+    tick();
+    Object.assign(world.workers.find(w => w.id === 'w-b2')!, { mergedAt: new Date(clock), prLifecycleStatus: 'merged', updatedAt: new Date(clock) });
+    recorded = [];
+    await store.reconcile({ limit: 50 });
+    const trace = recorded.find(r => r.event === 'mission_summary.reconcile.missed_write');
+    expect(trace?.fields).toMatchObject({ missionId: 'm-build', newest_workers: new Date(clock).toISOString() });
+    expect(String(trace?.fields.fields)).not.toBe('');
+  });
+
+  it('a refresh landing between the stored read and the load is not a missed write', async () => {
+    tick();
+    Object.assign(world.workers.find(w => w.id === 'w-b2')!, { mergedAt: new Date(clock), prLifecycleStatus: 'merged' });
+    const d = deps();
+    const base = d.readStored;
+    let reads = 0;
+    // The write's own refresh lands after the first stored read, before the compare.
+    d.readStored = async ids => {
+      const out = await base(ids);
+      if (reads++ === 0) { tick(); await createMissionSummaryStore(deps()).recompute(['m-build']); }
+      return out;
+    };
+    recorded = [];
+    const counts = await createMissionSummaryStore(d).reconcile({ limit: 50 });
+    expect(counts.missedWrites).toBe(0);
+    expect(counts.raced).toBe(1);
+    expect(recorded.some(r => r.event === 'mission_summary.reconcile.missed_write')).toBe(false);
   });
 
   it('a reading that only aged is repaired but is not a missed write', async () => {
@@ -263,5 +311,25 @@ describe('the reconcile', () => {
     expect(asked).toBe(200);
     await s.reconcile({ limit: 0 });
     expect(asked).toBe(1);
+  });
+});
+
+describe('change version (spec 3ef37387 R-20)', () => {
+  it('the writer bumps the workspace and team of each summary it wrote; the reconcile bumps only what it repaired', async () => {
+    const bumped: string[][] = [];
+    for (const m of world.missions) (m as any).teamId = 'team-1';
+    store = createMissionSummaryStore({ ...deps(), changed: async (scopes) => { bumped.push(scopes); } });
+
+    await store.recompute(['m-build']);
+    expect(bumped).toEqual([['ws-1', 'team:team-1']]);
+
+    bumped.length = 0;
+    tick();
+    await store.reconcile({ limit: 50 });
+    expect(bumped).toEqual([]);
+
+    Object.assign(world.workers.find(w => w.id === 'w-b2')!, { mergedAt: new Date(clock), prLifecycleStatus: 'merged' });
+    await store.reconcile({ limit: 50 });
+    expect(bumped).toEqual([['ws-1', 'team:team-1']]);
   });
 });

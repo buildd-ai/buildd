@@ -20,10 +20,14 @@ import { withCronRun } from '@/lib/cron-run';
 import { drainDueEffects, reconcileKernelDeliveries, reconcileTrunkIncidents, restartTreadmillCycles, type FloorSummary, type TreadmillCycleSummary, type TrunkSweepSummary } from './seam';
 import type { DrainSummary } from './effects';
 import { postgresCommandLedger } from './command-ledger';
-import { drainParkedCommands, type ParkedDrainSummary } from './command-outbox';
+import { drainParkedCommands, readOutboxDepth, type ParkedDrainSummary } from './command-outbox';
 import { kernelHost } from './kernel-host';
 import { commandsConfigured, executionModeOf } from './command-api';
 import { publishOpenPrStatuses, type OpenPrStatusSummary } from './open-pr-status';
+import { drainDueEpochEffects, type EpochDrainSummary } from './epoch-effects';
+import { KERNEL_SPAN, emitKernelSpan, floorSpanAttributes, type FloorRepairs, type OutboxDepth } from './kernel-telemetry';
+
+export { readOutboxDepth } from './command-outbox';
 
 type Isolated<T> = T | { error: string };
 
@@ -36,6 +40,8 @@ export const TREADMILL_COOLDOWN_MS = 60 * 60_000;
 
 export interface KernelFloorResult {
   kernelOutbox: Isolated<DrainSummary>;
+  /** The mission epochs' outbox (§6): the writable epoch's refresh a request left due. */
+  epochOutbox: Isolated<EpochDrainSummary>;
   trunk: Isolated<TrunkSweepSummary>;
   kernelFloor: Isolated<FloorSummary>;
   treadmillCycles: Isolated<TreadmillCycleSummary>;
@@ -46,20 +52,25 @@ export interface KernelFloorResult {
 
 export interface KernelFloorDeps {
   drainDueEffects?: typeof drainDueEffects;
+  drainDueEpochEffects?: () => Promise<EpochDrainSummary>;
   reconcileTrunkIncidents?: () => Promise<TrunkSweepSummary>;
   reconcileKernelDeliveries?: () => Promise<FloorSummary>;
   restartTreadmillCycles?: typeof restartTreadmillCycles;
   pruneCommands?: () => Promise<number>;
   drainParkedCommands?: () => Promise<ParkedDrainSummary>;
   publishOpenPrStatuses?: () => Promise<OpenPrStatusSummary>;
+  /** The outboxes' depth after the pass, for its span (`kernel.floor`). */
+  readOutboxDepth?: () => Promise<OutboxDepth>;
 }
 
 const isolate = <T>(p: () => Promise<T>): Promise<Isolated<T>> =>
   Promise.resolve().then(p).catch((err): { error: string } => ({ error: err instanceof Error ? err.message : String(err) }));
 
 export async function runKernelFloor(deps: KernelFloorDeps = {}): Promise<KernelFloorResult> {
-  const [kernelOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands, openPrStatuses] = await Promise.all([
+  const startedAt = Date.now();
+  const [kernelOutbox, epochOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands, openPrStatuses] = await Promise.all([
     isolate(() => (deps.drainDueEffects ?? drainDueEffects)()),
+    isolate(() => (deps.drainDueEpochEffects ?? (() => drainDueEpochEffects()))()),
     isolate(() => (deps.reconcileTrunkIncidents ?? (() => reconcileTrunkIncidents()))()),
     isolate(() => (deps.reconcileKernelDeliveries ?? (() => reconcileKernelDeliveries()))()),
     isolate(() => (deps.restartTreadmillCycles ?? restartTreadmillCycles)({ cooldownMs: TREADMILL_COOLDOWN_MS })),
@@ -67,7 +78,34 @@ export async function runKernelFloor(deps: KernelFloorDeps = {}): Promise<Kernel
     isolate(() => (deps.drainParkedCommands ?? (() => drainParkedCommands()))()),
     isolate(() => (deps.publishOpenPrStatuses ?? (() => publishOpenPrStatuses()))()),
   ]);
-  return { kernelOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands, openPrStatuses };
+  const result = { kernelOutbox, epochOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands, openPrStatuses };
+  // After the pass: what it left waiting. A failed read is reported as unread, never as empty.
+  const depth = await (deps.readOutboxDepth ?? readOutboxDepth)().catch((err: unknown) => {
+    console.error('[kernel-floor] the outbox depth could not be read:', err instanceof Error ? err.message : err);
+    return null;
+  });
+  reportKernelFloor(result, depth, startedAt);
+  return result;
+}
+
+/** The floor's repairs per kind, from one pass's result (a failed step repaired nothing). */
+export function floorRepairsOf(r: KernelFloorResult): FloorRepairs {
+  const floor = ok(r.kernelFloor) ? r.kernelFloor : null;
+  const trunk = ok(r.trunk) ? r.trunk : null;
+  const tread = ok(r.treadmillCycles) ? r.treadmillCycles : null;
+  const parked = ok(r.parkedCommands) ? r.parkedCommands : null;
+  return {
+    factsImported: floor?.imported ?? 0, effectsEnqueued: floor?.enqueued ?? 0, trunkRecovered: trunk?.recovered ?? 0,
+    treadmillRestarted: tread?.restarted ?? 0, parkedAnswered: parked?.done ?? 0, parkedDead: parked?.dead ?? 0,
+  };
+}
+
+function reportKernelFloor(r: KernelFloorResult, depth: OutboxDepth | null, startedAt: number): void {
+  const errors = kernelFloorOutcome(r).errors;
+  emitKernelSpan({
+    name: KERNEL_SPAN.floor, startMs: startedAt, durationMs: Date.now() - startedAt, error: errors > 0,
+    attributes: floorSpanAttributes({ host: kernelHost(), depth, repairs: floorRepairsOf(r), errors }),
+  });
 }
 
 const ok = <T>(v: Isolated<T>): v is T => !(v && typeof v === 'object' && 'error' in (v as object));
@@ -75,18 +113,19 @@ const ok = <T>(v: Isolated<T>): v is T => !(v && typeof v === 'object' && 'error
 /** The cron-run verdict of one pass: what it moved, and what failed. */
 export function kernelFloorOutcome(r: KernelFloorResult): { processed: number; changed: number; errors: number } {
   const outbox = ok(r.kernelOutbox) ? r.kernelOutbox : null;
+  const epochs = ok(r.epochOutbox) ? r.epochOutbox : null;
   const floor = ok(r.kernelFloor) ? r.kernelFloor : null;
   const trunk = ok(r.trunk) ? r.trunk : null;
   const tread = ok(r.treadmillCycles) ? r.treadmillCycles : null;
   // A parked command given up is an error: a verdict or an end that never landed.
   const parked = ok(r.parkedCommands) ? r.parkedCommands : null;
-  // AC-37: an open head still without Buildd / Review approval is an error of the run, so the coverage can fail.
+  // AC-76: an open head still without Buildd / Review approval is an error of the run, so the coverage can fail.
   const open = ok(r.openPrStatuses) ? r.openPrStatuses : null;
   return {
-    processed: (outbox?.claimed ?? 0) + (floor?.checked ?? 0) + (trunk?.checked ?? 0) + (tread?.checked ?? 0) + (parked?.claimed ?? 0) + (open?.checked ?? 0),
-    changed: (outbox?.done ?? 0) + (floor ? floor.imported + floor.enqueued : 0) + (trunk?.resolved ?? 0) + (tread?.restarted ?? 0) + (parked?.done ?? 0)
+    processed: (outbox?.claimed ?? 0) + (epochs?.claimed ?? 0) + (floor?.checked ?? 0) + (trunk?.checked ?? 0) + (tread?.checked ?? 0) + (parked?.claimed ?? 0) + (open?.checked ?? 0),
+    changed: (outbox?.done ?? 0) + (epochs?.done ?? 0) + (floor ? floor.imported + floor.enqueued : 0) + (trunk?.resolved ?? 0) + (tread?.restarted ?? 0) + (parked?.done ?? 0)
       + (open ? open.published + open.republished : 0),
-    errors: (outbox ? outbox.failed : 1) + (floor ? floor.errors : 1) + (trunk ? trunk.errors : 1) + (tread ? tread.errors : 1) + (ok(r.commandsPruned) ? 0 : 1) + (parked ? parked.dead : 1)
+    errors: (outbox ? outbox.failed : 1) + (epochs ? epochs.failed + epochs.dead : 1) + (floor ? floor.errors : 1) + (trunk ? trunk.errors : 1) + (tread ? tread.errors : 1) + (ok(r.commandsPruned) ? 0 : 1) + (parked ? parked.dead : 1)
       + (open ? open.errors + open.coverage.missing.length : 1),
   };
 }
@@ -95,6 +134,7 @@ export function logKernelFloor(r: KernelFloorResult, where: string): void {
   const line = (label: string, v: Isolated<object | number>) =>
     ok(v) ? console.log(`[${label}] ${where} ${JSON.stringify(v)}`) : console.error(`[${label}] ${where} error:`, (v as { error: string }).error);
   line('KernelOutbox', r.kernelOutbox);
+  line('EpochOutbox', r.epochOutbox);
   line('TrunkIncidents', r.trunk);
   line('KernelFloor', r.kernelFloor);
   line('TreadmillCycles', r.treadmillCycles);

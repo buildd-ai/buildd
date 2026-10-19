@@ -48,7 +48,7 @@ import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
 import { runPromptEval } from '@/lib/prompt-evals/run';
 import { promptEvalDeps } from '@/lib/prompt-evals/store';
 // A green head is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
-import { observeBase, observeCiGreen, observePrState, systemPrincipal } from '@/lib/workflow/kernel-client';
+import { observeBase, observeCiGreen, observePrState, systemPrincipal, withWebhookBudget } from '@/lib/workflow/kernel-client';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { invalidateGithubApproval } from '@/lib/github-approval';
 import { kernelDeliveriesLandingAt } from '@/lib/workflow/authority';
@@ -76,7 +76,18 @@ export async function POST(req: NextRequest) {
   console.log(`GitHub webhook: ${event} (${deliveryId})`);
 
   try {
-    switch (event) {
+    // GitHub fails a delivery at about 10 s: every kernel door call below waits only a short, shared
+    // budget and otherwise takes its durable path (parked, or recorded unapplied and healed).
+    await withWebhookBudget(deliveryId, () => dispatchEvent(event, data));
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    console.error(`Webhook error (${event}):`, error);
+    return NextResponse.json({ error: 'Webhook processing failed' }, { status: 500 });
+  }
+}
+
+async function dispatchEvent(event: string, data: any): Promise<void> {
+  switch (event) {
       case 'installation':
         await handleInstallationEvent(data as GitHubInstallationEvent);
         break;
@@ -94,7 +105,7 @@ export async function POST(req: NextRequest) {
         break;
 
       case 'check_run':
-        // A required candidate check re-ran or finished: its head's approval status follows now (AC-39).
+        // A required candidate check re-ran or finished: its head's approval status follows now (AC-78).
         // Only a release candidate's answer reads checks, so any other PR is skipped unread.
         if (data?.installation?.id && ['completed', 'rerequested'].includes(data.action)) {
           await republishPrHeads(data.installation.id, data.repository?.full_name, checkEventHeads(data.check_run?.pull_requests, data.check_run?.head_sha), { candidatesOnly: true });
@@ -131,12 +142,6 @@ export async function POST(req: NextRequest) {
 
       default:
         console.log(`Unhandled event: ${event}`);
-    }
-
-    return NextResponse.json({ ok: true });
-  } catch (error) {
-    console.error(`Webhook error (${event}):`, error);
-    return NextResponse.json({ error: 'Webhook processing failed' }, { status: 500 });
   }
 }
 
@@ -439,7 +444,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
     return;
   }
 
-  // A suite starting or finishing moves a release candidate's gate: its approval status follows now, not at the hourly floor (AC-39).
+  // A suite starting or finishing moves a release candidate's gate: its approval status follows now, not at the hourly floor (AC-78).
   // Only a release candidate's answer reads checks, so any other PR is skipped unread.
   await republishPrHeads(installation.id, repository.full_name, checkEventHeads(check_suite.pull_requests, check_suite.head_sha), { candidatesOnly: true });
 
@@ -454,7 +459,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
       // its terminal status, and a suite for a SHA that is no longer the PR's
       // head is dropped (§16 S6).
       const applied = worker
-        ? await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: 'ci_running', headSha: check_suite.head_sha, currentHeadSha: pr.head?.sha ?? null })
+        ? await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: 'ci_running', headSha: check_suite.head_sha, currentHeadSha: pr.head?.sha ?? null }, { scope: factFunnelScope })
         : [];
       if (worker && applied.length > 0) {
         await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
@@ -494,7 +499,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         columns: { id: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
       });
       const applied = worker
-        ? await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: 'ci_failed', headSha, currentHeadSha: pr.head?.sha ?? null })
+        ? await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: 'ci_failed', headSha, currentHeadSha: pr.head?.sha ?? null }, { scope: factFunnelScope })
         : [];
       if (worker && (applied.length > 0 || (worker.prLifecycleStatus === 'ci_failed' && (!pr.head?.sha || pr.head.sha === headSha)))) {
         await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
@@ -526,13 +531,6 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
       });
 
       for (const workspace of linkedWorkspaces) {
-        // 38442d17: a green head ends a kernel CI repair bound to it (an infrastructure failure re-run green).
-        // Before the worker lookup: a kernel delivery needs no worker row (a local mission's PR may have none).
-        await observeCiGreen({
-          workspaceId: workspace.id, repoFullName: repository.full_name, prNumber: pr.number, installationId: installation.id,
-          headSha, source: 'webhook:check_suite',
-        }, { principal: systemPrincipal('system:webhook:check_suite') }).catch((err) => console.error(`[workflow] CiGreenObserved ${repository.full_name}#${pr.number} failed:`, err));
-
         // Ensure this PR was created by a Buildd worker
         const worker = await db.query.workers.findFirst({
           where: sqlWhere(and(
@@ -541,26 +539,36 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           )),
         });
 
+        // Verify ALL check suites have passed (not just the triggering one). A failed read is not a pass.
+        const allPassed = worker
+          ? await allCheckSuitesPassed(installation.id, repository.full_name, headSha)
+            .catch((err) => { console.error(`[webhook] check-suite read for ${repository.full_name}#${pr.number} failed:`, err); return false; })
+          : false;
+
+        // Mark CI as green — used by pr_checks_green loop exit condition evaluation.
+        // A merged or closed PR keeps its terminal status (recordPrFact). A delivery-owned row comes
+        // back deferred: the kernel transition below projects its column. Recorded before the kernel
+        // sees the green, so a projection it makes cannot hide that the fact is new for the row.
+        const greened = worker && allPassed
+          ? await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: 'ci_green', headSha, currentHeadSha: pr.head?.sha ?? null }, { scope: factFunnelScope })
+          : [];
+
+        // 38442d17: a green head ends a kernel CI repair bound to it (an infrastructure failure re-run green).
+        // Whether or not a worker row exists: a kernel delivery needs none (a local mission's PR may have none).
+        await observeCiGreen({
+          workspaceId: workspace.id, repoFullName: repository.full_name, prNumber: pr.number, installationId: installation.id,
+          headSha, source: 'webhook:check_suite',
+        }, { principal: systemPrincipal('system:webhook:check_suite') }).catch((err) => console.error(`[workflow] CiGreenObserved ${repository.full_name}#${pr.number} failed:`, err));
+
         if (!worker) {
           continue;
         }
-
-        // Verify ALL check suites have passed (not just the triggering one)
-        const allPassed = await allCheckSuitesPassed(
-          installation.id,
-          repository.full_name,
-          headSha,
-        );
 
         if (!allPassed) {
           console.log(`Not all check suites passed for ${repository.full_name}#${pr.number}, waiting`);
           continue;
         }
 
-        // Mark CI as green — used by pr_checks_green loop exit condition evaluation.
-        // Skip if the PR is already in a terminal state (merged/closed wins).
-        // A merged or closed PR keeps its terminal status (recordPrFact).
-        const greened = await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: 'ci_green', headSha, currentHeadSha: pr.head?.sha ?? null });
         // Model policy: every check suite passed on the run's PR (once per transition to green).
         if (greened.length > 0) {
           await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: true }]);
@@ -919,7 +927,7 @@ async function handlePullRequestEvent(event: {
       await recordPrFact(
         { workerId: openWorker.id },
         pr.mergeable === false ? { kind: 'conflict' } : { kind: 'open', reopened: action === 'reopened' },
-        { bookkeeping: { prIsDraft: pr.draft ?? null } },
+        { bookkeeping: { prIsDraft: pr.draft ?? null }, scope: factFunnelScope },
       );
 
       await triggerEvent(channels.workspace(openWorker.workspaceId), events.WORKER_PROGRESS, {

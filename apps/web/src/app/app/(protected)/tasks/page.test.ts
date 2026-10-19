@@ -70,9 +70,9 @@ describe('Activity page', () => {
   it('uses Activity for all list views without the retired ids branch', () => {
     expect(pageSource).not.toContain('TaskGrid');
     expect(pageSource).not.toContain('parseTaskListSelection');
-    expect(pageSource).toContain('gte(tasks.updatedAt, windowStart)');
-    expect(pageSource).toContain('loadLiveRootIds(wsIds)');
-    expect(pageSource).toContain('activity = await loadActivity');
+    // The window, live roots and filters live in activity-data.ts (activity-data.test.ts).
+    expect(pageSource).toContain('loadActivity({');
+    expect(pageSource).toContain('scope: { workspaceIds: wsIds, missionId, initiativeId }');
   });
 });
 

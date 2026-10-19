@@ -105,13 +105,13 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The Codex worker backend MUST drive the shared worker loop by mapping Codex thread events into Claude-shaped SDK messages, emitting exactly one complete and one aggregate result per run, and resuming by thread id.
 - [Live Sibling Conflict Probe](./live-sibling-conflict-probe.md) · @max — verified 2026-10-08
   Two live workers whose touches share a file MUST be trial-merged on a runner, and a real conflict MUST reach both workers once per pair, naming files, hunks and who rebases.
-- [Local Agent Presence](./local-agent-presence.md) · @max — verified 2026-10-15
+- [Local Agent Presence](./local-agent-presence.md) · @max — verified 2026-10-18
   A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
 - [Provider Failover](./provider-failover.md) · @max — verified 2026-10-14
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
 - [Runner Failure Alerts](./runner-failure-alerts.md) · @max — verified 2026-10-15
   Systemic runner failures MUST alert operations only when enabled and MUST never block claiming work.
-- [Runner Heartbeat and Version](./runner-heartbeat.md) · @max — verified 2026-10-15
+- [Runner Heartbeat and Version](./runner-heartbeat.md) · @max — verified 2026-10-18
   A runner heartbeat MUST report current presence and version information without exposing its local UI token.
 - [Runner Pre-Merge, Derived Files and Mergiraf](./runner-pre-merge.md) · @max — verified 2026-10-10
   Before a conflict agent starts, the runner MUST merge the right base with derived-file and mergiraf drivers, MUST record every file mergiraf resolved, and MUST NOT push mergiraf's work without an agent.
@@ -177,15 +177,15 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.
 - [Base Refresh Classification](./base-refresh-classification.md) · @max — verified 2026-10-01
   A behind-only PR MUST be refreshed agent-free via a head-pinned branch update; only a verified textual conflict dispatches a conflict agent, and an unknown semantic verdict never clears a merge.
-- [Claim Gate Legibility](./claim-gate-legibility.md) · @max — verified 2026-10-15
+- [Claim Gate Legibility](./claim-gate-legibility.md) · @max — verified 2026-10-18
   Every condition withholding a pending task MUST have an observable claim-gate reason.
-- [Claim Ordering (Batch Planner)](./claim-ordering.md) · @max — verified 2026-10-12
+- [Claim Ordering (Batch Planner)](./claim-ordering.md) · @max — verified 2026-10-18
   The claim route MUST order auto-claims through planClaimBatch only when a workspace opts in, MUST never co-schedule across a hard edge, and MUST use predicted scope only above pinned, evidence-backed thresholds.
 - [Decision Kinds (First-Party Adapters and Migration Seam)](./decision-kinds.md) · @max — verified 2026-10-11
   A decision call site MUST target a typed decision kind that owns its features, override, fallback and objective, while routes, ledger rows, outcomes and the readout come from one shared substrate.
 - [Failure Incident Recovery](./failure-incident-recovery.md) · @max — verified 2026-10-16
   A failure incident MUST carry one fresh, versioned recovery assessment that is re-checked before any repair, resolved only by a passing check, and shown identically on every surface.
-- [Force Start Past a Coordination Wait](./force-start.md) · @max — verified 2026-10-12
+- [Force Start Past a Coordination Wait](./force-start.md) · @max — verified 2026-10-18
   A dashboard Start MUST name the real waiting reasons, and Force start MUST lift exactly the confirmed forceable ones through one audited, single-use intent a runner's claim honours.
 - [Human Answer Delivery](./human-answer-delivery.md) · @max — verified 2026-10-15
   An authorised human answer MUST reach a live session or create durable retry work, and MUST never be applied twice or silently dropped.
@@ -203,8 +203,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   When a workspace opts in, a PR touching a serialized surface MUST wait behind an earlier open PR on the same surface and base branch, and MUST merge inside an atomic per-surface reservation.
 - [Task Dispatch Authority](./task-dispatch-authority.md) · @max — verified 2026-10-11
   Every state change that may make a task runnable MUST leave a durable dispatch intent, delivered at least once through one authority, while the claim route stays the only scheduling decision.
-- [Task Estimates (Rollout and Team Switch)](./task-estimates.md) · @max — verified 2026-10-15
-  Frozen forecasts use shared evidence-aware display and auditable sample selection; estimates follow the team's switch or a quality-gated default and never order work.
+- [Task Estimates (Availability and Calibration)](./task-estimates.md) · @max — verified 2026-10-17
+  Eligible teams receive frozen evidence-aware forecasts by default; calibration gates numeric confidence, team health stays compact, and forecasts never order work.
 - [Task and Worker State Machines](./task-state-machine.md) · @max — verified 2026-10-15
   Task and worker transitions MUST preserve output requirements, terminal-state guards and dependency resolution.
 
@@ -212,8 +212,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Bug Intake and Quality](./bug-intake-and-quality.md) · @max — verified 2026-10-11
   Every defect report MUST land as one report on one failure incident, every incident above noise MUST have exactly one owner, and every resolved defect MUST trace to the change, release and agent that introduced it.
-- [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-17
-  Overlapping work MUST start by default; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, workspace hard surfaces) and only while its holder is live work.
+- [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-18
+  Overlapping work MUST start by default, undeclared scope included; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, hard surfaces) and only while its holder is live.
 - [Commercial Licensing Foundation](./commercial-licensing.md) · @builder — verified 2026-10-09
   The public core MUST verify a signed license offline and answer scoped capability checks for future commercial modules, denying only the premium capability and never core features or data.
 - [Decision Model Selection (Per-Decision Model, Measured Thresholds, Signal Collection)](./decision-model-selection.md) · @max — verified 2026-10-16

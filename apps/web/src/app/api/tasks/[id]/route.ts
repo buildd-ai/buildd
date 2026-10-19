@@ -46,8 +46,12 @@ import { TASK_RESERVATION_KEY, buildReservation } from '../../workers/claim/held
 import { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } from '@/lib/interactive-session';
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { dispatchHistoryForTask } from '@buildd/core/dispatch-outbox';
-import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { sqlExtras, sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { leanContextSql, leanResultSql, taskReadColumns, taskReadShape } from '@/lib/task-read-shape';
 import { taskPrOf, withTaskPr } from '@/lib/workflow/task-pr';
+import { settleWorkChanges } from '@/lib/settle-work-changes';
+import { bumpChangeVersions, scopesOfDeletedTasks } from '@/lib/change-version';
+import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 
 /**
  * Label the wake for a task just reset to pending — but only when nothing it
@@ -85,6 +89,10 @@ async function wakeIfDependenciesSatisfied(task: typeof tasks.$inferSelect): Pro
 //     the workers even without `workers`).
 //   include=estimate — the task's frozen estimate (task-estimates experiment),
 //     omitted when none was written.
+//   Lean by default (spec 3ef37387 R-19, lib/task-read-shape.ts): `context` and
+//   `result` reduced to the keys get_task renders, no decision JSON, workspace
+//   as id/name/repo. include=context|result|decisions|evidence expands one;
+//   include=full is the pre-R-19 row. view=status is a status-only poll.
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -123,18 +131,30 @@ export async function GET(
     // A task token for a worker-level caller needs to check if the requested
     // task is its own task or a child task, which requires fetching the task.
     // We can't know this without a DB query, so we fetch first then check.
-    const task = await db.query.tasks.findFirst({
+    const shape = taskReadShape(req.nextUrl.searchParams);
+    const { include, statusOnly } = shape;
+    const columns = taskReadColumns(shape);
+    const leanExtras = {
+      ...(!statusOnly && !shape.wants('context') ? { leanContext: leanContextSql } : {}),
+      ...(!statusOnly && !shape.wants('result') ? { leanResult: leanResultSql } : {}),
+    };
+    const row = await db.query.tasks.findFirst({
       where: sqlWhere(eq(tasks.id, id)),
-      with: {
-        workspace: true,
+      ...(columns ? { columns } : {}),
+      ...(Object.keys(leanExtras).length > 0 ? { extras: sqlExtras(leanExtras) } : {}),
+      ...(!statusOnly ? { with: {
+        workspace: shape.full ? true : { columns: { id: true, name: true, repo: true } },
         mission: { columns: { id: true, title: true, status: true } },
-      },
-    });
+      } } : {}),
+    }) as Record<string, any> | undefined;
+    // The lean projections answer under the blobs' own names.
+    const { leanContext, leanResult, ...task } = row ?? {};
 
-    if (!task) {
+    if (!row) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
-    if (apiAccount && !(await taskScopeAllowsMissionTaskRead(apiAccount, task))) {
+    if ('leanContext' in row) task.context = leanContext;
+    if (apiAccount && !(await taskScopeAllowsMissionTaskRead(apiAccount, task as any))) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
@@ -147,8 +167,7 @@ export async function GET(
       if (!hasAccess) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    const includeRaw = req.nextUrl.searchParams.get('include') || '';
-    const include = new Set(includeRaw.split(',').map(s => s.trim()).filter(Boolean));
+    if (statusOnly) return NextResponse.json({ id: task.id, workspaceId: task.workspaceId, status: task.status, updatedAt: task.updatedAt });
 
     let taskWorkers: any[] | undefined;
     let taskArtifacts: any[] | undefined;
@@ -157,6 +176,7 @@ export async function GET(
       taskWorkers = await db.query.workers.findMany({
         where: sqlWhere(eq(workers.taskId, id)),
         orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
+        limit: 50,
         columns: {
           id: true,
           status: true,
@@ -205,7 +225,9 @@ export async function GET(
       const workerIds = taskWorkers.map(w => w.id);
       const rows = await db.query.artifacts.findMany({
         where: sqlWhere(inArray(artifacts.workerId, workerIds)),
-        orderBy: sqlOrderBy([desc(artifacts.updatedAt)]),
+        orderBy: sqlOrderBy([desc(artifacts.updatedAt), desc(artifacts.id)]),
+        limit: 50,
+        columns: { content: false },
       });
       const baseUrl = appBaseUrl();
       taskArtifacts = rows.map(a => ({
@@ -217,7 +239,7 @@ export async function GET(
     // result.prUrl / prNumber are derived on read (workflow/task-pr.ts): get_task's PR line reads them.
     const response: Record<string, unknown> = {
       ...task,
-      result: withTaskPr(task.result as Record<string, unknown> | null, await taskPrOf(id)),
+      result: withTaskPr(('leanResult' in row ? leanResult : task.result) as Record<string, unknown> | null, await taskPrOf(id)),
       workspace: withoutDispatchToken(task.workspace),
     };
     if (taskWorkers !== undefined) response.workers = taskWorkers;
@@ -241,11 +263,11 @@ export async function GET(
         };
       }
     }
-    const evidenceObjects = await loadInlineEvidence(task.workspaceId, id, {
+    const evidenceObjects = shape.wants('evidence') ? await loadInlineEvidence(task.workspaceId, id, {
       surface: 'get_task',
       // The account decides access above when both are present, so it is the actor.
       actor: apiAccount ? { accountId: apiAccount.id } : { userId: user!.id },
-    });
+    }) : [];
     if (evidenceObjects.length > 0) response.evidenceObjects = evidenceObjects;
 
     return NextResponse.json(response);
@@ -267,6 +289,9 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   const { id } = await params;
 
   // Dev mode returns mock
@@ -353,6 +378,8 @@ export async function PATCH(
       if (!updated) {
         return NextResponse.json({ error: 'The task was claimed while the delegation was being set; a running agent asks with request_capability instead.', code: 'not_pending' }, { status: 409 });
       }
+      // A token minted for this task reads its delegation through the caller cache.
+      await clearCallerCache(callerDep.task(id));
       return NextResponse.json({ id: updated.id, delegation: updated.delegation });
     }
 
@@ -856,6 +883,7 @@ export async function PATCH(
     console.error('Update task error:', error);
     return NextResponse.json({ error: 'Failed to update task' }, { status: 500 });
   }
+  } finally { await settleWorkChanges(); }
 }
 
 // DELETE /api/tasks/[id] - Delete a task (only pending tasks)
@@ -863,6 +891,9 @@ export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   const { id } = await params;
 
   // Dev mode returns success
@@ -918,11 +949,15 @@ export async function DELETE(
     // delete orphans the worker rows (task_id → NULL), and a question parked
     // on one would otherwise stay live, holding a slot, with no task to end it.
     await applyTaskDeleteSideEffects(id);
+    // The row is gone after the delete, so resolve the scopes it versions on first.
+    const deletedScopes = await scopesOfDeletedTasks([id]);
     await db.delete(tasks).where(eq(tasks.id, id));
+    await bumpChangeVersions(deletedScopes);
 
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Delete task error:', error);
     return NextResponse.json({ error: 'Failed to delete task' }, { status: 500 });
   }
+  } finally { await settleWorkChanges(); }
 }

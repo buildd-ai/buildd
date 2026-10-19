@@ -176,6 +176,8 @@ mock.module('@buildd/core/db', () => ({
     },
     insert: (table: any) => mockGenericInsert(table),
     select: mockSelect,
+    // One round trip of independent reads (lib/read-round.ts): the mocked reads, in order.
+    batch: (reads: any[]) => Promise.all(reads),
   },
 }));
 
@@ -757,8 +759,10 @@ const mockIsKernelReviewRound = mock(async (_t: any): Promise<boolean> => false)
 // The legacy conflict/migration repair gate (lib/repair-completion.ts) has its
 // own unit suite; here: that the route refuses on its verdict.
 const mockLegacyRepairGate = mock(async (_p: any, _d: any): Promise<any> => null);
+const mockLegacyReviewFixGate = mock(async (_p: any, _d: any): Promise<any> => null);
 mock.module('@/lib/repair-completion', () => ({
   legacyRepairCompletionGate: mockLegacyRepairGate,
+  legacyReviewFixCompletionGate: mockLegacyReviewFixGate,
 }));
 // T4 goes through the one client (AC-9): the kernel's door, not the seam.
 const realKernelClient = await import('@/lib/workflow/kernel-client');
@@ -777,6 +781,7 @@ mock.module('@/lib/workflow/seam', () => ({
   attemptEndFromPatch: realHandOff.attemptEndFromPatch,
   taskRetryCoversAttemptEnd: realHandOff.taskRetryCoversAttemptEnd,
   fixCompletionGate: mockFixCompletionGate,
+  legacyDiffTouchesFindings: () => null,
   recordReviewVerdict: mock(async () => { throw new Error('the worker PATCH called the seam\'s recordReviewVerdict, not the kernel client\'s'); }),
   adoptReviewVerdict: mock(async () => { throw new Error('the worker PATCH called the seam\'s adoptReviewVerdict, not the kernel client\'s'); }),
   noopEvidenceOf: (o: any) => (o?.noopEvidence?.findingIds?.length && o?.noopEvidence?.evidence ? o.noopEvidence : null),
@@ -1100,6 +1105,46 @@ describe('GET /api/workers/[id]', () => {
     const data = await res.json();
     expect(data.id).toBe('worker-1');
     expect(data.status).toBe('running');
+  });
+});
+
+describe('GET /api/workers/[id]?view=status', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+  });
+  const statusReq = () => new NextRequest(`http://localhost:3000/api/workers/${WORKER_ID}?view=status`, {
+    headers: new Headers({ Authorization: 'Bearer bld_test' }),
+  });
+
+  it('reads only the status columns and the task status, never the workspace row', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1', accountId: 'account-1', taskId: 'task-1', workspaceId: 'ws-1', claimedByUserId: null,
+      status: 'running', error: null, task: { status: 'in_progress' },
+    });
+    const res = await GET(statusReq(), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: 'worker-1', status: 'running', error: null, task: { status: 'in_progress' } });
+    const args = (mockWorkersFindFirst.mock.calls.at(-1) as any[])[0];
+    expect(args.columns).toBeDefined();
+    expect(args.columns.milestones).toBeUndefined();
+    expect(args.with.task).toEqual({ columns: { status: true } });
+    expect(args.with.workspace).toBeUndefined();
+  });
+
+  it('keeps the owner check: another account gets 403', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'account-2', taskId: 't', workspaceId: 'w', claimedByUserId: null, status: 'running', error: null, task: null });
+    const res = await GET(statusReq(), { params: mockParams });
+    expect(res.status).toBe(403);
+  });
+
+  it('404 when the worker does not exist', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue(null);
+    const res = await GET(statusReq(), { params: mockParams });
+    expect(res.status).toBe(404);
   });
 });
 
@@ -2580,7 +2625,9 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedSet.milestones).toEqual([runner, { ...agent, origin: 'agent' }]);
     worker.milestones = capturedSet.milestones;
     await PATCH(createMockRequest({ method: 'PATCH', body: { milestones: capturedSet.milestones } }), { params: mockParams });
-    expect(capturedSet.milestones).toHaveLength(2);
+    // The same snapshot again merges to exactly what is stored (no duplicate
+    // narration), so the list is not rewritten at all (R-33).
+    expect(capturedSet.milestones).toBeUndefined();
   });
 
   it('caps full runner snapshots without evicting lifecycle checkpoints', async () => {
@@ -3099,7 +3146,10 @@ describe('PATCH /api/workers/[id]', () => {
 
     it('a re-send of a question the server already disposed reuses it and files nothing twice', async () => {
       await parkWith(BLOCKER, { stored: { ...BLOCKER, disposition: 'recovered', dispositionBy: 'server_recheck', repairTaskId: REPAIR_ID } });
-      expect(capturedSet.waitingFor).toMatchObject({ disposition: 'recovered', repairTaskId: REPAIR_ID });
+      // The disposition reused is the one stored, so the stored park stands
+      // unwritten (R-33: only changed fields); the status move is written.
+      expect(capturedSet.status).toBe('waiting_input');
+      expect(capturedSet.waitingFor).toBeUndefined();
       expect(askedSomeone()).toBe(false);
     });
 
@@ -3930,6 +3980,43 @@ describe('PATCH /api/workers/[id]', () => {
       expect(body).toMatchObject({ code: 'repair_still_conflicted', gate: 'output_requirement', boundHeadSha: 'h1' });
       expect(mockLegacyRepairGate.mock.calls[0][0]).toMatchObject({ task: { conflictRetryPrNumber: 42 } });
       expect(taskUpdateCalled).toBe(false);
+    });
+
+    it('a legacy review fix with no relevant diff is refused repair_unrelated_diff, and nothing is written', async () => {
+      let taskUpdateCalled = false;
+      mockTasksUpdate.mockReturnValue({ set: mock(() => { taskUpdateCalled = true; return { where: mock(() => Promise.resolve()) }; }) });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...fixWorker, taskId: 'review-fix-1' });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'review-fix-1', outputRequirement: 'auto', category: 'bug', deliveryId: null, reviewerRetryPrNumber: 42, reviewerRetryHeadSha: 'h1',
+        context: { failureContext: { errorType: 'reviewer_request_changes', summary: 'fix it' } },
+      });
+      mockLegacyReviewFixGate.mockReset();
+      mockLegacyReviewFixGate.mockResolvedValue({
+        code: 'repair_unrelated_diff', error: 'changes nothing near the files', hint: 'fix it', boundHeadSha: 'h1', liveHeadSha: 'h2',
+      });
+
+      const res = await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed', structuredOutput: { fixedElsewhere: { files: ['a.ts'], reason: 'moved' } } } }), { params: mockParams });
+      const body = await res.json();
+
+      expect(res.status).toBe(400);
+      expect(body).toMatchObject({ code: 'repair_unrelated_diff', gate: 'output_requirement', boundHeadSha: 'h1', liveHeadSha: 'h2' });
+      expect(mockLegacyReviewFixGate.mock.calls[0][0]).toMatchObject({ task: { reviewerRetryPrNumber: 42 }, fixedElsewhere: { files: ['a.ts'], reason: 'moved' } });
+      expect(taskUpdateCalled).toBe(false);
+    });
+
+    it('the legacy review-fix gate is not reached by a kernel-delivery task or a task with no review round', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(fixWorker);
+      mockTasksFindFirst.mockResolvedValue({ ...fixTaskRow, reviewerRetryPrNumber: 42, reviewerRetryHeadSha: 'h1' });
+      mockFixCompletionGate.mockReset();
+      mockFixCompletionGate.mockResolvedValue(null);
+      mockLegacyReviewFixGate.mockReset();
+      await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed' } }), { params: mockParams });
+      mockWorkersFindFirst.mockResolvedValue({ ...fixWorker, taskId: 'task-1' });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'pr_required' });
+      await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed' } }), { params: mockParams });
+      expect(mockLegacyReviewFixGate).not.toHaveBeenCalled();
     });
 
     it('the legacy repair gate is not consulted for a task that is not a conflict retry', async () => {
@@ -9264,6 +9351,8 @@ describe('PATCH /api/workers/[id]', () => {
             summary: 'Test summary',
             feedback: verdict === 'request-changes' ? 'Fix the missing handler' : undefined,
             escalationReason: verdict === 'escalate' ? 'PR touches schema' : undefined,
+            // The reviewer read the head it was asked about (the fixture's context.headSha).
+            checkoutSha: 'abc123',
             ...extra,
           },
         },
@@ -11224,15 +11313,79 @@ describe('PATCH /api/workers/[id]', () => {
         // The body says what happened without claiming the file list did it.
         expect(note.body).not.toContain('the file list requires a human');
         expect(note.body).toContain('below workspace threshold');
-        const persisted = taskSetCalls.find((u: any) => u.result?.type === 'sql');
+        const persisted = taskSetCalls.find((u: any) => u.result?.type === 'sql' && u.result.values.includes('escalate'));
         expect(persisted).toBeDefined();
-        expect(persisted.result.values).toContain('escalate');
       });
 
       it('approve at a confident score still runs the bounded merge', async () => {
         setupReviewerTaskCompletion('approve');
         await PATCH(makeReviewerPatchRequest('approve', { confidence: 0.9 }), { params: mockParams });
         expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('0230612e: the reviewer\'s checkout is the verdict\'s evidence', () => {
+      function captureTaskSets() {
+        const sets: any[] = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            sets.push(updates);
+            return { where: mock(() => ({ catch: () => Promise.resolve() })) };
+          }),
+        });
+        return sets;
+      }
+
+      for (const [label, extra, read] of [
+        ['at the base, not the head', { checkoutSha: 'FFF999' }, 'fff999'],
+        ['with no checkout reported', { checkoutSha: undefined }, null],
+      ] as const) {
+        it(`an approval read ${label} is inconclusive: no APPROVE, no merge, a person's, the evidence recorded`, async () => {
+          setupReviewerTaskCompletion('approve');
+          const sets = captureTaskSets();
+
+          const res = await PATCH(makeReviewerPatchRequest('approve', extra), { params: mockParams });
+
+          expect(res.status).toBe(200);
+          expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+          expect(mockLandPr).not.toHaveBeenCalled();
+          expect(mockPostPrReview.mock.calls.some((c: any) => c[0]?.event === 'APPROVE')).toBe(false);
+          expect(missionNoteInserts.some((n) => n.type === 'reviewer_approved')).toBe(false);
+          const note = missionNoteInserts.find((n) => n.type === 'reviewer_escalated');
+          expect(note.title).toContain('inconclusive');
+          expect(note.body).toContain('another commit than this PR\'s head');
+          // Recorded with the verdict: the commit it read, and that it was not the head.
+          const evidence = sets.find((u: any) => u.result?.type === 'sql' && u.result.values.includes(false));
+          expect(evidence).toBeDefined();
+          expect(evidence.result.values).toContain(read);
+          expect(sets.some((u: any) => u.result?.type === 'sql' && u.result.values.includes('escalate'))).toBe(true);
+        });
+      }
+
+      it('a request for changes read at another commit dispatches no fix', async () => {
+        setupReviewerTaskCompletion('request-changes');
+        mockAnnounceTaskCreated.mockClear();
+        await PATCH(makeReviewerPatchRequest('request-changes', { checkoutSha: 'fff999' }), { params: mockParams });
+        expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+        expect(missionNoteInserts.some((n) => n.type === 'reviewer_request_changes')).toBe(false);
+        expect(missionNoteInserts.find((n) => n.type === 'reviewer_escalated')?.title).toContain('inconclusive');
+      });
+
+      it('read at the head, the approval counts and records its evidence as the head', async () => {
+        setupReviewerTaskCompletion('approve');
+        const sets = captureTaskSets();
+        await PATCH(makeReviewerPatchRequest('approve', { checkoutSha: 'ABC123' }), { params: mockParams });
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+        const evidence = sets.find((u: any) => u.result?.type === 'sql' && u.result.values.includes(true));
+        expect(evidence.result.values).toContain('abc123');
+      });
+
+      it('a kernel round gets the evidence commit with its verdict, so the reducer can refuse to decide on it', async () => {
+        setupReviewerTaskCompletion('approve', { kernel: true });
+        mockRecordReviewVerdict.mockResolvedValue({ handled: true, result: { result: 'applied', transitionId: 't1', deliveryId: 'delivery-1', version: 5, decision: { toState: 'AWAITING_REVIEW' } }, toState: 'AWAITING_REVIEW' });
+        await PATCH(makeReviewerPatchRequest('approve', { checkoutSha: 'fff999' }), { params: mockParams });
+        expect(mockRecordReviewVerdict.mock.calls[0][0]).toMatchObject({ verdict: 'approve', headSha: 'abc123', evidenceSha: 'fff999' });
+        expect(mockPostPrReview).not.toHaveBeenCalled();
       });
     });
 
@@ -11272,8 +11425,7 @@ describe('PATCH /api/workers/[id]', () => {
     it('request-changes: creates retry task with baseBranch = workerBranch (no new branch)', async () => {
       setupReviewerTaskCompletion('request-changes');
       // Also need original task for the retry
-      mockTasksFindFirst
-        .mockResolvedValueOnce({
+      const reviewerRow = {
           id: 'reviewer-task-1',
           category: 'review',
           context: {
@@ -11290,14 +11442,18 @@ describe('PATCH /api/workers/[id]', () => {
           missionId: 'mission-1',
           title: '[reviewer] PR #42: Original task',
           outputRequirement: 'none',
-        })
-        .mockResolvedValueOnce({
+        };
+      const originalRow = {
           id: 'original-task-1',
           title: 'Build feature X',
           description: 'Description',
           missionId: 'mission-1',
           pathManifest: ['apps/web/src/lib/feature-x.ts'],
-        });
+        };
+      mockTasksFindFirst.mockImplementation((opts?: any) =>
+        Promise.resolve(opts?.columns?.status && Object.keys(opts.columns).length === 1
+          ? { status: 'pending' } : opts?.columns?.pathManifest ? originalRow : reviewerRow),
+      );
 
       const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
 
@@ -11376,8 +11532,7 @@ describe('PATCH /api/workers/[id]', () => {
           prNumber: 42,
           prBaseRef: 'mission/mission-example-goal-a1b2c3d4',
         });
-      mockTasksFindFirst
-        .mockResolvedValueOnce({
+      const reviewerRow = {
           id: 'reviewer-task-1',
           category: 'review',
           context: {
@@ -11394,14 +11549,18 @@ describe('PATCH /api/workers/[id]', () => {
           missionId: 'mission-1',
           title: '[reviewer] PR #42: Original task',
           outputRequirement: 'none',
-        })
-        .mockResolvedValueOnce({
+        };
+      const originalRow = {
           id: 'original-task-1',
           title: 'Build feature X',
           description: 'Description',
           missionId: 'mission-1',
           pathManifest: ['apps/web/src/lib/feature-x.ts'],
-        });
+        };
+      mockTasksFindFirst.mockImplementation((opts?: any) =>
+        Promise.resolve(opts?.columns?.status && Object.keys(opts.columns).length === 1
+          ? { status: 'pending' } : opts?.columns?.pathManifest ? originalRow : reviewerRow),
+      );
 
       const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
 
@@ -11596,7 +11755,7 @@ describe('PATCH /api/workers/[id]', () => {
         pathManifest: null,
       });
 
-      const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+      const res = await PATCH(makeReviewerPatchRequest('request-changes', { checkoutSha: 'def456' }), { params: mockParams });
 
       expect(res.status).toBe(200);
       expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
@@ -14806,7 +14965,7 @@ describe('PATCH /api/workers/[id]', () => {
         }),
       });
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
-      mockWorkersFindFirst.mockResolvedValue(baseWorker);
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, branch: 'buildd/claim-time-branch' });
 
       const req = createMockRequest({
         method: 'PATCH',
@@ -17489,14 +17648,27 @@ describe('PATCH /api/workers/[id] — instruction queue hand-off', () => {
   };
 
   let sets: any[] = [];
+  let rawSets: any[] = [];
+  let queueAtWrite: string | null;
 
   function setup(worker: any = baseWorker) {
     sets = [];
+    rawSets = [];
+    queueAtWrite = worker.pendingInstructions ?? null;
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', level: 'worker' });
     mockWorkersFindFirst.mockResolvedValue(worker);
     mockWorkersUpdate.mockReturnValue({
       set: mock((vals: any) => {
-        sets.push(vals);
+        rawSets.push(vals);
+        // Model the database CASE against the queue at write time, including
+        // an instruction appended after the route read its worker snapshot.
+        const queueExpr = vals.pendingInstructions;
+        const persisted = { ...vals };
+        if (queueExpr?.type === 'sql') {
+          expect(queueExpr.strings.join('?')).toMatch(/CASE\s+WHEN \? = \? THEN NULL\s+ELSE \? END/);
+          persisted.pendingInstructions = queueAtWrite === queueExpr.values[1] ? null : queueAtWrite;
+        }
+        sets.push(persisted);
         return {
           where: mock(() => ({
             returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
@@ -17572,6 +17744,18 @@ describe('PATCH /api/workers/[id] — instruction queue hand-off', () => {
     expect(sets.some(v => v.pendingInstructions === null)).toBe(true);
     const marked = sets.find(v => v.instructionHistory);
     expect(marked.instructionHistory[0].deliveryState).toBe('delivered');
+  });
+
+  it('preserves a queue appended between the read and the single acknowledgement write', async () => {
+    setup();
+    queueAtWrite = 'Switch to the other auth flow\n\nAlso add a test';
+    expect((await patch({ instructionsDelivered: 'Switch to the other auth flow' })).status).toBe(200);
+
+    const write = rawSets.find(v => v.pendingInstructions?.type === 'sql');
+    expect(write).toBeDefined();
+    expect(write.pendingInstructions.values[1]).toBe(baseWorker.pendingInstructions);
+    expect(sets.find(v => v.instructionHistory).pendingInstructions).toBe(queueAtWrite);
+    expect(rawSets.filter(v => 'pendingInstructions' in v)).toHaveLength(1);
   });
 
   it('does not clear a queue that grew after the hand-off', async () => {
@@ -17657,6 +17841,27 @@ describe('PATCH /api/workers/[id] — instruction queue hand-off', () => {
     expect(typeof marked[0].deliveredAt).toBe('number');
     expect(sets.some(v => v.pendingInstructions === null)).toBe(true);
     expect(sets.every(v => v.turns === undefined)).toBe(true);
+  });
+
+  it('publishes delivery once on the worker channel and suppresses a repeated acknowledgement', async () => {
+    const worker = { ...idWorker, currentAction: 'Editing files' };
+    setup(worker);
+    mockTriggerEvent.mockReset();
+    mockTriggerEvent.mockResolvedValue(undefined);
+    const body = { instructionsDelivered: 'Switch to the other auth flow', instructionIdsDelivered: ['i-1'] };
+
+    expect((await patch(body)).status).toBe(200);
+    const progress = mockTriggerEvent.mock.calls.filter((call: any[]) => call[1] === 'worker:progress');
+    expect(progress).toHaveLength(1);
+    expect(progress[0][0]).toBe('worker-' + (await mockParams).id);
+    expect(progress[0][2]).toMatchObject({ delivery: true });
+    expect(sets.every(v => v.currentAction === undefined)).toBe(true);
+
+    const persisted = Object.assign({}, worker, ...sets);
+    setup(persisted);
+    mockTriggerEvent.mockClear();
+    expect((await patch(body)).status).toBe(200);
+    expect(mockTriggerEvent.mock.calls.filter((call: any[]) => call[1] === 'worker:progress')).toHaveLength(0);
   });
 
   it('B-3: instructionsAcknowledged flips exactly that entry, ignores unknown ids, and is not a turn', async () => {

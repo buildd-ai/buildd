@@ -7,6 +7,7 @@ import { hostname } from 'os';
 import { resolveBuilddHome } from './buildd-home';
 import { resolveBuilddServer } from './server-url';
 import type { LocalUIConfig, LLMProvider, LocalWorker, ProviderConfig } from './types';
+import { DEFAULT_LOGIN_MODE, parseLoginMode } from '@buildd/shared';
 import { BuilddClient, getLastServerContactAt } from './buildd';
 import { WorkerManager, getIsolationRecord } from './workers';
 import { toPublicEvent, toPublicWorker, toPublicWorkers } from './public-worker';
@@ -37,7 +38,7 @@ import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
 import { bannerPalette, renderBanner } from './banner';
 import { checkSingleInstance, createSocketWatchdog, decideStart, enqueueEvent, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, socketHealthCheck, SOCKET_WATCHDOG_INTERVAL_MS, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
-import { withMissionStages } from './mission-stages';
+import { openMissionIds, readTaskListWithStages } from './mission-stages';
 import { rateLimitedRetryAfterSec } from './read-backoff';
 import { consumeRestartMarker, shouldAutoOpenBrowser, writeRestartMarker } from './browser-open';
 import { claimEntryWords } from './claim-words';
@@ -108,6 +109,16 @@ if (CLI.kind === 'slots') {
   const { runSlotsCommand } = await import('./runner-slots');
   const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
   const r = await runSlotsCommand(CLI.cmd, { configFile: CONFIG_FILE, socketPath: socketPathFor(BUILDD_DIR) });
+  if (r.stdout) console.log(r.stdout);
+  if (r.stderr) console.error(r.stderr);
+  process.exit(r.code);
+}
+
+// `buildd logins [<mode>]`: how this runner's own logins share its slots (runner-logins.ts).
+if (CLI.kind === 'logins') {
+  const { runLoginsCommand } = await import('./runner-logins');
+  const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
+  const r = await runLoginsCommand(CLI.cmd, { configFile: CONFIG_FILE, socketPath: socketPathFor(BUILDD_DIR) });
   if (r.stdout) console.log(r.stdout);
   if (r.stderr) console.error(r.stderr);
   process.exit(r.code);
@@ -381,6 +392,7 @@ interface SavedConfig {
   serverless?: boolean;
   model?: string;
   maxConcurrent?: number; // Max concurrent workers (default: 3)
+  loginMode?: string; // How this runner's own logins share its slots (runner-logins.ts; default balanced)
   acceptRemoteTasks?: boolean; // Accept task assignments from dashboard (default: true)
   bypassPermissions?: boolean; // Bypass permission prompts (dangerous commands still blocked)
   openBrowser?: boolean; // Auto-open browser on startup
@@ -415,6 +427,7 @@ function loadSavedConfig(): SavedConfig {
         serverless: data.serverless,
         model: data.model,
         maxConcurrent: data.maxConcurrent,
+        loginMode: data.loginMode,
         acceptRemoteTasks: data.acceptRemoteTasks,
         bypassPermissions: data.bypassPermissions,
         openBrowser: data.openBrowser,
@@ -649,6 +662,8 @@ const config: LocalUIConfig = {
   builddServer: resolveBuilddServer({ env: process.env, saved: savedConfig.builddServer }),
   apiKey: resolvedApiKey,
   maxConcurrent: savedConfig.maxConcurrent || parseInt(process.env.MAX_CONCURRENT || '3'),
+  // How this runner's own logins share its slots (spec 34a48877 R-14).
+  loginMode: parseLoginMode(savedConfig.loginMode) ?? DEFAULT_LOGIN_MODE,
   model: process.env.MODEL || savedConfig.model || bundledTierEntry('standard').model,
   // LLM provider (OpenRouter, etc.)
   llmProvider: buildProviderConfig(),
@@ -1566,6 +1581,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         ...routeStatus,
         model: config.model,
         maxConcurrent: config.maxConcurrent,
+        // How this runner's own logins share its slots (spec 34a48877 R-14); top's header says it (c7410e76 R-60).
+        loginMode: config.loginMode,
         acceptRemoteTasks: config.acceptRemoteTasks !== false,
         bypassPermissions: config.bypassPermissions || false,
         openBrowser: savedConfig.openBrowser !== false, // default true
@@ -1926,6 +1943,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
           projectRoots: config.projectRoots,
           builddServer: config.builddServer,
           maxConcurrent: config.maxConcurrent,
+          loginMode: config.loginMode,
           model: config.model,
           bypassPermissions: config.bypassPermissions || false,
           acceptRemoteTasks: config.acceptRemoteTasks !== false,
@@ -1986,7 +2004,9 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
     if (path === '/api/tasks' && req.method === 'GET') {
       try {
         // mission.stage comes from the missions module's own endpoint (R-18), best effort.
-        const tasks = await withMissionStages(await buildd!.listTasks(), ids => buildd!.listMissionStages(ids));
+        // One server read where the server knows include=missionStages; an
+        // older server answers without it and the stages are asked separately.
+        const tasks = await readTaskListWithStages(buildd!);
         return Response.json({ tasks }, { headers: corsHeaders });
       } catch (err: any) {
         // If 401, API key is invalid - clear and show setup
@@ -2046,6 +2066,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
     if (path === '/api/missions/recent' && req.method === 'GET') {
       try {
         const missions = await buildd!.listRecentMissions();
+        // Top rereads these when one of them moves (mission-loop events), not on a timer.
+        workerManager?.watchMissions(openMissionIds(missions));
         return Response.json({ missions }, { headers: corsHeaders });
       } catch (err: any) {
         const wait = rateLimitedRetryAfterSec(err);
@@ -2092,6 +2114,26 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       if (!runnerHold) return Response.json({ error: 'This runner runs one task and cannot be held.' }, { status: 409, headers: corsHeaders });
       const was = runnerHold.resume();
       return Response.json({ hold: null, wasHeld: was !== null, running: liveAgentCount() }, { headers: corsHeaders });
+    }
+
+    // `buildd logins` / b in top (runner-logins.ts, spec 34a48877 R-14, R-19).
+    if (path === '/api/logins' && req.method === 'GET') {
+      const { loginUseFor } = await import('./runner-logins');
+      const use = loginUseFor(config.loginMode ?? DEFAULT_LOGIN_MODE, config.maxConcurrent, (workerManager?.getWorkers() ?? []) as any[]);
+      return Response.json(use, { headers: corsHeaders });
+    }
+    if (path === '/api/logins' && req.method === 'POST') {
+      const { applyLoginMode } = await import('./runner-logins');
+      const body = await parseBody(req).catch(() => ({}));
+      const wm = workerManager;
+      const result = applyLoginMode(body, {
+        setLoginMode: (mode) => {
+          saveConfig({ loginMode: mode });
+          if (wm) wm.setLoginMode(mode);
+          else { config.loginMode = mode; broadcast({ type: 'logins', loginMode: mode }); }
+        },
+      });
+      return Response.json(result.body, { status: result.status, headers: corsHeaders });
     }
 
     // `buildd slots` / + and - in top (runner-slots.ts, R-43..R-46).

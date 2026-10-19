@@ -26,7 +26,7 @@ export function headPhase(phases: readonly Phase[]): { phase: Phase; index: numb
 }
 
 /**
- * The run's evidence read as a state on the one Build → Audit → Land track.
+ * The run's evidence read as a state on the one Build → Verify → Deliver track.
  * The phases stay the evidence (behind the disclosure); this only says which
  * step they add up to. `paused` is the waiting-on-an-answer bar.
  */
@@ -63,7 +63,7 @@ export function RunEvidenceRail({ evidence, nowMs, paused = false }: { evidence:
         summary={
           <span data-testid="run-evidence-head" className="font-mono text-meta text-text-secondary truncate">
             Run evidence · {head ? (
-              <><b className={`font-semibold ${phaseTone(head.phase)}`}>{head.phase.label}{head.phase.subState ? ` (${head.phase.subState.replaceAll('_', ' ')})` : ''}</b> · {head.index + 1} of {phases.length}</>
+              <><b className={`font-semibold ${phaseTone(head.phase)}`}>{head.phase.label}{head.phase.subState ? ` (${head.phase.subState.replaceAll('_', ' ')})` : ''}</b> · step {head.index + 1} of {phases.length}</>
             ) : (
               <>none yet · {phases.length} phases</>
             )}

@@ -57,6 +57,12 @@ export interface RunnerHeartbeat {
    */
   shared: boolean;
   /**
+   * Pending tasks in the viewed workspaces this runner's claim would refuse
+   * for isolation, by requirement (runner-isolation-health isolationBlockedCounts).
+   * Set by Health's loader; absent elsewhere.
+   */
+  isolationBlocked?: { protected: number; trustedLocal: number };
+  /**
    * The viewing user created this runner's account: they manage it. False
    * for a teammate's runner (or one with no recorded creator), which the
    * Health page lists apart under "Team runners".

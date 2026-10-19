@@ -418,7 +418,7 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
           if (headSha) {
             const liveStatus = await fetchCiLifecycleStatus(installationId, repo, headSha);
             if (liveStatus !== null && liveStatus !== worker.prLifecycleStatus) {
-              await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: liveStatus, headSha, currentHeadSha: headSha });
+              await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: liveStatus, headSha, currentHeadSha: headSha }, { scope: factFunnelScope });
             }
           }
         }
@@ -469,4 +469,22 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
       }
     }
   }
+}
+
+/**
+ * `observeMergeStateOnRender` for a page that has not read the workspace's
+ * GitHub installation: it is read here, after the response, so the render
+ * reads nothing for the import. No installation, nothing to observe.
+ */
+export async function observeWorkspaceMergeStateOnRender(
+  rows: Array<{ id: string; prNumber: number; prUrl: string; workspaceId: string }>,
+  workspaceId: string,
+): Promise<void> {
+  const ws = await db.query.workspaces.findFirst({
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
+    columns: {},
+    with: { githubInstallation: { columns: { installationId: true } } },
+  });
+  const installId = ws?.githubInstallation?.installationId;
+  if (installId) await observeMergeStateOnRender(rows, installId);
 }

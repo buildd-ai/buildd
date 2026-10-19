@@ -1,3 +1,4 @@
+import { withoutRecentWorkerHeartbeat } from '@/lib/worker-patch-diff';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { isGrantSession } from '@/lib/grant-scope';
 import { NextRequest, NextResponse } from 'next/server';
@@ -11,6 +12,8 @@ import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnreadInteractive
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
 import { kernelDeliveryById } from '@/lib/workflow/authority';
 import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
+import { endOwner, isOwnerTask, notOwnerTaskSql, ownerTaskAttemptOf, requeueOwner, withdrawOwner } from '@/lib/workflow/owner-attempt';
+import { systemPrincipal } from '@/lib/workflow/kernel-client';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
 import { releaseAndNotify } from '@/lib/path-claim-release';
@@ -26,7 +29,40 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
 // over 3 hours before being killed manually.
 const MAX_TASK_FAILURES = 3;
 
-async function resetOrFailTask(taskId: string, now: Date, reason: string) {
+/**
+ * AC-1 slice 9 (workflow-kernel-library.md §9): a kernel delivery's owner task is moved through the
+ * kernel, never by this route's own status write. The attempt the move is for is the task's latest
+ * attempt row when it is the current claim's (made at or after `claimed_at`): its requeue is
+ * AttemptRequeued and its failure at the cap AttemptEnded(lost), each guarded on that worker still
+ * being the current attempt. With no attempt row since the claim (the claim's worker never ran), the
+ * claim's own start is withdrawn (AttemptWithdrawn), guarded on exactly that claim. So a cleanup that
+ * lands after the task was claimed again moves nothing. Null: the task is no delivery's owner.
+ */
+async function moveOwnerTask(taskId: string, outcome: 'requeued' | 'failed', endedWorkerIds?: string[]): Promise<'pending' | 'failed' | 'unchanged' | null> {
+  const row = await ownerTaskAttemptOf(taskId);
+  if (!row) return null;
+  const { task } = row;
+  // The stalled pass names the workers it timed out: only one of them may be the attempt it moves. A
+  // newer attempt on the task (claimed again after that worker went quiet) keeps its task.
+  if (endedWorkerIds && (!row.currentWorkerId || !endedWorkerIds.includes(row.currentWorkerId))) return 'unchanged';
+  const principal = systemPrincipal('system:tasks-cleanup');
+  let moved: boolean;
+  if (row.currentWorkerId) {
+    const workerId = row.currentWorkerId;
+    if (outcome === 'requeued') {
+      moved = await requeueOwner({ task, workerId, reason: 'cleanup_requeue', source: 'tasks-cleanup', principal });
+    } else {
+      moved = (await endOwner({ task, workerId, status: 'lost', localHeadSha: row.head?.localHeadSha ?? null, commitCount: row.head?.commitCount ?? 0, source: 'tasks-cleanup', principal })) === 'failed';
+    }
+  } else if (row.claim) {
+    moved = await withdrawOwner({ task, claim: row.claim, outcome, reason: outcome === 'requeued' ? 'orphaned_claim' : 'retry_cap', source: 'tasks-cleanup', principal });
+  } else {
+    moved = false;
+  }
+  return moved ? (outcome === 'requeued' ? 'pending' : 'failed') : 'unchanged';
+}
+
+async function resetOrFailTask(taskId: string, now: Date, reason: string, endedWorkerIds?: string[]) {
   // Only chargeable failures count against the cap — budget/infra/never-started/
   // silent-start exits reflect external constraints, not task defects. The
   // exclusion list lives in worker-exit-taxonomy (it used to be duplicated here
@@ -48,21 +84,32 @@ async function resetOrFailTask(taskId: string, now: Date, reason: string) {
       columns: { context: true, workspaceId: true },
     });
     const existingCtx = (existing?.context || {}) as Record<string, unknown>;
-    await db
-      .update(tasks)
-      .set({
-        status: 'failed',
-        claimedBy: null,
-        claimedAt: null,
-        expiresAt: null,
-        updatedAt: now,
-        context: {
-          ...existingCtx,
-          terminalError: 'retry_cap_exceeded',
-          terminalReason: `${failureCount} worker failures (${reason}); aborting auto-retry`,
-        },
-      })
-      .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
+    const capContext = {
+      ...existingCtx,
+      terminalError: 'retry_cap_exceeded',
+      terminalReason: `${failureCount} worker failures (${reason}); aborting auto-retry`,
+    };
+    const owner = await moveOwnerTask(taskId, 'failed', endedWorkerIds);
+    if (owner === 'unchanged') return 'unchanged' as const;
+    if (owner === 'failed') {
+      // The kernel failed it: record why on the failed task.
+      await db
+        .update(tasks)
+        .set({ context: capContext, updatedAt: now })
+        .where(and(eq(tasks.id, taskId), eq(tasks.status, 'failed')));
+    } else {
+      await db
+        .update(tasks)
+        .set({
+          status: 'failed',
+          claimedBy: null,
+          claimedAt: null,
+          expiresAt: null,
+          updatedAt: now,
+          context: capContext,
+        })
+        .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql(), notOwnerTaskSql()));
+    }
 
     // This is a TERMINAL write, so it must run the same post-terminal resolution
     // every other terminal writer runs (lib/stale-workers.ts resolveStaleTask,
@@ -82,18 +129,28 @@ async function resetOrFailTask(taskId: string, now: Date, reason: string) {
     return 'failed' as const;
   }
 
-  await db
-    .update(tasks)
-    .set({
-      status: 'pending',
-      claimedBy: null,
-      claimedAt: null,
-      expiresAt: null,
-      updatedAt: now,
-      // A requeue ends the claim, so a force claim's audit goes with it.
-      context: sql`COALESCE(${tasks.context}, '{}'::jsonb) - ${FORCE_CLAIM_CONTEXT_KEY}`,
-    })
-    .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
+  const owner = await moveOwnerTask(taskId, 'requeued', endedWorkerIds);
+  if (owner === 'unchanged') return 'unchanged' as const;
+  if (owner === 'pending') {
+    // A requeue ends the claim, so a force claim's audit goes with it.
+    await db
+      .update(tasks)
+      .set({ context: sql`COALESCE(${tasks.context}, '{}'::jsonb) - ${FORCE_CLAIM_CONTEXT_KEY}` })
+      .where(and(eq(tasks.id, taskId), eq(tasks.status, 'pending')));
+  } else {
+    await db
+      .update(tasks)
+      .set({
+        status: 'pending',
+        claimedBy: null,
+        claimedAt: null,
+        expiresAt: null,
+        updatedAt: now,
+        // A requeue ends the claim, so a force claim's audit goes with it.
+        context: sql`COALESCE(${tasks.context}, '{}'::jsonb) - ${FORCE_CLAIM_CONTEXT_KEY}`,
+      })
+      .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql(), notOwnerTaskSql()));
+  }
   await wakeTask(taskId, 'task.requeued');
   return 'pending' as const;
 }
@@ -183,7 +240,7 @@ export async function POST(req: NextRequest) {
   // on MCP activity, not runner syncs, and it has its own longer TTL in
   // cleanupStaleWorkers (step 3). One hour of a person's local agent working
   // without an MCP call is normal (friction 92866723).
-  const stalledRunning = !hasAccounts ? [] : await db.query.workers.findMany({
+  const stalledCandidates = !hasAccounts ? [] : await db.query.workers.findMany({
     where: sqlWhere(and(
       inArray(workers.accountId, scope.accountIds),
       inArray(workers.status, ['running', 'starting']),
@@ -193,6 +250,7 @@ export async function POST(req: NextRequest) {
     columns: { id: true, taskId: true },
   });
 
+  const stalledRunning = await withoutRecentWorkerHeartbeat(stalledCandidates, () => oneHourAgo.getTime());
   if (stalledRunning.length > 0) {
     const stalledWorkerIds = stalledRunning.map(w => w.id);
     const stalledTaskIds = stalledRunning.map(w => w.taskId).filter(Boolean) as string[];
@@ -229,7 +287,7 @@ export async function POST(req: NextRequest) {
         columns: { id: true },
       });
       for (const t of stillAssigned) {
-        await resetOrFailTask(t.id, now, 'worker timed out — no activity for over 1 hour');
+        await resetOrFailTask(t.id, now, 'worker timed out — no activity for over 1 hour', stalledWorkerIds);
       }
     }
 
@@ -258,7 +316,11 @@ export async function POST(req: NextRequest) {
     if (hasActive) continue;
 
     // Check if any worker completed or has deliverables (PR, artifacts, structured output, commits)
-    let completedWorker = taskWorkers.find(w => w.status === 'completed');
+    // AC-1 slice 9: a kernel owner's completed worker is promoted only when it is the task's current
+    // attempt. An older attempt's end would be a late end for the delivery; with none, the task falls
+    // through to the requeue below, which moves it by its current attempt.
+    const currentOwnerWorker = isOwnerTask(task) ? (await ownerTaskAttemptOf(task.id))?.currentWorkerId ?? null : undefined;
+    let completedWorker = taskWorkers.find(w => w.status === 'completed' && (currentOwnerWorker === undefined || w.id === currentOwnerWorker));
     // A workflow-kernel attempt (docs/specs/workflow-state-kernel.md §9, AC-10) is never promoted to
     // `completed` from a dead worker's local commits: a local commit is not delivery. The kernel hears
     // the attempt's end from the reaper (AttemptEnded(lost)); here the task only falls through to the
@@ -278,10 +340,22 @@ export async function POST(req: NextRequest) {
       }
     }
     if (completedWorker) {
+      // AC-1 slice 9: a kernel owner's completed worker is its attempt's end (AttemptEnded, then the
+      // guarded projection): the task completes only while that worker is its current attempt. Its
+      // deliverables record is written either way; only another task's status is written here.
+      const ownerAttempt = isOwnerTask(task);
+      if (ownerAttempt) {
+        await endOwner({
+          task: { id: task.id, workspaceId: task.workspaceId, deliveryId: task.deliveryId!, deliveryRole: 'owner', context: task.context },
+          workerId: completedWorker.id, status: 'completed',
+          localHeadSha: completedWorker.lastCommitSha ?? null, commitCount: completedWorker.commitCount ?? 0,
+          source: 'tasks-cleanup', principal: systemPrincipal('system:tasks-cleanup'),
+        });
+      }
       await db
         .update(tasks)
         .set({
-          status: 'completed',
+          ...(ownerAttempt ? {} : { status: 'completed' as const }),
           result: {
             branch: completedWorker.branch,
             commits: completedWorker.commitCount ?? 0,
@@ -293,7 +367,7 @@ export async function POST(req: NextRequest) {
           },
           updatedAt: now,
         })
-        .where(eq(tasks.id, task.id));
+        .where(and(eq(tasks.id, task.id), ...(ownerAttempt ? [eq(tasks.status, 'completed')] : [])));
       orphanedTasks++;
       continue;
     }

@@ -57,6 +57,7 @@ import {
   DEAD_PR_LIFECYCLE, isDeliverableMissionTask, latestWorkerByTask, missionWorkHolder, missionWorkStateFromRows,
   type MissionWorkerRow, type MissionWorkState,
 } from '@/lib/mission-work-state';
+import { noteWorkChanged } from '@/lib/work-changed';
 
 export type { MissionWorkState, UnfinishedMissionTask, UnmergedMissionPr } from '@/lib/mission-work-state';
 
@@ -535,7 +536,7 @@ export async function openMissionIntegrationPr(
       updatedAt: new Date(),
     })
     .where(eq(workers.id, ownerWorker.id));
-  await recordPrFact({ workerId: ownerWorker.id }, { kind: 'open' });
+  await recordPrFact({ workerId: ownerWorker.id }, { kind: 'open' }, { scope: factFunnelScope });
 
   await claimMissionPrimaryPr(missionId, prNumber, prUrl, {
     baseRef: recordedBaseRef,
@@ -638,6 +639,8 @@ async function ensureMissionPrOwnerRows(args: {
       priority: 0,
     })
     .returning({ id: tasks.id });
+  // A new task in the workspace's lists (spec 3ef37387 R-20).
+  if (!reusableTask && ownerTask) noteWorkChanged({ taskIds: [ownerTask.id], missionIds: [missionId] });
 
   // An owner worker with no `prUrl` is a previous attempt that never reached
   // GitHub — attach to it instead of adding another.

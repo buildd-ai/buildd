@@ -417,6 +417,55 @@ describe('AC-23 / a11abc4b: refresh PRs left on a merged branch', () => {
   });
 });
 
+describe('a refresh PR GitHub moved to trunk when it deleted the merged branch', () => {
+  /** The delete-on-merge sequence: merge, GitHub retargets the PR to trunk, the webhook records PrMovedOff. */
+  async function mergeDeletingBranch(prNumber: number) {
+    refreshPrs = new Set([prNumber]);
+    work = { unfinishedTasks: 0, openTaskPrs: 0 };
+    const m = gh.mergeEpochPr(10, { deleteBranch: true });
+    expect(gh.prs.get(prNumber)!.base).toBe(TRUNK);
+    await epochs.applyMissionEpochCommand(missionId, { type: 'PrMovedOff', actor: 'test', at: '2026-10-14T12:00:00.000Z', branch: ROOT, prNumber }, deps());
+    await epochs.epochMerged(mergedInput(m), deps());
+    await epochs.reconcileMissionEpochs(missionId, deps());
+    return m;
+  }
+
+  test('contained work closes as redundant, superseded by the delivery PR, and the epoch retires', async () => {
+    await inFlight();
+    gh.commit('r5', ['b1', 't0']);
+    gh.sameTree.add('r5');
+    gh.prs.set(5, { number: 5, state: 'open', base: ROOT, headSha: 'r5', headRef: 'buildd/refresh-5' });
+    await mergeDeletingBranch(5);
+    expect(gh.prs.get(5)!.state).toBe('closed');
+    expect(superseded).toEqual([{ prNumber: 5, satisfiedBy: 10 }]);
+    expect(notes).toEqual([]);
+    const [e1] = await epochRows();
+    expect(e1!.settlement?.held ?? []).toEqual([]);
+    expect(e1!.settled_at).not.toBeNull();
+    expect(e1!.retired_at).not.toBeNull();
+  });
+
+  test('unique work is held, asks a person once, never merges to trunk, and holds mission completion', async () => {
+    await inFlight();
+    gh.commit('r6', ['b1', 't0']);
+    gh.conflicts.add('r6');
+    gh.prs.set(6, { number: 6, state: 'open', base: ROOT, headSha: 'r6', headRef: 'buildd/refresh-6' });
+    await mergeDeletingBranch(6);
+    await epochs.reconcileMissionEpochs(missionId, deps());
+    expect(gh.prs.get(6)!.state).toBe('open');
+    expect(gh.calls.some((c) => c.method === 'PUT' && /\/pulls\/6\/merge$/.test(c.path))).toBe(false);
+    expect(gh.calls.some((c) => c.path === '/repos/acme/app/merges' && (c.body as { base?: string })?.base === TRUNK)).toBe(false);
+    expect(superseded).toEqual([]);
+    expect(notes).toHaveLength(1);
+    const [e1] = await epochRows();
+    expect(e1!.settlement?.held?.length).toBe(1);
+    expect(e1!.retired_at).toBeNull();
+    const { epochCompletionHold } = await import('@buildd/workflow-kernel/delivery-epochs');
+    const loaded = (await epochs.epochsForMissions([missionId])).get(missionId)!;
+    expect(epochCompletionHold({ epochs: loaded }, () => 0)).toMatchObject({ holds: true });
+  });
+});
+
 describe('retirement reads GitHub fresh', () => {
   test('a PR opened on the merged branch after settlement keeps it, and is settled on the next pass', async () => {
     await inFlight();

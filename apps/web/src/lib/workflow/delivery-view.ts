@@ -15,7 +15,11 @@ import { toAttemptSnapshot, toDeliverySnapshot, toFindingSnapshot, toRoundSnapsh
 import { workspaceKernelOnSql } from './authority';
 import { LANE_PARKED_OUTCOME } from './landing-lane';
 import { ownerDeliveryDisplays, replacedFailedTaskIds, type DeliveryDisplay } from './delivery-display';
+import type { EscalationBriefPermissions } from '@buildd/workflow-kernel/escalation-brief';
 import { deriveDeliveryView, type AttemptTaskRef, type DeliveryView, type RemediationRef, type TransitionRef } from './projections';
+
+/** The escalations an escalation brief is built for (escalation-brief.ts): only these need the viewer's permissions. */
+const REVIEW_ESCALATION_REASONS = new Set(['review_escalated', 'review_exhausted', 'review_unavailable']);
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -29,6 +33,14 @@ export interface DeliveryViewsOptions {
    * `findings` is empty and `openFindings` 0, as before §7.
    */
   withFindings?: boolean;
+  /**
+   * Living Spec r7 AC-45/AC-46 (conformance follow-up 22): whether the viewer may approve past
+   * remaining findings, per workspace. A surface that knows the viewer passes what the merge
+   * policy and the viewer's permission say; absent, the brief offers no override (the safe
+   * reading), never a guess. Asked only for a delivery escalated for a review reason (the one
+   * the brief is built for), so a surface may read GitHub here without paying for every view.
+   */
+  escalationPermissions?: (workspaceId: string) => EscalationBriefPermissions | undefined | Promise<EscalationBriefPermissions | undefined>;
 }
 
 export function deliveryViewsSql(taskIds: string[], opts: DeliveryViewsOptions = {}): SQL {
@@ -133,7 +145,7 @@ export function laneWaitFrom(outcome: unknown): { behindPr: number | null } | nu
   return { behindPr: m ? Number(m[1]) : null };
 }
 
-export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson: ApprovedMergeRule = PERSON_MERGES): DeliveryView | null {
+export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson: ApprovedMergeRule = PERSON_MERGES, escalationPermissions?: EscalationBriefPermissions): DeliveryView | null {
   if (!row.delivery) return null;
   const rounds = ((row.rounds as J[]) ?? []).map(toRoundSnapshot);
   // §7: the proven push head stays on the read model, so a repair can say "pushed · testing".
@@ -154,6 +166,7 @@ export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson:
     remediation: remediationFrom(row.remediation as J | null, now),
     approvedNeedsPerson: (row.delivery as J).state === 'APPROVED' ? approvedNeedsPerson(row) : false,
     laneWait: laneWaitFrom(row.lane_wait),
+    ...(escalationPermissions ? { escalationPermissions } : {}),
   });
   return view ? withMergeContradiction(view, row.merge_contradiction as J | null | undefined) : null;
 }
@@ -188,7 +201,12 @@ export async function getDeliveryViewsForTasks(taskIds: string[], exec: Exec = d
     const rows = (res.rows ?? []) as J[];
     const needsPerson = rule ?? (rows.some(r => (r.delivery as J | null)?.state === 'APPROVED') ? await approvedMergeRule() : PERSON_MERGES);
     for (const row of rows) {
-      const v = rowToDeliveryView(row, Date.now(), needsPerson);
+      const dl = row.delivery as J | null;
+      const ws = dl?.workspace_id;
+      const escalated = dl?.state === 'ESCALATED' && typeof dl.state_reason === 'string' && REVIEW_ESCALATION_REASONS.has(dl.state_reason);
+      const perms = escalated && typeof ws === 'string' && opts.escalationPermissions
+        ? await Promise.resolve(opts.escalationPermissions(ws)).catch(() => undefined) : undefined;
+      const v = rowToDeliveryView(row, Date.now(), needsPerson, perms);
       if (!v) continue;
       if (want.has(v.ownerTaskId)) out.set(v.ownerTaskId, v);
       for (const h of v.history) if (want.has(h.taskId)) out.set(h.taskId, v);

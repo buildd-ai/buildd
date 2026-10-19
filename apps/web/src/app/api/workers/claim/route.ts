@@ -8,7 +8,8 @@ import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
-import { TASK_ISOLATION_CONTEXT_KEY, type TaskIsolationStamp } from '@buildd/shared';
+import { TASK_ISOLATION_CONTEXT_KEY, type TaskIsolationStamp, parseRunnerLoginUse, pickLoginBackend } from '@buildd/shared';
+import { claudeDefaultTaskIds } from './login-mode-gate';
 import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials, NEEDS_INPUT_ERROR_PREFIX, workerHoldsRunnerSlot, RUNNER_LIVE_WINDOW_MS } from '@buildd/shared';
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
@@ -62,7 +63,7 @@ import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, ty
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
 import { callerSeatKeys } from '@/lib/runner-seat-wall';
-import { findBlockingPr, declaresNoScope, intersectPaths, boundDeferralPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { findBlockingPr, intersectPaths, boundDeferralPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
   BYPASS_MISSION_BUDGET_KEY,
@@ -81,7 +82,7 @@ import { describeExplicitDeferral } from './explicit-deferral';
 import { decideClaimIsolation, teamSizeLoader } from './isolation-gate';
 import { CREDENTIAL_BLOCK_CONTEXT_KEY, credentialBlockFromDeferral, stampCredentialBlock } from '@/lib/credential-block';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
-import { advisoryBlockingPeer, advisoryMutexApplies, findActiveClaimBlocker, producesNoFileEdits } from './coordination-gates';
+import { findActiveClaimBlocker } from './coordination-gates';
 import { loadMissionCoordination, loadOpenPrTasksByWorkspace } from './coordination-snapshot';
 import { missionNotHeld, missionNotLocal, taskNotHeld, taskNotReserved, TASK_RESERVATION_KEY, checkTaskMissionLocal } from './held-gate';
 import { diagnoseExplicitTaskExclusion, evaluateForcedGates, explicitExclusionGateEvent, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
@@ -95,7 +96,8 @@ import { appliesWorkspacePausedGate, workspaceNotPausedGate } from './workspace-
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
 import { repinSpecAtClaim, type ClaimPin } from '@/lib/specs/claim-pin';
-import { cancelSkippedTask, isRepairRole, ownerClaimOpenSql, projectAttemptStart } from '@/lib/workflow/seam';
+import { cancelSkippedTask, isRepairRole, notOwnerTaskSql, ownerClaimOpenSql, projectAttemptStart } from '@/lib/workflow/seam';
+import { isOwnerTask, withdrawOwner, type OwnerTask } from '@/lib/workflow/owner-attempt';
 // T9 is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
 import { attemptStarted as kernelAttemptStarted, attemptStartKey, parkAttemptStart, claimFix as claimKernelFix, ControlPlaneUnavailableError, KernelCommandRefusedError, kernelPrincipalOf, withControlPlaneBudget, type KernelPrincipal } from '@/lib/workflow/kernel-client';
 
@@ -148,7 +150,6 @@ import { planClaimBatch, type ClaimPlan, type PlannerThresholds } from '@buildd/
 import {
   buildClaimPlanInput,
   EMPTY_PLANNER_SIGNALS,
-  plannerScopedTaskIds,
   resolveClaimPlannerConfig,
   splitOwnOpenPrs,
   type ClaimPlannerMode,
@@ -160,8 +161,6 @@ import { effectiveBackendOf, fireClaimPlanRecord, fireOrderedBehind, loadPlanner
 import {
   ClaimHoldCollector,
   acquireGatedStartPaths,
-  gatedStartApplies,
-  gatedStartReachable,
   isLiveHolderStatus,
   openPrStartVerdict,
   releaseGatedStartPaths,
@@ -176,8 +175,10 @@ import { loadIdleHolderIds, loadSoftOverlapHolders } from './soft-overlap-store'
 import { defaultPrDiffScopeDeps, prefetchPrDiffScopes } from '@/lib/claim-pr-diff-scope';
 import { loadPairProbeEvidence } from '@/lib/sibling-pair-probe';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { runnerLiveCandidateCutoff, withLiveRunnerBeats } from '@/lib/runner-beats';
 import { CLAIM_COOLDOWN_MS, claimOrderBy, claimableWorkspaceIds } from '@/lib/claim-order';
 import { claimCandidateWhere } from '@/lib/claim-candidate-where';
+import { settleWorkChanges } from '@/lib/settle-work-changes';
 
 // Candidate pages fetched past role-env-gapped tasks before the window is cut
 // anyway (at most 4 × candidateLimit rows). See the candidate fetch.
@@ -189,11 +190,22 @@ const ROLE_ENV_WINDOW_MAX_PAGES = 4;
  * undoes our own claim, it is not new runnable state, and a wake here would loop claim, refuse,
  * rollback, wake across every runner.
  */
-async function rollBackClaim(taskId: string, accountId: string): Promise<void> {
+async function rollBackClaim(taskId: string, accountId: string, owner: { task: OwnerTask; claimedAt: string; principal: KernelPrincipal | null } | null = null): Promise<void> {
+  // AC-1 slice 9: a kernel owner's start was the kernel's (AttemptStarted), so giving it back is too
+  // (AttemptWithdrawn), guarded on exactly this claim: a rollback that lands after the task moved on
+  // moves nothing. This write is every other task's.
+  if (owner) {
+    // Its reason tells the tasks trigger not to wake dispatch, as withDispatchHint does below.
+    await withdrawOwner({
+      task: owner.task, claim: { claimedBy: accountId, claimedAt: owner.claimedAt }, outcome: 'requeued',
+      reason: 'claim_rollback', source: 'claim', principal: owner.principal,
+    });
+    return;
+  }
   await withDispatchHint({ suppress: 'claim_rollback' }, db
     .update(tasks)
     .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
-    .where(and(eq(tasks.id, taskId), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, accountId))));
+    .where(and(eq(tasks.id, taskId), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, accountId), notOwnerTaskSql())));
 }
 
 /**
@@ -254,6 +266,9 @@ async function startKernelOwnerAttempt(p: {
 }
 
 export async function POST(req: NextRequest) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   const claimStarted = performance.now();
   let phaseStarted = claimStarted;
   let pathChecksMs = 0;
@@ -355,8 +370,8 @@ export async function POST(req: NextRequest) {
   // gates a person may override (deps, held mission, dead subject, startAt,
   // mission concurrency/pacing, path overlap, workspace cap) and never the ones
   // that protect correctness, cost or capacity (live worker, a person's hold on
-  // the task, the mission budget, scope-undeclared serialization, role/runner
-  // routing, provider walls, account limits). Granted below, once the task's
+  // the task, the mission budget, role/runner routing, provider walls,
+  // account limits). Undeclared scope is not a gate, so there is nothing to lift. Granted below, once the task's
   // team is known.
   const forceRequested = body.forceOverride === true && !!taskId && hasTokenRouteAdminAccess(account, req, 'admin');
   let forceClaim = false;
@@ -507,13 +522,18 @@ export async function POST(req: NextRequest) {
   // The limit is the slots the account's live runners report, added up; the
   // account's own number only when none reports (accountWorkerSlotLimit). A
   // failed read keeps the account's number, which is what applied before.
+  // A stored beat can be one write interval old: candidates by the widened
+  // cutoff, then "live" by the newer of it and the Redis beat (lib/runner-beats.ts).
+  const slotsNow = Date.now();
   const liveRunnerSlots = await db.query.workerHeartbeats.findMany({
     where: sqlWhere(and(
       eq(workerHeartbeats.accountId, account.id),
-      gte(workerHeartbeats.lastHeartbeatAt, new Date(Date.now() - RUNNER_LIVE_WINDOW_MS)),
+      gte(workerHeartbeats.lastHeartbeatAt, runnerLiveCandidateCutoff(slotsNow, RUNNER_LIVE_WINDOW_MS)),
     )),
-    columns: { maxConcurrentWorkers: true },
-  }).then(rows => rows.map(r => r.maxConcurrentWorkers)).catch((err) => {
+    columns: { accountId: true, localUiUrl: true, lastHeartbeatAt: true, maxConcurrentWorkers: true },
+  }).then(rows => withLiveRunnerBeats(rows))
+    .then(rows => rows.filter(r => slotsNow - r.lastHeartbeatAt.getTime() <= RUNNER_LIVE_WINDOW_MS).map(r => r.maxConcurrentWorkers))
+    .catch((err) => {
     console.warn('[claim] could not read live runner slots, using the account limit:', err);
     return [] as number[];
   });
@@ -870,8 +890,8 @@ export async function POST(req: NextRequest) {
   // (every flip below is in-memory). Stamped on the claim's context write as
   // BACKEND_ROUTING_KEY so explain / get_task can say why the backend changed.
   const backendRouting = new Map<string, ClaimBackendRouting>();
-  const noteRouting = (task: { id: string }, from: AgentBackend, backend: AgentBackend, reason: ClaimRoutingReason) => {
-    backendRouting.set(task.id, { backend, from, reason, at: now.toISOString() });
+  const noteRouting = (task: { id: string }, from: AgentBackend, backend: AgentBackend, reason: ClaimRoutingReason, mode?: string) => {
+    backendRouting.set(task.id, { backend, from, reason, at: now.toISOString(), ...(mode ? { mode } : {}) });
   };
 
   // Apply the team toggle's SAFE direction up front: if a task's backend is
@@ -907,6 +927,16 @@ export async function POST(req: NextRequest) {
 
   const runnerHasCodexBackend = capabilities.includes('backend:codex');
   const runnerHasLocalCodexAuth = capabilities.includes('OPENAI_API_KEY') || capabilities.includes('CODEX_HOME');
+  // The runner's login mode (spec 34a48877 R-14 to R-19): how its own logins
+  // share its slots. Null for an older runner, which keeps today's behaviour
+  // exactly (Claude, with Codex only as failover, one per workspace).
+  const loginUse = parseRunnerLoginUse((body as { loginUse?: unknown }).loginUse);
+  // R-17: a runner running Codex on its own machine login is limited by its
+  // own share, not by the one-Codex-per-workspace cap. A delivered credential
+  // keeps the cap.
+  const ownCodexLogin = !!loginUse && runnerHasCodexBackend && runnerHasLocalCodexAuth && !cloudExecutor;
+  // This runner's agents per backend: what it sent, plus what this claim starts.
+  const loginRunning = { claude: loginUse?.running.claude ?? 0, codex: loginUse?.running.codex ?? 0 };
   // A team's agent model endpoint can power Codex too (OpenAI-compatible
   // kinds only), but only for a runner that will actually apply it — one that
   // declares AGENT_ENDPOINT_RUNNER_FEATURE, same as the Claude path.
@@ -1177,6 +1207,16 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // Candidates a runner's login mode must leave on Claude (spec 34a48877 R-16).
+  // Only read when the mode can move work to Codex at all.
+  const loginTiedIds = loginUse && loginUse.mode !== 'claude-first'
+    ? await claudeDefaultTaskIds(filteredTasks as any[]).catch((err) => {
+      // Unknown defaults: move nothing (today's behaviour), never guess.
+      console.warn('[claim] login mode default lookup failed:', err);
+      return new Set(filteredTasks.map(t => t.id));
+    })
+    : new Set<string>();
+
   // Claim tasks and create workers with optimistic locking to prevent double-assignment.
   // Note: neon-http driver does not support interactive transactions (where intermediate
   // results inform subsequent queries). Instead, we use atomic UPDATE...WHERE status='pending'
@@ -1346,13 +1386,13 @@ export async function POST(req: NextRequest) {
   // Why the last tryFlipToCodex returned false: only `no_credential` is a missing key.
   let codexFlipFailure: 'paused' | 'slot_taken' | 'no_credential' | undefined;
   const tryFlipToCodex = async (task: any, teamId: string | undefined, wsId: string | undefined, reason: ClaimRoutingReason): Promise<boolean> => {
-    const codexFree = !!wsId && !codexBusyWorkspaces.has(wsId) && !codexFlippedWorkspaces.has(wsId);
+    const codexFree = !!wsId && (ownCodexLogin || (!codexBusyWorkspaces.has(wsId) && !codexFlippedWorkspaces.has(wsId)));
     codexFlipFailure = undefined;
     if (teamId && (await teamPauses(teamId)).has('codex')) { codexFlipFailure = 'paused'; return false; }
     if (!codexFree) { codexFlipFailure = 'slot_taken'; return false; }
     codexFlipFailure = 'no_credential';
     if (wsId && teamId && codexFree && await codexAuthReachesRunner({ teamId, workspaceId: wsId })) {
-      noteRouting(task, (task.backend || 'claude') as AgentBackend, 'codex', reason);
+      noteRouting(task, (task.backend || 'claude') as AgentBackend, 'codex', reason, reason === 'runner_login_mode' ? loginUse?.mode : undefined);
       task.backend = 'codex';
       codexFlippedWorkspaces.add(wsId);
       return true;
@@ -1466,28 +1506,23 @@ export async function POST(req: NextRequest) {
   // derive the base. Without them the prompt could only see the workspace's
   // trunk, which is exactly how a worker came to be told "PR to <trunk>" by a
   // server that then refused trunk for that task.
-  // Mission rows, in-flight counts (reviews excluded) and each mission's
-  // scope-undeclared in-flight set: see ./coordination-snapshot.
+  // Mission rows and in-flight counts (reviews excluded): see ./coordination-snapshot.
   const filteredMissionIds = [...new Set(
     filteredTasks.map(t => (t as any).missionId as string | null).filter(Boolean) as string[],
   )];
   const {
     missionClaimMap,
     missionActiveCountMap,
-    missionAdvisoryInFlight,
     missionInFlightRows,
   } = await loadMissionCoordination(filteredMissionIds);
 
   // Hold/start at claim (knowledge-base: buildd/design/conflict-aware-orchestration.md §5b).
   // The collector only remembers advisory deferrals that pass every
-  // deterministic rail (no I/O); the decisions run after the response. The
-  // gated START path is live (task 7eb191b9): an advisory deferral looks up an
-  // applied Jev START for its exact state, one indexed ledger read, and holds
-  // on any miss or error. `CLAIM_HOLD_APPLYING_FRACTION = 0` turns it off.
+  // deterministic rail (no I/O); the decisions run after the response and are
+  // recorded, never applied: the overlap policy decides (./overlap-policy).
   const holdStart = new ClaimHoldCollector();
-  const holdStartGated = gatedStartReachable();
-  // Every hold/start call in the loop is non-throwing: the collector methods,
-  // gatedStartApplies and acquireGatedStartPaths catch internally, and this
+  // Every hold/start call in the loop is non-throwing: the collector methods
+  // and acquireGatedStartPaths catch internally, and this
   // context builder does too. The bookkeeping runs for every team, opted in or
   // not, so a malformed row must cost a skipped note, never a failed claim.
   const holdStartContext = (t: any, isForced: boolean): ClaimHoldTaskContext | null => {
@@ -1613,8 +1648,6 @@ export async function POST(req: NextRequest) {
   const applyIds = new Set(applyTasks.map(t => t.id));
   const applyTaskById = new Map(applyTasks.map(t => [t.id, t]));
   const applyInitial = applyTasks.length > 0 ? planFor(applyTasks, [], availableSlots) : null;
-  /** Predicted-scope tasks whose advisory_manifest mutex the planner's edges replace. */
-  const plannerReplacesMutex = applyInitial ? plannerScopedTaskIds(applyInitial.ctx) : new Set<string>();
   const plannerAttempted = new Set<string>();
   const claimedTasksSoFar = () => claimedWorkers.map(w => w.task as unknown);
   function* plannedClaimOrder(): Generator<(typeof filteredTasks)[number]> {
@@ -1644,7 +1677,6 @@ export async function POST(req: NextRequest) {
     // wins, so the outcome join can grade a started pair and the dashboard can
     // say who decided.
     const softOverlapStarted: Array<Record<string, unknown>> = [];
-    const jevStartNotes: ClaimHoldNote[] = [];
     let sawCoordinationBlocker = false;
     // Captured before any provider-toggle/budget-failover flip below can mutate
     // (task as any).backend, so the Codex single-flight check further down tests
@@ -2038,90 +2070,20 @@ export async function POST(req: NextRequest) {
           if (bypassOrDefer('mission_paced', { missionId: taskMissionId, nextEligibleAt: pacingBlock.nextEligibleAt.toISOString() })) continue;
         }
 
-        // 4. Advisory-manifest serialization (compensating guard).
-        //    An undeclared scope — null, [], or '**' (declaresNoScope) — no
-        //    longer mints stored dependsOn edges (correct — those edges block
-        //    until completed+merged, which is not what a file conflict needs),
-        //    and neither path-overlap layer can help: layer 1 returns null for a
-        //    wildcard candidate, and layer 2 is nested inside
-        //    `if (taskManifest?.length)` and compares *this* task's concrete
-        //    paths — of which a scope-undeclared task has none, whatever leases
-        //    the other side holds. Two scope-undeclared tasks in one mission
-        //    would therefore edit the same files concurrently and ping-pong
-        //    conflict retries — the exact failure mode the ['**'] default was
-        //    introduced to stop.
-        //
-        //    Auto-leasing observed touches (PATCH /api/workers/[id] →
-        //    claimObservedPaths) does not retire this guard. It fills layer 2's
-        //    supply side, so a task that DID declare paths is now deferred on a
-        //    file a live worker is actually editing. It cannot help here,
-        //    because the deferral this guard makes is decided by the *candidate*
-        //    having nothing to compare, and because a lease only exists after
-        //    the holder's first sync — this gate runs before either task starts.
-        //
-        //    So: at most one scope-undeclared task per mission in flight. This
-        //    is a SOFT deferral — the task stays pending and is retried on the
-        //    next poll (seconds), never a stored edge (which would wait for
-        //    completed + PR merged). Mission-scoped, so it cannot reintroduce
-        //    workspace-wide serialization.
-        //
-        //    The in-flight set includes `waiting_input` workers (same statuses
-        //    the mission concurrency count uses): that worker's worktree still
-        //    holds uncommitted edits, so treating it as free would reintroduce
-        //    the conflict. Cost: a mission's other scope-undeclared tasks wait
-        //    on a parked question — visible as the advisory_manifest deferral
-        //    counter and as the parked task's own "Needs Input" state.
-        //
-        //    `category: 'review'` candidates skip this gate entirely: a
-        //    reviewer never edits files, so it cannot conflict with whatever
-        //    the mission's in-flight scope-undeclared occupant is doing, and
-        //    gating it here just adds a second review-starvation failure mode
-        //    on top of the one already fixed above (an orchestration task
-        //    holding the slot would otherwise block every reviewer forever).
-        //
-        //    `artifact_required` / `none` candidates skip it too, and never
-        //    occupy the slot: their deliverable is not a code change, so they
-        //    have no files to collide on. Without this a research task filed
-        //    without a manifest (there is no way to add one after creation)
-        //    waited behind any unrelated '**' task in the mission.
-        //    Under the planner's 'apply', a task with a confident predicted
-        //    scope (plannerReplacesMutex) was already ordered by real edges
-        //    against that scope, so the mutex no longer applies to it.
-        //    `localMissionClaim` (verified interactive session, explicit
-        //    taskId, mission.executor='local' — same predicate as the role
-        //    gate exemption above) also skips it: a person running a local
-        //    mission's tasks from their own session is the one choosing what
-        //    to claim next, in an isolated worktree per task, same as the
-        //    LX-2/LX-4 exemptions already granted to the mission-local and
-        //    role gates. This is narrower than an admin force claim — which
-        //    still does NOT lift this gate (see the force-claim comment
-        //    block and its regression test) — because force alone carries no
-        //    guarantee a human is actually supervising concurrent work.
-        if (advisoryMutexApplies(task as any) && !plannerReplacesMutex.has(task.id) && !localMissionClaim) {
-          const blockingPeer = advisoryBlockingPeer(task.id, missionAdvisoryInFlight.get(taskMissionId));
-          // Noted like layer 1 above. An applied gated START relaxes
-          // only this serialization; there are no declared paths to acquire,
-          // and observed touches are leased by the exclusive primitive later.
-          if (blockingPeer) sawCoordinationBlocker = true;
-          const holdCtx = blockingPeer ? holdStartContext(task, forced) : null;
-          const holdNote = holdCtx && blockingPeer ? holdStart.noteAdvisoryManifest(holdCtx, blockingPeer) : null;
-          if (blockingPeer && holdStartGated && holdNote && await gatedStartApplies(holdNote)) {
-            jevStartNotes.push(holdNote);
-            console.log(`[claim] gated_start: task ${task.id} past advisory_manifest serialization (peer ${blockingPeer})`);
-          } else if (blockingPeer && liftedByForce('advisory_manifest') && !forced) {
-            // A person's dashboard Force start lifts this serialization for
-            // this task (artifact §7.2: human force only). The admin MCP
-            // force claim above still does not.
-            if (!startForceBypassed.includes('advisory_manifest')) startForceBypassed.push('advisory_manifest');
-          } else if (blockingPeer) {
-            console.log(
-              `[claim] advisory_manifest_serialized: task ${task.id} deferred ` +
-              `(mission ${taskMissionId} already has scope-undeclared task ${blockingPeer} in flight)`,
-            );
-            deferTask(task, 'advisory_manifest', { missionId: taskMissionId, blockingPeer });
-            continue;
-          }
-        }
+        // No scope-undeclared serialization. A task that declares no files
+        //    (null, [], '**') starts like any other: it runs in its own worktree
+        //    on its own branch, and the merge settles an overlap (runner
+        //    pre-merge + mergiraf, mission refresh, the conflict resolver). The
+        //    one-per-mission mutex that used to sit here (`advisory_manifest`)
+        //    held ordinary work, CI repairs included, behind unrelated tasks;
+        //    the model's START that was meant to relax it never applied
+        //    (docs/specs/claim-overlap-scheduling.md, "Undeclared scope").
+        //    What still holds an undeclared task: a declared dependency, an
+        //    explicit hold, the caps. Nothing is leased for it up front (it
+        //    declares no path), so two undeclared tasks can both edit an
+        //    unmergeable surface, a migration included, under advisory leases
+        //    (the default): the merge step and CI catch that. Under
+        //    pathClaimEnforcement 'enforce' the second edit is denied.
       }
     }
 
@@ -2306,6 +2268,7 @@ export async function POST(req: NextRequest) {
     // below), so two originally-Codex tasks for the same workspace in one
     // poll don't both get claimed.
     if (
+      !ownCodexLogin &&
       taskOriginallyCodex &&
       isCodexTask && // still resolved to Codex — the toggle/wall reroutes above may have moved it to Claude
       (codexBusyWorkspaces.has(task.workspaceId) || codexFlippedWorkspaces.has(task.workspaceId))
@@ -2339,6 +2302,21 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // The runner's login mode picks the backend for work nothing ties to one
+    // (spec 34a48877 R-15, R-16): never a pinned task, never one whose mission,
+    // role or workspace names a backend, never tenant work. Here the task is on
+    // Claude only when Claude can take it (a walled seat deferred or failed it
+    // over above), so the choice is whether Codex takes it instead.
+    if (
+      loginUse && loginUse.mode !== 'claude-first' && !backendPinned && !isTenantTask
+      && (task as any).backend === 'claude' && codexEnabledForTeam && !loginTiedIds.has(task.id)
+      && pickLoginBackend({ mode: loginUse.mode, slots: loginUse.slots, running: loginRunning, claudeUsable: true, codexUsable: true }) === 'codex'
+    ) {
+      if (await tryFlipToCodex(task, taskTeamId, task.workspaceId, 'runner_login_mode')) {
+        console.log(`[claim] Login mode: task ${task.id} → Codex (runner ${loginUse.mode}, ${loginRunning.codex} on Codex, ${loginRunning.claude} on Claude)`);
+      }
+    }
+
     // Learned OAuth pressure narrows the seat's Claude parallelism (see above).
     // Codex, tenant work and non-seat Claude routes draw on other pools, so they
     // are never held by it. Read the backend fresh: `isCodexTask` was captured
@@ -2359,21 +2337,37 @@ export async function POST(req: NextRequest) {
     const taskProject = (task as any).project as string | null;
     const workspaceProjects = ((task.workspace as any)?.projects || []) as Array<{ name: string }>;
     if (taskProject && workspaceProjects.length > 0 && !workspaceProjects.some((p) => p.name === taskProject)) {
-      await db
-        .update(tasks)
-        .set({
-          status: 'failed',
-          claimedBy: null,
-          claimedAt: null,
-          expiresAt: null,
-          updatedAt: now,
-          context: {
-            ...(taskContext || {}),
-            terminalError: 'workspace_mismatch',
-            terminalReason: `Task pinned to project "${taskProject}" but workspace ${task.workspaceId} has no project with that name. Check that MCP is connected to the workspace that owns this repo.`,
-          },
-        })
-        .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending')));
+      const mismatchContext = {
+        ...(taskContext || {}),
+        terminalError: 'workspace_mismatch',
+        terminalReason: `Task pinned to project "${taskProject}" but workspace ${task.workspaceId} has no project with that name. Check that MCP is connected to the workspace that owns this repo.`,
+      };
+      if (isOwnerTask(task as any)) {
+        // AC-1 slice 9: a kernel owner is refused through the kernel (AttemptWithdrawn, no claim: a
+        // queued task no claim holds), then the refusal's reason is recorded on the failed task.
+        const refused = await withdrawOwner({
+          task: { id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: 'owner', context: task.context },
+          claim: null, outcome: 'failed', reason: 'workspace_mismatch', source: 'claim', principal: kernelPrincipalOf({ account }),
+        });
+        if (refused) {
+          await db
+            .update(tasks)
+            .set({ context: mismatchContext, updatedAt: now })
+            .where(and(eq(tasks.id, task.id), eq(tasks.status, 'failed')));
+        }
+      } else {
+        await db
+          .update(tasks)
+          .set({
+            status: 'failed',
+            claimedBy: null,
+            claimedAt: null,
+            expiresAt: null,
+            updatedAt: now,
+            context: mismatchContext,
+          })
+          .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending'), notOwnerTaskSql()));
+      }
       if (task.id === taskId) {
         explicitTaskExclusion = {
           code: 'workspace_mismatch',
@@ -2904,8 +2898,10 @@ export async function POST(req: NextRequest) {
         .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending')))
         .returning({ id: tasks.id });
 
+    // The kernel owner's claim stamp: the claim a later rollback withdraws (rollBackClaim).
+    const ownerClaimStamp = kernelOwner ? updated[0]?.claimStamp ?? null : null;
     if (updated.length > 0 && kernelOwner) {
-      const stamp = updated[0].claimStamp ?? null;
+      const stamp = ownerClaimStamp;
       const started = stamp
         ? await startKernelOwnerAttempt({
           task: { id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: 'owner', context: task.context },
@@ -2992,20 +2988,12 @@ export async function POST(req: NextRequest) {
     if (isCodexTask) {
       codexBusyWorkspaces.add(task.workspaceId);
     }
+    // Count it toward this runner's per-backend split for the rest of the batch.
+    if (loginUse) loginRunning[(task as any).backend === 'codex' ? 'codex' : 'claude']++;
 
     // Mission-level post-claim bookkeeping: update in-memory counters so
     // subsequent tasks in the same batch respect the gates we just passed.
     // Review tasks consume neither the concurrency count nor the pacing slot.
-    if (taskMissionId && (task as any).category !== 'review'
-      && !producesNoFileEdits((task as any).outputRequirement)
-      && declaresNoScope((task as any).pathManifest as string[] | null)) {
-      // Reserve the mission's single scope-undeclared slot for the rest of the
-      // batch, so one poll cannot claim two '**' tasks from the same mission.
-      // Keyed on category alone, like both sides of the advisory guard above.
-      const set = missionAdvisoryInFlight.get(taskMissionId) ?? new Set<string>();
-      set.add(task.id);
-      missionAdvisoryInFlight.set(taskMissionId, set);
-    }
     if (taskMissionId && !isReviewTask) {
       // Increment concurrency count so a second task from the same mission in
       // this batch sees the updated active count.
@@ -3162,7 +3150,9 @@ export async function POST(req: NextRequest) {
       // Suppressed for the dispatch trigger: this undoes our own claim, it is
       // not new runnable state, and a wake here would loop claim → refuse →
       // rollback → wake across every runner.
-      await rollBackClaim(task.id, account.id);
+      await rollBackClaim(task.id, account.id, kernelOwner && ownerClaimStamp
+        ? { task: { id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: 'owner', context: task.context }, claimedAt: ownerClaimStamp, principal: kernelPrincipalOf({ account }) }
+        : null);
       if (task.id === taskId) {
         explicitTaskExclusion = {
           code: 'account_cap',
@@ -3197,18 +3187,6 @@ export async function POST(req: NextRequest) {
     });
     // Learning observes only successful claims, never a decision that later lost a rail or race.
     if (!forced && startForceBypassed.length === 0) {
-      for (const note of jevStartNotes) {
-        const c = note.candidate;
-        fireGateEvent({
-          gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL, surface: 'POST /api/workers/claim', outcome: 'accepted',
-          reason: 'claim_learning_jev_start', taskId: task.id, workspaceId: task.workspaceId,
-          missionId: (task as any).missionId ?? null, workerId: worker.id,
-          callerOrigin: gateCallerOrigin({ apiAccount: account }),
-          detail: { gate: c.gate, paths: c.overlapPaths, blockerTaskIds: c.holder.taskId ? [c.holder.taskId] : [],
-            areaClass: CLAIM_LEARNING_HOOKS.areaClass(c.concretePaths), fingerprint: CLAIM_LEARNING_HOOKS.fingerprint,
-            candidateDigest: note.digest, startedAt: now.toISOString() },
-        });
-      }
       const declared = (task.pathManifest ?? []).filter((p: string) => p !== '**');
       if (!sawCoordinationBlocker && declared.length > 0) {
         fireGateEvent({
@@ -3696,6 +3674,7 @@ export async function POST(req: NextRequest) {
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),
   }, undefined, { route: req.nextUrl.pathname });
+  } finally { await settleWorkChanges(); }
 }
 
 /**

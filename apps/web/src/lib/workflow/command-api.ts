@@ -42,6 +42,7 @@ import { verifyRequest } from '@buildd/dispatch-contract';
 import { commandKeyRing } from './command-keys';
 import type { DrainSummary } from './effects';
 import { kernelHost } from './kernel-host';
+import { KERNEL_SPAN, commandOutcomeOf, commandSpanAttributes, emitKernelSpan } from './kernel-telemetry';
 import type { InstallationResolution } from './command-installation';
 import { COMMAND_HEARTBEAT_MS, postgresCommandLedger, type CommandLedger, type StoredAnswer } from './command-ledger';
 
@@ -78,6 +79,10 @@ export interface KernelOps {
   request_ci_retry: { input: Parameters<Seam['requestCiRetry']>[0]; result: Awaited<ReturnType<Seam['requestCiRetry']>> };
   record_supersession: { input: Parameters<Seam['recordSupersession']>[0]; result: Awaited<ReturnType<Seam['recordSupersession']>> };
   abandon: { input: Parameters<Seam['abandonDelivery']>[0]; result: Awaited<ReturnType<Seam['abandonDelivery']>> };
+  /** §5: a person waives or defers one finding. Person-only: see PERSON_OPS. */
+  dispose_finding: { input: Parameters<Seam['disposeFinding']>[0]; result: Awaited<ReturnType<Seam['disposeFinding']>> };
+  /** r7 AC-45: a person approves the head past remaining findings. Person-only: see PERSON_OPS. */
+  approve_override: { input: Parameters<Seam['approveOverrideThroughKernel']>[0]; result: Awaited<ReturnType<Seam['approveOverrideThroughKernel']>> };
   open_delivery: { input: Parameters<Seam['openKernelDelivery']>[0]; result: Awaited<ReturnType<Seam['openKernelDelivery']>> };
   /** Drain one delivery's due effects: what a web-host caller asks for instead of draining inline. */
   drain: { input: { deliveryId: string }; result: DrainSummary | null };
@@ -106,6 +111,10 @@ export interface KernelOps {
    * attempt (the task to `assigned`). As attempt_ended, the task's workspace rides at the top level.
    */
   attempt_started: { input: Parameters<Seam['attemptStarted']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptStarted']>> };
+  /** AC-1 slice 9: a settled owner task opens again (recovery, a resumed session). As attempt_ended, the task's workspace rides at the top level. */
+  attempt_reopened: { input: Parameters<Seam['attemptReopened']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptReopened']>> };
+  /** AC-1 slice 9: a claim that runs no attempt gives its start back, or a queued task is refused. */
+  attempt_withdrawn: { input: Parameters<Seam['attemptWithdrawn']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptWithdrawn']>> };
   /** T10 from buildd's own CI doors: the red-PR sweep, the landing path and the check_suite subscriber saw a red head. */
   observe_ci_failure: { input: Parameters<Seam['observeCiFailure']>[0]; result: Awaited<ReturnType<Seam['observeCiFailure']>> };
   /** CiGreenObserved (ends a CI repair) or a CiObserved reading, from the check_suite success webhook. */
@@ -145,6 +154,8 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
   request_ci_retry: (s, i) => s.requestCiRetry(i),
   record_supersession: (s, i) => s.recordSupersession(i),
   abandon: (s, i) => s.abandonDelivery(i),
+  dispose_finding: (s, i) => s.disposeFinding(i),
+  approve_override: (s, i) => s.approveOverrideThroughKernel(i),
   open_delivery: (s, i) => s.openKernelDelivery(i),
   drain: (s, i) => s.drainDelivery(i.deliveryId),
   heal: async (_s, i) => (await import('./kernel-heal')).healHere([i.deliveryId]),
@@ -164,6 +175,14 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
     // As attempt_ended: the start it applies must be for a task of the workspace the reach check judged.
     if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_started: input.workspaceId is not the task\'s workspace');
     return s.attemptStarted(p);
+  },
+  attempt_reopened: (s, { workspaceId, ...p }) => {
+    if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_reopened: input.workspaceId is not the task\'s workspace');
+    return s.attemptReopened(p);
+  },
+  attempt_withdrawn: (s, { workspaceId, ...p }) => {
+    if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_withdrawn: input.workspaceId is not the task\'s workspace');
+    return s.attemptWithdrawn(p);
   },
   observe_ci_failure: (s, i) => s.observeCiFailure(i),
   observe_ci_green: (s, i) => s.observeCiGreen(i),
@@ -194,6 +213,18 @@ export const KERNEL_OPS = Object.keys(RUN) as KernelOp[];
 
 /** `drain` and `heal`: buildd's own upkeep of one delivery, by id, with no workspace on the input and only a `system` principal. */
 const isSystemDeliveryOp = (op: unknown): op is 'drain' | 'heal' => op === 'drain' || op === 'heal';
+/**
+ * Ops only a signed-in person may submit, as `human:<their id>`: an agent, an API key or a grant
+ * session is refused here, before the reach check, whatever actor string its input names.
+ */
+export const PERSON_OPS: ReadonlySet<KernelOp> = new Set<KernelOp>(['dispose_finding', 'approve_override']);
+/** Why `principal` may not submit `op`, or null: a person-only op needs a `user` whose id is the input's `human:` actor. */
+export function personOpRefusal(op: KernelOp, input: unknown, principal: KernelPrincipal | null): string | null {
+  if (!PERSON_OPS.has(op)) return null;
+  if (principal?.kind !== 'user') return `${op} is for a signed-in person; an agent or API key cannot submit it.`;
+  if ((input as { actor?: unknown } | null)?.actor !== `human:${principal.id}`) return `${op}'s actor must be the signed-in person.`;
+  return null;
+}
 export const isKernelOp = (v: unknown): v is KernelOp => typeof v === 'string' && Object.prototype.hasOwnProperty.call(RUN, v);
 
 /** The ops whose input names a GitHub App installation (`installationId`). */
@@ -411,6 +442,29 @@ export async function principalReaches(principal: KernelPrincipal, workspaceId: 
 
 /** `POST /v1/commands`. Never throws: every outcome is a response. */
 export async function handleCommandRequest(req: Request, deps: CommandServerDeps = {}): Promise<Response> {
+  // The command's span (kernel-telemetry.ts `kernel.command`): op, outcome, status, latency, on the control plane.
+  const startedAt = Date.now();
+  const seen: { op?: string } = {};
+  const res = await handleCommandRequestUnreported(req, deps, seen);
+  if ((deps.host ?? kernelHost)() === 'control-plane') await reportCommand(res, seen.op ?? null, startedAt);
+  return res;
+}
+
+async function reportCommand(res: Response, op: string | null, startedAt: number): Promise<void> {
+  try {
+    const body = (await res.clone().json().catch(() => null)) as { code?: unknown; replayed?: unknown } | null;
+    const outcome = commandOutcomeOf(res.status, body);
+    const latencyMs = Date.now() - startedAt;
+    emitKernelSpan({
+      name: KERNEL_SPAN.command, startMs: startedAt, durationMs: latencyMs, error: outcome !== 'applied' && outcome !== 'replayed',
+      attributes: commandSpanAttributes({ op, status: res.status, outcome, code: typeof body?.code === 'string' ? body.code : null, latencyMs }),
+    });
+  } catch {
+    // Telemetry never reaches the answer.
+  }
+}
+
+async function handleCommandRequestUnreported(req: Request, deps: CommandServerDeps, seen: { op?: string }): Promise<Response> {
   const env = deps.env ?? process.env;
   const host = (deps.host ?? kernelHost)();
   if (req.method !== 'POST') return refuse(405, 'method_not_allowed', 'POST only');
@@ -430,6 +484,7 @@ export async function handleCommandRequest(req: Request, deps: CommandServerDeps
   try { body = JSON.parse(text); } catch { return refuse(400, 'bad_request', 'body is not JSON'); }
   const problem = commandProblem(body);
   if (problem) return refuse(400, 'bad_request', problem);
+  seen.op = (body as CommandRequest).op;
   return applyCommandRequest(body as CommandRequest, deps);
 }
 
@@ -446,6 +501,8 @@ export async function applyCommandRequest(cmd: CommandRequest, deps: CommandServ
   }
   const workspaceId = isSystemDeliveryOp(cmd.op) ? null : String((cmd.input as { workspaceId: string }).workspaceId);
   if (isSystemDeliveryOp(cmd.op) && cmd.principal.kind !== 'system') return refuse(403, 'forbidden', `${cmd.op} is a system operation`);
+  const notPerson = personOpRefusal(cmd.op, cmd.input, cmd.principal);
+  if (notPerson) return refuse(403, 'person_only', notPerson, { applied: false });
   // A reach check that could not be made (the database did not answer) is not a refusal: nothing ran,
   // retry. Only an answered "no" is a 403. The workspace's installation is read alongside it, so it
   // adds no round trip of its own.

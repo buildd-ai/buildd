@@ -27,7 +27,14 @@ export async function GET(req: NextRequest, { params }: Ctx) {
       return NextResponse.json({ error: `Short id ${specId} matches ${hit.specs.length} specs; pass a full id`, code: 'ambiguous_short_id', specs: hit.specs }, { status: 409 });
     }
   }
-  const r = await getSpec(caller, specId, { revision });
+  const limitRaw = req.nextUrl.searchParams.get('revisionsLimit');
+  const beforeRaw = req.nextUrl.searchParams.get('revisionsBefore');
+  const revisionsLimit = limitRaw === null ? 20 : Number(limitRaw);
+  const revisionsBefore = beforeRaw === null ? undefined : Number(beforeRaw);
+  if (!Number.isInteger(revisionsLimit) || revisionsLimit < 1 || revisionsLimit > 100 || (revisionsBefore !== undefined && (!Number.isInteger(revisionsBefore) || revisionsBefore < 1))) {
+    return NextResponse.json({ error: 'revisionsLimit must be 1–100; revisionsBefore must be a positive revision number' }, { status: 400 });
+  }
+  const r = await getSpec(caller, specId, { revision, revisionsLimit, revisionsBefore });
   if (r.ok) return NextResponse.json(r.view);
   // Not readable: point at a copy the caller can read, or say how one is made (lib/specs/copy.ts).
   if (r.status === 404 && r.error === 'Spec not found') {

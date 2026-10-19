@@ -21,10 +21,10 @@ describe('task page regression cases', () => {
     expect(f.findings.get('review-1')).toEqual({ prose: null, verdict: null, status: 'pending' });
   });
 
-  it('reviewer approved, parent awaiting merge: Review approved, Land · awaiting merge, no shipped/done/repair', () => {
+  it('reviewer approved, parent awaiting merge: Review approved, Deliver · ready to merge, no shipped/done/repair', () => {
     const { f, all } = text('review-approved');
     expect(f.verdict?.label).toBe('Review approved');
-    expect(f.track).toEqual({ state: 'landing', phrase: 'awaiting merge' });
+    expect(f.track).toEqual({ state: 'landing', phrase: 'ready to merge' });
     expect(f.shipped?.eyebrow).toBe('Review of PR #1234');
     expect(all).not.toMatch(/What shipped|What changed|Merged|Repair|\bDone\b/);
   });
@@ -52,5 +52,15 @@ describe('task page regression cases', () => {
   it('failed and needs-human keep their own states', () => {
     expect(text('failed').f.verdict?.state).toBe('failed');
     expect(text('needs-human').f.verdict?.state).toBe('needs_you');
+  });
+  it('review-stuck (AC-43 / AC-48): question first, blocker named, primary names the action, no approval offered', () => {
+    const { f } = text('review-stuck');
+    expect(f.verdict?.state).toBe('needs_you');
+    expect(f.verdict?.headline).toBe('How should the two unresolved findings be settled?');
+    expect(f.verdict?.cause).toContain('Automation stopped after three review rounds');
+    expect(f.escalation?.copy.unresolved.open).toEqual(['Mutation testing does not cover the new guard']);
+    expect(f.verdict?.actions[0]).toMatchObject({ label: 'Request another fix', href: '#task-decision-request_fix', tone: 'primary' });
+    expect(f.escalation?.copy.actions.map(a => a.id)).toEqual(['review_findings', 'request_fix', 'force_re_review']);
+    expect(f.checks.rounds?.githubNote).toContain('Commented');
   });
 });

@@ -13,6 +13,7 @@
  * the rules already chose, and only when its answer was made for the same
  * state and cause (`causeKey`); see `applyVerdictDecision`.
  */
+import { waitingOnFailedCopy } from '@buildd/core/dependency-failure';
 import type { TaskMismatch } from '@buildd/shared';
 import { REVIEW_VERDICT_LABEL, type ReviewVerdictWord } from './task-result';
 
@@ -70,6 +71,27 @@ export interface VerdictInput {
    * updates the branch or merges): nothing waits on a person until it finishes.
    */
   deliveryActivity?: string | null;
+  /**
+   * The delivery is parked on a review escalation (kernel `deriveEscalationBrief`): the
+   * cause label, what is left and what a person may choose. The verdict names it instead
+   * of saying only that something waits on a person.
+   */
+  escalation?: {
+    title: string;
+    /** The question the person decides (lib/workflow/escalation-copy). */
+    question: string;
+    /** Why automation stopped, in words. */
+    why: string;
+    /** The unresolved findings by title; the decision card right below names them. */
+    unresolved: { open: string[]; awaitingVerification: string[] };
+    /** The action the button names; it opens that action's confirmation on this page. */
+    primary: { label: string; href: string };
+  } | null;
+  /**
+   * A failed task that never ran: a task it depends on failed (`failedDependencyOf`,
+   * spec 072de598 I-14). The verdict names that task instead of a run that did not happen.
+   */
+  waitingOnFailed?: { taskId: string; title: string | null; requeuesItself: boolean } | null;
   /**
    * How long the merged PR took from claim to merge ("2h 14m"). The status
    * row is the one place a merged PR is stated, so it carries the time too.
@@ -220,6 +242,20 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
     };
   }
 
+  // 4a. Failed without running: a task it depends on failed, and the way on is there.
+  if (input.taskStatus === 'failed' && input.waitingOnFailed) {
+    const w = input.waitingOnFailed;
+    const copy = waitingOnFailedCopy(w, { requeuesItself: w.requeuesItself });
+    return {
+      ...base,
+      state: 'blocked',
+      headline: copy.state,
+      cause: copy.cause,
+      actions: [link('Open the failed task', `/app/tasks/${encodeURIComponent(w.taskId)}`, 'primary', false)],
+      causeKey: 'blocked:dependency_failed',
+    };
+  }
+
   // 4. A failed task.
   if (input.taskStatus === 'failed') {
     return {
@@ -242,6 +278,20 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
         cause: null,
         actions: [link(`View PR #${pr.number}`, pr.url)],
         causeKey: 'failed:pr_closed',
+      };
+    }
+    // A held review budget is a decision with a cause, not a generic wait: say which, and open the decision card.
+    if (input.escalation) {
+      const e = input.escalation;
+      return {
+        ...base,
+        state: 'needs_you',
+        label: e.title,
+        labelTone: 'warning',
+        headline: e.question,
+        cause: e.why,
+        actions: [link(e.primary.label, e.primary.href, 'primary', false), link(`Open PR #${pr.number}`, pr.url)],
+        causeKey: `needs_you:escalation:${e.title}`,
       };
     }
     const checks = input.checks ?? [];

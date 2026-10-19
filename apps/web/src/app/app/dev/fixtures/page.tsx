@@ -19,6 +19,7 @@ import GoalCriteriaFixture from './GoalCriteriaFixture';
 import SpecSurfaceFixture from './SpecSurfaceFixture';
 import SpecIndexFixture from './SpecIndexFixture';
 import SpecAttachmentsFixture from './SpecAttachmentsFixture';
+import SpecImportReviewFixture from './SpecImportReviewFixture';
 import SpecDeliveryFixture from './SpecDeliveryFixture';
 import MissionDeliveriesFixture from './MissionDeliveriesFixture';
 import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView } from './OnboardingFixture';
@@ -85,6 +86,7 @@ import {
     SPEC_INDEX_FIXTURE_STATE,
     SPEC_ATTACHMENTS_FIXTURE_STATE,
     SPEC_DELIVERY_FIXTURE_STATE,
+    SPEC_IMPORT_REVIEW_FIXTURE_STATE,
     RUNNER_KEYS_FIXTURE_STATE,
     MISSION_DELIVERIES_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
@@ -180,6 +182,10 @@ export default function DevFixturesPage() {
 
     if (state === SPEC_ATTACHMENTS_FIXTURE_STATE) {
         return <SpecAttachmentsFixture />;
+    }
+
+    if (state === SPEC_IMPORT_REVIEW_FIXTURE_STATE) {
+        return <SpecImportReviewFixture />;
     }
 
     if (state === SPEC_DELIVERY_FIXTURE_STATE) {

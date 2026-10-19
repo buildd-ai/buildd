@@ -50,6 +50,44 @@ export function postReviewBody(
   event: 'APPROVE' | 'REQUEST_CHANGES',
   out: { confidence?: number | null; summary?: string | null; feedback?: string | null },
   scope: unknown,
+  at?: ReviewAt,
+): string {
+  const text = verdictText(event, out, scope);
+  return at ? `${text}\n\n${verdictTrailer(event, at)}` : text;
+}
+
+/** Where a review sits: the head and round it judged, and the earlier verdict it replaces, if any. */
+export interface ReviewAt {
+  headSha: string;
+  round: number;
+  /** The newest earlier decided round, whatever it said. */
+  prior?: { round: number; headSha: string; verdict: 'approve' | 'request_changes' | 'escalate' } | null;
+}
+
+/**
+ * The machine-checkable line under a review's prose. A review whose state GitHub shows as COMMENTED
+ * (the App opened the PR, so it cannot approve it) carries its verdict here, at the head it judged,
+ * and says outright when it replaces an approval; nothing reads the prose above it as the verdict.
+ */
+function verdictTrailer(event: 'APPROVE' | 'REQUEST_CHANGES', at: ReviewAt): string {
+  const sha = (h: string) => h.slice(0, 7);
+  const verdict = event === 'APPROVE' ? 'approve' : 'request_changes';
+  const head = `buildd verdict: ${verdict} · head ${sha(at.headSha)} · round ${at.round}`;
+  const p = at.prior;
+  if (!p) return head;
+  if (event === 'APPROVE') {
+    return p.verdict === 'approve' ? `${head} · renews the approval of ${sha(p.headSha)} (round ${p.round})`
+      : `${head} · clears the ${p.verdict === 'escalate' ? 'escalation' : 'request for changes'} of round ${p.round} at ${sha(p.headSha)}`;
+  }
+  return p.verdict === 'approve'
+    ? `${head} · supersedes the approval of ${sha(p.headSha)} (round ${p.round}): a blocking issue was found${p.headSha === at.headSha ? ' at the same commit' : ' in the changes since'}. That approval no longer allows a merge.`
+    : `${head} · still blocking (round ${p.round} at ${sha(p.headSha)} also asked for changes)`;
+}
+
+function verdictText(
+  event: 'APPROVE' | 'REQUEST_CHANGES',
+  out: { confidence?: number | null; summary?: string | null; feedback?: string | null },
+  scope: unknown,
 ): string {
   if (event !== 'APPROVE') return `Changes requested by buildd reviewer: ${out.feedback ?? out.summary ?? ''}`;
   const sc = scope as { compositionDelta?: unknown; paths?: unknown } | null | undefined;
@@ -62,6 +100,13 @@ export function postReviewBody(
     return text.trimEnd();
   }
   return `Approved by buildd reviewer (confidence ${(out.confidence ?? 0).toFixed(2)}): ${out.summary ?? ''}`;
+}
+
+/** The newest decided round before `round`, with the verdict it stands for. */
+function priorRoundOf(rounds: ReadonlyArray<{ round: number; headSha: string; status: string; verdict?: string | null; effectiveVerdict?: string | null }>, round: { round: number }): ReviewAt['prior'] {
+  const p = rounds.filter((r) => r.status === 'decided' && r.round < round.round).sort((a, b) => b.round - a.round)[0];
+  const v = p ? (p.effectiveVerdict ?? p.verdict) : null;
+  return p && (v === 'approve' || v === 'request_changes' || v === 'escalate') ? { round: p.round, headSha: p.headSha, verdict: v } : null;
 }
 
 /**
@@ -284,7 +329,10 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       // §8.4: commit_id is the round's head, never whatever the PR shows now.
       commitId: String(e.payload.commitId ?? round.headSha),
       event,
-      body: postReviewBody(event, out, e.payload.scope),
+      body: postReviewBody(event, out, e.payload.scope, {
+        headSha: round.headSha, round: round.round,
+        prior: priorRoundOf(view.rounds, round),
+      }),
     }).catch((err: unknown): PostedReview => ({ id: null, posted: false, reason: err instanceof Error ? err.message : 'unknown error' }));
     if (res.posted === false && res.reason !== 'a matching review already exists for this commit') {
       await reviews.postFailed(d, { event, reason: res.reason ?? 'unknown error' });
@@ -323,14 +371,14 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       return { outcome: 'ok' };
     }
     if (event === 'landing_needs_human') {
-      await needsAttention(ports, e.kind, d, `PR #${d.prNumber}: landing needs a person`, String(e.payload.detail ?? 'the platform could not bring the branch up to date'));
+      await needsAttention(ports, e.kind, d, `PR #${d.prNumber}: merge needs a person`, String(e.payload.detail ?? 'the platform could not bring the branch up to date'));
       return { outcome: 'ok' };
     }
     if (event === 'effect_dead') {
       // §10.3: a critical effect went dead and the delivery escalated (67d34094).
       const what = DEAD_EFFECT_COPY[String(e.payload.effectKind)] ?? `the ${String(e.payload.effectKind)} step kept failing`;
       await needsAttention(ports, e.kind, d, `PR #${d.prNumber} needs a person: ${what}`,
-        `buildd retried ${what.replace(' kept failing', '')} until it gave up, so nothing will move this PR on its own. Check the PR and land or re-run it.`);
+        `buildd retried ${what.replace(' kept failing', '')} until it gave up, so nothing will move this PR on its own. Check the PR and merge or re-run it.`);
       return { outcome: 'ok' };
     }
     const local = (e.payload.localHeadSha as string | null) ?? null;

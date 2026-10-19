@@ -135,6 +135,14 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+// The default (summary) list reads stored summaries (lib/mission-summary-store.ts, tested on its own).
+const mockReadMissionSummaries = mock(async (_ids: readonly string[], _ws: readonly string[]) => new Map<string, any>());
+mock.module('@/lib/mission-summary-store', () => ({
+  readMissionSummaries: mockReadMissionSummaries,
+  refreshMissionSummary: () => {},
+  refreshMissionSummariesFor: async () => [],
+}));
+
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => args,
@@ -959,7 +967,7 @@ describe('GET /api/missions', () => {
       },
     ]);
 
-    const req = new NextRequest('http://localhost/api/missions');
+    const req = new NextRequest('http://localhost/api/missions?include=details');
     const res = await GET(req);
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -999,17 +1007,18 @@ describe('GET /api/missions', () => {
   });
 
   it('status=open lists every mission not completed or archived, and limit caps the query', async () => {
-    await GET(new NextRequest('http://localhost/api/missions?status=open&limit=15'));
+    await GET(new NextRequest('http://localhost/api/missions?status=open&limit=15&include=details'));
     const args = mockMissionsFindMany.mock.calls[0][0];
     // drizzle-orm is mocked in this file: `and` returns its predicates as an array.
     expect(capturedWhere(args.where)).toContainEqual({ field: undefined, values: ['completed', 'archived'], type: 'notInArray' });
     expect(args.limit).toBe(15);
   });
 
-  it('no status and no limit: every mission, unbounded, as before (the dashboard relies on it)', async () => {
-    await GET(new NextRequest('http://localhost/api/missions'));
+  it('include=details with no limit is capped at 50, every team mission otherwise (R-19)', async () => {
+    await GET(new NextRequest('http://localhost/api/missions?include=details'));
     const args = mockMissionsFindMany.mock.calls[0][0];
-    expect(args.limit).toBeUndefined();
+    expect(args.limit).toBe(50);
+    expect(args.with.tasks).toBeDefined();
     expect(capturedWhere(args.where).type).toBe('inArray');
   });
 
@@ -1043,7 +1052,7 @@ describe('GET /api/missions', () => {
     mockMissionsFindMany.mockResolvedValue([
       { id: 'm-1', title: 'A', status: 'active', tasks: [], schedule: null, createdAt: new Date('2026-01-01T00:00:00.000Z'), updatedAt: new Date('2026-01-01T00:00:00.000Z') },
     ]);
-    const res = await GET(new NextRequest('http://localhost/api/missions?limit=1'));
+    const res = await GET(new NextRequest('http://localhost/api/missions?limit=1&include=details'));
     const body = await res.json();
     expect(body.total).toBe(42);
     // Counted over the same predicate as the page.
@@ -1051,9 +1060,9 @@ describe('GET /api/missions', () => {
     expect(countWhere).toEqual(capturedWhere(mockMissionsFindMany.mock.calls[0][0].where));
   });
 
-  it('an uncapped list skips the count query', async () => {
+  it('a list shorter than its limit skips the count query', async () => {
     mockMissionsCount.mockReset();
-    const res = await GET(new NextRequest('http://localhost/api/missions'));
+    const res = await GET(new NextRequest('http://localhost/api/missions?include=details'));
     const body = await res.json();
     expect(mockMissionsCount).not.toHaveBeenCalled();
     expect(body.total).toBe(0);
@@ -1078,12 +1087,82 @@ describe('GET /api/missions', () => {
       },
     ]);
 
-    const req = new NextRequest('http://localhost/api/missions');
+    const req = new NextRequest('http://localhost/api/missions?include=details');
     const res = await GET(req);
     const body = await res.json();
 
     expect(body.missions[0].lastDeferralReason).toBeNull();
     expect(body.missions[0].lastDeferredAt).toBeNull();
+  });
+});
+
+describe('GET /api/missions — summary rows by default (R-19)', () => {
+  const row = (id: string, over: Record<string, unknown> = {}) => ({
+    id, teamId: 'team-1', workspaceId: 'ws-1', title: `M ${id}`, status: 'active', priority: 0, isHeld: false,
+    executor: 'cloud', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+    workspace: { id: 'ws-1', name: 'WS' }, ...over,
+  });
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockResolveAccountTeamIds.mockReset();
+    mockMissionsFindMany.mockReset();
+    mockMissionsCount.mockReset();
+    mockReadMissionSummaries.mockReset();
+
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
+    mockAuthenticateApiKey.mockReturnValue(null);
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
+    mockMissionsFindMany.mockResolvedValue([]);
+    mockReadMissionSummaries.mockResolvedValue(new Map());
+  });
+
+  it('reads summary columns, no tasks or schedule, and limit defaults to 50 (one extra row to know hasMore)', async () => {
+    await GET(new NextRequest('http://localhost/api/missions'));
+    const args = mockMissionsFindMany.mock.calls[0][0];
+    expect(args.limit).toBe(51);
+    expect(args.columns).toBeDefined();
+    expect(Object.keys(args.with)).toEqual(['workspace']);
+  });
+
+  it('answers summary fields from the stored summary and never tasks', async () => {
+    const summary = { progress: { total: 3, done: 3, percent: 100 }, liveWorkers: 0, lastActivityAt: '2026-01-03T00:00:00.000Z' };
+    mockMissionsFindMany.mockResolvedValue([
+      // Adapters that ignore `columns` must not leak these through.
+      row('m-1', { description: 'long body', tasks: [{ id: 't-1' }], schedule: { cronExpression: '* * * * *' } }),
+      row('m-2', { workspaceId: null, workspace: null }),
+    ]);
+    mockReadMissionSummaries.mockResolvedValue(new Map([['m-1', { missionId: 'm-1', summary }]]));
+
+    const res = await GET(new NextRequest('http://localhost/api/missions'));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(mockReadMissionSummaries).toHaveBeenCalledWith(['m-1', 'm-2'], ['ws-1']);
+    expect(body).toMatchObject({ total: 2, hasMore: false });
+    expect(mockMissionsCount).not.toHaveBeenCalled();
+    const [m1, m2] = body.missions;
+    expect(m1.tasks).toBeUndefined();
+    expect(m1.description).toBeUndefined();
+    expect(m1.schedule).toBeUndefined();
+    expect(m1).toMatchObject({ id: 'm-1', title: 'M m-1', summary, totalTasks: 3, completedTasks: 3, progress: 100, activeAgents: 0, lastActivityAt: summary.lastActivityAt, workspace: { id: 'ws-1', name: 'WS' } });
+    expect(m2).toMatchObject({ id: 'm-2', summary: null, totalTasks: 0, progress: 0, workspace: null });
+  });
+
+  it('a full page says hasMore and counts total over the same predicate', async () => {
+    mockMissionsCount.mockResolvedValue(7);
+    mockMissionsFindMany.mockResolvedValue([row('m-1'), row('m-2'), row('m-3')]);
+    const body = await (await GET(new NextRequest('http://localhost/api/missions?limit=2'))).json();
+    expect(body.missions.map((m: any) => m.id)).toEqual(['m-1', 'm-2']);
+    expect(body).toMatchObject({ total: 7, hasMore: true });
+    expect(mockReadMissionSummaries).toHaveBeenCalledWith(['m-1', 'm-2'], ['ws-1', 'ws-1']);
+    const [, countWhere] = mockMissionsCount.mock.calls[0] as any[];
+    expect(countWhere).toEqual(capturedWhere(mockMissionsFindMany.mock.calls[0][0].where));
+  });
+
+  it('limit is capped at 100', async () => {
+    await GET(new NextRequest('http://localhost/api/missions?limit=500'));
+    expect(mockMissionsFindMany.mock.calls[0][0].limit).toBe(101);
   });
 });
 

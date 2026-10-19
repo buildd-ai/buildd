@@ -1,11 +1,12 @@
 /**
- * The floor's pass over parked door commands (command-outbox.ts, workflow-kernel-library.md §3 AC-35):
+ * The floor's pass over parked door commands (command-outbox.ts, workflow-kernel-library.md §3 AC-74):
  * the ledger is asked first, each row is re-submitted with its own key, and only an answer settles it.
  * The real-SQL half (the table, the ledger, the control plane down and back) is
  * apps/web/tests/db/kernel-command-host.test.ts.
  */
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'bun:test';
-import { drainParkedCommands, outcomeOf, PARKED_BATCH, PARKED_LEASE_MS, PARKED_MAX_ATTEMPTS, PARKED_SUBMIT_BUDGET_MS, parkedRetryDelayMs, resubmitOnControlPlane, type CommandOutbox, type ParkedRow, type Resubmitted } from './command-outbox';
+import { drainParkedCommands, outboxDepthSql, outcomeOf, PARKED_BATCH, PARKED_LEASE_MS, PARKED_MAX_ATTEMPTS, PARKED_SUBMIT_BUDGET_MS, parkedRetryDelayMs, resubmitOnControlPlane, type CommandOutbox, type ParkedRow, type Resubmitted } from './command-outbox';
 import type { CommandLedger, LedgerRow } from './command-ledger';
 
 const WS = '11111111-1111-4111-8111-111111111111';
@@ -123,5 +124,16 @@ describe('on the control plane', () => {
     expect((await resubmitOnControlPlane(row('k-bad-1', { input: {} }), { env, host: () => 'control-plane' })).kind).toBe('refused');
     // Not the host in this mode (rolled back to shadow): asked again later.
     expect((await resubmitOnControlPlane(r, { env: { ...env, EXECUTION_MODE: 'shadow' }, host: () => 'control-plane' })).kind).toBe('unanswered');
+  });
+});
+
+// The floor's depth read (kernel.floor's outbox attributes, workflow-kernel-library.md Observability).
+describe('the outbox depth', () => {
+  it('the depth read renders: pending parked commands, and effects due or past their lease', () => {
+    const q = new PgDialect().sqlToQuery(outboxDepthSql());
+    expect(q.params).toEqual([]);
+    expect(q.sql).toContain("FROM workflow_command_outbox WHERE status = 'pending'");
+    expect(q.sql).toContain("(status = 'pending' AND not_before <= now()) OR (status = 'delivering' AND lease_until < now())");
+    expect(q.sql).toMatch(/AS parked,[\s\S]*AS parked_oldest_s,[\s\S]*AS effects_due,[\s\S]*AS effects_oldest_s/);
   });
 });

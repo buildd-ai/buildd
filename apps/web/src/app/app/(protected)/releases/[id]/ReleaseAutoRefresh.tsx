@@ -3,6 +3,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
+import { requestPageRefresh } from '@/lib/page-refresh';
 
 export default function ReleaseAutoRefresh({
   releaseId,
@@ -17,7 +18,7 @@ export default function ReleaseAutoRefresh({
   const doRefresh = useCallback(() => {
     if (refreshTimerRef.current) return;
     refreshTimerRef.current = setTimeout(() => {
-      router.refresh();
+      requestPageRefresh(router);
       refreshTimerRef.current = null;
     }, 500);
   }, [router]);

@@ -7,6 +7,8 @@ import { roleHas, isTeamRole } from '@/lib/permissions';
 import { clampCreatorKeys } from '@/lib/creator-key-clamp';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { isPersonalTeam } from '@/lib/personal-team';
+import { invalidateAppChrome } from '@/lib/app-chrome';
+import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 
 async function ownerCount(teamId: string): Promise<number> {
   const owners = await db.query.teamMembers.findMany({
@@ -100,6 +102,8 @@ export async function PATCH(
     if (updated.length === 0) {
       return NextResponse.json({ error: 'Member not found' }, { status: 404 });
     }
+    // Their OAuth sessions act at the new role on the next call (lib/caller-cache.ts).
+    await clearCallerCache(callerDep.user(targetUserId));
 
     const clampedKeys = await clampCreatorKeys({ teamId, userId: targetUserId, role });
 
@@ -192,12 +196,16 @@ export async function DELETE(
         )
       )
       .returning({ userId: teamMembers.userId });
+    // Their OAuth sessions and grants stop reaching this team on the next call.
+    await clearCallerCache(callerDep.user(targetUserId));
 
     // Nothing removed (they already left): their keys were clamped then.
     const clampedKeys = removed.length > 0
       ? await clampCreatorKeys({ teamId, userId: targetUserId, role: null })
       : 0;
 
+    // The acting user's shell shows this at once (lib/app-chrome.ts).
+    invalidateAppChrome(user.id);
     return NextResponse.json({ success: true, clampedKeys });
   } catch (error) {
     console.error('Remove team member error:', error);

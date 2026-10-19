@@ -39,12 +39,12 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import type { KernelView, PolicyOutcome, Verdict } from './types';
 import {
   UNKNOWN_CI_SIGNATURE, blockedOnResolvedSql, classifyCiFailure, openOrJoinIncidentSql, repairingCiOnBaseSql,
-  resolveIncidentSql, trunkExplains, trunkRecovered, unresolvedIncidentsSql, type TrunkClassification,
+  resolveIncidentSql, touchIncidentSql, trunkExplains, trunkRecoveredOnRuns, unresolvedIncidentsSql, type TrunkClassification,
 } from './trunk';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
 import { recordPrStateObserved } from './render-observation';
-import { endingWorkerIsCurrentSql, isAttemptRow, ownerAttemptEndOf, ownerClaimOpenSql, projectAttemptStartSql, projectLoopExitSql, projectOwnerEndSql, projectRequeueSql, requeueingAttemptIsCurrentSql } from './task-projection';
+import { endingWorkerIsCurrentSql, isAttemptRow, notOwnerTaskSql, ownerAttemptEndOf, ownerClaimOpenSql, projectAttemptStartSql, projectLoopExitSql, projectOwnerEndSql, projectReopenSql, projectRequeueSql, projectWithdrawSql, requeueingAttemptIsCurrentSql } from './task-projection';
 import { isTerminalWorkerStatus } from '@buildd/shared';
 import { scheduleKernelHeal } from './kernel-heal';
 import { KernelObservationFailed } from './kernel-observation';
@@ -381,6 +381,21 @@ export async function kernelDeliveryOfPr(p: { workspaceId: string; prNumber: num
   return { deliveryId, state: d?.state ?? null, stateReason: d?.stateReason ?? null, version: d?.version ?? 0 };
 }
 
+/**
+ * Living Spec r7 AC-45: the id of a person's decision on an escalation: the action, the head
+ * and the delivery version they decided at. The same decision submitted again (a double tap, a
+ * retried request, a door re-sent after an unknown outcome) carries the same id, so the kernel
+ * answers it with the transition it already made.
+ */
+export function humanDecision(action: 'request_fix' | 'force_re_review' | 'approve_override', headSha: string, version: number): { id: string; headSha: string } {
+  return { id: `${action}:${headSha}:v${version}`, headSha };
+}
+
+/** AC-45 for one finding: the same finding on the same head and version is one decision; a restated one is a new one. */
+export function findingDisposalDecision(findingId: string, headSha: string, version: number): { id: string; headSha: string } {
+  return { id: `dispose_finding:${findingId}:${headSha}:v${version}`, headSha };
+}
+
 // ── T23: a person applies an escalation's recommendation ────────────────────
 
 export interface HumanApplyOutcome {
@@ -401,6 +416,12 @@ export interface HumanApplyOutcome {
  */
 export async function applyRecommendationThroughKernel(p: {
   workspaceId: string; prNumber: number; actor: string; expectedVersion?: number | null; instructions?: string | null;
+  /**
+   * Living Spec r7 AC-45: the head the person decided on (with `expectedVersion`, the version
+   * they saw). Given, the fix is one decision bound to that head: a second submission of it is
+   * answered by the first (`duplicate`), and a head that moved refuses it (`decision_head_stale`).
+   */
+  decisionHeadSha?: string | null;
 }, deps: SeamDeps = {}): Promise<HumanApplyOutcome | null> {
   const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
   if (!repo) return null;
@@ -421,7 +442,10 @@ export async function applyRecommendationThroughKernel(p: {
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.actor}:apply_recommendation`, repoFullName: repo.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: { ...reader, readPr: async () => live } });
   const result = await applyCommand(
-    { type: 'HumanResolve', actor: p.actor, choice: 'apply_recommendation', expectedVersion, instructions: p.instructions ?? undefined },
+    {
+      type: 'HumanResolve', actor: p.actor, choice: 'apply_recommendation', expectedVersion, instructions: p.instructions ?? undefined,
+      ...(p.decisionHeadSha ? { decision: humanDecision('request_fix', p.decisionHeadSha, expectedVersion) } : {}),
+    },
     { ref: { deliveryId }, exec: deps.exec },
   );
   if (result.result === 'applied') await drainDelivery(deliveryId, deps);
@@ -436,6 +460,56 @@ export async function applyRecommendationThroughKernel(p: {
     current: await currentOf(),
     attempt: human ? { id: human.id, attemptNo: human.attemptNo, maxAttempts: human.maxAttempts, taskId: human.taskId } : null,
   };
+}
+
+/**
+ * "Approve and override" on a kernel-owned PR's review escalation (Living Spec r7 AC-45/AC-46):
+ * one T23 HumanResolve(approve) of the head the person decided on, at the version they saw,
+ * past the required findings still open or awaiting verification. The door proves who may
+ * (`hasMergePermission`, `overridePermitted`: lib/override-permission.ts); the kernel
+ * refuses without them, refuses a moved head (`decision_head_stale`) and answers a replay with
+ * the first transition (`duplicate`). On success the inline drain publishes `Buildd / Review
+ * approval` success for that head ("approved by a person over N open findings"), and the
+ * merge follows the workspace policy. Null = not the kernel's PR.
+ */
+export async function approveOverrideThroughKernel(p: {
+  workspaceId: string; prNumber: number; actor: string;
+  /** The head the person decided on, and the delivery version they saw (absent = the version read now). */
+  decision: { headSha: string; version?: number | null };
+  reason?: string | null;
+  hasMergePermission: boolean; overridePermitted: boolean;
+}, deps: SeamDeps = {}): Promise<{ result: CommandResult; current: CurrentView & { stateReason: string | null } } | null> {
+  const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
+  if (!repo) return null;
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, repo.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return null;
+  const currentOf = async (): Promise<CurrentView & { stateReason: string | null }> => {
+    const d = (await loadView({ deliveryId }, deps.exec)).delivery;
+    return { state: d?.state ?? null, stateReason: d?.stateReason ?? null, version: d?.version ?? 0, head: d?.currentHeadSha ?? null, round: d?.currentRound ?? 0 };
+  };
+  // Read before the live head is recorded, so a push that lands mid-click still makes the click stale.
+  const version = p.decision.version ?? (await loadView({ deliveryId }, deps.exec)).delivery?.version ?? 0;
+  // A head GitHub has that no webhook delivered yet is recorded first, so an approval of the
+  // older head is refused rather than applied to a head the person never saw.
+  const reader = readerFor(deps, repo.installationId);
+  const live = await reader.readPr(repo.repoFullName, p.prNumber);
+  if (!live) {
+    const current = await currentOf();
+    return { result: { result: 'rejected', reason: 'live_read_failed', current: { state: current.state, version: current.version, head: current.head, round: current.round } }, current };
+  }
+  await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.actor}:approve_override`, repoFullName: repo.repoFullName, prNumber: p.prNumber },
+    { exec: deps.exec, github: { ...reader, readPr: async () => live } });
+  const result = await applyCommand(
+    {
+      type: 'HumanResolve', actor: p.actor, choice: 'approve', expectedVersion: version,
+      commitId: p.decision.headSha, hasMergePermission: p.hasMergePermission, overridePermitted: p.overridePermitted,
+      reason: p.reason?.trim() || undefined,
+      decision: humanDecision('approve_override', p.decision.headSha, version),
+    },
+    { ref: { deliveryId }, exec: deps.exec },
+  );
+  if (result.result === 'applied') await drainDelivery(deliveryId, deps);
+  return { result, current: await currentOf() };
 }
 
 // ── a90fc99b: the escalation gate's policy-merge rule ───────────────────────
@@ -517,6 +591,101 @@ export async function attemptStarted(p: {
   }
   const started = await projectAttemptStart({ deliveryId: p.task.deliveryId, taskId: p.task.id, claimedBy: p.claimedBy, claimedAt: p.claimedAt }, deps.exec);
   return { handled: true, started, ...(result ? { result } : {}) };
+}
+
+// ── AC-1 slice 9: a settled owner task reopens; a claim withdraws its start ──
+
+/** The predicate an attempt writer's own (non-owner) status write carries (task-projection.ts). */
+export { notOwnerTaskSql };
+
+/**
+ * Project a reopen onto its task outside a transition (task-projection.ts `projectReopenSql`), then
+ * answer whether the task is open again as `to` says: moved here, or already by `t_reopen`.
+ */
+export async function projectReopen(
+  p: { deliveryId: string; taskId: string; workerId: string | null; endedAt: string | null; to: 'pending' | 'assigned' },
+  exec: Exec = seamExec,
+): Promise<boolean> {
+  if (((await exec(projectReopenSql(p))).rows ?? []).length > 0) return true;
+  const r = await exec(sql`SELECT 1 AS ok FROM tasks tk WHERE tk.id = ${p.taskId}::uuid AND tk.status = ${p.to}::text`);
+  return (r.rows ?? []).length > 0;
+}
+
+/**
+ * AttemptReopened from the recovery doors (credential, GitHub access, an incident's recovery) and
+ * the worker PATCH's resume: the owner task's ended attempt is opened again, for a new attempt
+ * (`pending`) or the same worker running again (`assigned`), the move the kernel makes in the
+ * transition's own statement (`t_reopen`). A reopen the reducer does not bind (the delivery handed
+ * on, or is terminal) is still projected under the same guard, so the task moves exactly when the
+ * named worker is still its latest attempt and its end is the one named. `handled` false: the task
+ * is no delivery's owner (the caller writes it itself).
+ */
+export async function attemptReopened(p: {
+  task: AttemptTask;
+  workerId: string | null;
+  endedAt: string | null;
+  to: 'pending' | 'assigned';
+  reason: string;
+  source: string;
+}, deps: SeamDeps = {}): Promise<{ handled: boolean; reopened: boolean; result?: CommandResult }> {
+  if (!p.task.deliveryId || p.task.deliveryRole !== 'owner') return { handled: false, reopened: false };
+  const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec, p.task.workspaceId);
+  let result: CommandResult | undefined;
+  if (deliveryId) {
+    result = await applyCommand(
+      { type: 'AttemptReopened', actor: p.source, taskId: p.task.id, workerId: p.workerId, endedAt: p.endedAt, to: p.to, reason: p.reason },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+    if (result.result !== 'applied' && result.result !== 'duplicate') {
+      console.log(`[workflow] AttemptReopened(${p.reason}) for task ${p.task.id}: ${result.result} (${result.reason})`);
+    }
+  }
+  const reopened = await projectReopen({ deliveryId: p.task.deliveryId, taskId: p.task.id, workerId: p.workerId, endedAt: p.endedAt, to: p.to }, deps.exec);
+  return { handled: true, reopened, ...(result ? { result } : {}) };
+}
+
+/**
+ * Project a withdrawal onto its task outside a transition (task-projection.ts `projectWithdrawSql`),
+ * then answer whether the task now has the outcome's status: moved here, or already by `t_withdraw`.
+ */
+export async function projectWithdraw(
+  p: { deliveryId: string; taskId: string; claim: { claimedBy: string; claimedAt: string } | null; outcome: 'requeued' | 'failed'; reason?: string | null },
+  exec: Exec = seamExec,
+): Promise<boolean> {
+  if (((await exec(projectWithdrawSql(p))).rows ?? []).length > 0) return true;
+  const r = await exec(sql`SELECT 1 AS ok FROM tasks tk WHERE tk.id = ${p.taskId}::uuid AND tk.status = ${p.outcome === 'requeued' ? 'pending' : 'failed'}::text`);
+  return (r.rows ?? []).length > 0;
+}
+
+/**
+ * AttemptWithdrawn from the claim route (the account cap refused the claim's worker; a workspace
+ * that lacks the task's project), the cleanup route (a claim with no attempt row) and the worker
+ * PATCH (a mount gap that ran its mission out of budget): a claim that runs no attempt gives its
+ * start back or ends the task, or a queued task is refused, the move the kernel makes in the
+ * transition's own statement (`t_withdraw`). Projected under the same guard when not bound.
+ * `handled` false: the task is no delivery's owner.
+ */
+export async function attemptWithdrawn(p: {
+  task: AttemptTask;
+  claim: { claimedBy: string; claimedAt: string } | null;
+  outcome: 'requeued' | 'failed';
+  reason: string;
+  source: string;
+}, deps: SeamDeps = {}): Promise<{ handled: boolean; withdrawn: boolean; result?: CommandResult }> {
+  if (!p.task.deliveryId || p.task.deliveryRole !== 'owner') return { handled: false, withdrawn: false };
+  const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec, p.task.workspaceId);
+  let result: CommandResult | undefined;
+  if (deliveryId) {
+    result = await applyCommand(
+      { type: 'AttemptWithdrawn', actor: p.source, taskId: p.task.id, claim: p.claim, outcome: p.outcome, reason: p.reason },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+    if (result.result !== 'applied' && result.result !== 'duplicate') {
+      console.log(`[workflow] AttemptWithdrawn(${p.reason}) for task ${p.task.id}: ${result.result} (${result.reason})`);
+    }
+  }
+  const withdrawn = await projectWithdraw({ deliveryId: p.task.deliveryId, taskId: p.task.id, claim: p.claim, outcome: p.outcome, reason: p.reason }, deps.exec);
+  return { handled: true, withdrawn, ...(result ? { result } : {}) };
 }
 
 // ── T4: an attempt ended ────────────────────────────────────────────────────
@@ -659,6 +828,11 @@ export async function attemptEnded(p: {
   if ((p.status === 'completed' || p.commitCount === 0) && !p.localHeadSha && !proof && reported === 0 && boundHead && live && live.state === 'open' && !live.merged && live.headSha !== boundHead && d.repoFullName) {
     proof = { liveContainsLocal: false, contentDiffChanged: true };
   }
+  // AC-79: a review fix whose PR moved off its bound head only by a merge of the base pushed nothing of
+  // its own: the PR's diff at the live head, against the base, is the diff at the bound head.
+  const baseOnly = attemptKind === 'fix' && d.state === 'FIXING' && boundHead && d.repoFullName
+    ? await baseOnlyMove(p.task.workspaceId, d.repoFullName, boundHead, live, deps)
+    : false;
   // 58c8961e: a repair's head on an approved delivery may be reviewed as a delta of the approval.
   let delta: DeltaReading | null = null;
   if (attemptKind !== 'owner' && live && live.state === 'open' && !live.merged && d.repoFullName && deltaApprovalSource(view)) {
@@ -684,6 +858,7 @@ export async function attemptEnded(p: {
     ...(changedPaths ? { changedPaths } : {}),
     ...(delta ? { delta } : {}),
     ...(p.noopEvidence && attemptKind === 'fix' ? { noopEvidence: p.noopEvidence } : {}),
+    ...(baseOnly ? { baseOnly: true } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
   if (result.result !== 'applied' && result.result !== 'duplicate') {
@@ -821,7 +996,7 @@ export async function handOffToLegacy(deliveryId: string, deps: SeamDeps = {}): 
 // ── §9 completion gate ──────────────────────────────────────────────────────
 
 export interface GateRefusal {
-  code: 'delivery_not_advanced' | 'repair_still_conflicted' | 'repair_still_colliding' | 'repair_unrelated_diff';
+  code: 'delivery_not_advanced' | 'repair_still_conflicted' | 'repair_still_colliding' | 'repair_unrelated_diff' | 'repair_base_only';
   error: string;
   hint: string;
   boundHeadSha: string | null;
@@ -863,6 +1038,12 @@ export function fixedElsewhereOf(output: unknown): { findingIds: string[]; files
   return findingIds.length && files.length && reason ? { findingIds, files, reason } : null;
 }
 
+/** The relevance rule of §13.13 rule 4 for a review fix on a PR with no delivery: false only when the diff plainly misses every named path. */
+export function legacyDiffTouchesFindings(p: { named: string[]; changed: string[] | null; feedback: string | null }): boolean | null {
+  const view = { findings: p.named.map((path, i) => ({ id: `legacy-${i}`, path, required: true, status: 'open' })) } as unknown as Parameters<typeof diffTouchesFindings>[0];
+  return diffTouchesFindings(view, p.changed, pathsNamedIn(p.feedback));
+}
+
 export async function fixCompletionGate(p: {
   task: AttemptTask; localHeadSha: string | null;
   noopEvidence?: { findingIds: string[]; evidence: string } | null;
@@ -900,6 +1081,16 @@ export async function fixCompletionGate(p: {
     // re-review, which verifies it like any fix.
     const ctx = ctxOf(p.task);
     const human = ctx.trigger === 'human';
+    // AC-79: the head moved only by a merge of the base (the PR's diff is the bound head's): nothing on
+    // it is the fix's own work, so it cannot complete on it.
+    if (p.task.deliveryRole === 'fix' && !human && attempt.boundHeadSha && await baseOnlyMove(p.task.workspaceId, d.repoFullName, attempt.boundHeadSha, live, deps, repo)) {
+      return {
+        code: 'repair_base_only',
+        error: `PR #${d.prNumber}'s head moved only by a merge of its base since your fix started at ${attempt.boundHeadSha.slice(0, 7)}: none of the commits on it is your fix.`,
+        hint: 'Fix the findings and push your own commits, then complete again. A merge of the base does not count as the fix.',
+        boundHeadSha: attempt.boundHeadSha, liveHeadSha: live.headSha, localHeadSha: p.localHeadSha,
+      };
+    }
     const claim = p.fixedElsewhere && openFindings(view).some((f) => p.fixedElsewhere!.findingIds.includes(f.id)) ? p.fixedElsewhere : null;
     if (p.task.deliveryRole === 'fix' && !human && !claim && attempt.boundHeadSha) {
       const reader = readerFor(deps, repo.installationId);
@@ -933,6 +1124,21 @@ export async function fixCompletionGate(p: {
     liveHeadSha: live.headSha,
     localHeadSha: p.localHeadSha,
   };
+}
+
+/**
+ * AC-79: did the PR move from `fromSha` to the live head only by base commits? True only on a read
+ * that says the PR's diff against the base is the same at both (`contentEquivalent`); unread is false.
+ */
+async function baseOnlyMove(
+  workspaceId: string, repoFullName: string, fromSha: string, live: LivePr | null, deps: SeamDeps,
+  repo?: { installationId: number } | null,
+): Promise<boolean> {
+  if (!live || live.state !== 'open' || live.merged || live.headSha === fromSha || !live.baseRef) return false;
+  const r = repo ?? await (deps.repoFor ?? workspaceRepo)(workspaceId);
+  const reader = r ? readerFor(deps, r.installationId) : null;
+  if (!reader?.contentEquivalent) return false;
+  return (await reader.contentEquivalent(repoFullName, live.baseRef, fromSha, live.headSha).catch(() => null)) === true;
 }
 
 // ── T9: a fix attempt is claimed ────────────────────────────────────────────
@@ -1009,6 +1215,12 @@ export async function recordReviewVerdict(p: {
   effectiveVerdict: string;
   headSha: string;
   confidence: number | null;
+  /**
+   * The commit the reviewer's checkout was at (`null`: none reported). A verdict read
+   * at any other commit than `headSha` is inconclusive: the round fails (T27), never decided.
+   * Absent = not attested (a caller that predates it).
+   */
+  evidenceSha?: string | null;
   /** What the reviewer said about findings (§5): its structured output, read defensively. */
   output?: unknown;
 }, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; toState: string | null }> {
@@ -1028,6 +1240,7 @@ export async function recordReviewVerdict(p: {
     effectiveVerdict: toKernelVerdict(p.effectiveVerdict),
     headBound: p.headSha,
     confidence: p.confidence,
+    ...(p.evidenceSha !== undefined ? { evidenceSha: p.evidenceSha, reviewerTaskId: p.reviewerTask.id, maxContractRetries: REVIEW_CONTRACT_RETRIES } : {}),
     ...(await resolveDeferralTasks(verdictFindingsOf(p.output), deliveryId, deps.exec ?? seamExec)),
   }, { ref: { deliveryId }, exec: deps.exec });
   await drainDelivery(deliveryId, deps);
@@ -1050,6 +1263,8 @@ export async function adoptReviewVerdict(p: {
   effectiveVerdict: string;
   headSha: string;
   confidence: number | null;
+  /** As `recordReviewVerdict`'s: a verdict read at another commit than `headSha` is never adopted. */
+  evidenceSha?: string | null;
   output?: unknown;
 }, deps: SeamDeps = {}): Promise<CommandResult | null> {
   const deliveryId = p.workspaceId
@@ -1064,6 +1279,7 @@ export async function adoptReviewVerdict(p: {
     effectiveVerdict: toKernelVerdict(p.effectiveVerdict),
     headBound: p.headSha,
     confidence: p.confidence,
+    ...(p.evidenceSha !== undefined ? { evidenceSha: p.evidenceSha } : {}),
     ...(await resolveDeferralTasks(verdictFindingsOf(p.output), deliveryId, deps.exec ?? seamExec)),
   }, { ref: { deliveryId }, exec: deps.exec });
   await drainDelivery(deliveryId, deps);
@@ -1265,6 +1481,34 @@ export async function abandonDelivery(p: {
   return { handled: true, deliveryId, result };
 }
 
+// ── §5: a person waives or defers one finding ───────────────────────────────
+
+/**
+ * FindingDisposed from the dashboard door: a person closes exactly one finding, recorded with who
+ * and why (the reducer refuses a non-person actor, an empty reason and a deferral without a full
+ * task id). `handled: false` = the PR is not the kernel's.
+ */
+export async function disposeFinding(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; actor: string;
+  findingId: string; disposition: 'waived' | 'deferred'; reason: string; deferredToTaskId?: string | null;
+  /** The head and delivery version the person's screen showed (absent = not bound to a decision). */
+  decision?: { headSha: string; version: number };
+}, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; findingStatus: string | null }> {
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return { handled: false };
+  const result = await applyCommand(
+    { type: 'FindingDisposed', actor: p.actor, findingId: p.findingId, disposition: p.disposition, reason: p.reason, deferredToTaskId: p.deferredToTaskId ?? null,
+      ...(p.decision ? { decision: findingDisposalDecision(p.findingId, p.decision.headSha, p.decision.version), expectedVersion: p.decision.version } : {}) },
+    { ref: { deliveryId }, exec: deps.exec },
+  );
+  if (result.result === 'applied') await drainDelivery(deliveryId, deps);
+  // A duplicate is a success only if the finding is closed the way the person asked now.
+  const findingStatus = result.result === 'duplicate'
+    ? ((await loadView({ deliveryId }, deps.exec)).findings ?? []).find((f) => f.id === p.findingId)?.status ?? null
+    : null;
+  return { handled: true, result, findingStatus };
+}
+
 // ── T5: a person or agent asks for a review ─────────────────────────────────
 
 /**
@@ -1273,6 +1517,12 @@ export async function abandonDelivery(p: {
  */
 export async function requestReview(p: {
   workspaceId: string; repoFullName: string; prNumber: number; installationId: number; forced: boolean; actor: string;
+  /**
+   * Living Spec r7 AC-45: a person's forced review, decided on this head at this version. Given,
+   * the request is one decision bound to the head: replayed, it is answered by the first; with
+   * the head moved since, it is refused (`decision_head_stale`) and nothing is queued.
+   */
+  decision?: { headSha: string; version: number } | null;
 }, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; reviewTaskId: string | null }> {
   const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
   if (!deliveryId) return { handled: false };
@@ -1286,7 +1536,11 @@ export async function requestReview(p: {
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.actor}:review_request`, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: { ...reader, readPr: async () => live } });
   const result = await applyCommand(
-    { type: 'ReviewRequested', actor: p.actor, headSha: live.headSha, live, forced: p.forced },
+    {
+      type: 'ReviewRequested', actor: p.actor, headSha: live.headSha, live, forced: p.forced,
+      // AC-45: bound to the version the person saw too, as the fix door is.
+      ...(p.decision ? { decision: humanDecision('force_re_review', p.decision.headSha, p.decision.version), expectedVersion: p.decision.version } : {}),
+    },
     { ref: { deliveryId }, exec: deps.exec },
   );
   if (result.result === 'rejected' && result.reason === 'review_in_flight' && !(await roundReviewerAt(deliveryId, live.headSha, deps.exec))) {
@@ -1525,33 +1779,54 @@ async function joinRepairingDeliveries(p: {
 
 export interface TrunkSweepSummary { checked: number; resolved: number; recovered: number; stillRed: number; errors: number }
 
+/** Pages of unresolved incidents one sweep reads at most (see `reconcileTrunkIncidents`). */
+export const TRUNK_SWEEP_PAGES = 4;
+
 /**
  * Re-read the base head of every unresolved trunk incident. Once the base no
- * longer fails the incident's checks (and every run on it completed), the
+ * longer fails the incident's checks (and they finished on it), the
  * incident resolves and each delivery blocked on it re-enters its resume state
  * (T26), with a mechanical refresh when its head predates the fix. A
  * delivery left blocked on an already-resolved incident (an interrupted pass)
  * is recovered too. Runs on the pr-reconcile floor tick.
+ *
+ * Least recently rechecked first, and every incident left unresolved goes to
+ * the back. An incident whose workspace has no repo costs no GitHub read, so
+ * the pass reads further pages (at most `TRUNK_SWEEP_PAGES`) until `limit`
+ * incidents had their base read: a pile of unreadable ones never keeps a
+ * newer incident on a green base from resolving.
  */
 export async function reconcileTrunkIncidents(deps: SeamDeps = {}, limit = 25): Promise<TrunkSweepSummary> {
   const exec = deps.exec ?? seamExec;
   const s: TrunkSweepSummary = { checked: 0, resolved: 0, recovered: 0, stillRed: 0, errors: 0 };
-  const incidents = ((await exec(unresolvedIncidentsSql(limit))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string }>;
-  for (const inc of incidents) {
-    s.checked++;
-    try {
-      const repo = await (deps.repoFor ?? workspaceRepo)(String(inc.workspace_id));
-      if (!repo) continue;
-      const reader = readerFor(deps, repo.installationId);
-      const head = reader.branchHead ? await reader.branchHead(inc.repo_full_name, inc.base_ref) : null;
-      const runs = head && reader.checkRuns ? await reader.checkRuns(inc.repo_full_name, head) : null;
-      // Unknown or still running is never read as recovered.
-      if (!runs || !runs.complete || !trunkRecovered(inc.signature, runs.failing)) { s.stillRed++; continue; }
-      const won = ((await exec(resolveIncidentSql(String(inc.id)))).rows ?? []).length > 0;
-      if (won) s.resolved++;
-    } catch (err) {
-      s.errors++;
-      console.error(`[workflow] trunk incident ${inc.id} recheck failed:`, err);
+  const seen = new Set<string>();
+  let read = 0;
+  for (let page = 0; page < TRUNK_SWEEP_PAGES && read < limit; page++) {
+    const rows = ((await exec(unresolvedIncidentsSql(limit))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string }>;
+    const incidents = rows.filter((r) => !seen.has(String(r.id)));
+    if (incidents.length === 0) break;
+    for (const inc of incidents) {
+      seen.add(String(inc.id));
+      s.checked++;
+      try {
+        const repo = await (deps.repoFor ?? workspaceRepo)(String(inc.workspace_id));
+        const reader = repo ? readerFor(deps, repo.installationId) : null;
+        if (reader) read++;
+        const head = reader?.branchHead ? await reader.branchHead(inc.repo_full_name, inc.base_ref) : null;
+        const runs = head && reader?.checkRuns ? await reader.checkRuns(inc.repo_full_name, head, { tests: true }) : null;
+        // Unknown, or the incident's checks still running, is never read as recovered.
+        if (trunkRecoveredOnRuns(inc.signature, runs)) {
+          const won = ((await exec(resolveIncidentSql(String(inc.id)))).rows ?? []).length > 0;
+          if (won) s.resolved++;
+          continue;
+        }
+        s.stillRed++;
+      } catch (err) {
+        s.errors++;
+        console.error(`[workflow] trunk incident ${inc.id} recheck failed:`, err);
+      }
+      // Still unresolved (red, unreadable, no repo, or an error): to the back of the queue.
+      await exec(touchIncidentSql(String(inc.id))).catch(() => undefined);
     }
   }
   const blocked = ((await exec(blockedOnResolvedSql(limit * 8))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string | null; current_head_sha: string | null; trunk_incident_id: string; base_ref: string }>;

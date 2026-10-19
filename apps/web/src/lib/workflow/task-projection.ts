@@ -18,7 +18,7 @@
  * see the task as it was before this statement, whatever `t_proj` writes.
  */
 import { sql, type SQL } from 'drizzle-orm';
-import { INTERACTIVE_WORKER_RUNNER, TERMINAL_WORKER_STATUSES } from '@buildd/shared';
+import { INTERACTIVE_WORKER_RUNNER, TERMINAL_TASK_STATUSES, TERMINAL_WORKER_STATUSES } from '@buildd/shared';
 import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
 import { notKernelMergedTaskSql, prRowOfDeliverySql } from './pr-fact-scope';
 import { tasks } from '@buildd/core/db/schema';
@@ -32,7 +32,7 @@ const terminal = sql.join(TERMINAL_PR_LIFECYCLE.map((s) => sql`${s}::text`), sql
 /** The CTEs that complete the owner task, after `d` (the delivery row, with its repo and PR number). */
 export function mergeTaskProjectionCtes(d = 'd'): SQL[] {
   const a = sql.raw(d);
-  const prUrl = sql`lower('https://github.com/' || ${a}.repo_full_name || '/pull/' || ${a}.pr_number::text)`;
+  const prUrl = deliveryPrUrlSql(d);
   return [
     // The PR's first worker row: whose task the merge's post-merge work runs for.
     sql`own AS (
@@ -49,16 +49,30 @@ export function mergeTaskProjectionCtes(d = 'd'): SQL[] {
   FROM own, ${a}
   WHERE tk.id = own.task_id AND tk.status <> 'completed'
     AND own.runner IS DISTINCT FROM ${INTERACTIVE_WORKER_RUNNER}::text
-    AND NOT EXISTS (
+    AND ${noOtherOpenPrSql(prUrl)}
+  RETURNING tk.id
+)`,
+  ];
+}
+
+/** The delivery's PR as a lower-cased URL, from a row carrying `repo_full_name` and `pr_number`. */
+const deliveryPrUrlSql = (alias: string): SQL => {
+  const a = sql.raw(alias);
+  return sql`lower('https://github.com/' || ${a}.repo_full_name || '/pull/' || ${a}.pr_number::text)`;
+};
+
+/**
+ * No other PR of the task `tk` is still open: a stacked series, or a follow-up PR, completes the
+ * task with its last merge, never with the first. T17's rule, shared with the loop exit.
+ */
+function noOtherOpenPrSql(prUrl: SQL): SQL {
+  return sql`NOT EXISTS (
       SELECT 1 FROM workers ow
       WHERE ow.task_id = tk.id AND ow.pr_url IS NOT NULL AND ow.pr_number IS NOT NULL
         AND lower(ow.pr_url) <> ${prUrl}
         AND (ow.pr_lifecycle_status IS NULL OR ow.pr_lifecycle_status NOT IN (${terminal}))
         AND NOT EXISTS (SELECT 1 FROM workers mw WHERE mw.task_id = tk.id AND mw.pr_url = ow.pr_url AND mw.merged_at IS NOT NULL)
-    )
-  RETURNING tk.id
-)`,
-  ];
+    )`;
 }
 
 /**
@@ -448,17 +462,188 @@ export function escalationTaskProjectionCtes(decision: Pick<ApplyDecision, 'comm
  * no delivery state moves: the kernel already has the held attempt's end, which the loop exit
  * re-sends (AttemptEnded, a duplicate when recorded). Moves only the delivery's owner task, only
  * while it is still `pending` with the loop satisfied (the exit's own compare-and-set wrote that),
- * only with no live attempt on it (a claim of the next iteration keeps its task), never over a
+ * only with no live attempt on it (a claim of the next iteration keeps its task), with no other PR
+ * of the task still open (T17's rule: a stacked series completes with its last merge), never over a
  * kernel-merged completion. Returns the task id moved, or null.
  */
 export function projectLoopExitSql(p: { deliveryId: string; taskId: string }): SQL {
   return sql`-- workflow:project_loop_exit
 UPDATE tasks tk SET status = 'completed', updated_at = now()
+FROM workflow_deliveries od
 WHERE tk.id = ${p.taskId}::uuid
   AND tk.status = 'pending' AND tk.loop_state = 'satisfied'
-  AND EXISTS (SELECT 1 FROM workflow_deliveries od WHERE od.id = ${p.deliveryId}::uuid AND od.owner_task_id = tk.id)
+  AND od.id = ${p.deliveryId}::uuid AND od.owner_task_id = tk.id
   AND NOT EXISTS (SELECT 1 FROM workers lw WHERE lw.task_id = tk.id AND ${isAttemptRowSql('lw')}
-    AND lw.status NOT IN (${sql.join(TERMINAL_WORKER_STATUSES.map((s) => sql`${s}::text`), sql`, `)}))
+    AND lw.status NOT IN (${liveExcluded}))
+  AND (od.pr_number IS NULL OR ${noOtherOpenPrSql(deliveryPrUrlSql('od'))})
   AND ${notKernelMergedTaskSql(tkCols)}
 RETURNING tk.id`;
+}
+
+const liveExcluded = sql.join(TERMINAL_WORKER_STATUSES.map((s) => sql`${s}::text`), sql`, `);
+
+// ── AC-1 slice 9: a settled owner task reopens; a claim withdraws its start ─────────────
+
+/**
+ * The statuses a reopen moves from: a new attempt only after a failure; the same worker resuming
+ * after either end. Never a cancelled task.
+ */
+const REOPEN_FROM: Record<'pending' | 'assigned', readonly string[]> = {
+  pending: ['failed'],
+  assigned: TERMINAL_TASK_STATUSES.filter((s) => s !== 'cancelled'),
+};
+
+/** The reopen a move is for, read off the decision's evidence (reducer.ts `attemptReopened`). */
+function reopenOf(evidence: unknown): ReopenRef | null {
+  const e = (evidence ?? {}) as Record<string, unknown>;
+  if (e.reopen !== true || typeof e.taskId !== 'string' || (e.to !== 'pending' && e.to !== 'assigned')) return null;
+  return { taskId: e.taskId, workerId: typeof e.workerId === 'string' ? e.workerId : null, endedAt: typeof e.endedAt === 'string' ? e.endedAt : null, to: e.to };
+}
+interface ReopenRef { taskId: string; workerId: string | null; endedAt: string | null; to: 'pending' | 'assigned' }
+
+/**
+ * Only the end that was reopened: the task still settled the way a reopen moves from, and the named
+ * worker still its latest attempt row (no claim since made a newer one) whose end is the one named
+ * (`endedAt`; a worker already running again has none yet). With no worker named, a task no attempt
+ * row ever ran. A new attempt (`pending`) also needs no live attempt on the task. Never a
+ * kernel-merged task.
+ */
+function reopenGuardSql(p: ReopenRef): SQL {
+  const from = sql.join(REOPEN_FROM[p.to].map((s) => sql`${s}::text`), sql`, `);
+  const ended = p.endedAt
+    ? sql`AND (rw.completed_at IS NULL OR date_trunc('milliseconds', rw.completed_at) = date_trunc('milliseconds', ${p.endedAt}::timestamptz))`
+    : sql``;
+  const attempt = p.workerId
+    ? sql`EXISTS (SELECT 1 FROM workers rw WHERE rw.id::text = ${p.workerId}::text AND rw.task_id = tk.id ${ended})
+    AND ${endingWorkerIsCurrentSql(p.workerId)}`
+    : sql`NOT EXISTS (SELECT 1 FROM workers rw WHERE rw.task_id = tk.id AND ${isAttemptRowSql('rw')})`;
+  return sql`tk.id = ${p.taskId}::uuid
+    AND tk.status IN (${from})
+    AND ${attempt}${p.to === 'pending' ? sql`
+    AND NOT EXISTS (SELECT 1 FROM workers lw WHERE lw.task_id = tk.id AND ${isAttemptRowSql('lw')} AND lw.status NOT IN (${liveExcluded}))` : sql``}
+    AND ${notKernelMergedTaskSql(tkCols)}`;
+}
+
+/** What a reopen writes: back to the queue with no claim, or running again under the claim it had. */
+const reopenSet = (to: 'pending' | 'assigned'): SQL => (to === 'pending'
+  ? sql`status = 'pending', claimed_by = NULL, claimed_at = NULL, expires_at = NULL, updated_at = now()`
+  : sql`status = 'assigned', updated_at = now()`);
+
+/**
+ * The `t_reopen` CTE (workflow-kernel-library.md §9, AC-1): AttemptReopened moves the owner task in
+ * the transition's own statement, reading the delivery CTE `d`, so a version miss writes nothing.
+ * Empty for every other decision.
+ */
+export function reopenTaskProjectionCtes(decision: Pick<ApplyDecision, 'command' | 'evidence'>, d = 'd'): SQL[] {
+  if (decision.command !== 'AttemptReopened') return [];
+  const r = reopenOf(decision.evidence);
+  if (!r) return [];
+  const a = sql.raw(d);
+  return [sql`t_reopen AS (
+  UPDATE tasks tk SET ${reopenSet(r.to)}
+  FROM ${a}
+  WHERE tk.id = (SELECT od.owner_task_id FROM workflow_deliveries od WHERE od.id = ${a}.id)
+    AND ${reopenGuardSql(r)}
+  RETURNING tk.id
+)`];
+}
+
+/**
+ * The same move outside a transition: a reopen the reducer did not bind (the delivery handed on or
+ * is terminal), a duplicate, or one the control plane could not take. Same guard as `t_reopen`.
+ * Returns the task id moved, or none.
+ */
+export function projectReopenSql(p: ReopenRef & { deliveryId: string }): SQL {
+  return sql`-- workflow:project_reopen
+UPDATE tasks tk SET ${reopenSet(p.to)}
+WHERE tk.id = ${p.taskId}::uuid
+  AND EXISTS (SELECT 1 FROM workflow_deliveries od WHERE od.id = ${p.deliveryId}::uuid AND od.owner_task_id = tk.id)
+  AND ${reopenGuardSql(p)}
+RETURNING tk.id`;
+}
+
+interface WithdrawRef { taskId: string; claim: { claimedBy: string; claimedAt: string } | null; outcome: 'requeued' | 'failed'; reason?: string | null }
+
+/**
+ * The claim route's rollback of its own claim is not new runnable state: as `rollBackClaim`'s legacy
+ * write does (withDispatchHint), the withdrawal tells the tasks trigger not to wake dispatch, or a
+ * refusal would loop claim, refuse, roll back, wake across every runner. A transaction-local
+ * setting, evaluated before the update (the WHERE reads it), so the row trigger sees it.
+ */
+const ROLLBACK_HINT = JSON.stringify({ suppress: 'claim_rollback' });
+const quietSql = (p: WithdrawRef): SQL => (p.reason === 'claim_rollback'
+  ? sql`
+    AND set_config('buildd.dispatch_hint', ${ROLLBACK_HINT}::text, true) IS NOT NULL`
+  : sql``);
+
+/** The withdrawal a move is for, read off the decision's evidence (reducer.ts `attemptWithdrawn`). */
+function withdrawOf(evidence: unknown): WithdrawRef | null {
+  const e = (evidence ?? {}) as Record<string, unknown>;
+  if (e.withdraw !== true || typeof e.taskId !== 'string' || (e.outcome !== 'requeued' && e.outcome !== 'failed')) return null;
+  const c = e.claim as Record<string, unknown> | null | undefined;
+  const claim = c && typeof c.claimedBy === 'string' && typeof c.claimedAt === 'string' ? { claimedBy: c.claimedBy, claimedAt: c.claimedAt } : null;
+  if (!claim && e.outcome !== 'failed') return null;
+  return { taskId: e.taskId, claim, outcome: e.outcome, reason: typeof e.reason === 'string' ? e.reason : null };
+}
+
+/**
+ * Only the claim that is withdrawn: the task `assigned` under exactly that claim with no attempt row
+ * made since it (the claim's worker was never inserted, or none ran). With no claim, a task still
+ * queued that no live claim holds (`ownerClaimOpenSql`'s rule) and no attempt is running. Never a
+ * kernel-merged task.
+ */
+function withdrawGuardSql(p: WithdrawRef): SQL {
+  const held = p.claim
+    ? sql`tk.status = 'assigned'
+    AND tk.claimed_by::text = ${p.claim.claimedBy}::text AND tk.claimed_at = ${p.claim.claimedAt}::timestamptz
+    AND NOT EXISTS (SELECT 1 FROM workers cw WHERE cw.task_id = tk.id AND ${isAttemptRowSql('cw')}
+      AND cw.created_at >= tk.claimed_at - make_interval(secs => ${CLAIM_CLOCK_SKEW_MS / 1000}::double precision))`
+    : sql`tk.status = 'pending' AND (tk.claimed_by IS NULL OR tk.expires_at < now())
+    AND NOT EXISTS (SELECT 1 FROM workers lw WHERE lw.task_id = tk.id AND ${isAttemptRowSql('lw')} AND lw.status NOT IN (${liveExcluded}))`;
+  return sql`tk.id = ${p.taskId}::uuid
+    AND ${held}
+    AND ${notKernelMergedTaskSql(tkCols)}${quietSql(p)}`;
+}
+
+const withdrawSet = (outcome: 'requeued' | 'failed'): SQL =>
+  sql`status = ${outcome === 'requeued' ? 'pending' : 'failed'}::text, claimed_by = NULL, claimed_at = NULL, expires_at = NULL, updated_at = now()`;
+
+/**
+ * The `t_withdraw` CTE (workflow-kernel-library.md §9, AC-1): AttemptWithdrawn gives the claim's start
+ * back (`pending`) or ends the task (`failed`) in the transition's own statement, reading the delivery
+ * CTE `d`. Empty for every other decision.
+ */
+export function withdrawTaskProjectionCtes(decision: Pick<ApplyDecision, 'command' | 'evidence'>, d = 'd'): SQL[] {
+  if (decision.command !== 'AttemptWithdrawn') return [];
+  const w = withdrawOf(decision.evidence);
+  if (!w) return [];
+  const a = sql.raw(d);
+  return [sql`t_withdraw AS (
+  UPDATE tasks tk SET ${withdrawSet(w.outcome)}
+  FROM ${a}
+  WHERE tk.id = (SELECT od.owner_task_id FROM workflow_deliveries od WHERE od.id = ${a}.id)
+    AND ${withdrawGuardSql(w)}
+  RETURNING tk.id
+)`];
+}
+
+/** The same move outside a transition, under the same guard. Returns the task id moved, or none. */
+export function projectWithdrawSql(p: WithdrawRef & { deliveryId: string }): SQL {
+  return sql`-- workflow:project_withdraw
+UPDATE tasks tk SET ${withdrawSet(p.outcome)}
+WHERE tk.id = ${p.taskId}::uuid
+  AND EXISTS (SELECT 1 FROM workflow_deliveries od WHERE od.id = ${p.deliveryId}::uuid AND od.owner_task_id = tk.id)
+  AND ${withdrawGuardSql(p)}
+RETURNING tk.id`;
+}
+
+/**
+ * AC-1 slice 9: an attempt writer's own status write for a task that is not a delivery's owner (no
+ * delivery, or a repair or review of one). The owner goes through the kernel instead, so this sits in
+ * the writer's WHERE and the write-site guard can see it never moves one. Broader than
+ * `notDeliveryOwnedTaskSql` on purpose: it also skips the owner of a delivery the kill switch
+ * released, whose kernel projection runs all the same.
+ */
+export function notOwnerTaskSql(): SQL {
+  return sql`(${tasks.deliveryId} IS NULL OR ${tasks.deliveryRole} IS DISTINCT FROM 'owner')`;
 }

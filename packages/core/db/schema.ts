@@ -1775,6 +1775,13 @@ export const tasks = pgTable('tasks', {
   releaseRunIdIdx: index('tasks_release_run_id_idx')
     .on(sql`((release_result->>'runId'))`)
     .where(sql`release_result IS NOT NULL`),
+  // The release page's "a degradation task was filed for this release"
+  // lookup (releases/[id]): partial, so it holds only the release watcher's
+  // degradation tasks, and keyed by the release they name, so the page reads
+  // one index entry instead of scanning tasks (spec 3ef37387 R-23).
+  degradationReleaseIdx: index('tasks_degradation_release_idx')
+    .on(t.workspaceId, sql`((context->>'releaseId'))`)
+    .where(sql`(context->>'type') = 'degradation'`),
   ciRetryEventIdx: uniqueIndex('tasks_ci_retry_event_unique')
     .on(t.workspaceId, t.ciRetryPrNumber, t.ciRetryHeadSha)
     .where(sql`${t.creationSource} = 'webhook' AND ${t.ciRetryPrNumber} IS NOT NULL AND ${t.ciRetryHeadSha} IS NOT NULL`),
@@ -5730,6 +5737,8 @@ export const workflowTransitions = pgTable('workflow_transitions', {
 }, (t) => ({
   idempotencyUnique: uniqueIndex('workflow_transitions_idempotency_unique').on(t.deliveryId, t.idempotencyKey),
   versionUnique: uniqueIndex('workflow_transitions_version_unique').on(t.deliveryId, t.toVersion),
+  // The platform operator's kernel view reads the log by time (recent transitions, the count on host=web).
+  createdIdx: index('workflow_transitions_created_idx').on(t.createdAt),
 }));
 
 export type WorkflowTransitionRow = typeof workflowTransitions.$inferSelect;
@@ -5794,10 +5803,14 @@ export type WorkflowCommandOutboxRow = typeof workflowCommandOutbox.$inferSelect
 
 // §5.5 — transactional outbox: inserted by the statement that applied the
 // transition, drained at least once by apps/web/src/lib/workflow/effects.ts.
+// A row is owed by a PR delivery (delivery + transition) or by a mission epoch
+// (workflow-kernel-library.md §6: the writable epoch's branch refresh, drained
+// by apps/web/src/lib/workflow/epoch-effects.ts). Never both, never neither.
 export const workflowEffects = pgTable('workflow_effects', {
   id: uuid('id').primaryKey().defaultRandom(),
-  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
-  transitionId: uuid('transition_id').references(() => workflowTransitions.id, { onDelete: 'cascade' }).notNull(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }),
+  transitionId: uuid('transition_id').references(() => workflowTransitions.id, { onDelete: 'cascade' }),
+  epochId: uuid('epoch_id').references(() => workflowMissionEpochs.id, { onDelete: 'cascade' }),
   kind: text('kind').notNull(),
   dedupeKey: text('dedupe_key').notNull(),
   payload: jsonb('payload').$type<Record<string, unknown>>().default({}).notNull(),
@@ -5813,6 +5826,8 @@ export const workflowEffects = pgTable('workflow_effects', {
   dedupeUnique: uniqueIndex('workflow_effects_dedupe_unique').on(t.dedupeKey),
   dueIdx: index('workflow_effects_due_idx').on(t.notBefore).where(sql`${t.status} IN ('pending', 'delivering')`),
   deliveryIdx: index('workflow_effects_delivery_idx').on(t.deliveryId, t.createdAt),
+  epochIdx: index('workflow_effects_epoch_idx').on(t.epochId, t.createdAt).where(sql`${t.epochId} IS NOT NULL`),
+  oneOwner: check('workflow_effects_one_owner', sql`(${t.epochId} IS NULL AND ${t.deliveryId} IS NOT NULL AND ${t.transitionId} IS NOT NULL) OR (${t.epochId} IS NOT NULL AND ${t.deliveryId} IS NULL AND ${t.transitionId} IS NULL)`),
 }));
 
 export type WorkflowEffectRow = typeof workflowEffects.$inferSelect;

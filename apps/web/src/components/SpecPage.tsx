@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useEffect, useState, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { useOptimisticApprove } from '@/components/useOptimisticApprove';
 import Card from '@/components/ui/Card';
 import Lede from '@/components/ui/Lede';
@@ -13,7 +13,6 @@ import Section from '@/components/ui/Section';
 import { Select } from '@/components/ui/Select';
 import MarkdownContent from '@/components/MarkdownContent';
 import SpecDiffView from '@/components/SpecDiffView';
-import SpecRevisionPanes from '@/components/SpecRevisionPanes';
 import SpecReviewChanges from '@/components/SpecReviewChanges';
 import SpecCriterionHistory from '@/components/SpecCriterionHistory';
 import Disclosure from '@/components/ui/Disclosure';
@@ -23,12 +22,11 @@ import SpecNeighbourGraph from '@/components/SpecNeighbourGraph';
 import Segmented from '@/components/ui/Segmented';
 import { neighbourGraph } from '@/lib/specs/index-view';
 import SpecFiling from '@/components/SpecFiling';
-import SpecRepoChecks from '@/components/SpecRepoChecks';
+import SpecRepoChecksFetch from '@/components/SpecRepoChecksFetch';
 import SpecDelivery from '@/components/SpecDelivery';
 import SpecRetire from '@/components/SpecRetire';
 import { useHideAskButton } from '@/lib/ask-button-hidden';
 import type { SpecPageView, SpecPanes } from '@/lib/specs/page-view';
-import type { RepoCopyPreflight } from '@/lib/specs/repo-copy';
 import { nativeHistoryData } from '@/lib/native-history';
 import type { CriterionMark } from '@/lib/specs/delivery-words';
 
@@ -70,16 +68,108 @@ export function withoutRepeatedTitle(body: string, title: string): string {
 }
 
 /**
- * Where the page's one primary action sits: inline on a phone, and on desktop
- * in the bottom-right corner the Ask button otherwise holds, which hides
- * while this is on screen. The approval is the thing to find; Ask is ⌘K away.
+ * Where the page's one decision sits. On a phone a bar stuck to the bottom of
+ * the screen: it renders last in its block, so it stays in view while the
+ * reader scrolls the text above it. The layout's <main> already pads for the
+ * bottom nav, so `bottom` adds only the home-indicator inset (MobileSaveBar).
+ * On desktop the bottom-right corner the Ask button otherwise holds, which
+ * hides while this is on screen. The decision is the thing to find; Ask is ⌘K away.
  */
-function ActionDock({ children }: { children: ReactNode }) {
+function ActionDock({ label, children }: { label: string; children: ReactNode }) {
   useHideAskButton(true);
   return (
-    <div className="md:fixed md:bottom-6 md:right-6 md:z-30 md:max-w-sm" data-testid="spec-page-action-dock">
+    <div
+      role="region"
+      aria-label={label}
+      className="sticky bottom-[env(safe-area-inset-bottom,0px)] z-10 -mx-4 border-t border-border-default bg-surface-1/95 px-4 py-3 backdrop-blur md:fixed md:bottom-6 md:left-auto md:right-6 md:z-30 md:mx-0 md:max-w-sm md:border-0 md:bg-transparent md:p-0 md:backdrop-blur-none"
+      data-testid="spec-page-action-dock"
+    >
       {children}
     </div>
+  );
+}
+
+type ConfirmReply = { error?: string; confirmed?: Array<{ specId: string }>; skipped?: Array<{ specId: string; reason: string; message: string }>; pending?: unknown };
+const sentence = (t: string) => `${t.charAt(0).toUpperCase()}${t.slice(1)}${/[.!?]$/.test(t) ? '' : '.'}`;
+
+/**
+ * What a press of Confirm import says (§18, R-19): approved, or why not. The
+ * route re-checks the repo file and the revision read; a stale file or a newer
+ * import comes back skipped, and nothing is approved.
+ */
+export function confirmImportResult(status: number, body: ConfirmReply, revision: number): { tone: 'ok' | 'warn' | 'err'; text: string } {
+  if (status === 200 && body.confirmed?.length) return { tone: 'ok', text: `Confirmed. Revision ${revision} is approved, and buildd is its source now.` };
+  const skip = body.skipped?.[0];
+  if (status === 200 && skip) return { tone: 'warn', text: skip.reason === 'not_imported' ? 'This import was already confirmed. Reload to see it.' : sentence(skip.message) };
+  if (status === 202) return { tone: 'warn', text: 'Confirm it from your own buildd session on the specs page.' };
+  return { tone: status === 409 ? 'warn' : 'err', text: body.error ?? 'Could not confirm the import. Try again.' };
+}
+
+/** The one act on an unconfirmed import: a person confirms the revision they read. */
+function ConfirmImport({ specId, workspaceId, revision }: { specId: string; workspaceId: string; revision: number }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ tone: 'ok' | 'warn' | 'err'; text: string } | null>(null);
+  const confirm = async () => {
+    setBusy(true);
+    const res = await fetch('/api/specs/import/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId, specIds: [specId], expectedRevisions: { [specId]: revision } }),
+    }).catch(() => null);
+    const body = (await res?.json().catch(() => ({}))) as ConfirmReply | undefined;
+    const r = res ? confirmImportResult(res.status, body ?? {}, revision) : { tone: 'err' as const, text: 'Could not reach buildd. Try again.' };
+    setBusy(false);
+    setResult(r);
+    if (r.tone === 'ok') router.refresh();
+  };
+  return (
+    <div className="flex flex-col gap-2">
+      {result ? <Notice tone={result.tone} data-testid="spec-page-confirm-import-result">{result.text}</Notice> : null}
+      {result?.tone === 'ok' ? null : (
+        <div>
+          <PrimaryAction onClick={confirm} pending={busy} fullWidthOnMobile data-testid="spec-page-confirm-import">
+            Confirm import
+          </PrimaryAction>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * An import waiting for confirmation (§18, R-19): what revision N is, that it
+ * is a baseline and not a proposed change, and who confirms it. Approve and
+ * Review are not offered: the server refuses both until it is confirmed.
+ */
+function ImportPanel({ specId, c }: { specId: string; c: NonNullable<Ok['importConfirmation']> }) {
+  return (
+    <section className="flex flex-col gap-1.5" data-testid="spec-page-import" aria-labelledby="spec-import-heading">
+      <h2 id="spec-import-heading" className="text-title font-semibold text-text-primary">
+        {c.canConfirm ? 'Confirm the import' : 'Imported, waiting for confirmation'}
+      </h2>
+      <p className="text-body text-text-secondary [overflow-wrap:anywhere]">
+        Revision {c.revision} is{' '}
+        {c.href ? <a href={c.href} className="font-mono text-meta underline" rel="noreferrer" target="_blank">{c.path}</a> : <span className="font-mono text-meta">{c.path}</span>}{' '}
+        at {c.commit}, as the repo has it. Until it is confirmed the repo file is its source: nothing here can be revised or approved.
+        {c.canConfirm ? ' Confirming approves it as the baseline.' : ' A person who approves specs here confirms it.'}
+      </p>
+      <p className="text-body text-text-secondary" data-testid="spec-page-import-no-changes">
+        No proposed changes. A change is a new revision after confirming, reviewed against this one.
+      </p>
+      <p className="flex flex-wrap gap-x-4 text-meta">
+        {c.previous ? (
+          <Link href={`/app/specs/${specId}?from=${c.previous}&to=${c.revision}`} className="inline-flex min-h-11 items-center text-text-secondary underline hover:text-text-primary md:min-h-0" data-testid="spec-page-import-repo-change">
+            What the repo file changed since revision {c.previous}
+          </Link>
+        ) : null}
+        {c.canConfirm ? (
+          <Link href={c.batchHref} className="inline-flex min-h-11 items-center text-text-secondary underline hover:text-text-primary md:min-h-0" data-testid="spec-page-import-batch">
+            Confirm with the other imports
+          </Link>
+        ) : null}
+      </p>
+    </section>
   );
 }
 
@@ -97,7 +187,7 @@ function Approve({ specId, revision, expectedVersion }: { specId: string; revisi
     return { tone: res.status === 409 ? 'warn' : 'err', text: body.error ?? 'Approval failed. Try again.' };
   }, approvedText, () => router.refresh());
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-2">
       {shown ? <Notice tone={shown.tone} data-testid="spec-page-approve-result">{shown.text}</Notice> : null}
       {!shown || retry ? (
         <div>
@@ -157,44 +247,26 @@ function Compare({ specId, revisions, from, to }: { specId: string; revisions: n
   );
 }
 
-/**
- * The repo checks on the would-be copy (R-34), fetched after the panel shows:
- * they ask GitHub, which is never on the path of opening Review (R-9).
- */
-function RepoChecks({ specId }: { specId: string }) {
-  const [got, setGot] = useState<{ preflight: RepoCopyPreflight | null } | 'loading' | 'unread'>('loading');
-  useEffect(() => {
-    let live = true;
-    fetch(`/api/specs/${encodeURIComponent(specId)}/preflight`)
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
-      .then((b: { preflight?: RepoCopyPreflight | null }) => { if (live) setGot({ preflight: b.preflight ?? null }); })
-      .catch(() => { if (live) setGot('unread'); });
-    return () => { live = false; };
-  }, [specId]);
-  if (got === 'loading') {
-    return (
-      <p className="flex items-center gap-2 text-meta text-text-muted" data-testid="spec-repo-checks-loading">
-        <Spinner size="xs" aria-label="Running the repo checks" /> Running the repo checks…
-      </p>
-    );
-  }
-  if (got === 'unread') return <p className="text-meta text-text-muted" data-testid="spec-repo-checks-unread">Couldn&apos;t run the repo checks. You can still approve; the PR runs them.</p>;
-  return <SpecRepoChecks preflight={got.preflight} />;
-}
-
 type ReviewPanes = SpecPanes & { version?: number };
 const REVIEW_UNREAD = 'The changes could not be read. Reload to try again.';
 
 /**
  * What approving the waiting revision puts in force (R-1 to R-8): from the
  * server when the page was loaded with ?review=1, else fetched on the press,
- * with the heading and a loading line shown at once. It leads with the change
- * summary and the per-criterion change list; the line diff is behind "Show
- * full diff", never the default.
+ * with the heading and a loading line shown at once (focus moves to it).
+ *
+ * A change to an approved revision leads with the change summary and the
+ * per-criterion change list; the line diff is behind "Show line diff", never
+ * the default. A first revision has nothing to compare with, so it shows the
+ * spec itself, rendered: a diff against nothing is every line added.
  */
 function ReviewPanel({ spec, waiting, initial, repoChecks }: { spec: Ok['spec']; waiting: number; initial: SpecPanes | null; repoChecks: boolean }) {
   const [panes, setPanes] = useState<ReviewPanes | null>(initial);
   const [error, setError] = useState<string | null>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  // Opened by the Review press, not a page load: take the reader to it.
+  const pressed = useRef(!initial);
+  useEffect(() => { if (pressed.current) heading.current?.focus(); }, []);
   useEffect(() => {
     if (initial) return;
     let live = true;
@@ -210,39 +282,45 @@ function ReviewPanel({ spec, waiting, initial, repoChecks }: { spec: Ok['spec'];
   }, [spec.id, initial]);
   const revision = panes?.revision ?? waiting;
   const replaces = panes ? panes.replaces : spec.approvedRevision;
+  const summary = panes?.changes?.summary?.trim();
   return (
-    <section className="flex flex-col gap-4" data-testid="spec-page-review-panel" aria-labelledby="spec-review-heading" aria-busy={!panes && !error}>
-      <h2 id="spec-review-heading" className="text-title font-semibold text-text-primary">
+    <section className="flex flex-col gap-3" data-testid="spec-page-review-panel" aria-labelledby="spec-review-heading" aria-busy={!panes && !error}>
+      <h2 id="spec-review-heading" ref={heading} tabIndex={-1} className="text-title font-semibold text-text-primary focus:outline-none">
         {replaces ? `Revision ${revision} replaces revision ${replaces}` : `Revision ${revision} (nothing approved yet)`}
       </h2>
       {error ? (
         <Notice tone="warn" data-testid="spec-page-review-error">{error}</Notice>
       ) : panes ? (
         <>
-          {panes.changes ? <SpecReviewChanges {...panes.changes} /> : null}
-          {/* After the changes on a phone; in the Ask corner on desktop. */}
-          <ActionDock>
+          {panes.replaces ? (
+            <>
+              {panes.changes ? <SpecReviewChanges {...panes.changes} /> : null}
+              {repoChecks ? <SpecRepoChecksFetch specId={spec.id} /> : null}
+              <Disclosure
+                summary={<span data-testid="spec-page-full-diff">Show line diff <span className="font-mono text-meta"><span className="text-status-success">+{panes.linesAdded}</span> <span className="text-status-error">−{panes.linesRemoved}</span></span></span>}
+                defaultOpen={!panes.changes}
+              >
+                <div className="mt-2"><SpecDiffView hunks={panes.hunks} omittedLines={panes.omittedLines} /></div>
+              </Disclosure>
+            </>
+          ) : (
+            <>
+              {summary ? <p className="whitespace-pre-line text-lede text-text-primary [overflow-wrap:anywhere]" data-testid="spec-review-summary">{summary}</p> : null}
+              <p className="text-body text-text-secondary" data-testid="spec-page-review-first">The whole spec, as approving would put it in force.</p>
+              {repoChecks ? <SpecRepoChecksFetch specId={spec.id} /> : null}
+              <Card as="article" className="md:p-8" data-testid="spec-page-review-body" aria-label={`Revision ${panes.revision} of the spec`}>
+                <MarkdownContent content={withoutRepeatedTitle(panes.body, spec.title)} images="link" surface="spec" attachments={panes.attachmentSources ?? {}} />
+              </Card>
+            </>
+          )}
+          {/* Last in the panel, so on a phone it stays in view while the reader scrolls it; in the Ask corner on desktop. */}
+          <ActionDock label="Decision">
             <Approve specId={spec.id} revision={panes.revision} expectedVersion={panes.version ?? spec.version} />
           </ActionDock>
-          {repoChecks ? <RepoChecks specId={spec.id} /> : null}
-          <Disclosure summary={<span data-testid="spec-page-full-diff">Show full diff</span>} defaultOpen={!panes.changes}>
-            <div className="mt-2 flex flex-col gap-3">
-              <SpecRevisionPanes
-                body={panes.body}
-                hunks={panes.hunks}
-                omittedLines={panes.omittedLines}
-                sectionCount={panes.sectionCount}
-                linesAdded={panes.linesAdded}
-                linesRemoved={panes.linesRemoved}
-                initial={panes.replaces ? 'changes' : 'spec'}
-                attachments={panes.attachmentSources}
-              />
-            </div>
-          </Disclosure>
         </>
       ) : (
         <>
-          {repoChecks ? <RepoChecks specId={spec.id} /> : null}
+          {repoChecks ? <SpecRepoChecksFetch specId={spec.id} /> : null}
           <p className="flex items-center gap-2 text-meta text-text-muted" data-testid="spec-page-review-loading">
             <Spinner size="sm" aria-label="Reading the changes" /> Reading what changed…
           </p>
@@ -277,7 +355,9 @@ export default function SpecPage({ view }: { view: Ok }) {
   const [relatedView, setRelatedView] = useState<'list' | 'graph'>('list');
   // Related renders only when something sits under it: no empty heading.
   const hasRelated = hasGraph || !!view.filing || view.children.length > 0 || !!view.design || view.repoRefs.length > 0;
-  const line = readingLine(view);
+  const importing = view.importConfirmation ?? null;
+  // An unconfirmed import has its own panel; "Nothing is approved yet" would only repeat it.
+  const line = importing ? null : readingLine(view);
   // Review is the address (?review=1), but pressing it is not a navigation: the
   // URL changes in place (no server render, R-7) and the panel fetches itself.
   const params = useSearchParams();
@@ -449,6 +529,7 @@ export default function SpecPage({ view }: { view: Ok }) {
                 </Link>
                 {r.revision === spec.approvedRevision ? <span className="text-meta font-medium text-status-success">approved</span> : null}
                 {r.revision === view.waiting ? <span className="text-meta font-medium text-status-warning">waiting</span> : null}
+                {importing && r.revision === importing.revision ? <span className="text-meta font-medium text-status-info">imported</span> : null}
                 <span className="text-meta text-text-muted">
                   by {r.author === 'person' ? 'a person' : 'an agent'}, {r.createdAgo}
                 </span>
@@ -495,7 +576,8 @@ export default function SpecPage({ view }: { view: Ok }) {
         </Link>
         <h1 className="font-voice text-2xl text-text-primary [overflow-wrap:anywhere] md:text-3xl" data-testid="spec-page-title">{spec.title}</h1>
         <p className="text-meta text-text-muted">{spec.scope} · {view.standing}</p>
-        {view.source?.path ? (
+        {/* An unconfirmed import names its file and commit in its own panel, below. */}
+        {importing ? null : view.source?.path ? (
           <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-source">
             {view.source.href ? <a href={view.source.href} className="font-mono underline">{view.source.path}</a> : <span className="font-mono">{view.source.path}</span>}
           </p>
@@ -513,14 +595,7 @@ export default function SpecPage({ view }: { view: Ok }) {
       {view.criteriaUnread ? <Notice tone="warn" data-testid="spec-page-criteria-unread">{view.criteriaUnread}</Notice> : null}
 
       {line ? <Lede><span data-testid="spec-page-reading">{line}</span></Lede> : null}
-
-      {reviewLink ? (
-        <ActionDock>
-          <a href={`${base}?review=1`} onClick={openReview} className={primaryActionClass({ fullWidthOnMobile: true })} data-testid="spec-page-review">
-            Review revision {view.waiting}
-          </a>
-        </ActionDock>
-      ) : null}
+      {importing ? <ImportPanel specId={spec.id} c={importing} /> : null}
 
       <nav aria-label="On this page" className="flex flex-wrap gap-x-4 text-meta lg:hidden" data-testid="spec-page-jumps">
         {jumps.map((j) => (
@@ -542,6 +617,19 @@ export default function SpecPage({ view }: { view: Ok }) {
           {!view.retirement && view.canRetire ? <SpecRetire specId={spec.id} retirement={null} canRetire targets={view.retireTargets ?? []} /> : null}
         </aside>
       </div>
+
+      {/* Last on the page, so on a phone it stays in view the whole way down. */}
+      {importing?.canConfirm ? (
+        <ActionDock label="Decision">
+          <ConfirmImport specId={spec.id} workspaceId={spec.workspaceId} revision={importing.revision} />
+        </ActionDock>
+      ) : reviewLink ? (
+        <ActionDock label="Decision">
+          <a href={`${base}?review=1`} onClick={openReview} className={primaryActionClass({ fullWidthOnMobile: true })} data-testid="spec-page-review">
+            Review revision {view.waiting}
+          </a>
+        </ActionDock>
+      ) : null}
     </div>
   );
 }

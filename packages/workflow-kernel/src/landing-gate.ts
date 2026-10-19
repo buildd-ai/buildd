@@ -90,6 +90,19 @@ export function reviewGate(view: KernelView, o: ReviewGateOptions = {}): ReviewG
   return { ok: true, coverage, overridden: override };
 }
 
+/**
+ * The approval a standing verdict or a new head leaves behind: the newest decided `approve` round
+ * (before `beforeRound`, when given) whose head is not the one now in question. A status or a
+ * review that names it tells a reader the earlier approval is no longer what lands, and where it
+ * was made, rather than leaving "approved" and "changes requested" to be reconciled from comments.
+ */
+export function priorApprovalOf(view: Pick<KernelView, 'rounds'>, head: string | null | undefined, beforeRound?: number): RoundSnapshot | null {
+  return view.rounds
+    .filter((r) => r.status === 'decided' && (r.effectiveVerdict ?? r.verdict) === 'approve' && (beforeRound == null || r.round < beforeRound))
+    .sort((a, b) => b.round - a.round)
+    .find((r) => r.headSha !== head) ?? null;
+}
+
 function notApprovedReason(d: DeliverySnapshot): string {
   switch (d.state) {
     case 'WORKING': case 'AWAITING_PUSH': return 'work on the PR is still running';
@@ -122,10 +135,36 @@ export const REVIEW_STATUS_TERMS = {
   finding: 'Unresolved review finding',
   ready: 'Ready to merge',
   blocked: 'Merge blocked',
-  repairing: 'Branch update in progress',
+  repairing: 'Repair in progress',
+  repairingBehind: 'Branch update in progress',
+  repairingCi: 'CI fix in progress',
+  repairingConflict: 'Conflict fix in progress',
+  repairingMigration: 'Migration fix in progress',
 } as const;
 
 const T = REVIEW_STATUS_TERMS;
+
+/** The term a repair leads with, per reason: a CI fix is not a "branch update". The state stays pending either way. */
+function repairTerm(reason: string | null | undefined): string {
+  switch (reason) {
+    case 'ci': return T.repairingCi;
+    case 'conflict': return T.repairingConflict;
+    case 'migration': return T.repairingMigration;
+    case 'behind': return T.repairingBehind;
+    default: return T.repairing;
+  }
+}
+
+/** A repair reason in words, for the description after the term. */
+function repairWords(reason: string | null | undefined): string {
+  switch (reason) {
+    case 'ci': return 'a failing check is being fixed';
+    case 'conflict': return 'a merge conflict is being resolved';
+    case 'migration': return 'a migration is being renumbered';
+    case 'behind': return 'the branch is being brought up to date';
+    default: return 'the PR is being repaired';
+  }
+}
 
 /** A stored reason code (`landing_needs_human`) in words: underscores to spaces, the kernel's "landing" as "merge". */
 function plainCode(code: string | null | undefined, fallback: string): string {
@@ -154,7 +193,11 @@ export function landingStatusOf(view: KernelView, o: { detail?: string | null } 
   const status = (state: LandingStatus['state'], term: string, text: string): LandingStatus => ({ state, sha: d.currentHeadSha!, description: clip(`${term}: ${text}`) });
   if (g.ok) {
     const by = g.coverage === 'human' ? 'a person' : g.coverage === 'composition' ? 'composition' : g.coverage === 'policy' ? 'merge policy' : 'review';
-    return status('success', T.ready, `${at} approved by ${by}`);
+    // A person's approval past required findings (approve and override) says so: the success is theirs, not a clean review's.
+    const over = g.coverage === 'human'
+      ? (view.findings ?? []).filter((f) => f.required && (f.status === 'open' || f.status === 'addressed')).length : 0;
+    const overText = over ? ` over ${over} open ${over === 1 ? 'finding' : 'findings'}` : '';
+    return status('success', T.ready, `${at} approved by ${by}${overText}`);
   }
   const gateFailure = (r: ReviewGate): LandingStatus | null => {
     if (r.ok) return null;
@@ -163,22 +206,28 @@ export function landingStatusOf(view: KernelView, o: { detail?: string | null } 
       return status('failure', T.finding, `${describeFinding(r.findings[0]!)}${more}`);
     }
     if (r.blocker === 'open_verdict' && r.round && (r.round.effectiveVerdict ?? r.round.verdict) !== 'escalate') {
-      return status('failure', T.changesRequested, r.reason);
+      const prior = priorApprovalOf(view, null, r.round.round);
+      return status('failure', T.changesRequested, prior ? `${r.reason}; supersedes the approval of ${short(prior.headSha)}` : r.reason);
     }
     return null;
   };
   // Review not finished is not a refusal: GitHub shows it as pending, never as a red CI.
-  if (g.blocker === 'review_missing') return status('pending', T.inProgress, `no review covers ${at} yet`);
+  const stale = priorApprovalOf(view, d.currentHeadSha);
+  const staleNote = stale ? `; the approval of ${short(stale.headSha)} does not cover it` : '';
+  if (g.blocker === 'review_missing') return status('pending', T.inProgress, `no review covers ${at} yet${staleNote}`);
   if (g.blocker === 'not_approved') {
-    if (d.state === 'AWAITING_REVIEW') return status('pending', T.inProgress, `${at} is waiting for its review`);
+    if (d.state === 'AWAITING_REVIEW') return status('pending', T.inProgress, `${at} is waiting for its review${staleNote}`);
     if (d.state === 'WORKING' || d.state === 'AWAITING_PUSH') return status('pending', T.inProgress, 'work on the PR is still running');
-    if (d.state === 'CHANGES_REQUESTED') return status('failure', T.changesRequested, `waiting for a fix to ${at}`);
-    if (d.state === 'FIXING') return status('failure', T.changesRequested, `a fix for ${at} is in progress`);
+    const standing = openVerdict(view);
+    const withdrawn = standing ? priorApprovalOf(view, null, standing.round) : null;
+    const withdrawnNote = withdrawn ? `; supersedes the approval of ${short(withdrawn.headSha)}` : '';
+    if (d.state === 'CHANGES_REQUESTED') return status('failure', T.changesRequested, `waiting for a fix to ${at}${withdrawnNote}`);
+    if (d.state === 'FIXING') return status('failure', T.changesRequested, `a fix for ${at} is in progress${withdrawnNote}`);
     // A repair (behind, conflict, CI) is landing eligibility, not a verdict on the review: while the
     // review of this head stands clean the check is pending, never a red that reads as a rejection.
     if (d.state === 'REPAIRING') {
       const review = reviewGate(view, { states: ['REPAIRING'] });
-      if (review.ok) return status('pending', T.repairing, `review approved ${at}; the PR is being repaired (${plainCode(d.stateReason, 'repair')})`);
+      if (review.ok) return status('pending', repairTerm(d.stateReason), `review approved ${at}; ${repairWords(d.stateReason)}`);
       if (review.blocker === 'review_missing') return status('pending', T.inProgress, `no review covers ${at} yet`);
       const failedReview = gateFailure(review);
       if (failedReview) return failedReview;

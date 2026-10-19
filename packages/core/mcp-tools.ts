@@ -15,7 +15,7 @@ import { DISPATCHABLE_BACKENDS, backendLabel, describeBackendRouting, isBackendP
 import { TIERS, isTierSurface, type Tier, type TierSurface } from './model-tier-defaults';
 import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
-import { TERMS, missionGateTerm, titleWithAttempt } from '@buildd/shared';
+import { TERMS, missionGateTerm, titleWithAttempt, githubReviewStatesLine, DECISION_LABELS } from '@buildd/shared';
 import { ARTIFACT_TYPES, isArtifactType, isTerminalWorkerStatus, isTerminalTaskStatus, INTERACTIVE_WORKER_RUNNER, isWorkspaceExecutor, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
 import { formatDispatchHealth, type DispatchHealthReport } from './dispatch-health-report';
@@ -144,14 +144,18 @@ export function pageWorkspaceExplain(data: { subjects?: any[]; considered?: numb
  * GitHub's review counts.
  */
 export function formatGetPrDelivery(data: {
-  reviews?: { approved?: number; changesRequested?: number } | null;
+  reviews?: { approved?: number; changesRequested?: number; commented?: number } | null;
   delivery?: {
     headline: string; detail: string | null;
     review: { line: string } | null;
+    /** AC-24: each round with buildd's verdict, and that GitHub lists those reviews as Commented. */
+    rounds?: { line: string; githubNote: string | null } | null;
+    /** AC-43: a review escalation's question, why automation stopped, the unresolved findings and the actions open now. */
+    decision?: { question: string; why: string; unresolved: { open: string[]; awaitingVerification: string[] }; actions: Array<{ label: string }> } | null;
     repairs: Array<{ label: string; words: string }>;
     reviewApproval?: { state: string; description: string } | null;
   } | null;
-}): { standingLine: string; reviewLine: string; repairsLine: string; approvalLine: string } {
+}): { standingLine: string; reviewLine: string; roundsLine: string; decisionLine: string; repairsLine: string; approvalLine: string } {
   const d = data.delivery;
   const r = data.reviews ?? {};
   const approved = r.approved ?? 0;
@@ -159,10 +163,26 @@ export function formatGetPrDelivery(data: {
   const github = approved > 0 || changes > 0
     ? `Reviews: ${approved} approved${changes > 0 ? `, ${changes} changes requested` : ''}`
     : 'Reviews: none';
-  if (!d) return { standingLine: '', reviewLine: github, repairsLine: '', approvalLine: '' };
+  if (!d) return { standingLine: '', reviewLine: github, roundsLine: '', decisionLine: '', repairsLine: '', approvalLine: '' };
+  const githubStates = githubReviewStatesLine(r) ?? '';
+  const dec = d.decision;
+  const decisionLine = dec
+    ? [
+        `Decision: ${dec.question} ${dec.why}`,
+        dec.unresolved.open.length > 0 ? `${DECISION_LABELS.open}: ${dec.unresolved.open.join('; ')}` : '',
+        dec.unresolved.awaitingVerification.length > 0 ? `${DECISION_LABELS.awaitingVerification}: ${dec.unresolved.awaitingVerification.join('; ')}` : '',
+        `${DECISION_LABELS.choicesOnTaskPage}: ${dec.actions.map(a => a.label).join(', ')}`,
+      ].filter(Boolean).join('\n')
+    : '';
   return {
     standingLine: `Where it stands: ${d.headline}${d.detail ? ` (${d.detail})` : ''}`,
     reviewLine: d.review ? `Reviews: ${d.review.line}` : 'Reviews: no review round yet',
+    decisionLine,
+    // AC-24: GitHub's formal states beside buildd's verdicts, never in place of them.
+    roundsLine: [
+      d.rounds ? `Review rounds: ${d.rounds.line}.${d.rounds.githubNote ? ` ${d.rounds.githubNote}` : ''}` : '',
+      githubStates,
+    ].filter(Boolean).join('\n'),
     repairsLine: d.repairs.length > 0 ? `Repairs: ${d.repairs.map(x => `${x.label} · ${x.words}`).join('; ')}` : '',
     // R-43: the review gate is its own line, never folded into CI.
     approvalLine: d.reviewApproval ? `Review approval: ${d.reviewApproval.description}` : '',
@@ -672,6 +692,8 @@ export const workerActions = [
   // ...and waits for the answer: a server-side long-poll that returns it once.
   'await_answer',
   'create_pr', 'close_pr', 'update_pr', 'merge_pr', 'get_pr', 'list_prs', 'request_pr_review', 'get_pr_review',
+  // A person's own OAuth session only (the route refuses keys, task tokens and agent grants).
+  'approve_pr_override',
   'record_pr_supersession',
   'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
@@ -1028,7 +1050,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_workspaces: '{ offset?, limit? (default 20, max 50) } — the workspaces this connection can act in, grouped by team: id, name, repo, the level you act at there and your access (read or read-write). On an account-level connection it lists exactly the workspaces you granted it that you are still a member of, nothing else. Name one of them (id, owner/repo or name) on any other action. Read-only; nextOffset pages.',
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active"), missionId? (full UUID) } — unknown params and bad values are rejected, never ignored. "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts"|"scheduling"|"dispatch"|"milestones", default workers+artifacts; "scheduling" adds dependsOn, pathManifest/declaration, tier, verificationCommand, specSource, and the task\'s frozen estimate when its team opted into task estimates; "dispatch" adds the task\'s dispatch outbox trail, one line per wake: cause, status, transport, handed-off time, delivered via, attempts, last error; "milestones" adds each shown worker\'s milestones, one line each (ISO time, type, label), the newest 25 plus every `Pre-merge:`/`Merge:` line, which record what the runner\'s merge drivers and mergiraf did), fullDescription?, all? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts: by default the newest 3 workers, 10 artifacts and 5 loop iterations, each cut saying how many it left out; all:true returns every one (and full worker errors). Use this to follow a task to completion after create_task.',
-    claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), waitSeconds? (0-45, with taskId: reserve the task for this session and, while only an unfinished dependency blocks it, keep retrying until it frees or the wait ends; call again to keep waiting), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. A task in a mission with executor="local" is claimable ONLY this way, from your interactive session (never auto-assigned). OAuth budget pacing is skipped. From your own Claude Code session the claim runs on your plan, so the account\'s Claude session wall and the team\'s recorded provider rate-limit walls are skipped too; a runner that names a task is still held by them, and tenant work is still held by its tenant budget. A held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, scope-undeclared serialization, provider walls or account limits, and it is recorded. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason (a budget_exhausted refusal names the wall that held it and when it lifts), plus the specific gate that excluded taskId when one was given.',
+    claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), waitSeconds? (0-45, with taskId: reserve the task for this session and, while only an unfinished dependency blocks it, keep retrying until it frees or the wait ends; call again to keep waiting), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. A task in a mission with executor="local" is claimable ONLY this way, from your interactive session (never auto-assigned). OAuth budget pacing is skipped. From your own Claude Code session the claim runs on your plan, so the account\'s Claude session wall and the team\'s recorded provider rate-limit walls are skipped too; a runner that names a task is still held by them, and tenant work is still held by its tenant budget. A held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, provider walls or account limits, and it is recorded. A task that declares no files is not held for that, so there is nothing to force. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason (a budget_exhausted refusal names the wall that held it and when it lifts), plus the specific gate that excluded taskId when one was given.',
     receive_messages: '{ workerId? } — collect the messages sent to you: human steering (send_agent_message / the task page), replies to your post_note questions, mission guidance and worker→worker messages. Each is returned once and acknowledged as read. On a runner-managed worker the runner already delivers these into your session at the next turn boundary, so this returns nothing there; in an interactive or local-plugin session call it when a hook says messages are waiting. workerId auto-resolved from context if omitted.',
     update_progress: '{ workerId?, progress? (legacy self-report; never displayed), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, costUsd?, costBasis? ("real"|"virtual"|"unknown"), lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted. inputTokens/outputTokens/costUsd are self-reported usage, written as a plain overwrite (a later, smaller report replaces rather than merges with the prior value) — the only way an interactive MCP session, with no runner watching the process, gets counted in get_usage_stats. costBasis says how that usage was charged: "real" (per token, e.g. an API key) or "virtual" (a subscription plan, valued at list price); omit it when you do not know and it records as unknown.',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), alreadyShippedIn? (PR number), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]), inputTokens?, outputTokens?, costUsd?, costBasis? ("real"|"virtual"|"unknown") } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. alreadyShippedIn is for a pr_required task whose work already landed in a merged PR it does not own (another task shipped it first): pass that PR number and completion succeeds without a PR of its own once GitHub confirms it is merged in the workspace repo; any commits or edits of this worker\'s own also need discardEdits. A mission-branch refresh task (merge dev into the integration branch) whose merge was already pushed straight to the branch needs neither: completion succeeds without a PR once GitHub confirms the branch contains the dispatched trunk sha. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). inputTokens/outputTokens/costUsd are self-reported usage — same plain overwrite as update_progress (a later, smaller report replaces rather than merges with the prior value), the only way an interactive MCP session\'s cost gets counted in get_usage_stats; costBasis as in update_progress. workerId auto-resolved from context if omitted',
@@ -1037,6 +1059,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
       + `lede (required) — ${LEDE_FIELD_SPEC}\n\n`
       + 'The lede leads the PR body; `body` follows it, unchanged and uncapped, under its own headings. Nothing inspects or grades what you write — the only way `lede` can fail is by being absent, and then no PR is created and you simply call again.',
     close_pr: '{ workerId?, prNumber (required), workspaceId? (disambiguate when prNumber exists in multiple repos) } — workerId is resolved from prNumber when absent, same as merge_pr. Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
+    approve_pr_override: '{ prNumber (required), headSha (required: the head you decided on), workspaceId?, version? (the delivery version you saw), reason? } — A person approves a PR waiting on them after review, past the findings still open or awaiting verification. One audited approval of exactly that head: refused once the PR has a newer commit, and a repeat changes nothing. The findings stay listed and Buildd / Review approval turns green for that head; the merge then follows the workspace merge policy. Needs the merge policy to allow it, an owner or admin team role, and merge permission on the repo on GitHub. Only from your own signed-in session: an API key, a task token or an agent cannot use it.',
     update_pr: '{ workerId?, prNumber (required), body? , draft? (false — marks a draft PR ready for review instead of editing the body; one of body/draft is required) } — Replace a pull request\'s body, or mark it ready for review with draft:false (gh pr ready is blocked for builders) via the workspace\'s GitHub App installation, same as close_pr but rewriting content instead of state. Use this instead of the GitHub connector\'s update_pull_request (returns 403 Resource not accessible by integration on most installations) and instead of create_pr\'s dedup-adoption path for a PR create_pr did not open or was not asked to refresh — e.g. correcting a PR body after the fact (removing a disclosed URL, fixing a no-prod-data gate trip). Only an agent run or team member that owns the PR (its own worker\'s, or one its task\'s records link: a retry\'s PR, or a PR linked when the task was filed) may call this; a task token is confined to its own task\'s PR the same way close_pr is.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId?, overrides? ({ freshness?: true, size?: true }), reason? (required with overrides) } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. **Subject to the workspace merge policy:** under tier `agent-review` a self-merge is refused — the reviewer decides, so use request_pr_review and let an approve merge it; under `human` it is refused outright; under `auto-threshold` it merges only if the same safety check auto-merge uses passes (CI green, no deny paths, size cap, migration inspector). A 403 carries the reason and the tier — read it rather than retrying. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps. **overrides** is the escape hatch for a PR whose landing escalated because the base kept moving (or the size cap): it merges past base freshness / the size cap, never the review verdict, red CI or a deny path, and is recorded with the reason. A person\'s own session (OAuth MCP, chat) may use it; an agent run is refused unless a person granted it on the run\'s task at creation (create_task context.landingOverride: { prNumbers, overrides: ["freshness"|"size"] }).',
     get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments?, includeCiFailures?, all? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. When the PR has fix attempts (after CI #N / after review #N, including one that opened a PR of its own after a failed resume) they are listed with each attempt\'s errorClass, first key line and any mismatch flag (the latest 5, and the first 5 failing checks, unless all:true; each cut says how many it left out). Stored run-evidence objects (kind, size, id) are listed when the task has any; read one with read_evidence. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state. When CI is red and you need to know why, pass includeCiFailures:true: for each failing check it returns the job, the failing step and the last ~150 log lines (timestamps and escape codes stripped, secrets and production figures redacted, size-capped); a job whose log is unavailable comes back as its name and URL only.',
@@ -2614,7 +2637,9 @@ export async function handleBuilddAction(
       // plus the frozen estimate (task-estimates experiment), which the route
       // reads only on `include=estimate`. workers/artifacts/dispatch expand
       // server-side under their own names.
-      const serverIncludes = includes.map(i => (i === 'scheduling' ? 'estimate' : i));
+      const serverIncludes = includes.map(i => (i === 'scheduling' ? 'estimate' : i))
+        // Evidence objects are bounded and always printed; the blobs stay lean (R-19).
+        .concat('evidence');
       const qs = serverIncludes.length > 0 ? `?include=${encodeURIComponent(serverIncludes.join(','))}` : '';
 
       const task = await api(`/api/tasks/${encodeURIComponent(taskId)}${qs}`).catch((e: unknown) => {
@@ -3259,7 +3284,7 @@ export async function handleBuilddAction(
           const workerData = await api(`/api/workers/${wid}`);
           const taskId = workerData?.taskId;
           if (taskId) {
-            const taskData = await api(`/api/tasks/${taskId}`);
+            const taskData = await api(`/api/tasks/${taskId}?include=full`);
             const releaseResult = taskData?.releaseResult;
             if (releaseResult?.message) {
               releaseLine = `\n\n${releaseResult.message}`;
@@ -3424,7 +3449,8 @@ export async function handleBuilddAction(
       const headline = data.deduplicated
         ? `No new pull request was opened — an existing one for this ${params.prUrl ? 'prUrl' : 'task/head branch'} was returned (deduplicated).`
         : 'Pull request created!';
-      const created = `${headline}\n\n**PR #${data.pr.number}:** ${data.pr.title}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`;
+      const created = `${headline}\n\n**PR #${data.pr.number}:** ${data.pr.title}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}` +
+        (typeof data.supersessionHint === 'string' ? `\n\n**Other open PRs on this task** — ${data.supersessionHint}` : '');
 
       // requestReview folds "open the PR" and "ask for a review" into one call.
       // A failed review request never hides the PR — the PR exists either way,
@@ -3606,7 +3632,7 @@ export async function handleBuilddAction(
         ? `Failing: ${shownFailing.map(c => (c.url ? `${c.name} (${c.url})` : c.name)).join(', ')}${omittedFailing > 0 ? ` (+${omittedFailing} more — all:true lists every one)` : ''}`
         : '';
 
-      const { standingLine, reviewLine, repairsLine, approvalLine } = formatGetPrDelivery(data);
+      const { standingLine, reviewLine, roundsLine, decisionLine, repairsLine, approvalLine } = formatGetPrDelivery(data);
 
       const mergeableLine = pr.mergeable === true ? 'Mergeable: yes'
         : pr.mergeable === false ? `Mergeable: no (${pr.mergeableState ?? 'blocked'})`
@@ -3696,6 +3722,8 @@ export async function handleBuilddAction(
         failingLine,
         approvalLine,
         reviewLine,
+        roundsLine,
+        decisionLine,
         repairsLine,
         statsLine,
         supersededLine,
@@ -3706,6 +3734,23 @@ export async function handleBuilddAction(
         attemptsSection,
         evidenceObjectsSection,
       ].filter(Boolean).join('\n'));
+    }
+
+    case 'approve_pr_override': {
+      if (!params.prNumber) throw new Error('prNumber is required');
+      if (typeof params.headSha !== 'string' || !params.headSha) throw new Error('headSha is required: the head you decided on');
+      const data = await api(`/api/prs/${Number(params.prNumber)}/approve-override`, {
+        method: 'POST',
+        body: JSON.stringify({
+          headSha: params.headSha,
+          ...(params.workspaceId != null ? { workspaceId: params.workspaceId } : {}),
+          ...(params.version != null ? { version: Number(params.version) } : {}),
+          ...(params.reason != null ? { reason: String(params.reason) } : {}),
+        }),
+      });
+      return text(data.replayed
+        ? `PR #${params.prNumber}: this approval was already recorded. The merge follows the workspace merge policy.`
+        : `PR #${params.prNumber}: you approved ${String(params.headSha).slice(0, 7)} over its remaining findings. The findings stay listed; the merge follows the workspace merge policy.`);
     }
 
     case 'request_pr_review': {
@@ -4581,17 +4626,14 @@ export async function handleBuilddAction(
         return text(`${schedules.length} schedule(s):\n\n${summary}`);
       }
 
-      // No workspace — list across all accessible workspaces
-      const wsData = await api('/api/workspaces');
-      const workspaces = wsData.workspaces || [];
-      if (workspaces.length === 0) return text('No workspaces found.');
+      // No workspace — every reachable workspace's schedules in one read (R-22).
+      const across = await api('/api/workspaces/across/schedules');
+      const workspaceCount: number = across.workspaceCount ?? 0;
+      if (workspaceCount === 0) return text('No workspaces found.');
 
       const allSchedules: { workspace: string; schedule: any }[] = [];
-      for (const ws of workspaces) {
-        const data = await api(`/api/workspaces/${ws.id}/schedules`);
-        for (const s of (data.schedules || [])) {
-          if (matchesFilters(s)) allSchedules.push({ workspace: ws.name, schedule: s });
-        }
+      for (const s of (across.schedules || [])) {
+        if (matchesFilters(s)) allSchedules.push({ workspace: s.workspaceName ?? s.workspaceId, schedule: s });
       }
 
       if (allSchedules.length === 0) {
@@ -4600,7 +4642,7 @@ export async function handleBuilddAction(
       }
 
       const summary = allSchedules.map(({ workspace, schedule: s }) => renderLine(s, workspace)).join('\n\n');
-      return text(`${allSchedules.length} schedule(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
+      return text(`${allSchedules.length} schedule(s) across ${workspaceCount} workspace(s):\n\n${summary}`);
     }
 
     case 'trace_schedule': {
@@ -4855,28 +4897,25 @@ export async function handleBuilddAction(
 
       // No workspace — list across all accessible workspaces, deduplicating
       // team-level roles (workspaceId === null) so they appear only once.
-      const wsData = await api('/api/workspaces');
-      const workspaces = wsData.workspaces || [];
-      if (workspaces.length === 0) return text('No workspaces found.');
+      // Every reachable workspace's skills in one read (R-22).
+      const qp = new URLSearchParams();
+      if (typeof params.enabled === 'boolean') qp.set('enabled', String(params.enabled));
+      if (typeof params.isRole === 'boolean') qp.set('isRole', String(params.isRole));
+      const across = await api(`/api/workspaces/across/skills${qp.toString() ? `?${qp}` : ''}`);
+      const workspaceCount: number = across.workspaceCount ?? 0;
+      if (workspaceCount === 0) return text('No workspaces found.');
 
       const allSkills: { workspace: string; skill: any }[] = [];
       const seenTeamLevelSlugs = new Set<string>();
-      for (const ws of workspaces) {
-        const qp = new URLSearchParams();
-        if (typeof params.enabled === 'boolean') qp.set('enabled', String(params.enabled));
-        if (typeof params.isRole === 'boolean') qp.set('isRole', String(params.isRole));
-        const qs = qp.toString() ? `?${qp.toString()}` : '';
-        const data = await api(`/api/workspaces/${ws.id}/skills${qs}`);
-        for (const s of (data.skills || [])) {
-          if (s.workspaceId === null) {
-            // Team-level role — deduplicate across all workspace calls.
-            if (!seenTeamLevelSlugs.has(s.slug)) {
-              seenTeamLevelSlugs.add(s.slug);
-              allSkills.push({ workspace: 'All workspaces (team-level)', skill: s });
-            }
-          } else {
-            allSkills.push({ workspace: ws.name, skill: s });
+      for (const s of (across.skills || [])) {
+        if (s.workspaceId === null) {
+          // Team-level role — listed once.
+          if (!seenTeamLevelSlugs.has(s.slug)) {
+            seenTeamLevelSlugs.add(s.slug);
+            allSkills.push({ workspace: 'All workspaces (team-level)', skill: s });
           }
+        } else {
+          allSkills.push({ workspace: s.workspaceName ?? s.workspaceId, skill: s });
         }
       }
 
@@ -4899,7 +4938,7 @@ export async function handleBuilddAction(
 
       const summary = allSkills.map(({ workspace, skill: s }) => skillLineCross(s, workspace)).join('\n');
 
-      return text(`${allSkills.length} skill(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
+      return text(`${allSkills.length} skill(s) across ${workspaceCount} workspace(s):\n\n${summary}`);
     }
 
     case 'get_skill': {
@@ -5280,25 +5319,20 @@ export async function handleBuilddAction(
         return text(`${artifactsList.length} artifact(s):\n\n${summary}`);
       }
 
-      // No workspace — aggregate across all
-      const wsData = await api('/api/workspaces');
-      const workspaces = wsData.workspaces || [];
-      if (workspaces.length === 0) return text('No workspaces found.');
+      // No workspace — every reachable workspace's artifacts in one read (R-22), newest first.
+      const across = await api(`/api/workspaces/across/artifacts?${searchParams}`);
+      const workspaceCount: number = across.workspaceCount ?? 0;
+      if (workspaceCount === 0) return text('No workspaces found.');
 
-      const allArtifacts: { workspace: string; artifact: any }[] = [];
-      for (const ws of workspaces) {
-        const data = await api(`/api/workspaces/${ws.id}/artifacts?${searchParams}`);
-        for (const a of (data.artifacts || [])) {
-          allArtifacts.push({ workspace: ws.name, artifact: a });
-        }
-      }
+      const allArtifacts: { workspace: string; artifact: any }[] = (across.artifacts || [])
+        .map((a: any) => ({ workspace: a.workspaceName ?? a.workspaceId, artifact: a }));
 
       if (allArtifacts.length === 0) {
         return text(`No artifacts found${params.key ? ` with key "${params.key}"` : ''}.`);
       }
 
       const summary = allArtifacts.map(({ workspace, artifact: a }) => formatArtifact(a, workspace)).join('\n\n');
-      return text(`${allArtifacts.length} artifact(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
+      return text(`${allArtifacts.length} artifact(s) across ${workspaceCount} workspace(s):\n\n${summary}`);
     }
 
     case 'get_artifact': {
@@ -6179,7 +6213,7 @@ export async function handleBuilddAction(
       // Only fetch the plan detail when there's actually a store to index into.
       if (ctx.knowledgeStore) {
         try {
-          const taskData = await api(`/api/tasks/${params.taskId}`);
+          const taskData = await api(`/api/tasks/${params.taskId}?include=result`);
           const planText = renderPlanText(taskData?.result?.structuredOutput?.plan);
           if (planText) {
             await mirrorWorkProduct(ctx, 'plan', buildPlanCard({
@@ -6393,7 +6427,7 @@ export async function handleBuilddAction(
           const target = await resolveMissionTarget(api, params, ctx);
           if ('message' in target) return text(target.message);
           const missionId = target.id;
-          const data = await api(`/api/missions/${missionId}`);
+          const data = await api(`/api/missions/${missionId}?include=details`);
           // Unfinished tasks first (route order kept within each half), capped
           // unless all:true; the cut says how many of each status it left out.
           const showAll = params.all === true;

@@ -232,11 +232,11 @@ mock.module('@buildd/core/db/schema', () => ({
   accountWorkspaces: { accountId: 'accountId', canClaim: 'canClaim', workspaceId: 'workspaceId' },
   tasks: { id: 'id', workspaceId: 'workspaceId', missionId: 'missionId', status: 'status', claimedBy: 'claimedBy', claimedAt: 'claimedAt', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn', backend: 'backend', pathManifest: 'pathManifest', roleSlug: 'roleSlug' },
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', createdAt: 'createdAt', taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt', workspaceId: 'workspaceId', turns: 'turns', inputTokens: 'inputTokens', outputTokens: 'outputTokens' },
-  missions: { id: 'id', status: 'status', maxConcurrentTasks: 'maxConcurrentTasks', pacingMode: 'pacingMode', pacingMaxPerHour: 'pacingMaxPerHour', lastTaskStartedAt: 'lastTaskStartedAt', updatedAt: 'updatedAt', workingBranch: 'workingBranch', integrationBranchEnabled: 'integrationBranchEnabled' },
+  missions: { id: 'id', status: 'status', maxConcurrentTasks: 'maxConcurrentTasks', pacingMode: 'pacingMode', pacingMaxPerHour: 'pacingMaxPerHour', lastTaskStartedAt: 'lastTaskStartedAt', updatedAt: 'updatedAt', workingBranch: 'workingBranch', integrationBranchEnabled: 'integrationBranchEnabled', defaultBackend: 'defaultBackend' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
   workerErrorTraces: mockErrorTracesTable,
   workspaces: { id: 'id', accessMode: 'accessMode', teamId: 'teamId' },
-  workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', workspaceId: 'workspaceId', accountId: 'accountId', teamId: 'teamId', connectorRefs: 'connectorRefs' },
+  workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', workspaceId: 'workspaceId', accountId: 'accountId', teamId: 'teamId', connectorRefs: 'connectorRefs', defaultBackend: 'defaultBackend' },
   secrets: { accountId: 'accountId', purpose: 'purpose', label: 'label', teamId: 'teamId', workspaceId: 'workspaceId' },
   tenantBudgets: { id: 'id', tenantId: 'tenantId', teamId: 'teamId', budgetResetsAt: 'budgetResetsAt' },
   backendPauses: { teamId: 'teamId', backend: 'backend', resetsAt: 'resetsAt' },
@@ -519,7 +519,6 @@ mock.module('./hold-start-shadow', () => ({
     ...holdStartTest.deps,
     schedule: (fn: () => Promise<void>) => { holdStartTest.scheduled.push(fn()); },
   }),
-  gatedStartReachable: () => realHoldStart.gatedStartReachable(holdStartTest.deps),
   gatedStartApplies: (n: any) => realHoldStart.gatedStartApplies(n, holdStartTest.deps),
   openPrStartVerdict: (n: any, g: boolean) => realHoldStart.openPrStartVerdict(n, g, holdStartTest.deps),
   acquireGatedStartPaths: (i: any) => realHoldStart.acquireGatedStartPaths(i, holdStartTest.deps),
@@ -845,11 +844,26 @@ describe('POST /api/workers/claim', () => {
     expect(data.detail).toBe('All 2 runner slots on this account are busy. A slot frees when a running task finishes.');
   });
 
+  const liveRunner = (name: string, slots: number, ageMs = 0) => ({
+    accountId: 'account-1', localUiUrl: `http://${name}:8766`, lastHeartbeatAt: new Date(Date.now() - ageMs), maxConcurrentWorkers: slots,
+  });
+
+  it('a runner whose last beat is past the live window (and has no newer Redis beat) adds no slots', async () => {
+    // The SQL cutoff is widened by the liveness write interval (lib/runner-beats.ts);
+    // the window itself is still applied, to the newer of the row and the Redis beat.
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+    mockHeartbeatsFindMany.mockResolvedValue([liveRunner('a', 2), liveRunner('b', 9, 4 * 60_000)]);
+    mockWorkersFindMany.mockResolvedValueOnce(['w1', 'w2'].map(id => ({ id, status: 'running', runner: 'r' })));
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+    expect(res.status).toBe(429);
+    expect((await res.json()).limit).toBe(2);
+  });
+
   it('the account limit is the slots its live runners report, not the account default', async () => {
     // The account default is 3, but its two runners report 9 and 5 slots:
     // three busy workers leave room (the runner caps its own slots).
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
-    mockHeartbeatsFindMany.mockResolvedValue([{ maxConcurrentWorkers: 9 }, { maxConcurrentWorkers: 5 }]);
+    mockHeartbeatsFindMany.mockResolvedValue([liveRunner('a', 9), liveRunner('b', 5)]);
     mockWorkersFindMany.mockResolvedValueOnce([
       { id: 'w1', status: 'running', runner: 'r' },
       { id: 'w2', status: 'running', runner: 'r' },
@@ -862,7 +876,7 @@ describe('POST /api/workers/claim', () => {
 
   it('live runners reporting fewer slots than are busy still get the 429, naming their total', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
-    mockHeartbeatsFindMany.mockResolvedValue([{ maxConcurrentWorkers: 2 }, { maxConcurrentWorkers: 2 }]);
+    mockHeartbeatsFindMany.mockResolvedValue([liveRunner('a', 2), liveRunner('b', 2)]);
     mockWorkersFindMany.mockResolvedValueOnce(
       ['w1', 'w2', 'w3', 'w4'].map(id => ({ id, status: 'running', runner: 'r' })),
     );
@@ -1956,6 +1970,160 @@ describe('POST /api/workers/claim', () => {
   // cloud runner workspace: a task routed through the team agent endpoint was
   // budget-blocked anyway; a task created with backend:'claude' was moved to
   // Codex; and a flip went through to a runner that then had no Codex auth.
+  // The runner's login mode (spec 34a48877 R-14 to R-19): how its own logins
+  // share its slots, for work no task, role, mission or workspace ties to one.
+  // The batch split itself (AC-10) is pinned on pickLoginBackend
+  // (packages/shared/__tests__/runner-login-mode.test.ts); these pin what the
+  // claim does with one task given the counts the runner sent.
+  describe("runner login mode: the runner's own logins share its slots", () => {
+    let origKey: string | undefined;
+    let taskSets: any[] = [];
+    const claimSet = () => taskSets.find(p => p && p.status === 'assigned') ?? null;
+
+    beforeEach(() => {
+      origKey = process.env.ENCRYPTION_KEY;
+      process.env.ENCRYPTION_KEY = 'test-encryption-key';
+      taskSets = [];
+      mockBackendPausesFindMany.mockResolvedValue([]);
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockResolveAgentModelRoute.mockReset();
+      mockResolveAgentModelRoute.mockImplementation(async () => null);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockMissionsFindMany.mockImplementation(() => [] as any[]);
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((payload: any) => {
+          taskSets.push(payload);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) };
+        }),
+      }));
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      }));
+      mockResolveCodexApiKey.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 9, type: 'user' as const, authType: 'oauth' as const,
+        maxConcurrentSessions: 10, activeSessions: 0,
+      });
+    });
+    afterEach(() => {
+      if (origKey === undefined) delete process.env.ENCRYPTION_KEY;
+      else process.env.ENCRYPTION_KEY = origKey;
+      mockBackendPausesFindMany.mockResolvedValue([]);
+      mockResolveCodexApiKey.mockResolvedValue(null);
+      mockMissionsFindMany.mockImplementation(() => [] as any[]);
+    });
+
+    const task = (over: Record<string, unknown> = {}, context: Record<string, unknown> = {}) => ({
+      id: 'task-1', workspaceId: 'ws-1', title: 'T', backend: 'claude', dependsOn: [], context,
+      workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' },
+      ...over,
+    });
+    /** A runner with its own Codex login (`codex login` → CODEX_HOME) and a login mode. */
+    const ownLogins = ['backend:codex', 'CODEX_HOME'];
+    const loginUse = (mode: string, running = { claude: 0, codex: 0 }, slots = 9) => ({ mode, slots, running });
+    const claim = (body: Record<string, unknown>) => POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', capabilities: ownLogins, ...body },
+    }));
+
+    it('an older runner that sends no mode keeps today: a free task runs on Claude, nothing stamped', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({})).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].task.backend).toBe('claude');
+      expect(claimSet()?.context?.backendRouting).toBeUndefined();
+    });
+
+    it('balanced: with Claude already ahead of its share, the next free task runs on Codex and says why (R-15, R-18)', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ loginUse: loginUse('balanced', { claude: 2, codex: 0 }) })).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].task.backend).toBe('codex');
+      expect(claimSet()?.context?.backendRouting).toEqual(expect.objectContaining({
+        backend: 'codex', from: 'claude', reason: 'runner_login_mode', mode: 'balanced',
+      }));
+    });
+
+    it('balanced: a full Codex share sends the free task to Claude', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ loginUse: loginUse('balanced', { claude: 2, codex: 3 }) })).json();
+      expect(data.workers[0].task.backend).toBe('claude');
+    });
+
+    it('AC-11: claude-first keeps a free task on Claude while Claude is usable', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ loginUse: loginUse('claude-first', { claude: 8, codex: 0 }) })).json();
+      expect(data.workers[0].task.backend).toBe('claude');
+      expect(claimSet()?.context?.backendRouting).toBeUndefined();
+    });
+
+    it('codex-first runs a free task on Codex', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ loginUse: loginUse('codex-first') })).json();
+      expect(data.workers[0].task.backend).toBe('codex');
+    });
+
+    it('AC-12: codex-first never moves a task created with backend claude', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([task({}, { backendPinned: true })]);
+      const data = await (await claim({ loginUse: loginUse('codex-first') })).json();
+      expect(data.workers[0].task.backend).toBe('claude');
+    });
+
+    it("R-16: codex-first respects a workspace default of claude (mission and role defaults: login-mode-gate.test.ts)", async () => {
+      mockTasksFindMany.mockResolvedValueOnce([task({ workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record', defaultBackend: 'claude' }, teamId: 'team-1' } })]);
+      expect((await (await claim({ loginUse: loginUse('codex-first') })).json()).workers[0].task.backend).toBe('claude');
+    });
+
+    it('codex-first sends the task to Claude while Codex is at its limit', async () => {
+      mockBackendPausesFindMany.mockResolvedValue([
+        { backend: 'codex', resetsAt: new Date(Date.now() + 60 * 60 * 1000), reason: 'budget' },
+      ]);
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ loginUse: loginUse('codex-first') })).json();
+      expect(data.workers[0].task.backend).toBe('claude');
+    });
+
+    it('codex-first on a runner that cannot run Codex stays on Claude', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ capabilities: [], loginUse: loginUse('codex-first') })).json();
+      expect(data.workers[0].task.backend).toBe('claude');
+    });
+
+    it('AC-13 / R-17: on its own Codex login a second Codex run in one workspace is allowed', async () => {
+      // Another Codex agent already runs in ws-1.
+      mockWorkersFindMany.mockResolvedValue([{ id: 'w-active', taskId: 'task-active', status: 'running', workspaceId: 'ws-1' }]);
+      mockTasksFindMany
+        .mockResolvedValueOnce([task()])
+        .mockResolvedValueOnce([{ workspaceId: 'ws-1', backend: 'codex', context: null }]);
+      const data = await (await claim({ loginUse: loginUse('balanced', { claude: 3, codex: 1 }) })).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].task.backend).toBe('codex');
+    });
+
+    it('R-17: a task stored as Codex is not held by the one-per-workspace cap on its own login', async () => {
+      mockWorkersFindMany.mockResolvedValue([{ id: 'w-active', taskId: 'task-active', status: 'running', workspaceId: 'ws-1' }]);
+      mockTasksFindMany
+        .mockResolvedValueOnce([task({ backend: 'codex' })])
+        .mockResolvedValueOnce([{ workspaceId: 'ws-1', backend: 'codex', context: null }]);
+      const data = await (await claim({ loginUse: loginUse('balanced', { claude: 0, codex: 1 }) })).json();
+      expect(data.diagnostics?.deferrals?.codex_single_flight ?? 0).toBe(0);
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('R-17: a delivered Codex credential keeps the one-per-workspace cap', async () => {
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-codex' });
+      mockWorkersFindMany.mockResolvedValue([{ id: 'w-active', taskId: 'task-active', status: 'running', workspaceId: 'ws-1' }]);
+      mockTasksFindMany
+        .mockResolvedValueOnce([task()])
+        .mockResolvedValueOnce([{ workspaceId: 'ws-1', backend: 'codex', context: null }]);
+      // backend:codex but no local login: Codex would run on the delivered key.
+      const data = await (await claim({ capabilities: ['backend:codex'], loginUse: loginUse('codex-first') })).json();
+      expect(data.workers[0].task.backend).toBe('claude');
+    });
+  });
+
   describe('Claude seat wall: only seat-bound, unpinned tasks fail over, and only where Codex can run', () => {
     let origKey: string | undefined;
     let taskSets: any[] = [];
@@ -8962,7 +9130,7 @@ describe('claim gate overrides', () => {
     });
   });
 
-  describe('advisory-manifest mission serialization (compensating guard)', () => {
+  describe('scope-undeclared work starts by default (no mission mutex)', () => {
     function advisoryTask(id: string, missionId: string | null, manifest: string[] = ['**'], category?: string) {
       return {
         id,
@@ -8994,7 +9162,7 @@ describe('claim gate overrides', () => {
       mockGetActiveClaimsByWorkspace.mockResolvedValue(new Map());
     });
 
-    it('defers a scope-undeclared task while a sibling in the SAME mission is in flight with a scope-undeclared manifest', async () => {
+    it('claims a scope-undeclared task while a sibling in the SAME mission is in flight with a scope-undeclared manifest', async () => {
       mockTasksFindMany.mockResolvedValueOnce([advisoryTask('task-1', 'mission-A')]).mockResolvedValue([]);
       // In-flight rows for the mission (same query that feeds the concurrency count)
       mockDbSelect.mockReturnValue(makeSelectChain([
@@ -9005,8 +9173,8 @@ describe('claim gate overrides', () => {
       const data = await res.json();
 
       expect(res.status).toBe(200);
-      expect(data.workers).toHaveLength(0);
-      expect(data.diagnostics?.deferrals?.advisory_manifest).toBe(1);
+      expect(data.workers).toHaveLength(1);
+      expect(data.diagnostics?.deferrals?.advisory_manifest ?? 0).toBe(0);
     });
 
     it.each(['artifact_required', 'none'])('does not defer a %s candidate behind a scope-undeclared sibling', async (outputRequirement) => {
@@ -9069,19 +9237,16 @@ describe('claim gate overrides', () => {
       expect(data.workers).toHaveLength(1);
     });
 
-    it('claims at most one scope-undeclared task per mission within a single poll', async () => {
+    it('claims two scope-undeclared tasks of one mission in a single poll', async () => {
       mockTasksFindMany
         .mockResolvedValueOnce([advisoryTask('task-1', 'mission-A'), advisoryTask('task-2', 'mission-A')])
         .mockResolvedValue([]);
       mockDbSelect.mockReturnValue(makeSelectChain([]));
 
-      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', maxTasks: 2 } }));
       const data = await res.json();
 
-      // Second task deferred by the in-batch reservation (deferral counters are
-      // only reported on an empty claim, so assert the claim shape instead).
-      expect(data.workers).toHaveLength(1);
-      expect(data.workers[0].taskId).toBe('task-1');
+      expect(data.workers.map((w: any) => w.taskId).sort()).toEqual(['task-1', 'task-2']);
     });
 
     it('layer 2: a path_claim deferral clears prNumber/prUrl so a coalesced gate row cannot name a stale PR', async () => {
@@ -9124,7 +9289,7 @@ describe('claim gate overrides', () => {
     // scope-undeclared sibling. "Undeclared scope" must mean null / [] / ['**']
     // on BOTH sides of the comparison.
 
-    it('defers a task with a NULL manifest behind a scope-undeclared in-flight sibling', async () => {
+    it('claims a task with a NULL manifest beside a scope-undeclared in-flight sibling', async () => {
       mockTasksFindMany
         .mockResolvedValueOnce([advisoryTask('task-1', 'mission-A', null as any)])
         .mockResolvedValue([]);
@@ -9135,11 +9300,10 @@ describe('claim gate overrides', () => {
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
       const data = await res.json();
 
-      expect(data.workers).toHaveLength(0);
-      expect(data.diagnostics?.deferrals?.advisory_manifest).toBe(1);
+      expect(data.workers).toHaveLength(1);
     });
 
-    it('defers a task with an EMPTY manifest behind a scope-undeclared in-flight sibling', async () => {
+    it('claims a task with an EMPTY manifest beside a scope-undeclared in-flight sibling', async () => {
       mockTasksFindMany
         .mockResolvedValueOnce([advisoryTask('task-1', 'mission-A', [])])
         .mockResolvedValue([]);
@@ -9150,13 +9314,10 @@ describe('claim gate overrides', () => {
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
       const data = await res.json();
 
-      expect(data.workers).toHaveLength(0);
-      expect(data.diagnostics?.deferrals?.advisory_manifest).toBe(1);
+      expect(data.workers).toHaveLength(1);
     });
 
-    it('treats an in-flight sibling with a NULL manifest as scope-undeclared too', async () => {
-      // The gap is symmetric: the in-flight peer set was built with the same
-      // predicate, so a null-manifest worker looked like "no peer at all".
+    it('an in-flight sibling with a NULL manifest holds nobody either', async () => {
       mockTasksFindMany
         .mockResolvedValueOnce([advisoryTask('task-1', 'mission-A')])
         .mockResolvedValue([]);
@@ -9167,8 +9328,7 @@ describe('claim gate overrides', () => {
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
       const data = await res.json();
 
-      expect(data.workers).toHaveLength(0);
-      expect(data.diagnostics?.deferrals?.advisory_manifest).toBe(1);
+      expect(data.workers).toHaveLength(1);
     });
 
     it('still claims a NULL-manifest task when the in-flight sibling declared concrete scope', async () => {
@@ -9185,7 +9345,7 @@ describe('claim gate overrides', () => {
       expect(data.workers).toHaveLength(1);
     });
 
-    it('claims at most one NULL-manifest task per mission within a single poll', async () => {
+    it('claims two NULL-manifest tasks of one mission within a single poll', async () => {
       mockTasksFindMany
         .mockResolvedValueOnce([
           advisoryTask('task-1', 'mission-A', null as any),
@@ -9194,11 +9354,10 @@ describe('claim gate overrides', () => {
         .mockResolvedValue([]);
       mockDbSelect.mockReturnValue(makeSelectChain([]));
 
-      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', maxTasks: 2 } }));
       const data = await res.json();
 
-      expect(data.workers).toHaveLength(1);
-      expect(data.workers[0].taskId).toBe('task-1');
+      expect(data.workers.map((w: any) => w.taskId).sort()).toEqual(['task-1', 'task-2']);
     });
 
     it('a NULL-manifest task with no mission is never serialized', async () => {
@@ -10689,7 +10848,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.diagnostics.taskExclusion.code).toBe('mission_budget');
   });
 
-  it('force keeps scope-undeclared serialization within a mission', async () => {
+  it('force claims a scope-undeclared task beside a running scope-undeclared peer (nothing to force)', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account('admin'));
     mockTasksFindMany
       .mockResolvedValueOnce(forceTarget())
@@ -10698,8 +10857,24 @@ describe('explicit taskId claims (organizer workflow)', () => {
     mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
 
     const data = await (await claim({ runner: 'mcp', forceOverride: true })).json();
-    expect(data.workers).toHaveLength(0);
-    expect(data.diagnostics.taskExclusion.code).toBe('advisory_manifest');
+    expect(data.workers).toHaveLength(1);
+  });
+
+  // #5192's case: an interactive force claim beside an undeclared peer. There
+  // is no serialization left to lift, so it claims and records no bypass for it.
+  it('force from a verified interactive session claims beside an undeclared peer; nothing recorded as bypassed for it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account('admin'));
+    mockTasksFindMany
+      .mockResolvedValueOnce(forceTarget())
+      .mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: ['**'] })]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
+
+    const ctx = claimedContext();
+
+    const data = await (await claim({ runner: 'mcp', forceOverride: true }, interactiveHeaders())).json();
+    expect(data.workers).toHaveLength(1);
+    expect(ctx()?.forceClaim?.bypassed ?? []).not.toContain('advisory_manifest');
   });
 
   // Friction 2ccccd12: a local-executor mission's own explicit claims aren't
@@ -10717,10 +10892,10 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.workers).toHaveLength(1);
   });
 
-  // The same task, same peer, but a runner poll (no interactive session) is
-  // still deferred — the exemption is scoped to the explicit interactive
-  // claim, not to the mission being local.
-  it('local executor: a runner poll is still deferred by scope-undeclared serialization', async () => {
+  // The same task, same peer, from a runner poll: undeclared scope holds
+  // nobody, so a runner claims it too (the local-mission gate decides who
+  // may claim, not the peer).
+  it('local executor: a runner poll is not deferred by a scope-undeclared peer either', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account());
     mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });
     mockMissionsFindFirst.mockResolvedValue({ id: 'mission-L' });
@@ -10729,7 +10904,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
     mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-L', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
 
     const data = await (await claim({ runner: 'runner-7' })).json();
-    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics?.deferrals?.advisory_manifest ?? 0).toBe(0);
   });
 
   // M1: the audit records who forced it and exactly which gates it lifted.
@@ -10873,27 +11048,20 @@ describe('explicit taskId claims (organizer workflow)', () => {
       expect(data.diagnostics.taskExclusion.code).toBe('path_overlap');
     });
 
-    // §7.2: scope-undeclared serialization is liftable by a HUMAN force only.
-    // The admin claim_task force keeps not lifting it (force-claim tests above).
-    it('lifts scope-undeclared serialization when the person confirmed it', async () => {
-      mockAuthenticateApiKey.mockResolvedValue(account('worker'));
-      mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: null, context: { forceStart: intent({ kinds: ['scope_undeclared_mutex'], loopKeys: ['advisory_manifest'] }) } })]);
-      mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
-      mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
-      const ctx = claimedContext();
-      const data = await (await claim({ runner: 'runner-7' })).json();
-      expect(data.workers).toHaveLength(1);
-      expect(ctx().forceStartHistory).toEqual([expect.objectContaining({ bypassed: ['advisory_manifest'] })]);
-    });
-
-    it('does not lift scope-undeclared serialization the person did not confirm', async () => {
-      mockAuthenticateApiKey.mockResolvedValue(account('worker'));
-      mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: null, context: { forceStart: intent({ kinds: ['mission_concurrent'], loopKeys: ['mission_concurrent'] }) } })]);
-      mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
-      mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
-      const data = await (await claim({ runner: 'runner-7' })).json();
-      expect(data.workers).toHaveLength(0);
-      expect(data.diagnostics.taskExclusion.code).toBe('advisory_manifest');
+    // Undeclared scope is not a wait, so an older intent naming the retired
+    // scope_undeclared_mutex lifts nothing and is not needed to start.
+    it('a scope-undeclared task beside a scope-undeclared peer claims with or without an intent naming the retired gate', async () => {
+      for (const forceStart of [intent({ kinds: ['scope_undeclared_mutex'], loopKeys: ['advisory_manifest'] }), undefined]) {
+        mockAuthenticateApiKey.mockResolvedValue(account('worker'));
+        mockTasksFindMany.mockReset();
+        mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: null, context: forceStart ? { forceStart } : {} })]).mockResolvedValue([]);
+        mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+        mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
+        const ctx = claimedContext();
+        const data = await (await claim({ runner: 'runner-7' })).json();
+        expect(data.workers).toHaveLength(1);
+        for (const h of ctx()?.forceStartHistory ?? []) expect(h.bypassed ?? []).not.toContain('advisory_manifest');
+      }
     });
 
     it('never lifts the mission budget', async () => {
@@ -11162,12 +11330,23 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
     return { status: res.status, body, rows: [...rows], scheduled: holdStartTest.scheduled.length };
   }
 
+  /** A scope-undeclared task beside a running scope-undeclared peer of its mission. */
+  const undeclaredBesidePeer = () => arm({
+    tasks: [task({ missionId: 'mission-A', pathManifest: ['**'] })],
+    missions: mission,
+    inFlight: [{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] }],
+  });
+
+  it('undeclared scope beside an undeclared peer: claimed, nothing asked, nothing recorded, with the capability on or off', async () => {
+    for (const deps of [holdStartOff(), holdStartOn()]) {
+      const r = await claimWith(deps, undeclaredBesidePeer);
+      expect(r.body.workers).toHaveLength(1);
+      expect(r.scheduled).toBe(0);
+      expect(r.rows).toHaveLength(0);
+    }
+  });
+
   const scenarios: Record<string, () => void> = {
-    advisoryManifest: () => arm({
-      tasks: [task({ missionId: 'mission-A', pathManifest: ['**'] })],
-      missions: mission,
-      inFlight: [{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] }],
-    }),
     openPrAfterWorkerEnded: () => arm({
       tasks: [task()],
       openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
@@ -11201,7 +11380,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
         prNumber: null,
         experimentArm: 'apply',
         propensity: 1,
-        candidatePolicyVersion: name === 'advisoryManifest' ? 'ch1.advisory_manifest' : 'ch1.open_pr_overlap',
+        candidatePolicyVersion: 'ch1.open_pr_overlap',
       });
     });
   }
@@ -11252,12 +11431,6 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       tasks: [task({ pathManifest: ['packages/core/drizzle/0300_x.sql'] })],
       openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
       prManifests: [{ id: 'pr-task', pathManifest: ['packages/core/drizzle/0300_x.sql'] }],
-    }),
-    'a failed lease read (unknown state)': () => arm({
-      tasks: [task({ missionId: 'mission-A', pathManifest: ['**'] })],
-      missions: mission,
-      inFlight: [{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] }],
-      leases: new Error('db down'),
     }),
     'a mission pacing deferral (not advisory)': () => arm({
       tasks: [task({ missionId: 'mission-A', pathManifest: ['**'] })],
@@ -11315,18 +11488,6 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       ...over,
     });
     beforeEach(() => { acquired.length = 0; });
-
-    it('keeps the advisory hold when policy state cannot be read, even with an applied START', async () => {
-      let appliedLookups = 0;
-      const on = await claimWith(gated({
-        loadLearningPolicy: async () => { throw new Error('fixture policy read failure'); },
-        findAppliedStart: async () => { appliedLookups++; return true; },
-      }), scenarios.advisoryManifest);
-      expect(on.body.workers).toHaveLength(0);
-      expect(appliedLookups).toBe(0);
-      expect(acquired).toHaveLength(0);
-      expect(on.rows).toHaveLength(0);
-    });
 
     // The model's verdict is recorded, never applied: an open-PR overlap on an
     // unmergeable surface holds whatever the ledger says.
@@ -11452,9 +11613,11 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       expect(acquired).toHaveLength(0);
     });
 
-    it('relaxes the scope-undeclared serialization; acquires nothing up front', async () => {
-      const on = await claimWith(gated(), scenarios.advisoryManifest);
+    it('a scope-undeclared task starts with no applied START and acquires nothing up front', async () => {
+      let lookups = 0;
+      const on = await claimWith(gated({ findAppliedStart: async () => { lookups++; return false; } }), undeclaredBesidePeer);
       expect(on.body.workers).toHaveLength(1);
+      expect(lookups).toBe(0);
       expect(acquired).toHaveLength(0);
     });
 
@@ -11820,12 +11983,12 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
     expect(mockFireOrderedBehind).toHaveBeenCalledTimes(1);
   });
 
-  it('off: a deferral-only poll keeps the legacy advisory_manifest deferral', async () => {
+  it('off: a scope-undeclared task beside a running scope-undeclared peer is claimed', async () => {
     const mission = [{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }];
     mockMissionsFindMany.mockResolvedValue(mission);
     mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] }]));
     const off = await claim([plannedTask('a', { missionId: 'mission-A', pathManifest: ['**'] }, { claimPlanner: 'off' })]);
-    expect(off.data.diagnostics.deferrals).toEqual({ advisory_manifest: 1 });
+    expect(pickedIds(off.data)).toEqual(['a']);
   });
 
   it('record: same picks as off, and the plan is recorded beside them', async () => {
@@ -11926,7 +12089,7 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
     expect(mockFireDeferralEvent.mock.calls.filter((c: any[]) => c[0].reason === 'path_overlap')).toHaveLength(0);
   });
 
-  describe('advisory_manifest mutex under apply', () => {
+  describe('scope-undeclared work under apply: no mutex, whatever the prediction', () => {
     const mission = [{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }];
     const undeclared = (g: Record<string, unknown>) => [
       plannedTask('a', { missionId: 'mission-A', pathManifest: ['**'] }, g),
@@ -11942,23 +12105,23 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
 
     beforeEach(() => { mockMissionsFindMany.mockResolvedValue(mission); });
 
-    it('is replaced by planner edges for confident, disjoint predicted scope', async () => {
+    it('claims both with confident, disjoint predicted scope', async () => {
       mockLoadPlannerSignals.mockImplementation(async () => predictions(0.9));
       const { data } = await claim(undeclared({ claimPlanner: 'apply', claimPlannerThresholds: THRESHOLDS }));
       expect(pickedIds(data)).toEqual(['a', 'b']);
     });
 
-    it('stays below thetaOrder', async () => {
+    it('claims both below thetaOrder, ordering nobody', async () => {
       mockLoadPlannerSignals.mockImplementation(async () => predictions(0.1));
       const { data } = await claim(undeclared({ claimPlanner: 'apply', claimPlannerThresholds: THRESHOLDS }));
-      expect(pickedIds(data)).toEqual(['a']);
-      expect(mockFireOrderedBehind.mock.calls[0][0]).toMatchObject({ taskId: 'b', edge: 'no_scope_mutex' });
+      expect(pickedIds(data)).toEqual(['a', 'b']);
+      expect(mockFireOrderedBehind).not.toHaveBeenCalled();
     });
 
-    it('stays with thresholds null', async () => {
+    it('claims both with thresholds null', async () => {
       mockLoadPlannerSignals.mockImplementation(async () => predictions(0.9));
       const { data } = await claim(undeclared({ claimPlanner: 'apply' }));
-      expect(pickedIds(data)).toEqual(['a']);
+      expect(pickedIds(data)).toEqual(['a', 'b']);
     });
   });
 

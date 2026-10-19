@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 import { db } from '@buildd/core/db';
 import { accountWorkspaces, githubRepos, workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray } from 'drizzle-orm';
@@ -15,6 +16,7 @@ import { emit } from '@/lib/core-emit';
 import { can } from '@/lib/permissions';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { invalidateAppChrome } from '@/lib/app-chrome';
 
 /**
  * The account fields a workspace listing may carry. The response spreads each
@@ -37,8 +39,8 @@ export async function GET(req: NextRequest) {
   // by name; it learns nothing about the rest of the team.
   const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
-  // Fall back to session auth
-  const user = await getCurrentUser();
+  // Fall back to session auth (only without a key: a key is authoritative)
+  const user = apiAccount ? null : await getCurrentUser();
 
   if (!apiAccount && !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -302,6 +304,9 @@ export async function POST(req: NextRequest) {
       })
       .returning();
 
+    // Created open: the team's accounts reach it on their next call.
+    await clearCallerCache(callerDep.teamOpenWorkspaces(teamId));
+
     // Modules react (e.g. connectors preinstalled from the team's catalog).
     await emit({ type: 'workspace.created', workspaceId: workspace.id, teamId, origin: req.nextUrl.origin });
 
@@ -315,6 +320,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // The acting user's shell shows this at once (lib/app-chrome.ts).
+    if (user) invalidateAppChrome(user.id);
     return NextResponse.json(toPublicWorkspace(workspace));
   } catch (error) {
     console.error('Create workspace error:', error);

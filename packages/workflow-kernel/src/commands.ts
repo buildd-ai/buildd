@@ -74,6 +74,18 @@ export interface VerdictFindings {
   deferredFindings?: Array<{ id: string; taskId?: string | null; reason: string }>;
 }
 
+/**
+ * Living Spec r7 AC-45: a person's decision on an escalation (a bounded fix, a forced
+ * review), bound to the head they decided on. `id` names the decision: the same id again is
+ * the same decision (a double tap, a retried request) and is answered by the transition it
+ * already made, never applied twice. A head that is no longer current refuses it
+ * (`decision_head_stale`, AC-46): the person decided on something else.
+ */
+export interface HumanDecision {
+  id: string;
+  headSha: string;
+}
+
 interface Base {
   actor: Actor;
   /** Human/agent callers send back the version they read (§7.2); reducer-driven callers omit it. */
@@ -123,6 +135,14 @@ export type Command =
        * follows may be a delta review (deltaApprovalEligibility); absent is a full review.
        */
       delta?: DeltaReading | null;
+      /**
+       * AC-79 (workflow-kernel-library.md §5): the move from the head the delivery held to this
+       * one brought only base commits. `own_refresh`: the platform's own `refresh_branch`,
+       * pinned to the held head, updated the branch. `compare`: the PR's diff against the base
+       * is the same at both heads. While a review fix runs, such a push is foreign: it is never
+       * credited to the fix (§6.9). Absent is unread, never "the fix's".
+       */
+      baseOnly?: 'own_refresh' | 'compare' | null;
     })
   | (Base & {
       /**
@@ -180,6 +200,14 @@ export type Command =
        * verification round at the same head decides.
        */
       noopEvidence?: { findingIds: string[]; evidence: string } | null;
+      /**
+       * AC-79 (workflow-kernel-library.md §5): a review fix's end, read by the fact layer: the
+       * PR's diff at the live head, against the base, is the diff at the head the fix was bound
+       * to. Whatever moved the head since brought only base commits (a merge of the base), so
+       * nothing on it is the fix's own work. Absent or false (unread, or the diff changed) is
+       * not this fact.
+       */
+      baseOnly?: boolean;
     })
   | (Base & {
       /**
@@ -198,7 +226,46 @@ export type Command =
       /** Why (a short tag: `retry`, `loop_hold`, `budget`, `codex_deferral`, `conflict_recovery`, ...). */
       reason: string;
     })
-  | (Base & { type: 'ReviewRequested'; headSha: string; live: LivePr; forced?: boolean })
+  | (Base & {
+      /**
+       * AC-1 slice 9 (workflow-kernel-library.md §9): the owner task's attempt already ended (the
+       * task is completed or failed) and the task is opened again. `pending` puts it back in the
+       * queue for a new attempt (a credential, GitHub access or incident recovery requeues a task
+       * that failed); `assigned` is the same worker running again (a person's follow-up resumed a
+       * finished session). Not a requeue (that names a current attempt) and no state change: the
+       * kernel records it and moves the task in the transition's own statement, only while the
+       * named worker is still the task's latest attempt and its end is the one named.
+       */
+      type: 'AttemptReopened';
+      taskId: string;
+      /** The worker row of the ended attempt it reopens; null when the task never ran one. */
+      workerId: string | null;
+      /** When that attempt ended (its worker's completed_at, ISO): each reopen of one worker is its own key. */
+      endedAt: string | null;
+      to: 'pending' | 'assigned';
+      /** Why (a short tag: `credential_restored`, `repo_access_verified`, `incident_recovery`, `resumed`). */
+      reason: string;
+    })
+  | (Base & {
+      /**
+       * AC-1 slice 9: a claim that does not go on to run the owner task's attempt. With `claim`,
+       * the claim's own start is given back (`requeued`: the account cap refused its worker, or a
+       * cleanup found the claim with no attempt row) or ended for good (`failed`). With no claim,
+       * a queued task that no claim holds is refused for good (`failed`: the workspace lacks the
+       * project it is pinned to, or a sandbox mount gap ran its mission out of budget). No attempt
+       * ran under it, so it is no end; no state change. The kernel records it and moves the task in
+       * the transition's own statement, only while the task still carries exactly that claim (or,
+       * with no claim, is still queued with no live attempt).
+       */
+      type: 'AttemptWithdrawn';
+      taskId: string;
+      /** tasks.claimed_by and tasks.claimed_at as Postgres renders it (microseconds kept), or null. */
+      claim: { claimedBy: string; claimedAt: string } | null;
+      outcome: 'requeued' | 'failed';
+      /** Why (a short tag: `account_cap`, `orphaned_claim`, `retry_cap`, `workspace_mismatch`, `mission_budget`). */
+      reason: string;
+    })
+  | (Base & { type: 'ReviewRequested'; headSha: string; live: LivePr; forced?: boolean; decision?: HumanDecision })
   | (Base & {
       type: 'ReviewVerdictRecorded';
       roundId: string;
@@ -207,6 +274,17 @@ export type Command =
       effectiveVerdict: Verdict;
       headBound: string;
       confidence?: number | null;
+      /**
+       * The commit the reviewer's checkout was at when it judged (`git rev-parse HEAD`).
+       * Only a verdict read at the round's own head decides it: any other commit (or
+       * `null`, none reported) is inconclusive, never an approval, and fails the round
+       * as T27 does. Absent = a caller that does not attest it.
+       */
+      evidenceSha?: string | null;
+      /** The reviewer that judged: one inconclusive verdict per reviewer spends the round's budget. */
+      reviewerTaskId?: string;
+      /** T27's budget for an inconclusive verdict. Absent = 0: it escalates at once. */
+      maxContractRetries?: number;
     } & VerdictFindings)
   | (Base & {
       /**
@@ -221,6 +299,8 @@ export type Command =
       effectiveVerdict: Verdict;
       headBound: string;
       confidence?: number | null;
+      /** As T6's: a verdict read at any other commit than `headBound` is never adopted. */
+      evidenceSha?: string | null;
     } & VerdictFindings)
   | (Base & {
       /**
@@ -232,6 +312,8 @@ export type Command =
       disposition: 'waived' | 'deferred';
       reason: string;
       deferredToTaskId?: string | null;
+      /** The decision this is, bound to the head and version the person saw: a restated finding is a new one. */
+      decision?: HumanDecision;
     })
   | (Base & { type: 'ReviewBudgetExhausted' })
   | (Base & {
@@ -506,6 +588,14 @@ export type Command =
       commitId?: string;
       /** approve: the person holds merge permission on the repo (T14's evidence). */
       hasMergePermission?: boolean;
+      /**
+       * approve past remaining required findings (open or awaiting verification) is an override
+       * (Living Spec r7 AC-45): the host says whether this person may take it under the merge
+       * policy and their team role. Absent reads as not permitted (`override_not_permitted`).
+       */
+      overridePermitted?: boolean;
+      /** AC-45: the decision this is and the head it was made on. */
+      decision?: HumanDecision;
     })
   | (Base & { type: 'DeliveryFailed'; reason: string })
   | (Base & {
@@ -521,7 +611,7 @@ export type Command =
       type: 'ReviewRoundFailed';
       roundId: string;
       /** `human_takeover` (a person interrupted the reviewer) escalates at once, never re-queued. */
-      reason: 'no_verdict' | 'prose_verdict' | 'infra' | 'human_takeover';
+      reason: 'no_verdict' | 'prose_verdict' | 'infra' | 'human_takeover' | 'evidence_not_at_head';
       maxContractRetries: number;
       /**
        * The reviewer task whose run failed. The failure is counted once per
@@ -560,7 +650,7 @@ export const EFFECT_KINDS = [
   'renumber_migration', 'push_recovery', 'stamp_pr_rows', 'cancel_open_attempts',
   'render_activity', 'notify', 'mission_note', 'wake_mission', 'release_attribution',
   'finalize_mission_pr', 'emit_pr_merged', 'scan_supersession', 'project_supersession',
-  'escalate_exhaustion', 'gate_event', 'capture_ci_evidence',
+  'escalate_exhaustion', 'gate_event', 'capture_ci_evidence', 'carry_findings',
   'publish_landing_status', 'dispatch_external_merge_fix',
 ] as const;
 

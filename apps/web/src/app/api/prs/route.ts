@@ -1,8 +1,7 @@
-import { NextRequest, NextResponse, after } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
-import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MERGED_WINDOW_DAYS, listPrsQuery, parsePrListState } from '@/lib/pr-list';
 
 /**
@@ -42,16 +41,19 @@ export async function GET(req: NextRequest) {
   const since = parsed.state === 'merged' ? new Date(Date.now() - days * 864e5) : undefined;
   const limit = Number(sp.get('limit'));
 
-  const prs = await listPrsQuery({
-    workspaceIds,
-    state: parsed.state,
-    ...(since ? { since } : {}),
-    ...(Number.isInteger(limit) && limit > 0 ? { limit } : {}),
-  });
-
-  // The webhook is lossy: heal stale PR state so the next read is right.
-  if (workspaceIds.length > 0) {
-    after(() => refreshStaleWorkersForWorkspaces(workspaceIds).catch(err => console.error('[pr-state-refresh] pr list refresh failed:', err)));
+  let prs;
+  try {
+    prs = await listPrsQuery({
+      workspaceIds,
+      state: parsed.state,
+      ...(since ? { since } : {}),
+      ...(Number.isInteger(limit) && limit > 0 ? { limit } : {}),
+    });
+  } catch (err) {
+    // An unhandled throw reaches the MCP client as `API error: 500 -`, an empty body.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[api/prs] list failed:', err);
+    return NextResponse.json({ error: `list_prs failed: ${message}`, state: parsed.state }, { status: 500 });
   }
 
   return NextResponse.json({ state: parsed.state, workspaceCount: workspaceIds.length, ...(since ? { sinceDays: days } : {}), prs });

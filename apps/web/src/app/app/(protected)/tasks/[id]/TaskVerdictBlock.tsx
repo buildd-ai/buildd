@@ -2,7 +2,7 @@
  * The task page's one outcome row, from the record (lib/task-verdict.ts):
  * the state's word, the headline only where it adds to that word, and the
  * cause when there is one (docs/specs/task-page.md). It sits under the
- * Build → Audit → Land track, which carries where the delivery is; this says
+ * Build → Verify → Deliver track, which carries where the delivery is; this says
  * what the run on screen came to.
  *
  * Compact by default: a chip and a line. It becomes a card only when it asks

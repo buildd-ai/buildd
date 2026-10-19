@@ -286,13 +286,17 @@ export type ClaimRoutingReason =
   /** Codex is disabled by the team's provider mask. */
   | 'codex_disabled'
   /** Codex has an active rate-limit/budget pause. */
-  | 'codex_rate_limited';
+  | 'codex_rate_limited'
+  /** The claiming runner's login mode picked it (spec 34a48877 R-15, R-18). */
+  | 'runner_login_mode';
 
 export interface ClaimBackendRouting {
   backend: AgentBackend;
   from: AgentBackend;
   reason: ClaimRoutingReason;
   at?: string;
+  /** With `runner_login_mode`: the runner's mode (balanced, claude-first, codex-first). */
+  mode?: string;
 }
 
 /**
@@ -320,11 +324,12 @@ export interface BackendRoutingDescription {
   summary: string;
 }
 
-const CLAIM_ROUTING_SUMMARY: Record<ClaimRoutingReason, (to: string) => string> = {
+const CLAIM_ROUTING_SUMMARY: Record<ClaimRoutingReason, (to: string, mode?: string) => string> = {
   claude_seat_exhausted: (to) => `routed to ${to} by budget failover (Claude seat exhausted)`,
   claude_disabled: (to) => `routed to ${to} because Claude is disabled for the team`,
   codex_disabled: (to) => `routed to ${to} because Codex is disabled for the team`,
   codex_rate_limited: (to) => `routed to ${to} by budget failover (Codex rate-limited)`,
+  runner_login_mode: (to, mode) => `routed to ${to} by this runner's ${mode && /^[a-z-]{1,20}$/.test(mode) ? mode : 'login'} mode`,
 };
 
 /**
@@ -351,7 +356,7 @@ export function describeBackendRouting(
       from: stamp.from,
       reason,
       source: 'claim',
-      summary: CLAIM_ROUTING_SUMMARY[reason](backendLabel(stamp.backend)),
+      summary: CLAIM_ROUTING_SUMMARY[reason](backendLabel(stamp.backend), typeof stamp.mode === 'string' ? stamp.mode : undefined),
     };
   }
   const from = ctx.failedOverFrom;

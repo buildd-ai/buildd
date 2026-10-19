@@ -8,7 +8,7 @@ domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/tasks/[id]/page.tsx, apps/web/src/lib/task-checks.ts, apps/web/src/lib/task-result.ts, apps/web/src/lib/workflow/projections.ts]
 related: [workflow-state-kernel, mission-task-lifecycle, surface-ia-home-missions-initiatives]
 keywords: [task detail, mobile header, show full title, review queued, no findings yet, review of PR, what shipped, why this, verdict block, review approved, updating branch, awaiting merge, repair 1, checks list, review round, attempt, reviewer task, fix attempt, structured output, technical summary, raw output, lifecycle track]
-verified_by: [apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx, apps/web/src/lib/task-view.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, apps/web/src/lib/task-sections.test.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskPanel.sections.test.tsx, apps/web/src/app/app/(protected)/missions/[id]/TaskPanel.page-body.test.tsx, apps/web/src/lib/task-live-view.test.ts, apps/web/src/lib/mission-board.test.ts]
+verified_by: [apps/web/src/lib/workflow/escalation-copy.test.ts, apps/web/src/components/EscalationDecision.test.tsx, apps/web/src/lib/workflow/delivery-rounds.test.ts, apps/web/src/lib/projections-agree.test.tsx, packages/workflow-kernel/src/escalation-brief.test.ts, apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx, apps/web/src/lib/task-view.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, apps/web/src/lib/task-sections.test.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskPanel.sections.test.tsx, apps/web/src/app/app/(protected)/missions/[id]/TaskPanel.page-body.test.tsx, apps/web/src/lib/task-live-view.test.ts, apps/web/src/lib/mission-board.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -406,6 +406,51 @@ with the title expanded and with Code review opened.
 No Why this, no duplicated Done, no "Repairing" for a refresh, no "What
 shipped" before a merge, no "This review run" as detail, no horizontal scroll
 in Raw output or at 320px.
+
+## Review escalation decision
+
+A delivery parked in `ESCALATED` for a review-family reason (`review_escalated`,
+`review_exhausted`, `review_unavailable`) never reads as a bare "Waiting on you":
+
+- The state label, on the verdict row, the header pill and every `deliveryReading`
+  surface, is the cause: `Automated fixes exhausted · n of m used` when the fix
+  ledger is spent with findings left, otherwise `Review required`
+  (`deriveEscalationBrief`, workflow-kernel).
+- The verdict row leads with the question ("How should the two unresolved findings
+  be settled?", counts in words, no PR number), then says why automation stopped
+  (rounds and fixes spent, in words) (spec r7 §7, AC-43). Its primary button names the
+  action it takes (Request another fix, Request a forced re-review, else Review
+  findings) and links `#task-decision-<action>`; the PR on GitHub is the second
+  link (AC-48). The wording is `decisionCopy` (lib/workflow/escalation-copy.ts),
+  shared by the verdict row, the card and get_pr.
+- The card, `#task-decision`, right under the verdict row, names each unresolved
+  finding (still open, or fixed and waiting for a review) and lists only the actions
+  this person may take now: Review findings (opens every finding
+  with its path, resolved ones too), then each available action. Choosing an action
+  opens a sheet that says what it does and who may do it; only its confirm calls the
+  route. Approve and override is not offered here: no route on the page records it.
+- Nothing is authorized by showing it. A spent budget stays held (workflow-state-kernel
+  T5/T7): request another fix is T23 with a recorded human extension of one attempt,
+  a forced re-review is a `human:` T5, and approve and override stays unavailable
+  unless policy permits it and the viewer holds merge permission. The routes
+  re-check access; the card refreshes the page so the verdict reconciles.
+- Other escalations (`landing_needs_human`, CI or conflict budgets, policy) keep the
+  generic wording until they get a brief of their own.
+
+## Review rounds, the same on every surface
+
+Under the review summary line the checks list prints each round as buildd judged it
+("Round 1 at abc1234: changes requested · Round 2 at def5678: changes requested")
+and, once buildd has posted a verdict, that on a PR buildd opened GitHub lists those
+reviews as Commented (`reviewRoundsOf`, lib/workflow/delivery-rounds.ts). get_pr
+(`Review rounds:`) and the PR activity comment (`Rounds:`) print the same line and
+note (spec r7 §7, AC-24). Where GitHub's reviews were read (get_pr, the PR card) the
+line also gives GitHub's own states in words ("On GitHub: two reviews Commented"),
+beside buildd's verdicts and never in their place (`githubReviewStatesLine`).
+
+The PR activity comment and get_pr carry the escalation decision in the same words
+as the task page: the question, why automation stopped, each unresolved finding and
+the actions open on the task page (AC-43, AC-48).
 
 ## Out of scope
 

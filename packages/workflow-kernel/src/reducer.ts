@@ -172,7 +172,8 @@ function holdThroughRepair(d: DeliverySnapshot): Pick<DeliveryPatch, 'resumeStat
  * reviewer's or the policy's call on the change. A person can't merge a PR
  * whose CI is red or whose migration number collides, so the repair runs
  * first and the person decides on a mergeable head. Not a landing hand-off or
- * a spent budget: those already are the person's next move.
+ * a spent budget: those already are the person's next move (T12 alone also
+ * repairs a landing hand-off that conflicts, dc4436aa).
  */
 export function isRepairableEscalation(reason: string | null | undefined): boolean {
   return isReviewEscalation(reason) || reason === 'policy_human';
@@ -332,8 +333,20 @@ export function verifyCompositionAttestation(
 const ciFactKey = (d: Pick<DeliverySnapshot, 'id' | 'version'>, headSha: string, verdict: 'red' | 'green' | 'running'): string =>
   `cifact:${d.id}:${headSha}:${verdict}@v${d.version}`;
 
+/** AC-45: the one transition a person's decision makes, whatever it was asked through and however often. */
+export function humanDecisionKey(deliveryId: string, decisionId: string): string {
+  return `decision:${deliveryId}:${decisionId}`;
+}
+
+/** The decision a command carries, when it is one of the two a person decides on an escalation. */
+function decisionOf(cmd: Command): { id: string; headSha: string } | null {
+  return (cmd.type === 'ReviewRequested' || cmd.type === 'HumanResolve' || cmd.type === 'FindingDisposed') && cmd.decision ? cmd.decision : null;
+}
+
 export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): string | null {
   const pr = d?.repoFullName && d.prNumber != null ? `${d.repoFullName}#${d.prNumber}` : null;
+  const decision = decisionOf(cmd);
+  if (decision && d) return humanDecisionKey(d.id, decision.id);
   switch (cmd.type) {
     case 'DeliveryOpened': return `open:${cmd.ownerTaskId}`;
     case 'PrBound': return `bind:${cmd.repoFullName}#${cmd.prNumber}`;
@@ -341,7 +354,13 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'AttemptStarted': return `start:${cmd.taskId}:${cmd.claimedAt}`;
     case 'AttemptEnded': return `end:${cmd.workerId}`;
     case 'AttemptRequeued': return `requeue:${cmd.workerId}`;
-    case 'ReviewVerdictRecorded': return `verdict:${cmd.roundId}`;
+    case 'AttemptReopened': return reopenKey(cmd);
+    case 'AttemptWithdrawn': return withdrawKey(cmd);
+    // An inconclusive verdict is its reviewer's failure of the round (T27's key), not the round's verdict:
+    // the reviewer asked next at the same round still answers it.
+    case 'ReviewVerdictRecorded':
+      if (cmd.evidenceSha !== undefined && cmd.evidenceSha !== cmd.headBound) return cmd.reviewerTaskId ? roundFailKey(cmd.roundId, cmd.reviewerTaskId) : null;
+      return `verdict:${cmd.roundId}`;
     case 'FixClaimed': return `claim:${cmd.attemptId}`;
     case 'FindingDisposed': return `dispose:${cmd.findingId}:${cmd.disposition}`;
     case 'HumanApproved': return pr ? `approve:${pr}:${cmd.reviewId}` : null;
@@ -640,6 +659,14 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
 
   if (cmd.type !== 'DeliveryOpened' && !(cmd.type === 'PrBound' && cmd.adoption && !d)) {
     if (!d) return c.rejected('no_delivery');
+    // AC-45/AC-46: a person's decision is a person's, and it is about the head they saw. A head
+    // that moved since refuses it before anything else is read: they decided on something else.
+    const decision = decisionOf(cmd);
+    if (decision) {
+      if (!isHumanActor(cmd.actor)) return c.rejected('human_required');
+      if (!decision.id.trim()) return c.rejected('decision_id_required');
+      if (decision.headSha !== d.currentHeadSha) return c.rejected('decision_head_stale');
+    }
     if (cmd.expectedVersion !== undefined && cmd.expectedVersion !== d.version) return c.stale('version_moved');
   }
 
@@ -693,6 +720,10 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
     // AC-1 slice 6 (workflow-kernel-library.md §9)
     case 'AttemptRequeued': return attemptRequeued(c, cmd);
 
+    // AC-1 slice 9 (workflow-kernel-library.md §9)
+    case 'AttemptReopened': return attemptReopened(c, cmd);
+    case 'AttemptWithdrawn': return attemptWithdrawn(c, cmd);
+
     // T5
     case 'ReviewRequested': {
       const dd = d!;
@@ -713,9 +744,11 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (c.decidedAt(cmd.headSha) && !cmd.forced) return c.rejected('head_already_reviewed');
       const r = c.startRound(cmd.headSha, cmd.forced || isHumanActor(cmd.actor) ? { trigger: 'manual_force' } : {});
       const attempts: AttemptOp[] = dd.state === 'CHANGES_REQUESTED' ? [{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }] : [];
-      return c.apply(`round:${dd.id}:${cmd.headSha}:${r.roundNo}`, 'AWAITING_REVIEW', {
+      const decision = cmd.decision ?? null;
+      return c.apply(decision ? humanDecisionKey(dd.id, decision.id) : `round:${dd.id}:${cmd.headSha}:${r.roundNo}`, 'AWAITING_REVIEW', {
         guardHead: true, guardRound: true, patch: r.patch, rounds: r.rounds, attempts, effects: r.effects,
-        bypass: cmd.forced ? { forced: true, actor: cmd.actor } : null,
+        ...(decision ? { evidence: { decision: { id: decision.id, headSha: decision.headSha, action: 'force_re_review' }, heldFrom: dd.state, escalation: dd.stateReason } } : {}),
+        bypass: cmd.forced ? { forced: true, actor: cmd.actor, ...(decision ? { decisionId: decision.id, headSha: decision.headSha } : {}) } : null,
       });
     }
 
@@ -746,6 +779,17 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         // A verdict for a superseded head/round: kept for audit, never applied (nor its findings).
         return c.stale('round_superseded', { rounds: [keep], attempts: [] });
       }
+      if (cmd.evidenceSha !== undefined && cmd.evidenceSha !== round.headSha) {
+        // The reviewer judged another commit than the round's head (its checkout sat at the base,
+        // say): the verdict is inconclusive. It decides nothing and approves nothing; the round
+        // fails as T27 does, so a reviewer is asked again at the head, then a person.
+        if (held) return c.stale('verdict_evidence_not_at_head');
+        if (cmd.reviewerTaskId && round.reviewerTaskId && round.reviewerTaskId !== cmd.reviewerTaskId) return c.stale('reviewer_not_current');
+        return roundFailed(c, round, {
+          reason: 'evidence_not_at_head', reviewerTaskId: cmd.reviewerTaskId, maxContractRetries: cmd.maxContractRetries ?? 0,
+          inconclusive: { verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, evidenceSha: cmd.evidenceSha, headSha: round.headSha },
+        });
+      }
       return verdictDecided(c, round, cmd, { held });
     }
 
@@ -754,6 +798,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const dd = d!;
       const head = cmd.headBound;
       if (head !== dd.currentHeadSha) return c.stale('verdict_head_not_current');
+      // Read at another commit than the head it names: inconclusive, never kept as that head's review.
+      if (cmd.evidenceSha !== undefined && cmd.evidenceSha !== head) return c.stale('verdict_evidence_not_at_head');
       const mine = c.view.rounds.find((r) => r.reviewerTaskId === cmd.reviewerTaskId && r.headSha === head);
       if (mine?.status === 'decided') return c.duplicate('verdict_already_recorded');
       if (c.decidedAt(head)) return c.stale('head_already_reviewed');
@@ -794,7 +840,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (!f) return c.rejected('unknown_finding');
       if (f.status === cmd.disposition) return c.duplicate('finding_already_disposed');
       if (f.status !== 'open' && f.status !== 'addressed') return c.rejected('finding_closed');
-      return c.apply(`dispose:${f.id}:${cmd.disposition}`, dd.state, {
+      return c.apply(cmd.decision ? humanDecisionKey(dd.id, cmd.decision.id) : `dispose:${f.id}:${cmd.disposition}`, dd.state, {
         findings: [{
           op: 'update', findingId: f.id, whenStatus: ['open', 'addressed'],
           set: { status: cmd.disposition, closedBy: cmd.actor, closedReason: cmd.reason.trim(), deferredToTaskId: cmd.deferredToTaskId ?? null },
@@ -1051,7 +1097,10 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const allowed: DeliveryState[] = ['AWAITING_REVIEW', 'APPROVED', 'LANDING', 'CHANGES_REQUESTED', 'REPAIRING'];
       // a90fc99b: a review or policy escalation that conflicts or collides is repaired first. A
       // behind-only refresh is not: nothing lands an escalated PR, so keeping it fresh buys nothing.
-      const escalatedRepair = dd.state === 'ESCALATED' && isRepairableEscalation(dd.stateReason)
+      // dc4436aa: so is a landing hand-off that now conflicts for real: a person cannot merge a
+      // dirty PR either, and the repaired head comes back to landing instead of waiting on one.
+      const escalatedRepair = dd.state === 'ESCALATED'
+        && (isRepairableEscalation(dd.stateReason) || dd.stateReason === 'landing_needs_human')
         && (cmd.migrationCollision === true || cmd.mergeable !== 'behind');
       if (!allowed.includes(dd.state) && !escalatedRepair) return c.stale('state_not_allowed');
       if (dd.state === 'REPAIRING' && !cmd.mechanicalRefused) return c.rejected('fix_in_flight');
@@ -1416,6 +1465,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         patch: { supersededByPr: cmd.target.prNumber, supersededByUrl: cmd.target.url, supersededReason: cmd.reason, recordedBy: cmd.actor },
         effects: [
           { kind: 'project_supersession', dedupeKey: `project_supersession:${dd.id}`, payload: { target: cmd.target } },
+          { kind: 'carry_findings', dedupeKey: `carry_findings:${dd.id}`, payload: { target: cmd.target } },
           { kind: 'wake_mission', dedupeKey: `wake_mission:${dd.id}:superseded`, payload: {} },
         ],
         evidence: { target: cmd.target, reason: cmd.reason },
@@ -1502,19 +1552,26 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (dd.state !== 'ESCALATED') return c.stale('state_moved');
       if (!isHumanActor(cmd.actor)) return c.rejected('human_required');
       if (cmd.expectedVersion === undefined) return c.rejected('expected_version_required');
-      const key = `resolve:${dd.id}:${dd.version}`;
-      const bypass = { choice: cmd.choice, reason: cmd.reason ?? null, actor: cmd.actor, escalation: dd.stateReason };
+      const key = cmd.decision ? humanDecisionKey(dd.id, cmd.decision.id) : `resolve:${dd.id}:${dd.version}`;
+      const bypass = {
+        choice: cmd.choice, reason: cmd.reason ?? null, actor: cmd.actor, escalation: dd.stateReason,
+        ...(cmd.decision ? { decisionId: cmd.decision.id, headSha: cmd.decision.headSha } : {}),
+      };
       if (cmd.choice === 'approve') {
         if (!dd.currentHeadSha) return c.rejected('no_head');
         // The same evidence T14 requires: an approval of the live head by someone who may merge.
         if (!cmd.commitId) return c.rejected('commit_id_required');
         if (cmd.commitId !== dd.currentHeadSha) return c.stale('review_on_older_commit');
         if (cmd.hasMergePermission !== true) return c.rejected('no_merge_permission');
+        // An approval past required findings still open or awaiting verification is an override:
+        // the policy and the person's role have to allow it. The findings stay as they are, named here.
+        const remaining = (view.findings ?? []).filter((f) => f.required && (f.status === 'open' || f.status === 'addressed'));
+        if (remaining.length && cmd.overridePermitted !== true) return c.rejected('override_not_permitted');
         return c.apply(key, 'APPROVED', {
           guardHead: true,
           patch: { approvedHeads: [cmd.commitId], approvalBasis: 'human', stateReason: null },
-          evidence: { commitId: cmd.commitId },
-          bypass,
+          evidence: { commitId: cmd.commitId, ...(remaining.length ? { overriddenFindings: remaining.map((f) => f.id) } : {}) },
+          bypass: remaining.length ? { ...bypass, overriddenFindings: remaining.map((f) => f.id) } : bypass,
         });
       }
       if (cmd.choice === 'dismiss') {
@@ -1618,28 +1675,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (!round || !OPEN_ROUND.has(round.status) || round.round !== dd.currentRound) return c.stale('round_not_current');
       // A reviewer the round no longer (or never) waits on cannot spend the budget of the one it does.
       if (cmd.reviewerTaskId && round.reviewerTaskId && round.reviewerTaskId !== cmd.reviewerTaskId) return c.stale('reviewer_not_current');
-      const n = round.failureCount + 1;
-      // Keyed on the reviewer that failed (§6.3 T27); only a kernel-side failure with no reviewer counts by number.
-      const key = cmd.reviewerTaskId ? roundFailKey(round.id, cmd.reviewerTaskId) : `roundfail:${round.id}:${n}`;
-      const ev = cmd.reviewerTaskId ? { roundId: round.id, reason: cmd.reason, reviewerTaskId: cmd.reviewerTaskId } : { roundId: round.id, reason: cmd.reason };
-      const gate: EffectSpec = { kind: 'gate_event', dedupeKey: `gate_event:${round.id}:${n}`, payload: { slug: 'review_round_failed', reason: cmd.reason, failure: n } };
-      // A person's takeover is not a contract failure to retry: it escalates now.
-      if (n <= cmd.maxContractRetries && cmd.reason !== 'human_takeover') {
-        // Re-queued at the same head with the same round number — never a new round.
-        return c.apply(key, 'AWAITING_REVIEW', {
-          guardRound: true,
-          rounds: [{ op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'], set: { status: 'queued', failureCount: n, clearReviewer: true } }],
-          effects: [{ kind: 'dispatch_review', dedupeKey: `dispatch_review:${dd.id}:${round.round}:retry${n}`, payload: { roundId: round.id, round: round.round, headSha: round.headSha, kind: round.kind, retry: n }, ...(cmd.retryDelayMs ? { delayMs: cmd.retryDelayMs * n } : {}) }, gate],
-          evidence: ev,
-        });
-      }
-      return c.apply(key, 'ESCALATED', {
-        guardRound: true,
-        patch: { stateReason: 'review_unavailable' },
-        rounds: [{ op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'], set: { status: 'failed', failureCount: n } }],
-        effects: [gate],
-        evidence: ev,
-      });
+      return roundFailed(c, round, cmd);
     }
 
     // T28: a preflight finding for one head, imported as policy evidence.
@@ -1745,6 +1781,13 @@ function verdictDecided(
     kind: 'post_review', dedupeKey: `post_review:${dd.id}:${round.id}`, payload: { commitId: round.headSha, event, roundId: round.id },
   });
   const unverified = cmd.effectiveVerdict === 'approve' && f.stillOpen.length > 0;
+  // A verdict that blocks contradicts a reviewer's approval standing at the same commit (a forced
+  // re-review that found what the first missed): that approval is withdrawn, not left covering the
+  // head beside the request for changes. A person's own approval (`human`) is theirs to withdraw.
+  const withdrawal: { patch: DeliveryPatch; evidence: Record<string, unknown> } =
+    cmd.effectiveVerdict !== 'approve' && dd.approvalBasis === 'verdict' && dd.approvedHeads.includes(round.headSha)
+      ? { patch: { approvedHeads: [], approvalBasis: null }, evidence: { withdrewApproval: { headSha: round.headSha, heads: dd.approvedHeads, byRoundId: round.id } } }
+      : { patch: {}, evidence: {} };
   if (o.held) {
     // The GitHub review is the reviewer's word on this commit; the kernel still gates landing.
     const ev = cmd.effectiveVerdict === 'approve' && !unverified ? 'APPROVE' : cmd.effectiveVerdict === 'request_changes' ? 'REQUEST_CHANGES' : null;
@@ -1791,7 +1834,8 @@ function verdictDecided(
   if (cmd.effectiveVerdict === 'escalate') {
     return c.apply(key, 'ESCALATED', {
       ...common,
-      patch: { stateReason: 'review_escalated' },
+      evidence: { ...common.evidence, ...withdrawal.evidence },
+      patch: { stateReason: 'review_escalated', ...withdrawal.patch },
       rounds: [decide],
       effects: [{ kind: 'mission_note', dedupeKey: `mission_note:${dd.id}:${round.id}`, payload: { reason: 'review_escalated', roundId: round.id } }],
     });
@@ -1801,19 +1845,67 @@ function verdictDecided(
     // A re-check after an approval is never at the limit: it gets its repair cycle (c1d66a6a).
     return c.apply(key, 'ESCALATED', {
       ...common,
-      patch: { stateReason: 'review_exhausted' },
+      evidence: { ...common.evidence, ...withdrawal.evidence },
+      patch: { stateReason: 'review_exhausted', ...withdrawal.patch },
       rounds: [decide],
       effects: [postReview('REQUEST_CHANGES'), { kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:${round.headSha}@v${dd.version}`, payload: { family: 'review_fix', rounds: dd.currentRound, findings: f.stillOpen.map((x) => x.id) } }],
     });
   }
   return c.apply(key, 'CHANGES_REQUESTED', {
     ...common,
-    patch: { stateReason: null },
+    evidence: { ...common.evidence, ...withdrawal.evidence },
+    patch: { stateReason: null, ...withdrawal.patch },
     rounds: [decide],
     effects: [postReview('REQUEST_CHANGES'), {
       kind: 'dispatch_fix', dedupeKey: `dispatch_fix:${dd.id}:${round.id}:${c.nextNo('review_fix', 'agent')}`,
       payload: { roundId: round.id, round: round.round, headSha: round.headSha, attemptNo: c.nextNo('review_fix', 'agent') },
     }],
+  });
+}
+
+/**
+ * T27: the current round's reviewer failed it (no verdict, a prose one, or one read at
+ * another commit than the head). Re-queued at the same head and round number while
+ * `maxContractRetries` lasts, then ESCALATED(review_unavailable). Keyed on the reviewer
+ * that failed; only a kernel-side failure with no reviewer counts by number.
+ */
+function roundFailed(
+  c: Ctx,
+  round: RoundSnapshot,
+  f: {
+    reason: Extract<Command, { type: 'ReviewRoundFailed' }>['reason'];
+    reviewerTaskId?: string;
+    maxContractRetries: number;
+    retryDelayMs?: number;
+    /** What an inconclusive verdict said, and the commit it was read at: kept on the transition for audit. */
+    inconclusive?: { verdict: string; effectiveVerdict: string; evidenceSha: string | null; headSha: string };
+  },
+): Decision {
+  const dd = c.d!;
+  const n = round.failureCount + 1;
+  const key = f.reviewerTaskId ? roundFailKey(round.id, f.reviewerTaskId) : `roundfail:${round.id}:${n}`;
+  const ev = {
+    roundId: round.id, reason: f.reason,
+    ...(f.reviewerTaskId ? { reviewerTaskId: f.reviewerTaskId } : {}),
+    ...(f.inconclusive ? { inconclusive: f.inconclusive } : {}),
+  };
+  const gate: EffectSpec = { kind: 'gate_event', dedupeKey: `gate_event:${round.id}:${n}`, payload: { slug: 'review_round_failed', reason: f.reason, failure: n } };
+  // A person's takeover is not a contract failure to retry: it escalates now.
+  if (n <= f.maxContractRetries && f.reason !== 'human_takeover') {
+    // Re-queued at the same head with the same round number — never a new round.
+    return c.apply(key, 'AWAITING_REVIEW', {
+      guardRound: true,
+      rounds: [{ op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'], set: { status: 'queued', failureCount: n, clearReviewer: true } }],
+      effects: [{ kind: 'dispatch_review', dedupeKey: `dispatch_review:${dd.id}:${round.round}:retry${n}`, payload: { roundId: round.id, round: round.round, headSha: round.headSha, kind: round.kind, retry: n }, ...(f.retryDelayMs ? { delayMs: f.retryDelayMs * n } : {}) }, gate],
+      evidence: ev,
+    });
+  }
+  return c.apply(key, 'ESCALATED', {
+    guardRound: true,
+    patch: { stateReason: 'review_unavailable' },
+    rounds: [{ op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'], set: { status: 'failed', failureCount: n } }],
+    effects: [gate],
+    evidence: ev,
   });
 }
 
@@ -1903,7 +1995,8 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
   // platform's own write, never a fix, whoever's push it turns out to be.
   const mechanical = d.state === 'REPAIRING' && c.attempt(d.boundAttemptId)?.mode === 'mechanical';
   const dec = headObservedInner(c, cmd);
-  if (dec.result !== 'apply' || mechanical || dec.evidence.carryForward === 'own_refresh') return dec;
+  // AC-79: a merge of the base recorded while a fix runs is a refresh push too.
+  if (dec.result !== 'apply' || mechanical || dec.evidence.carryForward === 'own_refresh' || dec.evidence.baseOnly) return dec;
   return withAddressed(c, dec, cmd.live.headSha, cmd.changedPaths);
 }
 
@@ -2056,11 +2149,15 @@ function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' 
       // Mid-fix pushes are normal; the round advances at AttemptEnded. A push
       // the running attempt can claim is recorded as its provenance (§6.9).
       const a = c.attempt(d.boundAttemptId);
-      const by = attributeHead(a, h, cmd.attribution);
+      // AC-79: a merge of the base descends from the fix's bound head, so ancestry alone would
+      // credit it. A push that brought only base commits is foreign whoever made it, unless the
+      // fix itself reported that exact head.
+      const baseOnly = cmd.baseOnly && !(a?.reportedShas.includes(h)) ? cmd.baseOnly : null;
+      const by = baseOnly ? 'foreign_running' : attributeHead(a, h, cmd.attribution);
       return c.apply(key, 'FIXING', {
         patch: { currentHeadSha: h },
         attempts: a && by === 'attempt' ? [{ op: 'update', attemptId: a.id, whenStatus: ['queued', 'running'], set: { appendReportedSha: h } }] : [],
-        evidence: by === 'attempt' ? evidence : { ...evidence, foreignPush: true },
+        evidence: by === 'attempt' ? evidence : { ...evidence, foreignPush: true, ...(baseOnly ? { baseOnly } : {}) },
       });
     }
     case 'APPROVED':
@@ -2134,13 +2231,56 @@ function attemptStarted(c: Ctx, cmd: Extract<Command, { type: 'AttemptStarted' }
   });
 }
 
+// ── AC-1 slice 9: a settled owner task reopens; a claim withdraws its start ──
+
+/** One reopen per ended attempt: a re-send is a duplicate, the next end of the same worker is a new key. */
+const reopenKey = (cmd: Extract<Command, { type: 'AttemptReopened' }>): string =>
+  `reopen:${cmd.taskId}:${cmd.workerId ?? 'none'}:${cmd.endedAt ?? 'none'}`;
+/** One withdrawal per claim and outcome (a queued task no claim holds is `queued`). */
+const withdrawKey = (cmd: Extract<Command, { type: 'AttemptWithdrawn' }>): string =>
+  `withdraw:${cmd.taskId}:${cmd.claim?.claimedAt ?? 'queued'}:${cmd.outcome}`;
+
+/**
+ * AttemptReopened: the owner task's ended attempt is opened again, for a new attempt (`pending`) or
+ * the same worker running again (`assigned`). No end and no state change, as AttemptStarted: while
+ * the delivery is `WORKING` on that owner task the transition records it (`reopen:...`) and its
+ * statement moves the task, guarded on the named worker still being the task's latest attempt.
+ * Anything else (the delivery handed on, or is terminal) is `attempt_not_bound`: the host's guarded
+ * projection still decides whether the task moves.
+ */
+function attemptReopened(c: Ctx, cmd: Extract<Command, { type: 'AttemptReopened' }>): Decision {
+  const d = c.d!;
+  if (!cmd.taskId || (cmd.to !== 'pending' && cmd.to !== 'assigned') || (cmd.to === 'assigned' && !cmd.workerId)) return c.rejected('reopen_not_named');
+  if (d.state !== 'WORKING' || cmd.taskId !== d.ownerTaskId) return c.stale('attempt_not_bound');
+  return c.apply(reopenKey(cmd), 'WORKING', {
+    evidence: { reopen: true, taskId: cmd.taskId, workerId: cmd.workerId, endedAt: cmd.endedAt, to: cmd.to, reason: cmd.reason },
+  });
+}
+
+/**
+ * AttemptWithdrawn: a claim that does not run the owner attempt gives its start back (`requeued`)
+ * or ends the task for good (`failed`); with no claim, a queued task is refused for good. No attempt
+ * ran, so it is no end and moves no state: while the delivery is `WORKING` on that owner task the
+ * transition records it (`withdraw:...`) and its statement moves the task, guarded on exactly that
+ * claim. Anything else is `attempt_not_bound`, and the host's guarded projection decides.
+ */
+function attemptWithdrawn(c: Ctx, cmd: Extract<Command, { type: 'AttemptWithdrawn' }>): Decision {
+  const d = c.d!;
+  if (!cmd.taskId || (cmd.outcome !== 'requeued' && cmd.outcome !== 'failed')) return c.rejected('withdrawal_not_named');
+  if (cmd.claim ? !cmd.claim.claimedBy || !cmd.claim.claimedAt : cmd.outcome !== 'failed') return c.rejected('claim_not_named');
+  if (d.state !== 'WORKING' || cmd.taskId !== d.ownerTaskId) return c.stale('attempt_not_bound');
+  return c.apply(withdrawKey(cmd), 'WORKING', {
+    evidence: { withdraw: true, taskId: cmd.taskId, claim: cmd.claim, outcome: cmd.outcome, reason: cmd.reason },
+  });
+}
+
 // ── T4 ──────────────────────────────────────────────────────────────────────
 
 /** T4, then §5: a repair whose delivered head changed an open finding's path marks it `addressed`. */
 function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): Decision {
   const fromState = c.d!.state;
   const dec = attemptEndedInner(c, cmd);
-  if (dec.result !== 'apply' || (fromState !== 'FIXING' && fromState !== 'REPAIRING') || !cmd.live || dec.toState === 'AWAITING_PUSH') return dec;
+  if (dec.result !== 'apply' || (fromState !== 'FIXING' && fromState !== 'REPAIRING') || !cmd.live || dec.toState === 'AWAITING_PUSH' || dec.evidence.baseOnly) return dec;
   if (dec.patch.currentHeadSha !== cmd.live.headSha) return dec;
   return withAddressed(c, dec, cmd.live.headSha, cmd.changedPaths);
 }
@@ -2273,6 +2413,15 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
     }
   }
 
+  // AC-79: a review fix whose end finds only base commits on the head since its bound one
+  // pushed nothing of its own: whatever proof the move would give, it is not the fix's. The fix
+  // does not complete on it, whatever outcome it reports; the attempt ends with no change (it
+  // spends the budget, AC-19) and a round scoped to the refresh reviews what the base brought in
+  // (the open verdict and findings still stand).
+  if (d.state === 'FIXING' && cmd.baseOnly === true && livePrOpen(live) && a.boundHeadSha && live!.headSha !== a.boundHeadSha) {
+    return baseOnlyEnd(c, key, a, live!.headSha, end('noop'), { ...evidence, baseOnly: true, attemptId: a.id });
+  }
+
   if (cmd.outcome === 'success' || (cmd.outcome === 'unproven' && cmd.commitCount > 0)) {
     // abe42d1b: an agent that pushed from its own session leaves the runner nothing local to
     // report, but its push was attributed to it mid-attempt (§6.9). That push is its L, as the
@@ -2375,6 +2524,26 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
     attempts: [end('failed'), { op: 'insert', id, family: a.family, attemptNo: n, mode: a.mode, boundHeadSha: a.boundHeadSha, triggerReason: a.triggerReason, taskId: null, trigger: 'automatic', status: 'queued', maxAttempts: max }],
     effects: [{ kind, dedupeKey: `${kind}:${d.id}:${a.boundHeadSha}:${a.mode}:${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: max, headSha: a.boundHeadSha, signature: a.triggerReason } }],
     evidence,
+  });
+}
+
+/**
+ * AC-79: a review fix ended and the only move on the PR since its bound head was a merge of the
+ * base. The round that follows is a delta of the refresh (trigger `base_refresh`, scope `refresh`),
+ * unless the head already has an open or decided round of its own.
+ */
+function baseOnlyEnd(c: Ctx, key: string, a: AttemptSnapshot, h: string, ended: AttemptOp, evidence: Record<string, unknown>): Decision {
+  const ev = { ...evidence, headMovedDuringFix: { from: a.boundHeadSha, to: h } };
+  const base: DeliveryPatch = { currentHeadSha: h, boundAttemptId: null, stateReason: null };
+  if (c.openRoundAt(h)) return c.apply(key, 'AWAITING_REVIEW', { patch: base, attempts: [ended], evidence: ev });
+  const decided = c.decidedAt(h);
+  if (decided) {
+    const re = reenterVerdict(c, key, decided, h, ev);
+    return re.result === 'apply' ? { ...re, patch: { ...re.patch, currentHeadSha: h, boundAttemptId: null }, attempts: [ended, ...re.attempts] } : re;
+  }
+  const r = c.startRound(h, { trigger: 'base_refresh', scope: { refresh: { fromHeadSha: a.boundHeadSha, toHeadSha: h } } });
+  return c.apply(key, 'AWAITING_REVIEW', {
+    patch: { ...base, ...r.patch }, rounds: r.rounds, attempts: [ended], effects: r.effects, evidence: ev,
   });
 }
 
@@ -2600,7 +2769,7 @@ function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'mig
         effects: finalCycle ? [{ kind: 'notify', dedupeKey: `notify:${d.id}:treadmill:${head}`, payload: { event: 'landing_needs_human', detail, ...(why ? { cause: why.cause } : {}) } }] : [],
         evidence: {
           ...evidence, refreshes, treadmill: true, cycle, ...(finalCycle ? { finalCycle: true } : {}),
-          ...(why ? { cause: why.cause, reason: detail, deltaReason: why.reason, ...(why.files ? { files: why.files } : {}), ...(o.baseDelta?.baseCommits != null ? { behindBy: o.baseDelta.baseCommits } : {}) } : {}),
+          ...(why ? { cause: why.cause, reason: detail, deltaReason: why.reason, ...(why.basis ? { deltaBasis: why.basis } : {}), ...(why.files ? { files: why.files } : {}), ...(o.baseDelta?.baseCommits != null ? { behindBy: o.baseDelta.baseCommits } : {}) } : {}),
         },
       });
     }

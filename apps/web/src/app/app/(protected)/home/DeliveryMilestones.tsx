@@ -3,7 +3,7 @@
  * mission row (ui/MissionRow), the same row the Missions portfolio uses:
  * title, the small strip (one cell per task), one state line (n of m landed),
  * Next, and the exception as a note when there is one. Home only lists
- * missions on the Build › Audit › Land track. Rendered from
+ * missions on the Build › Verify › Deliver track. Rendered from
  * lib/delivery-projection.ts, the same projection the other surfaces read;
  * nothing here derives state.
  */

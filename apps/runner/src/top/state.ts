@@ -28,7 +28,7 @@
 import type { ProgressCell } from './progress';
 import { rowDollars, runsOnLine, runWords, sameRoute, todayLine, todayTotals, workerSpend, type RouteProblem, type RunRoute, type RunSpend, type SpendResultMeta, type SpendTotals } from '../run-route';
 import { queueRowList, type QueueRow } from './queue';
-import { TERMINAL_TASK_STATUSES, TERMS, slotsInUse, isRunnerHoldActive, titleWithAttempt, parseRunnerHold, type RecentMission, type RunnerHold, type RunnerQueueResponse } from '@buildd/shared';
+import { TERMINAL_TASK_STATUSES, TERMS, slotsInUse, isRunnerHoldActive, titleWithAttempt, parseRunnerHold, type RecentMission, type RunnerHold, type RunnerQueueResponse, backendShares, parseLoginMode, type LoginBackend, type LoginMode } from '@buildd/shared';
 
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
 
@@ -63,6 +63,8 @@ export interface TopWorker {
   tokenTally?: { inputTokens: number; outputTokens: number };
   /** Which route the run reached its model by (run-route.ts); absent from older runners. */
   route?: RunRoute | null;
+  /** Why the run is on its backend when the claim moved it (R-40). */
+  routedWhy?: string | null;
   costBasis?: string | null;
   taskBackend?: string | null;
   /** The model the run asked for. */
@@ -148,6 +150,8 @@ export interface TopState {
     routes: RunRoute[];
     /** Routes that do not work right now, with where to fix them. */
     routeProblems: RouteProblem[];
+    /** How the runner's own logins share its slots (spec 34a48877 R-14); null from a runner that predates it. */
+    loginMode: LoginMode | null;
   };
   workers: Record<string, TopWorker>;
   tasks: TopTask[];
@@ -237,7 +241,7 @@ export const NO_MISSION_TITLE = 'Other tasks';
 
 export function initialState(opts: { hostname: string; missionId?: string | null; workspace?: string | null; team?: string | null }): TopState {
   return {
-    runner: { hostname: opts.hostname, version: null, pid: null, maxConcurrent: 1, builddServer: null, online: false, connectedOnce: false, hold: null, routes: [], routeProblems: [] },
+    runner: { hostname: opts.hostname, version: null, pid: null, maxConcurrent: 1, builddServer: null, online: false, connectedOnce: false, hold: null, routes: [], routeProblems: [], loginMode: null },
     workers: {},
     tasks: [],
     workspaces: [],
@@ -266,7 +270,9 @@ export function initialState(opts: { hostname: string; missionId?: string | null
 
 export type TopEvent =
   | { type: 'runner'; pid?: number | null; version?: string | null }
-  | { type: 'config'; maxConcurrent?: number; builddServer?: string | null; routes?: RunRoute[]; routeProblems?: RouteProblem[] }
+  | { type: 'config'; maxConcurrent?: number; builddServer?: string | null; routes?: RunRoute[]; routeProblems?: RouteProblem[]; loginMode?: unknown }
+  /** The runner's login mode changed (`buildd logins`, b; spec 34a48877 R-14). */
+  | { type: 'logins'; loginMode: string }
   | { type: 'workers'; workers: TopWorker[]; fresher?: string[] }
   | { type: 'tasks'; tasks: TopTask[] }
   | { type: 'workspaces'; workspaces: TopWorkspace[] }
@@ -285,6 +291,10 @@ export type TopEvent =
   | { type: 'slots'; maxConcurrent: number }
   | { type: 'worker_update'; worker: TopWorker }
   | { type: 'claim_rejected'; taskId?: string; status?: number; reason?: string }
+  /** A task in one of the runner's workspaces changed (the runner's workspace channels). */
+  | { type: 'tasks_changed'; workspaceId?: string | null; taskId?: string | null }
+  /** A mission-loop event on a mission top lists (the runner watches their channels). */
+  | { type: 'mission_changed'; missionId: string }
   | { type: string; [k: string]: unknown };
 
 function isRoute(r: unknown): r is RunRoute {
@@ -317,8 +327,13 @@ export function reduce(state: TopState, event: TopEvent): TopState {
           routeProblems: Array.isArray(e.routeProblems)
             ? e.routeProblems.filter((p): p is RouteProblem => !!p && typeof p.text === 'string')
             : state.runner.routeProblems,
+          loginMode: parseLoginMode(e.loginMode) ?? state.runner.loginMode,
         },
       };
+    }
+    case 'logins': {
+      const mode = parseLoginMode((event as any).loginMode);
+      return mode ? { ...state, runner: { ...state.runner, loginMode: mode } } : state;
     }
     case 'workers': {
       // fresher: workers the stream updated after this snapshot was asked for; their pushed copy is newer.
@@ -388,7 +403,7 @@ export function reduce(state: TopState, event: TopEvent): TopState {
         const tasks = e.claimOutcomes.tasks && typeof e.claimOutcomes.tasks === 'object' ? e.claimOutcomes.tasks : {};
         next = { ...next, claimOutcomes: { tasks: pruneMovedOutcomes(tasks, next.tasks), broad: e.claimOutcomes.broad ? stampBroad(e.claimOutcomes.broad, next.tasks) : null } };
       }
-      if (e.config) next = reduce(next, { type: 'config', maxConcurrent: e.config.maxConcurrent, builddServer: e.config.builddServer });
+      if (e.config) next = reduce(next, { type: 'config', maxConcurrent: e.config.maxConcurrent, builddServer: e.config.builddServer, loginMode: (e.config as { loginMode?: unknown }).loginMode });
       // An older runner sends no `hold`: it cannot be held, so none.
       return { ...next, lookingForWork: e.lookingForWork === true, runner: { ...next.runner, online: true, connectedOnce: true, hold: parseRunnerHold(e.hold) } };
     }
@@ -427,11 +442,14 @@ export function reduce(state: TopState, event: TopEvent): TopState {
 
 /**
  * Does this event mean the task list may have changed? The runner learns of
- * queue changes over Pusher (task_assigned), from its claim loop
+ * queue changes over Pusher (task_assigned, task_claimed, tasks_changed), from its claim loop
  * (claim_rejected) and from its own workers starting or finishing.
  */
 export function eventChangesQueue(state: TopState, event: TopEvent): boolean {
   // task_claimed: a task in one of its workspaces was claimed, by this runner or another (AC-12).
+  // tasks_changed: a task in one of its workspaces was created, updated, unblocked or finished
+  // (task:* and worker:completed/failed on the workspace channel; spec 3ef37387 R-21).
+  if (event.type === 'tasks_changed') return true;
   if (event.type === 'task_assigned' || event.type === 'task_claimed' || event.type === 'claim_rejected' || event.type === 'claim_outcome' || event.type === 'slots') return true;
   if (event.type === 'worker_update') {
     const w = (event as any).worker as TopWorker | undefined;
@@ -1605,6 +1623,38 @@ export function runsOn(state: TopState, now: number): string | null {
   const routes: RunRoute[] = [];
   for (const r of [...state.runner.routes, ...used]) if (!routes.some(x => sameRoute(x, r))) routes.push(r);
   return runsOnLine(routes);
+}
+
+/**
+ * R-60: what each of this runner's logins does now, and its login mode, e.g.
+ * "Logins: Claude plan · 6 running · Codex plan · idle · takes work when
+ * Claude is at its limit · claude-first (b to change)". Null from a runner
+ * that reports no mode, and on one that has a single login (nothing to share).
+ */
+export function loginsLine(state: TopState, now: number): string | null {
+  const mode = state.runner.loginMode;
+  if (!mode) return null;
+  const backends: LoginBackend[] = ['claude', 'codex'];
+  const routes = state.runner.routes;
+  if (!backends.every(b => routes.some(r => r.backend === b))) return null;
+  const running: Record<LoginBackend, number> = { claude: 0, codex: 0 };
+  for (const w of Object.values(state.workers)) {
+    if (w.status !== 'working' && w.status !== 'stale') continue;
+    running[(w.route?.backend ?? w.taskBackend) === 'codex' ? 'codex' : 'claude']++;
+  }
+  const share = backendShares(mode, state.runner.maxConcurrent);
+  const walls = liveBroad(state, now)?.walls ?? [];
+  const first: LoginBackend | null = mode === 'claude-first' ? 'claude' : mode === 'codex-first' ? 'codex' : null;
+  const NAME: Record<LoginBackend, string> = { claude: 'Claude', codex: 'Codex' };
+  const parts = backends.map(b => {
+    const name = `${NAME[b]}${routes.some(r => r.backend === b && r.bucket === 'plan') ? ' plan' : ''}`;
+    const wall = walls.find(w => w.backend === b);
+    if (wall) return `${name} · at its limit${wall.resetsAt ? ` until ${localLiftTime(wall.resetsAt, now)}` : ''}`;
+    if (mode === 'balanced') return `${name} · ${running[b]} of ${share[b]} running`;
+    if (running[b] > 0) return `${name} · ${running[b]} running`;
+    return b === first ? `${name} · idle` : `${name} · idle · takes work when ${NAME[first!]} is at its limit`;
+  });
+  return `Logins: ${parts.join(' · ')} · ${mode} (b to change)`;
 }
 
 /** Routes that do not work, each on its own line so a narrow terminal never cuts one off. */

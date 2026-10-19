@@ -26,15 +26,20 @@
  * no control plane to follow.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHash } from 'node:crypto';
 import { signRequest, signingKey } from '@buildd/dispatch-contract';
 import { kernelHost, type KernelHost } from './kernel-host';
 import {
-  COMMAND_API_VERSION, COMMAND_PATH, commandKeyRing, commandsConfigured, deliveryAfter, executionModeOf, runKernelOp,
+  COMMAND_API_VERSION, COMMAND_PATH, commandKeyRing, commandsConfigured, deliveryAfter, executionModeOf, personOpRefusal, runKernelOp,
   type CommandAnswer, type CommandRequest, type DeliveryVersion, type KernelOp, type KernelOps, type KernelPrincipal,
 } from './command-api';
 import { postgresCommandOutbox, shouldPark, type CommandOutbox } from './command-outbox';
 import { noteWorkChanged, workChangeOfKernelInput } from '@/lib/work-changed';
 import { KernelObservationFailed } from './kernel-observation';
+import {
+  KERNEL_SPAN, breakerSpanAttributes, currentKernelRoute, doorSpanAttributes, emitKernelSpan, inferDoorCaller, passSpanAttributes, webCommandSpanAttributes,
+  type DoorCaller, type DoorOutcome, type WebCommandReason,
+} from './kernel-telemetry';
 
 export { KernelObservationFailed } from './kernel-observation';
 
@@ -54,6 +59,8 @@ export class ControlPlaneUnavailableError extends Error {
   readonly retryable = true;
   /** Set by a door that kept the command for the floor to re-submit (command-outbox.ts): it is not lost. */
   parked = false;
+  /** Set when a breaker skipped the request (the door's span reads `breaker_open`). */
+  breakerOpen = false;
   constructor(readonly why: string, readonly outcome: 'not_applied' | 'unknown' = 'not_applied', readonly idempotencyKey: string | null = null) {
     super(outcome === 'unknown'
       ? `The control plane did not confirm the outcome (${why}); it may have been applied. Retry with the same idempotency key${idempotencyKey ? ` (${idempotencyKey})` : ''} to get its answer.`
@@ -242,6 +249,8 @@ interface BudgetScope {
   refused: number;
   drainsSkipped: number;
   waitedMs: number;
+  /** A webhook request's scope (`withWebhookBudget`): each door is capped short and keyed by the delivery. */
+  webhook?: { deliveryId: string };
 }
 
 const budgetScope = new AsyncLocalStorage<BudgetScope>();
@@ -264,15 +273,20 @@ export interface ControlPlaneBudgetReport {
  * earlier deadline. On the web host in shadow, and on the control plane, nothing is submitted and the
  * budget never binds.
  */
-export async function withControlPlaneBudget<T>(label: string, budgetMs: number, fn: () => Promise<T>, o: { now?: () => number } = {}): Promise<{ value: T; budget: ControlPlaneBudgetReport }> {
+export async function withControlPlaneBudget<T>(label: string, budgetMs: number, fn: () => Promise<T>, o: { now?: () => number; quiet?: boolean; webhook?: { deliveryId: string } } = {}): Promise<{ value: T; budget: ControlPlaneBudgetReport }> {
   const now = o.now ?? Date.now;
+  const startedAt = Date.now();
   const outer = budgetScope.getStore();
   const own = now() + budgetMs;
   const scope: BudgetScope = {
-    label, now, submitted: 0, refused: 0, drainsSkipped: 0, waitedMs: 0,
+    label, now, submitted: 0, refused: 0, drainsSkipped: 0, waitedMs: 0, webhook: o.webhook,
     deadline: outer ? Math.min(own, outer.deadline - outer.now() + now()) : own,
   };
   const value = await budgetScope.run(scope, fn);
+  // A pass that ran out of budget is what a monitor wants to see; one that did not is noise.
+  if (!o.quiet && (scope.refused > 0 || scope.drainsSkipped > 0)) {
+    emitKernelSpan({ name: KERNEL_SPAN.pass, startMs: startedAt, durationMs: Date.now() - startedAt, attributes: passSpanAttributes({ label, budgetMs, submitted: scope.submitted, refused: scope.refused, drainsSkipped: scope.drainsSkipped, waitedMs: scope.waitedMs, host: kernelHost() }) });
+  }
   return { value, budget: { label, budgetMs, submitted: scope.submitted, refused: scope.refused, drainsSkipped: scope.drainsSkipped, waitedMs: scope.waitedMs } };
 }
 
@@ -326,12 +340,15 @@ export function newIdempotencyKey(op: KernelOp): string {
 export async function submitKernelCommand<K extends KernelOp>(op: K, input: KernelOps[K]['input'], opts: SubmitOptions): Promise<KernelAnswer<K>> {
   const deps = opts.deps ?? {};
   const idempotencyKey = opts.idempotencyKey ?? (deps.newKey ?? (() => newIdempotencyKey(op)))();
+  // Checked on this host too, so running here never skips what the control plane would refuse.
+  const notPerson = personOpRefusal(op, input, opts.principal);
+  if (notPerson) throw new KernelCommandRefusedError(403, { code: 'person_only', error: notPerson });
   if (await hostsKernelHere(deps)) {
     // After an unknown outcome the control plane may have applied it: the web host never runs it as well.
     if (opts.priorUnknown && (deps.host ?? kernelHost)() === 'web') {
       throw new ControlPlaneUnavailableError('the web host now runs the kernel, but an earlier attempt may have reached the control plane', 'unknown', idempotencyKey);
     }
-    return noted(input, await runHere(op, input, idempotencyKey, deps, opts.withDelivery !== false));
+    return noted(input, await runHere(op, input, idempotencyKey, deps, opts.withDelivery !== false, commandsConfigured(deps.env ?? process.env) ? 'shadow' : 'no_command_key'));
   }
   return noted(input, await submitRemote(op, input, { ...opts, idempotencyKey }, deps));
 }
@@ -346,10 +363,25 @@ function noted<T>(input: unknown, answer: T): T {
   return answer;
 }
 
-async function runHere<K extends KernelOp>(op: K, input: KernelOps[K]['input'], idempotencyKey: string, deps: ClientDeps, withDelivery = true): Promise<KernelAnswer<K>> {
-  const result = await (deps.run ?? runKernelOp)(op, input);
+async function runHere<K extends KernelOp>(op: K, input: KernelOps[K]['input'], idempotencyKey: string, deps: ClientDeps, withDelivery: boolean, reason: WebCommandReason): Promise<KernelAnswer<K>> {
+  const result = await runReported(op, input, deps, reason);
   const delivery = withDelivery ? await (deps.deliveryAfter ?? deliveryAfter)(op, input, result).catch(() => null) : null;
   return { result, delivery, host: (deps.host ?? kernelHost)(), replayed: false, idempotencyKey };
+}
+
+/** Runs the command on this host; on the web host it is also reported (`kernel.web_command`), with why. */
+async function runReported<K extends KernelOp>(op: K, input: KernelOps[K]['input'], deps: ClientDeps, reason: WebCommandReason): Promise<KernelOps[K]['result']> {
+  if ((deps.host ?? kernelHost)() !== 'web') return (deps.run ?? runKernelOp)(op, input);
+  const startedAt = Date.now();
+  let failed = false;
+  try {
+    return await (deps.run ?? runKernelOp)(op, input);
+  } catch (err) {
+    failed = true;
+    throw err;
+  } finally {
+    emitKernelSpan({ name: KERNEL_SPAN.webCommand, startMs: startedAt, durationMs: Date.now() - startedAt, attributes: webCommandSpanAttributes({ op, reason, latencyMs: Date.now() - startedAt }), error: failed });
+  }
 }
 
 async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['input'], opts: SubmitOptions & { idempotencyKey: string }, deps: ClientDeps): Promise<KernelAnswer<K>> {
@@ -434,7 +466,7 @@ async function submitUntil<K extends KernelOp>(
       // The control plane is in shadow, or holds no command key yet (half switched over): the web host is
       // the host after all. It refused before running anything, so nothing was applied there.
       cached = { mode: 'shadow', at: now() };
-      return runHere(op, input, opts.idempotencyKey, deps, opts.withDelivery !== false);
+      return runHere(op, input, opts.idempotencyKey, deps, opts.withDelivery !== false, answer.code === 'not_host' ? 'not_host' : 'unconfigured');
     }
     if (res.status === 500 && answer?.code === 'command_failed') {
       // The command itself threw there (the key was released): the real error, not an outage. Not retried.
@@ -520,6 +552,8 @@ export interface DoorCall {
   principal: KernelPrincipal | null;
   /** The caller's key (an `Idempotency-Key` header); absent, one is made for this call. */
   idempotencyKey?: string;
+  /** Who is calling, for the door's span; absent, it is inferred (kernel-telemetry.ts `inferDoorCaller`). */
+  caller?: DoorCaller;
   deps?: ClientDeps;
 }
 
@@ -534,11 +568,138 @@ export const DOOR_UNKNOWN_RETRIES = 2;
  */
 export const DOOR_BUDGET_MS = 20_000;
 
-async function door<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall): Promise<KernelOps[K]['result']> {
-  // One key for the whole door call: every retry below asks the control plane the same question.
-  const idempotencyKey = c.idempotencyKey ?? (c.deps?.newKey ?? (() => newIdempotencyKey(op)))();
+/** A webhook request's whole control-plane budget: GitHub marks a delivery failed at about 10 s (KERNEL_WEBHOOK_BUDGET_MS overrides). */
+export const WEBHOOK_BUDGET_MS = 6_000;
+/** One door call's budget inside a webhook request (KERNEL_WEBHOOK_DOOR_BUDGET_MS overrides). */
+export const WEBHOOK_DOOR_BUDGET_MS = 2_500;
+/** After a webhook door went unanswered, how long every webhook door skips the control plane and takes its durable fallback at once. */
+export const WEBHOOK_SKIP_MS = 45_000;
+let webhookSkipUntil = 0;
+/** When the open webhook breaker opened (0: closed), for the span that reports it closing. */
+let webhookOpenedAt = 0;
+/** Close the webhook breaker (tests). */
+export function resetWebhookBreaker(): void {
+  webhookSkipUntil = 0;
+  webhookOpenedAt = 0;
+}
+
+/**
+ * Run a webhook request's handlers with a short control-plane budget, so the response is back well
+ * inside GitHub's delivery timeout even when the control plane is slow or down. Inside it, each door
+ * call waits at most `WEBHOOK_DOOR_BUDGET_MS`, the whole request at most `WEBHOOK_BUDGET_MS`, and a
+ * door left unanswered opens a breaker (`WEBHOOK_SKIP_MS`) so the rest of the request, and the next
+ * deliveries, skip the wait. A door that gives up takes the durable path it always had: a parked
+ * command (`PARK_ON_UNAVAILABLE`) or a close recorded unapplied and healed (`observePrState`), so
+ * nothing is lost. Each door's command key derives from the delivery id, so GitHub's redelivery of a
+ * request that did apply, slowly, is the same command to the ledger and answers with what was done.
+ */
+export function withWebhookBudget<T>(deliveryId: string, fn: () => Promise<T>, o: { now?: () => number; env?: Record<string, string | undefined> } = {}): Promise<T> {
+  const env = o.env ?? process.env;
+  return withControlPlaneBudget('webhook', Number(env.KERNEL_WEBHOOK_BUDGET_MS) || WEBHOOK_BUDGET_MS, fn, { now: o.now, webhook: { deliveryId } }).then((r) => r.value);
+}
+
+/** The command key of a door call made while handling one webhook delivery: stable across GitHub's redeliveries. */
+export function webhookCommandKey(deliveryId: string, op: KernelOp, input: unknown): string {
+  const hash = createHash('sha256').update(JSON.stringify(input) ?? '').digest('hex').slice(0, 16);
+  return `webhook:${deliveryId.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 60)}:${op}:${hash}`;
+}
+
+/**
+ * The doors a webhook request caps (AC-65): the ones that have a durable fallback when the control
+ * plane does not answer. Parked ops (`PARK_ON_UNAVAILABLE`) are kept for the floor; `observe_pr_state`
+ * is recorded unapplied and healed; `observe_ci_failure` and `observe_conflict` are not parked but the
+ * red-PR and conflict sweeps re-send them. Every other door (`open_delivery`, whose failure hands a
+ * PR to legacy review while the control plane may still finish it; `land`; the rest) keeps its own
+ * budget and is outside the webhook's scope, as before.
+ */
+export const WEBHOOK_CAPPED_OPS: ReadonlySet<KernelOp> = new Set<KernelOp>([
+  'observe_ci_green', 'observe_head', 'observe_base', 'observe_pr_state', 'observe_ci_failure', 'observe_conflict',
+]);
+
+async function door<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall, o: { skew?: boolean } = {}): Promise<KernelOps[K]['result']> {
+  // The door's span (kernel-telemetry.ts): op, outcome, latency, budget, caller.
+  const startedAt = Date.now();
+  const budgetMs = doorBudgetMs(op, c.deps?.env ?? process.env);
   try {
-    return await submitDoor(op, input, c, idempotencyKey);
+    const result = await doorUnreported(op, input, c);
+    reportDoor(op, c, { startedAt, budgetMs, outcome: 'applied' });
+    return result;
+  } catch (err) {
+    reportDoor(op, c, { startedAt, budgetMs, outcome: doorOutcomeOf(err, op, o.skew === true), err });
+    throw err;
+  }
+}
+
+/**
+ * The budget a door call runs under, as `submitDoor` computes it: the door's own, cut to what is left of
+ * its pass and, inside a webhook request, to the webhook door cap. A webhook door with no durable
+ * fallback leaves the webhook's scope (`doorUnreported`), so only its own budget applies.
+ */
+function doorBudgetMs(op: KernelOp, env: Record<string, string | undefined>): number {
+  const own = Number(env.KERNEL_DOOR_BUDGET_MS) || DOOR_BUDGET_MS;
+  const wh = budgetScope.getStore()?.webhook;
+  if (wh && !WEBHOOK_CAPPED_OPS.has(op)) return own;
+  const webhookCap = wh ? (Number(env.KERNEL_WEBHOOK_DOOR_BUDGET_MS) || WEBHOOK_DOOR_BUDGET_MS) : Infinity;
+  return Math.min(own, controlPlaneBudgetLeft() ?? Infinity, webhookCap);
+}
+
+/** How a door call that threw ended, for its span. */
+function doorOutcomeOf(err: unknown, op: KernelOp, skew: boolean): DoorOutcome {
+  if (err instanceof ControlPlaneUnavailableError) return err.breakerOpen ? 'breaker_open' : err.parked ? 'parked' : 'unavailable';
+  if (skew && refusedAsUnknownOp(err, op)) return 'skew_fallback';
+  if (err instanceof KernelCommandRefusedError) return 'refused';
+  return 'failed';
+}
+
+function reportDoor(op: KernelOp, c: DoorCall, p: { startedAt: number; budgetMs: number; outcome: DoorOutcome; err?: unknown; pass?: string }): void {
+  const scope = budgetScope.getStore();
+  const pass = p.pass ?? (scope?.webhook && !WEBHOOK_CAPPED_OPS.has(op) ? null : scope?.label ?? null);
+  const errorCode = p.err instanceof KernelCommandRefusedError ? String(p.err.body.code ?? p.err.status)
+    // A webhook door its breaker skipped is still parked for the floor: the code says so.
+    : p.err instanceof ControlPlaneUnavailableError ? (p.err.breakerOpen && p.err.parked ? 'parked' : p.err.outcome)
+      : p.err instanceof KernelCommandFailedError ? 'command_failed' : null;
+  const latencyMs = Date.now() - p.startedAt;
+  emitKernelSpan({
+    name: KERNEL_SPAN.door, startMs: p.startedAt, durationMs: latencyMs,
+    error: p.outcome !== 'applied' && p.outcome !== 'skew_fallback',
+    attributes: doorSpanAttributes({
+      op, outcome: p.outcome, latencyMs, budgetMs: Number.isFinite(p.budgetMs) ? p.budgetMs : 0,
+      caller: inferDoorCaller({ explicit: c.caller, route: currentKernelRoute(), pass, principal: c.principal }),
+      host: (c.deps?.host ?? kernelHost)(), pass, errorCode,
+    }),
+  });
+}
+
+async function doorUnreported<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall): Promise<KernelOps[K]['result']> {
+  // A door without a durable fallback runs as it always did: no cap, no breaker, and no share of the webhook's budget.
+  if (budgetScope.getStore()?.webhook && !WEBHOOK_CAPPED_OPS.has(op)) return budgetScope.exit(() => doorUnreported(op, input, c));
+  const wh = budgetScope.getStore()?.webhook;
+  const whNow = c.deps?.now ?? Date.now;
+  // One key for the whole door call: every retry below asks the control plane the same question.
+  const idempotencyKey = c.idempotencyKey ?? (wh && wh.deliveryId ? webhookCommandKey(wh.deliveryId, op, input) : undefined) ?? (c.deps?.newKey ?? (() => newIdempotencyKey(op)))();
+  try {
+    if (wh && whNow() < webhookSkipUntil) {
+      const skipped = new ControlPlaneUnavailableError(`a webhook door went unanswered within the last ${WEBHOOK_SKIP_MS / 1000}s; the door is skipped until then`, 'not_applied', idempotencyKey);
+      skipped.breakerOpen = true;
+      throw skipped;
+    }
+    try {
+      const result = await submitDoor(op, input, c, idempotencyKey);
+      if (wh && webhookOpenedAt) {
+        emitKernelSpan({ name: KERNEL_SPAN.breaker, startMs: Date.now(), durationMs: 0, attributes: breakerSpanAttributes({ state: 'closed', breaker: 'webhook', op, skipMs: WEBHOOK_SKIP_MS, openMs: whNow() - webhookOpenedAt, host: (c.deps?.host ?? kernelHost)() }) });
+        webhookOpenedAt = 0;
+      }
+      return result;
+    } catch (err) {
+      if (wh && err instanceof ControlPlaneUnavailableError && !err.why.includes('spent its control-plane budget')) {
+        webhookSkipUntil = whNow() + WEBHOOK_SKIP_MS;
+        if (!webhookOpenedAt) {
+          webhookOpenedAt = whNow();
+          emitKernelSpan({ name: KERNEL_SPAN.breaker, startMs: Date.now(), durationMs: 0, error: true, attributes: breakerSpanAttributes({ state: 'open', breaker: 'webhook', op, skipMs: WEBHOOK_SKIP_MS, host: (c.deps?.host ?? kernelHost)() }) });
+        }
+      }
+      throw err;
+    }
   } catch (err) {
     // Unanswered for the whole budget: an op nothing else re-sends is kept, under this same key, for the
     // floor to re-submit until it is answered (command-outbox.ts). The door still answers unavailable.
@@ -562,7 +723,8 @@ async function submitDoor<K extends KernelOp>(op: K, input: KernelOps[K]['input'
   const env = c.deps?.env ?? process.env;
   // Inside a pass, the door's budget is also cut to what is left of the pass's (submitRemote refuses once it is spent).
   const passLeft = controlPlaneBudgetLeft();
-  const deadline = now() + Math.min(Number(env.KERNEL_DOOR_BUDGET_MS) || DOOR_BUDGET_MS, passLeft ?? Infinity);
+  const webhookCap = budgetScope.getStore()?.webhook ? (Number(env.KERNEL_WEBHOOK_DOOR_BUDGET_MS) || WEBHOOK_DOOR_BUDGET_MS) : Infinity;
+  const deadline = now() + Math.min(Number(env.KERNEL_DOOR_BUDGET_MS) || DOOR_BUDGET_MS, passLeft ?? Infinity, webhookCap);
   let priorUnknown = false;
   for (let attempt = 0; ; attempt++) {
     try {
@@ -585,6 +747,8 @@ export const requestReview = (p: KernelOps['request_review']['input'], c: DoorCa
 export const requestCiRetry = (p: KernelOps['request_ci_retry']['input'], c: DoorCall) => door('request_ci_retry', p, c);
 export const recordSupersession = (p: KernelOps['record_supersession']['input'], c: DoorCall) => door('record_supersession', p, c);
 export const abandonDelivery = (p: KernelOps['abandon']['input'], c: DoorCall) => door('abandon', p, c);
+export const disposeFinding = (p: KernelOps['dispose_finding']['input'], c: DoorCall) => door('dispose_finding', p, c);
+export const approveOverride = (p: KernelOps['approve_override']['input'], c: DoorCall) => door('approve_override', p, c);
 export const openKernelDelivery = (p: KernelOps['open_delivery']['input'], c: DoorCall) => door('open_delivery', p, c);
 /**
  * Whether the control plane refused `op` because it does not know it: a 400 from `commandProblem`
@@ -606,11 +770,11 @@ export function refusedAsUnknownOp(err: unknown, op: KernelOp): boolean {
  */
 async function doorOrHereOnSkew<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall, what: string): Promise<KernelOps[K]['result']> {
   try {
-    return await door(op, input, c);
+    return await door(op, input, c, { skew: true });
   } catch (err) {
     if (!refusedAsUnknownOp(err, op)) throw err;
     console.error(`[workflow] SKEW: the control plane does not know ${op} (an older build); applying ${what} on the ${(c.deps?.host ?? kernelHost)()} host instead. This should stop once the control plane is on this release.`);
-    return (c.deps?.run ?? runKernelOp)(op, input);
+    return runReported(op, input, c.deps ?? {}, 'skew');
   }
 }
 
@@ -638,9 +802,12 @@ export const ATTEMPT_START_BUDGET_MS = 750;
 export const ATTEMPT_START_SKIP_MS = 45_000;
 /** Process-level: until when starts skip the door (0: the door is tried). */
 let attemptStartSkipUntil = 0;
+/** When the open breaker opened (0: closed), for the span that reports it closing. */
+let attemptStartOpenedAt = 0;
 /** Close the start breaker (tests). */
 export function resetAttemptStartBreaker(): void {
   attemptStartSkipUntil = 0;
+  attemptStartOpenedAt = 0;
 }
 
 /**
@@ -653,19 +820,62 @@ export function resetAttemptStartBreaker(): void {
  * without a request, so an outage costs one claim the budget, not every claim.
  */
 export async function attemptStarted(p: Omit<KernelOps['attempt_started']['input'], 'workspaceId'>, c: DoorCall): Promise<KernelOps['attempt_started']['result']> {
+  return shortDoor('attempt_started', { ...p, workspaceId: p.task.workspaceId }, c, 'claim_start');
+}
+
+/**
+ * A door on the start's small budget and breaker: for an op whose caller projects the same move on
+ * its own host on any door error (a claim's start, a withdrawal, a reopen), so waiting longer buys
+ * nothing and one outage costs the budget once per breaker window, not once per call.
+ */
+async function shortDoor<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall, label: string): Promise<KernelOps[K]['result']> {
   const now = c.deps?.now ?? Date.now;
-  if (now() < attemptStartSkipUntil) {
-    throw new ControlPlaneUnavailableError(`a start went unanswered within the last ${ATTEMPT_START_SKIP_MS / 1000}s; the door is skipped until then`);
-  }
+  const host = (c.deps?.host ?? kernelHost)();
   const env = c.deps?.env ?? process.env;
   const budgetMs = Number(env.KERNEL_START_BUDGET_MS) || ATTEMPT_START_BUDGET_MS;
-  try {
-    const { value } = await withControlPlaneBudget('claim_start', budgetMs, () => door('attempt_started', { ...p, workspaceId: p.task.workspaceId }, c), { now });
-    return value;
-  } catch (err) {
-    if (err instanceof ControlPlaneUnavailableError) attemptStartSkipUntil = now() + ATTEMPT_START_SKIP_MS;
+  if (now() < attemptStartSkipUntil) {
+    const err = new ControlPlaneUnavailableError(`a start went unanswered within the last ${ATTEMPT_START_SKIP_MS / 1000}s; the door is skipped until then`);
+    reportDoor(op, c, { startedAt: Date.now(), budgetMs, outcome: 'breaker_open', err, pass: label });
     throw err;
   }
+  try {
+    const { value } = await withControlPlaneBudget(label, budgetMs, () => door(op, input, c), { now, quiet: true });
+    if (attemptStartOpenedAt) {
+      emitKernelSpan({ name: KERNEL_SPAN.breaker, startMs: Date.now(), durationMs: 0, attributes: breakerSpanAttributes({ state: 'closed', breaker: 'attempt_start', op, skipMs: ATTEMPT_START_SKIP_MS, openMs: now() - attemptStartOpenedAt, host }) });
+      attemptStartOpenedAt = 0;
+    }
+    return value;
+  } catch (err) {
+    if (err instanceof ControlPlaneUnavailableError) {
+      attemptStartSkipUntil = now() + ATTEMPT_START_SKIP_MS;
+      if (!attemptStartOpenedAt) {
+        attemptStartOpenedAt = now();
+        emitKernelSpan({ name: KERNEL_SPAN.breaker, startMs: Date.now(), durationMs: 0, error: true, attributes: breakerSpanAttributes({ state: 'open', breaker: 'attempt_start', op, skipMs: ATTEMPT_START_SKIP_MS, host }) });
+      }
+    }
+    throw err;
+  }
+}
+
+/**
+ * AttemptReopened from the web host (AC-1 slice 9): a settled owner task opens again, applied where
+ * the kernel is hosted. Never run on the web host in own mode, not even during release skew, and
+ * never parked: the caller projects the reopen on its own host (`projectReopen`) on any door error,
+ * under the same guard. On the start's small budget and breaker, so a recovery reopening many tasks
+ * through an outage pays the budget once, not once per task.
+ */
+export async function attemptReopened(p: Omit<KernelOps['attempt_reopened']['input'], 'workspaceId'>, c: DoorCall): Promise<KernelOps['attempt_reopened']['result']> {
+  return shortDoor('attempt_reopened', { ...p, workspaceId: p.task.workspaceId }, c, 'reopen');
+}
+
+/**
+ * AttemptWithdrawn from the web host (AC-1 slice 9): a claim that runs no attempt gives its start
+ * back, or a queued task is refused. As AttemptStarted (a claim waits on it): the start's small
+ * budget and breaker, never run on the web host in own mode, never parked; the caller projects it
+ * on its own host (`projectWithdraw`) on any door error.
+ */
+export async function attemptWithdrawn(p: Omit<KernelOps['attempt_withdrawn']['input'], 'workspaceId'>, c: DoorCall): Promise<KernelOps['attempt_withdrawn']['result']> {
+  return shortDoor('attempt_withdrawn', { ...p, workspaceId: p.task.workspaceId }, c, 'claim_withdraw');
 }
 
 /**

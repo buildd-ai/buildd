@@ -480,9 +480,19 @@ export interface MergePolicy {
    * Destructive DDL, rewritten migrations and mixed PRs are unaffected.
    */
   dataMigrations?: DataMigrationsPolicy;
+
+  /**
+   * Who may approve a PR past review findings that are still open or awaiting
+   * verification ("Approve and override" on a review escalation). 'admins'
+   * (default): a team owner or admin who also holds merge permission on the repo
+   * on GitHub. 'off': nobody; the findings have to be fixed, waived or deferred.
+   */
+  reviewOverride?: ReviewOverridePolicy;
 }
 
 export type DataMigrationsPolicy = 'person' | 'agent-review';
+export type ReviewOverridePolicy = 'admins' | 'off';
+export const VALID_REVIEW_OVERRIDE: ReviewOverridePolicy[] = ['admins', 'off'];
 const VALID_DATA_MIGRATIONS: DataMigrationsPolicy[] = ['person', 'agent-review'];
 
 /**
@@ -577,7 +587,7 @@ export function visualReviewPolicyOf(gitConfig: unknown): VisualReviewPolicyMode
 }
 
 const VALID_TIERS: MergePolicyTier[] = ['auto-threshold', 'agent-review', 'human'];
-const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations']);
+const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations', 'reviewOverride']);
 const KNOWN_THRESHOLD_KEYS = new Set(['maxLines', 'maxSourceLines', 'denyPaths']);
 const KNOWN_AGENT_REVIEW_KEYS = new Set(['reviewerRole', 'escalateToPaths', 'maxConfidenceThreshold', 'gateCondition']);
 
@@ -670,6 +680,14 @@ export function parseMergePolicy(val: unknown): MergePolicyParseResult {
       ok: false,
       error: `mergePolicy.dataMigrations must be one of: ${VALID_DATA_MIGRATIONS.join(', ')}`,
       field: 'dataMigrations',
+    };
+  }
+
+  if (obj.reviewOverride !== undefined && !VALID_REVIEW_OVERRIDE.includes(obj.reviewOverride as ReviewOverridePolicy)) {
+    return {
+      ok: false,
+      error: `mergePolicy.reviewOverride must be one of: ${VALID_REVIEW_OVERRIDE.join(', ')}`,
+      field: 'reviewOverride',
     };
   }
 
@@ -1361,6 +1379,12 @@ export interface WorkerEnvironment {
    */
   hold?: RunnerHold | null;
   /**
+   * How this runner's own logins share its slots (./runner-login-mode, spec
+   * 34a48877 R-14): balanced, claude-first or codex-first. Absent on runner
+   * builds that predate it, which behave as claude-first.
+   */
+  loginMode?: import('./runner-login-mode').LoginMode;
+  /**
    * The confinement this runner can apply, per backend and mode, from this
    * process's own probe (./runner-isolation). Absent on runner builds that
    * predate it: readers then fall back to the legacy `sandboxEnabled` boolean,
@@ -1617,8 +1641,7 @@ export interface ClaimTasksInput {
    * dependencies, a held mission, a dead subject, a future startAt, mission
    * concurrency and pacing, path overlap and the workspace cap. Never skips a
    * live worker, a person's hold on the task, the mission budget,
-   * scope-undeclared serialization, role/runner routing, provider walls or
-   * account limits. Ignored otherwise. Audited on the task and the gate ledger.
+   * role/runner routing, provider walls or account limits. Ignored otherwise. Audited on the task and the gate ledger.
    */
   forceOverride?: boolean;
   /**
@@ -1809,7 +1832,7 @@ export interface ClaimDiagnostics {
     connector_mismatch?: number;
     subject_dead?: number;
     path_overlap?: number;
-    /** Scope-undeclared ('**') task held behind a sibling in the same mission. */
+    /** Retired: undeclared scope no longer holds a task. Always 0; kept for older readers. */
     advisory_manifest?: number;
     /**
      * Declared scope overlaps an in-flight task's only softly (directory
@@ -2683,6 +2706,8 @@ export function visualReviewRelation(agentVerdict: VisualQaVerdict, decision: Vi
 export const VISUAL_REVIEW_PHASES = [
   'off',
   'waiting_deps',
+  /** The latest audit never ran: build work it depends on failed (spec 072de598 I-14). `waitingOn` names it. */
+  'waiting_on_failed_work',
   'queued',
   'no_browser_runner',
   'capturing',
@@ -3005,6 +3030,8 @@ export interface VisualReviewModel {
   resolvedElsewhere?: VisualReviewResolvedElsewhere[];
   /** Failed audits a later completed audit replaced. Still in `audits`, never the phase. */
   replacedAudits?: VisualReviewReplacedAudit[];
+  /** For `waiting_on_failed_work`: the failed build task the audit waits on; its recovery is there. */
+  waitingOn?: { taskId: string; title: string | null } | null;
   generatedAt: string;
 }
 
@@ -3429,7 +3456,9 @@ export type RunnerQueueHold =
   | 'task_held'
   | 'workspace_paused'
   | 'workspace_cap'
-  | 'runner_cooldown';
+  | 'runner_cooldown'
+  /** Its mission already runs a task that, like it, declares no files: the claim starts one such task per mission at a time. */
+  | 'advisory_manifest';
 
 /** Why waiting work is never this runner's to take (R-26 "Not for this runner"). */
 export type RunnerQueueExclusion =
@@ -3469,7 +3498,19 @@ export interface RunnerQueueTask {
    * overlaps nothing, or overlaps something that holds it.
    */
   alongside?: { prNumber: number | null; holderTaskId: string | null } | null;
+  /** With the `advisory_manifest` hold: the task it waits for, running or ahead of it in this queue. */
+  holderTaskId?: string | null;
+  /**
+   * Whose work it is (spec c7410e76 R-58): the task's owner (who filed it, else
+   * its mission's, else its schedule's) against the person behind the runner's
+   * key, never the runner or login that runs it. Absent from an older server.
+   */
+  owner?: RunnerQueueOwner;
+  /** With owner 'teammate': their first name, when buildd knows it. */
+  ownerName?: string;
 }
+
+export type RunnerQueueOwner = 'you' | 'teammate' | 'unattributed';
 
 export interface RunnerQueueTeam {
   teamId: string;
@@ -3487,6 +3528,22 @@ export interface RunnerQueueResponse {
   teams: RunnerQueueTeam[];
   /** Set when the read was cut at its row limit. */
   truncated: boolean;
+}
+
+/** One worker as `GET /api/workers/[id]?view=status` and `GET /api/workers/status` answer it. */
+export interface WorkerStatusView {
+  status: string;
+  error: string | null;
+  task: { status: string } | null;
+}
+
+/**
+ * `GET /api/workers/status?ids=…`: the caller's own workers by id, and the ids
+ * no worker row has. An id that exists but is not the caller's is in neither.
+ */
+export interface WorkerStatusesResponse {
+  workers: Record<string, WorkerStatusView>;
+  missing: string[];
 }
 
 export interface GoalCriteriaState {

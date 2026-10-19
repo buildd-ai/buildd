@@ -120,6 +120,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   claudeLoginUsed: true, // a label (machine_login | machine_token | stored); no credential
   claudeLoginId: true, // a one-way hash of the login's account id; no credential
   route: true, // bucket/provider/owner/host label; no credential
+  routedWhy: true, // one sentence: why the run is on its backend; no credential
   modelLoginFailed: true, // a boolean
   sandboxMountGap: true,
   bwrapRetryPending: true,

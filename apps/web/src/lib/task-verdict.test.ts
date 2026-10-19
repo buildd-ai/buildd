@@ -218,3 +218,39 @@ describe('verdictRepeatsOpenQuestion', () => {
     expect(verdictRepeatsOpenQuestion(live, { questionOnPage: true })).toBe(false);
   });
 });
+
+describe('review escalation verdict (PR #4996 shape)', () => {
+  const pr = { url: 'https://github.com/acme/widgets/pull/7', number: 7, lifecycle: null, merged: false };
+  const base: VerdictInput = { taskStatus: 'completed', live: null, openQuestion: false, pr, checks: null, openAttempt: null };
+  const escalation = {
+    title: 'Automated fixes exhausted · 2 of 2 used',
+    question: 'How should the two unresolved findings be settled?',
+    why: 'Automation stopped after three review rounds: both automatic fixes ran and the review still asks for changes. Nothing runs again until someone chooses.',
+    unresolved: { open: ['Mutation tests do not cover the new guard'], awaitingVerification: ['Verify against a real Postgres'] },
+    primary: { label: 'Request another fix', href: '#task-decision-request_fix' },
+  };
+
+  it('names the cause, leads with the question and says why automation stopped instead of "Waiting on you"', () => {
+    const v = deriveTaskVerdict({ ...base, escalation })!;
+    expect(v.state).toBe('needs_you');
+    expect(v.label).toBe('Automated fixes exhausted · 2 of 2 used');
+    expect(v.headline).toBe('How should the two unresolved findings be settled?');
+    // Copy rule 3: no PR number in the headline.
+    expect(v.headline).not.toContain('#7');
+    expect(v.cause).toContain('Automation stopped after three review rounds');
+    // The decision card right below names the findings; the row does not repeat them.
+    expect(v.cause).not.toContain('Mutation tests');
+    expect(v.cause).not.toMatch(/waiting on you/i);
+  });
+
+  it('AC-48: the primary button names the action and opens the decision on this page, GitHub second', () => {
+    const v = deriveTaskVerdict({ ...base, escalation })!;
+    expect(v.actions[0]).toMatchObject({ label: 'Request another fix', href: '#task-decision-request_fix', external: false, tone: 'primary' });
+    expect(v.actions[1]).toMatchObject({ href: pr.url, tone: 'quiet' });
+    expect(v.actions.some((a) => /approve/i.test(a.label))).toBe(false);
+  });
+
+  it('without an escalation the generic PR reading is unchanged', () => {
+    expect(deriveTaskVerdict({ ...base })!.causeKey).toBe('needs_you:pr_open');
+  });
+});
