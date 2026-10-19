@@ -24,6 +24,7 @@ let tasksServed = 0;
 let serveMissions = false;
 /** Hold /api/tasks and /api/missions/recent until this resolves (a slow server read). */
 let slowReads: Promise<void> | null = null;
+let slowTalk: Promise<void> | null = null;
 /** The next N task-list reads answer 429 (the server's read rate limit, passed through). */
 let rateLimitTasks = 0;
 /** The next N /api/config reads fail (a runner too busy to answer the first load). */
@@ -42,6 +43,7 @@ beforeEach(() => {
   tasksServed = 0;
   serveMissions = false;
   slowReads = null;
+  slowTalk = null;
   rateLimitTasks = 0;
   failConfig = 0;
   sse = null;
@@ -60,7 +62,10 @@ function serveFakeRunner() {
       const body = await req.json().catch(() => ({}));
       posts.push({ path, body });
       if (path === '/api/workers/w-hint/answer') return Response.json({ ok: true });
-      if (path === '/api/talk-context') return Response.json({ cwd: '/work/repo', server: 'https://buildd.example', apiKey: 'bld_secret', explain: null, mission: null });
+      if (path === '/api/talk-context') {
+        if (slowTalk) await slowTalk;
+        return Response.json({ cwd: '/work/repo', server: 'https://buildd.example', apiKey: 'bld_secret', explain: null, mission: null });
+      }
       return Response.json({ error: 'Worker is not running' }, { status: 409 });
     }
     switch (path) {
@@ -265,6 +270,29 @@ describe('runTop', () => {
     expect(ran).toBe(0);
     t.type('q');
     await done;
+  });
+
+  test('while the runner is slow to answer, s says Claude is opening, and s again says it is still opening', async () => {
+    let answer!: () => void;
+    slowTalk = new Promise<void>(r => { answer = r; });
+    serveFakeRunner();
+    const t = fakeTerminal();
+    const ran: any[] = [];
+    const done = runTop({
+      socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {}, env: {},
+      talk: { loggedIn: async () => true, run: async (l) => { ran.push(l); return 0; }, sessions: { get: () => null, set: () => {}, exists: () => false, focusPane: async () => false, newId: () => 'n' } },
+    });
+    await until(() => t.screen().includes('name override'));
+    t.type('s');
+    await until(() => t.screen().includes('Opening Claude'));
+    t.type('s');
+    await until(() => t.screen().includes('Still opening Claude'));
+    expect(t.screen()).not.toContain('already open');
+    answer();
+    await until(() => ran.length === 1);
+    await until(() => t.screen().includes('Back from Claude'));
+    t.type('q');
+    expect(await done).toBe(0);
   });
 
   test('s without a claude login says so in one line and opens nothing', async () => {

@@ -178,7 +178,8 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
 
   // While a talk session owns the terminal, nothing is drawn or read here.
   let suspended = false;
-  let talking = false;
+  /** `opening` while the runner gathers the context (it can be slow); `open` while claude runs. */
+  let talking: 'opening' | 'open' | null = null;
   let talkSessions: TalkSessions | null = null;
 
   const draw = () => {
@@ -426,8 +427,10 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
       say('Claude is already open for this one: switched to its pane.', 'info');
       return;
     }
-    if (talking) { say('A Claude session is already open.'); return; }
-    talking = true;
+    if (talking === 'opening') { say('Still opening Claude: waiting for the runner to answer.', 'info'); return; }
+    if (talking) { say('Claude is already open in the other pane: close it there (/exit) to open another.'); return; }
+    talking = 'opening';
+    say('Opening Claude…', 'info');
     try {
       if (!(await (opts.talk?.loggedIn ?? claudeLoggedIn)())) { say(NOT_LOGGED_IN); return; }
       const workspaceId = talkWorkspaceId(state, target, Date.now());
@@ -449,6 +452,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
       });
       if (!launch.ok) { say(launch.message); return; }
       const run = opts.talk?.run ?? runTalk;
+      talking = 'open';
       const record = { sessionId: launch.sessionId, cwd: launch.cwd };
       sessions.set(key, record);
       if (launch.mode === 'tmux') {
@@ -483,7 +487,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
       suspended = false;
       say(`Could not open Claude: ${err?.message ?? err}`);
     } finally {
-      talking = false;
+      talking = null;
     }
   };
 
