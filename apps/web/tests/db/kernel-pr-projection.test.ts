@@ -237,6 +237,41 @@ describe('AC-1 / AC-4: outside the kernel the funnel records only what the deliv
     expect((await recordPrFact({ prUrl: prUrl(n), prNumber: n }, { kind: 'merged', mergedAt: '2026-10-07T00:00:00Z' }, { scope: factFunnelScope })).map((r) => r.id)).toEqual([w]);
   });
 
+  test('AC-1: a funnel CI-failure fact on a delivery-owned row issues no UPDATE to workers; it is reported as deferred', async () => {
+    const o = await open();
+    const stamp = () => q<{ id: string; pr_lifecycle_status: string | null; updated_at: string }>(
+      sql`SELECT id, pr_lifecycle_status, updated_at::text FROM workers WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid ORDER BY created_at, id`);
+    const before = await stamp();
+    const recorded = await recordPrFact({ workerId: o.ownerWorkerId }, { kind: 'ci', status: 'ci_failed', headSha: 'H1', currentHeadSha: 'H1' }, { scope: factFunnelScope });
+    expect(recorded.map((r) => [r.id, r.deferred])).toEqual([[o.ownerWorkerId, true]]);
+    for (const fact of [{ kind: 'open' }, { kind: 'conflict' }, { kind: 'unresolvable', reason: 'gone' }, { kind: 'ci', status: 'ci_running' }] as const) {
+      await recordPrFact({ prUrl: prUrl(o.prNumber), prNumber: o.prNumber }, fact, { scope: factFunnelScope });
+    }
+    // Not one column moved, not even updated_at: the UPDATE never touched the rows.
+    expect(await stamp()).toEqual(before);
+  });
+
+  test('AC-1: the kernel transition projects the live status onto every row of the PR, in its own statement', async () => {
+    const o = await open();
+    // The open transition already projected the delivery's reading: no CI verdict at H1 yet.
+    expect((await rows(o)).map((r) => r.pr_lifecycle_status)).toEqual(['pr_open', 'pr_open']);
+    const view = (await loadView({ deliveryId: o.deliveryId })).delivery!;
+    const { applyCommand } = await import('../../src/lib/workflow/kernel');
+    await applyCommand({ type: 'CiObserved', actor: 'test:ci_reading', headSha: view.currentHeadSha!, verdict: 'red', liveChecks: { complete: true, failing: ['build'] } }, { ref: { deliveryId: o.deliveryId } });
+    expect((await rows(o)).map((r) => r.pr_lifecycle_status)).toEqual(['ci_failed', 'ci_failed']);
+    await applyCommand({ type: 'CiObserved', actor: 'test:ci_reading', headSha: view.currentHeadSha!, verdict: 'running', liveChecks: { complete: false, failing: [] } }, { ref: { deliveryId: o.deliveryId } });
+    expect((await rows(o)).map((r) => r.pr_lifecycle_status)).toEqual(['pr_open', 'pr_open']);
+  });
+
+  test('a PR with no delivery takes a CI fact as it always has', async () => {
+    const taskId = await seedTask(workspaceId, { status: 'in_progress', title: 'feat: legacy ci' });
+    const n = prSeq++;
+    const w = await seedWorker(taskId, n, 'completed');
+    const recorded = await recordPrFact({ workerId: w }, { kind: 'ci', status: 'ci_failed' }, { scope: factFunnelScope });
+    expect(recorded.map((r) => [r.id, r.deferred])).toEqual([[w, false]]);
+    expect((await q<{ s: string }>(sql`SELECT pr_lifecycle_status AS s FROM workers WHERE id = ${w}::uuid`))[0].s).toBe('ci_failed');
+  });
+
   test('webhookClosed for an unknown PR is not kernel-owned', async () => {
     expect(await webhookClosed()).toBe(false);
   });

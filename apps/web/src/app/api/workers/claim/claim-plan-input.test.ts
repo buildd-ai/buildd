@@ -3,7 +3,6 @@ import { CLAIM_PLANNER_CALIBRATION, overlapPairKey, planClaimBatch } from '@buil
 import {
   buildClaimPlanInput,
   EMPTY_PLANNER_SIGNALS,
-  plannerScopedTaskIds,
   resolveClaimPlannerConfig,
   splitOwnOpenPrs,
   type ClaimPlanSource,
@@ -145,40 +144,26 @@ describe('buildClaimPlanInput', () => {
     })).sort()).toEqual(['a', 'b']);
   });
 
-  it('keeps the one-per-mission mutex for scope-undeclared work, in flight or in the batch', () => {
+  it('scope-undeclared work of one mission starts together, in flight or in the batch', () => {
     const inFlight = source({
       candidates: [task('a', { pathManifest: ['**'] })],
       missionInFlightRows: [{ missionId: 'm1', taskId: 'w', pathManifest: ['**'], category: null, outputRequirement: null }],
     });
-    expect(picks(inFlight)).toEqual([]);
+    expect(picks(inFlight)).toEqual(['a']);
     const batch = source({ candidates: [task('a'), task('b')] });
-    expect(picks(batch)).toHaveLength(1);
+    expect(picks(batch).sort()).toEqual(['a', 'b']);
   });
 
-  it('review and no-edit work neither take nor wait for the mutex', () => {
-    expect(picks(source({
-      candidates: [task('r', { category: 'review' }), task('n', { outputRequirement: 'none' })],
-      missionInFlightRows: [{ missionId: 'm1', taskId: 'w', pathManifest: null, category: null, outputRequirement: null }],
-    })).sort()).toEqual(['n', 'r']);
-    expect(picks(source({
-      candidates: [task('a')],
-      missionInFlightRows: [{ missionId: 'm1', taskId: 'w', pathManifest: null, category: 'review', outputRequirement: null }],
-    }))).toEqual(['a']);
-  });
-
-  it('a confident prediction replaces the mutex with real edges; a weak one leaves it', () => {
+  it('a prediction, weak or confident, never orders undeclared work behind undeclared work', () => {
     const preds = (conf: number) => signals({
       predictions: new Map([
         ['a', { selected: ['src/a.ts'], setConfidence: conf, expectedSize: null, unknownScope: false }],
         ['b', { selected: ['src/b.ts'], setConfidence: conf, expectedSize: null, unknownScope: false }],
       ]),
     });
-    const confident = source({ candidates: [task('a'), task('b')], thresholds: THRESHOLDS, signals: preds(0.9) });
-    expect(picks(confident).sort()).toEqual(['a', 'b']);
-    expect([...plannerScopedTaskIds(buildClaimPlanInput(confident))].sort()).toEqual(['a', 'b']);
-    const weak = source({ candidates: [task('a'), task('b')], thresholds: THRESHOLDS, signals: preds(0.1) });
-    expect(picks(weak)).toHaveLength(1);
-    expect(plannerScopedTaskIds(buildClaimPlanInput(weak)).size).toBe(0);
+    for (const conf of [0.9, 0.1]) {
+      expect(picks(source({ candidates: [task('a'), task('b')], thresholds: THRESHOLDS, signals: preds(conf) })).sort()).toEqual(['a', 'b']);
+    }
   });
 
   it('null thresholds ignore predictions entirely', () => {
@@ -187,8 +172,7 @@ describe('buildClaimPlanInput', () => {
       thresholds: null,
       signals: signals({ predictions: new Map([['a', { selected: ['src/a.ts'], setConfidence: 0.99, expectedSize: null, unknownScope: false }]]) }),
     });
-    expect(picks(src)).toHaveLength(1);
-    expect(plannerScopedTaskIds(buildClaimPlanInput(src)).size).toBe(0);
+    expect(picks(src).sort()).toEqual(['a', 'b']);
   });
 
   it('an unknown-scope prediction is never scope', () => {

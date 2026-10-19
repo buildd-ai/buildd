@@ -47,6 +47,8 @@ export const UNGATED_EFFECTS: ReadonlySet<EffectKind> = new Set([
   'render_activity', 'stamp_pr_rows', 'notify', 'mission_note', 'wake_mission', 'release_attribution',
   'finalize_mission_pr', 'emit_pr_merged', 'verify_merge', 'cancel_open_attempts', 'scan_supersession',
   'project_supersession', 'post_review', 'escalate_exhaustion', 'gate_event', 'capture_ci_evidence',
+  // §5: re-reads the delivery and moves what it still holds open; a replay finds nothing left to move.
+  'carry_findings',
   // Re-reads the delivery and publishes its newest answer (an older version's row skips itself).
   'publish_landing_status',
   // Once per merge, read from the merged delivery.

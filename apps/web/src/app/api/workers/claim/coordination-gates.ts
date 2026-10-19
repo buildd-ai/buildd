@@ -6,10 +6,10 @@
  * the "Queued at front · No runner has responded" failure — or the reverse.
  *
  * Covered: path overlap layer 1 (open PR) and layer 2 (live path claim),
- * mission concurrency, mission pacing, one scope-undeclared task per mission
- * (`advisory_manifest`), and planner order (`ordered_behind`, from the ledger).
+ * mission concurrency, mission pacing, and planner order (`ordered_behind`,
+ * from the ledger). A task that declares no files is not held for that alone.
  */
-import { pathsOverlap, declaresNoScope, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { pathsOverlap, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { makeWaitingReason, overlapAreas, orderWaitingReasons, type WaitingReason } from '@buildd/core/waiting-reason';
 import { isDispatchedReview } from '@/lib/read-only-task';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
@@ -69,18 +69,6 @@ export function findActiveClaimBlocker(
   return null;
 }
 
-/** Whether the one-scope-undeclared-task-per-mission guard applies to this task at all. */
-export function advisoryMutexApplies(task: { category?: unknown; outputRequirement?: unknown; pathManifest?: unknown }): boolean {
-  return task.category !== 'review'
-    && !producesNoFileEdits(task.outputRequirement)
-    && declaresNoScope(task.pathManifest as string[] | null);
-}
-
-/** The in-flight scope-undeclared peer this task would wait behind, if any. */
-export function advisoryBlockingPeer(taskId: string, peers: Set<string> | null | undefined): string | undefined {
-  return peers ? [...peers].find(id => id !== taskId) : undefined;
-}
-
 export interface MissionCoordination {
   status: string;
   maxConcurrentTasks: number | null;
@@ -94,7 +82,6 @@ export interface CoordinationSnapshot {
   activeClaims: Map<string, string[]> | null;
   mission: MissionCoordination | null;
   missionActiveCount: number;
-  missionAdvisoryInFlight: Set<string> | null;
   /** Latest planner orientation still in force (ledger), if any. */
   orderedBehind: { blockedBy: string; edge: string | null; since: string | null } | null;
   /** Tasks with a live worker, to mark a lease holder or ordering blocker live. */
@@ -180,14 +167,6 @@ export function evaluateCoordinationGates(task: any, s: CoordinationSnapshot): W
         because: `the mission starts a task at most every ${Math.round(paced.intervalSec / 60)} min; next at ${paced.nextEligibleAt.toISOString()}`,
         blocker: { type: 'mission', id: missionId, label: 'mission pacing', href: `/app/missions/${missionId}` },
         provenance: { source: 'probe', derivedFrom: 'missions.pacingMode' },
-      }));
-    }
-    const peer = advisoryMutexApplies(task) ? advisoryBlockingPeer(task.id, s.missionAdvisoryInFlight) : undefined;
-    if (peer) {
-      out.push(makeWaitingReason('scope_undeclared_mutex', {
-        because: 'neither task declares the files it edits, so the mission runs one at a time',
-        blocker: { type: 'task', id: peer, label: `task ${shortId(peer)}`, href: `/app/tasks/${peer}`, live: true },
-        provenance: { source: 'probe', derivedFrom: 'tasks.pathManifest (advisory_manifest)' },
       }));
     }
   }
