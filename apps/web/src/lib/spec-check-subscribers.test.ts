@@ -13,6 +13,7 @@ mock.module('@/lib/specs/criterion-checks', () => ({
   dispatchCriterionChecks: async (o: unknown) => { dispatched.push(o); return { dispatched: 1 }; },
   handleCriterionCheckOutcome: async (id: string, ev: unknown) => { handled.push([id, ev]); return { recorded: true }; },
   isCriterionCheckTask: (c: unknown) => !!(c as Record<string, unknown> | null)?.specCriterionCheck,
+  registerMissionVerdictRecorder: () => {},
 }));
 
 const { specCheckSubscribers } = await import('./spec-check-subscribers');

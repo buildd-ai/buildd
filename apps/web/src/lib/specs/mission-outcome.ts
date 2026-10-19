@@ -8,7 +8,7 @@ import { VERIFICATION_VERDICTS, boundEvidenceRefs, verdictSourceOfEvidence, type
 import type { LivingSpecGoalCriterion } from '@buildd/shared';
 import type { RequirementRef } from '@buildd/spec-contract/requirements';
 import { githubApi } from '@/lib/github';
-import { isAncestor } from '@/lib/integration-refresh';
+import { encodeRef, isAncestor } from '@/lib/integration-refresh';
 import { integrationTarget } from './mission-integration-target';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
 import { requestingPerson } from '@/lib/request-person';
@@ -54,19 +54,19 @@ async function loadMission(missionId: string): Promise<MissionRow | null> {
 
 export { livingSpecCriteriaOf, selectedScope };
 
-async function missionRepo(mission: MissionRow): Promise<{ installationId: number; fullName: string } | { error: string }> {
+async function missionRepo(mission: MissionRow): Promise<{ installationId: number; fullName: string; trunk: string } | { error: string }> {
   const resolved = await resolveMissionRepoWorkspaceId({ missionId: mission.id, missionWorkspaceId: mission.workspaceId });
   if (!resolved.workspaceId) return { error: resolved.detail ?? 'the mission has no workspace' };
-  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, resolved.workspaceId)), columns: { githubRepoId: true } });
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, resolved.workspaceId)), columns: { githubRepoId: true, gitConfig: true } });
   if (!ws?.githubRepoId) return { error: 'the workspace is not linked to a GitHub repo' };
   const repo = await db.query.githubRepos.findFirst({
     where: sqlWhere(eq(githubRepos.id, ws.githubRepoId)),
-    columns: { fullName: true },
+    columns: { fullName: true, defaultBranch: true },
     with: { installation: { columns: { installationId: true } } },
   });
   const installationId = (repo as { installation?: { installationId?: number } } | undefined)?.installation?.installationId;
   if (!repo?.fullName || !installationId) return { error: 'the GitHub repo row was not found' };
-  return { installationId, fullName: repo.fullName };
+  return { installationId, fullName: repo.fullName, trunk: ws.gitConfig?.targetBranch || ws.gitConfig?.defaultBranch || repo.defaultBranch || 'main' };
 }
 
 /**
@@ -270,3 +270,20 @@ export async function readMissionSpecOutcomes(caller: SpecCaller | null, mission
   return { ok: true, outcomes };
 }
 
+/** Resolve a concrete commit for mechanical final checks, validating direct-mission ancestry. */
+export async function resolveMissionCheckTarget(missionId: string, api: Api = githubApi): Promise<{ headSha: string; branch: string } | null> {
+  const mission = await loadMission(missionId);
+  if (!mission) return null;
+  const target = await resolveMissionTarget(mission, [], api);
+  if (target.kind === 'integration') return { headSha: target.headSha, branch: target.branch };
+  if (target.kind === 'unknown') return null;
+  const repo = await missionRepo(mission);
+  if ('error' in repo) return null;
+  try {
+    const ref = await api(repo.installationId, `/repos/${repo.fullName}/git/ref/heads/${encodeRef(repo.trunk)}`);
+    const sha = ref?.object?.sha;
+    if (typeof sha !== 'string' || !/^[0-9a-f]{40}$/i.test(sha)) return null;
+    const current = await resolveMissionTarget(mission, [sha], api);
+    return verdictIsCurrent(current, sha) ? { headSha: sha.toLowerCase(), branch: repo.trunk } : null;
+  } catch { return null; }
+}
