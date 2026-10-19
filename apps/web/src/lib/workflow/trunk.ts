@@ -3,7 +3,8 @@
  * T25/T26, S24, AC-15).
  *
  * A CI failure is classified by its signature: the normalised names of the
- * check runs that failed on the head. When the PR's base branch fails the same
+ * check runs that failed on the head, at test level where the job log names
+ * its failing tests (a sharded job's name is shared by unrelated failures). When the PR's base branch fails the same
  * checks on its own head (on by default), or, opted in, enough deliveries hit
  * the same signature inside a window, the failure is the trunk's, not the
  * PR's: the delivery joins one `trunk_incidents` row and goes
@@ -21,12 +22,12 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
-import type { Trunk, TrunkIncident } from '@buildd/workflow-kernel/ports';
+import type { CheckRunsRead, Trunk, TrunkIncident } from '@buildd/workflow-kernel/ports';
 import type { Exec } from './kernel';
 import type { GithubFactReader } from './facts';
-import { UNKNOWN_CI_SIGNATURE, ciSignature, trunkExplains } from './trunk-signature';
+import { UNKNOWN_CI_SIGNATURE, ciSignature, signatureCheckNames, trunkExplains, trunkRecovered } from './trunk-signature';
 
-export { UNKNOWN_CI_SIGNATURE, ciSignature, signatureChecks, trunkExplains, trunkRecovered } from './trunk-signature';
+export { UNKNOWN_CI_SIGNATURE, ciSignature, signatureCheckNames, signatureChecks, trunkExplains, trunkRecovered } from './trunk-signature';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -105,10 +106,22 @@ WHERE d.workspace_id = ${p.workspaceId}::uuid AND d.repo_full_name = ${p.repoFul
 LIMIT ${TRUNK_AFFECTED_CAP}::int`;
 }
 
+/** The least recently rechecked first: every recheck that leaves one unresolved touches it (`touchIncidentSql`). */
 export function unresolvedIncidentsSql(limit: number): SQL {
   return sql`-- workflow:trunk_unresolved
 SELECT id, workspace_id, repo_full_name, base_ref, signature FROM trunk_incidents
-WHERE status <> 'resolved' ORDER BY updated_at LIMIT ${limit}::int`;
+WHERE status <> 'resolved' ORDER BY updated_at, id LIMIT ${limit}::int`;
+}
+
+/**
+ * An incident rechecked and left unresolved goes to the back of the sweep's
+ * queue. Without it the same oldest page (a base still red, a workspace with
+ * no repo) is all the sweep ever reads, and a newer incident whose base is
+ * green is never resolved.
+ */
+export function touchIncidentSql(id: string): SQL {
+  return sql`-- workflow:trunk_touch
+UPDATE trunk_incidents SET updated_at = now() WHERE id = ${id}::uuid AND status <> 'resolved'`;
 }
 
 export function resolveIncidentSql(id: string): SQL {
@@ -164,6 +177,21 @@ WHERE id = ${incidentId}::uuid AND trunk_fix_task_id IS NULL AND status <> 'reso
   AND EXISTS (SELECT 1 FROM tasks WHERE id = ${taskId}::uuid)`;
 }
 
+/**
+ * T26's reading of the base head: none of the incident's entries fails on it,
+ * and the incident's checks have finished there. Every run finished is enough;
+ * so is a whole list of what is still going that names none of the incident's
+ * checks (a busy base rarely has a head with nothing running). Unknown is never
+ * recovered.
+ */
+export function trunkRecoveredOnRuns(incidentSignature: string, runs: CheckRunsRead | null): boolean {
+  if (!runs || !trunkRecovered(incidentSignature, runs.tests ?? runs.failing)) return false;
+  if (runs.complete) return true;
+  if (!runs.pending) return false;
+  const checks = new Set(signatureCheckNames(incidentSignature));
+  return !signatureCheckNames(ciSignature(runs.pending)).some((c) => checks.has(c));
+}
+
 /** buildd's `trunk_incidents` as the kernel's `Trunk` port. */
 export function builddTrunk(exec: Exec = dbExec): Trunk {
   return {
@@ -207,8 +235,9 @@ export async function classifyCiFailure(p: {
   gitConfig: unknown; reader: GithubFactReader; exec?: Exec;
 }): Promise<TrunkClassification> {
   const exec = p.exec ?? dbExec;
-  const runs = p.reader.checkRuns ? await p.reader.checkRuns(p.repoFullName, p.headSha).catch(() => null) : null;
-  const signature = ciSignature(runs?.failing ?? []);
+  // At test level: a shared (sharded) job name is not a shared failure.
+  const runs = p.reader.checkRuns ? await p.reader.checkRuns(p.repoFullName, p.headSha, { tests: true }).catch(() => null) : null;
+  const signature = ciSignature(runs?.tests ?? runs?.failing ?? []);
   const cfg = trunkBreakerConfig(p.gitConfig);
   if (!cfg.enabled || signature === UNKNOWN_CI_SIGNATURE || !p.baseRef) return { signature, incident: null };
   const baseRef = p.baseRef;
@@ -225,8 +254,8 @@ export async function classifyCiFailure(p: {
   // (a) The base branch's own head fails the same checks now.
   const baseHead = p.reader.branchHead ? await p.reader.branchHead(p.repoFullName, baseRef).catch(() => null) : null;
   if (baseHead && baseHead !== p.headSha && p.reader.checkRuns) {
-    const baseRuns = await p.reader.checkRuns(p.repoFullName, baseHead).catch(() => null);
-    const baseSignature = ciSignature(baseRuns?.failing ?? []);
+    const baseRuns = await p.reader.checkRuns(p.repoFullName, baseHead, { tests: true }).catch(() => null);
+    const baseSignature = ciSignature(baseRuns?.tests ?? baseRuns?.failing ?? []);
     if (trunkExplains(signature, baseSignature)) return join(baseSignature, 'base_red');
   }
 

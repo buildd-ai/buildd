@@ -390,11 +390,15 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
       if (!B?.choice || !d) return miss('no choice in bypass');
       const choice = B.choice as 'approve' | 'request_changes' | 'apply_recommendation' | 'dismiss';
       const instr = fx.find((e) => e.kind === 'dispatch_fix')?.payload.humanInstructions;
+      // An approval that named overridden findings was an override the policy allowed at the click.
+      const overrode = Array.isArray(B.overriddenFindings) && B.overriddenFindings.length > 0;
+      const decisionId = str(B.decisionId), decisionHead = str(B.headSha);
       return ok({
         type: 'HumanResolve', actor, choice, expectedVersion: d.version,
         ...(B.reason != null ? { reason: String(B.reason) } : {}),
         ...(typeof instr === 'string' ? { instructions: instr } : {}),
-        ...(choice === 'approve' ? { commitId: str(E.commitId) ?? undefined, hasMergePermission: true } : {}),
+        ...(decisionId && decisionHead ? { decision: { id: decisionId, headSha: decisionHead } } : {}),
+        ...(choice === 'approve' ? { commitId: str(E.commitId) ?? undefined, hasMergePermission: true, ...(overrode ? { overridePermitted: true } : {}) } : {}),
       });
     }
     case 'DeliveryFailed': {

@@ -172,7 +172,8 @@ function holdThroughRepair(d: DeliverySnapshot): Pick<DeliveryPatch, 'resumeStat
  * reviewer's or the policy's call on the change. A person can't merge a PR
  * whose CI is red or whose migration number collides, so the repair runs
  * first and the person decides on a mergeable head. Not a landing hand-off or
- * a spent budget: those already are the person's next move.
+ * a spent budget: those already are the person's next move (T12 alone also
+ * repairs a landing hand-off that conflicts, dc4436aa).
  */
 export function isRepairableEscalation(reason: string | null | undefined): boolean {
   return isReviewEscalation(reason) || reason === 'policy_human';
@@ -1096,7 +1097,10 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const allowed: DeliveryState[] = ['AWAITING_REVIEW', 'APPROVED', 'LANDING', 'CHANGES_REQUESTED', 'REPAIRING'];
       // a90fc99b: a review or policy escalation that conflicts or collides is repaired first. A
       // behind-only refresh is not: nothing lands an escalated PR, so keeping it fresh buys nothing.
-      const escalatedRepair = dd.state === 'ESCALATED' && isRepairableEscalation(dd.stateReason)
+      // dc4436aa: so is a landing hand-off that now conflicts for real: a person cannot merge a
+      // dirty PR either, and the repaired head comes back to landing instead of waiting on one.
+      const escalatedRepair = dd.state === 'ESCALATED'
+        && (isRepairableEscalation(dd.stateReason) || dd.stateReason === 'landing_needs_human')
         && (cmd.migrationCollision === true || cmd.mergeable !== 'behind');
       if (!allowed.includes(dd.state) && !escalatedRepair) return c.stale('state_not_allowed');
       if (dd.state === 'REPAIRING' && !cmd.mechanicalRefused) return c.rejected('fix_in_flight');
@@ -1558,11 +1562,15 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         if (!cmd.commitId) return c.rejected('commit_id_required');
         if (cmd.commitId !== dd.currentHeadSha) return c.stale('review_on_older_commit');
         if (cmd.hasMergePermission !== true) return c.rejected('no_merge_permission');
+        // An approval past required findings still open or awaiting verification is an override:
+        // the policy and the person's role have to allow it. The findings stay as they are, named here.
+        const remaining = (view.findings ?? []).filter((f) => f.required && (f.status === 'open' || f.status === 'addressed'));
+        if (remaining.length && cmd.overridePermitted !== true) return c.rejected('override_not_permitted');
         return c.apply(key, 'APPROVED', {
           guardHead: true,
           patch: { approvedHeads: [cmd.commitId], approvalBasis: 'human', stateReason: null },
-          evidence: { commitId: cmd.commitId },
-          bypass,
+          evidence: { commitId: cmd.commitId, ...(remaining.length ? { overriddenFindings: remaining.map((f) => f.id) } : {}) },
+          bypass: remaining.length ? { ...bypass, overriddenFindings: remaining.map((f) => f.id) } : bypass,
         });
       }
       if (cmd.choice === 'dismiss') {
@@ -2726,7 +2734,7 @@ function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'mig
         effects: finalCycle ? [{ kind: 'notify', dedupeKey: `notify:${d.id}:treadmill:${head}`, payload: { event: 'landing_needs_human', detail, ...(why ? { cause: why.cause } : {}) } }] : [],
         evidence: {
           ...evidence, refreshes, treadmill: true, cycle, ...(finalCycle ? { finalCycle: true } : {}),
-          ...(why ? { cause: why.cause, reason: detail, deltaReason: why.reason, ...(why.files ? { files: why.files } : {}), ...(o.baseDelta?.baseCommits != null ? { behindBy: o.baseDelta.baseCommits } : {}) } : {}),
+          ...(why ? { cause: why.cause, reason: detail, deltaReason: why.reason, ...(why.basis ? { deltaBasis: why.basis } : {}), ...(why.files ? { files: why.files } : {}), ...(o.baseDelta?.baseCommits != null ? { behindBy: o.baseDelta.baseCommits } : {}) } : {}),
         },
       });
     }

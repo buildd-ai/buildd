@@ -41,6 +41,10 @@ type Gh = {
   headRef?: string;
   /** Other PRs a verdict may name: number → { state, merged }. */
   siblings?: Record<number, { state: string; merged: boolean }>;
+  /** Commit parents by SHA (`commits/{sha}`). */
+  parents?: Record<string, string[]>;
+  /** Commits the base branch holds (`compare/{sha}...{base}` answers `ahead`). */
+  onBase?: string[];
 };
 let gh: Gh;
 const freshGh = (): Gh => ({
@@ -59,6 +63,13 @@ const freshGh = (): Gh => ({
 const mockGithubApi = mock(async (_installationId: number, path: string): Promise<any> => {
   if (/\/commits\/[^/]+\/check-runs(\?|$)/.test(path)) return { check_runs: gh.checkRuns };
   if (/\/commits\/[^/]+\/status(\?|$)/.test(path)) return { total_count: 0, statuses: [] };
+  const commit = /\/commits\/([^/]+)$/.exec(path);
+  if (commit && gh.parents?.[commit[1]!]) return { sha: commit[1], parents: gh.parents[commit[1]!]!.map((sha) => ({ sha })) };
+  // Whether the base holds a commit other than the PR's head (the head's own `{head}...{base}` is the base delta, below).
+  const held = /\/compare\/([^/.]+)\.\.\.([^/]+)$/.exec(path);
+  if (held && gh.onBase && held[1] !== gh.head && decodeURIComponent(held[2]!) === gh.baseRef) {
+    return { status: gh.onBase.includes(held[1]!) ? 'ahead' : 'diverged' };
+  }
   if (/\/pulls\/42\/files/.test(path)) {
     return gh.prFiles.map((filename) => ({ filename, additions: 5, deletions: 1 }));
   }
@@ -1460,6 +1471,68 @@ describe('landPr — behind base is work with an owner', () => {
     gh.baseMovement = { ahead_by: 1, files: ['x/o.ts'] };
     expect((await land()).kind).toBe('updating_branch');
     expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+  });
+
+  describe('replay #5172: update-branch answers before the branch moves', () => {
+    beforeEach(() => {
+      // GitHub accepts the update and moves the branch a moment later: the read after it still sees head1.
+      mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: true, branchUpdated: true }));
+    });
+
+    /** The refresh lands on GitHub: `head` with these parents is the live head, behind by one unrelated commit. */
+    const branchMoves = (head: string, parents: string[]) => {
+      gh.head = head;
+      gh.parents = { [head]: parents };
+      gh.onBase = ['base2'];
+      gh.behindBy = 1;
+      gh.baseMovement = { ahead_by: 1, files: ['packages/other/x.ts'] };
+      mockDispatchConflictRetry.mockClear();
+    };
+
+    it('the refresh\'s own merge commit is the platform\'s head: the bound applies and it lands, no second refresh', async () => {
+      expect(await land()).toEqual({ kind: 'updating_branch', newHeadSha: 'head1' });
+      expect(markerStore).toMatchObject({ pendingHeadSha: 'head1', refreshCount: 1 });
+
+      branchMoves('head2', ['head1', 'base2']);
+      const out = await land({ eventHeadSha: 'head2' });
+      expect(out).toEqual({ kind: 'merged', sha: 'head2' });
+      expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+      expect(mockMergePullRequest.mock.calls[0]).toEqual([7, 'buildd-ai/buildd', 42, 'squash', 'head2']);
+      expect(landingEvents().map((e: any) => e.reason)).not.toContain('this head was not produced by a platform refresh');
+    });
+
+    it('a refresh whose head the base outran is refreshed again inside the same cycle, so the budget is spent and bounded', async () => {
+      await land();
+      branchMoves('head2', ['head1', 'base2']);
+      gh.baseMovement = { ahead_by: TREADMILL_MAX_BASE_COMMITS + 1, files: ['packages/other/x.ts'] };
+      expect((await land({ eventHeadSha: 'head2' })).kind).toBe('updating_branch');
+      expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+      // Counted against the cycle, not a new cycle at 1: the treadmill ends in the bound, never forever.
+      expect(markerStore.refreshCount).toBe(2);
+    });
+
+    it('a push by anyone else (one parent) still starts a new cycle and is refreshed', async () => {
+      await land();
+      branchMoves('head2', ['head1']);
+      expect((await land({ eventHeadSha: 'head2' })).kind).toBe('updating_branch');
+      expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+      expect(markerStore.refreshCount).toBe(1);
+    });
+
+    it('a merge of a branch the base does not hold is not a refresh', async () => {
+      await land();
+      branchMoves('head2', ['head1', 'side1']);
+      expect((await land({ eventHeadSha: 'head2' })).kind).toBe('updating_branch');
+      expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+      expect(markerStore.refreshCount).toBe(1);
+    });
+
+    it('a merge on top of some other head is not this refresh', async () => {
+      await land();
+      branchMoves('head2', ['elsewhere', 'base2']);
+      expect((await land({ eventHeadSha: 'head2' })).kind).toBe('updating_branch');
+      expect(markerStore.refreshCount).toBe(1);
+    });
   });
 
   // Replay of PR #3582: approved, CI green, mergeable, and parked for good as
