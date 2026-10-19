@@ -1788,8 +1788,14 @@ export function checkoutInstruction(headSha: string): string {
     '',
     `Your worktree may start at the base branch, not this PR. Before you read any file, put it at the head:`,
     `  git fetch origin ${headSha} && git checkout --detach ${headSha}`,
-    'Then return `checkoutSha`: the full SHA `git rev-parse HEAD` prints. A verdict whose `checkoutSha` is not',
-    `${headSha} (or that has none) is inconclusive: it is discarded and never approves.`,
+    'Then return `checkoutSha`: the full SHA `git rev-parse HEAD` prints.',
+    '',
+    'If the checkout fails because the worktree is read-only (e.g. `index.lock: Operation not permitted`), do not',
+    'stop: export the head into a scratch directory and read every file from there instead:',
+    `  d=$(mktemp -d) && git archive ${headSha} | tar -x -C "$d"`,
+    `Then return \`checkoutSha\` as \`git rev-parse ${headSha}^{commit}\`: the commit whose files you read.`,
+    '',
+    `A verdict whose \`checkoutSha\` is not ${headSha} (or that has none) is inconclusive: it is discarded and never approves.`,
   ].join('\n');
 }
 
