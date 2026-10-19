@@ -17,6 +17,7 @@ const executed: string[] = [];
 /** Rows `db.execute` answers with: a follow-up insert that wrote a row returns one. */
 let executeRows: unknown[] = [];
 const inserted: any[] = [];
+const updated: any[] = [];
 const notes: any[] = [];
 let existingTask: { id: string } | null = null;
 /** The status of the task a status-only read finds (an adopted reviewer). */
@@ -60,7 +61,7 @@ mock.module('@buildd/core/db', () => ({
         return { onConflictDoNothing: () => ({ returning: async () => [{ id: v.id, title: v.title }] }) };
       },
     }),
-    update: () => ({ set: () => chain([]) }),
+    update: () => ({ set: (value: any) => { updated.push(value); return chain([]); } }),
     execute: async (q: any) => { executed.push(JSON.stringify(q.queryChunks?.map((c: any) => c.value ?? '').flat())); return { rows: executeRows }; },
   },
 }));
@@ -204,6 +205,12 @@ describe('fixWork (Work, role fix)', () => {
 });
 
 describe('reviewWork (Work, role review)', () => {
+  test('carries the durable callback into the reviewer task context', async () => {
+    const reviewCallback = { url: 'https://example.test/hook', on: 'merge' };
+    await reviewWork(reviewReq({ reviewCallback }) as any);
+    expect((mockCreateReviewer.mock.calls[0][0] as any).reviewCallback).toEqual(reviewCallback);
+  });
+
   test('the round\'s reviewer, bound to the round head, linked to delivery and round, carrying the prior verdict', async () => {
     const prior = { headSha: 'H1', verdict: 'request-changes', confidence: 0.9, summary: 's', feedback: 'check the caller task', escalationReason: null };
     const r = await reviewWork(reviewReq({ priorVerdict: prior, compositionScope: { novelDeltaPaths: ['b.ts'] } }) as any);
@@ -225,6 +232,14 @@ describe('reviewWork (Work, role review)', () => {
     created = { id: 'reviewer-live', deduplicated: true };
     expect(await reviewWork(reviewReq() as any)).toEqual({ filed: { taskId: 'reviewer-live', created: false } });
     expect(mockAppend).not.toHaveBeenCalled();
+  });
+
+  test('an adopted reviewer receives the durable callback too', async () => {
+    created = { id: 'reviewer-live', deduplicated: true };
+    const reviewCallback = { url: 'https://example.test/adopted-hook', on: 'merge' };
+    updated.length = 0;
+    await reviewWork(reviewReq({ reviewCallback }) as any);
+    expect(JSON.stringify(updated)).toContain('https://example.test/adopted-hook');
   });
 
   test('an adopted reviewer nobody has claimed yet is answered unclaimed, so the kernel wakes it', async () => {

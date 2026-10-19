@@ -405,6 +405,9 @@ describe('AC-9: a review verdict and a fix claim are applied by the control plan
     expect(kv).toMatchObject({ handled: true, toState: 'CHANGES_REQUESTED' });
     expect(cp.calls.filter((c) => c.op !== 'drain')).toEqual([{ path: '/v1/commands', op: 'record_review_verdict' }]);
     expect((await w!.delivery(pr)).state).toBe('CHANGES_REQUESTED');
+    // The fix task is an effect now: it drains after the command's answer, not inside it.
+    await seam.drainDelivery(pr.deliveryId);
+    cp.calls.length = 0;
 
     const [fix] = await q<{ id: string; workspace_id: string; delivery_id: string; delivery_role: string; context: Record<string, unknown> }>(
       sql`SELECT id, workspace_id, delivery_id, delivery_role, context FROM tasks WHERE delivery_id = ${pr.deliveryId}::uuid AND delivery_role = 'fix' ORDER BY created_at DESC LIMIT 1`);
@@ -676,6 +679,7 @@ describe('AC-74: a door command the control plane never answered lands once it r
     expect((await w!.delivery(pr)).state).toBe('CHANGES_REQUESTED');
     expect(await countOf(pr, 'ReviewVerdictRecorded')).toBe(1);
     expect(await parked(key)).toMatchObject({ status: 'done', outcome: 'applied' });
+    await seam.drainDelivery(pr.deliveryId);
     const fixes = await w!.tasksOf(pr, 'fix');
     expect(fixes).toHaveLength(1);
 

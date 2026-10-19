@@ -22,6 +22,9 @@ export const RUNNER_USAGE = [
   '                             (--mission <id> opens on one mission, --workspace <name or id>',
   '                             on one workspace, --team <name> on one team; t switches team,',
   '                             w switches workspace, ? shows the keys)',
+  '  buildd top --dev           The same top from the newest dev commit (also: buildd top-dev).',
+  '                             Each run updates its own copy in ~/.buildd-dev (BUILDD_DEV_DIR);',
+  '                             the runner and ~/.buildd stay on the production release',
   '  buildd login [--device]    Sign in and save an API key to ~/.buildd/config.json',
   '  buildd login --workspaces  Choose which workspaces this runner serves; the key stays the same',
   '  buildd logout              Remove the saved API key',
@@ -123,6 +126,10 @@ export type CliDecision =
   | { kind: 'web' }
   | { kind: 'run' }
   | { kind: 'top'; missionId: string | null; workspace: string | null; team: string | null; frame?: { view: 'missions' | 'queue'; cols: number; rows: number } }
+  /** `buildd top --dev` / `buildd top-dev`: top from the dev checkout (top-dev.ts); `args` are top's, minus --dev. */
+  | { kind: 'top-dev'; args: string[] }
+  /** `--dev` on anything but top: only top has a dev build. */
+  | { kind: 'dev-refused'; message: string }
   | { kind: 'unknown'; arg: string };
 
 /** `buildd top [--mission <id>] [--workspace <name or id>] [--team <name>]`: its own small grammar, nothing else is accepted. */
@@ -179,9 +186,18 @@ function classifyHold(args: string[]): CliDecision {
   return { kind: 'hold', forArg };
 }
 
+/** Why the dev channel is top only: the runner, its service and auto-update stay on production. */
+export const DEV_ONLY_TOP = '--dev: only buildd top has a dev build (buildd top --dev, or buildd top-dev). The runner, its service and its updates stay on the production release.';
+
 export function classifyCliArgs(argv: string[]): CliDecision {
   const args = argv.slice(2);
   if (args.some(a => HELP.has(a))) return { kind: 'help' };
+  if (args[0] === 'top-dev' || (args[0] === 'top' && args.includes('--dev'))) {
+    const topArgs = args.slice(1).filter(a => a !== '--dev');
+    const top = classifyTop(topArgs);
+    return top.kind === 'top' ? { kind: 'top-dev', args: topArgs } : top;
+  }
+  if (args.includes('--dev')) return { kind: 'dev-refused', message: DEV_ONLY_TOP };
   if (args[0] === 'top') return classifyTop(args.slice(1));
 
   if (args[0] === 'name') {
@@ -229,4 +245,15 @@ export function classifyCliArgs(argv: string[]): CliDecision {
     return { kind: 'unknown', arg: a };
   }
   return { kind: 'run' };
+}
+
+/**
+ * The dev checkout (top-dev.ts sets BUILDD_TOP_CHANNEL=dev) runs `buildd top`
+ * and nothing else: never a runner, so nothing from dev claims work.
+ * Null when the decision may go ahead.
+ */
+export function refuseInDevCheckout(decision: CliDecision, env: Record<string, string | undefined> = process.env): string | null {
+  if (env.BUILDD_TOP_CHANNEL !== 'dev') return null;
+  if (decision.kind === 'top' || decision.kind === 'help') return null;
+  return 'This is the dev checkout (buildd top --dev). The dev checkout only runs buildd top; start the runner from the production install: buildd';
 }
