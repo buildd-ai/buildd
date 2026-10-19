@@ -259,6 +259,8 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
     }
 
     let repoHasNoPermission = false;
+    const owned = deps.owned ?? ((w, r, n) => kernelDeliveryForPr(w, r, n, exec));
+
     for (const pr of pulls) {
       const sha = pr.head?.sha;
       if (!sha) continue;
@@ -276,6 +278,27 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
         continue;
       }
 
+      // Check if this PR is owned by any delivery
+      let prOwner: string | null = null;
+      for (const l of links) {
+        prOwner = await owned(l.workspaceId, repoFullName, pr.number);
+        if (prOwner) break;
+      }
+
+      // Skip ordinary PRs without a live delivery only if this repo is linked from multiple workspaces
+      // (i.e., it's in another workspace's scope). Single-workspace repos publish pending as before.
+      // Bots and drafts are always published (except release candidates, handled by publishHead).
+      const isBot = pr.user?.login?.toLowerCase().includes('[bot]');
+      const isDraft = pr.draft;
+      const isSharedRepo = links.length > 1;
+      if (!prOwner && !isBot && !isDraft && isSharedRepo) {
+        s.skipped++;
+        s.skipReasons.noDelivery++;
+        console.error(`[workflow] open PR status for ${repoFullName}#${pr.number} skipped: no live delivery`);
+        heads.push({ ...head, shown: true });
+        continue;
+      }
+
       try {
         const r = await publishHead(run, links, pr, sha);
         shown = r.shown;
@@ -284,8 +307,17 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
         if (r.wrote) s.published++;
         else if (r.unchanged) s.unchanged++;
       } catch (err) {
-        // Detect 403 permission denied and skip the entire repo
-        if (err instanceof Error && err.message.includes('403')) {
+        // Only skip the repo for confirmed statuses:write permission denied.
+        // GitHub's permission denied for statuses:write includes keywords like "resource not accessible"
+        // or "statuses" combined with permission-related terms. Rate limits, review access errors, and
+        // other 403s should be treated as errors, not permission denials.
+        const msg = err instanceof Error ? err.message.toLowerCase() : '';
+        const isConfirmedPermissionDenied = err instanceof Error && (err as any).status === 403 &&
+          (msg.includes('resource not accessible') ||
+           (msg.includes('statuses') && (msg.includes('permission') || msg.includes('forbidden'))) ||
+           msg.includes('statuses:write'));
+
+        if (isConfirmedPermissionDenied) {
           repoHasNoPermission = true;
           s.skipped++;
           s.skipReasons.noStatusesPermission++;
