@@ -10,6 +10,7 @@
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
+import { OPEN_TASK_STATUSES, UNCLAIMED_TASK_STATUSES } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { decideBuildingGate, type AcceptanceTest, type GateDecision, type StartingResult } from './acceptance-gate';
 
@@ -120,7 +121,7 @@ export const dbGateStore: GateStore = {
       acceptanceTask,
       tests: testsFromContext(acceptanceTask.context),
       objected: acceptanceTask.context?.acceptanceObjection === true,
-      buildingTasks: rows.filter((t) => t.id !== acceptanceTask.id && ['pending', 'assigned'].includes(t.status)),
+      buildingTasks: rows.filter((t) => t.id !== acceptanceTask.id && (UNCLAIMED_TASK_STATUSES as readonly string[]).includes(t.status)),
     };
   },
   async patchContext(taskId, patch) {
@@ -128,7 +129,7 @@ export const dbGateStore: GateStore = {
     await db.update(tasks).set({ context: { ...(row?.context ?? {}), ...patch } }).where(eq(tasks.id, taskId));
   },
   async completeAcceptanceTask(taskId) {
-    await db.update(tasks).set({ status: 'completed' }).where(and(eq(tasks.id, taskId), inArray(tasks.status, ['pending', 'assigned', 'in_progress'])));
+    await db.update(tasks).set({ status: 'completed' }).where(and(eq(tasks.id, taskId), inArray(tasks.status, [...OPEN_TASK_STATUSES])));
   },
   async reopenAcceptanceTask(taskId) {
     await db.update(tasks).set({ status: 'pending', claimedBy: null, claimedAt: null }).where(eq(tasks.id, taskId));
