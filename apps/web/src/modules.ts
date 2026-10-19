@@ -266,6 +266,17 @@ export const MISSION_SHIPPING_PR_MERGED: ShippingPrMergedReader = (missionId, re
 export const MISSION_EPOCH_HOOKS: MissionEpochHooks = missionEpochHooks;
 
 /**
+ * The scope-answer slot (docs/specs/workflow-kernel-library.md §6): the task
+ * routes record a person's answer to a held mission scope decision through the
+ * missions module's door (lib/mission-epoch-door.ts), loaded on first use.
+ */
+type ScopeAnswerInput = Parameters<typeof import('@/lib/mission-epoch-door').answerMissionTaskScope>[0];
+export const MISSION_SCOPE_ANSWER = {
+  answer: async (p: ScopeAnswerInput) => (await import('@/lib/mission-epoch-door')).answerMissionTaskScope(p),
+  answerQuietly: async (p: ScopeAnswerInput) => (await import('@/lib/mission-epoch-door')).answerMissionTaskScopeQuietly(p),
+};
+
+/**
  * The escalation gate's slots (lib/escalation-gate-check.ts): Jev, the ledger
  * and the repair filer, for a core caller such as Home that gates PRs.
  */

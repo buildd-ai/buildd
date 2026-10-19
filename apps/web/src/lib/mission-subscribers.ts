@@ -86,6 +86,24 @@ export const missionSubscribers: readonly AnySubscriber[] = [
       await ensureMissionWritableBranch(missionId, 'task_filed');
     })().catch(err => console.error('[task-create] mission scope/delivery failed:', err)));
   }),
+  // §6: an existing task linked to the mission gets the same scope decision as one filed into it
+  // (and the same compare-and-set on the scope version), then the same writable delivery.
+  subscriber('missions', 'task.joined_mission', 'decide-linked-task-scope', e => {
+    after(() => (async () => {
+      const { decideMissionTaskScope, ensureMissionWritableBranch } = await import('@/lib/mission-epoch-door');
+      const decided = await decideMissionTaskScope({ taskId: e.taskId, workspaceId: e.workspaceId, origin: 'linked' });
+      if (decided) await ensureMissionWritableBranch(e.missionId, 'task_linked');
+    })().catch(err => console.error('[task-link] mission scope/delivery failed:', err)));
+  }),
+  // A task that left the mission before anyone answered its held scope decision: the decision is
+  // withdrawn and the hold it placed released. A no-op for a task with no held decision there.
+  subscriber('missions', 'task.left_mission', 'withdraw-scope-decision', e => {
+    if (!e.workspaceId) return;
+    const workspaceId = e.workspaceId;
+    after(() => import('@/lib/mission-epoch-door').then(({ answerMissionTaskScopeQuietly }) => answerMissionTaskScopeQuietly({
+      taskId: e.taskId, workspaceId, missionId: e.missionId, answer: 'withdrawn', actor: 'system:task_left_mission',
+    })).catch(err => console.error('[task-unlink] scope withdrawal failed:', err)));
+  }),
   subscriber('missions', 'task.created', 'task-created-mission-feed', e => {
     if (!e.missionId) return;
     const missionId = e.missionId;

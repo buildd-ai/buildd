@@ -23,9 +23,14 @@ const MANY_TESTS = '*';
 // `|` separates entries, so it never survives inside one.
 const norm = (s: string) => normalizeErrorSignature(s).toLowerCase().replace(/\|/g, '/');
 
+// build.yml names the DB architecture job after the ref under test ("· merge ref"
+// on a PR, "· branch HEAD" on a push to the base). It is one check: the suffix
+// must not make a base failure and the PR's identical failure look unrelated.
+const REF_SUFFIX = / · (?:merge ref|branch head)$/;
+
 function normEntry(entry: string): { check: string; test: string | null } | null {
   const i = entry.indexOf(TEST_SEPARATOR);
-  const check = norm(i < 0 ? entry : entry.slice(0, i));
+  const check = norm(i < 0 ? entry : entry.slice(0, i)).replace(REF_SUFFIX, '');
   if (!check) return null;
   if (i < 0) return { check, test: null };
   const raw = entry.slice(i + TEST_SEPARATOR.length).trim();
