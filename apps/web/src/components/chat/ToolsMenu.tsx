@@ -6,12 +6,12 @@
  * never-in-chat rows are locked. The choice is the viewer's own, per team.
  *
  * The menu and its rows are the kit's (`ToolsMenu` from
- * @builddai/ai-kit/chat/react); this owns buildd's fetch and PATCH of
+ * @buildd/ai-kit/chat/react); this owns buildd's fetch and PATCH of
  * `/api/chat/permissions`, with an optimistic toggle that rolls back and says
  * "Not saved" when the PATCH fails. The cell is just `···`, never a count.
  */
 import { useEffect, useState } from 'react';
-import { ToolsMenu as KitToolsMenu } from '@builddai/ai-kit/chat/react';
+import { ToolsMenu as KitToolsMenu } from '@buildd/ai-kit/chat/react';
 import type { ChatToolPermissionRow, GetChatPermissionsResponse } from '@buildd/shared';
 import KitMenuCell from './KitMenuCell';
 

@@ -42,7 +42,7 @@ import {
   type DecisionRoute,
   type DecisionRuntime,
   type UsageSink,
-} from '@builddai/ai-kit/decide';
+} from '@buildd/ai-kit/decide';
 import {
   decisionCall,
   resolveDecisionAccess,

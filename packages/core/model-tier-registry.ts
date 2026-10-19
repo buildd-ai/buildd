@@ -1,7 +1,7 @@
 /**
  * Model tier registry — resolves premium-plus/premium/standard/budget → concrete provider + model.
  *
- * The resolver is the standalone model policy (`@builddai/ai-kit/policy`, via
+ * The resolver is the standalone model policy (`@buildd/ai-kit/policy`, via
  * model-policy.ts); this module loads a team's registry rows as a policy
  * document and adds buildd's default layer. There is no second resolver here.
  *

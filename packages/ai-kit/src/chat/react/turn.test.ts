@@ -4,7 +4,7 @@
  * next text opens the next. Keys hold as parts stream in.
  */
 import { describe, expect, it } from 'bun:test';
-import type { ChatPart } from '@builddai/ai-kit/chat/contract';
+import type { ChatPart } from '@buildd/ai-kit/chat/contract';
 import { composeTurn } from './model';
 
 const text = (t: string, state?: 'streaming' | 'done'): ChatPart => ({ type: 'text', text: t, ...(state ? { state } : {}) } as ChatPart);

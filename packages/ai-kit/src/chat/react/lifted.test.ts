@@ -4,7 +4,7 @@
  * and cost formatting. No DOM.
  */
 import { describe, expect, it } from 'bun:test';
-import { encodeApprovalPreview, type ChatToolPart, type ObjectRef } from '@builddai/ai-kit/chat/contract';
+import { encodeApprovalPreview, type ChatToolPart, type ObjectRef } from '@buildd/ai-kit/chat/contract';
 import { createObjectStore, createTrailingThrottle, type KitClock, type ObjectSource } from './object-store';
 import { INITIAL_PANE, dockChoice, paneReducer, parsePaneSide, type PaneState } from './object-dock';
 import { createPendingMessages, type PendingStorage } from './pending-message';

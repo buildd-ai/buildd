@@ -1,4 +1,4 @@
-# @builddai/ai-kit
+# @buildd/ai-kit
 
 Shared chat contract, tool permissions, model plans and Jev decisions for apps
 that use [buildd](https://buildd.dev)'s model economy.
@@ -8,7 +8,7 @@ app makes the call with its own provider key and reports a content-free usage
 record. buildd never sees prompts, tool results or replies.
 
 ```sh
-npm i -E @builddai/ai-kit@0.16.0
+npm i -E @buildd/ai-kit@0.16.0
 ```
 
 Pin exact versions: a Jev model bump or a contract change is a new kit release,
@@ -21,16 +21,16 @@ to npm with provenance and is tagged `ai-kit-v<version>`. See
 
 | Import | What | Status |
 |---|---|---|
-| `@builddai/ai-kit/chat/contract` | Wire types: parts, object refs, data parts, approval previews, tool-permission rows. No deps, isomorphic | Ready |
-| `@builddai/ai-kit/chat/server` | `createChatTurn` (the turn runner), `defineToolGroups` + server-side Allow enforcement, the `ChatStore` persistence adapter. Peer `ai@^7`, loaded lazily on the first turn | Ready |
-| `@builddai/ai-kit/chat/react` | Thread, composer, tools / scope / tier pickers, thinking panel, approval / hand-off / setup cards, empty state, `useKitChat`. Peers `react@^19`, `@ai-sdk/react@^4`, `ai@^7` (all required by this entry) | Ready |
-| `@builddai/ai-kit/chat/theme.css` | `--kit-*` CSS custom properties. No Tailwind | Ready |
-| `@builddai/ai-kit/chat/styles.css` | The components' layout, reading only `--kit-*`. No Tailwind | Ready |
-| `@builddai/ai-kit/chat/schema.sql` | Reference Postgres tables for a `ChatStore` (never run by the kit) | Reference |
-| `@builddai/ai-kit/models` | Model-plan client + usage sink. No deps; Node, Bun, edge | Ready |
-| `@builddai/ai-kit/policy` | Standalone model policy: surface + tier → provider, model, effort. Local-first, optional remote service with fallback. No deps; Node, Bun, edge | Ready |
-| `@builddai/ai-kit/decide` | Jev decisions: typed questions, gating, versioning, eval. Optional peer `@typesafe-ai/sdk@0.7.0`: install it to call `decide`; without it the module still loads and `decide` returns `sdk_missing` | Ready |
-| `@builddai/ai-kit/surfaces` | Jev picks the app's own chips and card: `defineSurface` (rank and choice slots in one call, shadow first, a slot gated only after an eval of at least 700 held-out rows) and the single-slot `defineRankSurface` | Ready (shadow) |
+| `@buildd/ai-kit/chat/contract` | Wire types: parts, object refs, data parts, approval previews, tool-permission rows. No deps, isomorphic | Ready |
+| `@buildd/ai-kit/chat/server` | `createChatTurn` (the turn runner), `defineToolGroups` + server-side Allow enforcement, the `ChatStore` persistence adapter. Peer `ai@^7`, loaded lazily on the first turn | Ready |
+| `@buildd/ai-kit/chat/react` | Thread, composer, tools / scope / tier pickers, thinking panel, approval / hand-off / setup cards, empty state, `useKitChat`. Peers `react@^19`, `@ai-sdk/react@^4`, `ai@^7` (all required by this entry) | Ready |
+| `@buildd/ai-kit/chat/theme.css` | `--kit-*` CSS custom properties. No Tailwind | Ready |
+| `@buildd/ai-kit/chat/styles.css` | The components' layout, reading only `--kit-*`. No Tailwind | Ready |
+| `@buildd/ai-kit/chat/schema.sql` | Reference Postgres tables for a `ChatStore` (never run by the kit) | Reference |
+| `@buildd/ai-kit/models` | Model-plan client + usage sink. No deps; Node, Bun, edge | Ready |
+| `@buildd/ai-kit/policy` | Standalone model policy: surface + tier → provider, model, effort. Local-first, optional remote service with fallback. No deps; Node, Bun, edge | Ready |
+| `@buildd/ai-kit/decide` | Jev decisions: typed questions, gating, versioning, eval. Optional peer `@typesafe-ai/sdk@0.7.0`: install it to call `decide`; without it the module still loads and `decide` returns `sdk_missing` | Ready |
+| `@buildd/ai-kit/surfaces` | Jev picks the app's own chips and card: `defineSurface` (rank and choice slots in one call, shadow first, a slot gated only after an eval of at least 700 held-out rows) and the single-slot `defineRankSurface` | Ready (shadow) |
 
 ## Model plans
 
@@ -38,7 +38,7 @@ Ask buildd which model to call and whether it may spend; make the call with
 your own key; record a content-free receipt.
 
 ```ts
-import { createModelsClient, toCallConfig, isPlanDeniedError } from '@builddai/ai-kit/models';
+import { createModelsClient, toCallConfig, isPlanDeniedError } from '@buildd/ai-kit/models';
 
 const models = createModelsClient({
   apiKey: env.BUILDD_AI_KEY,                // a bld_ key for the app's service account
@@ -110,7 +110,7 @@ its **surface** (`chat | coding`) and the **tier** it wants. It works with no
 service and no buildd account; a policy service is optional.
 
 ```ts
-import { createPolicyClient, remotePolicy, DEFAULT_MODEL_POLICY } from '@builddai/ai-kit/policy';
+import { createPolicyClient, remotePolicy, DEFAULT_MODEL_POLICY } from '@buildd/ai-kit/policy';
 
 // Local: no network.
 const local = createPolicyClient({
@@ -167,7 +167,7 @@ The kit never imports a provider SDK. Build the model yourself, e.g. with
 ```ts
 // app/api/chat/[id]/route.ts
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { createChatTurn, modelFromPlan } from '@builddai/ai-kit/chat/server';
+import { createChatTurn, modelFromPlan } from '@buildd/ai-kit/chat/server';
 import { groups } from '@/lib/ai/tool-groups';        // defineToolGroups(...)
 import { tools } from '@/lib/ai/tools';                // AI SDK tool({ ... }) keyed by name
 import { models } from '@/lib/ai/models';              // createModelsClient(...)
@@ -286,13 +286,13 @@ interface ChatStore {
 
 ```tsx
 'use client';
-import '@builddai/ai-kit/chat/theme.css';
-import '@builddai/ai-kit/chat/styles.css';
+import '@buildd/ai-kit/chat/theme.css';
+import '@buildd/ai-kit/chat/styles.css';
 import { useRef } from 'react';
 import {
   useKitChat, ChatThread, ChatComposer, ChatEmpty, ChatSetupCard, ToolsMenu, TierPicker, ScopePicker,
   type ChatComposerHandle,
-} from '@builddai/ai-kit/chat/react';
+} from '@buildd/ai-kit/chat/react';
 
 export function Chat({ id, name, chips, rows, onToolChange }) {
   const chat = useKitChat({ api: `/api/chat/${id}`, id, steer: { api: `/api/chat/${id}/steer` } });
@@ -355,7 +355,7 @@ export function Chat({ id, name, chips, rows, onToolChange }) {
 
 ```ts
 // lib/chat/composer.ts
-import { createComposerStore } from '@builddai/ai-kit/chat/react';
+import { createComposerStore } from '@buildd/ai-kit/chat/react';
 export const composer = createComposerStore({
   prefs: {                                   // your storage; apply any tier cap on the server before returning
     load: key => fetch(`/api/chat/composer?key=${key}`).then(r => (r.ok ? r.json() : null)),   // { scope?, tier? }
@@ -378,7 +378,7 @@ const c = useComposerState(composer, teamId, { scopes: spaces, pageScope: search
 **Per-app tiers (0.6.0): default, names, which are offered.** One `defineTierPolicy` object (from `/chat/contract`, so the server can use it too) says what an app offers. Nothing changes without one: Auto stays first and the default, then Budget / Standard / Premium.
 
 ```ts
-import { defineTierPolicy } from '@builddai/ai-kit/chat/contract';
+import { defineTierPolicy } from '@buildd/ai-kit/chat/contract';
 export const tiers = defineTierPolicy({
   offer: ['budget', 'standard', 'premium'],               // no premium-plus
   defaultTier: 'budget',                                   // null = Auto
@@ -417,7 +417,7 @@ Declare your tool groups once. The same declaration drives the tools menu,
 the per-person preference and server-side enforcement.
 
 ```ts
-import { defineToolGroups } from '@builddai/ai-kit/chat/server';
+import { defineToolGroups } from '@buildd/ai-kit/chat/server';
 
 export const groups = defineToolGroups({
   notes:  { label: 'Notes',  tools: [{ name: 'create_note', class: 'write' }], modes: ['ask', 'allow'] },
@@ -448,7 +448,7 @@ never writes text. Use it as an accelerator in front of logic you already
 have, never as the only source of an answer.
 
 ```ts
-import { choice, noul, defineDecision, expectDecisionPinned } from '@builddai/ai-kit/decide';
+import { choice, noul, defineDecision, expectDecisionPinned } from '@buildd/ai-kit/decide';
 
 export const emailTriage = defineDecision({
   id: 'cue.email_triage',
@@ -544,7 +544,7 @@ one Jev `score` question per candidate, in one call. The output space is
 closed: only ids you registered, and your code supplies every label and text.
 
 ```ts
-import { defineRankSurface } from '@builddai/ai-kit/surfaces';
+import { defineRankSurface } from '@buildd/ai-kit/surfaces';
 
 export const CHIPS = defineRankSurface({
   id: 'money.chat_chips',
@@ -583,7 +583,7 @@ const chips = CHIPS.resolve(pick.ids);
 `choice` over your labels).
 
 ```ts
-import { defineSurface, runSurfaceEval, gateFromEval } from '@builddai/ai-kit/surfaces';
+import { defineSurface, runSurfaceEval, gateFromEval } from '@buildd/ai-kit/surfaces';
 
 export const EMPTY = defineSurface({
   id: 'cue.chat_empty',
@@ -642,7 +642,7 @@ const pick = await EMPTY.pick(counts, { apiKey, onUsage, onPick: log => saveShad
 
 ## Theming
 
-Import `@builddai/ai-kit/chat/theme.css` and `@builddai/ai-kit/chat/styles.css`,
+Import `@buildd/ai-kit/chat/theme.css` and `@buildd/ai-kit/chat/styles.css`,
 and override the `--kit-*` variables with your own tokens.
 
 The rich tool rows (0.11.0) also read `--kit-ink-soft` (secondary text),

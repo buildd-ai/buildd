@@ -19,7 +19,7 @@
  * The DB-backed half is `apps/web/src/lib/post-session-triage.ts`.
  */
 
-import type { DecisionResponse } from '@builddai/ai-kit/decide';
+import type { DecisionResponse } from '@buildd/ai-kit/decide';
 import {
   POST_SESSION_HARD_TRIGGERS,
   TRIAGE_UNAVAILABLE,

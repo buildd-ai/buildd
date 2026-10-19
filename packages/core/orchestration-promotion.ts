@@ -34,7 +34,7 @@
  *
  * Pure: no DB, no env.
  */
-import { decisionFingerprint, type Decision, type DecisionQuestions } from '@builddai/ai-kit/decide';
+import { decisionFingerprint, type Decision, type DecisionQuestions } from '@buildd/ai-kit/decide';
 import { buildPickDecision, MANIFEST_CANDIDATE_POLICY_VERSION, MANIFEST_DECISION_ID } from './manifest-prediction';
 import type { StoredFeatureMode } from './owner-feature-switches';
 

@@ -1,4 +1,4 @@
-import { isPersonalKeyProvider } from '@builddai/ai-kit/models/provider-keys';
+import { isPersonalKeyProvider } from '@buildd/ai-kit/models/provider-keys';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';

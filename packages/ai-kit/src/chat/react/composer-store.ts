@@ -28,7 +28,7 @@
  * next new chat's default (buildd does).
  */
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
-import type { TierPolicy } from '@builddai/ai-kit/chat/contract';
+import type { TierPolicy } from '@buildd/ai-kit/chat/contract';
 
 /** Absent = never chosen (keep the current value); null = chosen "all" / "Auto". */
 export interface ComposerSeed {

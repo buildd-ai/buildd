@@ -45,7 +45,7 @@ describe('the workflow kernel imports nothing from buildd', () => {
     const at = `${PKG}/src/effects.ts`;
     expect(offendersIn(at, `import { db } from '@buildd/core/db';`)).toEqual([`${at} → @buildd/core/db`]);
     expect(offendersIn(at, `import type { Task } from "@buildd/shared";`)).toHaveLength(1);
-    expect(offendersIn(at, `import { x } from '@builddai/ai-kit';`)).toHaveLength(1);
+    expect(offendersIn(at, `import { x } from '@buildd/ai-kit';`)).toHaveLength(1);
     expect(offendersIn(at, `import { sql } from 'drizzle-orm';`)).toHaveLength(1);
     expect(offendersIn(at, `import { neon } from '@neondatabase/serverless';`)).toHaveLength(1);
     expect(offendersIn(at, `import 'drizzle-orm';`)).toHaveLength(1);

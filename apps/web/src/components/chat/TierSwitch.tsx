@@ -5,7 +5,7 @@
  * for this conversation. A tier, never a model: which model backs a tier is
  * the team admin's.
  *
- * The picker is the kit's (`TierPicker` from @builddai/ai-kit/chat/react); this
+ * The picker is the kit's (`TierPicker` from @buildd/ai-kit/chat/react); this
  * owns buildd's `/api/chat/tiers` fetch and the pricing detail: each option
  * names its model and its expected price per 1k tokens (averaged over the
  * tier's models when it's pooled) on its second line, and hovering the cell
@@ -13,7 +13,7 @@
  * cost so far (the kit Menu's `hover`).
  */
 import { useEffect, useState } from 'react';
-import { TierPicker, formatCost, formatPer1k, type TierOption } from '@builddai/ai-kit/chat/react';
+import { TierPicker, formatCost, formatPer1k, type TierOption } from '@buildd/ai-kit/chat/react';
 import type { ChatTierInfo, ChatTierName, GetChatTiersResponse } from '@buildd/shared';
 import KitMenuCell from './KitMenuCell';
 

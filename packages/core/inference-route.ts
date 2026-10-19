@@ -3,7 +3,7 @@
  *
  * Chat turns and inference calls both name a vendor and a native model (from
  * the tier registry). This picks the first route in `routeOrder(vendor)`
- * (`@builddai/ai-kit/models` routes.ts) that has a credential for the caller:
+ * (`@buildd/ai-kit/models` routes.ts) that has a credential for the caller:
  * the vendor's own API, then OpenRouter, then the team's LiteLLM gateway. One
  * order, so a team whose only key is OpenRouter (or a gateway) gets every
  * server-side feature, not just chat.
@@ -21,7 +21,7 @@
 import {
   ROUTES, routeModelId, routeOrder,
   type KitProvider, type RouteId, type RouteWire,
-} from '@builddai/ai-kit/models';
+} from '@buildd/ai-kit/models';
 import type { InferenceKeyScope, ResolvedInferenceCredential, ResolveInferenceKeyOptions } from './inference-keys';
 import type { InferenceKeyPolicy } from './inference-key-policy';
 import type { LiteLLMGateway } from './litellm-gateway';

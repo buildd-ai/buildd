@@ -30,7 +30,7 @@
  * Never throws.
  */
 import { createHash } from 'node:crypto';
-import type { DecisionResponse } from '@builddai/ai-kit/decide';
+import type { DecisionResponse } from '@buildd/ai-kit/decide';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
 import type { BuilddDecisionScope } from '@buildd/core/decision-policy';
 import {

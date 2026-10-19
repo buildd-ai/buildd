@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
-import { choice, defineDecision, defineDecisionKind, expectDecisionPinned, noul } from '@builddai/ai-kit/decide';
+import { choice, defineDecision, defineDecisionKind, expectDecisionPinned, noul } from '@buildd/ai-kit/decide';
 import {
   installPrompts,
   promptFallbackCounts,

@@ -2,7 +2,7 @@
  * Jev decisions for memory (knowledge-base: buildd/design/memory-done-right.md, "Where Jev
  * helps"; docs/design/decision-calls.md).
  *
- * Every decision here is typed through `@builddai/ai-kit/decide`, gated by a
+ * Every decision here is typed through `@buildd/ai-kit/decide`, gated by a
  * confidence threshold that lives next to its question, and FAILS OPEN to the
  * rule that ran before it existed: a missing key, an error, the 5s deadline or
  * low confidence all leave today's behaviour untouched.
@@ -53,7 +53,7 @@ import {
   type DecisionRun,
   type Decision,
   type NoulAnswer,
-} from '@builddai/ai-kit/decide';
+} from '@buildd/ai-kit/decide';
 import { definePromptedDecision } from './prompted-decision';
 
 // ── Vocabulary ────────────────────────────────────────────────────────────────

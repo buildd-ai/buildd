@@ -1,5 +1,5 @@
 /**
- * `@builddai/ai-kit/policy`: standalone model policy (no peers, no framework
+ * `@buildd/ai-kit/policy`: standalone model policy (no peers, no framework
  * deps; Node, Bun and edge). Usable with no buildd and no service at all.
  *
  * The caller declares `surface` (`chat | coding`) and requests a `tier`; the

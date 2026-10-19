@@ -20,7 +20,7 @@
  * to a model; nothing here is written anywhere.
  */
 import { createHash } from 'node:crypto';
-import type { DecisionAnswers, DecisionQuestions } from '@builddai/ai-kit/decide';
+import type { DecisionAnswers, DecisionQuestions } from '@buildd/ai-kit/decide';
 import { parseLabeledJsonl } from '@buildd/core/decision-benchmark';
 import type { AnyBuilddDecisionKind } from '@buildd/core/decision-kinds';
 import type { DecisionReplayInput } from '@buildd/core/decision-replay';

@@ -7,7 +7,7 @@
  * height in both places, so a message that holds one never changes size while
  * the reply streams under it.
  */
-import { attachmentChars, fileKindLabel, fileSizeLabel, isImageMediaType, type AttachmentData } from '@builddai/ai-kit/chat/contract';
+import { attachmentChars, fileKindLabel, fileSizeLabel, isImageMediaType, type AttachmentData } from '@buildd/ai-kit/chat/contract';
 
 export interface AttachmentCardProps {
   attachment: AttachmentData;

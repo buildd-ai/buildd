@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { JEV_MODEL } from '@builddai/ai-kit/decide';
+import { JEV_MODEL } from '@buildd/ai-kit/decide';
 import { estimateExpectedSize } from '../task-size-bucket-source';
 import { SIZE_BUCKET_ESTIMATES } from '../task-size-bucket-decision';
 import { isInferenceAllowed, OPT_IN_CAPABILITIES } from '../inference-policy';

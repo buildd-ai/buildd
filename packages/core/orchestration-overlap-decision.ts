@@ -18,7 +18,7 @@
  * apply from the first PR, with every call logged so the threshold can be
  * recalibrated from evidence later (jev-scheduling §6).
  */
-import { choice, type Decision } from '@builddai/ai-kit/decide';
+import { choice, type Decision } from '@buildd/ai-kit/decide';
 import { definePromptedDecision } from './prompted-decision';
 import { overlapFraction, overlapPairKey } from './claim-planner';
 import { candidateDigest } from './orchestration-decision';

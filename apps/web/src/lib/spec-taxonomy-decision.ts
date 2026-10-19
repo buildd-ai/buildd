@@ -1,8 +1,8 @@
 import { db } from '@buildd/core/db';
 import { decisionRecords, workspaces } from '@buildd/core/db/schema';
 import { and, eq, gt, isNotNull } from 'drizzle-orm';
-import { canonicalJson, choice, shortHash } from '@builddai/ai-kit/decide';
-import type { DecisionKindConfig, DecisionRequest, ModelVerdict } from '@builddai/ai-kit/decide';
+import { canonicalJson, choice, shortHash } from '@buildd/ai-kit/decide';
+import type { DecisionKindConfig, DecisionRequest, ModelVerdict } from '@buildd/ai-kit/decide';
 import { defineBuilddDecisionKind, type BuilddDecisionKindBinding } from '@buildd/core/decision-kinds';
 import { runBuilddDecision, type BuilddDecisionScope } from '@buildd/core/decision-policy';
 import { CROSS_CUTTING_DOMAINS, type ProposeTaxonomyInput, type TaxonomyItem, type TaxonomyProposal, type TaxonomyProposer } from '@/lib/specs/areas';

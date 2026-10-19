@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createPolicyClient, findCredentialLike, remotePolicy, type ModelPolicy } from '@builddai/ai-kit/policy';
+import { createPolicyClient, findCredentialLike, remotePolicy, type ModelPolicy } from '@buildd/ai-kit/policy';
 import { ENV_KEYS, handle, type Deps, type Env } from './handler';
 import { parseTokenRing } from './auth';
 

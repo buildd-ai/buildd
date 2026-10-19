@@ -40,7 +40,7 @@
  */
 import { after } from 'next/server';
 import { TASK_STATUSES, isTerminalTaskStatus } from '@buildd/shared';
-import type { Decision } from '@builddai/ai-kit/decide';
+import type { Decision } from '@buildd/ai-kit/decide';
 import {
   CLAIM_HOLD_APPLYING_FRACTION,
   CLAIM_HOLD_DECISION,

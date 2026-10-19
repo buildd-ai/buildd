@@ -4,7 +4,7 @@
  * `createPendingMessages` (session storage, read-and-clear), under buildd's
  * key prefix so a message parked by an older tab still lands.
  */
-import { createPendingMessages } from '@builddai/ai-kit/chat/react';
+import { createPendingMessages } from '@buildd/ai-kit/chat/react';
 import type { ChatDraftAttachment } from '@buildd/shared';
 
 const pending = createPendingMessages({ prefix: 'buildd-chat-pending:' });

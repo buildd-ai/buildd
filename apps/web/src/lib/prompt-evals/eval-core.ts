@@ -19,7 +19,7 @@ import { sha256Hex, type PromptSeedEntry } from '@buildd/core/prompt-seed';
 import { activePromptFingerprints, type RegisteredPrompt } from '@buildd/core/prompts';
 import { parseLabeledJsonl, summarizeBenchmark, type LabeledExample } from '@buildd/core/decision-benchmark';
 import type { decisionCall } from '@buildd/core/decision-client';
-import type { DecisionEndpoint } from '@builddai/ai-kit/decide';
+import type { DecisionEndpoint } from '@buildd/ai-kit/decide';
 import { SETS, runBenchmarkSet, type QuestionSet } from './benchmark-sets';
 
 export const MISSING_KEY_SECRET = 'OPENROUTER_API_KEY';

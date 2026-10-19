@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
-import { choice, defineDecision, JEV_MODEL } from '@builddai/ai-kit/decide';
+import { choice, defineDecision, JEV_MODEL } from '@buildd/ai-kit/decide';
 import { assignApplyingArm, type OrchestrationDecisionDeps, type OrchestrationDecisionRow } from '@buildd/core/orchestration-decision';
 import {
   ClaimHoldCollector,

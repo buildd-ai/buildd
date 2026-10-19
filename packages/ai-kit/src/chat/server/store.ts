@@ -7,7 +7,7 @@
  * `memoryChatStore()` implements it in memory, for tests and prototypes.
  */
 
-import type { ChatMessage, ChatPart, ChatUsage } from '@builddai/ai-kit/chat/contract';
+import type { ChatMessage, ChatPart, ChatUsage } from '@buildd/ai-kit/chat/contract';
 import type { ApprovalRequestRow } from './approvals';
 
 /** A message as the store keeps it: the wire message plus turn bookkeeping. */

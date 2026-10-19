@@ -4,7 +4,7 @@
  * log row is the real code.
  */
 import { describe, expect, it } from 'bun:test';
-import { expectDecisionPinned, type DecisionReceipt } from '@builddai/ai-kit/decide';
+import { expectDecisionPinned, type DecisionReceipt } from '@buildd/ai-kit/decide';
 import {
   createMemoryDecider,
   labelTaskMemoryUses,
