@@ -345,7 +345,7 @@ async function createTaskFromIssue(
  */
 async function resolveIssueWorkspace(installationId: number, repoFullName: string) {
   const installation = await db.query.githubInstallations.findFirst({
-    where: eq(githubInstallations.installationId, installationId),
+    where: sqlWhere(eq(githubInstallations.installationId, installationId)),
     columns: { id: true },
   });
   if (!installation) return null;
