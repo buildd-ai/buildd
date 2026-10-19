@@ -233,7 +233,7 @@ describe('Health › Runner row detail (R-7)', () => {
 });
 
 describe('Health › Runners ownership', () => {
-  const hb = (id: string, name: string, mine: boolean) => ({ id, accountId: id, accountName: name, lastHeartbeatAt: ago(0).toISOString(), activeWorkerCount: 0, maxConcurrentWorkers: 2, mine });
+  const hb = (id: string, name: string, mine: boolean) => ({ id, accountId: id, accountName: name, lastHeartbeatAt: ago(0).toISOString(), activeWorkerCount: 0, maxConcurrentWorkers: 2, mine, runnerClass: 'personal' as const });
 
   it('lists the viewer\'s runners under "Your runners" and teammates\' under "Team runners"', async () => {
     await mount(0, [hb('a', 'Mine one', true), hb('b', 'Teammate box', false)]);
@@ -258,9 +258,55 @@ describe('Health › Runners ownership', () => {
     expect(team).toContain('team host');
   });
 
+  it('keeps a managed or team-host runner the viewer created out of "Your runners"', async () => {
+    await mount(0, [
+      { ...hb('a', 'Mine one', true), runnerClass: 'personal' },
+      { ...hb('b', 'Cloud', true), runnerClass: 'managed' },
+      { ...hb('c', 'Host', true), runnerClass: 'team' },
+    ]);
+    const mine = q('health-runners-mine')!.textContent!;
+    expect(mine).toContain('Mine one');
+    expect(mine).not.toContain('Cloud');
+    expect(mine).not.toContain('Host');
+    const team = q('health-runners-team')!.textContent!;
+    expect(team).toContain('Cloud');
+    expect(team).toContain('Host');
+  });
+
   it('omits a section with no runners', async () => {
     await mount(0, [hb('a', 'Mine one', true)]);
     expect(q('health-runners-mine')).not.toBeNull();
     expect(q('health-runners-team')).toBeNull();
   });
+});
+
+
+describe('Health › Lifetime history privacy (AC-4)', () => {
+  for (const mine of [false, true]) {
+    it(`${mine ? 'owner retains' : 'linked-team viewer cannot request'} lifetime totals when expanding a runner`, async () => {
+      const requested: string[] = [];
+      const fallback = globalThis.fetch;
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (!url.includes('/proxy')) return fallback(input, init);
+        requested.push(url);
+        const data = url.includes('history')
+          ? { totalSessions: 73, totalCost: 12, avgDurationMs: 60000, byStatus: {} }
+          : { timestamp: new Date(NOW).toISOString(), checks: [], summary: { ok: 1, warn: 0, error: 0 } };
+        return new Response(JSON.stringify(data), { status: 200 });
+      }) as typeof fetch;
+      await mount(0, [{ ...DEFAULT_RUNNERS[0], mine, runnerClass: 'personal' }]);
+      const row = q('health-runner-row')!;
+      const button = [...row.querySelectorAll('button')].find(b => b.textContent === 'Details')!;
+      await act(async () => { button.click(); });
+      for (let i = 0; i < 3; i++) await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+      expect(requested.some(url => url.includes('history'))).toBe(mine);
+      expect(row.textContent!.includes('Session history')).toBe(mine);
+      if (mine) {
+        expect(row.textContent).toContain('73');
+        expect(row.textContent).toContain('Total cost');
+        expect(row.textContent).toContain('Avg duration');
+      }
+    });
+  }
 });

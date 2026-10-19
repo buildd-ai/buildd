@@ -168,7 +168,7 @@ export interface FloorRepairs {
   parkedDead: number;
 }
 
-export function floorSpanAttributes(p: { host: KernelHost; depth: OutboxDepth | null; repairs: FloorRepairs; errors: number }): SpanAttributes {
+export function floorSpanAttributes(p: { host: KernelHost; depth: OutboxDepth | null; repairs: FloorRepairs; errors: number; deadEffects?: { closed: number; live: number; oldestAgeS: number } | null }): SpanAttributes {
   const r = p.repairs;
   return {
     'kernel.host': p.host,
@@ -188,6 +188,14 @@ export function floorSpanAttributes(p: { host: KernelHost; depth: OutboxDepth | 
     'kernel.floor.repairs.parked_dead': r.parkedDead,
     'kernel.floor.repairs.total': r.factsImported + r.effectsEnqueued + r.trunkRecovered + r.treadmillRestarted + r.parkedAnswered,
     'kernel.floor.errors': p.errors,
+    // Dead effects owed to a live delivery: the operator signal (Health kernel view lists them). Absent when the sweep failed.
+    ...(p.deadEffects
+      ? {
+        'kernel.floor.dead_effects.closed': p.deadEffects.closed,
+        'kernel.floor.dead_effects.live': p.deadEffects.live,
+        'kernel.floor.dead_effects.oldest_age_s': ms(p.deadEffects.oldestAgeS),
+      }
+      : {}),
   };
 }
 

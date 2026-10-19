@@ -15,7 +15,7 @@ function view(over: Partial<KernelOperatorView> = {}): KernelOperatorView {
     query: { window: '24h' }, since: ago(86_400_000), now: NOW, scopeMissing: null,
     transitions: [tr()], web: { count: 0, recent: [] },
     parked: { total: 0, oldestAt: null, byOp: [], gaveUp: 0 },
-    floorRuns: [], timeline: { kind: 'idle' }, ...over,
+    floorRuns: [], deadEffects: { total: 0, rows: [] }, timeline: { kind: 'idle' }, ...over,
   };
 }
 const render = (v: KernelOperatorView | null) => renderToStaticMarkup(<KernelSection view={v} />);
@@ -65,6 +65,16 @@ describe('KernelSection', () => {
     const t = text(render(view({ parked: { total: 1, oldestAt: ago(60_000), gaveUp: 0, byOp: [{ op: 'attempt_ended', count: 1, oldestAt: ago(60_000), failing: 0, lastError: null }] } })));
     expect(t).toContain('1 command is parked');
     expect(t).toContain('No resend failures.');
+  });
+
+  it('dead effects on a live delivery are listed; none says so', () => {
+    expect(render(view())).toContain('No dead effects.');
+    const html = render(view({ deadEffects: { total: 1, rows: [
+      { id: 'e1', kind: 'publish_landing_status', deliveryId: 'd1', deliveryState: 'AWAITING_REVIEW', repo: 'acme/app', prNumber: 7, attempts: 8, lastError: 'boom', deadAt: ago(3_600_000) },
+    ] } }));
+    expect(html).toContain('data-testid="kernel-dead-effects" data-total="1"');
+    expect(html).toContain('acme/app#7');
+    expect(html).toContain('Last error: boom');
   });
 
   it('floor runs: what each repaired, and what it could not', () => {

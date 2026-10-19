@@ -31,7 +31,8 @@
       "groupName": "drizzle",
       "automerge": false,
       "rangeStrategy": "pin",
-      "description": "Pinned to an exact v1 rc, and always together: the migrator (packages/core/db/migrate-tree.ts, migrate-apply.ts) and the layout tools rely on properties of that rc's folder layout, snapshots and `check`, asserted by packages/core/__tests__/migration-layout.test.ts and apps/web/tests/db/migration-layout-v1.test.ts. A bump is a person's review of those two, never an automerge."
+      "allowedVersions": "/^1\\.0\\.0-rc\\.\\d+$/",
+      "description": "Only plain rc tags (1.0.0-rc.N), never hash-suffixed snapshot builds such as rc.5-ab785fc, which ship without release notes. Pinned to an exact v1 rc, and always together: the migrator (packages/core/db/migrate-tree.ts, migrate-apply.ts) and the layout tools rely on properties of that rc's folder layout, snapshots and `check`, asserted by packages/core/__tests__/migration-layout.test.ts and apps/web/tests/db/migration-layout-v1.test.ts. A bump is a person's review of those two, never an automerge."
     },
     {
       "matchPackageNames": ["playwright", "playwright-core", "@playwright/test"],

@@ -52,7 +52,7 @@ const VALID_HB = {
   accountId: 'acc-1',
   localUiUrl: 'https://runner.example.com',
   viewerToken: 'tok-abc',
-  account: { teamId: 'team-1' },
+  account: { teamId: 'team-1', createdByUserId: 'user-1' },
 };
 
 const DOCTOR_RESPONSE = {
@@ -201,25 +201,24 @@ describe('GET /api/runners/[heartbeatId]/proxy', () => {
     expect(res.status).toBe(502);
   });
 
-  it('grants access via workspace link when team does not match', async () => {
-    mockGetUserTeamIds.mockResolvedValue(['team-OTHER']);
-    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
-    // First selectDistinct call (for accountWorkspaces) returns a match
-    let callCount = 0;
-    mockSelectDistinct.mockReturnValue({
-      from: mock(() => ({
-        where: mock(() => {
-          callCount++;
-          return Promise.resolve(callCount === 1 ? [{ accountId: 'acc-1' }] : []);
-        }),
-      })),
+  for (const path of ['doctor', 'history/stats', 'debug/claims']) {
+    it(`refuses ${path} to a member of another team linked to the runner's account`, async () => {
+      mockGetUserTeamIds.mockResolvedValue(['team-OTHER']);
+      mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+      // Live workspace link AND past worked rows both match.
+      mockSelectDistinct.mockReturnValue({
+        from: mock(() => ({ where: mock(() => Promise.resolve([{ accountId: 'acc-1' }])) })),
+      });
+      const fetchMock = mock(() =>
+        Promise.resolve({ ok: true, json: () => Promise.resolve({ totalSessions: 99, totalCost: 123 }) } as any),
+      );
+      globalThis.fetch = fetchMock as any;
+      const res = await GET(req('11111111-1111-4111-8111-111111111111', path), { params: makeParams('11111111-1111-4111-8111-111111111111') });
+      expect(res.status).toBe(403);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(JSON.stringify(await res.json())).not.toContain('totalCost');
     });
-    globalThis.fetch = mock(() =>
-      Promise.resolve({ ok: true, json: () => Promise.resolve(DOCTOR_RESPONSE) } as any),
-    );
-    const res = await GET(req('11111111-1111-4111-8111-111111111111', 'doctor'), { params: makeParams('11111111-1111-4111-8111-111111111111') });
-    expect(res.status).toBe(200);
-  });
+  }
 
   it('accepts debug/claims as an allowed path', async () => {
     globalThis.fetch = mock(() =>
@@ -228,4 +227,18 @@ describe('GET /api/runners/[heartbeatId]/proxy', () => {
     const res = await GET(req('11111111-1111-4111-8111-111111111111', 'debug/claims'), { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
   });
+});
+
+
+describe('Lifetime history owner authorization (AC-4)', () => {
+  for (const createdByUserId of ['teammate', null]) {
+    it(`denies same-team lifetime history when creator is ${createdByUserId}`, async () => {
+      mockHbFindFirst.mockResolvedValue({ ...VALID_HB, account: { teamId: 'team-1', createdByUserId } });
+      const upstream = mock(() => Promise.resolve(Response.json({ totalSessions: 73, totalCost: 12, avgDurationMs: 60000 })));
+      globalThis.fetch = upstream as unknown as typeof fetch;
+      const res = await GET(req(VALID_HB.id, 'history/stats'), { params: makeParams(VALID_HB.id) });
+      expect(res.status).toBe(403);
+      expect(upstream).not.toHaveBeenCalled();
+    });
+  }
 });
