@@ -24,6 +24,7 @@ import { drainParkedCommands, readOutboxDepth, type ParkedDrainSummary } from '.
 import { kernelHost } from './kernel-host';
 import { commandsConfigured, executionModeOf } from './command-api';
 import { publishOpenPrStatuses, type OpenPrStatusSummary } from './open-pr-status';
+import { runDueEffectDrains, type EffectTickResult } from './effect-timer';
 import { drainDueEpochEffects, type EpochDrainSummary } from './epoch-effects';
 import { KERNEL_SPAN, emitKernelSpan, floorSpanAttributes, type FloorRepairs, type OutboxDepth } from './kernel-telemetry';
 
@@ -208,5 +209,21 @@ export async function runScheduledKernelFloor(o: { env?: Record<string, string |
     console.warn('[kernel-floor] CRON_SECRET is not configured; the pass runs unrecorded');
     await pass();
   }
+  return { ran: true, result };
+}
+
+/**
+ * The control plane's per-minute tick (apps/control-plane/wrangler.jsonc): drain the deliveries whose
+ * effect came due (effect-timer.ts). It reads Redis and, when nothing is due, touches no Postgres. The
+ * hourly floor above stays the backstop for a lost queue write.
+ */
+export async function runScheduledEffectTick(o: { env?: Record<string, string | undefined>; drain?: (deliveryId: string) => Promise<unknown> } = {}): Promise<{ ran: boolean; reason?: string; result?: EffectTickResult | null }> {
+  const env = o.env ?? process.env;
+  if (kernelHost() !== 'control-plane') return { ran: false, reason: 'not_control_plane' };
+  if (executionModeOf(env.EXECUTION_MODE) !== 'own') return { ran: false, reason: 'shadow' };
+  if (!commandsConfigured(env)) return { ran: false, reason: 'no_command_key' };
+  const drain = o.drain ?? (async (id: string) => (await import('./seam')).drainDelivery(id));
+  const result = await runDueEffectDrains({ drain });
+  if (result && result.due > 0) console.log(`[EffectTimer] control-plane ${JSON.stringify(result)}`);
   return { ran: true, result };
 }
