@@ -264,6 +264,8 @@ expect(prompt).toContain('authentication method');
 
 When stdout is not a TTY (a log file, an agent shell) the runner prints a `[progress]` line every 30s: files done, elapsed, host load vs CPU count, and hinted work left. Documented durations assume an idle host; a load well above the CPU count (shared runner) slows every broad check, so a long run with advancing `[progress]` lines is slow, not hung.
 
+Before starting, a run that finds the load past 3x the CPUs waits up to 60s (`BUILDD_TEST_ADMISSION_WAIT_MS`, `0` disables) for room, then proceeds with reduced concurrency. Commit hooks cache the no-prod-data base ref per HEAD for 5 minutes and skip the network fetch, so pre-commit and commit-msg share one resolution.
+
 `cd apps/web && bun run build:only` has no progress output and stays in "Compiling" for a long time under the same load. Check `uptime` against the CPU count before waiting on it; if the host is oversubscribed, stop it, run the focused test files your change touches, and let CI (`build` job) be the full-build and full-suite evidence rather than adding contention.
 
 Run unit tests through the runner, never `bun test` directly:
