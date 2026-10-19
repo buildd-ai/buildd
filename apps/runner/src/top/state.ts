@@ -291,6 +291,10 @@ export type TopEvent =
   | { type: 'slots'; maxConcurrent: number }
   | { type: 'worker_update'; worker: TopWorker }
   | { type: 'claim_rejected'; taskId?: string; status?: number; reason?: string }
+  /** A task in one of the runner's workspaces changed (the runner's workspace channels). */
+  | { type: 'tasks_changed'; workspaceId?: string | null; taskId?: string | null }
+  /** A mission-loop event on a mission top lists (the runner watches their channels). */
+  | { type: 'mission_changed'; missionId: string }
   | { type: string; [k: string]: unknown };
 
 function isRoute(r: unknown): r is RunRoute {
@@ -438,11 +442,14 @@ export function reduce(state: TopState, event: TopEvent): TopState {
 
 /**
  * Does this event mean the task list may have changed? The runner learns of
- * queue changes over Pusher (task_assigned), from its claim loop
+ * queue changes over Pusher (task_assigned, task_claimed, tasks_changed), from its claim loop
  * (claim_rejected) and from its own workers starting or finishing.
  */
 export function eventChangesQueue(state: TopState, event: TopEvent): boolean {
   // task_claimed: a task in one of its workspaces was claimed, by this runner or another (AC-12).
+  // tasks_changed: a task in one of its workspaces was created, updated, unblocked or finished
+  // (task:* and worker:completed/failed on the workspace channel; spec 3ef37387 R-21).
+  if (event.type === 'tasks_changed') return true;
   if (event.type === 'task_assigned' || event.type === 'task_claimed' || event.type === 'claim_rejected' || event.type === 'claim_outcome' || event.type === 'slots') return true;
   if (event.type === 'worker_update') {
     const w = (event as any).worker as TopWorker | undefined;

@@ -41,6 +41,7 @@ import MissionShippedHeader from './MissionShippedHeader';
 import { buildShippedHeaderView } from '@/lib/mission-shipped-header';
 import { shippedArtifactKey } from '@/lib/mission-shipped-report';
 import MissionAutoRefresh from './MissionAutoRefresh';
+import { LiveRegion } from '@/components/LiveRegion';
 import MissionReconcileOnOpen from './MissionReconcileOnOpen';
 import TaskPanelWrapper from './TaskPanelWrapper';
 import { buildMissionFeedView, type MissionFeedViewTask } from './mission-feed-view';
@@ -63,6 +64,8 @@ import { missionPlanInputs } from '@/lib/mission-plan-source';
 import MissionFeedLayout from './MissionFeedLayout';
 import { missionSummaryLine } from '@/lib/mission-summary-line';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
+import { buildActivityEpisodes } from '@/lib/activity-delivery';
+import { missionHistoryInputs } from '@/lib/mission-history-input';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { missionTaskDeliveries, type MissionDeliveryTaskRow } from './mission-task-delivery';
 import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
@@ -128,7 +131,28 @@ import { readRound } from '@/lib/read-round';
 export const dynamic = 'force-dynamic';
 
 
-export default async function MissionDetailPage({
+type PageProps = {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string; visualReview?: string }>;
+};
+
+/**
+ * Live events re-render this body through `loadRegion` (components/LiveRegion.tsx)
+ * instead of a router refresh. The body is the same function either way, so what
+ * a live event skips is the layout, not any of the mission's own reads: the board
+ * rows and header are derived from the whole mission read (gates, deliveries,
+ * release and visual state), and have no smaller source to render from.
+ */
+export default async function MissionDetailPage(props: PageProps) {
+  const [{ id }, search] = await Promise.all([props.params, props.searchParams]);
+  async function loadRegion() {
+    'use server';
+    return MissionDetailBody({ params: Promise.resolve({ id }), searchParams: Promise.resolve(search) });
+  }
+  return <LiveRegion load={loadRegion}>{await MissionDetailBody(props)}</LiveRegion>;
+}
+
+async function MissionDetailBody({
   params,
   searchParams,
 }: {
@@ -772,6 +796,20 @@ export default async function MissionDetailPage({
     taskId: n.taskId ?? null, createdAt: new Date(n.createdAt).getTime(),
   }));
 
+  // Highlights are Activity's episodes over this mission's own tasks (the rows
+  // already carry the kernel delivery overlay), not a second fold of the board.
+  const historyEpisodes = layout === 'feed'
+    ? buildActivityEpisodes({
+        ...missionHistoryInputs({
+          mission: { id, title: mission.title, status: mission.status, isHeld: (mission as any).isHeld, armedAt: (mission as any).armedAt, integrationBranchEnabled: (mission as any).integrationBranchEnabled },
+          tasks: allTasks as never,
+          digestOf,
+          rules: missionHelpers,
+        }),
+        rules: missionHelpers,
+      })
+    : [];
+
   const dbInitiative = (mission as any).initiative as { id: string; title: string } | null | undefined;
 
   const breadcrumb = resolveMissionBreadcrumb({
@@ -1377,6 +1415,7 @@ export default async function MissionDetailPage({
           <MissionFeedLayout
             model={boardModel}
             notes={feedNotes}
+            episodes={historyEpisodes}
             completionText={completionText}
             visual={boardVisual}
             notesEntry={<MissionNotesSheet missionId={id} />}
