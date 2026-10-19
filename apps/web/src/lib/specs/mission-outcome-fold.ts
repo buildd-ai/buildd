@@ -80,11 +80,16 @@ export function foldMissionSpec(input: {
   const grouped = new Map<string, MissionVerdictRow[]>();
   for (const r of input.rows) grouped.set(r.criterionId, [...(grouped.get(r.criterionId) ?? []), r]);
   const newest = new Map<string, MissionVerdictRow>();
-  for (const [id, rows] of grouped) newest.set(id, determiningVerdict(rows)!);
+  const outranked = new Map<string, number>();
+  for (const [id, rows] of grouped) {
+    const d = determiningVerdict(rows)!;
+    newest.set(id, d);
+    if (d.source === 'test') outranked.set(id, rows.filter((r) => (r.source ?? 'review') === 'review').length);
+  }
   const targetSha = input.target.kind === 'integration' ? input.target.headSha : null;
   const staleFails = new Set<string>();
 
-  const standings: LivingSpecCriterionStanding[] = input.scope.map((criterionId) => {
+  const fold = (criterionId: string): LivingSpecCriterionStanding => {
     const row = newest.get(criterionId);
     if (waived.has(criterionId)) return { criterionId, standing: 'waived', headSha: row?.headSha ?? null, ...(row ? { verdictId: row.id, source: row.source ?? 'review' } : {}) };
     if (!row) return { criterionId, standing: 'missing', headSha: null };
@@ -99,6 +104,11 @@ export function foldMissionSpec(input: {
       return { criterionId, standing: 'stale', headSha: row.headSha, verdictId: row.id, source: row.source ?? 'review' };
     }
     return { criterionId, standing: row.verdict, headSha: row.headSha, verdictId: row.id, source: row.source ?? 'review' };
+  };
+  const standings: LivingSpecCriterionStanding[] = input.scope.map((criterionId) => {
+    const s = fold(criterionId);
+    const n = outranked.get(criterionId);
+    return n ? { ...s, overriddenReviews: n } : s;
   });
 
   const judged = standings.filter((s) => s.standing !== 'waived');

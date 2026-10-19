@@ -100,3 +100,12 @@ describe('verdictSourceOf', () => {
     expect(verdictSourceOfEvidence(null)).toBe('review');
   });
 });
+
+describe('overriddenReviews on a standing (R-85)', () => {
+  it('counts the reviews a deciding test outranks, and is 0 when a review decides', () => {
+    const t = foldGovernedOutcome(['R-1'], [{ ...v('R-1', 'pass', HEAD, 1), source: 'test' as const }, v('R-1', 'fail', HEAD, 2), v('R-1', 'fail', HEAD, 3)], HEAD);
+    expect(t.criteria[0].overriddenReviews).toBe(2);
+    const r = foldGovernedOutcome(['R-1'], [v('R-1', 'pass', HEAD, 1)], HEAD);
+    expect(r.criteria[0].overriddenReviews).toBe(0);
+  });
+});

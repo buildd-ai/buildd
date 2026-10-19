@@ -79,33 +79,42 @@ export default function OutcomeSpecCriterion({ missionId, criterion, entry, read
           {group === 'tested' ? 'Tested' : 'Judged'}: <span className="font-mono text-text-muted">{v[group].join(', ')}</span>
         </p>
       ))}
-      {v.open.length > 0 && (
-        <ul className="space-y-1" data-testid="outcome-spec-open">
-          {v.open.map(o => (
-            <li key={o.standing} data-standing={o.standing} className="text-meta leading-snug">
-              <span className={o.standing === 'fail' ? 'text-status-error' : 'text-text-secondary'}>{o.label}</span>
-              <span className="text-text-muted">: </span>
-              {o.criterionIds.map((id, i) => (
-                <span key={id} className="font-mono text-text-muted">
-                  {i > 0 && ', '}
-                  {id}
-                  {!readonly && (
-                    <button
-                      type="button"
-                      className={`${ACTION} ml-1`}
-                      disabled={saving}
-                      data-testid={`waive-${id}`}
-                      onClick={() => { setPending({ kind: 'waive', criterionId: id }); setReason(''); }}
-                    >
-                      Waive
-                    </button>
-                  )}
-                </span>
-              ))}
+      {v.outranked.length > 0 && (
+        <ul className="space-y-1" data-testid="outcome-spec-outranked">
+          {v.outranked.map(o => (
+            <li key={o.criterionId} className="text-meta text-text-muted leading-snug">
+              <span className="font-mono">{o.criterionId}</span>: {o.note}
             </li>
           ))}
         </ul>
       )}
+      {v.open.length > 0 && (
+      <ul className="space-y-1" data-testid="outcome-spec-open">
+        {v.open.map(o => (
+          <li key={o.standing} data-standing={o.standing} className="text-meta leading-snug">
+            <span className={o.standing === 'fail' ? 'text-status-error' : 'text-text-secondary'}>{o.label}</span>
+            <span className="text-text-muted">: </span>
+            {o.criterionIds.map((id, i) => (
+              <span key={id} className="font-mono text-text-muted">
+                {i > 0 && ', '}
+                {id}
+                {!readonly && (
+                  <button
+                    type="button"
+                    className={`${ACTION} ml-1`}
+                    disabled={saving}
+                    data-testid={`waive-${id}`}
+                    onClick={() => { setPending({ kind: 'waive', criterionId: id }); setReason(''); }}
+                  >
+                    Waive
+                  </button>
+                )}
+              </span>
+            ))}
+          </li>
+        ))}
+      </ul>
+    )}
       {v.waived.length > 0 && (
         <ul className="space-y-1" data-testid="outcome-spec-waived">
           {v.waived.map(w => (
