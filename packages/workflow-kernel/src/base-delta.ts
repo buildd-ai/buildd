@@ -40,14 +40,24 @@ const CI_WORKFLOW = /^\.github\/workflows\//;
 const REPO_INVARIANT_TEST = /^scripts\/[^/]+\.test\.ts$/;
 
 /**
- * Paths where a base change is never "unrelated" to a PR, whatever files the
- * PR touches: migrations and the schema (ordering and drift), lockfiles and
- * package manifests (the whole build resolves through them), CI workflows
- * (they decide what "green" means) and repo-wide invariant tests.
+ * A migration or the schema. Their risk is ordering and drift against the
+ * PR's own migration or schema change, so on the base side of a gap they are
+ * risky only when the PR side has one too (92a439a6).
+ */
+export function isSchemaLandingPath(path: string): boolean {
+  return MIGRATION_PATH.test(path) || path === SCHEMA_FILE;
+}
+
+/**
+ * Paths where a change is never "unrelated" to a PR: migrations and the
+ * schema (ordering and drift; base-side only against the PR's own, see
+ * `isSchemaLandingPath`), lockfiles and package manifests (the whole build
+ * resolves through them), CI workflows (they decide what "green" means) and
+ * repo-wide invariant tests. All but the first pair are risky on either side,
+ * whatever files the PR touches.
  */
 export function isRiskyLandingPath(path: string): boolean {
-  return MIGRATION_PATH.test(path)
-    || path === SCHEMA_FILE
+  return isSchemaLandingPath(path)
     || LOCKFILE.test(path)
     || PACKAGE_MANIFEST.test(path)
     || CI_WORKFLOW.test(path)
@@ -106,8 +116,9 @@ export type BaseDeltaVerdict =
    * `refresh_unsafe`: the gap itself is the problem (a shared file, a risky
    * path; `files` names them), whatever its size. `refresh_exhausted`: the gap
    * is too big, unreadable, or the base requires an up-to-date branch.
-   * `basis` (refresh_unsafe only) says which: `risky_path` (either side
-   * touches a path where "unrelated" is unsafe) or `overlap` (the base changed
+   * `basis` (refresh_unsafe only) says which: `risky_path` (a path where
+   * "unrelated" is unsafe; a base-side migration or schema change only when
+   * the PR has one too) or `overlap` (the base changed
    * the PR's own files).
    */
   | { tolerated: false; cause: BaseDeltaCause; reason: string; files?: string[]; basis?: BaseDeltaBasis };
@@ -129,7 +140,9 @@ export function judgeBaseDelta(fact: BaseDeltaFact, maxBaseCommits: number): Bas
     return { tolerated: false, cause: 'refresh_exhausted', reason: 'could not list the files on one side of the gap' };
   }
   const bumps = new Set(fact.versionBumpFiles ?? []);
-  const risky = [...new Set([...fact.baseFiles.filter((f) => !bumps.has(f)), ...fact.prFiles].filter(isRiskyLandingPath))].sort();
+  const prSchema = fact.prFiles.some(isSchemaLandingPath);
+  const baseRisky = fact.baseFiles.filter((f) => !bumps.has(f) && isRiskyLandingPath(f) && (prSchema || !isSchemaLandingPath(f)));
+  const risky = [...new Set([...baseRisky, ...fact.prFiles.filter(isRiskyLandingPath)])].sort();
   if (risky.length) {
     return { tolerated: false, cause: 'refresh_unsafe', basis: 'risky_path', reason: `the gap involves a migration, schema, lockfile, manifest, CI workflow or repo-wide test (${risky.join(', ')})`, files: risky };
   }
