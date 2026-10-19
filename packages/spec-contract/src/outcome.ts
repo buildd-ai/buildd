@@ -48,6 +48,23 @@ export const verdictSourceOf = (recordedBy: unknown): VerdictSource =>
 export const verdictSourceOfEvidence = (evidence: unknown): VerdictSource =>
   verdictSourceOf(evidence && typeof evidence === 'object' ? (evidence as Record<string, unknown>).recordedBy : null);
 
+/**
+ * What verified a criterion, as kept on a verdict_criteria link. `test` and
+ * `review` are the two VerdictSources; `baseline` is a verdict taken from the
+ * state a criterion already held before the work (author `baseline:<id>`). A
+ * baseline verdict ranks as a review when the deciding verdict is chosen.
+ */
+export const VERIFIED_BY = ['test', 'review', 'baseline'] as const;
+export type VerifiedBy = (typeof VERIFIED_BY)[number];
+
+/** The verified_by of a verdict from its `recordedBy` author. */
+export const verifiedByOf = (recordedBy: unknown): VerifiedBy =>
+  typeof recordedBy === 'string' && recordedBy.startsWith('baseline:') ? 'baseline' : verdictSourceOf(recordedBy);
+
+/** The verified_by of a stored verdict row from its evidence blob. */
+export const verifiedByOfEvidence = (evidence: unknown): VerifiedBy =>
+  verifiedByOf(evidence && typeof evidence === 'object' ? (evidence as Record<string, unknown>).recordedBy : null);
+
 export interface CriterionVerdict {
   criterionId: string;
   verdict: Verdict;
