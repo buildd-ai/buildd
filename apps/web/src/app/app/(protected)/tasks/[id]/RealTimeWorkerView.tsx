@@ -1,7 +1,7 @@
 'use client';
 
 import { resolvePrDisplayState, type PrDisplayState } from '@/lib/pr-presentation';
-import { isOpenAsk } from '@/lib/open-ask';
+import { isOpenAsk, recoveredRepairTaskId } from '@/lib/open-ask';
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
@@ -314,9 +314,26 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
     return (
       <div data-testid="worker-view" data-state="platform-owned" className="space-y-5">
         <div data-testid="worker-platform-owned-banner" className="border border-border-strong px-4 py-3">
-          <p className="font-mono text-[11px] text-text-muted">buildd is handling this</p>
+          <p className="font-mono text-chip text-text-muted">buildd is handling this</p>
           <p className="mt-1 text-sm font-semibold text-text-primary">{delivery.headline}</p>
           {delivery.detail && <p className="mt-1 text-sm text-text-secondary">{delivery.detail}</p>}
+        </div>
+      </div>
+    );
+  }
+
+  // Parked `recovered`: the gate filed a repair instead of asking, and the
+  // task resumes when it completes. Nothing here for a person to answer.
+  const repairTaskId = isOpenAsk(taskStatus, worker.status) ? recoveredRepairTaskId(worker.waitingFor) : null;
+  if (repairTaskId) {
+    return (
+      <div data-testid="worker-view" data-state="recovered" className="space-y-5">
+        <div data-testid="worker-recovered-banner" className="border border-border-strong px-4 py-3">
+          <p className="font-mono text-chip text-text-muted">buildd is handling this</p>
+          <p className="mt-1 text-sm font-semibold text-text-primary">
+            Waiting on <a href={`/app/tasks/${repairTaskId}`} className="underline hover:no-underline">repair task {repairTaskId.slice(0, 8)}</a>
+          </p>
+          <p className="mt-1 text-sm text-text-secondary">A platform problem stopped this task. It resumes when the repair completes.</p>
         </div>
       </div>
     );

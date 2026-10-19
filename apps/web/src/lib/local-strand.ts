@@ -75,6 +75,20 @@ export interface LocalStrand {
   lastSessionAt: string | null;
   /** How long the claimable work has gone untouched. 0 when nothing is claimable. */
   quietMs: number;
+  /**
+   * When the quiet clock started (ms): the later of the last session touch and
+   * the moment the oldest dependency-met pending task became claimable (a
+   * future start floor included). Null when nothing is pending. `quietMs` and
+   * `stranded` are this anchor read at `now`, so a stored reading keeps the
+   * anchor and derives the other two when it is read (`strandAt`).
+   */
+  quietSince: number | null;
+}
+
+/** The two time-dependent answers of a strand, read from its anchor at `now`. */
+export function strandAt(quietSince: number | null, now: number): { stranded: boolean; quietMs: number } {
+  const quietMs = quietSince === null ? 0 : Math.max(0, now - quietSince);
+  return { stranded: quietSince !== null && quietMs >= LOCAL_SESSION_QUIET_MS, quietMs };
 }
 
 function ms(d: Date | string | null | undefined): number | null {
@@ -120,23 +134,27 @@ export function deriveLocalStrand(input: {
   const touches = input.tasks.flatMap(t => (t.workers ?? []).map(lastTouch)).filter((t): t is number => t !== null);
   const lastSession = touches.length > 0 ? Math.max(...touches) : null;
 
-  if (claimable.length === 0) {
-    return { stranded: false, claimableTaskIds: [], lastSessionAt: lastSession !== null ? new Date(lastSession).toISOString() : null, quietMs: 0 };
-  }
+  const lastSessionAt = lastSession !== null ? new Date(lastSession).toISOString() : null;
 
+  // The anchor ignores the start floor: a task still before its floor has
+  // `since` at the floor, in the future, so it reads quiet for zero until the
+  // floor passes and then counts from it. Same answer, without the clock.
+  const pending = input.tasks
+    .filter(t => t.status === 'pending')
+    .filter(t => unmetDependencyIds(t, byId).length === 0)
+    .map(t => claimableSince(t, byId))
+    .filter((t): t is number => t !== null);
   // Quiet since the later of: the session's last touch, and the oldest
   // claimable task becoming claimable. A task filed a minute ago has not been
   // ignored for an hour just because the session left an hour ago.
-  const oldestSince = claimable[0].since;
-  const anchors = [lastSession, oldestSince].filter((t): t is number => t !== null);
-  const quietMs = anchors.length > 0 ? Math.max(0, now - Math.max(...anchors)) : 0;
+  const anchors = pending.length > 0 ? [lastSession, Math.min(...pending)].filter((t): t is number => t !== null) : [];
+  const quietSince = anchors.length > 0 ? Math.max(...anchors) : null;
 
-  return {
-    stranded: anchors.length > 0 && quietMs >= LOCAL_SESSION_QUIET_MS,
-    claimableTaskIds: claimable.map(c => c.id),
-    lastSessionAt: lastSession !== null ? new Date(lastSession).toISOString() : null,
-    quietMs,
-  };
+  if (claimable.length === 0) {
+    return { stranded: false, claimableTaskIds: [], lastSessionAt, quietMs: 0, quietSince };
+  }
+
+  return { ...strandAt(quietSince, now), claimableTaskIds: claimable.map(c => c.id), lastSessionAt, quietSince };
 }
 
 /**
