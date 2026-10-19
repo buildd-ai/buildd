@@ -15,6 +15,7 @@ import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import type { TaskObjectView } from '@/components/chat/objects/object-views';
 import { getOwnerDeliveryDisplays, getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { prLifecycleFor } from '@/lib/delivery-overlay';
+import { repairStatusOf } from '@/lib/activity-delivery';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const epoch = (v: Date | string | null | undefined): number | null => {
@@ -92,6 +93,9 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
   const renderedAt = Date.now();
   // The worker's merged/closed columns say what the delivery says when the kernel owns one.
   const life = prLifecycleFor(latest, deliveryViews.get(taskId), taskId);
+  // A repair attempt of a kernel delivery reads where the ledger has it (7105282e).
+  const view = deliveryViews.get(taskId);
+  const attempt = view && view.ownerTaskId !== taskId ? view.ledger.find((a: { taskId: string | null; mode: string }) => a.taskId === taskId && a.mode === 'agent') : undefined;
   const now = latest ? taskNowState({
     ...latest,
     outputRequirement: task.outputRequirement,
@@ -130,6 +134,7 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
     } : null,
     now,
     delivery: deliveries.get(task.id) ?? null,
+    repair: attempt ? { status: repairStatusOf(attempt, view!) } : null,
     attempts: runs ?? (latest ? 1 : 0),
     waitingPrompt: latest?.waitingFor?.prompt ?? null,
     error: latest?.error ?? null,
