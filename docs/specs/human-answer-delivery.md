@@ -2,10 +2,10 @@
 title: Human Answer Delivery
 status: active
 owner: max
-last_verified: 2026-10-15
-summary: An authorised human answer MUST reach a live session or create durable retry work, and MUST never be applied twice or silently dropped.
+last_verified: 2026-10-20
+summary: An authorised human answer MUST reach a live session or a new attempt of the same task, and MUST never be applied twice or silently dropped.
 domain: tasks
-surfaces: [apps/web/src/lib/worker-instructions.ts, apps/web/src/app/api/workers/[id]/respond/route.ts]
+surfaces: [apps/web/src/lib/worker-instructions.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/lib/answer-attempt.ts]
 related: [agent-question-protocol, worker-reclamation]
 verified_by: [apps/web/src/lib/worker-instructions.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, apps/web/src/app/api/workers/[id]/instruct/route.test.ts]
 assertions:
@@ -70,46 +70,41 @@ path unchanged.
   all accept an answer. This is not laxity — it is the contract that keeps the
   `inputAsRetry` abort (above) from swallowing the question.
 - An answer that CANNOT resume the parked session (see
-  `docs/specs/answered-question-resume.md` for the five gates and the recorded
-  reason) MUST produce one new `pending` task titled
-  `Continue: <original title>` whose description carries the original task, the
-  recorded milestones, the question and the human answer verbatim, and whose
-  `context` carries `baseBranch` (the dead worker's branch), `userInput`,
-  `previousAttempt.workerId` and `iteration + 1`. Branch continuity is what
-  makes the answer resumable rather than a restart.
-- An answer that CAN resume it creates no task at all: the same worker row
-  receives the answer through the acknowledged instruction queue and continues.
-  The invariants below about superseding the worker apply to the cold path
-  only.
+  `docs/specs/answered-question-resume.md` for the gates and the recorded
+  reason) MUST reopen the answered worker's OWN task for a new attempt and
+  MUST NOT insert a task. The task goes back to `pending`, unclaimed, with the
+  question, the human answer verbatim, the milestones and the worker id in
+  `context.answeredQuestions`, `context.resumeBranch` set to the worker's
+  branch and `context.iteration + 1`; the next claim mints a new worker row
+  under the same task id. One task id, one mission slot, one dependency node.
+- An answer that CAN resume it creates no task and reopens nothing: the same
+  worker row receives the answer through the acknowledged instruction queue
+  and continues. The invariants below about superseding the worker apply to
+  the cold path only.
 - A COLD-path answering worker MUST be marked `superseded` (not `completed`, not
-  `failed`) with `waitingFor = null` — it did not finish its task, it was
-  replaced by the continuation task, so it must not count as either a success
-  or a failure. `superseded` is included in `IN_FLIGHT_WORKER_STATUSES`
+  `failed`) with `waitingFor = null` — it did not finish its task, a new
+  attempt of the same task replaces it, so it must not count as either a
+  success or a failure. `superseded` is included in `IN_FLIGHT_WORKER_STATUSES`
   (`apps/web/src/lib/failure-analytics.ts`) so it is excluded from both the
   success and failure buckets of `get_failure_analytics` /
   success-rate-by-role, and in `TERMINAL_WORKER_STATUSES`
   (`apps/web/src/app/api/workers/[id]/route.ts`) so a late runner PATCH for the
   same worker is rejected (409) rather than resurrecting or overwriting it.
-- The continuation task MUST inherit the fields that describe what the work
-  must deliver — `mode`, `taskClass`, `priority`, `outputRequirement`,
-  `outputSchema`, `category`, `pathManifest`, `backend` — since none of those
-  change because a question was asked. It MUST NOT inherit `dependsOn` (the
-  parent's prerequisites were already satisfied before the parent could run),
-  `subjectAnchor` (drives a dedup/supersession subsystem this path is not
-  part of), or `creationSource` (this row was created by whoever answered the
-  question via this route, not by the orchestrator — it always defaults to
-  `'api'` here). Copying `mode: 'planning'` is safe because the
-  planning-contract guard's `mode === 'planning'` clause fires unconditionally
-  on mode alone; it does not depend on `creationSource` or `scheduleId` (those
-  only gate the guard's separate orchestrator-fallback clause — see the
-  `mode`/`creationSource` distinction in the guard's own comment,
-  `apps/web/src/app/api/workers/[id]/route.ts`).
-- `context.baseBranch` is honoured by the runner's worktree setup only when
+  The new attempt is its own worker row, counted at its own real end.
+- Nothing is copied, because the work keeps its own row: `mode`, `taskClass`,
+  `priority`, `outputRequirement`, `outputSchema`, `category`, `pathManifest`,
+  `backend`, `runnerPreference`, `roleSlug`, `dependsOn`, `delegation`,
+  `missionId` and the branch name are the task's own. (The cold path used to
+  insert a `Continue:` task and copy a chosen subset of these; every field it
+  dropped was a bug of that copy.)
+- A task that is `completed` or `cancelled` is never reopened by an answer: the
+  answer is refused (`409 task_closed`) and nothing is written.
+- `context.resumeBranch` is honoured by the runner's worktree setup only when
   that branch already exists on the remote — i.e. the original worker had
   already pushed (for example, a PR was already open). If the question was
-  asked before anything was pushed, the runner falls back to a fresh worktree
-  from the default branch; the server cannot detect at `/respond` time which
-  case applies, so "resumes the existing work" is not a guarantee.
+  asked before anything was pushed, the new attempt starts from a fresh
+  worktree on the base; the server cannot detect at `/respond` time which case
+  applies, so "resumes the existing work" is not a guarantee.
 - An answer for a worker with no `waitingFor` MUST be refused with HTTP 400. This
   refusal is the only defence against a second person answering the same prompt.
 - Authorisation: a session user with workspace access, or an API key whose
@@ -128,21 +123,23 @@ path unchanged.
 
 **Acceptance criteria**:
 - AC-4: GIVEN a worker with `status: 'failed'`, `error: 'needs_input: …'`
-  and `waitingFor` set WHEN `POST /respond` is called THEN HTTP 200 with a new
-  `taskId`; the answer is NOT lost to the worker's terminal status.
+  and `waitingFor` set WHEN `POST /respond` is called THEN HTTP 200 with the
+  worker's own `taskId`, reopened `pending`; the answer is NOT lost to the
+  worker's terminal status.
 - AC-5: GIVEN a worker whose `waitingFor` is `null` WHEN `POST /respond` is
-  called THEN HTTP 400 `Worker is not waiting for input` and no task is created.
+  called THEN HTTP 400 and no task is created or reopened.
 - AC-6: GIVEN an API key whose account differs from `workers.accountId`
-  WHEN `POST /respond` is called THEN HTTP 403 and no task is created.
-- AC-7: GIVEN a successful `/respond` THEN the new task's
-  `context.baseBranch` equals the answered worker's `branch` and
+  WHEN `POST /respond` is called THEN HTTP 403 and no task is created or
+  reopened.
+- AC-7: GIVEN a successful cold `/respond` THEN the answered task's own
+  `context.resumeBranch` equals the answered worker's `branch` and
   `context.iteration` is the previous iteration + 1.
 - AC-29: GIVEN a successful `/respond` THEN the answered worker's `status`
   is `superseded`, never `completed`.
-- AC-30: GIVEN a parent task with `priority`, `outputRequirement`,
-  `outputSchema`, `category`, `pathManifest`, `backend` set WHEN `/respond`
-  creates the continuation THEN all six are copied onto it, and `dependsOn`,
-  `subjectAnchor`, `creationSource` are NOT copied.
+- AC-30: GIVEN a task with `priority`, `outputRequirement`, `outputSchema`,
+  `category`, `pathManifest`, `backend`, `dependsOn` and `delegation` set WHEN
+  a cold `/respond` reopens it THEN no task is inserted and every one of those
+  is unchanged on the same row.
 - AC-31: GIVEN a task with `mode: 'execution'`, `creationSource:
   'orchestrator'`, `scheduleId: null` (an auto-approved mission builder child
   from `approve-plan.ts`, not a cron-dispatched organizer cycle) WHEN its
@@ -157,7 +154,9 @@ path unchanged.
 **Code surface**:
 - `apps/web/src/app/api/workers/[id]/respond/route.ts` `POST` (the
   `waitingFor` gate), `respondByResume`, `respondToInteractiveSession`,
-  `respondByContinuation` (the `Continue:` task and the `superseded` write)
+  `respondByContinuation` (the `superseded` write and the reopen)
+- `apps/web/src/lib/answer-attempt.ts` — `reopenTaskForAnsweredAttempt`, the
+  one writer of the reopen
 - Client entry: `apps/web/src/app/app/(protected)/tasks/[id]/RealTimeWorkerView.tsx`
   (an answer link, `?respond=1`, focuses its reply box; the old `/respond` page redirects there)
 

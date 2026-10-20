@@ -31,6 +31,7 @@ import { parseCredentialBlock, CREDENTIAL_BLOCK_CONTEXT_KEY } from '@/lib/creden
 import { displayWorkspaceName, isLiveWorkerStatus, isTerminalTaskStatus, ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { isValidTaskId } from '@/lib/task-id';
+import { answeredAttemptLine } from '@/lib/answer-resume';
 import PlanningNotice from './PlanningNotice';
 import LocalTime from '../LocalTime';
 import ReassignButton from './ReassignButton';
@@ -1287,12 +1288,13 @@ async function TaskDetailPage({
                       {worker.status === 'superseded' && (
                         <p className="text-[11px] text-text-muted mt-0.5">
                           Session ended after you answered the question.{' '}
+                          {/* A legacy record links its Continue: task; a new attempt stays on this task. */}
                           {worker.continuationTaskId ? (
                             <a href={taskPageHref({ taskId: worker.continuationTaskId, missionId: task.missionId })} className="text-status-info hover:underline">
                               Continued in a new task →
                             </a>
                           ) : (
-                            'Continuation task not recorded.'
+                            answeredAttemptLine(task.context, worker.id)
                           )}
                         </p>
                       )}
