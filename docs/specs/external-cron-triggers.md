@@ -169,7 +169,7 @@ is how an MCP connector credential holding a valid refresh token stayed dead for
 - `scripts/sync-crons.test.ts`: cron-field expansion and drift-detection tests.
 - `scripts/cron-coverage.test.ts`: every route in exactly one trigger set,
   bearer auth on every externally triggered route.
-- `.github/workflows/cron-sync.yml`: probes the secret against production,
+- `.github/workflows/post-deploy.yml` (job `cron-sync`): probes the secret against production,
   then runs `cron:sync`, on successful Production deploys only. Reads from the
   default branch (`dev`).
 - `apps/web/src/app/api/cron/routing-calibration/route.ts`: the probe target.
