@@ -284,6 +284,8 @@ export interface SpecPanes {
   attachmentSources?: Record<string, AttachmentSource>;
   /** Review only: the change summary, the per-criterion change list, the other text and the summary check ("Reviewing a spec revision" R-1 to R-5). */
   changes?: Pick<RevisionReview, 'summary' | 'lines' | 'otherText' | 'mismatch'>;
+  /** Review only, nothing approved yet: what this revision changed from the one before it, so a later draft still shows its own change. */
+  since?: { revision: number; changes: Pick<RevisionReview, 'summary' | 'lines' | 'otherText' | 'mismatch'> } | null;
 }
 
 export type SpecPageView =
@@ -381,18 +383,25 @@ async function readRevision(spec: SpecRow, n: number): Promise<Reading | null> {
 /**
  * What approving the head would put in force: the approved revision against
  * the head, or with nothing approved the whole head, from the kept review of
- * that pair (R-8). The caller has read the spec row, checked reach and
- * checked that the reader may approve.
+ * that pair (R-8), and then also what the head changed from the revision
+ * before it (both pairs are kept when a revision is written). The caller has
+ * read the spec row, checked reach and checked that the reader may approve.
  */
 async function reviewPanes(spec: SpecRow, reading: Reading | null): Promise<SpecPanes | null> {
   const sources = attachmentSources(spec.id, spec.headRevision).catch(() => ({}));
   const headP = reading?.revision.revision === spec.headRevision ? Promise.resolve(reading) : readRevision(spec, spec.headRevision);
   const head = await headP;
   if (!head) return null;
-  const r = await revisionReview(spec, spec.approvedRevision ?? 0, spec.headRevision, new Map([[spec.headRevision, head.body]]));
+  const bodies = new Map([[spec.headRevision, head.body]]);
+  const before = spec.approvedRevision == null && spec.headRevision > 1 ? spec.headRevision - 1 : null;
+  const [r, since] = await Promise.all([
+    revisionReview(spec, spec.approvedRevision ?? 0, spec.headRevision, bodies),
+    before ? revisionReview(spec, before, spec.headRevision, bodies).catch(() => null) : null,
+  ]);
   if (!r) return null;
   const review = panes(r.hunks, r.omittedLines, head.body, spec.headRevision, spec.approvedRevision);
   review.changes = { summary: r.summary, lines: r.lines, otherText: r.otherText, mismatch: r.mismatch };
+  review.since = before && since ? { revision: before, changes: { summary: since.summary, lines: since.lines, otherText: since.otherText, mismatch: since.mismatch } } : null;
   review.attachmentSources = await sources;
   return review;
 }

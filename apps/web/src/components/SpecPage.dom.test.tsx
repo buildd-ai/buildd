@@ -90,9 +90,13 @@ describe('readingLine', () => {
     expect(readingLine({ ...base, canApprove: false })).toBe('Revision 2 waits for approval.');
     expect(readingLine(base)).toBe('Revision 2 waits for your approval.');
   });
-  it('says nothing is approved yet for a never-approved draft', () => {
+  it('says nothing for a never-approved draft: "draft, never approved" is in the header', () => {
     expect(readingLine({ ...base, spec: { ...base.spec, approvedRevision: null }, reading: { revision: 2, approved: false, isHead: true }, waiting: 2 }))
-      .toBe('Nothing is approved yet.');
+      .toBeNull();
+  });
+  it('a never-approved draft read at an older revision still names the one waiting', () => {
+    expect(readingLine({ ...base, spec: { ...base.spec, approvedRevision: null }, reading: { revision: 1, approved: false, isHead: false }, waiting: 2 }))
+      .toBe('Revision 2 waits for your approval.');
   });
   it('names the approved revision when reading another one', () => {
     expect(readingLine({ ...base, reading: { revision: 2, approved: false, isHead: true } }))
@@ -277,7 +281,7 @@ describe('SpecPage', () => {
     globalThis.fetch = (() => new Promise<Response>(r => { answer = r; })) as unknown as typeof fetch;
     const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };
     act(() => root.render(<SpecPage view={{ ...base, review }} />));
-    expect(q('spec-page-review-panel')!.querySelector('h2')!.textContent).toBe('Revision 2 (nothing approved yet)');
+    expect(q('spec-page-review-panel')!.querySelector('h2')!.textContent).toBe('Review revision 2');
     // Approve is the panel's last block, in the dock that sticks to the bottom of a phone screen: in view while the text scrolls.
     const panel = q('spec-page-review-panel')!;
     const last = panel.lastElementChild as HTMLElement;
@@ -542,13 +546,41 @@ describe('Delivery and verification (Slice 13, R-61, AC-48)', () => {
       },
     };
     act(() => root.render(<SpecPage view={{ ...base, criterionHistory }} />));
-    expect(q('spec-criterion-history-link')!.getAttribute('href')).toBe(`/app/specs/${SPEC}?history=R-1#criterion-history`);
     const entries = [...container.querySelectorAll('[data-testid="spec-criterion-history-entry"]')];
     // Newest first, the changed words marked against the wording before.
     expect(entries.map((e) => e.getAttribute('data-revision'))).toEqual(['2', '1']);
     expect(entries[0].querySelector('[data-testid="spec-review-word-added"]')!.textContent).toBe('cart');
     expect(entries[0].textContent).toContain('not approved');
     expect(entries[1].textContent).toContain('approved');
+  });
+
+  it('a criterion opens its history in place, under its own words, on its id or History (R-12)', async () => {
+    const history = {
+      criterionId: 'R-1', head: 2, retiredIn: null, replacedBy: null, replaces: [],
+      entries: [
+        { criterionId: 'R-1', revision: 1, kind: 'added' as const, text: 'Totals in the shopper currency.', textHash: 'a', section: 'Checkout', changeSummary: null, author: 'person' as const, approved: true },
+        { criterionId: 'R-1', revision: 2, kind: 'changed' as const, text: 'Totals in the cart currency.', textHash: 'b', section: 'Checkout', changeSummary: 'Pick the currency', author: 'agent' as const, approved: false },
+      ],
+    };
+    const asked: string[] = [];
+    globalThis.fetch = (async (url: string) => { asked.push(url); return new Response(JSON.stringify({ history }), { status: 200 }); }) as unknown as typeof fetch;
+    act(() => root.render(<SpecPage view={base} />));
+    const row = container.querySelector('#R-1')!;
+    expect(row.querySelector('[data-testid="spec-criterion-inline-history"]')).toBeNull();
+    // Not a link that only scrolls: the id opens the history right here.
+    const id = row.querySelector('[data-testid="spec-criterion-id"]') as HTMLButtonElement;
+    expect(id.tagName).toBe('BUTTON');
+    await act(async () => { id.click(); });
+    expect(asked).toEqual([`/api/specs/${SPEC}/criteria/R-1`]);
+    const inline = row.querySelector('[data-testid="spec-criterion-inline-history"]')!;
+    expect([...inline.querySelectorAll('[data-testid="spec-criterion-history-entry"]')].map((e) => e.getAttribute('data-revision'))).toEqual(['2', '1']);
+    expect(id.getAttribute('aria-expanded')).toBe('true');
+    expect(row.querySelector('[data-testid="spec-criterion-history-link"]')!.textContent).toBe('Hide history');
+    // Closed and opened again, it is not read twice.
+    await act(async () => { (row.querySelector('[data-testid="spec-criterion-history-link"]') as HTMLButtonElement).click(); });
+    expect(row.querySelector('[data-testid="spec-criterion-inline-history"]')).toBeNull();
+    await act(async () => { id.click(); });
+    expect(asked).toHaveLength(1);
   });
 
   it('on the revision in force, work built to an older wording reads "Passed an earlier wording" under the criterion (R-13)', () => {
@@ -674,7 +706,9 @@ describe('reviewing a first revision, and on a phone (320 and 390 wide)', () => 
 
   it('a long 12-section first revision opens as the rendered spec: no +192 diff, no Spec/Changes switch, no row of Added labels', () => {
     act(() => root.render(<SpecPage view={{ ...draft, review: first }} />));
-    expect(q('spec-page-review-first')!.textContent).toBe('The whole spec, as approving would put it in force.');
+    expect(q('spec-page-review-panel')!.querySelector('h2')!.textContent).toBe('Review revision 1');
+    expect(q('spec-page-review-first')!.textContent).toBe('First approval. Approving puts the whole spec in force.');
+    expect(q('spec-page-review-since')).toBeNull();
     expect(q('spec-page-review-body')!.querySelectorAll('h2')).toHaveLength(12);
     expect(q('spec-approval-diff')).toBeNull();
     expect(q('spec-page-full-diff')).toBeNull();
@@ -683,6 +717,19 @@ describe('reviewing a first revision, and on a phone (320 and 390 wide)', () => 
     expect(container.querySelectorAll('[data-testid="spec-review-change"]')).toHaveLength(0);
     expect(q('spec-review-summary')!.textContent).toBe('First draft');
     expect(q('spec-page-approve')!.textContent).toBe('Approve revision 1');
+  });
+
+  it('a later draft with nothing approved leads with what it changed since the revision before, then the whole spec', () => {
+    const since = { revision: 2, changes: { summary: 'Adds R-12', mismatch: null, lines: [{ kind: 'added' as const, id: 'R-12', text: 'Part 12 holds.', section: '12. Part 12' }], otherText: [] } };
+    act(() => root.render(<SpecPage view={{ ...draft, spec: { ...draft.spec, headRevision: 3 }, waiting: 3, review: { ...first, revision: 3, since } }} />));
+    expect(q('spec-page-review-panel')!.querySelector('h2')!.textContent).toBe('Review revision 3');
+    const block = q('spec-page-review-since')!;
+    expect(block.querySelector('h3')!.textContent).toBe('Changed since revision 2');
+    expect(block.querySelector('[data-testid="spec-review-summary"]')!.textContent).toBe('Adds R-12');
+    expect([...block.querySelectorAll('[data-testid="spec-review-change-id"]')].map((e) => e.textContent)).toEqual(['R-12']);
+    // The summary shows once, in the change list, and the whole spec still follows.
+    expect(container.querySelectorAll('[data-testid="spec-review-summary"]')).toHaveLength(1);
+    expect(q('spec-page-review-body')!.querySelectorAll('h2')).toHaveLength(12);
   });
 
   it('twelve added sections of an amendment are one "Added" row, not twelve', () => {
