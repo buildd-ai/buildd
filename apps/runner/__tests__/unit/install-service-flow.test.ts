@@ -38,14 +38,12 @@ describe('install.ps1 service offer', () => {
     expect(installPs1).toMatch(/\[switch\]\$Service/);
   });
 
-  test('registers a Scheduled Task that runs at logon and restarts on crash', () => {
-    expect(installPs1).toContain('New-ScheduledTaskTrigger -AtLogOn');
-    expect(installPs1).toContain('-RestartCount');
-    expect(installPs1).toContain('Register-ScheduledTask');
-  });
-
-  test('runs as the installing user, never elevated/system', () => {
-    expect(installPs1).toContain('-LogonType Interactive -RunLevel Limited');
+  // The Scheduled Task itself (logon trigger, limited token, restart on failure)
+  // is service.ts generateWindowsTaskXml, covered by service.test.ts.
+  test('installs the service by invoking the buildd CLI, not duplicating its logic', () => {
+    expect(installPs1).toContain('& "$BinDir\\buildd.cmd" service install');
+    expect(installPs1).toContain("$env:BUILDD_INSTALLER = '1'");
+    expect(installPs1).not.toContain('Register-ScheduledTask');
   });
 
   test('buildd.cmd restarts on exit code 75 like the bash launcher', () => {

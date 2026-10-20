@@ -89,7 +89,7 @@ What `service install` does, per platform:
 |---|---|---|
 | macOS | a `launchd` LaunchAgent (`RunAtLoad` + `KeepAlive`) | `~/Library/LaunchAgents/dev.buildd.runner.plist` |
 | Linux | a `systemd --user` unit (`Restart=always`) | `~/.config/systemd/user/buildd-runner.service` |
-| Windows | a Scheduled Task (`AtLogOn` trigger, restart-on-crash settings) | registered task `buildd runner` |
+| Windows | a Scheduled Task (at your logon, limited token, restart on failure, no console window) | task `buildd runner`, defined by `~/.buildd/service/buildd-runner.xml` |
 
 Logs land in `~/.buildd/logs/stdout.log` and `~/.buildd/logs/stderr.log` (or
 under `$BUILDD_HOME/logs` if you've overridden `BUILDD_HOME`).
@@ -104,20 +104,14 @@ loginctl enable-linger $USER
 `buildd service install` prints this reminder; `buildd service status` warns
 if linger isn't enabled yet.
 
-On Windows, the Scheduled Task is registered by `install.ps1` directly (there
-is no `buildd service` subcommand on Windows — the launcher there,
-`buildd.cmd`, has no subcommand dispatch). Pass `-Service` to register it
-non-interactively:
+On Windows, `install.ps1 -Service` runs `buildd service install` for you:
 
 ```powershell
 &([ScriptBlock]::Create((irm buildd.dev/install.ps1))) -Service
 ```
 
-Manage or remove it with the standard `ScheduledTasks` PowerShell module:
-
-```powershell
-Get-ScheduledTask -TaskName 'buildd runner' | Unregister-ScheduledTask -Confirm:$false
-```
+**Windows only:** `buildd service uninstall` (or a stop from Task Scheduler)
+ends the runner at once, so its agents get no window to pause first.
 
 Either way, the service always runs **as the installing user** — never
 root/Administrator/SYSTEM — and it keeps the exact same self-update behavior

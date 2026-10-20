@@ -81,6 +81,13 @@ describe('install.ps1 launcher', () => {
     expect(launcher.indexOf('=="install"')).toBeLessThan(launcher.indexOf(':runloop'));
   });
 
+  test('sends `buildd service` to service.ts, as the bash launcher does', () => {
+    const branch = launcher.match(/if \/i "%SUBCMD%"=="service" \(([\s\S]*?)\n\)/)?.[1] ?? '';
+    expect(branch).toContain('apps\\runner\\src\\service.ts" !REST!');
+    expect(branch).toContain('exit /b');
+    expect(launcher.indexOf('=="service"')).toBeLessThan(launcher.indexOf(':runloop'));
+  });
+
   // `set "PROJECTS_ROOT=!ROOTS!"` without delayed expansion set the literal text !ROOTS!.
   test('enables delayed expansion for the !VAR! it uses', () => {
     expect(launcher).toMatch(/!\w+!/);
