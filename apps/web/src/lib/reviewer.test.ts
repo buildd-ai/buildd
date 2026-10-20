@@ -232,6 +232,8 @@ import {
   supersedeReviewerTaskOnMerge,
   supersedeFixTaskOnApproval,
   REVIEWER_TASK_OUTPUT_SCHEMA,
+  REVIEWER_CONTEXT_TEMPLATE,
+  DELTA_REVIEWER_CONTEXT_TEMPLATE,
 } from './reviewer';
 import { composeBodyWithLede } from '@buildd/core/pr-lede';
 import { toReviewerCriterionRefs } from './criteria-reviewer-findings';
@@ -2596,5 +2598,17 @@ describe('compositionScopeSection: the delta reviewer of a composed PR', () => {
     expect(text).toContain('Review ONLY these paths');
     expect(text).toContain('- `apps/web/src/lib/x.ts`');
     expect(text).toContain("keeps both sides' changes");
+  });
+});
+
+describe('reviewer prompt templates — feedback is publishable, diagnostics stay internal', () => {
+  it.each([
+    ['full', REVIEWER_CONTEXT_TEMPLATE],
+    ['delta', DELTA_REVIEWER_CONTEXT_TEMPLATE],
+  ])('%s template scopes feedback to actionable findings', (_n, tpl) => {
+    expect(tpl).toContain('may be posted to GitHub as-is');
+    expect(tpl).toContain('specific, actionable findings and the file paths');
+    expect(tpl).toContain('technical detail is needed to fix each defect');
+    expect(tpl).toContain("do not explain yourself or GitHub's limits on self-review");
   });
 });

@@ -125,6 +125,12 @@ export interface TaskActionZoneProps {
    */
   framed?: boolean;
   /**
+   * The host already draws this task's question (the mission Ask banner), so
+   * the zone draws none: two cards for one question each keep their own
+   * answer state, and an answer in one leaves the other open to tap.
+   */
+  questionShownAbove?: boolean;
+  /**
    * A way into the task (the strip's Task link). It joins the Run now row, at
    * that row's button size, so a local task's actions read as one row (R-39);
    * with no Run now row it closes the zone on its own row.
@@ -158,6 +164,7 @@ export default function TaskActionZone({
   taskTitle = null,
   onChanged,
   framed = true,
+  questionShownAbove = false,
   trailing = null,
 }: TaskActionZoneProps) {
   const displayTz = useDisplayTimezone();
@@ -263,7 +270,7 @@ export default function TaskActionZone({
       {/* A question → the task page's own question card, compact: the same
           question (its note's headline too), options, recommendation and
           own-words field, answered in place. */}
-      {answer.outcome || answeredAwaitingAgent ? (
+      {questionShownAbove ? null : answer.outcome || answeredAwaitingAgent ? (
         <AnswerRecorded outcome={answer.outcome} awaitingAgent={!MOVED_ON.has(phase)} />
       ) : has('answer') && worker?.waitingFor && (
         <TaskQuestion

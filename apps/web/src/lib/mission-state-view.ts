@@ -201,10 +201,18 @@ export type WaitingOnDescriptor =
        */
       blockedBy?: { prNumbers: number[]; unfinished: number };
       /**
+       * Spec 8e137fdb I-15: open rows a worker started (`assigned` / `in_progress`)
+       * with nothing executing them now. Work status and execution are separate
+       * axes: these are interrupted, not running, and the cause is not guessed.
+       */
+      interrupted?: { started: number };
+      /**
        * The claim loop's hold on every claimable open row, in words
        * (`claimHoldPhrase`): the honest cause instead of "nothing is running".
        */
       hold?: string;
+      /** The claim gate's own key for `hold` (`ClaimHoldReason`, or `browser_runner`): the presentation reads the cause from it, never from the phrase. */
+      holdKey?: string;
       /**
        * The mission PR has merged and only the visual review is left (spec
        * f7f67f1a R-32): the mission is waiting on a check, not stalled.
@@ -1561,7 +1569,9 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
     // because the hold lifting would still leave nothing able to run it.
     const holds = claimable.map(t => (t.missingBrowser ? BROWSER_RUNNER_MISSING : claimHoldPhrase(t.holdReason)));
     const hold = holds.every(h => h && h === holds[0]) ? holds[0]! : undefined;
-    const base = { kind: 'task' as const, count: pendingCount, taskIds: citedIds, byStatus, ...(isLocal(input) ? { local: true as const } : {}) };
+    const holdKeys = claimable.map(t => (t.missingBrowser ? 'browser_runner' : t.holdReason ?? ''));
+    const holdKey = hold && holdKeys.every(k => k && k === holdKeys[0]) ? holdKeys[0] : undefined;
+    const base = { kind: 'task' as const, count: pendingCount, taskIds: citedIds, byStatus, ...(isLocal(input) ? { local: true as const } : {}), ...(holdKey ? { holdKey } : {}) };
     if (input.missionPrMerged && claimable.every(t => t.surfaceAudit)) {
       const vr = input.visualReview?.status;
       if (vr === 'blocked') {
@@ -1617,12 +1627,16 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
     }
   }
 
+  const started = (byStatus.assigned ?? 0) + (byStatus.in_progress ?? 0);
+  const interrupted = !live && started > 0 ? { started } : null;
   return {
     kind: live ? 'running' : 'blocked',
     waitingOn: {
       kind: 'task',
       tone: live ? 'neutral' : 'warning',
-      label: live
+      label: interrupted
+        ? `Interrupted: ${started === 1 ? '1 started task has' : `${started} started tasks have`} no agent running`
+        : live
         ? breakdown
           ? `${tasksWord} still open: ${breakdown}`
           : `${tasksWord} still open`
@@ -1632,6 +1646,7 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
       count: pendingCount,
       taskIds: citedIds,
       byStatus,
+      ...(interrupted ? { interrupted } : {}),
       ...(isLocal(input) ? { local: true as const } : {}),
     },
     displayState: live ? 'running' : 'stalled',
@@ -1976,8 +1991,11 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
       if (d.waitingNoCause) return `${d.count === 1 ? 'the open task is' : `${d.count} open tasks are`} waiting`;
       // `neutral` is open work with something live on the mission; `warning`
       // is the stall, where nothing is.
+      if (d.interrupted) {
+        return d.interrupted.started === 1 ? 'interrupted: a started task has no agent running' : `interrupted: ${d.interrupted.started} started tasks have no agent running`;
+      }
       if (d.tone === 'warning') {
-        return d.count === 1 ? 'nothing is running the open task' : `nothing is running its ${d.count} open tasks`;
+        return d.count === 1 ? 'waiting for an agent to pick up the open task' : `waiting for an agent to pick up ${d.count} open tasks`;
       }
       return d.count === 1 ? '1 task to do' : `${d.count} tasks to do`;
     case 'task_failed':
@@ -2231,6 +2249,7 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
           ? 'Start it from your session with claim_task {taskId}, or cancel it if you no longer want the work.'
           : 'Start them from your session with claim_task {taskId}, or cancel the ones you no longer want.';
       }
+      if (waitingOn.interrupted) return 'Restart the interrupted work from its task page, or cancel it if you no longer want it.';
       return 'Start an agent on the open task(s), or cancel them if you no longer want the work.';
     case 'task_failed':
       return waitingOn.infra

@@ -1,0 +1,108 @@
+name: Claude Artifact Smoke
+
+# Real-CLI smoke for claude.ai artifact access (PR #3400). Gate mode only:
+# apps/runner/scripts/claude-artifact-smoke.ts runs the Claude Code binary the
+# runner bundles, with the env and PreToolUse hook built by the runner's own
+# functions, and checks that the CLI offers `Artifact` with the opt-in and not
+# without it, and that the hook refuses publish and delete. The CLI decides tool
+# availability before any API call, so this needs no credential: no Claude
+# login is ever stored in CI (a subscription login stays on the machine that
+# owns it). The canvas read itself (full mode) runs on a runner host with its
+# own login; this workflow records it as not exercised.
+#
+# Not on every PR: the mocked-SDK version runs in the unit suite
+# (apps/runner/__tests__/unit/claude-ai-artifacts-session.test.ts). This catches
+# what that cannot: a Claude Code / Agent SDK bump that changes how the CLI
+# gates the tool. So: daily, on main pushes that touch the SDK pin or the gate,
+# and by hand.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/runner/package.json'
+      - 'bun.lock'
+      - 'packages/shared/src/claude-ai-artifacts.ts'
+      - 'apps/runner/src/agent-env.ts'
+      - 'apps/runner/src/hook-factory.ts'
+      - 'apps/runner/src/sdk-binary-path.ts'
+      - 'apps/runner/scripts/claude-artifact-smoke.ts'
+      - '.github/workflows/claude-artifact-smoke.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: claude-artifact-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Artifact gate (real CLI, no login)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.3"
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run the smoke (one attempt, no retries)
+        id: smoke
+        env:
+          ARTIFACT_SMOKE_MODE: gate
+          ARTIFACT_SMOKE_OUT: ${{ runner.temp }}/claude-artifact-smoke
+          ARTIFACT_SMOKE_TIMEOUT_MS: '120000'
+          BUILDD_SHA: ${{ github.sha }}
+        run: bun apps/runner/scripts/claude-artifact-smoke.ts
+
+      - name: Evidence to the job summary
+        if: always()
+        env:
+          EVIDENCE: ${{ runner.temp }}/claude-artifact-smoke/claude-artifact-smoke.json
+        run: |
+          {
+            echo "### Claude artifact smoke (gate)"
+            echo
+            if [ -f "$EVIDENCE" ]; then
+              jq -r '"sha `\(.sha)` · runner \(.runnerVersion) · Claude Code \(.cliVersion // "?") · overall **\(.overall)**\n"' "$EVIDENCE"
+              echo "| check | status | detail |"
+              echo "|---|---|---|"
+              jq -r '.checks[] | "| \(.name) | \(.status)\(if .required then "" else " (not required)" end) | \(.detail) |"' "$EVIDENCE"
+            else
+              echo "No evidence file: the smoke did not get far enough to write one."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: claude-artifact-smoke
+          path: ${{ runner.temp }}/claude-artifact-smoke/
+          if-no-files-found: warn
+
+      - name: Alert on failure
+        if: failure() && steps.smoke.outcome == 'failure' && github.event_name != 'workflow_dispatch'
+        env:
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+          PUSHOVER_TOKEN_ALERT: ${{ secrets.PUSHOVER_TOKEN_ALERT }}
+        run: |
+          RUN="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "::error::Claude artifact gate smoke failed: the bundled Claude Code no longer gates the Artifact tool the way the runner expects. $RUN"
+          if [ -z "$PUSHOVER_USER" ] || [ -z "$PUSHOVER_TOKEN_ALERT" ]; then exit 0; fi
+          curl -s --form-string "token=${PUSHOVER_TOKEN_ALERT}" \
+            --form-string "user=${PUSHOVER_USER}" \
+            --form-string "title=Claude artifact gate smoke failed" \
+            --form-string "message=The bundled Claude Code no longer gates the Artifact tool the way the runner expects (opt-in env, or the runner hook). Check the CLI/SDK bump that landed." \
+            --form-string "priority=1" \
+            --form-string "url=${RUN}" \
+            --form-string "url_title=View CI run" \
+            https://api.pushover.net/1/messages.json || true
