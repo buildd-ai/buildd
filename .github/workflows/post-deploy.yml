@@ -1,0 +1,215 @@
+name: Post-deploy
+
+# Everything that reacts to a Vercel Production deployment, in one workflow so a
+# deploy produces one run (not one per concern, each mostly skipped for Preview
+# deploys). Replaces cron-sync.yml, deploy-annotation.yml and deploy-recover.yml;
+# the jobs and their conditions are unchanged. Owner: platform/release.
+#
+# - cron-sync: reconcile the external cron scheduler (cron-job.org) to
+#   cron-manifest.json after a successful deploy. Idempotent; origin-scoped; no
+#   --prune. Requires CRONJOB_API_KEY, CRON_SECRET; optional CRON_TARGET_BASE_URL
+#   and the CRON_PROFILES variable. See docs/specs/external-cron-triggers.md.
+#   Vercel-native crons do not fire in this project, so every route lives there.
+# - annotate: advisory deploy marker on the Axiom `buildd-traces` dataset
+#   (AXIOM_ANNOTATIONS_TOKEN, AXIOM_ORG_ID). Never affects the deploy.
+# - recover: on a failed Production build matching a known infrastructure cause
+#   (Google Fonts fetch, SIGKILL/OOM, network), redeploy the same commit once; a
+#   second failure or an unknown cause fails the job (the alert). Needs VERCEL_TOKEN.
+# - verify: confirm /api/deploy-identity reports the deployed SHA within 10 min.
+#
+# deployment_status workflows run from the file on the DEFAULT branch (`dev`),
+# even for deploys of `main`, so edits take effect once merged to dev.
+# deploy-control-plane.yml stays separate: it also has a manual dispatch path
+# and its own concurrency group.
+
+on:
+  deployment_status: {}
+
+permissions:
+  deployments: read
+  contents: read
+
+jobs:
+  cron-sync:
+    runs-on: ubuntu-latest
+    # Only Production, and only on a successful deploy.
+    if: >
+      github.event.deployment.environment == 'Production' &&
+      github.event.deployment_status.state == 'success'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # CRON_SECRET exists in three places: Vercel's env (the validator), this
+      # repo's secrets (what we write into new jobs), and each provider job's
+      # Authorization header (the sender). Comparing the GitHub and Vercel
+      # copies directly is impossible — but we don't need to. Vercel is the
+      # authority, so we ask it: hit a read-only cron route with the secret we
+      # hold and see whether it accepts. 401 means this repo's secret has
+      # drifted from production. Runs BEFORE sync so a bad secret is never
+      # written into a newly-created job.
+      - name: Verify CRON_SECRET matches production
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CRON_TARGET_BASE_URL: ${{ secrets.CRON_TARGET_BASE_URL }}
+        run: |
+          BASE="${CRON_TARGET_BASE_URL:-https://buildd.dev}"
+          PROBE="$BASE/api/cron/routing-calibration"   # GET, read-only, no side effects
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -m 30 \
+            -H "Authorization: Bearer $CRON_SECRET" "$PROBE" || echo "000")
+          case "$code" in
+            200)
+              echo "CRON_SECRET matches production (probe returned 200)." ;;
+            401)
+              echo "::error::CRON_SECRET in this repo's secrets does NOT match Vercel production — $PROBE returned 401. Fix the repo secret before syncing, or newly created cron jobs will 401."
+              exit 1 ;;
+            000)
+              echo "::error::Could not reach $PROBE (network/timeout). Not syncing."
+              exit 1 ;;
+            *)
+              echo "::warning::Probe returned HTTP $code — not an auth failure, so the secret is presumed correct, but $PROBE is unhealthy."
+              ;;
+          esac
+
+      - name: Sync external cron scheduler to manifest
+        env:
+          CRONJOB_API_KEY: ${{ secrets.CRONJOB_API_KEY }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CRON_TARGET_BASE_URL: ${{ secrets.CRON_TARGET_BASE_URL }}
+          CRON_PROFILES: ${{ vars.CRON_PROFILES }}
+        run: |
+          if [ -z "$CRONJOB_API_KEY" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRONJOB_API_KEY / CRON_SECRET not set as repo secrets — cannot sync the external cron scheduler"
+            exit 1
+          fi
+          bun run cron:sync
+
+  annotate:
+    runs-on: ubuntu-latest
+    if: >
+      github.event.deployment.environment == 'Production' &&
+      github.event.deployment_status.state == 'success'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.deployment.sha }}
+          sparse-checkout: apps/web/package.json
+          sparse-checkout-cone-mode: false
+
+      - name: Post deploy annotation to Axiom
+        env:
+          AXIOM_TOKEN: ${{ secrets.AXIOM_ANNOTATIONS_TOKEN }}
+          AXIOM_ORG_ID: ${{ secrets.AXIOM_ORG_ID }}
+          SHA: ${{ github.event.deployment.sha }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          if [ -z "$AXIOM_TOKEN" ] || [ -z "$AXIOM_ORG_ID" ]; then
+            echo "::warning::AXIOM_ANNOTATIONS_TOKEN / AXIOM_ORG_ID not set; skipping deploy annotation"
+            exit 0
+          fi
+          VERSION=$(jq -r .version apps/web/package.json)
+          body=$(jq -n --arg v "$VERSION" --arg sha "$SHA" --arg url "$REPO_URL/commit/$SHA" '{
+            type: "deploy",
+            datasets: ["buildd-traces"],
+            title: ("Deploy v" + $v),
+            description: ("Production deploy of " + $sha[0:9]),
+            url: $url
+          }')
+          code=$(curl -sS -o response.json -w '%{http_code}' -m 30 -X POST \
+            https://api.axiom.co/v2/annotations \
+            -H "Authorization: Bearer $AXIOM_TOKEN" \
+            -H "X-Axiom-Org-Id: $AXIOM_ORG_ID" \
+            -H 'Content-Type: application/json' \
+            -d "$body" || echo "000")
+          if [ "$code" != "200" ] && [ "$code" != "201" ]; then
+            echo "::warning::Axiom annotation failed (HTTP $code): $(cat response.json 2>/dev/null)"
+            exit 0
+          fi
+          echo "Annotated v$VERSION ($SHA) on buildd-traces"
+
+#
+# - recover: on a failed Production deployment, if its build log matches a
+#   known infra cause, redeploy the same commit once. A second failure for the
+#   same SHA, or a failure with no known cause, fails this job (the alert).
+# - verify: on a successful Production deployment, confirm /api/deploy-identity
+#   reports the deployed SHA within 10 minutes.
+#
+# NOTE: deployment_status workflows always run from the file on the repository's
+# DEFAULT branch (`dev`), even for deploys of `main` (see cron-sync.yml).
+#
+# Requires repo secret VERCEL_TOKEN (recover is skipped with a warning without it).
+
+on:
+  deployment_status: {}
+
+permissions:
+  deployments: read
+  contents: read
+
+jobs:
+  recover:
+    if: >
+      github.event.deployment.environment == 'Production' &&
+      (github.event.deployment_status.state == 'failure' || github.event.deployment_status.state == 'error')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ github.event.deployment.sha }}
+      TARGET_URL: ${{ github.event.deployment_status.target_url }}
+    steps:
+      - name: Redeploy once on a known infrastructure failure
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "::warning::VERCEL_TOKEN not set; cannot inspect or redeploy the failed production build of $SHA"
+            exit 1
+          fi
+          # Production deployments of this commit that have already failed.
+          failed=0
+          for id in $(gh api "repos/${{ github.repository }}/deployments?sha=$SHA&environment=Production" --jq '.[].id'); do
+            state=$(gh api "repos/${{ github.repository }}/deployments/$id/statuses" --jq '.[0].state')
+            case "$state" in failure|error) failed=$((failed+1));; esac
+          done
+          if [ "$failed" -gt 1 ]; then
+            echo "::error::Production build of $SHA failed again after a redeploy; needs a human"
+            exit 1
+          fi
+          # Inspect the failed deployment's build log (no quotes: target_url is a vercel.com/deployment URL).
+          npx --yes vercel@latest inspect "$TARGET_URL" --logs --token "$VERCEL_TOKEN" > build.log 2>&1 || true
+          if grep -Eqi "turbopack-next/internal/font/google|Failed to fetch .* from Google Fonts|SIGKILL|Killed|JavaScript heap out of memory|ECONNRESET|ETIMEDOUT|EAI_AGAIN|getaddrinfo" build.log; then
+            echo "Known infrastructure failure; redeploying $SHA once"
+            npx --yes vercel@latest redeploy "$TARGET_URL" --target=production --token "$VERCEL_TOKEN"
+          else
+            echo "::error::Production build of $SHA failed and the log matches no known infrastructure cause"
+            tail -n 40 build.log
+            exit 1
+          fi
+
+  verify:
+    if: >
+      github.event.deployment.environment == 'Production' &&
+      github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Wait for deploy-identity to report the deployed SHA
+        env:
+          SHA: ${{ github.event.deployment.sha }}
+        run: |
+          for i in $(seq 1 20); do
+            got=$(curl -fsS -m 20 https://buildd.dev/api/deploy-identity | jq -r .sha || true)
+            if [ "$got" = "$SHA" ]; then
+              echo "deploy-identity reports $SHA"
+              exit 0
+            fi
+            echo "attempt $i: deploy-identity reports '${got:-none}', want $SHA"
+            sleep 30
+          done
+          echo "::error::deploy-identity did not reach $SHA within 10 minutes"
+          exit 1
