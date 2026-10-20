@@ -1150,7 +1150,7 @@ let pendingTreeSyncRestart = false;
  * failure case either: a crashed child is detected by its exit code on the same
  * poll and returns immediately instead of waiting out the deadline.
  */
-const HEALTH_PROBE_TIMEOUT_MS = 30_000;
+const HEALTH_PROBE_TIMEOUT_MS = 60_000;
 
 /**
  * Hard ceiling on the WHOLE probe call, teardown included.
@@ -3102,7 +3102,7 @@ const ownRunnerProcessCheck = () => socketHealthCheck(socketWatchdog?.state() ??
 const localUrl = `http://localhost:${PORT}`;
 
 // Repos for the banner count: the disk cache, or an async scan when there is none.
-const repos = await getRepos();
+const repos = process.env.BUILDD_HEALTH_PROBE === '1' ? [] : await getRepos(); // the health probe skips the scan (updater.ts HEALTH_PROBE_ENV)
 
 // ── Startup banner ──────────────────────────────────────────────────────────
 
