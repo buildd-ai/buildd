@@ -48,18 +48,55 @@ export function runLifecycleState(phases: readonly Phase[], { paused = false }: 
   return paused ? 'waiting' : 'running';
 }
 
+type MarkerKind = 'done' | 'reported' | 'current' | 'failed' | 'todo' | 'unknown';
+
+const markerKind = (p: Phase): MarkerKind =>
+  p.state === 'done' ? (isWeak(p) ? 'reported' : 'done') : p.state === 'skipped' ? 'todo' : p.state;
+
+/**
+ * One shape per kind, so the list reads without colour: solid (done), framed
+ * with an inner fill (reported), haloed (live), crossed (failed, the ⊠ glyph),
+ * outline (not yet), dashed (not seen). 12px cells on the 3px cell radius.
+ */
+const MARKER: Record<MarkerKind, string> = {
+  done: 'bg-status-success',
+  reported: 'ring-1 ring-inset ring-status-success',
+  current: 'bg-status-running ring-[3px] ring-primary-ring animate-status-pulse motion-reduce:animate-none',
+  failed: 'ring-1 ring-inset ring-status-error',
+  todo: 'ring-1 ring-inset ring-[var(--faint)]',
+  unknown: 'border border-dashed border-[var(--faint)]',
+};
+
+function EvidenceMarker({ kind }: { kind: MarkerKind }) {
+  return (
+    <span aria-hidden="true" data-testid="run-evidence-marker" data-kind={kind}
+      className={`relative z-10 block justify-self-center w-3 h-3 rounded-sm bg-card ${MARKER[kind]}`}>
+      {kind === 'reported' && <span className="absolute inset-[3px] bg-status-success" />}
+      {kind === 'failed' && (
+        <>
+          <span className="absolute left-1/2 top-0.5 bottom-0.5 w-px -translate-x-1/2 rotate-45 bg-status-error" />
+          <span className="absolute left-1/2 top-0.5 bottom-0.5 w-px -translate-x-1/2 -rotate-45 bg-status-error" />
+        </>
+      )}
+    </span>
+  );
+}
+
 /**
  * Where the run is: the one `Lifecycle` track, then the labelled phase list
  * with times behind a 44px disclosure (closed by default, at every width).
- * Evidence markers distinguish weaker reports from observed facts.
+ * The list is a timeline: a 1px connector through one marker per phase.
+ * Markers distinguish weaker reports from observed facts; a phase with no
+ * evidence says "not seen". Rows are not tap targets, so they stay compact.
  */
-export function RunEvidenceRail({ evidence, nowMs, paused = false }: { evidence: NowState['evidence']; nowMs?: number; paused?: boolean }) {
+export function RunEvidenceRail({ evidence, nowMs, paused = false, defaultOpen = false }: { evidence: NowState['evidence']; nowMs?: number; paused?: boolean; defaultOpen?: boolean }) {
   const phases = evidence.phases.filter(p => p.state !== 'skipped');
   const head = headPhase(phases);
   return (
     <div data-testid="run-evidence-rail" className="mt-3 flex flex-col gap-1">
       <Lifecycle state={runLifecycleState(phases, { paused })} />
       <Disclosure
+        defaultOpen={defaultOpen}
         summary={
           <span data-testid="run-evidence-head" className="font-mono text-meta text-text-secondary truncate">
             Run evidence · {head ? (
@@ -70,17 +107,20 @@ export function RunEvidenceRail({ evidence, nowMs, paused = false }: { evidence:
           </span>
         }
       >
-        <ol data-testid="run-evidence-list" className="mt-1 border-l-2 border-border-default">
-          {phases.map(p => (
+        <ol data-testid="run-evidence-list" className="mb-1">
+          {phases.map((p, i) => (
             <li key={p.key} data-phase={p.key} data-state={p.state} data-source={p.source} aria-label={phaseName(p)}
-              className={`flex min-h-11 md:min-h-8 items-center gap-3 pl-3 font-mono text-chip ${phaseTone(p)}`}>
-              <span aria-hidden="true" className={`inline-block w-3 h-3 shrink-0 border-2 border-current ${p.state === 'done' && !isWeak(p) ? 'bg-current' : ''} ${p.state === 'current' ? 'animate-status-pulse' : ''}`} />
-              <span className="min-w-0 flex-1 truncate">
+              aria-current={p.state === 'current' ? 'step' : undefined}
+              className={`relative grid grid-cols-[16px_minmax(0,1fr)_auto] min-h-8 items-center gap-x-2.5 py-1 font-mono text-meta ${phaseTone(p)}`}>
+              <span aria-hidden="true" data-testid="run-evidence-connector"
+                className={`absolute left-[7.5px] w-px bg-border-strong ${i === 0 ? 'top-1/2' : 'top-0'} ${i === phases.length - 1 ? 'bottom-1/2' : 'bottom-0'}`} />
+              <EvidenceMarker kind={markerKind(p)} />
+              <span className={`truncate ${p.state === 'current' ? 'font-semibold' : ''}`}>
                 {p.label}
-                {p.subState && <span className="text-text-secondary"> · {p.subState.replaceAll('_', ' ')}</span>}
+                {p.subState && <span className="font-normal text-text-secondary"> · {p.subState.replaceAll('_', ' ')}</span>}
                 {isWeak(p) && <span className="text-text-muted"> · reported</span>}
               </span>
-              <span className="shrink-0 tabular-nums text-text-muted" suppressHydrationWarning>
+              <span className="tabular-nums text-right text-text-muted" suppressHydrationWarning>
                 {p.at != null && nowMs != null ? `${ageLabel(nowMs - p.at)} ago` : p.state === 'unknown' ? 'not seen' : ''}
               </span>
             </li>
