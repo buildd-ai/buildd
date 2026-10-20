@@ -660,6 +660,17 @@ export const RUNNER_ENTRY = 'apps/runner/src/index.ts';
  */
 export const HEALTH_PROBE_SERVER = 'http://127.0.0.1:1';
 
+/**
+ * Set in the probe child's env. The probe only has to prove the module graph
+ * loads and the port binds, so a child that sees this skips the work that is
+ * proportional to the machine (the repo scan over the project roots, the
+ * environment scan with its browser check, the bwrap probe). On a laptop whose
+ * auto-discovered root is the whole home directory those took ~12s idle and
+ * past the 30s deadline when the live runner was busy, rolling back healthy
+ * updates.
+ */
+export const HEALTH_PROBE_ENV = 'BUILDD_HEALTH_PROBE';
+
 export interface HealthProbeSpawn {
   cmd: string[];
   cwd: string;
@@ -692,6 +703,7 @@ export function buildHealthProbeSpawn(opts: {
   env.BUILDD_HOME = opts.probeHome;
   env.BUILDD_CONFIG = opts.configFile;
   env.BUILDD_SERVER = HEALTH_PROBE_SERVER;
+  env[HEALTH_PROBE_ENV] = '1';
   // The credential broker's socket path defaults to a FIXED path shared by
   // every process on the host. Left un-isolated, the probe's broker unlinks the
   // live runner's socket and rebinds it on start, then unlinks it again on

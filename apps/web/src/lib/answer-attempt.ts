@@ -19,8 +19,6 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { FORCE_CLAIM_CONTEXT_KEY } from '@/lib/force-claim';
 import { requeueBranchContext } from '@/lib/integration-refresh';
-import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
-import { endedAtOf, isOwnerTask, notOwnerTaskSql, reopenOwner, requeueOwner } from '@/lib/workflow/owner-attempt';
 import {
   REOPENABLE_TASK_STATUSES,
   buildAnsweredAttemptContextPatch,
@@ -64,6 +62,13 @@ export async function reopenTaskForAnsweredAttempt(input: {
   /** Who reopened it, for the kernel's actor: `respond`, `sweep:…`. */
   source: string;
 }): Promise<ReopenForAnswerResult> {
+  // Workflow modules load lazily, as everywhere else on the answer path: this
+  // file is imported by /respond and the sweeps, and their static graph split
+  // into a chunk Turbopack then named the same as an unrelated loader chunk.
+  const [{ notKernelMergedTaskSql }, { endedAtOf, isOwnerTask, notOwnerTaskSql, reopenOwner, requeueOwner }] = await Promise.all([
+    import('@/lib/workflow/pr-fact-scope'),
+    import('@/lib/workflow/owner-attempt'),
+  ]);
   const task = await db.query.tasks.findFirst({
     where: sqlWhere(eq(tasks.id, input.taskId)),
     columns: { id: true, workspaceId: true, status: true, context: true, deliveryId: true, deliveryRole: true },

@@ -1544,6 +1544,8 @@ export async function cleanupUnresumedAnswers(
     }
     let reopened = false;
     try {
+      // Lazy, like the kernel modules above: its kernel/owner graph would
+      // otherwise join every route that loads this module.
       const { reopenTaskForAnsweredAttempt } = await import('@/lib/answer-attempt');
       const r = await reopenTaskForAnsweredAttempt({
         taskId,
@@ -1705,6 +1707,8 @@ export async function cleanupUnreadInteractiveAnswers(
 
     let reopened = false;
     try {
+      // Lazy, like the kernel modules above: its kernel/owner graph would
+      // otherwise join every route that loads this module.
       const { reopenTaskForAnsweredAttempt } = await import('@/lib/answer-attempt');
       const r = await reopenTaskForAnsweredAttempt({
         taskId: task.id,

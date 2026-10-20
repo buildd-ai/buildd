@@ -33,7 +33,7 @@ import {
   type AnswerPathDecision,
 } from '@/lib/answer-resume';
 import { preflightBackendCredential } from '@/lib/answer-credential-preflight';
-import type { ReopenForAnswerResult } from '@/lib/answer-attempt';
+import { reopenTaskForAnsweredAttempt, type ReopenForAnswerResult } from '@/lib/answer-attempt';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { clearTeamCache } from '@/lib/team-cache';
 
@@ -599,9 +599,6 @@ async function respondByContinuation(args: {
 
   let reopened: ReopenForAnswerResult;
   try {
-    // Lazy: a static edge here splits a shared chunk two ways and Turbopack
-    // refuses the build ("assets with different content ... same output path").
-    const { reopenTaskForAnsweredAttempt } = await import('@/lib/answer-attempt');
     reopened = await reopenTaskForAnsweredAttempt({
       taskId,
       worker: { id: worker.id, branch: worker.branch ?? null, lastCommitSha: worker.lastCommitSha ?? null, completedAt: claimed.completedAt ?? null },
