@@ -243,7 +243,10 @@ export function stripReason(t: BoardTask, executor: MissionExecutor | null): str
     case 'blocked':
       return null;
     case 'waiting': return t.waitingFor?.prompt ?? 'Has a question.';
-    case 'running': return t.currentAction ?? `In progress${t.runner ? ` on ${t.runner}` : ''}.`;
+    case 'running':
+      // Work status and execution are separate axes: started, but no live worker, is interrupted.
+      if (t.executing === false) return 'Started, but no agent is running it now.';
+      return t.currentAction ?? `In progress${t.runner ? ` on ${t.runner}` : ''}.`;
     case 'review': return 'PR open, awaiting merge.';
     case 'ci_failed': return 'CI failed on its PR.';
     case 'fixing': return 'A fix attempt is working on its red PR.';
