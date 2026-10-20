@@ -1401,7 +1401,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'changes requested');
       f.github.setPr(s.repo, s.prNumber, s.live('H1'));
       await drainKernel(host, s, f.ports);
-      eq(f.github.written.filter((w) => w.op === 'postReview').map((w) => pick(w, ['commitId', 'event', 'body'])), [{ commitId: 'H1', event: 'REQUEST_CHANGES', body: 'Changes requested by buildd reviewer: check the caller\n\nbuildd verdict: request_changes · head H1 · round 1' }], 'posted at the round head');
+      eq(f.github.written.filter((w) => w.op === 'postReview').map((w) => pick(w, ['commitId', 'event', 'body'])), [{ commitId: 'H1', event: 'REQUEST_CHANGES', body: 'check the caller' }], 'posted at the round head');
       const attempt = (await s.view()).attempts.find((a) => a.family === 'review_fix')!;
       ok(attempt?.taskId, 'T8 allocated the row with its task id');
       eq(f.work.filed.filter((w) => w.role === 'fix').map((w) => ({ taskId: w.taskId, attemptId: w.lineage.attemptId, firstAtHead: w.detail?.firstAtHead })), [{ taskId: attempt.taskId, attemptId: attempt.id, firstAtHead: true }], 'the fix, under the row');
@@ -1445,16 +1445,27 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
-    name: 'handlers/review: a review GitHub refused is recorded for a person once; a matching review is no failure; a verdict on the host\'s own PR went up as a comment',
+    name: 'handlers/review: an approval posts no review; a request for changes GitHub refused is recorded for a person once; a matching review is no failure; a verdict on the host\'s own PR went up as a comment',
     async run(host) {
+      const approved = await (await new Delivery(host, 89).open()).approvedAt('H1');
+      const fa = fakePorts(host);
+      await drainKernel(host, approved, fa.ports);
+      eq(await outcomesOf(host, approved, 'post_review'), ['skipped:approval_is_status'], 'an approval posts no review: the commit status is the verdict');
+      eq(fa.github.written.filter((w) => w.op === 'postReview').length, 0, 'nothing written to the PR');
       const post = async (prNumber: number, answer: { posted: boolean; reason?: string; commentedOwnPr?: boolean }) => {
-        const s = await (await new Delivery(host, prNumber).open()).approvedAt('H1');
+        const s = await new Delivery(host, prNumber).open();
+        applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
         const f = fakePorts(host);
+        await drainKernel(host, s, f.ports);
+        const r1 = await s.latestRound();
+        f.reviews.outputs.set(r1.id, { verdict: 'request-changes', confidence: 0.9, summary: 's', feedback: 'check the caller' });
+        applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'changes requested');
+        f.github.setPr(s.repo, s.prNumber, s.live('H1'));
         f.github.reviewAnswer = { id: null, ...answer };
         await drainKernel(host, s, f.ports);
         return { outcome: await outcomesOf(host, s, 'post_review'), ops: f.reviews.ops().filter((o) => o.startsWith('postFailed')) };
       };
-      eq(await post(85, { posted: false, reason: 'bad token' }), { outcome: ['failed_post:bad token'], ops: ['postFailed:APPROVE:bad token'] }, 'refused: recorded, not retried');
+      eq(await post(85, { posted: false, reason: 'bad token' }), { outcome: ['failed_post:bad token'], ops: ['postFailed:REQUEST_CHANGES:bad token'] }, 'refused: recorded, not retried');
       eq(await post(86, { posted: false, reason: 'a matching review already exists for this commit' }), { outcome: ['ok'], ops: [] }, 'already there');
       eq(await post(87, { posted: true, commentedOwnPr: true }), { outcome: ['ok:commented_own_pr'], ops: [] }, 'own PR');
     },

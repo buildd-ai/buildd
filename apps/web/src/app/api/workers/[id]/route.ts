@@ -6367,16 +6367,16 @@ async function handleReviewerOutcomeIfNeeded(
   // postPrReview is idempotent per (PR, head SHA, resulting state), so a forced
   // re-review that reaches the same verdict on the same commit does not stack a
   // second approval.
-  if (!kernelOwnsVerdict && (effectiveVerdict === 'approve' || effectiveVerdict === 'request-changes')) {
+  // An approval posts nothing: it is the `Buildd / Review approval` commit status. Only a request
+  // for changes reaches the PR, as its actionable findings.
+  if (!kernelOwnsVerdict && effectiveVerdict === 'request-changes') {
     const reviewPostResult = await postPrReview({
       installationId,
       repoFullName,
       prNumber,
       headSha,
-      event: effectiveVerdict === 'approve' ? 'APPROVE' : 'REQUEST_CHANGES',
-      body: effectiveVerdict === 'approve'
-        ? `Approved by buildd reviewer (confidence ${output.confidence.toFixed(2)}): ${output.summary}`
-        : `Changes requested by buildd reviewer: ${output.feedback ?? output.summary}`,
+      event: 'REQUEST_CHANGES',
+      body: (output.feedback ?? output.summary ?? '').trim() || 'Changes requested. See the task for details.',
     }).catch((err) => ({
       posted: false as const,
       reason: err instanceof Error ? err.message : 'unknown error',
