@@ -710,6 +710,11 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
   }
   addSection('retry-context', retryContent);
 
+  // A cold answer reopens this SAME task for a new attempt (no `Continue:`
+  // task): the person's answer reaches the attempt only through here. See
+  // docs/specs/answered-question-resume.md, "The cold fallback".
+  addSection('answered-question', renderAnsweredQuestions((taskCtx as any)?.answeredQuestions));
+
   // Communication instruction: configurable input policy. Every policy also
   // gets REFUSED_TOOL_CALL_GUIDANCE (see its definition).
   // inputPolicy: 'autonomous' (default, no questions), 'important-only', 'allow'
@@ -735,6 +740,28 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
   addSection('task-metadata', `---\nTask ID: ${task.id}\nWorker ID: ${worker.id}\nWorkspace: ${worker.workspaceName}`);
 
   return { promptText: promptParts.join('\n\n'), memory, sections };
+}
+
+/**
+ * The `answered-question` section: every question an earlier attempt of this
+ * task asked and the person's answer, verbatim. Written by the server's
+ * `reopenTaskForAnsweredAttempt` as `context.answeredQuestions`.
+ */
+function renderAnsweredQuestions(raw: unknown): string | null {
+  if (!Array.isArray(raw)) return null;
+  const entries = raw.filter((e): e is { question?: unknown; answer: string; milestones?: unknown } =>
+    !!e && typeof e === 'object' && typeof (e as { answer?: unknown }).answer === 'string');
+  if (entries.length === 0) return null;
+  const parts = [entries.length === 1 ? '## Answered Question' : '## Answered Questions',
+    'An earlier attempt of this task stopped to ask a person, and the person answered. This attempt continues the same task with that answer.'];
+  for (const e of entries) {
+    const question = typeof e.question === 'string' && e.question ? e.question : 'A question the earlier attempt asked (not retained)';
+    parts.push(`### Question\n${question}`, `### Answer\n${e.answer}`);
+    const done = Array.isArray(e.milestones) ? e.milestones.filter((m): m is string => typeof m === 'string' && !!m) : [];
+    if (done.length) parts.push(`### What the earlier attempt had done\n${done.map(m => `- ${m}`).join('\n')}`);
+  }
+  parts.push('Act on the answer; do not ask it again. If you hit the same need again (e.g. access you were told you have), check whether the answer or the task\'s grants already cover it; if something is still missing, ask for that specific missing thing, never the same question.');
+  return parts.join('\n\n');
 }
 
 // ── Post-session helpers ───────────────────────────────────────────
