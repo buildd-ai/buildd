@@ -335,6 +335,14 @@ describe('Claude run refused for want of a model login', () => {
   });
 });
 
+describe('session refused by the runner isolation preflight', () => {
+  it('books it as infra_failure, which does not consume a retry', () => {
+    const cause = classifyReportedFailure({ budgetLimited: false, sandboxMountGap: false, isolationRefused: true });
+    expect(cause).toBe('infra_failure');
+    expect(consumesRetryAttempt(cause)).toBe(false);
+  });
+});
+
 // A catalog model the runner's CLI is too old to serve fails with a
 // deterministic 400 before the agent takes a turn. That says nothing about the
 // task, so it is infra and must not spend the task's retry budget.

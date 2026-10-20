@@ -13732,6 +13732,45 @@ describe('PATCH /api/workers/[id]', () => {
         });
       });
 
+      // The runner refused the session at preflight: its isolation record
+      // cannot honour the task's requirement (Living Spec "Runner isolation",
+      // R-4). Nothing ran: back to the queue for a runner that can confine it.
+      describe('session refused by the runner isolation preflight', () => {
+        const refusedBody = {
+          status: 'failed',
+          error: 'Not started: The task needs protected isolation and this runner has no confinement for Claude: sandbox disabled by the runner operator (BUILDD_DISABLE_SANDBOX=1).',
+          isolationRefused: true,
+        };
+
+        it('requeues on the infra budget and books infra_failure', async () => {
+          const { taskSetCalls, workerSetCalls } = setupCrashReconcile({});
+          const res = await PATCH(createMockRequest({
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer bld_test' },
+            body: refusedBody,
+          }), { params: mockParams });
+
+          expect(res.status).toBe(200);
+          const requeue = taskSetCalls.find((c: any) => c.status === 'pending');
+          expect(requeue).toBeDefined();
+          expect(requeue.context.infraRetryCount).toBe(1);
+          expect(requeue.context.retryCount).toBeUndefined();
+          expect(taskSetCalls.some((c: any) => c.status === 'failed')).toBe(false);
+          expect(workerSetCalls.find((u: any) => u.exitCause).exitCause).toBe('infra_failure');
+        });
+
+        it('stalls once the infra budget is spent', async () => {
+          const { taskSetCalls } = setupCrashReconcile({ infraRetryCount: 3 });
+          await PATCH(createMockRequest({
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer bld_test' },
+            body: refusedBody,
+          }), { params: mockParams });
+          expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+          expect(taskSetCalls.find((c: any) => c.status === 'failed')?.result.errorType).toBe('infra_stalled');
+        });
+      });
+
       // The cloud runner's supervisor (apps/cloud-runner/src/supervisor.ts)
       // reports a container that died under the runner with the same flag. It
       // used to send a bare {failed, error}, which booked code_failure and left

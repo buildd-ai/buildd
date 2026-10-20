@@ -151,13 +151,13 @@ function truncateToolCalls(toolCalls: Array<{ name: string; timestamp: number; i
   });
 }
 
-/** Gateway connectors from a persisted record, re-validated on the way in. */
 /** The stored isolation stamp, validated; a malformed one is dropped (= protected). */
 function restoredIsolation(data: PersistedWorker): { taskIsolation?: LocalWorker['taskIsolation'] } {
   const stamp = readTaskIsolationStamp({ [TASK_ISOLATION_CONTEXT_KEY]: (data as { taskIsolation?: unknown }).taskIsolation });
   return stamp ? { taskIsolation: stamp } : {};
 }
 
+/** Gateway connectors from a persisted record, re-validated on the way in. */
 function restoredConnectors(data: PersistedWorker): { mcpConnectors?: ReturnType<typeof gatewayConnectorsOnly> } {
   const list = gatewayConnectorsOnly(data.mcpConnectors);
   return list.length > 0 ? { mcpConnectors: list } : {};

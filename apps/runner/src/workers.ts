@@ -1,4 +1,4 @@
-import { canonicalToolName, decideTaskIsolation, reducedIsolationOptedIn, taskCodexSandboxMode, taskIsolationRequirement, readTaskIsolationStamp, type TaskIsolationDecision } from '@buildd/shared';
+import { canonicalToolName, decideTaskIsolation, isolationRefusalError, reducedIsolationOptedIn, taskCodexSandboxMode, taskIsolationRequirement, readTaskIsolationStamp, type TaskIsolationDecision } from '@buildd/shared';
 import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
 import { query, type HookCallback, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
@@ -3406,6 +3406,9 @@ export class WorkerManager {
     // Refused before spawn for want of any model credential: the machine's
     // setup, not the task. The server requeues it as an infra failure.
     const isModelAuthMissing = (error as { modelAuthMissing?: unknown })?.modelAuthMissing === true;
+    // Refused at preflight by this runner's isolation record: nothing ran.
+    // Same hand-back as a missing model login: the server requeues it.
+    const isIsolationRefused = (error as { isolationRefused?: unknown })?.isolationRefused === true;
     // Flush buffered CLI stderr into error traces so get_error_traces surfaces
     // them. Idempotent — a no-op when the eager stderr-callback flush already
     // staged this text and nothing new arrived since.
@@ -3427,7 +3430,7 @@ export class WorkerManager {
       ? closingTurnOutcome
       : isBudgetError ? ('skipped:rate_limit' as const)
       : isSessionBudgetCap ? ('skipped:session_budget_capped' as const)
-      : isSteeringDeliveryCrash || isModelAuthMissing ? ('skipped:infra_failure' as const)
+      : isSteeringDeliveryCrash || isModelAuthMissing || isIsolationRefused ? ('skipped:infra_failure' as const)
       : closingTurnOutcome;
     // A usage/session-limit death leaves the agent's whole session in the
     // worktree, usually uncommitted. Save it before anything can remove the
@@ -3462,6 +3465,7 @@ export class WorkerManager {
       ...(isSessionBudgetCap && { sessionBudgetCapped: true }),
       ...(isSteeringDeliveryCrash && { steeringDelivery: true }),
       ...(isModelAuthMissing && { modelAuthMissing: true }),
+      ...(isIsolationRefused && { isolationRefused: true }),
       ...(modelRejection && {
         unrecognizedModel: true,
         ...(modelRejection.model ? { rejectedModel: modelRejection.model } : {}),
@@ -4385,8 +4389,9 @@ export class WorkerManager {
       // decided this against the record sent with it; decide again against
       // the record as it is now, so a probe that flipped since (a mid-run
       // bwrap denial on another task) never starts this one with less. A task
-      // with no stamp is held to protected. Refused = the attempt fails with
-      // the cause; it never runs reduced without the operator's opt-in.
+      // with no stamp is held to protected. Refused = nothing runs, and the
+      // attempt is handed back to the queue as infra (isolationRefused), like
+      // a missing model login; it never runs reduced without the opt-in.
       const isolationBackend = isCodexTask ? 'codex' as const : 'claude' as const;
       // Kept on the worker so a resume, retry or recovery stub (recovery.ts)
       // carries the same stamp instead of reading as unstamped (protected).
@@ -4394,7 +4399,7 @@ export class WorkerManager {
       if (claimStamp) worker.taskIsolation = claimStamp;
       const isolationDecision = this.decideSessionIsolation(task, isolationBackend);
       if (!isolationDecision.ok) {
-        throw new Error(`Not started: ${isolationDecision.message}${isolationDecision.remedy.length > 0 ? ` ${isolationDecision.remedy.join(' ')}` : ''}`);
+        throw Object.assign(new Error(isolationRefusalError(isolationDecision)), { isolationRefused: true });
       }
       this.addMilestone(worker, { type: 'status', label: isolationModeLabel(isolationDecision, isolationBackend, getIsolationRecord().platform), ts: Date.now() });
       sessionLog(worker.id, isolationDecision.mode === 'reduced' ? 'warn' : 'info', 'isolation_mode', `requirement=${isolationDecision.requirement} mode=${isolationDecision.mode} backend=${isolationBackend} mechanism=${isolationDecision.confinement.mechanism}`, task.id);
