@@ -155,30 +155,16 @@ describe('no unauthorized merge', () => {
   });
 });
 
-describe('the GitHub review states the verdict, its commit and what it replaces', () => {
+describe('the GitHub review body carries findings only', () => {
   const out = { confidence: 0.85, summary: 'Looks right.', feedback: 'resume re-starts hand-paused agents' };
 
-  test('a first review names its verdict, head and round', () => {
-    const body = postReviewBody('APPROVE', out, null, { headSha: A, round: 1 });
-    expect(body).toContain('Approved by buildd reviewer');
-    expect(body).toContain('buildd verdict: approve · head AAAAAAA · round 1');
+  test('a request for changes is the findings alone, with no internal diagnostics', () => {
+    const body = postReviewBody(out);
+    expect(body).toBe('resume re-starts hand-paused agents');
+    expect(body).not.toMatch(/buildd verdict|confidence|round \d|head [0-9A-Fa-f]{7}|approval|scope|manifest|GitHub does not/i);
   });
 
-  test('a blocking review after an approval says the approval no longer allows a merge', () => {
-    const body = postReviewBody('REQUEST_CHANGES', out, null, { headSha: B, round: 3, prior: { round: 2, headSha: A, verdict: 'approve' } });
-    expect(body).toContain('Changes requested by buildd reviewer: resume re-starts hand-paused agents');
-    expect(body).toContain('supersedes the approval of AAAAAAA (round 2)');
-    expect(body).toContain('in the changes since');
-    expect(body).toContain('no longer allows a merge');
-  });
-
-  test('the same-commit case says so, and an approval that clears a request names it', () => {
-    expect(postReviewBody('REQUEST_CHANGES', out, null, { headSha: A, round: 3, prior: { round: 2, headSha: A, verdict: 'approve' } })).toContain('at the same commit');
-    expect(postReviewBody('APPROVE', out, null, { headSha: C, round: 4, prior: { round: 3, headSha: B, verdict: 'request_changes' } }))
-      .toContain('clears the request for changes of round 3 at BBBBBBB');
-  });
-
-  test('without a position the body is the bare verdict text', () => {
-    expect(postReviewBody('REQUEST_CHANGES', out, null)).toBe('Changes requested by buildd reviewer: resume re-starts hand-paused agents');
+  test('an empty finding still says something actionable-neutral rather than posting a blank body', () => {
+    expect(postReviewBody({ feedback: '  ', summary: null })).toBe('Changes requested. See the task for details.');
   });
 });
