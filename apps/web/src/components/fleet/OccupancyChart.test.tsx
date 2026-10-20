@@ -39,9 +39,34 @@ describe('OccupancyPlot', () => {
     expect(html).toMatch(/>10<\/span><span[^>]*>Slots online</);
   });
 
-  it('draws slots online as a reference line when the data reaches that high', () => {
+  it('never draws slots online across the window: it is a count now, not a history', () => {
     const many = Array.from({ length: 4 }, () => run('http://r', NOW - 2 * H, NOW - H));
-    expect(render(many, '24h', 4)).toContain('data-testid="occupancy-capacity-line"');
+    for (const w of ['24h', '7d', '30d'] as const) {
+      const html = render(many, w, 4);
+      expect(html).not.toContain('occupancy-capacity-line');
+      expect(html).not.toContain('slots online</text>');
+    }
+  });
+
+  it('says the current numbers are now, from runners that checked in, and names offline and paused slots apart', () => {
+    const slots = { configured: 9, online: 5, schedulable: 1, busy: 1, asOf: NOW, windowMs: 180_000 };
+    const html = renderToStaticMarkup(
+      <OccupancyPlot series={buildOccupancySeries({ window: '24h', now: NOW, workers: [run('http://r', NOW - 2 * H, NOW - H)] })} capacityNow={5} busyNow={1} slots={slots} />,
+    );
+    const note = html.match(/data-testid="occupancy-now-note"[^>]*>([^<]*)</)?.[1] ?? '';
+    expect(note).toContain('runners that checked in within 3 minutes');
+    expect(note).toContain('4 on paused runners');
+    expect(note).toContain('4 more on offline runners');
+  });
+
+  it('no offline or held slots: the note says only where the numbers come from', () => {
+    const slots = { configured: 5, online: 5, schedulable: 5, busy: 0, asOf: NOW, windowMs: 180_000 };
+    const html = renderToStaticMarkup(
+      <OccupancyPlot series={buildOccupancySeries({ window: '24h', now: NOW, workers: [] })} capacityNow={5} busyNow={0} slots={slots} />,
+    );
+    const note = html.match(/data-testid="occupancy-now-note"[^>]*>([^<]*)</)?.[1] ?? '';
+    expect(note).not.toContain('paused');
+    expect(note).not.toContain('offline');
   });
 
   it('states peak, average, in use now and slots online as separate numbers', () => {
