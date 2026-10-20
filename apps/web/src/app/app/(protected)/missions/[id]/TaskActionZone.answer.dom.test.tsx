@@ -86,6 +86,16 @@ async function respond(status: number, body: unknown) {
 }
 
 describe('TaskActionZone answering a question', () => {
+  // Regression (iPhone report): the mission Overview drew the question in its
+  // Ask banner and again in the focused task's action zone, two cards with
+  // separate answer state for one question. The host that already shows the
+  // question says so, and the zone draws none.
+  it('draws no question when the host already shows it', () => {
+    render({ questionShownAbove: true });
+    expect(q('[data-testid="task-sheet-question"]')).toBeNull();
+    expect(chips()).toHaveLength(0);
+  });
+
   // Regression (owner report): the sheet drew its own small answer box (chips,
   // "Type your response...") while the task page drew the question card.
   it('renders the task page question card, not a second answer box', () => {
