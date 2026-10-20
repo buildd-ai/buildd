@@ -62,7 +62,7 @@ describe('R-32: a merged mission PR is on trunk', () => {
 
   it('merged but not released: Next is the release', () => {
     const m = projectMissionDelivery(mission({ missionPrMerged: true, released: false, tasks: [merged('One'), shipTask('2026-10-12T00:00:00Z')] }));
-    expect(m.next).toBe('Release');
+    expect(m.next).toBe('Waiting on the release');
   });
 
   it('a merged PR on a direct (no mission branch) mission changes nothing', () => {

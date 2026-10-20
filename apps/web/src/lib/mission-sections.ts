@@ -4,14 +4,15 @@
  * collapsed On dev, criteria pending group. Pure rules over the shared
  * delivery projection (lib/delivery-projection.ts).
  *
- * Each section carries its own ordering, and says so on screen:
- *   Needs you  oldest first        (longest-waiting decision first)
- *   In motion  slipping first      (repairing or audit-blocked, then the
- *                                   quietest; the projection carries no ETA, so
- *                                   "slipping" is read from repair and stall)
- *   Waiting    next to start first (capacity before dependencies, held last)
- *   On dev     oldest first        (every task landed; a goal criterion has
- *                                   not passed yet, so the mission is open)
+ * Each section carries its own ordering. It is applied, never printed: the
+ * headings stay compact labels from the shared terms catalog.
+ *   Needs you    oldest first        (longest-waiting decision first)
+ *   In progress  slipping first      (repairing or audit-blocked, then the
+ *                                     quietest; the projection carries no ETA, so
+ *                                     "slipping" is read from repair and stall)
+ *   Not started  next to start first (capacity before dependencies, held last)
+ *   On dev       oldest first        (every task landed; a goal criterion has
+ *                                     not passed yet, so the mission is open)
  */
 import type { StateKey } from '@/components/ui/states';
 import { STATE_OF_KIND, type DeliveryKind } from './delivery-projection';
@@ -19,11 +20,11 @@ import type { PortfolioRow } from './mission-portfolio';
 
 export type MissionSectionKey = 'needs' | 'motion' | 'waiting' | 'landed';
 
-export const SECTION_META: Record<MissionSectionKey, { label: string; order: string }> = {
-  needs: { label: 'Waiting on you', order: 'oldest first' },
-  motion: { label: 'In motion', order: 'slipping first' },
-  waiting: { label: 'Waiting', order: 'next to start first' },
-  landed: { label: 'Done, checks pending', order: 'oldest first' },
+export const SECTION_META: Record<MissionSectionKey, { label: string }> = {
+  needs: { label: 'Waiting on you' },
+  motion: { label: 'In progress' },
+  waiting: { label: 'Not started' },
+  landed: { label: 'Done, checks pending' },
 };
 
 export const SECTION_KEYS: readonly MissionSectionKey[] = ['needs', 'motion', 'waiting', 'landed'];
@@ -73,7 +74,6 @@ const ORDER: Record<MissionSectionKey, (a: PortfolioRow, b: PortfolioRow) => num
 export interface MissionSection {
   key: MissionSectionKey;
   label: string;
-  order: string;
   rows: PortfolioRow[];
 }
 
