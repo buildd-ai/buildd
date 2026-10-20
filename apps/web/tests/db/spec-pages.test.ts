@@ -123,4 +123,21 @@ describe('spec page', () => {
     if (after.state !== 'ok') throw new Error('expected ok');
     expect(after).toMatchObject({ reading: { revision: 2, approved: true }, waiting: null, canApprove: false, review: null });
   });
+
+  test('a never-approved spec past revision 1 reviews the whole head and what it changed since the one before', async () => {
+    const first = await specPageView(admin, childId, { review: true });
+    if (first.state !== 'ok' || !first.review) throw new Error('expected a review');
+    // Revision 1 has nothing before it.
+    expect(first.review).toMatchObject({ revision: 1, replaces: null, since: null });
+
+    const later = '# Totals\nR-2: Round half up.\nR-3: Show the rounding rule.\n';
+    const r = await reviseSpecDraft(user(member), childId, { expectedVersion: first.spec.version, body: later, changeSummary: 'Adds R-3' });
+    if (!r.ok) throw new Error(r.error);
+    const v = await specPageView(admin, childId, { review: true });
+    if (v.state !== 'ok' || !v.review) throw new Error('expected a review');
+    expect(v.review).toMatchObject({ revision: 2, replaces: null, body: later });
+    expect(v.review.since?.revision).toBe(1);
+    expect(v.review.since?.changes.summary).toBe('Adds R-3');
+    expect(v.review.since?.changes.lines).toEqual([expect.objectContaining({ kind: 'added', id: 'R-3' })]);
+  });
 });

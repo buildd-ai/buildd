@@ -25,6 +25,10 @@ describe('fleetHeartbeatScope', () => {
     expect(text).toContain('"account_workspaces"."removed_at" is null');
   });
 
+  it('a person-granted link counts only while its grant still holds (the claim rule and the runner list drop it too)', () => {
+    expect(text).toContain('"account_workspaces"."granted_by_user_id" is null or');
+  });
+
   it("still takes the team's own accounts", () => {
     expect(text).toContain('"accounts"."team_id" = $?');
   });
