@@ -23,7 +23,13 @@ mock.module('fs', () => ({
 
 import { scanEnvironment, checkBrowserCapability, checkBwrapSupport, type ScanConfig } from './env-scan';
 import { CAPABILITY_MCP_GROUP_TOOLS } from '@buildd/shared';
-import { resetBrowserCapabilityCache } from './browser-capability';
+import { resetBrowserCapabilityCache, setBrowserPlatformForTests } from './browser-capability';
+
+// The mocks model a POSIX host. Pin the probe shell and browser discovery to
+// one, so a Windows host runs the same cases (there, posixShell() would ask
+// the mocked child_process for git, and browser discovery is off).
+process.env.BUILDD_POSIX_SHELL = '/bin/sh';
+setBrowserPlatformForTests('linux');
 
 describe('checkBwrapSupport', () => {
   let originalDisableSandbox: string | undefined;

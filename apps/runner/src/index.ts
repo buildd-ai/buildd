@@ -2728,7 +2728,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         }
 
         // Async: a clone takes minutes at worst, and a sync one froze the runner.
-        // Same command line (through /bin/sh) and timeout as the execSync it replaces.
+        // Same command line (through sh, posixShell()) and timeout as the execSync it replaces.
         await gitShellAsync(`git clone ${cloneUrl} "${clonePath}"`, { cwd: process.cwd(), timeoutMs: 120000 });
 
         // Invalidate caches so the new repo is immediately discoverable
