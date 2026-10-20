@@ -2952,6 +2952,9 @@ export class WorkerManager {
           },
         );
       } finally {
+        // No await between here and `worker.worktreePath = ...` below, so the
+        // ownership check never sees the path unrecorded and unreserved.
+        gitOperations.releaseWorktreeReservation?.(worker.id);
         const n = (setupsInFlight.get(workspacePath) ?? 1) - 1;
         if (n > 0) setupsInFlight.set(workspacePath, n);
         else setupsInFlight.delete(workspacePath);
