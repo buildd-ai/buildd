@@ -27,7 +27,7 @@ import {
   type HostProbeDeps,
   type IsolationProbeInputs,
 } from '../../src/isolation-probe';
-import { decideTaskIsolation, isIsolationRecordCurrent } from '@buildd/shared';
+import { decideTaskIsolation, isIsolationRecordCurrent, isolationRemediation } from '@buildd/shared';
 
 const T0 = '2026-10-17T00:00:00.000Z';
 const T1 = '2026-10-17T00:00:05.000Z';
@@ -188,6 +188,21 @@ describe('buildIsolationRecord (R-2, R-6)', () => {
   it('an unsupported platform says so', () => {
     const rec = buildIsolationRecord(inputs({ host: { platform: 'other', evidence: [] }, bwrap: null }));
     expect(rec.claude.reason).toBe('unsupported_platform');
+  });
+
+  it('an unsupported platform (Windows) still gets a next step: WSL2', () => {
+    expect(isolationRemediation('unsupported_platform', 'other').join('\n')).toContain('WSL2');
+  });
+
+  it('on an unsupported platform protected work is refused and trusted work names the opt-in once', () => {
+    const record = buildIsolationRecord(inputs({ host: { platform: 'other', evidence: [] }, bwrap: null }));
+    const protectedTask = decideTaskIsolation({ requirement: 'protected', record, backend: 'claude', codexMode: 'workspace-write' });
+    expect(protectedTask.ok).toBe(false);
+    const trusted = decideTaskIsolation({ requirement: 'trusted_local', record, backend: 'claude', codexMode: 'workspace-write' });
+    expect(trusted.ok).toBe(false);
+    const remedy = trusted.ok ? [] : trusted.remedy;
+    expect(remedy.some((s) => s.includes('WSL2'))).toBe(true);
+    expect(remedy.filter((s) => s.includes('BUILDD_ALLOW_REDUCED_ISOLATION=1'))).toHaveLength(1);
   });
 
   it('carries the probe time, the process start and the runner version (R-2, R-11)', () => {

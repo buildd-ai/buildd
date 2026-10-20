@@ -60,7 +60,10 @@ class CredentialBroker {
   private baseUrl: string;
   private apiKey: string;
   private readonly runnerId: string;
-  readonly socketPath: string;
+  private _socketPath: string;
+  private readonly platform: string;
+  private readonly restrictToOwner: (socketPath: string) => boolean;
+  private readonly serve: (opts: { unix: string; fetch: (req: Request) => Response | Promise<Response> }) => { stop(closeActiveConnections?: boolean): void };
 
   private managed = new Map<string, ManagedCredential>(); // secretId → info
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -71,13 +74,32 @@ class CredentialBroker {
   //   secretId → Map<workerId, credentialFilePath>
   private credentialFiles = new Map<string, Map<string, string>>();
 
-  constructor() {
+  constructor(opts: BrokerHostOptions = {}) {
     // Env vars only — the module-level singleton is constructed at import time,
     // before config.json is loaded. The real values arrive via configure()/start().
     this.baseUrl = process.env.BUILDD_CLIENT_URL ?? 'https://buildd.dev';
     this.apiKey = process.env.BUILDD_API_KEY ?? '';
     this.runnerId = process.env.BUILDD_RUNNER_ID ?? hostname();
-    this.socketPath = process.env.BUILDD_BROKER_SOCKET ?? '/tmp/buildd-broker.sock';
+    this.platform = opts.platform ?? process.platform;
+    this.restrictToOwner = opts.restrictToOwner ?? chmodOwnerOnly;
+    this.serve = opts.serve ?? ((o) => Bun.serve(o));
+    // No socket on Windows: see startLocalServer.
+    this._socketPath = this.platform === 'win32'
+      ? ''
+      : process.env.BUILDD_BROKER_SOCKET ?? '/tmp/buildd-broker.sock';
+  }
+
+  /**
+   * Where the local token server listens; '' when it does not (Windows, or a
+   * socket that could not be made owner-only). fetchTokenFromBroker('') returns
+   * null and spawn falls back to the claim response's inline token.
+   */
+  get socketPath(): string {
+    return this._socketPath;
+  }
+
+  get localServerListening(): boolean {
+    return this.localServer !== null;
   }
 
   private get endpoint(): string {
@@ -171,22 +193,34 @@ class CredentialBroker {
    * is needed because the socket itself IS the trust boundary.
    */
   private startLocalServer(): void {
-    // Remove a stale socket left by a previous crash before binding.
-    if (existsSync(this.socketPath)) {
-      try { unlinkSync(this.socketPath); } catch {}
+    // Windows has no file mode to give the socket: owner-only there means an
+    // owner-only ACL on the socket file. This endpoint's only client is the runner itself, which already falls
+    // back to the inline token, and the lease path is being removed, so on
+    // Windows it is simply not served rather than given its own ACL handling.
+    if (this.platform === 'win32') {
+      console.log('[broker] local token server not started on Windows; workers use the inline token');
+      return;
     }
-    this.localServer = Bun.serve({
-      unix: this.socketPath,
+    // Remove a stale socket left by a previous crash before binding.
+    if (existsSync(this._socketPath)) {
+      try { unlinkSync(this._socketPath); } catch {}
+    }
+    const server = this.serve({
+      unix: this._socketPath,
       fetch: (req) => this.handleLocalRequest(req),
     });
     // Restrict access to the current OS user (mode 0600) so that only
-    // processes running as the same user can connect.  We use spawnSync
-    // rather than fs.chmodSync to avoid conflicts with test fs mocks.
-    const chmod = Bun.spawnSync(['chmod', '0600', this.socketPath]);
-    if (chmod.exitCode !== 0) {
-      console.warn(`[broker] chmod 0600 failed for ${this.socketPath}`);
+    // processes running as the same user can connect. The mode is the only
+    // boundary, so a socket that cannot get it is closed, not served.
+    if (!this.restrictToOwner(this._socketPath)) {
+      server.stop(true);
+      try { unlinkSync(this._socketPath); } catch {}
+      console.warn(`[broker] could not make ${this._socketPath} owner-only (chmod 0600) — local token server not started; workers use the inline token`);
+      this._socketPath = '';
+      return;
     }
-    console.log(`[broker] local token server listening on unix:${this.socketPath}`);
+    this.localServer = server;
+    console.log(`[broker] local token server listening on unix:${this._socketPath}`);
   }
 
   /**
@@ -387,7 +421,7 @@ class CredentialBroker {
       this.localServer.stop(true);
       this.localServer = null;
     }
-    try { unlinkSync(this.socketPath); } catch {}
+    if (this._socketPath) { try { unlinkSync(this._socketPath); } catch {} }
     console.log(`[broker] shutting down, releasing ${this.managed.size} lease(s)`);
     await Promise.all(
       Array.from(this.managed.keys()).map(async (secretId) => {
@@ -468,6 +502,26 @@ class CredentialBroker {
   }
 }
 
+/** Host seams for tests; production passes none. */
+export interface BrokerHostOptions {
+  platform?: string;
+  /** Make the socket owner-only; false when that failed. */
+  restrictToOwner?: (socketPath: string) => boolean;
+  serve?: (opts: { unix: string; fetch: (req: Request) => Response | Promise<Response> }) => { stop(closeActiveConnections?: boolean): void };
+}
+
+/**
+ * chmod 0600 through a child process rather than fs.chmodSync, to avoid
+ * conflicts with test fs mocks. A missing chmod binary counts as failure.
+ */
+function chmodOwnerOnly(socketPath: string): boolean {
+  try {
+    return Bun.spawnSync(['chmod', '0600', socketPath]).exitCode === 0;
+  } catch {
+    return false;
+  }
+}
+
 // Export the class for testing.
 export { CredentialBroker };
 
@@ -483,6 +537,7 @@ export function notifyBrokerCredentials(entries: CredentialEntry[]): void {
  * The Unix socket path the local token server listens on.
  * Workers use this to request access tokens from the broker.
  * Reads BUILDD_BROKER_SOCKET env var; falls back to '/tmp/buildd-broker.sock'.
+ * '' when the broker serves no socket (Windows, or one it could not make owner-only).
  */
 export function getBrokerSocketPath(): string {
   return credentialBroker.socketPath;
