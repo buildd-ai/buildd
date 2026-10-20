@@ -42,7 +42,7 @@ import {
 // file goes through removeWorktreeIfUnowned so no site can force-remove a
 // directory a live worker is sitting in. See git-operations.ts.
 import { checkpointWorktree } from './worktree-archive';
-import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, collectGitStats } from './git-operations';
+import { setupWorktree, releaseWorktreeReservation, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, collectGitStats } from './git-operations';
 // Namespace, not named: many tests mock.module('./git-operations') with a fixed
 // export list, and a named import missing from it fails the whole file.
 import * as gitOperations from './git-operations';
@@ -2948,6 +2948,9 @@ export class WorkerManager {
           },
         );
       } finally {
+        // No await between here and `worker.worktreePath = ...` below, so the
+        // ownership check never sees the path unrecorded and unreserved.
+        releaseWorktreeReservation(worker.id);
         const n = (setupsInFlight.get(workspacePath) ?? 1) - 1;
         if (n > 0) setupsInFlight.set(workspacePath, n);
         else setupsInFlight.delete(workspacePath);
