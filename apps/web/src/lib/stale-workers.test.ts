@@ -707,6 +707,1586 @@ describe('cleanupStuckWaitingInput', () => {
   });
 });
 
+describe('cleanupStaleWorkers — cancelled task protection', () => {
+  // Regression: cancelled tasks were being re-queued when their aborted worker
+  // expired and resolveStaleTask reset them to 'pending' without a status check.
+  // Sequence: cancel task → abort worker → stale cleanup → task re-queued → re-claimed.
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+  });
+
+  it('does not re-queue a cancelled task when its stale worker has no deliverables', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: 'Aborted by user' }])
+      .mockResolvedValueOnce([])   // no other active workers
+      .mockResolvedValueOnce([]);  // heartbeat orphans
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    // resolveStaleTask reads task status first; resolveCompletedTask reads parentTaskId
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'cancelled', context: {} })   // status check
+      .mockResolvedValueOnce({ parentTaskId: null });                 // dep resolution
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // No task status update must occur — task stays cancelled
+    expect(taskUpdateSet).toBeNull();
+  });
+
+  it('does not override cancelled status even when the stale worker has deliverables', async () => {
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: 'PR #5',
+    });
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: 'https://github.com/pr/5', prNumber: 5, commitCount: 2, branch: null, error: null }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'cancelled', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // Task must stay cancelled — deliverables from an aborted worker must not win
+    expect(taskUpdateSet).toBeNull();
+  });
+
+  it('still resets a non-cancelled task to pending when its stale worker has no deliverables', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: 'expired' }])
+      .mockResolvedValueOnce([])   // no other active workers
+      .mockResolvedValueOnce([])   // failed workers count
+      .mockResolvedValueOnce([]);  // heartbeat orphans
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })  // not cancelled → proceed normally
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('pending');
+  });
+});
+
+describe('cleanupStaleWorkers — reviewer lease expiry', () => {
+  beforeEach(() => {
+    capturedInsertValues = null;
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockReset();
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+  });
+
+  it('fails a stale reviewer task after promoting its PR to the human queue', async () => {
+    // A genuine timeout: worker was started and ran (startedAt is set), but then went stale
+    // after at least one turn with some spend. This should be immediately escalated, not retried.
+    const now = new Date();
+    const recentTime = new Date(now.getTime() - 10 * 60 * 1000); // 10 min ago
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{
+        id: 'review-worker',
+        taskId: 'review-task',
+        prUrl: null,
+        prNumber: null,
+        commitCount: 0,
+        branch: null,
+        error: 'expired',
+        startedAt: recentTime,
+        turns: 10,
+        costUsd: '1.50',
+        inputTokens: 5000,
+        outputTokens: 2000,
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'review-task', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      // resolveStaleTask's own "is this cancelled?" read.
+      .mockResolvedValueOnce({
+        status: 'assigned',
+        category: 'review',
+        context: { reviewerFor: 'original-task', prNumber: 42 },
+      })
+      // escalateReviewContractFailure's own read, keyed on the review task's
+      // own id — it already carries the original task's missionId (copied at
+      // creation), so no separate "original task" lookup is needed any more.
+      .mockResolvedValueOnce({ id: 'review-task', missionId: 'mission-1', title: 'Review PR #42', workspaceId: 'ws-1' })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    const taskUpdates: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((values: any) => {
+        taskUpdates.push(values);
+        return {
+          where: mock(() => Object.assign(Promise.resolve(), {
+            // The CAS dedup in escalateReviewContractFailure claims via
+            // .returning() — simulate a successful (unclaimed-until-now) claim.
+            returning: () => Promise.resolve([{ id: 'review-task' }]),
+          })),
+        };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // Two updates now: escalateReviewContractFailure's CAS claim on `context`,
+    // then this function's own status:'failed' update.
+    expect(taskUpdates).toHaveLength(2);
+    expect(taskUpdates[0].context).toBeDefined();
+    expect(taskUpdates[1].status).toBe('failed');
+    expect(taskUpdates[1].result.error).toContain('agent review timed out');
+    expect(capturedInsertValues.type).toBe('reviewer_escalated');
+    expect(capturedInsertValues.title).toContain('review never produced a verdict');
+  });
+
+  it('retries a reviewer task with never_started error after backoff', async () => {
+    // A never_started failure: worker was claimed but never started a session.
+    // This is an infra failure that should be retried with backoff, not escalated.
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{
+        id: 'review-worker',
+        taskId: 'review-task',
+        prUrl: null,
+        prNumber: null,
+        commitCount: 0,
+        branch: null,
+        error: 'Worker was never started by a runner (claimed but no session began)',
+        startedAt: null, // Key: never started
+        turns: 0,
+        costUsd: '0',
+        inputTokens: 0,
+        outputTokens: 0,
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'review-task', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({
+        status: 'assigned',
+        category: 'review',
+        context: { reviewerFor: 'original-task', prNumber: 42 },
+      })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    const taskUpdates: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((values: any) => {
+        taskUpdates.push(values);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    mockWakeTask.mockClear();
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdates).toHaveLength(1);
+    expect(taskUpdates[0].status).toBe('pending');
+    expect(taskUpdates[0].context.infraRetryCount).toBe(1);
+    expect(taskUpdates[0].startAt).toBeDefined();
+    // Woken at the end of its backoff, not now.
+    expect(mockWakeTask.mock.calls).toEqual([['review-task', 'task.requeued', { notBefore: taskUpdates[0].startAt }]]);
+    // Should not have escalated to mission notes (no missionId call)
+    expect(capturedInsertValues).toBeNull();
+  });
+});
+
+describe('cleanupStaleWorkers — deliverable-aware cleanup', () => {
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => Promise.resolve()),
+      })),
+    });
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => Promise.resolve()),
+      })),
+    });
+  });
+
+  it('promotes task to completed when stale worker has deliverables (PR)', async () => {
+    // Call 1: find stale workers
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'w1', taskId: 'task-1', prUrl: 'https://github.com/org/repo/pull/42', prNumber: 42, commitCount: 3 },
+      ])
+      // Call 2: other active workers for the task
+      .mockResolvedValueOnce([])
+      // Call 3: heartbeat orphans
+      .mockResolvedValueOnce([]);
+
+    // staleTasks query
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    // Task lookup for dependency resolution
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    // Worker has a PR
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: 'PR #42, 3 commits',
+    });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // Task should be promoted to completed, NOT reset to pending
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('completed');
+  });
+
+  // An interactive session's lease ran out while its client may still be
+  // running a long command: a PR opened mid-work is not the task done, and the
+  // same client must be able to claim it again at once (no infra backoff).
+  it('never completes a reaped interactive worker\'s task; requeues it with no backoff', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'mcp-1', taskId: 'task-1', runner: 'mcp', status: 'running', startedAt: new Date(), turns: 0, costUsd: '0', prUrl: 'https://github.com/org/repo/pull/42', prNumber: 42, commitCount: 3, branch: 'b', error: null },
+      ])
+      .mockResolvedValueOnce([]) // no other active workers
+      .mockResolvedValueOnce([]); // heartbeat orphans
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', status: 'in_progress', parentTaskId: null });
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: 'PR #42, 3 commits',
+    });
+    const taskSets: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskSets.push(vals);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+    mockWakeTask.mockClear();
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskSets.some(v => v.status === 'completed')).toBe(false);
+    const requeue = taskSets.find(v => v.status === 'pending');
+    expect(requeue).toBeDefined();
+    expect(requeue.startAt).toBeNull();
+    expect(requeue.context.infraRetryCount).toBe(0); // no infra retry charged
+    expect(requeue.context.resumeBranch).toBe('b');
+    expect(mockWakeTask).toHaveBeenCalledWith('task-1', 'task.requeued');
+  });
+
+  it('leaves a reaped interactive worker\'s finished task as it is', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'mcp-1', taskId: 'task-1', runner: 'mcp', status: 'running', startedAt: new Date(), turns: 0, costUsd: '0', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', status: 'completed', parentTaskId: null });
+    const taskSets: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskSets.push(vals);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskSets.filter(v => 'status' in v)).toEqual([]);
+  });
+
+  it('promotes task to completed when stale worker has artifacts but no PR', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: true, hasStructuredOutput: false, hasCommits: false, hasAny: true, details: '2 artifacts',
+    });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('completed');
+  });
+
+  it('promotes task to completed when stale worker has structured output', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: true, hasCommits: false, hasAny: true, details: 'structured output',
+    });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('completed');
+  });
+
+  it('resets task to pending when stale worker has no deliverables', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('pending');
+  });
+
+  it('does nothing when no stale workers exist', async () => {
+    mockWorkersFindMany.mockResolvedValue([]);
+    await cleanupStaleWorkers('account-1');
+    expect(mockCheckWorkerDeliverables).not.toHaveBeenCalled();
+  });
+});
+
+describe('cleanupStaleWorkers — heartbeat-expiry path with deliverables', () => {
+  // Regression: stale-worker reaper marks a finished worker as 'runner went offline'
+  // even after the worker delivered PR+artifact. The heartbeat-expiry path (section 2)
+  // calls resolveStaleTask just like section 1 — it must promote the task to completed,
+  // not reset it to pending or fail it.
+  // Incident: worker on buildd/f97… delivered PR #1591 then was killed by the reaper
+  // because the runner's heartbeat was stale (> 150 min). The task was misclassified as
+  // failed/Infra Error. See memory e1b02fc0 and 48eae69a.
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockReset();
+    mockWorkerHeartbeatsFindFirst.mockReset();
+    mockWorkerHeartbeatsFindFirst.mockReturnValue({ id: 'hb-1' }); // fresh by default
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+  });
+
+  it('promotes task to completed when heartbeat-expired worker has a registered PR', async () => {
+    // Section 1 (15-min stale): no stale workers
+    // Section 2 (heartbeat): one orphaned worker that delivered a PR
+    // null → no fresh heartbeat → section 2 fires
+    mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])  // section 1: no 15-min stale workers
+      .mockResolvedValueOnce([    // section 2: one heartbeat-orphaned worker with a PR
+        { id: 'w-hb', taskId: 'task-hb', prUrl: 'https://github.com/org/repo/pull/1591', prNumber: 1591, commitCount: 5, branch: 'buildd/f97abc', error: null },
+      ])
+      .mockResolvedValueOnce([]); // no other active workers for the task
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([{ id: 'task-hb', workspaceId: 'ws-1' }]); // orphanTasks
+
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', category: 'feature', context: {} }) // resolveStaleTask: current task
+      .mockResolvedValueOnce({ parentTaskId: null }); // resolveCompletedTask: dep check
+
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true,
+      hasAny: true, details: 'PR #1591, 5 commits',
+    });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('completed');
+    // result must be populated so mission review sees a real completion
+    expect(taskUpdateSet.result).toBeDefined();
+    // AC-1 slice 4: the PR stays on the worker row and is derived on read; result does not copy it.
+    expect(taskUpdateSet.result.prUrl).toBeUndefined();
+    expect(taskUpdateSet.result.prNumber).toBeUndefined();
+    expect(taskUpdateSet.result.reaperAutoCompleted).toBe(true);
+  });
+
+  it('S9: a kernel attempt with only local commits is never promoted to completed (§9)', async () => {
+    kernelOwned = 'delivery-1';
+    try {
+      mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
+      mockWorkersFindMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'w-k', taskId: 'task-k', prUrl: 'https://github.com/org/repo/pull/7', prNumber: 7, commitCount: 2, branch: 'buildd/k', error: null }])
+        .mockResolvedValue([]); // no other live workers; no prior failed workers (so: an infra requeue)
+      mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-k', workspaceId: 'ws-1' }]);
+      mockTasksFindFirst.mockResolvedValue({ status: 'assigned', category: 'bug', context: { workflowAttemptId: 'a1' }, deliveryId: 'delivery-1', deliveryRole: 'fix', parentTaskId: null });
+      mockCheckWorkerDeliverables.mockReturnValue({ hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: 'PR #7, 2 commits' });
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({ set: mock((vals: any) => { sets.push(vals); return { where: mock(() => Promise.resolve()) }; }) });
+
+      await cleanupStaleWorkers('account-1');
+
+      expect(sets.some((v) => v.status === 'completed')).toBe(false);
+      expect(sets.some((v) => v.result?.reaperAutoCompleted)).toBe(false);
+      // An infra requeue resumes the same branch; it is not an attempt end (§5.7 rule 2).
+      expect(sets.some((v) => v.status === 'pending' && v.context?.resumeBranch === 'buildd/k')).toBe(true);
+    } finally {
+      kernelOwned = null;
+      mockTasksFindFirst.mockReset();
+      mockWorkersFindMany.mockReset();
+    }
+  });
+
+  it('S9: a kernel attempt the reaper ends for good reports AttemptEnded(lost) to the kernel', async () => {
+    kernelOwned = 'delivery-1';
+    mockWorkflowAttemptEnded.mockClear();
+    try {
+      mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
+      mockWorkersFindMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'w-k', taskId: 'task-k', prUrl: null, prNumber: null, commitCount: 1, branch: 'buildd/k', error: null }])
+        .mockResolvedValueOnce([])
+        // resolveStaleTask: failed workers already at the retry cap → permanent fail
+        .mockResolvedValue([{ id: 'f1', exitCause: null }, { id: 'f2', exitCause: null }, { id: 'f3', exitCause: null }]);
+      mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-k', workspaceId: 'ws-1' }]);
+      mockTasksFindFirst
+        .mockResolvedValueOnce({ status: 'assigned', category: 'bug', context: { workflowAttemptId: 'a1' }, deliveryId: 'delivery-1', deliveryRole: 'fix' })
+        .mockResolvedValue({ status: 'failed', parentTaskId: null });
+      mockCheckWorkerDeliverables.mockReturnValue({ hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: '1 commit' });
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+      await cleanupStaleWorkers('account-1');
+
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({
+        task: { id: 'task-k', deliveryId: 'delivery-1', deliveryRole: 'fix' }, workerId: 'w-k', status: 'lost', localHeadSha: null,
+      });
+    } finally {
+      kernelOwned = null;
+      mockTasksFindFirst.mockReset();
+      mockWorkersFindMany.mockReset();
+    }
+  });
+
+  // AC-1 slice 5 (workflow-kernel-library.md §9): the owner attempt's end is the kernel's to
+  // project onto the task, so the reaper writes the result only.
+  function reapOwnerAtRetryCap(category = 'feature') {
+    mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'w-o', taskId: 'task-o', prUrl: null, prNumber: null, commitCount: 0, branch: 'buildd/o', error: null }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([{ id: 'f1', exitCause: null }, { id: 'f2', exitCause: null }, { id: 'f3', exitCause: null }]);
+    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-o', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ status: 'assigned', category, context: {}, deliveryId: 'delivery-1', deliveryRole: 'owner', parentTaskId: null });
+    mockCheckWorkerDeliverables.mockReturnValue({ hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: '' });
+    const sets: any[] = [];
+    const returning = mock(async () => [{ id: 'task-o' }]);
+    mockTasksUpdate.mockReturnValue({ set: mock((vals: any) => { sets.push(vals); return { where: mock(() => Object.assign(Promise.resolve(), { returning })) }; }) });
+    return { sets, returning };
+  }
+
+  it('AC-1 slice 5: a kernel owner attempt at the retry cap gets its result written and its status from the kernel', async () => {
+    kernelOwned = 'delivery-1';
+    mockWorkflowAttemptEnded.mockClear();
+    mockProjectOwnerEnd.mockClear();
+    mockReapedOwnerAttemptIsCurrent.mockClear();
+    try {
+      const { sets, returning } = reapOwnerAtRetryCap();
+      await cleanupStaleWorkers('account-1');
+
+      expect(mockReapedOwnerAttemptIsCurrent).toHaveBeenCalledWith('task-o', 'w-o');
+      const fail = sets.find((v) => v.result?.error?.includes('worker attempts'));
+      expect(fail).toBeDefined();
+      expect('status' in fail).toBe(false);
+      expect(returning).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ task: { id: 'task-o', deliveryRole: 'owner' }, workerId: 'w-o', status: 'lost' });
+      expect(mockProjectOwnerEnd).toHaveBeenCalledWith({ deliveryId: 'delivery-1', taskId: 'task-o', workerId: 'w-o', status: 'lost' });
+    } finally {
+      kernelOwned = null;
+      mockTasksFindFirst.mockReset();
+      mockWorkersFindMany.mockReset();
+    }
+  });
+
+  // Review of #5122: a task classified `review` can own its PR's delivery. Its reaped attempt is the
+  // owner's, not a reviewer round's, so the kernel still hears the end and no status is written here.
+  it('AC-1 slice 5: a category review owner attempt at the retry cap sends AttemptEnded(lost) and writes no status', async () => {
+    kernelOwned = 'delivery-1';
+    mockWorkflowAttemptEnded.mockClear();
+    mockProjectOwnerEnd.mockClear();
+    try {
+      const { sets } = reapOwnerAtRetryCap('review');
+      await cleanupStaleWorkers('account-1');
+      expect(sets.length).toBeGreaterThan(0);
+      expect(sets.some((v) => 'status' in v)).toBe(false);
+      expect(sets.some((v) => v.result?.error === 'agent review timed out')).toBe(false);
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ task: { id: 'task-o', deliveryRole: 'owner' }, workerId: 'w-o', status: 'lost' });
+      expect(mockProjectOwnerEnd).toHaveBeenCalledTimes(1);
+    } finally {
+      kernelOwned = null;
+      mockTasksFindFirst.mockReset();
+      mockWorkersFindMany.mockReset();
+    }
+  });
+
+  it('AC-1 slice 5: a guarded owner requeue that matched no row (a re-claim raced the reap) wakes nothing', async () => {
+    kernelOwned = 'delivery-1';
+    mockWakeTask.mockClear();
+    try {
+      mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
+      mockWorkersFindMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'w-o', taskId: 'task-o', prUrl: null, prNumber: null, commitCount: 0, branch: 'buildd/o', error: null }])
+        .mockResolvedValue([]); // no other live workers, no prior failures: an infra requeue
+      mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-o', workspaceId: 'ws-1' }]);
+      mockTasksFindFirst.mockResolvedValue({ status: 'assigned', category: 'feature', context: {}, deliveryId: 'delivery-1', deliveryRole: 'owner', parentTaskId: null });
+      mockCheckWorkerDeliverables.mockReturnValue({ hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: '' });
+      for (const [rows, woken] of [[[], 0], [[{ id: 'task-o' }], 1]] as const) {
+        mockWakeTask.mockClear();
+        const sets: any[] = [];
+        const returning = mock(async () => rows);
+        mockTasksUpdate.mockReturnValue({ set: mock((vals: any) => { sets.push(vals); return { where: mock(() => Object.assign(Promise.resolve(), { returning })) }; }) });
+        if (woken) {
+          mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
+          mockWorkersFindMany
+            .mockResolvedValueOnce([])
+            .mockResolvedValueOnce([{ id: 'w-o', taskId: 'task-o', prUrl: null, prNumber: null, commitCount: 0, branch: 'buildd/o', error: null }])
+            .mockResolvedValue([]);
+          mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-o', workspaceId: 'ws-1' }]);
+        }
+        mockWorkflowAttemptRequeued.mockClear();
+        await cleanupStaleWorkers('account-1');
+        // AC-1 slice 8: the guarded write carries the backoff and context, never the status: the
+        // kernel's requeue moves it, and only after the write still found the attempt current.
+        expect(sets.some((v) => v.startAt instanceof Date && v.context?.infraRetryCount === 1)).toBe(true);
+        expect(sets.some((v) => 'status' in v)).toBe(false);
+        expect(returning).toHaveBeenCalledTimes(1);
+        expect(mockWorkflowAttemptRequeued.mock.calls.length).toBe(woken);
+        if (woken) expect(mockWorkflowAttemptRequeued.mock.calls[0][0]).toMatchObject({ task: { id: 'task-o', deliveryRole: 'owner' }, workerId: 'w-o', reason: 'infra_retry' });
+        expect(mockWakeTask.mock.calls.filter((c: any[]) => c[1] === 'task.requeued').length).toBe(woken);
+      }
+    } finally {
+      kernelOwned = null;
+      mockTasksFindFirst.mockReset();
+      mockWorkersFindMany.mockReset();
+    }
+  });
+
+  it('AC-1 slice 5: a late reap (no longer the owner task\'s current attempt) writes nothing and ends nothing', async () => {
+    kernelOwned = 'delivery-1';
+    reapedIsCurrent = false;
+    mockWorkflowAttemptEnded.mockClear();
+    mockProjectOwnerEnd.mockClear();
+    try {
+      const { sets } = reapOwnerAtRetryCap();
+      await cleanupStaleWorkers('account-1');
+      expect(sets).toEqual([]);
+      expect(mockWorkflowAttemptEnded).not.toHaveBeenCalled();
+      expect(mockProjectOwnerEnd).not.toHaveBeenCalled();
+    } finally {
+      kernelOwned = null;
+      reapedIsCurrent = true;
+      mockTasksFindFirst.mockReset();
+      mockWorkersFindMany.mockReset();
+    }
+  });
+
+  it('promotes task to completed when heartbeat-expired worker has artifact but no PR', async () => {
+    mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
+
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(2);
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])  // section 1: no stale workers
+      .mockResolvedValueOnce([    // section 2: orphaned worker with artifacts
+        { id: 'w-hb', taskId: 'task-hb', prUrl: null, prNumber: null, commitCount: 0, branch: 'buildd/f97abc', error: null },
+      ])
+      .mockResolvedValueOnce([]); // no other active workers
+
+    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-hb', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', category: 'feature', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: true, hasStructuredOutput: false, hasCommits: false,
+      hasAny: true, details: '2 artifacts',
+    });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => { taskUpdateSet = vals; return { where: mock(() => Promise.resolve()) }; }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('completed');
+    expect(taskUpdateSet.result).toBeDefined();
+    expect(taskUpdateSet.result.reaperAutoCompleted).toBe(true);
+  });
+
+  it('still resets to pending when heartbeat-expired worker has no deliverables', async () => {
+    mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])  // section 1: no stale workers
+      .mockResolvedValueOnce([    // section 2: orphaned worker with no deliverables
+        { id: 'w-hb', taskId: 'task-hb', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])  // no other active workers
+      .mockResolvedValueOnce([]); // no failed workers (retry cap check)
+
+    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-hb', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', category: 'feature', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => { taskUpdateSet = vals; return { where: mock(() => Promise.resolve()) }; }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('pending');
+  });
+
+  it('promotes to completed even when getWorkerArtifactCount would throw (prUrl present)', async () => {
+    // This tests the fix: artifact count error must NOT prevent the prUrl check.
+    // If the try-catch wrapped checkWorkerDeliverables too (old bug), the throw would
+    // leave hasDeliverables=false and the task would be reset to pending.
+    mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
+
+    mockGetWorkerDeliverableArtifactCount.mockRejectedValue(new Error('DB timeout'));
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'w-hb', taskId: 'task-hb', prUrl: 'https://github.com/org/repo/pull/99', prNumber: 99, commitCount: 3, branch: 'buildd/abc', error: null },
+      ])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-hb', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', category: 'feature', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    // With artifactCount=0 (fallback) + prUrl set → checkWorkerDeliverables must still return hasAny=true
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true,
+      hasAny: true, details: 'PR #99, 3 commits',
+    });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => { taskUpdateSet = vals; return { where: mock(() => Promise.resolve()) }; }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // Even with artifact query failure, prUrl being set must promote to completed
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('completed');
+    expect(taskUpdateSet.result.prUrl).toBeUndefined();
+  });
+});
+
+describe('cleanupStaleWorkers — retry cap', () => {
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => Promise.resolve()),
+      })),
+    });
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => Promise.resolve()),
+      })),
+    });
+  });
+
+  it('resets task to pending when fewer than 3 failed workers exist', async () => {
+    // Call sequence:
+    // 1. Stale workers → 1 stale worker
+    // 2. Other active workers for the task → none
+    // 3. Failed workers count (retry cap) → 2 failed (below cap)
+    // 4. Heartbeat orphans → none
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null },
+      ])
+      .mockResolvedValueOnce([]) // no other active workers
+      .mockResolvedValueOnce([{ id: 'f1' }, { id: 'f2' }]) // 2 failed workers (below cap of 3)
+      .mockResolvedValueOnce([]); // heartbeat check — no orphans
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('pending');
+    expect(taskUpdateSet.claimedBy).toBeNull();
+    expect(taskUpdateSet.claimedAt).toBeNull();
+  });
+
+  it('permanently fails task when 3+ failed workers exist (retry cap reached)', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null },
+      ])
+      .mockResolvedValueOnce([]) // no other active workers
+      .mockResolvedValueOnce([{ id: 'f1' }, { id: 'f2' }, { id: 'f3' }]) // 3 failed (at cap)
+      .mockResolvedValueOnce([]); // heartbeat check
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('failed');
+    expect(taskUpdateSet.result).toBeDefined();
+    expect(taskUpdateSet.result.error).toContain('3 worker attempts');
+  });
+
+  // Visual auditor (docs/design/visual-qa-auditor.md): the reaper must neither
+  // pass an audit around its evidence check nor fail it into releasing the
+  // mission.
+  it('a visual-auditor mission task at the retry cap fails as infra_stalled, so the mission stays blocked', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'f1' }, { id: 'f2' }, { id: 'f3' }])
+      .mockResolvedValueOnce([]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', workspaceId: 'ws-1', parentTaskId: null, status: 'in_progress',
+      missionId: 'mission-1', roleSlug: 'visual-auditor', context: {},
+    });
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => { taskUpdateSet = vals; return { where: mock(() => Promise.resolve()) }; }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet.status).toBe('failed');
+    expect(taskUpdateSet.result.errorType).toBe('infra_stalled');
+    expect(taskUpdateSet.result.error).toContain('3 worker attempts');
+  });
+
+  it('never reaper-completes a visual-auditor task from its artifacts: that would skip the evidence check', async () => {
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: true, hasStructuredOutput: false, hasCommits: false, hasAny: true, details: '3 artifacts',
+    });
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]) // no failed workers yet
+      .mockResolvedValueOnce([]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', workspaceId: 'ws-1', parentTaskId: null, status: 'in_progress',
+      missionId: 'mission-1', roleSlug: 'visual-auditor', context: {},
+    });
+    const sets: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => { sets.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(sets.some((v) => v.status === 'completed')).toBe(false);
+    // Requeued for another auditor run instead.
+    expect(sets.some((v) => v.status === 'pending')).toBe(true);
+  });
+
+  it('still promotes to completed with deliverables even when retry cap is reached', async () => {
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: 'PR #1',
+    });
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: 'https://github.com/pr/1', prNumber: 1, commitCount: 3 },
+      ])
+      .mockResolvedValueOnce([]) // no other active workers
+      // Note: failed workers count query should NOT be called when deliverables exist
+      .mockResolvedValueOnce([]); // heartbeat check
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // Deliverables take priority — task promoted to completed regardless of retry count
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('completed');
+  });
+
+  it('does not count sandbox_mount_gap workers toward retry cap', async () => {
+    // 3 failed workers, but all are sandbox_mount_gap — none charge against the cap.
+    // Task should still be reset to pending (cap not reached).
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null },
+      ])
+      .mockResolvedValueOnce([]) // no other active workers
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'sandbox_mount_gap' },
+        { id: 'f2', exitCause: 'sandbox_mount_gap' },
+        { id: 'f3', exitCause: 'sandbox_mount_gap' },
+      ]) // 3 sandbox_mount_gap workers — all exempt from cap
+      .mockResolvedValueOnce([]); // heartbeat check
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // sandbox_mount_gap workers don't consume retry slots — task re-queued, not failed
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('pending');
+  });
+
+  it('counts mixed exitCause workers correctly (sandbox_mount_gap exempt, code_failure not)', async () => {
+    // 2 sandbox_mount_gap + 3 code_failure = 3 chargeable → cap reached
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'sandbox_mount_gap' },
+        { id: 'f2', exitCause: 'sandbox_mount_gap' },
+        { id: 'f3', exitCause: 'code_failure' },
+        { id: 'f4', exitCause: 'code_failure' },
+        { id: 'f5', exitCause: 'code_failure' },
+      ])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // 3 code_failure workers hit the cap → permanently failed
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('failed');
+  });
+
+  it('resets to pending with backoff on first infra failure (infraRetryCount=0)', async () => {
+    // No chargeable failures — all infra. infraRetryCount not set yet (first infra failure).
+    const before = Date.now();
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null, branch: null, error: 'session ID in use' },
+      ])
+      .mockResolvedValueOnce([]) // no other active workers
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'infra_failure' }, // 0 chargeable failures → infra path
+      ])
+      .mockResolvedValueOnce([]); // heartbeat check
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-1', workspaceId: 'ws-1', status: 'assigned',
+      category: 'feature', context: {}, loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    mockWakeTask.mockClear();
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('pending');
+    expect(taskUpdateSet.claimedBy).toBeNull();
+    expect(taskUpdateSet.claimedAt).toBeNull();
+    // Woken at the end of its backoff, not now: the backoff is what lets the
+    // infra issue settle before the next runner races in.
+    expect(mockWakeTask.mock.calls).toEqual([['task-1', 'task.requeued', { notBefore: taskUpdateSet.startAt }]]);
+    // startAt should be ~5 minutes from now (first backoff slot)
+    expect(taskUpdateSet.startAt).toBeInstanceOf(Date);
+    const startAtMs = taskUpdateSet.startAt.getTime();
+    expect(startAtMs).toBeGreaterThanOrEqual(before + 4 * 60_000);
+    expect(startAtMs).toBeLessThanOrEqual(Date.now() + 6 * 60_000);
+    // infraRetryCount incremented to 1
+    expect(taskUpdateSet.context?.infraRetryCount).toBe(1);
+  });
+
+  // Review of #3053: a force claim's audit describes one claim; a requeue ends it.
+  it('a requeue drops the previous claim\'s force audit', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([{ id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'f1', exitCause: 'infra_failure' }])
+      .mockResolvedValueOnce([]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-1', workspaceId: 'ws-1', status: 'assigned', category: 'feature',
+      context: { forceClaim: { at: 'x', accountId: 'a', userId: null, bypassed: ['deps_blocked'] }, keep: 1 },
+      loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValueOnce({ parentTaskId: null });
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({ set: mock((vals: any) => { taskUpdateSet = vals; return { where: mock(() => Promise.resolve()) }; }) });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet.status).toBe('pending');
+    expect('forceClaim' in taskUpdateSet.context).toBe(false);
+    expect(taskUpdateSet.context.keep).toBe(1);
+  });
+
+  it('sets resumeBranch alongside baseBranch on infra-failure reset, so the runner resumes the branch rather than treating it as a declared base', async () => {
+    // Same as the first-infra-failure case above, but the stale worker has a
+    // real branch — the retry must resume that exact branch, not cut a fresh
+    // one from it. `baseBranch` alone is ambiguous with a mission-branch
+    // task's declared base (see apps/runner/src/git-operations.ts's
+    // resumeCandidate); `resumeBranch` is what disambiguates true resume.
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w2', taskId: 'task-2', prUrl: null, prNumber: null, commitCount: null, branch: 'buildd/task-2-slug', error: 'session ID in use' },
+      ])
+      .mockResolvedValueOnce([]) // no other active workers
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'infra_failure' }, // 0 chargeable failures → infra path
+      ])
+      .mockResolvedValueOnce([]); // heartbeat check
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-2', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-2', workspaceId: 'ws-1', status: 'assigned',
+      category: 'feature', context: {}, loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet.context?.baseBranch).toBe('buildd/task-2-slug');
+    expect(taskUpdateSet.context?.resumeBranch).toBe('buildd/task-2-slug');
+  });
+
+  it('#4909: an infra reset of a mission refresh resumes its branch but keeps the mission branch it was filed for', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w3', taskId: 'task-3', prUrl: null, prNumber: null, commitCount: null, branch: 'buildd/task-3-refresh', error: 'session ID in use' },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'f1', exitCause: 'infra_failure' }])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-3', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-3', workspaceId: 'ws-1', status: 'assigned', category: 'chore',
+      context: { requireMergeCommit: true, baseBranch: 'mission/m-1', refreshTrunk: 'dev' },
+      loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet.context?.baseBranch).toBe('mission/m-1');
+    expect(taskUpdateSet.context?.resumeBranch).toBe('buildd/task-3-refresh');
+  });
+
+  it('uses 15-minute backoff on second infra failure (infraRetryCount=1)', async () => {
+    const before = Date.now();
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'infra_failure' },
+      ])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-1', workspaceId: 'ws-1', status: 'assigned',
+      category: 'feature', context: { infraRetryCount: 1 }, loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet.status).toBe('pending');
+    // startAt should be ~15 minutes from now (second backoff slot)
+    expect(taskUpdateSet.startAt).toBeInstanceOf(Date);
+    const startAtMs = taskUpdateSet.startAt.getTime();
+    expect(startAtMs).toBeGreaterThanOrEqual(before + 14 * 60_000);
+    expect(startAtMs).toBeLessThanOrEqual(Date.now() + 16 * 60_000);
+    expect(taskUpdateSet.context?.infraRetryCount).toBe(2);
+  });
+
+  it('marks task as infra_stalled after exceeding MAX_INFRA_RETRIES', async () => {
+    // infraRetryCount=3 (MAX_INFRA_RETRIES) → stall cap reached → failed + errorType infra_stalled
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'infra_failure' }, // 0 chargeable failures → infra path
+      ])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-1', workspaceId: 'ws-1', status: 'assigned',
+      category: 'feature', context: { infraRetryCount: 3 }, loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('failed');
+    expect(taskUpdateSet.result?.errorType).toBe('infra_stalled');
+    expect(taskUpdateSet.result?.infraRetryCount).toBe(3);
+    expect(taskUpdateSet.result?.error).toContain('infra errors prevented startup');
+    // startAt must NOT be set — this is terminal
+    expect(taskUpdateSet.startAt).toBeUndefined();
+  });
+
+  it('budget_limited workers do not count toward code-failure retry cap', async () => {
+    // Session-limit (budget_limited) errors must not consume retry attempts —
+    // the task failed due to a platform capacity condition, not a code defect.
+    // 3 budget_limited workers → 0 chargeable → cap NOT reached → task re-queued.
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'budget_limited' },
+        { id: 'f2', exitCause: 'budget_limited' },
+        { id: 'f3', exitCause: 'budget_limited' },
+      ])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-1', workspaceId: 'ws-1', status: 'assigned',
+      category: 'feature', context: {}, loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // budget_limited workers never consume a retry slot — task must be re-queued
+    expect(taskUpdateSet).not.toBeNull();
+    expect(taskUpdateSet.status).toBe('pending');
+  });
+
+  it('infra_failure workers do not count toward code-failure retry cap', async () => {
+    // 3 infra_failure workers → 0 chargeable → code cap NOT reached; infra path used instead
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'infra_failure' },
+        { id: 'f2', exitCause: 'infra_failure' },
+        { id: 'f3', exitCause: 'infra_failure' },
+      ])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    // infraRetryCount=0 → still within infra retry window → reset to pending, not failed
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-1', workspaceId: 'ws-1', status: 'assigned',
+      category: 'feature', context: {}, loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    // 3 infra_failure workers → 0 chargeable → code cap not hit → infra retry path
+    expect(taskUpdateSet.status).toBe('pending');
+    expect(taskUpdateSet.context?.infraRetryCount).toBe(1);
+  });
+});
+
+describe('cleanupStaleWorkers — activeSessions seat release', () => {
+  // Regression: activeSessions was incremented at claim time but never decremented.
+  // Any code path that takes a live worker to a terminal state must decrement it so
+  // future claims are not permanently blocked by Gate B (maxConcurrentSessions check).
+  beforeEach(() => {
+    capturedAccountsSet = null;
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockAccountsUpdate.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockReset();
+    mockWorkerHeartbeatsFindFirst.mockReset();
+    mockWorkerHeartbeatsFindFirst.mockReturnValue({ id: 'hb-1' }); // fresh heartbeat by default
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockAccountsUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        capturedAccountsSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+  });
+
+  it('decrements activeSessions when stale workers (15-min path) are reaped', async () => {
+    // One stale worker in 'running' status — it held a seat that must be released.
+    mockWorkersFindMany
+      // accountId is part of the selected columns: the decrement is grouped by
+      // each reaped row's own account, so a fixture without it models a row
+      // that holds no seat anywhere and would (correctly) decrement nothing.
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', accountId: 'account-1', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null }])
+      .mockResolvedValueOnce([])   // no other active workers
+      .mockResolvedValueOnce([])   // failed workers (retry cap)
+      .mockResolvedValueOnce([]);  // heartbeat orphans
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    await cleanupStaleWorkers('account-1');
+
+    // activeSessions decrement must have been attempted
+    expect(mockAccountsUpdate).toHaveBeenCalled();
+    expect(capturedAccountsSet).not.toBeNull();
+    expect(capturedAccountsSet.activeSessions).toBeDefined();
+  });
+
+  it('decrements by the number of reaped workers (batch)', async () => {
+    // Two stale workers — both seats must be released in one decrement.
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'w1', taskId: 'task-1', accountId: 'account-1', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+        { id: 'w2', taskId: 'task-2', accountId: 'account-1', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])   // other active workers for task-1
+      .mockResolvedValueOnce([])   // failed workers for task-1
+      .mockResolvedValueOnce([])   // other active workers for task-2
+      .mockResolvedValueOnce([])   // failed workers for task-2
+      .mockResolvedValueOnce([]);  // heartbeat orphans
+
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'task-1', workspaceId: 'ws-1' },
+      { id: 'task-2', workspaceId: 'ws-1' },
+    ]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null })
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    await cleanupStaleWorkers('account-1');
+
+    // One decrement call for the batch of 2 stale workers
+    expect(capturedAccountsSet).not.toBeNull();
+    expect(capturedAccountsSet.activeSessions).toBeDefined();
+  });
+
+  it('decrements activeSessions when heartbeat-orphaned workers are reaped', async () => {
+    // No 15-min stale workers, but heartbeat is stale → section 2 fires.
+    mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null); // no fresh heartbeat
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])  // section 1: no 15-min stale workers
+      .mockResolvedValueOnce([    // section 2: one heartbeat-orphaned worker
+        { id: 'w-hb', taskId: 'task-hb', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])  // no other active workers for the orphaned task
+      .mockResolvedValueOnce([]); // failed workers count for task-hb (resolveStaleTask)
+
+    mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-hb', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    await cleanupStaleWorkers('account-1');
+
+    // activeSessions must be decremented for the heartbeat-orphaned worker
+    expect(mockAccountsUpdate).toHaveBeenCalled();
+    expect(capturedAccountsSet).not.toBeNull();
+    expect(capturedAccountsSet.activeSessions).toBeDefined();
+  });
+
+  it('does not call accounts update when no workers are reaped', async () => {
+    // No stale workers in either section → no decrement should be attempted.
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // section 1: no stale workers
+      .mockResolvedValueOnce([]); // section 2: no orphans (but heartbeat is fresh, so section 2 won't even query)
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(mockAccountsUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe('cleanupStaleWorkers — seat accounting across a cross-account batch', () => {
+  /**
+   * Companion to widening the never-started rule to the whole team.
+   *
+   * Once the reaper can pick up a row belonging to a *sibling* account, a single
+   * `accounts.activeSessions -= batchSize WHERE id = <cleaning account>` is a
+   * silent seat leak in two directions at once: the cleaning account is
+   * credited seats it never held (it can then over-claim past
+   * maxConcurrentSessions), and the account that actually held the seat never
+   * gets it back. The decrement has to be grouped by each reaped row's OWN
+   * account — the same grouping `cleanupStuckWaitingInput` already does.
+   *
+   * The schema mock flattens columns to `undefined`, so the column a predicate
+   * is keyed on is invisible here — but the bound *value* is not: mocked `eq`
+   * keeps `{ value }`, and mocked `sql` keeps its interpolations. That is
+   * enough to see which account each decrement targets and by how much.
+   */
+  const decrements: Array<{ accountId: string | undefined; amount: unknown }> = [];
+
+  beforeEach(() => {
+    decrements.length = 0;
+    capturedAccountsSet = null;
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockAccountsUpdate.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockReset();
+    mockWorkerHeartbeatsFindFirst.mockReset();
+    mockWorkerHeartbeatsFindFirst.mockReturnValue({ id: 'hb-1' }); // fresh heartbeat → section 2 inert
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockAccountsUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        // `activeSessions` is a mocked sql template: values[1] is the amount.
+        const amount = vals?.activeSessions?.values?.[1];
+        return {
+          where: mock((predicate: any) => {
+            // and(eq(accounts.id, <id>), eq(accounts.authType, 'oauth'))
+            const idClause = predicate?.args?.find((a: any) => a?.type === 'eq' && a?.value !== 'oauth');
+            decrements.push({ accountId: idClause?.value, amount });
+            return Promise.resolve();
+          }),
+        };
+      }),
+    });
+  });
+
+  it('issues one decrement per reaped row\'s own account, not one for the cleaning account', async () => {
+    // A team-widened batch: one orphan on the cleaning account, one on a
+    // sibling account in the same team.
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'w-own', taskId: 'task-1', accountId: 'account-1', status: 'idle', startedAt: null, prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+        { id: 'w-sibling', taskId: 'task-2', accountId: 'account-2', status: 'idle', startedAt: null, prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])  // other active workers for task-1
+      .mockResolvedValueOnce([])  // failed workers for task-1
+      .mockResolvedValueOnce([])  // other active workers for task-2
+      .mockResolvedValueOnce([])  // failed workers for task-2
+      .mockResolvedValueOnce([]); // heartbeat orphans
+
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'task-1', workspaceId: 'ws-1' },
+      { id: 'task-2', workspaceId: 'ws-2' },
+    ]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null })
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(decrements).toHaveLength(2);
+    expect(decrements.map(d => d.accountId).sort()).toEqual(['account-1', 'account-2']);
+    // Each account held exactly one seat in this batch.
+    for (const d of decrements) {
+      expect(d.amount).toBe(1);
+    }
+  });
+
+  it('does not charge the cleaning account for a seat a sibling account held', async () => {
+    // Every reaped row belongs to the sibling. The cleaning account held no
+    // seat here and must not be decremented at all.
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'w-sibling', taskId: 'task-2', accountId: 'account-2', status: 'idle', startedAt: null, prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])  // other active workers
+      .mockResolvedValueOnce([])  // failed workers
+      .mockResolvedValueOnce([]); // heartbeat orphans
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-2', workspaceId: 'ws-2' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(decrements).toHaveLength(1);
+    expect(decrements[0].accountId).toBe('account-2');
+    expect(decrements[0].amount).toBe(1);
+  });
+
+  it('collapses several rows on the same account into a single decrement', async () => {
+    // Grouping must aggregate, not fan out one UPDATE per row.
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'w1', taskId: 'task-1', accountId: 'account-2', status: 'idle', startedAt: null, prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+        { id: 'w2', taskId: 'task-2', accountId: 'account-2', status: 'idle', startedAt: null, prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'task-1', workspaceId: 'ws-1' },
+      { id: 'task-2', workspaceId: 'ws-1' },
+    ]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null })
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(decrements).toHaveLength(1);
+    expect(decrements[0].accountId).toBe('account-2');
+    expect(decrements[0].amount).toBe(2);
+  });
+});
+
 describe('cleanupStuckWaitingInput — activeSessions seat release', () => {
   beforeEach(() => {
     capturedAccountsSet = null;
