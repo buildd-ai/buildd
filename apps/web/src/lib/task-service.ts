@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { accounts, workers, workspaces } from '@buildd/core/db/schema';
+import { accounts, workers, workspaces, teamMembers, tasks } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
 import { getUserTeamIds } from '@/lib/team-access';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -23,7 +23,7 @@ export interface ResolvedCreatorContext {
   createdByWorkerId: string | null;
   creationSource: CreationSource;
   parentTaskId: string | null;
-  /** The authenticated person the task is for, or null for the trigger to derive; see tasks.createdByUserId. */
+  /** The person the task is for; see tasks.createdByUserId. */
   createdByUserId: string | null;
 }
 
@@ -57,7 +57,7 @@ export async function resolveCreatorContext(
     params.userId
   );
 
-  const createdByUserId = resolveRequesterUserId(params);
+  const createdByUserId = await resolveRequesterUserId(params, derivedParentTaskId);
 
   return {
     createdByAccountId,
@@ -69,14 +69,27 @@ export async function resolveCreatorContext(
 }
 
 /**
- * The authenticated person a new task is for: the signed-in user, or the person
- * behind an OAuth session. Only a person this request authenticated is written
- * here. A task an agent, retry, schedule or mission files gets its person from
- * the `tasks_resolve_requester` trigger (parent -> mission -> schedule), which
- * records it as derived rather than as named by the writer.
+ * The person a new task is for: the signed-in user, or the person behind an
+ * OAuth session, or — for a task an agent files — whoever its parent task was
+ * for. Tasks filed by other paths (retries, schedules, missions) are resolved
+ * at read time by `resolveTaskRequesterUserId`.
  */
-function resolveRequesterUserId(params: CreateTaskCreatorParams): string | null {
-  return params.userId || params.apiAccount?.sessionUserId || null;
+async function resolveRequesterUserId(
+  params: CreateTaskCreatorParams,
+  parentTaskId: string | null,
+): Promise<string | null> {
+  if (params.userId) return params.userId;
+  if (params.apiAccount?.sessionUserId) return params.apiAccount.sessionUserId;
+  if (!parentTaskId) return null;
+  try {
+    const parent = await db.query.tasks.findFirst({
+      where: sqlWhere(eq(tasks.id, parentTaskId)),
+      columns: { createdByUserId: true },
+    });
+    return parent?.createdByUserId ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**

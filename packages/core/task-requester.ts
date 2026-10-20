@@ -7,12 +7,8 @@
  * then the creator of the mission it belongs to; then the creator of the
  * schedule that spawned it. `null` = no person — team credentials only.
  *
- * Since migration *_task_requester_trigger the database runs this same walk on
- * every insert (tasks_derive_requester) and stores the answer, with how it was
- * decided in `requesterSource`, so code that reads `createdByUserId` directly
- * (Health occupancy, the claim-order queue) agrees with this. The walk here
- * stays for rows whose parent, mission or schedule gained a person later.
- * Change the two together.
+ * Only the main create path writes `createdByUserId`; the other ~30 places that
+ * file tasks (retries, sweeps, webhooks) rely on this walk instead.
  */
 import { eq } from 'drizzle-orm';
 import { db } from './db';

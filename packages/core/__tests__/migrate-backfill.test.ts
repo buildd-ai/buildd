@@ -345,8 +345,6 @@ describe('assertion coverage over the real migration corpus', () => {
     //    conflict/collision attempt edges, with no schema assertions.
     //  - 0289_artifact_revisions_trigger: plpgsql functions and triggers only
     //    (artifact body history); its table and columns are in 0288.
-    //  - *_task_requester_trigger: plpgsql functions, a trigger and the
-    //    idempotent requester backfill; its column is in *_tired_warstar.
-    expect(withoutAssertions.length).toBeLessThanOrEqual(5);
+    expect(withoutAssertions.length).toBeLessThanOrEqual(4);
   });
 });

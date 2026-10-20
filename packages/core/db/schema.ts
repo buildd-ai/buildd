@@ -1605,15 +1605,13 @@ export const tasks = pgTable('tasks', {
   // The person this task is for: the signed-in creator, or — for a task an agent,
   // schedule or mission files — the person behind its parent task, schedule or
   // mission. NULL = no person (pure API-key creation). Personal credentials and
-  // personal roles serve only this person's tasks. A writer that names no person
-  // gets one from the trigger in migration *_task_requester_trigger, by the walk
-  // in core/task-requester.ts; it never guesses beyond that walk.
+  // personal roles serve only this person's tasks.
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
-  // How createdByUserId was decided (TaskRequesterSource in core/task-requester.ts):
+  // How createdByUserId was decided (TaskRequesterSource in core/task-requester-source.ts):
   // 'explicit' (the writer named the person), 'parent' | 'mission' | 'schedule'
   // (derived at insert), 'none' (no person: service or API-key work), and the
-  // same with a 'backfill_' prefix for rows filled in after the fact. NULL: a
-  // person recorded before this column existed.
+  // same with a 'backfill_' prefix for rows filled in after the fact. NULL: not
+  // yet decided — nothing writes this column until the insert trigger lands.
   requesterSource: text('requester_source').$type<TaskRequesterSource>(),
   creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook' | 'orchestrator' | 'conflict'>(),
   // Direct link to the task_schedule that spawned this task (when creationSource = 'schedule' or 'orchestrator').

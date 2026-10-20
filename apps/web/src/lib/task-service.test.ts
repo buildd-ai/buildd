@@ -418,11 +418,10 @@ describe('task-service', () => {
       expect(ctx.createdByUserId).toBe('user-2');
     });
 
-    it("leaves an agent-filed task's person to the insert trigger, so it is recorded as derived", async () => {
+    it("inherits the parent task's person for an agent-filed task", async () => {
       mockTasksFindFirst.mockImplementation(async () => ({ createdByUserId: 'user-3' }));
       const ctx = await resolveCreatorContext({ apiAccount: { id: 'acct-1' }, parentTaskId: 'parent-1' });
-      expect(ctx.createdByUserId).toBeNull();
-      expect(ctx.parentTaskId).toBe('parent-1');
+      expect(ctx.createdByUserId).toBe('user-3');
       mockTasksFindFirst.mockImplementation(async () => null);
     });
 
