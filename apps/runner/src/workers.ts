@@ -1007,10 +1007,14 @@ export class WorkerManager {
     }
 
     // Scan environment on startup (sync — runs once, fast enough for init)
+    // The updater's health probe child skips it (updater.ts HEALTH_PROBE_ENV).
+    const healthProbe = process.env.BUILDD_HEALTH_PROBE === '1';
     try {
-      this.environment = scanEnvironment();
-      const mcpCount = this.environment.mcpServers?.length || this.environment.mcp.length;
-      console.log(`Environment scan: ${this.environment.tools.length} tools, ${this.environment.envKeys.length} env keys, ${mcpCount} MCP servers`);
+      if (!healthProbe) {
+        this.environment = scanEnvironment();
+        const mcpCount = this.environment.mcpServers?.length || this.environment.mcp.length;
+        console.log(`Environment scan: ${this.environment.tools.length} tools, ${this.environment.envKeys.length} env keys, ${mcpCount} MCP servers`);
+      }
     } catch (err) {
       console.warn('Environment scan failed:', err);
     }
@@ -1019,7 +1023,7 @@ export class WorkerManager {
     // starts. Without this, the probe runs lazily inside the first task execution
     // and a false-positive (e.g. setuid bwrap passing the probe) can only be
     // detected after the agent loop is already deep in work.
-    isBwrapSupported();
+    if (!healthProbe) isBwrapSupported();
     // Re-scan every 30 minutes
     this.envScanInterval = setInterval(() => {
       try {
