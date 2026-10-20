@@ -351,6 +351,8 @@ export function StripTaskActions({ task: t, state, link, workspaceId, executor, 
             hideQueuedNote={!!why}
             deliveryReading={t.delivery?.label ?? null}
             framed={false}
+            // The mission's Ask banner draws a waiting task's question (a delivery's wait is not one).
+            questionShownAbove={t.status === 'waiting' && !t.delivery && !!t.waitingFor}
             taskTitle={t.title}
             onChanged={onChanged}
             trailing={
