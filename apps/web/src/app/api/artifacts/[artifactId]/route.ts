@@ -20,6 +20,9 @@ import { finalizeArtifactUpload } from '@/lib/artifact-upload';
 import { ArtifactReadError, parseReadSelector, readArtifactBody, returnedChars, type ArtifactReadSelector } from '@buildd/core/artifact-read';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
+// Workspace-shared observation artifact that any task in its workspace may update.
+const SHARED_OBSERVATION_ARTIFACT_KEY = 'failure-pattern-shadow-backstop';
+
 // PATCH metadata semantics and the in-SQL merge: lib/artifact-metadata-merge.ts.
 
 type ArtifactRow = NonNullable<Awaited<ReturnType<typeof findArtifactWithWorker>>>;
@@ -255,8 +258,12 @@ export async function PATCH(
     }
     const ownTaskArtifact = !!artifact.worker && artifact.worker.accountId === account.id && taskScopeAllowsWorker(account, artifact.worker);
     const ownMissionArtifact = !artifact.workerId && !artifact.initiativeId && await taskScopeAllowsMission(account, artifact.missionId);
-    // Workspace observation artifacts (shadow-backstop observations) are updatable by any task in the workspace
-    const isWorkspaceObservationArtifact = artifact.workspaceId && artifact.key && artifact.key.startsWith('shadow-backstop-');
+    // The shared shadow-backstop observation artifact is updatable by any task in its own workspace.
+    // Exact key only: any task can set a key, so a prefix match would widen write access.
+    const isWorkspaceObservationArtifact =
+      artifact.key === SHARED_OBSERVATION_ARTIFACT_KEY &&
+      !!artifact.workspaceId &&
+      artifact.workspaceId === account.taskScope.workspaceId;
     if (!ownTaskArtifact && !ownMissionArtifact && !isWorkspaceObservationArtifact) {
       return NextResponse.json({ error: "A task token may update only its own task's or its own mission's artifacts" }, { status: 403 });
     }
