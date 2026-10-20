@@ -11,7 +11,10 @@
  */
 export const PROVIDER_SLUGS = ['axiom', 'sentry', 'posthog', 'vercel', 'neon', 'supabase', 'linear', 'notion'] as const;
 
-const ACCESS_WORDS = /\b(access|permissions?|scopes?|widen\w*|grant\w*|authori[sz]\w*|credentials?|api[ -]?keys?|worker[ -]?key|tokens?|analytics:read|connect\w*|read[ -]only|read)\b/i;
+// A lone keyword (read, token, connect, credentials) is an ordinary question
+// about the provider. Only a request shape counts: an asking verb followed,
+// in the same sentence, by what is being asked for.
+const ACCESS_WORDS = /\b(?:widen\w*|grant\w*|enabl\w*|allow\w*|giv\w*|need\w*|want\w*|request\w*|extend\w*|expand\w*|add)\b[^.?!\n]{0,60}\b(?:access|permissions?|scopes?|analytics:read|worker[ -]?key|api[ -]?keys?)\b/i;
 const WRITE_WORDS = /\b(write|mutate|create|delete|deploy|admin)\b/i;
 const RESOURCE_RE = /\b([a-z0-9]+(?:-[a-z0-9]+)*-(?:traces|logs|events|metrics))\b/i;
 

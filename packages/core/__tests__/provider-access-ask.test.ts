@@ -13,6 +13,22 @@ describe('provider access ask', () => {
     expect(detectProviderAccessAsk('Should the Axiom dashboard use a bar chart?')).toBeNull();
   });
 
+  it('detects the Sentry and PostHog phrasing', () => {
+    expect(detectProviderAccessAsk('I need read access to Sentry issues'))
+      .toEqual({ provider: 'sentry', access: 'read' });
+    expect(detectProviderAccessAsk('Please grant me PostHog read access')?.provider).toBe('posthog');
+  });
+  it('does not refuse ordinary questions that mention a provider and a generic word', () => {
+    expect(detectProviderAccessAsk('Should I read the Linear ticket description before starting?')).toBeNull();
+    expect(detectProviderAccessAsk('Which Vercel project should I use? The token in .env looks stale')).toBeNull();
+    expect(detectProviderAccessAsk('Should I connect the Notion page to the doc with credentials from the README?')).toBeNull();
+  });
+  it('reads the context and options too: the provider ask there counts, an ordinary one does not', () => {
+    expect(detectProviderAccessAsk('Which should I pick?', 'I need access to Axiom buildd-traces', 'A', 'B'))
+      .toEqual({ provider: 'axiom', access: 'read', resource: 'buildd-traces' });
+    expect(detectProviderAccessAsk('Which should I pick?', 'The Sentry token looks stale', 'Linear', 'Vercel')).toBeNull();
+  });
+
   it('ask_human refuses it, parks nothing, and never recommends widening the key', async () => {
     const api = mock(async () => ({}));
     const res = await handleBuilddAction(api as unknown as ApiFn, 'ask_human', {
