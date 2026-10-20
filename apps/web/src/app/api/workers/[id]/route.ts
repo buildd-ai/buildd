@@ -56,7 +56,7 @@ import { wakeOldestPendingTaskOnCapacityFreed } from '@/lib/capacity-freed-wake'
 import { onManagedWorkerTerminal } from '@/lib/entitlements/managed-runner';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { enforceServerSideEscalation, applyCopyReviewGate, parseCopyFindings } from '@/lib/reviewer';
-import { copyReviewConfigOf } from '@buildd/shared';
+import { copyReviewConfigOf, isIsolationRefusalError } from '@buildd/shared';
 import {
   checkDispatch,
   guardDispatchedTask,
@@ -3119,6 +3119,8 @@ async function patchWorker(
   // with backoff instead of staying failed (a green PR stuck in review_failed).
   const isWorktreeSetupTimeout = status === 'failed' && isWorktreeSetupTimeoutError(error);
   const isModelAuthMissing = status === 'failed' && body.modelAuthMissing === true;
+  // The runner refused the session at preflight against its own isolation record (isolation-policy.ts).
+  const isIsolationRefused = status === 'failed' && (body.isolationRefused === true || isIsolationRefusalError(error));
   // The CLI's model version gate: this runner cannot serve the model the task
   // was routed to. A deterministic 400 before the first turn, so it is infra
   // and rides the infra retry budget below; the claim route's capability gate
@@ -3146,6 +3148,7 @@ async function patchWorker(
       githubThrottled: isGithubThrottled,
       worktreeSetupTimeout: isWorktreeSetupTimeout,
       modelAuthMissing: isModelAuthMissing,
+      isolationRefused: isIsolationRefused,
       unrecognizedModel: isUnrecognizedModel,
       needsInput: isNeedsInput,
       budgetLimited: isBudgetError,
