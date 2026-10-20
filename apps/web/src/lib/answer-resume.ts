@@ -642,3 +642,42 @@ export function answeredAttemptLine(taskContext: unknown, workerId: string): str
   if (!entry) return 'Continuation not recorded.';
   return `A new attempt of this task carries your answer, because ${entry.reason}.`;
 }
+
+/** The question an unanswered-timeout attempt asked, as `tasks.context.unansweredQuestion` keeps it. */
+export interface UnansweredQuestionEntry {
+  workerId: string;
+  prompt: string | null;
+  options: string[];
+  expiredAt: string;
+}
+
+/**
+ * What the waiting-input sweep merges into a task's live context when it
+ * requeues the SAME task after a question nobody answered. The task keeps its
+ * description; "do not ask again" travels as `unansweredQuestion`, which the
+ * runner's prompt builder renders, so the guidance is context and not a rewrite
+ * of what the person wrote. Merge patch: every key it does not name stays.
+ */
+export function buildUnansweredRequeuePatch(opts: {
+  context: unknown;
+  workerId: string;
+  prompt?: string | null;
+  options?: string[];
+  branchContext: { baseBranch?: string; resumeBranch?: string };
+  failureContext: string;
+  now?: number;
+}) {
+  const ctx = (opts.context as Record<string, unknown> | null) || {};
+  const entry: UnansweredQuestionEntry = {
+    workerId: opts.workerId,
+    prompt: opts.prompt ?? null,
+    options: opts.options ?? [],
+    expiredAt: new Date(opts.now ?? Date.now()).toISOString(),
+  };
+  return {
+    ...opts.branchContext,
+    failureContext: opts.failureContext,
+    iteration: (typeof ctx.iteration === 'number' ? ctx.iteration : 0) + 1,
+    unansweredQuestion: entry,
+  };
+}

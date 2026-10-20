@@ -714,6 +714,7 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
   // task): the person's answer reaches the attempt only through here. See
   // docs/specs/answered-question-resume.md, "The cold fallback".
   addSection('answered-question', renderAnsweredQuestions((taskCtx as any)?.answeredQuestions));
+  addSection('unanswered-question', renderUnansweredQuestion((taskCtx as any)?.unansweredQuestion));
 
   // Communication instruction: configurable input policy. Every policy also
   // gets REFUSED_TOOL_CALL_GUIDANCE (see its definition).
@@ -761,6 +762,24 @@ function renderAnsweredQuestions(raw: unknown): string | null {
     if (done.length) parts.push(`### What the earlier attempt had done\n${done.map(m => `- ${m}`).join('\n')}`);
   }
   parts.push('Act on the answer; do not ask it again. If you hit the same need again (e.g. access you were told you have), check whether the answer or the task\'s grants already cover it; if something is still missing, ask for that specific missing thing, never the same question.');
+  return parts.join('\n\n');
+}
+
+/**
+ * The `unanswered-question` section: an earlier attempt of this task asked and
+ * nobody answered before the sweep timed it out. Written by the waiting-input
+ * sweep as `context.unansweredQuestion`; the task's description is untouched.
+ */
+export function renderUnansweredQuestion(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const e = raw as { prompt?: unknown; options?: unknown };
+  const prompt = typeof e.prompt === 'string' && e.prompt ? e.prompt : null;
+  const options = Array.isArray(e.options) ? e.options.filter((o): o is string => typeof o === 'string' && !!o) : [];
+  const parts = ['## Unanswered Question',
+    prompt
+      ? `An earlier attempt of this task stopped waiting for input and nobody answered: "${prompt}"${options.length ? ` (options: ${options.join(', ')})` : ''}`
+      : 'An earlier attempt of this task stopped waiting for input and nobody answered.',
+    'Do NOT ask for user input. Make reasonable decisions autonomously and proceed without blocking.'];
   return parts.join('\n\n');
 }
 

@@ -164,6 +164,22 @@ import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers,
 import { INTERACTIVE_ABANDONED_ERROR } from './worker-exit-taxonomy';
 import { capturedWhere } from '@buildd/core/db/relational-sql';
 
+// A tasks update whose `.where()` is awaitable and also supports `.returning()`
+// (the same-task requeue moves a guarded row and reads it back).
+function taskUpdateChain(sets: any[] = [], rows: any[] = [{ id: 'task-1' }]) {
+  return {
+    set: mock((vals: any) => {
+      sets.push(vals);
+      return { where: mock(() => Object.assign(Promise.resolve(), { returning: async () => rows })) };
+    }),
+  };
+}
+// The JSON patch the requeue merges into the live context.
+function requeuedPatch(set: any) {
+  const json = set.context.values.find((v: unknown) => typeof v === 'string' && v.startsWith('{'));
+  return JSON.parse(json);
+}
+
 describe('cleanupStuckWaitingInput', () => {
   beforeEach(() => {
     mockWorkersFindMany.mockReset();
@@ -177,11 +193,7 @@ describe('cleanupStuckWaitingInput', () => {
         where: mock(() => Promise.resolve()),
       })),
     });
-    mockTasksUpdate.mockReturnValue({
-      set: mock(() => ({
-        where: mock(() => Promise.resolve()),
-      })),
-    });
+    mockTasksUpdate.mockReturnValue(taskUpdateChain());
     mockTasksInsert.mockReturnValue({
       values: mock(() => ({
         returning: mock(() => [{ id: 'new-task-id' }]),
@@ -291,17 +303,20 @@ describe('cleanupStuckWaitingInput', () => {
       expect(mockTasksInsert).not.toHaveBeenCalled();
     });
 
-    it('on a local mission: files the retry, which only a person\'s session can claim', async () => {
+    it('on a local mission: requeues the same task, which only a person\'s session can claim', async () => {
       mockWorkersFindMany.mockResolvedValue([stuck({ executor: 'local' })]);
       mockTasksFindFirst.mockResolvedValue(interactiveTask('mission-1'));
       captureWorkerSet();
       mockTasksInsert.mockClear();
-      mockTasksInsert.mockReturnValue({ values: mock(() => ({ returning: mock(() => [{ id: 'new-task-id' }]) })) });
+      const taskSets: any[] = [];
+      mockTasksUpdate.mockReturnValue(taskUpdateChain(taskSets));
 
       const result = await cleanupStuckWaitingInput('account-1');
 
       expect(result.retriedTasks).toBe(1);
-      expect(mockTasksInsert).toHaveBeenCalledTimes(1);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+      expect(taskSets).toHaveLength(1);
+      expect(taskSets[0].status).toBe('pending');
     });
   });
 
@@ -507,172 +522,92 @@ describe('cleanupStuckWaitingInput', () => {
     expect(result.retriedTasks).toBe(0);
   });
 
-  it('creates retry task with no-input instruction appended to description', async () => {
+  const plainTask = (over: Record<string, unknown> = {}) => ({
+    id: 'task-1', workspaceId: 'ws-1', title: 'Fix the bug', description: 'Fix the login bug', status: 'in_progress',
+    priority: 0, category: 'bug', project: 'web', context: { iteration: 1 }, requiredCapabilities: [],
+    missionId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null, ...over,
+  });
+
+  // AC-58: the last place a parked task changed identity. A question nobody
+  // answered requeues the SAME task: no clone, the mission grows no task, the
+  // original is never left `failed`, and its description is not rewritten.
+  it('requeues the same task for a new attempt: no clone, status pending, description untouched', async () => {
     const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: { type: 'question', prompt: 'Need clarification' } },
     ]);
-
-    mockTasksFindFirst.mockResolvedValue({
-      id: 'task-1',
-      workspaceId: 'ws-1',
-      title: 'Fix the bug',
-      description: 'Fix the login bug',
-      priority: 0,
-      category: 'bug',
-      project: 'web',
-      context: {},
-      requiredCapabilities: [],
-      missionId: null,
-      runnerPreference: 'any',
-      mode: 'execution',
-      outputRequirement: 'auto',
-      outputSchema: null,
-    });
-
-    let capturedValues: any = null;
-    mockTasksInsert.mockReturnValue({
-      values: mock((vals: any) => {
-        capturedValues = vals;
-        return { returning: mock(() => [{ id: 'new-task-id' }]) };
-      }),
-    });
-
+    mockTasksFindFirst.mockResolvedValue(plainTask());
+    const taskSets: any[] = [];
+    mockTasksUpdate.mockReturnValue(taskUpdateChain(taskSets));
+    mockTasksInsert.mockClear();
     mockWakeTask.mockClear();
-    await cleanupStuckWaitingInput('account-1');
 
-    expect(capturedValues).not.toBeNull();
-    expect(capturedValues.title).toBe('Fix the bug');
-    // The retry replaces a stalled attempt: woken as a requeue, not left to a poll.
-    expect(mockWakeTask.mock.calls).toEqual([['new-task-id', 'task.requeued']]);
-    expect(capturedValues.description).toContain('Fix the login bug');
-    expect(capturedValues.description).toContain('IMPORTANT: Do NOT ask for user input');
-    expect(capturedValues.workspaceId).toBe('ws-1');
+    const result = await cleanupStuckWaitingInput('account-1');
+
+    expect(result).toMatchObject({ failedWorkers: 1, retriedTasks: 1 });
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+    // One task write, and it is the requeue: the task is never failed.
+    expect(taskSets).toHaveLength(1);
+    expect(taskSets[0]).toMatchObject({ status: 'pending', claimedBy: null, claimedAt: null, expiresAt: null });
+    for (const k of ['title', 'description', 'roleSlug', 'dependsOn', 'parentTaskId', 'missionId']) expect(k in taskSets[0]).toBe(false);
+    // Woken as a requeue of the SAME task, not left to a poll.
+    expect(mockWakeTask.mock.calls).toEqual([['task-1', 'task.requeued']]);
   });
 
-  it('keeps roleSlug on the retry, so a visual-auditor audit stays browser-routed and evidence-gated', async () => {
+  it('carries the question and the do-not-ask-again guidance in context, bumping the iteration', async () => {
+    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, branch: 'buildd/task-1-slug',
+        waitingFor: { type: 'question', prompt: 'What database should I use?', options: ['PostgreSQL', 'MySQL'] } },
+    ]);
+    mockTasksFindFirst.mockResolvedValue(plainTask({ context: { iteration: 2 } }));
+    const taskSets: any[] = [];
+    mockTasksUpdate.mockReturnValue(taskUpdateChain(taskSets));
+
+    await cleanupStuckWaitingInput('account-1');
+
+    const patch = requeuedPatch(taskSets[0]);
+    expect(patch.unansweredQuestion).toMatchObject({ workerId: 'w1', prompt: 'What database should I use?', options: ['PostgreSQL', 'MySQL'] });
+    expect(patch.iteration).toBe(3);
+    expect(patch.failureContext).toBeDefined();
+    // The branch is resumed, not treated as a declared base.
+    expect(patch.baseBranch).toBe('buildd/task-1-slug');
+    expect(patch.resumeBranch).toBe('buildd/task-1-slug');
+  });
+
+  it('a requeue guarded out (the task closed in the window) is not counted and wakes nothing', async () => {
     const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: null },
     ]);
-    mockTasksFindFirst.mockResolvedValue({
-      id: 'task-1', workspaceId: 'ws-1', title: '[surface audit] M', description: 'd', priority: 0,
-      context: {}, requiredCapabilities: [], missionId: 'mission-1', runnerPreference: 'any',
-      mode: 'execution', outputRequirement: 'artifact_required', outputSchema: null,
-      roleSlug: 'visual-auditor', dependsOn: ['builder-a', 'builder-b'],
-    });
-    let capturedValues: any = null;
-    mockTasksInsert.mockReturnValue({
-      values: mock((vals: any) => {
-        capturedValues = vals;
-        return { returning: mock(() => [{ id: 'new-task-id' }]) };
-      }),
-    });
+    mockTasksFindFirst.mockResolvedValue(plainTask());
+    mockTasksUpdate.mockReturnValue(taskUpdateChain([], []));
+    mockWakeTask.mockClear();
 
-    await cleanupStuckWaitingInput('account-1');
+    const result = await cleanupStuckWaitingInput('account-1');
 
-    expect(capturedValues.roleSlug).toBe('visual-auditor');
-    // Required routes are re-derived at completion from dependsOn's
-    // pathManifests; a clone without it would fall back to "any one route".
-    expect(capturedValues.dependsOn).toEqual(['builder-a', 'builder-b']);
+    expect(result.retriedTasks).toBe(0);
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
-  it('does not copy dependsOn onto the retry of an ordinary task (unchanged behaviour)', async () => {
-    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
+  it('a mission task keeps its slot: the original id is requeued, nothing inserted', async () => {
+    const staleDate = new Date(Date.now() - 5 * 60 * 60 * 1000);
     mockWorkersFindMany.mockResolvedValue([
-      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: null },
+      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: null,
+        task: { missionId: 'mission-1', mission: { executor: 'runner' } } },
     ]);
-    mockTasksFindFirst.mockResolvedValue({
-      id: 'task-1', workspaceId: 'ws-1', title: 'T', description: 'd', priority: 0,
-      context: {}, requiredCapabilities: [], missionId: 'mission-1', runnerPreference: 'any',
-      mode: 'execution', outputRequirement: 'auto', outputSchema: null,
-      roleSlug: 'builder', dependsOn: ['dep-1'],
-    });
-    let capturedValues: any = null;
-    mockTasksInsert.mockReturnValue({
-      values: mock((vals: any) => {
-        capturedValues = vals;
-        return { returning: mock(() => [{ id: 'new-task-id' }]) };
-      }),
-    });
+    mockTasksFindFirst.mockResolvedValue(plainTask({
+      missionId: 'mission-1', roleSlug: 'visual-auditor', dependsOn: ['builder-a'], parentTaskId: 'parent-1',
+    }));
+    const taskSets: any[] = [];
+    mockTasksUpdate.mockReturnValue(taskUpdateChain(taskSets));
+    mockTasksInsert.mockClear();
 
-    await cleanupStuckWaitingInput('account-1');
+    const result = await cleanupStuckWaitingInput('account-1');
 
-    expect(capturedValues.dependsOn).toBeUndefined();
-  });
-
-  it('sets resumeBranch alongside baseBranch on the retry task, so the runner resumes the stalled branch rather than treating it as a declared base', async () => {
-    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
-    mockWorkersFindMany.mockResolvedValue([
-      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: { type: 'question', prompt: 'Need clarification' }, branch: 'buildd/task-1-slug' },
-    ]);
-
-    mockTasksFindFirst.mockResolvedValue({
-      id: 'task-1',
-      workspaceId: 'ws-1',
-      title: 'Fix the bug',
-      description: 'Fix the login bug',
-      priority: 0,
-      category: 'bug',
-      project: 'web',
-      context: {},
-      requiredCapabilities: [],
-      missionId: null,
-      runnerPreference: 'any',
-      mode: 'execution',
-      outputRequirement: 'auto',
-      outputSchema: null,
-    });
-
-    let capturedValues: any = null;
-    mockTasksInsert.mockReturnValue({
-      values: mock((vals: any) => {
-        capturedValues = vals;
-        return { returning: mock(() => [{ id: 'new-task-id' }]) };
-      }),
-    });
-
-    await cleanupStuckWaitingInput('account-1');
-
-    expect(capturedValues.context?.baseBranch).toBe('buildd/task-1-slug');
-    expect(capturedValues.context?.resumeBranch).toBe('buildd/task-1-slug');
-  });
-
-  it('fails the original task when creating retry', async () => {
-    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
-    mockWorkersFindMany.mockResolvedValue([
-      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: { type: 'question', prompt: 'Need input' } },
-    ]);
-
-    mockTasksFindFirst.mockResolvedValue({
-      id: 'task-1',
-      workspaceId: 'ws-1',
-      title: 'Build feature',
-      description: 'Build the feature',
-      priority: 5,
-      category: 'feature',
-      project: null,
-      context: { key: 'value' },
-      requiredCapabilities: ['docker'],
-      missionId: 'obj-1',
-      runnerPreference: 'any',
-      mode: 'execution',
-      outputRequirement: 'pr_required',
-      outputSchema: null,
-    });
-
-    let taskUpdateSet: any = null;
-    mockTasksUpdate.mockReturnValue({
-      set: mock((vals: any) => {
-        taskUpdateSet = vals;
-        return { where: mock(() => Promise.resolve()) };
-      }),
-    });
-
-    await cleanupStuckWaitingInput('account-1');
-
-    expect(taskUpdateSet).not.toBeNull();
-    expect(taskUpdateSet.status).toBe('failed');
+    expect(result.retriedTasks).toBe(1);
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+    expect(taskSets).toHaveLength(1);
   });
 
   it('handles multiple stuck workers across different tasks', async () => {
@@ -688,15 +623,12 @@ describe('cleanupStuckWaitingInput', () => {
         priority: 0, category: null, project: null, context: {}, requiredCapabilities: [],
         missionId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
       })
-      // resolveCompletedTask calls findFirst internally (no parentTaskId → no-op)
-      .mockResolvedValueOnce({ parentTaskId: null })
       .mockResolvedValueOnce({
         id: 'task-2', workspaceId: 'ws-1', title: 'Task 2', description: 'Desc 2',
         priority: 0, category: null, project: null, context: {}, requiredCapabilities: [],
         missionId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
       })
-      // resolveCompletedTask calls findFirst internally (no parentTaskId → no-op)
-      .mockResolvedValueOnce({ parentTaskId: null });
+    ;
 
     const result = await cleanupStuckWaitingInput('account-1');
 
@@ -772,34 +704,6 @@ describe('cleanupStuckWaitingInput', () => {
     // Only the mission task (w1) should be cleaned up, not the standalone (w2)
     expect(result.failedWorkers).toBe(1);
     expect(result.retriedTasks).toBe(1);
-  });
-
-  it('includes previous waiting_for context in retry task description', async () => {
-    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
-    mockWorkersFindMany.mockResolvedValue([
-      {
-        id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate,
-        waitingFor: { type: 'question', prompt: 'What database should I use?', options: ['PostgreSQL', 'MySQL'] },
-      },
-    ]);
-
-    mockTasksFindFirst.mockResolvedValue({
-      id: 'task-1', workspaceId: 'ws-1', title: 'Setup DB', description: 'Set up the database',
-      priority: 0, category: null, project: null, context: {}, requiredCapabilities: [],
-      missionId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
-    });
-
-    let capturedValues: any = null;
-    mockTasksInsert.mockReturnValue({
-      values: mock((vals: any) => {
-        capturedValues = vals;
-        return { returning: mock(() => [{ id: 'new-task-id' }]) };
-      }),
-    });
-
-    await cleanupStuckWaitingInput('account-1');
-
-    expect(capturedValues.description).toContain('What database should I use?');
   });
 });
 
@@ -2393,7 +2297,7 @@ describe('cleanupStuckWaitingInput — activeSessions seat release', () => {
     mockTasksInsert.mockReset();
     mockAccountsUpdate.mockReset();
     mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
-    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue(taskUpdateChain());
     mockTasksInsert.mockReturnValue({
       values: mock(() => ({ returning: mock(() => [{ id: 'new-task-id' }]) })),
     });
@@ -3075,7 +2979,7 @@ describe('cleanupStuckWaitingInput — account scoping', () => {
         }),
       })),
     });
-    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue(taskUpdateChain());
     mockTasksInsert.mockReturnValue({
       values: mock(() => ({ returning: mock(() => [{ id: 'new-task-id' }]) })),
     });

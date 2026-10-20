@@ -464,7 +464,7 @@ const ATTEMPT_MERGED_GUARD: Record<string, number | string> = {
   // AC-1 slice 6: the budget, codex, mount-gap and auth-failover requeues share one helper
   // (`requeueWorkerTask`): its two statements (the no-delivery requeue, a kernel owner's fields).
   'apps/web/src/app/api/workers/[id]/route.ts': 7,
-  'apps/web/src/lib/stale-workers.ts': 6,
+  'apps/web/src/lib/stale-workers.ts': 7,
   'apps/web/src/app/api/tasks/cleanup/route.ts': 2,
   'apps/web/src/lib/task-recovery-hold.ts': 1,
   // The non-owner reopen and the owner's context write: neither moves a merged task.
@@ -535,7 +535,8 @@ const ATTEMPT_SITES: Record<string, AttemptSite[]> = {
     { at: /Previous worker expired \(infra failure\)/, kind: 'KERNEL', via: 'AttemptRequeued', calls: /requeueReapedOwnerAttempt\(\{[^}]*reason: 'infra_retry'/, ownerSkip: { spread: 'ownerAttempt ? {} : {' }, why: 'AC-1 slice 8: the infra requeue' },
     { at: /result: failure as any/, kind: 'KERNEL', via: 'AttemptEnded(lost)', calls: /workflowAttemptEnded\(\{[\s\S]*status: 'lost'/, ownerSkip: { spread: 'ownerAttempt ? {} : {' }, why: 'AC-1 slice 5: the silent-start, retry and infra caps' },
     { at: /CLAIM_RESPONSE_LOST_ERROR/, kind: 'KERNEL', via: 'AttemptRequeued', calls: /reason: undelivered \? 'claim_undelivered' : 'interactive_release'/, ownerSkip: { spread: 'ownerAttempt ? {} : {' }, why: 'AC-1 slice 8: a released interactive lease or an undelivered claim' },
-    { at: /eq\(tasks\.id, originalTask\.id\)/, kind: 'KERNEL', via: 'AttemptEnded(lost) (t_attempt, projectOwnerEnd)', calls: /source: 'sweep:waiting-input'[\s\S]{0,600}projectOwnerEnd\(\{/, ownerSkip: { branch: /const ownerAttempt = !!kernelDeliveryId && originalTask\.deliveryRole === 'owner';[\s\S]{0,600}if \(!ownerAttempt\) \{\s*await db\s*\.$/ }, why: 'AC-1 slice 5 / 9: an unanswered question, superseded by recovery or not, ends the owner attempt (the recovery later reopens it, AttemptReopened); only a non-owner reaches this write' },
+    { at: /status: 'failed',\s*updatedAt: new Date\(\),\s*\}\)\s*\.where\(and\(eq\(tasks\.id, originalTask\.id\)/, kind: 'KERNEL', via: 'AttemptEnded(lost) (t_attempt, projectOwnerEnd)', calls: /source: 'sweep:waiting-input'[\s\S]{0,600}projectOwnerEnd\(\{/, ownerSkip: { branch: /const ownerAttempt = !!kernelDeliveryId && originalTask\.deliveryRole === 'owner';[\s\S]{0,1200}if \(!ownerAttempt && !requeueSameTask\) \{\s*await db\s*\.$/ }, why: 'AC-1 slice 5 / 9: an unanswered question, superseded by recovery or not, ends the owner attempt (the recovery later reopens it, AttemptReopened); only a non-owner reaches this write' },
+    { at: /JSON\.stringify\(patch\)/, kind: 'NOT_OWNER', why: 'an unanswered question requeues the SAME plain task (answered-question-resume AC-58); a kernel-linked task returns to the kernel branch before this write' },
   ],
   'apps/web/src/lib/interactive-detach.ts': [
     { at: /notExists\(otherLive\)/, kind: 'KERNEL', via: 'AttemptRequeued', calls: /requeueOwnerThroughKernel\(/, ownerSkip: { branch: /if \(task\?\.deliveryId && task\.deliveryRole === 'owner'\) \{\s*if \(await requeueOwnerThroughKernel\([\s\S]{0,200}return;\s*\}[\s\S]{0,400}const \[requeued\] = await db\s*\.$/ }, why: 'AC-1 slice 8: "Release slot"; an owner task returns before this write' },
