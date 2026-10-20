@@ -208,3 +208,22 @@ export function readTaskIsolationStamp(context: unknown): TaskIsolationStamp | n
 export function taskIsolationRequirement(context: unknown): IsolationRequirement {
   return readTaskIsolationStamp(context)?.requirement ?? 'protected';
 }
+
+/**
+ * The error a runner records when it refuses to start a session its own
+ * isolation record cannot honour. It is a preflight block, not an agent
+ * failure: nothing ran, and starting it again on the same runner is refused the
+ * same way until the runner's isolation changes.
+ */
+export const ISOLATION_REFUSAL_PREFIX = 'Not started: ';
+
+export function isolationRefusalError(decision: Extract<TaskIsolationDecision, { ok: false }>): string {
+  const steps = decision.remedy.length > 0 ? ` ${decision.remedy.join(' ')}` : '';
+  return `${ISOLATION_REFUSAL_PREFIX}${decision.message}${steps}`;
+}
+
+/** Whether a stored worker error is an isolation refusal made by `isolationRefusalError`. */
+export function isIsolationRefusalError(error: string | null | undefined): boolean {
+  if (typeof error !== 'string' || !error.startsWith(ISOLATION_REFUSAL_PREFIX)) return false;
+  return /needs protected isolation and this runner has no confinement|reported no current isolation probe|has not opted in to running trusted local work reduced/.test(error);
+}

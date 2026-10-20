@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import {
   decideTaskIsolation,
+  isIsolationRefusalError,
+  isolationRefusalError,
   readTaskIsolationStamp,
   reducedIsolationOptedIn,
   resolveIsolationRequirement,
@@ -114,5 +116,38 @@ describe('opt-in and stamp helpers', () => {
     expect(taskCodexSandboxMode('engineering', { sandboxMode: 'read-only' })).toBe('read-only');
     expect(taskCodexSandboxMode('research', null)).toBe('read-only');
     expect(taskCodexSandboxMode('engineering', { sandboxMode: 'danger-full-access' })).toBe('workspace-write');
+  });
+});
+
+describe('preflight refusal of a task (smoke-test dispatch regression)', () => {
+  const sandboxOff = record({ reducedOptIn: true });
+  const decide = (requirement: 'protected' | 'trusted_local', rec: RunnerIsolationRecord) =>
+    decideTaskIsolation({ requirement, record: rec, backend: 'claude', codexMode: 'workspace-write' });
+
+  it('ineligible runner: a protected task on a sandbox-off runner is refused, and the stored error reads as a preflight block', () => {
+    const d = decide('protected', sandboxOff);
+    expect(d.ok).toBe(false);
+    if (d.ok) return;
+    const error = isolationRefusalError(d);
+    expect(error.startsWith('Not started: ')).toBe(true);
+    expect(isIsolationRefusalError(error)).toBe(true);
+  });
+
+  it('eligible runner: a trusted_local task on an opted-in sandbox-off runner runs reduced', () => {
+    const d = decide('trusted_local', sandboxOff);
+    expect(d).toMatchObject({ ok: true, mode: 'reduced' });
+  });
+
+  it('correctly blocked: trusted_local without the operator opt-in is refused and also reads as a preflight block', () => {
+    const d = decide('trusted_local', record());
+    expect(d.ok).toBe(false);
+    if (d.ok) return;
+    expect(isIsolationRefusalError(isolationRefusalError(d))).toBe(true);
+  });
+
+  it('does not mistake an agent failure for a refusal', () => {
+    expect(isIsolationRefusalError('Not started: worktree setup failed')).toBe(false);
+    expect(isIsolationRefusalError('Error: tests failed')).toBe(false);
+    expect(isIsolationRefusalError(null)).toBe(false);
   });
 });
