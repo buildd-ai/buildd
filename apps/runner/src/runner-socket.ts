@@ -2,12 +2,12 @@
  * One runner per machine, found through a local socket (Living Spec
  * "Runner on your terminal", R-11..R-13).
  *
- * Every long-running runner serves an owner-only (0600) unix socket at
+ * Every long-running runner serves an owner-only unix socket at
  * `<BUILDD_HOME>/runner.sock`, headless included. It answers the same handler
  * the `--debug` HTTP server uses, so `buildd top` reads workers, tasks, config
- * and the `/api/events` stream from it with no port and no local token: the
- * file mode is the boundary, the same way it is for the credential broker's
- * socket.
+ * and the `/api/events` stream from it with no port and no local token: who
+ * may connect is the boundary. On POSIX that is mode 0600; on Windows, where
+ * chmod does nothing, it is an owner-only ACL (restrictSocketToOwner).
  *
  * The socket is also how a second start finds the first. Before the runner does
  * anything with side effects it probes the socket:
@@ -22,6 +22,7 @@
  * process still holds open, and removing it would let a second runner start
  * beside the first.
  */
+import { spawnSync } from 'child_process';
 import { chmodSync, lstatSync, statSync, unlinkSync } from 'fs';
 import { join } from 'path';
 
@@ -179,11 +180,86 @@ export interface RunnerSocketServer {
   pendingRequests(): number;
 }
 
+// ── Owner-only, per platform ────────────────────────────────────────────────
+
+const SID_RE = /^S-1-\d+(-\d+)+$/;
+
+/** The SID from `whoami /user /fo csv /nh` ("host\name","S-1-5-21-…"), or null. */
+export function parseWhoamiSid(output: string): string | null {
+  const fields = output.trim().split(',').map(f => f.trim().replace(/^"|"$/g, ''));
+  const sid = fields[fields.length - 1] ?? '';
+  return SID_RE.test(sid) ? sid : null;
+}
+
+/**
+ * System32 by full path: on PATH, `whoami` is often Git for Windows' MSYS one,
+ * which has no /user, and a PATH entry must not pick what sets the ACL.
+ */
+function system32(exe: string): string {
+  return join(process.env.SystemRoot || 'C:\\Windows', 'System32', exe);
+}
+
+let cachedSid: string | null | undefined;
+function currentUserSid(): string | null {
+  if (cachedSid === undefined) {
+    const r = spawnSync(system32('whoami.exe'), ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true });
+    cachedSid = r.status === 0 ? parseWhoamiSid(r.stdout ?? '') : null;
+  }
+  return cachedSid;
+}
+
+/** Drop the inherited entries and grant the owner alone: the Windows 0600. */
+export function ownerOnlyAclCommand(socketPath: string, sid: string): string[] {
+  return ['icacls', socketPath, '/inheritance:r', '/grant:r', `*${sid}:(F)`];
+}
+
+function runCommand(argv: string[]): { exitCode: number; output: string } {
+  const r = spawnSync(argv[0] === 'icacls' ? system32('icacls.exe') : argv[0], argv.slice(1), { encoding: 'utf8', windowsHide: true });
+  return { exitCode: r.status ?? -1, output: `${r.stdout ?? ''}${r.stderr ?? ''}${r.error ? r.error.message : ''}`.trim() };
+}
+
+/**
+ * Make the socket connectable by its owner alone.
+ *
+ * POSIX: chmod 0600 (the 0177 umask at bind already did; a failure here is
+ * not fatal). Windows: chmod is a no-op, but AF_UNIX connect there needs
+ * write access in the socket file's DACL, so the DACL is the boundary. The
+ * socket otherwise inherits its directory's, which under the profile is the
+ * owner, SYSTEM and Administrators, but under a BUILDD_HOME or
+ * BUILDD_RUNNER_SOCKET elsewhere (C:\ gives BUILTIN\Users Modify on new
+ * folders) can be every local account. Windows has no umask, so the
+ * directory's ACL applies from bind until this runs. A failure throws: the
+ * caller must not serve a socket it could not restrict.
+ */
+export function restrictSocketToOwner(
+  socketPath: string,
+  deps: {
+    platform?: NodeJS.Platform;
+    chmod?: (path: string, mode: number) => void;
+    run?: (argv: string[]) => { exitCode: number; output: string };
+    sid?: () => string | null;
+  } = {},
+): void {
+  const platform = deps.platform ?? process.platform;
+  if (platform !== 'win32') {
+    try { (deps.chmod ?? chmodSync)(socketPath, 0o600); } catch { /* umask already applied it */ }
+    return;
+  }
+  const sid = (deps.sid ?? currentUserSid)();
+  if (!sid) throw new Error(`cannot restrict ${socketPath} to its owner: no SID for the current user (whoami /user)`);
+  const r = (deps.run ?? runCommand)(ownerOnlyAclCommand(socketPath, sid));
+  if (r.exitCode !== 0) {
+    throw new Error(`cannot restrict ${socketPath} to its owner: icacls exited ${r.exitCode}${r.output ? `: ${r.output}` : ''}`);
+  }
+}
+
 /**
  * Serve `fetch` on an owner-only unix socket. The socket is created under a
  * 0177 umask so it is never group/world-accessible, even for the moment
- * before the chmod. On exit the socket is removed, but only if it is still
- * ours (a later runner may already have replaced it).
+ * before the chmod (Windows: see restrictSocketToOwner). On exit the socket is
+ * removed, but only if it is still ours (a later runner may already have
+ * replaced it). A socket that cannot be made owner-only is closed and removed,
+ * and the error is thrown.
  *
  * It never removes an existing file first. checkSingleInstance has already
  * cleared a stale one, so a file still at the path here belongs to a start that
@@ -205,6 +281,8 @@ export function serveRunnerSocket(
     deadlineMs?: number;
     /** Requests exempt from the deadline (a long-running POST /api/update). */
     noDeadline?: (req: Request) => boolean;
+    /** Makes the bound socket owner-only. Default restrictSocketToOwner; tests replace it. */
+    restrict?: (socketPath: string) => void;
   } = {},
 ): RunnerSocketServer {
   const deadlineMs = opts.deadlineMs ?? SOCKET_HANDLER_DEADLINE_MS;
@@ -257,7 +335,14 @@ export function serveRunnerSocket(
     } finally {
       process.umask(prevUmask);
     }
-    try { chmodSync(socketPath, 0o600); } catch { /* umask already applied it */ }
+    try {
+      (opts.restrict ?? restrictSocketToOwner)(socketPath);
+    } catch (err) {
+      // Just bound, so the file is ours: never leave it open to others.
+      try { server.stop(true); } catch { /* ignore */ }
+      try { unlinkSync(socketPath); } catch { /* already gone */ }
+      throw err;
+    }
     ino = null;
     try { ino = statSync(socketPath).ino; } catch { /* ignore */ }
   };

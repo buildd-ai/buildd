@@ -143,6 +143,12 @@ if /i "%SUBCMD%"=="install" (
     exit /b
 )
 
+REM `buildd service install|uninstall|status|logs` manages the background Scheduled Task.
+if /i "%SUBCMD%"=="service" (
+    bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\service.ts" !REST!
+    exit /b
+)
+
 REM Restart loop (exit code 75 = update applied, restart) - mirrors install.sh's
 REM bash launcher so the self-updater behaves the same on every platform.
 :runloop
@@ -170,7 +176,7 @@ Write-Host ""
 # restarts if it crashes, so it survives closing the terminal and reboots -
 # see apps/runner/README.md "Running as a service". -Service registers
 # non-interactively; otherwise ask when there's an interactive session.
-$TaskName = "buildd runner"
+# `buildd service install` (apps/runner/src/service.ts) owns the task itself.
 $InstallService = $false
 if ($Service) {
     $InstallService = $true
@@ -180,18 +186,12 @@ if ($Service) {
 }
 
 if ($InstallService) {
-    try {
-        $Action = New-ScheduledTaskAction -Execute "$BinDir\buildd.cmd"
-        $Trigger = New-ScheduledTaskTrigger -AtLogOn
-        $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-            -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
-        $Principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
-        Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Force | Out-Null
-        Start-ScheduledTask -TaskName $TaskName
-        Write-Host "Registered Scheduled Task '$TaskName' (runs at logon, as your user, restarts on crash)." -ForegroundColor Green
-        Write-Host "Manage it with: Get-ScheduledTask -TaskName '$TaskName' | Unregister-ScheduledTask -Confirm:`$false"
-    } catch {
-        Write-Host "Could not register the Scheduled Task ($($_.Exception.Message)) - run buildd manually, or retry from an elevated PowerShell." -ForegroundColor Yellow
+    $env:BUILDD_INSTALLER = '1'
+    & "$BinDir\buildd.cmd" service install
+    $ServiceExit = $LASTEXITCODE
+    Remove-Item Env:BUILDD_INSTALLER
+    if ($ServiceExit -ne 0) {
+        Write-Host "Could not install the background service - run 'buildd service install' to retry, or 'buildd' to run it in the foreground." -ForegroundColor Yellow
     }
 } else {
     Write-Host "Tip: re-run this installer with -Service to run it in the background." -ForegroundColor Yellow
@@ -218,5 +218,5 @@ if (-not $LoggedIn) {
 if (-not $InstallService) {
     Write-Host "  buildd                   start the runner in this terminal"
 } elseif (-not $LoggedIn) {
-    Write-Host "  then restart the 'buildd runner' Scheduled Task so it picks up your account"
+    Write-Host "  buildd service install   restart the background service with your account"
 }
