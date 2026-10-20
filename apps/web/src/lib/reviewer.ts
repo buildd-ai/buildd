@@ -1056,7 +1056,7 @@ Use your outputSchema to return:
 - \`verdict\`: 'approve' | 'request-changes' | 'escalate'
 - \`confidence\`: 0.0–1.0
 - \`summary\`: one sentence
-- \`feedback\`: (request-changes only) specific, actionable, with file paths
+- \`feedback\`: (request-changes only) may be posted to GitHub as-is. State only the specific, actionable findings and the file paths they concern, with whatever technical detail is needed to fix each defect. Keep verdict, confidence, provenance, round, how you ran and policy rationale in the other fields, and do not explain yourself or GitHub's limits on self-review
 - \`escalationReason\`: (escalate only) why a human must decide, and what you did and did not check. Do not list proposed policy additions here; the server surfaces those separately
 - \`recommendation\`: (escalate only) what the human should DO next, as one imperative sentence of at most 140 characters. Never leave this empty on an escalation: it is the first line they read on their queue
 - \`blockers\`: (escalate only) one \`{kind, text}\` entry per distinct reason, \`text\` a short phrase{{ledeOutputLine}}{{criteriaOutputLine}}
@@ -1123,7 +1123,7 @@ Use your outputSchema to return:
 - \`verdict\`: 'approve' | 'request-changes' | 'escalate'
 - \`confidence\`: 0.0–1.0
 - \`summary\`: one sentence — about the delta, and whether it changes the prior verdict
-- \`feedback\`: (request-changes only) specific, actionable, with file paths
+- \`feedback\`: (request-changes only) may be posted to GitHub as-is. State only the specific, actionable findings and the file paths they concern, with whatever technical detail is needed to fix each defect. Keep verdict, confidence, provenance, round, how you ran and policy rationale in the other fields, and do not explain yourself or GitHub's limits on self-review
 - \`escalationReason\`: (escalate only) why a human must decide
 - \`recommendation\`: (escalate only) what the human should DO next{{criteriaOutputLine}}
 `;

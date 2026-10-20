@@ -1,4 +1,4 @@
-import { canonicalToolName, decideTaskIsolation, reducedIsolationOptedIn, taskCodexSandboxMode, taskIsolationRequirement, type TaskIsolationDecision } from '@buildd/shared';
+import { canonicalToolName, decideTaskIsolation, isolationRefusalError, reducedIsolationOptedIn, taskCodexSandboxMode, taskIsolationRequirement, type TaskIsolationDecision } from '@buildd/shared';
 import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
 import { query, type HookCallback, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
@@ -3406,6 +3406,8 @@ export class WorkerManager {
     // Refused before spawn for want of any model credential: the machine's
     // setup, not the task. The server requeues it as an infra failure.
     const isModelAuthMissing = (error as { modelAuthMissing?: unknown })?.modelAuthMissing === true;
+    // Refused at preflight by this runner's isolation record: nothing ran.
+    const isIsolationRefused = (error as { isolationRefused?: unknown })?.isolationRefused === true;
     // Flush buffered CLI stderr into error traces so get_error_traces surfaces
     // them. Idempotent — a no-op when the eager stderr-callback flush already
     // staged this text and nothing new arrived since.
@@ -3462,6 +3464,7 @@ export class WorkerManager {
       ...(isSessionBudgetCap && { sessionBudgetCapped: true }),
       ...(isSteeringDeliveryCrash && { steeringDelivery: true }),
       ...(isModelAuthMissing && { modelAuthMissing: true }),
+      ...(isIsolationRefused && { isolationRefused: true }),
       ...(modelRejection && {
         unrecognizedModel: true,
         ...(modelRejection.model ? { rejectedModel: modelRejection.model } : {}),
@@ -4390,7 +4393,7 @@ export class WorkerManager {
       const isolationBackend = isCodexTask ? 'codex' as const : 'claude' as const;
       const isolationDecision = this.decideSessionIsolation(task, isolationBackend);
       if (!isolationDecision.ok) {
-        throw new Error(`Not started: ${isolationDecision.message}${isolationDecision.remedy.length > 0 ? ` ${isolationDecision.remedy.join(' ')}` : ''}`);
+        throw Object.assign(new Error(isolationRefusalError(isolationDecision)), { isolationRefused: true });
       }
       this.addMilestone(worker, { type: 'status', label: isolationModeLabel(isolationDecision, isolationBackend, getIsolationRecord().platform), ts: Date.now() });
       sessionLog(worker.id, isolationDecision.mode === 'reduced' ? 'warn' : 'info', 'isolation_mode', `requirement=${isolationDecision.requirement} mode=${isolationDecision.mode} backend=${isolationBackend} mechanism=${isolationDecision.confinement.mechanism}`, task.id);

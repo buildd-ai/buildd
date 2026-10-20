@@ -14,7 +14,7 @@
  * state and cause (`causeKey`); see `applyVerdictDecision`.
  */
 import { waitingOnFailedCopy } from '@buildd/core/dependency-failure';
-import type { TaskMismatch } from '@buildd/shared';
+import { ISOLATION_REFUSAL_PREFIX, isIsolationRefusalError, type TaskMismatch } from '@buildd/shared';
 import { REVIEW_VERDICT_LABEL, type ReviewVerdictWord } from './task-result';
 
 export type VerdictState = 'shipped' | 'blocked' | 'in_progress' | 'needs_you' | 'failed' | 'done';
@@ -256,7 +256,19 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
     };
   }
 
-  // 4. A failed task.
+  // 4. A failed task. A runner that refused it at preflight (its isolation
+  // cannot honour the task) never ran it: that is a block with a cause on the
+  // runner, not an agent failure, and starting it again changes nothing.
+  if (input.taskStatus === 'failed' && isIsolationRefusalError(input.failureLine)) {
+    return {
+      ...base,
+      state: 'blocked',
+      headline: 'Not started: no runner can run it yet',
+      cause: firstLine(input.failureLine?.slice(ISOLATION_REFUSAL_PREFIX.length), 400) ?? null,
+      actions: [link('Open runner settings', '/app/settings/runners', 'primary', false)],
+      causeKey: 'blocked:isolation',
+    };
+  }
   if (input.taskStatus === 'failed') {
     return {
       ...base,
