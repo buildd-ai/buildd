@@ -3407,7 +3407,6 @@ export class WorkerManager {
     // setup, not the task. The server requeues it as an infra failure.
     const isModelAuthMissing = (error as { modelAuthMissing?: unknown })?.modelAuthMissing === true;
     // Refused at preflight by this runner's isolation record: nothing ran.
-    // Same hand-back as a missing model login: the server requeues it.
     const isIsolationRefused = (error as { isolationRefused?: unknown })?.isolationRefused === true;
     // Flush buffered CLI stderr into error traces so get_error_traces surfaces
     // them. Idempotent — a no-op when the eager stderr-callback flush already

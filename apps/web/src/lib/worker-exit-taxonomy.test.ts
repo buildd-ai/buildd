@@ -335,7 +335,7 @@ describe('Claude run refused for want of a model login', () => {
   });
 });
 
-describe('session refused by the runner isolation preflight', () => {
+describe('Session refused at preflight by the runner isolation record', () => {
   it('books it as infra_failure, which does not consume a retry', () => {
     const cause = classifyReportedFailure({ budgetLimited: false, sandboxMountGap: false, isolationRefused: true });
     expect(cause).toBe('infra_failure');

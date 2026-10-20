@@ -22,7 +22,7 @@ mock.module('@buildd/core/db/schema', () => ({
   githubInstallations: { installationId: 'installationId' },
 }));
 
-import { postPrReview, OWN_PR_REVIEW_NOTE, mergePullRequest, checkSuitesAllPassed, dropSupersededSuites, allCheckSuitesPassed, retryAfterFromHeaders, githubApi } from './github';
+import { postPrReview, mergePullRequest, checkSuitesAllPassed, dropSupersededSuites, allCheckSuitesPassed, retryAfterFromHeaders, githubApi } from './github';
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
@@ -173,7 +173,7 @@ describe('postPrReview on a PR buildd itself opened', () => {
 
       expect(posts).toEqual([
         { commit_id: 'sha-1', event, body: 'Verdict body' },
-        { commit_id: 'sha-1', event: 'COMMENT', body: `Verdict body\n\n${OWN_PR_REVIEW_NOTE}` },
+        { commit_id: 'sha-1', event: 'COMMENT', body: 'Verdict body' },
       ]);
       expect(result).toEqual({ posted: true, reviewId: 77, commentedOwnPr: true });
     });
@@ -190,13 +190,16 @@ describe('postPrReview on a PR buildd itself opened', () => {
     expect(result.reason).toBe('a matching review already exists for this commit');
   });
 
-  it('does not stack a second comment review when the earlier one carries the own-PR note', async () => {
+  it('never explains the own-PR limit in the comment it falls back to', async () => {
+    const bodies: string[] = [];
     global.fetch = mock(async (_url: unknown, opts?: RequestInit) => {
-      if (opts?.method === 'POST') throw new Error('must not POST again');
-      return jsonResponse(200, [{ id: 77, commit_id: 'sha-1', state: 'COMMENTED', body: `Verdict body\n\n${OWN_PR_REVIEW_NOTE}` }]);
+      if (opts?.method !== 'POST') return jsonResponse(200, []);
+      const sent = JSON.parse(String(opts.body));
+      bodies.push(sent.body);
+      return sent.event === 'COMMENT' ? jsonResponse(200, { id: 77 }) : jsonResponse(422, OWN_APPROVE);
     }) as unknown as typeof fetch;
-
-    expect((await call('APPROVE')).reason).toBe('a matching review already exists for this commit');
+    await call('REQUEST_CHANGES');
+    for (const b of bodies) expect(b).not.toMatch(/GitHub does not let|COMMENTED|commit status|Buildd \/ Review/i);
   });
 
   it('a 422 for any other reason is not retried as a comment', async () => {

@@ -520,7 +520,7 @@ Output format (use your outputSchema):
 - verdict: 'approve' | 'request-changes' | 'escalate'
 - confidence: 0.0–1.0
 - summary: one sentence
-- feedback: (for request-changes only) specific, actionable changes required, referencing file paths
+- feedback: (for request-changes only) may be posted to GitHub as-is: only the specific, actionable changes required and the file paths they concern, with the technical detail needed to fix each defect. Keep verdict, confidence, provenance, round, execution mechanics and policy rationale in the other fields; do not explain yourself or GitHub's self-review limits
 - escalationReason: (for escalate only) why a human must decide
 
 ESCALATION IS REQUIRED when:

@@ -3119,9 +3119,7 @@ async function patchWorker(
   // with backoff instead of staying failed (a green PR stuck in review_failed).
   const isWorktreeSetupTimeout = status === 'failed' && isWorktreeSetupTimeoutError(error);
   const isModelAuthMissing = status === 'failed' && body.modelAuthMissing === true;
-  // The runner refused the session at preflight against its own isolation
-  // record (isolation-policy.ts). Nothing ran: like a missing model login it
-  // rides the infra retry budget, back to the queue for a runner that confines it.
+  // The runner refused the session at preflight against its own isolation record (isolation-policy.ts).
   const isIsolationRefused = status === 'failed' && (body.isolationRefused === true || isIsolationRefusalError(error));
   // The CLI's model version gate: this runner cannot serve the model the task
   // was routed to. A deterministic 400 before the first turn, so it is infra
@@ -6373,16 +6371,16 @@ async function handleReviewerOutcomeIfNeeded(
   // postPrReview is idempotent per (PR, head SHA, resulting state), so a forced
   // re-review that reaches the same verdict on the same commit does not stack a
   // second approval.
-  if (!kernelOwnsVerdict && (effectiveVerdict === 'approve' || effectiveVerdict === 'request-changes')) {
+  // An approval posts nothing: it is the `Buildd / Review approval` commit status. Only a request
+  // for changes reaches the PR, as its actionable findings.
+  if (!kernelOwnsVerdict && effectiveVerdict === 'request-changes') {
     const reviewPostResult = await postPrReview({
       installationId,
       repoFullName,
       prNumber,
       headSha,
-      event: effectiveVerdict === 'approve' ? 'APPROVE' : 'REQUEST_CHANGES',
-      body: effectiveVerdict === 'approve'
-        ? `Approved by buildd reviewer (confidence ${output.confidence.toFixed(2)}): ${output.summary}`
-        : `Changes requested by buildd reviewer: ${output.feedback ?? output.summary}`,
+      event: 'REQUEST_CHANGES',
+      body: (output.feedback ?? output.summary ?? '').trim() || 'Changes requested. See the task for details.',
     }).catch((err) => ({
       posted: false as const,
       reason: err instanceof Error ? err.message : 'unknown error',
