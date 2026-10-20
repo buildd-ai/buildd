@@ -15,8 +15,11 @@ Write-Host "Installing buildd runner..." -ForegroundColor Green
 # Check for bun
 if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
     Write-Host "Bun not found. Installing..." -ForegroundColor Yellow
+    # bun's installer rewrites this process's PATH from the registry, which
+    # drops entries added only to the session (e.g. git), so restore ours.
+    $SavedPath = $env:Path
     irm bun.sh/install.ps1 | iex
-    $env:Path = "$env:USERPROFILE\.bun\bin;$env:Path"
+    $env:Path = "$env:USERPROFILE\.bun\bin;$SavedPath"
 }
 
 $InstallDir = "$env:USERPROFILE\.buildd"
@@ -90,7 +93,7 @@ if /i "%~1"=="login" (
     exit /b
 )
 
-REM Restart loop (exit code 75 = update applied, restart) — mirrors install.sh's
+REM Restart loop (exit code 75 = update applied, restart) - mirrors install.sh's
 REM bash launcher so the self-updater behaves the same on every platform.
 :runloop
 bun --no-env-file run "%USERPROFILE%\.buildd\apps\runner\src\index.ts" %*
@@ -114,7 +117,7 @@ Write-Host "Installation complete!" -ForegroundColor Green
 Write-Host ""
 
 # Offer to register buildd as a Scheduled Task that starts at logon and
-# restarts if it crashes, so it survives closing the terminal and reboots —
+# restarts if it crashes, so it survives closing the terminal and reboots -
 # see apps/runner/README.md "Running as a service". -Service registers
 # non-interactively; otherwise ask when there's an interactive session.
 $TaskName = "buildd runner"
@@ -138,7 +141,7 @@ if ($InstallService) {
         Write-Host "Registered Scheduled Task '$TaskName' (runs at logon, as your user, restarts on crash)." -ForegroundColor Green
         Write-Host "Manage it with: Get-ScheduledTask -TaskName '$TaskName' | Unregister-ScheduledTask -Confirm:`$false"
     } catch {
-        Write-Host "Could not register the Scheduled Task ($($_.Exception.Message)) — run buildd manually, or retry from an elevated PowerShell." -ForegroundColor Yellow
+        Write-Host "Could not register the Scheduled Task ($($_.Exception.Message)) - run buildd manually, or retry from an elevated PowerShell." -ForegroundColor Yellow
     }
 } else {
     Write-Host "Tip: re-run this installer with -Service to run it in the background." -ForegroundColor Yellow
