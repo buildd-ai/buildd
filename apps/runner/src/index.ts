@@ -1487,7 +1487,8 @@ function builddServerOrigin(): string | null {
 /**
  * Who sent a request to the local handler. The TCP server (--debug) knows the
  * peer's address and authorizes it with the local token; the unix socket's
- * peer is always this machine's owner (the socket is 0600), so it skips that.
+ * peer is always this machine's owner (the socket is owner-only: mode 0600, or
+ * an owner-only ACL on Windows), so it skips that.
  */
 interface LocalPeer {
   remoteAddr: string | null;
