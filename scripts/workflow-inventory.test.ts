@@ -92,3 +92,24 @@ describe('workflow inventory', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+describe('workflow files are valid YAML', () => {
+  // A bad merge once left a second `on:`/`permissions:`/`jobs:` block in
+  // post-deploy.yml; GitHub rejects such a file ("workflow file issue") and the
+  // run fails on every push, including release candidate branches.
+  test('no workflow repeats a top-level key', () => {
+    const { readdirSync } = require('fs');
+    const dir = '.github/workflows';
+    const dupes: string[] = [];
+    for (const f of readdirSync(dir).filter((n: string) => /\.ya?ml$/.test(n))) {
+      const seen = new Set<string>();
+      for (const line of readFileSync(`${dir}/${f}`, 'utf8').split('\n')) {
+        const m = /^([A-Za-z_'"][^\s:#]*):/.exec(line);
+        if (!m) continue;
+        if (seen.has(m[1])) dupes.push(`${f}: ${m[1]}`);
+        seen.add(m[1]);
+      }
+    }
+    expect(dupes).toEqual([]);
+  });
+});
