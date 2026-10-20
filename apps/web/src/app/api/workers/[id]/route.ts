@@ -3880,7 +3880,8 @@ async function patchWorker(
         // failed every in-flight non-mission task. A model version-gate 400
         // rides it too: bounded, backed off, and uncharged. So does a clone GitHub
         // throttled: the backoff is the point, GitHub needs time.
-        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isGithubThrottled || isWorktreeSetupTimeout || isModelAuthMissing || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
+        // An isolation refusal at preflight rides it like a missing model login.
+        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isGithubThrottled || isWorktreeSetupTimeout || isModelAuthMissing || isIsolationRefused || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
           const infraRetryCount = (taskCtxForRetry.infraRetryCount as number) || 0;
           if (infraRetryCount < MAX_INFRA_RETRIES_PATCH) {
             shouldAutoRetry = true;
