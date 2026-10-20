@@ -132,26 +132,6 @@ jobs:
           fi
           echo "Annotated v$VERSION ($SHA) on buildd-traces"
 
-#
-# - recover: on a failed Production deployment, if its build log matches a
-#   known infra cause, redeploy the same commit once. A second failure for the
-#   same SHA, or a failure with no known cause, fails this job (the alert).
-# - verify: on a successful Production deployment, confirm /api/deploy-identity
-#   reports the deployed SHA within 10 minutes.
-#
-# NOTE: deployment_status workflows always run from the file on the repository's
-# DEFAULT branch (`dev`), even for deploys of `main` (see cron-sync.yml).
-#
-# Requires repo secret VERCEL_TOKEN (recover is skipped with a warning without it).
-
-on:
-  deployment_status: {}
-
-permissions:
-  deployments: read
-  contents: read
-
-jobs:
   recover:
     if: >
       github.event.deployment.environment == 'Production' &&
