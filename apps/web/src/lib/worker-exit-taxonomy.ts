@@ -245,6 +245,8 @@ export function classifyReportedFailure(input: {
   worktreeSetupTimeout?: boolean;
   /** The runner refused a Claude run before spawn: no model login or key on the machine, none delivered. */
   modelAuthMissing?: boolean;
+  /** The runner refused the session at preflight: its isolation record cannot honour the task's requirement. Nothing ran. */
+  isolationRefused?: boolean;
   /**
    * The session died on the CLI's model version gate (see
    * isUnrecognizedModelError): the runner cannot serve the model the task was
@@ -272,6 +274,7 @@ export function classifyReportedFailure(input: {
   if (input.githubThrottled) return 'infra_failure';
   if (input.worktreeSetupTimeout) return 'infra_failure';
   if (input.modelAuthMissing) return 'infra_failure';
+  if (input.isolationRefused) return 'infra_failure';
   if (input.unrecognizedModel) return 'infra_failure';
   // Steering-delivery crashes are infra failures — the CLI rejected a malformed
   // invocation, not a code defect. Must not consume a retry attempt.
