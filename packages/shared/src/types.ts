@@ -4323,8 +4323,30 @@ export interface FleetSnapshot {
   /** Live workers on runner slots (session claims are in `sessions`). */
   live: number;
   capacity: number;
+  /** Runner slots by state, now (lib/fleet-view.ts fleetSlotCounts). Absent on older snapshots. */
+  slots?: FleetSlotCounts;
   /** Timeline window, epoch ms. */
   window: { from: number; to: number };
+}
+
+/**
+ * Runner slots as of one moment, from the runners' heartbeats. configured ≥
+ * online ≥ schedulable, but busy can exceed schedulable (a held runner still
+ * finishing its work), so they are four numbers, never one derived from another.
+ */
+export interface FleetSlotCounts {
+  /** Advertised by every runner in scope that is not presumed dead, online or not. */
+  configured: number;
+  /** On runners whose last beat is inside `windowMs` of `asOf`. Equals `FleetSnapshot.capacity`. */
+  online: number;
+  /** Online slots a claim can fill: online, minus runners a person put on hold. */
+  schedulable: number;
+  /** Live runner workers on online runners. */
+  busy: number;
+  /** When the heartbeats were read, epoch ms. */
+  asOf: number;
+  /** How fresh a beat must be to count online, ms. */
+  windowMs: number;
 }
 
 // ── GET /api/prs (list_prs) ─────────────────────────────────────────────────

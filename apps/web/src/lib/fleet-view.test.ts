@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   buildFleetSnapshot,
   fleetCapacity,
+  fleetSlotCounts,
   fleetDisplayRows,
   fleetLabel,
   fleetSummary,
@@ -670,3 +671,65 @@ describe('slot `mine` follows the task owner, not the claimer', () => {
   });
 });
 
+
+/**
+ * "Slots online" on Health read 5 next to a runner listed Offline. Every slot
+ * number is a count of runners' heartbeats at one moment; an offline, stale
+ * or held runner adds nothing to what can take work now.
+ */
+describe('fleetSlotCounts', () => {
+  const beat = (id: string, max: number, agoMs: number, over: Partial<FleetHeartbeatRow> = {}): FleetHeartbeatRow => ({
+    id, accountId: 'acct', localUiUrl: `http://${id}:1`, maxConcurrentWorkers: max, lastHeartbeatAt: new Date(NOW - agoMs), ...over,
+  });
+  const opts = { now: NOW, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS };
+
+  it('an offline multi-slot runner is configured, not online', () => {
+    const c = fleetSlotCounts([beat('on', 1, 10_000), beat('off', 4, 40 * 60_000)], opts);
+    expect(c).toMatchObject({ configured: 5, online: 1, schedulable: 1 });
+    expect(c.online).toBe(fleetCapacity([beat('on', 1, 10_000), beat('off', 4, 40 * 60_000)], opts));
+  });
+
+  it('a beat just past the online window counts zero; just inside it counts', () => {
+    expect(fleetSlotCounts([beat('r', 3, FLEET_ONLINE_WINDOW_MS + 1)], opts).online).toBe(0);
+    expect(fleetSlotCounts([beat('r', 3, FLEET_ONLINE_WINDOW_MS - 1)], opts).online).toBe(3);
+  });
+
+  it('a runner that reconnects counts again from its next beat', () => {
+    const stale = beat('r', 3, 20 * 60_000);
+    expect(fleetSlotCounts([stale], opts).online).toBe(0);
+    expect(fleetSlotCounts([{ ...stale, lastHeartbeatAt: new Date(NOW - 5_000) }], opts).online).toBe(3);
+  });
+
+  it('a held runner is online but takes no claim', () => {
+    const held = beat('h', 4, 10_000, { environment: { hold: { since: new Date(NOW - 60_000).toISOString(), until: null } } });
+    const expired = beat('e', 2, 10_000, { environment: { hold: { since: new Date(NOW - 2 * 3_600_000).toISOString(), until: new Date(NOW - 3_600_000).toISOString() } } });
+    expect(fleetSlotCounts([held, expired], opts)).toMatchObject({ configured: 6, online: 6, schedulable: 2 });
+  });
+
+  it('mixed ownership: each account adds only its online runners', () => {
+    const c = fleetSlotCounts([
+      beat('mine', 2, 10_000, { accountId: 'personal' }),
+      beat('mine-off', 3, 30 * 60_000, { accountId: 'personal' }),
+      beat('team', 4, 10_000, { accountId: 'team' }),
+    ], opts);
+    expect(c).toMatchObject({ configured: 9, online: 6, schedulable: 6 });
+  });
+
+  it('a finished ephemeral run is neither configured nor online', () => {
+    const once = beat('x', 5, 10_000, { localUiUrl: 'headless://container/once/abc', activeWorkerCount: 0 });
+    expect(fleetSlotCounts([once], opts)).toMatchObject({ configured: 0, online: 0 });
+  });
+
+  it('the snapshot carries them with when they were read, and busy counts only online runners', () => {
+    const s = buildFleetSnapshot(
+      [beat('on', 5, 10_000), beat('off', 4, 40 * 60_000)],
+      [
+        { id: 'w1', accountId: 'acct', runner: 'http://on:1', status: 'running', startedAt: new Date(NOW - 60_000) },
+        { id: 'w2', accountId: 'acct', runner: 'http://off:1', status: 'running', startedAt: new Date(NOW - 60_000) },
+      ],
+      opts,
+    );
+    expect(s.slots).toEqual({ configured: 9, online: 5, schedulable: 5, busy: 1, asOf: NOW, windowMs: FLEET_ONLINE_WINDOW_MS });
+    expect(s.capacity).toBe(5);
+  });
+});
