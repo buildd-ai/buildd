@@ -255,7 +255,9 @@ export async function PATCH(
     }
     const ownTaskArtifact = !!artifact.worker && artifact.worker.accountId === account.id && taskScopeAllowsWorker(account, artifact.worker);
     const ownMissionArtifact = !artifact.workerId && !artifact.initiativeId && await taskScopeAllowsMission(account, artifact.missionId);
-    if (!ownTaskArtifact && !ownMissionArtifact) {
+    // Workspace observation artifacts (shadow-backstop observations) are updatable by any task in the workspace
+    const isWorkspaceObservationArtifact = artifact.workspaceId && artifact.key && artifact.key.startsWith('shadow-backstop-');
+    if (!ownTaskArtifact && !ownMissionArtifact && !isWorkspaceObservationArtifact) {
       return NextResponse.json({ error: "A task token may update only its own task's or its own mission's artifacts" }, { status: 403 });
     }
   }
