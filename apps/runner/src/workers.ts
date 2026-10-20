@@ -1,4 +1,4 @@
-import { canonicalToolName, decideTaskIsolation, reducedIsolationOptedIn, taskCodexSandboxMode, taskIsolationRequirement, type TaskIsolationDecision } from '@buildd/shared';
+import { canonicalToolName, decideTaskIsolation, reducedIsolationOptedIn, taskCodexSandboxMode, taskIsolationRequirement, readTaskIsolationStamp, type TaskIsolationDecision } from '@buildd/shared';
 import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
 import { query, type HookCallback, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
@@ -4388,6 +4388,10 @@ export class WorkerManager {
       // with no stamp is held to protected. Refused = the attempt fails with
       // the cause; it never runs reduced without the operator's opt-in.
       const isolationBackend = isCodexTask ? 'codex' as const : 'claude' as const;
+      // Kept on the worker so a resume, retry or recovery stub (recovery.ts)
+      // carries the same stamp instead of reading as unstamped (protected).
+      const claimStamp = readTaskIsolationStamp(task.context);
+      if (claimStamp) worker.taskIsolation = claimStamp;
       const isolationDecision = this.decideSessionIsolation(task, isolationBackend);
       if (!isolationDecision.ok) {
         throw new Error(`Not started: ${isolationDecision.message}${isolationDecision.remedy.length > 0 ? ` ${isolationDecision.remedy.join(' ')}` : ''}`);
