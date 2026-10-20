@@ -144,3 +144,5 @@ apps/runner/__tests__/unit/codex-instructions.test.ts
 # Scans every mission UI file for banned state narration and component-local derivations
 # (spec 8e137fdb I-17). A new surface is a change nowhere near this test.
 scripts/mission-state-copy-guard.test.ts
+# Inventories .github/workflows/ — a workflow added or removed elsewhere is a change nowhere near this test.
+scripts/workflow-inventory.test.ts
