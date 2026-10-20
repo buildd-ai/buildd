@@ -133,7 +133,7 @@ describe('the kernel against the fake GitHub', () => {
     const reader = githubReader(installationId);
     expect(await reader.ciGreen!(REPO, h1)).toBe(true);
 
-    // The reviewer approves the head; the verdict is posted to GitHub as a review on it.
+    // The reviewer approves the head; the approval posts no review to GitHub (the commit status carries it).
     const [reviewer] = await q<{ id: string; context: Record<string, unknown> }>(
       sql`SELECT id, context FROM tasks WHERE delivery_id = ${deliveryId}::uuid AND delivery_role = 'review' ORDER BY created_at DESC LIMIT 1`);
     expect(reviewer).toBeTruthy();
@@ -142,7 +142,7 @@ describe('the kernel against the fake GitHub', () => {
       verdict: 'approve', effectiveVerdict: 'approve', headSha: h1, confidence: 0.9,
     });
     expect((await loadView({ deliveryId: deliveryId! })).delivery!.state).toBe('APPROVED');
-    expect(gh.pr(REPO, prNumber).reviews).toEqual([expect.objectContaining({ state: 'APPROVED', commitId: h1, user: gh.appLogin })]);
+    expect(gh.pr(REPO, prNumber).reviews).toEqual([]);
     await gh.deliverWebhooks();
 
     // A door lands it, its rails having read CI green; the kernel makes the one pinned merge call.
