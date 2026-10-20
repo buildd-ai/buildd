@@ -27,7 +27,6 @@ import {
   describeAnswerPath,
   type AnswerDeliveryRecord,
 } from '@/lib/answer-resume';
-import { reopenTaskForAnsweredAttempt } from '@/lib/answer-attempt';
 import type { WaitingFor } from '@buildd/shared';
 import { waitingForOptionLabels } from '@/lib/waiting-for-options';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -1566,6 +1565,9 @@ export async function cleanupUnresumedAnswers(
     }
     let reopened = false;
     try {
+      // Lazy, like the kernel modules above: its kernel/owner graph would
+      // otherwise join every route that loads this module.
+      const { reopenTaskForAnsweredAttempt } = await import('@/lib/answer-attempt');
       const r = await reopenTaskForAnsweredAttempt({
         taskId,
         worker: { id: worker.id, branch: worker.branch ?? null, lastCommitSha: worker.lastCommitSha ?? null, completedAt: claimed.completedAt ?? null },
@@ -1726,6 +1728,9 @@ export async function cleanupUnreadInteractiveAnswers(
 
     let reopened = false;
     try {
+      // Lazy, like the kernel modules above: its kernel/owner graph would
+      // otherwise join every route that loads this module.
+      const { reopenTaskForAnsweredAttempt } = await import('@/lib/answer-attempt');
       const r = await reopenTaskForAnsweredAttempt({
         taskId: task.id,
         worker: { id: worker.id, branch: worker.branch ?? null, lastCommitSha: worker.lastCommitSha ?? null, completedAt: claimed.completedAt ?? null },
