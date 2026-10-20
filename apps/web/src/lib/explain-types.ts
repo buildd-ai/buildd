@@ -14,6 +14,7 @@
 import type { BackendRoutingDescription } from '@buildd/core/backend-policy';
 import type { MissionStateKind, WaitingOnDescriptor, MissionStateSource, MissionSituation, MissionStateView } from './mission-state-view';
 import { OUTSTANDING_RANK } from './mission-state-view';
+import type { MissionStatePresentation } from './mission-state-presentation';
 import type { InlineEvidenceObject } from './evidence-inline';
 
 export type ExplainScope = 'task' | 'mission' | 'workspace' | 'pr';
@@ -188,6 +189,8 @@ export interface ExplainAnswer {
    */
   displayState: MissionStateView['displayState'];
   chip: MissionStateView['chip'];
+  /** The closed `{ state, cause, action }` vocabulary every surface renders (spec 8e137fdb I-13). */
+  presentation: MissionStatePresentation;
   /** Straight off the accessor. Null only on `complete` / `idle` / `running`. */
   waitingOn: WaitingOnDescriptor | null;
   /**

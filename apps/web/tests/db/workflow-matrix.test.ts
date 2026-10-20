@@ -551,7 +551,8 @@ describe('S2 — approve at H0, non-equivalent push to H1', () => {
   test('APPROVED → AWAITING_REVIEW with a new round dispatched on the push, never at merge time; the old approval covers only its own head', async () => {
     const o = await openAndHandOn();
     expect(await verdict(o, 'approve')).toMatchObject({ handled: true, toState: 'APPROVED' });
-    expect(posted).toEqual([{ commitId: 'H1', event: 'APPROVE' }]);
+    // An approval is the commit status, never a PR review or comment.
+    expect(posted).toEqual([]);
     await push(o, 'H2');
     const d = await delivery(o.deliveryId);
     expect(d).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2, approvedHeads: ['H1'] });
@@ -2972,10 +2973,8 @@ describe('S32–S34 — release composition', () => {
     const [t] = (await transitions(agg.deliveryId)).filter((x) => x.command === 'ReviewVerdictRecorded');
     expect(t.evidence).toMatchObject({ compositionDelta: { roundId: r2.id, paths: ['packages/core/drizzle/9999_hand.sql'] } });
 
-    // The GitHub review and the headline both say the review covered only the delta.
-    expect(posted).toEqual([{ commitId: 'H1', event: 'APPROVE' }]);
-    expect(postedBodies[0]).toStartWith('New changes approved');
-    expect(postedBodies[0]).toContain('packages/core/drizzle/9999_hand.sql');
+    // Nothing is posted to the PR; the headline says the review covered only the delta.
+    expect(posted).toEqual([]);
     const view = (await getDeliveryViewsForTasks([agg.ownerTaskId])).get(agg.ownerTaskId)!;
     expect(view.headline).not.toBe('Approved');
     expect(view.headline).toBe('New changes approved');

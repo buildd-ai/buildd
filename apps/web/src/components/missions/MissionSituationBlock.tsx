@@ -29,7 +29,7 @@
 import Link from 'next/link';
 import type { CausalLink } from '@/lib/explain-types';
 import { situationDetail, type MissionSituation, type WaitingOnDescriptor, type WaitingOnTone } from '@/lib/mission-state-view';
-import { missionTaskHref, taskAnswerHref, taskPageHref } from '@/lib/mission-task-href';
+import { missionTaskHref, taskAnswerHref } from '@/lib/mission-task-href';
 import { strandCtaFor } from '@/lib/mission-list-card';
 import ContinueOnRunnerCta from './ContinueOnRunnerCta';
 import ClosedPrResolution, { type ClosedPrItem } from './ClosedPrResolution';
@@ -177,20 +177,6 @@ function RefLink({ refs, missionId }: { refs: CausalLink['refs']; missionId: str
       </a>
     );
   }
-  if (refs.taskId) {
-    // A short id is opaque text, not a titled row — it must read as a real
-    // link to the task's own page, never a trigger for this page's drawer
-    // (no `data-task-id`: TaskPanelWrapper's capture handler only intercepts
-    // that attribute, so this click navigates for real).
-    return (
-      <Link
-        href={taskPageHref({ taskId: refs.taskId, missionId })}
-        className="font-mono text-accent-text hover:underline"
-      >
-        task {refs.taskId.slice(0, 8)}
-      </Link>
-    );
-  }
   if (refs.criterion) {
     return <span className="font-mono text-text-secondary">{refs.criterion}</span>;
   }
@@ -198,6 +184,11 @@ function RefLink({ refs, missionId }: { refs: CausalLink['refs']; missionId: str
     return <span className="font-mono text-text-secondary">#{refs.prNumber}</span>;
   }
   return null;
+}
+
+/** False for a ref that is only a raw task id: nothing a reader can follow without knowing it. */
+function hasReadableRef(refs: CausalLink['refs']): boolean {
+  return !refs.taskId || !!(refs.prUrl || refs.prNumber != null || refs.criterion);
 }
 
 export interface MissionSituationBlockProps {
@@ -216,7 +207,10 @@ export default function MissionSituationBlock({ missionId, situation, because, c
   const affordance = affordanceFor(situation.focus, { missionId, criteriaReachable });
   const strand = strandCtaFor(missionId, { situation });
   // One explanatory line (F2): the blockers, the next action, or the why.
-  const detail = situationDetail(situation, because);
+  // A raw task id is not a reason a reader can act on (spec 8e137fdb I-14, I-16):
+  // a "why" whose only ref is a task id restates the headline, so it is dropped.
+  const rawDetail = situationDetail(situation, because);
+  const detail = rawDetail?.kind === 'why' && !hasReadableRef(rawDetail.link.refs) ? null : rawDetail;
 
   return (
     <div
