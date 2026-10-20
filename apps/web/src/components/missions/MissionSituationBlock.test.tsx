@@ -147,7 +147,7 @@ describe('the why, with its hard ref linked', () => {
     expect(html).toContain('https://example.invalid/pr/9001');
   });
 
-  it('a hard ref with only a task id is a real link to that task\'s own page, never a drawer trigger', () => {
+  it('a why whose only ref is a raw task id is dropped from the primary notice (spec 8e137fdb I-14, I-16)', () => {
     const view = deriveMissionStateView(base);
     const because = [{
       order: 1,
@@ -159,11 +159,8 @@ describe('the why, with its hard ref linked', () => {
       <MissionSituationBlock missionId="m-1" situation={view.situation} because={because} />,
     );
 
-    expect(html).toContain('task 00000000');
-    expect(html).toContain('href="/app/tasks/00000000-0000-4000-8000-00000000000a?from=mission&amp;missionId=m-1"');
-    // No `data-task-id`: TaskPanelWrapper's capture handler only intercepts
-    // that attribute to open the mission's own task drawer/sheet in-place —
-    // a short id must navigate for real instead.
+    expect(html).not.toContain('task 00000000');
+    expect(html).not.toContain('00000000-0000-4000');
     expect(html).not.toContain('data-task-id');
   });
 });

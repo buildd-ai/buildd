@@ -57,7 +57,7 @@ mock.module('@/lib/team-access', () => ({
 const { mintTaskToken } = await import('./task-token');
 const { authenticateTaskScopedCaller, taskScopeAllowsDelegated } = await import('./task-token-auth');
 const { preflightTaskDelegation } = await import('./task-delegation-checks');
-const { buildContinuationTaskValues } = await import('./answer-resume');
+const { buildAnsweredAttemptContextPatch, buildAnsweredQuestionEntry } = await import('./answer-resume');
 
 const savedSecret = process.env.AUTH_SECRET;
 afterAll(() => {
@@ -125,37 +125,43 @@ describe('a task without the grant', () => {
   });
 });
 
-describe('its continuation', () => {
-  const continuationOf = (parent: Record<string, unknown>) => buildContinuationTaskValues({
-    task: parent as any,
-    workspaceId: HOME_WS,
-    workerId: 'worker-1',
-    branch: 'buildd/spec',
-    milestones: [],
-    question: 'May I file the follow-ups in the other workspace?',
-    answer: 'Yes, file them there.',
-    delivery: { path: 'cold_continuation' } as any,
-  });
+// A cold answer is a new attempt of the SAME task (answered-question-resume.md):
+// nothing is copied onto a new row, so the grant cannot be lost in the copy.
+describe('its new attempt after an answer', () => {
+  /** The task row once the answer's context patch is merged (jsonb `||`, top-level keys). */
+  const reopened = (task: Record<string, any>) => {
+    const entry = buildAnsweredQuestionEntry({
+      workerId: 'worker-1',
+      question: 'May I file the follow-ups in the other workspace?',
+      answer: 'Yes, file them there.',
+      milestones: [],
+      branch: 'buildd/spec',
+      delivery: { reasonCode: 'worker_not_parked', reason: 'r' },
+    });
+    const patch = buildAnsweredAttemptContextPatch({
+      context: task.context,
+      entry,
+      branchContext: { resumeBranch: 'buildd/spec' },
+      delivery: { path: 'cold_continuation', reasonCode: 'worker_not_parked', reason: 'r', workerId: 'worker-1', decidedAt: new Date(0).toISOString() },
+    });
+    return { ...task, context: { ...(task.context ?? {}), ...patch } };
+  };
 
-  it('inherits the grant, so its token reaches the same workspace', async () => {
-    const values = continuationOf(taskRow);
-    expect(values.delegation).toMatchObject({ grants: GRANT.grants, grantedByUserId: 'user-owner', inheritedFromTaskId: TASK });
-    expect(values.context.filingTargets).toEqual([TARGET_WS]);
+  it('keeps the grant and the filing targets, so its token reaches the same workspace', async () => {
+    taskRow = reopened(taskRow);
+    expect(taskRow.id).toBe(TASK);
+    expect(taskRow.delegation).toBe(GRANT);
+    expect(taskRow.context.filingTargets).toEqual([TARGET_WS]);
 
-    taskRow = { id: TASK, workspaceId: HOME_WS, scheduleId: null, delegation: values.delegation, context: values.context };
     const caller = await authenticateTaskScopedCaller(token());
     expect(taskScopeAllowsDelegated(caller!, TARGET_WS, 'tasks:create')).toBe(true);
     expect(await preflightTaskDelegation(taskRow as any, account as any)).toEqual([]);
   });
 
-  it('carries the answered question and its answer, and says not to ask it again', () => {
-    const { description } = continuationOf(taskRow);
-    expect(description).toContain('May I file the follow-ups in the other workspace?');
-    expect(description).toContain('Yes, file them there.');
-    expect(description).toContain('do not ask it again');
-  });
-
-  it('a parent without a grant passes none on', () => {
-    expect(continuationOf({ ...taskRow, delegation: null }).delegation).toBeUndefined();
+  it('carries the answered question and its answer', () => {
+    const [entry] = reopened(taskRow).context.answeredQuestions;
+    expect(entry.question).toBe('May I file the follow-ups in the other workspace?');
+    expect(entry.answer).toBe('Yes, file them there.');
   });
 });
+

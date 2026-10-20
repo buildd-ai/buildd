@@ -42,6 +42,7 @@ import { checkSingleInstance, createSocketWatchdog, decideStart, enqueueEvent, p
 import { openMissionIds, readTaskListWithStages } from './mission-stages';
 import { rateLimitedRetryAfterSec } from './read-backoff';
 import { consumeRestartMarker, shouldAutoOpenBrowser, writeRestartMarker } from './browser-open';
+import { openInBrowser } from './open-url';
 import { claimEntryWords } from './claim-words';
 
 const PORT = parseInt(process.env.PORT || '8766');
@@ -1150,7 +1151,7 @@ let pendingTreeSyncRestart = false;
  * failure case either: a crashed child is detected by its exit code on the same
  * poll and returns immediately instead of waiting out the deadline.
  */
-const HEALTH_PROBE_TIMEOUT_MS = 30_000;
+const HEALTH_PROBE_TIMEOUT_MS = 60_000;
 
 /**
  * Hard ceiling on the WHOLE probe call, teardown included.
@@ -2084,7 +2085,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         ]);
         const ws = workspaces.find((w: any) => w.id === (body.workspaceId ?? mission?.workspaceId));
         const cwd = ws ? await resolver.resolveAsync?.({ id: ws.id, name: ws.name, repo: ws.repo, defaultBranch: ws.gitConfig?.defaultBranch ?? null }, null, { maxAgeMs: 60_000 }) ?? null : null;
-        return Response.json({ cwd, server: config.builddServer, apiKey: config.apiKey ?? null, explain, mission }, { headers: corsHeaders });
+        return Response.json({ cwd, workspaceId: ws?.id ?? null, server: config.builddServer, apiKey: config.apiKey ?? null, explain, mission }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ error: err.message || 'Failed to read the context' }, { status: 502, headers: corsHeaders });
       }
@@ -3102,7 +3103,7 @@ const ownRunnerProcessCheck = () => socketHealthCheck(socketWatchdog?.state() ??
 const localUrl = `http://localhost:${PORT}`;
 
 // Repos for the banner count: the disk cache, or an async scan when there is none.
-const repos = await getRepos();
+const repos = process.env.BUILDD_HEALTH_PROBE === '1' ? [] : await getRepos(); // the health probe skips the scan (updater.ts HEALTH_PROBE_ENV)
 
 // ── Startup banner ──────────────────────────────────────────────────────────
 
@@ -3247,13 +3248,13 @@ function markBrowserOpened() {
 
       if (shouldOpen && shouldOpenBrowser()) {
         console.log('Opening browser...');
-        Bun.spawn(['open', localUrl]);
+        void openInBrowser(localUrl);
         markBrowserOpened();
       }
       console.log(`Preference saved. Change anytime in ${CONFIG_FILE}`);
     }
   } else if (savedConfig.openBrowser && shouldOpenBrowser()) {
-    Bun.spawn(['open', localUrl]);
+    void openInBrowser(localUrl);
     markBrowserOpened();
   }
 })();

@@ -1,3 +1,4 @@
+import { TASK_ISOLATION_CONTEXT_KEY, type TaskIsolationStamp } from '@buildd/shared';
 import { emitMetric } from './phase-lines';
 import { existsSync } from 'fs';
 import type { LocalWorker, Milestone, BuilddTask, ChatMessage, Checkpoint } from './types';
@@ -20,18 +21,26 @@ interface RecoverySession {
 }
 
 /**
- * The stub tasks built below have no claim payload, so without this
- * resolveSessionModel() sees no `context.model` and a restarted session runs on
- * the runner-global default instead of the model the original session used.
- * Carry the session model through as the only context field.
+ * The stub tasks built below have no claim payload, so carry what the original
+ * session's claim decided:
+ * - `context.model`: without it resolveSessionModel() sees no per-task model
+ *   and a restarted session runs on the runner-global default.
+ * - `context.isolation`: without it startSession reads the task as unstamped,
+ *   i.e. protected, and a trusted_local task that ran reduced on an opted-in
+ *   runner is refused on its follow-up (task 4ad0f95a). Only the stamp the
+ *   session started under is carried, so nothing runs laxer than it did.
  */
-function sessionModelContext(worker: LocalWorker): { context?: { model: string }; backend?: 'claude' | 'codex' } {
+function sessionModelContext(worker: LocalWorker): { context?: { model?: string; [TASK_ISOLATION_CONTEXT_KEY]?: TaskIsolationStamp }; backend?: 'claude' | 'codex' } {
   const model = typeof worker.sessionModel === 'string' ? worker.sessionModel.trim() : '';
   // The backend the session actually ran on. startSession defaults a missing
   // backend to Claude, so without it a Codex session (e.g. one budget failover
   // moved to Codex) resumed down the Claude path with its Codex thread id.
   const backend = worker.taskBackend ? { backend: worker.taskBackend } : {};
-  return model ? { context: { model }, ...backend } : backend;
+  const context = {
+    ...(model ? { model } : {}),
+    ...(worker.taskIsolation ? { [TASK_ISOLATION_CONTEXT_KEY]: worker.taskIsolation } : {}),
+  };
+  return Object.keys(context).length > 0 ? { context, ...backend } : backend;
 }
 
 /**

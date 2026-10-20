@@ -242,6 +242,12 @@ export interface BoardTask {
   /** 0-based slot on that runner, derived from overlap. */
   slot: number | null;
   workerId: string | null;
+  /**
+   * Execution axis (spec 8e137fdb I-15), separate from `status`: a worker is
+   * live on this task right now. `status: 'running'` with `executing: false` is
+   * started work nothing is executing (interrupted), not active execution.
+   */
+  executing?: boolean;
   startedAt: number | null;
   endedAt: number | null;
   /** When the current wait began (a waiting task). */
@@ -797,6 +803,7 @@ export function buildBoardCells(
       runner: activeWorker ? displayOf(activeWorker)?.name ?? null : null,
       slot: null,
       workerId: activeWorker?.id ?? null,
+      executing: isLiveWorker(activeWorker),
       startedAt: activeWorker?.startedAt ?? null,
       endedAt: activeWorker && !isLiveWorker(activeWorker) ? activeWorker.completedAt ?? activeWorker.updatedAt : null,
       waitStartedAt: status === 'waiting' ? activeWorker?.updatedAt ?? null : null,

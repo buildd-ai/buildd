@@ -2,6 +2,7 @@ import * as fs from 'fs';
 const { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, readdirSync, unlinkSync } = fs;
 import { join } from 'path';
 import { resolveBuilddHome } from './buildd-home';
+import { readTaskIsolationStamp, TASK_ISOLATION_CONTEXT_KEY } from '@buildd/shared';
 import type { LocalWorker, CheckpointEventType } from './types';
 import { teardownStableCodexHome } from './codex-auth';
 import { sessionLog } from './session-logger';
@@ -58,6 +59,8 @@ const PERSISTED_FIELDS = [
   'pauseRequestedAt',
   // So a resume after a runner restart keeps the model the session ran on.
   'sessionModel',
+  // So a resume after a runner restart is decided under the claim's isolation stamp.
+  'taskIsolation',
   'messages', 'milestones', 'toolCalls', 'commits',
   'output', 'worktreePath', 'promptSuggestions', 'lastAssistantMessage',
   // Read by history-store's backfill so an archived session keeps its usage,
@@ -146,6 +149,12 @@ function truncateToolCalls(toolCalls: Array<{ name: string; timestamp: number; i
     // Truncate to a simple summary
     return { ...tc, input: { _truncated: inputStr.slice(0, MAX_TOOL_INPUT_LENGTH) } };
   });
+}
+
+/** The stored isolation stamp, validated; a malformed one is dropped (= protected). */
+function restoredIsolation(data: PersistedWorker): { taskIsolation?: LocalWorker['taskIsolation'] } {
+  const stamp = readTaskIsolationStamp({ [TASK_ISOLATION_CONTEXT_KEY]: (data as { taskIsolation?: unknown }).taskIsolation });
+  return stamp ? { taskIsolation: stamp } : {};
 }
 
 /** Gateway connectors from a persisted record, re-validated on the way in. */
@@ -314,6 +323,7 @@ export function loadAllWorkers(): LocalWorker[] {
         promptSuggestions: data.promptSuggestions as string[] | undefined,
         lastAssistantMessage: data.lastAssistantMessage as string | undefined,
         ...restoredConnectors(data),
+        ...restoredIsolation(data),
         // Transient defaults
         hasNewActivity: false,
         currentAction: '',
@@ -386,6 +396,7 @@ export function loadWorker(workerId: string): LocalWorker | null {
       promptSuggestions: data.promptSuggestions as string[] | undefined,
       lastAssistantMessage: data.lastAssistantMessage as string | undefined,
       ...restoredConnectors(data),
+      ...restoredIsolation(data),
       hasNewActivity: false,
       currentAction: '',
       subagentTasks: [],
