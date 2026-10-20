@@ -24,6 +24,7 @@ let tasksServed = 0;
 let serveMissions = false;
 /** Hold /api/tasks and /api/missions/recent until this resolves (a slow server read). */
 let slowReads: Promise<void> | null = null;
+let slowTalk: Promise<void> | null = null;
 /** The next N task-list reads answer 429 (the server's read rate limit, passed through). */
 let rateLimitTasks = 0;
 /** The next N /api/config reads fail (a runner too busy to answer the first load). */
@@ -42,6 +43,7 @@ beforeEach(() => {
   tasksServed = 0;
   serveMissions = false;
   slowReads = null;
+  slowTalk = null;
   rateLimitTasks = 0;
   failConfig = 0;
   sse = null;
@@ -60,7 +62,10 @@ function serveFakeRunner() {
       const body = await req.json().catch(() => ({}));
       posts.push({ path, body });
       if (path === '/api/workers/w-hint/answer') return Response.json({ ok: true });
-      if (path === '/api/talk-context') return Response.json({ cwd: '/work/repo', server: 'https://buildd.example', apiKey: 'bld_secret', explain: null, mission: null });
+      if (path === '/api/talk-context') {
+        if (slowTalk) await slowTalk;
+        return Response.json({ cwd: '/work/repo', server: 'https://buildd.example', apiKey: 'bld_secret', explain: null, mission: null });
+      }
       return Response.json({ error: 'Worker is not running' }, { status: 409 });
     }
     switch (path) {
@@ -203,6 +208,122 @@ describe('runTop', () => {
     await until(() => t.writes.slice(i).some(w => w.includes('\x1b[?1049h')));
     expect(t.raw).toEqual([true, false, true]);
     await until(() => t.screen().includes('Back from Claude'));
+    t.type('q');
+    expect(await done).toBe(0);
+  });
+
+  test('s again on the same mission resumes its earlier session; a different checkout starts over', async () => {
+    serveFakeRunner();
+    const t = fakeTerminal();
+    const ran: any[] = [];
+    const store = new Map<string, any>();
+    const sessions = {
+      get: (k: string) => store.get(k) ?? null,
+      set: (k: string, r: any) => { store.set(k, r); },
+      exists: (id: string) => id === 'first',
+      findNew: () => null,
+      focusPane: async () => false,
+      newId: () => (store.size ? 'second' : 'first'),
+    };
+    const done = runTop({
+      socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {}, env: {},
+      talk: { loggedIn: async () => true, run: async (l) => { ran.push(l); return 0; }, sessions },
+    });
+    await until(() => t.screen().includes('name override'));
+    t.type('s');
+    await until(() => ran.length === 1);
+    expect(ran[0]).toMatchObject({ sessionId: 'first', resumed: false });
+    await until(() => t.screen().includes('Back from Claude'));
+    t.type('s');
+    await until(() => ran.length === 2);
+    expect(ran[1]).toMatchObject({ sessionId: 'first', resumed: true });
+    expect(ran[1].argv).toContain('--resume');
+    // The checkout moved: claude keeps conversations per folder, so that one cannot be resumed here.
+    for (const [k, r] of store) store.set(k, { ...r, cwd: '/elsewhere' });
+    await until(() => t.screen().includes('Back from Claude'));
+    t.type('s');
+    await until(() => ran.length === 3);
+    expect(ran[2]).toMatchObject({ sessionId: 'second', resumed: false });
+    t.type('q');
+    expect(await done).toBe(0);
+  });
+
+  test('in tmux, s on a mission whose session is still open in a pane focuses that pane', async () => {
+    serveFakeRunner();
+    const t = fakeTerminal();
+    let ran = 0;
+    const focused: string[] = [];
+    const sessions = {
+      get: () => ({ sessionId: 'open', cwd: '/work/repo', paneId: '%7' }),
+      set: () => {},
+      exists: () => true,
+      findNew: () => null,
+      focusPane: async (p: string) => { focused.push(p); return true; },
+      newId: () => 'unused',
+    };
+    const done = runTop({
+      socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {}, env: { TMUX: '/tmp/tmux-1/default,1,0' },
+      talk: { loggedIn: async () => true, run: async () => { ran++; return 0; }, sessions },
+    });
+    await until(() => t.screen().includes('name override'));
+    t.type('s');
+    await until(() => t.screen().includes('switched to its pane'));
+    expect(focused).toEqual(['%7']);
+    expect(ran).toBe(0);
+    t.type('q');
+    await done;
+  });
+
+  test('while the runner is slow to answer, s says Claude is opening, and s again says it is still opening', async () => {
+    let answer!: () => void;
+    slowTalk = new Promise<void>(r => { answer = r; });
+    serveFakeRunner();
+    const t = fakeTerminal();
+    const ran: any[] = [];
+    const done = runTop({
+      socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {}, env: {},
+      talk: { loggedIn: async () => true, run: async (l) => { ran.push(l); return 0; }, sessions: { get: () => null, set: () => {}, exists: () => false, findNew: () => null, focusPane: async () => false, newId: () => 'n' } },
+    });
+    await until(() => t.screen().includes('name override'));
+    t.type('s');
+    await until(() => t.screen().includes('Opening Claude'));
+    t.type('s');
+    await until(() => t.screen().includes('Still opening the session'));
+    expect(t.screen()).not.toContain('already open');
+    answer();
+    await until(() => ran.length === 1);
+    await until(() => t.screen().includes('Back from Claude'));
+    t.type('q');
+    expect(await done).toBe(0);
+  });
+
+  test('S opens Codex and remembers the session codex named, so S again resumes it', async () => {
+    serveFakeRunner();
+    const t = fakeTerminal();
+    const ran: any[] = [];
+    const store = new Map<string, any>();
+    const asked: string[] = [];
+    const sessions = {
+      get: (k: string) => store.get(k) ?? null,
+      set: (k: string, r: any) => { store.set(k, r); },
+      exists: (id: string, agent: string) => agent === 'codex' && id === 'codex-1',
+      findNew: (agent: string, cwd: string) => (agent === 'codex' && cwd === '/work/repo' ? 'codex-1' : null),
+      focusPane: async () => false,
+      newId: () => 'unused',
+    };
+    const done = runTop({
+      socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {}, env: {},
+      talk: { loggedIn: async (a) => { asked.push(a); return true; }, run: async (l) => { ran.push(l); return 0; }, sessions },
+    });
+    await until(() => t.screen().includes('name override'));
+    t.type('S');
+    await until(() => ran.length === 1);
+    expect(asked).toEqual(['codex']);
+    expect(ran[0]).toMatchObject({ agent: 'codex', resumed: false });
+    await until(() => t.screen().includes('Back from Codex'));
+    t.type('S');
+    await until(() => ran.length === 2);
+    expect(ran[1]).toMatchObject({ agent: 'codex', sessionId: 'codex-1', resumed: true });
     t.type('q');
     expect(await done).toBe(0);
   });
