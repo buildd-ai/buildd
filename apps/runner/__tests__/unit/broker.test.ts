@@ -928,3 +928,64 @@ describe('refreshExpiring — lost rotation', () => {
     expect((broker as any).managed.has(SECRET_ID)).toBe(true);
   });
 });
+
+// ── local token server: where it may not be served ───────────────────────────
+
+describe('local token server — owner-only or not at all', () => {
+  const path = `/tmp/buildd-broker-gate-${process.pid}.sock`;
+  let gated: CredentialBroker | null = null;
+
+  beforeEach(() => {
+    process.env.BUILDD_BROKER_SOCKET = path;
+    globalThis.fetch = makeFetchMock([]);
+  });
+
+  afterEach(async () => {
+    await gated?.shutdown();
+    gated = null;
+    delete process.env.BUILDD_BROKER_SOCKET;
+    try { unlinkSync(path); } catch {}
+    globalThis.fetch = originalFetch;
+  });
+
+  test('on Windows there is no socket path, even when BUILDD_BROKER_SOCKET names one', () => {
+    gated = new CredentialBroker({ platform: 'win32' });
+    expect(gated.socketPath).toBe('');
+  });
+
+  test('on Windows start() neither binds nor restricts a socket, and does not throw', () => {
+    const restrict = mock((_p: string) => true);
+    const serve = mock(() => ({ stop() {} }));
+    gated = new CredentialBroker({ platform: 'win32', restrictToOwner: restrict, serve });
+    expect(() => gated!.start({ apiKey: 'k' }, { signalHandlers: false })).not.toThrow();
+    expect(serve).not.toHaveBeenCalled();
+    expect(restrict).not.toHaveBeenCalled();
+    expect(gated.localServerListening).toBe(false);
+  });
+
+  test('fetchTokenFromBroker with the Windows (empty) socket path returns null, so spawn uses the inline token', async () => {
+    gated = new CredentialBroker({ platform: 'win32' });
+    expect(await fetchTokenFromBroker(SECRET_ID, gated.socketPath)).toBeNull();
+  });
+
+  test('when the socket cannot be made owner-only, the server is stopped rather than left open', () => {
+    let stopped = false;
+    const serve = mock(() => ({ stop() { stopped = true; } }));
+    gated = new CredentialBroker({ platform: 'linux', restrictToOwner: () => false, serve });
+    gated.start({ apiKey: 'k' }, { signalHandlers: false });
+    expect(serve).toHaveBeenCalledTimes(1);
+    expect(stopped).toBe(true);
+    expect(gated.localServerListening).toBe(false);
+    expect(gated.socketPath).toBe('');
+  });
+
+  test('when the socket is made owner-only, the server stays up', () => {
+    const serve = mock(() => ({ stop() {} }));
+    const restrict = mock((_p: string) => true);
+    gated = new CredentialBroker({ platform: 'linux', restrictToOwner: restrict, serve });
+    gated.start({ apiKey: 'k' }, { signalHandlers: false });
+    expect(restrict).toHaveBeenCalledWith(path);
+    expect(gated.localServerListening).toBe(true);
+    expect(gated.socketPath).toBe(path);
+  });
+});

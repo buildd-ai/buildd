@@ -303,6 +303,14 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   animation: status-pulse 1.5s ease-in-out infinite;
 }
 
+/* This rule is unlayered, so it beats Tailwind's `motion-reduce:animate-none`:
+   reduced motion has to be honoured here. A live mark stays lit, still. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-status-pulse {
+    animation: none;
+  }
+}
+
 /* Block-ticker spinner — the replacement for animate-spin+rounded-full rings
    (there is no circle in the radius scale, so ring spinners render as rotating
    rounded squares). Each bar is lit for 20% of a 1s cycle; steps(1) makes it tick rather

@@ -125,7 +125,7 @@ function Scenario({ scenario }: { scenario: RunActivityScenario }) {
           {EVIDENCE_STATES.map(e => (
             <div key={e.key} data-testid={`evidence-state-${e.key}`} className="card px-4 py-3">
               <p className="text-meta text-text-muted">{e.title}</p>
-              <RunEvidenceRail evidence={deriveRunEvidence(e.input as never)} nowMs={RUN_ACTIVITY_NOW} defaultOpen />
+              <RunEvidenceRail evidence={deriveRunEvidence(e.input as never)} nowMs={RUN_ACTIVITY_NOW} defaultOpen={e.open ?? true} />
             </div>
           ))}
         </div>

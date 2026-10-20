@@ -5,9 +5,10 @@
  * without the user wiring nohup/systemd/launchd themselves.
  *
  * macOS: a launchd LaunchAgent (~/Library/LaunchAgents). Linux: a systemd
- * --user unit (~/.config/systemd/user). Windows is handled entirely inside
- * install.ps1 (a Scheduled Task) since the Windows launcher has no
- * subcommand dispatch to reach this file from — see apps/runner/README.md.
+ * --user unit (~/.config/systemd/user). Windows: a per-user Scheduled Task
+ * (`buildd runner`, at logon, as the user, never elevated) registered from a
+ * task XML with schtasks.exe; the cmd launcher (buildd.cmd, written by
+ * install.ps1) dispatches `buildd service` here as the bash launcher does.
  *
  * Every generator below is pure (string in, string out) so the service file
  * contents are unit-tested directly; nothing here calls launchctl/systemctl
@@ -20,18 +21,19 @@ import { dirname, join } from 'path';
 import { homedir } from 'os';
 import { resolveBuilddHome } from './buildd-home';
 
-export type ServicePlatform = 'darwin' | 'linux' | 'unsupported';
+export type ServicePlatform = 'darwin' | 'linux' | 'win32' | 'unsupported';
 
 export function detectServicePlatform(platform: string = process.platform): ServicePlatform {
   if (platform === 'darwin') return 'darwin';
   if (platform === 'linux') return 'linux';
+  if (platform === 'win32') return 'win32';
   return 'unsupported';
 }
 
 export interface ServicePaths {
   /** Operator home directory (os.homedir()) — where LaunchAgents/systemd user dirs and the launcher live. */
   home: string;
-  /** The launcher script install.sh writes to ~/.local/bin/buildd. */
+  /** The launcher install.sh writes to ~/.local/bin/buildd (install.ps1: buildd.cmd beside it). */
   builddBin: string;
   /** Runner home (resolveBuilddHome()) — logs live under here so BUILDD_HOME overrides are respected. */
   logsDir: string;
@@ -41,6 +43,10 @@ export interface ServicePaths {
   label: string;
   /** systemd unit name (without the .service suffix). */
   unitName: string;
+  /** Windows Scheduled Task name; the one install.ps1 registered before this file handled Windows. */
+  taskName: string;
+  /** Windows account the task runs as and starts at the logon of (DOMAIN\user). */
+  windowsUser: string;
   /** PATH handed to the service — non-interactive supervisors don't source .bashrc/.zshrc. */
   pathEnv: string;
 }
@@ -50,20 +56,29 @@ export interface ResolveServicePathsOptions {
   home?: string;
   /** Runner home directory. Defaults to resolveBuilddHome(). */
   builddHome?: string;
+  /** Defaults to process.platform; decides the launcher's file name. */
+  platform?: string;
+  /** Defaults to %USERDOMAIN%\%USERNAME%. */
+  windowsUser?: string;
 }
 
 export function resolveServicePaths(opts: ResolveServicePathsOptions = {}): ServicePaths {
   const home = opts.home ?? homedir();
   const builddHome = opts.builddHome ?? resolveBuilddHome({ home });
   const logsDir = join(builddHome, 'logs');
+  const platform = opts.platform ?? process.platform;
+  const user = process.env.USERNAME ?? '';
+  const domain = process.env.USERDOMAIN;
   return {
     home,
-    builddBin: join(home, '.local', 'bin', 'buildd'),
+    builddBin: join(home, '.local', 'bin', platform === 'win32' ? 'buildd.cmd' : 'buildd'),
     logsDir,
     stdoutLog: join(logsDir, 'stdout.log'),
     stderrLog: join(logsDir, 'stderr.log'),
     label: 'dev.buildd.runner',
     unitName: 'buildd-runner',
+    taskName: 'buildd runner',
+    windowsUser: opts.windowsUser ?? (domain ? `${domain}\\${user}` : user),
     pathEnv: [
       join(home, '.bun', 'bin'),
       join(home, '.local', 'bin'),
@@ -82,6 +97,11 @@ export function launchdPlistPath(paths: ServicePaths): string {
 
 export function systemdUnitPath(paths: ServicePaths): string {
   return join(paths.home, '.config', 'systemd', 'user', `${paths.unitName}.service`);
+}
+
+/** The task XML `buildd service install` registers, kept so a reinstall can read whether it ran with --debug. */
+export function windowsTaskXmlPath(paths: ServicePaths): string {
+  return join(dirname(paths.logsDir), 'service', `${paths.unitName}.xml`);
 }
 
 function escapeXml(value: string): string {
@@ -170,7 +190,80 @@ WantedBy=default.target
 `;
 }
 
+/**
+ * Windows Scheduled Task definition (Task Scheduler schema 1.2). Starts at
+ * this user's logon and runs as them with a limited token, never elevated;
+ * restarts on failure, no 72h execution limit, not stopped on battery.
+ *
+ * Runs `conhost --headless cmd /c` so no console window opens and cmd can
+ * append the launcher's output to the service logs (Task Scheduler has no
+ * stdout redirection of its own). The outer quotes are cmd's: /c strips the
+ * first and last quote of a line that holds more than two.
+ *
+ * Stopping: schtasks /End terminates the process tree outright, so on Windows
+ * the runner gets no SERVICE_STOP_TIMEOUT_S window to pause its agents.
+ */
+export function generateWindowsTaskXml(paths: ServicePaths, opts: ServiceRunOptions = {}): string {
+  const line = `""${paths.builddBin}"${opts.debug ? ' --debug' : ''} >>"${paths.stdoutLog}" 2>>"${paths.stderrLog}""`;
+  const user = escapeXml(paths.windowsUser);
+  return `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>buildd runner (buildd service install)</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>${user}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>${user}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>conhost.exe</Command>
+      <Arguments>--headless cmd.exe /d /c ${escapeXml(line).replace(/"/g, '&quot;')}</Arguments>
+      <WorkingDirectory>${escapeXml(paths.home)}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+`;
+}
+
 export function serviceLogsHint(paths: ServicePaths): string {
+  if (paths.builddBin.endsWith('.cmd')) {
+    return [
+      'Service logs:',
+      `  stdout: ${paths.stdoutLog}`,
+      `  stderr: ${paths.stderrLog}`,
+      '',
+      'Tail live with (PowerShell):',
+      `  Get-Content -Wait -Tail 50 "${paths.stdoutLog}", "${paths.stderrLog}"`,
+    ].join('\n');
+  }
   return [
     'Service logs:',
     `  stdout: ${paths.stdoutLog}`,
@@ -214,8 +307,20 @@ function withWatchHint(message: string, opts: { watchHint?: boolean }): string {
   return opts.watchHint === false ? message : `${message}\n\n${SERVICE_WATCH_HINT}`;
 }
 
-const UNSUPPORTED_PLATFORM_MESSAGE =
-  'buildd service is only supported on macOS and Linux. On Windows, install.ps1 registers a Scheduled Task automatically.';
+const UNSUPPORTED_PLATFORM_MESSAGE = 'buildd service is supported on macOS, Linux and Windows only.';
+
+const SCHTASKS = 'schtasks.exe';
+
+function failure(r: CommandResult): string {
+  return (r.stderr || r.stdout).trim();
+}
+
+/** The task's `Status:` from schtasks /Query, or null when it is not registered. */
+function windowsTaskStatus(paths: ServicePaths, run: CommandRunner): { status: string; detail: string } | null {
+  const q = run(SCHTASKS, ['/Query', '/TN', paths.taskName, '/FO', 'LIST']);
+  if (q.exitCode !== 0) return null;
+  return { status: q.stdout.match(/^Status:\s*(.+?)\s*$/m)?.[1] ?? 'unknown', detail: q.stdout.trim() };
+}
 
 export function installService(
   paths: ServicePaths,
@@ -239,6 +344,27 @@ export function installService(
     return {
       ok: true,
       message: withWatchHint(`Installed launchd service (${plistPath}).\n${serviceLogsHint(paths)}`, opts),
+    };
+  }
+
+  if (platform === 'win32') {
+    const xmlPath = windowsTaskXmlPath(paths);
+    mkdirSync(dirname(xmlPath), { recursive: true });
+    // The declaration says UTF-16, which is what schtasks reads; BOM first.
+    writeFileSync(xmlPath, Buffer.from(`﻿${generateWindowsTaskXml(paths, opts)}`, 'utf16le'));
+    // Re-registering leaves a running instance alone, so end it first or a
+    // reinstall (e.g. to add --debug) keeps the old process.
+    if (windowsTaskStatus(paths, run)?.status === 'Running') run(SCHTASKS, ['/End', '/TN', paths.taskName]);
+    const create = run(SCHTASKS, ['/Create', '/TN', paths.taskName, '/XML', xmlPath, '/F']);
+    if (create.exitCode !== 0) return { ok: false, message: `schtasks /Create failed: ${failure(create)}` };
+    const start = run(SCHTASKS, ['/Run', '/TN', paths.taskName]);
+    if (start.exitCode !== 0) return { ok: false, message: `schtasks /Run failed: ${failure(start)}` };
+    return {
+      ok: true,
+      message: withWatchHint(
+        `Installed Scheduled Task '${paths.taskName}' (starts at logon as ${paths.windowsUser}, restarts on failure).\n${serviceLogsHint(paths)}`,
+        opts,
+      ),
     };
   }
 
@@ -279,9 +405,15 @@ export function installService(
 
 /** Whether the installed service runs with --debug, so a plain reinstall keeps it. False when none is installed. */
 export function installedServiceDebug(paths: ServicePaths, platform: ServicePlatform): boolean {
-  const file = platform === 'darwin' ? launchdPlistPath(paths) : platform === 'linux' ? systemdUnitPath(paths) : null;
+  const file = platform === 'darwin' ? launchdPlistPath(paths)
+    : platform === 'linux' ? systemdUnitPath(paths)
+    : platform === 'win32' ? windowsTaskXmlPath(paths)
+    : null;
   if (!file || !existsSync(file)) return false;
   try {
+    if (platform === 'win32') {
+      return /<Arguments>[^<]*&quot; --debug /.test(readFileSync(file).toString('utf16le'));
+    }
     const text = readFileSync(file, 'utf-8');
     return platform === 'darwin'
       ? text.includes('<string>--debug</string>')
@@ -338,6 +470,18 @@ export function uninstallService(
     return { ok: true, message: `Removed systemd service (${unitPath}).` };
   }
 
+  if (platform === 'win32') {
+    if (!windowsTaskStatus(paths, run)) {
+      rmSync(windowsTaskXmlPath(paths), { force: true });
+      return { ok: true, message: 'No Scheduled Task installed.' };
+    }
+    run(SCHTASKS, ['/End', '/TN', paths.taskName]);
+    const del = run(SCHTASKS, ['/Delete', '/TN', paths.taskName, '/F']);
+    if (del.exitCode !== 0) return { ok: false, message: `schtasks /Delete failed: ${failure(del)}` };
+    rmSync(windowsTaskXmlPath(paths), { force: true });
+    return { ok: true, message: `Removed Scheduled Task '${paths.taskName}'.` };
+  }
+
   return { ok: false, message: UNSUPPORTED_PLATFORM_MESSAGE };
 }
 
@@ -370,6 +514,15 @@ export function serviceStatus(
         ? '\n\nNote: linger is not enabled — the service will stop when you log out. Run `loginctl enable-linger $USER` to keep it running.'
         : '';
     return { ok: result.exitCode === 0, message: `${result.stdout.trim()}${lingerHint}` };
+  }
+
+  if (platform === 'win32') {
+    const task = windowsTaskStatus(paths, run);
+    if (!task) return { ok: false, message: `Not installed (no Scheduled Task '${paths.taskName}'). Run \`buildd service install\`.` };
+    if (task.status !== 'Running') {
+      return { ok: false, message: `Installed but ${task.status}, not running. Run \`buildd service install\` to start it.\n${task.detail}` };
+    }
+    return { ok: true, message: `Running.\n${task.detail}` };
   }
 
   return { ok: false, message: UNSUPPORTED_PLATFORM_MESSAGE };
@@ -407,7 +560,11 @@ async function main(): Promise<void> {
         console.log(serviceLogsHint(paths));
         process.exit(0);
       }
-      const proc = Bun.spawn(['tail', '-f', paths.stdoutLog, paths.stderrLog], { stdio: ['inherit', 'inherit', 'inherit'] });
+      const quote = (p: string) => `'${p.replace(/'/g, "''")}'`;
+      const tail = platform === 'win32'
+        ? ['powershell.exe', '-NoProfile', '-Command', `Get-Content -Wait -Tail 50 ${quote(paths.stdoutLog)}, ${quote(paths.stderrLog)}`]
+        : ['tail', '-f', paths.stdoutLog, paths.stderrLog];
+      const proc = Bun.spawn(tail, { stdio: ['inherit', 'inherit', 'inherit'] });
       process.exit(await proc.exited);
     }
     default: {

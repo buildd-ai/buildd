@@ -47,7 +47,10 @@ afterEach(async () => {
   globalThis.fetch = realFetch;
 });
 
-describe('socket lifecycle', () => {
+// POSIX only: on Windows the broker serves no socket at all (unit/broker.test.ts covers that).
+const posixDescribe = describe.skipIf(process.platform === 'win32');
+
+posixDescribe('socket lifecycle', () => {
   test('start() creates a unix socket at socketPath', async () => {
     broker.start();
     await new Promise((r) => setTimeout(r, 30));
@@ -82,7 +85,7 @@ describe('socket lifecycle', () => {
   });
 });
 
-describe('live unix socket requests', () => {
+posixDescribe('live unix socket requests', () => {
   const SECRET_ID = 'cred-live-test';
   const ACCESS_TOKEN = 'sk-ant-live-at-12345';
   const EXPIRES_AT = '2030-06-01T00:00:00Z';
