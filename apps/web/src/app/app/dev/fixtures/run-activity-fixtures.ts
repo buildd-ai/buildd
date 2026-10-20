@@ -42,7 +42,7 @@ export const RUN_ACTIVITY_SCENARIO_TITLES: Record<RunActivityScenario, string> =
   error: 'Failed run',
   'steering-acks': 'Steering messages: queued, delivered, acknowledged, undelivered',
   'attempts-tie': 'Attempts with equal timestamps',
-  'evidence-states': 'Run evidence, expanded: reported, live, failed, complete',
+  'evidence-states': 'Run evidence: reported, live, failed, complete, closed',
 };
 
 /** Pure: `&scenario=` to the scenarios the page renders. Unknown or absent = all. */
@@ -282,7 +282,7 @@ export function withFlippedStatus(src: typeof attemptTie, flip: { id: string; to
  * reported mobile screenshot, step 4 of 9), a live commit, a failed check and a
  * merged run.
  */
-export const EVIDENCE_STATES: Array<{ key: string; title: string; input: Record<string, unknown> }> = [
+export const EVIDENCE_STATES: Array<{ key: string; title: string; input: Record<string, unknown>; open?: boolean }> = [
   { key: 'reported', title: 'Commit reported, the rest not seen', input: {
     status: 'running', createdAt: iso(42 * MINUTE), startedAt: iso(40 * MINUTE), dirtyWorktree: true,
     milestones: [{ type: 'checkpoint', event: 'first_edit', ts: at(30) }, { type: 'checkpoint', event: 'first_commit', ts: at(10) }],
@@ -291,6 +291,10 @@ export const EVIDENCE_STATES: Array<{ key: string; title: string; input: Record<
     status: 'running', createdAt: iso(42 * MINUTE), startedAt: iso(40 * MINUTE), dirtyWorktree: true, commitCount: 0, lastCommitSha: null, usesReviewer: true,
     milestones: [{ type: 'checkpoint', event: 'first_edit', ts: at(30) }],
   } },
+  { key: 'collapsed', title: 'Commit live, closed', input: {
+    status: 'running', createdAt: iso(42 * MINUTE), startedAt: iso(40 * MINUTE), dirtyWorktree: true, commitCount: 0, lastCommitSha: null, usesReviewer: true,
+    milestones: [{ type: 'checkpoint', event: 'first_edit', ts: at(30) }],
+  }, open: false },
   { key: 'failed', title: 'CI failed', input: {
     status: 'running', createdAt: iso(60 * MINUTE), startedAt: iso(58 * MINUTE), dirtyWorktree: true, commitCount: 2, lastCommitSha: 'abc1234',
     prNumber: 101, prUrl: 'https://example.com/pr/101', prLifecycleStatus: 'ci_failed', usesReviewer: true,
