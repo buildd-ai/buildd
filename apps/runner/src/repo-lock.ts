@@ -15,7 +15,7 @@
  * repo.
  */
 import { existsSync, readFileSync, realpathSync, statSync } from 'fs';
-import { dirname, isAbsolute, join, resolve } from 'path';
+import { basename, dirname, isAbsolute, join, resolve } from 'path';
 
 const tails = new Map<string, Promise<void>>();
 
@@ -43,8 +43,11 @@ export function gitCommonDirKey(repoOrWorktree: string): string {
       const rel = readFileSync(commonFile, 'utf-8').trim();
       return real(isAbsolute(rel) ? rel : resolve(gitDir, rel));
     }
-    // Older layout: <common>/worktrees/<name>.
-    return real(dirname(dirname(gitDir)));
+    // A `--separate-git-dir` main clone: `.git` is a file pointing straight at
+    // the common dir (no `commondir` file), which is also what its worktrees
+    // resolve to. Only a linked worktree's gitdir sits in <common>/worktrees/.
+    if (basename(dirname(gitDir)) === 'worktrees') return real(dirname(dirname(gitDir)));
+    return real(gitDir);
   } catch {
     return real(repoOrWorktree);
   }

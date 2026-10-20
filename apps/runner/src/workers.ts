@@ -1,4 +1,4 @@
-import { canonicalToolName, decideTaskIsolation, isolationRefusalError, reducedIsolationOptedIn, taskCodexSandboxMode, taskIsolationRequirement, type TaskIsolationDecision } from '@buildd/shared';
+import { canonicalToolName, decideTaskIsolation, isolationRefusalError, reducedIsolationOptedIn, taskCodexSandboxMode, taskIsolationRequirement, readTaskIsolationStamp, type TaskIsolationDecision } from '@buildd/shared';
 import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
 import { query, type HookCallback, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
@@ -1007,10 +1007,14 @@ export class WorkerManager {
     }
 
     // Scan environment on startup (sync — runs once, fast enough for init)
+    // The updater's health probe child skips it (updater.ts HEALTH_PROBE_ENV).
+    const healthProbe = process.env.BUILDD_HEALTH_PROBE === '1';
     try {
-      this.environment = scanEnvironment();
-      const mcpCount = this.environment.mcpServers?.length || this.environment.mcp.length;
-      console.log(`Environment scan: ${this.environment.tools.length} tools, ${this.environment.envKeys.length} env keys, ${mcpCount} MCP servers`);
+      if (!healthProbe) {
+        this.environment = scanEnvironment();
+        const mcpCount = this.environment.mcpServers?.length || this.environment.mcp.length;
+        console.log(`Environment scan: ${this.environment.tools.length} tools, ${this.environment.envKeys.length} env keys, ${mcpCount} MCP servers`);
+      }
     } catch (err) {
       console.warn('Environment scan failed:', err);
     }
@@ -1019,7 +1023,7 @@ export class WorkerManager {
     // starts. Without this, the probe runs lazily inside the first task execution
     // and a false-positive (e.g. setuid bwrap passing the probe) can only be
     // detected after the agent loop is already deep in work.
-    isBwrapSupported();
+    if (!healthProbe) isBwrapSupported();
     // Re-scan every 30 minutes
     this.envScanInterval = setInterval(() => {
       try {
@@ -2948,6 +2952,9 @@ export class WorkerManager {
           },
         );
       } finally {
+        // No await between here and `worker.worktreePath = ...` below, so the
+        // ownership check never sees the path unrecorded and unreserved.
+        gitOperations.releaseWorktreeReservation?.(worker.id);
         const n = (setupsInFlight.get(workspacePath) ?? 1) - 1;
         if (n > 0) setupsInFlight.set(workspacePath, n);
         else setupsInFlight.delete(workspacePath);
@@ -3429,7 +3436,7 @@ export class WorkerManager {
       ? closingTurnOutcome
       : isBudgetError ? ('skipped:rate_limit' as const)
       : isSessionBudgetCap ? ('skipped:session_budget_capped' as const)
-      : isSteeringDeliveryCrash || isModelAuthMissing ? ('skipped:infra_failure' as const)
+      : isSteeringDeliveryCrash || isModelAuthMissing || isIsolationRefused ? ('skipped:infra_failure' as const)
       : closingTurnOutcome;
     // A usage/session-limit death leaves the agent's whole session in the
     // worktree, usually uncommitted. Save it before anything can remove the
@@ -4388,9 +4395,14 @@ export class WorkerManager {
       // decided this against the record sent with it; decide again against
       // the record as it is now, so a probe that flipped since (a mid-run
       // bwrap denial on another task) never starts this one with less. A task
-      // with no stamp is held to protected. Refused = the attempt fails with
-      // the cause; it never runs reduced without the operator's opt-in.
+      // with no stamp is held to protected. Refused = nothing runs, and the
+      // attempt is handed back to the queue as infra (isolationRefused), like
+      // a missing model login; it never runs reduced without the opt-in.
       const isolationBackend = isCodexTask ? 'codex' as const : 'claude' as const;
+      // Kept on the worker so a resume, retry or recovery stub (recovery.ts)
+      // carries the same stamp instead of reading as unstamped (protected).
+      const claimStamp = readTaskIsolationStamp(task.context);
+      if (claimStamp) worker.taskIsolation = claimStamp;
       const isolationDecision = this.decideSessionIsolation(task, isolationBackend);
       if (!isolationDecision.ok) {
         throw Object.assign(new Error(isolationRefusalError(isolationDecision)), { isolationRefused: true });
