@@ -8,11 +8,11 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { classifyStaleExit, consumesRetryAttempt, CLAIM_RESPONSE_LOST_ERROR, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
-import { WORKER_STALE_REAP_MS, INTERACTIVE_WORKER_IDLE_TTL_MS, WORKER_LEASE_TTL_MS, RUNNER_STALE_CUTOFF_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, isTerminalTaskStatus, type LoopConfig } from '@buildd/shared';
+import { WORKER_STALE_REAP_MS, INTERACTIVE_WORKER_IDLE_TTL_MS, WORKER_LEASE_TTL_MS, RUNNER_STALE_CUTOFF_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, OPEN_TASK_STATUSES, isTerminalTaskStatus, type LoopConfig } from '@buildd/shared';
 import { interactiveAbandonedScope, runnerWorkerOnly } from '@/lib/interactive-worker-liveness';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { detachInteractiveWorkersOfEndedTasks, releaseConcurrencySeats } from '@/lib/interactive-detach';
-import { withoutForceClaim } from '@/lib/force-claim';
+import { withoutForceClaim, FORCE_CLAIM_CONTEXT_KEY } from '@/lib/force-claim';
 import { requeueBranchContext } from '@/lib/integration-refresh';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
 import { kernelDeliveryById, reapedOwnerAttemptIsCurrent, reapedOwnerAttemptIsCurrentSql } from '@/lib/workflow/authority';
@@ -24,6 +24,7 @@ import { clearWorkerMessages } from '@buildd/core/worker-messages';
 import {
   ANSWER_PATH_REASONS,
   INTERACTIVE_ANSWER_READ_DEADLINE_MS,
+  buildUnansweredRequeuePatch,
   describeAnswerPath,
   type AnswerDeliveryRecord,
 } from '@/lib/answer-resume';
@@ -1309,15 +1310,6 @@ export async function cleanupStuckWaitingInput(
     // worker above. Failing the task or filing a retry would undo the cancel.
     if (isTerminalTaskStatus(originalTask.status)) continue;
 
-    // Build retry description with context about what was asked
-    const waitingFor = worker.waitingFor as Partial<WaitingFor> | null;
-    const optionLabels = waitingForOptionLabels(waitingFor?.options);
-    const waitingContext = waitingFor?.prompt
-      ? `\n\n---\nPrevious attempt stalled waiting for input: "${waitingFor.prompt}"${optionLabels.length ? ` (options: ${optionLabels.join(', ')})` : ''}\nIMPORTANT: Do NOT ask for user input. Make reasonable decisions autonomously and proceed without blocking.`
-      : '\n\n---\nIMPORTANT: Do NOT ask for user input. Make reasonable decisions autonomously and proceed without blocking.';
-
-    const retryDescription = (originalTask.description || '') + waitingContext;
-
     // An attempt of a workflow-kernel delivery is not cloned here: a clone would
     // run without the delivery link (its push would read as foreign) and the
     // ledger row would stay `running`. The kernel hears AttemptEnded(lost) and
@@ -1333,8 +1325,14 @@ export async function cleanupStuckWaitingInput(
     // ends nothing: the new attempt keeps its task.
     if (ownerAttempt && !(await reapedOwnerAttemptIsCurrent(originalTask.id, worker.id))) continue;
 
+    // A question nobody answered requeues the SAME task for a new attempt
+    // (docs/specs/answered-question-resume.md, AC-58): a clone would grow the
+    // mission and leave the original `failed`. Only a plain task that may be
+    // retried (not interactive-without-local, not kernel-linked) is requeued.
+    const requeueSameTask = !superseded && !kernelDeliveryId && fileRetry;
+
     // Fail the original task
-    if (!ownerAttempt) {
+    if (!ownerAttempt && !requeueSameTask) {
       await db
         .update(tasks)
         .set({
@@ -1375,54 +1373,35 @@ export async function cleanupStuckWaitingInput(
       continue;
     }
 
-    // Create retry task with enriched context for branch continuity
-    const existingCtx = (originalTask.context || {}) as Record<string, unknown>;
-    const retryContext = {
-      ...existingCtx,
-      ...requeueBranchContext(existingCtx, worker.branch),
+    // Requeue the same task. The patch is merged into the LIVE context in SQL
+    // (a worker message may have touched it since the read above) and the
+    // guard only moves a task still open, so a cancel or merge in the window wins.
+    const waitingFor = worker.waitingFor as Partial<WaitingFor> | null;
+    const patch = buildUnansweredRequeuePatch({
+      context: originalTask.context,
+      workerId: worker.id,
+      prompt: waitingFor?.prompt,
+      options: waitingForOptionLabels(waitingFor?.options),
+      branchContext: requeueBranchContext(originalTask.context, worker.branch),
       failureContext: worker.error || 'Worker stalled in waiting_input',
-      iteration: ((existingCtx.iteration as number) || 0) + 1,
-    };
-
-    const [retryTask] = await db
-      .insert(tasks)
-      .values({
-        workspaceId: originalTask.workspaceId,
-        title: originalTask.title,
-        description: retryDescription,
-        context: retryContext,
-        priority: originalTask.priority,
-        category: originalTask.category,
-        project: originalTask.project,
-        requiredCapabilities: originalTask.requiredCapabilities,
-        missionId: originalTask.missionId,
-        runnerPreference: originalTask.runnerPreference,
-        mode: originalTask.mode,
-        taskClass: (originalTask.taskClass ?? 'work') as 'work' | 'attempt' | 'bookkeeping',
-        outputRequirement: originalTask.outputRequirement,
-        outputSchema: originalTask.outputSchema,
-        parentTaskId: originalTask.parentTaskId,
-        // A person's cross-workspace grant is part of the work, not the attempt.
-        ...(() => { const delegation = inheritTaskDelegation(originalTask); return delegation ? { delegation } : {}; })(),
-        // Routing survives the retry: without it a visual-auditor audit would
-        // be claimable by any runner and skip its evidence check.
-        roleSlug: originalTask.roleSlug,
-        // A visual-auditor's required routes are re-derived at completion from
-        // its dependsOn (lib/visual-audit-evidence.ts). Its deps are the
-        // mission's builder tasks, already done, so copying them gates nothing
-        // new; dropping them would shrink the audit to "any one route".
-        ...(originalTask.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && Array.isArray(originalTask.dependsOn)
-          ? { dependsOn: originalTask.dependsOn }
-          : {}),
+    });
+    const [requeued] = await db
+      .update(tasks)
+      .set({
+        status: 'pending',
+        claimedBy: null,
+        claimedAt: null,
+        expiresAt: null,
+        context: sql`(COALESCE(${tasks.context}, '{}'::jsonb) - ${FORCE_CLAIM_CONTEXT_KEY}::text) || ${JSON.stringify(patch)}::jsonb` as any,
+        updatedAt: new Date(),
       })
+      .where(and(eq(tasks.id, originalTask.id), inArray(tasks.status, [...OPEN_TASK_STATUSES]), notKernelMergedTaskSql()))
       .returning({ id: tasks.id });
 
-    // A replacement for the stalled attempt, so a requeue in all but row identity.
-    if (retryTask) await wakeTask(retryTask.id, 'task.requeued');
-    retriedTasks++;
-
-    // Resolve dependencies for the failed task
-    await resolveCompletedTask(originalTask.id, originalTask.workspaceId);
+    if (requeued) {
+      await wakeTask(originalTask.id, 'task.requeued');
+      retriedTasks++;
+    }
   }
 
   // Release concurrency seats for OAuth accounts. Group by accountId so each

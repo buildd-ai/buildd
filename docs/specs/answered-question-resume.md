@@ -8,7 +8,7 @@ domain: runners
 surfaces: [apps/web/src/lib/answer-resume.ts, apps/web/src/lib/answer-attempt.ts, apps/web/src/lib/stale-workers.ts, apps/runner/src/prompt-builder.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/lib/await-answer.ts, apps/web/src/app/api/workers/[id]/answer/route.ts, apps/web/src/lib/answer-wait-capability.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.ts, apps/runner/src/recovery.ts, apps/web/src/lib/answer-credential-preflight.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.ts]
 related: [human-in-the-loop-protocol, runner-liveness, codex-backend-spec, credential-refresh-lifecycle]
 keywords: [await_answer, ask_human, waitCommand, wait capability, run_in_background, sessionSeenAt, resume, sessionId, codexThreadId, waiting_input, Continue task, superseded, pendingInstructions, answerDelivery, cold continuation, AskUserQuestion, transcript, new attempt, answeredQuestions, same task, attempt history]
-verified_by: [apps/web/src/lib/answer-resume.test.ts, apps/web/src/lib/answer-attempt.test.ts, apps/web/tests/db/answered-attempt-mission.test.ts, apps/runner/src/prompt-builder.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, apps/web/src/lib/await-answer.test.ts, apps/web/src/app/api/workers/[id]/answer/route.test.ts, apps/web/src/lib/answer-wait-capability.test.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.test.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.test.ts, packages/core/__tests__/mcp-tools-ask-human.test.ts, packages/core/__tests__/mcp-tools-await-answer.test.ts, apps/web/src/lib/answer-credential-preflight.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.test.ts, apps/web/src/lib/local-session.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/runner/__tests__/unit/backends/claude-backend.test.ts, apps/runner/__tests__/unit/backends/codex-resume.test.ts, apps/runner/__tests__/unit/resume-credential-preflight.test.ts]
+verified_by: [apps/web/src/lib/answer-resume.test.ts, apps/web/src/lib/answer-attempt.test.ts, apps/web/tests/db/answered-attempt-mission.test.ts, apps/runner/src/prompt-builder.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, apps/web/src/lib/await-answer.test.ts, apps/web/src/app/api/workers/[id]/answer/route.test.ts, apps/web/src/lib/answer-wait-capability.test.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.test.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.test.ts, packages/core/__tests__/mcp-tools-ask-human.test.ts, packages/core/__tests__/mcp-tools-await-answer.test.ts, apps/web/src/lib/answer-credential-preflight.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/runner/__tests__/unit/unanswered-question-prompt.test.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.test.ts, apps/web/src/lib/local-session.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/runner/__tests__/unit/backends/claude-backend.test.ts, apps/runner/__tests__/unit/backends/codex-resume.test.ts, apps/runner/__tests__/unit/resume-credential-preflight.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -514,8 +514,21 @@ a shell command that does the waiting instead.
 **Invariants**:
 - The waiting_input sweep (`cleanupStuckWaitingInput`) still owns expiry
   (24 h, 4 h in a mission) and still fails the worker (`exitCause:
-  'needs_input'`) and the task.
-- For an interactive worker it files NO retry task, unless the task's mission
+  'needs_input'`).
+- Where the task may be retried, the sweep requeues the SAME task for a new
+  attempt (the shape of `reopenTaskForAnsweredAttempt`: `pending`, unclaimed,
+  woken as `task.requeued`) and never inserts a clone: the mission grows no
+  task, the original is not left `failed`, `resolveCompletedTask` is not run on
+  it, and the description is not rewritten. The "do not ask again" guidance
+  travels as `context.unansweredQuestion` (`{ workerId, prompt, options,
+  expiredAt }`), which the runner's prompt builder renders as an
+  `unanswered-question` section; `iteration` and the branch context are bumped
+  as on every requeue. The write is merged into the live context in SQL and
+  guarded to a task still open and not kernel-merged: a task cancelled or
+  merged in the window stays as it is and nothing is woken.
+- A delivery-owner task is ended through the kernel (`AttemptEnded(lost)`) as
+  before; a kernel-linked non-owner task is failed, with no clone.
+- For an interactive worker the task is NOT requeued, and stays failed, unless the task's mission
   is `executor = 'local'`. A person chose to run that work in their own
   session; a retry on a runner mission is claimable by a background runner,
   which would rebuild the work behind them. A local mission's retry is only
@@ -536,8 +549,18 @@ a shell command that does the waiting instead.
 - AC-40: GIVEN a parked interactive worker WHEN `receive_messages` THEN
   `waitingFor.sessionSeenAt` is stamped and `updated_at` is unchanged.
 - AC-41: GIVEN an interactive worker's question past the sweep's
-  threshold THEN the worker and task fail and no retry task is inserted;
-  on an `executor = 'local'` mission the retry is inserted.
+  threshold THEN the worker and task fail and the task is not requeued;
+  on an `executor = 'local'` mission the same task is requeued (AC-58).
+- AC-58: GIVEN a question nobody answered past the sweep's threshold on a plain
+  task WHEN the sweep runs THEN no task row is inserted, the same task is
+  `pending` and unclaimed with `task.requeued` woken, its title, description,
+  role, dependencies and parent are untouched, and `context.unansweredQuestion`
+  carries the question and options.
+- AC-59: GIVEN that requeue WHEN the task was closed or merged in the window
+  THEN the guarded write moves nothing, nothing is woken and it is not counted.
+- AC-60: GIVEN a task with `context.unansweredQuestion` WHEN the runner builds
+  its prompt THEN an `unanswered-question` section names the question and
+  tells the attempt not to ask for input.
 
 ### An answer the session never reads
 
@@ -1022,11 +1045,11 @@ them.
    are kept, but a new worker row runs in a new worktree: commits the superseded
    attempt never pushed, and its uncommitted changes, stay on that runner's
    disk. Only the resume path keeps them.
-10. **An unanswered question's expiry still clones the task.**
-   `cleanupStuckWaitingInput` fails a question nobody answered and files a
-   retry as a new task row, outside this capability (no answer was given). It
-   is the remaining place a parked task changes identity, and is tracked
-   separately.
+10. **An unanswered-question requeue is not an answer.** The new attempt gets
+   the question and a do-not-ask-again line, not a person's reply; if the work
+   truly cannot proceed without one it will stop and ask again, and the sweep
+   will requeue it again, each time bumping `iteration`. Only `unansweredQuestion`
+   (the latest) is kept, so earlier expiries are visible only as failed workers.
 11. **The superseded attempt holds no terminal record.** As noted under the
    resume path, `superseded` writes no `workerTerminalRecords` row; the new
    attempt's own end is recorded normally.
