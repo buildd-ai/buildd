@@ -118,6 +118,13 @@ export function setBrowserProbeTimeoutForTests(ms: number): void {
   probeTimeoutMs = ms;
 }
 
+let hostPlatform: NodeJS.Platform = process.platform;
+
+/** Test hook: detect as if on `platform` (the suite mocks POSIX discovery). */
+export function setBrowserPlatformForTests(platform: NodeJS.Platform): void {
+  hostPlatform = platform;
+}
+
 /** The most recent detection (startup or re-scan), if any has run. */
 export function getLastBrowserDetection(): BrowserDetection | undefined {
   return lastDetection;
@@ -199,8 +206,17 @@ function findInPlaywrightDirs(dirs: string[]): string[] {
  * Ordered, deduped candidates: Playwright builds first — the pinned version's
  * build before any other, headless shells before full Chromium — then PATH
  * entries deduped by realpath with snap stubs dropped.
+ *
+ * None on Windows: discovery is `which`, `find -perm` and Linux/macOS binary
+ * names, and under cmd.exe `find` is a different program. A Windows runner
+ * does not advertise the browser capability.
  */
-export function collectBrowserCandidates(searched: string[], pin: PlaywrightPin | undefined = getPlaywrightPin()): Candidate[] {
+export function collectBrowserCandidates(
+  searched: string[],
+  pin: PlaywrightPin | undefined = getPlaywrightPin(),
+  platform: NodeJS.Platform = hostPlatform,
+): Candidate[] {
+  if (platform === 'win32') return [];
   const out: Candidate[] = [];
   const seenReal = new Set<string>();
   const add = (c: Candidate) => {

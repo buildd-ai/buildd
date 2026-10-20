@@ -38,6 +38,7 @@ import { existsSync, readFileSync, readdirSync, statSync, unlinkSync } from 'fs'
 // which the callers below already treat as "can't prove it" and catch.
 import * as fs from 'fs';
 import { join } from 'path';
+import { posixShell } from './posix-shell';
 import { findLockfileRule } from '@buildd/core/ecosystem-detect';
 
 const pexec = promisify(exec);
@@ -431,13 +432,16 @@ export interface ExecuteOptions {
 // Async so a slow readiness probe (tsc, lint) never blocks the runner's single
 // event loop while other workers are streaming. `exec` runs the command through
 // a shell (the manifest declares shell strings) and captures both streams.
-const defaultRunCommand: CommandRunner = async (command, opts) => {
+// The manifest's strings are POSIX sh, so the shell is posixShell() (Git for
+// Windows' sh on win32), never exec's default cmd.exe there.
+export const defaultRunCommand: CommandRunner = async (command, opts) => {
   try {
     const { stdout, stderr } = await pexec(command, {
       cwd: opts.cwd,
       timeout: opts.timeoutMs,
       encoding: 'utf-8',
       env: opts.env,
+      shell: posixShell(),
     });
     return { code: 0, stdout: stdout ?? '', stderr: stderr ?? '' };
   } catch (err: any) {

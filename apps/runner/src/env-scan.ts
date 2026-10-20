@@ -8,6 +8,7 @@ import { CAPABILITY_BROWSER, CAPABILITY_MCP_GROUP_TOOLS, CAPABILITY_SANDBOX_MOUN
 export type { McpServerInfo } from './mcp-json';
 import { extractVarReferences, parseMcpJsonContent, type McpServerInfo } from './mcp-json';
 import { resolveClaudeCliVersion } from './sdk-binary-path';
+import { posixShell } from './posix-shell';
 import { selectedBrowserCapability, getBrowserProviderProbe } from './browser-provider';
 import { localCodexAuthPath } from './host-seat';
 import { CLAUDE_INNER_SANDBOX_UNSHARE, probeBwrapNamespacesDetailed } from './isolation-probe';
@@ -107,7 +108,8 @@ export { checkBrowserCapability } from './browser-capability';
 export function probeTool(name: string, cmd?: string): WorkerTool | null {
   try {
     // POSIX `command -v`, not `which`: `which` is absent from minimal images.
-    execSync(`command -v ${cmd || name}`, { timeout: 2000, stdio: 'pipe', shell: '/bin/sh' });
+    // posixShell(): Git for Windows' sh on win32, where cmd.exe has no `command`.
+    execSync(`command -v ${cmd || name}`, { timeout: 2000, stdio: 'pipe', shell: posixShell() });
   } catch {
     return null;
   }
