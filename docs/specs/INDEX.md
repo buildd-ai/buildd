@@ -208,7 +208,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Task and Worker State Machines](./task-state-machine.md) · @max — verified 2026-10-15
   Task and worker transitions MUST preserve output requirements, terminal-state guards and dependency resolution.
 
-## Draft (12)
+## Draft (13)
 
 - [Bug Intake and Quality](./bug-intake-and-quality.md) · @max — verified 2026-10-11
   Every defect report MUST land as one report on one failure incident, every incident above noise MUST have exactly one owner, and every resolved defect MUST trace to the change, release and agent that introduced it.
@@ -234,6 +234,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 - [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-19
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
+- [Workspace Routing and Reach](./workspace-routing-and-reach.md) · @max — verified 2026-10-19
+  Every task MUST be filed into the workspace its subject lives in, with the reason recorded, and MUST reach any other workspace only through a named, person-granted delegation checked before it runs.
 
 ## Superseded (7)
 
