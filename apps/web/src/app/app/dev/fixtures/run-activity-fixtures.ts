@@ -31,6 +31,7 @@ export const RUN_ACTIVITY_SCENARIOS = [
   'error',
   'steering-acks',
   'attempts-tie',
+  'evidence-states',
 ] as const;
 export type RunActivityScenario = (typeof RUN_ACTIVITY_SCENARIOS)[number];
 
@@ -41,6 +42,7 @@ export const RUN_ACTIVITY_SCENARIO_TITLES: Record<RunActivityScenario, string> =
   error: 'Failed run',
   'steering-acks': 'Steering messages: queued, delivered, acknowledged, undelivered',
   'attempts-tie': 'Attempts with equal timestamps',
+  'evidence-states': 'Run evidence, expanded: reported, live, failed, complete',
 };
 
 /** Pure: `&scenario=` to the scenarios the page renders. Unknown or absent = all. */
@@ -271,6 +273,35 @@ export function withFlippedStatus(src: typeof attemptTie, flip: { id: string; to
   const f = (w: AttemptWorker) => (w.id === flip.id ? { ...w, status: flip.to } : w);
   return { own: src.own.map(f), attempts: src.attempts.map(a => ({ workers: a.workers.map(f) })) };
 }
+
+// ── (6) The expanded run evidence list in each kind of evidence ──
+
+/**
+ * `deriveRunEvidence` inputs for the expanded list, one per evidence mix the
+ * markers must tell apart: an agent-reported commit with the rest not seen (the
+ * reported mobile screenshot, step 4 of 9), a live commit, a failed check and a
+ * merged run.
+ */
+export const EVIDENCE_STATES: Array<{ key: string; title: string; input: Record<string, unknown> }> = [
+  { key: 'reported', title: 'Commit reported, the rest not seen', input: {
+    status: 'running', createdAt: iso(42 * MINUTE), startedAt: iso(40 * MINUTE), dirtyWorktree: true,
+    milestones: [{ type: 'checkpoint', event: 'first_edit', ts: at(30) }, { type: 'checkpoint', event: 'first_commit', ts: at(10) }],
+  } },
+  { key: 'live', title: 'Commit live', input: {
+    status: 'running', createdAt: iso(42 * MINUTE), startedAt: iso(40 * MINUTE), dirtyWorktree: true, commitCount: 0, lastCommitSha: null, usesReviewer: true,
+    milestones: [{ type: 'checkpoint', event: 'first_edit', ts: at(30) }],
+  } },
+  { key: 'failed', title: 'CI failed', input: {
+    status: 'running', createdAt: iso(60 * MINUTE), startedAt: iso(58 * MINUTE), dirtyWorktree: true, commitCount: 2, lastCommitSha: 'abc1234',
+    prNumber: 101, prUrl: 'https://example.com/pr/101', prLifecycleStatus: 'ci_failed', usesReviewer: true,
+    milestones: [{ type: 'checkpoint', event: 'first_edit', ts: at(50) }, { type: 'checkpoint', event: 'first_commit', ts: at(20) }, { type: 'checkpoint', event: 'first_push', ts: at(19) }],
+  } },
+  { key: 'complete', title: 'Merged', input: {
+    status: 'completed', createdAt: iso(180 * MINUTE), startedAt: iso(178 * MINUTE), dirtyWorktree: false, commitCount: 3, lastCommitSha: 'def5678',
+    prNumber: 102, prUrl: 'https://example.com/pr/102', prLifecycleStatus: 'merged', mergedAt: iso(60 * MINUTE), reviewState: 'approved', usesReviewer: true,
+    milestones: [{ type: 'checkpoint', event: 'first_edit', ts: at(150) }, { type: 'checkpoint', event: 'first_commit', ts: at(130) }, { type: 'checkpoint', event: 'first_push', ts: at(129) }],
+  } },
+];
 
 /** The fixed "now" every scenario renders against, so ages read the same each load. */
 export const RUN_ACTIVITY_NOW = BASE;

@@ -7,6 +7,7 @@ import { homedir, hostname } from 'os';
 import { writeSecretJsonFile } from './secure-file';
 import { refreshBuilddMcpEntries } from './claude-json-mcp';
 import { runWorkspacesEdit } from './login-workspaces';
+import { openInBrowser } from './open-url';
 
 const CONFIG_DIR = join(homedir(), '.buildd');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
@@ -124,8 +125,7 @@ if (values.workspaces) {
     env: process.env,
     serverFlag: values.server || undefined,
     openUrl: async (url) => {
-      const proc = Bun.spawn(['open', url], { stdio: ['ignore', 'ignore', 'ignore'] });
-      await proc.exited;
+      if (!(await openInBrowser(url))) console.log(`Open this page in your browser: ${url}`);
     },
     log: (line) => console.log(line),
     error: (line) => console.error(line),
@@ -299,8 +299,10 @@ const authUrl = `${serverUrl}/api/auth/cli?${authParams.toString()}`;
 // Open browser
 console.log(`Opening browser to ${serverUrl}...`);
 
-const proc = Bun.spawn(['open', authUrl], { stdio: ['ignore', 'ignore', 'ignore'] });
-await proc.exited;
+if (!(await openInBrowser(authUrl))) {
+  console.log('Could not open a browser. Open this page to sign in:');
+  console.log(`  ${authUrl}`);
+}
 
 console.log('Waiting for authentication...');
 

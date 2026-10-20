@@ -1,7 +1,7 @@
 import type { RoleBundle, RoleConfig, RoleInstructions } from './roles.js';
 import type { PromptCompositionEvent } from './memory-digest-policy.js';
 import type { BashCommandCounts } from './bash-classify.js';
-import type { DerivedFileRule, LoginMode, RunnerFleetIdentity, SkillBundle } from '@buildd/shared';
+import type { DerivedFileRule, LoginMode, RunnerFleetIdentity, SkillBundle, TaskIsolationStamp } from '@buildd/shared';
 
 // Worker status
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
@@ -163,6 +163,12 @@ export interface LocalWorker {
   parentTaskId?: string | null;
   taskMode?: string;  // 'execution' or 'planning'
   taskBackend?: 'claude' | 'codex';  // Which agent backend ran this task
+  /**
+   * The isolation stamp the claim put on the task context (Living Spec
+   * "Runner isolation", R-4), kept so a resume, retry or recovery session is
+   * decided under the same requirement. Unset = none seen = protected.
+   */
+  taskIsolation?: TaskIsolationStamp;
   workspaceId: string;
   workspaceName: string;
   workspaceDataClass: 'standard' | 'sensitive';

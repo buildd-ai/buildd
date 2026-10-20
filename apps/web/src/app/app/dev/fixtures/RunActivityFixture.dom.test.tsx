@@ -186,6 +186,25 @@ describe('evidence rail', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     const listed = [...s.querySelectorAll('[data-testid="run-evidence-list"] li[data-phase]')].map(li => `${li.getAttribute('data-phase')}:${li.getAttribute('data-state')}`);
     expect(listed.length).toBeGreaterThan(0);
-    for (const li of s.querySelectorAll('[data-testid="run-evidence-list"] li')) expect(li.className).toContain('min-h-11');
+    // The rows are not tap targets (the toggle is), so they stay compact: 32px (task d483085c).
+    for (const li of s.querySelectorAll('[data-testid="run-evidence-list"] li')) expect(li.className).toContain('min-h-8');
+  });
+});
+
+// Task d483085c: the expanded list's markers per evidence mix, as the QA plan shoots them.
+describe('evidence states', () => {
+  test('each mix opens with its markers: reported, live, failed, complete', async () => {
+    const s = await mount('evidence-states');
+    const kinds = (key: string) => Object.fromEntries([...s.querySelectorAll(`[data-testid="evidence-state-${key}"] li[data-phase]`)]
+      .map(li => [li.getAttribute('data-phase'), li.querySelector('[data-testid="run-evidence-marker"]')?.getAttribute('data-kind')]));
+    expect(kinds('reported')).toMatchObject({ changed: 'done', committed: 'reported', pushed: 'unknown', merged: 'unknown' });
+    expect(text(s.querySelector('[data-testid="evidence-state-reported"]')!)).toContain('step 4 of 9');
+    expect(kinds('live')).toMatchObject({ committed: 'current', review: 'todo' });
+    expect(kinds('failed')).toMatchObject({ pr_open: 'done', ci: 'failed' });
+    // A merge does not prove the checks ran: CI stays "not seen" unless it was observed.
+    expect(kinds('complete')).toMatchObject({ committed: 'done', pr_open: 'done', ci: 'unknown', review: 'done', merged: 'done' });
+    for (const key of ['reported', 'live', 'failed', 'complete']) {
+      expect(s.querySelectorAll(`[data-testid="evidence-state-${key}"] li[data-phase]`).length).toBe(9);
+    }
   });
 });
