@@ -56,22 +56,26 @@ const markerKind = (p: Phase): MarkerKind =>
 /**
  * One shape per kind, so the list reads without colour: solid (done), framed
  * with an inner fill (reported), haloed (live), crossed (failed, the ⊠ glyph),
- * outline (not yet), dashed (not seen). 12px cells on the 3px cell radius.
+ * outline (not yet), dashed (not seen). Cells on the 3px cell radius.
  */
 const MARKER: Record<MarkerKind, string> = {
   done: 'bg-status-success',
-  reported: 'ring-1 ring-inset ring-status-success',
+  reported: 'bg-card ring-1 ring-inset ring-status-success',
   current: 'bg-status-running ring-[3px] ring-primary-ring animate-status-pulse motion-reduce:animate-none',
-  failed: 'ring-1 ring-inset ring-status-error',
-  todo: 'ring-1 ring-inset ring-[var(--faint)]',
-  unknown: 'border border-dashed border-[var(--faint)]',
+  failed: 'bg-card ring-1 ring-inset ring-status-error',
+  todo: 'bg-card ring-1 ring-inset ring-[var(--faint)]',
+  unknown: 'bg-card border border-dashed border-[var(--faint)]',
 };
 
-function EvidenceMarker({ kind }: { kind: MarkerKind }) {
+/**
+ * Odd sizes in an odd-width column, so every marker and the 1px axis share
+ * one centre on a whole pixel: the current step 15px, every other step 11px.
+ */
+function EvidenceMarker({ kind, head }: { kind: MarkerKind; head: boolean }) {
   return (
     <span aria-hidden="true" data-testid="run-evidence-marker" data-kind={kind}
-      className={`relative z-10 block justify-self-center w-3 h-3 rounded-sm bg-card ${MARKER[kind]}`}>
-      {kind === 'reported' && <span className="absolute inset-[3px] bg-status-success" />}
+      className={`relative z-10 block rounded-sm ${head ? 'w-[15px] h-[15px]' : 'w-[11px] h-[11px]'} ${MARKER[kind]}`}>
+      {kind === 'reported' && <span className={`absolute bg-status-success ${head ? 'inset-1' : 'inset-[3px]'}`} />}
       {kind === 'failed' && (
         <>
           <span className="absolute left-1/2 top-0.5 bottom-0.5 w-px -translate-x-1/2 rotate-45 bg-status-error" />
@@ -83,11 +87,34 @@ function EvidenceMarker({ kind }: { kind: MarkerKind }) {
 }
 
 /**
+ * What the evidence says about the current step, in the words the list
+ * already uses: its state (the catalog's "working" while live, else done or
+ * its sub-state) and where the fact came from.
+ */
+export function headWords(p: Phase): string {
+  const state = p.subState ? p.subState.replaceAll('_', ' ') : p.state === 'current' ? 'working' : p.state;
+  if (p.state === 'current') return state;
+  return `${state} · ${isWeak(p) ? 'reported' : p.source}`;
+}
+
+type Tier = 'history' | 'head' | 'future';
+
+/** Label tone per tier: the head carries the state hue, history is ink, the future is muted. */
+const labelTone = (p: Phase, tier: Tier) =>
+  p.state === 'failed' ? 'text-status-error'
+    : tier === 'head' ? (p.state === 'current' ? 'text-accent-text' : 'text-text-primary')
+    : tier === 'history' && p.state === 'done' ? 'text-text-primary' : 'text-text-muted';
+
+/**
  * Where the run is: the one `Lifecycle` track, then the labelled phase list
  * with times behind a 44px disclosure (closed by default, at every width).
- * The list is a timeline: a 1px connector through one marker per phase.
- * Markers distinguish weaker reports from observed facts; a phase with no
- * evidence says "not seen". Rows are not tap targets, so they stay compact.
+ *
+ * Open, the list reads in three tiers on one 1px axis: compact history, the
+ * current step (the head phase, larger, with what the evidence says about it),
+ * then the steps still to come, muted. Times sit in a fixed left column,
+ * right-aligned in tabular figures, so they line up down the axis. A phase
+ * with no evidence says "not seen"; a reported one says "reported". Rows are
+ * not tap targets, so they stay compact; the toggle is the 44px target.
  */
 export function RunEvidenceRail({ evidence, nowMs, paused = false, defaultOpen = false }: { evidence: NowState['evidence']; nowMs?: number; paused?: boolean; defaultOpen?: boolean }) {
   const phases = evidence.phases.filter(p => p.state !== 'skipped');
@@ -107,24 +134,51 @@ export function RunEvidenceRail({ evidence, nowMs, paused = false, defaultOpen =
           </span>
         }
       >
-        <ol data-testid="run-evidence-list" className="mb-1">
-          {phases.map((p, i) => (
-            <li key={p.key} data-phase={p.key} data-state={p.state} data-source={p.source} aria-label={phaseName(p)}
-              aria-current={p.state === 'current' ? 'step' : undefined}
-              className={`relative grid grid-cols-[16px_minmax(0,1fr)_auto] min-h-8 items-center gap-x-2.5 py-1 font-mono text-meta ${phaseTone(p)}`}>
-              <span aria-hidden="true" data-testid="run-evidence-connector"
-                className={`absolute left-[7.5px] w-px bg-border-strong ${i === 0 ? 'top-1/2' : 'top-0'} ${i === phases.length - 1 ? 'bottom-1/2' : 'bottom-0'}`} />
-              <EvidenceMarker kind={markerKind(p)} />
-              <span className={`truncate ${p.state === 'current' ? 'font-semibold' : ''}`}>
-                {p.label}
-                {p.subState && <span className="font-normal text-text-secondary"> · {p.subState.replaceAll('_', ' ')}</span>}
-                {isWeak(p) && <span className="text-text-muted"> · reported</span>}
-              </span>
-              <span className="tabular-nums text-right text-text-muted" suppressHydrationWarning>
-                {p.at != null && nowMs != null ? `${ageLabel(nowMs - p.at)} ago` : p.state === 'unknown' ? 'not seen' : ''}
-              </span>
-            </li>
-          ))}
+        <ol data-testid="run-evidence-list" className="mt-1 mb-2 font-mono text-meta">
+          {phases.map((p, i) => {
+            const tier: Tier = head && i === head.index ? 'head' : head && i > head.index ? 'future' : 'history';
+            const isHead = tier === 'head';
+            // The axis runs from the first marker's centre to the last one's;
+            // the head's marker sits 8px lower, under its taller first line.
+            const centre = isHead ? 'top-[22px]' : 'top-3.5';
+            const reach = isHead ? 'h-[22px]' : 'h-3.5';
+            const first = i === 0;
+            const last = i === phases.length - 1;
+            const time = p.at != null && nowMs != null ? `${ageLabel(nowMs - p.at)} ago` : '';
+            return (
+              <li key={p.key} data-phase={p.key} data-state={p.state} data-source={p.source} data-tier={tier} aria-label={phaseName(p)}
+                aria-current={p.state === 'current' ? 'step' : undefined}
+                className={`grid grid-cols-[56px_15px_minmax(0,1fr)] gap-x-3 ${isHead ? 'items-start' : 'h-7 items-center'}`}>
+                <span data-testid="run-evidence-time" suppressHydrationWarning
+                  className={`text-right tabular-nums whitespace-nowrap text-text-muted ${isHead ? 'mt-2 h-7 leading-7' : ''}`}>
+                  {time}
+                </span>
+                <span className="relative self-stretch flex justify-center">
+                  {!(first && last) && (
+                    <span aria-hidden="true" data-testid="run-evidence-axis"
+                      className={`absolute left-[7px] w-px bg-border-strong ${first ? `${centre} bottom-0` : last ? `top-0 ${reach}` : 'top-0 bottom-0'}`} />
+                  )}
+                  <span className={`flex items-center ${isHead ? 'mt-2 h-7' : ''}`}>
+                    <EvidenceMarker kind={markerKind(p)} head={isHead} />
+                  </span>
+                </span>
+                {isHead ? (
+                  <span data-testid="run-evidence-current" className="min-w-0 py-2">
+                    <span className={`block h-7 leading-7 truncate text-title font-semibold ${labelTone(p, tier)}`}>{p.label}</span>
+                    <span data-testid="run-evidence-current-words" className="block truncate text-text-secondary">{headWords(p)}</span>
+                  </span>
+                ) : (
+                  <span className={`truncate ${labelTone(p, tier)}`}>
+                    {p.label}
+                    {p.subState && <span className="text-text-secondary"> · {p.subState.replaceAll('_', ' ')}</span>}
+                    {p.state === 'failed' && !p.subState && <span className="text-text-secondary"> · failed</span>}
+                    {isWeak(p) && <span className="text-text-muted"> · reported</span>}
+                    {p.state === 'unknown' && <span className="text-text-muted"> · not seen</span>}
+                  </span>
+                )}
+              </li>
+            );
+          })}
         </ol>
       </Disclosure>
     </div>
@@ -163,13 +217,12 @@ export default function NowStrip({ now, nowMs }: { now: NowState; nowMs: number 
   return (
     <section
       data-testid="worker-now-strip"
-      className="relative bg-card border-2 border-border-strong shadow-[var(--card-shadow)] pl-5 pr-4 py-4 md:pl-8 md:pr-6 md:py-5"
+      className="card px-4 py-4 md:px-6 md:py-5"
     >
-      <span aria-hidden="true" className="absolute left-0 top-0 bottom-0 w-[6px] bg-accent" />
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1" data-testid="worker-current-action">
           <div className="flex items-center gap-2 font-mono text-chip font-semibold text-accent-text">
-            <span className="w-[9px] h-[9px] bg-accent animate-status-pulse" aria-hidden="true" />
+            <span className="w-[9px] h-[9px] rounded-sm bg-accent animate-status-pulse motion-reduce:animate-none" aria-hidden="true" />
             Now
             {now.updatedTs != null && (
               <span className="font-normal text-text-muted" suppressHydrationWarning>
@@ -195,7 +248,7 @@ export default function NowStrip({ now, nowMs }: { now: NowState; nowMs: number 
 /** Waiting-state stand-in for the Now strip: where the agent paused, dimmed. */
 export function PausedBar({ evidence, elapsed, turns, tokens, nowMs }: { evidence?: NowState['evidence']; elapsed: string | null; turns: number; tokens: string | null; nowMs?: number }) {
   return (
-    <div data-testid="worker-paused-bar" className="border-2 border-border-default bg-surface-2 px-4 py-3 md:px-6 md:py-4">
+    <div data-testid="worker-paused-bar" className="card px-4 py-3 md:px-6 md:py-4">
       <div className="flex flex-wrap md:flex-nowrap items-center gap-x-4 gap-y-3">
         <span className="font-mono text-chip text-text-muted whitespace-nowrap">
           Paused
