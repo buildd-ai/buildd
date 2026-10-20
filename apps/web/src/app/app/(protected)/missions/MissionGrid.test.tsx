@@ -84,14 +84,17 @@ describe('MissionGrid portfolio', () => {
     expect(history).not.toContain('Workspace settings split into tabs');
   });
 
-  it('groups open missions into Needs you / In motion / Waiting, each with its ordering named', () => {
+  it('groups open missions into Needs you / In progress / Not started, ordering applied but never printed', () => {
     const sec = (k: string) => html.match(new RegExp(`<section[^>]*data-section="${k}"[\\s\\S]*?</section>`))![0];
     expect(sec('needs')).toContain('Waiting on you');
-    expect(sec('needs')).toContain('oldest first');
-    expect(sec('motion')).toContain('In motion');
-    expect(sec('motion')).toContain('slipping first');
-    expect(sec('waiting')).toContain('Waiting');
-    expect(sec('waiting')).toContain('next to start first');
+    expect(sec('motion')).toContain('In progress');
+    expect(sec('waiting')).toContain('Not started');
+    for (const k of ['needs', 'motion', 'waiting']) {
+      for (const phrase of ['oldest first', 'slipping first', 'next to start first']) expect(sec(k)).not.toContain(phrase);
+    }
+    expect(html).not.toContain('mission-section-order');
+    // The row's next line is the sentence itself: no redundant "Next" prefix.
+    expect(html).not.toMatch(/>Next<\/span> /);
     const ids = (k: string) => [...sec(k).matchAll(/data-mission-id="(m\d+)"/g)].map(m => m[1]);
     expect(ids('needs')).toEqual(['m03']); // not landed
     expect(ids('motion')).toContain('m01');
@@ -194,7 +197,8 @@ describe('MissionGrid portfolio', () => {
     const r = rowHtml('m01');
     expect(r).toContain('2 of 3 merged');
     expect(r).not.toContain('2 of 3 landed');
-    expect(r).toContain('Next');
+    expect(r).toContain('opens a PR');
+    expect(r).not.toMatch(/>Next<\/span>/);
     expect(r).toContain('role="img"'); // TaskStrip size sm
   });
 
@@ -232,7 +236,7 @@ describe('MissionGrid portfolio', () => {
     const filters = html.match(/<div[^>]*data-testid="portfolio-filters"[\s\S]*?<\/div>/)![0];
     expect(filters).toContain('data-testid="segmented"');
     expect(filters).toContain('role="radiogroup"');
-    for (const label of ['All', 'Waiting on you', 'In motion', 'Waiting', 'Done']) expect(filters).toContain(label);
+    for (const label of ['All', 'Waiting on you', 'In progress', 'Not started', 'Done']) expect(filters).toContain(label);
     expect(filters).not.toContain('Executing');
   });
 

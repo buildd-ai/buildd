@@ -35,7 +35,7 @@ describe('mission sections', () => {
       row('none', [asking('t')], { lastAdvancedAt: null }),
     ]);
     expect(s[0].rows.map(r => r.delivery.id)).toEqual(['old', 'new', 'none']);
-    expect(s[0].order).toBe('oldest first');
+    expect(s[0]).not.toHaveProperty('order');
   });
 
   const abandoned = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed', abandonedAt: '2026-10-01T00:00:00Z' }] });
@@ -82,7 +82,7 @@ describe('mission sections', () => {
       row('fix', [ciFailed('t')], { lastAdvancedAt: 8000 }),
     ]);
     expect(s[0].rows.map(r => r.delivery.id)).toEqual(['fix', 'quiet', 'fresh']);
-    expect(s[0].order).toBe('slipping first');
+    expect(s[0].label).toBe('In progress');
   });
 
   it('Waiting runs next to start first: queued, not planned, held', () => {
@@ -92,7 +92,7 @@ describe('mission sections', () => {
       row('queued', [task('t')]),
     ]);
     expect(s[0].rows.map(r => r.delivery.id)).toEqual(['queued', 'plan', 'held']);
-    expect(s[0].order).toBe('next to start first');
+    expect(s[0].label).toBe('Not started');
     expect(sectionOf(s[0].rows[0])).toBe('waiting');
   });
 
