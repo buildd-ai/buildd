@@ -193,13 +193,12 @@ class CredentialBroker {
    * is needed because the socket itself IS the trust boundary.
    */
   private startLocalServer(): void {
-    // Windows has no file mode to give the socket, and an AF_UNIX socket's ACL
-    // did not gate connect when tried (owner-only, deny-write and an empty DACL
-    // all still let a fresh client in), so there is no boundary to bind behind.
-    // The runner is the endpoint's only client and already falls back to the
-    // inline token, so on Windows the endpoint is simply not served.
+    // Windows has no file mode to give the socket: owner-only there means an
+    // owner-only ACL on the socket file. This endpoint's only client is the runner itself, which already falls
+    // back to the inline token, and the lease path is being removed, so on
+    // Windows it is simply not served rather than given its own ACL handling.
     if (this.platform === 'win32') {
-      console.log('[broker] local token server not started: Windows has no owner-only unix socket; workers use the inline token');
+      console.log('[broker] local token server not started on Windows; workers use the inline token');
       return;
     }
     // Remove a stale socket left by a previous crash before binding.
