@@ -45,6 +45,7 @@ import { canCompleteMission } from '@/lib/mission-completion';
 import { evaluateMissionGate } from '@/lib/mission-dependency';
 import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-prepass';
 import { evaluateMissionWorkState } from '@/lib/mission-pr';
+import { presentMissionState } from '@/lib/mission-state-presentation';
 import { deriveMissionStateView, type MissionStateInput, type MissionStateView } from '@/lib/mission-state-view';
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
 import { getDeliveryViewsForTasks, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
@@ -764,6 +765,7 @@ function answerFrom(
     state: view.kind,
     displayState: view.displayState,
     chip: view.chip,
+    presentation: presentMissionState(view),
     waitingOn: view.waitingOn,
     outstanding: view.outstanding,
     situation: view.situation,
