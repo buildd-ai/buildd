@@ -42,6 +42,7 @@ import { checkSingleInstance, createSocketWatchdog, decideStart, enqueueEvent, p
 import { openMissionIds, readTaskListWithStages } from './mission-stages';
 import { rateLimitedRetryAfterSec } from './read-backoff';
 import { consumeRestartMarker, shouldAutoOpenBrowser, writeRestartMarker } from './browser-open';
+import { openInBrowser } from './open-url';
 import { claimEntryWords } from './claim-words';
 
 const PORT = parseInt(process.env.PORT || '8766');
@@ -3247,13 +3248,13 @@ function markBrowserOpened() {
 
       if (shouldOpen && shouldOpenBrowser()) {
         console.log('Opening browser...');
-        Bun.spawn(['open', localUrl]);
+        void openInBrowser(localUrl);
         markBrowserOpened();
       }
       console.log(`Preference saved. Change anytime in ${CONFIG_FILE}`);
     }
   } else if (savedConfig.openBrowser && shouldOpenBrowser()) {
-    Bun.spawn(['open', localUrl]);
+    void openInBrowser(localUrl);
     markBrowserOpened();
   }
 })();
