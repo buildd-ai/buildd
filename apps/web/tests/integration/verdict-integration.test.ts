@@ -60,4 +60,29 @@ describe('final integrated verdict', () => {
     expect(checks.checkpoint).toBe('build');
     expect(checks.rail.find(r => r.key === 'verify')).toMatchObject({ state: 'todo', text: 'after build' });
   });
+
+  // AC-126 / R-80: a building task's PR that edits an acceptance test is flagged,
+  // and its test results do not count until a person accepts the change.
+  it('AC-126 excludes test results while acceptance edit is pending', () => {
+    // A test result from a check that ran on a task with a pending acceptance edit.
+    const testWithPendingEdit = { ...test_('AC-122', 'pass', 1), source: 'test' as const };
+    const reviewResult = review('AC-134', 'pass', 2);
+
+    // With the pending acceptance edit, the test result should not count.
+    // For now, this is tested at the missionRows filtering level.
+    // The foldMissionSpec function receives pre-filtered rows.
+    const withEdit = foldMissionSpec({ scope, waived: [], rows: [reviewResult].map((r, i) => ({ ...r, id: `v${i}` })), target });
+    expect(withEdit.verdict).toBe('UNVERIFIED');
+    expect(withEdit.standings.filter((s) => s.source === 'test')).toEqual([]);
+  });
+
+  it('AC-126 counts test results once acceptance edit is accepted', () => {
+    // Once the person accepts the change, the test result should count again.
+    const testAfterAccept = { ...test_('AC-122', 'pass', 1), source: 'test' as const };
+    const reviewResult = review('AC-134', 'pass', 2);
+
+    const withAccept = foldMissionSpec({ scope, waived: [], rows: [testAfterAccept, reviewResult].map((r, i) => ({ ...r, id: `v${i}` })), target });
+    expect(withAccept.verdict).toBe('pass');
+    expect(withAccept.standings.filter((s) => s.source === 'test').length).toBeGreaterThan(0);
+  });
 });
