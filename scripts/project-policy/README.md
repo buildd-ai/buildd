@@ -216,3 +216,20 @@ Architectural references inspected: [Chock](https://github.com/open-coder-ai/cho
 (policy entry-point coverage), [Abide](https://github.com/coldteadotai/abide)
 (semantic edit feedback), [Reflex](https://github.com/ursuciprian/reflex)
 (rules first, model fallback/escalation). None is installed as a dependency.
+
+The local label experiment compares the previous multi-pattern wording with
+`edit / leave` and `edit / leave / need_context`, using either one question or
+three narrow questions. Binary `leave` includes insufficient evidence; it is not
+a quality certification. The fresh validation examples are agent-provisional,
+not human gold. Prompts and cases are frozen before live calls.
+
+```sh
+bun scripts/project-policy/run-label-experiment.ts --team=<team-id> --workspace=<workspace-id> --order=shuffle-17 --output=<absolute-local-report.json>
+```
+
+Repeat with `--order=reverse` to check order sensitivity. Batch selection compares
+Jev with `deepseek/deepseek-v4.1-flash` through the existing typed chat adapter.
+Pools contain 16 strings to respect that adapter's option limit. DeepSeek only
+selects candidates; Jev checks them. An unavailable route is reported without
+provider fallback. Reports retain actual receipts, selection recall and final
+findings separately. This runner does not change production defaults.

@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
-import { choice, defineDecision, canonicalJson, JEV_MODEL, redactSecrets, type DecideParams, type DecisionReceipt, type DecisionQuestions } from '../../packages/ai-kit/src/decide';
+import { choice, defineDecision, canonicalJson, JEV_MODEL, redactSecrets, type DecideParams, type DecisionReceipt, type DecisionQuestions, type DecisionEndpoint } from '../../packages/ai-kit/src/decide';
 import { buildSemanticState } from './semantic';
 import type { CopyRole } from './pipeline';
 import type { StaticCopyContext } from './static-context';
 import prompts from './pattern-prompts.json';
 import tuned from './pattern-prompts-v2.json';
 import eligibility from './pattern-eligibility.json';
+import clear from './label-prompts.json';
 
 export interface ExperimentRow {
   id: string; text: string; role: CopyRole; purpose: string; staticContext?: StaticCopyContext;
@@ -36,11 +37,12 @@ export function patternPrompts(version: number) {
   } };
 }
 
-export function createPatternExperiment(apiKey?: string | null, fetcher?: Fetcher, maxCalls = 400, config = patternPrompts(1)) {
+export function createPatternExperiment(apiKey?: string | null, fetcher?: Fetcher, maxCalls = 400, config = patternPrompts(1),
+  routeConfig: { model: string; endpoint?: DecisionEndpoint; timeoutMs?: number } = { model: JEV_MODEL }) {
   if (!Number.isInteger(maxCalls) || maxCalls < 0 || maxCalls > 400) throw new Error('Experiment budget must be between 0 and 400.');
   let reserved = 0;
   const calls: { id: string; promptFingerprint: string; inputFingerprint: string; ok: boolean; model: string;
-    latencyMs: number; attempts: number; costUsd: number | null; receipt: DecisionReceipt | null }[] = [];
+    latencyMs: number; attempts: number; costUsd: number | null; receipt: DecisionReceipt | null; errorKind?: string }[] = [];
   const safe = (row: ExperimentRow) => {
     if (!row || typeof row.text !== 'string' || typeof row.purpose !== 'string' || !['action', 'description', 'heading', 'status', 'diagnostic'].includes(row.role)) return false;
     const c = row.staticContext;
@@ -58,15 +60,16 @@ export function createPatternExperiment(apiKey?: string | null, fetcher?: Fetche
     const selector = (config.eligibility as Partial<Record<Pattern, { roles: string[]; purposeContains: string[] }>>)[pattern];
     return !selector || selector.roles.includes(row.role) || selector.purposeContains.some(part => row.purpose.includes(part));
   };
-  async function execute<const Q extends DecisionQuestions>(kind: string, questions: Q, state: unknown) {
-    const definition = defineDecision({ id: `buildd.copy_experiment.${kind}`, promptVersion: `patterns-${config.version}`,
-      model: JEV_MODEL, mode: 'shadow', questions });
+  async function execute<const Q extends DecisionQuestions>(kind: string, questions: Q, state: unknown, promptVersion = `patterns-${config.version}`) {
+    const definition = defineDecision({ id: `buildd.copy_experiment.${kind}`, promptVersion,
+      model: routeConfig.model, ...(routeConfig.endpoint ? { endpoint: routeConfig.endpoint } : {}), mode: 'shadow', questions });
     if (!apiKey || reserved >= maxCalls) return null;
     reserved++;
-    const run = await definition.run({ apiKey, state: state as Record<string, unknown>, ...(fetcher ? { fetch: fetcher } : {}), timeoutMs: 5000, maxAttempts: 2 });
+    const run = await definition.run({ apiKey, state: state as Record<string, unknown>, ...(fetcher ? { fetch: fetcher } : {}), timeoutMs: routeConfig.timeoutMs ?? 5000, maxAttempts: 2 });
     calls.push({ id: definition.id, promptFingerprint: definition.fingerprint, inputFingerprint: hash(state), ok: run.result.ok,
       model: run.result.ok ? run.result.model : definition.model, latencyMs: run.result.latencyMs, attempts: run.result.attempts,
-      costUsd: run.result.ok ? run.result.usage.costUsd : null, receipt: run.receipt });
+      costUsd: run.result.ok ? run.result.usage.costUsd : null, receipt: run.receipt,
+      ...(!run.result.ok ? { errorKind: run.result.error.kind } : {}) });
     return run.result.ok ? run.result.answers : null;
   }
   async function ask<const L extends string>(kind: string, instructions: string, criteria: Record<L, string>, state: unknown) {
@@ -87,6 +90,17 @@ export function createPatternExperiment(apiKey?: string | null, fetcher?: Fetche
   };
   return {
     calls, route, targeted,
+    async clearLabels(row: ExperimentRow, mode: 'single' | 'multi', count: 2 | 3) {
+      if (!safe(row)) return { id: row.id, verdict: 'uncertain', votes: null };
+      const criteria: Record<string, string> = count === 2 ? { edit: clear.edit, leave: clear.binaryLeave }
+        : { edit: clear.edit, leave: clear.leave, need_context: clear.need_context };
+      const questions = mode === 'single' ? { value: choice(clear.single, criteria) }
+        : Object.fromEntries(Object.entries(clear.patterns).filter(([pattern]) => applicable(pattern as Pattern, row))
+          .map(([pattern, question]) => [pattern, choice(question, criteria)]));
+      const votes = await execute(`clear_${mode}_${count}`, questions, rowState(row), `clear-labels-${clear.version}`);
+      return { id: row.id, verdict: !votes ? 'uncertain' : Object.values(votes).some(v => v.choice === 'edit') ? 'revise'
+        : Object.values(votes).some(v => v.choice === 'need_context') ? 'uncertain' : 'keep', votes };
+    },
     async allPatterns(row: ExperimentRow) {
       if (!safe(row)) return { id: row.id, verdict: 'uncertain', votes: null };
       const questions = Object.fromEntries(Object.entries(config.patterns).filter(([pattern]) => applicable(pattern as Pattern, row))
@@ -98,6 +112,7 @@ export function createPatternExperiment(apiKey?: string | null, fetcher?: Fetche
     async routed(row: ExperimentRow) { const selected = await route(row); return { ...await targeted(row, selected.pattern), routeConfidence: selected.confidence }; },
     async shortlist(rows: ExperimentRow[], limit: number) {
       if (rows.length > 32 || !Number.isInteger(limit) || limit < 0 || limit > rows.length) throw new Error('Use batches <=32 and a bounded shortlist.');
+      if (routeConfig.endpoint?.kind === 'chat' && rows.length > 19) throw new Error('Chat adapter supports at most19 rows plus none.');
       const remaining = rows.filter(safe);
       const selected: ExperimentRow[] = [];
       while (remaining.length && selected.length < limit) {
@@ -113,7 +128,10 @@ export function createPatternExperiment(apiKey?: string | null, fetcher?: Fetche
       return selected;
     },
     summary() {
+      const latencies = calls.map(c => c.latencyMs).sort((a, b) => a - b);
       return { requests: calls.length, attempts: calls.reduce((sum, c) => sum + c.attempts, 0), failures: calls.filter(c => !c.ok).length,
+        latencyP50Ms: latencies.length ? latencies[Math.ceil(latencies.length * 0.5) - 1] : null,
+        latencyP95Ms: latencies.length ? latencies[Math.ceil(latencies.length * 0.95) - 1] : null,
         latencyTotalMs: calls.reduce((sum, c) => sum + c.latencyMs, 0),
         costUsd: calls.every(c => c.costUsd !== null) ? calls.reduce((sum, c) => sum + c.costUsd!, 0) : null };
     },

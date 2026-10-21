@@ -84,3 +84,29 @@ it('checks all applicable patterns in one request without a routing skip', async
   expect((await engine.allPatterns(row)).verdict).toBe('revise');
   expect(calls).toBe(1);
 });
+
+it('compares two versus three clear labels with the same narrow questions', async () => {
+  for (const count of [2, 3] as const) {
+    const engine = createPatternExperiment('test-key', async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      const answers = Object.fromEntries(Object.entries(body.questions).map(([key, q]) => {
+        const labels = Object.keys((q as { criteria: object }).criteria);
+        expect(labels.sort()).toEqual(count === 2 ? ['edit', 'leave'] : ['edit', 'leave', 'need_context']);
+        return [key, { type: 'choice', choice: 'leave', probabilities: Object.fromEntries(labels.map(l => [l, l === 'leave' ? 1 : 0])), confidence: 1 }];
+      }));
+      return new Response(JSON.stringify({ answers, usage: { cost: 0.000001 } }), { status: 200 });
+    }, 400, patternPrompts(3));
+    expect((await engine.clearLabels(row, 'multi', count)).verdict).toBe('keep');
+  }
+});
+
+it('routes batch selection through the existing chat adapter for the explicit DeepSeek model', async () => {
+  const engine = createPatternExperiment('test-key', async (url, init) => {
+    expect(String(url)).toBe('https://openrouter.ai/api/v1/chat/completions');
+    expect(JSON.parse(String(init?.body)).model).toBe('deepseek/deepseek-v4.1-flash');
+    return new Response(JSON.stringify({ model: 'deepseek/deepseek-v4.1-flash', choices: [{ message: { content: 'C' },
+      logprobs: { content: [{ token: 'C', logprob: 0, top_logprobs: [{ token: 'C', logprob: 0 }] }] } }], usage: { cost: 0.00001 } }), { status: 200 });
+  }, 400, patternPrompts(3), { model: 'deepseek/deepseek-v4.1-flash', endpoint: { kind: 'chat', baseURL: 'https://openrouter.ai/api/v1', provider: 'openrouter' } });
+  expect((await engine.shortlist([row, { ...row, id: 'row-2' }], 1)).map(r => r.id)).toEqual(['row-2']);
+  expect(engine.calls[0].receipt?.endpoint).toBe('chat');
+});
