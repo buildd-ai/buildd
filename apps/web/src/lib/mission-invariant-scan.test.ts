@@ -127,6 +127,8 @@ mock.module('@/lib/workspace-installation', () => ({
 }));
 const mockGithubApi = mock(async (_id: number, _path: string) => ({ ok: true }));
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
+// The kernel read model (its own tests); here no open PR is person-gated.
+mock.module('@/lib/workflow/delivery-view', () => ({ escalatedDeliveryPrs: async () => new Map() }));
 
 const {
   checkRemoteRef,

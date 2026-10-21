@@ -13,6 +13,7 @@ import type {
   AttemptOutcome,
   AttemptStatus,
   ApprovalBasis,
+  CloseActor,
   CloseCause,
   CompositionAttestation,
   PolicyEvidence,
@@ -552,7 +553,7 @@ export type Command =
       retryAt?: string;
     })
   | (Base & { type: 'PrMerged'; live: LivePr })
-  | (Base & { type: 'PrClosedUnmerged'; live: LivePr; closeCause: CloseCause })
+  | (Base & { type: 'PrClosedUnmerged'; live: LivePr; closeCause: CloseCause; closedBy?: CloseActor | null })
   | (Base & { type: 'PrReopened'; live: LivePr })
   | (Base & {
       /**
