@@ -341,19 +341,13 @@ mock.module('@/lib/base-refresh', () => ({
 }));
 // The runner's recorded resume cause for the worker opening the PR.
 const mockResolveSupersessionCause = mock(async (_workerId: any) => 'unknown' as string);
+// A foreign close records the supersession on the owning worker (lib/pr-supersession.ts has its own tests).
+const mockRecordPrSupersession = mock(async (_p: any): Promise<any> => ({ ok: true }));
 mock.module('@/lib/retry-pr-supersession', () => ({
   collectRetryLineage: async (taskId: string) => [taskId],
   closeAncestorRetryPrs: mockCloseAncestorRetryPrs,
   resolveSupersessionCause: mockResolveSupersessionCause,
-}));
-
-// A foreign close records the supersession on the owning worker (lib/pr-supersession.ts has its own tests).
-const mockRecordPrSupersession = mock(async (_p: any): Promise<any> => ({ ok: true }));
-mock.module('@/lib/pr-supersession', () => ({
-  recordPrSupersession: mockRecordPrSupersession,
-  recordPrAbandonment: async () => ({ ok: true }),
-  dismissSupersessionSuggestion: async () => ({ ok: true }),
-  supersessionRepoScope: async () => new Set<string>(),
+  recordForeignCloseSupersession: (p: any) => mockRecordPrSupersession(p),
 }));
 
 import { POST, PATCH, PUT, GET } from './route';

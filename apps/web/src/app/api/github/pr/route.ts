@@ -74,7 +74,7 @@ import { pickReviewerRole } from '@/lib/pr-review-status';
 // One resolver for "which worker owns PR #N", shared with the `explain` MCP read.
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
-import { closeAncestorRetryPrs, collectRetryLineage, resolveSupersessionCause, type SupersededPr } from '@/lib/retry-pr-supersession';
+import { closeAncestorRetryPrs, collectRetryLineage, recordForeignCloseSupersession, resolveSupersessionCause, type SupersededPr } from '@/lib/retry-pr-supersession';
 import { ATTEMPT_FOOTER_PATTERN, checkFreshRetryPr, freshRetryPrRefusal, retryAttemptFooter } from '@/lib/retry-fresh-pr-gate';
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
@@ -1495,8 +1495,7 @@ async function recordForeignClose(p: {
   }
   if (!owner) return { reason, supersedingPrNumber, commented, supersession: { recorded: false, error: `no worker records PR #${prNumber}`, hint: retry } };
   try {
-    const { recordPrSupersession } = await import('@/lib/pr-supersession');
-    const result = await recordPrSupersession({
+    const result = await recordForeignCloseSupersession({
       workerId: owner.id,
       supersedingPrNumber,
       reason,

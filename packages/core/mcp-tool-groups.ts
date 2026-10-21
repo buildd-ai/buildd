@@ -725,8 +725,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'update_pr', 'get_pr_review', 'request_pr_review', 'approve_pr_override'] }]),
     param('releaseId', str, [{ text: 'Release UUID', actions: ['get_release'] }]),
     param('headSha', str, [{ text: 'The head you decided on', actions: ['approve_pr_override'] }]),
-    param('reason', str, [{ text: 'Why (recorded)', actions: ['approve_pr_override', 'close_pr'] }]),
-    param('supersedingPrNumber', num, [{ text: 'Merged PR carrying the work (closing another task\'s PR)', actions: ['close_pr'] }]),
+    param('reason', str, [{ text: 'Why (recorded)', actions: ['approve_pr_override'] }]),
   ],
   artifacts: [
     param('artifactId', str, [{ text: 'Artifact UUID', actions: ['get_artifact', 'update_artifact', 'link_artifact', 'list_artifact_links'] }]),
