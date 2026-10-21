@@ -111,6 +111,28 @@ does not return billed cost through the current adapter, so cost remains null.
 
 ## Limits and smallest next slices
 
+### Prompt routing and shortlist experiment
+
+`run-pattern-experiment.ts` compares the broad WWVD decision with per-string
+pattern routing and batch candidate selection followed by targeted review.
+`pattern-prompts.json` versions the router, candidate picker and narrow questions.
+The separate 32-case corpus has provisional agent-reviewed labels; validation
+examples are withheld from prompt construction for the run, but some adapt earlier
+controls. It is not human gold or independent production calibration.
+
+```powershell
+bun scripts/project-policy/run-pattern-experiment.ts --team=<team-id> --workspace=<workspace-id> --output=<absolute-report.json> --surface=<absolute-surface-final.json>
+```
+
+The optional surface pass lets the model inspect all eligible strings in bounded
+batches of32, selecting at most one per batch, then choosing a pattern and checking
+the selected string. This is batch-local prioritization, not a single global rank.
+Only bounded text/role/purpose/static context is sent; labels, rationale, source
+paths and previous model verdicts are withheld. All calls use the existing typed
+shadow adapter, current scoped credentials and local receipts. Nothing is enforced,
+learned automatically or written to production. Each experiment engine caps requests
+at400 with the existing timeout/retry handling; bulk work uses four workers.
+
 ### Cached surface scans and changed context
 
 ```powershell

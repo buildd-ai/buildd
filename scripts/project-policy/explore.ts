@@ -37,23 +37,26 @@ async function resolveLocalCredential(scope: LocalScope) {
 }
 
 /** Local opt-in only. Explicit scope wins; no fallback to an unrelated env credential. */
-export async function localJevEvaluator(teamId?: string, workspaceId?: string,
-  resolve: (scope: LocalScope) => Promise<{ key: string; scope: InferenceKeyScope } | null> = resolveLocalCredential,
-  cacheDirectory?: string, maxNewDecisions = 20) {
-  const evaluator = (key?: string | null) => {
-    const live = createJevEvaluator(key, undefined, maxNewDecisions);
-    return key && cacheDirectory ? cachedJevEvaluator(live, { directory: cacheDirectory,
-      namespace: JSON.stringify({ team: teamId ?? 'local-env', workspace: workspaceId ?? 'local-env' }) }).evaluate : live;
-  };
+export async function localJevKey(teamId?: string, workspaceId?: string,
+  resolve: (scope: LocalScope) => Promise<{ key: string; scope: InferenceKeyScope } | null> = resolveLocalCredential) {
   if (teamId || workspaceId) {
     if (!teamId || !workspaceId) throw new Error('Supply both team and workspace for scoped exploration.');
     const credential = await resolve({ teamId, workspaceId, provider: 'openrouter', purposes: ['decision_key', 'inference_key'] });
     if (credential && credential.scope !== 'workspace' && credential.scope !== 'team') {
       throw new Error('Scoped exploration requires a workspace or team credential.');
     }
-    return evaluator(credential?.key);
+    return credential?.key;
   }
-  return evaluator(process.env.OPENROUTER_API_KEY);
+  return process.env.OPENROUTER_API_KEY;
+}
+
+export async function localJevEvaluator(teamId?: string, workspaceId?: string,
+  resolve: (scope: LocalScope) => Promise<{ key: string; scope: InferenceKeyScope } | null> = resolveLocalCredential,
+  cacheDirectory?: string, maxNewDecisions = 20) {
+  const key = await localJevKey(teamId, workspaceId, resolve);
+  const live = createJevEvaluator(key, undefined, maxNewDecisions);
+  return key && cacheDirectory ? cachedJevEvaluator(live, { directory: cacheDirectory,
+    namespace: JSON.stringify({ team: teamId ?? 'local-env', workspace: workspaceId ?? 'local-env' }) }).evaluate : live;
 }
 
 export async function explorePolicy(examples: Array<{ text: string; purpose: string; expected: string }>, configured: ProjectPolicy, evaluate: SemanticEvaluator) {
