@@ -2,11 +2,15 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import * as missionHelpers from '../../packages/core/mission-helpers';
 import { projectMissionDelivery, type MissionTaskRow } from '../../apps/web/src/lib/delivery-projection';
-import { buildMissionSections } from '../../apps/web/src/lib/mission-sections';
+import { buildMissionSections, type MissionSectionKey } from '../../apps/web/src/lib/mission-sections';
 import type { PortfolioRow } from '../../apps/web/src/lib/mission-portfolio';
 import { TERMS } from '../../packages/shared/src/terms';
 
 export const SCHEDULED_AT = '2026-10-21T14:00:00.000Z';
+/** The sort captions the Missions list printed before #5359; the unrepaired fixture still shows them. */
+export const PRINTED_ORDER: Record<MissionSectionKey, string> = {
+  needs: 'oldest first', motion: 'slipping first', waiting: 'next to start first', landed: 'oldest first',
+};
 const task = (id: string, status?: string): MissionTaskRow => ({
   id, title: id, taskClass: 'work', status: status ? 'completed' : 'pending',
   workers: status ? [{ status: 'completed', prUrl: 'https://github.com/example/project/pull/1', prLifecycleStatus: status }] : [],
@@ -40,7 +44,7 @@ export function MissionCopyFixture({ repaired }: { repaired: boolean }) {
   return <main>
     {sections.map(section => <section key={section.key}>
       <h2>{section.label}</h2>
-      {!repaired && <span data-testid="mission-section-order">{section.order}</span>}
+      {!repaired && <span data-testid="mission-section-order">{PRINTED_ORDER[section.key]}</span>}
       <ul>{section.rows.map(item => <li key={item.delivery.id} data-mission-id={item.delivery.id}>
         {item.delivery.title}
         {item.delivery.id === 'scheduled' && <>

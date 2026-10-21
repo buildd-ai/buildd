@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { surface } from '../../../../../packages/core/ui-verification.fixtures';
-import { executeUiVerification, type UiVerificationDeps } from './ui-verification-executor';
+import { executeUiVerification, type UiVerificationDeps } from './ui-verification-decision';
 import type { DecisionReceipt } from '@buildd/ai-kit/decide';
 
 const receipt: DecisionReceipt = { kind: 'decision', decisionId: 'buildd.ui_copy', provider: 'openrouter', model: 'typesafe/jev-3', usage: { inputTokens: 60, outputTokens: 3, costUsd: 0.0001 }, latencyMs: 9, outcome: 'ok', attempts: 1 };

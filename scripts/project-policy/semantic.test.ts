@@ -3,7 +3,7 @@ import policy from './product-language.json';
 import { extractChangedSubjects, evaluateSubject, policyExitCode } from './pipeline';
 import { buildSemanticState, createJevEvaluator, createClefEvaluator, semanticDecision } from './semantic';
 
-const subject = () => extractChangedSubjects({ file: 'src/Status.tsx', before: '', after: '<span>slipping first</span>' })[0];
+const subject = () => extractChangedSubjects({ file: 'src/Status.tsx', before: '', after: '<span>highest priority first</span>' })[0];
 const context = { source: 'fixture provenance', purpose: 'section-subtitle' };
 
 it('runs each Clef variant through Workers AI with the same policy and records top probability separately', async () => {
@@ -26,7 +26,7 @@ it('runs each Clef variant through Workers AI with the same policy and records t
 
 it('uses bounded semantic facts, excluding paths, before copy, context source and diffs', () => {
   const state = buildSemanticState({ ...subject(), before: 'private old copy' }, context);
-  expect(state).toEqual({ text: 'slipping first', role: 'description', component: 'span', prop: 'children', purpose: 'section-subtitle' });
+  expect(state).toEqual({ text: 'highest priority first', role: 'description', component: 'span', prop: 'children', purpose: 'section-subtitle' });
   expect(JSON.stringify(state)).not.toContain('private');
   expect(semanticDecision(policy).policyOf('value').mode).toBe('shadow');
 });

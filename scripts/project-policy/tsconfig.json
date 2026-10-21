@@ -5,9 +5,7 @@
     "types": ["bun", "react", "react-dom"],
     "typeRoots": ["../../node_modules/@types", "../../apps/web/node_modules/@types"],
     "paths": {
-      "@/*": ["../../apps/web/src/*"],
-      "react-dom/server": ["../../apps/web/node_modules/@types/react-dom/server.d.ts"],
-      "react/jsx-runtime": ["../../apps/web/node_modules/@types/react/jsx-runtime.d.ts"]
+      "@/*": ["../../apps/web/src/*"]
     }
   },
   "include": ["./*.ts", "./*.tsx", "../../apps/web/src/types/next-auth.d.ts"],

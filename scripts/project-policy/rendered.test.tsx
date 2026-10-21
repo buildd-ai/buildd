@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { buildMissionSections, SECTION_META } from '../../apps/web/src/lib/mission-sections';
+import { buildMissionSections } from '../../apps/web/src/lib/mission-sections';
 import { TERMS } from '../../packages/shared/src/terms';
-import { MissionCopyFixture, fixtureRows, SCHEDULED_AT } from './fixtures';
+import { MissionCopyFixture, fixtureRows, PRINTED_ORDER, SCHEDULED_AT } from './fixtures';
 
 const ids = (html: string) => [...html.matchAll(/data-mission-id="([^"]+)"/g)].map(m => m[1]);
 
 describe('project policy: independent rendered mission fixture', () => {
   it('reproduces the actual section captions before repair', () => {
     const html = renderToStaticMarkup(<MissionCopyFixture repaired={false} />);
-    expect(html).toContain(SECTION_META.waiting.order);
-    expect(html).toContain(SECTION_META.motion.order);
+    expect(html).toContain(PRINTED_ORDER.waiting);
+    expect(html).toContain(PRINTED_ORDER.motion);
     expect(html).toContain('next to start first');
     expect(html).toContain('slipping first');
     expect(html).toContain('>Planning</span>');

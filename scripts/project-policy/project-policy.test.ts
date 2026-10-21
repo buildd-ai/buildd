@@ -73,7 +73,13 @@ describe('versioned project policy', () => {
       if (row.expected !== 'redundant') expect(result.find(f => f.rule === 'semantic-value')?.verdict).toBe('unsupported');
     }
   });
-  it.each(['next to start first', 'slipping first', 'oldest first', 'highest priority first'])('advises removal of sort caption %s', async text => {
+  it.each(['next to start first', 'slipping first', 'oldest first'])('enforces the core sort-subtitle rule for %s', async text => {
+    const s = extract(`<span>${text}</span>`)[0];
+    const findings = await evaluateSubject(s, policy, { role: 'description', purpose: 'section-subtitle', source: 'MissionGrid SectionView' });
+    expect(findings.some(f => f.rule === 'sort-subtitle' && f.verdict === 'revise' && f.enforced)).toBe(true);
+    expect(policyExitCode(findings)).toBe(1);
+  });
+  it.each(['highest priority first', 'largest last'])('advises removal of sort caption %s', async text => {
     const s = extract(`<span>${text}</span>`)[0];
     const findings = await evaluateSubject(s, policy, { role: 'description', purpose: 'section-subtitle', source: 'MissionGrid SectionView' });
     expect(findings.some(f => f.reasonCode === 'redundant-sort-narration' && f.verdict === 'revise' && !f.enforced && f.suggestedCorrection?.includes('Remove'))).toBe(true);

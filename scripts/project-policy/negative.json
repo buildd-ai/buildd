@@ -2,9 +2,9 @@
   "changes": [{
     "file": "apps/web/src/components/MissionSection.tsx",
     "before": "export const Example = () => <section><h2>Waiting</h2></section>;",
-    "after": "export const Example = () => <section>\n<h2>Waiting</h2>\n<span>next to start first</span>\n<span>Planning</span>\n<button>Your call</button>\n</section>;",
+    "after": "export const Example = () => <section>\n<h2>Waiting</h2>\n<span>highest priority first</span>\n<span>Planning</span>\n<button>Your call</button>\n</section>;",
     "contexts": {
-      "3": { "role": "description", "purpose": "section-subtitle", "source": "MissionGrid SectionView/SECTION_META.waiting.order" },
+      "3": { "role": "description", "purpose": "section-subtitle", "source": "MissionGrid SectionView section subtitle" },
       "4": { "role": "status", "state": { "kind": "waiting", "value": "start_deferred" }, "scheduledAt": "2027-01-15T12:00:00Z", "source": "authoritative waiting projection fixture" },
       "5": { "role": "action", "source": "approval action fixture", "action": "approval" }
     }
