@@ -55,8 +55,9 @@ import { loadPrAttempts } from '@/lib/pr-attempts';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { kernelLandingView, type KernelLanding } from '@/lib/workflow/seam';
 import { doorErrorResponse, isDoorError, idempotencyKeyOf, landThroughKernel, openKernelDelivery, type KernelPrincipal } from '@/lib/workflow/kernel-client';
-import { kernelPrincipalOf } from '@/lib/workflow/kernel-client';
-import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { kernelPrincipalOf, type KernelCaller } from '@/lib/workflow/kernel-client';
+import { deliveryBlockerFacts, getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { checkForeignClose, closesForeignPr, foreignCloseComment } from '@/lib/agent-capabilities/pr-close-guard';
 import { prDeliveryReport } from '@/lib/pr-delivery-report';
 import { canonicalPrState, prRecord } from '@/lib/pr-presentation';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
@@ -73,7 +74,7 @@ import { pickReviewerRole } from '@/lib/pr-review-status';
 // One resolver for "which worker owns PR #N", shared with the `explain` MCP read.
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
-import { closeAncestorRetryPrs, collectRetryLineage, resolveSupersessionCause, type SupersededPr } from '@/lib/retry-pr-supersession';
+import { closeAncestorRetryPrs, collectRetryLineage, recordForeignCloseSupersession, resolveSupersessionCause, type SupersededPr } from '@/lib/retry-pr-supersession';
 import { ATTEMPT_FOOTER_PATTERN, checkFreshRetryPr, freshRetryPrRefusal, retryAttemptFooter } from '@/lib/retry-fresh-pr-gate';
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
@@ -1454,6 +1455,61 @@ export async function POST(req: NextRequest) {
   }
 }
 
+/**
+ * After a foreign close (see PATCH): explain it on the PR, and record the
+ * supersession on the owning task's worker so the close is never read as an
+ * unknown one. The close has happened by now, so a failure here is reported,
+ * not thrown: the caller can still record it with record_pr_supersession.
+ */
+async function recordForeignClose(p: {
+  account: NonNullable<KernelCaller['account']>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  worker: any;
+  prNumber: number;
+  repo: { fullName: string; installation: { installationId: number } };
+  reason: string;
+  supersedingPrNumber: number;
+}): Promise<{ reason: string; supersedingPrNumber: number; commented: boolean; supersession: { recorded: boolean; error?: string; hint?: string } }> {
+  const { worker, prNumber, repo, reason, supersedingPrNumber } = p;
+  let commented = true;
+  try {
+    await githubApi(repo.installation.installationId, `/repos/${repo.fullName}/issues/${prNumber}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: foreignCloseComment({ closerTaskId: worker.taskId ?? null, reason, supersedingPrNumber }) }),
+    });
+  } catch (err) {
+    commented = false;
+    console.warn(`[close_pr] closed #${prNumber} but the explanation comment failed:`, err);
+  }
+
+  const retry = `Record it with record_pr_supersession (prNumber ${prNumber}, supersedingPrNumber ${supersedingPrNumber}, reason).`;
+  let owner: { id: string } | null | undefined = null;
+  try {
+    owner = await db.query.workers.findFirst({
+      where: sqlWhere(and(eq(workers.workspaceId, worker.workspaceId), eq(workers.prNumber, prNumber))),
+      columns: { id: true },
+    });
+  } catch (err) {
+    console.warn(`[close_pr] closed #${prNumber} but could not read its owning worker:`, err);
+  }
+  if (!owner) return { reason, supersedingPrNumber, commented, supersession: { recorded: false, error: `no worker records PR #${prNumber}`, hint: retry } };
+  try {
+    const result = await recordForeignCloseSupersession({
+      workerId: owner.id,
+      supersedingPrNumber,
+      reason,
+      recordedBy: `agent:${worker.taskId ?? worker.id}`,
+      // The control plane checks the API account against the workspace, as record_pr_supersession does.
+      caller: { account: p.account },
+      targetRepoWithinWorkspace: true,
+    });
+    return { reason, supersedingPrNumber, commented, supersession: result.ok ? { recorded: true } : { recorded: false, error: result.error, hint: retry } };
+  } catch (err) {
+    return { reason, supersedingPrNumber, commented, supersession: { recorded: false, error: err instanceof Error ? err.message : String(err), hint: retry } };
+  }
+}
+
 // PATCH /api/github/pr - Close a pull request
 export async function PATCH(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -1545,6 +1601,32 @@ export async function PATCH(req: NextRequest) {
     }
     const repo = repoAccess.repo;
 
+    // Closing a PR another task owns: refused while it waits on a person, and
+    // otherwise only with a reason and a merged successor, so the close is
+    // recorded as a supersession rather than an unexplained CLOSED_UNMERGED
+    // (lib/agent-capabilities/pr-close-guard.ts).
+    let foreignClose: { reason: string; supersedingPrNumber: number } | null = null;
+    if (capability === 'pr.close' && closesForeignPr(account, worker, prNumber)) {
+      const verdict = await checkForeignClose(
+        { prNumber, reason: closeReason, supersedingPrNumber: requestBody.supersedingPrNumber },
+        {
+          deliveryOf: async (n) => {
+            const facts = await deliveryBlockerFacts(worker.workspaceId, n);
+            if (!facts) return null;
+            const view = (await getDeliveryViewsForTasks([facts.ownerTaskId])).get(facts.ownerTaskId);
+            return { state: facts.state, needsPerson: !!view && view.prNumber === n && view.needsYou };
+          },
+          successorMerged: async (n) =>
+            (await githubApi(repo.installation.installationId, `/repos/${repo.fullName}/pulls/${n}`))?.merged === true,
+        },
+      );
+      if (!verdict.ok) {
+        void recordCapabilityDecision({ capability, decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: verdict.reasonCode });
+        return NextResponse.json({ error: verdict.error, reasonCode: verdict.reasonCode, hint: verdict.hint }, { status: verdict.status });
+      }
+      foreignClose = verdict;
+    }
+
     const allowed = recordCapabilityDecision({
       capability, decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`,
       // The caller's reason travels with the close: the kernel names this door as the closer from this row.
@@ -1596,6 +1678,8 @@ export async function PATCH(req: NextRequest) {
       isDraft = false;
     }
 
+    const foreign = foreignClose ? await recordForeignClose({ account, worker, prNumber, repo, ...foreignClose }) : null;
+
     return NextResponse.json({
       ok: true,
       pr: {
@@ -1605,6 +1689,7 @@ export async function PATCH(req: NextRequest) {
         title: prData.title,
         ...(isDraft === undefined ? {} : { draft: isDraft }),
       },
+      ...(foreign ? { foreignClose: foreign } : {}),
     });
   } catch (error) {
     console.error('Update PR error:', error);
