@@ -8,8 +8,8 @@ import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { VERIFICATION_VERDICTS, boundEvidenceRefs, verdictSourceOfEvidence, type VerificationVerdict } from '@buildd/core/verification-check';
 import type { LivingSpecGoalCriterion } from '@buildd/shared';
 import type { RequirementRef } from '@buildd/spec-contract/requirements';
-import { acceptanceEditOf, pendingAcceptance } from '@buildd/spec-contract/acceptance-edit';
 import { githubApi } from '@/lib/github';
+import { unacceptedPathsOf } from '@/lib/acceptance-edit-sync';
 import { encodeRef, isAncestor } from '@/lib/integration-refresh';
 import { integrationTarget } from './mission-integration-target';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
@@ -117,17 +117,9 @@ async function missionRows(missionId: string, specRevisionId: string, hashes: Re
   return rows.filter((r) => !r.textHash || r.textHash === hashes.get(r.criterionId)).map(({ textHash: _t, evidence, ...r }) => ({ ...r, source: verdictSourceOfEvidence(evidence), evidence })) as MissionVerdictRow[];
 }
 
-async function unacceptedAcceptanceTestPaths(missionId: string): Promise<string[]> {
-  const buildingTasks = await db.select({ id: tasks.id, context: tasks.context })
-    .from(tasks)
-    .where(and(eq(tasks.missionId, missionId), eq(tasks.roleSlug, 'builder')));
-  const all: string[] = [];
-  for (const t of buildingTasks) {
-    const flag = acceptanceEditOf(t.context);
-    const pending = pendingAcceptance(flag);
-    all.push(...pending);
-  }
-  return all;
+export async function unacceptedAcceptanceTestPaths(missionId: string): Promise<string[]> {
+  const rows = await db.select({ roleSlug: tasks.roleSlug, context: tasks.context }).from(tasks).where(eq(tasks.missionId, missionId));
+  return unacceptedPathsOf(rows);
 }
 
 export type MissionSpecStanding = MissionSpecFold & { target: MissionTarget; scope: RequirementRef[]; title: string };
