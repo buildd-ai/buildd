@@ -240,3 +240,22 @@ each suspected defect before accepting it, continuing after a rejected suspicion
 Unknown evidence is retained, and transport failures abstain immediately. Trace
 nodes and receipts expose the path and call cost. These examples are now exposed;
 tree results are exploratory rather than fresh validation.
+
+`run-selector-experiment.ts` tests DeepSeek as a structured LLM proposer rather
+than a probability-bearing decision. It reuses the installed web AI SDK and
+OpenRouter provider, explicit scoped credentials and bounded static state. Each
+16- or 48-row batch must return complete unique IDs with review/leave/need_context
+and suspected patterns. Schema failures, truncation and unknown IDs defer the
+batch. No confidence is requested or invented. Output is advisory; leave is not
+a certified pass. Provider-reported usage is retained even on rejected output;
+unknown spend remains explicit. The selector has no tools, retries or model
+fallback, and uses a 20-second request deadline.
+
+```sh
+bun scripts/project-policy/run-selector-experiment.ts --team=<team-id> --workspace=<workspace-id> --order=shuffle-17 --output=<absolute-local-report.json>
+```
+
+Repeat with reverse order. Compare direct Jev narrow checks with selection plus
+the same checks, and separately selection plus only the proposed pattern checks.
+Candidate recall, pattern agreement and final findings are separate measurements.
+These examples are previously exposed; this does not establish production recall.
