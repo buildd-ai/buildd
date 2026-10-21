@@ -739,6 +739,8 @@ async function handlePullRequestEvent(event: {
   installation?: { id: number };
   repository: { full_name: string; default_branch?: string };
   changes?: { base?: { ref?: { from?: string } } };
+  /** Who acted: on `closed`, who closed the PR (`type` is `User` or `Bot`). */
+  sender?: { login?: string | null; type?: string | null } | null;
 }) {
   const { action, pull_request: pr, repository } = event;
   // Home caches GitHub's approval state per PR (lib/github-approval.ts); any
@@ -1105,6 +1107,7 @@ async function handlePullRequestEvent(event: {
     kernelOwned = await observePrState({
       workspaceId: worker.workspaceId, repoFullName: repository.full_name, prNumber: pr.number,
       installationId: event.installation.id, source: 'webhook:closed', pull: pr,
+      ...(event.sender ? { closedBy: { login: event.sender.login ?? null, type: event.sender.type ?? null } } : {}),
     }, { principal: systemPrincipal('system:webhook:closed') }).catch((err) => {
       // S4a: the kernel owns the PR but its live read failed. This payload is recorded as an
       // unapplied fact and a fast heal applies it within minutes (kernel-heal.ts); the legacy
