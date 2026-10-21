@@ -28,7 +28,7 @@ const HEADING = /^\s*#{1,6}\s/;
  * next id or heading; fenced blocks are skipped; a repeated id owns nothing.
  */
 export function criterionLines(body: string, label: string): Array<{ criterionId: string; value: string }> {
-  const LINE = new RegExp(`^\\s*(?:[-*+]\\s+)?(?:\\*\\*|__)?${label}(?:\\*\\*|__)?\\s*:\\s*(.+?)\\s*$`, 'i');
+  const LINE = new RegExp(`^\\s*(?:[-*+]\\s+)?(?:\\*\\*|__)?${label}(?:\\*\\*|__)?\\s*:\\s*(.*?)\\s*$`, 'i');
   const out: Array<{ criterionId: string; value: string }> = [];
   const seen = new Set<string>();
   let current: string | null = null;
