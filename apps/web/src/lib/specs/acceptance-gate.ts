@@ -29,8 +29,8 @@ export function decideBuildingGate(input: { tests: readonly AcceptanceTest[]; ob
   if (input.objected) return { action: 'hold', reopenAcceptanceTask: true, readyChecks: [] };
   const readyChecks = [...new Set(input.tests.filter((t) => t.startingResult === 'fail').map((t) => t.checkId))];
   const sendBack = input.tests.filter((t) => t.startingResult === 'pass');
-  const pendingChecks = [...new Set(input.tests.filter((t) => t.startingResult !== 'fail').map((t) => t.checkId))];
-  if (pendingChecks.length === 0 && input.tests.length > 0) return { action: 'start', readyChecks };
+  const pendingChecks = [...new Set(input.tests.filter((t) => t.startingResult !== 'fail' && t.startingResult !== 'pass').map((t) => t.checkId))];
+  if (pendingChecks.length === 0 && sendBack.length === 0 && input.tests.length > 0) return { action: 'start', readyChecks };
   return { action: 'wait', readyChecks: readyChecks.filter((c) => !pendingChecks.includes(c)), pendingChecks, sendBack };
 }
 

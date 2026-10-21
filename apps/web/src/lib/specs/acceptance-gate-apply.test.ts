@@ -77,3 +77,46 @@ describe('recording', () => {
     expect(calls).toContain('reopen:acc');
   });
 });
+
+describe('R-78/R-79 end-to-end (AC-125)', () => {
+  test('no objection branch: tests run, all fail, building starts', async () => {
+    const { store, calls } = fake({ tests: [t('AC-1', null), t('AC-2', null)] });
+    // Simulate: acceptance-tests worker runs tests on starting commit
+    let out = await recordAcceptanceResults(store, 'm', [t('AC-1', 'fail'), t('AC-2', 'fail')]);
+    expect(out?.decision).toBe('start');
+    expect(calls).toEqual(['patch:acc:acceptanceTests', 'complete:acc']);
+  });
+
+  test('no objection branch: one test passes, building waits and sendback resets tests', async () => {
+    const { store, calls } = fake({ tests: [t('AC-1', 'fail'), t('AC-2', null)], acceptanceStatus: 'completed' });
+    // AC-2 passes on starting commit, so it gets sent back
+    let out = await recordAcceptanceResults(store, 'm', [t('AC-2', 'pass', 'output')]);
+    expect(out?.decision).toBe('wait');
+    expect(calls).toEqual(['patch:acc:acceptanceTests', 'patch:acc:acceptanceSentBack', 'reopen:acc']);
+  });
+
+  test('objection branch: objection prevents building even when all tests fail', async () => {
+    const { store, calls } = fake({ tests: [t('AC-1', 'fail'), t('AC-2', 'fail')] });
+    // First record tests
+    let out = await applyBuildingGate(store, 'm');
+    expect(out?.decision).toBe('start');
+    calls.length = 0; // reset calls
+    // Then person objects
+    out = await recordAcceptanceObjection(store, 'm', true);
+    expect(out?.decision).toBe('hold');
+    expect(calls[0]).toBe('patch:acc:acceptanceObjection');
+    expect(calls).toContain('reopen:acc');
+  });
+
+  test('objection branch: objection withdraw flips back to start when all tests fail', async () => {
+    const { store, calls } = fake({ tests: [t('AC-1', 'fail'), t('AC-2', 'fail')], objected: true });
+    // Person initially objected
+    let out = await applyBuildingGate(store, 'm');
+    expect(out?.decision).toBe('hold');
+    calls.length = 0; // reset calls
+    // Person withdraws objection
+    out = await recordAcceptanceObjection(store, 'm', false);
+    expect(out?.decision).toBe('start');
+    expect(calls).toEqual(['patch:acc:acceptanceObjection', 'complete:acc']);
+  });
+});
