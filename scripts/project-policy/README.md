@@ -124,6 +124,14 @@ controls. It is not human gold or independent production calibration.
 bun scripts/project-policy/run-pattern-experiment.ts --team=<team-id> --workspace=<workspace-id> --output=<absolute-report.json> --surface=<absolute-surface-final.json>
 ```
 
+Use `--variant=1|2|3` and `--order=source|shuffle-17|reverse` to reproduce prompt
+tuning and position-sensitivity runs. V1 is the frozen first prompt; V2 tunes
+mixed fact/filler routing using development failures; V3 adds data selectors so
+vague-action prompts only apply to actions or known result/toast purposes. Native
+component/prop context is retained for surface inputs. Pattern agreement and final
+verdict precision/recall are reported separately. These variants remain experiments;
+the staged CLI still uses its existing broad policy and cache.
+
 The optional surface pass lets the model inspect all eligible strings in bounded
 batches of32, selecting at most one per batch, then choosing a pattern and checking
 the selected string. This is batch-local prioritization, not a single global rank.

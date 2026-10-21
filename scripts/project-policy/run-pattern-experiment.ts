@@ -74,7 +74,8 @@ async function surface(key: string, path: string, version: number, order: string
   const source = await Bun.file(path).json() as { rows: { subject: ChangedSubject; findings: PolicyFinding[] }[]; sourceCommit: string };
   const eligible = source.rows.filter(row => row.subject.after !== null && row.findings.some(f => f.decision));
   const rows: ExperimentRow[] = eligible.map((row, index) => ({ id: `u${String(index).padStart(4, '0')}`, text: row.subject.after!,
-    role: row.subject.role, purpose: 'unknown', ...(row.subject.staticContext ? { staticContext: row.subject.staticContext } : {}) }));
+    role: row.subject.role, purpose: 'unknown', component: row.subject.component, prop: row.subject.prop,
+    ...(row.subject.staticContext ? { staticContext: row.subject.staticContext } : {}) }));
   const engine = createPatternExperiment(key, undefined, 400, patternPrompts(version));
   const batches: ExperimentRow[][] = [];
   const ordered = experimentOrder(rows, order);

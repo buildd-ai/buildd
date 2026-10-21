@@ -1,0 +1,6 @@
+{
+  "version": 3,
+  "patterns": {
+    "vague_action": { "roles": ["action"], "purposeContains": ["result", "toast"] }
+  }
+}

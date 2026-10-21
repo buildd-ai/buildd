@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import { createPatternExperiment, metrics } from './pattern-experiment';
+import { createPatternExperiment, metrics, patternPrompts, rowState } from './pattern-experiment';
 import { experimentOrder } from './run-pattern-experiment';
 
 const row = { id: 'row-1', text: 'Deployment ready.', role: 'description' as const, purpose: 'deployment-result-toast', expected: 'keep' as const };
@@ -58,4 +58,15 @@ it('bounds concurrent experiments and screens complete candidate context', async
   const unsafe = createPatternExperiment('test-key', async () => { throw new Error('must not call'); });
   expect(await unsafe.shortlist([{ ...row, staticContext: { container: 'section', nearbyText: ['Bearer test-key-secret-neighbor'], completeness: 'static-partial' } }], 1)).toEqual([]);
   expect(unsafe.calls).toHaveLength(0);
+});
+
+it('preserves native component/prop and scopes vague-action prompts to eligible roles', async () => {
+  const input = { ...row, text: 'Steer this agent…', purpose: 'unknown', component: 'input', prop: 'placeholder' };
+  expect(rowState(input)).toMatchObject({ component: 'input', prop: 'placeholder' });
+  const engine = createPatternExperiment('test-key', async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    expect(body.questions.value.criteria.vague_action).toBeUndefined();
+    return response('none');
+  }, 400, patternPrompts(3));
+  expect((await engine.routed(input)).verdict).toBe('keep');
 });

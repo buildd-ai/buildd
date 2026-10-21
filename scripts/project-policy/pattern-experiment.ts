@@ -5,9 +5,11 @@ import type { CopyRole } from './pipeline';
 import type { StaticCopyContext } from './static-context';
 import prompts from './pattern-prompts.json';
 import tuned from './pattern-prompts-v2.json';
+import eligibility from './pattern-eligibility.json';
 
 export interface ExperimentRow {
   id: string; text: string; role: CopyRole; purpose: string; staticContext?: StaticCopyContext;
+  component?: string; prop?: string;
   expected?: string; expectedPattern?: string; source?: string; rationale?: string; split?: string;
 }
 export type Pattern = keyof typeof prompts.routes;
@@ -19,15 +21,15 @@ const hash = (value: unknown) => createHash('sha256').update(canonicalJson(value
 /** Pure bounded model input; never include labels, source paths, rationale or gold repairs. */
 export function rowState(row: ExperimentRow) {
   return buildSemanticState({ kind: 'ui.copy', file: '', line: 1, endLine: 1, start: 0, end: row.text.length,
-    before: null, after: row.text, component: row.role === 'action' ? 'button' : row.role === 'heading' ? 'h2' : 'p',
-    prop: 'children', role: row.role, confidence: 'syntactic', provenance: '' },
+    before: null, after: row.text, component: row.component ?? (row.role === 'action' ? 'button' : row.role === 'heading' ? 'h2' : 'p'),
+    prop: row.prop ?? 'children', role: row.role, confidence: 'syntactic', provenance: '' },
   { source: '', purpose: row.purpose, ...(row.staticContext ? { staticContext: row.staticContext } : {}) });
 }
 
 export function patternPrompts(version: number) {
-  if (version === 1) return prompts;
-  if (version !== 2) throw new Error('Unknown prompt experiment version.');
-  return { ...prompts, ...tuned, routes: { ...prompts.routes, ...tuned.routes }, patterns: {
+  if (version === 1) return { ...prompts, eligibility: {} };
+  if (version !== 2 && version !== 3) throw new Error('Unknown prompt experiment version.');
+  return { ...prompts, ...tuned, version, eligibility: version === 3 ? eligibility.patterns : {}, routes: { ...prompts.routes, ...tuned.routes }, patterns: {
     over_explanation: { ...prompts.patterns.over_explanation, ...tuned.patterns.over_explanation },
     duplication: { ...prompts.patterns.duplication, ...tuned.patterns.duplication },
     vague_action: { ...prompts.patterns.vague_action, ...tuned.patterns.vague_action },
@@ -46,10 +48,15 @@ export function createPatternExperiment(apiKey?: string | null, fetcher?: Fetche
       || c.heading !== undefined && typeof c.heading !== 'string' || !Array.isArray(c.nearbyText) || c.nearbyText.some(t => typeof t !== 'string'))) return false;
     const state = rowState(row);
     const raw = canonicalJson(state);
-    return row.text.length <= 500 && row.purpose.length <= 80 && state.role !== 'unknown'
+    return row.text.length <= 500 && row.purpose.length <= 80 && typeof state.component === 'string' && state.component.length <= 80
+      && typeof state.prop === 'string' && state.prop.length <= 80 && state.role !== 'unknown'
       && (!state.staticContext || state.staticContext.container.length <= 80 && (state.staticContext.heading?.length ?? 0) <= 120
         && state.staticContext.nearbyText.length <= 2 && state.staticContext.nearbyText.every(s => s.length <= 160))
       && redactSecrets(raw, [apiKey]) === raw && !/(?:sk-|bld_|ghp_|github_pat_|AKIA)[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(raw);
+  };
+  const applicable = (pattern: Pattern, row: ExperimentRow) => {
+    const selector = (config.eligibility as Partial<Record<Pattern, { roles: string[]; purposeContains: string[] }>>)[pattern];
+    return !selector || selector.roles.includes(row.role) || selector.purposeContains.some(part => row.purpose.includes(part));
   };
   async function ask<const L extends string>(kind: string, instructions: string, criteria: Record<L, string>, state: unknown) {
     const definition = defineDecision({ id: `buildd.copy_experiment.${kind}`, promptVersion: `patterns-${config.version}`,
@@ -64,12 +71,13 @@ export function createPatternExperiment(apiKey?: string | null, fetcher?: Fetche
   }
   const route = async (row: ExperimentRow): Promise<{ pattern: Pattern; confidence: number | null }> => {
     if (!safe(row)) return { pattern: 'uncertain', confidence: null };
-    const answer = await ask('route', config.routeInstructions, config.routes, rowState(row));
-    return { pattern: answer?.choice ?? 'uncertain', confidence: answer?.confidence ?? null };
+    const criteria = Object.fromEntries(Object.entries(config.routes).filter(([pattern]) => applicable(pattern as Pattern, row)));
+    const answer = await ask('route', config.routeInstructions, criteria, rowState(row));
+    return { pattern: (answer?.choice as Pattern) ?? 'uncertain', confidence: answer?.confidence ?? null };
   };
   const targeted = async (row: ExperimentRow, pattern: Pattern): Promise<RoutedResult> => {
     if (pattern === 'none' || pattern === 'necessary_detail') return { id: row.id, pattern, verdict: 'keep', confidence: null };
-    if (pattern === 'uncertain' || !safe(row)) return { id: row.id, pattern, verdict: 'uncertain', confidence: null };
+    if (pattern === 'uncertain' || !safe(row) || !applicable(pattern, row)) return { id: row.id, pattern, verdict: 'uncertain', confidence: null };
     const selected = config.patterns[pattern];
     const answer = await ask(pattern, selected.question, { revise: selected.revise, keep: selected.keep, uncertain: config.uncertain }, rowState(row));
     return { id: row.id, pattern, verdict: answer?.choice ?? 'uncertain', confidence: answer?.confidence ?? null };
