@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { isUnitTestFile } from './run-unit-tests';
+import { ACCEPTANCE_ONLY_TESTS, isUnitTestFile } from './run-unit-tests';
 
 /**
  * Every tracked test file must be either collected by the unit runner or listed
@@ -23,6 +23,7 @@ const DELIBERATELY_NOT_IN_THE_UNIT_SUITE: Array<[pattern: RegExp, runBy: string]
   [/^apps\/runner\/__tests__\/integration/, 'bun run test:integration (spawns real sessions)'],
   [/^tests\/e2e\//, 'bun run test:e2e (needs BUILDD_TEST_SERVER)'],
   [/^apps\/web\/tests\/db\//, 'bun run test:db (real Postgres; CI db-architecture job in build.yml)'],
+  [new RegExp(`^(?:${ACCEPTANCE_ONLY_TESTS.map(f => f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})$`), 'scripts/run-acceptance-tests.ts (test-first; red until the build lands)'],
 ];
 
 function trackedTestFiles(): string[] {

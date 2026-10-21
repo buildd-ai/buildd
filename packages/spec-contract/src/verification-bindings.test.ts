@@ -1,100 +1,133 @@
 import { describe, expect, it } from 'bun:test';
-import { createHash } from 'node:crypto';
-import { criterionRecords, otherTextBySection } from './criterion-records';
-import { criterionVerifications, criterionVerificationCoverage, type VerificationBinding } from './verification-bindings';
+import { criterionRecords } from './criterion-records';
+import {
+  bindingFingerprint,
+  bindingLine,
+  criterionBindings,
+  verificationCoverage,
+  type VerificationBinding,
+  type VerifierRegistry,
+} from './verification-bindings';
 
-const action: VerificationBinding = { id: 'ui.actions_match_state', version: 1, profile: 'buildd.enterprise@1', mode: 'required' };
-const clarity: VerificationBinding = { id: 'ui.card_clarity', version: 1, profile: 'buildd.enterprise@1', mode: 'advisory' };
-const line = (value: unknown) => `  verify: ${JSON.stringify(value)}`;
+/**
+ * Acceptance tests for "Registered requirement verification in Build, Verify
+ * and Deliver" (revision 1): registered bindings declared in the approved
+ * spec body. Written before the build; the module under test does not exist
+ * on the mission's starting commit.
+ *
+ * Contract these tests pin:
+ *  - A binding is one `verify:` line under its criterion, read by the same
+ *    rule as `check:` lines (nearest R-n / AC-n above it; fenced blocks
+ *    skipped). Its value is `key=value` pairs, not a language:
+ *      verify: verifier=<id>@<version> profile=<id>@<version> mode=<required|advisory> evidence=<a>,<b>
+ *  - `criterionBindings(body, registry)` returns the bindings it accepts and,
+ *    separately, every one it refuses with a reason. Nothing is dropped.
+ *  - `bindingLine(b)` writes the line `criterionBindings` reads back.
+ *  - `bindingFingerprint(b)` is a stable hash of the complete identity.
+ *  - `verificationCoverage(body, registry)` says, per criterion, how it is
+ *    covered: `command`, `registered`, `unsupported` or `none`.
+ */
 
-describe('criterionVerifications', () => {
-  it('AC-1: binds registered checks to their governing R/AC criterion, including table rows', () => {
-    const body = ['# UI', 'R-1: Actions reflect the current state.', line(action),
-      '| Id | Requirement |', '|---|---|', '| AC-1 | Cards communicate the decision. |', line(clarity)].join('\n');
-    const got = criterionVerifications(body);
-    expect(got.map(({ criterionId, binding }) => ({ criterionId, binding }))).toEqual([
-      { criterionId: 'R-1', binding: action }, { criterionId: 'AC-1', binding: clarity },
-    ]);
-    expect(got.every(v => /^[0-9a-f]{64}$/.test(v.fingerprint))).toBe(true);
+const REGISTRY: VerifierRegistry = {
+  verifiers: [
+    { id: 'ui.action-state', version: 1, method: 'deterministic', evidence: ['ui.text', 'ui.actions', 'ui.state'] },
+    { id: 'ui.copy', version: 1, method: 'model', evidence: ['ui.text', 'ui.actions'] },
+    { id: 'ui.copy', version: 2, method: 'model', evidence: ['ui.text', 'ui.actions'] },
+  ],
+  profiles: [{ id: 'buildd-ui', version: 1 }, { id: 'buildd-ui', version: 2 }],
+};
+
+const PROSE = 'The task card offers one action that matches the PR state.';
+const LINE_V1 = 'verify: verifier=ui.action-state@1 profile=buildd-ui@1 mode=required evidence=ui.text,ui.actions,ui.state';
+
+const body = (...lines: string[]) => ['## Acceptance', '', `AC-1 ${PROSE}`, ...lines.map((l) => `  ${l}`), '', 'AC-2 Another check.', ''].join('\n');
+
+const BINDING: VerificationBinding = {
+  criterionId: 'AC-1',
+  verifier: { id: 'ui.action-state', version: 1 },
+  profile: { id: 'buildd-ui', version: 1 },
+  mode: 'required',
+  evidence: ['ui.text', 'ui.actions', 'ui.state'],
+};
+
+describe('registered verification bindings', () => {
+  it('AC-1: approved-body bindings round-trip, refuse unsupported identities and move the fingerprint, not the prose', () => {
+    // Round trip: the line written for a binding reads back as that binding.
+    const written = bindingLine(BINDING);
+    const parsed = criterionBindings(body(written), REGISTRY);
+    expect(parsed.refused).toEqual([]);
+    expect(parsed.bindings).toEqual([BINDING]);
+    expect(criterionBindings(body(LINE_V1), REGISTRY).bindings).toEqual([BINDING]);
+
+    // Unsupported identities are refused with a reason, never dropped silently.
+    const unknownVerifier = criterionBindings(body('verify: verifier=ui.nope@1 profile=buildd-ui@1 mode=required evidence=ui.text'), REGISTRY);
+    expect(unknownVerifier.bindings).toEqual([]);
+    expect(unknownVerifier.refused).toEqual([expect.objectContaining({ criterionId: 'AC-1', reason: 'unknown_verifier' })]);
+    const unknownVersion = criterionBindings(body('verify: verifier=ui.action-state@9 profile=buildd-ui@1 mode=required evidence=ui.text,ui.actions,ui.state'), REGISTRY);
+    expect(unknownVersion.refused).toEqual([expect.objectContaining({ criterionId: 'AC-1', reason: 'unknown_verifier' })]);
+    const unknownProfile = criterionBindings(body('verify: verifier=ui.action-state@1 profile=acme@1 mode=required evidence=ui.text,ui.actions,ui.state'), REGISTRY);
+    expect(unknownProfile.refused).toEqual([expect.objectContaining({ criterionId: 'AC-1', reason: 'unknown_profile' })]);
+
+    // A changed binding changes the fingerprint; the criterion's prose does not change.
+    const v2Line = 'verify: verifier=ui.action-state@1 profile=buildd-ui@2 mode=required evidence=ui.text,ui.actions,ui.state';
+    const a = criterionBindings(body(LINE_V1), REGISTRY).bindings[0]!;
+    const b = criterionBindings(body(v2Line), REGISTRY).bindings[0]!;
+    expect(bindingFingerprint(a)).toBe(bindingFingerprint(BINDING));
+    expect(bindingFingerprint(a)).not.toBe(bindingFingerprint(b));
+    expect(bindingFingerprint({ ...BINDING, mode: 'advisory' })).not.toBe(bindingFingerprint(BINDING));
+    expect(bindingFingerprint({ ...BINDING, evidence: ['ui.text', 'ui.actions'] })).not.toBe(bindingFingerprint(BINDING));
+    const prose = (text: string) => criterionRecords(text).find((r) => r.id === 'AC-1')!.text;
+    expect(prose(body(LINE_V1))).toBe(PROSE);
+    expect(prose(body(v2Line))).toBe(PROSE);
+    expect(prose(body())).toBe(PROSE);
   });
 
-  it('AC-1: normalizes JSON property order while fingerprinting every policy field', () => {
-    const a = criterionVerifications(`R-1: Actions.\n${line(action)}`)[0];
-    const reordered = criterionVerifications('R-1: Actions.\n verify: {"mode":"required","profile":"buildd.enterprise@1","version":1,"id":"ui.actions_match_state"}')[0];
-    const advisory = criterionVerifications(`R-1: Actions.\n${line({ ...action, mode: 'advisory' })}`)[0];
-    const differentCheck = criterionVerifications(`R-1: Actions.\n${line({ ...action, id: 'ui.card_clarity' })}`)[0];
-    expect(a.fingerprint).toBe(reordered.fingerprint);
-    expect(a.fingerprint).not.toBe(advisory.fingerprint);
-    expect(a.fingerprint).not.toBe(differentCheck.fingerprint);
+  it('R-1: coverage is explicit per criterion; a criterion with nothing declared reads none, never a pass', () => {
+    const text = [
+      '## Acceptance', '',
+      'AC-1 Has a command.', '  check: bun run scripts/run-unit-tests.ts a.test.ts', '',
+      `AC-2 Has a registered verifier.`, `  ${LINE_V1}`, '',
+      'AC-3 Has an unknown verifier.', '  verify: verifier=ui.nope@1 profile=buildd-ui@1 mode=required evidence=ui.text', '',
+      'AC-4 Has nothing.', '',
+    ].join('\n');
+    const coverage = Object.fromEntries(verificationCoverage(text, REGISTRY).map((c) => [c.criterionId, c.coverage]));
+    expect(coverage).toEqual({ 'AC-1': 'command', 'AC-2': 'registered', 'AC-3': 'unsupported', 'AC-4': 'none' });
+    for (const c of verificationCoverage(text, REGISTRY)) expect(c.coverage).not.toBe('pass');
   });
 
-  it('AC-1: fingerprints the canonical full binding with portable SHA-256 identities', () => {
-    for (const id of ['ui.actions_match_state', 'ui.card_clarity'] as const) {
-      for (const mode of ['required', 'advisory'] as const) {
-        const binding: VerificationBinding = { id, version: 1, profile: 'buildd.enterprise@1', mode };
-        const expected = createHash('sha256').update(JSON.stringify(binding)).digest('hex');
-        expect(criterionVerifications(`R-1: Actions.\n${line(binding)}`)[0].fingerprint).toBe(expected);
-      }
+  it('R-2: a binding names criterion, verifier/version, profile/version, mode and evidence; anything less is refused as malformed', () => {
+    for (const line of [
+      'verify: profile=buildd-ui@1 mode=required evidence=ui.text',
+      'verify: verifier=ui.action-state profile=buildd-ui@1 mode=required evidence=ui.text,ui.actions,ui.state',
+      'verify: verifier=ui.action-state@1 mode=required evidence=ui.text,ui.actions,ui.state',
+      'verify: verifier=ui.action-state@1 profile=buildd-ui@1 mode=sometimes evidence=ui.text,ui.actions,ui.state',
+      'verify: verifier=ui.action-state@1 profile=buildd-ui@1 mode=required',
+      'verify: run(rm -rf /)',
+    ]) {
+      const r = criterionBindings(body(line), REGISTRY);
+      expect(r.bindings).toEqual([]);
+      expect(r.refused).toEqual([expect.objectContaining({ criterionId: 'AC-1', reason: 'malformed' })]);
     }
+    // A binding inside a fenced example is not a declaration.
+    expect(criterionBindings(body('```', LINE_V1, '```'), REGISTRY)).toEqual({ bindings: [], refused: [] });
   });
 
-  it('AC-1: rejects malformed, missing, unknown or unsupported configuration instead of dropping a required check', () => {
-    const invalid = ['', 'not json', '[]', 'null', 'true', '"ui.actions_match_state"',
-      JSON.stringify({ ...action, id: 'ui.invented' }), JSON.stringify({ ...action, version: 2 }),
-      JSON.stringify({ ...action, version: '1' }), JSON.stringify({ ...action, profile: 'another-project@1' }),
-      JSON.stringify({ ...action, mode: 'off' }), JSON.stringify({ ...action, model: 'caller-selected' }),
-      JSON.stringify({ id: action.id, version: action.version, profile: action.profile })];
-    for (const value of invalid) expect(() => criterionVerifications(`R-1: Actions.\n verify: ${value}`)).toThrow(/R-1/);
+  it('R-3: incompatible evidence is refused, and an ordinary check command stays compatible beside a binding', () => {
+    const short = criterionBindings(body('verify: verifier=ui.action-state@1 profile=buildd-ui@1 mode=required evidence=ui.text'), REGISTRY);
+    expect(short.bindings).toEqual([]);
+    expect(short.refused).toEqual([expect.objectContaining({ criterionId: 'AC-1', reason: 'incompatible_evidence' })]);
+    const both = body('check: bun run scripts/run-unit-tests.ts a.test.ts', LINE_V1);
+    expect(criterionRecords(both).find((r) => r.id === 'AC-1')!.checks).toEqual(['bun run scripts/run-unit-tests.ts a.test.ts']);
+    expect(criterionBindings(both, REGISTRY).bindings).toEqual([BINDING]);
   });
 
-  it('AC-1: allows distinct detectors but rejects repeated or conflicting registrations for the same detector', () => {
-    expect(criterionVerifications(`R-1: Cards.\n${line(action)}\n${line(clarity)}`)).toHaveLength(2);
-    expect(() => criterionVerifications(`R-1: Cards.\n${line(action)}\n${line(action)}`)).toThrow(/R-1/);
-    expect(() => criterionVerifications(`R-1: Cards.\n${line(action)}\n${line({ ...action, mode: 'advisory' })}`)).toThrow(/R-1/);
-  });
-
-  it('AC-1: ignores examples, non-criteria, headings and repeated criterion definitions like check lines do', () => {
-    const body = ['verify: not owned', 'R-1: First.', line(action),
-      '```json', 'R-9: Example only.', 'verify: invalid example', '```',
-      'D-1: Decision.', 'verify: invalid under decision', 'I-1: Invariant.', 'verify: invalid under invariant',
-      '## Notes', 'verify: invalid under heading', 'R-1: Repeated.', 'verify: invalid repeat',
-      'AC-1: Acceptance.', line(clarity)].join('\n');
-    expect(criterionVerifications(body).map(v => v.criterionId)).toEqual(['R-1', 'AC-1']);
-  });
-
-  it('AC-1: binding changes leave criterion prose/hash unchanged but remain visible in revision text changes', () => {
-    const before = `# UI\nR-1: Actions reflect current state.\n${line(action)}\n`;
-    const after = before.replace('"required"', '"advisory"');
-    const a = criterionRecords(before)[0]; const b = criterionRecords(after)[0];
-    const hash = (s: string) => createHash('sha256').update(s).digest('hex');
-    expect(a.text).toBe('Actions reflect current state.');
-    expect(hash(a.text)).toBe(hash(b.text));
-    expect(otherTextBySection(before).get('UI')).toContain('"required"');
-    expect(otherTextBySection(after).get('UI')).toContain('"advisory"');
-  });
-});
-
-describe('criterionVerificationCoverage', () => {
-  it('AC-5: reports all R/AC criteria and declared check kinds without claiming any check ran or passed', () => {
-    const body = ['# UI', 'R-1: Mechanical invariant.', ' check: bun run check-state',
-      'R-2: Card clarity.', line(clarity), 'AC-1: Visual decision.', ' screen: review-desktop, review-phone',
-      'AC-2: No registration yet.', 'D-1: A design choice.', 'I-1: Background.'].join('\n');
-    expect(criterionVerificationCoverage(body)).toEqual([
-      { criterionId: 'R-1', command: true, visual: false, registered: false, status: 'declared' },
-      { criterionId: 'R-2', command: false, visual: false, registered: true, status: 'declared' },
-      { criterionId: 'AC-1', command: false, visual: true, registered: false, status: 'declared' },
-      { criterionId: 'AC-2', command: false, visual: false, registered: false, status: 'missing' },
-    ]);
-  });
-
-  it('AC-5: combines multiple evidence/check kinds and refuses malformed verifier declarations', () => {
-    const body = `R-1: Cards.\n check: bun run check-card\n screen: decision\n${line(action)}`;
-    expect(criterionVerificationCoverage(body)).toEqual([
-      { criterionId: 'R-1', command: true, visual: true, registered: true, status: 'declared' },
-    ]);
-    expect(() => criterionVerificationCoverage('R-1: Cards.\n verify: {"id":"unknown"}')).toThrow();
-    expect(criterionVerificationCoverage('R-1: Not runnable.\n check: ``\n screen: ``')).toEqual([
-      { criterionId: 'R-1', command: false, visual: false, registered: false, status: 'missing' },
-    ]);
+  it('R-20: the profile is part of the contract identity, not a flag; an unregistered profile is not silently given Buildd\'s', () => {
+    const acme = criterionBindings(body('verify: verifier=ui.copy@1 profile=acme-ui@1 mode=advisory evidence=ui.text,ui.actions'), REGISTRY);
+    expect(acme.bindings).toEqual([]);
+    expect(acme.refused).toEqual([expect.objectContaining({ reason: 'unknown_profile' })]);
+    const withAcme: VerifierRegistry = { ...REGISTRY, profiles: [...REGISTRY.profiles, { id: 'acme-ui', version: 1 }] };
+    const ok = criterionBindings(body('verify: verifier=ui.copy@1 profile=acme-ui@1 mode=advisory evidence=ui.text,ui.actions'), withAcme);
+    expect(ok.bindings[0]?.profile).toEqual({ id: 'acme-ui', version: 1 });
+    expect(ok.bindings[0]?.verifier).toEqual({ id: 'ui.copy', version: 1 });
   });
 });
