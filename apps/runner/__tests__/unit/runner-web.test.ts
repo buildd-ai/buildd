@@ -85,6 +85,10 @@ describe('readRunnerHttpPort', () => {
     serveIdentity(withUi, 8766);
     expect(await readRunnerHttpPort(withUi)).toEqual({ state: 'live', httpPort: 8766 });
 
+    // Windows: Bun's lstat throws EACCES on a live socket; that is not "absent".
+    const eacces = () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); };
+    expect(await readRunnerHttpPort(withUi, 2_000, { lstat: eacces })).toEqual({ state: 'live', httpPort: 8766 });
+
     const headless = tempSocket();
     serveIdentity(headless, null);
     expect(await readRunnerHttpPort(headless)).toEqual({ state: 'live', httpPort: null });
