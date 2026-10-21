@@ -172,6 +172,7 @@ apps/runner/src/agent-plugin-install.ts
 apps/runner/src/buildd-home.ts
 apps/runner/src/claude-json-mcp.ts
 apps/runner/src/secure-file.ts
+apps/runner/src/launcher-commands.ts
 apps/runner/plugin/
 scripts/stub-server-only.ts
 CLIENT_SPARSE
@@ -519,81 +520,11 @@ CLIENTUSAGE
     ;;
 
   init)
-    # Per-workspace MCP registration: writes .mcp.json in current repo
-    if [ ! -d ".git" ]; then
-      echo "Error: not in a git repository. Run 'buildd init' from a repo root." >&2
-      exit 1
-    fi
-
-    # Read workspace ID from arg or prompt
-    WORKSPACE_ID="${2:-}"
-    if [ -z "$WORKSPACE_ID" ]; then
-      echo "Usage: buildd init <workspace-id>"
-      echo ""
-      echo "Find your workspace ID in the buildd dashboard."
-      exit 1
-    fi
-
-    # Read API key from config
-    CONFIG_FILE="$HOME/.buildd/config.json"
-    BUILDD_KEY=""
-    BUILDD_SERVER="https://buildd.dev"
-    if [ -f "$CONFIG_FILE" ]; then
-      BUILDD_KEY=$(bun --no-env-file -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.apiKey||'')" 2>/dev/null)
-      BUILDD_SERVER=$(bun --no-env-file -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.builddServer||'https://buildd.dev')" 2>/dev/null)
-    fi
-    if [ -z "$BUILDD_KEY" ]; then
-      echo "Error: not logged in. Run 'buildd login' first." >&2
-      exit 1
-    fi
-
-    # Write .mcp.json
-    cat > .mcp.json << MCPEOF
-{
-  "mcpServers": {
-    "buildd": {
-      "type": "http",
-      "url": "${BUILDD_SERVER}/api/mcp?workspace=${WORKSPACE_ID}",
-      "headers": {
-        "Authorization": "Bearer ${BUILDD_KEY}"
-      }
-    }
-  }
-}
-MCPEOF
-
-    # Add .mcp.json to .gitignore if not already there
-    if [ -f .gitignore ]; then
-      if ! grep -qx '.mcp.json' .gitignore 2>/dev/null; then
-        echo '.mcp.json' >> .gitignore
-        echo "Added .mcp.json to .gitignore"
-      fi
-    else
-      echo '.mcp.json' > .gitignore
-      echo "Created .gitignore with .mcp.json"
-    fi
-
-    # Ensure Claude Code allows project MCP servers
-    CLAUDE_SETTINGS="$HOME/.claude/settings.json"
-    if [ -f "$CLAUDE_SETTINGS" ]; then
-      if ! grep -q '"enableAllProjectMcpServers"' "$CLAUDE_SETTINGS" 2>/dev/null; then
-        # Use bun to merge the setting
-        bun --no-env-file -e "
-          const fs = require('fs');
-          const settings = JSON.parse(fs.readFileSync('$CLAUDE_SETTINGS', 'utf-8'));
-          settings.enableAllProjectMcpServers = true;
-          fs.writeFileSync('$CLAUDE_SETTINGS', JSON.stringify(settings, null, 2) + '\n');
-        " 2>/dev/null && echo "Enabled project MCP servers in Claude Code settings"
-      fi
-    else
-      mkdir -p "$HOME/.claude"
-      echo '{ "enableAllProjectMcpServers": true }' > "$CLAUDE_SETTINGS"
-      echo "Created Claude Code settings with project MCP servers enabled"
-    fi
-
-    echo "Created .mcp.json for workspace $WORKSPACE_ID"
-    echo "Claude Code will now auto-detect the buildd MCP server in this repo."
-    exit 0
+    # Per-workspace MCP registration: writes .mcp.json in the current repo.
+    # status, logout and init live in launcher-commands.ts, shared with the
+    # Windows launcher (install.ps1).
+    shift
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/launcher-commands.ts" init "$@"
     ;;
 
   install)
@@ -619,53 +550,15 @@ MCPEOF
     ;;
 
   logout)
-    CONFIG_FILE="$HOME/.buildd/config.json"
-    if [ -f "$CONFIG_FILE" ]; then
-      # Revoke the session presence token server-side (best effort), then drop
-      # both credentials from the file.
-      bun --no-env-file -e "
-        const fs = require('fs');
-        const config = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf-8'));
-        const token = config.presenceToken;
-        const server = (config.builddServer || 'https://buildd.dev').replace(/\/+$/, '');
-        const done = () => {
-          delete config.apiKey;
-          delete config.presenceToken;
-          fs.writeFileSync('$CONFIG_FILE', JSON.stringify(config, null, 2), { mode: 0o600 });
-        };
-        if (typeof token === 'string' && token.startsWith('bldp_')) {
-          fetch(server + '/api/auth/presence-token', { method: 'DELETE', headers: { Authorization: 'Bearer ' + token }, signal: AbortSignal.timeout(5000) })
-            .catch(() => {}).finally(done);
-        } else done();
-      "
-      echo "Logged out. API key and session presence token removed from $CONFIG_FILE"
-    else
-      echo "Not logged in (no config file found)"
-    fi
-    exit 0
+    # Revokes the session presence token (best effort), then drops both
+    # credentials from ~/.buildd/config.json.
+    shift
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/launcher-commands.ts" logout "$@"
     ;;
 
   status)
-    CONFIG_FILE="$HOME/.buildd/config.json"
-    if [ -f "$CONFIG_FILE" ]; then
-      bun --no-env-file -e "
-        const fs = require('fs');
-        const config = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf-8'));
-        if (config.apiKey) {
-          const key = config.apiKey;
-          console.log('Status: logged in');
-          console.log('API key: ' + key.slice(0, 10) + '...' + key.slice(-4));
-          console.log('Server:  ' + (config.builddServer || 'https://buildd.dev'));
-        } else {
-          console.log('Status: not logged in');
-          console.log('Run \"buildd login\" to authenticate.');
-        }
-      "
-    else
-      echo "Status: not logged in"
-      echo "Run \"buildd login\" to authenticate."
-    fi
-    exit 0
+    shift
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/launcher-commands.ts" status "$@"
     ;;
 
   service)

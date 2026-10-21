@@ -134,19 +134,34 @@ goto collect
 REM `buildd login` connects this machine to an account, as in the bash launcher.
 if /i "%SUBCMD%"=="login" (
     bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\login.ts" !REST!
-    exit /b
+    exit /b !ERRORLEVEL!
+)
+
+REM `buildd status`, `buildd logout` and `buildd init <workspace-id>` run the same
+REM launcher-commands.ts the bash launcher does; the runner rejects them.
+if /i "%SUBCMD%"=="status" (
+    bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\launcher-commands.ts" status !REST!
+    exit /b !ERRORLEVEL!
+)
+if /i "%SUBCMD%"=="logout" (
+    bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\launcher-commands.ts" logout !REST!
+    exit /b !ERRORLEVEL!
+)
+if /i "%SUBCMD%"=="init" (
+    bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\launcher-commands.ts" init !REST!
+    exit /b !ERRORLEVEL!
 )
 
 REM `buildd install` puts the agent plugin hooks into Claude Code, Codex and Cursor.
 if /i "%SUBCMD%"=="install" (
     bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\agent-plugin-install.ts" !REST!
-    exit /b
+    exit /b !ERRORLEVEL!
 )
 
 REM `buildd service install|uninstall|status|logs` manages the background Scheduled Task.
 if /i "%SUBCMD%"=="service" (
     bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\service.ts" !REST!
-    exit /b
+    exit /b !ERRORLEVEL!
 )
 
 REM Restart loop (exit code 75 = update applied, restart) - mirrors install.sh's
