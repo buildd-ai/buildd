@@ -902,7 +902,7 @@ bwrap_offer() {
   cmd="$(bwrap_install_cmd)" || return 0
   if [ "$(id -u)" != "0" ]; then
     if command -v sudo >/dev/null 2>&1; then
-      elevate="sudo"
+      elevate="sudo"  # printf: shown in interactive prompts below
     else
       echo -e "${YELLOW}bubblewrap is not installed. As root, run: ${cmd}${NC}"
       return 0
