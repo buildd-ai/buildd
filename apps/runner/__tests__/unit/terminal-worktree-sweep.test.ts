@@ -18,7 +18,7 @@ import { describe, test, expect, beforeEach, afterAll } from 'bun:test';
 import { execSync } from 'child_process';
 import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync, readdirSync, mkdirSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { sweepTerminalWorktrees, type SweepRecord } from '../../src/terminal-worktree-sweep';
 
 const roots: string[] = [];
@@ -98,7 +98,8 @@ describe('sweepTerminalWorktrees', () => {
     expect(readFileSync(join(archiveDir, 'dirty.patch'), 'utf-8')).toContain('edited but not committed');
   });
 
-  test('keeps the worktree when the archive cannot be written', async () => {
+  // A 0o500 directory is still writable on Windows (the DACL decides), so the archive never fails there.
+  test.skipIf(process.platform === 'win32')('keeps the worktree when the archive cannot be written', async () => {
     const path = makeWorktree('noarchive', { push: false, commit: true });
     mkdirSync(archiveDir, { recursive: true });
     chmodSync(archiveDir, 0o500);
@@ -239,5 +240,6 @@ test('a cloud session in the clone is never swept', async () => {
     inMemoryWorkers: [], now: Date.now(), retentionMs: 0, archiveDir });
   expect(results).toEqual([]);
   expect(existsSync(join(repo, '.git'))).toBe(true);
-  expect(git(repo, 'rev-parse --show-toplevel').trim()).toBe(repo);
+  // resolve(): Git for Windows prints C:/... with forward slashes.
+  expect(resolve(git(repo, 'rev-parse --show-toplevel').trim())).toBe(repo);
 });

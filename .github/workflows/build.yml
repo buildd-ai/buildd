@@ -540,6 +540,57 @@ jobs:
           done
           exit $status
 
+  # The runner's unit tests on Windows. Every other job here runs on ubuntu, so
+  # Windows-only breakages (a launcher that did not dispatch `status`, a stale
+  # runner.sock, an installer one-liner) shipped and were found on a real
+  # Windows machine instead. Tests of genuinely Unix-only features (bwrap, POSIX
+  # uids, the bash launcher) are skipped on win32 in the test files themselves.
+  #
+  # Not in `build`'s needs, so branch protection does not require it yet; it
+  # joins the aggregator once it has stayed green for a while.
+  runner-unit-tests-windows:
+    name: Runner unit tests (windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.3"
+
+      - name: Cache bun install cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: bun install
+
+      # TMP outside the user profile's Temp folder: icacls cannot read the ACL of
+      # a Unix socket created there, which fails the owner-only socket tests.
+      - name: Run runner unit tests
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          mkdir -p "$RUNNER_TEMP/tmp"
+          export TMP="$RUNNER_TEMP\\tmp" TEMP="$RUNNER_TEMP\\tmp" TMPDIR="$RUNNER_TEMP\\tmp"
+          # shellcheck disable=SC2046
+          bun run scripts/run-unit-tests.ts $(git ls-files 'apps/runner/__tests__/unit/*.test.ts' 'apps/runner/src/*.test.ts')
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-report-windows
+          path: .test-report.log
+          if-no-files-found: ignore
+          retention-days: 7
+
   # Pre-promote schema drift check — must produce a definitive pass/fail on every PR,
   # never Skipped. GitHub branch protection treats Skipped as satisfying a required
   # check, so a job-level `if:` that evaluates false lets non-main PRs merge without

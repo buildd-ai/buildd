@@ -18,12 +18,15 @@
  */
 import { describe, test, expect, beforeAll, afterAll, mock } from 'bun:test';
 import { tmpdir } from 'os';
+import { resolve } from 'path';
 import type { LocalUIConfig } from '../../src/types';
 import * as realRoles from '../../src/roles';
 import * as realGitOps from '../../src/git-operations';
 import { cleanupTestWorkspace } from '../test-workspace';
 
-const PRIMARY = '/tmp/test-primary-clone';
+// Absolute on every platform (a drive letter on Windows), written with `/` so it is
+// one plain word to the Bash tokenizer, for which `\` is an escape.
+const PRIMARY = resolve('/tmp/test-primary-clone').replace(/\\/g, '/');
 const WORKTREE = `${PRIMARY}/.buildd-worktrees/buildd-w-conf`;
 
 let lastQueryOpts: any = null;

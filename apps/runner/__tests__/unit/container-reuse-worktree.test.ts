@@ -20,6 +20,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { pathToFileURL } from 'url';
 import { KEEP_DIRNAME, resetContainer, type ResetPaths } from '../../src/container-reset';
 import { __resetGitOpsDeps, __setGitOpsDeps, setupWorktree, takeSetupWorktreeError } from '../../src/git-operations';
 import { ensureIsolatedClone } from '../../src/workspace';
@@ -70,6 +71,10 @@ function acquire(h = hooks()) {
   const path = ensureIsolatedClone({ id: WS, repo: url, defaultBranch: 'dev' }, paths.isolationRoot, h);
   return { path, h };
 }
+
+// resetContainer runs only in a Linux cloud container (process uids, `ps`,
+// SIGKILL): the suites that reset are skipped on Windows.
+const describeContainer = describe.skipIf(process.platform === 'win32');
 
 function reset() {
   const r = resetContainer(paths, {
@@ -130,7 +135,9 @@ function commitAndPush(worktree: string, file: string, branch: string) {
 
 beforeEach(() => {
   dir = fs.mkdtempSync(join(tmpdir(), 'reuse-wt-'));
-  ({ origin, url } = makeDeepOrigin(dir));
+  ({ origin } = makeDeepOrigin(dir));
+  // `file://${origin}` is not a file URL for a Windows drive path.
+  url = pathToFileURL(origin).href;
   const home = join(dir, 'home');
   const builddHome = join(home, '.buildd');
   paths = {
@@ -179,7 +186,7 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-describe('reset → next task: setupWorktree in the reused clone', () => {
+describeContainer('reset → next task: setupWorktree in the reused clone', () => {
   test('builder then reviewer then builder: each reused clone runs in place, from the kept packs, with nothing planted', async () => {
     // ── Task 1 (fresh container): cloud clone, builder checkout, push, plant ──
     const first = acquire();
@@ -270,7 +277,7 @@ describe('reset → next task: setupWorktree in the reused clone', () => {
   });
 });
 
-describe('the seed fetches only what origin added', () => {
+describeContainer('the seed fetches only what origin added', () => {
   /** A tree big enough that a full depth-1 pack and an incremental one are far apart: 300 incompressible files. */
   function growOrigin(): string {
     const other = join(dir, 'grow');

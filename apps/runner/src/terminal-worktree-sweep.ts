@@ -79,7 +79,8 @@ async function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promis
 }
 
 export function mainRepoFor(worktreePath: string): string {
-  const idx = worktreePath.indexOf(`/${WORKTREE_DIR_MARKER}`);
+  // Same-length replace, so the index slices the original (Windows `\`) path.
+  const idx = worktreePath.replace(/\\/g, '/').indexOf(`/${WORKTREE_DIR_MARKER}`);
   return idx > 0 ? worktreePath.slice(0, idx) : worktreePath;
 }
 

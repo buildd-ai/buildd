@@ -104,7 +104,8 @@ describe('runVerificationCommand — evidence shape and iteration binding', () =
     const evidence = await runVerificationCommand({
       workerId: 'w1',
       iteration: 0,
-      command: 'echo hello-out; echo hello-err >&2',
+      // `&&` and `1>&2` mean the same under sh and cmd.exe (exec's shell on Windows); `;` does not.
+      command: 'echo hello-out && echo hello-err 1>&2',
       cwd: '/tmp',
     });
     expect(evidence.stdout).toContain('hello-out');

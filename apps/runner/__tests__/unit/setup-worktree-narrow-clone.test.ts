@@ -16,6 +16,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { setupWorktree, collectGitStats, __setGitOpsDeps, __resetGitOpsDeps } from '../../src/git-operations';
 import { CLOUD_BRANCH_FETCH_DEPTH, cloneRepo } from '../../src/git-clone';
+import { posixShell } from '../../src/posix-shell';
 import { git, makeDeepOrigin, remoteBranches } from '../fixtures/deep-origin';
 
 let dir: string;
@@ -48,7 +49,9 @@ beforeEach(() => {
   commands = [];
   const recordingExec = ((cmd: string, opts?: cp.ExecSyncOptions) => {
     commands.push(String(cmd));
-    return cp.execSync(cmd, opts);
+    // The runner's own exec runs git command lines under a POSIX sh on Windows
+    // too (they are single-quoted); cmd.exe, execSync's default there, is not one.
+    return cp.execSync(cmd, process.platform === 'win32' ? { ...opts, shell: posixShell() } : opts);
   }) as typeof cp.execSync;
   __setGitOpsDeps({
     execSync: recordingExec, execFile: cp.execFile, existsSync: fs.existsSync, mkdirSync: fs.mkdirSync,

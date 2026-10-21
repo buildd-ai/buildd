@@ -37,6 +37,8 @@ function makeFixture(): { repoPath: string; holderPath: string } {
   sh(`git clone "${barePath}" "${repoPath}"`, bare);
   sh('git config user.email test@buildd.dev', repoPath);
   sh('git config user.name buildd-test', repoPath);
+  // Git for Windows defaults autocrlf on, which would check work.txt out as CRLF.
+  sh('git config core.autocrlf false', repoPath);
   sh('git commit --allow-empty -m init', repoPath);
   sh('git push origin main', repoPath);
 

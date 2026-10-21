@@ -18,13 +18,16 @@
 
 import { describe, test, expect, mock } from 'bun:test';
 import { readFileSync, readdirSync, statSync } from 'fs';
-import { join } from 'path';
+import { join, normalize, resolve } from 'path';
 import { HookFactory } from '../../src/hook-factory';
 import { RUNNER_DENIAL_MARKER, runnerDenial, HUMAN_UI_DENIAL } from '../../src/runner-denial';
 import type { LocalWorker } from '../../src/types';
 
-const OWN = '/repo/.buildd-worktrees/own';
-const PRIMARY = '/repo';
+// Resolved so they carry a drive letter on Windows, as the runner's real paths do.
+const PRIMARY = resolve('/repo');
+const OWN = join(PRIMARY, '.buildd-worktrees', 'own');
+// A shell word for PRIMARY: forward slashes, since `\` is an escape in the Bash tokenizer.
+const PRIMARY_SH = PRIMARY.replace(/\\/g, '/');
 
 function makeFactory(opts: { inputAsRetry?: boolean; pending?: Map<string, any> } = {}) {
   return new HookFactory({
@@ -50,7 +53,7 @@ const reasonOf = (r: any): string | undefined =>
 const CASES: Case[] = [
   {
     name: 'read-jail: Read outside the worktree',
-    run: async () => reasonOf(await makeFactory().createReadJailHook(worker, OWN, ['/secret'])(pre('Read', { file_path: '/secret/x' }), undefined, signal)),
+    run: async () => reasonOf(await makeFactory().createReadJailHook(worker, OWN, [normalize('/secret')])(pre('Read', { file_path: '/secret/x' }), undefined, signal)),
   },
   {
     name: 'claude.ai artifact gate: delete',
@@ -58,7 +61,7 @@ const CASES: Case[] = [
   },
   {
     name: 'worktree confinement: Bash cd into the primary clone',
-    run: async () => reasonOf(await makeFactory().createWorktreeConfinementHook(worker, OWN, PRIMARY)(pre('Bash', { command: `cd ${PRIMARY} && ls` }), undefined, signal)),
+    run: async () => reasonOf(await makeFactory().createWorktreeConfinementHook(worker, OWN, PRIMARY)(pre('Bash', { command: `cd ${PRIMARY_SH} && ls` }), undefined, signal)),
   },
   {
     name: 'permission hook: AskUserQuestion that asks nothing',

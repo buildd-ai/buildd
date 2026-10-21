@@ -22,6 +22,7 @@
  */
 
 import { describe, test, expect, afterAll, beforeEach } from 'bun:test';
+import { join } from 'path';
 
 // ─── Fake git ────────────────────────────────────────────────────────────────
 // Enough of git's worktree semantics to reproduce the collision: one branch may
@@ -144,8 +145,8 @@ describe('setupWorktree — shared/default branch guard', () => {
 
     // Distinct directories.
     expect(a.path).not.toBe(b.path);
-    expect(a.path).toBe('/repo/.buildd-worktrees/buildd_task-a');
-    expect(b.path).toBe('/repo/.buildd-worktrees/buildd_task-b');
+    expect(a.path).toBe(join(MAIN_WORKTREE, '.buildd-worktrees', 'buildd_task-a'));
+    expect(b.path).toBe(join(MAIN_WORKTREE, '.buildd-worktrees', 'buildd_task-b'));
 
     // Both still branch off the default branch's remote tip.
     const adds = syncCalls.filter(c => c.cmd.includes('git worktree add'));

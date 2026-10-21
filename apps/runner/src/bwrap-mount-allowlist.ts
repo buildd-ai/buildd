@@ -88,7 +88,8 @@ export function parseExtraMounts(
 function parentDirs(path: string): string[] {
   const dirs: string[] = [];
   let current = dirname(path);
-  while (current !== '/') {
+  // Stop at the root, which is its own dirname: `/`, or `C:\` on Windows (where `!== '/'` never ended).
+  while (current !== dirname(current)) {
     dirs.push(current);
     current = dirname(current);
   }
