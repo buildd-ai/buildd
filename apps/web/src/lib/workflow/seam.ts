@@ -1443,10 +1443,12 @@ export { KernelObservationFailed } from './kernel-observation';
  */
 export async function observePrState(p: {
   workspaceId: string; repoFullName: string; prNumber: number; installationId: number; source: string; pull?: unknown;
+  /** The webhook's `sender` (login and User/Bot type): who closed the PR. */
+  closedBy?: { login: string | null; type: string | null } | null;
 }, deps: SeamDeps = {}): Promise<boolean> {
   const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
   if (!deliveryId) return false;
-  const r = await ingestFact({ kind: 'pr_closed', workspaceId: p.workspaceId, source: p.source, repoFullName: p.repoFullName, prNumber: p.prNumber },
+  const r = await ingestFact({ kind: 'pr_closed', workspaceId: p.workspaceId, source: p.source, repoFullName: p.repoFullName, prNumber: p.prNumber, ...(p.closedBy ? { closedBy: p.closedBy } : {}) },
     { exec: deps.exec, github: readerFor(deps, p.installationId) });
   if (r.result === 'rejected' && r.factId === null) {
     if (p.pull) {

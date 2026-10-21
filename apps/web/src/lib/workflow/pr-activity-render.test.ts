@@ -87,6 +87,15 @@ describe('transitions → timeline', () => {
     ]);
   });
 
+  test('a close without a merge carries who closed it, on the row and in the header', () => {
+    const closedBy = { login: 'example-app[bot]', type: 'Bot', door: { workerId: 'wk1', taskId: '0123abcd-0000-4000-8000-000000000000', accountId: null, principalVia: 'task_token', reason: 'superseded by #8' } };
+    const ts = [T('PrClosedUnmerged', 'AWAITING_REVIEW', 'CLOSED_UNMERGED', { live: { ...live('H2'), state: 'closed' }, closeCause: 'buildd_close', closedBy }, 1)];
+    expect(transitionsToActivityEntries(ts, [], []).map((e) => [e.kind, e.detail ?? null])).toEqual([['closed_unmerged', 'closed through buildd by task `0123abcd` · superseded by #8']]);
+    const body = renderDeliveryActivity({ view: { delivery: D({ state: 'CLOSED_UNMERGED', stateReason: 'buildd_close' }), rounds: [], attempts: [] }, transitions: ts, timezone: 'UTC' });
+    expect(header(body)).toContain('closed through buildd by task `0123abcd`');
+    expect(body).not.toContain('· unknown');
+  });
+
   test('fix lines carry the 1-based ledger attempt', () => {
     const e = transitionsToActivityEntries(log, rounds, attempts).find((x) => x.kind === 'fix_started')!;
     expect({ iteration: e.iteration, maxIterations: e.maxIterations }).toEqual({ iteration: 1, maxIterations: 3 });

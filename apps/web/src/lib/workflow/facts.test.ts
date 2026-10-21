@@ -212,6 +212,58 @@ describe('ingestFact', () => {
     }
   });
 
+  test('pr_closed: the closer is recorded, and the cause is the buildd door that closed it, a person on GitHub, or unknown', async () => {
+    const closedLive: LivePr = { ...live('H1'), state: 'closed', updatedAt: '2026-01-01T02:00:00Z' };
+    const run = async (o: { closedBy?: { login: string | null; type: string | null }; decision?: Record<string, unknown> | null; decisionFails?: boolean }) => {
+      const inserted: Array<Record<string, unknown>> = [];
+      const asked: unknown[][] = [];
+      const { exec } = router({
+        load_view: () => ({ rows: [{ delivery: delivery({ state: 'AWAITING_REVIEW' }), rounds: [], attempts: [] }] }),
+        close_decision: (_t, params) => {
+          asked.push(params);
+          if (o.decisionFails) throw new Error('db down');
+          return { rows: o.decision ? [o.decision] : [] };
+        },
+        insert_fact: (_t, params) => { inserted.push(JSON.parse(String(params[6]))); return { rows: [{ id: 'f7' }] }; },
+        find_transition: () => ({ rows: [] }),
+        transition: () => ({ rows: [{ transition_id: 'tr7', delivery_id: 'd1', version: 3 }] }),
+      });
+      const r = await ingestFact({ kind: 'pr_closed', workspaceId: 'w1', source: 'webhook:closed', repoFullName: 'acme/widgets', prNumber: 7, ...(o.closedBy ? { closedBy: o.closedBy } : {}) }, {
+        exec, github: { readPr: async () => closedLive, branchExists: async () => true },
+      });
+      if (r.result !== 'applied') throw new Error(`expected applied, got ${r.result}`);
+      return { r, payload: inserted[0], asked };
+    };
+
+    // A buildd door (close_pr) closed it: the decision row names the worker, task, account and the caller's reason.
+    const door = await run({
+      closedBy: { login: 'example-app[bot]', type: 'Bot' },
+      decision: { worker_id: 'wk1', task_id: 't9', account_id: 'a1', principal_via: 'task_token', reason: 'superseded by #8', occurred_at: '2026-01-01T01:59:58Z' },
+    });
+    expect(door.asked[0]).toEqual(expect.arrayContaining(['w1', 'pr:7']));
+    expect(door.r.decision.patch.stateReason).toBe('buildd_close');
+    expect(door.r.decision.evidence.closedBy).toEqual({
+      login: 'example-app[bot]', type: 'Bot',
+      door: { workerId: 'wk1', taskId: 't9', accountId: 'a1', principalVia: 'task_token', reason: 'superseded by #8' },
+    });
+    expect(door.payload.closedBy).toEqual(door.r.decision.evidence.closedBy);
+
+    // A person closed it on GitHub and no buildd door did: manual, with their login.
+    const person = await run({ closedBy: { login: 'some-human', type: 'User' } });
+    expect(person.r.decision.patch.stateReason).toBe('manual');
+    expect(person.r.decision.evidence.closedBy).toEqual({ login: 'some-human', type: 'User' });
+
+    // A bot that is not a buildd door, or a sweep that saw the close without a sender: unknown, still never guessed.
+    expect((await run({ closedBy: { login: 'other-bot[bot]', type: 'Bot' } })).r.decision.patch.stateReason).toBe('unknown');
+    const swept = await run({});
+    expect(swept.r.decision.patch.stateReason).toBe('unknown');
+    expect(swept.r.decision.evidence.closedBy).toBeUndefined();
+    // A sweep's read still finds a buildd door's close.
+    expect((await run({ decision: { worker_id: 'wk1', task_id: null, account_id: null, principal_via: 'runner_key', reason: null } })).r.decision.patch.stateReason).toBe('buildd_close');
+    // An unreadable audit row never blocks the close.
+    expect((await run({ closedBy: { login: 'some-human', type: 'User' }, decisionFails: true })).r.decision.patch.stateReason).toBe('manual');
+  });
+
   test('composition_attested resolves constituents from the ledger and cites the fact', async () => {
     const { exec } = router({
       constituent_evidence: () => ({ rows: [{ round_id: 'rx', head_sha: 'C1', status: 'decided', effective_verdict: 'approve', approved_heads: ['C1'], delivery_id: 'dx', pr_number: 3, repo_full_name: 'acme/widgets' }] }),
