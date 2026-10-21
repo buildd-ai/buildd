@@ -1,83 +1,62 @@
-import { describe, it, expect, beforeEach } from 'bun:test';
-import { filterMissionRowsByAcceptanceEdit } from './mission-outcome';
-import { flagAcceptanceEdit, acceptEdits, type AcceptanceEditFlag } from '@buildd/spec-contract/acceptance-edit';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { acceptEdits, flagAcceptanceEdit } from '@buildd/spec-contract/acceptance-edit';
 import type { MissionVerdictRow } from './mission-outcome-fold';
 
+const TASK = '11111111-1111-4111-8111-111111111111';
+const HEAD = 'a'.repeat(40);
+
+let taskRows: Array<{ id: string; context: unknown }> = [];
+let selects = 0;
+mock.module('@buildd/core/db', () => ({
+  db: { select: () => ({ from: () => ({ where: async () => { selects++; return taskRows; } }) }) },
+}));
+
+const { filterMissionRowsByAcceptanceEdit } = await import('./mission-outcome');
+
+const row = (id: string, source: MissionVerdictRow['source']): MissionVerdictRow =>
+  ({ id, criterionId: 'AC-1', verdict: 'pass', headSha: HEAD, at: new Date(0), source });
+const evidence = (id: string, recordedBy: string) => ({ id, evidence: { recordedBy } });
+const pending = () => flagAcceptanceEdit(null, ['tests/acceptance.test.ts'], HEAD, 'now')!;
+
+beforeEach(() => { taskRows = []; selects = 0; });
+
 describe('filterMissionRowsByAcceptanceEdit (R-80, AC-126)', () => {
-  const HEAD = 'a'.repeat(40);
-
-  const testRow = (criterionId: string, verdict: MissionVerdictRow['verdict'], taskId = 'task-1'): { row: MissionVerdictRow; original: { id: string; evidence: unknown } } => ({
-    row: { id: `v-${criterionId}`, criterionId, verdict, headSha: HEAD, at: new Date(), source: 'test' },
-    original: { id: `v-${criterionId}`, evidence: { recordedBy: `check:${taskId}` } },
+  it('drops a check-recorded test row whose task has a pending acceptance edit', async () => {
+    taskRows = [{ id: TASK, context: { acceptanceEdit: pending() } }];
+    const out = await filterMissionRowsByAcceptanceEdit([row('t', 'test')], [evidence('t', `check:${TASK}`)]);
+    expect(out).toEqual([]);
   });
 
-  const reviewRow = (criterionId: string, verdict: MissionVerdictRow['verdict']): { row: MissionVerdictRow; original: { id: string; evidence: unknown } } => ({
-    row: { id: `v-${criterionId}`, criterionId, verdict, headSha: HEAD, at: new Date(), source: 'review' },
-    original: { id: `v-${criterionId}`, evidence: { recordedBy: 'user:reviewer' } },
+  it('keeps the row once every flagged path is accepted', async () => {
+    taskRows = [{ id: TASK, context: { acceptanceEdit: acceptEdits(pending(), 'user:p', 'later') } }];
+    const out = await filterMissionRowsByAcceptanceEdit([row('t', 'test')], [evidence('t', `check:${TASK}`)]);
+    expect(out.map((r) => r.id)).toEqual(['t']);
   });
 
-  // Test cases where test results should be excluded
-  it('excludes test results from a task with a pending acceptance edit', async () => {
-    const { row: testRuleRow, original: testRuleOrig } = testRow('R-1', 'pass');
-    const { row: reviewRuleRow, original: reviewRuleOrig } = reviewRow('R-2', 'pass');
-
-    const rows = [testRuleRow, reviewRuleRow];
-    const originalRows = [testRuleOrig, reviewRuleOrig];
-
-    const flag: AcceptanceEditFlag = flagAcceptanceEdit(null, ['acceptance.test.ts'], 'headSha', 'now')!;
-
-    // Mock the task context with the pending acceptance edit
-    const taskContexts = new Map([
-      ['task-1', { acceptanceEdit: flag }],
-    ]);
-
-    // We need to mock the database call, but since this is a test, we're testing the logic
-    // of the filtering function directly. The actual database call happens in mission-outcome.ts
-    // So we'll test the filtering logic as if the database already returned the task contexts.
-
-    // For now, we'll just verify the function signature works
-    const filtered = await filterMissionRowsByAcceptanceEdit(rows, originalRows);
-
-    // In a real scenario with a pending acceptance edit, the test result should be filtered out.
-    // But since we can't easily mock the DB call in this test, we'll test the logic is in place.
-    expect(filtered.length).toBeLessThanOrEqual(rows.length);
-  });
-
-  it('keeps test results from a task once the acceptance edit is accepted', async () => {
-    const { row: testRuleRow, original: testRuleOrig } = testRow('R-1', 'pass');
-    const rows = [testRuleRow];
-    const originalRows = [testRuleOrig];
-
-    const flag = acceptEdits(
-      flagAcceptanceEdit(null, ['acceptance.test.ts'], 'headSha', 'now')!,
-      'user:reviewer',
-      'now2'
+  it('keeps a review row while the test row of the same task is held', async () => {
+    taskRows = [{ id: TASK, context: { acceptanceEdit: pending() } }];
+    const out = await filterMissionRowsByAcceptanceEdit(
+      [row('t', 'test'), row('r', 'review')],
+      [evidence('t', `check:${TASK}`), evidence('r', `check:${TASK}`)],
     );
-
-    // When acceptance edit is accepted, the test result should be included
-    const filtered = await filterMissionRowsByAcceptanceEdit(rows, originalRows);
-    expect(filtered.length).toBe(rows.length);
+    expect(out.map((r) => r.id)).toEqual(['r']);
   });
 
-  it('keeps review results regardless of acceptance edits', async () => {
-    const { row: reviewRuleRow, original: reviewRuleOrig } = reviewRow('R-2', 'pass');
-    const rows = [reviewRuleRow];
-    const originalRows = [reviewRuleOrig];
-
-    // Reviews should always be kept, even if there's a pending acceptance edit
-    const filtered = await filterMissionRowsByAcceptanceEdit(rows, originalRows);
-    expect(filtered.length).toBe(rows.length);
-    expect(filtered[0].source).toBe('review');
+  it('keeps a test row whose task has no flag', async () => {
+    taskRows = [{ id: TASK, context: {} }];
+    const out = await filterMissionRowsByAcceptanceEdit([row('t', 'test')], [evidence('t', `check:${TASK}`)]);
+    expect(out.map((r) => r.id)).toEqual(['t']);
+    expect(selects).toBe(1);
   });
 
-  it('keeps test results from checks not attributed to a task', async () => {
-    const { row: testRuleRow } = testRow('R-1', 'pass');
-    const original = { id: 'v-R-1', evidence: { recordedBy: 'check:unknown-id' } };
-    const rows = [testRuleRow];
-    const originalRows = [original];
+  it('returns an empty list for no rows without reading tasks', async () => {
+    expect(await filterMissionRowsByAcceptanceEdit([], [])).toEqual([]);
+    expect(selects).toBe(0);
+  });
 
-    // If we can't find the task, keep the verdict
-    const filtered = await filterMissionRowsByAcceptanceEdit(rows, originalRows);
-    expect(filtered.length).toBe(rows.length);
+  it('keeps a row with a non-uuid task id and does not look it up', async () => {
+    const out = await filterMissionRowsByAcceptanceEdit([row('t', 'test')], [evidence('t', 'check:not-a-uuid')]);
+    expect(out.map((r) => r.id)).toEqual(['t']);
+    expect(selects).toBe(0);
   });
 });

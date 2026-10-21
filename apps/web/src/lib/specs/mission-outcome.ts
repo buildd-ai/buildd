@@ -20,7 +20,7 @@ import { foldMissionSpec, verdictIsCurrent, type MissionSpecFold, type MissionTa
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 import { settleVerdictSource } from './verdict-source';
 import { revisionCriterionHashes } from './criteria';
-import { acceptanceEditOf, dropUnacceptedTestResults } from '@buildd/spec-contract/acceptance-edit';
+import { checkTaskIdOf, holdUnacceptedTestRows } from './acceptance-hold';
 
 /**
  * Mission-level verdicts on the mission's selected outcome spec (Living Specs
@@ -54,54 +54,19 @@ export async function filterMissionRowsByAcceptanceEdit(
   rows: MissionVerdictRow[],
   originalRows: Array<{ id: string; evidence: unknown }>,
 ): Promise<MissionVerdictRow[]> {
-  // Collect task IDs from verdicts that came from checks (recordedBy: check:taskId).
+  const evidenceById = new Map(originalRows.map((r) => [r.id, r.evidence]));
   const taskIds = new Set<string>();
-  const evidenceMap = new Map(originalRows.map((r) => [r.id, r.evidence]));
-
   for (const r of rows) {
-    const evidence = evidenceMap.get(r.id) && typeof evidenceMap.get(r.id) === 'object'
-      ? (evidenceMap.get(r.id) as Record<string, unknown>)
-      : {};
-    const recordedBy = evidence.recordedBy as string | undefined;
-    if (recordedBy?.startsWith('check:')) {
-      const taskId = recordedBy.slice(6); // Remove 'check:' prefix
-      if (isUuid(taskId)) taskIds.add(taskId);
-    }
+    if (r.source !== 'test') continue;
+    const taskId = checkTaskIdOf(evidenceById.get(r.id));
+    if (taskId) taskIds.add(taskId);
   }
-
-  // Load task contexts for tasks that have acceptance edit flags.
-  const taskContexts = new Map<string, unknown>();
-  if (taskIds.size > 0) {
-    const taskRows = await db.select({ id: tasks.id, context: tasks.context })
-      .from(tasks)
-      .where(inArray(tasks.id, [...taskIds]));
-    for (const t of taskRows) {
-      taskContexts.set(t.id, t.context);
-    }
-  }
-
-  // Filter out test results from verdicts whose source task has an unaccepted acceptance edit.
-  return rows.filter((r) => {
-    if (r.source !== 'test') return true; // Keep non-test results
-
-    const evidence = evidenceMap.get(r.id) && typeof evidenceMap.get(r.id) === 'object'
-      ? (evidenceMap.get(r.id) as Record<string, unknown>)
-      : {};
-    const recordedBy = evidence.recordedBy as string | undefined;
-
-    if (!recordedBy?.startsWith('check:')) return true; // Keep if not from a check
-
-    const taskId = recordedBy.slice(6);
-    const taskContext = taskContexts.get(taskId);
-    const flag = acceptanceEditOf(taskContext);
-
-    // If there's a pending acceptance edit, exclude this test result.
-    if (flag && flag.paths.some((p) => !flag.acceptedPaths.includes(p))) {
-      return false;
-    }
-
-    return true;
-  });
+  if (taskIds.size === 0) return rows;
+  const taskRows = await db.select({ id: tasks.id, context: tasks.context })
+    .from(tasks)
+    .where(inArray(tasks.id, [...taskIds]));
+  const contexts = new Map<string, unknown>(taskRows.map((t) => [t.id, t.context]));
+  return holdUnacceptedTestRows(rows, evidenceById, contexts);
 }
 
 async function loadMission(missionId: string): Promise<MissionRow | null> {

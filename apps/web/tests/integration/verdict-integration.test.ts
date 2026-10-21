@@ -1,6 +1,8 @@
 /** Final integrated verdict contract: acceptance tests and final review stay distinct. No live server required. */
 import { describe, expect, it } from 'bun:test';
 import { foldGovernedOutcome } from '../../../../packages/spec-contract/src/outcome';
+import { acceptEdits, flagAcceptanceEdit } from '../../../../packages/spec-contract/src/acceptance-edit';
+import { holdUnacceptedTestRows } from '../../src/lib/specs/acceptance-hold';
 import { foldMissionSpec } from '../../src/lib/specs/mission-outcome-fold';
 import { outcomeSpecView } from '../../src/lib/mission-outcome-spec-view';
 import { missionChecks } from '../../src/lib/mission-checks';
@@ -61,28 +63,21 @@ describe('final integrated verdict', () => {
     expect(checks.rail.find(r => r.key === 'verify')).toMatchObject({ state: 'todo', text: 'after build' });
   });
 
-  // AC-126 / R-80: a building task's PR that edits an acceptance test is flagged,
-  // and its test results do not count until a person accepts the change.
-  it('AC-126 excludes test results while acceptance edit is pending', () => {
-    // A test result from a check that ran on a task with a pending acceptance edit.
-    const testWithPendingEdit = { ...test_('AC-122', 'pass', 1), source: 'test' as const };
-    const reviewResult = review('AC-134', 'pass', 2);
+  // AC-126 / R-80: flag -> the task's test result is held out of the fold -> a person accepts -> it counts.
+  it('AC-126 holds a flagged task\'s test result out of the fold until a person accepts it', () => {
+    const TASK = '11111111-1111-4111-8111-111111111111';
+    const vrows = rows.map((r, i) => ({ ...r, id: `v${i}` }));
+    const evidenceById = new Map<string, unknown>([['v0', { recordedBy: `check:${TASK}` }]]);
+    const flagged = flagAcceptanceEdit(null, ['tests/acceptance/ac-122.test.ts'], HEAD, 'now')!;
+    const foldWith = (flag: typeof flagged) =>
+      foldMissionSpec({ scope, waived: [], rows: holdUnacceptedTestRows(vrows, evidenceById, new Map([[TASK, { acceptanceEdit: flag }]])), target });
 
-    // With the pending acceptance edit, the test result should not count.
-    // For now, this is tested at the missionRows filtering level.
-    // The foldMissionSpec function receives pre-filtered rows.
-    const withEdit = foldMissionSpec({ scope, waived: [], rows: [reviewResult].map((r, i) => ({ ...r, id: `v${i}` })), target });
-    expect(withEdit.verdict).toBe('UNVERIFIED');
-    expect(withEdit.standings.filter((s) => s.source === 'test')).toEqual([]);
-  });
+    const held = foldWith(flagged);
+    expect(held.standings.find((s) => s.source === 'test')).toBeUndefined();
+    expect(held.verdict).not.toBe('pass');
 
-  it('AC-126 counts test results once acceptance edit is accepted', () => {
-    // Once the person accepts the change, the test result should count again.
-    const testAfterAccept = { ...test_('AC-122', 'pass', 1), source: 'test' as const };
-    const reviewResult = review('AC-134', 'pass', 2);
-
-    const withAccept = foldMissionSpec({ scope, waived: [], rows: [testAfterAccept, reviewResult].map((r, i) => ({ ...r, id: `v${i}` })), target });
-    expect(withAccept.verdict).toBe('pass');
-    expect(withAccept.standings.filter((s) => s.source === 'test').length).toBeGreaterThan(0);
+    const counted = foldWith(acceptEdits(flagged, 'user:person', 'later'));
+    expect(counted.standings.map((s) => s.source)).toEqual(['test', 'review']);
+    expect(counted.verdict).toBe('pass');
   });
 });
