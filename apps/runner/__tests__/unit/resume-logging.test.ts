@@ -403,7 +403,7 @@ describe('answering a parked question resumes the same session', () => {
     ];
 
     await manager.sendMessage('w-log-1', 'Postgres');
-    for (let i = 0; i < 100 && queryOptionCalls.length === 0; i++) await new Promise(r => setTimeout(r, 50));
+    for (let i = 0; i < 100 && !queryOptionCalls.some(o => o.resume === 'sess-parked-1'); i++) await new Promise(r => setTimeout(r, 50));
 
     const events = getSessionLogCalls().map(l => l.event);
     expect(events).toContain('resume_requested');
