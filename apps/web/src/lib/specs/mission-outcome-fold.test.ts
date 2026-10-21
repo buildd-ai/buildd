@@ -155,3 +155,65 @@ describe('R-83: achievement counts tested checks only', () => {
     expect(r.standings[0].standing).toBe('stale');
   });
 });
+
+describe('R-80: unaccepted acceptance test edits drop test results', () => {
+  it('drops acceptance test verdicts when there are unaccepted test edits', () => {
+    const acceptanceTestRow = {
+      ...row('R-1', 'pass', A),
+      source: 'test' as const,
+      evidence: { kind: 'acceptance-test', testName: 'basic.test.ts' },
+    };
+    const r = foldMissionSpec({
+      scope: ['R-1'],
+      waived: [],
+      rows: [acceptanceTestRow],
+      target: integration(),
+      unacceptedTestPaths: ['apps/web/src/__tests__/basic.test.ts'],
+    });
+    expect(r.verdict).toBe('UNVERIFIED');
+    expect(r.standings[0].standing).toBe('missing');
+    expect(r.evidence).toContain('No tested checks');
+  });
+
+  it('keeps acceptance test verdicts when all edits are accepted', () => {
+    const acceptanceTestRow = {
+      ...row('R-1', 'pass', A),
+      source: 'test' as const,
+      evidence: { kind: 'acceptance-test', testName: 'basic.test.ts' },
+    };
+    const r = foldMissionSpec({
+      scope: ['R-1'],
+      waived: [],
+      rows: [acceptanceTestRow],
+      target: integration(),
+      unacceptedTestPaths: [], // No unaccepted paths
+    });
+    expect(r.verdict).toBe('pass');
+    expect(r.standings[0].standing).toBe('pass');
+  });
+
+  it('drops acceptance test results but keeps other test results when there are unaccepted edits', () => {
+    const acceptanceTestRow = {
+      ...row('R-1', 'pass', A),
+      source: 'test' as const,
+      evidence: { kind: 'acceptance-test', testName: 'basic.test.ts' },
+    };
+    const otherTestRow = {
+      ...row('R-2', 'pass', A),
+      source: 'test' as const,
+      evidence: { kind: 'some-other-check' },
+    };
+    const r = foldMissionSpec({
+      scope: ['R-1', 'R-2'],
+      waived: [],
+      rows: [acceptanceTestRow, otherTestRow],
+      target: integration(),
+      unacceptedTestPaths: ['apps/web/src/__tests__/basic.test.ts'],
+    });
+    // R-1's acceptance test is dropped, so it's missing. R-2's other test is kept.
+    expect(r.verdict).toBe('UNVERIFIED');
+    expect(r.standings[0].standing).toBe('missing');
+    expect(r.standings[1].standing).toBe('pass');
+    expect(r.evidence).toContain('One of two');
+  });
+});
