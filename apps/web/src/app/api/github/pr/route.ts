@@ -1523,7 +1523,7 @@ export async function PATCH(req: NextRequest) {
 
   try {
     const requestBody = await req.json();
-    const { workerId, prNumber, body: newPrBody, draft: draftUpdate, workspaceId: prWorkspaceId } = requestBody;
+    const { workerId, prNumber, body: newPrBody, draft: draftUpdate, workspaceId: prWorkspaceId, reason: closeReason } = requestBody;
     // Closing or readying the PR changes its worker's lifecycle; refreshed after the response.
     noteWorkChanged({ workerIds: [typeof workerId === 'string' ? workerId : null] });
     // Presence of `body` switches this call from closing the PR to rewriting
@@ -1608,7 +1608,7 @@ export async function PATCH(req: NextRequest) {
     let foreignClose: { reason: string; supersedingPrNumber: number } | null = null;
     if (capability === 'pr.close' && closesForeignPr(account, worker, prNumber)) {
       const verdict = await checkForeignClose(
-        { prNumber, reason: requestBody.reason, supersedingPrNumber: requestBody.supersedingPrNumber },
+        { prNumber, reason: closeReason, supersedingPrNumber: requestBody.supersedingPrNumber },
         {
           deliveryOf: async (n) => {
             const facts = await deliveryBlockerFacts(worker.workspaceId, n);
@@ -1627,7 +1627,13 @@ export async function PATCH(req: NextRequest) {
       foreignClose = verdict;
     }
 
-    void recordCapabilityDecision({ capability, decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}` });
+    const allowed = recordCapabilityDecision({
+      capability, decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`,
+      // The caller's reason travels with the close: the kernel names this door as the closer from this row.
+      ...(capability === 'pr.close' && typeof closeReason === 'string' && closeReason.trim() ? { sideEffect: { reason: closeReason.trim().slice(0, 280) } } : {}),
+    });
+    // A close's row must exist before GitHub sends `closed`; recordCapabilityDecision never throws.
+    if (capability === 'pr.close') await allowed;
     if (isBodyUpdate && isReadyUpdate) {
       void recordCapabilityDecision({ capability: 'pr.mark_ready', decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}` });
     }

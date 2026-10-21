@@ -69,6 +69,9 @@ let visualReviewOwed = false;
 // §6 mission deliveries: a mission PR merge is recorded with the kernel, which
 // rotates, settles and only then retires the branch. The door just records it.
 const mockRecordMissionPrMerged = mock((..._args: any[]) => Promise.resolve({ recorded: true, reason: 'merged' }));
+// Capability decisions the route records (agent_capability_decisions), awaited for a close.
+const mockRecordCapabilityDecision = mock(async (_row: any) => {});
+mock.module('@/lib/agent-capabilities/audit', () => ({ recordCapabilityDecision: mockRecordCapabilityDecision }));
 mock.module('@/lib/mission-epoch-door', () => ({
   recordMissionPrMerged: (...args: any[]) => mockRecordMissionPrMerged(...args),
   ensureMissionWritableBranch: async () => null,
@@ -3833,6 +3836,27 @@ describe('PATCH /api/github/pr', () => {
     expect(data.pr.number).toBe(42);
     expect(data.pr.state).toBe('closed');
     expect(data.pr.url).toBe('https://github.com/owner/repo/pull/42');
+  });
+
+  it('records the close as an allowed pr.close decision carrying the caller\'s reason, before GitHub closes it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', accountId: 'account-1', prNumber: 42, workspace: WORKSPACE_OK });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    const order: string[] = [];
+    mockRecordCapabilityDecision.mockReset();
+    mockRecordCapabilityDecision.mockImplementation(async () => { order.push('decision'); });
+    mockGithubApi.mockImplementation(async () => { order.push('github'); return { number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'closed', title: 'x' }; });
+
+    const res = await PATCH(createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, reason: '  superseded by #43  ' },
+    }));
+
+    expect(res.status).toBe(200);
+    expect(order).toEqual(['decision', 'github']);
+    expect(mockRecordCapabilityDecision).toHaveBeenCalledWith(expect.objectContaining({
+      capability: 'pr.close', decision: 'allowed', resource: 'pr:42', sideEffect: { reason: 'superseded by #43' },
+    }));
   });
 
   it('calls githubApi with PATCH and state: closed', async () => {
