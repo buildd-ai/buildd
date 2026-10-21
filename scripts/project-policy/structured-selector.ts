@@ -78,7 +78,8 @@ export function createStructuredSelector(apiKey: string, fetcher: Fetcher = fetc
         });
         const result = await generateText({ model, output: Output.object({ schema }), maxRetries: 0, temperature: 0,
           maxOutputTokens: 6000, abortSignal: AbortSignal.timeout(20000), system: prompt.instructions, prompt: raw });
-        if (receipt.model && receipt.model !== SELECTOR_MODEL && !receipt.model.startsWith(`${SELECTOR_MODEL}-`)) throw new Error('Unexpected returned model.');
+        const returned = result.response.modelId;
+        if (returned && returned !== SELECTOR_MODEL && !returned.startsWith(`${SELECTOR_MODEL}-`)) throw new Error('Unexpected returned model.');
         if (result.finishReason !== 'stop') throw new Error('Incomplete selector output.');
         const selected = schema.parse(result.output).rows;
         if (new Set(selected.map(r => r.id)).size !== rows.length || selected.some(r => new Set(r.patterns).size !== r.patterns.length

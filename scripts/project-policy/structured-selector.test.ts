@@ -60,3 +60,12 @@ it('does not send unsafe input or overrun the budget; truncation and provider er
   expect(result.ok).toBe(false);
   expect(JSON.stringify(result)).not.toContain('secret');
 });
+
+it('rejects an unexpected returned model without losing billing', async () => {
+  const selector = createStructuredSelector('test-key', async () => {
+    const output = await reply(body).json() as Record<string, unknown>;
+    return new Response(JSON.stringify({ ...output, model: 'other/vendor-model' }));
+  });
+  expect((await selector.select(rows)).ok).toBe(false);
+  expect(selector.calls[0]).toMatchObject({ model: null, requestedModel: 'deepseek/deepseek-v4.1-flash', costUsd: 0.0001 });
+});
