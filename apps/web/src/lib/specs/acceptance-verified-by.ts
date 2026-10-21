@@ -44,17 +44,23 @@ export function testsByCheck(checkIds: readonly string[], files: readonly TestFi
 }
 
 /**
- * The new `verified_by`: always keyed by check id, one entry per check that has a
- * test (R-77, AC-123). A keyed record keeps its entries; an older flat list is
- * replaced by the keyed form, since a bare path names no check. Null when that is
- * no change.
+ * The new `verified_by`, always a map keyed by check id (what `pinnedChecks`
+ * reads); null when that is no change. An existing flat list keeps its paths:
+ * they have no check id of their own, so they ride on the first check recorded
+ * and stay in the flattened list. An unchanged flat list with nothing found is
+ * left as it is.
  */
 export function verifiedByUpdate(current: string[] | Record<string, string[]> | undefined, found: CheckTests): Record<string, string[]> | null {
   if (!found.byCheck.size) return null;
+  const flat = Array.isArray(current) ? current : [];
   const next: Record<string, string[]> = current && !Array.isArray(current) ? { ...current } : {};
-  let changed = !!current && Array.isArray(current) && current.length > 0;
+  let changed = Array.isArray(current);
+  let carried = false;
   for (const [id, t] of found.byCheck) {
-    if (!next[id]?.includes(t.path)) { next[id] = [...(next[id] ?? []), t.path]; changed = true; }
+    const have = next[id] ?? [];
+    const paths = [...new Set([...have, ...(carried ? [] : flat), t.path])];
+    carried = true;
+    if (paths.length !== have.length) { next[id] = paths; changed = true; }
   }
   return changed ? next : null;
 }
