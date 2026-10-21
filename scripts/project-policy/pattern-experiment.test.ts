@@ -70,3 +70,17 @@ it('preserves native component/prop and scopes vague-action prompts to eligible 
   }, 400, patternPrompts(3));
   expect((await engine.routed(input)).verdict).toBe('keep');
 });
+
+it('checks all applicable patterns in one request without a routing skip', async () => {
+  let calls = 0;
+  const engine = createPatternExperiment('test-key', async (_url, init) => {
+    calls++;
+    const body = JSON.parse(String(init?.body));
+    expect(Object.keys(body.questions).sort()).toEqual(['duplication', 'over_explanation', 'vague_action']);
+    const answers = Object.fromEntries(Object.keys(body.questions).map(key => [key, { type: 'choice', choice: key === 'duplication' ? 'revise' : 'keep',
+      probabilities: { revise: key === 'duplication' ? 1 : 0, keep: key === 'duplication' ? 0 : 1, uncertain: 0 }, confidence: 1 }]));
+    return new Response(JSON.stringify({ answers, model: 'typesafe/jev-1.13', usage: { cost: 0.000001 } }), { status: 200 });
+  }, 400, patternPrompts(3));
+  expect((await engine.allPatterns(row)).verdict).toBe('revise');
+  expect(calls).toBe(1);
+});

@@ -131,6 +131,8 @@ vague-action prompts only apply to actions or known result/toast purposes. Nativ
 component/prop context is retained for surface inputs. Pattern agreement and final
 verdict precision/recall are reported separately. These variants remain experiments;
 the staged CLI still uses its existing broad policy and cache.
+An additional `multi` arm asks all applicable narrow pattern questions in one typed
+request per string, exposing routing skips versus the cost of simultaneous checks.
 
 The optional surface pass lets the model inspect all eligible strings in bounded
 batches of32, selecting at most one per batch, then choosing a pattern and checking

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { choice, defineDecision, canonicalJson, JEV_MODEL, redactSecrets, type DecideParams, type DecisionReceipt } from '../../packages/ai-kit/src/decide';
+import { choice, defineDecision, canonicalJson, JEV_MODEL, redactSecrets, type DecideParams, type DecisionReceipt, type DecisionQuestions } from '../../packages/ai-kit/src/decide';
 import { buildSemanticState } from './semantic';
 import type { CopyRole } from './pipeline';
 import type { StaticCopyContext } from './static-context';
@@ -58,16 +58,19 @@ export function createPatternExperiment(apiKey?: string | null, fetcher?: Fetche
     const selector = (config.eligibility as Partial<Record<Pattern, { roles: string[]; purposeContains: string[] }>>)[pattern];
     return !selector || selector.roles.includes(row.role) || selector.purposeContains.some(part => row.purpose.includes(part));
   };
-  async function ask<const L extends string>(kind: string, instructions: string, criteria: Record<L, string>, state: unknown) {
+  async function execute<const Q extends DecisionQuestions>(kind: string, questions: Q, state: unknown) {
     const definition = defineDecision({ id: `buildd.copy_experiment.${kind}`, promptVersion: `patterns-${config.version}`,
-      model: JEV_MODEL, mode: 'shadow', questions: { value: choice(instructions, criteria) } });
+      model: JEV_MODEL, mode: 'shadow', questions });
     if (!apiKey || reserved >= maxCalls) return null;
     reserved++;
     const run = await definition.run({ apiKey, state: state as Record<string, unknown>, ...(fetcher ? { fetch: fetcher } : {}), timeoutMs: 5000, maxAttempts: 2 });
     calls.push({ id: definition.id, promptFingerprint: definition.fingerprint, inputFingerprint: hash(state), ok: run.result.ok,
       model: run.result.ok ? run.result.model : definition.model, latencyMs: run.result.latencyMs, attempts: run.result.attempts,
       costUsd: run.result.ok ? run.result.usage.costUsd : null, receipt: run.receipt });
-    return run.result.ok ? run.result.answers.value : null;
+    return run.result.ok ? run.result.answers : null;
+  }
+  async function ask<const L extends string>(kind: string, instructions: string, criteria: Record<L, string>, state: unknown) {
+    return (await execute(kind, { value: choice(instructions, criteria) }, state))?.value ?? null;
   }
   const route = async (row: ExperimentRow): Promise<{ pattern: Pattern; confidence: number | null }> => {
     if (!safe(row)) return { pattern: 'uncertain', confidence: null };
@@ -84,6 +87,14 @@ export function createPatternExperiment(apiKey?: string | null, fetcher?: Fetche
   };
   return {
     calls, route, targeted,
+    async allPatterns(row: ExperimentRow) {
+      if (!safe(row)) return { id: row.id, verdict: 'uncertain', votes: null };
+      const questions = Object.fromEntries(Object.entries(config.patterns).filter(([pattern]) => applicable(pattern as Pattern, row))
+        .map(([pattern, value]) => [pattern, choice(value.question, { revise: value.revise, keep: value.keep, uncertain: config.uncertain })]));
+      const votes = await execute('multi', questions, rowState(row));
+      return { id: row.id, verdict: !votes ? 'uncertain' : Object.values(votes).some(v => v.choice === 'revise') ? 'revise'
+        : Object.values(votes).some(v => v.choice === 'uncertain') ? 'uncertain' : 'keep', votes };
+    },
     async routed(row: ExperimentRow) { const selected = await route(row); return { ...await targeted(row, selected.pattern), routeConfidence: selected.confidence }; },
     async shortlist(rows: ExperimentRow[], limit: number) {
       if (rows.length > 32 || !Number.isInteger(limit) || limit < 0 || limit > rows.length) throw new Error('Use batches <=32 and a bounded shortlist.');

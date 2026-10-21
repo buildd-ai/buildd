@@ -47,6 +47,10 @@ async function benchmark(key: string, version: number, order: string) {
   const routedStart = performance.now();
   const routed = await mapFour(rows, row => routedEngine.routed(row));
   const routedWallMs = Math.round(performance.now() - routedStart);
+  const multiEngine = createPatternExperiment(key, undefined, 400, config);
+  const multiStart = performance.now();
+  const multi = await mapFour(rows, row => multiEngine.allPatterns(row));
+  const multiWallMs = Math.round(performance.now() - multiStart);
   const selectedEngine = createPatternExperiment(key, undefined, 400, config);
   const selectedStart = performance.now();
   const selected: ExperimentRow[] = [];
@@ -56,7 +60,7 @@ async function benchmark(key: string, version: number, order: string) {
   const splits = Object.fromEntries(['development', 'validation'].map(split => {
     const splitRows = rows.filter(row => row.split === split);
     const matching = routed.filter(result => splitRows.some(row => row.id === result.id && row.expectedPattern === result.pattern)).length;
-    return [split, { broad: metrics(splitRows, broad), routed: metrics(splitRows, routed), shortlisted: metrics(splitRows, shortlisted),
+    return [split, { broad: metrics(splitRows, broad), routed: metrics(splitRows, routed), multi: metrics(splitRows, multi), shortlisted: metrics(splitRows, shortlisted),
       routePatternAgreement: { matching, total: splitRows.length, rate: matching / splitRows.length },
       candidateRecall: splitRows.filter(row => row.expected === 'revise' && selected.some(s => s.id === row.id)).length / splitRows.filter(row => row.expected === 'revise').length }];
   }));
@@ -66,6 +70,7 @@ async function benchmark(key: string, version: number, order: string) {
       costUsd: broad.every(r => r.evaluation.costUsd !== null) ? broad.reduce((sum, r) => sum + r.evaluation.costUsd!, 0) : null,
       results: broad },
     routed: { wallMs: routedWallMs, ...routedEngine.summary(), results: routed, calls: routedEngine.calls },
+    multi: { wallMs: multiWallMs, ...multiEngine.summary(), results: multi, calls: multiEngine.calls },
     shortlisted: { wallMs: shortlistWallMs, ...selectedEngine.summary(), selectedIds: selected.map(r => r.id), results: shortlisted, calls: selectedEngine.calls },
     cases };
 }
@@ -110,6 +115,7 @@ if (import.meta.main) {
     console.log(JSON.stringify({ sourceCommit: report.sourceCommit, sourceDirty: report.sourceDirty, splits: report.benchmark.splits,
       broad: { requests: report.benchmark.broad.requests, costUsd: report.benchmark.broad.costUsd },
       routed: { requests: report.benchmark.routed.requests, costUsd: report.benchmark.routed.costUsd },
+      multi: { requests: report.benchmark.multi.requests, costUsd: report.benchmark.multi.costUsd },
       shortlisted: { requests: report.benchmark.shortlisted.requests, costUsd: report.benchmark.shortlisted.costUsd },
       ...(report.surface ? { surface: { inputs: report.surface.inputs, chosen: report.surface.chosen, requests: report.surface.requests, costUsd: report.surface.costUsd } } : {}) }, null, 2));
   } catch {
