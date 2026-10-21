@@ -27,7 +27,7 @@
 import { spawn, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, statfsSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, isAbsolute, join, relative } from 'path';
+import { basename, dirname, isAbsolute, join, relative } from 'path';
 import {
   emitCacheSkipped,
   emitMetric,
@@ -397,7 +397,7 @@ export function writeCacheFileList(cacheDir: string, listPath: string, skipTopLe
       if (top && skipTopLevelNames?.has(e.name)) continue;
       const abs = join(dir, e.name);
       if (e.isDirectory()) walk(abs, false);
-      else if (e.isFile() || e.isSymbolicLink()) files.push(relative(cacheDir, abs));
+      else if (e.isFile() || e.isSymbolicLink()) files.push(tarPathArg(relative(cacheDir, abs)));
     }
   };
   walk(cacheDir, true);
@@ -407,11 +407,33 @@ export function writeCacheFileList(cacheDir: string, listPath: string, skipTopLe
   return listPath;
 }
 
+/**
+ * A path as a tar operand (`-C`, `-T`, or a name in a `-T` list). On Windows
+ * it gets forward slashes: GNU tar (Git for Windows ships it) unquotes those
+ * operands, so the `\1` or `\t` in a backslashed path becomes a control
+ * character. bsdtar takes forward slashes too. Elsewhere it is unchanged.
+ */
+export function tarPathArg(p: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? p.replace(/\\/g, '/') : p;
+}
+
+/** The command that extracts a cache tarball from stdin into `cacheDir`. */
+export function cacheExtractCommand(cacheDir: string, zstd: boolean): [string, string[]] {
+  const dir = tarPathArg(cacheDir);
+  return zstd
+    ? ['sh', ['-c', 'zstd -d -c -f -q | tar -xf - -C "$1" --no-same-owner', 'sh', dir]]
+    : ['tar', ['-xf', '-', '-C', dir, '--no-same-owner']];
+}
+
 export function createCacheTarball(cacheDir: string, outFile: string): boolean {
   const list = writeCacheFileList(cacheDir, `${outFile}.list`);
   if (!list) return false;
   try {
-    const r = spawnSync('tar', ['-cf', outFile, '-C', cacheDir, '-T', list], { stdio: ['ignore', 'ignore', 'pipe'], timeout: GIT_TIMEOUT_MS });
+    // tar runs in the archive's directory and gets a bare file name: GNU tar
+    // (Git for Windows ships it) reads `C:\...` as a remote `host:path`.
+    const r = spawnSync('tar', ['-cf', basename(outFile), '-C', tarPathArg(cacheDir), '-T', tarPathArg(list)], {
+      cwd: dirname(outFile), stdio: ['ignore', 'ignore', 'pipe'], timeout: GIT_TIMEOUT_MS,
+    });
     return r.status === 0;
   } finally {
     rmSync(list, { force: true });
@@ -995,9 +1017,7 @@ export class WarmRepoSession {
   }
 
   private cacheExtractCommand(): [string, string[]] {
-    return this.useZstd()
-      ? ['sh', ['-c', 'zstd -d -c -f -q | tar -xf - -C "$1" --no-same-owner', 'sh', this.d.cacheDir]]
-      : ['tar', ['-xf', '-', '-C', this.d.cacheDir, '--no-same-owner']];
+    return cacheExtractCommand(this.d.cacheDir, this.useZstd());
   }
 
   /**
@@ -1049,7 +1069,7 @@ export class WarmRepoSession {
       if (!list) return null;
       try {
         return await streamToMultipart({
-          command: 'tar', args: ['-cf', '-', '-C', this.d.cacheDir, '-T', list], transport: this.d.transport,
+          command: 'tar', args: ['-cf', '-', '-C', tarPathArg(this.d.cacheDir), '-T', tarPathArg(list)], transport: this.d.transport,
           path: `/warm/${generation}/cache`, partBytes, maxBytes,
           ...(compress ? { filter: { command: 'zstd', args: ['-q', '-c', '-T0'] } } : {}),
         });

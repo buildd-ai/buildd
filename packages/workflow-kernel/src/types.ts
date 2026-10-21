@@ -43,7 +43,21 @@ export type EscalationReason =
   | 'effect_dead'
   | 'policy_human'
   | 'unsafe_to_merge';
-export type CloseCause = 'manual' | 'base_deleted' | 'superseded_by_policy' | 'unknown';
+/**
+ * Why a PR closed without merging. `buildd_close`: one of buildd's own doors closed it
+ * (a `pr.close` capability decision for the PR); `manual`: a person closed it on GitHub.
+ */
+export type CloseCause = 'manual' | 'base_deleted' | 'superseded_by_policy' | 'buildd_close' | 'unknown';
+
+/**
+ * Who closed a PR: GitHub's webhook `sender`, when the close came with one, and the buildd
+ * door that closed it, when one did. Ids and a label only; `reason` is the caller's own words.
+ */
+export interface CloseActor {
+  login?: string | null;
+  type?: string | null;
+  door?: { workerId: string | null; taskId: string | null; accountId: string | null; principalVia: string | null; reason: string | null } | null;
+}
 
 /**
  * What a standing approval rests on. `composition` and `policy` are never a
