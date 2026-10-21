@@ -20,7 +20,7 @@ export interface ProjectPolicy {
   authority: { title: string; revision: number; hash: string; criteria: string[]; repoGuide: string };
   selectors: { kind: string; extension: string };
   deterministic: { copyRules: boolean; termsCatalog: boolean; stateLabels: boolean };
-  semantic: { mode: string; requiredEvidence: string[]; instructions: string; labels: Record<string, string>;
+  semantic: { mode: string; requiredEvidence: string[]; instructions: string; labels: Record<string, string>; redundantCorrection?: string;
     sortCaption: { purpose: string; pattern: string; message: string; correction: string } };
   enforcement: { authoring: string; commit: string; pr: string };
   customRules: Array<{ id: string; roles: string[]; pattern: string; correction: string; pathPrefix?: string; component?: string }>;
@@ -190,7 +190,7 @@ export async function evaluateSubject(subject: ChangedSubject, policy: ProjectPo
     const verdict = decision.label === 'useful' ? 'pass' : decision.label === 'uncertain' ? 'uncertain'
       : decision.label === 'unsupported' ? 'unsupported' : 'revise';
     emit('semantic-value', verdict, decision.reasonCode, `Semantic exploration: ${decision.label}; advisory only.`,
-      decision.label === 'redundant' ? context?.purpose === caption.purpose ? caption.correction : 'Remove repeated wording while preserving the verified action and state.'
+      decision.label === 'redundant' ? context?.purpose === caption.purpose ? caption.correction : policy.semantic.redundantCorrection ?? 'Remove repeated wording while preserving the verified action and state.'
         : decision.label === 'unclear' ? 'Name the specific user action or fact.' : undefined,
       decision.label === 'unsupported' ? 'unavailable' : 'model-advisory');
     const finding = findings[findings.length - 1];

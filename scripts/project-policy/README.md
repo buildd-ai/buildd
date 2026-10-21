@@ -109,6 +109,18 @@ does not return billed cost through the current adapter, so cost remains null.
 
 ## Limits and smallest next slices
 
+`--policy=wwvd` selects the user's local enterprise-copy restraint preset in
+`wwvd.json`: direct outcome/fact, a next action when needed, no dispensable
+explanation or reassurance, and preserved necessary consequences/recovery steps.
+It is a user instruction, not an official Vercel standard or an amended Living Spec.
+Use `explore.ts --policy=wwvd --model=jev` for its separate 12-example development
+set, or `cli.ts --staged --policy=wwvd --jev` for changed copy. Both support the
+same scoped credential arguments as before. Default policy/gold remain unchanged.
+Jev advice cannot enforce this preset yet. Existing deterministic rules still
+apply, including the >30-word rule: direct exploration may find a long warning
+useful while the CLI rejects it before calling the model. An approved rule change
+would be needed to reconcile that conflict; this experiment does not bypass it.
+
 - TSX only; no Vue, Svelte, MDX, translations or cross-file constant/data flow.
   The actual SECTION_META-to-MissionGrid flow is demonstrated by a render fixture,
   not resolved statically. Supplied snapshots must represent the actual edit.

@@ -1,7 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { summarizeBenchmark } from '../../packages/core/decision-benchmark';
-import gold from './gold.json';
-import policy from './product-language.json';
+import { policyPreset } from './policy-presets';
 import type { ChangedSubject, ProjectPolicy } from './pipeline';
 import { createJevEvaluator, createClefEvaluator, type SemanticEvaluator } from './semantic';
 import type { InferenceKeyScope, ResolveInferenceKeyOptions } from '../../packages/core/inference-keys';
@@ -83,12 +82,13 @@ if (import.meta.main) {
   try {
     const args = process.argv.slice(2);
     const arg = (key: string) => args.find(a => a.startsWith(`--${key}=`))?.slice(key.length + 3);
-    if (args.some(a => !['team', 'workspace', 'output', 'model'].some(key => a.startsWith(`--${key}=`)))) throw new Error('Use --model=jev|clef|clef-flash with --team=<id> --workspace=<id> --output=<local-json>.');
+    if (args.some(a => !['team', 'workspace', 'output', 'model', 'policy'].some(key => a.startsWith(`--${key}=`)))) throw new Error('Use --model=jev|clef|clef-flash with --policy=product-language|wwvd --team=<id> --workspace=<id> --output=<local-json>.');
+    const { policy, examples } = policyPreset(arg('policy'));
     const model = arg('model') ?? 'jev';
     if (!['jev', 'clef', 'clef-flash'].includes(model)) throw new Error('Unknown exploration model.');
     const evaluator = model === 'jev' ? await localJevEvaluator(arg('team'), arg('workspace'))
       : await localClefEvaluator(model as ClefModel, arg('team'), arg('workspace'));
-    const report = { ...await explorePolicy(gold, policy, evaluator),
+    const report = { ...await explorePolicy(examples, policy, evaluator),
       sourceCommit: spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim(),
       sourceDirty: !!spawnSync('git', ['status', '--porcelain', '--', 'scripts/project-policy'], { encoding: 'utf8' }).stdout.trim() };
     if (arg('output')) await Bun.write(arg('output')!, JSON.stringify(report, null, 2) + '\n');

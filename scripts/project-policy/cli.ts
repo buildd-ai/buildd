@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import policy from './product-language.json';
+import { policyPreset } from './policy-presets';
 import { evaluateSubject, extractChangedSubjects, policyExitCode, type ProjectPolicy, type SubjectContext } from './pipeline';
 import type { SemanticEvaluator } from './semantic';
 
@@ -48,10 +49,10 @@ function validateInput(value: unknown): { changes: Change[]; customRules?: Proje
   return input;
 }
 
-export async function runLocalCheck(value: unknown, stage: Stage, semantic?: SemanticEvaluator) {
+export async function runLocalCheck(value: unknown, stage: Stage, semantic?: SemanticEvaluator, selected: ProjectPolicy = policy) {
   if (!['agent', 'commit', 'ci'].includes(stage)) throw new Error('stage must be agent, commit or ci.');
   const input = validateInput(value);
-  const configured: ProjectPolicy = { ...policy, customRules: input.customRules ?? policy.customRules };
+  const configured: ProjectPolicy = { ...selected, customRules: input.customRules ?? selected.customRules };
   const subjects = input.changes.flatMap(c => {
     const extracted = extractChangedSubjects(c);
     return extracted.map(subject => {
@@ -87,12 +88,13 @@ if (import.meta.main) {
     const stage = (args.find(a => a.startsWith('--stage='))?.slice(8) ?? 'commit') as Stage;
     const inputPath = args.find(a => a.startsWith('--input='))?.slice(8);
     if ((!inputPath && !args.includes('--staged')) || (inputPath && args.includes('--staged'))) throw new Error('Use --input=<snapshots.json> OR --staged, optionally --stage=agent|commit|ci.');
-    if (args.some(a => a !== '--staged' && a !== '--jev' && !['--input=', '--stage=', '--team=', '--workspace='].some(prefix => a.startsWith(prefix)))) throw new Error('Unknown argument.');
+    if (args.some(a => a !== '--staged' && a !== '--jev' && !['--input=', '--stage=', '--team=', '--workspace=', '--policy='].some(prefix => a.startsWith(prefix)))) throw new Error('Unknown argument.');
+    const selected = policyPreset(args.find(a => a.startsWith('--policy='))?.slice(9)).policy;
     if (!args.includes('--jev') && args.some(a => a.startsWith('--team=') || a.startsWith('--workspace='))) throw new Error('Credential scope is only used with explicit --jev exploration.');
     const input = inputPath ? JSON.parse(readFileSync(inputPath, 'utf8')) : { changes: readStagedChanges() };
     const semantic = args.includes('--jev') ? await (await import('./explore')).localJevEvaluator(
       args.find(a => a.startsWith('--team='))?.slice(7), args.find(a => a.startsWith('--workspace='))?.slice(12)) : undefined;
-    const report = { ...await runLocalCheck(input, stage, semantic), sourceCommit: git(['rev-parse', 'HEAD']).trim(),
+    const report = { ...await runLocalCheck(input, stage, semantic, selected), sourceCommit: git(['rev-parse', 'HEAD']).trim(),
       sourceDirty: !!git(['status', '--porcelain', '--', 'scripts/project-policy']).trim() };
     console.log(JSON.stringify(report, null, 2));
     process.exitCode = report.exitCode;
