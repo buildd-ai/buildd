@@ -116,7 +116,7 @@ import {
 } from '@/lib/mission-integration-pr';
 import { MissionPrLine, MissionScopeUpdates } from './MissionPrLine';
 import MissionAcceptanceTests from './MissionAcceptanceTests';
-import { isAcceptanceTask, testsFromContext } from '@/lib/specs/acceptance-gate-apply';
+import { testsFromContext } from '@/lib/specs/acceptance-gate-apply';
 import { missionEpochsOf, scopeAmendmentsOf } from '@/lib/workflow/delivery-ship';
 import { describeScopeUpdates } from '@/lib/mission-scope-view';
 import { explainMission } from '@/lib/explain';
@@ -937,7 +937,7 @@ async function MissionDetailBody({
     // records it is the current delivery; a shipped one is named beside it.
     ? <MissionPrLine pr={missionIntegrationPr} />
     : null;
-  const acceptanceTests = testsFromContext(decisionTasks.find(t => isAcceptanceTask(t as { context?: Record<string, unknown> | null }))?.context as Record<string, unknown> | null);
+  const acceptanceTests = testsFromContext(decisionTasks.find(t => (t.context as Record<string, unknown> | null)?.acceptanceTests != null)?.context as Record<string, unknown> | null);
   const acceptanceBlock = acceptanceTests.length > 0 ? <MissionAcceptanceTests tests={acceptanceTests} /> : null;
   const scopeUpdatesBlock = scopeUpdates.length > 0 ? <MissionScopeUpdates lines={scopeUpdates} /> : null;
 

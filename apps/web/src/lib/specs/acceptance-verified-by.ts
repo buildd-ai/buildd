@@ -43,19 +43,20 @@ export function testsByCheck(checkIds: readonly string[], files: readonly TestFi
   return { byCheck, untested: checkIds.filter((id) => !byCheck.has(id)) };
 }
 
-/** The new `verified_by`: what it lists plus the test files found; null when that is no change. A keyed record stays keyed by check id. */
-export function verifiedByUpdate(current: string[] | Record<string, string[]> | undefined, found: CheckTests): string[] | Record<string, string[]> | null {
-  if (current && !Array.isArray(current)) {
-    const next: Record<string, string[]> = { ...current };
-    let changed = false;
-    for (const [id, t] of found.byCheck) {
-      if (!next[id]?.includes(t.path)) { next[id] = [...(next[id] ?? []), t.path]; changed = true; }
-    }
-    return changed ? next : null;
+/**
+ * The new `verified_by`: always keyed by check id, one entry per check that has a
+ * test (R-77, AC-123). A keyed record keeps its entries; an older flat list is
+ * replaced by the keyed form, since a bare path names no check. Null when that is
+ * no change.
+ */
+export function verifiedByUpdate(current: string[] | Record<string, string[]> | undefined, found: CheckTests): Record<string, string[]> | null {
+  if (!found.byCheck.size) return null;
+  const next: Record<string, string[]> = current && !Array.isArray(current) ? { ...current } : {};
+  let changed = !!current && Array.isArray(current) && current.length > 0;
+  for (const [id, t] of found.byCheck) {
+    if (!next[id]?.includes(t.path)) { next[id] = [...(next[id] ?? []), t.path]; changed = true; }
   }
-  const have = current ?? [];
-  const next = [...new Set([...have, ...[...found.byCheck.values()].map((t) => t.path)])];
-  return next.length === have.length ? null : next;
+  return changed ? next : null;
 }
 
 const MAX_TEST_FILES = 40;

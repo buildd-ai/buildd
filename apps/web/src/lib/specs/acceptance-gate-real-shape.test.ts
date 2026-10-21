@@ -39,9 +39,8 @@ describe('acceptance gate over the real task shape (R-79)', () => {
     expect(isAcceptanceTask({ context: { acceptanceTests: MARKER } })).toBe(true);
     expect(isAcceptanceTask({ context: {} })).toBe(false);
     const tests = [{ checkId: 'AC-1', name: 'n', startingResult: 'fail' }];
-    expect(testsFromContext({ acceptanceTests: { ...MARKER, tests } })).toEqual(tests);
+    expect(testsFromContext({ acceptanceTests: MARKER, acceptanceTestResults: tests })).toEqual(tests);
     expect(testsFromContext({ acceptanceTests: MARKER })).toEqual([]);
-    expect(testsFromContext({ acceptanceTests: tests })).toEqual(tests); // older array shape
   });
 
   it('load finds the task instead of answering "none"', async () => {
@@ -63,7 +62,7 @@ describe('acceptance gate over the real task shape (R-79)', () => {
 
   it('recorded results keep the marker object and are read back', async () => {
     fresh();
-    await dbGateStore.patchContext('acc', { acceptanceTests: [{ checkId: 'AC-1', name: 'n', startingResult: 'fail' }] });
+    await dbGateStore.patchContext('acc', { acceptanceTestResults: [{ checkId: 'AC-1', name: 'n', startingResult: 'fail' }] });
     expect(rows[0].context.acceptanceTests.specId).toBe('s1');
     expect(testsFromContext(rows[0].context)).toHaveLength(1);
   });
