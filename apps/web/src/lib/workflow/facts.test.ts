@@ -6,7 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import type { LivePr } from './commands';
-import { carryForwardReading, constituentEvidenceSql, factKeyFor, findFactSql, ingestFact, insertFactSql, lastAppliedHeadFactSql, ownRefreshSql, projectEquivalentHeadSql, refreshUnappliedFactSql, type GithubFactReader } from './facts';
+import { carryForwardReading, CLOSE_DECISION_WINDOW_MIN, closeDecisionSql, constituentEvidenceSql, factKeyFor, findFactSql, ingestFact, insertFactSql, lastAppliedHeadFactSql, ownRefreshSql, projectEquivalentHeadSql, refreshUnappliedFactSql, type GithubFactReader } from './facts';
 import type { Exec } from './kernel';
 
 const dialect = new PgDialect();
@@ -314,5 +314,25 @@ describe('carryForwardReading: diff evidence for an approved head that moved', (
   test('an unread compare is not a changed diff', async () => {
     expect(await carryForwardReading(view, 'acme/widgets', live('H2'), exec(true), reader(null))).toEqual({ evidence: null, diffChanged: false });
     expect(await carryForwardReading(view, 'acme/widgets', live('H2'), exec(true), undefined)).toEqual({ evidence: null, diffChanged: false });
+  });
+});
+
+describe('closeDecisionSql', () => {
+  test('reads the allowed pr.close decision for this PR within the window around GitHub close', () => {
+    const { sql: text, params } = render(closeDecisionSql('w1', 42, '2026-01-01T00:00:00Z'));
+    expect(text.split('\n')[0]).toBe('-- workflow:close_decision');
+    expect(text).toContain("capability = 'pr.close' AND decision = 'allowed'");
+    expect(text).toContain('workspace_id = $1::uuid');
+    expect(text).toContain('resource = $2::text');
+    expect(text).toContain(`$3::timestamptz - interval '${CLOSE_DECISION_WINDOW_MIN} minutes'`);
+    expect(text).toContain("$4::timestamptz + interval '2 minutes'");
+    expect(text).toContain('ORDER BY occurred_at DESC');
+    expect(params).toEqual(['w1', 'pr:42', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z']);
+  });
+
+  test('without a close time it anchors on now()', () => {
+    const { sql: text, params } = render(closeDecisionSql('w1', 42, null));
+    expect(text).toContain(`now() - interval '${CLOSE_DECISION_WINDOW_MIN} minutes'`);
+    expect(params).toEqual(['w1', 'pr:42']);
   });
 });
