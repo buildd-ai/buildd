@@ -612,6 +612,9 @@ export async function POST(req: NextRequest) {
     if (rawPrReachScope && !grantPerson) {
       return NextResponse.json({ error: 'Only a person can grant PR reach scope; omit prReachScope.' }, { status: 403 });
     }
+    if (rawPrReachScope && !resolveExplicitPrReachScope(rawPrReachScope, `human:${grantPerson}`)) {
+      return NextResponse.json({ error: 'prReachScope must be either { prNumbers: [1,2,...] } or { workspaceWide: true }' }, { status: 400 });
+    }
     const stampedGrant = stampLandingOverrideGrant(rawIncomingContext, grantPerson);
     if (!stampedGrant.ok) {
       return NextResponse.json({ error: stampedGrant.error }, { status: stampedGrant.status });
@@ -1087,20 +1090,19 @@ export async function POST(req: NextRequest) {
       if (filerWorker?.taskId) prReachFiler = { kind: 'task', taskId: filerWorker.taskId };
     }
 
-    // Check if a person explicitly granted prReach scope
-    let prReach = null;
+    // Names in the title/description are linked as before; a person's explicit
+    // scope is merged on top (union of PR numbers, plus the workspace marker).
+    let prReach = await resolvePrReachGrant({ title, description, context: incomingContext, workspaceId }, prReachFiler)
+      .catch((err) => {
+        console.warn('[tasks] PR link lookup failed; none stamped:', (err as Error)?.message ?? err);
+        return null;
+      });
     if (grantPerson && rawPrReachScope) {
-      prReach = resolveExplicitPrReachScope(rawPrReachScope, `human:${grantPerson}`);
-      if (!prReach) {
-        return NextResponse.json({ error: 'prReachScope must be either { prNumbers: [1,2,...] } or { workspaceWide: true }' }, { status: 400 });
-      }
-    } else {
-      // Fall back to auto-resolving from PR names in title/description
-      prReach = await resolvePrReachGrant({ title, description, context: incomingContext, workspaceId }, prReachFiler)
-        .catch((err) => {
-          console.warn('[tasks] PR link lookup failed; none stamped:', (err as Error)?.message ?? err);
-          return null;
-        });
+      const explicit = resolveExplicitPrReachScope(rawPrReachScope, `human:${grantPerson}`)!;
+      prReach = {
+        ...explicit,
+        prNumbers: [...new Set([...(prReach?.prNumbers ?? []), ...explicit.prNumbers])].sort((a, b) => a - b),
+      };
     }
     const prReachCtx = prReach ? { prReach } : {};
     let specRepairCtx: { specRepair?: NonNullable<ReturnType<typeof specRepairStamp>> } = {};

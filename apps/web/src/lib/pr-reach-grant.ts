@@ -102,8 +102,10 @@ export async function taskReachesPr(taskId: string, workspaceId: string, prNumbe
 }
 
 /**
- * Resolve a person's explicit PR reach scope grant. Accepts either explicit PR
- * numbers or a workspace-wide scope. Returns a PrReachGrant or null if invalid.
+ * The PR reach a person explicitly grants at filing: `{ prNumbers: [..] }` (at
+ * least one) or `{ workspaceWide: true }`. Null when the scope is malformed.
+ * A workspace-wide grant carries `scope: 'workspace'`, an explicit marker (never
+ * an empty list), and is honoured by the review-request door only.
  */
 export function resolveExplicitPrReachScope(
   scope: unknown,
@@ -111,32 +113,13 @@ export function resolveExplicitPrReachScope(
   now: Date = new Date(),
 ): PrReachGrant | null {
   if (!scope || typeof scope !== 'object' || Array.isArray(scope)) return null;
-
   const s = scope as Record<string, unknown>;
-
-  // Explicit PR numbers: { prNumbers: [1, 2, 3] }
+  const grantedAt = now.toISOString();
+  if (s.workspaceWide === true) return { prNumbers: [], scope: 'workspace', grantedBy, grantedAt };
   if (Array.isArray(s.prNumbers)) {
-    const prNumbers = (s.prNumbers as unknown[])
-      .filter((n): n is number => Number.isInteger(n) && (n as number) > 0)
-      .sort((a, b) => a - b);
-    if (prNumbers.length === 0) return null;
-    return {
-      prNumbers,
-      grantedBy,
-      grantedAt: now.toISOString(),
-    };
+    const prNumbers = [...new Set(s.prNumbers.filter((n): n is number => Number.isInteger(n) && n > 0))].sort((a, b) => a - b);
+    if (prNumbers.length === 0 || prNumbers.length !== new Set(s.prNumbers).size) return null;
+    return { prNumbers, grantedBy, grantedAt };
   }
-
-  // Workspace-wide scope: { workspaceWide: true }
-  // For now, return a marker that the task is authorized for all workspace PRs.
-  // This will be resolved at review-request time to the actual open PRs.
-  if (s.workspaceWide === true) {
-    return {
-      prNumbers: [], // Empty list signals workspace-wide scope
-      grantedBy,
-      grantedAt: now.toISOString(),
-    };
-  }
-
   return null;
 }
