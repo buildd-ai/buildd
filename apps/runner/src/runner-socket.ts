@@ -23,7 +23,7 @@
  * beside the first.
  */
 import { spawnSync } from 'child_process';
-import { chmodSync, lstatSync, statSync, unlinkSync } from 'fs';
+import { chmodSync, existsSync, lstatSync, statSync, unlinkSync } from 'fs';
 import { join } from 'path';
 
 export const RUNNER_SOCKET_NAME = 'runner.sock';
@@ -62,20 +62,34 @@ function isRefusal(err: unknown): boolean {
   return /ECONNREFUSED|ENOENT|ConnectionRefused|FailedToOpenSocket|No such file/i.test(text);
 }
 
+type Lstat = (path: string) => { isSocket(): boolean };
+
+/**
+ * What is at the socket path, without connecting. On Windows Bun's lstat and
+ * stat throw EACCES on an AF_UNIX socket, a live one its caller owns included,
+ * so only ENOENT/ENOTDIR mean nothing is there. Any other error with a file
+ * present is 'unknown': the caller connects to find out.
+ */
+export function socketPresence(socketPath: string, lstat: Lstat = lstatSync): 'absent' | 'socket' | 'other' | 'unknown' {
+  try {
+    return lstat(socketPath).isSocket() ? 'socket' : 'other';
+  } catch (err) {
+    const code = (err as { code?: string } | null)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return 'absent';
+    return existsSync(socketPath) ? 'unknown' : 'absent';
+  }
+}
+
 /**
  * Ask whatever holds `socketPath` who it is. Never throws.
  */
 export async function probeRunnerSocket(
   socketPath: string,
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; lstat?: Lstat } = {},
 ): Promise<SocketProbe> {
-  let isSocket = false;
-  try {
-    isSocket = lstatSync(socketPath).isSocket();
-  } catch {
-    return { state: 'absent' };
-  }
-  if (!isSocket) return { state: 'stale' };
+  const presence = socketPresence(socketPath, opts.lstat);
+  if (presence === 'absent') return { state: 'absent' };
+  if (presence === 'other') return { state: 'stale' };
 
   try {
     // Bun extends RequestInit with `unix` for unix domain sockets.
@@ -144,8 +158,9 @@ export async function checkSingleInstance(input: {
   foreground: boolean;
   timeoutMs?: number;
   log?: (msg: string) => void;
+  lstat?: Lstat;
 }): Promise<{ probe: SocketProbe; decision: StartDecision }> {
-  const probe = await probeRunnerSocket(input.socketPath, { timeoutMs: input.timeoutMs });
+  const probe = await probeRunnerSocket(input.socketPath, { timeoutMs: input.timeoutMs, lstat: input.lstat });
   if (probe.state === 'stale') {
     try {
       unlinkSync(input.socketPath);
@@ -283,8 +298,11 @@ export function serveRunnerSocket(
     noDeadline?: (req: Request) => boolean;
     /** Makes the bound socket owner-only. Default restrictSocketToOwner; tests replace it. */
     restrict?: (socketPath: string) => void;
+    /** statSync, for the inode that marks the file as ours; tests replace it. */
+    stat?: (path: string) => { ino: number };
   } = {},
 ): RunnerSocketServer {
+  const stat = opts.stat ?? statSync;
   const deadlineMs = opts.deadlineMs ?? SOCKET_HANDLER_DEADLINE_MS;
   // What each accepted request is waiting on, so a socket that stops answering
   // can say whether a handler is stuck or Bun never called one.
@@ -344,13 +362,20 @@ export function serveRunnerSocket(
       throw err;
     }
     ino = null;
-    try { ino = statSync(socketPath).ino; } catch { /* ignore */ }
+    try { ino = stat(socketPath).ino; } catch { /* Windows: Bun cannot stat a socket */ }
   };
   bind();
 
+  // With an inode, remove the file only if it is still the one we bound. Without
+  // one (Windows), the file is ours for as long as this server holds the path,
+  // which it does until stop/exit, so remove it then.
   const removeIfOurs = () => {
     try {
-      if (ino !== null && statSync(socketPath).ino === ino) unlinkSync(socketPath);
+      if (ino === null) {
+        if (existsSync(socketPath)) unlinkSync(socketPath);
+      } else if (stat(socketPath).ino === ino) {
+        unlinkSync(socketPath);
+      }
     } catch { /* already gone */ }
   };
   process.on('exit', removeIfOurs);
@@ -422,9 +447,9 @@ export type SocketHealth =
  * Ask the socket for /health the way `buildd top` and `buildd hold` would.
  * Any HTTP answer, 503 "starting" included, means it is serving. Never throws.
  */
-export async function checkSocketHealth(socketPath: string, timeoutMs: number): Promise<SocketHealth> {
+export async function checkSocketHealth(socketPath: string, timeoutMs: number, opts: { lstat?: Lstat } = {}): Promise<SocketHealth> {
   const started = Date.now();
-  try { lstatSync(socketPath); } catch { return { ok: false, reason: 'absent', ms: 0 }; }
+  if (socketPresence(socketPath, opts.lstat) === 'absent') return { ok: false, reason: 'absent', ms: 0 };
   try {
     const res = await fetch('http://localhost/health', {
       unix: socketPath,

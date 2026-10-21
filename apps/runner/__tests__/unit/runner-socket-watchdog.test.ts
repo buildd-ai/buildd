@@ -105,7 +105,7 @@ describe('serveRunnerSocket rebind', () => {
     const end = await Promise.race([reader.read().then(r => r.done, () => true), Bun.sleep(2_000).then(() => 'still open')]);
     expect(end).toBe(true);
 
-    expect(statSync(sock).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') expect(statSync(sock).mode & 0o777).toBe(0o600);
     expect(await (await fetch('http://localhost/health', { unix: sock } as RequestInit)).json()).toEqual({ alive: true });
     expect(s.inFlight()).toEqual([]);
   });
@@ -131,6 +131,12 @@ describe('checkSocketHealth', () => {
     const result = await checkSocketHealth(sock, 300);
     expect(result).toMatchObject({ ok: false, reason: 'timeout' });
     expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  test('a live socket Bun cannot lstat (Windows: EACCES) is serving, not absent', async () => {
+    serve(() => Response.json({ alive: true }));
+    const eacces = () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); };
+    expect(await checkSocketHealth(sock, 1_000, { lstat: eacces })).toMatchObject({ ok: true, status: 200 });
   });
 
   test('no socket at all is reported as such', async () => {

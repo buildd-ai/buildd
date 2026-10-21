@@ -62,12 +62,14 @@ async function makeStaleSocket(path: string): Promise<void> {
   }
   child.kill('SIGKILL');
   await child.exited;
-  expect(lstatSync(path).isSocket()).toBe(true);
+  // Windows: Bun cannot lstat a socket (EACCES), so only check the file is left.
+  if (process.platform === 'win32') expect(existsSync(path)).toBe(true);
+  else expect(lstatSync(path).isSocket()).toBe(true);
 }
 
 describe('runnerSocketPath', () => {
   test('lives under BUILDD_HOME', () => {
-    expect(runnerSocketPath('/h/.buildd', {})).toBe('/h/.buildd/runner.sock');
+    expect(runnerSocketPath('/h/.buildd', {})).toBe(join('/h/.buildd', 'runner.sock'));
   });
   test('BUILDD_RUNNER_SOCKET overrides it', () => {
     expect(runnerSocketPath('/h/.buildd', { BUILDD_RUNNER_SOCKET: '/x/r.sock' })).toBe('/x/r.sock');
@@ -199,6 +201,41 @@ describe('owner-only socket on Windows', () => {
     expect(acl).not.toMatch(/BUILTIN\\Users/i);
     // The owner still connects.
     expect((await fetch('http://localhost/api/runner', { unix: sock } as RequestInit)).status).toBe(200);
+  });
+});
+
+// On Windows Bun's lstatSync/statSync throw EACCES on an AF_UNIX socket, even
+// a live one its caller owns, so "lstat threw" must not read as "absent".
+describe('a socket Bun cannot lstat (Windows)', () => {
+  const eacces = () => { throw Object.assign(new Error('EACCES: permission denied, lstat'), { code: 'EACCES' }); };
+
+  test('a live runner is live, with its pid', async () => {
+    serveIdentity(4242);
+    expect(await probeRunnerSocket(sock, { lstat: eacces })).toEqual({ state: 'live', pid: 4242, version: '9.9.9' });
+  });
+
+  test('a socket file with no process behind it is stale, and checkSingleInstance clears it', async () => {
+    await makeStaleSocket(sock);
+    expect(await probeRunnerSocket(sock, { lstat: eacces })).toEqual({ state: 'stale' });
+    const { decision } = await checkSingleInstance({ socketPath: sock, isTTY: false, foreground: false, lstat: eacces });
+    expect(decision).toEqual({ action: 'start' });
+    expect(existsSync(sock)).toBe(false);
+  });
+
+  test('nothing at the path is still absent', async () => {
+    expect(await probeRunnerSocket(join(dir, 'gone.sock'), { lstat: eacces })).toEqual({ state: 'absent' });
+  });
+
+  test('ENOENT is absent without a connect', async () => {
+    const enoent = () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); };
+    serveIdentity();
+    expect(await probeRunnerSocket(sock, { lstat: enoent })).toEqual({ state: 'absent' });
+  });
+
+  test('stop removes the socket even when its inode cannot be read', () => {
+    const s = serveRunnerSocket(sock, () => new Response('x'), { stat: eacces });
+    s.stop();
+    expect(existsSync(sock)).toBe(false);
   });
 });
 

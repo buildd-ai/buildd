@@ -11,7 +11,7 @@
 # it never appears in a workstation env or a world-readable log (see the
 # comment atop no-prod-data.yml). Export NO_PROD_DATA_IDENTIFIERS yourself if
 # you have it and want that half checked too; otherwise this degrades to a
-# warning rather than a false green -- see check_no_prod_data.py's
+# warning rather than a false green -- see check-no-prod-data.ts's
 # NO_PROD_DATA_LOCAL handling.
 #
 # Usage:
@@ -98,4 +98,4 @@ fi
 # ${ARGS[@]+...}: macOS ships bash 3.2, where expanding an EMPTY array under
 # `set -u` is an "unbound variable" error — every no-flag run (the pre-commit
 # hook's) died here before checking anything.
-NO_PROD_DATA_LOCAL=1 python3 scripts/check_no_prod_data.py "$BASE_REF" ${ARGS[@]+"${ARGS[@]}"}
+NO_PROD_DATA_LOCAL=1 bun scripts/check-no-prod-data.ts "$BASE_REF" ${ARGS[@]+"${ARGS[@]}"}

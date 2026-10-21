@@ -1,11 +1,11 @@
 /**
  * The PR title/body half of the No Production Data check
- * (scripts/check_no_prod_data.py `scan_prose`, .github/workflows/no-prod-data.yml),
+ * (scripts/check-no-prod-data.ts `scanProse`, .github/workflows/no-prod-data.yml),
  * so `create_pr` can refuse a body CI would reject before the PR exists
  * (docs/specs/workflow-state-kernel.md §6.10 tier 1, S31).
  *
- * CI runs the Python script and this server cannot, so this is the same rule in
- * TypeScript, held to it by a parity test that runs both on one fixture set
+ * This is the same rule kept as its own copy in packages/core, held to the
+ * script by a parity test that runs both on one fixture set
  * (packages/core/__tests__/no-prod-data-prose.test.ts). Change one, change the
  * other: the test fails on any disagreement.
  *
