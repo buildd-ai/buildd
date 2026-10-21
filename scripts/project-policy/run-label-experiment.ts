@@ -20,24 +20,26 @@ const git = (args: string[]) => {
 };
 const config = patternPrompts(3);
 
-async function run(key: string, order: string) {
+async function run(key: string, order: string, experiment = 'labels') {
+  if (!['labels', 'tree'].includes(experiment)) throw new Error('Unknown experiment.');
   const rows = experimentOrder([
     ...(original as ExperimentRow[]).map(row => ({ ...row, split: `previous-${row.split}` })),
     ...(fresh as ExperimentRow[]).map(row => ({ ...row, split: 'fresh-validation' })),
   ], order);
   const groups = ['previous-development', 'previous-validation', 'fresh-validation'];
   const arms: Record<string, unknown> = {};
-  for (const mode of ['old-multi', 'single-2', 'single-3', 'multi-2', 'multi-3']) {
+  for (const mode of experiment === 'tree' ? ['old-multi', 'multi-3', 'tree-early', 'tree-confirm'] : ['old-multi', 'single-2', 'single-3', 'multi-2', 'multi-3']) {
     const engine = createPatternExperiment(key, undefined, 400, config);
     const started = performance.now();
-    const results = await mapWorkers(rows, row => mode === 'old-multi' ? engine.allPatterns(row)
+    const results = await mapWorkers<ExperimentRow, { id: string; verdict: string; trace?: unknown; votes?: unknown }>(rows, row => mode === 'old-multi' ? engine.allPatterns(row)
+      : mode.startsWith('tree') ? engine.tree(row, mode === 'tree-confirm')
       : engine.clearLabels(row, mode.startsWith('single') ? 'single' : 'multi', mode.endsWith('2') ? 2 : 3));
     arms[mode] = { wallMs: Math.round(performance.now() - started), ...engine.summary(),
       scores: Object.fromEntries(groups.map(group => [group, metrics(rows.filter(row => row.split === group), results)])),
       results, calls: engine.calls };
   }
   const batch: Record<string, unknown> = {};
-  for (const model of ['typesafe/jev-1.13', 'deepseek/deepseek-v4.1-flash']) {
+  for (const model of experiment === 'tree' ? [] : ['typesafe/jev-1.13', 'deepseek/deepseek-v4.1-flash']) {
     const endpoint = model.startsWith('deepseek/') ? { kind: 'chat' as const, baseURL: 'https://openrouter.ai/api/v1', provider: 'openrouter' as const } : undefined;
     const picker = createPatternExperiment(key, undefined, 100, config, { model, ...(endpoint ? { endpoint } : {}), timeoutMs: 10000 });
     const started = performance.now();
@@ -57,7 +59,7 @@ async function run(key: string, order: string) {
       })), selectedIds: selected.map(row => row.id), results, calls: { selection: picker.calls, checking: checking.calls } };
   }
   return { order, labels: { binary: 'edit / leave (leave includes insufficient evidence)', ternary: 'edit / leave / need_context' },
-    provenance: 'Original32 are previously exposed provisional examples. Fresh16 were prepared by a separate agent before new prompts/results were seen; labels are still agent-provisional, not human gold.',
+    provenance: experiment === 'tree' ? 'All48 cases are previously exposed and agent-provisional. No fresh validation or human gold for this tree comparison.' : 'Original32 are previously exposed provisional examples. Fresh16 were prepared by a separate agent before new prompts/results were seen; labels are still agent-provisional, not human gold.',
     cases: rows, arms, batch };
 }
 
@@ -65,12 +67,12 @@ if (import.meta.main) {
   try {
     const args = process.argv.slice(2);
     const arg = (name: string) => args.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3);
-    if (args.some(a => !['team', 'workspace', 'output', 'order'].some(name => a.startsWith(`--${name}=`)))) throw new Error('Unknown argument.');
+    if (args.some(a => !['team', 'workspace', 'output', 'order', 'experiment'].some(name => a.startsWith(`--${name}=`)))) throw new Error('Unknown argument.');
     if (!arg('output')) throw new Error('Local output required.');
     const key = await localJevKey(arg('team'), arg('workspace'));
     if (!key) throw new Error('No authorized OpenRouter credential.');
     const report = { sourceCommit: git(['rev-parse', 'HEAD']), sourceDirty: !!git(['status', '--porcelain', '--', 'scripts/project-policy']),
-      startedAt: new Date().toISOString(), experiment: await run(key, arg('order') ?? 'shuffle-17'),
+      startedAt: new Date().toISOString(), experiment: await run(key, arg('order') ?? 'shuffle-17', arg('experiment') ?? 'labels'),
       recording: 'Shared typed shadow adapter and local receipts; DeepSeek only selects candidates; no settings or database writes.' };
     await Bun.write(arg('output')!, JSON.stringify(report, null, 2) + '\n');
     console.log(JSON.stringify({ sourceCommit: report.sourceCommit, sourceDirty: report.sourceDirty,

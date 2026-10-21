@@ -233,3 +233,10 @@ Pools contain 16 strings to respect that adapter's option limit. DeepSeek only
 selects candidates; Jev checks them. An unavailable route is reported without
 provider fallback. Reports retain actual receipts, selection recall and final
 findings separately. This runner does not change production defaults.
+
+Add `--experiment=tree` to compare the existing narrow baselines with sequential
+single-string trees. One stops at the first edit; the other independently checks
+each suspected defect before accepting it, continuing after a rejected suspicion.
+Unknown evidence is retained, and transport failures abstain immediately. Trace
+nodes and receipts expose the path and call cost. These examples are now exposed;
+tree results are exploratory rather than fresh validation.

@@ -6,6 +6,21 @@ const row = { id: 'row-1', text: 'Deployment ready.', role: 'description' as con
 const response = (label: string) => new Response(JSON.stringify({ model: 'typesafe/jev-1.13', answers: { value: { type: 'choice', choice: label,
   probabilities: { [label]: 1 }, confidence: 1 } }, usage: { input_tokens: 10, output_tokens: 1, cost: 0.000001 } }), { status: 200 });
 
+it('follows narrow tree branches, confirms edits, and preserves uncertainty on failure', async () => {
+  let calls = 0;
+  const engine = createPatternExperiment('test-key', async () => response(['leave', 'edit', 'leave', 'leave'][calls++]));
+  const result = await engine.tree(row, true);
+  expect(result.verdict).toBe('keep');
+  expect(result.trace.map(t => t.node)).toEqual(['over_explanation', 'duplication', 'confirm_duplication', 'vague_action']);
+  expect(calls).toBe(4);
+  const early = createPatternExperiment('test-key', async () => response('edit'));
+  expect((await early.tree(row, false)).verdict).toBe('revise');
+  expect(early.calls).toHaveLength(1);
+  const failed = createPatternExperiment('test-key', async () => new Response('{}', { status: 401 }));
+  expect((await failed.tree(row, true)).verdict).toBe('uncertain');
+  expect(failed.calls).toHaveLength(1);
+});
+
 it('supports reproducible order sensitivity without depending on expected labels', () => {
   const rows = Array.from({ length: 8 }, (_, i) => ({ ...row, id: `r${i}` }));
   const mixed = experimentOrder(rows, 'shuffle-17');

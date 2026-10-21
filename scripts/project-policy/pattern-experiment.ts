@@ -7,6 +7,7 @@ import prompts from './pattern-prompts.json';
 import tuned from './pattern-prompts-v2.json';
 import eligibility from './pattern-eligibility.json';
 import clear from './label-prompts.json';
+import tree from './tree-prompts.json';
 
 export interface ExperimentRow {
   id: string; text: string; role: CopyRole; purpose: string; staticContext?: StaticCopyContext;
@@ -90,6 +91,30 @@ export function createPatternExperiment(apiKey?: string | null, fetcher?: Fetche
   };
   return {
     calls, route, targeted,
+    async tree(row: ExperimentRow, confirm: boolean) {
+      const trace: { node: string; choice: string | null }[] = [];
+      if (!safe(row)) return { id: row.id, verdict: 'uncertain', trace };
+      let uncertain = false;
+      for (const pattern of tree.order as (keyof typeof clear.patterns)[]) {
+        if (!applicable(pattern, row)) continue;
+        const answer = (await execute(`tree_${pattern}`, { value: choice(clear.patterns[pattern], {
+          edit: clear.edit, leave: clear.leave, need_context: clear.need_context,
+        }) }, rowState(row), `tree-${tree.version}`))?.value;
+        trace.push({ node: pattern, choice: answer?.choice ?? null });
+        if (!answer) return { id: row.id, verdict: 'uncertain', trace };
+        if (answer.choice === 'need_context') uncertain = true;
+        if (answer.choice !== 'edit') continue;
+        if (!confirm) return { id: row.id, verdict: 'revise', trace };
+        const checked = (await execute('tree_confirm', { value: choice(tree.confirm, {
+          edit: tree.edit, leave: tree.leave, need_context: tree.need_context,
+        }) }, { ...rowState(row), suspectedPattern: pattern }, `tree-${tree.version}`))?.value;
+        trace.push({ node: `confirm_${pattern}`, choice: checked?.choice ?? null });
+        if (!checked) return { id: row.id, verdict: 'uncertain', trace };
+        if (checked.choice === 'edit') return { id: row.id, verdict: 'revise', trace };
+        if (checked.choice === 'need_context') uncertain = true;
+      }
+      return { id: row.id, verdict: uncertain ? 'uncertain' : 'keep', trace };
+    },
     async clearLabels(row: ExperimentRow, mode: 'single' | 'multi', count: 2 | 3) {
       if (!safe(row)) return { id: row.id, verdict: 'uncertain', votes: null };
       const criteria: Record<string, string> = count === 2 ? { edit: clear.edit, leave: clear.binaryLeave }
