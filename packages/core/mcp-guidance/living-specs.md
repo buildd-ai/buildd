@@ -82,6 +82,16 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
    `buildd action=manage_specs params={ action: "conflict", specId, revision, criterionIds, note }`.
    It records an advisory discrepancy and blocks nothing.
 
+To request the registered checks on a task's current target, call
+`buildd action=manage_specs params={ action: "verify", taskId, evidenceRef? }`.
+`evidenceRef` is a stored artifact UUID; omit it for server evidence selection.
+The task's own token may request this for itself, with workspace write access.
+It cannot choose a method, model, prompt, head or verdict, or submit raw evidence.
+The same coordinator runs automatically on PR heads and final mission verification.
+It reads the pinned revision's `verify:` bindings and validates the evidence's
+origin and commit before recording a result. Missing evidence remains unverified.
+Declaration coverage says which requirements name checks; it does not mean they passed.
+
 ## Tables and diagrams
 
 The spec page renders GitHub Markdown tables, and fenced code blocks tagged

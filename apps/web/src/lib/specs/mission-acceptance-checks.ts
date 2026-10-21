@@ -6,4 +6,6 @@ export async function runFinalAcceptanceChecks(taskId: string, missionId: string
   const target = await resolveMissionCheckTarget(missionId);
   if (!target) return;
   await dispatchCriterionChecks({ taskId, headSha: target.headSha, headBranch: target.branch });
+  const { dispatchRegisteredVerification } = await import('./registered-verification');
+  await dispatchRegisteredVerification({ taskId, headSha: target.headSha });
 }
