@@ -2,7 +2,7 @@
 title: Codex Backend Behavioral Spec
 status: active
 owner: max
-last_verified: 2026-10-15
+last_verified: 2026-10-20
 summary: The Codex worker backend MUST drive the shared worker loop by mapping Codex thread events into Claude-shaped SDK messages, emitting exactly one complete and one aggregate result per run, and resuming by thread id.
 domain: runners
 surfaces: [apps/runner/src/backends/codex-backend.ts, apps/runner/src/backends/codex-events.ts, apps/runner/src/workers.ts, apps/runner/src/codex-auth.ts, apps/runner/src/host-seat.ts]
@@ -131,7 +131,7 @@ The SDK exposes no approval/effort/sandbox-policy thread options, so these are w
 
 **R-19 (effort mapping).** `configuredEffort` maps to `model_reasoning_effort` in `config.toml` (`codexReasoningEffort` in `codex-auth.ts`); buildd `max` collapses to codex `high`. *Reason:* otherwise `create_task { effort }` is a silent no-op for Codex. *Guard:* `codex-effort-config.test.ts`.
 
-**R-20 (sandbox mapping).** buildd permission policy + `task.kind` → Codex `sandboxMode` (`read-only` | `workspace-write`; default `workspace-write`). Dangerous-bash blocking relies on the **Codex sandbox**, not buildd's PreToolUse hook (which we cannot reach on Codex, see R-22). Both modes need the host's confinement (Seatbelt on macOS, bwrap on Linux). On a host without it, `mapSandboxMode` falls back to `danger-full-access`, with a warning, only for a run the runner decided reduced: a `trusted_local` task on a runner whose operator opted in (Living Spec "Runner isolation" R-5, AC-5). Any other run refuses to start, and the claim route does not hand a `protected` Codex task to that runner. *Guard:* `sandbox-inference.test.ts`, `codex-sandbox-bwrap.test.ts`.
+**R-20 (sandbox mapping).** buildd permission policy + `task.kind` → Codex `sandboxMode` (`read-only` | `workspace-write`; default `workspace-write`). Dangerous-bash blocking relies on the **Codex sandbox**, not buildd's PreToolUse hook (which we cannot reach on Codex, see R-22). Both modes need the host's confinement (Seatbelt on macOS, bwrap on Linux, Codex's own unelevated Windows sandbox on Windows). On Windows the runner probes that sandbox (`codex-windows-sandbox.ts`, a real `codex sandbox` run that must write inside its workspace and be refused outside it) and passes `windows.sandbox="unelevated"` on every run, since Codex without it runs `workspace-write` as read-only. That mechanism (`windows_restricted_token`) confines writes but not the network, so it takes `trusted_local` Codex tasks and refuses `protected` ones (a protected task needs `write` and `network` in scope). buildd never uses the `elevated` mode: it sets itself up by creating local accounts and firewall rules. On a host without it, `mapSandboxMode` falls back to `danger-full-access`, with a warning, only for a run the runner decided reduced: a `trusted_local` task on a runner whose operator opted in (Living Spec "Runner isolation" R-5, AC-5). Any other run refuses to start, and the claim route does not hand a `protected` Codex task to that runner. *Guard:* `sandbox-inference.test.ts`, `codex-sandbox-bwrap.test.ts`.
 
 Retired (was INV-21): stdio MCP server injection into `config.toml`, whose only user was the code graph; both were removed.
 

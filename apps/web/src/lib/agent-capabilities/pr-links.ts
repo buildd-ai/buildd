@@ -24,6 +24,12 @@ export interface PrLinkTask {
  */
 export interface PrReachGrant {
   prNumbers: number[];
+  /**
+   * `'workspace'`: a person also granted review authority over every open PR
+   * in the task's workspace. Review-request door only (`taskHoldsWorkspacePrReach`);
+   * it never makes `taskLinksPr` true, so close, merge and supersede ignore it.
+   */
+  scope?: 'workspace';
   grantedBy: string;
   grantedAt: string;
 }
@@ -33,7 +39,18 @@ export function readPrReachGrant(context: unknown): PrReachGrant | null {
   const raw = (context as { prReach?: Partial<PrReachGrant> } | null | undefined)?.prReach;
   if (!raw || typeof raw !== 'object' || !Array.isArray(raw.prNumbers)) return null;
   if (typeof raw.grantedBy !== 'string' || !/^(human|task|system):./.test(raw.grantedBy)) return null;
-  return { prNumbers: raw.prNumbers.filter((n): n is number => Number.isInteger(n) && n > 0), grantedBy: raw.grantedBy, grantedAt: String(raw.grantedAt ?? '') };
+  return {
+    prNumbers: raw.prNumbers.filter((n): n is number => Number.isInteger(n) && n > 0),
+    ...(raw.scope === 'workspace' ? { scope: 'workspace' as const } : {}),
+    grantedBy: raw.grantedBy,
+    grantedAt: String(raw.grantedAt ?? ''),
+  };
+}
+
+/** Did a person grant this task review authority over every PR in its workspace? */
+export function taskHoldsWorkspacePrReach(task: PrLinkTask | null | undefined): boolean {
+  const grant = task ? readPrReachGrant(task.context) : null;
+  return grant?.scope === 'workspace' && grant.grantedBy.startsWith('human:');
 }
 
 /** The PR a retry attempt is bound to (a server-written column), or null. */

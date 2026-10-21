@@ -101,7 +101,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Runners MUST sweep worktree changes against the resolved PR base at checkpoints and offer them for exclusive acquisition; under enforcement a confirmed collision MUST deny or defer.
 - [Cloud Egress Merge Guard](./cloud-egress-merge-guard.md) · @max — verified 2026-10-05
   The cloud egress handler MUST refuse a direct GitHub PR merge, a push to a protected branch, and (under an allow-list) any ref move outside the task's own branch, before attaching its token.
-- [Codex Backend Behavioral Spec](./codex-backend-spec.md) · @max — verified 2026-10-15
+- [Codex Backend Behavioral Spec](./codex-backend-spec.md) · @max — verified 2026-10-20
   The Codex worker backend MUST drive the shared worker loop by mapping Codex thread events into Claude-shaped SDK messages, emitting exactly one complete and one aggregate result per run, and resuming by thread id.
 - [Live Sibling Conflict Probe](./live-sibling-conflict-probe.md) · @max — verified 2026-10-08
   Two live workers whose touches share a file MUST be trial-merged on a runner, and a real conflict MUST reach both workers once per pair, naming files, hunks and who rebases.

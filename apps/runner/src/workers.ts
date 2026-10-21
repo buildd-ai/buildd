@@ -78,6 +78,7 @@ import { toolActionMilestone, appendMilestone, phaseOpName, recordPhaseOp, commi
 import { describeInjectedMessage } from '@buildd/core/worker-message-format';
 import { extractBuilddAction, BUILDD_MCP_TOOL_MATCHER, withBuilddActionTools } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
+import { probeCodexWindowsSandbox } from './codex-windows-sandbox';
 import { claudeSessionSandbox, decideConfinementRestart, detectHostPlatform, diagnoseClaudeBwrapFailure, isConfined, isolationModeLabel, probeIsolationRecord, probeSeatbelt, processStartedAt, type BwrapProbeFailure, type BwrapProbeResult } from './isolation-probe';
 import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-capability';
 import { buildAgentBaseEnv, withWorkerResourceAttribute } from './agent-env';
@@ -240,6 +241,7 @@ export function __resetBwrapSupportForTest(): void {
   _mountIsolationBwrapSupported = null;
   _isolationHost = null;
   _seatbeltSupported = null;
+  _codexWindowsSupported = null;
   _bwrapFailure = null;
 }
 // The isolation record's other inputs (./isolation-probe), cached per process
@@ -248,6 +250,7 @@ export function __resetBwrapSupportForTest(): void {
 const PROCESS_STARTED_AT = processStartedAt();
 let _isolationHost: ReturnType<typeof detectHostPlatform> | null = null;
 let _seatbeltSupported: boolean | null = null;
+let _codexWindowsSupported: boolean | null = null;
 let _bwrapFailure: BwrapProbeFailure | null = null;
 // The pre-spawn model-auth check (host-seat.ts claudeModelAuthMissing).
 let _modelAuthPreflight: typeof claudeModelAuthMissing = claudeModelAuthMissing;
@@ -284,9 +287,6 @@ export function isBwrapSupported(): boolean {
   if (_bwrapSupported === null) {
     _bwrapSupported = checkBwrapSupport();
     _bwrapProbeAt = new Date().toISOString();
-    if (!_bwrapSupported) {
-      console.log('[runner] bwrap user namespaces unavailable — will force sandbox disabled for all tasks');
-    }
   }
   return _bwrapSupported;
 }
@@ -312,11 +312,12 @@ export function getIsolationRecord(): RunnerIsolationRecord {
       return { ok: false, reason: _bwrapFailure };
     },
     seatbelt: () => {
-      if (_seatbeltSupported === null) {
-        _seatbeltSupported = probeSeatbelt();
-        if (!_seatbeltSupported) console.log('[runner] macOS Seatbelt (sandbox-exec) did not start — Claude and Codex run unconfined');
-      }
+      if (_seatbeltSupported === null) _seatbeltSupported = probeSeatbelt();
       return _seatbeltSupported;
+    },
+    codexWindows: () => {
+      if (_codexWindowsSupported === null) _codexWindowsSupported = probeCodexWindowsSandbox();
+      return _codexWindowsSupported;
     },
     reducedOptIn: () => reducedIsolationOptedIn(process.env),
   }, {
@@ -1023,7 +1024,8 @@ export class WorkerManager {
     // starts. Without this, the probe runs lazily inside the first task execution
     // and a false-positive (e.g. setuid bwrap passing the probe) can only be
     // detected after the agent loop is already deep in work.
-    if (!healthProbe) isBwrapSupported();
+    // The startup banner prints the result, one line per backend (index.ts).
+    if (!healthProbe) getIsolationRecord();
     // Re-scan every 30 minutes
     this.envScanInterval = setInterval(() => {
       try {

@@ -59,8 +59,8 @@ fi
 # No Production Data gate, reproduced locally against the STAGED tree (--staged),
 # so a UUID removed in this commit is not rejected and one added is caught here.
 # The candidate commit message is checked by .githooks/commit-msg. CI scans
-# committed HEAD. Never blocks on a missing base ref or missing python3.
-if command -v python3 >/dev/null 2>&1 && [ -f scripts/check_no_prod_data.py ]; then
+# committed HEAD. Never blocks on a missing base ref. (bun is checked above.)
+if [ -f scripts/check-no-prod-data.ts ]; then
   if ! bash scripts/check-no-prod-data-local.sh --staged >/tmp/no-prod-data-precommit.log 2>&1; then
     echo "" >&2
     echo "✖ no-prod-data check failed (see .github/workflows/no-prod-data.yml)." >&2

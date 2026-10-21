@@ -12,7 +12,7 @@
  * Run directly (install.sh does, after `bun install`), it prints the verdict
  * and exits 0 either way: reduced isolation is not an install failure.
  */
-import { isolationVerdict, type RunnerIsolationRecord } from '@buildd/shared';
+import { confinementLevel, isolationRemediation, isolationVerdict, partialConfinementRemediation, type RunnerIsolationRecord } from '@buildd/shared';
 import { probeIsolationRecord, processStartedAt, realIsolationProbes } from './isolation-probe';
 import { PKG_VERSION } from './updater';
 
@@ -20,8 +20,12 @@ export interface IsolationCheck {
   name: 'sandbox';
   status: 'ok' | 'warn';
   message: string;
-  /** The operator's steps, one per line; absent when confined or nothing on the host would help. */
+  /** One line per backend: what confines it here and where its tasks go (isolationVerdict). */
+  backends: string[];
+  /** The backend lines, then the steps, one per line; absent when every backend is fully confined. */
   detail?: string;
+  /** The runner operator's steps alone. */
+  steps: string[];
 }
 
 /** This host's record, probed now, uncached. */
@@ -32,29 +36,56 @@ export function probeThisHost(): RunnerIsolationRecord {
   });
 }
 
-/** Doctor's check for a record: warn whenever Health would (deriveSandboxPosture). */
+/**
+ * Doctor's check for a record: warn whenever a backend lacks full confinement
+ * (Health warns on the same records, deriveSandboxPosture).
+ */
 export function isolationCheck(record: RunnerIsolationRecord): IsolationCheck {
   const v = isolationVerdict(record);
-  if (v.confined) return { name: 'sandbox', status: 'ok', message: v.summary };
+  const backends = v.backends.map((b) => b.line);
+  if (v.backends.every((b) => b.level === 'full')) return { name: 'sandbox', status: 'ok', message: v.summary, backends, steps: [] };
+  // Claude's cause when it has none; otherwise what a less-confined Codex mode needs.
+  const codex = [record.codex['workspace-write'], record.codex['read-only']].find((c) => confinementLevel(c) !== 'full');
+  const steps = !v.confined
+    ? v.remediation
+    : codex && codex.mechanism === 'none'
+      ? isolationRemediation(codex.reason ?? 'backend_probe_failed', record.platform)
+      : partialConfinementRemediation(record.platform);
   return {
     name: 'sandbox',
     status: 'warn',
-    message: `${v.summary} — tasks run without isolation`,
-    ...(v.remediation.length > 0 ? { detail: v.remediation.join('\n') } : {}),
+    message: v.summary,
+    backends,
+    detail: [...backends, ...steps].join('\n'),
+    steps,
   };
+}
+
+/**
+ * The posture the banner, `buildd top` (through /api/config) and
+ * `buildd service install` show: the verdict's summary and one line per
+ * backend, so no surface words it differently.
+ */
+export function sandboxPosture(record: RunnerIsolationRecord): { summary: string; backends: { line: string; level: 'full' | 'partial' | 'none' }[] } {
+  const v = isolationVerdict(record);
+  return { summary: v.summary, backends: v.backends.map((b) => ({ line: b.line, level: b.level })) };
 }
 
 /** The installer's lines for a record. */
 export function formatIsolationCheck(record: RunnerIsolationRecord): string[] {
   const check = isolationCheck(record);
   const lines = [`Sandbox (${record.platform}): ${check.message}`];
-  if (check.detail) {
+  for (const b of check.backends) lines.push(`  ${b}`);
+  if (check.steps.length > 0) {
     lines.push('  To fix (runner operator; buildd does not change host security settings):');
-    for (const step of check.detail.split('\n')) lines.push(`    ${step}`);
+    for (const step of check.steps) lines.push(`    ${step}`);
   }
   return lines;
 }
 
 if (import.meta.main) {
-  for (const line of formatIsolationCheck(probeThisHost())) console.log(line);
+  const record = probeThisHost();
+  // install.sh asks for Claude's cause alone, to decide whether to offer bubblewrap.
+  if (process.argv.includes('--claude-reason')) console.log(record.claude.reason ?? 'confined');
+  else for (const line of formatIsolationCheck(record)) console.log(line);
 }

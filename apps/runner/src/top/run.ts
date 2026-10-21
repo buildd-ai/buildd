@@ -282,7 +282,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   // only (the runner answers from memory), so a finished run re-reads it: a
   // login that just failed shows as expired in the header.
   const configEvent = (body: any): TopEvent => ({
-    type: 'config', maxConcurrent: body.maxConcurrent, builddServer: body.builddServer, routes: body.routes, routeProblems: body.routeProblems, loginMode: body.loginMode,
+    type: 'config', maxConcurrent: body.maxConcurrent, builddServer: body.builddServer, routes: body.routes, routeProblems: body.routeProblems, loginMode: body.loginMode, sandbox: body.sandbox,
   });
   const refreshConfig = async () => {
     try {
