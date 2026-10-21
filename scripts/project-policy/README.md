@@ -259,3 +259,19 @@ Repeat with reverse order. Compare direct Jev narrow checks with selection plus
 the same checks, and separately selection plus only the proposed pattern checks.
 Candidate recall, pattern agreement and final findings are separate measurements.
 These examples are previously exposed; this does not establish production recall.
+
+`run-author-experiment.ts` instead asks DeepSeek to author three reusable narrow
+Jev prompts once, using only the original 16 development examples and their
+provisional labels. It reuses the structured selector's SDK/usage path, not a new
+transport. Proposed prompt strings are bounded and schema-checked; they cannot
+add code, models, thresholds or patterns. The prompts are saved before evaluation
+and remain advisory. Both orders reuse the same authored policy, with fresh
+independently prepared agent-provisional cases reported apart from exposed cases.
+
+```sh
+bun scripts/project-policy/run-author-experiment.ts --team=<team-id> --workspace=<workspace-id> --output=<absolute-local-report.json>
+```
+
+This tests offline policy authoring, not per-string prompt generation or automatic
+policy deployment. Original deterministic checks and production settings remain
+unchanged. Prompts and cache entries must be versioned together before any rollout.

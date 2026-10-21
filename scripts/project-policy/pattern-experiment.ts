@@ -8,6 +8,7 @@ import tuned from './pattern-prompts-v2.json';
 import eligibility from './pattern-eligibility.json';
 import clear from './label-prompts.json';
 import tree from './tree-prompts.json';
+import type { AuthoredPrompts } from './structured-selector';
 
 export interface ExperimentRow {
   id: string; text: string; role: CopyRole; purpose: string; staticContext?: StaticCopyContext;
@@ -91,6 +92,14 @@ export function createPatternExperiment(apiKey?: string | null, fetcher?: Fetche
   };
   return {
     calls, route, targeted,
+    async authored(row: ExperimentRow, authored: AuthoredPrompts) {
+      if (!safe(row)) return { id: row.id, verdict: 'uncertain', votes: null };
+      const questions = Object.fromEntries(Object.entries(authored).filter(([p]) => applicable(p as Pattern, row))
+        .map(([p, q]) => [p, choice(q.question, { revise: q.revise, keep: q.keep, uncertain: q.uncertain })]));
+      const votes = await execute('authored', questions, rowState(row), `authored-${hash(authored).slice(0, 16)}`);
+      return { id: row.id, verdict: !votes ? 'uncertain' : Object.values(votes).some(v => v.choice === 'revise') ? 'revise'
+        : Object.values(votes).some(v => v.choice === 'uncertain') ? 'uncertain' : 'keep', votes };
+    },
     async tree(row: ExperimentRow, confirm: boolean) {
       const trace: { node: string; choice: string | null }[] = [];
       if (!safe(row)) return { id: row.id, verdict: 'uncertain', trace };
