@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { copyViolations } from '../../packages/core/copy-rules';
 import { bannedWordsIn, findTerm, type InternalRef } from '../../packages/shared/src/terms';
 import { runVerificationCheck, type VerificationResult } from '../../packages/core/verification-check';
+import type { SemanticEvaluation, SemanticEvaluator } from './semantic';
 
 export type CopyRole = 'status' | 'action' | 'heading' | 'description' | 'diagnostic' | 'unknown';
 export interface ChangedSubject {
@@ -27,7 +28,8 @@ export interface ProjectPolicy {
 export interface PolicyFinding {
   policy: string; policyVersion: number; rule: string; subject: ChangedSubject;
   verdict: 'pass' | 'revise' | 'uncertain' | 'unsupported'; reasonCode: string; message: string;
-  suggestedCorrection?: string; evaluator: 'deterministic' | 'heuristic-advisory' | 'unavailable';
+  suggestedCorrection?: string; evaluator: 'deterministic' | 'heuristic-advisory' | 'model-advisory' | 'unavailable';
+  decision?: SemanticEvaluation;
   enforced: boolean; inputFingerprint: string; verification: VerificationResult;
 }
 
@@ -132,7 +134,7 @@ export function extractChangedSubjects(input: { file: string; before: string; af
 const fingerprint = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 /** Local only: no model transport, env-key discovery, network, or evidence writes. */
-export async function evaluateSubject(subject: ChangedSubject, policy: ProjectPolicy, context?: SubjectContext): Promise<PolicyFinding[]> {
+export async function evaluateSubject(subject: ChangedSubject, policy: ProjectPolicy, context?: SubjectContext, semantic?: SemanticEvaluator): Promise<PolicyFinding[]> {
   if (subject.kind !== policy.selectors.kind || !subject.file.endsWith(policy.selectors.extension)) return [];
   const role = context?.role ?? subject.role;
   const findings: PolicyFinding[] = [];
@@ -183,7 +185,18 @@ export async function evaluateSubject(subject: ChangedSubject, policy: ProjectPo
     } else emit('state-label', 'pass', 'catalog-consistent', 'The label agrees with the supplied canonical projection.');
   }
   const caption = policy.semantic.sortCaption;
-  if (context?.purpose === caption.purpose && new RegExp(caption.pattern, 'i').test(subject.after)) {
+  if (semantic && !findings.some(f => f.enforced)) {
+    const decision = await semantic(subject, policy, context);
+    const verdict = decision.label === 'useful' ? 'pass' : decision.label === 'uncertain' ? 'uncertain'
+      : decision.label === 'unsupported' ? 'unsupported' : 'revise';
+    emit('semantic-value', verdict, decision.reasonCode, `Semantic exploration: ${decision.label}; advisory only.`,
+      decision.label === 'redundant' ? context?.purpose === caption.purpose ? caption.correction : 'Remove repeated wording while preserving the verified action and state.'
+        : decision.label === 'unclear' ? 'Name the specific user action or fact.' : undefined,
+      decision.label === 'unsupported' ? 'unavailable' : 'model-advisory');
+    const finding = findings[findings.length - 1];
+    finding.decision = decision;
+    if (decision.confidence !== null) finding.verification.confidence = decision.confidence;
+  } else if (context?.purpose === caption.purpose && new RegExp(caption.pattern, 'i').test(subject.after)) {
     emit('semantic-value', 'revise', 'redundant-sort-narration', caption.message, caption.correction, 'heuristic-advisory');
   } else {
     emit('semantic-value', 'unsupported', 'model-not-exercised', 'No authorized local semantic decision route is configured.', undefined, 'unavailable');

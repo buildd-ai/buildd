@@ -7,7 +7,7 @@ Reuse/gap inventory, written before implementation:
 | Terminology | `packages/shared/src/terms.ts`, totality tests, generated `docs/design/terms.md` | Read the catalog; never copy its state mapping. |
 | Copy lint | `packages/core/copy-rules.ts`, `scripts/copy-check.ts` AST and ratchet | Add conservative changed-subject extraction; current flattening of expressions to N cannot prove state. |
 | Delivery review | `apps/web/src/lib/copy-review.ts`, `reviewer.ts`, `gitConfig.copyReview` | Preserve the independent PR gate. No hook installation. |
-| Decisions | `packages/ai-kit/src/decide`, core decision kinds/policy/client, ledger, measurements | No authorized local workspace route established. Semantic model execution unsupported; no alternate transport or implicit use of keys. |
+| Decisions | `packages/ai-kit/src/decide`, core decision kinds/policy/client, ledger, measurements | Optional local Jev exploration now uses the existing typed shadow adapter and scoped resolver. Default checks remain offline; production kind/ledger integration is separate. |
 | Evidence | `packages/core/verification-check.ts`, Quality Scout adapters | Adapt findings to existing check results; no persistence or lifecycle. |
 | Missions | `mission-sections.ts` SECTION_META, MissionGrid SectionView, delivery/start projections | Fixtures only. PR #5359 owns production caption/Next removal; do not duplicate its changes. Scheduled context is absent from the list projection and must be supplied. |
 
@@ -37,7 +37,12 @@ bun run scripts/project-policy/cli.ts --input=scripts/project-policy/positive.js
 bun run scripts/project-policy/cli.ts --staged --stage=commit
 bun run scripts/project-policy/cli.ts --input=scripts/project-policy/negative.json --stage=agent
 # advisory authoring invocation: exit 0, same structured findings
-bun run scripts/run-unit-tests.ts scripts/project-policy/project-policy.test.ts scripts/project-policy/cli.test.ts scripts/project-policy/rendered.test.tsx
+# Explicit opt-in, using OPENROUTER_API_KEY injected by your secret manager:
+bun run scripts/project-policy/explore.ts --output=/absolute/path/to/jev-report.json
+bun run scripts/project-policy/cli.ts --input=scripts/project-policy/negative.json --jev
+# Or pass --team=<team-id> --workspace=<workspace-id> with the scoped resolver's
+# existing database/encryption configuration supplied by your secret manager.
+bun run scripts/run-unit-tests.ts scripts/project-policy/project-policy.test.ts scripts/project-policy/cli.test.ts scripts/project-policy/rendered.test.tsx scripts/project-policy/semantic.test.ts scripts/project-policy/explore.test.ts
 bunx tsc --project scripts/project-policy/tsconfig.json --noEmit
 bun run scripts/project-policy/fixtures.tsx /absolute/path/to/fixture.html
 ```
@@ -67,13 +72,25 @@ reported strings, but cannot establish semantic user value or interpret an
 approved exception. `gold.json` includes redundant, useful and unclear controls;
 these are development labels, not a held-out calibration or a measured threshold.
 
-Model/provider/version, latency and cost are **not exercised**. No key lookup,
-custom HTTP transport, provider fallback, database write, or decision-ledger row
-is fabricated. A production semantic adapter should use a new opt-in capability
-and `runBuilddDecision` in explicit shadow mode; the platform's implicit Jev
-measurement behavior is insufficient calibration for a new copy question.
-Only bounded strings, roles and relevant clauses may enter that adapter, never
-whole diffs, source files, telemetry, secrets or unrelated context.
+The default command makes no model calls. Explicit `--jev` and `explore.ts` use
+the existing `defineDecision` adapter in **shadow** mode, pinned to the kit's
+Jev model, with existing transport, retry/deadline handling and metadata receipts.
+The local evaluator caps each invocation at 20 model calls. A supplied env API key
+uses the existing offline-eval convention; otherwise explicit team/workspace args
+use the shared scoped credential resolver, with platform billing fallback disabled
+and database writes disabled. Credentials never enter files or reports. No alternate
+provider is selected. Missing keys/provider failure remain unsupported.
+
+Only bounded changed text, syntactic role/component/prop, relevant purpose and
+resolved catalog/date/action facts reach the model. Paths, before text, diffs,
+arbitrary provenance and unrelated context are excluded; unresolved, oversized and
+recognizably sensitive copy abstains. Reports include actual returned model version,
+confidence, latency/cost, request and prompt fingerprints, and shared-adapter receipts.
+Local receipts are not database ledger rows. A production adapter still needs its own
+opt-in capability and `runBuilddDecision` integration. The platform's implicit Jev
+measurement behavior is insufficient calibration for a new copy question. No model
+judgment, even at confidence 1, can overrule a deterministic violation or block commit.
+Gold-set accuracy is development evidence; it selects no enforcement threshold.
 
 ## Limits and smallest next slices
 
@@ -91,8 +108,8 @@ whole diffs, source files, telemetry, secrets or unrelated context.
   They do not certify a full browser layout or implement the production scheduled
   projection missing from the current Missions list.
 - Extend existing components: retain this small adapter under scripts, then
-  share strict AST subjects with copy-review/copy-check, register the opt-in shadow
-  semantic kind/ledger path, collect independent gold labels and measurements,
+  share strict AST subjects with copy-review/copy-check, register the production
+  semantic kind/ledger path, collect independent gold labels and held-out measurements,
   and only then add explicit agent/pre-commit/CI adapters under measured policy.
   No new package, evidence store, or lifecycle is warranted yet.
 

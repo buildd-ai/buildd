@@ -42,3 +42,12 @@ it('rejects malformed supplied inputs instead of claiming no findings', async ()
   await expect(runLocalCheck({ changes: [{ file: 'x.tsx' }] }, 'commit')).rejects.toThrow();
   await expect(runLocalCheck({ changes: [] }, 'invalid' as 'commit')).rejects.toThrow();
 });
+
+it('opt-in semantic execution reports model receipts but preserves deterministic enforcement', async () => {
+  const result = await runLocalCheck(bad, 'commit', async () => ({ label: 'redundant', reasonCode: 'model_redundant',
+    model: 'test-model', version: 'v1', promptFingerprint: 'p1', inputFingerprint: 'i1', confidence: 1,
+    latencyMs: 15, costUsd: 0.001, attempts: 1, receipt: null }));
+  expect(result.exitCode).toBe(1);
+  expect(result.model.decisions).toBe(1);
+  expect(result.findings.find(f => f.evaluator === 'model-advisory')?.enforced).toBe(false);
+});

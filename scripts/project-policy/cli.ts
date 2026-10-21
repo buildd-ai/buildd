@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import policy from './product-language.json';
 import { evaluateSubject, extractChangedSubjects, policyExitCode, type ProjectPolicy, type SubjectContext } from './pipeline';
+import type { SemanticEvaluator } from './semantic';
 
 type Stage = 'agent' | 'commit' | 'ci';
 interface Change { file: string; before: string; after: string; patch?: string; contexts?: Record<string, SubjectContext> }
@@ -47,7 +48,7 @@ function validateInput(value: unknown): { changes: Change[]; customRules?: Proje
   return input;
 }
 
-export async function runLocalCheck(value: unknown, stage: Stage) {
+export async function runLocalCheck(value: unknown, stage: Stage, semantic?: SemanticEvaluator) {
   if (!['agent', 'commit', 'ci'].includes(stage)) throw new Error('stage must be agent, commit or ci.');
   const input = validateInput(value);
   const configured: ProjectPolicy = { ...policy, customRules: input.customRules ?? policy.customRules };
@@ -64,15 +65,19 @@ export async function runLocalCheck(value: unknown, stage: Stage) {
       return { subject, context: matches(subject) ? context : undefined };
     });
   });
-  const evaluated = (await Promise.all(subjects.map(s => evaluateSubject(s.subject, configured, s.context)))).flat();
+  const evaluated = (await Promise.all(subjects.map(s => evaluateSubject(s.subject, configured, s.context, semantic)))).flat();
   const findings = stage === 'agent' ? evaluated.map(f => ({ ...f, enforced: false })) : evaluated;
+  const decisions = evaluated.flatMap(f => f.decision ? [f.decision] : []).filter(d => d.attempts > 0);
   return {
     policy: `${configured.id}@${configured.version}`, stage, subjects: subjects.length, findings,
     invocation: stage === 'agent' ? 'advisory' : 'deterministic-only',
     exitCode: stage === 'agent' ? 0 : policyExitCode(findings),
     scope: 'Deterministic pass does not establish semantic quality or actual runtime state.',
     coverage: { command: 'executed', agentHook: 'not integrated', preCommitHook: 'not integrated', ci: 'not integrated', pr: 'existing copyReview unchanged' },
-    model: { status: 'not exercised', provider: null, version: null, decisions: 0, latencyMs: null, costUsd: null },
+    model: { status: decisions.length ? 'advisory exploration' : 'not exercised',
+      provider: decisions.length ? 'openrouter' : null, version: decisions[0]?.model ?? null,
+      decisions: decisions.length, latencyMs: decisions.length ? decisions.reduce((sum, d) => sum + d.latencyMs, 0) : null,
+      costUsd: decisions.length && decisions.every(d => d.costUsd !== null) ? decisions.reduce((sum, d) => sum + d.costUsd!, 0) : null },
   };
 }
 
@@ -82,9 +87,13 @@ if (import.meta.main) {
     const stage = (args.find(a => a.startsWith('--stage='))?.slice(8) ?? 'commit') as Stage;
     const inputPath = args.find(a => a.startsWith('--input='))?.slice(8);
     if ((!inputPath && !args.includes('--staged')) || (inputPath && args.includes('--staged'))) throw new Error('Use --input=<snapshots.json> OR --staged, optionally --stage=agent|commit|ci.');
-    if (args.some(a => a !== '--staged' && !a.startsWith('--input=') && !a.startsWith('--stage='))) throw new Error('Unknown argument.');
+    if (args.some(a => a !== '--staged' && a !== '--jev' && !['--input=', '--stage=', '--team=', '--workspace='].some(prefix => a.startsWith(prefix)))) throw new Error('Unknown argument.');
+    if (!args.includes('--jev') && args.some(a => a.startsWith('--team=') || a.startsWith('--workspace='))) throw new Error('Credential scope is only used with explicit --jev exploration.');
     const input = inputPath ? JSON.parse(readFileSync(inputPath, 'utf8')) : { changes: readStagedChanges() };
-    const report = await runLocalCheck(input, stage);
+    const semantic = args.includes('--jev') ? await (await import('./explore')).localJevEvaluator(
+      args.find(a => a.startsWith('--team='))?.slice(7), args.find(a => a.startsWith('--workspace='))?.slice(12)) : undefined;
+    const report = { ...await runLocalCheck(input, stage, semantic), sourceCommit: git(['rev-parse', 'HEAD']).trim(),
+      sourceDirty: !!git(['status', '--porcelain', '--', 'scripts/project-policy']).trim() };
     console.log(JSON.stringify(report, null, 2));
     process.exitCode = report.exitCode;
   } catch (error) {
