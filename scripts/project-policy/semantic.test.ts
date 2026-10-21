@@ -1,10 +1,28 @@
 import { expect, it } from 'bun:test';
 import policy from './product-language.json';
 import { extractChangedSubjects, evaluateSubject, policyExitCode } from './pipeline';
-import { buildSemanticState, createJevEvaluator, semanticDecision } from './semantic';
+import { buildSemanticState, createJevEvaluator, createClefEvaluator, semanticDecision } from './semantic';
 
 const subject = () => extractChangedSubjects({ file: 'src/Status.tsx', before: '', after: '<span>slipping first</span>' })[0];
 const context = { source: 'fixture provenance', purpose: 'section-subtitle' };
+
+it('runs each Clef variant through Workers AI with the same policy and records top probability separately', async () => {
+  for (const model of ['clef', 'clef-flash'] as const) {
+    const evaluate = createClefEvaluator(model, 'test-key', { kind: 'workers-ai', baseURL: 'https://example.test/ai/run' }, async (url, init) => {
+      expect(String(url)).toEndWith(`/@cf/cloudflare/${model}`);
+      const body = JSON.parse(String(init?.body));
+      expect(body.model).toBe(model);
+      expect(body.questions).toEqual(semanticDecision(policy).questions);
+      return new Response(JSON.stringify({ success: true, result: { model, answers: { value: {
+        type: 'choice', choice: 'redundant', probabilities: { useful: 0.1, redundant: 0.7, unclear: 0.1, uncertain: 0.1 }, confidence: 0.12,
+      } }, usage: { input_tokens: 30 } } }), { status: 200 });
+    });
+    const result = await evaluate(subject(), policy, context);
+    expect(result).toMatchObject({ label: 'redundant', confidence: 0.12, topProbability: 0.7, costUsd: null });
+    expect(result.receipt?.provider).toBe('cloudflare');
+    expect(policyExitCode(await evaluateSubject(subject(), policy, context, evaluate))).toBe(0);
+  }
+});
 
 it('uses bounded semantic facts, excluding paths, before copy, context source and diffs', () => {
   const state = buildSemanticState({ ...subject(), before: 'private old copy' }, context);

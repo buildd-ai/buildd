@@ -3,8 +3,29 @@ import { summarizeBenchmark } from '../../packages/core/decision-benchmark';
 import gold from './gold.json';
 import policy from './product-language.json';
 import type { ChangedSubject, ProjectPolicy } from './pipeline';
-import { createJevEvaluator, type SemanticEvaluator } from './semantic';
+import { createJevEvaluator, createClefEvaluator, type SemanticEvaluator } from './semantic';
 import type { InferenceKeyScope, ResolveInferenceKeyOptions } from '../../packages/core/inference-keys';
+import type { ClefModel, DecisionEndpoint } from '../../packages/ai-kit/src/decide';
+import type { DecisionModelRoute } from '../../packages/core/decision-model';
+
+type ClefScope = { teamId: string; workspaceId: string; allowPlatformKey: false };
+async function resolveLocalClefRoute(setting: DecisionModelRoute, scope: ClefScope) {
+  process.env.DISABLE_WRITES = 'true';
+  const { resolveDecisionRoute } = await import('../../packages/core/decision-client');
+  return resolveDecisionRoute(setting, scope);
+}
+
+/** Explicit experiment selection; reads the existing team route without saving settings or minting tokens. */
+export async function localClefEvaluator(model: ClefModel, teamId?: string, workspaceId?: string,
+  resolve: (setting: DecisionModelRoute, scope: ClefScope) => Promise<{ apiKey: string | null; model: string; endpoint?: DecisionEndpoint }> = resolveLocalClefRoute) {
+  if (!teamId || !workspaceId) throw new Error('Supply both team and workspace for scoped Clef exploration.');
+  const route = await resolve({ endpoint: 'systemone', via: 'cloudflare', model }, { teamId, workspaceId, allowPlatformKey: false });
+  if (route.model !== model || (route.apiKey && route.endpoint?.kind !== 'workers-ai')) {
+    throw new Error('Cloudflare Workers AI route is required for the selected Clef model.');
+  }
+  // Non-routable placeholder is never invoked without a key; retain model identity in the abstention.
+  return createClefEvaluator(model, route.apiKey, route.endpoint?.kind === 'workers-ai' ? route.endpoint : { kind: 'workers-ai', baseURL: 'https://unconfigured.invalid' });
+}
 
 type LocalScope = ResolveInferenceKeyOptions & { teamId: string; workspaceId: string };
 async function resolveLocalCredential(scope: LocalScope) {
@@ -62,8 +83,11 @@ if (import.meta.main) {
   try {
     const args = process.argv.slice(2);
     const arg = (key: string) => args.find(a => a.startsWith(`--${key}=`))?.slice(key.length + 3);
-    if (args.some(a => !['team', 'workspace', 'output'].some(key => a.startsWith(`--${key}=`)))) throw new Error('Use --team=<id> --workspace=<id> --output=<local-json>; or supply an explicit OPENROUTER_API_KEY.');
-    const evaluator = await localJevEvaluator(arg('team'), arg('workspace'));
+    if (args.some(a => !['team', 'workspace', 'output', 'model'].some(key => a.startsWith(`--${key}=`)))) throw new Error('Use --model=jev|clef|clef-flash with --team=<id> --workspace=<id> --output=<local-json>.');
+    const model = arg('model') ?? 'jev';
+    if (!['jev', 'clef', 'clef-flash'].includes(model)) throw new Error('Unknown exploration model.');
+    const evaluator = model === 'jev' ? await localJevEvaluator(arg('team'), arg('workspace'))
+      : await localClefEvaluator(model as ClefModel, arg('team'), arg('workspace'));
     const report = { ...await explorePolicy(gold, policy, evaluator),
       sourceCommit: spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim(),
       sourceDirty: !!spawnSync('git', ['status', '--porcelain', '--', 'scripts/project-policy'], { encoding: 'utf8' }).stdout.trim() };
@@ -71,7 +95,7 @@ if (import.meta.main) {
     console.log(JSON.stringify(report, null, 2));
     if (report.measurement.answered === 0) process.exitCode = 2;
   } catch {
-    console.error('Local Jev exploration could not run. Check the scoped resolver or local credential; no key or provider body is printed.');
+    console.error('Local policy exploration could not run. Check the scoped resolver or local credential; no key or provider body is printed.');
     process.exitCode = 2;
   }
 }

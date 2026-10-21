@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { choice, defineDecision, canonicalJson, JEV_MODEL, redactSecrets, type DecideParams, type DecisionReceipt } from '../../packages/ai-kit/src/decide';
+import { choice, defineDecision, canonicalJson, JEV_MODEL, redactSecrets, type DecideParams, type DecisionReceipt, type DecisionEndpoint, type ClefModel } from '../../packages/ai-kit/src/decide';
 import type { ChangedSubject, ProjectPolicy, SubjectContext } from './pipeline';
 import { findTerm } from '../../packages/shared/src/terms';
 
@@ -9,6 +9,8 @@ export interface SemanticEvaluation {
   model: string; version: string; promptFingerprint: string; inputFingerprint: string;
   confidence: number | null; latencyMs: number; costUsd: number | null; attempts: number;
   receipt: DecisionReceipt | null;
+  /** Chosen-label probability, separate from the model's raw confidence. Neither is calibrated here. */
+  topProbability?: number;
 }
 export type SemanticEvaluator = (subject: ChangedSubject, policy: ProjectPolicy, context?: SubjectContext) => Promise<SemanticEvaluation>;
 
@@ -24,20 +26,31 @@ export function buildSemanticState(subject: ChangedSubject, context?: SubjectCon
     ...(context?.action === 'approval' ? { action: 'approval' } : {}) };
 }
 
-export function semanticDecision(policy: ProjectPolicy) {
+type ClefRoute = { model: ClefModel; endpoint: DecisionEndpoint & { kind: 'workers-ai' } };
+export function semanticDecision(policy: ProjectPolicy, route?: ClefRoute) {
   const labels = ['useful', 'redundant', 'unclear', 'uncertain'] as const;
   if (Object.keys(policy.semantic.labels).sort().join(',') !== [...labels].sort().join(',')) throw new Error('Semantic labels must retain the fixed typed contract.');
   const criteria = Object.fromEntries(labels.map(label => [label, policy.semantic.labels[label]])) as Record<SemanticLabel, string>;
   return defineDecision({ id: `${policy.id}.semantic-value`, promptVersion: `policy-${policy.version}`,
-    mode: 'shadow', model: JEV_MODEL, questions: { value: choice(policy.semantic.instructions, criteria) } });
+    mode: 'shadow', model: route?.model ?? JEV_MODEL, ...(route ? { endpoint: route.endpoint } : {}),
+    questions: { value: choice(policy.semantic.instructions, criteria) } });
 }
 
 /** Explicit local exploration uses the existing typed shadow engine/transport and receipts. */
 export function createJevEvaluator(apiKey?: string | null, fetcher?: DecideParams<ReturnType<typeof semanticDecision>['questions']>['fetch'], budget = 20): SemanticEvaluator {
+  return createSemanticEvaluator(apiKey, fetcher, budget);
+}
+
+export function createClefEvaluator(model: ClefModel, apiKey: string | null | undefined, endpoint: ClefRoute['endpoint'],
+  fetcher?: DecideParams<ReturnType<typeof semanticDecision>['questions']>['fetch'], budget = 20): SemanticEvaluator {
+  return createSemanticEvaluator(apiKey, fetcher, budget, { model, endpoint });
+}
+
+function createSemanticEvaluator(apiKey?: string | null, fetcher?: DecideParams<ReturnType<typeof semanticDecision>['questions']>['fetch'], budget = 20, route?: ClefRoute): SemanticEvaluator {
   let calls = 0;
   const maxCalls = Number.isInteger(budget) ? Math.max(0, Math.min(20, budget)) : 0;
   return async (subject, policy, context) => {
-    const definition = semanticDecision(policy);
+    const definition = semanticDecision(policy, route);
     const state = buildSemanticState(subject, context);
     const inputFingerprint = createHash('sha256').update(canonicalJson({ state, policy: `${policy.id}@${policy.version}`,
       policyAuthority: policy.authority.hash, prompt: definition.fingerprint })).digest('hex');
@@ -57,6 +70,7 @@ export function createJevEvaluator(apiKey?: string | null, fetcher?: DecideParam
       attempts: run.result.attempts, receipt: run.receipt };
     const answer = run.result.answers.value;
     return { ...base, label: answer.choice, reasonCode: `model_${answer.choice}`, confidence: answer.confidence,
+      topProbability: answer.probabilities[answer.choice],
       model: run.result.model, latencyMs: run.result.latencyMs, costUsd: run.result.usage.costUsd,
       attempts: run.result.attempts, receipt: run.receipt };
   };

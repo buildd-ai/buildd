@@ -92,6 +92,21 @@ measurement behavior is insufficient calibration for a new copy question. No mod
 judgment, even at confidence 1, can overrule a deterministic violation or block commit.
 Gold-set accuracy is development evidence; it selects no enforcement threshold.
 
+The same development set can be explored explicitly with Cloudflare's existing
+team-scoped route (no settings writes, token minting or provider fallback):
+
+```powershell
+bun scripts/project-policy/explore.ts --model=clef --team=<authorized-team-id> --workspace=<authorized-workspace-id> --output=<local-report.json>
+bun scripts/project-policy/explore.ts --model=clef-flash --team=<authorized-team-id> --workspace=<authorized-workspace-id> --output=<local-report.json>
+```
+
+`--model=jev` remains the default for `explore.ts`; the copy CLI's `--jev` stays
+Jev-only. Clef uses the shared Workers AI transport, including existing gateway
+headers. Missing credentials abstain. Reports retain raw confidence and chosen-label
+`topProbability` separately; neither has a threshold calibrated for this policy.
+Clef model names are service aliases, not immutable model-version pins. Workers AI
+does not return billed cost through the current adapter, so cost remains null.
+
 ## Limits and smallest next slices
 
 - TSX only; no Vue, Svelte, MDX, translations or cross-file constant/data flow.

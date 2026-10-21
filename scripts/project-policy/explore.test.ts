@@ -1,7 +1,27 @@
 import { expect, it } from 'bun:test';
-import { explorePolicy, localJevEvaluator } from './explore';
+import { explorePolicy, localJevEvaluator, localClefEvaluator } from './explore';
 import policy from './product-language.json';
 import type { SemanticEvaluation } from './semantic';
+
+it('explicit Clef exploration resolves the existing Cloudflare route without provider fallback', async () => {
+  for (const model of ['clef', 'clef-flash'] as const) {
+    let calls = 0;
+    const evaluate = await localClefEvaluator(model, 'team-test', 'workspace-test', async (setting, scope) => {
+      calls++;
+      expect(setting).toEqual({ endpoint: 'systemone', via: 'cloudflare', model });
+      expect(scope).toEqual({ teamId: 'team-test', workspaceId: 'workspace-test', allowPlatformKey: false });
+      return { apiKey: null, model };
+    });
+    const report = await explorePolicy([{ text: 'slipping first', purpose: 'section-subtitle', expected: 'redundant' }], policy, evaluate);
+    expect(calls).toBe(1);
+    expect(report.measurement.answered).toBe(0);
+    expect(report.rows[0].model).toBe(model);
+  }
+  await expect(localClefEvaluator('clef')).rejects.toThrow('Supply both team and workspace');
+  await expect(localClefEvaluator('clef', 'team-test', 'workspace-test', async () => ({
+    apiKey: 'unrelated-test-key', model: 'typesafe/jev-1.13',
+  }))).rejects.toThrow('Cloudflare Workers AI route is required');
+});
 
 it('scores labeled development examples without leaking gold to evaluator or selecting an enforcement threshold', async () => {
   const rows = [{ text: 'oldest first', purpose: 'section-subtitle', expected: 'redundant' }];
