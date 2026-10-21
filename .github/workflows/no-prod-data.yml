@@ -44,12 +44,16 @@ jobs:
           printf '%s' "$PR_BODY" > /tmp/pr-body.txt
           printf '%s' "$PR_TITLE" > /tmp/pr-title.txt
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.3"
+
       - name: Self-test the checker
         # Ordered BEFORE the check it guards, deliberately. A failing step skips
         # the ones after it, so while this ran second it was skipped on exactly
         # the runs where the check misbehaved — including all six false positives
         # on 2026-08-31. A guardrail that cannot fail is worse than none.
-        run: python3 scripts/__tests__/check_no_prod_data_test.py
+        run: bun test scripts/check-no-prod-data.test.ts
 
       - name: Check for production data
         env:
@@ -59,7 +63,7 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           git fetch --no-tags origin "$BASE_REF"
-          python3 scripts/check_no_prod_data.py "origin/$BASE_REF" \
+          bun scripts/check-no-prod-data.ts "origin/$BASE_REF" \
             --body /tmp/pr-body.txt --title /tmp/pr-title.txt
 
       - name: Check the diff for a leaked agent-instructions block

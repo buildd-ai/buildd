@@ -1521,6 +1521,27 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     expect(resolveCriteriaEscalationCalls[0]).toMatchObject({ missionId: '11111111-1111-4111-8111-111111111111', reason: 'waived' });
   });
 
+  const SPEC_ID = '00000000-0000-4000-8000-000000000001';
+  const specMission = () => ({
+    id: '11111111-1111-4111-8111-111111111111', teamId: 'team-1', title: 'Existing Mission', workspaceId: 'ws-1', scheduleId: null, status: 'active', priority: 0,
+    goalCriteria: [{ type: 'living_spec', specId: SPEC_ID, specRevisionId: '00000000-0000-4000-8000-000000000002', revision: 1, contentHash: 'h' }],
+    goalCriteriaState: {
+      overall: 'UNVERIFIED', evaluatedAt: '2026-01-01T00:00:00.000Z', evaluatedBy: 'auto',
+      criteria: [{ index: 0, type: 'living_spec', verdict: 'PENDING', spec: { specId: SPEC_ID, revision: 1, targetSha: 'abc', standings: [
+        { criterionId: 'R-1', standing: 'pass', headSha: null }, { criterionId: 'R-2', standing: 'inconclusive', headSha: null },
+      ] } }],
+    },
+  });
+
+  it('waive and complete records the unmet spec criteria as waived in the same write', async () => {
+    mockMissionsFindFirst.mockReturnValue(specMission());
+    const res = await PATCH(new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', { method: 'PATCH', body: JSON.stringify({ status: 'completed' }) }), { params: makeParams('11111111-1111-4111-8111-111111111111') });
+    expect(res.status).toBe(200);
+    const saved = (updatedSetData as any).goalCriteria[0];
+    expect(saved.waived.map((w: any) => w.criterionId)).toEqual(['R-2']);
+    expect((updatedSetData as any).goalCriteriaState.criteria[0].spec.standings.map((s: any) => s.standing)).toEqual(['pass', 'waived']);
+  });
+
   it('does not resolve a criteria escalation on completion when the mission was never escalated', async () => {
     const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
@@ -2399,6 +2420,18 @@ describe("/api/missions/[id] — an orchestration task's admin per-task token", 
         return { where: mock(() => ({ returning: mock(() => [{ id: MISSION, ...data }]) })) };
       }),
     }));
+  });
+
+  it('completing the mission with a task token does not waive the outcome spec criteria', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: MISSION, teamId: 'team-1', title: 'Mine', workspaceId: 'ws-1', scheduleId: null, priority: 0, status: 'active',
+      goalCriteria: [{ type: 'living_spec', specId: '00000000-0000-4000-8000-000000000001', specRevisionId: '00000000-0000-4000-8000-000000000002', revision: 1, contentHash: 'h' }],
+      goalCriteriaState: { overall: 'UNVERIFIED', evaluatedAt: '2026-01-01T00:00:00.000Z', evaluatedBy: 'auto', criteria: [{ index: 0, type: 'living_spec', verdict: 'PENDING', spec: { specId: '00000000-0000-4000-8000-000000000001', revision: 1, targetSha: 'abc', standings: [{ criterionId: 'R-2', standing: 'inconclusive', headSha: null }] } }] },
+    });
+    const res = await patch({ status: 'completed' });
+    expect(res.status).toBe(200);
+    expect((updatedSetData as any).status).toBe('completed');
+    expect((updatedSetData as any).goalCriteria).toBeUndefined();
   });
 
   it("edits its own task's mission's descriptive fields", async () => {

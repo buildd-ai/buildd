@@ -511,7 +511,7 @@ export async function evaluateCriteriaNow(
       cs.evidence = standing.evidence;
       const buildDone = !hasPendingDeliverableWork(missionTasks);
       cs.spec = { specId: criterion.specId, revision: criterion.revision, targetSha: standing.targetSha, standings: standing.standings, buildDone };
-      if (standing.verdict !== 'pass' && standing.verdict !== 'fail' && standing.target.kind !== 'unknown' && buildDone && canDispatch) {
+      if (standing.verdict !== 'pass' && standing.verdict !== 'fail' && standing.target.kind !== 'unknown' && buildDone && canDispatch && mission.status !== 'completed' && mission.status !== 'archived') {
         const fv = await ensureFinalVerification(missionId, criterion, standing);
         if (fv.kind === 'dispatched') {
           // A new check of the integrated result is work filed against the

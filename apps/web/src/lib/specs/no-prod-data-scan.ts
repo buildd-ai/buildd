@@ -1,9 +1,9 @@
 /**
  * The no-prod-data rules that need no secret, for a generated repo copy before
  * approval (docs/specs/living-specs.md §18, R-34). The patterns are
- * `scripts/check_no_prod_data.py`'s, character for character;
- * `no-prod-data-scan.test.ts` reads them out of the Python file and fails when
- * the two drift. The identifier half (personal handles, private repo names)
+ * `scripts/check-no-prod-data.ts`'s, character for character;
+ * `no-prod-data-scan.test.ts` imports them from there and fails when the two
+ * drift. The identifier half (personal handles, private repo names)
  * reads a repo secret only CI holds, so it is not here.
  *
  * `code: true` scans as CI scans an added source line (the UUID rule only);
