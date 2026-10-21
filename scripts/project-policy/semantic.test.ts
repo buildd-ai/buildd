@@ -31,6 +31,16 @@ it('uses bounded semantic facts, excluding paths, before copy, context source an
   expect(semanticDecision(policy).policyOf('value').mode).toBe('shadow');
 });
 
+it('includes bounded static neighbors but screens secrets in the entire context', async () => {
+  const nearby = { container: 'section', heading: 'Deployments', nearbyText: ['Deployment ready.'], completeness: 'static-partial' as const };
+  expect(buildSemanticState(subject(), { ...context, staticContext: nearby }).staticContext).toEqual(nearby);
+  let calls = 0;
+  const evaluator = createJevEvaluator('test-key', async () => { calls++; throw new Error('must not call'); });
+  const unsafe = await evaluator(subject(), policy, { ...context, staticContext: { ...nearby, nearbyText: ['Bearer test-key-not-for-provider'] } });
+  expect(unsafe.reasonCode).toBe('sensitive_copy');
+  expect(calls).toBe(0);
+});
+
 it('runs typed Jev advice through existing shadow adapter; even confidence 1 cannot block', async () => {
   let calls = 0;
   const semantic = createJevEvaluator('test-key', async (_url, init) => {
@@ -76,4 +86,13 @@ it('caps explicitly opted-in local model spend and includes only resolved state 
   const evaluate = createJevEvaluator('test-key', async () => new Response('{}', { status: 401 }), 1);
   await evaluate(subject(), policy, context);
   expect((await evaluate(subject(), policy, context)).reasonCode).toBe('local_budget_exhausted');
+});
+
+it('allows an explicit larger surface-scan budget while keeping the default at 20', async () => {
+  let calls = 0;
+  const fetcher = async () => { calls++; return new Response('{}', { status: 401 }); };
+  const larger = createJevEvaluator('test-key', fetcher, 21);
+  for (let index = 0; index < 21; index++) await larger(subject(), policy, context);
+  expect(calls).toBe(21);
+  expect((await larger(subject(), policy, context)).reasonCode).toBe('local_budget_exhausted');
 });

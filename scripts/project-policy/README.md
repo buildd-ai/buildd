@@ -75,7 +75,9 @@ these are development labels, not a held-out calibration or a measured threshold
 The default command makes no model calls. Explicit `--jev` and `explore.ts` use
 the existing `defineDecision` adapter in **shadow** mode, pinned to the kit's
 Jev model, with existing transport, retry/deadline handling and metadata receipts.
-The local evaluator caps each invocation at 20 model calls. A supplied env API key
+The local evaluator defaults to 20 decisions. The surface command can explicitly
+raise that budget with `--max-new` (maximum 5000); retries remain bounded separately.
+A supplied env API key
 uses the existing offline-eval convention; otherwise explicit team/workspace args
 use the shared scoped credential resolver, with platform billing fallback disabled
 and database writes disabled. Credentials never enter files or reports. No alternate
@@ -108,6 +110,44 @@ Clef model names are service aliases, not immutable model-version pins. Workers 
 does not return billed cost through the current adapter, so cost remains null.
 
 ## Limits and smallest next slices
+
+### Cached surface scans and changed context
+
+```powershell
+# Full tracked web TSX inventory and deterministic checks, offline:
+bun scripts/project-policy/surface.ts --policy=wwvd --output=<absolute-local-report.json>
+# Initial semantic baseline, using the authorized existing route; default budget is 20:
+bun scripts/project-policy/surface.ts --policy=wwvd --jev --team=<team-id> --workspace=<workspace-id> --max-new=3000 --output=<absolute-local-report.json>
+# Replay cached advice with no new model decisions:
+bun scripts/project-policy/surface.ts --policy=wwvd --jev --team=<team-id> --workspace=<workspace-id> --max-new=0 --output=<absolute-local-report.json>
+```
+
+The surface scan and staged CLI share a local `.git/project-policy-cache` by
+default; `--cache=<directory>` overrides it. Current credential authorization is
+resolved before cache use. Entries expire after 24 hours. Keys cover exact bounded
+model input, full policy, prompt/engine/model identity, context schema and scoped
+namespace. No credential values, source paths, whole source or copy text are stored
+in cache records; local reports separately contain attributable source findings.
+Only successful answers are persisted, including uncertain answers; transport and
+unsupported results retry next time. Corrupt/expired records miss. Writes replace
+individual content-addressed records atomically; concurrent identical requests in
+one process coalesce. Historical receipts remain marked as such, while current
+attempts/latency/cost are zero on replay. This is memoization, not a new evidence ledger.
+
+Static context includes a nearest native container, preceding local heading and
+up to two complete static neighboring texts. It excludes code snippets, hidden,
+custom and dynamic neighbors and oversized sentences, and is always marked partial.
+The complete outbound context is secret-screened. Changes to neighboring context
+recheck affected unchanged strings and invalidate their cached advice. Moving a
+string without changing model input does not invalidate it. Static syntax cannot
+prove runtime visibility, state, route reachability or duplication across components.
+
+The inventory separately reports unknown/dynamic subjects, parse errors and `.ts`
+catalog candidates from the existing copy-check extractor. Descriptions with local
+headings are prioritized. Deterministic checks run before model/cache advice. When
+budget is exhausted, deferred rows remain explicit; repeat to advance through cache
+hits, or use `--offset` if persistent provider failures would starve later rows.
+The command does not modify production copy, install hooks or change CI policy.
 
 `--policy=wwvd` selects the user's local enterprise-copy restraint preset in
 `wwvd.json`: direct outcome/fact, a next action when needed, no dispensable

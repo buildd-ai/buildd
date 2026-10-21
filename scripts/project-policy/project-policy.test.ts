@@ -7,6 +7,14 @@ const file = 'apps/web/src/components/MissionSection.tsx';
 const extract = (after: string, before = '') => extractChangedSubjects({ file, before, after });
 
 describe('changed TSX subjects', () => {
+  it('rechecks unchanged copy when its static local context changes', () => {
+    const before = '<section><h2>Models</h2><p>Manage providers.</p></section>';
+    const after = before.replace('Models', 'Agents');
+    const rows = extract(after, before);
+    expect(rows.find(row => row.after === 'Manage providers.')?.staticContext?.heading).toBe('Agents');
+    const diff = '@@ -1 +1 @@\n-<section><h2>Models</h2><p>Manage providers.</p></section>\n+<section><h2>Agents</h2><p>Manage providers.</p></section>';
+    expect(extractChangedSubjects({ file, before, after, patch: diff }).some(row => row.after === 'Manage providers.')).toBe(true);
+  });
   it('extracts JSX and visible props, including one word labels, with spans and before', () => {
     const before = '<button title="Review">Review changes</button>';
     const rows = extract('<button title="Approve">Approve changes</button>', before);

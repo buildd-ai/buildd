@@ -11,6 +11,8 @@ export interface SemanticEvaluation {
   receipt: DecisionReceipt | null;
   /** Chosen-label probability, separate from the model's raw confidence. Neither is calibrated here. */
   topProbability?: number;
+  coalesced?: true;
+  cache?: { hit: true; recordedAt: number; historical: { attempts: number; latencyMs: number; costUsd: number | null } };
 }
 export type SemanticEvaluator = (subject: ChangedSubject, policy: ProjectPolicy, context?: SubjectContext) => Promise<SemanticEvaluation>;
 
@@ -20,10 +22,13 @@ export function buildSemanticState(subject: ChangedSubject, context?: SubjectCon
   const canonicalLabel = term?.word;
   const scheduledAt = term?.key === 'wait.scheduled' && context?.scheduledAt && Number.isFinite(Date.parse(context.scheduledAt))
     ? new Date(context.scheduledAt).toISOString() : undefined;
+  const nearby = context?.staticContext ?? subject.staticContext;
+  const staticContext = nearby ? { container: nearby.container, heading: nearby.heading,
+    nearbyText: nearby.nearbyText, completeness: nearby.completeness } : undefined;
   return { text: subject.after, role: context?.role ?? subject.role,
     component: subject.component, prop: subject.prop, purpose: context?.purpose ?? 'unknown',
     ...(canonicalLabel ? { canonicalLabel } : {}), ...(scheduledAt ? { scheduledAt } : {}),
-    ...(context?.action === 'approval' ? { action: 'approval' } : {}) };
+    ...(context?.action === 'approval' ? { action: 'approval' } : {}), ...(staticContext ? { staticContext } : {}) };
 }
 
 type ClefRoute = { model: ClefModel; endpoint: DecisionEndpoint & { kind: 'workers-ai' } };
@@ -33,7 +38,7 @@ export function semanticDecision(policy: ProjectPolicy, route?: ClefRoute) {
   const criteria = Object.fromEntries(labels.map(label => [label, policy.semantic.labels[label]])) as Record<SemanticLabel, string>;
   return defineDecision({ id: `${policy.id}.semantic-value`, promptVersion: `policy-${policy.version}`,
     mode: 'shadow', model: route?.model ?? JEV_MODEL, ...(route ? { endpoint: route.endpoint } : {}),
-    questions: { value: choice(policy.semantic.instructions, criteria) } });
+    questions: { value: choice(`${policy.semantic.instructions} Static context is partial syntax, not proof of runtime visibility or state. Do not infer missing surrounding facts.`, criteria) } });
 }
 
 /** Explicit local exploration uses the existing typed shadow engine/transport and receipts. */
@@ -48,7 +53,7 @@ export function createClefEvaluator(model: ClefModel, apiKey: string | null | un
 
 function createSemanticEvaluator(apiKey?: string | null, fetcher?: DecideParams<ReturnType<typeof semanticDecision>['questions']>['fetch'], budget = 20, route?: ClefRoute): SemanticEvaluator {
   let calls = 0;
-  const maxCalls = Number.isInteger(budget) ? Math.max(0, Math.min(20, budget)) : 0;
+  const maxCalls = Number.isInteger(budget) ? Math.max(0, Math.min(5000, budget)) : 0;
   return async (subject, policy, context) => {
     const definition = semanticDecision(policy, route);
     const state = buildSemanticState(subject, context);
@@ -60,6 +65,11 @@ function createSemanticEvaluator(apiKey?: string | null, fetcher?: DecideParams<
     if (!apiKey) return unsupported('missing_key');
     if (state.text === null || state.role === 'unknown') return unsupported('unresolved_copy');
     if (state.text.length > 500 || state.component.length > 80 || state.prop.length > 80 || state.purpose.length > 80) return unsupported('context_too_large');
+    if (state.staticContext && (state.staticContext.completeness !== 'static-partial'
+      || typeof state.staticContext.container !== 'string' || state.staticContext.container.length > 80
+      || state.staticContext.heading !== undefined && (typeof state.staticContext.heading !== 'string' || state.staticContext.heading.length > 120)
+      || !Array.isArray(state.staticContext.nearbyText) || state.staticContext.nearbyText.length > 2
+      || state.staticContext.nearbyText.some(text => typeof text !== 'string' || text.length > 160))) return unsupported('context_too_large');
     const outbound = canonicalJson(state);
     if (redactSecrets(outbound, [apiKey]) !== outbound
       || /(?:sk-|bld_|ghp_|github_pat_|AKIA)[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(outbound)) return unsupported('sensitive_copy');

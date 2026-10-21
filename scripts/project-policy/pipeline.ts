@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { copyViolations } from '../../packages/core/copy-rules';
 import { bannedWordsIn, findTerm, type InternalRef } from '../../packages/shared/src/terms';
 import { runVerificationCheck, type VerificationResult } from '../../packages/core/verification-check';
+import { staticCopyContexts, type StaticCopyContext } from './static-context';
 import type { SemanticEvaluation, SemanticEvaluator } from './semantic';
 
 export type CopyRole = 'status' | 'action' | 'heading' | 'description' | 'diagnostic' | 'unknown';
@@ -10,10 +11,12 @@ export interface ChangedSubject {
   kind: 'ui.copy'; file: string; line: number; endLine: number; start: number; end: number;
   before: string | null; after: string | null; component: string; prop: string;
   role: CopyRole; confidence: 'syntactic' | 'unknown'; provenance: string;
+  staticContext?: StaticCopyContext;
 }
 export interface SubjectContext {
   source: string; role?: CopyRole; purpose?: string; state?: InternalRef;
   scheduledAt?: string; action?: 'approval'; prop?: string; component?: string; start?: number;
+  staticContext?: StaticCopyContext;
 }
 export interface ProjectPolicy {
   id: string; version: number;
@@ -100,6 +103,8 @@ export function extractChangedSubjects(input: { file: string; before: string; af
   const file = input.file.replace(/\\/g, '/');
   const previous = subjects(file, input.before);
   const next = subjects(file, input.after);
+  const previousContext = staticCopyContexts(file, input.before, previous);
+  const nextContext = staticCopyContexts(file, input.after, next);
   let added: Set<number> | undefined;
   if (input.patch !== undefined) {
     added = new Set<number>();
@@ -125,9 +130,11 @@ export function extractChangedSubjects(input: { file: string; before: string; af
     const key = `${s.component}:${s.prop}`;
     const ordinal = counts.get(key) ?? 0; counts.set(key, ordinal + 1);
     const old = previous.filter(p => p.component === s.component && p.prop === s.prop)[ordinal];
-    if (added && ![...added].some(l => l >= s.line && l <= s.endLine)) return [];
-    if (old && s.after !== null && old.after === s.after) return [];
-    return [{ ...s, before: old?.after ?? null }];
+    const localContext = nextContext.get(s.start);
+    const contextChanged = !!old && JSON.stringify(previousContext.get(old.start)) !== JSON.stringify(localContext);
+    if (added && ![...added].some(l => l >= s.line && l <= s.endLine) && !contextChanged) return [];
+    if (old && s.after !== null && old.after === s.after && !contextChanged) return [];
+    return [{ ...s, before: old?.after ?? null, ...(localContext ? { staticContext: localContext } : {}) }];
   });
 }
 

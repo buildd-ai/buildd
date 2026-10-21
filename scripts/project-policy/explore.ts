@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { summarizeBenchmark } from '../../packages/core/decision-benchmark';
 import { policyPreset } from './policy-presets';
+import { cachedJevEvaluator } from './cache';
 import type { ChangedSubject, ProjectPolicy } from './pipeline';
 import { createJevEvaluator, createClefEvaluator, type SemanticEvaluator } from './semantic';
 import type { InferenceKeyScope, ResolveInferenceKeyOptions } from '../../packages/core/inference-keys';
@@ -37,16 +38,22 @@ async function resolveLocalCredential(scope: LocalScope) {
 
 /** Local opt-in only. Explicit scope wins; no fallback to an unrelated env credential. */
 export async function localJevEvaluator(teamId?: string, workspaceId?: string,
-  resolve: (scope: LocalScope) => Promise<{ key: string; scope: InferenceKeyScope } | null> = resolveLocalCredential) {
+  resolve: (scope: LocalScope) => Promise<{ key: string; scope: InferenceKeyScope } | null> = resolveLocalCredential,
+  cacheDirectory?: string, maxNewDecisions = 20) {
+  const evaluator = (key?: string | null) => {
+    const live = createJevEvaluator(key, undefined, maxNewDecisions);
+    return key && cacheDirectory ? cachedJevEvaluator(live, { directory: cacheDirectory,
+      namespace: JSON.stringify({ team: teamId ?? 'local-env', workspace: workspaceId ?? 'local-env' }) }).evaluate : live;
+  };
   if (teamId || workspaceId) {
     if (!teamId || !workspaceId) throw new Error('Supply both team and workspace for scoped exploration.');
     const credential = await resolve({ teamId, workspaceId, provider: 'openrouter', purposes: ['decision_key', 'inference_key'] });
     if (credential && credential.scope !== 'workspace' && credential.scope !== 'team') {
       throw new Error('Scoped exploration requires a workspace or team credential.');
     }
-    return createJevEvaluator(credential?.key);
+    return evaluator(credential?.key);
   }
-  return createJevEvaluator(process.env.OPENROUTER_API_KEY);
+  return evaluator(process.env.OPENROUTER_API_KEY);
 }
 
 export async function explorePolicy(examples: Array<{ text: string; purpose: string; expected: string }>, configured: ProjectPolicy, evaluate: SemanticEvaluator) {

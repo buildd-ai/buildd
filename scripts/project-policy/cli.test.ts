@@ -48,6 +48,7 @@ it('opt-in semantic execution reports model receipts but preserves deterministic
     model: 'test-model', version: 'v1', promptFingerprint: 'p1', inputFingerprint: 'i1', confidence: 1,
     latencyMs: 15, costUsd: 0.001, attempts: 1, receipt: null }));
   expect(result.exitCode).toBe(1);
-  expect(result.model.decisions).toBe(1);
+  // The unchanged heading also needs review when its neighboring changed copy changes.
+  expect(result.model.decisions).toBe(2);
   expect(result.findings.find(f => f.evaluator === 'model-advisory')?.enforced).toBe(false);
 });
