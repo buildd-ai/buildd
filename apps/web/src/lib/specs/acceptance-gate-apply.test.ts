@@ -19,7 +19,7 @@ function fake(init: { tests: AcceptanceTest[]; objected?: boolean; acceptanceSta
     load: async () => state,
     patchContext: async (id, patch) => {
       calls.push(`patch:${id}:${Object.keys(patch).join(',')}`);
-      if ('acceptanceTests' in patch) state.tests = patch.acceptanceTests as AcceptanceTest[];
+      if ('acceptanceTests' in patch) state.tests = (patch.acceptanceTests as { tests: AcceptanceTest[] }).tests;
       if ('acceptanceObjection' in patch) state.objected = patch.acceptanceObjection as boolean;
     },
     completeAcceptanceTask: async (id) => { calls.push(`complete:${id}`); },

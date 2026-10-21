@@ -40,13 +40,31 @@ export interface GateStore {
 
 const RESULTS = new Set(['fail', 'pass', 'inconclusive']);
 
+/**
+ * The filed acceptance-tests task carries `context.acceptanceTests` as an object
+ * (`{ missionId, specId, specRevisionId, apartFrom }`); its recorded tests live in `.tests`.
+ * A bare array of tests is still read, for tasks recorded before that shape.
+ */
 export function isAcceptanceTask(t: { context?: Record<string, unknown> | null }): boolean {
-  return Array.isArray(t.context?.acceptanceTests);
+  const a = t.context?.acceptanceTests;
+  return Array.isArray(a) || (!!a && typeof a === 'object');
+}
+
+function rawTests(context: Record<string, unknown> | null | undefined): unknown {
+  const a = context?.acceptanceTests;
+  return Array.isArray(a) ? a : (a as Record<string, unknown> | undefined)?.tests;
+}
+
+/** The `acceptanceTests` value to store: the filed marker kept whole, with `tests` replaced. */
+export function withRecordedTests(context: Record<string, unknown> | null | undefined, tests: AcceptanceTest[]): Record<string, unknown> {
+  const a = context?.acceptanceTests;
+  const marker = a && typeof a === 'object' && !Array.isArray(a) ? (a as Record<string, unknown>) : {};
+  return { ...marker, tests };
 }
 
 /** The tests recorded on a task's context; malformed entries are dropped. */
 export function testsFromContext(context: Record<string, unknown> | null | undefined): AcceptanceTest[] {
-  const raw = context?.acceptanceTests;
+  const raw = rawTests(context);
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((r): AcceptanceTest[] => {
     if (!r || typeof r !== 'object') return [];
@@ -97,7 +115,7 @@ export async function recordAcceptanceResults(store: GateStore, missionId: strin
     const i = merged.findIndex((t) => t.checkId === r.checkId && t.name === r.name);
     if (i >= 0) merged[i] = { ...merged[i], ...r }; else merged.push(r);
   }
-  await store.patchContext(state.acceptanceTask.id, { acceptanceTests: merged });
+  await store.patchContext(state.acceptanceTask.id, { acceptanceTests: withRecordedTests(state.acceptanceTask.context, merged) });
   return applyBuildingGate(store, missionId);
 }
 
