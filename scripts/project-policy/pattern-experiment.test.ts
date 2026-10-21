@@ -1,9 +1,18 @@
 import { expect, it } from 'bun:test';
 import { createPatternExperiment, metrics } from './pattern-experiment';
+import { experimentOrder } from './run-pattern-experiment';
 
 const row = { id: 'row-1', text: 'Deployment ready.', role: 'description' as const, purpose: 'deployment-result-toast', expected: 'keep' as const };
 const response = (label: string) => new Response(JSON.stringify({ model: 'typesafe/jev-1.13', answers: { value: { type: 'choice', choice: label,
   probabilities: { [label]: 1 }, confidence: 1 } }, usage: { input_tokens: 10, output_tokens: 1, cost: 0.000001 } }), { status: 200 });
+
+it('supports reproducible order sensitivity without depending on expected labels', () => {
+  const rows = Array.from({ length: 8 }, (_, i) => ({ ...row, id: `r${i}` }));
+  const mixed = experimentOrder(rows, 'shuffle-17');
+  expect(mixed.map(r => r.id)).not.toEqual(rows.map(r => r.id));
+  expect(experimentOrder(rows.map(r => ({ ...r, expected: 'revise' as const })), 'shuffle-17').map(r => r.id)).toEqual(mixed.map(r => r.id));
+  expect(experimentOrder(rows, 'reverse').map(r => r.id)).toEqual([...rows].reverse().map(r => r.id));
+});
 
 it('withholds labels/provenance, sends only the chosen pattern to targeted review and uses no fallback', async () => {
   let calls = 0;

@@ -4,6 +4,7 @@ import { buildSemanticState } from './semantic';
 import type { CopyRole } from './pipeline';
 import type { StaticCopyContext } from './static-context';
 import prompts from './pattern-prompts.json';
+import tuned from './pattern-prompts-v2.json';
 
 export interface ExperimentRow {
   id: string; text: string; role: CopyRole; purpose: string; staticContext?: StaticCopyContext;
@@ -11,7 +12,7 @@ export interface ExperimentRow {
 }
 export type Pattern = keyof typeof prompts.routes;
 type Verdict = 'revise' | 'keep' | 'uncertain';
-export interface RoutedResult { id: string; pattern: Pattern; verdict: Verdict; confidence: number | null }
+export interface RoutedResult { id: string; pattern: Pattern; verdict: Verdict; confidence: number | null; routeConfidence?: number | null }
 type Fetcher = DecideParams<{ value: ReturnType<typeof choice> }>['fetch'];
 const hash = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
 
@@ -23,11 +24,26 @@ export function rowState(row: ExperimentRow) {
   { source: '', purpose: row.purpose, ...(row.staticContext ? { staticContext: row.staticContext } : {}) });
 }
 
-export function createPatternExperiment(apiKey?: string | null, fetcher?: Fetcher, maxCalls = 400) {
+export function patternPrompts(version: number) {
+  if (version === 1) return prompts;
+  if (version !== 2) throw new Error('Unknown prompt experiment version.');
+  return { ...prompts, ...tuned, routes: { ...prompts.routes, ...tuned.routes }, patterns: {
+    over_explanation: { ...prompts.patterns.over_explanation, ...tuned.patterns.over_explanation },
+    duplication: { ...prompts.patterns.duplication, ...tuned.patterns.duplication },
+    vague_action: { ...prompts.patterns.vague_action, ...tuned.patterns.vague_action },
+  } };
+}
+
+export function createPatternExperiment(apiKey?: string | null, fetcher?: Fetcher, maxCalls = 400, config = patternPrompts(1)) {
+  if (!Number.isInteger(maxCalls) || maxCalls < 0 || maxCalls > 400) throw new Error('Experiment budget must be between 0 and 400.');
   let reserved = 0;
   const calls: { id: string; promptFingerprint: string; inputFingerprint: string; ok: boolean; model: string;
     latencyMs: number; attempts: number; costUsd: number | null; receipt: DecisionReceipt | null }[] = [];
   const safe = (row: ExperimentRow) => {
+    if (!row || typeof row.text !== 'string' || typeof row.purpose !== 'string' || !['action', 'description', 'heading', 'status', 'diagnostic'].includes(row.role)) return false;
+    const c = row.staticContext;
+    if (c && (c.completeness !== 'static-partial' || typeof c.container !== 'string'
+      || c.heading !== undefined && typeof c.heading !== 'string' || !Array.isArray(c.nearbyText) || c.nearbyText.some(t => typeof t !== 'string'))) return false;
     const state = rowState(row);
     const raw = canonicalJson(state);
     return row.text.length <= 500 && row.purpose.length <= 80 && state.role !== 'unknown'
@@ -36,7 +52,7 @@ export function createPatternExperiment(apiKey?: string | null, fetcher?: Fetche
       && redactSecrets(raw, [apiKey]) === raw && !/(?:sk-|bld_|ghp_|github_pat_|AKIA)[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(raw);
   };
   async function ask<const L extends string>(kind: string, instructions: string, criteria: Record<L, string>, state: unknown) {
-    const definition = defineDecision({ id: `buildd.copy_experiment.${kind}`, promptVersion: `patterns-${prompts.version}`,
+    const definition = defineDecision({ id: `buildd.copy_experiment.${kind}`, promptVersion: `patterns-${config.version}`,
       model: JEV_MODEL, mode: 'shadow', questions: { value: choice(instructions, criteria) } });
     if (!apiKey || reserved >= maxCalls) return null;
     reserved++;
@@ -48,19 +64,19 @@ export function createPatternExperiment(apiKey?: string | null, fetcher?: Fetche
   }
   const route = async (row: ExperimentRow): Promise<{ pattern: Pattern; confidence: number | null }> => {
     if (!safe(row)) return { pattern: 'uncertain', confidence: null };
-    const answer = await ask('route', prompts.routeInstructions, prompts.routes, rowState(row));
+    const answer = await ask('route', config.routeInstructions, config.routes, rowState(row));
     return { pattern: answer?.choice ?? 'uncertain', confidence: answer?.confidence ?? null };
   };
   const targeted = async (row: ExperimentRow, pattern: Pattern): Promise<RoutedResult> => {
     if (pattern === 'none' || pattern === 'necessary_detail') return { id: row.id, pattern, verdict: 'keep', confidence: null };
     if (pattern === 'uncertain' || !safe(row)) return { id: row.id, pattern, verdict: 'uncertain', confidence: null };
-    const selected = prompts.patterns[pattern];
-    const answer = await ask(pattern, selected.question, { revise: selected.revise, keep: selected.keep, uncertain: prompts.uncertain }, rowState(row));
+    const selected = config.patterns[pattern];
+    const answer = await ask(pattern, selected.question, { revise: selected.revise, keep: selected.keep, uncertain: config.uncertain }, rowState(row));
     return { id: row.id, pattern, verdict: answer?.choice ?? 'uncertain', confidence: answer?.confidence ?? null };
   };
   return {
     calls, route, targeted,
-    async routed(row: ExperimentRow) { return targeted(row, (await route(row)).pattern); },
+    async routed(row: ExperimentRow) { const selected = await route(row); return { ...await targeted(row, selected.pattern), routeConfidence: selected.confidence }; },
     async shortlist(rows: ExperimentRow[], limit: number) {
       if (rows.length > 32 || !Number.isInteger(limit) || limit < 0 || limit > rows.length) throw new Error('Use batches <=32 and a bounded shortlist.');
       const remaining = rows.filter(safe);
@@ -68,7 +84,7 @@ export function createPatternExperiment(apiKey?: string | null, fetcher?: Fetche
       while (remaining.length && selected.length < limit) {
         const criteria: Record<string, string> = { none: 'No remaining string has a clear actionable defect worth targeted review.' };
         remaining.forEach((_, index) => { criteria[`c_${index}`] = `The strongest remaining actionable copy-policy candidate is c_${index}.`; });
-        const answer = await ask('candidate', prompts.candidateInstructions, criteria,
+        const answer = await ask('candidate', config.candidateInstructions, criteria,
           { strings: remaining.map((row, index) => ({ id: `c_${index}`, ...rowState(row) })) });
         if (!answer || answer.choice === 'none') break;
         const index = Number(answer.choice.slice(2));
