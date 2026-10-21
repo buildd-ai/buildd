@@ -1000,6 +1000,36 @@ describe('per-task token', () => {
     expect(res.status).toBe(201);
   });
 
+  it('requests review of any workspace PR when its task holds a workspace-wide reach', async () => {
+    mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
+    mockTasksFindFirst.mockReturnValue({
+      id: 'task-1', title: 'Review every open PR', description: null, workspaceId: 'ws-1',
+      context: { prReach: { prNumbers: [], scope: 'workspace', grantedBy: 'human:user-1', grantedAt: 'x' } },
+    });
+    const res = await POST(post({ prNumber: 100 }));
+    expect(res.status).toBe(201);
+  });
+
+  it('refuses a workspace-wide reach held by a task of another workspace', async () => {
+    mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
+    mockTasksFindFirst.mockReturnValue({
+      id: 'task-1', title: 'Review every open PR', description: null, workspaceId: 'ws-other',
+      context: { prReach: { prNumbers: [], scope: 'workspace', grantedBy: 'human:user-1', grantedAt: 'x' } },
+    });
+    const res = await POST(post({ prNumber: 100 }));
+    expect(res.status).toBe(403);
+  });
+
+  it('an empty prNumbers list without the workspace marker is no reach', async () => {
+    mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
+    mockTasksFindFirst.mockReturnValue({
+      id: 'task-1', title: 'x', description: null, workspaceId: 'ws-1',
+      context: { prReach: { prNumbers: [], grantedBy: 'human:user-1', grantedAt: 'x' } },
+    });
+    const res = await POST(post({ prNumber: 100 }));
+    expect(res.status).toBe(403);
+  });
+
   it('requests review of the PR its retry is bound to', async () => {
     mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
     mockTasksFindFirst.mockReturnValue({ id: 'task-1', title: 'fix review', description: null, context: {}, workspaceId: 'ws-1', reviewerRetryPrNumber: 42 });

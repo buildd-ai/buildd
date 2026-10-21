@@ -100,3 +100,26 @@ export async function taskReachesPr(taskId: string, workspaceId: string, prNumbe
   const { missionOfPr } = await import('@/lib/agent-capabilities/worker-pr');
   return (await missionOfPr(workspaceId, prNumber)) === task.missionId;
 }
+
+/**
+ * The PR reach a person explicitly grants at filing: `{ prNumbers: [..] }` (at
+ * least one) or `{ workspaceWide: true }`. Null when the scope is malformed.
+ * A workspace-wide grant carries `scope: 'workspace'`, an explicit marker (never
+ * an empty list), and is honoured by the review-request door only.
+ */
+export function resolveExplicitPrReachScope(
+  scope: unknown,
+  grantedBy: string,
+  now: Date = new Date(),
+): PrReachGrant | null {
+  if (!scope || typeof scope !== 'object' || Array.isArray(scope)) return null;
+  const s = scope as Record<string, unknown>;
+  const grantedAt = now.toISOString();
+  if (s.workspaceWide === true) return { prNumbers: [], scope: 'workspace', grantedBy, grantedAt };
+  if (Array.isArray(s.prNumbers)) {
+    const prNumbers = [...new Set(s.prNumbers.filter((n): n is number => Number.isInteger(n) && n > 0))].sort((a, b) => a - b);
+    if (prNumbers.length === 0 || prNumbers.length !== new Set(s.prNumbers).size) return null;
+    return { prNumbers, grantedBy, grantedAt };
+  }
+  return null;
+}
