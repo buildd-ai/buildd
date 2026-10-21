@@ -46,7 +46,8 @@ let currentLoaded: any = loaded();
 const mockLoadRun = mock(async (_p: any, _c: string) => currentLoaded);
 let providerToken = PROVIDER_TOKEN;
 const mockAuthHeader = mock(async (_g: any) => (providerToken ? { name: 'Authorization', value: `Bearer ${providerToken}` } : null));
-const mockRefresh = mock(async (_g: any) => false);
+const NO_RETRY = { retry: false, outcome: 'expired' };
+const mockRefresh = mock(async (_g: any, _rejected: any) => NO_RETRY as { retry: boolean; outcome: string });
 const mockMarkRejected = mock(async (_g: any) => {});
 const mockRecentCount = mock(async (_w: string, _c: string) => 0);
 const seenKeys = new Set<string>();
@@ -137,7 +138,7 @@ beforeEach(() => {
   mockRecentCount.mockReset();
   mockRecentCount.mockResolvedValue(0);
   mockRefresh.mockReset();
-  mockRefresh.mockResolvedValue(false);
+  mockRefresh.mockResolvedValue(NO_RETRY);
   mockMarkRejected.mockClear();
   mockLoadRun.mockClear();
   mockAuth.mockClear();
@@ -348,10 +349,22 @@ describe('provider credential lifecycle', () => {
   it('expired OAuth: a 401 is refreshed and retried once, transparently', async () => {
     upstreamQueue.push({ native: true }); // the classification tools/list
     upstreamQueue.push({ status: 401, body: {} });
-    mockRefresh.mockResolvedValueOnce(true);
+    mockRefresh.mockResolvedValueOnce({ retry: true, outcome: 'refreshed' });
     const res = await POST(req(call('queryApl')), ctx());
     expect((await res.json()).result.content[0].text).toBe('ok');
     expect(mockRefresh).toHaveBeenCalledTimes(1);
+    expect(mockMarkRejected).not.toHaveBeenCalled();
+  });
+
+  it('a 401 inside the refresh lock window, after a peer stored a new token: retried with it, credential not marked', async () => {
+    upstreamQueue.push({ native: true });
+    upstreamQueue.push({ status: 401, body: {} });
+    mockRefresh.mockImplementationOnce(async () => { providerToken = 'peer-refreshed-token'; return { retry: true, outcome: 'peer_refreshed' }; });
+    const res = await POST(req(call('queryApl')), ctx());
+    expect((await res.json()).result.content[0].text).toBe('ok');
+    // the refresh is told which token the provider rejected
+    expect(mockRefresh.mock.calls[0][1]).toEqual({ name: 'Authorization', value: `Bearer ${PROVIDER_TOKEN}` });
+    expect(upstreamCalls.at(-1)!.headers.get('authorization')).toBe('Bearer peer-refreshed-token');
     expect(mockMarkRejected).not.toHaveBeenCalled();
   });
 

@@ -24,9 +24,31 @@ import { deriveEscalationBrief, type EscalationBrief, type EscalationBriefPermis
 import { landingStatusOf } from './landing-gate';
 import { ROUND_TRIGGER_COPY } from './delta-approval';
 import { attemptOrdinal, attemptView } from './reducer';
-import type { AttemptFamily, AttemptSnapshot, DeliverySnapshot, DeliveryState, FindingSnapshot, KernelView, RoundSnapshot } from './types';
+import type { AttemptFamily, AttemptSnapshot, CloseActor, DeliverySnapshot, DeliveryState, FindingSnapshot, KernelView, RoundSnapshot } from './types';
 
 export type { DeliverySnapshot } from './types';
+
+const short8 = (id: string) => id.slice(0, 8);
+
+/**
+ * Why a PR closed without merging and who closed it, from the cause the delivery holds and the
+ * `closedBy` its PrClosedUnmerged transition recorded. The header and the timeline row both print it.
+ */
+export function closeCauseCopy(cause: string | null, evidence: Record<string, unknown> | null | undefined): string | null {
+  const by = (evidence?.closedBy ?? null) as CloseActor | null;
+  const login = typeof by?.login === 'string' && by.login ? by.login : null;
+  switch (cause) {
+    case 'buildd_close': {
+      const door = by?.door;
+      const reason = typeof door?.reason === 'string' && door.reason.trim() ? door.reason.trim() : null;
+      return [`closed through buildd${door?.taskId ? ` by task \`${short8(door.taskId)}\`` : ''}`, reason && (reason.length > 60 ? `${reason.slice(0, 59)}…` : reason)].filter(Boolean).join(' · ');
+    }
+    case 'manual': return login ? `closed by @${login} on GitHub` : 'closed by a person on GitHub';
+    case 'base_deleted': return 'base branch deleted';
+    case 'superseded_by_policy': return 'superseded by policy';
+    default: return login ? `closed by @${login}` : cause;
+  }
+}
 
 export type NextMoveOwner = 'worker' | 'reviewer' | 'platform' | 'human' | 'landing' | 'trunk' | 'none';
 
@@ -430,7 +452,10 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
       cta = { action: 'open_pr', label: 'Review on GitHub' };
       break;
     case 'MERGED': headline = 'Merged'; break;
-    case 'CLOSED_UNMERGED': headline = 'Closed without merging'; detail = d.stateReason; break;
+    case 'CLOSED_UNMERGED':
+      headline = 'Closed without merging';
+      detail = closeCauseCopy(d.stateReason, input.lastTransition?.command === 'PrClosedUnmerged' ? input.lastTransition.evidence : null);
+      break;
     case 'SUPERSEDED': headline = d.supersededByPr != null ? `Merged in #${d.supersededByPr}` : 'Superseded'; break;
     case 'ABANDONED': headline = 'Abandoned'; break;
     case 'FAILED': headline = 'Failed'; detail = d.stateReason; break;

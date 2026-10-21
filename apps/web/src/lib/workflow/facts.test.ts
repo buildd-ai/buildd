@@ -6,7 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import type { LivePr } from './commands';
-import { carryForwardReading, constituentEvidenceSql, factKeyFor, findFactSql, ingestFact, insertFactSql, lastAppliedHeadFactSql, ownRefreshSql, projectEquivalentHeadSql, refreshUnappliedFactSql, type GithubFactReader } from './facts';
+import { carryForwardReading, CLOSE_DECISION_WINDOW_MIN, closeDecisionSql, constituentEvidenceSql, factKeyFor, findFactSql, ingestFact, insertFactSql, lastAppliedHeadFactSql, ownRefreshSql, projectEquivalentHeadSql, refreshUnappliedFactSql, type GithubFactReader } from './facts';
 import type { Exec } from './kernel';
 
 const dialect = new PgDialect();
@@ -212,6 +212,58 @@ describe('ingestFact', () => {
     }
   });
 
+  test('pr_closed: the closer is recorded, and the cause is the buildd door that closed it, a person on GitHub, or unknown', async () => {
+    const closedLive: LivePr = { ...live('H1'), state: 'closed', updatedAt: '2026-01-01T02:00:00Z' };
+    const run = async (o: { closedBy?: { login: string | null; type: string | null }; decision?: Record<string, unknown> | null; decisionFails?: boolean }) => {
+      const inserted: Array<Record<string, unknown>> = [];
+      const asked: unknown[][] = [];
+      const { exec } = router({
+        load_view: () => ({ rows: [{ delivery: delivery({ state: 'AWAITING_REVIEW' }), rounds: [], attempts: [] }] }),
+        close_decision: (_t, params) => {
+          asked.push(params);
+          if (o.decisionFails) throw new Error('db down');
+          return { rows: o.decision ? [o.decision] : [] };
+        },
+        insert_fact: (_t, params) => { inserted.push(JSON.parse(String(params[6]))); return { rows: [{ id: 'f7' }] }; },
+        find_transition: () => ({ rows: [] }),
+        transition: () => ({ rows: [{ transition_id: 'tr7', delivery_id: 'd1', version: 3 }] }),
+      });
+      const r = await ingestFact({ kind: 'pr_closed', workspaceId: 'w1', source: 'webhook:closed', repoFullName: 'acme/widgets', prNumber: 7, ...(o.closedBy ? { closedBy: o.closedBy } : {}) }, {
+        exec, github: { readPr: async () => closedLive, branchExists: async () => true },
+      });
+      if (r.result !== 'applied') throw new Error(`expected applied, got ${r.result}`);
+      return { r, payload: inserted[0], asked };
+    };
+
+    // A buildd door (close_pr) closed it: the decision row names the worker, task, account and the caller's reason.
+    const door = await run({
+      closedBy: { login: 'example-app[bot]', type: 'Bot' },
+      decision: { worker_id: 'wk1', task_id: 't9', account_id: 'a1', principal_via: 'task_token', reason: 'superseded by #8', occurred_at: '2026-01-01T01:59:58Z' },
+    });
+    expect(door.asked[0]).toEqual(expect.arrayContaining(['w1', 'pr:7']));
+    expect(door.r.decision.patch.stateReason).toBe('buildd_close');
+    expect(door.r.decision.evidence.closedBy).toEqual({
+      login: 'example-app[bot]', type: 'Bot',
+      door: { workerId: 'wk1', taskId: 't9', accountId: 'a1', principalVia: 'task_token', reason: 'superseded by #8' },
+    });
+    expect(door.payload.closedBy).toEqual(door.r.decision.evidence.closedBy);
+
+    // A person closed it on GitHub and no buildd door did: manual, with their login.
+    const person = await run({ closedBy: { login: 'some-human', type: 'User' } });
+    expect(person.r.decision.patch.stateReason).toBe('manual');
+    expect(person.r.decision.evidence.closedBy).toEqual({ login: 'some-human', type: 'User' });
+
+    // A bot that is not a buildd door, or a sweep that saw the close without a sender: unknown, still never guessed.
+    expect((await run({ closedBy: { login: 'other-bot[bot]', type: 'Bot' } })).r.decision.patch.stateReason).toBe('unknown');
+    const swept = await run({});
+    expect(swept.r.decision.patch.stateReason).toBe('unknown');
+    expect(swept.r.decision.evidence.closedBy).toBeUndefined();
+    // A sweep's read still finds a buildd door's close.
+    expect((await run({ decision: { worker_id: 'wk1', task_id: null, account_id: null, principal_via: 'runner_key', reason: null } })).r.decision.patch.stateReason).toBe('buildd_close');
+    // An unreadable audit row never blocks the close.
+    expect((await run({ closedBy: { login: 'some-human', type: 'User' }, decisionFails: true })).r.decision.patch.stateReason).toBe('manual');
+  });
+
   test('composition_attested resolves constituents from the ledger and cites the fact', async () => {
     const { exec } = router({
       constituent_evidence: () => ({ rows: [{ round_id: 'rx', head_sha: 'C1', status: 'decided', effective_verdict: 'approve', approved_heads: ['C1'], delivery_id: 'dx', pr_number: 3, repo_full_name: 'acme/widgets' }] }),
@@ -262,5 +314,25 @@ describe('carryForwardReading: diff evidence for an approved head that moved', (
   test('an unread compare is not a changed diff', async () => {
     expect(await carryForwardReading(view, 'acme/widgets', live('H2'), exec(true), reader(null))).toEqual({ evidence: null, diffChanged: false });
     expect(await carryForwardReading(view, 'acme/widgets', live('H2'), exec(true), undefined)).toEqual({ evidence: null, diffChanged: false });
+  });
+});
+
+describe('closeDecisionSql', () => {
+  test('reads the allowed pr.close decision for this PR within the window around GitHub close', () => {
+    const { sql: text, params } = render(closeDecisionSql('w1', 42, '2026-01-01T00:00:00Z'));
+    expect(text.split('\n')[0]).toBe('-- workflow:close_decision');
+    expect(text).toContain("capability = 'pr.close' AND decision = 'allowed'");
+    expect(text).toContain('workspace_id = $1::uuid');
+    expect(text).toContain('resource = $2::text');
+    expect(text).toContain(`$3::timestamptz - interval '${CLOSE_DECISION_WINDOW_MIN} minutes'`);
+    expect(text).toContain("$4::timestamptz + interval '2 minutes'");
+    expect(text).toContain('ORDER BY occurred_at DESC');
+    expect(params).toEqual(['w1', 'pr:42', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z']);
+  });
+
+  test('without a close time it anchors on now()', () => {
+    const { sql: text, params } = render(closeDecisionSql('w1', 42, null));
+    expect(text).toContain(`now() - interval '${CLOSE_DECISION_WINDOW_MIN} minutes'`);
+    expect(params).toEqual(['w1', 'pr:42']);
   });
 });

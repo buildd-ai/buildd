@@ -6,8 +6,7 @@
  * one running serves none, this says in one line how to turn it on and stops
  * there: restarting a runner mid-task is the person's call, never this command's.
  */
-import { lstatSync } from 'fs';
-import type { RunnerIdentity } from './runner-socket';
+import { socketPresence, type RunnerIdentity } from './runner-socket';
 
 export type WebProbe =
   | { state: 'absent' }
@@ -21,12 +20,14 @@ const NOT_RUNNING =
   'No buildd runner is running on this machine. Start one with buildd, or keep one running in the background with buildd service install.';
 
 /** Ask the runner on `socketPath` which port its web UI is on. Never throws. */
-export async function readRunnerHttpPort(socketPath: string, timeoutMs = 2_000): Promise<WebProbe> {
-  try {
-    if (!lstatSync(socketPath).isSocket()) return { state: 'stale' };
-  } catch {
-    return { state: 'absent' };
-  }
+export async function readRunnerHttpPort(
+  socketPath: string,
+  timeoutMs = 2_000,
+  opts: { lstat?: (path: string) => { isSocket(): boolean } } = {},
+): Promise<WebProbe> {
+  const presence = socketPresence(socketPath, opts.lstat);
+  if (presence === 'absent') return { state: 'absent' };
+  if (presence === 'other') return { state: 'stale' };
   try {
     // Bun extends RequestInit with `unix` for unix domain sockets.
     const res = await fetch('http://localhost/api/runner', {
