@@ -4731,12 +4731,17 @@ async function patchWorker(
         await recordAcceptanceVerifiedBy(taskId);
       });
 
-      // The acceptance-tests task finished: building starts only on recorded all-fail
-      // starting-commit results with no objection (spec 1dc6cc39 R-78, R-79, AC-125).
-      await runStep('acceptance-gate', async () => {
+      // ...and run them against the mission's starting commit (R-78): building is released only
+      // when every test failed there; otherwise the task is reopened and builders keep waiting.
+      await runStep('acceptance-start-commit', async () => {
         if (effectiveOutcome !== 'completed' || shouldAutoRetry) return;
-        const { gateAcceptanceCompletion } = await import('@/lib/specs/acceptance-gate-apply');
-        await gateAcceptanceCompletion(taskId);
+        const ctx = terminalTaskRow[0]?.context as Record<string, unknown> | null | undefined;
+        const { isAcceptanceTask, dbGateStore } = await import('@/lib/specs/acceptance-gate-apply');
+        if (!isAcceptanceTask({ context: ctx ?? null })) return;
+        const [row] = await db.select({ missionId: tasks.missionId }).from(tasks).where(eq(tasks.id, taskId)).limit(1);
+        if (!row?.missionId) return;
+        const { settleStartingCommit, reportedRunsFrom } = await import('@/lib/specs/acceptance-start-commit');
+        await settleStartingCommit(dbGateStore, row.missionId, reportedRunsFrom(body.structuredOutput));
       });
 
       // A recoverable-blocker repair landed: resume the tasks parked on it

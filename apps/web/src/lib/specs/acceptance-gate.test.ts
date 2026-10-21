@@ -15,7 +15,7 @@ describe('decideBuildingGate (R-79, AC-125)', () => {
   });
   it('waits on a test that has not run or could not, and sends a passing one back (R-78)', () => {
     const d = decideBuildingGate({ tests: [t('AC-1', 'fail'), t('AC-2', 'pass'), t('AC-3', null), t('AC-4', 'inconclusive')], objected: false });
-    expect(d).toMatchObject({ action: 'wait', readyChecks: ['AC-1'], pendingChecks: ['AC-3', 'AC-4'] });
+    expect(d).toMatchObject({ action: 'wait', readyChecks: ['AC-1'], pendingChecks: ['AC-2', 'AC-3', 'AC-4'] });
     expect(d.action === 'wait' && d.sendBack.map((x) => x.checkId)).toEqual(['AC-2']);
   });
 });
