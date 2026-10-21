@@ -9,8 +9,9 @@
  *
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/runner-key-agent-exposure.test.ts
  */
+import { expectOwnerOnlyPath } from '../windows-acl';
 import { describe, test, expect, afterEach } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, chmodSync, existsSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -189,7 +190,7 @@ describe('refreshBuilddMcpEntries (buildd login keeps the install scope)', () =>
     expect(data.projects['/code/b'].mcpServers.buildd).toEqual(oauth);
     expect(data.projects['/code/c']).toEqual({});
     expect(data.theme).toBe('dark');
-    expect(statSync(p).mode & 0o777).toBe(0o600);
+    expectOwnerOnlyPath(p, 0o600);
   });
 
   test('an existing user-wide key entry (from --everywhere) is re-keyed in place', () => {

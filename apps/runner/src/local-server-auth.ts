@@ -18,6 +18,7 @@
 import { randomBytes, timingSafeEqual } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { restrictToOwnerAcl } from './secure-file';
 
 export const LOCAL_TOKEN_HEADER = 'x-buildd-local-token';
 export const LOCAL_TOKEN_FILE = 'local-token';
@@ -60,6 +61,7 @@ export function loadOrCreateLocalToken(
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(path, fromEnv + '\n', { mode: 0o600 });
     chmodSync(path, 0o600);
+    restrictToOwnerAcl(path); // Windows: the DACL is the boundary, chmod does nothing
     return { token: fromEnv, path };
   }
   if (existsSync(path)) {
@@ -67,6 +69,7 @@ export function loadOrCreateLocalToken(
       const existing = readFileSync(path, 'utf8').trim();
       if (TOKEN_RE.test(existing)) {
         if ((statSync(path).mode & 0o077) !== 0) chmodSync(path, 0o600);
+        restrictToOwnerAcl(path);
         return { token: existing, path };
       }
     } catch {
@@ -77,6 +80,7 @@ export function loadOrCreateLocalToken(
   const token = randomBytes(32).toString('hex');
   writeFileSync(path, token + '\n', { mode: 0o600 });
   chmodSync(path, 0o600);
+  restrictToOwnerAcl(path);
   return { token, path };
 }
 

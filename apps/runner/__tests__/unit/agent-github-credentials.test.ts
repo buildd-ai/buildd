@@ -19,6 +19,7 @@ import {
   startScopedGitHubSession,
   type ScopedGitHubTokenResult,
 } from '../../src/agent-github-credentials';
+import { IS_WINDOWS, expectOwnerOnly, openToAllUsers } from '../windows-acl';
 
 const scratch = mkdtempSync(join(tmpdir(), 'agent-github-credentials-test-'));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -127,8 +128,30 @@ describe('applyScopedGitHubEnv', () => {
     const hosts = readFileSync(join(files.ghConfigDir, 'hosts.yml'), 'utf8');
     expect(hosts).toContain('github.com:');
     expect(hosts).toContain('oauth_token: ghs_task_scoped');
-    expect(statSync(files.tokenPath).mode & 0o077).toBe(0);
-    expect(statSync(join(files.ghConfigDir, 'hosts.yml')).mode & 0o077).toBe(0);
+    if (!IS_WINDOWS) {
+      expect(statSync(files.tokenPath).mode & 0o077).toBe(0);
+      expect(statSync(join(files.ghConfigDir, 'hosts.yml')).mode & 0o077).toBe(0);
+    } else {
+      expectOwnerOnly(files.tokenPath, { inherited: true });
+      expectOwnerOnly(join(files.ghConfigDir, 'hosts.yml'), { inherited: true });
+    }
+  });
+
+  // Mode bits do nothing on Windows: the scoped dir gets an inheritable
+  // owner-only DACL once, and the token files are written as temps inside it,
+  // so each atomic rewrite on refresh lands owner-only with no icacls call.
+  test.skipIf(!IS_WINDOWS)('Windows: in a directory every user may write, the token, hosts.yml and helper grant only the owner, across a refresh', () => {
+    const open = mkdtempSync(join(scratch, 'open-'));
+    openToAllUsers(open);
+    const files = applyScopedGitHubEnv(hostEnv(), join(open, 'scoped'));
+    expectOwnerOnly(files.dir);
+    expectOwnerOnly(files.helperPath, { inherited: true });
+    expectOwnerOnly(files.ghConfigDir, { inherited: true });
+    writeScopedGitHubToken(files, 'ghs_first');
+    writeScopedGitHubToken(files, 'ghs_second');
+    expect(readFileSync(files.tokenPath, 'utf8')).toBe('ghs_second');
+    expectOwnerOnly(files.tokenPath, { inherited: true });
+    expectOwnerOnly(join(files.ghConfigDir, 'hosts.yml'), { inherited: true });
   });
 
   test('a refresh replaces the token everywhere; clearing removes it', () => {

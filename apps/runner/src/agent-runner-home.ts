@@ -22,6 +22,7 @@
 import * as fs from 'fs';
 import { tmpdir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
+import { tryRestrictToOwnerAcl } from './secure-file';
 
 const PREFIX = 'buildd-agent-home-';
 
@@ -62,6 +63,9 @@ export function isolateAgentRunnerHome(
   } catch {
     try { fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch { /* the stores mkdir on first write */ }
   }
+  // Windows has no mkdtemp 0700: an inheritable owner-only DACL, best-effort
+  // like the mkdir above (the secret files in it restrict themselves).
+  tryRestrictToOwnerAcl(dir, { directory: true });
   return dir;
 }
 

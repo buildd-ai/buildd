@@ -1,5 +1,6 @@
+import { expectOwnerOnlyPath } from '../windows-acl';
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, statSync } from 'fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import {
@@ -919,7 +920,7 @@ describe('installer', () => {
     // The old every-session entry is gone; anything else the user had stays.
     expect(cfg.mcpServers).toEqual({ other: { command: 'x' } });
     expect(cfg.theme).toBe('dark');
-    expect(statSync(join(home, '.claude.json')).mode & 0o777).toBe(0o600);
+    expectOwnerOnlyPath(join(home, '.claude.json'), 0o600);
 
     const out = r.lines.join('\n');
     expect(out).toContain('registered for your workspace folders only (2)');

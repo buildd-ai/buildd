@@ -6,8 +6,9 @@ import { describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { CODEX_TOKEN_ENV, NOT_LOGGED_IN, buildTalkLaunch, claudeLoggedIn, claudeTranscriptExists, codexLoggedIn, codexTranscriptExists, fileTalkSessions, findCodexSession, starterPrompt, talkContext, talkSessionKey, talkWorkspaceId } from '../../src/top/talk';
+import { CODEX_TOKEN_ENV, NOT_LOGGED_IN, buildTalkLaunch, runTalk, claudeLoggedIn, claudeTranscriptExists, codexLoggedIn, codexTranscriptExists, fileTalkSessions, findCodexSession, starterPrompt, talkContext, talkSessionKey, talkWorkspaceId } from '../../src/top/talk';
 import { NOW, fixtureState } from './top-fixture';
+import { IS_WINDOWS, openToAllUsers } from '../windows-acl';
 
 const mission = { kind: 'mission' as const, id: 'm-tui-0000-0000', title: 'Runner TUI' };
 const base = { loggedIn: true, cwd: '/work/repo', server: 'https://buildd.example/', apiKey: 'bld_secret', mcpConfigPath: '/tmp/x/mcp.json', newSessionId: 'new-session', env: {} };
@@ -219,4 +220,31 @@ describe('Codex (S)', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+});
+
+// mcp.json carries the key. Mode bits do nothing on Windows, so the talk dir
+// gets an owner-only DACL before it is written, even under a configDir every
+// user may write. The session itself checks, since the dir is gone after.
+test.skipIf(!IS_WINDOWS)('Windows: the mcp.json a talk session reads grants only its owner', async () => {
+  const open = mkdtempSync(join(tmpdir(), 'talk-acl-'));
+  try {
+    openToAllUsers(open);
+    const check = join(open, 'check.js');
+    writeFileSync(check, [
+      "const p = process.argv[process.argv.indexOf('--mcp-config') + 1];",
+      "const ic = (process.env.SystemRoot || 'C:/Windows') + '/System32/icacls.exe';",
+      "const out = new TextDecoder().decode(Bun.spawnSync([ic, p]).stdout);",
+      "const aces = out.split(String.fromCharCode(10)).filter(l => l.includes(':('));",
+      "if (aces.length !== 1) console.error(out);",
+      "process.exit(aces.length === 1 && !/BUILTIN|Authenticated/i.test(out) ? 0 : 3);",
+    ].join('\n'));
+    const code = await runTalk({
+      ok: true, agent: 'claude', mode: 'suspend', cwd: open, sessionId: 's', resumed: false,
+      argv: [process.execPath, check, '--mcp-config', 'placeholder'],
+      mcpConfig: { mcpServers: { buildd: { type: 'http', url: 'https://buildd.example/api/mcp', headers: { Authorization: 'Bearer bld_test' } } } },
+    } as Parameters<typeof runTalk>[0], { configDir: open });
+    expect(code).toBe(0);
+  } finally {
+    rmSync(open, { recursive: true, force: true });
+  }
 });

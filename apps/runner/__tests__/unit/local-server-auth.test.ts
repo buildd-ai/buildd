@@ -1,5 +1,6 @@
+import { IS_WINDOWS, expectOwnerOnly, expectOwnerOnlyPath, openToAllUsers } from '../windows-acl';
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, statSync, writeFileSync, chmodSync, readFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -67,7 +68,7 @@ describe('loadOrCreateLocalToken', () => {
     const { token, path } = loadOrCreateLocalToken(dir);
     expect(token).toMatch(/^[0-9a-f]{64}$/);
     expect(path).toBe(join(dir, 'local-token'));
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expectOwnerOnlyPath(path, 0o600);
     expect(readFileSync(path, 'utf8').trim()).toBe(token);
   });
 
@@ -78,7 +79,7 @@ describe('loadOrCreateLocalToken', () => {
     chmodSync(p, 0o644);
     const { token } = loadOrCreateLocalToken(dir);
     expect(token).toBe(existing);
-    expect(statSync(p).mode & 0o777).toBe(0o600);
+    expectOwnerOnlyPath(p, 0o600);
   });
 
   it('prefers a valid BUILDD_LOCAL_TOKEN and persists it', () => {
@@ -86,8 +87,20 @@ describe('loadOrCreateLocalToken', () => {
     const { token, path } = loadOrCreateLocalToken(dir, { BUILDD_LOCAL_TOKEN: fromEnv });
     expect(token).toBe(fromEnv);
     expect(readFileSync(path, 'utf8').trim()).toBe(fromEnv);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expectOwnerOnlyPath(path, 0o600);
     expect(readLocalToken({ BUILDD_HOME: dir })).toBe(fromEnv);
+  });
+
+  it.skipIf(!IS_WINDOWS)('Windows: in a BUILDD_HOME every user may write, a new and an existing token grant only the owner', () => {
+    openToAllUsers(dir);
+    const { path } = loadOrCreateLocalToken(dir);
+    expectOwnerOnly(path);
+    const old = join(dir, 'old');
+    mkdirSync(old);
+    // A token file an older runner left with the folder's inherited ACL.
+    writeFileSync(join(old, 'local-token'), 'b'.repeat(64) + '\n');
+    loadOrCreateLocalToken(old);
+    expectOwnerOnly(join(old, 'local-token'));
   });
 
   it('ignores a malformed BUILDD_LOCAL_TOKEN', () => {

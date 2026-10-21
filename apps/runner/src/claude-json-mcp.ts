@@ -1,5 +1,5 @@
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'fs';
-import { SECRET_FILE_MODE } from './secure-file';
+import { SECRET_FILE_MODE, restrictToOwnerAcl } from './secure-file';
 
 /**
  * `buildd login`: put the new key into the buildd MCP entries that already
@@ -23,5 +23,6 @@ export function refreshBuilddMcpEntries(claudeJsonPath: string, apiKey: string, 
   if (n === 0) return 0;
   writeFileSync(claudeJsonPath, JSON.stringify(config, null, 2) + '\n');
   chmodSync(claudeJsonPath, SECRET_FILE_MODE);
+  restrictToOwnerAcl(claudeJsonPath); // Windows: the 0600
   return n;
 }
