@@ -38,6 +38,15 @@ describe('install.ps1 service offer', () => {
     expect(installPs1).toMatch(/\[switch\]\$Service/);
   });
 
+  // `irm ... | iex` cannot pass -Service, so a scripted one-liner sets this instead.
+  test('BUILDD_SERVICE=1 installs the service like -Service, without prompting', () => {
+    expect(installPs1).toMatch(/if \(\$Service -or \$env:BUILDD_SERVICE -eq '1'\) \{\s*\n\s*\$InstallService = \$true/);
+  });
+
+  test('documents the shell-agnostic one-liner', () => {
+    expect(installPs1).toContain('powershell -ExecutionPolicy ByPass -c "irm https://buildd.dev/install.ps1 | iex"');
+  });
+
   // The Scheduled Task itself (logon trigger, limited token, restart on failure)
   // is service.ts generateWindowsTaskXml, covered by service.test.ts.
   test('installs the service by invoking the buildd CLI, not duplicating its logic', () => {
