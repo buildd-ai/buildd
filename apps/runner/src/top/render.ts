@@ -14,7 +14,7 @@ import { queueNextLine, queueSections, selectedQueueRow, slotsSummary, type Queu
 import {
   busySlots, claimLoopLine, currentMission, currentWorkspace, deliveredDay, deliveredMissions, describeToolCall, emptyMissionWords, filterLine, formatDuration, heldNow, holdLine, missionList, missionRowStage, missionStageWord, missionStatusLine, planOf,
   DELIVERED_DAYS,
-  providerHoldLine, providerHolds, routeProblemLines, runsOn, loginsLine, selectedRow, spendTodayLine,
+  providerHoldLine, providerHolds, routeProblemLines, runsOn, sandboxLines, loginsLine, selectedRow, spendTodayLine,
   isLooseKey, taskRows, workerForTask, workspaceSummary, type MissionRow, type RowKind, type TaskRow, type TopState,
 } from './state';
 
@@ -592,6 +592,7 @@ export function renderFrame(state: TopState, opts: FrameOptions): string[] {
     ...(runsOnText ? [p.fg('muted', fit(' ' + runsOnText, cols))] : []),
     ...(loginsText ? [p.fg('muted', fit(' ' + loginsText, cols))] : []),
     ...routeProblemLines(state).map(l => p.fg('warning', fit(' ' + l, cols))),
+    ...sandboxLines(state).map(l => p.fg(l.warn ? 'warning' : 'muted', fit(' ' + l.text, cols))),
     ...(todayText ? [p.fg('muted', fit(' ' + todayText, cols))] : []),
   ];
   const bodyH = Math.max(1, rows - 5 - holdLines.length - ownHold.length - routeLines.length - loopLine.length);

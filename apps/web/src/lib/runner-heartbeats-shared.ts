@@ -136,10 +136,12 @@ export function deriveSandboxPosture(hb: {
     // The verdict doctor and install.sh print for the same record (R-8).
     const verdict = isolationVerdict(rec);
     if (!verdict.confined) {
+      // The other backend may still be confined here (Codex on Windows); its line says what it takes.
+      const others = verdict.backends.filter((b) => b.level !== 'none').map((b) => b.line);
       return {
-        label: verdict.reason === 'opt_out' ? 'sandbox disabled' : 'unsandboxed',
+        label: verdict.reason === 'opt_out' ? 'sandbox disabled' : others.length > 0 ? 'partly sandboxed' : 'unsandboxed',
         tier: 'warning',
-        detail: `${verdict.summary} · tasks run without isolation`,
+        detail: [`${verdict.summary} · tasks that need a sandbox go to other runners`, ...others].join(' · '),
       };
     }
     if (claude.mechanism === 'seatbelt') {

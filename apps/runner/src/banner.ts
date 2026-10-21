@@ -22,6 +22,8 @@ export interface BannerInfo {
   reposCached: boolean;
   roots: number;
   serverless: boolean;
+  /** One line per backend from the shared isolationVerdict (isolation-check.ts sandboxPosture). */
+  sandbox?: { line: string; level: 'full' | 'partial' | 'none' }[];
 }
 
 type Env = Record<string, string | undefined>;
@@ -80,6 +82,10 @@ export function renderBanner(info: BannerInfo, p: Palette): string[] {
   out.push('');
   const s = (n: number) => (n !== 1 ? 's' : '');
   out.push(`   ${muted(`${info.repos} repo${s(info.repos)}${info.reposCached ? ' · cached' : ''} · ${info.roots} root${s(info.roots)}`)}`);
+  // What confines each backend here and where its tasks go; less than full reads as a warning.
+  (info.sandbox ?? []).forEach((b, i) => {
+    out.push(row(i === 0 ? 'sandbox' : '', b.level === 'full' ? text(b.line) : p.fg('warning', b.line)));
+  });
 
   if (!info.apiKey && !info.serverless) {
     out.push('');

@@ -17,13 +17,18 @@ NC='\033[0m'
 # just what `buildd login` and `buildd install` load, runs no `bun install`,
 # downloads no Chromium and offers no service. Running the installer again
 # without --client upgrades it in place to the full runner.
+#
+# --install-bubblewrap: on Linux without bubblewrap, install it with the
+# package manager without asking (it needs root; see "bubblewrap offer").
 WANT_SERVICE=0
+WANT_BWRAP=0
 CLIENT_MODE=0
 REPAIR_MODE=0
 for arg in "$@"; do
   [ "$arg" = "--service" ] && WANT_SERVICE=1
   [ "$arg" = "--client" ] && CLIENT_MODE=1
   [ "$arg" = "--repair" ] && REPAIR_MODE=1
+  [ "$arg" = "--install-bubblewrap" ] && WANT_BWRAP=1
 done
 
 # Install zstd: apps/runner/src/warm-repo.ts shells out to the real CLI to
@@ -751,6 +756,61 @@ isolation_check() {
 }
 # --- isolation check: end ---
 isolation_check "$INSTALL_DIR"
+
+# --- bubblewrap offer: begin ---
+# On Linux, tasks are sandboxed with bubblewrap. When the isolation check says
+# it is not installed, offer to install it with the host's package manager.
+# That needs root, so it is asked, never assumed: on a terminal only, default
+# No, or with --install-bubblewrap for scripted installs. It installs that one
+# package and changes no sysctl, AppArmor or container setting.
+bwrap_install_cmd() {
+  local pm
+  for pm in apt-get dnf yum zypper pacman apk; do
+    command -v "$pm" >/dev/null 2>&1 || continue
+    case "$pm" in
+      apt-get) echo "apt-get install -y bubblewrap" ;;
+      dnf|yum) echo "$pm install -y bubblewrap" ;;
+      zypper) echo "zypper --non-interactive install bubblewrap" ;;
+      pacman) echo "pacman -S --noconfirm bubblewrap" ;;
+      apk) echo "apk add bubblewrap" ;;
+    esac
+    return 0
+  done
+  return 1
+}
+bwrap_offer() {
+  local install_dir="$1" wanted="$2" reason cmd elevate="" answer
+  [ "$(uname -s)" = "Linux" ] || return 0
+  reason="$(bun --no-env-file run "$install_dir/apps/runner/src/isolation-check.ts" --claude-reason 2>/dev/null | tail -n 1)"
+  [ "$reason" = "bwrap_missing" ] || return 0
+  cmd="$(bwrap_install_cmd)" || return 0
+  if [ "$(id -u)" != "0" ]; then
+    if command -v sudo >/dev/null 2>&1; then
+      elevate="sudo"  # printf: shown in interactive prompts below
+    else
+      echo -e "${YELLOW}bubblewrap is not installed. As root, run: ${cmd}${NC}"
+      return 0
+    fi
+  fi
+  if [ "$wanted" != "1" ]; then
+    [ -t 1 ] && [ -r /dev/tty ] || return 0
+    echo ""
+    printf "%s" "Without bubblewrap this runner takes no tasks that need a sandbox. Install it now with '${elevate:+$elevate }${cmd}'? [y/N] "
+    read -r answer < /dev/tty || answer=""
+    case "$answer" in
+      [yY]*) ;;
+      *) return 0 ;;
+    esac
+  fi
+  # shellcheck disable=SC2086 # cmd is one of the fixed commands above
+  if $elevate $cmd; then
+    isolation_check "$install_dir"
+  else
+    echo -e "${YELLOW}Could not install bubblewrap; run '${elevate:+$elevate }${cmd}' yourself, then restart the runner.${NC}"
+  fi
+}
+# --- bubblewrap offer: end ---
+bwrap_offer "$INSTALL_DIR" "$WANT_BWRAP"
 
 echo ""
 echo -e "${GREEN}Installation complete!${NC}"

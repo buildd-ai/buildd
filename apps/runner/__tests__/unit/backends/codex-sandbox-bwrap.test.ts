@@ -33,9 +33,12 @@ mockResumeThread = mock((_threadId: string, _opts: any) => ({
   runStreamed: mockRunStreamed,
 }));
 
+const codexCtorOpts: any[] = [];
+
 mock.module('@openai/codex-sdk', () => ({
   Codex: class {
-    constructor(_opts: any) {
+    constructor(opts: any) {
+      codexCtorOpts.push(opts);
       return {
         startThread: mockStartThread,
         resumeThread: mockResumeThread,
@@ -138,5 +141,34 @@ describe('CodexBackend sandbox mode — the confinement the runner probed for it
     expect(text).toMatch(/unprivileged_userns_clone/);
     expect(text).toMatch(/danger-full-access/);
     expect(text).not.toMatch(/seccomp=unconfined/);
+  });
+});
+
+describe("CodexBackend on Windows — Codex's own sandbox, named on every run", () => {
+  const WIN = { mechanism: 'windows_restricted_token', scope: ['write'] } as const;
+
+  beforeEach(() => {
+    mockStartThread.mockClear();
+    codexCtorOpts.length = 0;
+    process.env.OPENAI_API_KEY = 'sk-test';
+  });
+
+  const run = (opts: Record<string, unknown>) => drain(new CodexBackend().runStreamed({ ...BASE_OPTS, ...opts } as any));
+
+  test('passes windows.sandbox="unelevated", so workspace-write is not silently read-only', async () => {
+    await run({ sandboxConfinement: WIN });
+    expect(mockStartThread.mock.calls[0][0].sandboxMode).toBe('workspace-write');
+    expect(codexCtorOpts[0].config).toEqual({ windows: { sandbox: 'unelevated' } });
+  });
+
+  test('read-only keeps the same sandbox', async () => {
+    await run({ sandboxMode: 'read-only', sandboxConfinement: WIN });
+    expect(mockStartThread.mock.calls[0][0].sandboxMode).toBe('read-only');
+    expect(codexCtorOpts[0].config).toEqual({ windows: { sandbox: 'unelevated' } });
+  });
+
+  test('other hosts get no Windows config', async () => {
+    await run({ sandboxConfinement: BWRAP });
+    expect(codexCtorOpts[0].config).toBeUndefined();
   });
 });
