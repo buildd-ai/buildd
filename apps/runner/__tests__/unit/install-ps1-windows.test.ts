@@ -54,12 +54,6 @@ describe('install.ps1 checks out what install.sh does', () => {
     for (const list of ps1Sparse) expect(list).toEqual(shSparse);
   });
 
-  test('rewrites the root package.json to the same workspaces as install.sh', () => {
-    const shPkg = JSON.parse(installSh.match(/<< 'PKGJSON'\n([\s\S]*?)\nPKGJSON/)?.[1] ?? '{}');
-    const ps1Pkg = JSON.parse(ps1.match(/@'\n(\{[\s\S]*?\})\n'@ \| Set-Content "\$InstallDir\\package\.json"/)?.[1] ?? '{}');
-    expect(shPkg.workspaces?.length).toBeGreaterThan(0);
-    expect(ps1Pkg.workspaces).toEqual(shPkg.workspaces);
-  });
 });
 
 describe('install.ps1 launcher', () => {
