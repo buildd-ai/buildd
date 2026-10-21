@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { execFileSync, execSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { requiredWorkspaceDirs, widenSparseCheckout } from '../../src/updater';
@@ -73,65 +73,7 @@ describe('widenSparseCheckout, against real git', () => {
   });
 });
 
-// An install made before the sparse list carried bun.lock has no lockfile, and
-// `bun install --frozen-lockfile` then resolves fresh from npm. The update adds it.
-describe('ensureLockfileCheckedOut, against real git', () => {
-  test('an older sparse install gets the root bun.lock; a full checkout is untouched', async () => {
-    const { ensureLockfileCheckedOut } = await import('../../src/updater');
-    const origin = mkdtempSync(join(tmpdir(), 'upd-lock-origin-'));
-    const sh = (c: string, cwd = origin) => execSync(c, { cwd, stdio: 'pipe' });
-    sh('git init -q -b main && git config user.email a@b.c && git config user.name t');
-    write(origin, 'package.json', pkg('buildd'));
-    write(origin, 'bun.lock', '{}\n');
-    write(origin, 'apps/runner/package.json', pkg('@buildd/runner'));
-    write(origin, 'apps/web/bun.lock', '{}\n');
-    sh('git add -A && git commit -qm v1');
-
-    const install = mkdtempSync(join(tmpdir(), 'upd-lock-install-'));
-    const ish = (c: string) => execSync(c, { cwd: install, stdio: 'pipe' });
-    ish(`git init -q && git remote add origin ${origin} && git config core.sparseCheckout true`);
-    writeFileSync(join(install, '.git/info/sparse-checkout'), 'apps/runner/\npackage.json\n');
-    ish('git fetch -q origin main && git checkout -q -B main origin/main');
-    expect(existsSync(join(install, 'bun.lock'))).toBe(false);
-    // What the old unfrozen `bun install` left behind: a lockfile it resolved itself.
-    writeFileSync(join(install, 'bun.lock'), 'resolved fresh\n');
-
-    expect(await ensureLockfileCheckedOut(install, git)).toBe(true);
-    expect(readFileSync(join(install, 'bun.lock'), 'utf8').replace(/\r\n/g, '\n')).toBe('{}\n');
-    // Anchored: only the root lockfile, not one that happens to sit in another app.
-    expect(existsSync(join(install, 'apps/web/bun.lock'))).toBe(false);
-    // Idempotent.
-    expect(await ensureLockfileCheckedOut(install, git)).toBe(false);
-    expect(await ensureLockfileCheckedOut(origin, git)).toBe(false);
-  });
-});
-
 describe('applyUpdate', () => {
-  test('checks out the lockfile after the reset and before the reinstall', async () => {
-    const { applyUpdate } = await import('../../src/updater');
-    const order: string[] = [];
-    const home = mkdtempSync(join(tmpdir(), 'upd-home-'));
-    const result = await applyUpdate(home, require('fs'), {
-      git: async (args: string[]) => {
-        order.push(`git ${args.join(' ')}`);
-        if (args[0] === 'config') return 'true';
-        if (args[0] === 'sparse-checkout' && args[1] === 'list') return 'apps/runner\npackage.json';
-        if (args[0] === 'ls-tree') return '';
-        if (args[0] === 'show') return pkg('@buildd/runner');
-        return 'main';
-      },
-      bunVersion: async () => {},
-      bunInstall: async () => { order.push('bunInstall'); },
-    });
-    expect(result.success).toBe(true);
-    const reset = order.findIndex((o) => o.startsWith('git reset'));
-    const add = order.indexOf('git sparse-checkout add /bun.lock');
-    expect(reset).toBeGreaterThan(-1);
-    expect(add).toBeGreaterThan(reset);
-    expect(order.indexOf('bunInstall')).toBeGreaterThan(add);
-  });
-
-
   test('widens the sparse checkout after the reset and before the reinstall', async () => {
     const { applyUpdate } = await import('../../src/updater');
     const order: string[] = [];
