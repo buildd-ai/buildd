@@ -82,6 +82,31 @@ describe('install.ps1 launcher', () => {
     expect(launcher.indexOf('=="service"')).toBeLessThan(launcher.indexOf(':runloop'));
   });
 
+  // The runner rejects these with "Unknown argument", so a launcher that lets
+  // them fall through to index.ts breaks commands its own help lists.
+  for (const cmd of ['status', 'logout', 'init']) {
+    test(`sends \`buildd ${cmd}\` to launcher-commands.ts, not the runner`, () => {
+      const branch = launcher.match(new RegExp(`if /i "%SUBCMD%"=="${cmd}" \\(([\\s\\S]*?)\\n\\)`))?.[1] ?? '';
+      expect(branch).toContain(`apps\\runner\\src\\launcher-commands.ts" ${cmd} !REST!`);
+      expect(branch).toContain('exit /b');
+      expect(launcher.indexOf(`=="${cmd}"`)).toBeLessThan(launcher.indexOf(':runloop'));
+    });
+
+    test(`install.sh runs the same launcher-commands.ts for \`buildd ${cmd}\``, () => {
+      const branch = installSh.match(new RegExp(`\\n  ${cmd}\\)\\n([\\s\\S]*?)\\n    ;;`))?.[1] ?? '';
+      expect(branch).toContain(`apps/runner/src/launcher-commands.ts" ${cmd} "$@"`);
+    });
+  }
+
+  // A bare `exit /b` inside an if (...) block exits 0, whatever bun returned
+  // (`buildd init` with no id "succeeded"); %ERRORLEVEL% there is expanded
+  // before bun runs. The bash launcher's exec passes the code through.
+  test("every subcommand branch exits with bun's exit code", () => {
+    const branchExits = launcher.slice(0, launcher.indexOf(':runloop')).match(/^\s*exit \/b.*$/gm) ?? [];
+    expect(branchExits.length).toBeGreaterThan(0);
+    for (const e of branchExits) expect(e.trim()).toBe('exit /b !ERRORLEVEL!');
+  });
+
   // `set "PROJECTS_ROOT=!ROOTS!"` without delayed expansion set the literal text !ROOTS!.
   test('enables delayed expansion for the !VAR! it uses', () => {
     expect(launcher).toMatch(/!\w+!/);
