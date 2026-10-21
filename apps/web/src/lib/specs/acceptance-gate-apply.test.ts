@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  applyBuildingGate, recordAcceptanceObjection, recordAcceptanceResults,
+  applyBuildingGate, isAcceptanceTask, recordAcceptanceObjection, recordAcceptanceResults, testsFromContext,
   type GateState, type GateStore, type GateTask,
 } from './acceptance-gate-apply';
 import type { AcceptanceTest } from './acceptance-gate';
@@ -78,45 +78,41 @@ describe('recording', () => {
   });
 });
 
-describe('R-78/R-79 end-to-end (AC-125)', () => {
-  test('no objection branch: tests run, all fail, building starts', async () => {
-    const { store, calls } = fake({ tests: [t('AC-1', null), t('AC-2', null)] });
-    // Simulate: acceptance-tests worker runs tests on starting commit
-    let out = await recordAcceptanceResults(store, 'm', [t('AC-1', 'fail'), t('AC-2', 'fail')]);
-    expect(out?.decision).toBe('start');
-    expect(calls).toEqual(['patch:acc:acceptanceTests', 'complete:acc']);
+describe('filed task shape', () => {
+  const filed = { acceptanceTests: { missionId: 'm', specId: 's', specRevisionId: 'r', apartFrom: 'builder' } };
+  test('the task as filed (marker object) is an acceptance-tests task with no tests yet', () => {
+    expect(isAcceptanceTask({ context: filed })).toBe(true);
+    expect(testsFromContext(filed)).toEqual([]);
+  });
+  test('tests recorded in the marker are read back', () => {
+    const ctx = { acceptanceTests: { ...filed.acceptanceTests, tests: [{ checkId: 'AC-1', name: 'n', startingResult: 'fail' }] } };
+    expect(testsFromContext(ctx)).toEqual([{ checkId: 'AC-1', name: 'n', startingResult: 'fail' }]);
+  });
+  test('a task without the marker is not one', () => {
+    expect(isAcceptanceTask({ context: {} })).toBe(false);
+    expect(isAcceptanceTask({ context: null })).toBe(false);
+  });
+});
+
+describe('completion path (AC-125)', () => {
+  test('completing with no recorded results does not release building: the task is reopened', async () => {
+    const { store, calls } = fake({ tests: [], acceptanceStatus: 'completed' });
+    expect((await applyBuildingGate(store, 'm', { onCompletion: true }))?.decision).toBe('wait');
+    expect(calls).toEqual(['reopen:acc']);
   });
 
-  test('no objection branch: one test passes, building waits and sendback resets tests', async () => {
-    const { store, calls } = fake({ tests: [t('AC-1', 'fail'), t('AC-2', null)], acceptanceStatus: 'completed' });
-    // AC-2 passes on starting commit, so it gets sent back
-    let out = await recordAcceptanceResults(store, 'm', [t('AC-2', 'pass', 'output')]);
-    expect(out?.decision).toBe('wait');
-    expect(calls).toEqual(['patch:acc:acceptanceTests', 'patch:acc:acceptanceSentBack', 'reopen:acc']);
+  test('no objection: all-fail results recorded, completion keeps the task completed and building starts', async () => {
+    const { store, calls } = fake({ tests: [t('AC-1', null)], acceptanceStatus: 'completed' });
+    await recordAcceptanceResults(store, 'm', [t('AC-1', 'fail')]);
+    calls.length = 0;
+    expect((await applyBuildingGate(store, 'm', { onCompletion: true }))?.decision).toBe('start');
+    expect(calls).toEqual([]);
   });
 
-  test('objection branch: objection prevents building even when all tests fail', async () => {
-    const { store, calls } = fake({ tests: [t('AC-1', 'fail'), t('AC-2', 'fail')] });
-    // First record tests
-    let out = await applyBuildingGate(store, 'm');
-    expect(out?.decision).toBe('start');
-    calls.length = 0; // reset calls
-    // Then person objects
-    out = await recordAcceptanceObjection(store, 'm', true);
-    expect(out?.decision).toBe('hold');
-    expect(calls[0]).toBe('patch:acc:acceptanceObjection');
+  test('objection: building is held even though every test fails', async () => {
+    const { store, calls } = fake({ tests: [t('AC-1', 'fail')], acceptanceStatus: 'completed' });
+    const out = await recordAcceptanceObjection(store, 'm', true);
+    expect(out).toEqual({ decision: 'hold', held: ['b1', 'b2'] });
     expect(calls).toContain('reopen:acc');
-  });
-
-  test('objection branch: objection withdraw flips back to start when all tests fail', async () => {
-    const { store, calls } = fake({ tests: [t('AC-1', 'fail'), t('AC-2', 'fail')], objected: true });
-    // Person initially objected
-    let out = await applyBuildingGate(store, 'm');
-    expect(out?.decision).toBe('hold');
-    calls.length = 0; // reset calls
-    // Person withdraws objection
-    out = await recordAcceptanceObjection(store, 'm', false);
-    expect(out?.decision).toBe('start');
-    expect(calls).toEqual(['patch:acc:acceptanceObjection', 'complete:acc']);
   });
 });

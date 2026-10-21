@@ -4731,6 +4731,14 @@ async function patchWorker(
         await recordAcceptanceVerifiedBy(taskId);
       });
 
+      // The acceptance-tests task finished: building starts only on recorded all-fail
+      // starting-commit results with no objection (spec 1dc6cc39 R-78, R-79, AC-125).
+      await runStep('acceptance-gate', async () => {
+        if (effectiveOutcome !== 'completed' || shouldAutoRetry) return;
+        const { gateAcceptanceCompletion } = await import('@/lib/specs/acceptance-gate-apply');
+        await gateAcceptanceCompletion(taskId);
+      });
+
       // A recoverable-blocker repair landed: resume the tasks parked on it
       // (agent-question-protocol AC-55). Idempotent, so a duplicate completion is harmless.
       await runStep('recoverable-blocker-reconcile', async () => {

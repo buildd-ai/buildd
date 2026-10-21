@@ -40,13 +40,24 @@ export interface GateStore {
 
 const RESULTS = new Set(['fail', 'pass', 'inconclusive']);
 
+/**
+ * The task is filed with `context.acceptanceTests` as a marker object (`{ missionId, specId, ... }`);
+ * the tests added and their starting-commit results live in its `tests` array. A bare array is
+ * accepted too.
+ */
 export function isAcceptanceTask(t: { context?: Record<string, unknown> | null }): boolean {
-  return Array.isArray(t.context?.acceptanceTests);
+  const m = t.context?.acceptanceTests;
+  return Array.isArray(m) || (!!m && typeof m === 'object');
+}
+
+function rawTests(context: Record<string, unknown> | null | undefined): unknown {
+  const m = context?.acceptanceTests;
+  return Array.isArray(m) ? m : (m as Record<string, unknown> | null | undefined)?.tests;
 }
 
 /** The tests recorded on a task's context; malformed entries are dropped. */
 export function testsFromContext(context: Record<string, unknown> | null | undefined): AcceptanceTest[] {
-  const raw = context?.acceptanceTests;
+  const raw = rawTests(context);
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((r): AcceptanceTest[] => {
     if (!r || typeof r !== 'object') return [];
@@ -63,7 +74,7 @@ export interface GateOutcome {
 }
 
 /** Decide, then act. Idempotent: a repeat call with the same state changes nothing. */
-export async function applyBuildingGate(store: GateStore, missionId: string): Promise<GateOutcome | null> {
+export async function applyBuildingGate(store: GateStore, missionId: string, opts: { onCompletion?: boolean } = {}): Promise<GateOutcome | null> {
   const state = await store.load(missionId);
   if (!state) return null;
   const decision = decideBuildingGate({ tests: state.tests, objected: state.objected });
@@ -84,8 +95,22 @@ export async function applyBuildingGate(store: GateStore, missionId: string): Pr
     // A test that passed on the starting commit goes back to the tests task with its output.
     await store.patchContext(acceptanceId, { acceptanceSentBack: decision.sendBack });
     if (state.acceptanceTask.status === 'completed') await store.reopenAcceptanceTask(acceptanceId);
+  } else if (opts.onCompletion && state.acceptanceTask.status === 'completed') {
+    // The task finished but not every test has failed on the starting commit: completing is not
+    // enough to release building (R-78). Keep it open until the results are recorded.
+    await store.reopenAcceptanceTask(acceptanceId);
   }
   return { decision: decision.action, held };
+}
+
+/**
+ * The acceptance-tests task just completed (worker completion path): run the gate on it so building
+ * starts only on recorded all-fail results with no objection. Not an acceptance-tests task: null.
+ */
+export async function gateAcceptanceCompletion(taskId: string, store: GateStore = dbGateStore): Promise<GateOutcome | null> {
+  const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { missionId: true, status: true, context: true } });
+  if (!row?.missionId || row.status !== 'completed' || !isAcceptanceTask(row)) return null;
+  return applyBuildingGate(store, row.missionId, { onCompletion: true });
 }
 
 /** Record test results (matched by checkId + name; unknown ones are added), then run the gate. */
@@ -126,7 +151,13 @@ export const dbGateStore: GateStore = {
   },
   async patchContext(taskId, patch) {
     const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { context: true } });
-    await db.update(tasks).set({ context: { ...(row?.context ?? {}), ...patch } }).where(eq(tasks.id, taskId));
+    const context = { ...(row?.context ?? {}) } as Record<string, unknown>;
+    const { acceptanceTests, ...rest } = patch;
+    if (acceptanceTests !== undefined) {
+      const marker = context.acceptanceTests;
+      context.acceptanceTests = { ...(marker && typeof marker === 'object' && !Array.isArray(marker) ? marker : {}), tests: acceptanceTests };
+    }
+    await db.update(tasks).set({ context: { ...context, ...rest } }).where(eq(tasks.id, taskId));
   },
   async completeAcceptanceTask(taskId) {
     await db.update(tasks).set({ status: 'completed' }).where(and(eq(tasks.id, taskId), inArray(tasks.status, [...OPEN_TASK_STATUSES])));
