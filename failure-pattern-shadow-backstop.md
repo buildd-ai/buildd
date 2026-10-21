@@ -155,9 +155,58 @@ All crisis patterns from Oct 10–18 remain fully contained:
 
 ---
 
+---
+
+# Continuation: Oct 21 23:00 UTC
+
+**Observation Date**: 2026-10-21 23:00 UTC  
+**Window**: 24h (Oct 21 00:00–23:00 UTC)  
+**Status**: STABLE, baseline continued  
+**Failure Rate (24h)**: 3% (5 of 181 terminal workers, all isolated)  
+
+## Current Telemetry (Oct 21 23:00 UTC)
+
+### Worker Failures
+- **Rate**: 3% (5 terminal failures)
+- **Causes**: code_failure 2 (40%), output_unmet 2 (40%), budget_limited 1 (20%)
+- **Assessment**: All low-count, isolated signatures; no pattern correlation
+
+### Gate Activity (24h)
+- **Total events**: 317 (all operational range)
+- **pr_landing**: 127 events (123 deferred, 4 stranded) — expected range
+- **path_declaration**: 102 deferred — normal contention
+- **auto_pr_supersession**: 30 deferred — content verification
+- **claim_loop_deferral**: 20 events (19 deferred, 1 bypassed) — normal
+- **path_claim**: 10 deferred — expected path overlap
+- **Other gates**: 28 minor events — expected
+
+### Dispatch Health
+- **Wakes (24h)**: 185 events, all delivered successfully
+- **Latency**: p95 5.7s (healthy)
+- **Outbox**: 0 pending, 0 stuck, 0 stale, 0 orphaned
+- **Worker reachable**: Yes (173ms response)
+
+### PR Merge Performance
+- **Time to merge**: p50 0m, p90 0m, max 1m
+- **Merged (24h)**: 31 PRs
+- **Stuck past 30m**: 0
+- **Assessment**: Healthy, no landing pathology
+
+## Pattern Assessment
+
+**No systemic patterns detected.** All metrics confirm continued stable baseline:
+- No correlated failure signatures (each isolated)
+- No sharp spikes in gate distribution
+- No stranded task cascades (4 pr_landing stranded is normal, resolving)
+- No provider/backend mismatch attribution
+- No output-unmet boundary spike
+- PR merge health stable with zero stuck PRs
+
+**Status**: Platform operational at baseline 3% failure rate. All crisis patterns from Oct 18 remain resolved. Ready for native Failure Pattern Sentinel handoff.
+
 ## Artifact Status
 
-- **Written**: 2026-10-21 12:30 UTC
-- **Window**: Oct 14–21 (7d) + Oct 20–21 12:30 (24h focus)
-- **Next observation**: Oct 21 15:00–18:00 UTC
-- **Handed off to**: Native Failure Pattern Sentinel mission (landing in progress)
+- **Updated**: 2026-10-21 23:00 UTC
+- **Continuous observation**: Oct 14–21 (7d window), Oct 21 (4 observations: 12:30, 17:01, 22:00, 23:00 UTC)
+- **Verdict**: STABLE throughout, no escalations
+- **Handoff**: Ready for native Failure Pattern Sentinel mission
