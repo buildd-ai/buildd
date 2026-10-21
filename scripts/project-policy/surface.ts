@@ -26,12 +26,16 @@ export async function scanSurface(sources: { path: string; content: string }[], 
     catch { errors.push({ file: source.path, message: 'TSX parse failed; not treated as clean.' }); }
   }
   subjects.sort((a, b) => priority(b) - priority(a) || a.file.localeCompare(b.file) || a.start - b.start);
-  const rows = [];
-  for (let index = 0; index < subjects.length; index++) {
-    const subject = subjects[index];
-    const findings = await evaluateSubject(subject, policy, undefined, index >= offset ? semantic : undefined);
-    rows.push({ subject, findings });
-  }
+  const rows: { subject: ChangedSubject; findings: Awaited<ReturnType<typeof evaluateSubject>> }[] = new Array(subjects.length);
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(4, subjects.length) }, async () => {
+    while (cursor < subjects.length) {
+      const index = cursor++;
+      const subject = subjects[index];
+      const findings = await evaluateSubject(subject, policy, undefined, index >= offset ? semantic : undefined);
+      rows[index] = { subject, findings };
+    }
+  }));
   const findings = rows.flatMap(row => row.findings);
   const decisions = findings.flatMap(f => f.decision ? [f.decision] : []);
   const fresh = decisions.filter(d => d.attempts > 0);

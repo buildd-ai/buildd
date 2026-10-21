@@ -30,3 +30,17 @@ it('does not call the model in inventory-only mode and records parse errors', as
   expect(report.errors).toHaveLength(1);
   expect(report.inventory.subjects).toBe(1);
 });
+
+it('bounds bulk inference concurrency while retaining stable row order', async () => {
+  let active = 0, peak = 0;
+  const evaluate: SemanticEvaluator = async () => {
+    peak = Math.max(peak, ++active);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    active--;
+    return { label: 'useful', confidence: 0.8, model: 'test', version: 'v', promptFingerprint: 'p', inputFingerprint: 'i',
+      attempts: 1, latencyMs: 5, costUsd: 0.001, receipt: null, reasonCode: 'model_useful' };
+  };
+  const report = await scanSurface([{ path: 'x.tsx', content: `<section>${Array.from({ length: 8 }, (_, i) => `<p>Example ${i}</p>`).join('')}</section>` }], policyPreset('wwvd').policy, evaluate);
+  expect(peak).toBe(4);
+  expect(report.rows.map(row => row.subject.after)).toEqual(Array.from({ length: 8 }, (_, i) => `Example ${i}`));
+});
