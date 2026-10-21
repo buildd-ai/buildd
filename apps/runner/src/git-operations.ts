@@ -50,7 +50,7 @@ export interface ExecAsyncOptions {
   stdio?: unknown;
 }
 /**
- * A git command line through `/bin/sh -c`, like execSync, but awaited: the
+ * A git command line through `sh -c` (posixShell()), like execSync, but awaited: the
  * runner's event loop keeps serving the local socket, the heartbeat and the
  * sync tick while git runs. Resolves stdout; rejects like execSync
  * ("Command failed: <cmd>" then stderr, plus `status` and `stderr`).

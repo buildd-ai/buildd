@@ -137,7 +137,7 @@ export function isolationRemediation(reason: IsolationReason, platform: RunnerHo
         ? ['Check that /usr/bin/sandbox-exec runs for the runner\'s user (it is part of macOS), then restart the runner.']
         : [];
     case 'unsupported_platform':
-      return [];
+      return ['Run the runner on Linux (bubblewrap) or macOS (Seatbelt); on Windows, run it inside WSL2 with bubblewrap installed there.'];
   }
 }
 

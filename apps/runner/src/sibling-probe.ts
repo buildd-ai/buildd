@@ -26,6 +26,7 @@ import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { promisify } from 'util';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
+import { posixShell, windowsExecutablePath } from './posix-shell';
 import type { SiblingProbeConflict, SiblingProbeRequest, SiblingProbeResult } from '@buildd/shared';
 
 const FETCH_TIMEOUT_MS = 60_000;
@@ -67,8 +68,9 @@ async function git(cwd: string, args: string[], timeout = MERGE_TIMEOUT_MS): Pro
 }
 
 export function findMergirafBinary(): string | null {
+  if (process.platform === 'win32') return windowsExecutablePath('mergiraf');
   try {
-    return execSync('command -v mergiraf', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/sh' }).trim() || null;
+    return execSync('command -v mergiraf', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], shell: posixShell() }).trim() || null;
   } catch {
     return null;
   }
