@@ -40,13 +40,20 @@ export interface GateStore {
 
 const RESULTS = new Set(['fail', 'pass', 'inconclusive']);
 
+/**
+ * The acceptance-tests task is the one whose `context.acceptanceTests` is the marker object
+ * `ensureAcceptanceTests` files (`{ missionId, specId, ... }`); the tests it recorded live in that
+ * object's `tests`. A bare array is the older shape and is still read.
+ */
 export function isAcceptanceTask(t: { context?: Record<string, unknown> | null }): boolean {
-  return Array.isArray(t.context?.acceptanceTests);
+  const m = t.context?.acceptanceTests;
+  return Array.isArray(m) || (!!m && typeof m === 'object');
 }
 
 /** The tests recorded on a task's context; malformed entries are dropped. */
 export function testsFromContext(context: Record<string, unknown> | null | undefined): AcceptanceTest[] {
-  const raw = context?.acceptanceTests;
+  const marker = context?.acceptanceTests;
+  const raw = Array.isArray(marker) ? marker : (marker as { tests?: unknown } | null | undefined)?.tests;
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((r): AcceptanceTest[] => {
     if (!r || typeof r !== 'object') return [];
@@ -126,7 +133,14 @@ export const dbGateStore: GateStore = {
   },
   async patchContext(taskId, patch) {
     const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { context: true } });
-    await db.update(tasks).set({ context: { ...(row?.context ?? {}), ...patch } }).where(eq(tasks.id, taskId));
+    const context = (row?.context ?? {}) as Record<string, unknown>;
+    const next: Record<string, unknown> = { ...context, ...patch };
+    // A tests list is stored inside the marker object, which must stay an object.
+    if (Array.isArray(patch.acceptanceTests)) {
+      const marker = context.acceptanceTests;
+      next.acceptanceTests = { ...(marker && typeof marker === 'object' && !Array.isArray(marker) ? marker : {}), tests: patch.acceptanceTests };
+    }
+    await db.update(tasks).set({ context: next }).where(eq(tasks.id, taskId));
   },
   async completeAcceptanceTask(taskId) {
     await db.update(tasks).set({ status: 'completed' }).where(and(eq(tasks.id, taskId), inArray(tasks.status, [...OPEN_TASK_STATUSES])));
