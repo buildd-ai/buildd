@@ -16,7 +16,7 @@
  *    render older than the marker already on GitHub is skipped by the handler.
  */
 import { renderPrActivityComment, taskActivityUrl, type PrActivityEntry, type PrActivityKind, type ActivityHeader } from '@/lib/pr-activity-comment';
-import { deriveDeliveryView, reviewSummaryLine, reviewSummaryOf } from './projections';
+import { closeCauseCopy, deriveDeliveryView, reviewSummaryLine, reviewSummaryOf } from './projections';
 import { reviewRoundsOf } from './delivery-rounds';
 import { decisionCopy, DECISION_LABELS } from './escalation-copy';
 import { signatureChecks } from './trunk-signature';
@@ -183,8 +183,12 @@ export function transitionsToActivityEntries(
       case 'PrMerged':
         push({ kind: 'merged' });
         break;
-      case 'PrClosedUnmerged':
-        push({ kind: 'closed_unmerged' });
+      case 'PrClosedUnmerged': {
+        // A transition written before the cause was recorded on it reads as no detail, as it did.
+        const detail = closeCauseCopy(str(ev.closeCause), ev);
+        push({ kind: 'closed_unmerged', ...(detail && detail !== 'unknown' ? { detail } : {}) });
+        break;
+      }
         break;
       case 'SupersessionRecorded': {
         const target = ev.target as { prNumber?: unknown } | undefined;

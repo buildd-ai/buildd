@@ -40,7 +40,8 @@ packages/dispatch-contract/
 packages/spec-contract/
 scripts/stub-server-only.ts
 bunfig.toml
-package.json
+/package.json
+/bun.lock
 "@ | Set-Content ".git\info\sparse-checkout"
 
     git fetch origin dev
@@ -67,7 +68,8 @@ packages/dispatch-contract/
 packages/spec-contract/
 scripts/stub-server-only.ts
 bunfig.toml
-package.json
+/package.json
+/bun.lock
 "@ | Set-Content ".git\info\sparse-checkout"
 
     git fetch --depth 1 origin dev
@@ -75,27 +77,11 @@ package.json
     Pop-Location
 }
 
-# Point the root package.json at only the sparse-checkout workspaces, as
-# install.sh does: the repo's "apps/*" and "packages/*" name workspaces that
-# are not checked out, so bun install cannot resolve them.
-@'
-{
-  "name": "buildd",
-  "private": true,
-  "workspaces": [
-    "apps/runner",
-    "packages/shared",
-    "packages/core",
-    "packages/ai-kit",
-    "packages/dispatch-contract",
-    "packages/spec-contract"
-  ]
-}
-'@ | Set-Content "$InstallDir\package.json"
-
-# Install dependencies
+# Install dependencies, exactly as the repo's bun.lock pins them, as install.sh
+# does. The root package.json stays the repo's own: a rewritten one drops its
+# "overrides", and bun then refuses the lockfile as changed.
 Push-Location "$InstallDir\apps\runner"
-bun install
+bun install --frozen-lockfile
 Pop-Location
 
 # Create bin directory and launcher

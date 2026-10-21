@@ -1,7 +1,8 @@
 /**
- * install.sh clones a SPARSE tree and rewrites the root workspaces list. Every
- * workspace package the runner resolves — directly or transitively — must be in
- * both, or `bun install` fails on "@buildd/<pkg>@workspace:* failed to resolve"
+ * install.sh clones a SPARSE tree under the repo's own root package.json, whose
+ * workspace globs match only what is checked out. Every workspace package the
+ * runner resolves — directly or transitively — must be checked out and matched
+ * by those globs, or `bun install` fails on "@buildd/<pkg>@workspace:* failed to resolve"
  * and `set -e` exits before the launcher is written (every fresh install broke
  * this way when @buildd/core became a runner dependency).
  *
@@ -17,8 +18,7 @@ const installSh = await Bun.file(join(import.meta.dir, '../../install.sh')).text
 const sparseBlock = installSh.match(/write_sparse_checkout\(\) \{\n  cat > \.git\/info\/sparse-checkout << 'SPARSE'\n([\s\S]*?)\nSPARSE/)?.[1] ?? '';
 const sparse = sparseBlock.split('\n').map((l) => l.trim()).filter(Boolean);
 
-const pkgJsonBlock = installSh.match(/cat > "\$INSTALL_DIR\/package.json" << 'PKGJSON'\n([\s\S]*?)\nPKGJSON/)?.[1] ?? '';
-const workspaces: string[] = pkgJsonBlock ? JSON.parse(pkgJsonBlock).workspaces : [];
+const workspaces: string[] = (await Bun.file(join(repoRoot, 'package.json')).json()).workspaces ?? [];
 
 /** name -> dir for every workspace package in the repo. */
 async function workspaceDirs(): Promise<Map<string, string>> {
@@ -64,8 +64,11 @@ describe('install.sh sparse tree', () => {
     }
   });
 
-  test('every workspace package the runner resolves is in the rewritten workspaces list', async () => {
-    expect([...workspaces].sort()).toEqual(await runnerWorkspaceClosure());
+  test('every workspace package the runner resolves is matched by the root workspace globs', async () => {
+    const globs = workspaces.map((w) => new Bun.Glob(w));
+    for (const dir of await runnerWorkspaceClosure()) {
+      expect(globs.some((g) => g.match(dir))).toBe(true);
+    }
   });
 
   test('the server-only preload ships, and the launcher passes it explicitly', () => {
