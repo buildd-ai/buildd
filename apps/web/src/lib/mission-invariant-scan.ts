@@ -426,6 +426,30 @@ export async function loadInvariantSnapshot(
   snapshot.tasks = [...taskById.values()];
   snapshot.workers = [...workerById.values()];
 
+  // ── Person-gated deliveries ───────────────────────────────────────────────
+  // Open PRs whose delivery is ESCALATED: `open_pr_outpaced_by_base` must not
+  // tell its sweep to close one. One bounded read; a failure leaves the map
+  // empty, which only means the default remedy (close_pr still refuses).
+  const openPrKeys = [...new Set(snapshot.workers
+    .filter(w => w.prNumber !== null && !w.mergedAt)
+    .map(w => `${w.workspaceId} ${w.prNumber}`))];
+  if (openPrKeys.length > 0) {
+    try {
+      const res = await db.execute(sql`-- mission-invariants:person_gated_prs
+SELECT d.workspace_id AS "workspaceId", d.pr_number AS "prNumber", d.state AS state
+FROM workflow_deliveries d
+WHERE d.state = 'ESCALATED' AND d.pr_number IS NOT NULL
+  AND (d.workspace_id::text || ' ' || d.pr_number::text) IN (SELECT x FROM jsonb_array_elements_text(${JSON.stringify(openPrKeys)}::jsonb) x)
+LIMIT ${MAX_WORKERS}`) as unknown as { rows?: Array<{ workspaceId: unknown; prNumber: unknown; state: unknown }> };
+      for (const r of res.rows ?? []) {
+        if (r.workspaceId == null || r.prNumber == null || typeof r.state !== 'string') continue;
+        snapshot.personGatedPrs!.set(`${r.workspaceId} ${Number(r.prNumber)}`, r.state);
+      }
+    } catch (err) {
+      console.warn('[mission-invariants] person-gated delivery read failed; outpaced PRs get the default remedy:', err instanceof Error ? err.message : err);
+    }
+  }
+
   // ── Base drift ────────────────────────────────────────────────────────────
   // Merged rows, which every worker read above deliberately excludes. This is
   // the only place the snapshot learns that anything landed, and without it
