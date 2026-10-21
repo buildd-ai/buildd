@@ -10,6 +10,6 @@
       "react/jsx-runtime": ["../../apps/web/node_modules/@types/react/jsx-runtime.d.ts"]
     }
   },
-  "include": ["./*.ts", "./*.tsx"],
+  "include": ["./*.ts", "./*.tsx", "../../apps/web/src/types/next-auth.d.ts"],
   "exclude": []
 }

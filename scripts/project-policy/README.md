@@ -275,3 +275,16 @@ bun scripts/project-policy/run-author-experiment.ts --team=<team-id> --workspace
 This tests offline policy authoring, not per-string prompt generation or automatic
 policy deployment. Original deterministic checks and production settings remain
 unchanged. Prompts and cache entries must be versioned together before any rollout.
+
+`card-composition.test.tsx` captures real closed-PR/review/visual-review components
+with synthetic state in an isolated process. Set `COPY_CARD_REPORT` to a local
+JSON path while running that test to retain ordered text blocks, buttons, native
+disclosure state and server-side HTML. A deliberately stale caller-input probe
+is labeled as such; it is not evidence of a live loader bug. No network requests
+or product settings change. SSR does not establish CSS/runtime visibility or
+pixel layout. Word/button counts are review cues, not defect thresholds.
+
+This is a separate component/state-level coverage probe. Static string totals
+are not counts of cards or page defects. Generated questions, shared `.ts` state
+copy, action groups and stale facts require a composed snapshot and state evidence;
+they must not be inferred from isolated TSX literals or a fixed word limit.
