@@ -1,0 +1,10 @@
+[
+  { "text": "next to start first", "purpose": "section-subtitle", "expected": "redundant" },
+  { "text": "slipping first", "purpose": "section-subtitle", "expected": "redundant" },
+  { "text": "highest priority first", "purpose": "section-subtitle", "expected": "redundant" },
+  { "text": "Starts on January 15", "purpose": "section-subtitle", "expected": "useful" },
+  { "text": "Waiting for security approval", "purpose": "section-subtitle", "expected": "useful" },
+  { "text": "Approve changes", "purpose": "action", "expected": "useful" },
+  { "text": "Read the first chapter", "purpose": "description", "expected": "useful" },
+  { "text": "Your call", "purpose": "action", "expected": "unclear" }
+]
