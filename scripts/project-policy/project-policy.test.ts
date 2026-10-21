@@ -33,6 +33,12 @@ describe('changed TSX subjects', () => {
     expect(s.after).toBeNull();
     expect(s.role).toBe('unknown');
   });
+  it('does not judge standalone fragments of dynamic or inline sentences', () => {
+    const dynamic = extract('<p>Save {name} now.</p>');
+    expect(dynamic.every(subject => subject.role === 'unknown')).toBe(true);
+    const inline = extract('<p>Do <strong>not</strong> delete.</p>');
+    expect(inline.every(subject => subject.role === 'unknown')).toBe(true);
+  });
   it('extracts fragment copy and native input hints but excludes non-rendered HTML attributes', () => {
     expect(extract('<>Your call</>')[0].after).toBe('Your call');
     expect(extract('<input placeholder="Your call" />')[0].role).toBe('description');

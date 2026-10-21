@@ -88,9 +88,11 @@ function subjects(file: string, content: string): ChangedSubject[] {
           : init && ts.isJsxExpression(init) ? literal(init.expression) : null;
         add(attr, text, component, prop, prop === 'buttonLabel' ? 'action' : native && role === 'unknown' ? 'description' : role);
       }
+      const fragmented = ts.isJsxElement(n) && n.children.some(child => ts.isJsxElement(child) || ts.isJsxSelfClosingElement(child) || ts.isJsxFragment(child)
+        || ts.isJsxExpression(child) && child.expression && literal(child.expression) === null);
       if (ts.isJsxElement(n)) for (const child of n.children) {
-        if (ts.isJsxText(child)) add(child, child.text, component, 'children', role);
-        else if (ts.isJsxExpression(child) && child.expression) add(child, literal(child.expression), component, 'children', role);
+        if (ts.isJsxText(child)) add(child, child.text, component, 'children', fragmented ? 'unknown' : role);
+        else if (ts.isJsxExpression(child) && child.expression) add(child, literal(child.expression), component, 'children', fragmented ? 'unknown' : role);
       }
     }
     ts.forEachChild(n, visit);

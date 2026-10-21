@@ -15,8 +15,10 @@ it('inventories the surface, checks deterministic rules first and reports model 
   const report = await scanSurface([
     { path: 'src/Toast.tsx', content: '<section><h2>Deployments</h2><p>Your deployment is ready and you can now visit it.</p><p>Held</p><p>{dynamic}</p></section>' },
     { path: 'src/Toast.test.tsx', content: '<p>Ignore this</p>' },
+    { path: 'apps/web/src/app/dev/toast/page.tsx', content: '<p>Development fixture</p>' },
   ], policyPreset('wwvd').policy, evaluate);
   expect(report.inventory.subjects).toBe(4);
+  expect(report.inventory.excludedDevelopmentFiles).toBe(1);
   expect(report.inventory.unresolved).toBe(1);
   expect(report.coverage.deterministicViolations).toBeGreaterThan(0);
   expect(report.coverage.newDecisions).toBe(calls);

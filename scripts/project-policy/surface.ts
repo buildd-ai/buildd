@@ -21,7 +21,9 @@ export async function scanSurface(sources: { path: string; content: string }[], 
   semantic?: SemanticEvaluator, offset = 0) {
   const errors: { file: string; message: string }[] = [];
   const subjects: ChangedSubject[] = [];
+  const excludedDevelopmentFiles: string[] = [];
   for (const source of sources) {
+    if (/\/app\/dev\//.test(source.path.replace(/\\/g, '/'))) { excludedDevelopmentFiles.push(source.path); continue; }
     try { subjects.push(...extractChangedSubjects({ file: source.path, before: '', after: source.content })); }
     catch { errors.push({ file: source.path, message: 'TSX parse failed; not treated as clean.' }); }
   }
@@ -41,7 +43,7 @@ export async function scanSurface(sources: { path: string; content: string }[], 
   const fresh = decisions.filter(d => d.attempts > 0);
   return {
     policy: `${policy.id}@${policy.version}`, policyAuthority: policy.authority.hash,
-    inventory: { files: sources.length, subjects: subjects.length,
+    inventory: { files: sources.length, excludedDevelopmentFiles: excludedDevelopmentFiles.length, subjects: subjects.length,
       static: subjects.filter(s => s.after !== null).length,
       unresolved: subjects.filter(s => s.after === null || s.role === 'unknown').length,
       withStaticContext: subjects.filter(s => s.staticContext).length },
@@ -54,7 +56,7 @@ export async function scanSurface(sources: { path: string; content: string }[], 
       costUsd: fresh.length ? fresh.every(d => d.costUsd !== null) ? fresh.reduce((sum, d) => sum + d.costUsd!, 0) : null : 0,
       latencyTotalMs: fresh.reduce((sum, d) => sum + d.latencyMs, 0) },
     limits: ['Static TSX only; not a census of runtime copy.', 'Custom components, dynamic strings and .ts catalogs require contracts or rendered context.',
-      'Static neighbors are partial syntax; no runtime state or visibility is inferred.',
+      'Static neighbors are partial syntax; no runtime state or visibility is inferred. Mixed inline/dynamic sentence fragments abstain; app/dev fixtures are excluded.',
       'Deterministic violations skip the model; the 30-word rule still applies.',
       'Default 20 new decisions; --max-new explicitly raises the budget (maximum 5000). Repeat to reuse cache, or use --offset after persistent failures.'],
     errors, rows,
