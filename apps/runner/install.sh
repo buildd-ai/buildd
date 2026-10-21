@@ -142,6 +142,11 @@ BUILDD_REPO="${BUILDD_REPO:-buildd-ai/buildd}"
 # stub `server-only` for the plain Bun runtime. A workspace dep missing here makes
 # `bun install` fail with "@buildd/<pkg>@workspace:* failed to resolve", and
 # `set -e` then exits before the launcher is written.
+# The root package.json and bun.lock are the repo's own, anchored to the root:
+# the install is frozen against that lockfile, so it gets exactly the versions
+# the repo pins (with no lockfile, a frozen install resolves fresh from npm).
+# Unanchored, `package.json` would also check out every other app's manifest
+# and pull their dependencies in. apps/runner/__tests__/unit/install-pinned-deps.test.ts.
 write_sparse_checkout() {
   cat > .git/info/sparse-checkout << 'SPARSE'
 apps/runner/
@@ -152,7 +157,8 @@ packages/dispatch-contract/
 packages/spec-contract/
 scripts/stub-server-only.ts
 bunfig.toml
-package.json
+/package.json
+/bun.lock
 SPARSE
 }
 
@@ -282,24 +288,6 @@ else
   rm -f "$INSTALL_DIR/.client-only"
 fi
 
-# Rewrite root package.json to only reference the sparse-checkout workspaces
-# (the repo's package.json has "apps/*" and "packages/*" which includes workspaces
-# that don't exist in the sparse checkout, causing bun install to hang)
-[ "$CLIENT_MODE" = "1" ] || cat > "$INSTALL_DIR/package.json" << 'PKGJSON'
-{
-  "name": "buildd",
-  "private": true,
-  "workspaces": [
-    "apps/runner",
-    "packages/shared",
-    "packages/core",
-    "packages/ai-kit",
-    "packages/dispatch-contract",
-    "packages/spec-contract"
-  ]
-}
-PKGJSON
-
 # Register runtime-only files in the local git exclude list so they never appear
 # as untracked files in `git status` (and never block the self-update preflight).
 # .git/info/exclude is like .gitignore but per-clone and never tracked — it
@@ -319,9 +307,12 @@ done
 # Client mode stops short of the runner: no dependencies, no Chromium.
 if [ "$CLIENT_MODE" != "1" ]; then
 
-# Install dependencies
+# Install dependencies, exactly as bun.lock pins them. The root package.json
+# stays the repo's own: its "apps/*" and "packages/*" globs match only the
+# checked-out directories, and a rewritten one would drop the repo's
+# "overrides", which makes bun refuse the lockfile as changed.
 cd "$INSTALL_DIR/apps/runner"
-bun install
+bun install --frozen-lockfile
 
 # Bake headless Chromium into the runner at install time.
 # This lets agents do visual self-verification without per-task downloads.
@@ -457,7 +448,7 @@ ensure_packages() {
     ( cd "$HOME/.buildd" && ${limit:+$limit 600} bun install --frozen-lockfile >&2 )
     packages_missing || { rm -f "$marker"; return 0; }
   fi
-  echo "buildd: packages are missing from ~/.buildd. Fix: cd ~/.buildd && bun install" >&2
+  echo "buildd: packages are missing from ~/.buildd. Fix: cd ~/.buildd && bun install --frozen-lockfile" >&2
   exit 78
 }
 

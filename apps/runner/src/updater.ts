@@ -482,6 +482,28 @@ export async function widenSparseCheckout(installDir: string, git: UpdateExecOps
 }
 
 /**
+ * The frozen reinstall pins nothing unless the repo's bun.lock is in the tree:
+ * `bun install --frozen-lockfile` with no lockfile resolves fresh against npm,
+ * so an upstream release that names a version npm does not serve yet fails
+ * every update. Installs made before the sparse list carried `/bun.lock` lack
+ * it; add it (anchored, the root one only). Their old unfrozen install also
+ * left a lockfile of its own there, which `sparse-checkout add` keeps, so the
+ * tracked one is restored over it. Returns whether it was added. A full
+ * checkout (no sparse config) already has it.
+ */
+export async function ensureLockfileCheckedOut(installDir: string, git: UpdateExecOps['git']): Promise<boolean> {
+  let sparse = '';
+  try { sparse = await git(['config', '--get', 'core.sparseCheckout'], installDir, 5000); } catch { return false; }
+  if (sparse.trim() !== 'true') return false;
+  const listed = (await git(['sparse-checkout', 'list'], installDir, 5000)).split('\n').map((l) => l.trim().replace(/^\//, ''));
+  if (listed.includes('bun.lock')) return false;
+  await git(['sparse-checkout', 'add', '/bun.lock'], installDir, 30_000);
+  await git(['checkout', '--', 'bun.lock'], installDir, 10_000);
+  console.log('[updater] sparse checkout now includes bun.lock, so the reinstall is pinned');
+  return true;
+}
+
+/**
  * Applies the update: git fetch + reset --hard origin/$BRANCH, then a clean
  * reinstall (see `cleanReinstall`). Returns a result object; the caller
  * should `process.exit(75)` ONLY on success so the launcher restarts the
@@ -510,6 +532,7 @@ export async function applyUpdate(
     codeMoved = true;
     await execOps.git(['reset', '--hard', `origin/${BRANCH}`], installDir, 10_000);
     await widenSparseCheckout(installDir, execOps.git);
+    await ensureLockfileCheckedOut(installDir, execOps.git);
 
     const reinstall = await cleanReinstall(installDir, fsOps, execOps);
     if (!reinstall.success) {
