@@ -34,6 +34,7 @@ export function DecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone
   const merge = q?.chip === 'MERGE' && q.prNumber != null && !!q.workspaceId;
   const ci = item.label === 'tests failing' && q?.prNumber != null && !!q.workspaceId;
   const access = q?.chip === 'ACCESS' && !!q.accessRequestId;
+  const move = q?.chip === 'SCHEDULE_MOVE' ? q.scheduleMove : undefined;
   const blocked = merge ? q?.missionMergeBlockedReason : item.strand?.blockedReason;
   const recordStrand = (label: string) => {
     if (!item.strand) return;
@@ -84,8 +85,22 @@ export function DecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone
     } catch { setError('Could not reach the server.'); }
     finally { setBusy(false); }
   }
+  // A schedule move is answered in place: Accept moves it from the next run, Keep leaves it where it is,
+  // and Accept + read keeps the old home readable. The server checks the person again.
+  async function decideMove(decision: 'accept' | 'keep', grantOldHome = false) {
+    if (busy || !move) return;
+    setBusy(true); setError(null);
+    try {
+      const res = await fetch(`/api/workspaces/${encodeURIComponent(move.fromWorkspaceId)}/schedules/${encodeURIComponent(move.scheduleId)}/move-proposal/${encodeURIComponent(move.proposalId)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision, grantOldHome }) });
+      const data = await res.json().catch(() => ({})) as { error?: string };
+      if (res.ok) { onDone(item.key, decision === 'accept' ? 'moved' : 'kept'); router.refresh(); }
+      else setError(res.status === 409 ? data.error || 'Someone already answered this.' : data.error || 'Could not save the decision.');
+    } catch { setError('Could not reach the server.'); }
+    finally { setBusy(false); }
+  }
   let actions: ReactNode;
-  if (access) actions = <><button className={primary} disabled={busy} onClick={() => void decideAccess('approve')}>{busy ? 'Saving…' : q!.accessApproveLabel ?? 'Approve'}</button><button className={secondary} disabled={busy} onClick={() => void decideAccess('deny')}>Deny</button><Link className={secondary} href={item.primary?.href ?? item.href}>Details</Link></>;
+  if (move) actions = <><button className={primary} disabled={busy} onClick={() => void decideMove('accept')}>{busy ? 'Saving…' : 'Accept'}</button><button className={secondary} disabled={busy} onClick={() => void decideMove('keep')}>Keep</button><button className={secondary} disabled={busy} onClick={() => void decideMove('accept', true)}>Accept + read {move.fromWorkspaceName}</button><Link className={secondary} href={item.primary?.href ?? item.href}>Schedule</Link></>;
+  else if (access) actions = <><button className={primary} disabled={busy} onClick={() => void decideAccess('approve')}>{busy ? 'Saving…' : q!.accessApproveLabel ?? 'Approve'}</button><button className={secondary} disabled={busy} onClick={() => void decideAccess('deny')}>Deny</button><Link className={secondary} href={item.primary?.href ?? item.href}>Details</Link></>;
   else if (merge) actions = <><button className={primary} disabled={busy || !!blocked || !retrySafe} onClick={() => confirm ? void act(`/api/prs/${q.prNumber}/merge`, { workspaceId: q.workspaceId }, 'merged') : setConfirm(true)}>{busy ? 'Merging…' : confirm ? 'Confirm merge' : 'Merge'}</button>{confirm ? <button className={secondary} onClick={() => setConfirm(false)}>Cancel</button> : <Link href={q.prUrl ?? item.href} className={secondary}>{q.docFixTaskId ? 'Claims' : 'Review PR'}</Link>}</>;
   else if (q?.humanReview && q.prUrl) actions = <><Link className={primary} href={`${q.prUrl}/files`}>{q.humanReview.label}</Link>{item.details && <Link className={secondary} href={item.details.href}>{item.details.label}</Link>}</>;
   else if (ci) actions = <><button className={primary} disabled={busy} onClick={() => void act(`/api/prs/${q!.prNumber}/retry-ci`, { workspaceId: q!.workspaceId }, 'fix started')}>{busy ? 'Starting…' : 'Start fix'}</button><Link className={secondary} href={q?.prUrl ? `${q.prUrl}/checks` : item.href}>Logs</Link></>;

@@ -24,19 +24,10 @@ import { appendFileSync } from 'node:fs';
 import { recordNeonQueries, withLoaderLabel } from '@buildd/core/db';
 import { q } from './harness';
 
-/** Per-page budgets: the spec's table, R-1..R-8 (queries, database data). */
-export const PAGE_BUDGETS = {
-  home: { queries: 15, bytes: 200 * 1024 },
-  missionsList: { queries: 10, bytes: 200 * 1024 },
-  missionPage: { queries: 20, bytes: 300 * 1024 },
-  activity: { queries: 10, bytes: 200 * 1024 },
-  taskPage: { queries: 15, bytes: 150 * 1024 },
-  health: { queries: 15, bytes: 200 * 1024 },
-  specs: { queries: 15, bytes: 200 * 1024 },
-  other: { queries: 25, bytes: 300 * 1024 },
-} as const;
-
-export type Budget = { queries: number; bytes: number };
+// One table, two readers: these tests and the production alert (lib/page-budget-watch.ts).
+import { PAGE_BUDGETS, type Budget } from '../../src/lib/page-budgets';
+export { PAGE_BUDGETS };
+export type { Budget };
 
 export interface SeedScale {
   missions: number;

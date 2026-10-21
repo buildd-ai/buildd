@@ -81,6 +81,11 @@ export function currentLoaderLabel(): string | undefined {
   return scope.getStore()?.label;
 }
 
+/** True inside `recordNeonQueries`: a nested recording would take its queries. */
+export function isRecordingNeonQueries(): boolean {
+  return Boolean(scope.getStore()?.recorder);
+}
+
 /** Run `fn`, recording every Neon round trip it makes. */
 export async function recordNeonQueries<T>(fn: () => Promise<T>): Promise<QueryRecording<T>> {
   const recorder: RecordedQuery[] = [];

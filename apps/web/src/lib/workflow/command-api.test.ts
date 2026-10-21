@@ -624,3 +624,21 @@ it('stores the command answer before starting deferred effects and protects the 
   finish();
   await Promise.all(protectedWork);
 });
+
+it.each(['attempt_ended', 'observe_ci_failure'] as const)('%s answers before its effect drain runs', async (op) => {
+  const { deferEffectDrain } = await import('./effect-drain-context');
+  const order: string[] = [];
+  const protectedWork: Promise<unknown>[] = [];
+  const ledger = memoryLedger();
+  const complete = ledger.complete.bind(ledger);
+  ledger.complete = async p => { order.push('stored'); return complete(p); };
+  const d = server({ ledger, waitUntil: p => { protectedWork.push(p); }, run: async () => {
+    deferEffectDrain(DELIVERY, async () => { order.push('effect'); });
+    return { handled: true } as never;
+  } });
+  const input = op === 'attempt_ended' ? { workspaceId: landInput.workspaceId, task: { workspaceId: landInput.workspaceId } } : landInput;
+  const response = await d.call(await signed(body({ op, input })));
+  expect(response.status).toBe(200);
+  await Promise.all(protectedWork);
+  expect(order).toEqual(['stored', 'effect']);
+});

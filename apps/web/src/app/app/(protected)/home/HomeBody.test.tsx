@@ -42,7 +42,7 @@ describe('Home inbox', () => {
   });
   // The shared mission row (ui/MissionRow), the same one Missions draws:
   // title, the small strip, one state line, Next. No box, no tone edge.
-  it('delivery rows are the shared mission row: title, small strip, one state line, Next', () => {
+  it('delivery rows are the shared mission row: title, small strip, one state line, what happens next', () => {
     const html = render();
     const rows = html.split('data-testid="home-delivery-row"').slice(1).map(r => r.slice(0, r.indexOf('</a>')));
     expect(rows).toHaveLength(3);
@@ -53,7 +53,7 @@ describe('Home inbox', () => {
       // The shared row clamps a long title at three lines, never two.
       expect(r).not.toContain('line-clamp-2');
       expect(r).not.toContain('Stage:');
-      expect(r).toContain('>Next<');
+      expect(r).not.toContain('>Next<');
     }
     // An exception replaces the evidence it would repeat.
     const trunk = rows.find(r => r.includes('First-run checklist'))!;

@@ -9,8 +9,8 @@
  * from the draft the browser holds.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { isAttachmentDraft, type AttachmentData } from '@builddai/ai-kit/chat/contract';
-import { attachmentSizeLabel } from '@builddai/ai-kit/chat/react';
+import { isAttachmentDraft, type AttachmentData } from '@buildd/ai-kit/chat/contract';
+import { attachmentSizeLabel } from '@buildd/ai-kit/chat/react';
 import Sheet from '@/components/ui/Sheet';
 
 export const READER_PAGE_CHARS = 20_000;

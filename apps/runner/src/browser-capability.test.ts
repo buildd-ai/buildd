@@ -31,6 +31,7 @@ import {
   resetBrowserCapabilityCache,
   playwrightDirs,
   setBrowserProbeTimeoutForTests,
+  setBrowserPlatformForTests,
   SYSTEM_PLAYWRIGHT_DIR,
   FAILURE_BACKOFF_MS,
 } from './browser-capability';
@@ -97,6 +98,8 @@ function fakeChild(file: string) {
 
 beforeEach(() => {
   resetBrowserCapabilityCache();
+  // The mocks model POSIX discovery; a Windows host would skip it.
+  setBrowserPlatformForTests('linux');
   // No pin unless a test sets one, so discovery order is the pin-agnostic one.
   setPlaywrightPinForTests(null);
   probes = [];
@@ -135,6 +138,20 @@ afterEach(() => {
 });
 
 describe('detectBrowser', () => {
+  it('on Windows reports no browser without running POSIX discovery through cmd.exe', async () => {
+    install({
+      dirs: [SYSTEM_PLAYWRIGHT_DIR],
+      found: [SHELL],
+      launch: { [SHELL]: () => Buffer.from(HTML) },
+    });
+    setBrowserPlatformForTests('win32');
+
+    expect(detectBrowser().available).toBe(false);
+    expect((await detectBrowserAsync()).available).toBe(false);
+    expect(mockExecSync).not.toHaveBeenCalled();
+    expect(probes).toEqual([]);
+  });
+
   it('finds a Playwright headless shell under /opt/ms-playwright when it is the only browser installed', () => {
     install({
       dirs: [SYSTEM_PLAYWRIGHT_DIR],

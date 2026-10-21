@@ -26,7 +26,7 @@ const { tool } = await import('ai');
 const { MockLanguageModelV4, convertArrayToReadableStream } = await import('ai/test');
 const { z } = await import('zod');
 const kit = await import('./index');
-const server = await import('@builddai/ai-kit/chat/server');
+const server = await import('@buildd/ai-kit/chat/server');
 
 const usage = { inputTokens: { total: 3, noCache: 3, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 2, text: 2, reasoning: 0 } };
 const finish = (unified: string) => ({ type: 'finish', finishReason: { unified, raw: unified }, usage });

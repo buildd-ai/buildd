@@ -18,6 +18,7 @@ import {
   canFinishWithoutAgent,
   formatPreMergeMilestone,
   dedupeImportLines,
+  shellSafeMergirafPath,
   planPreMerge,
 } from '../../src/merge-drivers';
 
@@ -329,6 +330,21 @@ describe('mergeBaseWithDerivedFiles: structural resolutions and slow merges (rea
     // it must never show up as something an agent could commit.
     execFileSync('sleep', ['3']);
     expect(git(dir, 'status', '--porcelain')).toBe('');
+  });
+});
+
+describe('shellSafeMergirafPath', () => {
+  test('POSIX: a plain absolute path only, unchanged', () => {
+    expect(shellSafeMergirafPath('/usr/local/bin/mergiraf', 'linux')).toBe('/usr/local/bin/mergiraf');
+    expect(shellSafeMergirafPath('/opt/my tools/mergiraf', 'linux')).toBeNull();
+    expect(shellSafeMergirafPath('/opt/a\\b/mergiraf', 'linux')).toBeNull();
+    expect(shellSafeMergirafPath('C:/Users/a/mergiraf.exe', 'linux')).toBeNull();
+  });
+
+  test('Windows: a drive path, written with forward slashes that sh does not eat', () => {
+    expect(shellSafeMergirafPath('C:\\Users\\ADMINI~1\\.cargo\\bin\\mergiraf.exe', 'win32')).toBe('C:/Users/ADMINI~1/.cargo/bin/mergiraf.exe');
+    expect(shellSafeMergirafPath('C:\\Program Files\\mergiraf.exe', 'win32')).toBeNull();
+    expect(shellSafeMergirafPath('~/mergiraf', 'win32')).toBeNull();
   });
 });
 

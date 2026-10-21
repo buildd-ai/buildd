@@ -7,7 +7,7 @@
  * (`PermissionPrefs`: the list of group keys the person set to Allow).
  */
 
-import type { GetToolPermissionsResponse, UpdateToolPermissionRequest } from '@builddai/ai-kit/chat/contract';
+import type { GetToolPermissionsResponse, UpdateToolPermissionRequest } from '@buildd/ai-kit/chat/contract';
 import type { ToolGroups } from './permissions';
 
 export interface PermissionPrefs {

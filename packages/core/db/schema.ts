@@ -28,6 +28,7 @@ export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'st
 import { sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation, TaskDelegation } from '../token-delegation';
+import type { TaskRequesterSource } from '../task-requester-source';
 import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, RootCauseClassification, RootCauseCapabilityKind, FailureIncidentRecovery } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
@@ -1606,6 +1607,12 @@ export const tasks = pgTable('tasks', {
   // mission. NULL = no person (pure API-key creation). Personal credentials and
   // personal roles serve only this person's tasks.
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  // How createdByUserId was decided (TaskRequesterSource in core/task-requester-source.ts):
+  // 'explicit' (the writer named the person), 'parent' | 'mission' | 'schedule'
+  // (derived at insert), 'none' (no person: service or API-key work), and the
+  // same with a 'backfill_' prefix for rows filled in after the fact. NULL: not
+  // yet decided — nothing writes this column until the insert trigger lands.
+  requesterSource: text('requester_source').$type<TaskRequesterSource>(),
   creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook' | 'orchestrator' | 'conflict'>(),
   // Direct link to the task_schedule that spawned this task (when creationSource = 'schedule' or 'orchestrator').
   // Enables reverse lookup: given a stray task, find the schedule that created it.
@@ -3760,6 +3767,48 @@ export const taskSchedules = pgTable('task_schedules', {
 }, (t) => ({
   workspaceIdx: index('task_schedules_workspace_idx').on(t.workspaceId),
   enabledNextRunIdx: index('task_schedules_enabled_next_run_idx').on(t.enabled, t.nextRunAt),
+}));
+
+// Where a schedule's home moved, or was proposed to move
+// (docs/specs/workspace-routing-and-reach.md §6). One open proposal per
+// schedule; every accepted move, through a proposal or the schedule PATCH,
+// is one row here, which is the schedule's move history.
+export const scheduleMoves = pgTable('schedule_moves', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  scheduleId: uuid('schedule_id').references(() => taskSchedules.id, { onDelete: 'cascade' }).notNull(),
+  fromWorkspaceId: uuid('from_workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  toWorkspaceId: uuid('to_workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  // task = a run proposed it; auto = repeated refusals proposed it; direct = a person moved it by PATCH.
+  origin: text('origin').notNull().$type<'task' | 'auto' | 'direct'>(),
+  // open (awaiting a person) | accepted (the schedule moved) | kept (declined, stays put) | replaced (a newer proposal took its place).
+  status: text('status').notNull().$type<'open' | 'accepted' | 'kept' | 'replaced'>(),
+  reason: text('reason'),
+  // What the run attached, e.g. the reads that came back FORBIDDEN.
+  evidence: jsonb('evidence').$type<{ note?: string; refusals?: Array<{ taskId: string; capability: string; at: string }> }>(),
+  proposedByTaskId: uuid('proposed_by_task_id'),
+  decidedByUserId: uuid('decided_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  decidedByAccountId: uuid('decided_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  decidedAt: timestamp('decided_at', { withTimezone: true }),
+  // Accept + read grant: the old home stays readable (analytics:read) under the moved schedule.
+  grantedOldHome: boolean('granted_old_home').default(false).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  scheduleIdx: index('schedule_moves_schedule_idx').on(t.scheduleId, t.createdAt),
+  openPerScheduleIdx: uniqueIndex('schedule_moves_open_per_schedule_idx').on(t.scheduleId).where(sql`status = 'open'`),
+}));
+
+// A schedule-spawned task was refused on a workspace of its own team that it
+// has no reach into. Two runs refused on the same workspace propose the move
+// (apps/web/src/lib/schedule-move.ts). One row per (schedule, workspace, task).
+export const scheduleRefusals = pgTable('schedule_refusals', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  scheduleId: uuid('schedule_id').references(() => taskSchedules.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').notNull(),
+  capability: text('capability').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  uniq: uniqueIndex('schedule_refusals_unique_idx').on(t.scheduleId, t.workspaceId, t.taskId),
 }));
 
 // GitHub App Integration

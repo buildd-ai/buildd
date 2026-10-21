@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { DECIDE_ENGINE_VERSION, expectDecisionPinned, JEV_MODEL } from '@builddai/ai-kit/decide';
+import { DECIDE_ENGINE_VERSION, expectDecisionPinned, JEV_MODEL } from '@buildd/ai-kit/decide';
 import { DEFAULT_RANK_LEVELS, defineRankSurface, MIN_GATE_EVAL_ROWS, RANK_SLOT, type SlotGate } from './index';
 
 const catalogue = [

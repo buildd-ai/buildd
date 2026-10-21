@@ -25,6 +25,7 @@ import { dirname, isAbsolute, join } from 'path';
 import { promisify } from 'util';
 import type { NormalizedDerivedFileRule } from '@buildd/shared';
 import { gitArgsAsync, gitRunAsync } from './git-async';
+import { posixShell, windowsExecutablePath } from './posix-shell';
 import { withRepoLock } from './repo-lock';
 
 export { normalizeDerivedFiles, type NormalizedDerivedFileRule } from '@buildd/shared';
@@ -90,6 +91,24 @@ export const MERGIRAF_LEDGER = 'buildd-mergiraf-log';
 
 /** A mergiraf path we can put in a driver command without quoting it. */
 const SHELL_SAFE_PATH = /^\/[A-Za-z0-9._/+-]+$/;
+/**
+ * The same on Windows, where git runs drivers through its own sh: a drive
+ * path, with `~` allowed past the drive for 8.3 short names (`ADMINI~1`);
+ * sh expands a tilde only at the start of a word.
+ */
+const SHELL_SAFE_WINDOWS_PATH = /^[A-Za-z]:\/[A-Za-z0-9._/+~-]+$/;
+
+/**
+ * The mergiraf path as it goes into the driver command, or null when it is
+ * not shell-safe. On Windows the separators become forward slashes first:
+ * sh would eat a backslash path's separators.
+ */
+export function shellSafeMergirafPath(path: string, platform: NodeJS.Platform = process.platform): string | null {
+  if (SHELL_SAFE_PATH.test(path)) return path;
+  if (platform !== 'win32') return null;
+  const slashed = path.replace(/\\/g, '/');
+  return SHELL_SAFE_WINDOWS_PATH.test(slashed) ? slashed : null;
+}
 
 /**
  * The mergiraf driver, wrapped so each file lands in the ledger. `git
@@ -115,7 +134,7 @@ export function planMergeDrivers(rules: NormalizedDerivedFileRule[], opts: Merge
   const config: Array<[string, string]> = [];
   const attributes: string[] = [];
   const candidate = opts.mergiraf && opts.mergirafPath ? opts.mergirafPath : null;
-  const mergiraf = candidate && SHELL_SAFE_PATH.test(candidate) ? candidate : null;
+  const mergiraf = candidate ? shellSafeMergirafPath(candidate) : null;
   if (candidate && !mergiraf) {
     console.log(`[merge-drivers] mergiraf path ${JSON.stringify(candidate)} is not shell-safe — not registering it`);
   }
@@ -170,8 +189,9 @@ async function gitPathAsync(cwd: string, flag: '--git-dir' | '--git-common-dir')
 }
 
 async function findMergiraf(): Promise<string | null> {
+  if (process.platform === 'win32') return windowsExecutablePath('mergiraf');
   try {
-    const { stdout } = await pexec('command -v mergiraf', { encoding: 'utf-8', shell: '/bin/sh', timeout: GIT_TIMEOUT_MS });
+    const { stdout } = await pexec('command -v mergiraf', { encoding: 'utf-8', shell: posixShell(), timeout: GIT_TIMEOUT_MS });
     return String(stdout).trim() || null;
   } catch {
     return null;
@@ -274,7 +294,7 @@ function takePendingCommands(gitDir: string, rules: NormalizedDerivedFileRule[])
 }
 
 async function runRegenerate(worktreePath: string, command: string): Promise<void> {
-  await pexec(command, { cwd: worktreePath, encoding: 'utf-8', timeout: REGENERATE_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, shell: '/bin/sh' });
+  await pexec(command, { cwd: worktreePath, encoding: 'utf-8', timeout: REGENERATE_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, shell: posixShell() });
 }
 
 /** Delete git's merge temp files (`.merge_file_*`) a killed merge left in the tree. */
@@ -498,7 +518,7 @@ export async function finishDerivedMerge(
         timeout: opts.verifyTimeoutMs ?? VERIFY_TIMEOUT_MS,
         encoding: 'utf-8',
         maxBuffer: 16 * 1024 * 1024,
-        shell: '/bin/sh',
+        shell: posixShell(),
       });
     } catch (err) {
       const e = err as { stdout?: string; stderr?: string; message?: string };

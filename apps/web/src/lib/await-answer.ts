@@ -78,8 +78,12 @@ function sessionEnded(worker: AnswerWorkerRow): AnswerReadState {
     state: 'not_waiting',
     reasonCode: 'session_ended',
     message: superseded
-      ? 'The answer went to a follow-up task instead of this session (it had stopped waiting, or never read it). Stop here; the follow-up carries the work.'
+      ? worker.continuationTaskId
+        ? 'The answer went to a follow-up task instead of this session (it had stopped waiting, or never read it). Stop here; the follow-up carries the work.'
+        : 'The answer went to a new attempt of this task instead of this session (it had stopped waiting, or never read it). Stop here; the new attempt carries the work.'
       : `This worker has ended (${worker.status}); there is nothing left to wait for.`,
+    // A legacy record's pointer to its continuation task. A new attempt stays
+    // on this task, so there is nothing to point at.
     ...(superseded ? { continuationTaskId: worker.continuationTaskId ?? null } : {}),
   };
 }
@@ -95,9 +99,9 @@ export function readInteractiveAnswer(input: { worker: AnswerWorkerRow; taskCont
     };
   }
 
-  // Superseded first: the answer went to a follow-up task (the session was
-  // gone when it landed, or never read it), and a session that comes back
-  // must not act on it alongside that task.
+  // Superseded first: the answer went to a new attempt of the task (the
+  // session was gone when it landed, or never read it), and a session that
+  // comes back must not act on it alongside that attempt.
   if (worker.status === 'superseded') return sessionEnded(worker);
 
   const context = (input.taskContext && typeof input.taskContext === 'object' ? input.taskContext : {}) as Record<string, unknown>;

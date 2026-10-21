@@ -50,7 +50,7 @@ export interface ExecAsyncOptions {
   stdio?: unknown;
 }
 /**
- * A git command line through `/bin/sh -c`, like execSync, but awaited: the
+ * A git command line through `sh -c` (posixShell()), like execSync, but awaited: the
  * runner's event loop keeps serving the local socket, the heartbeat and the
  * sync tick while git runs. Resolves stdout; rejects like execSync
  * ("Command failed: <cmd>" then stderr, plus `status` and `stderr`).
@@ -678,6 +678,20 @@ function safeWorktreeDirName(branch: string): string {
   return branch.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
+/**
+ * Paths a setup has claimed but whose worker has not recorded yet (path -> worker
+ * id). setupWorktree adds one while it holds the repo lock and the caller drops
+ * it (`releaseWorktreeReservation`) once `worker.worktreePath` is set, or setup
+ * fails. Until then the workers map cannot show the owner, so the removal
+ * ownership check consults this instead.
+ */
+const reservedWorktreePaths = new Map<string, string>();
+
+/** Drop every path reserved for this worker. Idempotent. */
+export function releaseWorktreeReservation(workerId: string): void {
+  for (const [p, w] of reservedWorktreePaths) if (w === workerId) reservedWorktreePaths.delete(p);
+}
+
 export async function setupWorktree(
   repoPath: string,
   branch: string,
@@ -739,6 +753,14 @@ export async function setupWorktree(
   // below, which is what closes that collision at the source; also reassigned
   // when this path turns out to be occupied.
   let worktreePath = cloud ? repoPath : join(worktreeBase, safeBranch);
+  // Reserve under the lock, before anything can remove or create the path; kept
+  // past the unlock (see reservedWorktreePaths). A moved path drops the old one.
+  const reservePath = () => {
+    if (cloud) return;
+    releaseWorktreeReservation(workerId);
+    reservedWorktreePaths.set(worktreePath, workerId);
+  };
+  reservePath();
 
   try {
     // Ensure worktree base directory exists
@@ -821,7 +843,7 @@ export async function setupWorktree(
       return candidate;
     };
 
-    if (!cloud) worktreePath = await reclaimOrDivert(worktreePath);
+    if (!cloud) { worktreePath = await reclaimOrDivert(worktreePath); reservePath(); }
 
     // Determine if there is a resume candidate from prior attempt context —
     // i.e. a branch to check out and push to DIRECTLY, as opposed to a base to
@@ -1246,6 +1268,7 @@ export async function setupWorktree(
         // Through the same guard as the first reclaim — a recompute must not
         // grow a second, unguarded force-remove.
         worktreePath = await reclaimOrDivert(divertedPath);
+        reservePath();
       }
     }
 
@@ -1432,6 +1455,7 @@ export async function setupWorktree(
     };
   } catch (err) {
     console.error(`[Worker ${workerId}] Failed to set up worktree:`, err instanceof Error ? err.message : err);
+    releaseWorktreeReservation(workerId);
     setupWorktreeErrors.set(workerId, (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').trim().slice(0, 400));
     // Clean up partial worktree (still under the repo lock; retaken when the
     // failure came after it was released, e.g. in the install).
@@ -1552,7 +1576,8 @@ function unpushedRefusal(opts: RemoveWorktreeOptions): WorktreeRemovalOutcome {
 function removalRefusalBeforeGit(opts: RemoveWorktreeOptions): WorktreeRemovalOutcome | null {
   const { repoPath, worktreePath, workerId, workers } = opts;
   if (resolve(repoPath) === resolve(worktreePath)) return { removed: false, reason: 'primary_clone' };
-  if (isWorktreePathOwnedByOtherLiveWorker(workers, worktreePath, workerId)) {
+  const reservedBy = reservedWorktreePaths.get(worktreePath);
+  if (isWorktreePathOwnedByOtherLiveWorker(workers, worktreePath, workerId) || (reservedBy !== undefined && reservedBy !== workerId)) {
     const msg = `Refused to remove worktree ${worktreePath}: owned by another live worker`;
     sessionLog(workerId, 'warn', 'worktree_removal_skipped_owned', msg);
     console.warn(`[Worker ${workerId}] ${msg} (force-remove exits 0 after destroying its work)`);
@@ -1605,7 +1630,9 @@ export async function removeWorktreeIfUnowned(
   }
   // The awaits above (unpushed probe, archive, waiting for the repo lock) gave
   // another worker time to take this path: re-check ownership right before
-  // the removal, under the lock, so nothing can claim it in between.
+  // the removal, under the lock. A path a setup just created is not in the
+  // workers map until its worker records it, so reservedWorktreePaths covers
+  // that gap (setup releases the lock before the install).
   return withRepoLock(opts.repoPath, async () => {
     const late = removalRefusalBeforeGit(opts);
     if (late) return late;

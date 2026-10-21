@@ -1,3 +1,4 @@
+import { createPeriodicSelfHeal } from './self-heal';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import { fetchOpenRouterCatalog } from '@buildd/core/model-catalog';
@@ -41,6 +42,7 @@ import { checkSingleInstance, createSocketWatchdog, decideStart, enqueueEvent, p
 import { openMissionIds, readTaskListWithStages } from './mission-stages';
 import { rateLimitedRetryAfterSec } from './read-backoff';
 import { consumeRestartMarker, shouldAutoOpenBrowser, writeRestartMarker } from './browser-open';
+import { openInBrowser } from './open-url';
 import { claimEntryWords } from './claim-words';
 
 const PORT = parseInt(process.env.PORT || '8766');
@@ -77,7 +79,16 @@ if (CLI.kind === 'unknown') {
 if (CLI.kind === 'top-dev') {
   const { runTopDev, defaultDevDir } = await import('./top-dev');
   // This checkout (the production install) is only read: see top-dev.ts.
-  process.exit(await runTopDev({ prodDir: join(import.meta.dir, '..', '..', '..'), devDir: defaultDevDir(), topArgs: CLI.args }));
+  process.exit(await runTopDev({ prodDir: join(import.meta.dir, '..', '..', '..'), devDir: defaultDevDir(), topArgs: CLI.args, configFile: CONFIG_FILE }));
+}
+// `buildd config set devChannel on|off`: the per-machine opt-in for top --dev (top-dev.ts).
+if (CLI.kind === 'config-dev-channel') {
+  const { setDevChannel, defaultDevDir } = await import('./top-dev');
+  const { terminalConfirm } = await import('./runner-hold');
+  const r = await setDevChannel(CLI.on, { configFile: CONFIG_FILE, prodDir: join(import.meta.dir, '..', '..', '..'), devDir: defaultDevDir(), confirm: terminalConfirm() });
+  if (r.stdout) console.log(r.stdout);
+  if (r.stderr) console.error(r.stderr);
+  process.exit(r.code);
 }
 
 // `buildd name [<name>|--clear]`: read or set the display name, then exit. It
@@ -1140,7 +1151,7 @@ let pendingTreeSyncRestart = false;
  * failure case either: a crashed child is detected by its exit code on the same
  * poll and returns immediately instead of waiting out the deadline.
  */
-const HEALTH_PROBE_TIMEOUT_MS = 30_000;
+const HEALTH_PROBE_TIMEOUT_MS = 60_000;
 
 /**
  * Hard ceiling on the WHOLE probe call, teardown included.
@@ -1476,7 +1487,8 @@ function builddServerOrigin(): string | null {
 /**
  * Who sent a request to the local handler. The TCP server (--debug) knows the
  * peer's address and authorizes it with the local token; the unix socket's
- * peer is always this machine's owner (the socket is 0600), so it skips that.
+ * peer is always this machine's owner (the socket is owner-only: mode 0600, or
+ * an owner-only ACL on Windows), so it skips that.
  */
 interface LocalPeer {
   remoteAddr: string | null;
@@ -2074,7 +2086,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         ]);
         const ws = workspaces.find((w: any) => w.id === (body.workspaceId ?? mission?.workspaceId));
         const cwd = ws ? await resolver.resolveAsync?.({ id: ws.id, name: ws.name, repo: ws.repo, defaultBranch: ws.gitConfig?.defaultBranch ?? null }, null, { maxAgeMs: 60_000 }) ?? null : null;
-        return Response.json({ cwd, server: config.builddServer, apiKey: config.apiKey ?? null, explain, mission }, { headers: corsHeaders });
+        return Response.json({ cwd, workspaceId: ws?.id ?? null, server: config.builddServer, apiKey: config.apiKey ?? null, explain, mission }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ error: err.message || 'Failed to read the context' }, { status: 502, headers: corsHeaders });
       }
@@ -2717,7 +2729,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         }
 
         // Async: a clone takes minutes at worst, and a sync one froze the runner.
-        // Same command line (through /bin/sh) and timeout as the execSync it replaces.
+        // Same command line (through sh, posixShell()) and timeout as the execSync it replaces.
         await gitShellAsync(`git clone ${cloneUrl} "${clonePath}"`, { cwd: process.cwd(), timeoutMs: 120000 });
 
         // Invalidate caches so the new repo is immediately discoverable
@@ -3092,7 +3104,7 @@ const ownRunnerProcessCheck = () => socketHealthCheck(socketWatchdog?.state() ??
 const localUrl = `http://localhost:${PORT}`;
 
 // Repos for the banner count: the disk cache, or an async scan when there is none.
-const repos = await getRepos();
+const repos = process.env.BUILDD_HEALTH_PROBE === '1' ? [] : await getRepos(); // the health probe skips the scan (updater.ts HEALTH_PROBE_ENV)
 
 // ── Startup banner ──────────────────────────────────────────────────────────
 
@@ -3237,13 +3249,13 @@ function markBrowserOpened() {
 
       if (shouldOpen && shouldOpenBrowser()) {
         console.log('Opening browser...');
-        Bun.spawn(['open', localUrl]);
+        void openInBrowser(localUrl);
         markBrowserOpened();
       }
       console.log(`Preference saved. Change anytime in ${CONFIG_FILE}`);
     }
   } else if (savedConfig.openBrowser && shouldOpenBrowser()) {
-    Bun.spawn(['open', localUrl]);
+    void openInBrowser(localUrl);
     markBrowserOpened();
   }
 })();
@@ -3489,27 +3501,9 @@ setInterval(async () => {
 }, 60_000); // Check every 60 seconds
 
 // Periodic self-heal: run doctor checks every 30 minutes and auto-fix silently
-let lastSelfHeal = Date.now();
-setInterval(async () => {
-  if (Date.now() - lastSelfHeal < 30 * 60 * 1000) return;
-  lastSelfHeal = Date.now();
-
-  try {
-    const { runDiagnostics, autoFix } = await import('./doctor');
-    // This process is the runner: its line is whether its socket answers, not a ps match.
-    const report = runDiagnostics({ runnerProcess: ownRunnerProcessCheck() });
-    const fixable = report.checks.filter(c => c.status !== 'ok' && c.fixable);
-    if (fixable.length > 0) {
-      console.log(`[self-heal] ${fixable.length} issue(s) detected: ${fixable.map(c => c.name).join(', ')}`);
-      const fixes = autoFix(report);
-      for (const f of fixes) {
-        console.log(`[self-heal] ${f.success ? '✓' : '✗'} ${f.check}: ${f.message}`);
-      }
-    }
-  } catch (err: any) {
-    console.error('[self-heal] Doctor check failed:', err.message);
-  }
-}, 60_000); // Piggyback on same 60s tick, but only runs every 30 minutes
+// Doctor uses synchronous git and filesystem checks. Run it in a child so
+// the local socket continues serving health and worker requests during repairs.
+setInterval(createPeriodicSelfHeal(), 60_000);
 
 // Liveness heartbeat: a positive log signal so host-level monitors that watch
 // stdout staleness can distinguish "runner idle" from "runner wedged". Worker

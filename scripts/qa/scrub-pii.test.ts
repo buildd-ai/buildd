@@ -186,6 +186,7 @@ const SAFE: Record<string, string[]> = {
     'status', 'required_capabilities', 'heartbeat_tick_anchor', 'ci_retry_head_sha',
     'conflict_retry_head_sha', 'reviewer_retry_head_sha', 'depends_on', 'predicted_model',
     'loop_state', 'subject_head_sha',
+    'requester_source', // TaskRequesterSource: a fixed vocabulary written by a trigger (packages/core/task-requester-source.ts)
     // TaskDelegation (packages/core/token-delegation.ts): workspace ids,
     // fixed-vocabulary capabilities, granting user/account ids, timestamps and
     // capability-grant ids. Same shape as task_schedules.delegation.

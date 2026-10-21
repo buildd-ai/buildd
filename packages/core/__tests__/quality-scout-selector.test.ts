@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import type { DecisionRequest } from '@builddai/ai-kit/decide';
+import type { DecisionRequest } from '@buildd/ai-kit/decide';
 import type { ScoutProbeFeatures } from '../decision-kind-scout-probe-selection';
 import type { ScoutProbeCandidate, ScoutCandidateSet, ScoutProbeFamily, ScoutSeverity, ScoutSignalType } from '../quality-scout/candidates';
 import {

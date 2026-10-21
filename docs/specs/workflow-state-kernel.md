@@ -234,7 +234,7 @@ the platform waits on; every non-terminal state has exactly one.
 | `LANDING` | A merge or branch-refresh attempt for the current head is claimed | landing effect | `LandingRequested` |
 | `ESCALATED` | A person must act; attribute `reason` ∈ `review_escalated`, `review_exhausted`, `review_unavailable` (no valid verdict after the bounded contract retry, or the round's `dispatch_review` went `dead`), `ci_exhausted`, `conflict_exhausted`, `push_undeliverable`, `landing_needs_human`, `effect_dead` (a critical effect went `dead` and no more specific reason fits, §10.3), `policy_human`, `unsafe_to_merge` | human | explicit transitions only |
 | `MERGED` | GitHub confirmed the PR merged (terminal) | none | `PrMerged` |
-| `CLOSED_UNMERGED` | GitHub confirmed the PR closed without merging; attribute `close_cause` (`manual`, `base_deleted`, `superseded_by_policy`, `unknown`) | platform (supersession scan), then human | `PrClosedUnmerged` |
+| `CLOSED_UNMERGED` | GitHub confirmed the PR closed without merging; attribute `close_cause` (`manual`: a person on GitHub; `buildd_close`: a buildd door, from its `pr.close` capability decision; `base_deleted`, `superseded_by_policy`, `unknown`), with the closer (webhook sender, the door's worker/task and reason) on the transition | platform (supersession scan), then human | `PrClosedUnmerged` |
 | `SUPERSEDED` | Closed unmerged, and a verified merged PR carries the work (terminal) | none | `SupersessionRecorded` |
 | `ABANDONED` | Closed unmerged and a human declared the work dropped (terminal) | none | `Abandon` |
 | `FAILED` | The owner task ended terminally failed or cancelled with no PR to carry (terminal for the delivery; a new owner task opens a new delivery or reopens by `DeliveryOpened`); attribute `reason` | none | `AttemptEnded` with no retries left |
@@ -835,7 +835,11 @@ end. The activity comment's round rows and `explain` name the trigger, and
 ### 8.4 GitHub reviews
 
 `post_review` is an effect that sets `commit_id` to `round.head_sha` and keeps today's
-dedupe on `(commit_id, state)`. A human GitHub approval is a fact (`HumanApproved`)
+dedupe on `(commit_id, state)`. An approval posts **no** review or comment: the
+`Buildd / Review approval` commit status is its only GitHub surface. A request for changes
+posts only the reviewer's actionable findings, with no verdict line, confidence, head, round,
+scope or provenance and no note about GitHub's limits; those stay in buildd. An escalation
+posts nothing to the PR (a person is told through buildd). A human GitHub approval is a fact (`HumanApproved`)
 valid for its `commit_id` only. Internal approval never claims to satisfy GitHub branch
 protection; `ESCALATED(policy_human)` / "Approve on GitHub" stays an explicit state.
 
@@ -918,7 +922,7 @@ between "merge accepted" and "`task.pr_merged` emitted" loses the effect.
 |---|---|---|
 | `dispatch_review` | create the reviewer task for a round, announce, wake | one task per `(delivery, round)`; `createReviewerTask` dedupe by `(PR, head)` remains as backstop |
 | `dispatch_fix` / `dispatch_ci_fix` / `dispatch_conflict_fix` | create the attempt task | unique `dedupe_key`; existing `*_retry_event_unique` indexes until Slice C |
-| `post_review` | submit GitHub review at `commit_id` | GitHub dedupe on `(commit_id, state)`; the effect checks the posted result and fails on `posted:false` unless the dedupe reason matched (`postPrReview` never throws). GitHub refuses an approve or request-changes from the PR's own author with a 422, and buildd's App opens the PRs it reviews: `postPrReview` then posts the same body as a `COMMENT` review at the same commit (`isOwnPrReviewRefusal`), deduped on `(commit_id, COMMENTED, body)`, and the effect records `ok:commented_own_pr` with no mission warning. The verdict is the kernel's own record, never this review |
+| `post_review` | submit GitHub review at `commit_id` | GitHub dedupe on `(commit_id, state)`; the effect checks the posted result and fails on `posted:false` unless the dedupe reason matched (`postPrReview` never throws). GitHub refuses an approve or request-changes from the PR's own author with a 422, and buildd's App opens the PRs it reviews: `postPrReview` then posts the same findings as a `COMMENT` review at the same commit (`isOwnPrReviewRefusal`), unglossed and deduped on `(commit_id, COMMENTED, body)`, and the effect records `ok:commented_own_pr` with no mission warning. An approval's effect records `skipped:approval_is_status` and posts nothing. The verdict is the kernel's own record, never this review |
 | `merge_call` | `PUT /pulls/{n}/merge` with `sha` pinned (`pr-landing-effects.ts`) | the pin makes a replay at the same head a no-op or a clean refusal; `indeterminate` triggers `verify_merge`; one per landing request (`merge_call:{delivery}:{head}:v{n}`) |
 | `verify_merge` | read PR; `PrMerged` (T17) if merged, `MergeCallResult(not_merged)` if still open at the head | read-only |
 | `refresh_branch` | update-branch, records `expected_head` | one in flight per head (existing 60s lease) |

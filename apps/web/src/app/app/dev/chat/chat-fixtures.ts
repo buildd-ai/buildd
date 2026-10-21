@@ -12,7 +12,7 @@ import { encodeApprovalPreview, type ChatApprovalPreview, type ChatDraftAttachme
 import { buildVisualReviewFixtureModel } from '@/lib/visual-review-model.fixtures';
 import { visualReviewEventData, visualReviewEventText, type VisualReviewMoment } from '@/lib/chat/visual-review-text';
 import { backfillSteps, mergeStepParts } from '@/lib/chat/thinking-steps';
-import { APPROVAL_ROW_CAP, ONE_CARD_PER_TURN_REASON, ROW_CAP_REASON } from '@builddai/ai-kit/chat/contract';
+import { APPROVAL_ROW_CAP, ONE_CARD_PER_TURN_REASON, ROW_CAP_REASON } from '@buildd/ai-kit/chat/contract';
 
 /** The card `watch` gets without an allow (lib/chat/previews.ts builds the real one). */
 const WATCH_PREVIEW: ChatApprovalPreview = {

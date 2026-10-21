@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { choice } from '@builddai/ai-kit/decide';
+import { choice } from '@buildd/ai-kit/decide';
 import { defineBuilddDecisionKind, listBuilddDecisionKinds, isMeasuredForKind } from '../decision-kinds';
 import { replayOf, resolveBuilddDecisionRuntime, runBuilddDecision, toDecisionLedgerInput, type BuilddDecisionDeps } from '../decision-policy';
 import type { DecisionLedgerInput } from '../decision-ledger';

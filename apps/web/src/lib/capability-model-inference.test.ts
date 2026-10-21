@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
-import type { DecideParams, DecideResult, DecisionQuestions } from '@builddai/ai-kit/decide';
+import type { DecideParams, DecideResult, DecisionQuestions } from '@buildd/ai-kit/decide';
 import type { AgentPrincipal } from '@/lib/agent-capabilities/principal';
 import {
   checkGrant,

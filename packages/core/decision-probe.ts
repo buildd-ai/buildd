@@ -14,7 +14,7 @@
  * DB-free apart from the default route lookup, which is imported lazily, so
  * the test injects both halves.
  */
-import { choice, describeDecideError, providerErrorExcerpt, redactSecrets, type DecideError, type DecisionEndpoint } from '@builddai/ai-kit/decide';
+import { choice, describeDecideError, providerErrorExcerpt, redactSecrets, type DecideError, type DecisionEndpoint } from '@buildd/ai-kit/decide';
 import { isClefModel, type DecisionModelConfig } from './decision-model';
 import type { DecisionKeyScope, DecisionCallParams, DecisionResult } from './decision-client';
 

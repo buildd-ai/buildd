@@ -9,7 +9,7 @@
  * Desktop: "Open beside" docks the full object in the pane. Phone: the whole
  * strip opens the object as a sheet. The mechanism is the kit's PinnedObject.
  */
-import { PinnedObject as KitPinnedObject } from '@builddai/ai-kit/chat/react';
+import { PinnedObject as KitPinnedObject } from '@buildd/ai-kit/chat/react';
 import type { VisualReviewModel } from '@buildd/shared';
 import { taskDisplayLabel } from '@buildd/core/task-label';
 import VisualReviewLine from '@/components/visual-review/VisualReviewLine';

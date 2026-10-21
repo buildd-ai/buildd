@@ -2,13 +2,13 @@
 title: Answered-Question Resume
 status: active
 owner: max
-last_verified: 2026-10-15
-summary: Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
+last_verified: 2026-10-20
+summary: Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST otherwise start a new attempt of the same task (never a new task) for a recorded, owner-visible reason.
 domain: runners
-surfaces: [apps/web/src/lib/answer-resume.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/lib/await-answer.ts, apps/web/src/app/api/workers/[id]/answer/route.ts, apps/web/src/lib/answer-wait-capability.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.ts, apps/runner/src/recovery.ts, apps/web/src/lib/answer-credential-preflight.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.ts]
+surfaces: [apps/web/src/lib/answer-resume.ts, apps/web/src/lib/answer-attempt.ts, apps/web/src/lib/stale-workers.ts, apps/runner/src/prompt-builder.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/lib/await-answer.ts, apps/web/src/app/api/workers/[id]/answer/route.ts, apps/web/src/lib/answer-wait-capability.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.ts, apps/runner/src/recovery.ts, apps/web/src/lib/answer-credential-preflight.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.ts]
 related: [human-in-the-loop-protocol, runner-liveness, codex-backend-spec, credential-refresh-lifecycle]
-keywords: [await_answer, ask_human, waitCommand, wait capability, run_in_background, sessionSeenAt, resume, sessionId, codexThreadId, waiting_input, Continue task, superseded, pendingInstructions, answerDelivery, cold continuation, AskUserQuestion, transcript]
-verified_by: [apps/web/src/lib/answer-resume.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, apps/web/src/lib/await-answer.test.ts, apps/web/src/app/api/workers/[id]/answer/route.test.ts, apps/web/src/lib/answer-wait-capability.test.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.test.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.test.ts, packages/core/__tests__/mcp-tools-ask-human.test.ts, packages/core/__tests__/mcp-tools-await-answer.test.ts, apps/web/src/lib/answer-credential-preflight.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.test.ts, apps/web/src/lib/local-session.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/runner/__tests__/unit/backends/claude-backend.test.ts, apps/runner/__tests__/unit/backends/codex-resume.test.ts, apps/runner/__tests__/unit/resume-credential-preflight.test.ts]
+keywords: [await_answer, ask_human, waitCommand, wait capability, run_in_background, sessionSeenAt, resume, sessionId, codexThreadId, waiting_input, Continue task, superseded, pendingInstructions, answerDelivery, cold continuation, AskUserQuestion, transcript, new attempt, answeredQuestions, same task, attempt history]
+verified_by: [apps/web/src/lib/answer-resume.test.ts, apps/web/src/lib/answer-attempt.test.ts, apps/web/tests/db/answered-attempt-mission.test.ts, apps/runner/src/prompt-builder.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, apps/web/src/lib/await-answer.test.ts, apps/web/src/app/api/workers/[id]/answer/route.test.ts, apps/web/src/lib/answer-wait-capability.test.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.test.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.test.ts, packages/core/__tests__/mcp-tools-ask-human.test.ts, packages/core/__tests__/mcp-tools-await-answer.test.ts, apps/web/src/lib/answer-credential-preflight.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/runner/__tests__/unit/unanswered-question-prompt.test.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.test.ts, apps/web/src/lib/local-session.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/runner/__tests__/unit/backends/claude-backend.test.ts, apps/runner/__tests__/unit/backends/codex-resume.test.ts, apps/runner/__tests__/unit/resume-credential-preflight.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -46,6 +46,12 @@ to a cold continuation ONLY for a reason it records and shows the owner; and
 MUST refuse to resume into a context ceiling or an unhealthy backend credential
 rather than discovering either as a death.
 
+**Whatever path runs, the task is the same task.** A cold continuation is a new
+**execution attempt** (a new worker row) of the answered task, never a new
+task: one task id, one mission slot, one dependency node, through an answer, a
+cold restart, a lost runner and every retry after them. See "One task, many
+attempts".
+
 `docs/specs/human-in-the-loop-protocol.md` defines who may answer and what an
 answer is. This spec defines **what happens to the session afterwards**.
 
@@ -69,12 +75,12 @@ A parked question is a different class on every axis that decided them:
 | Does the worktree survive | no; the runner cleans it on a failed exit | **yes** — the runner keeps the worktree of a `waiting` worker alive on purpose |
 | Is there a cheaper substitute | yes (branch + failure excerpt + a reasoning digest) | no; the answer is a reply to a conversation |
 
-The cold path's own inheritance is a description built from the original task,
-the milestone labels, the question and the answer, plus `context.baseBranch`.
+The cold path's own inheritance is the task itself (it is the same row), the
+question and answer in `context.answeredQuestions`, and `context.resumeBranch`.
 That branch only resolves if the parked worker had already **pushed** — a
 question asked before the first `create_pr` leaves no remote branch, and the
-runner silently cuts a fresh worktree from the default branch instead. So on
-the common case the cold path inherits neither the reasoning nor the work.
+runner cuts a fresh worktree from the base instead. So on the common case the
+cold path inherits neither the reasoning nor the unpushed work.
 
 ---
 
@@ -198,7 +204,7 @@ could not be refreshed. A revoked credential never reaches the gates.
 **Code surface**:
 - `apps/web/src/lib/answer-resume.ts` — `evaluateAnswerPath`,
   `RESUME_RUNNER_FRESH_MS`, `RESUME_MAX_TURNS`, `RESUME_ACK_DEADLINE_MS`,
-  `ANSWER_PATH_REASONS`, `buildContinuationTaskValues`
+  `ANSWER_PATH_REASONS`, `buildAnsweredAttemptContextPatch`
 - `apps/web/src/app/api/workers/[id]/respond/route.ts` — the call site
 - `apps/runner/src/workers.ts` — the `finally` block that preserves a `waiting`
   worker's worktree, and the 10s sync that keeps `updatedAt` fresh
@@ -238,6 +244,13 @@ on the worker and task channels. That is the status change open views refresh on
 immediately. Before this, a second device kept showing a question that had
 already been answered.
 
+**A stale tap after a new attempt stays on the task.** A `superseded` worker with
+no `continuationTaskId` was answered onto a new attempt of its own task, so
+`explainNotWaiting` says so and returns `nextAction: { kind: 'refresh' }`, and
+the recorded answer is read from the task's own `context.answeredQuestions`. A
+`superseded` worker WITH a `continuationTaskId` is a legacy record (below) and
+keeps its `open_task` link.
+
 **Acceptance criteria**:
 - AC-28: GIVEN a `waiting_input` worker with a `permission` prompt, a fresh
   sync, ack support and `turns` far above `RESUME_MAX_TURNS` WHEN answered THEN
@@ -245,9 +258,13 @@ already been answered.
 - AC-29: GIVEN a `failed`/`error`/`completed` worker still carrying a
   `permission` prompt WHEN answered THEN `/respond` returns `400`,
   `reasonCode: 'worker_ended'`, and writes nothing.
-- AC-30: GIVEN a `superseded` worker with a `continuationTaskId` WHEN
-  answered THEN the reply carries `reasonCode: 'already_answered'` and
-  `nextAction: { kind: 'open_task', taskId }`.
+- AC-30: GIVEN a `superseded` worker with a `continuationTaskId` (a legacy
+  record) WHEN answered THEN the reply carries `reasonCode: 'already_answered'`
+  and `nextAction: { kind: 'open_task', taskId }`.
+- AC-56: GIVEN a `superseded` worker with no `continuationTaskId`, whose task's
+  `context.answeredQuestions` holds its answer WHEN answered again THEN the
+  reply carries `reasonCode: 'already_answered'`, `nextAction: { kind:
+  'refresh' }`, the task's own id, and `recordedAnswer` equal to that answer.
 - AC-31: GIVEN a terminal status PATCH for a worker carrying a `permission`
   prompt THEN `waitingFor` is cleared. A `question` prompt is kept.
 
@@ -266,7 +283,8 @@ already been answered.
   `get_failure_analytics` and success-rate-by-role. The `superseded` status and
   its analytics exclusion (`IN_FLIGHT_WORKER_STATUSES` in
   `apps/web/src/lib/failure-analytics.ts`) remain correct and remain in use —
-  on the cold path only, where they describe what actually happened.
+  on the cold path only, where they describe what actually happened: that
+  attempt was replaced by a new attempt of the same task.
 - The answer MUST be delivered through the existing acknowledged instruction
   queue, not a new invocation: `enqueuePendingInstruction` +
   `appendInstructionHistory` with `deliveryState: 'pending'`
@@ -496,8 +514,21 @@ a shell command that does the waiting instead.
 **Invariants**:
 - The waiting_input sweep (`cleanupStuckWaitingInput`) still owns expiry
   (24 h, 4 h in a mission) and still fails the worker (`exitCause:
-  'needs_input'`) and the task.
-- For an interactive worker it files NO retry task, unless the task's mission
+  'needs_input'`).
+- Where the task may be retried, the sweep requeues the SAME task for a new
+  attempt (the shape of `reopenTaskForAnsweredAttempt`: `pending`, unclaimed,
+  woken as `task.requeued`) and never inserts a clone: the mission grows no
+  task, the original is not left `failed`, `resolveCompletedTask` is not run on
+  it, and the description is not rewritten. The "do not ask again" guidance
+  travels as `context.unansweredQuestion` (`{ workerId, prompt, options,
+  expiredAt }`), which the runner's prompt builder renders as an
+  `unanswered-question` section; `iteration` and the branch context are bumped
+  as on every requeue. The write is merged into the live context in SQL and
+  guarded to a task still open and not kernel-merged: a task cancelled or
+  merged in the window stays as it is and nothing is woken.
+- A delivery-owner task is ended through the kernel (`AttemptEnded(lost)`) as
+  before; a kernel-linked non-owner task is failed, with no clone.
+- For an interactive worker the task is NOT requeued, and stays failed, unless the task's mission
   is `executor = 'local'`. A person chose to run that work in their own
   session; a retry on a runner mission is claimable by a background runner,
   which would rebuild the work behind them. A local mission's retry is only
@@ -518,8 +549,18 @@ a shell command that does the waiting instead.
 - AC-40: GIVEN a parked interactive worker WHEN `receive_messages` THEN
   `waitingFor.sessionSeenAt` is stamped and `updated_at` is unchanged.
 - AC-41: GIVEN an interactive worker's question past the sweep's
-  threshold THEN the worker and task fail and no retry task is inserted;
-  on an `executor = 'local'` mission the retry is inserted.
+  threshold THEN the worker and task fail and the task is not requeued;
+  on an `executor = 'local'` mission the same task is requeued (AC-58).
+- AC-58: GIVEN a question nobody answered past the sweep's threshold on a plain
+  task WHEN the sweep runs THEN no task row is inserted, the same task is
+  `pending` and unclaimed with `task.requeued` woken, its title, description,
+  role, dependencies and parent are untouched, and `context.unansweredQuestion`
+  carries the question and options.
+- AC-59: GIVEN that requeue WHEN the task was closed or merged in the window
+  THEN the guarded write moves nothing, nothing is woken and it is not counted.
+- AC-60: GIVEN a task with `context.unansweredQuestion` WHEN the runner builds
+  its prompt THEN an `unanswered-question` section names the question and
+  tells the attempt not to ask for input.
 
 ### An answer the session never reads
 
@@ -540,11 +581,13 @@ sweep looks at.
   session that is busy and checking in is never overtaken. The claiming write
   re-checks `status = 'running'` and the quiet `updatedAt`; a session that
   reads the answer or checks in first wins.
-- The worker is superseded and the answer leaves the old task's message queue.
-  A session that comes back gets `session_ended` (with the continuation id)
-  from `await_answer`, a 401 from the wait route and an abort from every
-  worker PATCH, so it cannot act on the answer alongside the continuation.
-- If the continuation insert fails, the worker goes back to `running` with the
+- The worker is superseded, the answer leaves the task's message queue, and the
+  same task is reopened for a new attempt carrying the answer (see "One task,
+  many attempts"). A session that comes back gets `session_ended` from
+  `await_answer` (no `continuationTaskId`: the work stays on this task), a 401
+  from the wait route and an abort from every worker PATCH, so it cannot act on
+  the answer alongside the new attempt.
+- If reopening the task fails, the worker goes back to `running` with the
   answer still readable; a later pass retries.
 - The plugin's turn-boundary nudge covers a queued answer (`hasUnreadAnswerFor`
   in `lib/local-session.ts`), not only `pendingInstructions`: a live session
@@ -556,14 +599,15 @@ sweep looks at.
 
 **Acceptance criteria**:
 - AC-45: GIVEN an interactive answer unread and the worker quiet for over
-  15 min WHEN the sweep runs THEN a `Continue:` task carries the answer with
-  `reasonCode: 'interactive_answer_not_read'`, the worker is superseded and
-  points at it, and the message leaves the old task's queue.
+  15 min WHEN the sweep runs THEN no task is inserted, the worker's own task is
+  reopened `pending` with the answer in `context.answeredQuestions` and
+  `reasonCode: 'interactive_answer_not_read'`, the worker is superseded with no
+  `continuationTaskId`, and the message leaves the task's queue.
 - AC-46: GIVEN the same answer with the worker active within 15 min, or
   the entry `acknowledged` THEN the sweep leaves it alone.
 - AC-47: GIVEN a superseded worker whose answer is still unread WHEN
-  `await_answer` THEN `session_ended` with the continuation id, never the
-  answer.
+  `await_answer` THEN `session_ended`, never the answer (with the continuation
+  id only for a legacy record that has one).
 - AC-48: GIVEN an answer queued for a bound worker WHEN a presence touch
   THEN the response flags `pendingInstructions: true`.
 
@@ -585,85 +629,235 @@ sweep looks at.
 
 ---
 
-## The cold fallback, and why it is loud
+## The cold fallback: a new attempt of the same task, and why it is loud
+
+**Decision: a cold continuation is a new execution attempt of the answered
+task, not a new task.** It used to insert a `Continue: <title>` task. That gave
+one piece of work two identities: a mission grew a task card the owner never
+planned, its progress counters grew by one, the dependency graph pointed at a
+task that would never finish (the parent stayed open forever, so its dependents
+waited on a node nobody was working), and the attempt history split across two
+task pages. A runner losing a session is an attempt ending, exactly as a crash
+retry is, and the platform already had one shape for that: the task goes back to
+`pending` and the next claim mints a new worker row under the same task id. The
+cold path now uses that shape.
 
 **Invariants**:
-- The cold path is exactly the behaviour that shipped before this spec: one new
-  `pending` task titled `Continue: <original title>`, the parked worker marked
-  `superseded`, `context.baseBranch` / `resumeBranch` / `userInput` /
-  `previousAttempt` / `iteration + 1` carried across, and the inherited-field
-  rules of `docs/specs/human-in-the-loop-protocol.md` unchanged. Falling back
-  loses context; it MUST NOT also lose the answer.
-- A fallback MUST NOT be silent. Every cold continuation writes
-  `context.answerDelivery` on both the parked task and the new task, carrying
-  `path`, `reasonCode` and a human-readable `reason`, AND posts one note to the
-  task feed naming which path ran and why. "The owner can see which path ran
-  and why" is a requirement of this spec, not a nicety: silent degradation
-  across runners is the specific failure the retry-resume audits warned about.
-- `reasonCode` MUST come from the closed set `ANSWER_PATH_REASONS`. A free-text
-  reason is not queryable, and an unqueryable degradation is the same as an
-  invisible one.
-- A resume that is queued but never acknowledged MUST degrade to a cold
-  continuation rather than waiting forever. `cleanupUnresumedAnswers`
+- The cold path MUST NOT insert a row into `tasks`. It supersedes the answered
+  worker and reopens that worker's own task for a new attempt through
+  `reopenTaskForAnsweredAttempt` (`apps/web/src/lib/answer-attempt.ts`), the
+  single writer `/respond` and both answer sweeps share.
+- The answered worker is marked `superseded` (not `completed`, not `failed`)
+  with `waitingFor = null`. It ended an attempt; it did not finish or fail the
+  task, so it stays out of both buckets of `get_failure_analytics` and
+  success-rate-by-role (`IN_FLIGHT_WORKER_STATUSES`). The new attempt is a new
+  worker row that reaches its own real terminal state and is counted honestly.
+  `continuationTaskId` is NOT written: there is no other task to point at.
+- Reopening sets `status: 'pending'`, clears `claimedBy` / `claimedAt` /
+  `expiresAt` and strips a stale force-claim, exactly as an auto-retry requeue
+  does, so the claim route schedules it like any queued task: role routing,
+  runner preference, held and local-executor missions, credentials and
+  capability checks all apply to the new attempt unchanged. A delivery owner
+  task (`deliveryRole = 'owner'`) is not moved by this statement: its status is
+  the workflow kernel's, so the reopen writes only its context and then asks the
+  kernel to move it — `requeueOwner` (AttemptRequeued) for an open task,
+  `reopenOwner` (AttemptReopened, naming the superseded attempt and its end) for
+  a failed one.
+- Reopening is gated in SQL. It moves the task only when it is not `completed`
+  or `cancelled`, was not merged by the kernel, and has no other live worker
+  (another attempt already running means this answer is not the one carrying the
+  work). An answer that cannot reopen its task is refused, not dropped: see
+  "Compensation" below.
+- Everything the work is, it keeps, because it is the same row: workspace,
+  mission, `roleSlug`, `dependsOn`, `pathManifest`, `delegation`,
+  `outputRequirement`, `outputSchema`, `backend`, `runnerPreference`, priority,
+  and the branch name, which the claim route derives from the task id. Nothing
+  is copied, so nothing can be dropped in the copy — the class of bug the old
+  continuation's field-by-field inheritance list existed to fight.
+- What the attempt adds is merged into the live `tasks.context` in SQL (never a
+  spread of a stale read):
+  - `answeredQuestions`: appended `{ id, workerId, question, answer,
+    milestones, branch, reasonCode, reason, answeredAt }`, the newest
+    `ANSWERED_QUESTIONS_KEEP` kept. The answer is durable here; nothing the
+    person typed lives only on a worker row that has ended.
+  - `resumeBranch` (and `baseBranch` where `requeueBranchContext` sets it) =
+    the superseded worker's branch, and `lastCommitSha` when known: the same
+    branch continuity every retry requeue writes.
+  - `iteration + 1`, and `answerDelivery` with `continuation: 'same_task'`.
+- The new attempt is told. The runner's prompt carries an `answered-question`
+  section built from `context.answeredQuestions`: each question, the person's
+  answer verbatim, and the instruction to act on it rather than ask again.
+- Mission bookkeeping cannot move. No task is inserted, so a mission's task
+  count, its progress fraction and its topological order are what they were;
+  the reopened task is not `completed`, so no dependent is unblocked until the
+  new attempt actually completes it.
+- Path claims held under the task are released (`releaseAndNotify(taskId,
+  'abandoned')`) as on every requeue; the new attempt re-declares its own.
+- A fallback MUST NOT be silent. Every cold fallback writes
+  `context.answerDelivery` carrying `path`, `reasonCode` and a human-readable
+  `reason`, AND posts one note to the task feed naming which path ran and why.
+  `reasonCode` MUST come from the closed set `ANSWER_PATH_REASONS`.
+- The stored path value stays `cold_continuation`. It is a queryable value
+  already written on existing rows; renaming it would split one decision across
+  two codes. `answerDelivery.continuation: 'same_task'` tells a new-attempt
+  record from a legacy one, which carries no such key.
+- A resume that is queued but never acknowledged MUST degrade to the same new
+  attempt rather than waiting forever. `cleanupUnresumedAnswers`
   (`apps/web/src/lib/stale-workers.ts`) converts any worker still parked with
   its answer still queued past `RESUME_ACK_DEADLINE_MS` into the cold path with
   `reasonCode: 'resume_not_acknowledged'`, reusing the queued text as the
-  answer so nothing is lost. It is reached by `POST /api/tasks/cleanup`, so the
-  worst-case latency of that degradation is that route's cadence — each
-  runner's 30-minute cleanup timer — not an instant. This is a stated cost, not
-  an oversight: the gates make non-delivery rare, and a slow correct fallback
-  beats a fast wrong one.
+  answer. It is reached by `POST /api/tasks/cleanup` and the
+  `waiting-input-sweep` cron, so the worst-case latency of that degradation is
+  their cadence, not an instant. A slow correct fallback beats a fast wrong one.
 - The sweep MUST be idempotent: once it has written `answerDelivery.path:
-  'cold_continuation'` and superseded the worker, a second pass creates no
-  second continuation.
-- `cleanupUnresumedAnswers` supersedes the worker and inserts the
-  `Continue:` task in two separate statements — neon-http has no
-  transactions. If the insert throws, the worker MUST be rolled back to
-  `waiting_input` with the answer restored on `pendingInstructions`, not left
-  `superseded` with the answer gone and no continuation to pick it up (the
-  candidate query only looks at `waiting_input`, so a worker stuck
-  `superseded` here is never revisited). This mirrors the same compensation
-  `respondByContinuation` (`apps/web/src/app/api/workers/[id]/respond/route.ts`)
-  already does for the equivalent hazard on the primary answer path.
-- Once that `Continue:` task exists, the two remaining writes (stamping
-  `answerDelivery` on the parent task's `context`, posting the feed note) are
-  best-effort: the answer is already durably recoverable, so a failure there
-  MUST NOT propagate out of `cleanupUnresumedAnswers` and abort the sweep for
-  the rest of that account's candidates. The worker stays `superseded` and
-  counts toward `degraded`; the failure is logged, not raised.
+  'cold_continuation'` and superseded the worker, a second pass reopens
+  nothing.
+- **Credential unavailable is not progress.** An `unhealthy` (expired and
+  unrefreshable) credential still reopens the task, so the answer is durable,
+  but the reply carries `blockedOn: 'credential'` and the feed note is a
+  `warning` that says the new attempt cannot start until the credential is
+  reconnected. Nothing reports the work as resumed. A revoked credential is
+  refused before any of this (`409`, nothing written).
+
+### Compensation
+
+neon-http has no transactions, so the worker write and the task write are two
+statements, compensated by hand:
+
+- `/respond` reads the task first and refuses a `completed` or `cancelled` task
+  with `409 reasonCode: 'task_closed'` before writing anything, so the question
+  stays parked and nothing is half-done.
+- The worker CAS on `waitingFor` comes first and decides the race between two
+  answers: the loser gets `409 already_answered` and writes nothing.
+- If the reopen then throws, the worker is restored to its pre-answer
+  `status`, `waitingFor` and `completedAt` and `/respond` answers `500`, so the
+  answer can simply be given again. If the reopen moves no row (the task closed,
+  or another attempt went live, in the window), the worker is restored the same
+  way and `/respond` answers `409` with the reason. For a delivery owner whose
+  kernel move was refused, the `answeredQuestions` entry it already wrote is
+  removed by id.
+- The unacknowledged-resume sweep restores the worker to `waiting_input` with
+  the answer back on `pendingInstructions`; the interactive sweep restores
+  `running` with the answer still readable. Either is revisited on a later
+  pass.
+- Once the task is reopened the answer is durable; the feed note and the
+  dashboard pushes after it are best-effort and MUST NOT abort a sweep for the
+  rest of that account's candidates.
+
+### Legacy `Continue:` records
+
+Rows written before this change keep what they recorded, and nothing rewrites
+them:
+
+- A worker with `continuationTaskId` keeps its link: the stale-card reply, the
+  task page and `await_answer` still point at the continuation task.
+- A legacy `Continue:` task is an ordinary task with `parentTaskId` set and
+  `context.answerDelivery` without `continuation`. It runs, completes or is
+  cancelled like any task.
+- **No backfill.** Folding a legacy continuation back into its parent would
+  move workers between tasks, rewrite PR ownership and branch names, and change
+  historical mission counts after the fact; none of that is safely reversible,
+  and the audit trail is worth more than tidy counts. Where a legacy parent was
+  left open with no live worker and its continuation carries the work, a person
+  resolves it (cancel the one not wanted); the platform does not guess which.
 
 **Acceptance criteria**:
 - AC-14: GIVEN an answer that falls back for any reason WHEN `POST
-  /respond` succeeds THEN the new task's `context.answerDelivery.reasonCode` is
-  the failing gate's code and the response carries
-  `path: 'cold_continuation'`.
+  /respond` succeeds THEN the task's `context.answerDelivery.reasonCode` is
+  the failing gate's code, `answerDelivery.continuation` is `'same_task'`, and
+  the response carries `path: 'cold_continuation'` and the answered worker's
+  own `taskId`.
 - AC-15: GIVEN the same call THEN exactly one note is posted to the task
   feed naming the path and the reason.
+- AC-49: GIVEN a cold fallback WHEN `POST /respond` succeeds THEN no row is
+  inserted into `tasks`; the task is `pending` with `claimedBy` null; its
+  `context.answeredQuestions` ends with an entry carrying the question, the
+  answer, the worker id and the reason code; `context.resumeBranch` is the
+  worker's branch and `context.iteration` is the previous one + 1; the worker
+  is `superseded` with no `continuationTaskId`.
+- AC-50: GIVEN a mission of three tasks where task 03 depends on task 02 and
+  task 02's worker is parked WHEN its answer falls back cold THEN the mission
+  still has three tasks, task 02 is the same row (now `pending`), and task 03
+  is still blocked on it; it is unblocked only once a later attempt completes
+  task 02.
+- AC-51: GIVEN a cold fallback whose task reopen throws THEN the worker is
+  restored to its pre-answer status with `waitingFor` and `completedAt` back,
+  the reply is `500`, and no note is posted.
+- AC-52: GIVEN a task that is `completed` or `cancelled` when its question is
+  answered and the answer would go cold THEN `/respond` answers `409
+  task_closed` and writes nothing; the question stays answerable.
+- AC-53: GIVEN a delivery owner task WHEN its answer falls back cold THEN the
+  reopen statement writes no `status` and the kernel move is requested:
+  AttemptRequeued for an open task, AttemptReopened naming the superseded
+  worker for a failed one.
+- AC-54: GIVEN a task whose `context.answeredQuestions` is set WHEN the
+  runner builds a new attempt's prompt THEN it carries the question and the
+  answer verbatim and tells the agent not to ask it again.
+- AC-55: GIVEN an `unhealthy` (not revoked) credential WHEN the answer falls
+  back cold THEN the task is reopened, the reply carries `blockedOn:
+  'credential'`, and the one note is a `warning` saying the new attempt cannot
+  start until the credential is reconnected.
 - AC-16: GIVEN a worker parked with `answerDelivery.path: 'resume'` and
   `pendingInstructions` still set, older than `RESUME_ACK_DEADLINE_MS`, WHEN
-  `cleanupUnresumedAnswers` runs THEN a `Continue:` task is created carrying
-  the queued answer, the worker becomes `superseded`, and
-  `answerDelivery.reasonCode` is `resume_not_acknowledged`.
+  `cleanupUnresumedAnswers` runs THEN no task is inserted, the worker's own task
+  is reopened carrying the queued answer in `context.answeredQuestions`, the
+  worker becomes `superseded`, and `answerDelivery.reasonCode` is
+  `resume_not_acknowledged`.
 - AC-17: GIVEN the same worker after that sweep has already run WHEN it
-  runs again THEN no second task is created.
+  runs again THEN nothing is reopened or inserted a second time.
 - AC-18: GIVEN a worker whose queued answer WAS acknowledged (its
   `instructionHistory` entry reads `delivered` and `pendingInstructions` is
   null) WHEN `cleanupUnresumedAnswers` runs THEN it is left alone.
-- AC-19: GIVEN a worker superseded by the sweep's CAS WHEN the
-  compensating `Continue:` task insert throws THEN the worker is rolled back
-  to `status: 'waiting_input'` with the answer restored on
-  `pendingInstructions`, no continuation task exists, and the OAuth seat is
-  not released.
-- AC-26: GIVEN a `Continue:` task that was inserted successfully WHEN the
-  `answerDelivery` context stamp or the feed-note insert then throws THEN
-  `cleanupUnresumedAnswers` does not raise, the worker still counts toward
-  `degraded`, and any later candidate in the same call is still processed.
+- AC-19: GIVEN a worker superseded by the sweep's CAS WHEN reopening its task
+  throws THEN the worker is rolled back to `status: 'waiting_input'` with the
+  answer restored on `pendingInstructions`, the task is unchanged, and the
+  OAuth seat is not released.
+- AC-26: GIVEN a task that was reopened successfully WHEN the feed-note insert
+  then throws THEN `cleanupUnresumedAnswers` does not raise, the worker still
+  counts toward `degraded`, and any later candidate in the same call is still
+  processed.
+- AC-57: GIVEN the task page of a task whose answered worker went to a new
+  attempt THEN that worker is listed in the task's attempt history as ended by
+  the answer, with the recorded reason and no link to another task, and the
+  task's status reads its real state (`pending` until a new attempt claims it).
 
 **Code surface**:
-- `apps/web/src/lib/answer-resume.ts` — `buildContinuationTaskValues`,
+- `apps/web/src/lib/answer-attempt.ts` — `reopenTaskForAnsweredAttempt`
+- `apps/web/src/lib/answer-resume.ts` — `buildAnsweredQuestionEntry`,
+  `buildAnsweredAttemptContextPatch`, `ANSWERED_QUESTIONS_KEEP`,
   `describeAnswerPath`
-- `apps/web/src/lib/stale-workers.ts` — `cleanupUnresumedAnswers`
-- `apps/web/src/app/api/tasks/cleanup/route.ts`
+- `apps/web/src/lib/stale-workers.ts` — `cleanupUnresumedAnswers`,
+  `cleanupUnreadInteractiveAnswers`
+- `apps/runner/src/prompt-builder.ts` — the `answered-question` section
+- `apps/web/src/app/app/(protected)/tasks/[id]/page.tsx` — the attempt row
+
+---
+
+## One task, many attempts
+
+The rule this capability keeps, stated once: **a task's identity survives every
+way an attempt can end.** An answer, a cold restart, a lost runner, a retry and
+a hand-off each end or replace a worker row; none of them mints a task. The task
+row is the mission slot and the dependency node, and the workers under it are
+its attempt history, in order, each with its own honest end.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Parked: worker asks (waiting_input)
+  Parked --> Resumed: answer, gates pass (same worker)
+  Parked --> NewAttempt: answer, a gate fails (worker superseded)
+  Resumed --> NewAttempt: answer never acknowledged (sweep)
+  NewAttempt --> Pending: same task reopened, answer in context
+  Pending --> Claimed: next claim mints a new worker row, same task id
+  Claimed --> [*]: completes or fails the task
+```
+
+**Invariants**:
+- Exactly one task row exists for the work from the first claim to the last
+  attempt. Attempt history is `workers WHERE task_id = <task>` in creation
+  order; nothing about an attempt is recorded only on another task.
+- Each attempt's end is counted once, on its own worker row: `superseded` for
+  one an answer replaced, its real `completed` / `failed` for every other.
 
 ---
 
@@ -702,7 +896,8 @@ stale, and the resumed session dies on its first request.
   rather than weakens its case.
 - `unhealthy` for any OTHER reason (expired and unrefreshable) MUST NOT silently
   become a cold continuation. That state is recoverable without human action, so
-  the answer is recorded durably (a continuation task is created, nothing the
+  the answer is recorded durably (the task is reopened for a new attempt
+  carrying it, nothing the
   human typed is lost) AND the owner is told at answer time with a `warning`
   note naming the credential.
 - The preflight MUST be advisory-on-error: a refresh that throws, times out or
@@ -727,7 +922,8 @@ stale, and the resumed session dies on its first request.
 - AC-22: GIVEN a refresh that throws THEN the result is `unknown`, not
   `unhealthy`.
 - AC-23: GIVEN an `unhealthy` preflight WITHOUT `revoked` (expired and
-  unrefreshable) WHEN `POST /respond` succeeds THEN a continuation task exists
+  unrefreshable) WHEN `POST /respond` succeeds THEN the task is reopened with
+  the answer in `context.answeredQuestions`
   (the answer is not dropped) AND a `warning` note naming the credential is
   posted.
 - AC-24: GIVEN a resume invocation whose broker lookup returns nothing and
@@ -735,7 +931,7 @@ stale, and the resumed session dies on its first request.
   it throws a named credential error before spawning the agent.
 - AC-25: GIVEN a preflight returning `revoked: true` WHEN `POST /respond`
   runs THEN it responds `409` with `credentialRevoked: true` and the backend
-  name, no worker row is written, no continuation task is inserted and no feed
+  name, no worker row is written, no task is reopened or inserted and no feed
   note is posted.
 
 **Code surface**:
@@ -836,7 +1032,7 @@ them.
 6. **An idle but open session loses its answer to a follow-up.** A session
    that ended its turn without waiting (no background `waitCommand`, no
    plugin to nudge it) is indistinguishable from a dead one. After 15 quiet
-   minutes its answer goes to a continuation, even if the person later comes
+   minutes its answer goes to a new attempt, even if the person later comes
    back to that terminal.
 7. **The heartbeat proves the session polled, not that it will read.** A
    session that keeps calling `await_answer` but whose model never acts on the
@@ -845,6 +1041,23 @@ them.
    with ask_human and never calls `await_answer` or `receive_messages` stamps
    no heartbeat, so its answer is still queued to it until the waiting_input
    sweep fails the worker — the behaviour before the heartbeat existed.
+9. **The new attempt inherits only pushed work.** The same task and branch name
+   are kept, but a new worker row runs in a new worktree: commits the superseded
+   attempt never pushed, and its uncommitted changes, stay on that runner's
+   disk. Only the resume path keeps them.
+10. **An unanswered-question requeue is not an answer.** The new attempt gets
+   the question and a do-not-ask-again line, not a person's reply; if the work
+   truly cannot proceed without one it will stop and ask again, and the sweep
+   will requeue it again, each time bumping `iteration`. Only `unansweredQuestion`
+   (the latest) is kept, so earlier expiries are visible only as failed workers.
+11. **The superseded attempt holds no terminal record.** As noted under the
+   resume path, `superseded` writes no `workerTerminalRecords` row; the new
+   attempt's own end is recorded normally.
+12. **A reopen does not revive a dependent a failure already cascaded.** When
+   the asking attempt errored, its task was `failed` before the answer came; if
+   the dependency cascade failed a dependent then, reopening the task does not
+   put that dependent back. It never unblocks one early either: a dependent is
+   released only when an attempt completes the task.
 
 ## Renumbered
 

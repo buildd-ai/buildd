@@ -18,6 +18,7 @@
  * that reports `err.message.split('\n')[0]` reports the same first line.
  */
 import * as childProcess from 'child_process';
+import { killProcessTree, posixShell } from './posix-shell';
 
 export interface GitAsyncOptions {
   cwd: string;
@@ -49,6 +50,8 @@ const DEFAULT_MAX_BUFFER = 16 * 1024 * 1024;
 export const KILL_GRACE_MS = 3_000;
 /** After SIGKILL, the most we wait for the exit before settling anyway. */
 const KILL_WAIT_MS = 1_000;
+/** Windows: after a killed child exits, how long its pipes get to drain before we settle. */
+const WIN_KILLED_DRAIN_MS = 250;
 
 /** How a child ended, before it is mapped to a resolve or a reject. */
 interface RawRun {
@@ -82,8 +85,10 @@ function spawnSettled(file: string, args: string[], opts: GitAsyncOptions): Prom
         env: opts.env ?? process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
         // Own process group, so a timeout reaches git itself and not only the
-        // `/bin/sh -c` wrapper (whose git child would keep the pipes open).
+        // `sh -c` wrapper (whose git child would keep the pipes open). Windows
+        // has no groups; killProcessTree ends the tree there instead.
         detached: true,
+        windowsHide: true,
       });
     } catch (err) {
       resolvePromise({ status: null, signal: null, stdout: '', stderr: '', timedOut: false, overflow: false, maxBuffer, error: err as Error });
@@ -112,7 +117,7 @@ function spawnSettled(file: string, args: string[], opts: GitAsyncOptions): Prom
     };
     const signalGroup = (sig: NodeJS.Signals) => {
       try {
-        if (child.pid) process.kill(-child.pid, sig);
+        if (child.pid) killProcessTree(child.pid, sig);
         else child.kill(sig);
       } catch {
         try { child.kill(sig); } catch { /* already gone */ }
@@ -142,6 +147,15 @@ function spawnSettled(file: string, args: string[], opts: GitAsyncOptions): Prom
     child.stderr?.on('data', (chunk: Buffer) => { errChunks.push(chunk); });
     child.on('error', (err) => settle(null, null, err));
     child.on('close', (code, signal) => settle(code, signal as NodeJS.Signals | null));
+    // Windows: a process that git's sh forked (a merge driver's child) is in
+    // neither the Windows tree nor our MSYS group, so it outlives the kill and
+    // holds the pipes, and 'close' waits for it. Once the killed child itself
+    // has exited, settle after a short drain instead.
+    if (process.platform === 'win32') {
+      child.on('exit', (code, signal) => {
+        if (killing) later(WIN_KILLED_DRAIN_MS, () => settle(code, signal as NodeJS.Signals | null));
+      });
+    }
   });
 }
 
@@ -169,12 +183,14 @@ export function gitArgsAsync(args: string[], opts: GitAsyncOptions): Promise<str
 }
 
 /**
- * A git command line run through `/bin/sh -c`, exactly as `execSync(cmd)` runs
- * it, for callers that build a shell-quoted string and must keep it
- * byte-identical. Resolves stdout, untrimmed.
+ * A git command line run through `sh -c`, exactly as `execSync(cmd)` runs it
+ * on POSIX, for callers that build a shell-quoted string and must keep it
+ * byte-identical. The sh is posixShell(): /bin/sh, or Git for Windows' sh.exe
+ * on win32 (never cmd.exe, which reads the quoting differently). Resolves
+ * stdout, untrimmed.
  */
-export function gitShellAsync(command: string, opts: GitAsyncOptions): Promise<string> {
-  return run('/bin/sh', ['-c', command], command, opts);
+export async function gitShellAsync(command: string, opts: GitAsyncOptions): Promise<string> {
+  return run(posixShell(), ['-c', command], command, opts);
 }
 
 /** How a git child ended, for callers that read stdout and stderr on failure too. */

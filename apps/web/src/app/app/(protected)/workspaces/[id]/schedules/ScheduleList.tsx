@@ -40,9 +40,21 @@ interface Schedule {
   pendingSuggestion?: PendingSuggestion | null;
 }
 
+/** An open proposal to move a schedule to another workspace (lib/schedule-move.ts). */
+export interface MoveProposal {
+  id: string;
+  toWorkspaceId: string;
+  toWorkspaceName: string;
+  reason: string | null;
+  origin: 'task' | 'auto' | 'direct';
+}
+
 interface Props {
   workspaceId: string;
   initialSchedules: Schedule[];
+  moveProposals?: Record<string, MoveProposal>;
+  /** Holds delegate_schedule_access: may accept or keep a proposed move. */
+  canAnswerMoves?: boolean;
 }
 
 function formatRelative(dateStr: string | null): string {
@@ -65,7 +77,7 @@ function formatRelative(dateStr: string | null): string {
   return diffMs > 0 ? `in ${days}d` : `${days}d ago`;
 }
 
-export function ScheduleList({ workspaceId, initialSchedules }: Props) {
+export function ScheduleList({ workspaceId, initialSchedules, moveProposals = {}, canAnswerMoves = false }: Props) {
   const { confirm, confirmDialog } = useConfirm();
   const router = useRouter();
   const [schedules, setSchedules] = useState(initialSchedules);
@@ -90,6 +102,32 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
       // Silent failure
     } finally {
       setSuggestionLoading(null);
+    }
+  }
+
+  const [moveBusy, setMoveBusy] = useState<string | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
+
+  async function answerMove(scheduleId: string, proposalId: string, decision: 'accept' | 'keep', grantOldHome = false) {
+    setMoveBusy(proposalId);
+    setMoveError(null);
+    try {
+      const res = await fetch(
+        `/api/workspaces/${workspaceId}/schedules/${scheduleId}/move-proposal/${proposalId}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision, grantOldHome }) },
+      );
+      if (res.ok) {
+        // Accepted: the schedule left this workspace; kept: the proposal is gone. Either way, re-read.
+        router.refresh();
+        setSchedules(prev => prev.filter(s => decision === 'keep' || s.id !== scheduleId));
+      } else {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        setMoveError(data.error || 'Could not save the decision.');
+      }
+    } catch {
+      setMoveError('Could not reach the server.');
+    } finally {
+      setMoveBusy(null);
     }
   }
 
@@ -197,6 +235,28 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
               {isScheduleErrorLive(schedule) && (
                 <p className="text-xs text-status-error mt-1 truncate">{schedule.lastError}</p>
               )}
+              {moveProposals[schedule.id] && (() => {
+                const move = moveProposals[schedule.id]!;
+                return (
+                  <div data-testid="schedule-move-banner" className="notice notice-warn mt-2">
+                    <div className="text-xs font-medium text-status-warning mb-1">
+                      {move.origin === 'auto' ? 'Its runs keep being refused elsewhere' : 'A run proposes moving this schedule'}
+                    </div>
+                    <p className="text-xs text-text-secondary">
+                      Move to {move.toWorkspaceName}? It keeps running here until someone accepts; an accepted move starts with the next run.
+                      {move.reason ? ` "${move.reason}"` : ''}
+                    </p>
+                    {canAnswerMoves && (
+                      <div className="flex flex-wrap items-center gap-2 mt-2">
+                        <button type="button" className="btn btn-sm" disabled={moveBusy === move.id} onClick={() => answerMove(schedule.id, move.id, 'accept')}>Accept</button>
+                        <button type="button" className="btn btn-sm btn-quiet" disabled={moveBusy === move.id} onClick={() => answerMove(schedule.id, move.id, 'keep')}>Keep here</button>
+                        <button type="button" className="btn btn-sm btn-quiet" disabled={moveBusy === move.id} onClick={() => answerMove(schedule.id, move.id, 'accept', true)}>Accept + read this workspace</button>
+                      </div>
+                    )}
+                    {moveError && <p role="alert" className="text-xs text-status-error mt-1">{moveError}</p>}
+                  </div>
+                );
+              })()}
               {schedule.pendingSuggestion && (
                 <div className="notice notice-warn mt-2">
                   <div className="flex items-start gap-2">

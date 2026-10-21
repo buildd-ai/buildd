@@ -13,8 +13,11 @@ import WorkerSteerPanel from '../../(protected)/tasks/[id]/WorkerSteerPanel';
 import InstructionHistory from '../../(protected)/tasks/[id]/InstructionHistory';
 import TaskEvidenceCard from '../../(protected)/tasks/[id]/TaskEvidenceCard';
 import { lineageWorkerHistory } from '../../(protected)/tasks/[id]/lineage-status';
+import { RunEvidenceRail } from '../../(protected)/tasks/[id]/NowStrip';
+import { deriveRunEvidence } from '@buildd/core/run-evidence';
 import {
   ATTEMPT_FLIP,
+  EVIDENCE_STATES,
   RUN_ACTIVITY_FIXTURE_STATE,
   RUN_ACTIVITY_NOW,
   RUN_ACTIVITY_SCENARIOS,
@@ -116,6 +119,17 @@ function Scenario({ scenario }: { scenario: RunActivityScenario }) {
       );
     case 'attempts-tie':
       return <AttemptsTie />;
+    case 'evidence-states':
+      return (
+        <div className="flex flex-col gap-6">
+          {EVIDENCE_STATES.map(e => (
+            <div key={e.key} data-testid={`evidence-state-${e.key}`} className="card px-4 py-3">
+              <p className="text-meta text-text-muted">{e.title}</p>
+              <RunEvidenceRail evidence={deriveRunEvidence(e.input as never)} nowMs={RUN_ACTIVITY_NOW} defaultOpen={e.open ?? true} />
+            </div>
+          ))}
+        </div>
+      );
   }
 }
 

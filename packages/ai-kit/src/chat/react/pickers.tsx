@@ -7,7 +7,7 @@
  * and the fetches (e.g. `GET`/`PATCH` from `createPermissionsApi`).
  */
 import type { ReactNode } from 'react';
-import type { TierPolicy, ToolPermissionRow } from '@builddai/ai-kit/chat/contract';
+import type { TierPolicy, ToolPermissionRow } from '@buildd/ai-kit/chat/contract';
 import { Menu, MenuOption, type MenuProps } from './Menu';
 import { tierLabel } from './model';
 

@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
-import { workspaces, taskSchedules } from '@buildd/core/db/schema';
-import { eq, desc } from 'drizzle-orm';
+import { workspaces, taskSchedules, scheduleMoves } from '@buildd/core/db/schema';
+import { and, eq, desc } from 'drizzle-orm';
+import { roleHas } from '@/lib/permission-registry';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -53,6 +54,17 @@ export default async function SchedulesPage({
     orderBy: sqlOrderBy([desc(taskSchedules.createdAt)]),
   });
 
+  // Open move proposals: a banner on the schedule (workspace-routing-and-reach §6).
+  const openMoves = schedules.length ? await db
+    .select({
+      id: scheduleMoves.id, scheduleId: scheduleMoves.scheduleId, toWorkspaceId: scheduleMoves.toWorkspaceId,
+      toWorkspaceName: workspaces.name, reason: scheduleMoves.reason, origin: scheduleMoves.origin,
+    })
+    .from(scheduleMoves)
+    .innerJoin(workspaces, eq(workspaces.id, scheduleMoves.toWorkspaceId))
+    .where(and(eq(scheduleMoves.status, 'open'), eq(scheduleMoves.fromWorkspaceId, id))) : [];
+  const moveProposals = Object.fromEntries(openMoves.map(m => [m.scheduleId, m]));
+
   return (
     <main className="pt-[4.5rem] px-4 pb-24 md:px-8 md:pt-8 md:pb-10">
       <div className="max-w-4xl space-y-8">
@@ -76,7 +88,7 @@ export default async function SchedulesPage({
 
         {showNew && <ScheduleForm workspaceId={id} />}
 
-        <ScheduleList workspaceId={id} initialSchedules={JSON.parse(JSON.stringify(schedules))} />
+        <ScheduleList workspaceId={id} initialSchedules={JSON.parse(JSON.stringify(schedules))} moveProposals={moveProposals} canAnswerMoves={roleHas(access.role, 'delegate_schedule_access')} />
       </div>
     </main>
   );

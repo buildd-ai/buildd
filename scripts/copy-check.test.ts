@@ -25,6 +25,12 @@ describe('copy rules', () => {
     expect(ids('Endpoint runs are metered on its key, not a Claude seat.')).toContain('not-this-its-that');
   });
 
+  it('flags a sort order printed as a subtitle, and only that', () => {
+    for (const t of ['slipping first', 'next to start first', 'oldest first']) expect(ids(t)).toContain('sort-subtitle');
+    expect(ids('Sort by oldest first')).not.toContain('sort-subtitle');
+    expect(ids('Fix the first failing test')).not.toContain('sort-subtitle');
+  });
+
   it('flags internal words in end-user copy', () => {
     expect(ids('Not codex runs: The Codex CLI speaks the OpenAI wire; this provider does not serve it.')).toContain('internal-jargon');
     expect(ids('Serves Chat · claude runs · cloud runs')).toContain('internal-jargon');

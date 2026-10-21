@@ -1,8 +1,8 @@
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { choice } from '@builddai/ai-kit/decide';
-import type { DecisionKindConfig, DecisionRequest, DecisionResponse, ModelVerdict, DecisionVerdict } from '@builddai/ai-kit/decide';
+import { choice } from '@buildd/ai-kit/decide';
+import type { DecisionKindConfig, DecisionRequest, DecisionResponse, ModelVerdict, DecisionVerdict } from '@buildd/ai-kit/decide';
 import { defineBuilddDecisionKind, type BuilddDecisionKindBinding } from '@buildd/core/decision-kinds';
 import { runBuilddDecision, type BuilddDecisionScope } from '@buildd/core/decision-policy';
 import { scanForProdData } from '@/lib/specs/no-prod-data-scan';

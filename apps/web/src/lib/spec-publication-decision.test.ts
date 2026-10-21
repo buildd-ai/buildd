@@ -8,7 +8,7 @@ const {
 } = await import('./spec-publication-decision');
 const { parsePublicationSection, publicationReason, publicationSentence } = await import('./specs/publication');
 import type { SpecPublicationDecision } from '@buildd/core/db/schema';
-const { runDecisionKind } = await import('@builddai/ai-kit/decide');
+const { runDecisionKind } = await import('@buildd/ai-kit/decide');
 
 const POLICY_BODY = `# Shop
 

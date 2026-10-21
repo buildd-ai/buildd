@@ -110,7 +110,8 @@ never in task context (caller-written, so forgeable):
   OAuth session) when filing the task or with `update_task` before it is
   claimed, or by a person approving the running task's `tasks:create`
   capability request (`request_capability`, resource = target workspace).
-  A continuation or retry of the task copies it.
+  A new attempt of the task (after an answer, or a retry) keeps it; a retry
+  filed as a new task copies it.
 Both record who granted it and when, are re-read on every request, and never
 exceed the minting key's reach. A task may declare `filingTargets` (workspaces it
 will file in): a need, not a grant. The claim pre-flight holds a task
@@ -305,7 +306,7 @@ task, with no continuation task. Every poll stamps `waitingFor.sessionSeenAt`.
 A session that closes cleanly through the agent plugin withdraws its question
 and the task returns to pending. A session whose last poll is over 5 min old,
 or whose worker has otherwise ended, has its answer sent cold to a runner as a
-continuation task, with the reason recorded. An
+new attempt of the same task (never a new task), with the reason recorded. An
 unanswered question expires with the normal park window (24 h, 4 h in a
 mission), and an expired interactive question files no retry unless its
 mission is `executor = 'local'`. `post_note` with `type=question` stays the
@@ -495,7 +496,7 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   `applyModelEnv`).
 - **Decision model** — `teams.decision_model` (`packages/core/decision-model.ts`):
   null = Jev on OpenRouter; otherwise any chat model via OpenRouter or the gateway,
-  with confidence from token logprobs (`@builddai/ai-kit/decide` chat endpoint).
+  with confidence from token logprobs (`@buildd/ai-kit/decide` chat endpoint).
   Thresholds were measured on Jev, so a call site that auto-applies (task
   category) records another model's pick without applying it.
   A platform operator control, not a team setting (see "Platform operator"): only an operator

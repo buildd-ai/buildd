@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { idParity, JEV_MODEL } from '@builddai/ai-kit/decide';
+import { idParity, JEV_MODEL } from '@buildd/ai-kit/decide';
 import {
   defineSurface,
   gateFromEval,

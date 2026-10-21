@@ -12,7 +12,7 @@
  * Styled only through `kit-toolcall*` classes and `--kit-*` properties.
  */
 import { useState } from 'react';
-import type { ChatToolPart } from '@builddai/ai-kit/chat/contract';
+import type { ChatToolPart } from '@buildd/ai-kit/chat/contract';
 import { toolCallView, toolGroupSummary, type ToolCallOptions, type ToolCallState, type ToolCallView } from './tool-calls';
 
 const MARK: Record<ToolCallState, { glyph: string; label: string }> = {

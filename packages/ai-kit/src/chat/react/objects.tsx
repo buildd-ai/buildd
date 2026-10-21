@@ -11,7 +11,7 @@
  * like. Styled only through `kit-*` classes and `--kit-*` values.
  */
 import { createContext, useCallback, useContext, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { refKey, type ObjectRef } from '@builddai/ai-kit/chat/contract';
+import { refKey, type ObjectRef } from '@buildd/ai-kit/chat/contract';
 import { createObjectStore, idleEntry, type ObjectEntry, type ObjectSource, type ObjectStore } from './object-store';
 
 // ── Store context ─────────────────────────────────────────────────────────────

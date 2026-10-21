@@ -13,8 +13,8 @@
  * - **Features**: the mission's own words (title, description, criteria
  *   labels) and the task's, each bounded; a delivery count. No code, no logs.
  */
-import { choice } from '@builddai/ai-kit/decide';
-import type { DecisionKindConfig, FeatureParse } from '@builddai/ai-kit/decide';
+import { choice } from '@buildd/ai-kit/decide';
+import type { DecisionKindConfig, FeatureParse } from '@buildd/ai-kit/decide';
 import { defineBuilddDecisionKind, type BuilddDecisionKindBinding } from './decision-kinds';
 
 export const MISSION_SCOPE_KIND = 'buildd.mission_scope' as const;

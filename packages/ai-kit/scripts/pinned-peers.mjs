@@ -14,7 +14,7 @@
  * outside the monorepo.
  */
 
-const PKG_NAME = '@builddai/ai-kit';
+const PKG_NAME = '@buildd/ai-kit';
 
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 

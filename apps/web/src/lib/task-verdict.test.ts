@@ -103,6 +103,23 @@ describe('deriveTaskVerdict', () => {
     expect(deriveTaskVerdict(input({ taskStatus: 'pending', pr: null, mismatch: [] }))).toBeNull();
   });
 
+  it('a runner that refused the task at preflight is a block on the runner, not a failure, with no retry', () => {
+    const v = deriveTaskVerdict(input({
+      taskStatus: 'failed',
+      pr: null,
+      failureLine: 'Not started: The task needs protected isolation and this runner has no confinement for Claude: sandbox disabled by the runner operator (BUILDD_DISABLE_SANDBOX=1). Unset BUILDD_DISABLE_SANDBOX and restart the runner.',
+    }))!;
+    expect(v.state).toBe('blocked');
+    expect(v.causeKey).toBe('blocked:isolation');
+    expect(v.cause).toContain('needs protected isolation');
+    expect(v.actions.map(a => a.label.toLowerCase()).join(' ')).not.toContain('retry');
+  });
+
+  it('an ordinary failure that merely starts with Not started stays a failure', () => {
+    const v = deriveTaskVerdict(input({ taskStatus: 'failed', pr: null, failureLine: 'Not started: worktree setup failed' }))!;
+    expect(v.state).toBe('failed');
+  });
+
   it('a closed PR is failed', () => {
     expect(deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'closed' } }))!.state).toBe('failed');
   });

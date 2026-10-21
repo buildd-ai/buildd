@@ -9,7 +9,7 @@
  */
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { join } from 'path';
-import { runTopDev, type TopDevDeps } from '../../src/top-dev';
+import { runTopDev, setDevChannel, devChannelEnabled, DEV_CHANNEL_OFF, type TopDevDeps } from '../../src/top-dev';
 
 const nodeFs = require('fs') as typeof import('fs');
 const ROOT = nodeFs.mkdtempSync(join(require('os').tmpdir(), 'top-dev-'));
@@ -123,7 +123,11 @@ function deps(): Partial<TopDevDeps> {
   };
 }
 
-const run = (topArgs: string[] = []) => runTopDev({ prodDir: PROD, devDir: DEV, topArgs, deps: deps() });
+/** Opted in for this one run (BUILDD_DEV_CHANNEL=1): the tests below are about what an opted-in run does. */
+const OPTED_IN = { BUILDD_DEV_CHANNEL: '1' };
+const configFile = () => join(PROD, 'config.json');
+const run = (topArgs: string[] = [], env: Record<string, string | undefined> = OPTED_IN) =>
+  runTopDev({ prodDir: PROD, devDir: DEV, topArgs, configFile: configFile(), env, deps: deps() });
 const devHead = () => sh(['rev-parse', 'HEAD'], DEV);
 const upstreamDev = () => sh(['rev-parse', 'dev'], UPSTREAM);
 
@@ -273,7 +277,7 @@ describe('it only ever resets its own checkout', () => {
     const before = prodSnapshot();
     for (const devDir of [PROD, join(PROD, 'dev')]) {
       calls = { installs: [], tops: [], logs: [] };
-      expect(await runTopDev({ prodDir: PROD, devDir, topArgs: [], deps: deps() })).toBe(1);
+      expect(await runTopDev({ prodDir: PROD, devDir, topArgs: [], configFile: configFile(), env: OPTED_IN, deps: deps() })).toBe(1);
       expect(calls.logs.join('\n')).toContain('outside the production install');
       expect(calls.tops).toHaveLength(0);
     }
@@ -290,5 +294,137 @@ describe('it only ever resets its own checkout', () => {
     expect(calls.logs.join('\n')).toContain('did not make');
     expect(devHead()).toBe(head);
     expect(nodeFs.existsSync(join(DEV, 'mine.txt'))).toBe(true);
+  });
+});
+
+describe('opt-in per machine', () => {
+  /** Every git call, so a refused run can be shown to clone and fetch nothing. */
+  function countingDeps(gitCalls: string[][]): Partial<TopDevDeps> {
+    return { ...deps(), git: async (args) => { gitCalls.push(args); return { code: 0, stdout: '', stderr: '' }; } };
+  }
+
+  test('without opt-in it refuses in one line, clones nothing and runs no git at all', async () => {
+    setupUpstream();
+    installProdLikeInstallSh();
+    const before = prodSnapshot();
+    const gitCalls: string[][] = [];
+    for (const env of [{}, { BUILDD_DEV_CHANNEL: '0' }, { BUILDD_DEV_CHANNEL: '' }]) {
+      calls = { installs: [], tops: [], logs: [] };
+      const code = await runTopDev({ prodDir: PROD, devDir: DEV, topArgs: [], configFile: configFile(), env, deps: countingDeps(gitCalls) });
+      expect(code).not.toBe(0);
+      expect(calls.logs).toEqual([DEV_CHANNEL_OFF]);
+      expect(calls.tops).toHaveLength(0);
+      expect(calls.installs).toHaveLength(0);
+    }
+    expect(DEV_CHANNEL_OFF).toBe('buildd top --dev runs unreleased code from dev, for buildd contributors. Turn it on with: buildd config set devChannel on');
+    expect(gitCalls).toEqual([]);
+    expect(nodeFs.existsSync(DEV)).toBe(false);
+    expect(prodSnapshot()).toEqual(before);
+  });
+
+  test('BUILDD_DEV_CHANNEL=1 allows one run, and saves nothing', async () => {
+    setupUpstream();
+    installProdLikeInstallSh();
+    const before = prodSnapshot();
+    expect(await run([], { BUILDD_DEV_CHANNEL: '1' })).toBe(0);
+    expect(calls.tops).toHaveLength(1);
+    expect(prodSnapshot()).toEqual(before);
+    // The next run without it is refused again.
+    calls = { installs: [], tops: [], logs: [] };
+    expect(await run([], {})).not.toBe(0);
+    expect(calls.logs).toEqual([DEV_CHANNEL_OFF]);
+  });
+
+  test('the first opted-in run says once that this is unreleased code, then goes ahead', async () => {
+    setupUpstream();
+    installProdLikeInstallSh();
+    expect(await run()).toBe(0);
+    const notes = calls.logs.filter(l => /unreleased/.test(l));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain('may break');
+    expect(notes[0].includes('\n')).toBe(false);
+    calls = { installs: [], tops: [], logs: [] };
+    expect(await run()).toBe(0);
+    expect(calls.logs.filter(l => /unreleased/.test(l))).toEqual([]);
+  });
+
+  test('config set devChannel on allows it; off turns it off again', async () => {
+    setupUpstream();
+    installProdLikeInstallSh();
+    const on = await setDevChannel(true, { configFile: configFile(), prodDir: PROD, devDir: DEV, confirm: null });
+    expect(on.code).toBe(0);
+    const cfg = JSON.parse(nodeFs.readFileSync(configFile(), 'utf-8'));
+    // Every other field is kept.
+    expect(cfg).toEqual({ apiKey: 'bld_test', devChannel: true });
+    expect(devChannelEnabled(configFile(), {})).toBe(true);
+    expect(await run([], {})).toBe(0);
+    expect(calls.tops).toHaveLength(1);
+
+    const off = await setDevChannel(false, { configFile: configFile(), prodDir: PROD, devDir: DEV, confirm: null });
+    expect(off.code).toBe(0);
+    expect(JSON.parse(nodeFs.readFileSync(configFile(), 'utf-8'))).toEqual({ apiKey: 'bld_test', devChannel: false });
+    expect(devChannelEnabled(configFile(), {})).toBe(false);
+    calls = { installs: [], tops: [], logs: [] };
+    expect(await run([], {})).not.toBe(0);
+    expect(calls.logs).toEqual([DEV_CHANNEL_OFF]);
+  });
+
+  test('a config.json that cannot be read is not overwritten (it holds the API key)', async () => {
+    setupUpstream();
+    installProdLikeInstallSh();
+    nodeFs.writeFileSync(configFile(), '{not json');
+    const r = await setDevChannel(true, { configFile: configFile(), prodDir: PROD, devDir: DEV, confirm: null });
+    expect(r.code).not.toBe(0);
+    expect(nodeFs.readFileSync(configFile(), 'utf-8')).toBe('{not json');
+  });
+
+  test('off asks once to delete the dev copy it made: y deletes it', async () => {
+    setupUpstream();
+    installProdLikeInstallSh();
+    expect(await run()).toBe(0);
+    const before = prodSnapshot();
+    const asked: string[] = [];
+    const r = await setDevChannel(false, { configFile: configFile(), prodDir: PROD, devDir: DEV, confirm: async (q) => { asked.push(q); return true; } });
+    expect(r.code).toBe(0);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain(DEV);
+    expect(nodeFs.existsSync(DEV)).toBe(false);
+    // Only the config key changed in ~/.buildd.
+    const after = prodSnapshot();
+    expect({ ...after, userConfig: null }).toEqual({ ...before, userConfig: null });
+  });
+
+  test('off keeps the dev copy on any other answer, and with no terminal', async () => {
+    setupUpstream();
+    installProdLikeInstallSh();
+    expect(await run()).toBe(0);
+    const r1 = await setDevChannel(false, { configFile: configFile(), prodDir: PROD, devDir: DEV, confirm: async () => false });
+    expect(r1.code).toBe(0);
+    expect(nodeFs.existsSync(join(DEV, '.git'))).toBe(true);
+    const r2 = await setDevChannel(false, { configFile: configFile(), prodDir: PROD, devDir: DEV, confirm: null });
+    expect(r2.code).toBe(0);
+    expect(nodeFs.existsSync(join(DEV, '.git'))).toBe(true);
+    expect(r2.stdout).toContain(DEV);
+  });
+
+  test('off never asks about, or deletes, a folder top-dev did not make', async () => {
+    setupUpstream();
+    installProdLikeInstallSh();
+    sh(['clone', '-q', UPSTREAM, DEV], T);
+    nodeFs.writeFileSync(join(DEV, 'mine.txt'), 'keep');
+    const before = prodSnapshot();
+    let asked = 0;
+    const yes = async () => { asked++; return true; };
+    expect((await setDevChannel(false, { configFile: configFile(), prodDir: PROD, devDir: DEV, confirm: yes })).code).toBe(0);
+    // A plain folder, and the production install itself.
+    const plain = join(T, 'plain');
+    nodeFs.mkdirSync(plain);
+    expect((await setDevChannel(false, { configFile: configFile(), prodDir: PROD, devDir: plain, confirm: yes })).code).toBe(0);
+    expect((await setDevChannel(false, { configFile: configFile(), prodDir: PROD, devDir: PROD, confirm: yes })).code).toBe(0);
+    expect(asked).toBe(0);
+    expect(nodeFs.readFileSync(join(DEV, 'mine.txt'), 'utf-8')).toBe('keep');
+    expect(nodeFs.existsSync(plain)).toBe(true);
+    const after = prodSnapshot();
+    expect({ ...after, userConfig: null }).toEqual({ ...before, userConfig: null });
   });
 });

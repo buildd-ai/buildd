@@ -8,26 +8,25 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { classifyStaleExit, consumesRetryAttempt, CLAIM_RESPONSE_LOST_ERROR, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
-import { WORKER_STALE_REAP_MS, INTERACTIVE_WORKER_IDLE_TTL_MS, WORKER_LEASE_TTL_MS, RUNNER_STALE_CUTOFF_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, isTerminalTaskStatus, type LoopConfig } from '@buildd/shared';
+import { WORKER_STALE_REAP_MS, INTERACTIVE_WORKER_IDLE_TTL_MS, WORKER_LEASE_TTL_MS, RUNNER_STALE_CUTOFF_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, OPEN_TASK_STATUSES, isTerminalTaskStatus, type LoopConfig } from '@buildd/shared';
 import { interactiveAbandonedScope, runnerWorkerOnly } from '@/lib/interactive-worker-liveness';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { detachInteractiveWorkersOfEndedTasks, releaseConcurrencySeats } from '@/lib/interactive-detach';
-import { withoutForceClaim } from '@/lib/force-claim';
+import { withoutForceClaim, FORCE_CLAIM_CONTEXT_KEY } from '@/lib/force-claim';
 import { requeueBranchContext } from '@/lib/integration-refresh';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
 import { kernelDeliveryById, reapedOwnerAttemptIsCurrent, reapedOwnerAttemptIsCurrentSql } from '@/lib/workflow/authority';
 import { notDeliveryOwnedTaskSql, notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
 import { notHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 import { PARK_MAX_MS, PARK_MISSION_MAX_MS, notParkedScope } from '@/lib/worker-park';
-import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
+import { wakeTask } from '@/lib/dispatch-authority';
 import { clearWorkerMessages } from '@buildd/core/worker-messages';
 import {
   ANSWER_PATH_REASONS,
   INTERACTIVE_ANSWER_READ_DEADLINE_MS,
-  buildContinuationTaskValues,
+  buildUnansweredRequeuePatch,
   describeAnswerPath,
   type AnswerDeliveryRecord,
-  type ContinuationParentTask,
 } from '@/lib/answer-resume';
 import type { WaitingFor } from '@buildd/shared';
 import { waitingForOptionLabels } from '@/lib/waiting-for-options';
@@ -1310,15 +1309,6 @@ export async function cleanupStuckWaitingInput(
     // worker above. Failing the task or filing a retry would undo the cancel.
     if (isTerminalTaskStatus(originalTask.status)) continue;
 
-    // Build retry description with context about what was asked
-    const waitingFor = worker.waitingFor as Partial<WaitingFor> | null;
-    const optionLabels = waitingForOptionLabels(waitingFor?.options);
-    const waitingContext = waitingFor?.prompt
-      ? `\n\n---\nPrevious attempt stalled waiting for input: "${waitingFor.prompt}"${optionLabels.length ? ` (options: ${optionLabels.join(', ')})` : ''}\nIMPORTANT: Do NOT ask for user input. Make reasonable decisions autonomously and proceed without blocking.`
-      : '\n\n---\nIMPORTANT: Do NOT ask for user input. Make reasonable decisions autonomously and proceed without blocking.';
-
-    const retryDescription = (originalTask.description || '') + waitingContext;
-
     // An attempt of a workflow-kernel delivery is not cloned here: a clone would
     // run without the delivery link (its push would read as foreign) and the
     // ledger row would stay `running`. The kernel hears AttemptEnded(lost) and
@@ -1334,8 +1324,14 @@ export async function cleanupStuckWaitingInput(
     // ends nothing: the new attempt keeps its task.
     if (ownerAttempt && !(await reapedOwnerAttemptIsCurrent(originalTask.id, worker.id))) continue;
 
+    // A question nobody answered requeues the SAME task for a new attempt
+    // (docs/specs/answered-question-resume.md, AC-58): a clone would grow the
+    // mission and leave the original `failed`. Only a plain task that may be
+    // retried (not interactive-without-local, not kernel-linked) is requeued.
+    const requeueSameTask = !superseded && !kernelDeliveryId && fileRetry;
+
     // Fail the original task
-    if (!ownerAttempt) {
+    if (!ownerAttempt && !requeueSameTask) {
       await db
         .update(tasks)
         .set({
@@ -1376,54 +1372,35 @@ export async function cleanupStuckWaitingInput(
       continue;
     }
 
-    // Create retry task with enriched context for branch continuity
-    const existingCtx = (originalTask.context || {}) as Record<string, unknown>;
-    const retryContext = {
-      ...existingCtx,
-      ...requeueBranchContext(existingCtx, worker.branch),
+    // Requeue the same task. The patch is merged into the LIVE context in SQL
+    // (a worker message may have touched it since the read above) and the
+    // guard only moves a task still open, so a cancel or merge in the window wins.
+    const waitingFor = worker.waitingFor as Partial<WaitingFor> | null;
+    const patch = buildUnansweredRequeuePatch({
+      context: originalTask.context,
+      workerId: worker.id,
+      prompt: waitingFor?.prompt,
+      options: waitingForOptionLabels(waitingFor?.options),
+      branchContext: requeueBranchContext(originalTask.context, worker.branch),
       failureContext: worker.error || 'Worker stalled in waiting_input',
-      iteration: ((existingCtx.iteration as number) || 0) + 1,
-    };
-
-    const [retryTask] = await db
-      .insert(tasks)
-      .values({
-        workspaceId: originalTask.workspaceId,
-        title: originalTask.title,
-        description: retryDescription,
-        context: retryContext,
-        priority: originalTask.priority,
-        category: originalTask.category,
-        project: originalTask.project,
-        requiredCapabilities: originalTask.requiredCapabilities,
-        missionId: originalTask.missionId,
-        runnerPreference: originalTask.runnerPreference,
-        mode: originalTask.mode,
-        taskClass: (originalTask.taskClass ?? 'work') as 'work' | 'attempt' | 'bookkeeping',
-        outputRequirement: originalTask.outputRequirement,
-        outputSchema: originalTask.outputSchema,
-        parentTaskId: originalTask.parentTaskId,
-        // A person's cross-workspace grant is part of the work, not the attempt.
-        ...(() => { const delegation = inheritTaskDelegation(originalTask); return delegation ? { delegation } : {}; })(),
-        // Routing survives the retry: without it a visual-auditor audit would
-        // be claimable by any runner and skip its evidence check.
-        roleSlug: originalTask.roleSlug,
-        // A visual-auditor's required routes are re-derived at completion from
-        // its dependsOn (lib/visual-audit-evidence.ts). Its deps are the
-        // mission's builder tasks, already done, so copying them gates nothing
-        // new; dropping them would shrink the audit to "any one route".
-        ...(originalTask.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && Array.isArray(originalTask.dependsOn)
-          ? { dependsOn: originalTask.dependsOn }
-          : {}),
+    });
+    const [requeued] = await db
+      .update(tasks)
+      .set({
+        status: 'pending',
+        claimedBy: null,
+        claimedAt: null,
+        expiresAt: null,
+        context: sql`(COALESCE(${tasks.context}, '{}'::jsonb) - ${FORCE_CLAIM_CONTEXT_KEY}::text) || ${JSON.stringify(patch)}::jsonb` as any,
+        updatedAt: new Date(),
       })
+      .where(and(eq(tasks.id, originalTask.id), inArray(tasks.status, [...OPEN_TASK_STATUSES]), notKernelMergedTaskSql()))
       .returning({ id: tasks.id });
 
-    // A replacement for the stalled attempt, so a requeue in all but row identity.
-    if (retryTask) await wakeTask(retryTask.id, 'task.requeued');
-    retriedTasks++;
-
-    // Resolve dependencies for the failed task
-    await resolveCompletedTask(originalTask.id, originalTask.workspaceId);
+    if (requeued) {
+      await wakeTask(originalTask.id, 'task.requeued');
+      retriedTasks++;
+    }
   }
 
   // Release concurrency seats for OAuth accounts. Group by accountId so each
@@ -1454,9 +1431,10 @@ export async function cleanupStuckWaitingInput(
  * and its next sync, taking the transcript and the worktree with it.
  *
  * Past `RESUME_ACK_DEADLINE_MS` the platform stops believing the resume
- * happened and converts the answer into the cold continuation it would have
- * created in the first place — carrying the queued text forward, so nothing the
- * human typed is lost. Loud, not silent: the recorded reason changes to
+ * happened and takes the cold path it would have taken in the first place: the
+ * worker is superseded and its OWN task is reopened for a new attempt carrying
+ * the queued text, so nothing the human typed is lost and no task is inserted
+ * (lib/answer-attempt.ts). Loud, not silent: the recorded reason changes to
  * `resume_not_acknowledged` and a warning note goes to the task feed.
  *
  * Idempotent three ways over: the SQL predicate requires the answer to still be
@@ -1479,10 +1457,9 @@ export async function cleanupUnresumedAnswers(
     columns: {
       id: true, taskId: true, accountId: true, workspaceId: true, branch: true,
       milestones: true, pendingInstructions: true, instructionHistory: true,
-      completedAt: true,
+      completedAt: true, lastCommitSha: true,
     },
-    // The workspace feeds the continuation's dispatch (webhook, repo, name).
-    with: { task: true, workspace: true },
+    with: { task: true },
   });
 
   let degraded = 0;
@@ -1521,7 +1498,7 @@ export async function cleanupUnresumedAnswers(
         eq(workers.status, 'waiting_input'),
         eq(workers.pendingInstructions, answer),
       ))
-      .returning({ id: workers.id });
+      .returning({ id: workers.id, completedAt: workers.completedAt });
 
     if (!claimed) continue;
 
@@ -1542,87 +1519,77 @@ export async function cleanupUnresumedAnswers(
     };
     delete coldDelivery.ackDeadlineAt;
 
-    if (task?.id) {
-      // No transactions on neon-http: if this insert throws (network blip,
-      // constraint violation), compensate by hand — undo the CAS above so the
-      // worker goes back to `waiting_input` with the answer still queued,
-      // instead of sitting `superseded` forever with the answer discarded and
-      // no continuation to pick it up (the candidate query only looks at
-      // `waiting_input`).
-      let continuation;
-      try {
-        [continuation] = await db
-          .insert(tasks)
-          .values(buildContinuationTaskValues({
-            task: task as ContinuationParentTask,
-            workspaceId: worker.workspaceId,
-            workerId: worker.id,
-            branch: worker.branch,
-            milestones: (worker.milestones as Array<{ type?: string; label?: string }>) || [],
-            // The question was cleared from `waitingFor` when the answer was
-            // claimed; the delivery record kept a copy precisely for this.
-            question: delivery.question || 'A question the agent asked (not retained)',
-            answer,
-            delivery: coldDelivery,
-          }))
-          .returning();
-      } catch (err) {
-        console.error(`[Worker ${worker.id}] Cold-continuation insert failed, restoring answer:`, err);
-        await db
-          .update(workers)
-          .set({
-            status: 'waiting_input',
-            pendingInstructions: answer,
-            completedAt: worker.completedAt ?? null,
-            updatedAt: new Date(),
-          })
-          .where(eq(workers.id, worker.id));
-        noteWorkChanged({ workerIds: [worker.id] });
-        continue;
-      }
-
-      // Best-effort from here: the continuation task exists, so the answer is
-      // safe even if these two writes fail.
-      try {
-        await db
-          .update(tasks)
-          .set({
-            context: { ...((task.context as Record<string, unknown>) || {}), answerDelivery: coldDelivery },
-            updatedAt: new Date(),
-          })
-          .where(eq(tasks.id, task.id));
-
-        await db.insert(missionNotes).values({
-          missionId: task.missionId ?? null,
-          taskId: task.id,
-          workerId: worker.id,
-          authorType: 'system',
-          type: 'warning',
-          title: 'Answer never reached the parked session',
-          body: describeAnswerPath(coldDecision),
-          status: 'open',
-        });
-      } catch (err) {
-        console.error(`[Worker ${worker.id}] Post-continuation bookkeeping failed:`, err);
-      }
-
-      // Wake runners for the continuation, as for any new task: a webhook-only
-      // workspace never polls, so without this it never runs. Held and
-      // local-executor missions are not filtered (the claim gate refuses
-      // them), and delivery reads the inherited runnerPreference off the row.
-      // Once per continuation: a later pass skips this worker (path is no
-      // longer `resume`). wakeTask never throws; the dashboard announce is
-      // best-effort, so one failure does not stop the sweep.
-      if (continuation) {
-        await wakeTask(continuation.id, 'task.created');
-        try {
-          const workspace = (worker as any).workspace ?? { id: worker.workspaceId };
-          await announceTaskCreated(continuation, workspace);
-        } catch (err) {
-          console.error(`[Worker ${worker.id}] Continuation task announce failed:`, err);
-        }
-      }
+    // No transactions on neon-http: if the reopen throws (network blip) or
+    // moves nothing (the task closed, or another attempt went live), undo the
+    // CAS above so the worker goes back to `waiting_input` with the answer
+    // still queued, instead of sitting `superseded` forever with the answer
+    // discarded and no attempt to pick it up (the candidate query only looks
+    // at `waiting_input`, so a later pass revisits it).
+    const restoreAnswer = async () => {
+      await db
+        .update(workers)
+        .set({
+          status: 'waiting_input',
+          pendingInstructions: answer,
+          completedAt: worker.completedAt ?? null,
+          updatedAt: new Date(),
+        })
+        .where(eq(workers.id, worker.id));
+      noteWorkChanged({ workerIds: [worker.id] });
+    };
+    const taskId = task?.id ?? worker.taskId;
+    if (!taskId) {
+      await restoreAnswer();
+      continue;
     }
+    let reopened = false;
+    try {
+      // Lazy, like the kernel modules above: its kernel/owner graph would
+      // otherwise join every route that loads this module.
+      const { reopenTaskForAnsweredAttempt } = await import('@/lib/answer-attempt');
+      const r = await reopenTaskForAnsweredAttempt({
+        taskId,
+        worker: { id: worker.id, branch: worker.branch ?? null, lastCommitSha: worker.lastCommitSha ?? null, completedAt: claimed.completedAt ?? null },
+        milestones: (worker.milestones as Array<{ type?: string; label?: string }>) || [],
+        // The question was cleared from `waitingFor` when the answer was
+        // claimed; the delivery record kept a copy precisely for this.
+        question: delivery.question || 'A question the agent asked (not retained)',
+        answer,
+        delivery: coldDelivery,
+        source: 'sweep:unresumed-answer',
+      });
+      reopened = r.reopened;
+      if (!r.reopened) console.warn(`[Worker ${worker.id}] Unacknowledged answer could not reopen task ${taskId} (${r.reason}); answer restored`);
+    } catch (err) {
+      console.error(`[Worker ${worker.id}] Reopening the task for a new attempt failed, restoring answer:`, err);
+    }
+    if (!reopened) {
+      await restoreAnswer();
+      continue;
+    }
+
+    // Best-effort from here: the reopened task carries the answer, so it is
+    // safe even if these fail, and one failure does not stop the sweep.
+    try {
+      await releaseAndNotify(taskId, 'abandoned');
+      await db.insert(missionNotes).values({
+        missionId: task?.missionId ?? null,
+        taskId,
+        workerId: worker.id,
+        authorType: 'system',
+        type: 'warning',
+        title: 'Answer never reached the parked session',
+        body: describeAnswerPath(coldDecision),
+        status: 'open',
+      });
+    } catch (err) {
+      console.error(`[Worker ${worker.id}] Post-reopen bookkeeping failed:`, err);
+    }
+
+    // Wake runners for the reopened task, as every requeue does: a
+    // webhook-only workspace never polls. Once: a later pass skips this
+    // worker (it is no longer parked). wakeTask never throws.
+    await wakeTask(taskId, 'task.requeued');
 
     degraded++;
   }
@@ -1641,7 +1608,7 @@ export async function cleanupUnresumedAnswers(
 
 /**
  * Send an answer that went back to an interactive session, and was never read,
- * to a follow-up task.
+ * to a new attempt of the same task.
  *
  * `/respond`'s interactive path flips the worker to `running` and queues the
  * answer for the session that asked (`ask_human`). If that session dies between
@@ -1650,17 +1617,18 @@ export async function cleanupUnresumedAnswers(
  * cleanupUnresumedAnswers sees it, and the answer sits on a `running` row until
  * the 2 h idle reaper fails it. Past INTERACTIVE_ANSWER_READ_DEADLINE_MS with
  * no activity on the worker, the answer goes to the cold continuation it would
- * have gone to had the session already been gone when the human answered.
+ * have gone to had the session already been gone when the human answered: a
+ * new attempt of the worker's own task (lib/answer-attempt.ts), not a new task.
  *
  * "No activity" is the worker's `updatedAt`, which the answer itself, any
  * update_progress and every plugin presence touch move, so a session that is
  * busy and checking in is never overtaken. The claiming write is gated on it
  * staying quiet; a session that reads the answer or checks in first wins.
  *
- * The answer also leaves the old task's queue, and the worker is superseded:
- * a session that does come back gets "this went to a follow-up task" from
+ * The answer also leaves the task's message queue, and the worker is
+ * superseded: a session that does come back gets `session_ended` from
  * await_answer and an abort from everything else, instead of acting on the
- * answer alongside the follow-up.
+ * answer alongside the new attempt.
  *
  * See docs/specs/answered-question-resume.md.
  */
@@ -1680,8 +1648,9 @@ export async function cleanupUnreadInteractiveAnswers(
     columns: {
       id: true, taskId: true, accountId: true, workspaceId: true, branch: true,
       milestones: true, instructionHistory: true, runner: true, status: true, updatedAt: true,
+      lastCommitSha: true,
     },
-    with: { task: true, workspace: true },
+    with: { task: true },
   });
 
   let degraded = 0;
@@ -1710,7 +1679,7 @@ export async function cleanupUnreadInteractiveAnswers(
       .update(workers)
       .set({
         status: 'superseded',
-        currentAction: 'Answer went to a follow-up task — the session never read it',
+        currentAction: 'Answer went to a new attempt of this task — the session never read it',
         completedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -1719,7 +1688,7 @@ export async function cleanupUnreadInteractiveAnswers(
         eq(workers.status, 'running'),
         lt(workers.updatedAt, quietSince),
       ))
-      .returning({ id: workers.id });
+      .returning({ id: workers.id, completedAt: workers.completedAt });
 
     if (!claimed) continue;
 
@@ -1736,25 +1705,28 @@ export async function cleanupUnreadInteractiveAnswers(
       decidedAt: new Date(now).toISOString(),
     };
 
-    let continuation;
+    let reopened = false;
     try {
-      [continuation] = await db
-        .insert(tasks)
-        .values(buildContinuationTaskValues({
-          task: task as ContinuationParentTask,
-          workspaceId: worker.workspaceId,
-          workerId: worker.id,
-          branch: worker.branch,
-          milestones: (worker.milestones as Array<{ type?: string; label?: string }>) || [],
-          question: delivery.question || 'A question the agent asked (not retained)',
-          answer,
-          delivery: coldDelivery,
-        }))
-        .returning();
+      // Lazy, like the kernel modules above: its kernel/owner graph would
+      // otherwise join every route that loads this module.
+      const { reopenTaskForAnsweredAttempt } = await import('@/lib/answer-attempt');
+      const r = await reopenTaskForAnsweredAttempt({
+        taskId: task.id,
+        worker: { id: worker.id, branch: worker.branch ?? null, lastCommitSha: worker.lastCommitSha ?? null, completedAt: claimed.completedAt ?? null },
+        milestones: (worker.milestones as Array<{ type?: string; label?: string }>) || [],
+        question: delivery.question || 'A question the agent asked (not retained)',
+        answer,
+        delivery: coldDelivery,
+        source: 'sweep:unread-interactive-answer',
+      });
+      reopened = r.reopened;
+      if (!r.reopened) console.warn(`[Worker ${worker.id}] Unread interactive answer could not reopen task ${task.id} (${r.reason}); answer restored`);
     } catch (err) {
+      console.error(`[Worker ${worker.id}] Reopening the task for a new attempt failed, restoring the interactive answer:`, err);
+    }
+    if (!reopened) {
       // No transactions on neon-http: undo the claim so the session can still
       // read its answer, and a later pass can try again.
-      console.error(`[Worker ${worker.id}] Cold-continuation insert failed, restoring the interactive answer:`, err);
       await db
         .update(workers)
         .set({ status: 'running', completedAt: null, updatedAt: worker.updatedAt })
@@ -1762,24 +1734,11 @@ export async function cleanupUnreadInteractiveAnswers(
       noteWorkChanged({ workerIds: [worker.id] });
       continue;
     }
+    noteWorkChanged({ workerIds: [worker.id] });
 
-    // Best-effort from here: the continuation carries the answer.
+    // Best-effort from here: the reopened task carries the answer.
     try {
       await clearWorkerMessages(task.id, [delivery.messageId]);
-      await db
-        .update(tasks)
-        .set({
-          context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('answerDelivery', ${JSON.stringify(coldDelivery)}::jsonb)` as any,
-          updatedAt: new Date(),
-        })
-        .where(eq(tasks.id, task.id));
-      if (continuation) {
-        await db
-          .update(workers)
-          .set({ continuationTaskId: continuation.id })
-          .where(eq(workers.id, worker.id));
-        noteWorkChanged({ workerIds: [worker.id] });
-      }
       await db.insert(missionNotes).values({
         missionId: task.missionId ?? null,
         taskId: task.id,
@@ -1790,21 +1749,13 @@ export async function cleanupUnreadInteractiveAnswers(
         body: describeAnswerPath(coldDecision),
         status: 'open',
       });
-      // The work goes on under the continuation's id, as on /respond's cold path.
+      // The superseded attempt's path claims go, as on every requeue.
       await releaseAndNotify(task.id, 'abandoned');
     } catch (err) {
-      console.error(`[Worker ${worker.id}] Post-continuation bookkeeping failed:`, err);
+      console.error(`[Worker ${worker.id}] Post-reopen bookkeeping failed:`, err);
     }
 
-    if (continuation) {
-      await wakeTask(continuation.id, 'task.created');
-      try {
-        const workspace = (worker as any).workspace ?? { id: worker.workspaceId };
-        await announceTaskCreated(continuation, workspace);
-      } catch (err) {
-        console.error(`[Worker ${worker.id}] Continuation task announce failed:`, err);
-      }
-    }
+    await wakeTask(task.id, 'task.requeued');
 
     degraded++;
   }

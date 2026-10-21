@@ -1,9 +1,9 @@
 @import "tailwindcss";
-/* The shared AI kit's chat components (@builddai/ai-kit/chat/react): its
+/* The shared AI kit's chat components (@buildd/ai-kit/chat/react): its
    neutral defaults and its layout, each in a layer so buildd's own mapping
    ("Chat on the kit", at the end of this file) and Tailwind utilities win. */
-@import "@builddai/ai-kit/chat/theme.css" layer(base);
-@import "@builddai/ai-kit/chat/styles.css" layer(components);
+@import "@buildd/ai-kit/chat/theme.css" layer(base);
+@import "@buildd/ai-kit/chat/styles.css" layer(components);
 @config "../../tailwind.config.ts";
 
 /* ── Z-Index Scale ──
@@ -301,6 +301,14 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 
 .animate-status-pulse {
   animation: status-pulse 1.5s ease-in-out infinite;
+}
+
+/* This rule is unlayered, so it beats Tailwind's `motion-reduce:animate-none`:
+   reduced motion has to be honoured here. A live mark stays lit, still. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-status-pulse {
+    animation: none;
+  }
 }
 
 /* Block-ticker spinner — the replacement for animate-spin+rounded-full rings
@@ -1000,7 +1008,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 
 /* ── Chat on the kit (knowledge-base: buildd/design/shared-ai-kit.md, 1c "Theming"). buildd's
  * tools menu, tier picker, approval and setup cards and the empty canvas are
- * the kit's components (@builddai/ai-kit/chat/react). They read only these
+ * the kit's components (@buildd/ai-kit/chat/react). They read only these
  * --kit-* properties, mapped here once from the chat roles above, so they
  * follow the day/night switch. Objects stay square: --kit-radius-hard is 0;
  * only the conversation's bubbles are soft (--kit-radius-soft). Declared on

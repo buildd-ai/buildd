@@ -7,13 +7,13 @@
  * mapping stays the team admin's (knowledge-base: buildd/design/agent-chat.md, "Models: tiers").
  *
  * The box, Enter / Shift+Enter, Send becoming Stop and the toolbar slots are
- * the kit's `ChatComposer` (@builddai/ai-kit/chat/react). buildd fills the
+ * the kit's `ChatComposer` (@buildd/ai-kit/chat/react). buildd fills the
  * slots: `scope` (the workspace switcher or a locked scope), `tools`, `tier`,
  * `edge` (the streaming sweep), `footer` (keyboard hints), `mood` and
  * `compact`; globals.css ("Composer on the kit") draws it as buildd's slab.
  */
 import { forwardRef, useImperativeHandle, useRef, type ReactNode } from 'react';
-import { ChatComposer as KitComposer, type ChatComposerHandle as KitComposerHandle } from '@builddai/ai-kit/chat/react';
+import { ChatComposer as KitComposer, type ChatComposerHandle as KitComposerHandle } from '@buildd/ai-kit/chat/react';
 import { CHAT_MAX_MESSAGE_CHARS, CHAT_PASTE_ATTACHMENT_CHARS, type ChatDraftAttachment, type ChatFileDraft, type ChatTierName } from '@buildd/shared';
 import { discardChatUpload, uploadChatFile } from './upload-file';
 import ToolsMenu from './ToolsMenu';

@@ -89,8 +89,13 @@ function isTestFileName(path: string): boolean {
 
 async function discoverUnitTests(): Promise<string[]> {
   const files: string[] = [];
-  for await (const path of new Bun.Glob('**/*.test.{ts,tsx}').scan({ cwd: '.', onlyFiles: true })) {
+  for await (const raw of new Bun.Glob('**/*.test.{ts,tsx}').scan({ cwd: '.', onlyFiles: true })) {
+    // Bun.Glob yields backslash separators on Windows; UNIT_TEST_ROOTS are slash prefixes.
+    const path = raw.replaceAll('\\', '/');
     if (isUnitTestFile(path)) files.push(path);
+  }
+  if (files.length === 0) {
+    throw new Error('discovered no unit test files at all — wrong cwd, or path separators not matching UNIT_TEST_ROOTS');
   }
   return files.sort();
 }
@@ -133,7 +138,7 @@ export async function discoverHiddenDirTests(
   for (const root of roots) {
     const glob = new Bun.Glob(`${root}**/.*/**/*.test.{ts,tsx}`);
     for await (const path of glob.scan({ cwd, onlyFiles: true, dot: true })) {
-      found.add(path);
+      found.add(path.replaceAll('\\', '/'));
     }
   }
   return [...found].sort();
@@ -661,6 +666,14 @@ export async function runTestFile(
       throw new Error(
         `No space left on ${tmpdir()} while creating a per-file test home. ` +
           'Point TMPDIR at a directory with free space (e.g. an ignored directory inside your worktree) and re-run.',
+        { cause: err },
+      );
+    }
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'EPERM' || code === 'EACCES' || code === 'EROFS') {
+      throw new Error(
+        `Cannot create a per-file test home in ${tmpdir()} (${code}): the temp directory is read-only here. ` +
+          'Point TMPDIR at a writable directory (e.g. an ignored directory inside your worktree) and re-run.',
         { cause: err },
       );
     }

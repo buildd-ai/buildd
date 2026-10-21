@@ -828,6 +828,7 @@ export function HealthClient({
             // From the fleet when it loaded, so "in use now" and "slots online" match Running now above.
             capacityNow={runnerLanes ? runnerLanes.fleet.capacity : runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0)}
             busyNow={runnerLanes ? runnerLanes.fleet.runners.reduce((n, r) => n + (r.online ? r.slots.filter(s => s.worker).length : 0), 0) : runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
+            slots={runnerLanes?.fleet.slots ?? null}
             workspaceId={wsFilter}
           />
         </div>

@@ -13,7 +13,7 @@
  * declares, so a read op can't reach a write route even if its handler tried.
  */
 
-import { CHANGED_SINCE_SHOWN } from '@builddai/ai-kit/chat/contract';
+import { CHANGED_SINCE_SHOWN } from '@buildd/ai-kit/chat/contract';
 import { isLiveWorkerStatus, isSystemRoleSlug } from '@buildd/shared';
 import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';

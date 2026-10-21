@@ -2,13 +2,13 @@
 title: Capability Requests and Grants
 status: active
 owner: max
-last_verified: 2026-10-12
-summary: An agent MUST get access it lacked at start only by asking for a semantic need, resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
+last_verified: 2026-10-20
+summary: An agent MUST get access it lacked at start only by asking for a provider and an access (read or write), resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
 domain: auth
 surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/task-delegation.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/lib/connector-gateway.ts]
 related: [agent-capabilities, model-inference-agent-capability, mcp-connectors-and-roles, team-permissions]
 keywords: [connector gateway, native MCP, tools/list, tools/call, readOnlyHint, toolPolicy, connectorCeiling, request_capability, capability grant, capability policy, auto_grant, ask_human, forbidden, approve, deny, revoke, lease, TTL, provider write guard]
-verified_by: [apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts]
+verified_by: [packages/core/__tests__/provider-access-ask.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts]
 supersedes: []
 assertions:
   - id: request-route
@@ -88,8 +88,8 @@ assertions:
 # Capability Requests and Grants
 
 Discovery ([resolve_capability](mcp-connectors-and-roles.md)) answers "what
-could serve this need here". This spec is the next step: a running agent
-asks for it, team policy answers, and what is granted is narrow, temporary
+could serve this category here" (a search filter). This spec is the next
+step: a running agent asks for a provider at read or write, team policy answers, and what is granted is narrow, temporary
 and checked on every use. It reuses connectors, workspace enablement, role
 `connectorRefs`, credential health and the catalog policy through discovery,
 and records every decision in `agent_capability_decisions`. It adds two
@@ -98,36 +98,48 @@ connector store.
 
 ## Asking
 
-**Capability statement**: A live agent run MUST be able to ask for a
-semantic need (`domain:verb`, or `model.inference`) for its own worker, and
+**Capability statement**: A live agent run MUST be able to ask for access to
+a named provider (`provider` + `access`: `read` or `write`; or
+`model.inference`) for its own worker, and
 MUST get one of a fixed set of outcomes with next steps and alternatives,
 without naming a connector id or seeing a credential.
 
 **Invariants**:
 - `POST /api/agent-capabilities/requests` (MCP `request_capability`) takes
-  `capability`, and optionally `provider` (catalog slug), `tool` (exact),
-  `resource`, `environment`, `risk`, `ttlSeconds`, `reason`. A body naming
+  `provider` (catalog slug) and `access` (`read | write`), and optionally
+  `tool` (exact), `resource`, `environment`, `risk`, `ttlSeconds`, `reason`.
+  There is no `domain:verb` to request or be granted: grants and policies are
+  per provider and risk, and the gateway decides per tool. A `domain:verb`
+  body is refused 400 and points at the search below. A body naming
   `connectorId`, `credentialRef`, `apiKey`, `token`, `baseURL`, `endpoint`,
   `headers` or `url` is refused 400. `*` is never a wildcard.
 - The principal is re-resolved per request (`resolveWorkerPrincipal`): a live
   worker on its task, claimed by the calling account. A per-task token
   reaches only its own task's worker; anything else answers 404. A trigger
   token is refused. A request from an ended task is refused 409.
-- Risk is the highest of the verb, the declared `risk`, and the named tool's
+- Risk is the highest of the access, the declared `risk`, and the named tool's
   risk by name (`classifyToolRisk`: read verbs read, destructive or authority
   verbs admin, anything else write). An agent cannot lower it.
 - Outcomes: `existing` (the role already mounts the connector for a read, or
   a live grant covers the exact ask), `auto_granted`, `pending_approval`,
   `denied`, `forbidden`, `need_connection`, `need_reauth`, `unhealthy`,
   `unavailable`. Every outcome lists `nextSteps` and up to five
-  `alternatives` (other providers, with their own outcome).
+  `alternatives` (other installs of the same provider, with their own outcome).
+- The categories (observability, deployment, database, analytics,
+  work_tracking, docs, source_control) are only a search filter:
+  `GET /api/connectors/capabilities?capability=domain:verb` (MCP
+  `resolve_capability`) lists which providers serve one, and `?provider=<slug>
+  &access=read|write` shows one provider's state in a workspace. Nothing
+  requested, stored, granted or audited carries a category.
 - One open row per (worker, target, exact ask): asking again, or two asks
   racing, returns the same row (partial unique index on `dedupe_key` over
   `pending`/`granted`). A denied ask is not re-opened for that worker.
-- `tasks:create` (filing tasks in another workspace of the team) is served by
-  buildd itself, not a connector: `resource` is the target workspace UUID,
-  `provider` is always `buildd`, risk is always `write`, so a person always
-  decides. Its own workspace is `existing`; another team's is `forbidden`
+- buildd's own capabilities live under provider `buildd`, served by buildd
+  itself, not a connector: `resource` is the target workspace UUID and a
+  person always decides. `access: write` is `tasks:create` (file tasks there),
+  `access: read` is `analytics:read` (read its analytics: stats, decisions,
+  health). The capability names `tasks:create` / `analytics:read` are still
+  accepted in place of provider + access. Its own workspace is `existing`; another team's is `forbidden`
   (no row); a target the task's delegation already grants is `existing`. A
   `pending_approval` keeps the run alive: the next steps tell the agent to keep
   working and ask again, never to end the run or ask_human for the same access.
@@ -135,15 +147,17 @@ without naming a connector id or seeing a credential.
   otherwise). Approval writes the grant onto the task's own delegation
   (`tasks.delegation`, lib/task-delegation.ts), which the task token re-reads
   on every call; if that write fails the approval is undone. Revoking removes
-  it from the delegation.
+  it from the delegation. A refused read of another workspace's analytics is
+  therefore one real action: the agent asks `buildd` `read` on that workspace,
+  a person approves, and the same call is retried.
 
 **Acceptance criteria**:
-- AC-1: GIVEN Axiom installed and connected but the team has blocked it in the catalog WHEN an agent asks for `observability:query` THEN the outcome is `forbidden` (`catalog_blocked`) and no row is written.
+- AC-1: GIVEN Axiom installed and connected but the team has blocked it in the catalog WHEN an agent asks for `axiom` `read` THEN the outcome is `forbidden` (`catalog_blocked`) and no row is written.
 - AC-2: GIVEN no role in the workspace mounts Axiom and no rule WHEN an agent asks THEN the outcome is `pending_approval`; a second identical ask returns the same request.
 - AC-3: GIVEN another role mounts Axiom and no rule WHEN an agent asks for a read THEN it is `auto_granted` with the requested TTL (narrowed by policy).
 - AC-4: GIVEN the role mounts a provider WHEN an agent asks for `write` THEN it is `pending_approval` (`write_needs_human`), whatever the team rule says.
 - AC-5: WHEN a body names a connector id THEN the route returns 400.
-- AC-5a: GIVEN a running task with no delegation WHEN its agent asks for `tasks:create` on a same-team workspace THEN the outcome is `pending_approval`; WHEN a person who reaches that workspace approves THEN the task's delegation grants `tasks:create` there and a repeat ask is `existing`; WHEN revoked THEN the grant leaves the delegation.
+- AC-5a: GIVEN a running task with no delegation WHEN its agent asks for `buildd` `write` (or `read`) on a same-team workspace THEN the outcome is `pending_approval`; WHEN a person who reaches that workspace approves THEN the task's delegation grants `tasks:create` (`analytics:read` for read) there and a repeat ask is `existing`; WHEN revoked THEN the grant leaves the delegation.
 
 ## Team policy
 
@@ -205,6 +219,8 @@ fact it was granted under still holds; revoking it MUST stop the next call.
   ([model-inference-agent-capability](model-inference-agent-capability.md)).
 
 **Acceptance criteria**:
+- AC-5b: GIVEN a task refused reading another workspace's analytics WHEN it asks `buildd` `read` on that workspace and a person approves THEN its delegation carries `analytics:read` there and the retried read passes.
+- AC-5c: GIVEN an agent whose question to a person asks for provider access (e.g. widening the worker key with `analytics:read` for Axiom) WHEN it calls `ask_human` THEN the call is refused with `use_request_capability` and the canonical ask (`provider: axiom, access: read`, plus a named resource such as `buildd-traces`), nothing is parked, and the answer never recommends widening the worker key: `analytics:read` is buildd's own analytics, not a provider's. A runner-managed agent's `AskUserQuestion` is not yet intercepted; its prompt and the `request_capability` description carry the same rule.
 - AC-6: GIVEN an approved grant WHEN an admin revokes it THEN the next `authorizeCapabilityUse` is refused.
 - AC-7: GIVEN a live grant WHEN the task's role changes, the task ends, the credential needs reconnecting, or the provider is blocked THEN the next use is refused with `role_changed`, `task_terminal`, `credential_dead` or `catalog_blocked`.
 - AC-8: GIVEN a `query` grant with no tool named WHEN the agent calls a write-named tool THEN it is refused `tool_risk_exceeds_grant`.

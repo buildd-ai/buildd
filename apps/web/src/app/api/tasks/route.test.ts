@@ -42,7 +42,8 @@ let intakeOverride: ((...a: any[]) => Promise<any>) | null = null;
 // The missions module's stage reader, reached through the composition root
 // only when a caller asks for include=missionStages (buildd top).
 const mockTaskListMissionStages = mock(async (_ids: string[], _ws: string[]) => new Map<string, unknown>());
-mock.module('@/modules', () => ({ TASK_LIST_MISSION_STAGES: mockTaskListMissionStages }));
+const mockTaskReachRefusal = mock(async (..._args: unknown[]) => {});
+mock.module('@/modules', () => ({ TASK_LIST_MISSION_STAGES: mockTaskListMissionStages, TASK_REACH_REFUSAL: mockTaskReachRefusal }));
 
 mock.module('@/lib/subject-intake', () => ({
   ...realSubjectIntake,
@@ -876,8 +877,9 @@ describe('POST /api/tasks', () => {
       const body = await response.json();
       expect(body.error).toMatch(/only in its own workspace, or one its delegation grants tasks:create on/);
       // It names the way to ask, so the agent asks instead of parking on a question.
-      expect(body.error).toContain("request_capability { capability: 'tasks:create'");
+      expect(body.error).toContain("request_capability { provider: 'buildd', access: 'write'");
       expect(body.code).toBe('delegation_required');
+      expect(mockTaskReachRefusal).toHaveBeenCalledWith(scoped, 'ws-2', 'tasks:create');
       expect(mockTasksInsert).not.toHaveBeenCalled();
     });
 

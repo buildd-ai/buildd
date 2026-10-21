@@ -1,6 +1,7 @@
 {
   "name": "@buildd/core",
-  "version": "0.370.0",
+  "version": "0.374.1",
+  "private": true,
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -338,7 +339,7 @@
     "@buildd/dispatch-contract": "workspace:*",
     "@buildd/shared": "workspace:*",
     "@buildd/spec-contract": "workspace:*",
-    "@builddai/ai-kit": "workspace:*",
+    "@buildd/ai-kit": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
     "@openai/codex-sdk": "^0.163.0",
     "@opentelemetry/api": "^1.9.0",

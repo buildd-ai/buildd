@@ -16,7 +16,7 @@ const { act, createElement } = await import('react');
 const h = createElement as (type: unknown, props?: unknown, ...children: unknown[]) => any;
 const { createRoot } = await import('react-dom/client');
 const kit = await import('./index');
-const { encodeApprovalPreview, ONE_CARD_PER_TURN_REASON } = await import('@builddai/ai-kit/chat/contract');
+const { encodeApprovalPreview, ONE_CARD_PER_TURN_REASON } = await import('@buildd/ai-kit/chat/contract');
 
 let container: HTMLElement;
 let root: ReturnType<typeof createRoot>;

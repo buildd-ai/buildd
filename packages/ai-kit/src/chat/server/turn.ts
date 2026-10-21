@@ -46,7 +46,7 @@ import {
   type StepData,
   type SteerData,
   type TurnErrorData,
-} from '@builddai/ai-kit/chat/contract';
+} from '@buildd/ai-kit/chat/contract';
 import { classifyTurnError } from './errors';
 import { contentInContext, toolOutputInHistory, ToolGroupsError, type ToolGroups } from './permissions';
 import { approvalRequestsIn, previewMatches, reconcileApprovals, type ApprovalRequestRow } from './approvals';

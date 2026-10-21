@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { MAX_CHOICE_OPTIONS } from '@builddai/ai-kit/decide';
+import { MAX_CHOICE_OPTIONS } from '@buildd/ai-kit/decide';
 import {
   DONE_LABEL,
   MANIFEST_MAX_CANDIDATES,

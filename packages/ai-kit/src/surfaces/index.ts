@@ -1,5 +1,5 @@
 /**
- * `@builddai/ai-kit/surfaces`: Jev picks which of the app's own chips and cards
+ * `@buildd/ai-kit/surfaces`: Jev picks which of the app's own chips and cards
  * to show, and in what order (server; builds on `/decide`).
  *
  * - `defineSurface` (0.14.0): several slots (rank chips, a choice card) in one
@@ -23,7 +23,7 @@ import {
   type DecisionText,
   type RunOptions,
   type ScoreQuestion,
-} from '@builddai/ai-kit/decide';
+} from '@buildd/ai-kit/decide';
 
 export * from './surface';
 import { checkGate, MIN_GATE_EVAL_ROWS, slotFingerprintOf, type EvaluableSurface, type SlotGate, type SurfaceCandidate } from './surface';

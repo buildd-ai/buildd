@@ -24,8 +24,8 @@ import {
   INTERACTIVE_WORKER_RUNNER,
   isTerminalWorkerStatus,
   LIVE_WORKER_STATUSES,
+  OPEN_TASK_STATUSES,
 } from '@buildd/shared';
-import { FILING_TARGETS_CONTEXT_KEY, inheritTaskDelegation, readFilingTargets } from '@buildd/core/token-delegation';
 
 /**
  * How stale `workers.updatedAt` may be and still mean "the runner that holds
@@ -104,7 +104,7 @@ export const INTERACTIVE_SESSION_POLL_STALE_MS = 5 * 60 * 1000;
 
 /**
  * How long an answer sent back to an interactive session may sit unread while
- * the session shows no sign of life, before it goes to a follow-up task.
+ * the session shows no sign of life, before it goes to a new attempt of the task.
  *
  * Measured from the worker's last activity (`updatedAt`: the answer itself, an
  * update_progress, a plugin presence touch), not from the answer alone, so a
@@ -123,7 +123,10 @@ export type AnswerPathReason = keyof typeof ANSWER_PATH_REASONS;
  * - `interactive`: the worker is a person's own MCP session (claim_task,
  *   `workers.runner = 'mcp'`); the answer is queued as an `answer` worker
  *   message that its `receive_messages` returns. No runner, no new task.
- * - `cold_continuation`: supersede + `Continue:` task.
+ * - `cold_continuation`: supersede the worker and reopen its OWN task for a new
+ *   attempt (a new worker row under the same task id) carrying the answer. The
+ *   name predates that shape: it is a stored, queryable value, so it is kept,
+ *   and `AnswerDeliveryRecord.continuation: 'same_task'` marks the new form.
  */
 export type AnswerPath = 'resume' | 'interactive' | 'cold_continuation';
 
@@ -346,14 +349,22 @@ export function explainNotWaiting(input: {
   /** The worker is an interactive session (`workers.runner = 'mcp'`). */
   interactive?: boolean;
 }): NotWaitingExplanation {
-  // `superseded` is written only by an answer (cold path) or a reassign.
+  // `superseded` is written only by an answer (cold path) or a reassign. A
+  // continuation task id is a legacy record (the cold path used to insert a
+  // `Continue:` task); without one the answer went to a new attempt of this
+  // same task, so the reader stays where they are.
   if (input.workerStatus === 'superseded') {
+    if (input.continuationTaskId) {
+      return {
+        reasonCode: 'already_answered',
+        message: 'This was already answered, and the work moved to a follow-up task.',
+        nextAction: { kind: 'open_task', taskId: input.continuationTaskId },
+      };
+    }
     return {
       reasonCode: 'already_answered',
-      message: 'This was already answered, and the work moved to a follow-up task.',
-      nextAction: input.continuationTaskId
-        ? { kind: 'open_task', taskId: input.continuationTaskId }
-        : { kind: 'refresh' },
+      message: 'This was already answered. A new attempt of this task carries the answer.',
+      nextAction: { kind: 'refresh' },
     };
   }
   if (isTerminalWorkerStatus(input.workerStatus)) {
@@ -412,11 +423,17 @@ export function isAnswerQueued(worker: { pendingInstructions?: string | null; in
 export function recordedAnswerOf(input: {
   workerStatus: string | null;
   instructionHistory: unknown;
+  /** A legacy `Continue:` task's context (`userInput`). */
   continuationContext?: unknown;
+  /** The worker's own task context: a new attempt's `answeredQuestions`. */
+  taskContext?: unknown;
+  workerId?: string | null;
 }): string | null {
   if (input.workerStatus === 'superseded') {
-    const answer = (input.continuationContext as { userInput?: unknown } | null | undefined)?.userInput;
-    return typeof answer === 'string' && answer ? answer : null;
+    const legacy = (input.continuationContext as { userInput?: unknown } | null | undefined)?.userInput;
+    if (typeof legacy === 'string' && legacy) return legacy;
+    const mine = answeredQuestionsOf(input.taskContext).filter(e => !input.workerId || e.workerId === input.workerId).at(-1);
+    return mine?.answer ? mine.answer : null;
   }
   const message = lastInstruction(input.instructionHistory)?.message;
   return typeof message === 'string' && message ? message : null;
@@ -449,7 +466,7 @@ export function describeAnswerPath(decision: AnswerPathDecision): string {
   if (decision.path === 'interactive') {
     return 'Sent your answer back to the session that asked — it picks it up on its next check-in and carries on where it stopped.';
   }
-  return `Started a fresh continuation instead of resuming the original session, because ${decision.reason}.`;
+  return `Started a new attempt of this task with your answer instead of resuming the original session, because ${decision.reason}.`;
 }
 
 /**
@@ -476,11 +493,17 @@ export interface AnswerDeliveryRecord {
    */
   waitCapId?: string;
   /**
-   * The question being answered, kept so the deadline sweep can build a
-   * continuation description after `waitingFor` has been cleared. Omitted when
-   * a sensitive workspace redacted the prompt away.
+   * The question being answered, kept so the deadline sweep can hand it to the
+   * new attempt after `waitingFor` has been cleared. Omitted when a sensitive
+   * workspace redacted the prompt away.
    */
   question?: string;
+  /**
+   * Cold path only: `'same_task'` when the answer reopened its own task for a
+   * new attempt. Absent on a legacy record, whose cold path inserted a
+   * `Continue:` task instead.
+   */
+  continuation?: 'same_task';
 }
 
 export function buildAnswerDeliveryRecord(opts: {
@@ -507,178 +530,154 @@ export function buildAnswerDeliveryRecord(opts: {
 type MilestoneLike = { type?: string; label?: string; timestamp?: number };
 
 /**
- * The cold continuation's description: original task, what the parked worker
- * got done, the question and the human's answer, verbatim.
- *
- * Shared by `/respond` and by the unacknowledged-resume sweep so the two cannot
- * drift into describing the same event differently.
+ * How many answered questions a task's context keeps. Each new attempt reads
+ * them all; a task asked more than this many times keeps the newest.
  */
-export function buildContinuationDescription(opts: {
-  taskDescription: string | null | undefined;
-  milestones: MilestoneLike[];
-  question: string;
-  answer: string;
-}): string {
-  const milestonesText = opts.milestones.length > 0
-    ? opts.milestones.map(m => `- ${m.label || m.type || 'activity'}`).join('\n')
-    : 'No milestones recorded';
-
-  return [
-    '## Original Task',
-    opts.taskDescription || '',
-    '',
-    '## What Was Accomplished',
-    milestonesText,
-    '',
-    '## Question Asked',
-    opts.question,
-    '',
-    '## User Response',
-    opts.answer,
-    '',
-    '## Already Answered',
-    'The question above was asked by the run this task continues, and a person answered it. Act on that answer; do not ask it again. If you hit the same need again (e.g. access you were told you have), check whether the answer or the task\'s grants already cover it; if something is still missing, ask for that specific thing (request_capability for access), never the same question.',
-  ].join('\n');
-}
+export const ANSWERED_QUESTIONS_KEEP = 10;
 
 /**
- * The subset of the answered task a continuation is built from. The narrowed
- * unions mirror `tasks` in packages/core/db/schema.ts — widening them to
- * `string` would compile here and fail at the insert.
+ * One answered question, as `tasks.context.answeredQuestions` keeps it: what a
+ * new attempt of the same task is told, and what the task page shows as the
+ * reason an attempt ended. The answer is verbatim: it is the person's words.
  */
-export interface ContinuationParentTask {
-  id?: string | null;
-  title?: string | null;
-  description?: string | null;
-  missionId?: string | null;
-  roleSlug?: string | null;
-  mode?: 'execution' | 'planning' | null;
-  taskClass?: string | null;
-  priority?: number | null;
-  outputRequirement?: 'pr_required' | 'artifact_required' | 'none' | 'auto' | null;
-  outputSchema?: Record<string, unknown> | null;
-  category?: 'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review' | 'research' | null;
-  pathManifest?: string[] | null;
-  backend?: 'claude' | 'codex' | null;
-  runnerPreference?: 'any' | 'user' | 'service' | 'action' | null;
-  context?: unknown;
-  /** The task's own cross-workspace grant (packages/core/token-delegation.ts). */
-  delegation?: unknown;
-}
-
-/**
- * The `Continue:` task a cold fallback inserts.
- *
- * Shared by `POST /api/workers/[id]/respond` and by the
- * unacknowledged-resume sweep, which must produce an identical row — two
- * builders for the same event drift, and the drift is only ever noticed as a
- * continuation that lost a field.
- *
- * Field-by-field decision on what carries over from the original task —
- * deliberate per field, not a blanket copy:
- *
- *  - mode, taskClass: COPY. The continuation's job is the ORIGINAL task's job,
- *    now armed with an answer — not a new kind of task. When mode was
- *    'planning' (the parent's deliverable IS a structured plan, e.g. a mission
- *    organizer cycle that asked a clarifying question mid-decompose), the
- *    continuation still owes that same plan; the SDK's outputFormat constraint
- *    (resolveOutputFormat, keyed on mode) applies identically to it, and the
- *    planning-contract guard's mode==='planning' clause
- *    (apps/web/src/app/api/workers/[id]/route.ts) fires the same way regardless
- *    of scheduleId or creationSource — those only gate the guard's separate
- *    orchestrator-fallback clause, which these continuations never hit since
- *    creationSource here always defaults to 'api' (see below).
- *  - priority, outputRequirement, outputSchema, category, pathManifest,
- *    backend: COPY. None of these describe *how* the task was created — they
- *    describe what it must deliver and how, which does not change because a
- *    question was asked. Dropping outputSchema in particular used to silently
- *    swap a custom contract (e.g. a reviewer verdict schema) for either the
- *    default planning schema or no schema at all. Dropping priority sent a
- *    priority-9 task's continuation to the back of the queue. Dropping
- *    pathManifest lost the conflict-serialization edges against sibling tasks
- *    touching the same files.
- *  - dependsOn: NOT copied. Those edges gated the ORIGINAL task's claim on
- *    prerequisites that were already satisfied before it could run in the first
- *    place — the continuation isn't blocked on them again.
- *  - subjectAnchor: NOT copied. It drives the subject-dedup/supersession gate
- *    for auto-filed tasks (friction/webhook/CI-retry); copying it onto a new
- *    task id under a human-answered flow isn't a case that subsystem is
- *    designed for.
- *  - creationSource: NOT copied (defaults to 'api'). It records who/what
- *    created the row; this row was created by a human or API caller answering a
- *    question, which 'api' describes accurately.
- */
-export function buildContinuationTaskValues(opts: {
-  task: ContinuationParentTask | null | undefined;
-  workspaceId: string;
+export interface AnsweredQuestionEntry {
+  id: string;
+  /** The attempt that asked and was superseded. */
   workerId: string;
-  branch: string | null;
-  milestones: MilestoneLike[];
   question: string;
   answer: string;
+  /** Milestone labels the asking attempt reached (types where labels were stripped). */
+  milestones: string[];
+  branch: string | null;
+  reasonCode: AnswerPathReason;
+  reason: string;
+  answeredAt: string;
+}
+
+export function buildAnsweredQuestionEntry(opts: {
+  id?: string;
+  workerId: string;
+  question: string;
+  answer: string;
+  milestones: MilestoneLike[];
+  branch: string | null | undefined;
+  delivery: Pick<AnswerDeliveryRecord, 'reasonCode' | 'reason'>;
+  now?: number;
+}): AnsweredQuestionEntry {
+  return {
+    id: opts.id ?? crypto.randomUUID(),
+    workerId: opts.workerId,
+    question: opts.question,
+    answer: opts.answer,
+    milestones: opts.milestones.map(m => m.label || m.type || 'activity'),
+    branch: opts.branch ?? null,
+    reasonCode: opts.delivery.reasonCode,
+    reason: opts.delivery.reason,
+    answeredAt: new Date(opts.now ?? Date.now()).toISOString(),
+  };
+}
+
+/** The answered questions a task's context holds, oldest first; anything malformed is skipped. */
+export function answeredQuestionsOf(context: unknown): AnsweredQuestionEntry[] {
+  const list = (context as { answeredQuestions?: unknown } | null | undefined)?.answeredQuestions;
+  if (!Array.isArray(list)) return [];
+  return list.filter((e): e is AnsweredQuestionEntry =>
+    !!e && typeof e === 'object' && typeof (e as AnsweredQuestionEntry).id === 'string' && typeof (e as AnsweredQuestionEntry).answer === 'string');
+}
+
+/**
+ * Task statuses an answer may reopen for a new attempt. A `failed` task is one
+ * whose parked worker errored with its question still open (the answer is what
+ * it was waiting for). `completed` and `cancelled` are never reopened: the work
+ * finished, or a person stopped it.
+ */
+export const REOPENABLE_TASK_STATUSES = [...OPEN_TASK_STATUSES, 'failed'] as const;
+
+export function isReopenableTaskStatus(status: string | null | undefined): boolean {
+  return typeof status === 'string' && (REOPENABLE_TASK_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * What a cold fallback merges into the answered task's live context so its next
+ * attempt carries the answer. A merge patch, not a replacement: every key it
+ * does not name (a delegation's filing targets, a mission branch's base) stays
+ * as it is, because it is the same task.
+ *
+ *  - `answeredQuestions`: the existing list plus `entry`, newest
+ *    ANSWERED_QUESTIONS_KEEP, no duplicate ids.
+ *  - `branchContext`: the caller's `requeueBranchContext` for the superseded
+ *    worker's branch, the same continuity every retry requeue writes.
+ *  - `iteration + 1`, `lastCommitSha` when known, and `answerDelivery` marked
+ *    `continuation: 'same_task'`.
+ */
+export function buildAnsweredAttemptContextPatch(opts: {
+  context: unknown;
+  entry: AnsweredQuestionEntry;
+  branchContext: { baseBranch?: string; resumeBranch?: string };
+  lastCommitSha?: string | null;
   delivery: AnswerDeliveryRecord;
 }) {
-  const parentContext = (opts.task?.context as Record<string, unknown>) || {};
-  const currentIteration = (parentContext.iteration as number) || 1;
-  // The same work keeps the same cross-workspace grant a person gave it, and
-  // the same declared need; without them the continuation would hit the wall
-  // its parent was granted past, or start without the claim pre-flight.
-  const delegation = opts.task?.id ? inheritTaskDelegation({ id: opts.task.id, delegation: opts.task.delegation }) : null;
-  const filingTargets = readFilingTargets(parentContext);
-
+  const ctx = (opts.context as Record<string, unknown> | null) || {};
+  const prior = answeredQuestionsOf(ctx).filter(e => e.id !== opts.entry.id);
+  const iteration = typeof ctx.iteration === 'number' && ctx.iteration > 0 ? ctx.iteration : 1;
+  const answerDelivery: AnswerDeliveryRecord = { ...opts.delivery, continuation: 'same_task' };
+  delete answerDelivery.ackDeadlineAt;
   return {
-    workspaceId: opts.workspaceId,
-    title: `Continue: ${opts.task?.title || 'Unknown task'}`,
-    description: buildContinuationDescription({
-      taskDescription: opts.task?.description,
-      milestones: opts.milestones,
-      question: opts.question,
-      answer: opts.answer,
-    }),
-    status: 'pending' as const,
-    parentTaskId: opts.task?.id ?? undefined,
-    missionId: opts.task?.missionId ?? undefined,
-    roleSlug: opts.task?.roleSlug ?? undefined,
-    mode: opts.task?.mode ?? undefined,
-    taskClass: (opts.task?.taskClass ?? 'work') as 'work' | 'attempt' | 'bookkeeping',
-    priority: opts.task?.priority ?? undefined,
-    outputRequirement: opts.task?.outputRequirement ?? undefined,
-    outputSchema: opts.task?.outputSchema ?? undefined,
-    category: opts.task?.category ?? undefined,
-    pathManifest: opts.task?.pathManifest ?? undefined,
-    backend: opts.task?.backend ?? undefined,
-    // Which runners may take the work: the continuation is the same work, so
-    // it goes where the parent was allowed to go (claim routing and webhook
-    // dispatch both read it).
-    runnerPreference: opts.task?.runnerPreference ?? undefined,
-    ...(delegation ? { delegation } : {}),
-    context: {
-      // Honored by the runner's worktree setup — but ONLY when `branch` already
-      // exists on the remote, i.e. the original worker had already pushed. If
-      // the question was asked before anything was pushed (the common case:
-      // mid-task, before create_pr), no such branch exists and the runner
-      // silently cuts a fresh worktree from the default branch. Nothing here
-      // can verify at write time which case applies. This is precisely what
-      // falling back costs; the resume path has no such gap.
-      baseBranch: opts.branch,
-      // Explicit continuity marker (same value; this is what the runner's
-      // resume-vs-cut-from-base logic actually keys on — baseBranch alone is
-      // ambiguous with a mission-branch task's declared base, which must never
-      // be checked out directly).
-      resumeBranch: opts.branch,
-      userInput: opts.answer,
-      previousAttempt: {
-        question: opts.question,
-        milestones: opts.milestones,
-        branch: opts.branch,
-        workerId: opts.workerId,
-      },
-      iteration: currentIteration + 1,
-      // Why this answer did NOT resume the original session. Recorded on the
-      // continuation itself so a reader of the cold task sees it without
-      // reconstructing anything.
-      answerDelivery: opts.delivery,
-      ...(filingTargets.length ? { [FILING_TARGETS_CONTEXT_KEY]: filingTargets } : {}),
-    },
+    answeredQuestions: [...prior, opts.entry].slice(-ANSWERED_QUESTIONS_KEEP),
+    ...opts.branchContext,
+    ...(opts.lastCommitSha ? { lastCommitSha: opts.lastCommitSha } : {}),
+    iteration: iteration + 1,
+    answerDelivery,
+  };
+}
+
+/**
+ * The attempt-history line under a worker an answer superseded onto a new
+ * attempt of its own task: where the answer went and why, in the task's own
+ * words. A worker with no recorded entry (a reassign, or a record from before
+ * entries were kept) gets the plain fallback.
+ */
+export function answeredAttemptLine(taskContext: unknown, workerId: string): string {
+  const entry = answeredQuestionsOf(taskContext).filter(e => e.workerId === workerId).at(-1);
+  if (!entry) return 'Continuation not recorded.';
+  return `A new attempt of this task carries your answer, because ${entry.reason}.`;
+}
+
+/** The question an unanswered-timeout attempt asked, as `tasks.context.unansweredQuestion` keeps it. */
+export interface UnansweredQuestionEntry {
+  workerId: string;
+  prompt: string | null;
+  options: string[];
+  expiredAt: string;
+}
+
+/**
+ * What the waiting-input sweep merges into a task's live context when it
+ * requeues the SAME task after a question nobody answered. The task keeps its
+ * description; "do not ask again" travels as `unansweredQuestion`, which the
+ * runner's prompt builder renders, so the guidance is context and not a rewrite
+ * of what the person wrote. Merge patch: every key it does not name stays.
+ */
+export function buildUnansweredRequeuePatch(opts: {
+  context: unknown;
+  workerId: string;
+  prompt?: string | null;
+  options?: string[];
+  branchContext: { baseBranch?: string; resumeBranch?: string };
+  failureContext: string;
+  now?: number;
+}) {
+  const ctx = (opts.context as Record<string, unknown> | null) || {};
+  const entry: UnansweredQuestionEntry = {
+    workerId: opts.workerId,
+    prompt: opts.prompt ?? null,
+    options: opts.options ?? [],
+    expiredAt: new Date(opts.now ?? Date.now()).toISOString(),
+  };
+  return {
+    ...opts.branchContext,
+    failureContext: opts.failureContext,
+    iteration: (typeof ctx.iteration === 'number' ? ctx.iteration : 0) + 1,
+    unansweredQuestion: entry,
   };
 }

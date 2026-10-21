@@ -57,7 +57,7 @@ function writeKit(repo: string, version: string, changelogVersion = version) {
   mkdirSync(join(repo, 'packages/ai-kit'), { recursive: true });
   writeFileSync(
     join(repo, 'packages/ai-kit/package.json'),
-    JSON.stringify({ name: '@builddai/ai-kit', version }, null, 2),
+    JSON.stringify({ name: '@buildd/ai-kit', version }, null, 2),
   );
   writeFileSync(
     join(repo, 'packages/ai-kit/CHANGELOG.md'),
@@ -187,7 +187,7 @@ describe('publish-ai-kit workflow: plan (push to dev)', () => {
     const before = git(repo, 'rev-parse', 'HEAD').stdout.trim();
     writeFileSync(
       join(repo, 'packages/ai-kit/package.json'),
-      JSON.stringify({ name: '@builddai/ai-kit', version: '0.4.0', description: 'edited' }),
+      JSON.stringify({ name: '@buildd/ai-kit', version: '0.4.0', description: 'edited' }),
     );
     commit(repo, 'edit description');
     const { code, outputs, log } = plan(repo, { BEFORE: before });

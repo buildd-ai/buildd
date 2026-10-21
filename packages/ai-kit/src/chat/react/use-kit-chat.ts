@@ -21,7 +21,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses, type UIMessage } from 'ai';
-import { ATTACHMENT_PART_TYPE, FILE_PART_TYPE, isFileDraft, isSteerPart, isTurnErrorPart, type DraftAttachment, type ChatMessage, type ChatUnavailableBody, type ChatUnavailableReason, type TurnErrorData } from '@builddai/ai-kit/chat/contract';
+import { ATTACHMENT_PART_TYPE, FILE_PART_TYPE, isFileDraft, isSteerPart, isTurnErrorPart, type DraftAttachment, type ChatMessage, type ChatUnavailableBody, type ChatUnavailableReason, type TurnErrorData } from '@buildd/ai-kit/chat/contract';
 
 const REASONS = new Set<ChatUnavailableReason>(['no_key', 'budget_exhausted', 'rate_limited']);
 
