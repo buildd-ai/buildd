@@ -318,6 +318,18 @@ export const MATRIX_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: 'S18b: a person closing the PR on GitHub is CLOSED_UNMERGED(manual), and the transition names who closed it',
+    async run(host) {
+      const s = await new Delivery(host, 2231).open();
+      await s.ownerPushed('H1');
+      const closedBy = { login: 'some-human', type: 'User' };
+      const r = await s.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: closedUnmerged(s, 'H1'), closeCause: 'manual', closedBy });
+      applied(r, 'CLOSED_UNMERGED', 'closed');
+      eq(pick(await s.d(), ['state', 'stateReason']), { state: 'CLOSED_UNMERGED', stateReason: 'manual' }, 'the cause is kept');
+      eq(r.result === 'applied' ? (r.decision.evidence as Record<string, unknown>).closedBy : null, closedBy, 'the closer is on the transition');
+    },
+  },
+  {
     name: 'S19: a fix worker killed after its claim returns to changes-requested with the next attempt owed, and exhausts at the cap',
     async run(host) {
       const s = await new Delivery(host, 224).open();

@@ -1428,7 +1428,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         rounds: c.openRounds().map((r) => ({ op: 'update', roundId: r.id, whenStatus: ['queued', 'reviewing'], set: { status: 'superseded' } })),
         attempts: [{ op: 'cancel_open', families: ['review_fix', 'ci', 'conflict', 'migration'], status: 'cancelled' }],
         effects: [{ ...fx('cancel_open_attempts'), payload: { closeCause: cmd.closeCause, reason: 'closed', ...mootOnResolution(c.view) } }, fx('scan_supersession'), fx('mission_note'), fx('stamp_pr_rows')],
-        evidence: { live: cmd.live },
+        evidence: { live: cmd.live, closeCause: cmd.closeCause, ...(cmd.closedBy ? { closedBy: cmd.closedBy } : {}) },
       });
     }
 
