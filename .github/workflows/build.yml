@@ -588,6 +588,8 @@ jobs:
         with:
           name: unit-test-report-windows
           path: .test-report.log
+          # upload-artifact skips dotfiles unless told otherwise.
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
 
