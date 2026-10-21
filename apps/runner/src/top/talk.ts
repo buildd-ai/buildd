@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSy
 import { homedir, tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { resolveBuilddHome } from '../buildd-home';
+import { restrictDirToOwnerOnce } from '../secure-file';
 import { NO_MISSION, isLooseKey, missionRows, taskRows, type TopState } from './state';
 
 export const NOT_LOGGED_IN = "Claude isn't logged in on this machine: run claude login";
@@ -204,6 +205,8 @@ const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 export async function runTalk(launch: Extract<TalkLaunch, { ok: true }>, io: { configDir?: string; onPane?: (paneId: string) => void } = {}): Promise<number> {
   const dir = mkdtempSync(join(io.configDir ?? tmpdir(), 'buildd-talk-'));
   try {
+    // Windows has no mkdtemp 0700, and mcp.json carries the key: owner-only DACL first.
+    restrictDirToOwnerOnce(dir);
     const argv = [...launch.argv];
     if (launch.mcpConfig) {
       const cfg = join(dir, 'mcp.json');

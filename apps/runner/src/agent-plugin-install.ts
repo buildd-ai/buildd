@@ -29,6 +29,7 @@ import { dirname, join, resolve } from 'path';
 // The hook's own helpers, so the installer and the hook agree on what a workspace repo is.
 import { fetchWorkspaces, gitRepo, gitRoot, hasProjectBuilddMcp, readWorkspaceCache, resolveAuth, writeWorkspaceCache } from '../plugin/scripts/buildd-hook.mjs';
 import { resolveBuilddHome } from './buildd-home';
+import { restrictToOwnerAcl } from './secure-file';
 
 export const BUILDD_HOOK_MARKER = 'buildd-hook.mjs';
 export const BUILDD_SKILL_NAME = 'buildd-session';
@@ -646,6 +647,7 @@ async function registerMcp(mode: McpMode, oauth: boolean, asAgent: boolean, home
   });
   writeJson(file, plan.config);
   chmodSync(file, 0o600); // an entry may hold the key, like ~/.buildd/config.json
+  restrictToOwnerAcl(file); // Windows: the 0600
   const lines: string[] = [];
   // What an --oauth install means, in plain words.
   const oauthNotes = (): string[] => {
