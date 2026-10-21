@@ -201,6 +201,9 @@ export function taskScopeAllowsWorkerPr(
  * caller's task, never the PR owner's: a task does not gain a PR because the
  * task that opened it links it (docs/specs/workflow-state-kernel.md §17.1,
  * the PR #3754 case). A PR named only in the task's text is not linked.
+ *
+ * A task with workspace-wide PR reach (prReach.prNumbers empty array) is
+ * authorized to act on any PR in the workspace.
  */
 export async function taskScopeTaskLinksPr(
   account: { taskScope?: TaskScope },
@@ -216,7 +219,18 @@ export async function taskScopeTaskLinksPr(
     },
   });
   if (!task || task.workspaceId !== scope.workspaceId) return false;
-  return taskLinksPr(task, pr.prNumber);
+
+  // Check if the task links this specific PR
+  if (taskLinksPr(task, pr.prNumber)) return true;
+
+  // Check for workspace-wide PR reach: a task with prReach.prNumbers = []
+  // is authorized to act on any PR in its workspace
+  const prReachGrant = (task.context as { prReach?: { prNumbers?: number[] } } | null | undefined)?.prReach;
+  if (prReachGrant && Array.isArray(prReachGrant.prNumbers) && prReachGrant.prNumbers.length === 0) {
+    return true;
+  }
+
+  return false;
 }
 
 /**

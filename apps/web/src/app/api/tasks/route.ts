@@ -47,7 +47,7 @@ import {
 import type { SubjectFilingOrigin } from '@buildd/core/subject-anchor-observe';
 import { resolveSubjectPolicy, isIdentifyingSubjectKeyType } from '@buildd/core/subject-anchor-observe';
 import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
-import { resolvePrReachGrant, withoutPrReachGrant, type PrReachFiler } from '@/lib/pr-reach-grant';
+import { resolvePrReachGrant, resolveExplicitPrReachScope, withoutPrReachGrant, type PrReachFiler } from '@/lib/pr-reach-grant';
 import { intakeSubject } from '@/lib/subject-intake';
 import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
 import { detectProseGate } from '@buildd/core/prose-gate';
@@ -582,6 +582,8 @@ export async function POST(req: NextRequest) {
       // workspaces it declares it will file tasks in (lib/task-delegation.ts).
       delegation: rawDelegation,
       filingTargets: rawFilingTargets,
+      // Explicit PR reach grant for coordination tasks (person only): explicit PR numbers or workspace-wide scope.
+      prReachScope: rawPrReachScope,
     } = body;
     // A reservation is only for a verified interactive session (the one the claim
     // route lets claim its own reserved task). Refused before anything is filed, so
@@ -605,6 +607,10 @@ export async function POST(req: NextRequest) {
     // hold (spec c7410e76 R-34), so an API key or per-task token may not.
     if (assignToLocalUiUrl && !grantPerson) {
       return NextResponse.json({ error: 'Only a person can file a task onto a specific runner; omit assignToLocalUiUrl.' }, { status: 403 });
+    }
+    // So is granting explicit PR reach: only a person can authorize a task to act on a set of PRs.
+    if (rawPrReachScope && !grantPerson) {
+      return NextResponse.json({ error: 'Only a person can grant PR reach scope; omit prReachScope.' }, { status: 403 });
     }
     const stampedGrant = stampLandingOverrideGrant(rawIncomingContext, grantPerson);
     if (!stampedGrant.ok) {
@@ -1067,6 +1073,7 @@ export async function POST(req: NextRequest) {
     // The PRs this task may act on beyond its own worker's: a person's filing
     // links the PRs it names; an agent run's links only PRs its own task
     // already reaches (lib/pr-reach-grant.ts). Text alone never grants it later.
+    // A person may also explicitly grant a prReach scope (explicit PR numbers or workspace-wide).
     let prReachFiler: PrReachFiler = { kind: 'none' };
     if (grantPerson) {
       prReachFiler = { kind: 'person', personId: grantPerson };
@@ -1079,11 +1086,22 @@ export async function POST(req: NextRequest) {
       });
       if (filerWorker?.taskId) prReachFiler = { kind: 'task', taskId: filerWorker.taskId };
     }
-    const prReach = await resolvePrReachGrant({ title, description, context: incomingContext, workspaceId }, prReachFiler)
-      .catch((err) => {
-        console.warn('[tasks] PR link lookup failed; none stamped:', (err as Error)?.message ?? err);
-        return null;
-      });
+
+    // Check if a person explicitly granted prReach scope
+    let prReach = null;
+    if (grantPerson && rawPrReachScope) {
+      prReach = resolveExplicitPrReachScope(rawPrReachScope, `human:${grantPerson}`);
+      if (!prReach) {
+        return NextResponse.json({ error: 'prReachScope must be either { prNumbers: [1,2,...] } or { workspaceWide: true }' }, { status: 400 });
+      }
+    } else {
+      // Fall back to auto-resolving from PR names in title/description
+      prReach = await resolvePrReachGrant({ title, description, context: incomingContext, workspaceId }, prReachFiler)
+        .catch((err) => {
+          console.warn('[tasks] PR link lookup failed; none stamped:', (err as Error)?.message ?? err);
+          return null;
+        });
+    }
     const prReachCtx = prReach ? { prReach } : {};
     let specRepairCtx: { specRepair?: NonNullable<ReturnType<typeof specRepairStamp>> } = {};
     if (prReachFiler.kind === 'task' && missionId) {
