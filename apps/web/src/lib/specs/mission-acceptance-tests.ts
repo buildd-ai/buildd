@@ -91,9 +91,7 @@ export async function ensureAcceptanceTests(missionId: string, criterion: Living
       `In scope: ${scopeIds.join(', ') || 'every criterion'}.`,
       ``,
       `For each acceptance check that can be tested, write one test with the check's id in its name (for example \`AC-3: refuses a stale version\`) and record it in the spec's metadata \`verified_by\`, keyed by the check's id. The spec text, version and approval do not change.`,
-      `Each test must fail on the mission's starting commit. For a check that cannot be tested, say why: the code reviewer or screenshots judge it instead.`,
-      ``,
-      `Run each test on the starting commit (\`bun run scripts/run-acceptance-tests.ts <check id> <test file>\`, from a checkout of that commit) and report the results: \`POST /api/missions/${missionId}/acceptance-tests\` with \`{ "results": [{ "checkId", "name", "startingResult": "fail" | "pass" | "inconclusive", "output" }] }\`. A test that passes there is sent back to you with its output; building starts only when every test fails.`,
+      `Each test must fail on the mission's starting commit. Run each one there and report it in your structured output as \`startingCommitRuns: { startSha, runs: [{ checkId, name, exitCode, output }] }\`: building is held until every test is reported failing. For a check that cannot be tested, say why: the code reviewer or screenshots judge it instead.`,
     ].join('\n');
     const [task] = await db.insert(tasks).values({
       workspaceId: mission.workspaceId,

@@ -4731,6 +4731,19 @@ async function patchWorker(
         await recordAcceptanceVerifiedBy(taskId);
       });
 
+      // ...and run them against the mission's starting commit (R-78): building is released only
+      // when every test failed there; otherwise the task is reopened and builders keep waiting.
+      await runStep('acceptance-start-commit', async () => {
+        if (effectiveOutcome !== 'completed' || shouldAutoRetry) return;
+        const ctx = terminalTaskRow[0]?.context as Record<string, unknown> | null | undefined;
+        const { isAcceptanceTask, dbGateStore } = await import('@/lib/specs/acceptance-gate-apply');
+        if (!isAcceptanceTask({ context: ctx ?? null })) return;
+        const [row] = await db.select({ missionId: tasks.missionId }).from(tasks).where(eq(tasks.id, taskId)).limit(1);
+        if (!row?.missionId) return;
+        const { settleStartingCommit, reportedRunsFrom } = await import('@/lib/specs/acceptance-start-commit');
+        await settleStartingCommit(dbGateStore, row.missionId, reportedRunsFrom(body.structuredOutput));
+      });
+
       // A recoverable-blocker repair landed: resume the tasks parked on it
       // (agent-question-protocol AC-55). Idempotent, so a duplicate completion is harmless.
       await runStep('recoverable-blocker-reconcile', async () => {

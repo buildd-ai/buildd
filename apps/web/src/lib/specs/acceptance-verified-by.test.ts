@@ -21,10 +21,23 @@ describe('AC-123: verified_by lists one test per testable check, by id', () => {
     expect(r.byCheck.get('AC-1')?.name).toBe('AC-1: a');
   });
 
-  it('adds the test files to verified_by without dropping the existing ones, and changes nothing else', () => {
+  it('records one entry per check, keyed by id, replacing a flat list', () => {
     const r = testsByCheck(['AC-1', 'AC-2'], [file('t/a.test.ts', `it('AC-1: a', () => {});`), file('t/b.test.ts', `it('AC-2: b', () => {});`)]);
-    expect(verifiedByUpdate(['old.test.ts'], r)).toEqual(['old.test.ts', 't/a.test.ts', 't/b.test.ts']);
-    expect(verifiedByUpdate(['t/a.test.ts'], r)).toEqual(['t/a.test.ts', 't/b.test.ts']);
+    const next = verifiedByUpdate(['old.test.ts', 't/a.test.ts'], r);
+    expect(Array.isArray(next)).toBe(false);
+    expect(next).toEqual({ 'AC-1': ['t/a.test.ts'], 'AC-2': ['t/b.test.ts'] });
+  });
+
+  it('keeps existing keyed entries and adds the new test path', () => {
+    const r = testsByCheck(['AC-1'], [file('t/a.test.ts', `it('AC-1: a', () => {});`)]);
+    expect(verifiedByUpdate({ 'R-5': ['x.test.ts'], 'AC-1': ['old.test.ts'] }, r)).toEqual({ 'R-5': ['x.test.ts'], 'AC-1': ['old.test.ts', 't/a.test.ts'] });
+    expect(verifiedByUpdate({ 'AC-1': ['t/a.test.ts'] }, r)).toBeNull();
+  });
+
+  it('touches only verified_by: the recorded change carries no version or approved hash', async () => {
+    const src = await Bun.file(new URL('./acceptance-verified-by.ts', import.meta.url)).text();
+    expect(src).toMatch(/changes: \{ verified_by: next \}/);
+    expect(src).not.toMatch(/approvedHash|approved_hash|version:/);
   });
 
   it('writes nothing when no check has a test', () => {

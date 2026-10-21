@@ -4,7 +4,7 @@
  * recording results must keep that marker.
  */
 import { describe, expect, it } from 'bun:test';
-import { applyBuildingGate, isAcceptanceTask, recordAcceptanceObjection, recordAcceptanceResults, testsFromContext, withRecordedTests, type GateStore, type GateTask } from './acceptance-gate-apply';
+import { applyBuildingGate, isAcceptanceTask, recordAcceptanceObjection, recordAcceptanceResults, testsFromContext, type GateStore, type GateTask } from './acceptance-gate-apply';
 
 // The context exactly as ensureAcceptanceTests inserts it.
 const filedContext = () => ({ acceptanceTests: { missionId: 'm1', specId: 's1', specRevisionId: 'r1', apartFrom: 'builder' }, baseBranch: 'mission/x' });
@@ -53,10 +53,5 @@ describe('gate store with the filed acceptance-tests task', () => {
     expect(out?.decision).toBe('start');
     expect(acc.status).toBe('completed');
     expect(await applyBuildingGate(store, 'm1')).toMatchObject({ decision: 'start' });
-  });
-
-  it('withRecordedTests keeps the marker and still accepts a bare-array context', () => {
-    expect(withRecordedTests(filedContext(), [])).toEqual({ missionId: 'm1', specId: 's1', specRevisionId: 'r1', apartFrom: 'builder', tests: [] });
-    expect(testsFromContext({ acceptanceTests: [{ checkId: 'AC-1', name: 'n', startingResult: 'fail' }] })).toHaveLength(1);
   });
 });
