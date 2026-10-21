@@ -68,11 +68,11 @@ describe('launchdPlistPath / systemdUnitPath', () => {
   const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd', platform: 'linux' });
 
   test('plist lives under ~/Library/LaunchAgents', () => {
-    expect(launchdPlistPath(paths)).toBe('/home/alice/Library/LaunchAgents/dev.buildd.runner.plist');
+    expect(launchdPlistPath(paths)).toBe(join('/home/alice', 'Library', 'LaunchAgents', 'dev.buildd.runner.plist'));
   });
 
   test('unit lives under ~/.config/systemd/user', () => {
-    expect(systemdUnitPath(paths)).toBe('/home/alice/.config/systemd/user/buildd-runner.service');
+    expect(systemdUnitPath(paths)).toBe(join('/home/alice', '.config', 'systemd', 'user', 'buildd-runner.service'));
   });
 });
 
@@ -457,7 +457,8 @@ describe('--debug is kept across reinstalls', () => {
       expect(installedServiceDebug(paths, platform)).toBe(false);
     });
 
-    test.skipIf(process.getuid?.() === 0)(`${platform}: returns false if the service file is unreadable`, () => {
+    // Windows has no write-only mode bit: chmod 0o200 leaves the file readable there.
+    test.skipIf(process.getuid?.() === 0 || process.platform === 'win32')(`${platform}: returns false if the service file is unreadable`, () => {
       const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
       installService(paths, platform, fakeRunner(0).run, { debug: true });
       const file = platform === 'darwin' ? launchdPlistPath(paths) : systemdUnitPath(paths);

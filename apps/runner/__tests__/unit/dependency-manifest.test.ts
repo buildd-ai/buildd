@@ -27,7 +27,8 @@ describe('dependency handover (synthetic pnpm sha512 content-addressed store)', 
   test('repository bin outside node_modules survives', () => { const f = fixture(); const p = join(f.repoRoot, '.bin/tool'); mkdirSync(join(f.repoRoot, '.bin')); writeFileSync(p, 'repo tool'); f.verify(); expect(existsSync(p)).toBe(true); });
   test('same-size replacement inode is deleted', () => { const f = fixture(); unlinkSync(f.file); writeFileSync(f.file, 'export default 2;'); f.verify(); expect(existsSync(f.file)).toBe(false); });
   test('replaced directory explains deleted descendants without falling back', () => { const f = fixture(); const directory = join(f.repoRoot, 'node_modules/pkg'); const replacement = join(f.repoRoot, 'replacement'); mkdirSync(replacement); writeFileSync(join(replacement, 'index.js'), 'planted'); rmSync(directory, { recursive: true }); renameSync(replacement, directory); const report = f.verify(); expect(report.fellBack).toBe(false); expect(existsSync(directory)).toBe(false); });
-  test('chmod is explained and original mode restored', () => { const f = fixture(); chmodSync(f.file, 0o777); const r = f.verify(); expect(r.fellBack).toBe(false); expect(r.entriesExplained).toBeGreaterThan(0); expect(readFileSync(f.file, 'utf8')).toBe('export default 1;'); });
+  // Windows has no POSIX mode bits for chmod to change.
+  test.skipIf(process.platform === 'win32')('chmod is explained and original mode restored', () => { const f = fixture(); chmodSync(f.file, 0o777); const r = f.verify(); expect(r.fellBack).toBe(false); expect(r.entriesExplained).toBeGreaterThan(0); expect(readFileSync(f.file, 'utf8')).toBe('export default 1;'); });
   test('new package file is deleted', () => { const f = fixture(); const p = join(f.repoRoot, 'node_modules/pkg/planted.js'); writeFileSync(p, 'bad'); f.verify(); expect(existsSync(p)).toBe(false); });
   test('changed symlink is deleted', () => { const f = fixture(); const p = join(f.repoRoot, 'node_modules/link'); symlinkSync('pkg', p); const expected = captureDependencyManifest(f.repoRoot); unlinkSync(p); symlinkSync('/tmp', p); const r = verifyDependencyHandover({ ...f, expected, expectedDigest: expected.digest }); expect(r.entriesChanged).toBeGreaterThan(0); expect(existsSync(p)).toBe(false); });
   test('planted bin shim is deleted', () => { const f = fixture(); const p = join(f.repoRoot, 'node_modules/.bin/tool'); mkdirSync(join(f.repoRoot, 'node_modules/.bin')); writeFileSync(p, 'bad'); f.verify(); expect(existsSync(p)).toBe(false); });
@@ -35,7 +36,8 @@ describe('dependency handover (synthetic pnpm sha512 content-addressed store)', 
 });
 
 // A local packed package exercises the actual pnpm layout without registry/network access.
-test('real pnpm frozen install regenerates a deleted planted bin shim', () => {
+// Unix-only: the planted .bin shim is a POSIX shell script run directly (Windows pnpm shims are .cmd/.ps1).
+test.skipIf(process.platform === 'win32')('real pnpm frozen install regenerates a deleted planted bin shim', () => {
   const base = mkdtempSync(join(tmpdir(), 'dependency-fixture-')); roots.push(base);
   const repoRoot = join(base, 'repo'); const storeDir = join(base, 'store');
   const packageDir = join(base, 'package');

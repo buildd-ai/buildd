@@ -31,7 +31,10 @@ const SLEEP_S = 1;
 /** A loop that is free answers in a few ms; a sync git holds it for the whole sleep. */
 const ANSWER_WITHIN_MS = 200;
 
-const REAL_GIT = execSync('command -v git', { encoding: 'utf-8' }).trim();
+// The harness shims `git` with a #!/bin/sh script on a ':'-separated PATH;
+// Windows will not exec an extensionless script, so the file is POSIX-only.
+const IS_WINDOWS = process.platform === 'win32';
+const REAL_GIT = IS_WINDOWS ? 'git' : execSync('command -v git', { encoding: 'utf-8' }).trim();
 const ORIGINAL_PATH = process.env.PATH;
 const ORIGINAL_ENV: Record<string, string | undefined> = Object.fromEntries(
   ['BUILDD_EXECUTOR', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL'].map(k => [k, process.env[k]]),
@@ -90,6 +93,7 @@ async function worstLatencyDuring<T>(work: () => Promise<T>): Promise<{ result: 
 }
 
 beforeAll(() => {
+  if (IS_WINDOWS) return;
   tmp = initTestWorkspace();
   // HOME is already a per-file temp dir (the test runner injects it); archives go to tmp.
   delete process.env.BUILDD_EXECUTOR;
@@ -114,6 +118,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  if (IS_WINDOWS) return;
   process.env.PATH = ORIGINAL_PATH;
   for (const [k, v] of Object.entries(ORIGINAL_ENV)) {
     if (v === undefined) delete process.env[k];
@@ -127,7 +132,7 @@ const gitCalls = (): string[] => {
   try { return readFileSync(gitLog, 'utf-8').split('\n').filter(Boolean); } catch { return []; }
 };
 
-describe('baseline', () => {
+describe.skipIf(IS_WINDOWS)('baseline', () => {
   test('a sync git call under this harness holds the socket for the whole sleep (what this replaces)', async () => {
     const { clone } = makeClone('baseline-slow');
     let worst = 0;
@@ -140,7 +145,7 @@ describe('baseline', () => {
   }, 15_000);
 });
 
-describe('task start', () => {
+describe.skipIf(IS_WINDOWS)('task start', () => {
   test('setupWorktree (fetch, drift probe, worktree add, branch config) never holds the loop', async () => {
     const { clone } = makeClone('setup-slow');
     writeFileSync(gitLog, '');
@@ -207,7 +212,7 @@ describe('task start', () => {
   }, 30_000);
 });
 
-describe('task finish', () => {
+describe.skipIf(IS_WINDOWS)('task finish', () => {
   test('git stats and worktree removal never hold the loop', async () => {
     const { clone } = makeClone('finish-slow');
     const setup = await setupWorktree(clone, 'buildd/def67890-finish', 'dev', 'w-finish-1');

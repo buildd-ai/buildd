@@ -319,10 +319,13 @@ describe('Error Handling', () => {
     beforeEach(() => {
       process.env.BUILDD_DISABLE_SANDBOX = '1';
       __resetBwrapSupportForTest();
+      // The reset also clears the pinned host; pin it again (see above).
+      __setIsolationHostForTest('linux');
     });
     afterEach(() => {
       if (prevDisable === undefined) delete process.env.BUILDD_DISABLE_SANDBOX; else process.env.BUILDD_DISABLE_SANDBOX = prevDisable;
       __resetBwrapSupportForTest();
+      __setIsolationHostForTest('linux');
     });
 
     test('a trusted_local stamp runs reduced and is kept on the worker for later resumes', async () => {

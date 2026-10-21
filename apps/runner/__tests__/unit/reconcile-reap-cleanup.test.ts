@@ -139,7 +139,10 @@ mock.module('../../src/history-store', () => ({
   initHistoryStore: () => {},
 }));
 
-const { WorkerManager } = await import('../../src/workers');
+const { WorkerManager, __setIsolationHostForTest } = await import('../../src/workers');
+// The mocked env-scan models a Linux host with bwrap; hold the real host probe to
+// match, or a Windows/macOS host refuses the session before it starts.
+__setIsolationHostForTest('linux');
 
 function makeConfig(): LocalUIConfig {
   return {

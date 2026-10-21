@@ -174,7 +174,8 @@ describe('the runtime builds its heartbeat record with the same function (R-8)',
   });
 });
 
-describe('install.sh runs the installed runner\'s own check', () => {
+// install.sh is the Unix installer; this runs its block under bash with a ':'-joined POSIX PATH.
+describe.skipIf(process.platform === 'win32')('install.sh runs the installed runner\'s own check', () => {
   const installSh = Bun.file(join(import.meta.dir, '../../install.sh')).text();
   const BEGIN = '# --- isolation check: begin ---';
   const END = '# --- isolation check: end ---';

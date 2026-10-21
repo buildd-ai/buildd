@@ -14,6 +14,7 @@
  */
 import { describe, test, expect, beforeEach, afterEach, mock , afterAll } from 'bun:test';
 import { tmpdir } from 'os';
+import { fileURLToPath } from 'url';
 import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';
 
@@ -84,7 +85,7 @@ mock.module('pusher-js', () => ({
 /** Whether the session cwd looks like a git checkout. */
 let cwdIsGitRepo = true;
 mock.module('fs', () => ({
-  existsSync: (p: string) => (String(p).endsWith('/.git') ? cwdIsGitRepo : false),
+  existsSync: (p: string) => (/[\\/]\.git$/.test(String(p)) ? cwdIsGitRepo : false),
   readFileSync: () => '{}',
   writeFileSync: () => {},
   mkdirSync: () => {},
@@ -286,7 +287,7 @@ describe('session cwd must be a git checkout for a repo task', () => {
 // branch is reached only when the SDK session is already under way, which this
 // file's harness deliberately does not carry far enough to observe.
 describe('the guard is scoped to a cwd git did not produce', () => {
-  const src = Bun.file(new URL('../../src/workers.ts', import.meta.url).pathname);
+  const src = Bun.file(fileURLToPath(new URL('../../src/workers.ts', import.meta.url)));
 
   test('skips the probe when setupWorktree produced the cwd', async () => {
     expect(await src.text()).toContain('hasRepo && !worktreeCreated && !existsSync(join(sessionCwd');

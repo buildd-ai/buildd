@@ -22,7 +22,7 @@
  */
 import { spawnSync } from 'child_process';
 import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
-import { basename, dirname, isAbsolute, join, resolve, sep } from 'path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { WARM_BASE_REF, gitFailureText } from './warm-repo';
 import { branchOfRemoteRef, ensureRemoteBranch, gitRetryDelayMs, parseRetryAfter, probeRetryAfter, sleepSync } from './git-clone';
 
@@ -384,13 +384,15 @@ export async function parkWorkerNow(
 export function readParkBundle(tarPath: string, stageDir: string): OpenedPark {
   const list = spawnSync('tar', ['-tf', basename(tarPath)], { cwd: dirname(tarPath), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
   if (list.status !== 0) throw new ParkRestoreError('park bundle is not a tarball');
-  for (const raw of (list.stdout ?? '').split('\n').filter(Boolean)) {
+  // Windows' own tar lists members with CRLF.
+  for (const raw of (list.stdout ?? '').split(/\r?\n/).filter(Boolean)) {
     const name = raw.replace(/^\.\//, '');
     if (name.startsWith('/') || name.split('/').includes('..')) throw new ParkRestoreError(`park bundle has an unsafe member: ${raw}`);
   }
   rmSync(stageDir, { recursive: true, force: true });
   mkdirSync(stageDir, { recursive: true });
-  const x = spawnSync('tar', ['-xf', basename(tarPath), '-C', stageDir, '--no-same-owner'], { cwd: dirname(tarPath), stdio: ['ignore', 'ignore', 'pipe'] });
+  // -C relative to the cwd: Git for Windows' GNU tar reads `C:\...` as a remote host.
+  const x = spawnSync('tar', ['-xf', basename(tarPath), '-C', relative(dirname(tarPath), stageDir) || '.', '--no-same-owner'], { cwd: dirname(tarPath), stdio: ['ignore', 'ignore', 'pipe'] });
   if (x.status !== 0 || !existsSync(join(stageDir, 'manifest.json'))) throw new ParkRestoreError('park bundle could not be extracted');
   return { manifest: parseManifest(readFileSync(join(stageDir, 'manifest.json'), 'utf-8')), stageDir };
 }

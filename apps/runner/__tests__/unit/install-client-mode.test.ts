@@ -155,7 +155,8 @@ describe('install.sh --client next steps', () => {
   });
 });
 
-describe('launcher in client mode', () => {
+// The launcher is the Unix bash script install.sh writes, run here with PATH=/usr/bin:/bin.
+describe.skipIf(process.platform === 'win32')('launcher in client mode', () => {
   const launcher = installSh.match(/cat > "\$BIN_DIR\/buildd" << 'LAUNCHER'\n([\s\S]*?)\nLAUNCHER/)?.[1] ?? '';
 
   function runLauncher(args: string[], clientOnly: boolean) {

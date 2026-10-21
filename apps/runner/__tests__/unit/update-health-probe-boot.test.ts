@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join, resolve } from 'path';
+import { delimiter, join, resolve } from 'path';
 import { HEALTH_PROBE_ENV, buildHealthProbeSpawn } from '../../src/updater';
 
 /**
@@ -11,8 +11,8 @@ import { HEALTH_PROBE_ENV, buildHealthProbeSpawn } from '../../src/updater';
  * real entry with a `git` that sleeps and records its calls (a slow scan).
  */
 const REPO_ROOT = resolve(import.meta.dir, '../../../..');
-const cleanup: Array<() => void> = [];
-afterEach(() => { while (cleanup.length) cleanup.pop()!(); });
+const cleanup: Array<() => void | Promise<void>> = [];
+afterEach(async () => { while (cleanup.length) await cleanup.pop()!(); });
 
 async function bootAndWaitForHealth(port: number, probe: boolean) {
   const dir = mkdtempSync(join(tmpdir(), 'probe-boot-'));
@@ -20,6 +20,8 @@ async function bootAndWaitForHealth(port: number, probe: boolean) {
   const root = join(dir, 'projects');
   const gitLog = join(dir, 'git.log');
   mkdirSync(bin); mkdirSync(join(root, 'repo-a', '.git'), { recursive: true });
+  // On Windows this extensionless sh shim is never exec'd, so the scan runs the
+  // real git there: the boot and /health are still proven, the slow scan is not.
   writeFileSync(join(bin, 'git'), `#!/bin/sh\necho "$PWD: $@" >> ${gitLog}\nsleep 20\n`);
   chmodSync(join(bin, 'git'), 0o755);
 
@@ -27,11 +29,16 @@ async function bootAndWaitForHealth(port: number, probe: boolean) {
   mkdirSync(home);
   const spec = buildHealthProbeSpawn({
     installDir: REPO_ROOT, probePort: port, probeHome: home, configFile: join(home, 'config.json'),
-    baseEnv: { PATH: `${bin}:${process.env.PATH}`, PROJECTS_ROOT: root, HOME: dir },
+    baseEnv: { PATH: `${bin}${delimiter}${process.env.PATH}`, PROJECTS_ROOT: root, HOME: dir },
   });
   if (!probe) delete spec.env[HEALTH_PROBE_ENV];
   const proc = Bun.spawn(spec.cmd, { cwd: spec.cwd, env: spec.env, stdout: 'ignore', stderr: 'ignore' });
-  cleanup.push(() => { try { proc.kill('SIGKILL'); } catch { /* gone */ } rmSync(dir, { recursive: true, force: true }); });
+  cleanup.push(async () => {
+    try { proc.kill('SIGKILL'); } catch { /* gone */ }
+    // Windows keeps the dir locked until the killed child has actually exited.
+    await proc.exited;
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
 
   const start = Date.now();
   let ok = false;
