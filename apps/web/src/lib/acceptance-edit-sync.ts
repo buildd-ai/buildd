@@ -22,6 +22,11 @@ export interface AcceptanceEditDeps {
 
 export const isBuildingRole = (roleSlug: string | null | undefined): boolean => (roleSlug ?? '').trim().toLowerCase() === 'builder';
 
+/** Paths of acceptance tests still awaiting a person's accept, over a mission's tasks. Only building tasks carry the flag; the role is matched as the setter does. */
+export function unacceptedPathsOf(rows: Array<{ roleSlug: string | null; context: unknown }>): string[] {
+  return rows.filter((t) => isBuildingRole(t.roleSlug)).flatMap((t) => pendingAcceptance(acceptanceEditOf(t.context)));
+}
+
 export function flagText(paths: readonly string[], prNumber: number): { title: string; body: string } {
   const list = paths.map((p) => `- \`${p}\``).join('\n');
   return {
