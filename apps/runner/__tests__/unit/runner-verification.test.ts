@@ -1,3 +1,4 @@
+import { tmpdir } from 'os';
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import {
   runVerificationCommand,
@@ -63,13 +64,16 @@ describe('resolveCommand', () => {
   });
 });
 
+// `exit 0` means the same under sh and cmd.exe; `true` does not exist on Windows.
+const OK_CMD = 'exit 0';
+
 describe('runVerificationCommand — evidence shape and iteration binding', () => {
   it('binds workerId and iteration in returned evidence', async () => {
     const evidence = await runVerificationCommand({
       workerId: 'worker-abc',
       iteration: 2,
       command: 'exit 0',
-      cwd: '/tmp',
+      cwd: tmpdir(),
     });
     expect(evidence.workerId).toBe('worker-abc');
     expect(evidence.iteration).toBe(2);
@@ -80,21 +84,21 @@ describe('runVerificationCommand — evidence shape and iteration binding', () =
     const evidence = await runVerificationCommand({
       workerId: 'w1',
       iteration: 0,
-      command: 'true',
-      cwd: '/tmp',
+      command: OK_CMD,
+      cwd: tmpdir(),
     });
     expect(evidence.outcome).toBe('ok');
     expect(evidence.exitCode).toBe(0);
     expect(typeof evidence.durationMs).toBe('number');
-    expect(evidence.command).toBe('true');
+    expect(evidence.command).toBe(OK_CMD);
   });
 
   it('returns outcome=failed when command exits non-zero', async () => {
     const evidence = await runVerificationCommand({
       workerId: 'w1',
       iteration: 0,
-      command: 'false',
-      cwd: '/tmp',
+      command: 'exit 1',
+      cwd: tmpdir(),
     });
     expect(evidence.outcome).toBe('failed');
     expect(evidence.exitCode).not.toBe(0);
@@ -106,7 +110,7 @@ describe('runVerificationCommand — evidence shape and iteration binding', () =
       iteration: 0,
       // `&&` and `1>&2` mean the same under sh and cmd.exe (exec's shell on Windows); `;` does not.
       command: 'echo hello-out && echo hello-err 1>&2',
-      cwd: '/tmp',
+      cwd: tmpdir(),
     });
     expect(evidence.stdout).toContain('hello-out');
     expect(evidence.stderr).toContain('hello-err');
@@ -116,8 +120,8 @@ describe('runVerificationCommand — evidence shape and iteration binding', () =
     const evidence = await runVerificationCommand({
       workerId: 'w1',
       iteration: 0,
-      command: 'sleep 10',
-      cwd: '/tmp',
+      command: `"${process.execPath}" -e "setTimeout(()=>{},10000)"`,
+      cwd: tmpdir(),
       timeoutMs: 100,
     });
     expect(evidence.outcome).toBe('timeout');
@@ -129,7 +133,7 @@ describe('runVerificationCommand — evidence shape and iteration binding', () =
       workerId: 'w1',
       iteration: 0,
       command: '__buildd_nonexistent_cmd_xyz__',
-      cwd: '/tmp',
+      cwd: tmpdir(),
     });
     // Either exec_error or failed (some shells report exit 127 for not-found)
     expect(['exec_error', 'failed']).toContain(evidence.outcome);
@@ -142,7 +146,7 @@ describe('runVerificationCommand — evidence shape and iteration binding', () =
       workerId: 'w1',
       iteration: 0,
       command: `printf '%${VERIFICATION_EXCERPT_BYTES + 1000}s' 'x'`,
-      cwd: '/tmp',
+      cwd: tmpdir(),
     });
     if (evidence.stdout) {
       expect(Buffer.byteLength(evidence.stdout, 'utf-8')).toBeLessThanOrEqual(VERIFICATION_EXCERPT_BYTES);
@@ -163,7 +167,7 @@ describe('runVerificationCommand — evidence shape and iteration binding', () =
       iteration: 0,
       // Write 2MB of 'x' to stdout — exceeds Node's 1MB default buffer.
       command: "dd if=/dev/zero bs=1048576 count=2 2>/dev/null | tr '\\0' 'x'",
-      cwd: '/tmp',
+      cwd: tmpdir(),
     });
     expect(evidence.outcome).not.toBe('timeout');
     if (evidence.stdout) {
