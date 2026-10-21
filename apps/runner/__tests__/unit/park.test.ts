@@ -5,7 +5,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { basename, dirname, join, sep } from 'path';
 import {
   MAX_PARKS,
   PARK_FETCH_RETRY_BUDGET_MS,
@@ -21,12 +21,19 @@ import {
   readParkCount,
   restoreParkFiles,
   parkCountPath,
+  parkMemberPath,
   type ParkPaths,
 } from '../../src/park';
 import { WARM_BASE_REF } from '../../src/warm-repo';
 import { cloneRepo, ensureRemoteBranch } from '../../src/git-clone';
 import { makeDeepOrigin } from '../fixtures/deep-origin';
 import { templateDir } from '../fixtures/template-dir';
+
+// Byte-exact file contents below: a Windows git with core.autocrlf=true would
+// check them out with CRLF. One process per test file, so this stays here.
+process.env.GIT_CONFIG_COUNT = '1';
+process.env.GIT_CONFIG_KEY_0 = 'core.autocrlf';
+process.env.GIT_CONFIG_VALUE_0 = 'false';
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
@@ -137,9 +144,36 @@ describe('parkingEnabled', () => {
   });
 });
 
+describe('parkMemberPath', () => {
+  test('a POSIX path keeps the layout existing bundles use', () => {
+    expect(parkMemberPath('/home/buildd/.buildd/workers/w.json', 'linux')).toBe('home/buildd/.buildd/workers/w.json');
+    expect(parkMemberPath('/w.json', 'darwin')).toBe('w.json');
+  });
+
+  test('a Windows drive path keeps the drive letter as a segment and drops the colon', () => {
+    expect(parkMemberPath(String.raw`C:\Users\runner\.buildd\workers\w.json`, 'win32')).toBe('C/Users/runner/.buildd/workers/w.json');
+    expect(parkMemberPath('d:/work/w.json', 'win32')).toBe('d/work/w.json');
+  });
+
+  test('two drives never map onto each other', () => {
+    expect(parkMemberPath(String.raw`C:\x\w.json`, 'win32')).not.toBe(parkMemberPath(String.raw`D:\x\w.json`, 'win32'));
+  });
+
+  test('a UNC path goes under UNC/<server>/<share>', () => {
+    expect(parkMemberPath(String.raw`\\host\share\x\w.json`, 'win32')).toBe('UNC/host/share/x/w.json');
+  });
+
+  test('a relative or drive-less path is refused', () => {
+    expect(() => parkMemberPath('workers/w.json', 'linux')).toThrow();
+    expect(() => parkMemberPath('C:w.json', 'win32')).toThrow();
+    expect(() => parkMemberPath(String.raw`\Users\w.json`, 'win32')).toThrow();
+    expect(() => parkMemberPath(String.raw`C:\x\..\..\w.json`, 'win32')).toThrow();
+  });
+});
+
 describe('findTranscriptFiles', () => {
   test("the session's jsonl and its subagent directory, nothing else", () => {
-    const files = findTranscriptFiles(paths.claudeConfigDirs, SESSION).map(f => f.split('/').slice(-2).join('/'));
+    const files = findTranscriptFiles(paths.claudeConfigDirs, SESSION).map(f => f.split(sep).slice(-2).join('/'));
     expect(files.sort()).toEqual(['subagents/agent-1.jsonl', `${worktree.replace(/[^A-Za-z0-9]/g, '-')}/${SESSION}.jsonl`].sort());
   });
 });
@@ -492,8 +526,8 @@ describe('restore refuses what it should', () => {
     const opened = readParkBundle(built.tarPath, join(dir, 'stage'));
     const evil = join(dir, 'evil-target');
     opened.manifest.files.push(evil);
-    mkdirSync(join(opened.stageDir, 'files', dirname(evil).slice(1)), { recursive: true });
-    writeFileSync(join(opened.stageDir, 'files', evil.slice(1)), 'pwned');
+    mkdirSync(join(opened.stageDir, 'files', parkMemberPath(dirname(evil))), { recursive: true });
+    writeFileSync(join(opened.stageDir, 'files', parkMemberPath(evil)), 'pwned');
     expect(() => restoreParkFiles(opened, paths)).toThrow(ParkRestoreError);
     expect(existsSync(evil)).toBe(false);
   });
@@ -503,7 +537,7 @@ describe('restore refuses what it should', () => {
     mkdirSync(join(stage, 'a'), { recursive: true });
     writeFileSync(join(stage, 'x.txt'), 'x');
     const tarPath = join(dir, 'dotdot.tar');
-    execFileSync('tar', ['-cf', tarPath, '-C', join(stage, 'a'), '../x.txt']);
+    execFileSync('tar', ['-cf', basename(tarPath), '-C', join(stage, 'a'), '../x.txt'], { cwd: dirname(tarPath) });
     expect(() => readParkBundle(tarPath, join(dir, 'stage2'))).toThrow(ParkRestoreError);
   });
 });

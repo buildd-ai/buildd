@@ -14,7 +14,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs';
 import { builtinModules } from 'module';
 import { tmpdir } from 'os';
-import { dirname, join, normalize } from 'path';
+import { join, posix } from 'path';
 
 const repoRoot = join(import.meta.dir, '../../../..');
 const installSh = readFileSync(join(import.meta.dir, '../../install.sh'), 'utf8');
@@ -28,7 +28,8 @@ function importGraph(entries: string[]): { files: string[]; external: string[] }
   const external = new Set<string>();
   const re = /(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]\s*\)|require\(\s*['"]([^'"]+)['"]\s*\)/g;
   const resolveLocal = (from: string, spec: string): string | null => {
-    const base = normalize(join(dirname(from), spec));
+    // posix: the sparse list uses forward slashes, and so must the graph on Windows.
+    const base = posix.normalize(posix.join(posix.dirname(from), spec));
     for (const c of [base, `${base}.ts`, `${base}.mjs`, `${base}.js`, join(base, 'index.ts')]) {
       if (existsSync(join(repoRoot, c)) && !c.endsWith('/')) {
         try { readFileSync(join(repoRoot, c)); return c; } catch { /* a directory */ }
@@ -55,7 +56,8 @@ function importGraph(entries: string[]): { files: string[]; external: string[] }
 
 const covered = (file: string) => clientSparse.some(p => (p.endsWith('/') ? file.startsWith(p) : file === p));
 
-const ENTRIES = ['apps/runner/src/login.ts', 'apps/runner/src/agent-plugin-install.ts'];
+// launcher-commands.ts backs `buildd status`, `buildd logout` and `buildd init`, which the client help lists.
+const ENTRIES = ['apps/runner/src/login.ts', 'apps/runner/src/agent-plugin-install.ts', 'apps/runner/src/launcher-commands.ts'];
 
 describe('install.sh --client file set', () => {
   test('the client sparse block exists and is small', () => {
