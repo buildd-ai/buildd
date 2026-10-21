@@ -275,3 +275,19 @@ describe('quietMissionsLine agrees in number', () => {
     expect(quietMissionsLine(2, [{ cause: 'on hold', count: 2 }])).toBe('2 more missions are on hold.');
   });
 });
+
+describe('headline spacing on phones', () => {
+  it('headline has top padding on mobile when something needs the owner', () => {
+    const items = deriveHomeAttention({ queue: [{ subjectKey: 'd', chip: 'DECIDE', missionId: 'mission-a', escalationReason: 'Keep the old route?' }], questions: [], held: [], missions: [] });
+    const html = renderToStaticMarkup(<HomeBody items={items} ask={null} counts={counts} milestones={[]} quietMissions={0} />);
+    // The h1 headline should have pt-4 on phones (md:hidden is not present, so pt-4 applies mobile-first)
+    const headline = html.match(/<h1[^>]*data-testid="home-headline"[^>]*>/)?.[0] ?? '';
+    expect(headline).toContain('pt-4');
+  });
+
+  it('all-clear message has bottom padding on mobile', () => {
+    const html = renderToStaticMarkup(<HomeBody items={[]} ask={null} counts={counts} milestones={[]} quietMissions={0} />);
+    const allClear = html.match(/<p[^>]*data-testid="home-all-clear"[^>]*>/)?.[0] ?? '';
+    expect(allClear).toContain('py-3');
+  });
+});
