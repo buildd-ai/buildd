@@ -21,7 +21,7 @@ import { applyCommand, loadView, type CommandResult, type DeliveryRef, type Exec
 import { baseChangeKey, headCoverage, headObservationKey } from './reducer';
 import { openFindings } from '@buildd/workflow-kernel/findings';
 import { deltaApprovalSource, type DeltaReading } from '@buildd/workflow-kernel/delta-approval';
-import type { CloseCause, CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from './types';
+import type { CloseActor, CloseCause, CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from './types';
 import { isResolvedWithoutMerge, recordMergeContradiction } from './merge-contradiction';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
@@ -44,7 +44,11 @@ export type FactInput =
   | {
       kind: 'head_observed'; workspaceId: string; source: string; repoFullName: string; prNumber: number; hintedHeadSha?: string | null;
     }
-  | { kind: 'pr_closed'; workspaceId: string; source: string; repoFullName: string; prNumber: number }
+  | {
+      kind: 'pr_closed'; workspaceId: string; source: string; repoFullName: string; prNumber: number;
+      /** The webhook's `sender`, when the close came with one (a sweep's read has none). */
+      closedBy?: { login: string | null; type: string | null } | null;
+    }
   | { kind: 'base_changed'; workspaceId: string; source: string; repoFullName: string; prNumber: number; hintedFromBase?: string | null }
   | { kind: 'composition_attested'; workspaceId: string; source: string; attestation: CompositionAttestation };
 
@@ -86,6 +90,25 @@ export function refreshUnappliedFactSql(f: { factId: string; source: string; pay
 UPDATE workflow_facts SET payload = ${JSON.stringify(f.payload)}::jsonb, source = ${f.source}::text
 WHERE id = ${f.factId}::uuid AND applied_transition_id IS NULL`;
 }
+
+/**
+ * The `pr.close` capability decision a buildd door (`PATCH /api/github/pr`, `close_pr`) wrote for
+ * this PR just before GitHub closed it. `resource` is `pr:<number>` within the workspace.
+ */
+export function closeDecisionSql(workspaceId: string, prNumber: number, closedAt: string | null | undefined): SQL {
+  const at = closedAt ? sql`${closedAt}::timestamptz` : sql`now()`;
+  return sql`-- workflow:close_decision
+SELECT worker_id, task_id, account_id, principal_via, side_effect->>'reason' AS reason, occurred_at
+FROM agent_capability_decisions
+WHERE workspace_id = ${workspaceId}::uuid AND capability = 'pr.close' AND decision = 'allowed'
+  AND resource = ${`pr:${prNumber}`}::text
+  AND occurred_at BETWEEN ${at} - interval '${sql.raw(String(CLOSE_DECISION_WINDOW_MIN))} minutes' AND ${at} + interval '2 minutes'
+ORDER BY occurred_at DESC
+LIMIT 1`;
+}
+
+/** How long before GitHub's close a buildd door's decision still counts as the one that closed it. */
+export const CLOSE_DECISION_WINDOW_MIN = 10;
 
 export function findFactSql(workspaceId: string, factKey: string): SQL {
   return sql`-- workflow:find_fact
@@ -408,13 +431,28 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
       const baseExists = closedUnmerged && live!.baseRef && github?.branchExists
         ? await github.branchExists(fact.repoFullName, live!.baseRef)
         : null;
-      const closeCause: CloseCause = baseExists === false ? 'base_deleted' : 'unknown';
+      // Who closed it: a buildd door's own `pr.close` decision, else GitHub's sender. An unreadable
+      // audit row never blocks the close; it only leaves the door unnamed.
+      const decision = closedUnmerged
+        ? (((await exec(closeDecisionSql(fact.workspaceId, fact.prNumber, live!.updatedAt)).catch(() => null))?.rows ?? [])[0] as Record<string, unknown> | undefined)
+        : undefined;
+      const s = (v: unknown) => (typeof v === 'string' && v ? v : null);
+      const closedBy: CloseActor | null = closedUnmerged && (decision || fact.closedBy)
+        ? {
+            ...(fact.closedBy ? { login: fact.closedBy.login, type: fact.closedBy.type } : {}),
+            ...(decision ? { door: { workerId: s(decision.worker_id), taskId: s(decision.task_id), accountId: s(decision.account_id), principalVia: s(decision.principal_via), reason: s(decision.reason) } } : {}),
+          }
+        : null;
+      const closeCause: CloseCause = baseExists === false ? 'base_deleted'
+        : decision ? 'buildd_close'
+          : fact.closedBy?.type === 'User' ? 'manual'
+            : 'unknown';
       const command: Command = live!.merged
         ? { type: 'PrMerged', actor, live: live! }
         : live!.state === 'open'
           ? { type: 'PrReopened', actor, live: live! }
-          : { type: 'PrClosedUnmerged', actor, live: live!, closeCause };
-      return { command, ref, payload: { live, ...(closedUnmerged ? { baseExists } : {}) }, repoFullName: fact.repoFullName, prNumber: fact.prNumber };
+          : { type: 'PrClosedUnmerged', actor, live: live!, closeCause, ...(closedBy ? { closedBy } : {}) };
+      return { command, ref, payload: { live, ...(closedUnmerged ? { baseExists } : {}), ...(closedBy ? { closedBy } : {}) }, repoFullName: fact.repoFullName, prNumber: fact.prNumber };
     }
     case 'base_changed': {
       const ref: DeliveryRef = { workspaceId: fact.workspaceId, repoFullName: fact.repoFullName, prNumber: fact.prNumber };

@@ -346,6 +346,32 @@ LIMIT 1`);
 }
 
 /**
+ * The ESCALATED deliveries among the given open PRs, keyed `${workspaceId} ${prNumber}`
+ * → state. The mission-invariant sweep reads it so its remedy never tells an
+ * agent to close a PR that waits on a person. A SELECT, like the rest of this file.
+ */
+export async function escalatedDeliveryPrs(
+  prs: Array<{ workspaceId: string; prNumber: number }>,
+  limit: number,
+  exec: Exec = dbExec,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const keys = [...new Set(prs.map(p => `${p.workspaceId} ${p.prNumber}`))];
+  if (keys.length === 0) return out;
+  const res = await exec(sql`-- workflow:escalated_delivery_prs
+SELECT d.workspace_id AS "workspaceId", d.pr_number AS "prNumber", d.state AS state
+FROM workflow_deliveries d
+WHERE d.state = 'ESCALATED' AND d.pr_number IS NOT NULL
+  AND (d.workspace_id::text || ' ' || d.pr_number::text) IN (SELECT x FROM jsonb_array_elements_text(${JSON.stringify(keys)}::jsonb) x)
+LIMIT ${limit}`);
+  for (const r of (res.rows ?? []) as Array<{ workspaceId: unknown; prNumber: unknown; state: unknown }>) {
+    if (r.workspaceId == null || r.prNumber == null || typeof r.state !== 'string') continue;
+    out.set(`${r.workspaceId} ${Number(r.prNumber)}`, r.state);
+  }
+  return out;
+}
+
+/**
  * Slice E (§17.5): taskId → the serialisable `DeliveryDisplay` for each given
  * task that OWNS a kernel-owned delivery. The one load a list surface makes;
  * every chip, tile and badge it draws for those rows projects from it. Never

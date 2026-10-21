@@ -21,6 +21,8 @@ on:
       - 'packages/spec-contract/**'
       - 'scripts/stub-server-only.ts'
       - 'bunfig.toml'
+      - 'bun.lock'
+      - 'package.json'
       - '.github/workflows/installer-smoke.yml'
   pull_request:
     branches: [dev, main]
@@ -33,6 +35,8 @@ on:
       - 'packages/spec-contract/**'
       - 'scripts/stub-server-only.ts'
       - 'bunfig.toml'
+      - 'bun.lock'
+      - 'package.json'
       - '.github/workflows/installer-smoke.yml'
   workflow_dispatch:
 

@@ -142,6 +142,11 @@ BUILDD_REPO="${BUILDD_REPO:-buildd-ai/buildd}"
 # stub `server-only` for the plain Bun runtime. A workspace dep missing here makes
 # `bun install` fail with "@buildd/<pkg>@workspace:* failed to resolve", and
 # `set -e` then exits before the launcher is written.
+# The root package.json and bun.lock are the repo's own, anchored to the root:
+# the install is frozen against that lockfile, so it gets exactly the versions
+# the repo pins (with no lockfile, a frozen install resolves fresh from npm).
+# Unanchored, `package.json` would also check out every other app's manifest
+# and pull their dependencies in. apps/runner/__tests__/unit/install-pinned-deps.test.ts.
 write_sparse_checkout() {
   cat > .git/info/sparse-checkout << 'SPARSE'
 apps/runner/
@@ -152,7 +157,8 @@ packages/dispatch-contract/
 packages/spec-contract/
 scripts/stub-server-only.ts
 bunfig.toml
-package.json
+/package.json
+/bun.lock
 SPARSE
 }
 
@@ -172,6 +178,7 @@ apps/runner/src/agent-plugin-install.ts
 apps/runner/src/buildd-home.ts
 apps/runner/src/claude-json-mcp.ts
 apps/runner/src/secure-file.ts
+apps/runner/src/launcher-commands.ts
 apps/runner/plugin/
 scripts/stub-server-only.ts
 CLIENT_SPARSE
@@ -282,24 +289,6 @@ else
   rm -f "$INSTALL_DIR/.client-only"
 fi
 
-# Rewrite root package.json to only reference the sparse-checkout workspaces
-# (the repo's package.json has "apps/*" and "packages/*" which includes workspaces
-# that don't exist in the sparse checkout, causing bun install to hang)
-[ "$CLIENT_MODE" = "1" ] || cat > "$INSTALL_DIR/package.json" << 'PKGJSON'
-{
-  "name": "buildd",
-  "private": true,
-  "workspaces": [
-    "apps/runner",
-    "packages/shared",
-    "packages/core",
-    "packages/ai-kit",
-    "packages/dispatch-contract",
-    "packages/spec-contract"
-  ]
-}
-PKGJSON
-
 # Register runtime-only files in the local git exclude list so they never appear
 # as untracked files in `git status` (and never block the self-update preflight).
 # .git/info/exclude is like .gitignore but per-clone and never tracked — it
@@ -319,9 +308,12 @@ done
 # Client mode stops short of the runner: no dependencies, no Chromium.
 if [ "$CLIENT_MODE" != "1" ]; then
 
-# Install dependencies
+# Install dependencies, exactly as bun.lock pins them. The root package.json
+# stays the repo's own: its "apps/*" and "packages/*" globs match only the
+# checked-out directories, and a rewritten one would drop the repo's
+# "overrides", which makes bun refuse the lockfile as changed.
 cd "$INSTALL_DIR/apps/runner"
-bun install
+bun install --frozen-lockfile
 
 # Bake headless Chromium into the runner at install time.
 # This lets agents do visual self-verification without per-task downloads.
@@ -457,7 +449,7 @@ ensure_packages() {
     ( cd "$HOME/.buildd" && ${limit:+$limit 600} bun install --frozen-lockfile >&2 )
     packages_missing || { rm -f "$marker"; return 0; }
   fi
-  echo "buildd: packages are missing from ~/.buildd. Fix: cd ~/.buildd && bun install" >&2
+  echo "buildd: packages are missing from ~/.buildd. Fix: cd ~/.buildd && bun install --frozen-lockfile" >&2
   exit 78
 }
 
@@ -519,81 +511,11 @@ CLIENTUSAGE
     ;;
 
   init)
-    # Per-workspace MCP registration: writes .mcp.json in current repo
-    if [ ! -d ".git" ]; then
-      echo "Error: not in a git repository. Run 'buildd init' from a repo root." >&2
-      exit 1
-    fi
-
-    # Read workspace ID from arg or prompt
-    WORKSPACE_ID="${2:-}"
-    if [ -z "$WORKSPACE_ID" ]; then
-      echo "Usage: buildd init <workspace-id>"
-      echo ""
-      echo "Find your workspace ID in the buildd dashboard."
-      exit 1
-    fi
-
-    # Read API key from config
-    CONFIG_FILE="$HOME/.buildd/config.json"
-    BUILDD_KEY=""
-    BUILDD_SERVER="https://buildd.dev"
-    if [ -f "$CONFIG_FILE" ]; then
-      BUILDD_KEY=$(bun --no-env-file -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.apiKey||'')" 2>/dev/null)
-      BUILDD_SERVER=$(bun --no-env-file -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.builddServer||'https://buildd.dev')" 2>/dev/null)
-    fi
-    if [ -z "$BUILDD_KEY" ]; then
-      echo "Error: not logged in. Run 'buildd login' first." >&2
-      exit 1
-    fi
-
-    # Write .mcp.json
-    cat > .mcp.json << MCPEOF
-{
-  "mcpServers": {
-    "buildd": {
-      "type": "http",
-      "url": "${BUILDD_SERVER}/api/mcp?workspace=${WORKSPACE_ID}",
-      "headers": {
-        "Authorization": "Bearer ${BUILDD_KEY}"
-      }
-    }
-  }
-}
-MCPEOF
-
-    # Add .mcp.json to .gitignore if not already there
-    if [ -f .gitignore ]; then
-      if ! grep -qx '.mcp.json' .gitignore 2>/dev/null; then
-        echo '.mcp.json' >> .gitignore
-        echo "Added .mcp.json to .gitignore"
-      fi
-    else
-      echo '.mcp.json' > .gitignore
-      echo "Created .gitignore with .mcp.json"
-    fi
-
-    # Ensure Claude Code allows project MCP servers
-    CLAUDE_SETTINGS="$HOME/.claude/settings.json"
-    if [ -f "$CLAUDE_SETTINGS" ]; then
-      if ! grep -q '"enableAllProjectMcpServers"' "$CLAUDE_SETTINGS" 2>/dev/null; then
-        # Use bun to merge the setting
-        bun --no-env-file -e "
-          const fs = require('fs');
-          const settings = JSON.parse(fs.readFileSync('$CLAUDE_SETTINGS', 'utf-8'));
-          settings.enableAllProjectMcpServers = true;
-          fs.writeFileSync('$CLAUDE_SETTINGS', JSON.stringify(settings, null, 2) + '\n');
-        " 2>/dev/null && echo "Enabled project MCP servers in Claude Code settings"
-      fi
-    else
-      mkdir -p "$HOME/.claude"
-      echo '{ "enableAllProjectMcpServers": true }' > "$CLAUDE_SETTINGS"
-      echo "Created Claude Code settings with project MCP servers enabled"
-    fi
-
-    echo "Created .mcp.json for workspace $WORKSPACE_ID"
-    echo "Claude Code will now auto-detect the buildd MCP server in this repo."
-    exit 0
+    # Per-workspace MCP registration: writes .mcp.json in the current repo.
+    # status, logout and init live in launcher-commands.ts, shared with the
+    # Windows launcher (install.ps1).
+    shift
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/launcher-commands.ts" init "$@"
     ;;
 
   install)
@@ -619,53 +541,15 @@ MCPEOF
     ;;
 
   logout)
-    CONFIG_FILE="$HOME/.buildd/config.json"
-    if [ -f "$CONFIG_FILE" ]; then
-      # Revoke the session presence token server-side (best effort), then drop
-      # both credentials from the file.
-      bun --no-env-file -e "
-        const fs = require('fs');
-        const config = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf-8'));
-        const token = config.presenceToken;
-        const server = (config.builddServer || 'https://buildd.dev').replace(/\/+$/, '');
-        const done = () => {
-          delete config.apiKey;
-          delete config.presenceToken;
-          fs.writeFileSync('$CONFIG_FILE', JSON.stringify(config, null, 2), { mode: 0o600 });
-        };
-        if (typeof token === 'string' && token.startsWith('bldp_')) {
-          fetch(server + '/api/auth/presence-token', { method: 'DELETE', headers: { Authorization: 'Bearer ' + token }, signal: AbortSignal.timeout(5000) })
-            .catch(() => {}).finally(done);
-        } else done();
-      "
-      echo "Logged out. API key and session presence token removed from $CONFIG_FILE"
-    else
-      echo "Not logged in (no config file found)"
-    fi
-    exit 0
+    # Revokes the session presence token (best effort), then drops both
+    # credentials from ~/.buildd/config.json.
+    shift
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/launcher-commands.ts" logout "$@"
     ;;
 
   status)
-    CONFIG_FILE="$HOME/.buildd/config.json"
-    if [ -f "$CONFIG_FILE" ]; then
-      bun --no-env-file -e "
-        const fs = require('fs');
-        const config = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf-8'));
-        if (config.apiKey) {
-          const key = config.apiKey;
-          console.log('Status: logged in');
-          console.log('API key: ' + key.slice(0, 10) + '...' + key.slice(-4));
-          console.log('Server:  ' + (config.builddServer || 'https://buildd.dev'));
-        } else {
-          console.log('Status: not logged in');
-          console.log('Run \"buildd login\" to authenticate.');
-        }
-      "
-    else
-      echo "Status: not logged in"
-      echo "Run \"buildd login\" to authenticate."
-    fi
-    exit 0
+    shift
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/launcher-commands.ts" status "$@"
     ;;
 
   service)
