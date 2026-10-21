@@ -94,8 +94,34 @@ describe('client adapters', () => {
     expect(isBuilddTool('mcp__buildd__buildd')).toBe(true);
     expect(isBuilddTool('mcp__plugin_buildd_buildd__buildd')).toBe(true);
     expect(isBuilddTool('mcp__buildd__buildd_work')).toBe(true);
-    expect(isBuilddTool('mcp__other__buildd')).toBe(false);
     expect(isBuilddTool('mcp__buildd__recall')).toBe(false);
+    expect(isBuilddTool('mcp__buildd__buildd_memory')).toBe(false);
+  });
+
+  it('a claude.ai connector is recognised under any server name: Desktop names it by connector id, the CLI by its title', () => {
+    expect(isBuilddTool('mcp__0c0ffee0-0000-4000-8000-00000000c0de__buildd')).toBe(true);
+    expect(isBuilddTool('mcp__claude_ai_Buildd_Acme-Widget__buildd')).toBe(true);
+    expect(isBuilddTool('mcp__0c0ffee0-0000-4000-8000-00000000c0de__buildd_work')).toBe(true);
+    expect(isBuilddTool('mcp__0c0ffee0-0000-4000-8000-00000000c0de__recall')).toBe(false);
+    const base = { session_id: 'cc-1', cwd: '/repo', hook_event_name: 'PostToolUse' };
+    for (const tool_name of ['mcp__0c0ffee0-0000-4000-8000-00000000c0de__buildd', 'mcp__claude_ai_Buildd_Acme__buildd']) {
+      expect(normalizeHookEvent('claude', {
+        ...base, tool_name, tool_input: { action: 'claim_task', params: {} },
+        tool_response: [{ type: 'text', text: CLAIM_TEXT }],
+      }, {})).toEqual({ clientSessionId: 'cc-1', cwd: '/repo', event: 'bind', workerId: WORKER, interactive: true });
+    }
+  });
+
+  it("another server's tool named buildd never binds without a buildd claim reply", () => {
+    const base = { session_id: 'cc-1', cwd: '/repo', hook_event_name: 'PostToolUse', tool_name: 'mcp__other__buildd' };
+    const touch = { clientSessionId: 'cc-1', cwd: '/repo', event: 'touch' };
+    expect(normalizeHookEvent('claude', { ...base, tool_input: { action: 'claim_task' }, tool_response: `Claimed: ${WORKER}` })).toEqual(touch);
+    expect(normalizeHookEvent('claude', { ...base, tool_input: { action: 'claim_task' }, tool_response: { ok: true } })).toEqual(touch);
+    expect(normalizeHookEvent('claude', { ...base, tool_input: { cmd: 'claim_task' }, tool_response: CLAIM_TEXT })).toEqual(touch);
+    expect(normalizeHookEvent('cursor', {
+      conversation_id: 'cu-1', workspace_roots: ['/repo'], hook_event_name: 'afterMCPExecution', tool_name: 'buildd', mcp_server_name: 'other',
+      tool_input: JSON.stringify({ action: 'claim_task' }), result_json: JSON.stringify({ ok: true }),
+    })).toBeNull();
   });
 
   it('Codex: same schema, client codex, SessionEnd reason always other', () => {
@@ -428,6 +454,33 @@ describe('workspace scope', () => {
     expect(r.body).toMatchObject({ event: 'start', repo: 'Acme/Widget' });
   });
 
+  it('a session starting in a workspace repo is told its workspace, to pass as workspaceId', async () => {
+    workspaceCheckout(dir, 'Acme/Widget', ['acme/widget']);
+    const r = await run({ client: 'claude', stdin: ev('SessionStart'), env: env(), fetchImpl: server([]) });
+    const out = JSON.parse(r.output);
+    expect(out.hookSpecificOutput.hookEventName).toBe('SessionStart');
+    expect(out.hookSpecificOutput.additionalContext).toContain('Acme/Widget');
+    expect(out.hookSpecificOutput.additionalContext).toContain('workspaceId');
+    // A local fact: said even when buildd does not answer, and without another call.
+    calls = [];
+    const down = (async (url: string) => { calls.push(url); throw new Error('ECONNREFUSED'); }) as any;
+    const again = await run({ client: 'claude', stdin: ev('SessionStart', { session_id: 'scope-2' }), env: env(), fetchImpl: down });
+    expect(JSON.parse(again.output).hookSpecificOutput.additionalContext).toContain('Acme/Widget');
+    expect(calls.filter(u => u.endsWith('/api/workspaces'))).toEqual([]);
+    // Only at the start, and only for Claude Code.
+    expect((await run({ client: 'claude', stdin: ev('Stop'), env: env(), fetchImpl: server([]) })).output).toBe('');
+    expect((await run({ client: 'codex', stdin: ev('SessionStart', { session_id: 'scope-3' }), env: env(), fetchImpl: server([]) })).output).toBe('');
+  });
+
+  it('no workspace hint outside a workspace, or in a repo in scope only through its .mcp.json', async () => {
+    workspaceCheckout(dir, 'someone/else', ['acme/widget']);
+    expect((await run({ client: 'claude', stdin: ev('SessionStart'), env: env(), fetchImpl: server([]) })).output).toBe('');
+    writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp' } } }));
+    const r = await run({ client: 'claude', stdin: ev('SessionStart', { session_id: 'scope-2' }), env: env(), fetchImpl: server([]) });
+    expect(r.sent).toBe(true);
+    expect(r.output).toBe('');
+  });
+
   it('claiming a task outside a workspace still binds, and the session is tracked from then on', async () => {
     workspaceCheckout(dir, 'someone/else', ['acme/widget']);
     const fetchImpl = server([]);
@@ -738,14 +791,14 @@ describe('fail open', () => {
     expect(JSON.parse(seen!.init.body)).toMatchObject({ event: 'start', client: 'claude', clientSessionId: 's' });
   });
 
-  it('the real script exits 0 with buildd unreachable, fast, printing nothing', () => {
+  it('the real script exits 0 with buildd unreachable, fast, printing only the folder\'s workspace', () => {
     const t0 = Date.now();
     const p = Bun.spawnSync(['node', SCRIPT, 'claude'], {
       stdin: Buffer.from(startEv()),
       env: { PATH: process.env.PATH ?? '', HOME: dir, ...env() },
     });
     expect(p.exitCode).toBe(0);
-    expect(p.stdout.toString()).toBe('');
+    expect(JSON.parse(p.stdout.toString())).toEqual({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: expect.stringContaining('workspaceId') } });
     expect(Date.now() - t0).toBeLessThan(8_000);
   });
 
