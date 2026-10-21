@@ -36,7 +36,22 @@ const UNIT_TEST_ROOTS = [
   'apps/web/tests/integration/start-commit-gate.test.ts', // pure decision; same reason
 ] as const;
 
+/**
+ * Test-first acceptance files for spec "Registered requirement verification in
+ * Build, Verify and Deliver" r1. They fail until the build lands, by design, so
+ * the unit gate must not collect them; scripts/run-acceptance-tests.ts runs them
+ * per criterion. The build task removes each entry once its file passes.
+ */
+export const ACCEPTANCE_ONLY_TESTS: readonly string[] = [
+  'apps/web/src/lib/specs/mission-registered-verification.test.ts',
+  'apps/web/src/lib/specs/registered-verification.test.ts',
+  'packages/core/decision-kind-ui-copy.test.ts',
+  'packages/core/ui-verification.test.ts',
+  'packages/spec-contract/src/verification-bindings.test.ts',
+];
+
 export function isUnitTestFile(path: string): boolean {
+  if (ACCEPTANCE_ONLY_TESTS.includes(path)) return false;
   return (
     UNIT_TEST_ROOTS.some(root => path.startsWith(root)) &&
     (path.endsWith('.test.ts') || path.endsWith('.test.tsx'))
