@@ -43,19 +43,26 @@ export function testsByCheck(checkIds: readonly string[], files: readonly TestFi
   return { byCheck, untested: checkIds.filter((id) => !byCheck.has(id)) };
 }
 
-/** The new `verified_by`: what it lists plus the test files found; null when that is no change. A keyed record stays keyed by check id. */
-export function verifiedByUpdate(current: string[] | Record<string, string[]> | undefined, found: CheckTests): string[] | Record<string, string[]> | null {
-  if (current && !Array.isArray(current)) {
-    const next: Record<string, string[]> = { ...current };
-    let changed = false;
-    for (const [id, t] of found.byCheck) {
-      if (!next[id]?.includes(t.path)) { next[id] = [...(next[id] ?? []), t.path]; changed = true; }
-    }
-    return changed ? next : null;
+/**
+ * The new `verified_by`, always a map keyed by check id (what `pinnedChecks`
+ * reads); null when that is no change. An existing flat list keeps its paths:
+ * they have no check id of their own, so they ride on the first check recorded
+ * and stay in the flattened list. An unchanged flat list with nothing found is
+ * left as it is.
+ */
+export function verifiedByUpdate(current: string[] | Record<string, string[]> | undefined, found: CheckTests): Record<string, string[]> | null {
+  if (!found.byCheck.size) return null;
+  const flat = Array.isArray(current) ? current : [];
+  const next: Record<string, string[]> = current && !Array.isArray(current) ? { ...current } : {};
+  let changed = Array.isArray(current);
+  let carried = false;
+  for (const [id, t] of found.byCheck) {
+    const have = next[id] ?? [];
+    const paths = [...new Set([...have, ...(carried ? [] : flat), t.path])];
+    carried = true;
+    if (paths.length !== have.length) { next[id] = paths; changed = true; }
   }
-  const have = current ?? [];
-  const next = [...new Set([...have, ...[...found.byCheck.values()].map((t) => t.path)])];
-  return next.length === have.length ? null : next;
+  return changed ? next : null;
 }
 
 const MAX_TEST_FILES = 40;
