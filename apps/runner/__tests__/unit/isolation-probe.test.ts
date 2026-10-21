@@ -136,8 +136,12 @@ describe('detectHostPlatform (R-1)', () => {
     expect(detectHostPlatform(hostDeps({ files: { '/proc/1/cgroup': '0::/kubepods/besteffort/pod1' } })).platform).toBe('linux-container');
   });
 
+  it('Windows is windows', () => {
+    expect(detectHostPlatform(hostDeps({ platform: 'win32' }))).toEqual({ platform: 'windows', evidence: ['process.platform=win32'] });
+  });
+
   it('anything else is other', () => {
-    expect(detectHostPlatform(hostDeps({ platform: 'win32' })).platform).toBe('other');
+    expect(detectHostPlatform(hostDeps({ platform: 'freebsd' })).platform).toBe('other');
   });
 });
 
@@ -183,6 +187,24 @@ describe('buildIsolationRecord (R-2, R-6)', () => {
       expect(rec.claude.reason).toBe('opt_out');
       expect(rec.codex['read-only'].reason).toBe('opt_out');
     }
+  });
+
+  it('Windows: Claude has no sandbox; Codex is confined by its Windows sandbox, writes only', () => {
+    const rec = buildIsolationRecord(inputs({ host: { platform: 'windows', evidence: [] }, bwrap: null, codexWindows: true }));
+    expect(rec.claude).toEqual({ mechanism: 'none', scope: [], reason: 'unsupported_platform' });
+    for (const mode of ['read-only', 'workspace-write'] as const) {
+      expect(rec.codex[mode]).toEqual({ mechanism: 'windows_restricted_token', scope: ['write'] });
+    }
+  });
+
+  it('Windows: a Codex sandbox probe that fails leaves Codex unconfined, with that cause', () => {
+    const rec = buildIsolationRecord(inputs({ host: { platform: 'windows', evidence: [] }, bwrap: null, codexWindows: false }));
+    expect(rec.codex['workspace-write']).toEqual({ mechanism: 'none', scope: [], reason: 'backend_probe_failed' });
+  });
+
+  it('Windows: the opt-out still wins', () => {
+    const rec = buildIsolationRecord(inputs({ host: { platform: 'windows', evidence: [] }, optOut: true, codexWindows: true }));
+    expect(rec.codex['workspace-write'].reason).toBe('opt_out');
   });
 
   it('an unsupported platform says so', () => {

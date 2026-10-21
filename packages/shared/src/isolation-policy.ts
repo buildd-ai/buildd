@@ -13,8 +13,11 @@
  * Pure and dependency-free, like ./runner-isolation.
  */
 import {
+  confinementLevel,
   isIsolationRecordCurrent,
+  isolationMechanismText,
   isolationReasonText,
+  partialConfinementRemediation,
   isolationRemediation,
   type BackendConfinement,
   type CodexSandboxMode,
@@ -93,7 +96,7 @@ export function backendConfinement(
   return record.codex?.[codexMode] ?? null;
 }
 
-export type IsolationRefusal = 'probe_unknown' | 'confinement_not_enforced' | 'reduced_not_opted_in';
+export type IsolationRefusal = 'probe_unknown' | 'confinement_not_enforced' | 'confinement_partial' | 'reduced_not_opted_in';
 
 export type TaskIsolationDecision =
   | {
@@ -123,6 +126,9 @@ const BACKEND_TEXT = (backend: IsolationBackend, codexMode: CodexSandboxMode) =>
  *   started, R-11): refused for both requirements. Nothing is known, so
  *   nothing may run reduced on the strength of it.
  * - Confinement enforced for the backend and mode: runs, `enforced`.
+ * - Confinement that covers writes but not the network (Codex's Windows
+ *   sandbox): `trusted_local` runs `enforced` on it; `protected` is refused,
+ *   since a command could still send out what it reads (PROTECTED_SCOPE).
  * - Not enforced and `protected`: refused, with the cause and the steps.
  * - Not enforced and `trusted_local`: runs `reduced` only if the record says
  *   the operator opted in; otherwise refused.
@@ -146,8 +152,19 @@ export function decideTaskIsolation(input: {
     };
   }
   const confinement = backendConfinement(record, backend, codexMode);
-  if (confinement && confinement.mechanism !== 'none') {
+  const level = confinementLevel(confinement);
+  if (confinement && (level === 'full' || (level === 'partial' && requirement === 'trusted_local'))) {
     return { ok: true, requirement, mode: 'enforced', confinement };
+  }
+  if (confinement && level === 'partial') {
+    return {
+      ok: false,
+      requirement,
+      code: 'confinement_partial',
+      reason: null,
+      message: `The task needs protected isolation and this runner confines ${label} with ${isolationMechanismText(confinement.mechanism)}, which does not block network access.`,
+      remedy: partialConfinementRemediation(record.platform),
+    };
   }
   const reason = confinement?.reason ?? 'backend_probe_failed';
   const cause = isolationReasonText(reason, record.platform);
@@ -225,5 +242,5 @@ export function isolationRefusalError(decision: Extract<TaskIsolationDecision, {
 /** Whether a stored worker error is an isolation refusal made by `isolationRefusalError`. */
 export function isIsolationRefusalError(error: string | null | undefined): boolean {
   if (typeof error !== 'string' || !error.startsWith(ISOLATION_REFUSAL_PREFIX)) return false;
-  return /needs protected isolation and this runner has no confinement|reported no current isolation probe|has not opted in to running trusted local work reduced/.test(error);
+  return /needs protected isolation and this runner (has no confinement|confines .* which does not block network access)|reported no current isolation probe|has not opted in to running trusted local work reduced/.test(error);
 }

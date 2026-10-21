@@ -21,7 +21,7 @@ import { probeIsolationRecord, detectHostPlatform, type IsolationProbes, type Ho
 import { isolationCheck, formatIsolationCheck } from '../../src/isolation-check';
 import { checkIsolation } from '../../src/doctor';
 import { deriveSandboxPosture } from '../../../web/src/lib/runner-heartbeats-shared';
-import { isolationReasonText, isolationRemediation, type IsolationReason, type RunnerIsolationRecord } from '@buildd/shared';
+import { isolationReasonText, isolationRemediation, isolationVerdict, type IsolationReason, type RunnerIsolationRecord } from '@buildd/shared';
 
 const STARTED = '2026-10-17T00:00:00.000Z';
 const PROBED = '2026-10-17T00:00:05.000Z';
@@ -32,6 +32,7 @@ interface Fixture {
   optOut?: boolean;
   bwrap?: BwrapProbeResult;
   seatbelt?: boolean;
+  codexWindows?: boolean;
   /** null: confined. */
   cause: IsolationReason | null;
 }
@@ -43,6 +44,7 @@ const linux = (files: Record<string, string> = {}): HostProbeDeps => ({
   read: (p) => files[p] ?? null,
 });
 const darwin: HostProbeDeps = { platform: 'darwin', env: {}, exists: () => false, read: () => null };
+const win32: HostProbeDeps = { platform: 'win32', env: {}, exists: () => false, read: () => null };
 
 const FIXTURES: Fixture[] = [
   { name: 'darwin, Seatbelt starts', host: darwin, seatbelt: true, cause: null },
@@ -52,6 +54,8 @@ const FIXTURES: Fixture[] = [
   { name: 'Linux, bwrap missing', host: linux(), bwrap: { ok: false, reason: 'bwrap_missing' }, cause: 'bwrap_missing' },
   { name: 'container, exec blocked', host: linux({ '/.dockerenv': '' }), bwrap: { ok: false, reason: 'probe_exec_failed' }, cause: 'probe_exec_failed' },
   { name: 'Linux, operator opt-out', host: linux(), optOut: true, bwrap: { ok: true }, cause: 'opt_out' },
+  { name: 'Windows, Codex sandbox confines', host: win32, codexWindows: true, cause: 'unsupported_platform' },
+  { name: 'Windows, Codex sandbox does not confine', host: win32, codexWindows: false, cause: 'unsupported_platform' },
 ];
 
 function probesFor(f: Fixture): IsolationProbes & { calls: string[] } {
@@ -62,6 +66,7 @@ function probesFor(f: Fixture): IsolationProbes & { calls: string[] } {
     optOut: () => f.optOut ?? false,
     bwrap: () => { calls.push('bwrap'); return f.bwrap ?? { ok: false, reason: 'probe_exec_failed' }; },
     seatbelt: () => { calls.push('seatbelt'); return f.seatbelt ?? false; },
+    codexWindows: () => { calls.push('codexWindows'); return f.codexWindows ?? false; },
   };
 }
 
@@ -100,6 +105,13 @@ describe('install.sh, doctor, heartbeat and Health agree per host fixture (AC-8)
           expect(s.install).toContain(text);
         });
 
+        it('doctor and the installer print one line per backend, from the shared verdict', () => {
+          for (const b of isolationVerdict(s.record).backends) {
+            expect(s.doctor.detail).toContain(b.line);
+            expect(s.install).toContain(b.line);
+          }
+        });
+
         it('doctor and the installer print the platform steps', () => {
           for (const step of isolationRemediation(cause, s.record.platform)) {
             expect(s.doctor.detail).toContain(step);
@@ -123,6 +135,23 @@ describe('install.sh, doctor, heartbeat and Health agree per host fixture (AC-8)
     const lin = probesFor(FIXTURES[2]);
     probeIsolationRecord(lin, { processStartedAt: STARTED, runnerVersion: 't' });
     expect(lin.calls).toEqual(['bwrap']);
+  });
+
+  it('a Windows host runs only the Codex sandbox probe', () => {
+    const win = probesFor(FIXTURES.find((f) => f.host.platform === 'win32')!);
+    probeIsolationRecord(win, { processStartedAt: STARTED, runnerVersion: 't' });
+    expect(win.calls).toEqual(['codexWindows']);
+  });
+
+  it('Windows: the heartbeat, Health, doctor and installer all say Codex is confined for writes only', () => {
+    const s = surfaces(FIXTURES.find((f) => f.name === 'Windows, Codex sandbox confines')!);
+    expect(s.heartbeat.codex['workspace-write']).toEqual({ mechanism: 'windows_restricted_token', scope: ['write'] });
+    const codexLine = isolationVerdict(s.record).backends.find((b) => b.backend === 'codex')!.line;
+    expect(codexLine).toContain('writes only; network is open');
+    expect(s.health.label).toBe('partly sandboxed');
+    expect(s.health.detail).toContain(codexLine);
+    expect(s.doctor.detail).toContain(codexLine);
+    expect(s.install).toContain(codexLine);
   });
 
   it('an opt-out runs no probe at all', () => {
@@ -204,5 +233,77 @@ describe('install.sh runs the installed runner\'s own check', () => {
     expect(r.exitCode).toBe(0);
     expect(out).toContain(isolationReasonText('opt_out', 'linux'));
     expect(out).toContain('Unset BUILDD_DISABLE_SANDBOX');
+  });
+});
+
+describe('install.sh offers bubblewrap when it is missing, and only with consent', () => {
+  const installSh = Bun.file(join(import.meta.dir, '../../install.sh')).text();
+
+  async function blocks(): Promise<string> {
+    const sh = await installSh;
+    const iso = sh.slice(sh.indexOf('# --- isolation check: begin ---'), sh.indexOf('# --- isolation check: end ---'));
+    const offer = sh.slice(sh.indexOf('# --- bubblewrap offer: begin ---'), sh.indexOf('# --- bubblewrap offer: end ---'));
+    expect(offer).toContain('bwrap_offer()');
+    return `${iso}\n${offer}`;
+  }
+
+  /** Runs bwrap_offer with stub tools in an otherwise empty PATH. No TTY: stdin and stdout are pipes. */
+  async function offer(o: { reason: string; uid: string; wanted: '0' | '1'; sudo?: boolean }) {
+    const bin = mkdtempSync(join(tmpdir(), 'bwrap-offer-bin-'));
+    // Forward slashes: on Windows the stubs run under Git for Windows' bash.
+    const log = join(bin, 'calls.log').replace(/\\/g, '/');
+    const stub = (name: string, body: string) => {
+      writeFileSync(join(bin, name), `#!/bin/bash\n${body}\n`);
+      chmodSync(join(bin, name), 0o755);
+    };
+    stub('uname', 'echo Linux');
+    stub('id', `echo ${o.uid}`);
+    stub('tail', 'exec /usr/bin/tail "$@"');
+    stub('bun', `case "$*" in *--claude-reason*) echo ${o.reason} ;; *) echo "isolation check ran" ;; esac`);
+    stub('apt-get', `echo "apt-get $*" >> "${log}"`);
+    if (o.sudo) stub('sudo', `echo "sudo $*" >> "${log}"`);
+    const script = `GREEN=''; YELLOW=''; NC=''\n${await blocks()}\nbwrap_offer /opt/buildd-test ${o.wanted}\n`;
+    const r = Bun.spawnSync([Bun.which('bash') ?? 'bash', '-c', script], { env: { PATH: bin }, stdin: 'pipe' });
+    const calls = Bun.file(log);
+    return { code: r.exitCode, out: new TextDecoder().decode(r.stdout), calls: (await calls.exists()) ? await calls.text() : '' };
+  }
+
+  it('--install-bubblewrap as root installs it, then checks again', async () => {
+    const r = await offer({ reason: 'bwrap_missing', uid: '0', wanted: '1' });
+    expect(r.code).toBe(0);
+    expect(r.calls).toBe('apt-get install -y bubblewrap\n');
+    expect(r.out).toContain('isolation check ran');
+  });
+
+  it('as a user it asks for root through sudo, never runs as itself', async () => {
+    const r = await offer({ reason: 'bwrap_missing', uid: '1000', wanted: '1', sudo: true });
+    expect(r.calls).toBe('sudo apt-get install -y bubblewrap\n');
+  });
+
+  it('as a user with no way to get root, it prints the command instead', async () => {
+    const r = await offer({ reason: 'bwrap_missing', uid: '1000', wanted: '1' });
+    expect(r.calls).toBe('');
+    expect(r.out).toContain('As root, run: apt-get install -y bubblewrap');
+  });
+
+  it('without the flag and without a terminal to ask on, it installs nothing', async () => {
+    const r = await offer({ reason: 'bwrap_missing', uid: '0', wanted: '0' });
+    expect(r.code).toBe(0);
+    expect(r.calls).toBe('');
+  });
+
+  it('offers nothing for any other cause, flag or not (buildd never changes a sysctl or AppArmor)', async () => {
+    for (const reason of ['confined', 'userns_sysctl_denied', 'probe_exec_failed']) {
+      const r = await offer({ reason, uid: '0', wanted: '1' });
+      expect(r.calls).toBe('');
+    }
+    const b = await blocks();
+    for (const forbidden of ['sysctl -w', 'aa-complain', 'setenforce', 'apparmor_parser']) expect(b).not.toContain(forbidden);
+  });
+
+  it('is called right after the isolation check', async () => {
+    const sh = await installSh;
+    expect(sh.indexOf('bwrap_offer "$INSTALL_DIR" "$WANT_BWRAP"')).toBeGreaterThan(sh.indexOf('isolation_check "$INSTALL_DIR"'));
+    expect(sh.indexOf('bwrap_offer "$INSTALL_DIR" "$WANT_BWRAP"')).toBeLessThan(sh.indexOf('Installation complete!'));
   });
 });

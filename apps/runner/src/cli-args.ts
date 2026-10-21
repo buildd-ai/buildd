@@ -5,9 +5,9 @@
  * only ever looked for the flags it knew and ignored the rest. Help and unknown
  * arguments are now answered here and never reach the runner.
  *
- * The launcher (install.sh) handles its own subcommands (init, install, login,
- * logout, status, service) before the runner is invoked; everything else
- * arrives here.
+ * The launchers (install.sh, and install.ps1's buildd.cmd) handle their own
+ * subcommands (init, install, login, logout, status, service) before the runner
+ * is invoked; everything else arrives here.
  */
 
 /** sysexits EX_USAGE, the same code `--once` uses for a bad invocation. */

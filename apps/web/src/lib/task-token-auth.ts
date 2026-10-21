@@ -6,7 +6,7 @@ import { authenticateApiKey } from './api-auth';
 import { noteBearerTenant } from './request-tenant';
 import { canMintAdminTaskToken, isTaskToken, missingTaskTokenScopes, taskTokenKeyBinding, verifyTaskToken } from './task-token';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
-import { taskLinksPr } from './agent-capabilities/pr-links';
+import { taskHoldsWorkspacePrReach, taskLinksPr } from './agent-capabilities/pr-links';
 import { delegationAllows, type ScheduleDelegationCapability, type ScheduleDelegationGrant } from '@buildd/core/token-delegation';
 import { loadTokenDelegationsOrThrow } from './task-delegation';
 import { cachedCaller, callerDep } from './caller-cache';
@@ -217,6 +217,26 @@ export async function taskScopeTaskLinksPr(
   });
   if (!task || task.workspaceId !== scope.workspaceId) return false;
   return taskLinksPr(task, pr.prNumber);
+}
+
+/**
+ * Did a person give the token's own task review authority over every PR in its
+ * workspace (`prReach.scope === 'workspace'`)? Used by the review-request door
+ * only: supersede, close and merge keep `taskScopeTaskLinksPr`, which ignores
+ * the marker. Bound to the token's workspace like the rest of the scope.
+ */
+export async function taskScopeHoldsWorkspaceReviewReach(
+  account: { taskScope?: TaskScope },
+  pr: { workspaceId: string | null | undefined },
+): Promise<boolean> {
+  const scope = account.taskScope;
+  if (!scope || !pr.workspaceId || pr.workspaceId !== scope.workspaceId) return false;
+  const task = await db.query.tasks.findFirst({
+    where: { RAW: sqlWhereFn((t, { eq: eqOp }) => eqOp(t.id, scope.taskId)) },
+    columns: { id: true, workspaceId: true, context: true },
+  });
+  if (!task || task.workspaceId !== scope.workspaceId) return false;
+  return taskHoldsWorkspacePrReach(task);
 }
 
 /**

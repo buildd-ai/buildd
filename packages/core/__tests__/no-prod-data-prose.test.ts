@@ -1,18 +1,17 @@
 /**
  * create_pr's prose preflight (§6.10 tier 1, S31) must say exactly what CI's
- * No Production Data check says about a PR title and body. CI runs the Python
- * script; the server runs packages/core/no-prod-data-prose.ts. This test runs
- * both on one fixture set and fails on any disagreement, so the two cannot
+ * No Production Data check says about a PR title and body. CI runs
+ * scripts/check-no-prod-data.ts; the server runs
+ * packages/core/no-prod-data-prose.ts. This test runs both on one fixture set
+ * and fails on any disagreement, so the two cannot
  * drift into a refusal CI would not make, or a pass CI would fail.
  *
  * Run: bun run scripts/run-unit-tests.ts packages/core/__tests__/no-prod-data-prose.test.ts
  */
 import { describe, expect, test } from 'bun:test';
-import { spawnSync } from 'child_process';
-import { resolve } from 'path';
+import * as gate from '../../../scripts/check-no-prod-data';
 import { describeProseFindings, scanPrProse } from '../no-prod-data-prose';
 
-const SCRIPTS = resolve(import.meta.dir, '../../../scripts');
 // Synthetic, built at run time so no UUID-shaped literal sits in the tree.
 const FAKE_UUID = ['aaaaaaaa', 'bbbb', 'cccc', 'dddd', 'eeeeeeeeeeee'].join('-');
 
@@ -36,36 +35,24 @@ const FIXTURES: Array<{ name: string; title: string; body: string }> = [
   { name: 'CRLF body', title: 'chore', body: 'ok\r\nno-prod-data: allow reason\r\nwith 5 teams' },
 ];
 
-/** CI's verdict per fixture: scan_prose's Report, run on the exact strings. */
-function pythonVerdicts(): Array<{ failed: boolean; lines: number[] }> {
-  const program = `
-import json, sys, io, contextlib
-sys.path.insert(0, ${JSON.stringify(SCRIPTS)})
-import check_no_prod_data as c
-out = []
-for f in json.load(sys.stdin):
-    rep = c.Report()
-    allow = c.ALLOW_RE.search(f["body"])
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        c.scan_prose(f["title"], "PR title", rep, allow is None)
-        if f["body"]:
-            c.scan_prose(f["body"], "PR body", rep, allow is None)
-    lines = sorted({int(l.split(" at line ")[1].split(" ")[0]) for l in buf.getvalue().splitlines() if " at line " in l})
-    out.append({"failed": rep.failed, "lines": lines})
-print(json.dumps(out))
-`;
-  const r = spawnSync('python3', ['-I', '-c', program], {
-    input: JSON.stringify(FIXTURES),
-    encoding: 'utf8',
-    env: { PATH: process.env.PATH ?? '' },
+/** CI's verdict per fixture: scanProse's Report, run on the exact strings. */
+function ciVerdicts(): Array<{ failed: boolean; lines: number[] }> {
+  return FIXTURES.map((f) => {
+    const printed: string[] = [];
+    const rep = new gate.Report((line) => printed.push(line));
+    const checkCounts = gate.ALLOW_RE.exec(f.body) === null;
+    gate.scanProse(f.title, 'PR title', rep, checkCounts);
+    if (f.body) gate.scanProse(f.body, 'PR body', rep, checkCounts);
+    const lines = new Set(printed.flatMap((l) => [...l.matchAll(/ at line (\d+) /g)].map((m) => Number(m[1]))));
+    return { failed: rep.failed, lines: [...lines].sort((a, b) => a - b) };
   });
-  if (r.status !== 0) throw new Error(`python3 failed: ${r.stderr}`);
-  return JSON.parse(r.stdout);
 }
 
-describe('scanPrProse agrees with CI (scripts/check_no_prod_data.py scan_prose)', () => {
-  const ci = pythonVerdicts();
+describe('scanPrProse agrees with CI (scripts/check-no-prod-data.ts scanProse)', () => {
+  const saved = process.env.NO_PROD_DATA_IDENTIFIERS;
+  delete process.env.NO_PROD_DATA_IDENTIFIERS; // the server never has it either
+  const ci = ciVerdicts();
+  if (saved !== undefined) process.env.NO_PROD_DATA_IDENTIFIERS = saved;
   FIXTURES.forEach((f, i) => {
     test(f.name, () => {
       const ts = scanPrProse({ title: f.title, body: f.body });

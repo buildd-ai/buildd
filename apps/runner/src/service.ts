@@ -303,6 +303,15 @@ export const SERVICE_WATCH_HINT = [
   'Open it in your browser: buildd web',
 ].join('\n');
 
+/**
+ * After an install: what the service's runner can confine here, one line per
+ * backend, from the shared verdict (isolation-check.ts sandboxPosture), so the
+ * operator sees which work it will not take before any is refused.
+ */
+export function sandboxPostureText(backends: { line: string }[]): string {
+  return ['Sandbox on this host:', ...backends.map(b => `  ${b.line}`)].join('\n');
+}
+
 function withWatchHint(message: string, opts: { watchHint?: boolean }): string {
   return opts.watchHint === false ? message : `${message}\n\n${SERVICE_WATCH_HINT}`;
 }
@@ -543,6 +552,10 @@ async function main(): Promise<void> {
     case 'install': {
       const result = handleInstallCommand(paths, platform, runSync, Bun.argv.slice(3));
       console.log(result.message);
+      if (result.ok) {
+        const { probeThisHost, sandboxPosture } = await import('./isolation-check');
+        console.log(`\n${sandboxPostureText(sandboxPosture(probeThisHost()).backends)}`);
+      }
       process.exit(result.ok ? 0 : 1);
     }
     case 'uninstall': {

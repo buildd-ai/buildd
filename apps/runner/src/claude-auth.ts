@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { isolatedClaudeConfigDirPath as _isolatedClaudeConfigDirPath } from './isolation-paths.js';
+import { restrictDirToOwnerOnce, restrictToOwnerAcl, tryRestrictToOwnerAcl } from './secure-file';
 
 export { isolatedClaudeConfigDirPath } from './isolation-paths.js';
 
@@ -82,9 +83,12 @@ export function materializeClaudeConfigDir(
     claudeConfigDir = _isolatedClaudeConfigDirPath(options.workspaceId, workerId, options.isolationRoot);
     fs.mkdirSync(claudeConfigDir, { recursive: true, mode: 0o700 });
     try { fs.chmodSync(claudeConfigDir, 0o700); } catch {}
+    // Windows: mode bits do nothing; an inheritable owner-only DACL is the 0700.
+    tryRestrictToOwnerAcl(claudeConfigDir, { directory: true });
   } else {
     claudeConfigDir = fs.mkdtempSync(join(tmpdir(), 'claude-cfg-'));
     fs.chmodSync(claudeConfigDir, 0o700);
+    restrictDirToOwnerOnce(claudeConfigDir);
   }
 
   const credentials = buildClaudeCredentialsFile(accessToken, expiresAt, options?.scopes);
@@ -92,6 +96,7 @@ export function materializeClaudeConfigDir(
   const credPath = join(claudeConfigDir, '.credentials.json');
   fs.writeFileSync(credPath, JSON.stringify(credentials));
   fs.chmodSync(credPath, 0o600);
+  restrictToOwnerAcl(credPath);
 
   console.log(`[Worker ${workerId}] Materialized Claude config dir at ${claudeConfigDir} (access-only, no refreshToken)`);
   return { claudeConfigDir };

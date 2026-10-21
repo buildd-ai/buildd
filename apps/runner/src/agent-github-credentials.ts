@@ -21,11 +21,13 @@
  * call, while an env var would be fixed at spawn.
  *
  * Files live under the session's throwaway runner home (agent-runner-home.ts),
- * created 0700/0600, removed with it.
+ * created 0700/0600 (on Windows, an inheritable owner-only DACL on the dir),
+ * removed with it.
  */
 // Namespace import: many runner tests mock.module('fs') with a partial stub.
 import * as fs from 'fs';
 import { join } from 'path';
+import { restrictDirToOwnerOnce } from './secure-file';
 
 /** GitHub tokens a runner's env might carry; none reach a scoped agent. */
 export const INHERITED_GITHUB_TOKEN_ENV = ['GITHUB_TOKEN', 'GH_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'] as const;
@@ -93,6 +95,10 @@ export function applyScopedGitHubEnv(env: Record<string, string>, dir: string): 
   };
   fs.mkdirSync(files.ghConfigDir, { recursive: true, mode: 0o700 });
   fs.chmodSync(dir, 0o700);
+  // Windows: mode bits do nothing. One inheritable owner-only DACL on the dir
+  // covers gh/, the helper and every token rewrite: writeAtomic makes its temp
+  // inside the dir, and a rename keeps the DACL the temp was created with.
+  restrictDirToOwnerOnce(dir);
   fs.writeFileSync(files.helperPath, helperScript(files.tokenPath), { mode: 0o700 });
 
   appendGitConfig(env, [

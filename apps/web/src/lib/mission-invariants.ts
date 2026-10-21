@@ -352,6 +352,12 @@ export interface InvariantSnapshot {
   remoteBranchExists: Map<string, boolean | null>;
   /** workspaceId → the branch names that count as trunk for that workspace. */
   trunkBranches: Map<string, Set<string>>;
+  /**
+   * `${workspaceId} ${prNumber}` → delivery state, for open PRs whose delivery
+   * waits on a person (ESCALATED). Absent means not person-gated, or not read.
+   * Only `open_pr_outpaced_by_base` reads it, to choose its remedy.
+   */
+  personGatedPrs?: Map<string, string>;
 }
 
 export function remoteRefKey(workspaceId: string, ref: string): string {
@@ -369,6 +375,7 @@ export function emptySnapshot(): InvariantSnapshot {
     baseMerges: [],
     remoteBranchExists: new Map(),
     trunkBranches: new Map(),
+    personGatedPrs: new Map(),
   };
 }
 
@@ -402,6 +409,8 @@ export interface InvariantViolation {
   detail: string;
   /** How long the breached state has been observable. */
   ageMs: number;
+  /** Replaces the invariant's remedy for THIS row, when the row's state calls for a different one. */
+  remedy?: string;
 }
 
 export interface Invariant {
@@ -1088,6 +1097,7 @@ export const INVARIANTS: Invariant[] = [
     remedy:
       'Rebase it and land it, or close it. Both are decisions; leaving it open is the one outcome ' +
       'the merge history says usually ends in nothing.',
+    // A person-gated PR gets PERSON_GATED_PR_REMEDY per row instead: closing it is not the sweep's call.
     // The SECOND invariant staged to file, and the reason is that the report is
     // useless here. The other report-only invariants describe a state someone
     // can look at later and still fix; this one describes a PR whose odds are
@@ -1129,6 +1139,7 @@ export const INVARIANTS: Invariant[] = [
         const drift = countBaseDrift(s, w, anchor);
         if (drift < PR_OUTPACED_DRIFT) continue;
         const reviewed = anchor.getTime() !== prOpenedAt(w).getTime();
+        const gated = s.personGatedPrs?.get(`${w.workspaceId} ${w.prNumber}`);
         out.push({
           // The PR, not the worker row, is what's decaying, and it's the PR
           // that must dedupe: a worker id is not guaranteed stable across two
@@ -1143,14 +1154,26 @@ export const INVARIANTS: Invariant[] = [
               ? `PR #${w.prNumber} last reviewed ${Math.round(ageMs / HOUR)}h ago; `
               : `PR #${w.prNumber} open ${Math.round(ageMs / HOUR)}h; `) +
             `${drift} merges into '${w.prBaseRef}' since ${reviewed ? 'that review' : 'it opened'}` +
-            (w.prUrl ? ` (${w.prUrl})` : ''),
+            (w.prUrl ? ` (${w.prUrl})` : '') +
+            (gated ? `; delivery ${gated}, waiting on a person` : ''),
           ageMs,
+          ...(gated ? { remedy: PERSON_GATED_PR_REMEDY } : {}),
         });
       }
       return out;
     },
   },
 ];
+
+/**
+ * The outpaced-PR remedy when the PR's delivery waits on a person. A sweep
+ * that closed one of these took the person's decision away, and whether it
+ * did depended on which model picked the sweep up; close_pr now refuses it
+ * (`pr_awaiting_person`, lib/agent-capabilities/pr-close-guard.ts).
+ */
+export const PERSON_GATED_PR_REMEDY =
+  'This PR waits on a person (its delivery is ESCALATED), so do not close it. Rebase it if the base ' +
+  'moved under it, then ask the owner to decide (ask_human, or post_note type=question on the owning task).';
 
 const BY_KEY = new Map<InvariantKey, Invariant>(INVARIANTS.map(i => [i.key, i]));
 
