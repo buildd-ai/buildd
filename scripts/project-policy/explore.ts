@@ -4,23 +4,27 @@ import gold from './gold.json';
 import policy from './product-language.json';
 import type { ChangedSubject, ProjectPolicy } from './pipeline';
 import { createJevEvaluator, type SemanticEvaluator } from './semantic';
+import type { InferenceKeyScope, ResolveInferenceKeyOptions } from '../../packages/core/inference-keys';
 
-type LocalScope = { teamId: string; workspaceId: string; allowPlatformKey: false };
-async function resolveLocalRoute(scope: LocalScope) {
+type LocalScope = ResolveInferenceKeyOptions & { teamId: string; workspaceId: string };
+async function resolveLocalCredential(scope: LocalScope) {
   process.env.DISABLE_WRITES = 'true';
-  const { resolveDecisionRoute } = await import('../../packages/core/decision-client');
+  const { resolveInferenceCredential } = await import('../../packages/core/inference-keys');
   // User explicitly selects the pinned Jev offline experiment, not a different team model.
   // Resolve only a scoped team/workspace API credential; never use a platform billing fallback.
-  return resolveDecisionRoute(null, scope);
+  return resolveInferenceCredential(scope);
 }
 
 /** Local opt-in only. Explicit scope wins; no fallback to an unrelated env credential. */
 export async function localJevEvaluator(teamId?: string, workspaceId?: string,
-  resolve: (scope: LocalScope) => Promise<{ apiKey: string | null }> = resolveLocalRoute) {
+  resolve: (scope: LocalScope) => Promise<{ key: string; scope: InferenceKeyScope } | null> = resolveLocalCredential) {
   if (teamId || workspaceId) {
     if (!teamId || !workspaceId) throw new Error('Supply both team and workspace for scoped exploration.');
-    const route = await resolve({ teamId, workspaceId, allowPlatformKey: false });
-    return createJevEvaluator(route.apiKey);
+    const credential = await resolve({ teamId, workspaceId, provider: 'openrouter', purposes: ['decision_key', 'inference_key'] });
+    if (credential && credential.scope !== 'workspace' && credential.scope !== 'team') {
+      throw new Error('Scoped exploration requires a workspace or team credential.');
+    }
+    return createJevEvaluator(credential?.key);
   }
   return createJevEvaluator(process.env.OPENROUTER_API_KEY);
 }

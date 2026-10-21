@@ -24,12 +24,24 @@ it('honors explicit workspace credential scope ahead of an unrelated env key', a
     let calls = 0;
     await localJevEvaluator('team-test', 'workspace-test', async scope => {
       calls++;
-      expect(scope).toEqual({ teamId: 'team-test', workspaceId: 'workspace-test', allowPlatformKey: false });
-      return { apiKey: null };
+      expect(scope).toEqual({ teamId: 'team-test', workspaceId: 'workspace-test', provider: 'openrouter', purposes: ['decision_key', 'inference_key'] });
+      return null;
     });
     expect(calls).toBe(1);
   } finally {
     if (old === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = old;
+  }
+});
+
+it('rejects an environment credential returned by the shared resolver for explicit scope', async () => {
+  await expect(localJevEvaluator('team-test', 'workspace-test', async () => ({
+    key: 'unrelated-test-key', scope: 'env',
+  }))).rejects.toThrow('Scoped exploration requires a workspace or team credential.');
+});
+
+it('accepts workspace and team credentials for explicit scope', async () => {
+  for (const scope of ['workspace', 'team'] as const) {
+    expect(typeof await localJevEvaluator('team-test', 'workspace-test', async () => ({ key: 'test-key', scope }))).toBe('function');
   }
 });

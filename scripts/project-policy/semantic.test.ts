@@ -34,7 +34,9 @@ it('never calls the model to overrule deterministic truth, or with unresolved or
   let calls = 0;
   const semantic = createJevEvaluator('test-key', async () => { calls++; throw new Error('must not call'); });
   const bad = extractChangedSubjects({ file: 'src/X.tsx', before: '', after: '<span>Held</span>' })[0];
-  expect(policyExitCode(await evaluateSubject(bad, policy, context, semantic))).toBe(1);
+  const findings = await evaluateSubject(bad, policy, context, semantic);
+  expect(policyExitCode(findings)).toBe(1);
+  expect(findings.find(f => f.rule === 'semantic-value')?.message).toContain('skipped');
   const unknown = { ...subject(), after: null };
   await evaluateSubject(unknown, policy, context, semantic);
   const secret = await semantic({ ...subject(), after: 'Bearer test-key-that-must-not-leave' }, policy, context);

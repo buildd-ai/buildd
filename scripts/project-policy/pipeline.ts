@@ -199,7 +199,9 @@ export async function evaluateSubject(subject: ChangedSubject, policy: ProjectPo
   } else if (context?.purpose === caption.purpose && new RegExp(caption.pattern, 'i').test(subject.after)) {
     emit('semantic-value', 'revise', 'redundant-sort-narration', caption.message, caption.correction, 'heuristic-advisory');
   } else {
-    emit('semantic-value', 'unsupported', 'model-not-exercised', 'No authorized local semantic decision route is configured.', undefined, 'unavailable');
+    emit('semantic-value', 'unsupported', semantic ? 'deterministic-violation' : 'model-not-exercised',
+      semantic ? 'Semantic evaluation skipped because deterministic violations already require correction.'
+        : 'No authorized local semantic decision route is configured.', undefined, 'unavailable');
   }
   if (!findings.some(f => f.enforced)) emit('deterministic-rules', 'pass', 'deterministic-only', 'Applicable deterministic rules passed; semantic coverage is reported separately.');
   return findings;
