@@ -18,9 +18,10 @@
 import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import { createRequire } from 'module';
-import { homedir, tmpdir } from 'os';
+import { tmpdir } from 'os';
 import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { resolveBuilddHome } from './buildd-home';
 
 /** The `windows.sandbox` mode the runner probes and passes to Codex. */
 export const CODEX_WINDOWS_SANDBOX_MODE = 'unelevated';
@@ -85,7 +86,7 @@ export interface CodexWindowsProbeDeps {
 const realDeps: CodexWindowsProbeDeps = {
   codexBin: () => resolveCodexBinary(),
   run: runInCodexSandbox,
-  probeRoot: () => process.env.BUILDD_HOME || join(homedir(), '.buildd'),
+  probeRoot: () => resolveBuilddHome(),
 };
 
 /**
