@@ -9,7 +9,13 @@ buildd login        # or: buildd login --device, on a machine with no browser
 buildd              # or: buildd service install, to run it in the background
 ```
 
-(Windows: `irm buildd.dev/install.ps1 | iex`.) This installs Bun, a sparse
+Windows, from any shell (PowerShell, cmd, Git Bash):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://buildd.dev/install.ps1 | iex"
+```
+
+This installs Bun, a sparse
 clone of this repo under `~/.buildd`, headless Chromium, and the `buildd`
 launcher at `~/.local/bin/buildd`.
 
@@ -104,11 +110,16 @@ loginctl enable-linger $USER
 `buildd service install` prints this reminder; `buildd service status` warns
 if linger isn't enabled yet.
 
-On Windows, `install.ps1 -Service` runs `buildd service install` for you:
+On Windows the installer asks the same question at the end. For a scripted
+install that registers the service without asking, set `BUILDD_SERVICE=1` in
+your shell before the one-liner (inside its quotes the outer shell would expand
+`$env:` first):
 
 ```powershell
-&([ScriptBlock]::Create((irm buildd.dev/install.ps1))) -Service
+$env:BUILDD_SERVICE=1; powershell -ExecutionPolicy ByPass -c "irm https://buildd.dev/install.ps1 | iex"
 ```
+
+From cmd: `set "BUILDD_SERVICE=1"` first, then the same one-liner.
 
 **Windows only:** `buildd service uninstall` (or a stop from Task Scheduler)
 ends the runner at once, so its agents get no window to pause first.

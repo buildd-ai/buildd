@@ -1,10 +1,13 @@
 # buildd runner installer for Windows
-# Usage: irm buildd.dev/install.ps1 | iex
-# With the background service: &([ScriptBlock]::Create((irm buildd.dev/install.ps1))) -Service
+# Usage, from any shell (PowerShell, cmd, Git Bash, Run dialog):
+#   powershell -ExecutionPolicy ByPass -c "irm https://buildd.dev/install.ps1 | iex"
+# Scripted, with the background service and no prompt: set BUILDD_SERVICE=1 in
+# your shell first (PowerShell: $env:BUILDD_SERVICE=1), then run the line above.
 
 param(
     # Register the background Scheduled Task non-interactively (for scripted
-    # installs). Without it, an interactive session is asked at the end.
+    # installs; BUILDD_SERVICE=1 does the same where `| iex` cannot pass it).
+    # Without either, an interactive session is asked at the end.
     [switch]$Service
 )
 
@@ -178,7 +181,7 @@ Write-Host ""
 # non-interactively; otherwise ask when there's an interactive session.
 # `buildd service install` (apps/runner/src/service.ts) owns the task itself.
 $InstallService = $false
-if ($Service) {
+if ($Service -or $env:BUILDD_SERVICE -eq '1') {
     $InstallService = $true
 } elseif ([Environment]::UserInteractive) {
     $Answer = Read-Host "Run buildd in the background so it survives closing this terminal and reboots? [Y/n]"
@@ -194,7 +197,7 @@ if ($InstallService) {
         Write-Host "Could not install the background service - run 'buildd service install' to retry, or 'buildd' to run it in the foreground." -ForegroundColor Yellow
     }
 } else {
-    Write-Host "Tip: re-run this installer with -Service to run it in the background." -ForegroundColor Yellow
+    Write-Host "Tip: run 'buildd service install' later to run it in the background." -ForegroundColor Yellow
 }
 
 # The runner is headless unless started with --debug: nothing listens on

@@ -36,7 +36,7 @@ buildd
 
 `buildd login` opens your browser to connect this machine to your account; on a headless or SSH machine with no browser, use `buildd login --device` and enter the code it prints. `buildd` then starts the runner in that terminal. To keep it running after you close the terminal, and across reboots, run `buildd service install` instead.
 
-The installer clones the runner into `~/.buildd`, installs Bun if you don't have it, puts the `buildd` launcher in `~/.local/bin` and adds that to your shell rc. Once you're logged in, re-running it offers to register the background service; pass `--service` to register it without asking (`curl -fsSL https://buildd.dev/install.sh | bash -s -- --service`). Windows: `irm buildd.dev/install.ps1 | iex`.
+The installer clones the runner into `~/.buildd`, installs Bun if you don't have it, puts the `buildd` launcher in `~/.local/bin` and adds that to your shell rc. Once you're logged in, re-running it offers to register the background service; pass `--service` to register it without asking (`curl -fsSL https://buildd.dev/install.sh | bash -s -- --service`). Windows, from any shell: `powershell -ExecutionPolicy ByPass -c "irm https://buildd.dev/install.ps1 | iex"` (set `BUILDD_SERVICE=1` first to register the service without asking).
 
 The runner has no web page by default. `buildd --debug` adds a local one on http://localhost:8766 for troubleshooting.
 
