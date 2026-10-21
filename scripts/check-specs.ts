@@ -202,6 +202,16 @@ const SOURCE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|json|sh|sql|ya?ml)$|Dockerfile$/i;
 /** Tests are not a code surface a spec may cite — see resolveSymbols. */
 const TEST_FILE = /(^|\/)__tests__\/|\.(test|spec|e2e)\.(ts|tsx|js|jsx)$/;
 
+/** Git's NUL-delimited inventory, in repo separators before scope filtering. */
+export function trackedSourcePaths(output: string): string[] {
+  return output.split('\0').map(file => file.replace(/\\/g, '/'))
+    .filter(file => file && !file.startsWith('docs/') && SOURCE_EXT.test(file) && !TEST_FILE.test(file));
+}
+
+export function specIndexIsCurrent(have: string, want: string): boolean {
+  return have.replace(/\r\n/g, '\n').trim() === want.replace(/\r\n/g, '\n').trim();
+}
+
 /**
  * Resolve every claimed symbol against the tracked source tree in one pass.
  *
@@ -230,9 +240,8 @@ export function resolveSymbols(symbols: string[]): Set<string> {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   });
-  const files = (ls.stdout ?? '')
-    .split('\0')
-    .filter((f) => f && !f.startsWith('docs/') && SOURCE_EXT.test(f) && !TEST_FILE.test(f));
+  if (ls.status !== 0) throw new Error('Cannot inspect tracked source paths: git ls-files failed.');
+  const files = trackedSourcePaths(ls.stdout ?? '');
 
   for (const file of files) {
     let text: string;
@@ -655,12 +664,12 @@ const nextIndex = buildIndex(specs);
 const currentIndex = existsSync(INDEX_FILE) ? readFileSync(INDEX_FILE, 'utf8') : '';
 let indexStale = false;
 if (checkOnly) {
-  if (nextIndex.trim() !== currentIndex.trim()) {
+  if (!specIndexIsCurrent(currentIndex, nextIndex)) {
     console.error('✖ docs/specs/INDEX.md is stale — run `bun run specs:check` to regenerate');
     errorCount++;
     indexStale = true;
   }
-} else if (nextIndex.trim() !== currentIndex.trim()) {
+} else if (!specIndexIsCurrent(currentIndex, nextIndex)) {
   writeFileSync(INDEX_FILE, nextIndex);
   console.log('✎ regenerated docs/specs/INDEX.md');
 }

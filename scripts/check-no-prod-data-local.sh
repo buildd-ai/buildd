@@ -98,4 +98,17 @@ fi
 # ${ARGS[@]+...}: macOS ships bash 3.2, where expanding an EMPTY array under
 # `set -u` is an "unbound variable" error — every no-flag run (the pre-commit
 # hook's) died here before checking anything.
-NO_PROD_DATA_LOCAL=1 python3 scripts/check_no_prod_data.py "$BASE_REF" ${ARGS[@]+"${ARGS[@]}"}
+# Windows can expose a python3 App Execution Alias even when only python works.
+# Probe the interpreter; finding an executable name does not prove it can run.
+PYTHON_CMD=""
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; sys.exit(0 if sys.version_info.major == 3 else 1)' >/dev/null 2>&1; then
+    PYTHON_CMD="$candidate"
+    break
+  fi
+done
+if [ -z "$PYTHON_CMD" ]; then
+  echo "no-prod-data (local): no working Python 3 interpreter; check could not run." >&2
+  exit 1
+fi
+PYTHONIOENCODING=utf-8 NO_PROD_DATA_LOCAL=1 "$PYTHON_CMD" -X utf8 scripts/check_no_prod_data.py "$BASE_REF" ${ARGS[@]+"${ARGS[@]}"}

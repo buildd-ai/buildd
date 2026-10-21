@@ -12,7 +12,21 @@ import {
   resolveApiRoute,
   resolveSymbols,
   VERIFIED_BY_DEBT,
+  trackedSourcePaths,
+  specIndexIsCurrent,
 } from './check-specs';
+
+describe('portable spec verification', () => {
+  test('compares generated indexes independently of checkout line endings', () => {
+    expect(specIndexIsCurrent('# Index\r\n\r\nEntry\r\n', '# Index\n\nEntry\n')).toBe(true);
+    expect(specIndexIsCurrent('# Index\r\nWrong\r\n', '# Index\nEntry\n')).toBe(false);
+  });
+
+  test('normalizes tracked paths before excluding docs and tests', () => {
+    expect(trackedSourcePaths('docs\\example.ts\0packages\\core\\__tests__\\fixture.ts\0scripts\\fixture.test.ts\0packages\\core\\live.ts\0'))
+      .toEqual(['packages/core/live.ts']);
+  });
+});
 
 /**
  * Guards for the checks that make `specs:lint` test whether a spec is TRUE

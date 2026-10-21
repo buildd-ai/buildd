@@ -115,4 +115,19 @@ describe('--staged / --message-file', () => {
     writeFileSync(f, 'fix: task 8237cfa9\n# comment\n');
     expect(run('--staged', '--message-file', f).status).toBe(0);
   });
+
+  test('uses working python when python3 resolves to a broken execution alias', () => {
+    const bashEnv = join(repo, 'broken-python3.sh');
+    writeFileSync(bashEnv, 'python3() { return 127; }\nexport -f python3\n');
+    const result = spawnSync('bash', [join(repo, 'scripts/check-no-prod-data-local.sh'), 'origin/dev', '--staged'], {
+      cwd: repo, encoding: 'utf8', env: { ...process.env, BASH_ENV: bashEnv.replace(/\\/g, '/') },
+    });
+    expect(result.status).toBe(0);
+  });
+
+  test('scans a safe UTF-8 diff using the working interpreter', () => {
+    writeFileSync(join(repo, 'a.ts'), '// “café” ✓\n');
+    g('add', 'a.ts');
+    expect(run('--staged').status).toBe(0);
+  });
 });

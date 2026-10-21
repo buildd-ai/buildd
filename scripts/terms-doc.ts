@@ -12,6 +12,11 @@ import { BANNED_WORDS, NOUNS, TERMS, type InternalRef } from '../packages/shared
 
 export const TERMS_DOC = 'docs/design/terms.md';
 
+/** Checkout line endings do not change generated content. */
+export function termsDocIsCurrent(have: string, want = renderTermsDoc()): boolean {
+  return have.replace(/\r\n/g, '\n') === want.replace(/\r\n/g, '\n');
+}
+
 const cell = (s: string) => s.replace(/\|/g, '\\|');
 const ref = (r: InternalRef) => `\`${r.kind}:${r.value}\`${r.when ? ` (${r.when})` : ''}`;
 
@@ -43,12 +48,12 @@ if (import.meta.main) {
   const want = renderTermsDoc();
   const have = existsSync(TERMS_DOC) ? readFileSync(TERMS_DOC, 'utf8') : '';
   if (process.argv.includes('--check')) {
-    if (have !== want) {
+    if (!termsDocIsCurrent(have, want)) {
       console.error(`❌ ${TERMS_DOC} is stale. Run \`bun run terms:doc\` and commit it.`);
       process.exit(1);
     }
     console.log(`✅ ${TERMS_DOC} is current.`);
-  } else if (have !== want) {
+  } else if (!termsDocIsCurrent(have, want)) {
     writeFileSync(TERMS_DOC, want);
     console.log(`✅ Wrote ${TERMS_DOC}.`);
   } else console.log(`✅ ${TERMS_DOC} is current.`);

@@ -36,7 +36,11 @@ const UNIT_TEST_ROOTS = [
   'apps/web/tests/integration/start-commit-gate.test.ts', // pure decision; same reason
 ] as const;
 
+/** Bun.Glob uses platform separators; suite identities and hints use repo paths. */
+export const normalizeTestPath = (path: string): string => path.replace(/\\/g, '/').replace(/^\.\//, '');
+
 export function isUnitTestFile(path: string): boolean {
+  path = normalizeTestPath(path);
   return (
     UNIT_TEST_ROOTS.some(root => path.startsWith(root)) &&
     (path.endsWith('.test.ts') || path.endsWith('.test.tsx'))
@@ -62,8 +66,12 @@ const SKIP_SENTINEL = 'SKIP';
  */
 export function selectTestFiles(named: readonly string[], discovered: readonly string[]): string[] {
   if (named.includes(SKIP_SENTINEL)) return [];
-  const explicit = named.filter(arg => arg !== ALL_SENTINEL);
-  if (explicit.length === 0) return [...discovered];
+  discovered = discovered.map(normalizeTestPath);
+  const explicit = named.filter(arg => arg !== ALL_SENTINEL).map(normalizeTestPath);
+  if (explicit.length === 0) {
+    if (discovered.length === 0) throw new Error('No unit test files discovered; refusing an empty successful run.');
+    return [...discovered];
+  }
   const selected = new Set<string>();
   for (const arg of explicit) {
     if (isTestFileName(arg)) {
@@ -90,7 +98,7 @@ function isTestFileName(path: string): boolean {
 async function discoverUnitTests(): Promise<string[]> {
   const files: string[] = [];
   for await (const path of new Bun.Glob('**/*.test.{ts,tsx}').scan({ cwd: '.', onlyFiles: true })) {
-    if (isUnitTestFile(path)) files.push(path);
+    if (isUnitTestFile(path)) files.push(normalizeTestPath(path));
   }
   return files.sort();
 }
@@ -107,7 +115,7 @@ const UNIT_TEST_DIR_ROOTS = UNIT_TEST_ROOTS.filter(root => root.endsWith('/'));
  * from the scan, so the final segment is never considered.
  */
 export function hiddenDirSegment(path: string): string | null {
-  return path.split('/').slice(0, -1).find(segment => segment.startsWith('.')) ?? null;
+  return normalizeTestPath(path).split('/').slice(0, -1).find(segment => segment.startsWith('.')) ?? null;
 }
 
 /**
@@ -133,7 +141,7 @@ export async function discoverHiddenDirTests(
   for (const root of roots) {
     const glob = new Bun.Glob(`${root}**/.*/**/*.test.{ts,tsx}`);
     for await (const path of glob.scan({ cwd, onlyFiles: true, dot: true })) {
-      found.add(path);
+      found.add(normalizeTestPath(path));
     }
   }
   return [...found].sort();

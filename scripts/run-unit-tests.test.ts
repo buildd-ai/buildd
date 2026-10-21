@@ -38,9 +38,14 @@ import {
   orderByDuration,
   parseRunnerArgs,
   readDurationHints,
+  normalizeTestPath,
 } from './run-unit-tests';
 
 describe('isUnitTestFile', () => {
+  it('recognizes Windows discovery paths and dot-relative named paths', () => {
+    expect(isUnitTestFile('apps\\web\\src\\lib\\team-access.test.ts')).toBe(true);
+    expect(isUnitTestFile('.\\scripts\\run-unit-tests.test.ts')).toBe(true);
+  });
   it('includes the unit-suite roots and its own regression test', () => {
     expect(isUnitTestFile('apps/web/src/lib/team-access.test.ts')).toBe(true);
     expect(isUnitTestFile('apps/runner/__tests__/unit/workers.test.ts')).toBe(true);
@@ -60,6 +65,18 @@ describe('selectTestFiles', () => {
     'apps/web/src/lib/b.test.ts',
     'packages/core/__tests__/c.test.ts',
   ];
+
+  it('normalizes Windows discovery and named paths before selection', () => {
+    expect(selectTestFiles([], ['scripts\\example.test.ts'])).toEqual(['scripts/example.test.ts']);
+    expect(selectTestFiles(['.\\apps\\web\\src\\'], discovered)).toEqual(discovered.slice(0, 2));
+    expect(selectTestFiles(['.\\scripts\\example.test.ts'], [])).toEqual(['scripts/example.test.ts']);
+  });
+
+  it('refuses an empty discovery result unless SKIP explicitly requests no work', () => {
+    expect(() => selectTestFiles([], [])).toThrow(/no unit test files/i);
+    expect(() => selectTestFiles(['ALL'], [])).toThrow(/no unit test files/i);
+    expect(selectTestFiles(['SKIP'], [])).toEqual([]);
+  });
 
   it('falls back to discovery when no files are named', () => {
     expect(selectTestFiles([], discovered)).toEqual(discovered);
@@ -277,7 +294,8 @@ describe('runTestFile BUILDD_HOME isolation', () => {
 
   it('still passes the rest of the parent environment through', () => {
     const env = capturedEnv('example.test.ts');
-    expect(env.PATH).toBe(process.env.PATH);
+    const pathKey = Object.keys(env).find(key => key.toUpperCase() === 'PATH');
+    expect(env[pathKey!]).toBe(process.env.PATH);
   });
 
   it('removes the temp home after the child exits', async () => {
@@ -669,7 +687,7 @@ describe('hidden dot-directory tests', () => {
 
       const ordinary: string[] = [];
       for await (const path of new Bun.Glob('**/*.test.{ts,tsx}').scan({ cwd: base, onlyFiles: true })) {
-        ordinary.push(path);
+        ordinary.push(normalizeTestPath(path));
       }
       expect(ordinary).toEqual(['pkg/src/visible.test.ts']);
 

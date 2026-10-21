@@ -74,7 +74,7 @@ export function parseSpecFrontmatter(raw: string): { fm: SpecFrontmatter | null;
   const block = raw.slice(3, end).trim();
   const body = raw.slice(end + 4);
   const fm: Record<string, unknown> = {};
-  for (const line of block.split('\n')) {
+  for (const line of block.split(/\r?\n/)) {
     const m = line.match(/^([A-Za-z_]+):\s*(.*)$/);
     if (!m) continue;
     const [, key, rawVal] = m;
