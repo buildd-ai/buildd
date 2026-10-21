@@ -347,6 +347,21 @@ describe('firstDivergence', () => {
     return { div: firstDivergence(n.recorded, n.replayed), tolerated: n.tolerated };
   };
 
+  test('a1f31c85: a close records its cause and closer; a recording without them is tolerated only when the cause matches its effect', () => {
+    const close = (evidence: Record<string, unknown>, closeCause = 'unknown') => dec({ command: 'PrClosedUnmerged', toState: 'CLOSED_UNMERGED', idempotencyKey: 'closed:o/r#1:T', evidence },
+      [{ kind: 'cancel_open_attempts', dedupeKey: 'cancel:d:4', payload: { closeCause, reason: 'closed' } }]);
+    const old = { live: { state: 'closed' }, actor: 'webhook:closed' };
+    const r = clean(close(old), close({ ...old, closeCause: 'unknown' }));
+    expect(r.div).toBeNull();
+    expect(r.tolerated).toEqual([expect.stringContaining('a1f31c85')]);
+    expect(clean(close(old, 'manual'), close({ ...old, closeCause: 'manual', closedBy: { login: 'octo-user', type: 'User' } }, 'manual')).div).toBeNull();
+    // A cause the recorded effect does not carry, another command, or a recording that has the cause: still compared.
+    expect(clean(close(old), close({ ...old, closeCause: 'manual' })).div).not.toBeNull();
+    expect(clean(close({ ...old, closeCause: 'unknown' }), close({ ...old, closeCause: 'manual' })).div).not.toBeNull();
+    const other = dec({ command: 'PrMerged', evidence: { ...old, closeCause: 'unknown' } });
+    expect(clean(dec({ command: 'PrMerged', evidence: old }), other).div).not.toBeNull();
+  });
+
   test('#4911: a round trigger on dispatch_review is tolerated only when the recording has none and the trigger is a known one', () => {
     const fx = (payload: Record<string, unknown>) => dec({ command: 'AttemptEnded', toState: 'AWAITING_REVIEW' }, [{ kind: 'dispatch_review', dedupeKey: 'dispatch_review:d:1', payload }]);
     const old = { roundId: 'r1', round: 1, headSha: 'H', kind: 'full', priorRound: null, scope: null };
