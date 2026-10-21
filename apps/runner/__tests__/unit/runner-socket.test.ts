@@ -15,8 +15,11 @@ import {
   checkSingleInstance,
   decideStart,
   matchWorkerAction,
+  ownerOnlyAclCommand,
+  parseWhoamiSid,
   probeRunnerSocket,
   relayWorkerAction,
+  restrictSocketToOwner,
   runnerSocketPath,
   serveRunnerSocket,
   type RunnerSocketServer,
@@ -59,12 +62,14 @@ async function makeStaleSocket(path: string): Promise<void> {
   }
   child.kill('SIGKILL');
   await child.exited;
-  expect(lstatSync(path).isSocket()).toBe(true);
+  // Windows: Bun cannot lstat a socket (EACCES), so only check the file is left.
+  if (process.platform === 'win32') expect(existsSync(path)).toBe(true);
+  else expect(lstatSync(path).isSocket()).toBe(true);
 }
 
 describe('runnerSocketPath', () => {
   test('lives under BUILDD_HOME', () => {
-    expect(runnerSocketPath('/h/.buildd', {})).toBe('/h/.buildd/runner.sock');
+    expect(runnerSocketPath('/h/.buildd', {})).toBe(join('/h/.buildd', 'runner.sock'));
   });
   test('BUILDD_RUNNER_SOCKET overrides it', () => {
     expect(runnerSocketPath('/h/.buildd', { BUILDD_RUNNER_SOCKET: '/x/r.sock' })).toBe('/x/r.sock');
@@ -72,7 +77,8 @@ describe('runnerSocketPath', () => {
 });
 
 describe('serveRunnerSocket', () => {
-  test('is owner-only (0600)', () => {
+  // Windows has no mode bits: chmod is a no-op there and `mode` says nothing.
+  test.skipIf(process.platform === 'win32')('is owner-only (0600)', () => {
     serveIdentity();
     expect(statSync(sock).mode & 0o777).toBe(0o600);
   });
@@ -106,6 +112,130 @@ describe('serveRunnerSocket', () => {
     serveIdentity(4242);
     expect(() => serveRunnerSocket(sock, () => Response.json({ pid: 5151 }))).toThrow();
     expect(await probeRunnerSocket(sock)).toEqual({ state: 'live', pid: 4242, version: '9.9.9' });
+  });
+});
+
+// Windows AF_UNIX connect needs write access in the socket file's DACL, the way
+// POSIX connect needs the w bit. chmod does nothing there, so without an
+// explicit ACL the socket inherits its directory's: a BUILDD_HOME or
+// BUILDD_RUNNER_SOCKET outside the profile (C:\ gives BUILTIN\Users Modify on
+// new folders) would let every local account drive the runner.
+describe('owner-only socket on Windows', () => {
+  const SID = 'S-1-5-21-1-2-3-1001';
+
+  test('reads the SID from whoami /user /fo csv /nh', () => {
+    expect(parseWhoamiSid('"host\\someone","S-1-5-21-1-2-3-1001"\r\n')).toBe('S-1-5-21-1-2-3-1001');
+    expect(parseWhoamiSid('')).toBeNull();
+    expect(parseWhoamiSid('"host\\someone","not-a-sid"')).toBeNull();
+  });
+
+  test('the ACL drops inheritance and grants the owner alone', () => {
+    expect(ownerOnlyAclCommand('C:\\h\\runner.sock', SID)).toEqual([
+      'icacls', 'C:\\h\\runner.sock', '/inheritance:r', '/grant:r', `*${SID}:(F)`,
+    ]);
+  });
+
+  test('POSIX: chmod 0600, no icacls', () => {
+    const calls: string[] = [];
+    restrictSocketToOwner('/h/runner.sock', {
+      platform: 'linux',
+      chmod: (p, m) => { calls.push(`chmod ${p} ${m.toString(8)}`); },
+      run: (argv) => { calls.push(argv.join(' ')); return { exitCode: 0, output: '' }; },
+      sid: () => SID,
+    });
+    expect(calls).toEqual(['chmod /h/runner.sock 600']);
+  });
+
+  test('POSIX: a failed chmod is not fatal (the 0177 umask already applied)', () => {
+    expect(() => restrictSocketToOwner('/h/runner.sock', {
+      platform: 'darwin',
+      chmod: () => { throw new Error('EPERM'); },
+    })).not.toThrow();
+  });
+
+  test('Windows: runs icacls with the owner SID', () => {
+    const calls: string[][] = [];
+    restrictSocketToOwner('C:\\h\\runner.sock', {
+      platform: 'win32',
+      chmod: () => { throw new Error('chmod must not be the boundary on Windows'); },
+      run: (argv) => { calls.push(argv); return { exitCode: 0, output: 'Successfully processed 1 files' }; },
+      sid: () => SID,
+    });
+    expect(calls).toEqual([ownerOnlyAclCommand('C:\\h\\runner.sock', SID)]);
+  });
+
+  test('Windows: an icacls failure throws, so the socket is never served open', () => {
+    expect(() => restrictSocketToOwner('C:\\h\\runner.sock', {
+      platform: 'win32',
+      run: () => ({ exitCode: 5, output: 'Access is denied.' }),
+      sid: () => SID,
+    })).toThrow(/Access is denied/);
+  });
+
+  test('Windows: no SID throws', () => {
+    expect(() => restrictSocketToOwner('C:\\h\\runner.sock', {
+      platform: 'win32',
+      run: () => ({ exitCode: 0, output: '' }),
+      sid: () => null,
+    })).toThrow(/SID/);
+  });
+
+  test('a socket that cannot be restricted is not left behind, and the path stays free', async () => {
+    expect(() => serveRunnerSocket(sock, () => new Response('x'), {
+      restrict: () => { throw new Error('icacls failed'); },
+    })).toThrow(/icacls failed/);
+    expect(existsSync(sock)).toBe(false);
+    serveIdentity();
+    // Fetch, not probeRunnerSocket: Bun cannot lstat a socket on Windows.
+    expect((await fetch('http://localhost/api/runner', { unix: sock } as RequestInit)).status).toBe(200);
+  });
+
+  test.skipIf(process.platform !== 'win32')('Windows: in a directory every user may write, the socket grants only its owner', async () => {
+    // Make the temp dir behave like C:\buildd: BUILTIN\Users may modify what is created in it.
+    expect(Bun.spawnSync(['icacls', dir, '/grant', '*S-1-5-32-545:(OI)(CI)(M)']).exitCode).toBe(0);
+    serveIdentity();
+    const acl = new TextDecoder().decode(Bun.spawnSync(['icacls', sock]).stdout);
+    const aces = acl.split(/\r?\n/).filter(l => /:\(/.test(l));
+    expect(aces).toHaveLength(1);
+    expect(acl).not.toContain('(I)');
+    expect(acl).not.toMatch(/BUILTIN\\Users/i);
+    // The owner still connects.
+    expect((await fetch('http://localhost/api/runner', { unix: sock } as RequestInit)).status).toBe(200);
+  });
+});
+
+// On Windows Bun's lstatSync/statSync throw EACCES on an AF_UNIX socket, even
+// a live one its caller owns, so "lstat threw" must not read as "absent".
+describe('a socket Bun cannot lstat (Windows)', () => {
+  const eacces = () => { throw Object.assign(new Error('EACCES: permission denied, lstat'), { code: 'EACCES' }); };
+
+  test('a live runner is live, with its pid', async () => {
+    serveIdentity(4242);
+    expect(await probeRunnerSocket(sock, { lstat: eacces })).toEqual({ state: 'live', pid: 4242, version: '9.9.9' });
+  });
+
+  test('a socket file with no process behind it is stale, and checkSingleInstance clears it', async () => {
+    await makeStaleSocket(sock);
+    expect(await probeRunnerSocket(sock, { lstat: eacces })).toEqual({ state: 'stale' });
+    const { decision } = await checkSingleInstance({ socketPath: sock, isTTY: false, foreground: false, lstat: eacces });
+    expect(decision).toEqual({ action: 'start' });
+    expect(existsSync(sock)).toBe(false);
+  });
+
+  test('nothing at the path is still absent', async () => {
+    expect(await probeRunnerSocket(join(dir, 'gone.sock'), { lstat: eacces })).toEqual({ state: 'absent' });
+  });
+
+  test('ENOENT is absent without a connect', async () => {
+    const enoent = () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); };
+    serveIdentity();
+    expect(await probeRunnerSocket(sock, { lstat: enoent })).toEqual({ state: 'absent' });
+  });
+
+  test('stop removes the socket even when its inode cannot be read', () => {
+    const s = serveRunnerSocket(sock, () => new Response('x'), { stat: eacces });
+    s.stop();
+    expect(existsSync(sock)).toBe(false);
   });
 });
 

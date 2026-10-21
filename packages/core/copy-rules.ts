@@ -33,7 +33,8 @@ export type CopyRuleId =
   | 'failed-to'
   | 'shouting-tag'
   | 'state-jargon'
-  | 'catalog-word';
+  | 'catalog-word'
+  | 'sort-subtitle';
 
 export interface CopyRule {
   id: CopyRuleId;
@@ -243,6 +244,14 @@ export const COPY_RULES: CopyRule[] = [
     why: 'Every state a person reads comes from packages/shared/src/terms.ts (docs/design/terms.md). Held, landed, landing, shipped, delivered and Completed each cover facts the catalog names apart.',
     bad: 'Mission is on hold',
     good: 'Not started',
+  },
+  {
+    id: 'sort-subtitle',
+    name: 'Sort order printed as a subtitle',
+    test: re(/^(?:oldest|newest|latest|slipping|next to start|most recent|least recent) first$/i),
+    why: 'A list is ordered; it does not need to announce how. The heading is the label and the order is the product\u2019s job.',
+    bad: 'slipping first',
+    good: 'In progress',
   },
   {
     id: 'duplicate-explanation',

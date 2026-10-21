@@ -9,6 +9,7 @@ import { resolveBuilddHome } from './buildd-home';
 import { resolveBuilddServer } from './server-url';
 import type { LocalUIConfig, LLMProvider, LocalWorker, ProviderConfig } from './types';
 import { DEFAULT_LOGIN_MODE, parseLoginMode } from '@buildd/shared';
+import { sandboxPosture } from './isolation-check';
 import { BuilddClient, getLastServerContactAt } from './buildd';
 import { WorkerManager, getIsolationRecord } from './workers';
 import { toPublicEvent, toPublicWorker, toPublicWorkers } from './public-worker';
@@ -1151,7 +1152,7 @@ let pendingTreeSyncRestart = false;
  * failure case either: a crashed child is detected by its exit code on the same
  * poll and returns immediately instead of waiting out the deadline.
  */
-const HEALTH_PROBE_TIMEOUT_MS = 30_000;
+const HEALTH_PROBE_TIMEOUT_MS = 60_000;
 
 /**
  * Hard ceiling on the WHOLE probe call, teardown included.
@@ -1487,7 +1488,8 @@ function builddServerOrigin(): string | null {
 /**
  * Who sent a request to the local handler. The TCP server (--debug) knows the
  * peer's address and authorizes it with the local token; the unix socket's
- * peer is always this machine's owner (the socket is 0600), so it skips that.
+ * peer is always this machine's owner (the socket is owner-only: mode 0600, or
+ * an owner-only ACL on Windows), so it skips that.
  */
 interface LocalPeer {
   remoteAddr: string | null;
@@ -1612,6 +1614,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         maxConcurrent: config.maxConcurrent,
         // How this runner's own logins share its slots (spec 34a48877 R-14); top's header says it (c7410e76 R-60).
         loginMode: config.loginMode,
+        // What confines each backend here and where its tasks go (isolationVerdict); top's header says it.
+        ...(workerManager ? { sandbox: sandboxPosture(getIsolationRecord()) } : {}),
         acceptRemoteTasks: config.acceptRemoteTasks !== false,
         bypassPermissions: config.bypassPermissions || false,
         openBrowser: savedConfig.openBrowser !== false, // default true
@@ -2085,7 +2089,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         ]);
         const ws = workspaces.find((w: any) => w.id === (body.workspaceId ?? mission?.workspaceId));
         const cwd = ws ? await resolver.resolveAsync?.({ id: ws.id, name: ws.name, repo: ws.repo, defaultBranch: ws.gitConfig?.defaultBranch ?? null }, null, { maxAgeMs: 60_000 }) ?? null : null;
-        return Response.json({ cwd, server: config.builddServer, apiKey: config.apiKey ?? null, explain, mission }, { headers: corsHeaders });
+        return Response.json({ cwd, workspaceId: ws?.id ?? null, server: config.builddServer, apiKey: config.apiKey ?? null, explain, mission }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ error: err.message || 'Failed to read the context' }, { status: 502, headers: corsHeaders });
       }
@@ -2728,7 +2732,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         }
 
         // Async: a clone takes minutes at worst, and a sync one froze the runner.
-        // Same command line (through /bin/sh) and timeout as the execSync it replaces.
+        // Same command line (through sh, posixShell()) and timeout as the execSync it replaces.
         await gitShellAsync(`git clone ${cloneUrl} "${clonePath}"`, { cwd: process.cwd(), timeoutMs: 120000 });
 
         // Invalidate caches so the new repo is immediately discoverable
@@ -3103,7 +3107,7 @@ const ownRunnerProcessCheck = () => socketHealthCheck(socketWatchdog?.state() ??
 const localUrl = `http://localhost:${PORT}`;
 
 // Repos for the banner count: the disk cache, or an async scan when there is none.
-const repos = await getRepos();
+const repos = process.env.BUILDD_HEALTH_PROBE === '1' ? [] : await getRepos(); // the health probe skips the scan (updater.ts HEALTH_PROBE_ENV)
 
 // ── Startup banner ──────────────────────────────────────────────────────────
 
@@ -3129,6 +3133,8 @@ for (const line of renderBanner({
   reposCached: reposLoadedFromCache,
   roots: projectRoots.length,
   serverless: !!config.serverless,
+  // The health probe never claims, so it skips the sandbox probes too.
+  sandbox: process.env.BUILDD_HEALTH_PROBE === '1' ? undefined : sandboxPosture(getIsolationRecord()).backends,
 }, PAL)) console.log(line);
 
 // Auto-install HTTP MCP for onboarded repos (non-blocking)

@@ -2,8 +2,12 @@ import { describe, it, expect } from 'bun:test';
 import {
   evaluateAnswerPath,
   describeAnswerPath,
-  buildContinuationDescription,
-  buildContinuationTaskValues,
+  buildAnsweredQuestionEntry,
+  buildAnsweredAttemptContextPatch,
+  answeredQuestionsOf,
+  isReopenableTaskStatus,
+  answeredAttemptLine,
+  ANSWERED_QUESTIONS_KEEP,
   buildAnswerDeliveryRecord,
   ANSWER_PATH_REASONS,
   RESUME_RUNNER_FRESH_MS,
@@ -233,7 +237,8 @@ describe('describeAnswerPath', () => {
     const line = describeAnswerPath(
       evaluateAnswerPath(eligible({ supportsInstructionAck: false })),
     );
-    expect(line).toContain('continuation');
+    expect(line).toContain('new attempt of this task');
+    expect(line).not.toMatch(/new task|follow-up task/i);
     expect(line).toContain(ANSWER_PATH_REASONS.runner_cannot_confirm_delivery);
   });
 });
@@ -284,55 +289,113 @@ describe('buildAnswerDeliveryRecord', () => {
   });
 });
 
-describe('buildContinuationDescription', () => {
-  const base = {
-    taskDescription: 'Fix the auth bug',
-    milestones: [{ label: 'Read the route', timestamp: 1 }, { type: 'status', timestamp: 2 }],
+// A cold fallback is a new attempt of the SAME task (docs/specs/answered-question-resume.md,
+// "The cold fallback"): what the task's context gains, so the new attempt has the answer.
+describe('buildAnsweredQuestionEntry', () => {
+  const delivery = buildAnswerDeliveryRecord({
+    decision: evaluateAnswerPath(eligible({ supportsInstructionAck: false })),
+    workerId: 'worker-1',
     question: 'Which database?',
-    answer: 'Postgres',
-  };
-
-  it('carries the original task, milestones, question and answer verbatim', () => {
-    const description = buildContinuationDescription(base);
-    expect(description).toContain('Fix the auth bug');
-    expect(description).toContain('Read the route');
-    expect(description).toContain('Which database?');
-    expect(description).toContain('Postgres');
+    now: NOW,
   });
 
-  it('falls back to a placeholder when no milestone survived redaction', () => {
-    const description = buildContinuationDescription({ ...base, milestones: [] });
-    expect(description).toContain('No milestones recorded');
-  });
-
-  it('uses a milestone type when a sensitive workspace stripped the label', () => {
-    const description = buildContinuationDescription({
-      ...base,
-      milestones: [{ type: 'phase', timestamp: 1 }],
+  it('carries the question, the answer verbatim, the worker, the branch and the reason', () => {
+    const entry = buildAnsweredQuestionEntry({
+      workerId: 'worker-1',
+      question: 'Which database?',
+      answer: 'Postgres, please',
+      milestones: [{ label: 'Read the route', timestamp: 1 }, { type: 'phase', timestamp: 2 }],
+      branch: 'buildd/abc-fix',
+      delivery,
+      now: NOW,
     });
-    expect(description).toContain('phase');
+    expect(entry).toMatchObject({
+      workerId: 'worker-1',
+      question: 'Which database?',
+      answer: 'Postgres, please',
+      branch: 'buildd/abc-fix',
+      reasonCode: 'runner_cannot_confirm_delivery',
+      reason: ANSWER_PATH_REASONS.runner_cannot_confirm_delivery,
+      answeredAt: new Date(NOW).toISOString(),
+    });
+    // A sensitive workspace strips labels: the milestone keeps its type.
+    expect(entry.milestones).toEqual(['Read the route', 'phase']);
+    expect(typeof entry.id).toBe('string');
+    expect(entry.id.length).toBeGreaterThan(8);
+  });
+});
+
+describe('buildAnsweredAttemptContextPatch', () => {
+  const delivery = { path: 'cold_continuation', reasonCode: 'worker_not_parked', reason: 'r', workerId: 'w-1', decidedAt: new Date(NOW).toISOString() } as const;
+  const entry = (n: number) => ({ id: `e-${n}`, workerId: 'w-1', question: `q${n}`, answer: `a${n}`, milestones: [], branch: 'b', reasonCode: 'worker_not_parked' as const, reason: 'r', answeredAt: new Date(NOW).toISOString() });
+
+  it('appends the answer, bumps the iteration, keeps branch continuity and marks the record same-task', () => {
+    const patch = buildAnsweredAttemptContextPatch({
+      context: { iteration: 2, answeredQuestions: [entry(1)], filingTargets: ['ws-2'] },
+      entry: entry(2),
+      branchContext: { baseBranch: 'buildd/x', resumeBranch: 'buildd/x' },
+      lastCommitSha: 'abc123',
+      delivery: delivery as any,
+    });
+    expect(patch.answeredQuestions.map((e: { id: string }) => e.id)).toEqual(['e-1', 'e-2']);
+    expect(patch.iteration).toBe(3);
+    expect(patch.resumeBranch).toBe('buildd/x');
+    expect(patch.baseBranch).toBe('buildd/x');
+    expect(patch.lastCommitSha).toBe('abc123');
+    expect(patch.answerDelivery).toMatchObject({ path: 'cold_continuation', continuation: 'same_task' });
+    // A merge patch: keys it does not name (a delegation's filing targets) are untouched.
+    expect('filingTargets' in patch).toBe(false);
   });
 
-  it('tolerates a task with no description', () => {
-    const description = buildContinuationDescription({ ...base, taskDescription: null });
-    expect(description).toContain('Which database?');
+  it('starts at iteration 2 when none was recorded', () => {
+    const patch = buildAnsweredAttemptContextPatch({ context: null, entry: entry(1), branchContext: {}, delivery: delivery as any });
+    expect(patch.iteration).toBe(2);
+    expect('lastCommitSha' in patch).toBe(false);
+  });
+
+  it(`keeps only the newest ${ANSWERED_QUESTIONS_KEEP} answers, and never duplicates an entry`, () => {
+    const many = Array.from({ length: ANSWERED_QUESTIONS_KEEP + 3 }, (_, i) => entry(i));
+    const patch = buildAnsweredAttemptContextPatch({ context: { answeredQuestions: many }, entry: entry(ANSWERED_QUESTIONS_KEEP + 2), branchContext: {}, delivery: delivery as any });
+    expect(patch.answeredQuestions).toHaveLength(ANSWERED_QUESTIONS_KEEP);
+    expect(patch.answeredQuestions.at(-1).id).toBe(`e-${ANSWERED_QUESTIONS_KEEP + 2}`);
+    expect(new Set(patch.answeredQuestions.map((e: { id: string }) => e.id)).size).toBe(ANSWERED_QUESTIONS_KEEP);
+  });
+
+  it('answeredQuestionsOf ignores anything that is not an entry list', () => {
+    expect(answeredQuestionsOf({ answeredQuestions: 'nope' })).toEqual([]);
+    expect(answeredQuestionsOf(null)).toEqual([]);
+    expect(answeredQuestionsOf({ answeredQuestions: [entry(1), null, 3] })).toHaveLength(1);
+  });
+});
+
+describe('isReopenableTaskStatus', () => {
+  it.each([['pending'], ['assigned'], ['in_progress'], ['failed']])('reopens a %s task for a new attempt', (s) => {
+    expect(isReopenableTaskStatus(s)).toBe(true);
+  });
+  // A person's cancel and a finished task are never reopened by an answer.
+  it.each([['completed'], ['cancelled'], [null]])('never reopens a %p task', (s) => {
+    expect(isReopenableTaskStatus(s as string | null)).toBe(false);
   });
 });
 
 // The rejection a stale card gets. The raw gate text ("Worker is not waiting
 // for input") told the reader nothing: not why, not what to do next.
 describe('explainNotWaiting', () => {
-  it('points at the continuation when the question was already answered', () => {
+  it('points a legacy answered worker at its continuation task', () => {
     const r = explainNotWaiting({ workerStatus: 'superseded', continuationTaskId: 'task-2' });
     expect(r.reasonCode).toBe('already_answered');
     expect(r.nextAction).toEqual({ kind: 'open_task', taskId: 'task-2' });
     expect(r.message).not.toMatch(/waitingFor|not waiting for input/i);
   });
 
-  it('asks for a refresh when an answered worker has no recorded continuation', () => {
+  // AC-56: the answer went to a new attempt of this same task, so the reader
+  // stays here; nothing points at another task.
+  it('keeps an answered worker with no continuation on its own task', () => {
     const r = explainNotWaiting({ workerStatus: 'superseded', continuationTaskId: null });
     expect(r.reasonCode).toBe('already_answered');
     expect(r.nextAction).toEqual({ kind: 'refresh' });
+    expect(r.message).toMatch(/new attempt of this task/);
+    expect(r.message).not.toMatch(/follow-up task/);
   });
 
   it.each([['completed'], ['failed'], ['error']])('says a %s worker has stopped and offers a follow-up', (status) => {
@@ -397,22 +460,6 @@ describe('isAnswerableWaitingFor', () => {
   });
 });
 
-describe('buildContinuationTaskValues: runner preference', () => {
-  const args = {
-    workspaceId: 'ws-1', workerId: 'w-1', branch: 'buildd/x', milestones: [], question: 'q', answer: 'a',
-    delivery: { path: 'cold_continuation', reasonCode: 'worker_not_parked', reason: 'r', workerId: 'w-1', decidedAt: new Date(0).toISOString() } as any,
-  };
-
-  it.each(['user', 'service', 'action', 'any'] as const)('carries the parent preference %s', (runnerPreference) => {
-    expect(buildContinuationTaskValues({ ...args, task: { id: 't', runnerPreference } }).runnerPreference).toBe(runnerPreference);
-  });
-
-  it('no parent preference leaves the column default', () => {
-    expect(buildContinuationTaskValues({ ...args, task: { id: 't' } }).runnerPreference).toBeUndefined();
-    expect(buildContinuationTaskValues({ ...args, task: null }).runnerPreference).toBeUndefined();
-  });
-});
-
 // What a duplicate answer is told was recorded, so the card can say "you
 // answered X" (and whether that differs from the tap) instead of an error.
 describe('recordedAnswerOf', () => {
@@ -425,11 +472,23 @@ describe('recordedAnswerOf', () => {
     expect(recordedAnswerOf({ workerStatus: 'waiting_input', instructionHistory: history })).toBe('Park and wait');
   });
 
-  it('reads the continuation brief on a superseded worker', () => {
+  it('reads a legacy continuation brief on a superseded worker', () => {
     expect(recordedAnswerOf({
       workerStatus: 'superseded',
       instructionHistory: [{ type: 'instruction', message: 'an old steer', timestamp: 1 }],
       continuationContext: { userInput: 'Park and wait' },
+    })).toBe('Park and wait');
+  });
+
+  it('reads the answer a new attempt of the same task was given', () => {
+    expect(recordedAnswerOf({
+      workerStatus: 'superseded',
+      workerId: 'w-2',
+      instructionHistory: [],
+      taskContext: { answeredQuestions: [
+        { id: 'e1', workerId: 'w-1', question: 'q', answer: 'an older answer', milestones: [], branch: null, reasonCode: 'worker_not_parked', reason: 'r', answeredAt: '' },
+        { id: 'e2', workerId: 'w-2', question: 'q', answer: 'Park and wait', milestones: [], branch: null, reasonCode: 'worker_not_parked', reason: 'r', answeredAt: '' },
+      ] },
     })).toBe('Park and wait');
   });
 
@@ -537,7 +596,7 @@ describe('evaluateInteractiveAnswerPath', () => {
 
   it('describeAnswerPath names why a gone interactive session went cold', () => {
     const line = describeAnswerPath(evaluateInteractiveAnswerPath(live({ workerStatus: 'failed' }))!);
-    expect(line).toContain('continuation');
+    expect(line).toContain('new attempt of this task');
     expect(line).toContain(ANSWER_PATH_REASONS.interactive_session_gone);
   });
 
@@ -616,5 +675,25 @@ describe('evaluateInteractiveAnswerPath: the poll heartbeat', () => {
       sessionSeenAt: new Date(NOW - INTERACTIVE_SESSION_POLL_STALE_MS - 1).toISOString(),
     }));
     expect(d.reasonCode).toBe('interactive_session_stopped_polling');
+  });
+});
+
+// AC-57: the task page lists the superseded attempt in this task's own history,
+// with the reason, and no link to another task.
+describe('answeredAttemptLine', () => {
+  const ctx = { answeredQuestions: [
+    { id: 'e1', workerId: 'w-1', question: 'q', answer: 'a', milestones: [], branch: null, reasonCode: 'runner_not_holding_transcript', reason: ANSWER_PATH_REASONS.runner_not_holding_transcript, answeredAt: '' },
+  ] };
+
+  it('names the new attempt and the recorded reason for that worker', () => {
+    const line = answeredAttemptLine(ctx, 'w-1');
+    expect(line).toContain('new attempt of this task');
+    expect(line).toContain(ANSWER_PATH_REASONS.runner_not_holding_transcript);
+    expect(line).not.toMatch(/new task|follow-up task/);
+  });
+
+  it('falls back plainly for a worker with no recorded answer', () => {
+    expect(answeredAttemptLine(ctx, 'w-2')).toBe('Continuation not recorded.');
+    expect(answeredAttemptLine(null, 'w-1')).toBe('Continuation not recorded.');
   });
 });

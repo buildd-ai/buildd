@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { dirname, join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { stableCodexHomeIsolatedPath as _stableCodexHomeIsolatedPath } from './isolation-paths.js';
+import { restrictToOwnerAcl, tryRestrictToOwnerAcl } from './secure-file';
 
 export { stableCodexHomeIsolatedPath } from './isolation-paths.js';
 
@@ -57,6 +58,7 @@ export function materializeStableCodexHome(
   fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
   // Re-chmod in case it pre-existed with a looser mode.
   try { fs.chmodSync(codexHome, 0o700); } catch {}
+  tryRestrictToOwnerAcl(codexHome, { directory: true }); // Windows: the 0700
   writeCodexAuthJson(codexHome, credential);
   console.log(`[Worker ${workerId}] Stable Codex home ready at ${codexHome} (sessions preserved)`);
   return { codexHome };
@@ -71,6 +73,7 @@ export function ensureStableCodexHome(workerId: string, explicitPath?: string): 
   const codexHome = explicitPath ?? stableCodexHomePath(workerId);
   fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
   try { fs.chmodSync(codexHome, 0o700); } catch {}
+  tryRestrictToOwnerAcl(codexHome, { directory: true }); // Windows: the 0700
   return { codexHome };
 }
 
@@ -145,6 +148,7 @@ export function writeCodexAuthJson(codexHome: string, credential: CodexCredentia
   const authPath = join(codexHome, 'auth.json');
   fs.writeFileSync(authPath, JSON.stringify(authJson));
   fs.chmodSync(authPath, 0o600);
+  restrictToOwnerAcl(authPath); // Windows: the 0600
 }
 
 /**
@@ -157,6 +161,7 @@ export function writeCodexApiKeyToHome(codexHome: string, apiKey: string): void 
   const authPath = join(codexHome, 'auth.json');
   fs.writeFileSync(authPath, JSON.stringify({ api_key: apiKey }));
   fs.chmodSync(authPath, 0o600);
+  restrictToOwnerAcl(authPath); // Windows: the 0600
 }
 
 /**
@@ -169,6 +174,7 @@ export function seedCodexAuthIfMissing(workerId: string, credential: CodexCreden
   const codexHome = explicitPath ?? stableCodexHomePath(workerId);
   fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
   try { fs.chmodSync(codexHome, 0o700); } catch {}
+  tryRestrictToOwnerAcl(codexHome, { directory: true }); // Windows: the 0700
   // A link left by a machine-login run is not a CLI-refreshed copy of this
   // credential: drop it so the server credential is seeded.
   detachMachineCodexAuth(codexHome);
@@ -260,6 +266,8 @@ export function teardownStableCodexHome(workerId: string, isolationRoot?: string
 export function materializeCodexAuth(workerId: string, credential: CodexCredential): { codexHome: string } {
   // mkdtempSync guarantees 0o700 on POSIX — no need to re-chmod the dir.
   const codexHome = fs.mkdtempSync(join(tmpdir(), 'codex-'));
+  // Windows has no mkdtemp 0700: give the dir an inheritable owner-only DACL.
+  tryRestrictToOwnerAcl(codexHome, { directory: true });
   // Write first (no mode option — avoids a Bun 1.3.x bug where writeFileSync
   // with { mode } silently fails to create the file), then chmod explicitly.
   writeCodexAuthJson(codexHome, credential);
@@ -338,6 +346,8 @@ function codexReasoningEffort(effort: 'low' | 'medium' | 'high' | 'max'): 'low' 
 /** Create a temporary CODEX_HOME for runs that only need transient Codex config. */
 export function materializeCodexHome(workerId: string): { codexHome: string } {
   const codexHome = fs.mkdtempSync(join(tmpdir(), 'codex-'));
+  // Windows has no mkdtemp 0700: give the dir an inheritable owner-only DACL.
+  tryRestrictToOwnerAcl(codexHome, { directory: true });
   console.log(`[Worker ${workerId}] Materialized Codex config dir at ${codexHome}`);
   return { codexHome };
 }

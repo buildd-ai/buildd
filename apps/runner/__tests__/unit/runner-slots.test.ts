@@ -4,8 +4,9 @@
  * words, which agents a lower N makes extra, and the pause queue's order.
  * Never the real ~/.buildd.
  */
+import { expectOwnerOnlyPath } from '../windows-acl';
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, writeFileSync, statSync } from 'fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -80,7 +81,7 @@ describe('config.json (R-43, AC-28)', () => {
     saveSlotsToConfig(file, 2);
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ apiKey: 'bld_fake', runnerName: 'atlas', maxConcurrent: 2 });
     expect(readSlotsFromConfig(file)).toBe(2);
-    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expectOwnerOnlyPath(file, 0o600);
   });
 
   test('an unreadable config.json is never overwritten', async () => {

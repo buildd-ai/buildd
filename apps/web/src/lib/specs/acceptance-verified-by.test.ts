@@ -21,10 +21,16 @@ describe('AC-123: verified_by lists one test per testable check, by id', () => {
     expect(r.byCheck.get('AC-1')?.name).toBe('AC-1: a');
   });
 
-  it('adds the test files to verified_by without dropping the existing ones, and changes nothing else', () => {
+  it('writes a map keyed by check id, keeping a flat list\'s paths', () => {
     const r = testsByCheck(['AC-1', 'AC-2'], [file('t/a.test.ts', `it('AC-1: a', () => {});`), file('t/b.test.ts', `it('AC-2: b', () => {});`)]);
-    expect(verifiedByUpdate(['old.test.ts'], r)).toEqual(['old.test.ts', 't/a.test.ts', 't/b.test.ts']);
-    expect(verifiedByUpdate(['t/a.test.ts'], r)).toEqual(['t/a.test.ts', 't/b.test.ts']);
+    expect(verifiedByUpdate(['old.test.ts'], r)).toEqual({ 'AC-1': ['old.test.ts', 't/a.test.ts'], 'AC-2': ['t/b.test.ts'] });
+    expect(verifiedByUpdate(undefined, r)).toEqual({ 'AC-1': ['t/a.test.ts'], 'AC-2': ['t/b.test.ts'] });
+  });
+
+  it('adds to an already keyed map and reports no change when nothing is new', () => {
+    const r = testsByCheck(['AC-1', 'AC-2'], [file('t/a.test.ts', `it('AC-1: a', () => {});`), file('t/b.test.ts', `it('AC-2: b', () => {});`)]);
+    expect(verifiedByUpdate({ 'AC-1': ['x.test.ts'] }, r)).toEqual({ 'AC-1': ['x.test.ts', 't/a.test.ts'], 'AC-2': ['t/b.test.ts'] });
+    expect(verifiedByUpdate({ 'AC-1': ['t/a.test.ts'], 'AC-2': ['t/b.test.ts'] }, r)).toBeNull();
   });
 
   it('writes nothing when no check has a test', () => {

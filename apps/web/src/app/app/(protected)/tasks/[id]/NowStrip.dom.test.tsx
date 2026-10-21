@@ -53,4 +53,34 @@ describe('run evidence disclosure', () => {
     await act(async () => root.unmount());
     el.remove();
   });
+
+  // Task d483085c: each evidence kind has its own marker shape, so the list
+  // reads without colour (design-system §4). Hue tokens are stripped first.
+  it('every marker kind differs in shape once hue is removed', async () => {
+    const { RunEvidenceRail } = await import('./NowStrip');
+    const { deriveRunEvidence } = await import('@buildd/core/run-evidence');
+    const t0 = new Date(0).toISOString();
+    const inputs = [
+      { startedAt: t0, dirtyWorktree: true, milestones: [{ type: 'checkpoint', event: 'first_commit', ts: 10 }] },
+      { startedAt: t0, dirtyWorktree: true, commitCount: 0, lastCommitSha: null, usesReviewer: true },
+      { startedAt: t0, prNumber: 7, prLifecycleStatus: 'ci_failed' },
+    ];
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    const root = createRoot(el);
+    await act(async () => {
+      root.render(<>{inputs.map((i, n) => (
+        <RunEvidenceRail key={n} evidence={deriveRunEvidence({ status: 'running', createdAt: t0, ...i } as never)} nowMs={60_000} defaultOpen />
+      ))}</>);
+    });
+    const hue = /\b[\w:-]*(status-[a-z]+|\[var\(--[a-z-]+\)\]|primary-ring|bg-card)\b/g;
+    const shapes = new Map<string, string>();
+    for (const m of el.querySelectorAll('[data-testid="run-evidence-marker"]')) {
+      shapes.set(m.getAttribute('data-kind')!, m.outerHTML.replace(hue, '').replace(/\s+/g, ' '));
+    }
+    expect([...shapes.keys()].sort()).toEqual(['current', 'done', 'failed', 'reported', 'todo', 'unknown']);
+    expect(new Set(shapes.values()).size).toBe(6);
+    await act(async () => root.unmount());
+    el.remove();
+  });
 });

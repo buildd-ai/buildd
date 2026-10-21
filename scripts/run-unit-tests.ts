@@ -97,8 +97,13 @@ function isTestFileName(path: string): boolean {
 
 async function discoverUnitTests(): Promise<string[]> {
   const files: string[] = [];
-  for await (const path of new Bun.Glob('**/*.test.{ts,tsx}').scan({ cwd: '.', onlyFiles: true })) {
-    if (isUnitTestFile(path)) files.push(normalizeTestPath(path));
+  for await (const raw of new Bun.Glob('**/*.test.{ts,tsx}').scan({ cwd: '.', onlyFiles: true })) {
+    // Bun.Glob yields backslash separators on Windows; UNIT_TEST_ROOTS are slash prefixes.
+    const path = normalizeTestPath(raw);
+    if (isUnitTestFile(path)) files.push(path);
+  }
+  if (files.length === 0) {
+    throw new Error('discovered no unit test files at all — wrong cwd, or path separators not matching UNIT_TEST_ROOTS');
   }
   return files.sort();
 }

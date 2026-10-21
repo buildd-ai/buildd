@@ -293,3 +293,50 @@ describe('writeCodexApiKeyToHome', () => {
     teardownStableCodexHome(workerId);
   });
 });
+
+// ─── Windows: owner-only DACLs ────────────────────────────────────────────────
+// chmod does nothing on Windows. The per-worker CODEX_HOME gets an inheritable
+// owner-only DACL (so what the Codex CLI writes or renames in later, including
+// a refreshed auth.json, is owner-only too) and auth.json its own.
+
+describe.skipIf(process.platform !== 'win32')('codex auth files on Windows', () => {
+  let root: string;
+  let prevRoot: string | undefined;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'codex-acl-'));
+    prevRoot = process.env.CODEX_HOME_ROOT;
+    process.env.CODEX_HOME_ROOT = root;
+  });
+  afterEach(() => {
+    if (prevRoot === undefined) delete process.env.CODEX_HOME_ROOT; else process.env.CODEX_HOME_ROOT = prevRoot;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  fsTest('stable home under a root every user may write: home and auth.json grant only the owner, a CLI rewrite too', async () => {
+    const { expectOwnerOnly, openToAllUsers } = await import('../windows-acl');
+    const { renameSync } = await import('fs');
+    openToAllUsers(root);
+    const { codexHome } = materializeStableCodexHome('acl-worker', oauthCred);
+    expectOwnerOnly(codexHome);
+    expectOwnerOnly(join(codexHome, 'auth.json'));
+    writeFileSync(join(codexHome, 'auth.json.tmp'), '{}');
+    renameSync(join(codexHome, 'auth.json.tmp'), join(codexHome, 'auth.json'));
+    expectOwnerOnly(join(codexHome, 'auth.json'), { inherited: true });
+  });
+
+  fsTest('writeCodexApiKeyToHome and the temp-dir form write an owner-only auth.json', async () => {
+    const { expectOwnerOnly, openToAllUsers } = await import('../windows-acl');
+    const { writeCodexApiKeyToHome, materializeCodexAuth } = await import('../../src/codex-auth');
+    openToAllUsers(root);
+    const home = join(root, 'apikey');
+    mkdirSync(home);
+    writeCodexApiKeyToHome(home, 'sk-test-key-123');
+    expectOwnerOnly(join(home, 'auth.json'));
+    const { codexHome } = materializeCodexAuth('acl-temp', oauthCred);
+    try {
+      expectOwnerOnly(join(codexHome, 'auth.json'));
+    } finally {
+      rmSync(codexHome, { recursive: true, force: true });
+    }
+  });
+});

@@ -1,6 +1,7 @@
 import { MISSION_SUMMARY_COLUMNS, missionReadOptions, missionSummaryResponse } from '@/lib/mission-read-shape';
 import { readMissionSummaries } from '@/lib/mission-summary-store';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { settleSpecWaive } from '@/lib/mission-spec-waive-settle';
 import { cancelWaivedSurfaceAudits } from '@/lib/surface-audit-waiver-cancel';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -31,7 +32,7 @@ import { resolveTimezone } from '@buildd/core/timezone';
 import { resolveFeedActor, postMissionFeedEvent, diffGoalCriteria, criterionLabel } from '@/lib/mission-feed';
 import { resolveCriteriaEscalation, escalateCriteriaFailure } from '@/lib/criteria-escalation';
 import { criteriaFingerprint } from '@/lib/criteria-rearm';
-import type { GoalCriteriaState } from '@buildd/shared';
+import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError, visualReviewPolicyOf } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
@@ -567,6 +568,22 @@ export async function PATCH(
               actor,
             }).catch(e => console.error('[missions] override escalation failed:', e));
           }
+        }
+      }
+
+      // Waive and complete settles the outcome spec row in the same write: the
+      // unmet in-scope criteria go on the spec's waive record and its stored
+      // entry follows. Only a person's close does; a task token's does not.
+      if (status === 'completed' && !wasAlreadyClosed && (actor.kind === 'user' || (actor.kind === 'mcp' && !apiAccount?.taskScope))) {
+        const settled = settleSpecWaive(
+          Array.isArray(existing.goalCriteria) ? existing.goalCriteria as GoalCriterion[] : [],
+          existing.goalCriteriaState as GoalCriteriaState | null,
+          user ? `user:${user.id}` : `account:${apiAccount?.id ?? 'unknown'}`,
+          surfaceWaiverReason ?? undefined,
+        );
+        if (settled) {
+          updateData.goalCriteria = settled.goalCriteria;
+          updateData.goalCriteriaState = settled.goalCriteriaState;
         }
       }
 

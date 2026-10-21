@@ -29,7 +29,7 @@ export interface MissionRowProps {
 
 /**
  * One mission in the portfolio and on Home: title, a decision if one is
- * waiting, the small strip, one state line, Next. L1: a hairline above, no box.
+ * waiting, the small strip, one state line, what happens next. L1: a hairline above, no box.
  */
 export default function MissionRow({ href, title, strip, state, stat, eta, slip, decide, meta, aside, next, note }: MissionRowProps) {
   const pillLabel = state ? [STATES[state].word, stat, eta].filter(Boolean).join(' · ') : null;
@@ -61,7 +61,7 @@ export default function MissionRow({ href, title, strip, state, stat, eta, slip,
       </div>
       {next && (
         <span className="text-title text-text-primary">
-          <span className="text-text-muted">Next</span> {next}
+          {next}
         </span>
       )}
       {note && <span className="font-mono text-meta text-text-muted">{note}</span>}

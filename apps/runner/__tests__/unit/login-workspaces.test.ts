@@ -161,9 +161,11 @@ function sandbox() {
   const cwd = tmp('buildd-login-cwd-');
   const bin = tmp('buildd-login-bin-');
   const openLog = join(bin, 'opened.txt');
-  // A stub `open` so no browser starts; it records what it was asked to open.
-  writeFileSync(join(bin, 'open'), `#!/bin/sh\necho "$1" >> "${openLog}"\n`);
-  chmodSync(join(bin, 'open'), 0o755);
+  // Stub openers (`open` on macOS, `xdg-open` elsewhere) so no browser starts; they record what they were asked to open.
+  for (const name of ['open', 'xdg-open']) {
+    writeFileSync(join(bin, name), `#!/bin/sh\necho "$1" >> "${openLog}"\n`);
+    chmodSync(join(bin, name), 0o755);
+  }
   return { home, cwd, bin, openLog };
 }
 

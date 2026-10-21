@@ -294,6 +294,18 @@ function sameRepo(prUrl: string | null | undefined, repoFullName: string): boole
 }
 
 /**
+ * Record that a PR another task owns was closed in favour of a merged successor
+ * (close_pr's foreign close, lib/agent-capabilities/pr-close-guard.ts). The PR
+ * route reaches the supersession record through this module.
+ */
+export async function recordForeignCloseSupersession(
+  params: import('@/lib/pr-supersession').RecordPrSupersessionParams,
+): Promise<import('@/lib/pr-supersession').RecordPrSupersessionResult> {
+  const { recordPrSupersession } = await import('@/lib/pr-supersession');
+  return recordPrSupersession(params);
+}
+
+/**
  * Close every OPEN ancestor PR in the successor's retry lineage.
  *
  * Returns one entry per ancestor PR considered. Never throws for a single PR:

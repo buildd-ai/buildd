@@ -121,6 +121,18 @@ describe('readInteractiveAnswer', () => {
     expect(s).toMatchObject({ state: 'not_waiting', reasonCode: 'session_ended', continuationTaskId: 'task-2' });
   });
 
+  // AC-47: the sweep now hands the answer to a new attempt of the same task.
+  // The session that comes back is still told to stop, never given the answer.
+  it('an answer handed to a new attempt of the same task is not returned either', () => {
+    const a = answered({ queued: true });
+    const s = readInteractiveAnswer({
+      ...a,
+      worker: { ...a.worker, status: 'superseded', continuationTaskId: null },
+    });
+    expect(s).toMatchObject({ state: 'not_waiting', reasonCode: 'session_ended', continuationTaskId: null });
+    expect((s as { message: string }).message).toContain('new attempt of this task');
+  });
+
   it('a failed worker (question expired) has ended', () => {
     const s = readInteractiveAnswer({ worker: { ...parked, status: 'failed' }, taskContext: {} });
     expect(s).toMatchObject({ state: 'not_waiting', reasonCode: 'session_ended' });

@@ -3,8 +3,9 @@
  * BUILDD_RUNNER_NAME, else ~/.buildd/config.json, else the hostname, and rides
  * the heartbeat as a label without touching the runner's identity.
  */
+import { expectOwnerOnlyPath } from '../windows-acl';
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, statSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -70,7 +71,7 @@ describe('saveRunnerName', () => {
     saveRunnerName(configFile, 'atlas');
     const cfg = JSON.parse(readFileSync(configFile, 'utf8'));
     expect(cfg).toEqual({ apiKey: 'bld_x', builddServer: 'https://example.test', name: 'atlas' });
-    expect(statSync(configFile).mode & 0o777).toBe(0o600);
+    expectOwnerOnlyPath(configFile, 0o600);
   });
 
   test('null removes the name', () => {

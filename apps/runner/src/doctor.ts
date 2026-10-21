@@ -7,8 +7,9 @@
 
 import { archiveWorktreeWorkSync } from './worktree-archive';
 import { pruneLocalBranches } from './branch-prune';
-import { execSync, spawnSync } from 'child_process';
-import { existsSync, readdirSync, statSync, readFileSync, copyFileSync, truncateSync } from 'fs';
+import { execFileSync, execSync, spawnSync } from 'child_process';
+import { existsSync, readdirSync, statSync, readFileSync, copyFileSync, truncateSync, rmSync, statfsSync } from 'fs';
+import { tmpdir } from 'os';
 import { basename, join } from 'path';
 import { resolveBuilddHome } from './buildd-home';
 import { isolationCheck, probeThisHost } from './isolation-check';
@@ -33,9 +34,19 @@ import { activityAt } from './worker-store';
 const builddDir = () => resolveBuilddHome();
 const WORKER_STORE_TTL_MS = 24 * 60 * 60 * 1000; // mirrors worker-store MAX_AGE_MS
 const BRANCH = process.env.BUILDD_BRANCH || 'main';
+/**
+ * Where an external wrapper redirects the runner's stdout/stderr: /tmp on
+ * POSIX; the OS temp dir on Windows, where `/tmp` would mean `C:\tmp`.
+ */
+export function defaultRunnerLogPath(platform: NodeJS.Platform = process.platform, tmp: string = tmpdir()): string {
+  return platform === 'win32' ? join(tmp, 'buildd.log') : '/tmp/buildd.log';
+}
 // Overridable for tests — production always redirects the runner's own
 // stdout/stderr to this fixed path (an external wrapper, not this process).
-const RUNNER_LOG_PATH = process.env.BUILDD_RUNNER_LOG_PATH || '/tmp/buildd.log';
+const RUNNER_LOG_PATH = process.env.BUILDD_RUNNER_LOG_PATH || defaultRunnerLogPath();
+const IS_WINDOWS = process.platform === 'win32';
+/** For checks built on ps, screen or df, which a Windows host does not have. */
+const notCheckedOnWindows = (name: string): CheckResult => ({ name, status: 'ok', message: 'Not checked on Windows' });
 const RUNNER_LOG_ROTATE_MAX_BYTES = 5 * 1024 * 1024; // 5MB — grows ~0.5MB/day, so this is days of history per rotation
 
 export type CheckStatus = 'ok' | 'warn' | 'error';
@@ -153,6 +164,7 @@ export function checkGitUntracked(): CheckResult {
 }
 
 function checkBunInstall(): CheckResult {
+  if (IS_WINDOWS) return notCheckedOnWindows('bun-install');
   try {
     // Check for lock conflicts — is another bun install running?
     const ps = execSync("ps aux | grep 'bun install' | grep -v grep", { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
@@ -176,11 +188,19 @@ function checkBunInstall(): CheckResult {
   }
 }
 
+function diskUsedPct(): number {
+  if (IS_WINDOWS) {
+    const s = statfsSync(builddDir());
+    return Math.round(100 * (1 - s.bavail / s.blocks));
+  }
+  const df = execSync("df -h . | tail -1", { cwd: builddDir(), encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
+  return parseInt(df.split(/\s+/)[4]); // e.g. "66%"
+}
+
 function checkDiskUsage(): CheckResult {
   try {
-    const df = execSync("df -h . | tail -1", { cwd: builddDir(), encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
-    const parts = df.split(/\s+/);
-    const usedPct = parseInt(parts[4]); // e.g. "66%"
+    const usedPct = diskUsedPct();
+    if (!Number.isFinite(usedPct)) throw new Error('no usage figure');
     if (usedPct >= 90) {
       return { name: 'disk-usage', status: 'error', message: `Disk ${usedPct}% full`, fixable: true };
     }
@@ -379,6 +399,8 @@ function findRemovableWorktrees(): RemovableWorktree[] {
 }
 
 function dirSizeMB(path: string): number {
+  // No du on Windows: sizes read 0 there rather than walking a big tree in-thread.
+  if (IS_WINDOWS) return 0;
   try {
     const du = execSync(`du -sm "${path}" 2>/dev/null | cut -f1`, { encoding: 'utf-8', timeout: 10000, stdio: 'pipe' }).trim();
     return parseInt(du) || 0;
@@ -425,6 +447,7 @@ export function checkIsolation(record?: RunnerIsolationRecord): CheckResult {
 }
 
 function checkScreenSession(): CheckResult {
+  if (IS_WINDOWS) return notCheckedOnWindows('screen-session');
   try {
     const screens = execSync('screen -ls 2>&1', { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
     if (screens.includes('buildd')) {
@@ -437,6 +460,7 @@ function checkScreenSession(): CheckResult {
 }
 
 function checkRunnerProcess(): CheckResult {
+  if (IS_WINDOWS) return notCheckedOnWindows('runner-process');
   try {
     const ps = execSync("ps aux | grep 'bun run apps/runner' | grep -v grep", { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
     if (ps) {
@@ -507,6 +531,16 @@ export function rotateLogIfLarge(path: string, maxBytes: number): RotateResult {
   return { rotated: true, sizeBefore };
 }
 
+/**
+ * The last `n` lines of a file, like `tail -n`. Reads the whole file: the
+ * runner log is rotated at RUNNER_LOG_ROTATE_MAX_BYTES before this runs.
+ */
+export function tailLines(path: string, n: number): string {
+  const lines = readFileSync(path, 'utf-8').split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines.slice(-n).join('\n') + '\n';
+}
+
 function checkRunnerLog(): CheckResult {
   const logPath = RUNNER_LOG_PATH;
   try {
@@ -519,7 +553,7 @@ function checkRunnerLog(): CheckResult {
     // trigger for touching this file (and only "fixed" it by clearing it).
     rotateLogIfLarge(logPath, RUNNER_LOG_ROTATE_MAX_BYTES);
 
-    const tail = execSync(`tail -50 "${logPath}"`, { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
+    const tail = tailLines(logPath, 50);
 
     // Detect auto-update loop
     const updateLines = tail.split('\n').filter(l => l.includes('Auto-updating after'));
@@ -627,6 +661,20 @@ function fixBunInstall(): FixResult {
   }
 }
 
+/**
+ * Remove a worktree via git (which also drops its .git/worktrees/ admin
+ * entry), else delete the directory. Argv git and fs, no shell: the old
+ * `... 2>/dev/null` / `rm -rf` lines both failed under cmd.exe on Windows.
+ * Best effort; never throws. The caller prunes dangling admin entries.
+ */
+export function removeWorktreeDir(repoDir: string, path: string): void {
+  try {
+    execFileSync('git', ['worktree', 'remove', '--force', path], { cwd: repoDir, encoding: 'utf-8', timeout: 10000, stdio: 'pipe', windowsHide: true });
+  } catch {
+    try { rmSync(path, { recursive: true, force: true }); } catch { /* skip */ }
+  }
+}
+
 export function fixStaleWorktrees(liveWorkers?: LiveWorkerView): FixResult {
   let scan: SweepScan;
   try {
@@ -657,16 +705,7 @@ export function fixStaleWorktrees(liveWorkers?: LiveWorkerView): FixResult {
       console.warn(`[worktree-sweep] keeping ${w.path}: archive failed — ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`);
       continue;
     }
-    // Remove via git (also drops the .git/worktrees/ admin ref), fallback to rm -rf.
-    try {
-      execSync(`git worktree remove --force "${w.path}" 2>/dev/null`, {
-        cwd: w.repoDir, encoding: 'utf-8', timeout: 10000, stdio: 'pipe',
-      });
-    } catch {
-      try {
-        execSync(`rm -rf "${w.path}"`, { encoding: 'utf-8', timeout: 10000, stdio: 'pipe' });
-      } catch { /* skip */ }
-    }
+    removeWorktreeDir(w.repoDir, w.path);
     cleaned++;
   }
   scan.telemetry.reaped = cleaned;
@@ -727,7 +766,7 @@ function fixDiskUsage(): FixResult {
         const toRemove = entries.slice(0, -100);
         for (const entry of toRemove) {
           try {
-            execSync(`rm -f "${join(archiveDir, entry)}"`, { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
+            rmSync(join(archiveDir, entry), { force: true });
           } catch { /* skip */ }
         }
         actions.push(`trimmed archive (kept 100, removed ${toRemove.length})`);
@@ -747,7 +786,7 @@ function fixDiskUsage(): FixResult {
 
       const toRemove = logFiles.slice(50);
       for (const f of toRemove) {
-        try { execSync(`rm -f "${join(logsDir, f.name)}"`, { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }); } catch { /* skip */ }
+        try { rmSync(join(logsDir, f.name), { force: true }); } catch { /* skip */ }
       }
       if (toRemove.length > 0) actions.push(`removed ${toRemove.length} old log files`);
     } catch { /* skip */ }

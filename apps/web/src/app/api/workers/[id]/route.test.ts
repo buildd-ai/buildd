@@ -9535,7 +9535,7 @@ describe('PATCH /api/workers/[id]', () => {
         setupReviewerTaskCompletion('approve', { kernel: true });
         mockRecordReviewVerdict.mockResolvedValue({ handled: false });
         await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
-        expect(mockPostPrReview).toHaveBeenCalledTimes(1);
+        expect(mockPostPrReview).not.toHaveBeenCalled();
       });
 
       // Task 7313de90: a reviewer contract failure on a kernel round is T27, never the
@@ -9615,7 +9615,7 @@ describe('PATCH /api/workers/[id]', () => {
         setupReviewerTaskCompletion('approve');
         await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
         expect(mockRecordReviewVerdict).not.toHaveBeenCalled();
-        expect(mockPostPrReview).toHaveBeenCalledTimes(1);
+        expect(mockPostPrReview).not.toHaveBeenCalled();
       });
     });
 
@@ -9727,18 +9727,12 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
     });
 
-    it('approve: posts exactly one GitHub APPROVE review for the verdict', async () => {
+    it('approve: posts no GitHub review or comment (the verdict is the commit status)', async () => {
       setupReviewerTaskCompletion('approve');
 
       await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
 
-      expect(mockPostPrReview).toHaveBeenCalledTimes(1);
-      expect(mockPostPrReview.mock.calls[0][0]).toMatchObject({
-        prNumber: 42,
-        headSha: 'abc123',
-        repoFullName: 'org/repo',
-        event: 'APPROVE',
-      });
+      expect(mockPostPrReview).not.toHaveBeenCalled();
     });
 
     it('approve: acts through the repo and installation resolved from the workspace, not the task context', async () => {
@@ -9748,8 +9742,7 @@ describe('PATCH /api/workers/[id]', () => {
       await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
 
       expect(mockResolveDispatchedReview.mock.calls.at(-1)?.[1]).toBe('ws-1');
-      expect(mockPostPrReview).toHaveBeenCalledTimes(1);
-      expect(mockPostPrReview.mock.calls[0][0]).toMatchObject({ repoFullName: 'org/linked', installationId: 7, prNumber: 42 });
+      expect(mockPostPrReview).not.toHaveBeenCalled();
     });
 
     it('approve: a review the server cannot trace to its own dispatch posts no review and merges nothing', async () => {
@@ -10002,7 +9995,7 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(mockPostPrReview).toHaveBeenCalledTimes(1);
+      expect(mockPostPrReview).not.toHaveBeenCalled();
       // Idempotent skip must not block the rest of the approve path.
       expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
     });
@@ -10022,18 +10015,16 @@ describe('PATCH /api/workers/[id]', () => {
     // it. Before this, that resolved failure was checked nowhere: buildd's
     // own store had the verdict, GitHub showed no review at all, and nothing
     // said so.
-    it('approve: a GitHub review-post failure that resolves (not throws) is surfaced, not swallowed', async () => {
-      setupReviewerTaskCompletion('approve');
+    it('request-changes: a GitHub review-post failure that resolves (not throws) is surfaced, not swallowed', async () => {
+      setupReviewerTaskCompletion('request-changes');
       mockPostPrReview.mockResolvedValue({ posted: false, reason: 'resource not accessible by integration' });
 
-      const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+      const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
 
       expect(res.status).toBe(200);
       const note = missionNoteInserts.find((n) => n.type === 'warning');
       expect(note).toBeDefined();
       expect(note.body).toContain('resource not accessible by integration');
-      // A posting failure is surfaced, not treated as a merge blocker.
-      expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
     });
 
     it('approve: the idempotent duplicate-review skip is not treated as a posting failure', async () => {
@@ -10493,7 +10484,7 @@ describe('PATCH /api/workers/[id]', () => {
         // exactly as it would have been with no correction at all.
         expect(res.status).toBe(200);
         expect(mockTryAutoMergeWorkerPr).toHaveBeenCalled();
-        expect(mockPostPrReview).toHaveBeenCalled();
+        expect(mockPostPrReview).not.toHaveBeenCalled();
         const note = missionNoteInserts.find((n) => n.type === 'reviewer_approved');
         expect(note).toBeDefined();
         expect(note.body).not.toContain('Lede corrected');
@@ -13729,6 +13720,45 @@ describe('PATCH /api/workers/[id]', () => {
           expect(requeue.context.retryCount).toBeUndefined();
           expect(taskSetCalls.some((c: any) => c.status === 'failed')).toBe(false);
           expect(workerSetCalls.find((u: any) => u.exitCause).exitCause).toBe('infra_failure');
+        });
+      });
+
+      // The runner refused the session at preflight: its isolation record
+      // cannot honour the task's requirement (Living Spec "Runner isolation",
+      // R-4). Nothing ran: back to the queue for a runner that can confine it.
+      describe('session refused by the runner isolation preflight', () => {
+        const refusedBody = {
+          status: 'failed',
+          error: 'Not started: The task needs protected isolation and this runner has no confinement for Claude: sandbox disabled by the runner operator (BUILDD_DISABLE_SANDBOX=1).',
+          isolationRefused: true,
+        };
+
+        it('requeues on the infra budget and books infra_failure', async () => {
+          const { taskSetCalls, workerSetCalls } = setupCrashReconcile({});
+          const res = await PATCH(createMockRequest({
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer bld_test' },
+            body: refusedBody,
+          }), { params: mockParams });
+
+          expect(res.status).toBe(200);
+          const requeue = taskSetCalls.find((c: any) => c.status === 'pending');
+          expect(requeue).toBeDefined();
+          expect(requeue.context.infraRetryCount).toBe(1);
+          expect(requeue.context.retryCount).toBeUndefined();
+          expect(taskSetCalls.some((c: any) => c.status === 'failed')).toBe(false);
+          expect(workerSetCalls.find((u: any) => u.exitCause).exitCause).toBe('infra_failure');
+        });
+
+        it('stalls once the infra budget is spent', async () => {
+          const { taskSetCalls } = setupCrashReconcile({ infraRetryCount: 3 });
+          await PATCH(createMockRequest({
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer bld_test' },
+            body: refusedBody,
+          }), { params: mockParams });
+          expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+          expect(taskSetCalls.find((c: any) => c.status === 'failed')?.result.errorType).toBe('infra_stalled');
         });
       });
 

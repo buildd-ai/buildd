@@ -38,6 +38,8 @@ export interface MissionVerdictRow {
   source?: VerdictSource;
   /** Immutable approved-body binding that produced this evidence, if registered. */
   bindingFingerprint?: string | null;
+  /** The verdict's evidence, for filtering unaccepted acceptance test edits. */
+  evidence?: Record<string, unknown>;
 }
 
 export interface MissionSpecFold {
@@ -75,10 +77,19 @@ export function foldMissionSpec(input: {
   target: MissionTarget;
   /** Required fingerprints from the selected immutable revision, by criterion. */
   requiredBindings?: ReadonlyMap<string, readonly string[]>;
+  /** Acceptance test file paths that have been edited but not accepted yet (R-80). */
+  unacceptedTestPaths?: readonly string[];
 }): MissionSpecFold {
   const waived = new Set(input.waived);
+  // If any building task edited acceptance tests without accepting, drop acceptance test verdicts (R-80).
+  const hasUnacceptedEdits = (input.unacceptedTestPaths?.length ?? 0) > 0;
+  const filtered = hasUnacceptedEdits ? input.rows.filter((r) => {
+    if (r.source !== 'test') return true;
+    const evidence = r.evidence as Record<string, unknown> | undefined;
+    return evidence?.kind !== 'acceptance-test';
+  }) : input.rows;
   const grouped = new Map<string, MissionVerdictRow[]>();
-  for (const r of input.rows) grouped.set(r.criterionId, [...(grouped.get(r.criterionId) ?? []), r]);
+  for (const r of filtered) grouped.set(r.criterionId, [...(grouped.get(r.criterionId) ?? []), r]);
   const newest = new Map<string, MissionVerdictRow>();
   const outranked = new Map<string, number>();
   for (const [id, rows] of grouped) {

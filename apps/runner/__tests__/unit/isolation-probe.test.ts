@@ -27,7 +27,7 @@ import {
   type HostProbeDeps,
   type IsolationProbeInputs,
 } from '../../src/isolation-probe';
-import { decideTaskIsolation, isIsolationRecordCurrent } from '@buildd/shared';
+import { decideTaskIsolation, isIsolationRecordCurrent, isolationRemediation } from '@buildd/shared';
 
 const T0 = '2026-10-17T00:00:00.000Z';
 const T1 = '2026-10-17T00:00:05.000Z';
@@ -136,8 +136,12 @@ describe('detectHostPlatform (R-1)', () => {
     expect(detectHostPlatform(hostDeps({ files: { '/proc/1/cgroup': '0::/kubepods/besteffort/pod1' } })).platform).toBe('linux-container');
   });
 
+  it('Windows is windows', () => {
+    expect(detectHostPlatform(hostDeps({ platform: 'win32' }))).toEqual({ platform: 'windows', evidence: ['process.platform=win32'] });
+  });
+
   it('anything else is other', () => {
-    expect(detectHostPlatform(hostDeps({ platform: 'win32' })).platform).toBe('other');
+    expect(detectHostPlatform(hostDeps({ platform: 'freebsd' })).platform).toBe('other');
   });
 });
 
@@ -185,9 +189,42 @@ describe('buildIsolationRecord (R-2, R-6)', () => {
     }
   });
 
+  it('Windows: Claude has no sandbox; Codex is confined by its Windows sandbox, writes only', () => {
+    const rec = buildIsolationRecord(inputs({ host: { platform: 'windows', evidence: [] }, bwrap: null, codexWindows: true }));
+    expect(rec.claude).toEqual({ mechanism: 'none', scope: [], reason: 'unsupported_platform' });
+    for (const mode of ['read-only', 'workspace-write'] as const) {
+      expect(rec.codex[mode]).toEqual({ mechanism: 'windows_restricted_token', scope: ['write'] });
+    }
+  });
+
+  it('Windows: a Codex sandbox probe that fails leaves Codex unconfined, with that cause', () => {
+    const rec = buildIsolationRecord(inputs({ host: { platform: 'windows', evidence: [] }, bwrap: null, codexWindows: false }));
+    expect(rec.codex['workspace-write']).toEqual({ mechanism: 'none', scope: [], reason: 'backend_probe_failed' });
+  });
+
+  it('Windows: the opt-out still wins', () => {
+    const rec = buildIsolationRecord(inputs({ host: { platform: 'windows', evidence: [] }, optOut: true, codexWindows: true }));
+    expect(rec.codex['workspace-write'].reason).toBe('opt_out');
+  });
+
   it('an unsupported platform says so', () => {
     const rec = buildIsolationRecord(inputs({ host: { platform: 'other', evidence: [] }, bwrap: null }));
     expect(rec.claude.reason).toBe('unsupported_platform');
+  });
+
+  it('an unsupported platform (Windows) still gets a next step: WSL2', () => {
+    expect(isolationRemediation('unsupported_platform', 'other').join('\n')).toContain('WSL2');
+  });
+
+  it('on an unsupported platform protected work is refused and trusted work names the opt-in once', () => {
+    const record = buildIsolationRecord(inputs({ host: { platform: 'other', evidence: [] }, bwrap: null }));
+    const protectedTask = decideTaskIsolation({ requirement: 'protected', record, backend: 'claude', codexMode: 'workspace-write' });
+    expect(protectedTask.ok).toBe(false);
+    const trusted = decideTaskIsolation({ requirement: 'trusted_local', record, backend: 'claude', codexMode: 'workspace-write' });
+    expect(trusted.ok).toBe(false);
+    const remedy = trusted.ok ? [] : trusted.remedy;
+    expect(remedy.some((s) => s.includes('WSL2'))).toBe(true);
+    expect(remedy.filter((s) => s.includes('BUILDD_ALLOW_REDUCED_ISOLATION=1'))).toHaveLength(1);
   });
 
   it('carries the probe time, the process start and the runner version (R-2, R-11)', () => {

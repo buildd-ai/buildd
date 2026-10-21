@@ -206,6 +206,8 @@ export function criteriaChecks(criteria: readonly GoalCriterion[], state: GoalCr
       if (!e) return row('queued', 'not checked', ctx.buildComplete ? 'The build is done. It is checked on the integrated result next.' : 'Checked on the integrated result once the build work is done.', spec);
       if (e.fingerprint && e.fingerprint !== criterionFingerprint(c)) return row('stale', 'out of date', 'The spec selection changed after it was judged. It needs checking again.', spec);
       if (e.verdict === 'pass') return row('passed', 'passed', detail, { ...spec, actor: 'none' });
+      // Waived by a person: nothing is open, and it never reads as passed.
+      if (v.waived.length > 0 && v.open.length === 0) return row('waived', 'waived', detail, { ...spec, actor: 'none' });
       if (e.verdict === 'fail') return row('finding', v.short, detail, { ...spec, problem: 'product' });
       if (e.verdict === 'PENDING') return row('running', 'verifying', detail, spec);
       // Judged on the integration branch before the mission PR merges, so never "after merge".

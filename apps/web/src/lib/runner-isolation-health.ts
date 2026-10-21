@@ -15,6 +15,7 @@
  */
 
 import {
+  confinementLevel,
   decideTaskIsolation,
   isIsolationRecordCurrent,
   isolationMechanismText,
@@ -108,6 +109,7 @@ export const PLATFORM_TEXT: Record<RunnerHostPlatform, string> = {
   linux: 'Linux',
   'linux-wsl': 'Linux on WSL',
   'linux-container': 'Linux container',
+  windows: 'Windows',
   other: 'a platform buildd has no sandbox for',
 };
 
@@ -240,8 +242,11 @@ export function runnerIsolationDetail(hb: IsolationRunner): RunnerIsolationDetai
 
   const backends = collapseBackends(BACKEND_ROWS.map(b => {
     const c = b.pick(rec);
-    const value = c?.reason === 'opt_out' ? 'off' : isolationMechanismText(c?.mechanism ?? 'none');
-    return { label: b.label, value, confined: !!c && c.mechanism !== 'none' };
+    const level = confinementLevel(c);
+    const value = c?.reason === 'opt_out'
+      ? 'off'
+      : `${isolationMechanismText(c?.mechanism ?? 'none')}${level === 'partial' ? ' (writes only, network open)' : ''}`;
+    return { label: b.label, value, confined: level !== 'none' };
   }));
   const usesBwrap = [rec.claude, rec.codex['read-only'], rec.codex['workspace-write']].some(c => c?.mechanism === 'bwrap');
   const filesystem = usesBwrap

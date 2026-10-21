@@ -14,7 +14,7 @@ import { queueNextLine, queueSections, selectedQueueRow, slotsSummary, type Queu
 import {
   busySlots, claimLoopLine, currentMission, currentWorkspace, deliveredDay, deliveredMissions, describeToolCall, emptyMissionWords, filterLine, formatDuration, heldNow, holdLine, missionList, missionRowStage, missionStageWord, missionStatusLine, planOf,
   DELIVERED_DAYS,
-  providerHoldLine, providerHolds, routeProblemLines, runsOn, loginsLine, selectedRow, spendTodayLine,
+  providerHoldLine, providerHolds, routeProblemLines, runsOn, sandboxLines, loginsLine, selectedRow, spendTodayLine,
   isLooseKey, taskRows, workerForTask, workspaceSummary, type MissionRow, type RowKind, type TaskRow, type TopState,
 } from './state';
 
@@ -193,13 +193,13 @@ function rule(cols: number, p: Palette): string {
   return p.fg('faint', '─'.repeat(cols));
 }
 
-const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 's talk', 'h hold', '+- slots', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
+const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 's/S talk', 'h hold', '+- slots', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
 const HINTS_QUEUE = ['↑↓ move', 'c claim', 'h hold', '+- slots', 'o web', 'tab missions', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
 const HINTS_HELP = ['o open this runner on buildd', 'any key back', 'q quit'];
-const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 's talk', 'o web', 'q quit'];
+const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 's/S talk', 'o web', 'q quit'];
 
 /** Dropped first when the footer is too narrow; `? help`, `t`, `w` and `q quit` always stay. */
-const HINT_DROP_ORDER = ['b logins', 's talk', '+- slots', 'p pause', 'x stop', 'h hold', 'm message', 'c claim', 'a answer', 'tab queue', 'o web', '/ filter', '↑↓ move', '⏎ open', 'esc back'];
+const HINT_DROP_ORDER = ['b logins', 's/S talk', '+- slots', 'p pause', 'x stop', 'h hold', 'm message', 'c claim', 'a answer', 'tab queue', 'o web', '/ filter', '↑↓ move', '⏎ open', 'esc back'];
 
 function fitHints(hints: string[], cols: number): string {
   for (const sep of ['  ', ' ']) {
@@ -592,6 +592,7 @@ export function renderFrame(state: TopState, opts: FrameOptions): string[] {
     ...(runsOnText ? [p.fg('muted', fit(' ' + runsOnText, cols))] : []),
     ...(loginsText ? [p.fg('muted', fit(' ' + loginsText, cols))] : []),
     ...routeProblemLines(state).map(l => p.fg('warning', fit(' ' + l, cols))),
+    ...sandboxLines(state).map(l => p.fg(l.warn ? 'warning' : 'muted', fit(' ' + l.text, cols))),
     ...(todayText ? [p.fg('muted', fit(' ' + todayText, cols))] : []),
   ];
   const bodyH = Math.max(1, rows - 5 - holdLines.length - ownHold.length - routeLines.length - loopLine.length);

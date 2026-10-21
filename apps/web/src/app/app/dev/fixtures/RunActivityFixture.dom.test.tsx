@@ -186,6 +186,50 @@ describe('evidence rail', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     const listed = [...s.querySelectorAll('[data-testid="run-evidence-list"] li[data-phase]')].map(li => `${li.getAttribute('data-phase')}:${li.getAttribute('data-state')}`);
     expect(listed.length).toBeGreaterThan(0);
-    for (const li of s.querySelectorAll('[data-testid="run-evidence-list"] li')) expect(li.className).toContain('min-h-11');
+    // The rows are not tap targets (the toggle is), so they stay compact: 28px,
+    // and only the current step is taller (task 7b83507d).
+    const rows = [...s.querySelectorAll('[data-testid="run-evidence-list"] li')];
+    expect(rows.filter(li => li.getAttribute('data-tier') === 'head')).toHaveLength(1);
+    for (const li of rows.filter(li => li.getAttribute('data-tier') !== 'head')) expect(li.className.split(' ')).toContain('h-7');
+  });
+});
+
+// Task d483085c: the expanded list's markers per evidence mix, as the QA plan shoots them.
+describe('evidence states', () => {
+  test('each mix opens with its markers: reported, live, failed, complete', async () => {
+    const s = await mount('evidence-states');
+    const kinds = (key: string) => Object.fromEntries([...s.querySelectorAll(`[data-testid="evidence-state-${key}"] li[data-phase]`)]
+      .map(li => [li.getAttribute('data-phase'), li.querySelector('[data-testid="run-evidence-marker"]')?.getAttribute('data-kind')]));
+    expect(kinds('reported')).toMatchObject({ changed: 'done', committed: 'reported', pushed: 'unknown', merged: 'unknown' });
+    expect(text(s.querySelector('[data-testid="evidence-state-reported"]')!)).toContain('step 4 of 9');
+    expect(kinds('live')).toMatchObject({ committed: 'current', review: 'todo' });
+    expect(kinds('failed')).toMatchObject({ pr_open: 'done', ci: 'failed' });
+    // A merge does not prove the checks ran: CI stays "not seen" unless it was observed.
+    expect(kinds('complete')).toMatchObject({ committed: 'done', pr_open: 'done', ci: 'unknown', review: 'done', merged: 'done' });
+    for (const key of ['reported', 'live', 'failed', 'complete']) {
+      expect(s.querySelectorAll(`[data-testid="evidence-state-${key}"] li[data-phase]`).length).toBe(9);
+    }
+  });
+
+  // Task 7b83507d: each mix names one current step, the one its summary line names.
+  test('each open mix has one current step with its words; the closed one shows only the summary', async () => {
+    const s = await mount('evidence-states');
+    const current = (key: string) => {
+      const box = s.querySelector(`[data-testid="evidence-state-${key}"]`)!;
+      const head = box.querySelectorAll('li[data-tier="head"]');
+      expect(head).toHaveLength(1);
+      return [head[0].getAttribute('data-phase'), text(head[0].querySelector('[data-testid="run-evidence-current-words"]')!)];
+    };
+    expect(current('reported')).toEqual(['committed', 'done · reported']);
+    expect(current('live')).toEqual(['committed', 'working']);
+    expect(current('failed')).toEqual(['review', 'working']);
+    expect(current('complete')).toEqual(['merged', 'done · observed']);
+    const failedCi = s.querySelector('[data-testid="evidence-state-failed"] li[data-phase="ci"]')!;
+    expect(failedCi.getAttribute('data-tier')).toBe('history');
+    expect(text(failedCi)).toContain('· failed');
+    const closed = s.querySelector('[data-testid="evidence-state-collapsed"]')!;
+    expect(closed.querySelector('button[aria-expanded="false"]')).not.toBeNull();
+    expect(closed.querySelector('[data-testid="run-evidence-list"]')).toBeNull();
+    expect(text(closed)).toContain('Run evidence · Commit · step 4 of 9');
   });
 });

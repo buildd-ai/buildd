@@ -2,7 +2,9 @@
  * Acts on `decideBuildingGate` (spec 1dc6cc39 R-78, R-79).
  *
  * Where the state lives: the acceptance-tests task is the mission task whose `context.acceptanceTests`
- * is an array. It carries the tests added (with their result on the starting commit) and, in
+ * is the marker object `{ missionId, specId, ... }` (the shape ensureAcceptanceTests files, and the
+ * one deliverableRole reads). The tests added, with their result on the starting commit, are the
+ * array in `context.acceptanceTestResults`, and, in
  * `context.acceptanceObjection`, whether the person objected. Building tasks are the mission's other
  * open tasks; the gate holds one by putting the acceptance-tests task in its `dependsOn`, which the
  * claim route already treats as "not claimable until that task completes".
@@ -40,13 +42,16 @@ export interface GateStore {
 
 const RESULTS = new Set(['fail', 'pass', 'inconclusive']);
 
+export const ACCEPTANCE_RESULTS_KEY = 'acceptanceTestResults';
+
 export function isAcceptanceTask(t: { context?: Record<string, unknown> | null }): boolean {
-  return Array.isArray(t.context?.acceptanceTests);
+  const marker = t.context?.acceptanceTests;
+  return !!marker && typeof marker === 'object' && !Array.isArray(marker);
 }
 
 /** The tests recorded on a task's context; malformed entries are dropped. */
 export function testsFromContext(context: Record<string, unknown> | null | undefined): AcceptanceTest[] {
-  const raw = context?.acceptanceTests;
+  const raw = context?.[ACCEPTANCE_RESULTS_KEY];
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((r): AcceptanceTest[] => {
     if (!r || typeof r !== 'object') return [];
@@ -80,9 +85,17 @@ export async function applyBuildingGate(store: GateStore, missionId: string): Pr
     if (state.acceptanceTask.status !== 'pending') await store.reopenAcceptanceTask(acceptanceId);
   } else if (decision.action === 'start') {
     if (state.acceptanceTask.status !== 'completed') await store.completeAcceptanceTask(acceptanceId);
-  } else if (decision.sendBack.length > 0) {
-    // A test that passed on the starting commit goes back to the tests task with its output.
-    await store.patchContext(acceptanceId, { acceptanceSentBack: decision.sendBack });
+  } else {
+    // Not startable yet (R-78): building waits on the acceptance-tests task, which must not read as
+    // done. A test that passed on the starting commit goes back to it with its output; a check with
+    // no settled run is simply not released.
+    for (const t of state.buildingTasks) {
+      const deps = t.dependsOn ?? [];
+      if (deps.includes(acceptanceId)) continue;
+      await store.holdBuildingTask(t.id, [...deps, acceptanceId]);
+      held.push(t.id);
+    }
+    if (decision.sendBack.length > 0) await store.patchContext(acceptanceId, { acceptanceSentBack: decision.sendBack });
     if (state.acceptanceTask.status === 'completed') await store.reopenAcceptanceTask(acceptanceId);
   }
   return { decision: decision.action, held };
@@ -97,7 +110,7 @@ export async function recordAcceptanceResults(store: GateStore, missionId: strin
     const i = merged.findIndex((t) => t.checkId === r.checkId && t.name === r.name);
     if (i >= 0) merged[i] = { ...merged[i], ...r }; else merged.push(r);
   }
-  await store.patchContext(state.acceptanceTask.id, { acceptanceTests: merged });
+  await store.patchContext(state.acceptanceTask.id, { [ACCEPTANCE_RESULTS_KEY]: merged });
   return applyBuildingGate(store, missionId);
 }
 
@@ -109,20 +122,25 @@ export async function recordAcceptanceObjection(store: GateStore, missionId: str
   return applyBuildingGate(store, missionId);
 }
 
+/** The gate's state from a mission's task rows, in the shape ensureAcceptanceTests files them. */
+export function gateStateFromRows(rows: readonly GateTask[]): GateState | null {
+  const acceptanceTask = rows.find(isAcceptanceTask);
+  if (!acceptanceTask) return null;
+  return {
+    acceptanceTask,
+    tests: testsFromContext(acceptanceTask.context),
+    objected: acceptanceTask.context?.acceptanceObjection === true,
+    buildingTasks: rows.filter((t) => t.id !== acceptanceTask.id && !isAcceptanceTask(t) && (UNCLAIMED_TASK_STATUSES as readonly string[]).includes(t.status)),
+  };
+}
+
 export const dbGateStore: GateStore = {
   async load(missionId) {
     const rows = await db.query.tasks.findMany({
       where: sqlWhere(eq(tasks.missionId, missionId)),
       columns: { id: true, status: true, dependsOn: true, context: true },
     });
-    const acceptanceTask = rows.find(isAcceptanceTask);
-    if (!acceptanceTask) return null;
-    return {
-      acceptanceTask,
-      tests: testsFromContext(acceptanceTask.context),
-      objected: acceptanceTask.context?.acceptanceObjection === true,
-      buildingTasks: rows.filter((t) => t.id !== acceptanceTask.id && (UNCLAIMED_TASK_STATUSES as readonly string[]).includes(t.status)),
-    };
+    return gateStateFromRows(rows);
   },
   async patchContext(taskId, patch) {
     const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { context: true } });

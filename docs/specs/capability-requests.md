@@ -2,13 +2,13 @@
 title: Capability Requests and Grants
 status: active
 owner: max
-last_verified: 2026-10-12
+last_verified: 2026-10-20
 summary: An agent MUST get access it lacked at start only by asking for a provider and an access (read or write), resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
 domain: auth
 surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/task-delegation.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/lib/connector-gateway.ts]
 related: [agent-capabilities, model-inference-agent-capability, mcp-connectors-and-roles, team-permissions]
 keywords: [connector gateway, native MCP, tools/list, tools/call, readOnlyHint, toolPolicy, connectorCeiling, request_capability, capability grant, capability policy, auto_grant, ask_human, forbidden, approve, deny, revoke, lease, TTL, provider write guard]
-verified_by: [apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts]
+verified_by: [packages/core/__tests__/provider-access-ask.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/web/src/lib/connector-gateway-store.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts]
 supersedes: []
 assertions:
   - id: request-route
@@ -220,6 +220,7 @@ fact it was granted under still holds; revoking it MUST stop the next call.
 
 **Acceptance criteria**:
 - AC-5b: GIVEN a task refused reading another workspace's analytics WHEN it asks `buildd` `read` on that workspace and a person approves THEN its delegation carries `analytics:read` there and the retried read passes.
+- AC-5c: GIVEN an agent whose question to a person asks for provider access (e.g. widening the worker key with `analytics:read` for Axiom) WHEN it calls `ask_human` THEN the call is refused with `use_request_capability` and the canonical ask (`provider: axiom, access: read`, plus a named resource such as `buildd-traces`), nothing is parked, and the answer never recommends widening the worker key: `analytics:read` is buildd's own analytics, not a provider's. A runner-managed agent's `AskUserQuestion` is not yet intercepted; its prompt and the `request_capability` description carry the same rule.
 - AC-6: GIVEN an approved grant WHEN an admin revokes it THEN the next `authorizeCapabilityUse` is refused.
 - AC-7: GIVEN a live grant WHEN the task's role changes, the task ends, the credential needs reconnecting, or the provider is blocked THEN the next use is refused with `role_changed`, `task_terminal`, `credential_dead` or `catalog_blocked`.
 - AC-8: GIVEN a `query` grant with no tool named WHEN the agent calls a write-named tool THEN it is refused `tool_risk_exceeds_grant`.
@@ -334,9 +335,15 @@ agent's prompt, argv, env, logs, artifacts or disk.
   methods are refused.
 - Credential: decrypted per request under the connector's owner team, sent
   only to the connector's own https URL (no redirects). A provider 401 refreshes
-  the OAuth token and retries once; if that fails the credential is marked
-  (`gateway_401`) and the call answers `reconnect_required` as a tool result.
-  The session is never aborted for it.
+  the OAuth token and retries once. A refresh that comes back `locked` (another
+  request refreshed within the lock window, or is refreshing now) is not a
+  failure: if the stored token is no longer the one the provider rejected, the
+  call is retried with it. Only when no newer token exists is the credential
+  marked (`gateway_401`) and the call answered `reconnect_required` as a tool
+  result. The session is never aborted for it. Every provider 401 is logged
+  (`[connector-gateway] provider 401`) and stamped on the request's span
+  (`buildd.connector.refresh_outcome`, `buildd.connector.upstream_result`),
+  ids and outcome codes only.
 - Outage: if buildd cannot read run state or grants, the call is refused
   (`gateway_unavailable`) and nothing is sent. If the provider is unreachable
   or times out, the answer says a write may or may not have happened.
@@ -357,6 +364,7 @@ both, and visibility never depends on `tools/list_changed`.
 - AC-14: GIVEN Axiom mounted and then blocked in the catalog WHEN the agent calls a tool THEN `catalog_blocked`, and nothing reaches the provider.
 - AC-15: GIVEN a granted write WHEN the grant is revoked THEN the next call answers `capability_not_granted` (`grant_not_live`).
 - AC-16: GIVEN a provider 401 mid-call WHEN refresh fails THEN the tool result is `reconnect_required` and the session continues.
+- AC-18: GIVEN a provider 401 inside the refresh lock window WHEN a peer request has already stored a new token THEN the call is retried with that token and the credential is not marked (`apps/web/src/lib/connector-gateway-store.test.ts`).
 - AC-17: GIVEN any gateway answer, header or audit row THEN it does not contain the provider credential.
 
 **Code surface**:

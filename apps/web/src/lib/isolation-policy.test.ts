@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import {
   decideTaskIsolation,
+  isIsolationRefusalError,
+  isolationRefusalError,
   readTaskIsolationStamp,
   reducedIsolationOptedIn,
   resolveIsolationRequirement,
@@ -114,5 +116,80 @@ describe('opt-in and stamp helpers', () => {
     expect(taskCodexSandboxMode('engineering', { sandboxMode: 'read-only' })).toBe('read-only');
     expect(taskCodexSandboxMode('research', null)).toBe('read-only');
     expect(taskCodexSandboxMode('engineering', { sandboxMode: 'danger-full-access' })).toBe('workspace-write');
+  });
+});
+
+describe('preflight refusal of a task (smoke-test dispatch regression)', () => {
+  const sandboxOff = record({ reducedOptIn: true });
+  const decide = (requirement: 'protected' | 'trusted_local', rec: RunnerIsolationRecord) =>
+    decideTaskIsolation({ requirement, record: rec, backend: 'claude', codexMode: 'workspace-write' });
+
+  it('ineligible runner: a protected task on a sandbox-off runner is refused, and the stored error reads as a preflight block', () => {
+    const d = decide('protected', sandboxOff);
+    expect(d.ok).toBe(false);
+    if (d.ok) return;
+    const error = isolationRefusalError(d);
+    expect(error.startsWith('Not started: ')).toBe(true);
+    expect(isIsolationRefusalError(error)).toBe(true);
+  });
+
+  it('eligible runner: a trusted_local task on an opted-in sandbox-off runner runs reduced', () => {
+    const d = decide('trusted_local', sandboxOff);
+    expect(d).toMatchObject({ ok: true, mode: 'reduced' });
+  });
+
+  it('correctly blocked: trusted_local without the operator opt-in is refused and also reads as a preflight block', () => {
+    const d = decide('trusted_local', record());
+    expect(d.ok).toBe(false);
+    if (d.ok) return;
+    expect(isIsolationRefusalError(isolationRefusalError(d))).toBe(true);
+  });
+
+  it('does not mistake an agent failure for a refusal', () => {
+    expect(isIsolationRefusalError('Not started: worktree setup failed')).toBe(false);
+    expect(isIsolationRefusalError('Error: tests failed')).toBe(false);
+    expect(isIsolationRefusalError(null)).toBe(false);
+  });
+});
+
+describe('a writes-only sandbox (Codex on Windows, network open)', () => {
+  const winToken = { mechanism: 'windows_restricted_token', scope: ['write'] } as never;
+  const windows = (over: Partial<RunnerIsolationRecord> = {}) => record({
+    platform: 'windows',
+    evidence: ['process.platform=win32'],
+    claude: none('unsupported_platform'),
+    codex: { 'read-only': winToken, 'workspace-write': winToken },
+    ...over,
+  });
+  const decide = (requirement: 'protected' | 'trusted_local', rec: RunnerIsolationRecord) =>
+    decideTaskIsolation({ requirement, record: rec, backend: 'codex', codexMode: 'workspace-write' });
+
+  it('refuses a protected task: its network is not confined, and the refusal says so', () => {
+    const d = decide('protected', windows());
+    expect(d.ok).toBe(false);
+    if (d.ok) return;
+    expect(d.code).toBe('confinement_partial');
+    expect(d.message).toContain('network');
+    expect(d.remedy.join(' ')).toContain('WSL2');
+    expect(isIsolationRefusalError(isolationRefusalError(d))).toBe(true);
+  });
+
+  it('runs a trusted_local task confined, with no operator opt-in needed', () => {
+    expect(decide('trusted_local', windows())).toMatchObject({ ok: true, mode: 'enforced', confinement: { mechanism: 'windows_restricted_token' } });
+  });
+
+  it('does not change hosts whose sandbox covers writes and network', () => {
+    const linux = record({ claude: bwrap, codex: { 'read-only': bwrap, 'workspace-write': bwrap } });
+    expect(decide('protected', linux)).toMatchObject({ ok: true, mode: 'enforced' });
+    const mac = record({ platform: 'darwin', claude: seatbelt, codex: { 'read-only': seatbelt, 'workspace-write': seatbelt } });
+    expect(decide('protected', mac)).toMatchObject({ ok: true, mode: 'enforced' });
+  });
+
+  it('Claude on Windows: no sandbox, and the cause names Windows', () => {
+    const d = decideTaskIsolation({ requirement: 'protected', record: windows(), backend: 'claude', codexMode: 'workspace-write' });
+    expect(d.ok).toBe(false);
+    if (d.ok) return;
+    expect(d.message).toContain('Windows');
+    expect(d.remedy.join(' ')).toContain('WSL2');
   });
 });

@@ -528,21 +528,24 @@ export function HealthClient({
           failureGroups: overviewFailureGroups,
           accessProblems: accessProblems.length,
         }),
-        rows: overviewStatusRows({
-          runners: {
-            total: runners.length,
-            online: runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now)).length,
-            busySlots: runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0),
-            slots: runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0),
+        rows: overviewStatusRows(
+          {
+            runners: {
+              total: runners.length,
+              online: runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now)).length,
+              busySlots: runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0),
+              slots: runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0),
+            },
+            credentials: { total: credentialHealth.length, broken: brokenCredentials.length },
+            budget: {
+              monthly: budgetForecast?.monthly
+                ? { spentUsd: budgetForecast.monthly.spentUsd, budgetUsd: budgetForecast.monthly.budgetUsd, pctUsed: budgetForecast.monthly.pctUsed }
+                : null,
+              pausedProviders: (budgetForecast?.codex?.isExhausted ? 1 : 0) + (budgetForecast?.claudeTenant?.isExhausted ? 1 : 0),
+            },
           },
-          credentials: { total: credentialHealth.length, broken: brokenCredentials.length },
-          budget: {
-            monthly: budgetForecast?.monthly
-              ? { spentUsd: budgetForecast.monthly.spentUsd, budgetUsd: budgetForecast.monthly.budgetUsd, pctUsed: budgetForecast.monthly.pctUsed }
-              : null,
-            pausedProviders: (budgetForecast?.codex?.isExhausted ? 1 : 0) + (budgetForecast?.claudeTenant?.isExhausted ? 1 : 0),
-          },
-        }),
+          { hideOfflineRunners: offlineRunners.length > 0 },
+        ),
       }
     : null;
 
@@ -828,6 +831,7 @@ export function HealthClient({
             // From the fleet when it loaded, so "in use now" and "slots online" match Running now above.
             capacityNow={runnerLanes ? runnerLanes.fleet.capacity : runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0)}
             busyNow={runnerLanes ? runnerLanes.fleet.runners.reduce((n, r) => n + (r.online ? r.slots.filter(s => s.worker).length : 0), 0) : runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
+            slots={runnerLanes?.fleet.slots ?? null}
             workspaceId={wsFilter}
           />
         </div>

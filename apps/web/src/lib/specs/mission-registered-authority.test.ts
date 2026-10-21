@@ -10,7 +10,8 @@ let rows: unknown[] = [];
 let writes: any[] = [];
 let inspectedBodies: string[] = [];
 const chain = () => {
-  const query = { from: () => query, where: () => query, orderBy: async () => rows };
+  // Awaited straight after where(): the mission's tasks, none with unaccepted acceptance edits.
+  const query = { from: () => query, where: () => Object.assign(Promise.resolve([]), query), orderBy: async () => rows };
   return query;
 };
 mock.module('@buildd/core/db', () => ({ db: {

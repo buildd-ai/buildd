@@ -46,7 +46,7 @@ export function renderTermsDoc(): string {
 
 if (import.meta.main) {
   const want = renderTermsDoc();
-  const have = existsSync(TERMS_DOC) ? readFileSync(TERMS_DOC, 'utf8') : '';
+  const have = existsSync(TERMS_DOC) ? readFileSync(TERMS_DOC, 'utf8').replace(/\r\n/g, '\n') : '';
   if (process.argv.includes('--check')) {
     if (!termsDocIsCurrent(have, want)) {
       console.error(`❌ ${TERMS_DOC} is stale. Run \`bun run terms:doc\` and commit it.`);

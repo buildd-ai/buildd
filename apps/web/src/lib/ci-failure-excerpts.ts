@@ -45,7 +45,7 @@ export function cleanLogText(raw: string): string {
 }
 
 // ── Redaction ───────────────────────────────────────────────────────────────
-// The population/UUID rules are a port of scripts/check_no_prod_data.py: the
+// The population/UUID rules are a port of scripts/check-no-prod-data.ts: the
 // same text that would fail that gate in a PR body must not leave here in a
 // chat answer. The credential rules cover what CI logs carry that a diff does
 // not. Keep the first block in step with the script when it changes.

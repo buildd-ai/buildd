@@ -7,8 +7,9 @@
  * Everything runs against a temp config file and an injected socket; nothing
  * touches ~/.buildd or a real server.
  */
+import { expectOwnerOnlyPath } from '../windows-acl';
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, statSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -84,7 +85,7 @@ describe('config.json', () => {
     saveHoldToConfig(configFile, { since: new Date(T0).toISOString(), until: null });
     const cfg = JSON.parse(readFileSync(configFile, 'utf8'));
     expect(cfg).toEqual({ apiKey: 'bld_x', name: 'atlas', hold: { since: new Date(T0).toISOString(), until: null } });
-    expect(statSync(configFile).mode & 0o777).toBe(0o600);
+    expectOwnerOnlyPath(configFile, 0o600);
     saveHoldToConfig(configFile, null);
     expect(JSON.parse(readFileSync(configFile, 'utf8'))).toEqual({ apiKey: 'bld_x', name: 'atlas' });
   });

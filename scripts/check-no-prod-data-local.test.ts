@@ -80,7 +80,7 @@ describe('--staged / --message-file', () => {
     repo = mkdtempSync(join(tmpdir(), 'npd-staged-'));
     g('init', '-q', '-b', 'dev');
     mkdirSync(join(repo, 'scripts'));
-    for (const f of ['check-no-prod-data-local.sh', 'check_no_prod_data.py']) {
+    for (const f of ['check-no-prod-data-local.sh', 'check-no-prod-data.ts']) {
       copyFileSync(resolve(import.meta.dir, f), join(repo, 'scripts', f));
     }
     writeFileSync(join(repo, 'a.ts'), '// base\n');

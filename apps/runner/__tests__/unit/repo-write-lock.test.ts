@@ -27,7 +27,7 @@ mock.module('../../src/session-logger', () => ({ sessionLog: mock(() => {}) }));
 import { execFileSync, execSync } from 'child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { setupWorktree, removeWorktreeIfUnowned, __setGitOpsDeps, __resetGitOpsDeps } from '../../src/git-operations';
+import { setupWorktree, releaseWorktreeReservation, removeWorktreeIfUnowned, __setGitOpsDeps, __resetGitOpsDeps } from '../../src/git-operations';
 import { registerMergeDrivers } from '../../src/merge-drivers';
 import { gitRunAsync, KILL_GRACE_MS } from '../../src/git-async';
 import { gitCommonDirKey } from '../../src/repo-lock';
@@ -106,6 +106,17 @@ describe('one writer per clone', () => {
     const clone = makeClone('key');
     realGit(clone, 'worktree', 'add', '-q', '-b', 'side', join(clone, '.buildd-worktrees', 'side'), 'origin/dev');
     expect(gitCommonDirKey(join(clone, '.buildd-worktrees', 'side'))).toBe(gitCommonDirKey(clone));
+  });
+
+  test('a --separate-git-dir main clone and its worktrees share one lock key', () => {
+    const repo = join(tmp, 'sep-main');
+    const gitDir = join(tmp, 'sep-gitdir');
+    mkdirSync(repo);
+    realGit(repo, 'init', '-q', '-b', 'dev', `--separate-git-dir=${gitDir}`);
+    commit(repo, 'a.ts', 'x', 'base');
+    const wt = join(repo, '.buildd-worktrees', 'side');
+    realGit(repo, 'worktree', 'add', '-q', '-b', 'side', wt);
+    expect(gitCommonDirKey(wt)).toBe(gitCommonDirKey(repo));
   });
 
   test('two concurrent setups in one clone never overlap their writes, and both are fully configured', async () => {
@@ -205,4 +216,24 @@ describe('removeWorktreeIfUnowned re-checks ownership after its last await', () 
     expect(commands.some(c => c.includes('worktree remove'))).toBe(false);
     expect(commands).not.toContain('rmSync');
   });
+});
+
+describe('a path setup just created is protected until its worker records it', () => {
+  test('a teardown that passes the lock after setup released it does not remove the new worktree', async () => {
+    const clone = makeClone('reserved');
+    const r = await setupWorktree(clone, 'buildd/cccc3333-keep', 'dev', 'w-cccc3333');
+    expect(r).not.toBeNull();
+    // Setup has released the lock; workers.ts has not recorded the path yet.
+    const out = await removeWorktreeIfUnowned({
+      repoPath: clone, worktreePath: r!.path, workerId: 'w-old', workers: new Map(),
+    });
+    expect(out).toEqual({ removed: false, reason: 'owned_by_live_worker' });
+    expect(existsSync(r!.path)).toBe(true);
+    // Once recorded (reservation dropped) the workers map is the source of truth.
+    releaseWorktreeReservation('w-cccc3333');
+    const after = await removeWorktreeIfUnowned({
+      repoPath: clone, worktreePath: r!.path, workerId: 'w-old', workers: new Map(),
+    });
+    expect(after).toEqual({ removed: true });
+  }, 30_000);
 });
