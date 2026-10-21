@@ -1,6 +1,8 @@
 /** Final integrated verdict contract: acceptance tests and final review stay distinct. No live server required. */
 import { describe, expect, it } from 'bun:test';
 import { foldGovernedOutcome } from '../../../../packages/spec-contract/src/outcome';
+import { acceptEdits, flagAcceptanceEdit } from '../../../../packages/spec-contract/src/acceptance-edit';
+import { holdUnacceptedTestRows } from '../../src/lib/specs/acceptance-hold';
 import { foldMissionSpec } from '../../src/lib/specs/mission-outcome-fold';
 import { outcomeSpecView } from '../../src/lib/mission-outcome-spec-view';
 import { missionChecks } from '../../src/lib/mission-checks';
@@ -59,5 +61,23 @@ describe('final integrated verdict', () => {
     const checks = missionChecks({ build: { done: 1, total: 2 }, branch: 'mission-branch', target: 'dev', mergeTier: 'human', visual: null, criteria: [criterion], criteriaState: state(), integrationPr: null, release: 'not_configured' });
     expect(checks.checkpoint).toBe('build');
     expect(checks.rail.find(r => r.key === 'verify')).toMatchObject({ state: 'todo', text: 'after build' });
+  });
+
+  // AC-126 / R-80: flag -> the task's test result is held out of the fold -> a person accepts -> it counts.
+  it('AC-126 holds a flagged task\'s test result out of the fold until a person accepts it', () => {
+    const TASK = '11111111-1111-4111-8111-111111111111';
+    const vrows = rows.map((r, i) => ({ ...r, id: `v${i}` }));
+    const evidenceById = new Map<string, unknown>([['v0', { recordedBy: `check:${TASK}` }]]);
+    const flagged = flagAcceptanceEdit(null, ['tests/acceptance/ac-122.test.ts'], HEAD, 'now')!;
+    const foldWith = (flag: typeof flagged) =>
+      foldMissionSpec({ scope, waived: [], rows: holdUnacceptedTestRows(vrows, evidenceById, new Map([[TASK, { acceptanceEdit: flag }]])), target });
+
+    const held = foldWith(flagged);
+    expect(held.standings.find((s) => s.source === 'test')).toBeUndefined();
+    expect(held.verdict).not.toBe('pass');
+
+    const counted = foldWith(acceptEdits(flagged, 'user:person', 'later'));
+    expect(counted.standings.map((s) => s.source)).toEqual(['test', 'review']);
+    expect(counted.verdict).toBe('pass');
   });
 });
