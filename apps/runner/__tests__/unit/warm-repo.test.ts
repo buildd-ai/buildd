@@ -1379,7 +1379,8 @@ describe('snapshots never contain credentials', () => {
       createCacheTarball(cacheDir, out);
       const tar = readFileSync(out);
       expect(tar.includes(SECRET)).toBe(false);
-      const list = execFileSync('tar', ['-tf', out], { encoding: 'utf-8' }).split('\n').filter(Boolean);
+      // A bare file name: GNU tar on Windows reads `C:\...` as `host:path`.
+      const list = execFileSync('tar', ['-tf', 'cache.tar'], { cwd: dir, encoding: 'utf-8' }).split('\n').filter(Boolean);
       expect(list.some(l => l.endsWith('is-number@7.0.0/index.js'))).toBe(true);
       expect(list.some(l => /(^|\/)\.(npmrc|env|netrc)/.test(l))).toBe(false);
     } finally {
