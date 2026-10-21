@@ -21,7 +21,7 @@ import {
   type HandoffData,
   type ObjectRef,
   type ToolResult,
-} from '@builddai/ai-kit/chat/contract';
+} from '@buildd/ai-kit/chat/contract';
 import type { StoredMessage } from './store';
 
 /** What a hand-off tool returns: the model reads `data`, the kit reads `handoff`. */

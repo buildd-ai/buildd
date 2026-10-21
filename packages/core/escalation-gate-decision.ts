@@ -9,7 +9,7 @@
  * its answer are in ./escalation-gate.ts (`buildEscalationGateState`,
  * `readEscalationGateRun`), so the server gate needs no import of this module.
  */
-import { choice } from '@builddai/ai-kit/decide';
+import { choice } from '@buildd/ai-kit/decide';
 import { definePromptedDecision } from './prompted-decision';
 import {
   ESCALATION_GATE_DECISION_TIMEOUT_MS,

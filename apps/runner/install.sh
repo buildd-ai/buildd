@@ -166,6 +166,7 @@ write_client_sparse_checkout() {
   cat > .git/info/sparse-checkout << 'CLIENT_SPARSE'
 apps/runner/src/login.ts
 apps/runner/src/login-workspaces.ts
+apps/runner/src/open-url.ts
 apps/runner/src/server-url.ts
 apps/runner/src/agent-plugin-install.ts
 apps/runner/src/buildd-home.ts
@@ -388,6 +389,8 @@ cat > "$BIN_DIR/buildd" << 'LAUNCHER'
 #   PROJECTS_ROOT   - Project directories to scan
 #   BUILDD_SERVER   - Server URL (default: https://buildd.dev)
 #   PORT            - Local server port (default: 8766)
+#   BUILDD_DEV_DIR  - Where `buildd top --dev` keeps its dev checkout
+#                     (default: ~/.buildd-dev). Only top has a dev build.
 #
 # Every bun call passes --no-env-file: `buildd` runs from whatever folder you
 # are in, and Bun would otherwise auto-load that folder's .env — a project's
@@ -473,6 +476,21 @@ if [ -z "$PROJECTS_ROOT" ]; then
 
   export PROJECTS_ROOT="$ROOTS"
 fi
+
+# `--dev` belongs to top only (`buildd top --dev`, `buildd top-dev`, both
+# answered by the runner's own CLI). The runner, its service, login and
+# updates always stay on the production release.
+case "${1:-}" in
+  top|top-dev) ;;
+  *)
+    for arg in "$@"; do
+      if [ "$arg" = "--dev" ]; then
+        echo "buildd: --dev: only buildd top has a dev build (buildd top --dev, or buildd top-dev). The runner, its service and its updates stay on the production release." >&2
+        exit 64
+      fi
+    done
+    ;;
+esac
 
 # Subcommands
 case "${1:-}" in

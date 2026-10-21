@@ -723,6 +723,67 @@ describe('/api/artifacts/[artifactId] — per-task token', () => {
     expect(res.status).toBe(200);
     expect(mockTasksFindFirst).not.toHaveBeenCalled();
   });
+
+  it('updates the shared shadow-backstop observation artifact created by another task in the workspace', async () => {
+    // Shadow backstop observation artifacts are shared within a workspace and updatable by any task in that workspace
+    mockArtifactsFindFirst.mockResolvedValue({
+      ...base,
+      workerId: 'w-other-task',
+      workspaceId: 'ws-1',
+      missionId: null,
+      key: 'failure-pattern-shadow-backstop',
+      worker: { accountId: 'account-other', taskId: 'task-other', workspaceId: 'ws-1' },
+    });
+    const res = await PATCH(createMockPatchRequest({ content: 'Updated observation' }, 'bld_test'), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(lastSet?.content).toBe('Updated observation');
+  });
+
+  it.each(['shadow-backstop', 'shadow-backstop-observation', 'failure-pattern-shadow-backstop-2', 'x-failure-pattern-shadow-backstop'])(
+    'refuses update when key is a near-miss (%s)',
+    async (key) => {
+      mockArtifactsFindFirst.mockResolvedValue({
+        ...base,
+        workerId: 'w-other-task',
+        workspaceId: 'ws-1',
+        missionId: null,
+        key,
+        worker: { accountId: 'account-other', taskId: 'task-other', workspaceId: 'ws-1' },
+      });
+      const res = await PATCH(createMockPatchRequest({ content: 'x' }, 'bld_test'), { params: mockParams });
+      expect(res.status).toBe(403);
+      expect(lastSet).toBeNull();
+    },
+  );
+
+  it('404s the shared observation key in a different workspace', async () => {
+    mockArtifactsFindFirst.mockResolvedValue({
+      ...base,
+      workerId: 'w-other-task',
+      workspaceId: 'ws-2',
+      missionId: null,
+      key: 'failure-pattern-shadow-backstop',
+      worker: { accountId: 'account-other', taskId: 'task-other', workspaceId: 'ws-2' },
+    });
+    const res = await PATCH(createMockPatchRequest({ content: 'x' }, 'bld_test'), { params: mockParams });
+    expect(res.status).toBe(404);
+    expect(lastSet).toBeNull();
+  });
+
+  it('refuses update to a worker artifact from a different task without the shadow-backstop key', async () => {
+    // Non-observation artifacts created by other tasks cannot be updated
+    mockArtifactsFindFirst.mockResolvedValue({
+      ...base,
+      workerId: 'w-other-task',
+      workspaceId: 'ws-1',
+      missionId: null,
+      key: 'some-other-artifact',
+      worker: { accountId: 'account-other', taskId: 'task-other', workspaceId: 'ws-1' },
+    });
+    const res = await PATCH(createMockPatchRequest({ content: 'Update attempt' }, 'bld_test'), { params: mockParams });
+    expect(res.status).toBe(403);
+    expect(lastSet).toBeNull();
+  });
 });
 
 describe('GET /api/artifacts/[artifactId] — file artifact download URL', () => {

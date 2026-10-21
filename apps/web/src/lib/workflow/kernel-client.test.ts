@@ -150,6 +150,7 @@ describe('in own mode the web host submits and applies nothing itself', () => {
     expect(l.ran).toEqual([]);
     expect(seen).toHaveLength(1);
     expect(seen[0].url).toBe('https://control-plane.buildd.dev/v1/commands');
+    expect(seen[0].headers.get('user-agent')).toBe('buildd-kernel-client/1');
     expect(seen[0].headers.get('Dispatch-Signature')).toMatch(/^[0-9a-f]{64}$/);
     expect(seen[0].body).toEqual({ v: 1, op: 'land', input, principal, idempotencyKey: 'land:door-key-1' });
     expect(a).toMatchObject({ result: { where: 'control-plane' }, delivery: { version: 5 }, host: 'control-plane', idempotencyKey: 'land:door-key-1' });

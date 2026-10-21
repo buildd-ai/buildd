@@ -22,6 +22,9 @@ export interface ClaudeRouteEligibility {
   summary: string;
 }
 
+/** The claim scheduler's newest recorded decision for Claude work, when one exists. */
+export interface RouteDecision { state: 'blocked' | 'stale' | 'unknown'; kind: string | null }
+
 interface CredentialLike { purpose: string; healthStatus: string }
 
 const MANAGED_KEY_PURPOSES = new Set(['anthropic_api_key', 'inference_key']);
@@ -30,6 +33,8 @@ export function resolveClaudeRoute(
   runners: readonly Pick<RunnerHeartbeat, 'lastHeartbeatAt' | 'authType'>[],
   credentials: readonly CredentialLike[],
   now: number,
+  /** Authoritative scheduler decision; without a fresh credential refusal nothing is called blocked. */
+  decision?: RouteDecision | null,
 ): ClaudeRouteEligibility {
   const online = runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now));
   const localLogin = online.some(r => r.authType === 'oauth') ? 'ready' : 'none';
@@ -56,5 +61,12 @@ export function resolveClaudeRoute(
   if (online.length === 0 && managedKey === 'not_configured') {
     return { state: 'unknown', eligibleVia, localLogin, managedKey, summary: 'Claude route unknown: no runner online and no managed API key' };
   }
-  return { state: 'blocked', eligibleVia, localLogin, managedKey, summary: `Claude work has no open route: no local login online, ${keyWord}` };
+  const inferred = `no local login online, ${keyWord}`;
+  if (decision?.state === 'blocked' && decision.kind === 'credential_unavailable') {
+    return { state: 'blocked', eligibleVia, localLogin, managedKey, summary: `Claude work has no open route: ${inferred} (claim scheduler refused it)` };
+  }
+  return {
+    state: 'unknown', eligibleVia, localLogin, managedKey,
+    summary: `Claude route not confirmed by the claim scheduler: ${inferred} (inferred from heartbeats and stored keys)`,
+  };
 }

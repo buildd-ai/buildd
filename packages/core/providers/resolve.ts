@@ -59,7 +59,7 @@
 import { assignedPreference, parseProviderAssignments } from './assignments';
 import { and, eq, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { secrets } from '../db/schema';
-import { ROUTES } from '@builddai/ai-kit/models/routes';
+import { ROUTES } from '@buildd/ai-kit/models/routes';
 import { endpointAppliesTo, parseAgentEndpointBlob, type AgentEndpointBlob, type AgentEndpointKind } from '../agent-endpoint';
 import {
   PROVIDER_REGISTRY,

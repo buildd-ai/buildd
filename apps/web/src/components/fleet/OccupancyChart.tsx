@@ -4,8 +4,10 @@
  * Runners & capacity: runner slots in use over 24h, 7d or 30d.
  *
  * The scale comes from the data (`niceScaleMax`), not from capacity, so a peak
- * of one on a ten-slot fleet is still visible; slots online is stated as a
- * number, and drawn as a reference line only when it fits the scale. The area
+ * of one on a ten-slot fleet is still visible. Slots online is a count NOW,
+ * from heartbeats, so it is stated as a number with where it comes from and
+ * never drawn across the window: the fleet that is online now was not
+ * necessarily online all day (spec: runner capacity R-2, R-12). The area
  * is the time-weighted average per bucket, the thin line the peak in it.
  * Interactive sessions use no runner slot, so they are a separate chart below,
  * with their own numbers, never a line on the runner axis. A window with no work says
@@ -20,13 +22,14 @@ import { OCCUPANCY_OWNERS, OCCUPANCY_WINDOWS, type OccupancyBreakdown, type Occu
 import { fmtLevel, levelPaths, levelY, niceScaleMax, scaleTicks } from './occupancy-geometry';
 import { isOccupancySampleState, sampleOccupancySeries } from './occupancy-sample';
 import Segmented from '@/components/ui/Segmented';
+import type { FleetSlotCounts } from '@buildd/shared';
 
 const DEFAULT_W = 640;
 const PLOT_H = 140;
 const SESSIONS_H = 64;
 const AXIS_H = 20;
 const LEFT = 24;
-/** Room above the top gridline for its label and the "slots online" label. */
+/** Room above the top gridline for its label. */
 const TOP = 14;
 const RIGHT = 4;
 
@@ -65,7 +68,7 @@ export function tickAnchor(x: number, plotW: number): 'start' | 'middle' | 'end'
   return 'middle';
 }
 
-export function OccupancyChart({ capacityNow, busyNow, workspaceId }: { capacityNow: number; busyNow: number; workspaceId?: string | null }) {
+export function OccupancyChart({ capacityNow, busyNow, slots, workspaceId }: { capacityNow: number; busyNow: number; slots?: FleetSlotCounts | null; workspaceId?: string | null }) {
   const searchParams = useSearchParams();
   const sample = isOccupancySampleState(searchParams?.get('state') ?? null);
   const [window, setWindow] = useState<OccupancyWindow>('24h');
@@ -106,7 +109,7 @@ export function OccupancyChart({ capacityNow, busyNow, workspaceId }: { capacity
       ) : !series ? (
         <div className="h-[220px]" aria-busy="true" />
       ) : (
-        <OccupancyPlot series={series} capacityNow={capacityNow} busyNow={busyNow} />
+        <OccupancyPlot series={series} capacityNow={capacityNow} busyNow={busyNow} slots={slots} />
       )}
     </div>
   );
@@ -190,15 +193,14 @@ function useWidth() {
 
 /**
  * One series over the window: average as a filled area, optionally the peak as
- * a thin line and slots online as a dotted reference. Hover is shared, so the
+ * a thin line. Hover is shared, so the
  * runner and session charts point at the same time.
  */
-function LevelChart({ series, avg, peak, height, capacity, hover, setHover, label, tone }: {
+function LevelChart({ series, avg, peak, height, hover, setHover, label, tone }: {
   series: OccupancySeries;
   avg: number[];
   peak: number[] | null;
   height: number;
-  capacity: number | null;
   hover: number | null;
   setHover: (i: number | null) => void;
   label: string;
@@ -212,7 +214,6 @@ function LevelChart({ series, avg, peak, height, capacity, hover, setHover, labe
   const ticks = xTicks(series);
   const a = levelPaths(avg, max, plotW, height);
   const p = peak ? levelPaths(peak, max, plotW, height) : null;
-  const capacityFits = capacity != null && capacity > 0 && capacity <= max;
   const crossX = hover != null ? hover * step + step / 2 : null;
   const stroke = tone === 'accent' ? 'var(--accent)' : 'var(--text-secondary)';
   const fill = tone === 'accent' ? 'var(--accent-soft)' : 'var(--surface-3)';
@@ -253,12 +254,6 @@ function LevelChart({ series, avg, peak, height, capacity, hover, setHover, labe
           <path d={a.area} fill={fill} />
           <path d={a.line} fill="none" stroke={stroke} strokeWidth={1.5} strokeLinejoin="round" />
           {p && <path data-testid="occupancy-peak-line" d={p.line} fill="none" stroke={tone === 'accent' ? 'var(--accent-text)' : 'var(--text-muted)'} strokeWidth={1} strokeLinejoin="round" opacity={0.55} />}
-          {capacityFits && (
-            <g data-testid="occupancy-capacity-line">
-              <line x1={0} x2={plotW} y1={levelY(capacity!, max, height)} y2={levelY(capacity!, max, height)} stroke="var(--text-secondary)" strokeWidth={1} strokeDasharray="2 3" />
-              <text x={plotW - 2} y={levelY(capacity!, max, height) - 4} textAnchor="end" fontSize={11} fill="var(--text-secondary)">{capacity} slots online</text>
-            </g>
-          )}
           {crossX != null && <line x1={crossX} x2={crossX} y1={0} y2={height} stroke="var(--text-primary)" strokeWidth={1} opacity={0.35} />}
           {ticks.map(t => (
             <text key={t.i} x={t.i * step + step / 2} y={height + 15} textAnchor={tickAnchor(t.i * step + step / 2, plotW)} fontSize={11} fill="var(--text-muted)">{t.label}</text>
@@ -269,8 +264,22 @@ function LevelChart({ series, avg, peak, height, capacity, hover, setHover, labe
   );
 }
 
+/**
+ * Where "In use now" and "Slots online" come from, and the slots they leave
+ * out: on paused runners (online, but they start nothing new) and on offline ones.
+ */
+export function slotsNowNote(slots: FleetSlotCounts): string {
+  const minutes = Math.round(slots.windowMs / 60_000);
+  const parts = [`Now: runners that checked in within ${minutes} minute${minutes === 1 ? '' : 's'}`];
+  const held = slots.online - slots.schedulable;
+  if (held > 0) parts.push(`${held} on paused runners`);
+  const offline = slots.configured - slots.online;
+  if (offline > 0) parts.push(`${offline} more on offline runners`);
+  return `${parts.join(' · ')}.`;
+}
+
 /** The charts for one loaded window; no fetching, so it renders in a test. */
-export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded; capacityNow: number; busyNow: number }) {
+export function OccupancyPlot({ series, capacityNow, busyNow, slots }: { series: Loaded; capacityNow: number; busyNow: number; slots?: FleetSlotCounts | null }) {
   const [hover, setHover] = useState<number | null>(null);
   const [view, setView] = useState<OccupancyView>('total');
   const shown = (b: OccupancySeries['buckets'][number]) => (view === 'mine' ? b.runnerBy.mine : b.runner);
@@ -284,14 +293,12 @@ export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded
   const words = WINDOW_WORDS[series.windowKey];
   const showPeak = series.windowKey !== '24h';
 
-  if (runnerIdle && !hasSessions) {
-    return <p data-testid="occupancy-empty" className="py-2 text-body text-text-muted">No agents ran in the {words}.</p>;
-  }
-
   const b = hover != null ? series.buckets[hover] : null;
   const readout = (kind: 'runner' | 'sessions') => b
     ? `${fmtBucket(b.t, series.windowKey)}: average ${fmtLevel((kind === 'runner' ? shown(b) : b.sessions).avg)}, peak ${(kind === 'runner' ? shown(b) : b.sessions).peak}`
     : '';
+
+  const noHistory = runnerIdle && !hasSessions;
 
   return (
     <div>
@@ -301,6 +308,10 @@ export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded
         <Metric label="In use now" value={String(busyNow)} />
         <Metric label="Slots online" value={String(capacityNow)} testId="occupancy-slots-online" />
       </div>
+      {slots && <p data-testid="occupancy-now-note" className="-mt-1 mb-3 text-meta text-text-muted">{slotsNowNote(slots)}</p>}
+      {noHistory ? (
+        <p data-testid="occupancy-empty" className="py-2 text-body text-text-muted">No agents ran in the {words}.</p>
+      ) : (<>
       {!runnerIdle && (
         <div data-testid="occupancy-view-picker" className="mb-3">
           <Segmented label="Runner slots view" items={VIEWS} value={view} onChange={setView} />
@@ -314,7 +325,7 @@ export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded
         <>
           <p data-testid="occupancy-readout" className="min-h-4 truncate font-mono text-[11px] text-text-muted md:text-[12px]" aria-live="polite">{readout('runner')}</p>
           <LevelChart
-            series={series} avg={avg} peak={showPeak ? peak : null} height={PLOT_H} capacity={capacityNow}
+            series={series} avg={avg} peak={showPeak ? peak : null} height={PLOT_H}
             hover={hover} setHover={setHover} tone="accent"
             label={`${view === 'mine' ? 'Your runner slots' : 'Runner slots'} in use over the ${words}: peak ${shownSummary.peak}, average ${fmtLevel(shownSummary.avg)}.`}
           />
@@ -334,12 +345,13 @@ export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded
           </div>
           <p className="min-h-4 truncate font-mono text-[11px] text-text-muted md:text-[12px]">{readout('sessions')}</p>
           <LevelChart
-            series={series} avg={sessAvg} peak={showPeak ? sessPeak : null} height={SESSIONS_H} capacity={null}
+            series={series} avg={sessAvg} peak={showPeak ? sessPeak : null} height={SESSIONS_H}
             hover={hover} setHover={setHover} tone="muted"
             label={`Interactive sessions over the ${words}: peak ${series.summary.sessions.peak}, average ${fmtLevel(series.summary.sessions.avg)}.`}
           />
         </div>
       )}
+      </>)}
       {series.truncated && <p className="mt-2 text-meta text-status-warning">Partial window: only the newest agents were read.</p>}
     </div>
   );

@@ -37,7 +37,9 @@ export async function GET(req: NextRequest, { params }: Ctx) {
 }
 
 /**
- * POST /api/specs/mission-outcomes/[missionId] { specId?, criterionId, verdict, headSha, evidenceRefs?, readIds?, observed?, reaffirms? }:
+ * POST /api/specs/mission-outcomes/[missionId] { specId?, criterionId, verdict, headSha, evidenceRefs?, readIds?, observed?, reaffirms?, acceptanceTest? }:
+ * with acceptanceTest { exitCode, started?, testName?, stdout?, stderr? } the exit code decides the verdict (0 pass, other fail, none inconclusive)
+ * and the row is authored as a test (`check:acceptance:<criterion>`):
  * record one mission-level verdict at the integrated target. A person or the
  * mission's final verification task only (403 otherwise); a commit that is not
  * the current target is refused (409).
@@ -50,6 +52,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const r = await recordMissionSpecVerdict(c, missionId, {
     specId: body?.specId, criterionId: body?.criterionId, verdict: body?.verdict, headSha: body?.headSha,
     evidenceRefs: body?.evidenceRefs, readIds: body?.readIds, observed: body?.observed, reaffirms: body?.reaffirms,
+    acceptanceTest: body?.acceptanceTest,
   });
   if (r.ok) return NextResponse.json({ verdictId: r.verdictId, standing: { verdict: r.standing.verdict, evidence: r.standing.evidence, targetSha: r.standing.targetSha, standings: r.standing.standings } });
   return NextResponse.json({ error: r.error }, { status: r.status });

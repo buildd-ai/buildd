@@ -428,6 +428,7 @@ const TASK_STATUS_WRITERS: Record<string, string> = {
   'apps/web/src/lib/credential-recovery.ts': `${ATTEMPT('requeue of tasks failed on an auth error once the credential is back')}. A delivery owner is reopened through AttemptReopened (AC-1 slice 9)`,
   'apps/web/src/lib/github-repo-access-store.ts': `${ATTEMPT('requeue of a task failed on blocked GitHub access, once access is verified')}. A delivery owner is reopened through AttemptReopened (AC-1 slice 9)`,
   'apps/web/src/lib/task-recovery-hold.ts': `${ATTEMPT('a credential hold requeues the task to its probe floor')}. A delivery owner's hold writes the floor only; AttemptRequeued moves it (AC-1 slice 8)`,
+  'apps/web/src/lib/answer-attempt.ts': `${ATTEMPT('an answered question that cannot resume reopens its own task for a new attempt (answered-question-resume.md)')}. A delivery owner's reopen writes the answer into context only; AttemptRequeued, or AttemptReopened for a failed owner, moves it`,
   'apps/web/src/lib/conflict-retry.ts': ATTEMPT('recovery of a stalled conflict-fix attempt task (never the owner); a kernel repair with a worker row goes through AttemptRequeued (AC-1 slice 6), one with no worker row has no attempt to requeue'),
   'apps/web/src/lib/ci-failure-retry.ts': ATTEMPT('CI retries exhausted; for a kernel-owned PR it is the kernel\'s own Escalate effect that calls it (ci-retry-effects.ts), and the legacy callers return early for a kernel PR. The owner of a kernel delivery keeps its status in the statement itself: the escalating transition fails it (t_escalate, AC-1 slice 8)'),
   'apps/web/src/lib/loop-webhook.ts': ATTEMPT('a loop task\'s exit condition (pr_merged, pr_checks_green) is met: loopState and the status it implies. For a kernel owner the loop writes its own fields only: T17 completes it on a merge, and a green-checks exit re-sends the held end and runs projectLoopExit (AC-1 slice 8)'),
@@ -441,6 +442,7 @@ const TASK_STATUS_WRITERS: Record<string, string> = {
   'apps/web/src/app/api/webhooks/ingest/route.ts': PERSON('an external tracker issue closed or reopened'),
   'apps/web/src/app/api/github/webhook/route.ts': `${PERSON('a GitHub issue closed or reopened')}; ${NON_DELIVERY('a release task\'s release PR CI (releaseResult, context.releasePrPending)')}. The branch-name merge match moved to pr-merged-legacy-task.ts`,
   'apps/web/src/app/api/workers/[id]/interrupt/route.ts': NON_DELIVERY('a person takes over from a reviewer: the reviewer task (category review), never the owner; the kernel gets human_takeover (T27)'),
+  'apps/web/src/lib/specs/acceptance-gate-apply.ts': NON_DELIVERY('completes or reopens a mission\'s acceptance-tests task (a spec-process task with no PR, so never delivery-owned)'),
   'apps/web/src/lib/held-pr-tasks.ts': NON_DELIVERY('settles a release task held on its release PR (context.releasePrPending); release PRs never open a delivery'),
   'apps/web/src/lib/mission-surface-audit.ts': NON_DELIVERY('cancels a pending, unclaimed surface audit left with no dependencies'),
   'apps/web/src/lib/quality-scout-actions.ts': NON_DELIVERY('retires a pending, unclaimed scout follow-up'),
@@ -462,9 +464,11 @@ const ATTEMPT_MERGED_GUARD: Record<string, number | string> = {
   // AC-1 slice 6: the budget, codex, mount-gap and auth-failover requeues share one helper
   // (`requeueWorkerTask`): its two statements (the no-delivery requeue, a kernel owner's fields).
   'apps/web/src/app/api/workers/[id]/route.ts': 7,
-  'apps/web/src/lib/stale-workers.ts': 6,
+  'apps/web/src/lib/stale-workers.ts': 7,
   'apps/web/src/app/api/tasks/cleanup/route.ts': 2,
   'apps/web/src/lib/task-recovery-hold.ts': 1,
+  // The non-owner reopen and the owner's context write: neither moves a merged task.
+  'apps/web/src/lib/answer-attempt.ts': 2,
   'apps/web/src/lib/ci-failure-retry.ts': 1,
   'apps/web/src/app/api/workers/claim/route.ts': "moves only a pending task (WHERE status = 'pending') or rolls back its own assigned claim",
   'apps/web/src/lib/interactive-detach.ts': 'WHERE the task is not terminal: never a completed one',
@@ -531,7 +535,8 @@ const ATTEMPT_SITES: Record<string, AttemptSite[]> = {
     { at: /Previous worker expired \(infra failure\)/, kind: 'KERNEL', via: 'AttemptRequeued', calls: /requeueReapedOwnerAttempt\(\{[^}]*reason: 'infra_retry'/, ownerSkip: { spread: 'ownerAttempt ? {} : {' }, why: 'AC-1 slice 8: the infra requeue' },
     { at: /result: failure as any/, kind: 'KERNEL', via: 'AttemptEnded(lost)', calls: /workflowAttemptEnded\(\{[\s\S]*status: 'lost'/, ownerSkip: { spread: 'ownerAttempt ? {} : {' }, why: 'AC-1 slice 5: the silent-start, retry and infra caps' },
     { at: /CLAIM_RESPONSE_LOST_ERROR/, kind: 'KERNEL', via: 'AttemptRequeued', calls: /reason: undelivered \? 'claim_undelivered' : 'interactive_release'/, ownerSkip: { spread: 'ownerAttempt ? {} : {' }, why: 'AC-1 slice 8: a released interactive lease or an undelivered claim' },
-    { at: /eq\(tasks\.id, originalTask\.id\)/, kind: 'KERNEL', via: 'AttemptEnded(lost) (t_attempt, projectOwnerEnd)', calls: /source: 'sweep:waiting-input'[\s\S]{0,600}projectOwnerEnd\(\{/, ownerSkip: { branch: /const ownerAttempt = !!kernelDeliveryId && originalTask\.deliveryRole === 'owner';[\s\S]{0,600}if \(!ownerAttempt\) \{\s*await db\s*\.$/ }, why: 'AC-1 slice 5 / 9: an unanswered question, superseded by recovery or not, ends the owner attempt (the recovery later reopens it, AttemptReopened); only a non-owner reaches this write' },
+    { at: /status: 'failed',\s*updatedAt: new Date\(\),\s*\}\)\s*\.where\(and\(eq\(tasks\.id, originalTask\.id\)/, kind: 'KERNEL', via: 'AttemptEnded(lost) (t_attempt, projectOwnerEnd)', calls: /source: 'sweep:waiting-input'[\s\S]{0,600}projectOwnerEnd\(\{/, ownerSkip: { branch: /const ownerAttempt = !!kernelDeliveryId && originalTask\.deliveryRole === 'owner';[\s\S]{0,1200}if \(!ownerAttempt && !requeueSameTask\) \{\s*await db\s*\.$/ }, why: 'AC-1 slice 5 / 9: an unanswered question, superseded by recovery or not, ends the owner attempt (the recovery later reopens it, AttemptReopened); only a non-owner reaches this write' },
+    { at: /JSON\.stringify\(patch\)/, kind: 'NOT_OWNER', why: 'an unanswered question requeues the SAME plain task (answered-question-resume AC-58); a kernel-linked task returns to the kernel branch before this write' },
   ],
   'apps/web/src/lib/interactive-detach.ts': [
     { at: /notExists\(otherLive\)/, kind: 'KERNEL', via: 'AttemptRequeued', calls: /requeueOwnerThroughKernel\(/, ownerSkip: { branch: /if \(task\?\.deliveryId && task\.deliveryRole === 'owner'\) \{\s*if \(await requeueOwnerThroughKernel\([\s\S]{0,200}return;\s*\}[\s\S]{0,400}const \[requeued\] = await db\s*\.$/ }, why: 'AC-1 slice 8: "Release slot"; an owner task returns before this write' },
@@ -541,6 +546,9 @@ const ATTEMPT_SITES: Record<string, AttemptSite[]> = {
   ],
   'apps/web/src/lib/github-repo-access-store.ts': [
     { at: /status: 'pending',\s*context: sql`jsonb_set\(\$\{tasks\.context\}, '\{githubAccessBlock,resumedAt\}'/, kind: 'NOT_OWNER', predicate: true, why: 'a task failed on blocked GitHub access is requeued once access is verified; an owner is reopened by AttemptReopened(pending), as credential recovery (AC-1 slice 9)' },
+  ],
+  'apps/web/src/lib/answer-attempt.ts': [
+    { at: /status: 'pending',\s*claimedBy: null,\s*claimedAt: null,\s*expiresAt: null,\s*context: context as any/, kind: 'NOT_OWNER', predicate: true, why: 'reopens a task that is no delivery\'s owner for a new attempt after an answer; an owner\'s answer goes through requeueOwner / reopenOwner (AttemptRequeued / AttemptReopened)' },
   ],
   'apps/web/src/lib/task-recovery-hold.ts': [
     { at: /startAt: plan\.startAt/, kind: 'KERNEL', via: 'AttemptRequeued', calls: /input\.ownerAttempt\.requeue\(\)/, ownerSkip: { spread: 'input.ownerAttempt ? {} : {' }, why: 'AC-1 slice 8: a credential hold; the worker PATCH passes ownerAttempt for an owner task' },

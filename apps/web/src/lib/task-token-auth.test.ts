@@ -322,4 +322,51 @@ describe('taskScopeAllowsMissionTaskRead', () => {
   it('still refuses a task in another workspace', async () => {
     expect(await taskScopeAllowsMissionTaskRead(worker, { id: 'task-9', workspaceId: 'ws-2', missionId: null })).toBe(false);
   });
+
+  describe('a child filed elsewhere under a tasks:create delegation', () => {
+    const delegated = {
+      level: 'worker',
+      taskScope: {
+        taskId: 'task-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000,
+        delegations: [{ workspaceId: 'ws-2', capabilities: ['tasks:create' as const] }],
+      },
+    };
+    beforeEach(() => { mockWorkersFindFirst.mockReset(); });
+
+    it('reads a child whose parent is its own task', async () => {
+      const child = { id: 'task-c', workspaceId: 'ws-2', missionId: null, parentTaskId: 'task-1' };
+      expect(await taskScopeAllowsMissionTaskRead(delegated, child)).toBe(true);
+      expect(mockWorkersFindFirst).not.toHaveBeenCalled();
+    });
+
+    it("reads a child created by its own task's worker", async () => {
+      mockWorkersFindFirst.mockResolvedValue({ taskId: 'task-1' });
+      const child = { id: 'task-c', workspaceId: 'ws-2', missionId: null, parentTaskId: null, createdByWorkerId: 'w-1' };
+      expect(await taskScopeAllowsMissionTaskRead(delegated, child)).toBe(true);
+    });
+
+    it("refuses a task there created by another task's worker", async () => {
+      mockWorkersFindFirst.mockResolvedValue({ taskId: 'task-2' });
+      const other = { id: 'task-o', workspaceId: 'ws-2', missionId: null, parentTaskId: 'task-2', createdByWorkerId: 'w-2' };
+      expect(await taskScopeAllowsMissionTaskRead(delegated, other)).toBe(false);
+    });
+
+    it('refuses an unrelated task there, without reading anything', async () => {
+      expect(await taskScopeAllowsMissionTaskRead(delegated, { id: 'task-o', workspaceId: 'ws-2', missionId: null })).toBe(false);
+      expect(mockWorkersFindFirst).not.toHaveBeenCalled();
+    });
+
+    it('refuses its child in a workspace the delegation does not grant tasks:create on', async () => {
+      const readOnly = { ...delegated, taskScope: { ...delegated.taskScope, delegations: [{ workspaceId: 'ws-2', capabilities: ['analytics:read' as const] }] } };
+      const child = { id: 'task-c', workspaceId: 'ws-2', missionId: null, parentTaskId: 'task-1' };
+      expect(await taskScopeAllowsMissionTaskRead(readOnly, child)).toBe(false);
+      const elsewhere = { ...child, workspaceId: 'ws-3' };
+      expect(await taskScopeAllowsMissionTaskRead(delegated, elsewhere)).toBe(false);
+    });
+
+    it('does not widen writes: taskScopeAllowsMissionTask still refuses the child', async () => {
+      const child = { id: 'task-c', workspaceId: 'ws-2', missionId: null, parentTaskId: 'task-1' };
+      expect(await taskScopeAllowsMissionTask(delegated, child)).toBe(false);
+    });
+  });
 });

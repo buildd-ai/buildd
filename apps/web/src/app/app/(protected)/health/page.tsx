@@ -6,10 +6,13 @@ export type {
   GateAnalytics, SubagentMetrics, SubagentDelegationPanel, ErrorPatternMetrics,
   ErrorPatternPanel,
 } from './_lib/health-data';
+import { withPageBudget } from '@/lib/page-budget-watch';
 
 export const dynamic = 'force-dynamic';
 
 /** `/app/health`: Overview. What needs attention now. Reads `?workspace=`. */
-export default async function HealthOverviewPage({ searchParams }: { searchParams: Promise<{ workspace?: string; window?: string; failureWindow?: string }> }) {
+async function HealthOverviewPage({ searchParams }: { searchParams: Promise<{ workspace?: string; window?: string; failureWindow?: string }> }) {
   return renderHealthPage('overview', searchParams);
 }
+
+export default withPageBudget('health', HealthOverviewPage);

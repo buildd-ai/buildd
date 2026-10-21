@@ -56,7 +56,7 @@ import { wakeOldestPendingTaskOnCapacityFreed } from '@/lib/capacity-freed-wake'
 import { onManagedWorkerTerminal } from '@/lib/entitlements/managed-runner';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { enforceServerSideEscalation, applyCopyReviewGate, parseCopyFindings } from '@/lib/reviewer';
-import { copyReviewConfigOf } from '@buildd/shared';
+import { copyReviewConfigOf, isIsolationRefusalError } from '@buildd/shared';
 import {
   checkDispatch,
   guardDispatchedTask,
@@ -3119,6 +3119,8 @@ async function patchWorker(
   // with backoff instead of staying failed (a green PR stuck in review_failed).
   const isWorktreeSetupTimeout = status === 'failed' && isWorktreeSetupTimeoutError(error);
   const isModelAuthMissing = status === 'failed' && body.modelAuthMissing === true;
+  // The runner refused the session at preflight against its own isolation record (isolation-policy.ts).
+  const isIsolationRefused = status === 'failed' && (body.isolationRefused === true || isIsolationRefusalError(error));
   // The CLI's model version gate: this runner cannot serve the model the task
   // was routed to. A deterministic 400 before the first turn, so it is infra
   // and rides the infra retry budget below; the claim route's capability gate
@@ -3146,6 +3148,7 @@ async function patchWorker(
       githubThrottled: isGithubThrottled,
       worktreeSetupTimeout: isWorktreeSetupTimeout,
       modelAuthMissing: isModelAuthMissing,
+      isolationRefused: isIsolationRefused,
       unrecognizedModel: isUnrecognizedModel,
       needsInput: isNeedsInput,
       budgetLimited: isBudgetError,
@@ -3877,7 +3880,8 @@ async function patchWorker(
         // failed every in-flight non-mission task. A model version-gate 400
         // rides it too: bounded, backed off, and uncharged. So does a clone GitHub
         // throttled: the backoff is the point, GitHub needs time.
-        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isGithubThrottled || isWorktreeSetupTimeout || isModelAuthMissing || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
+        // An isolation refusal at preflight rides it like a missing model login.
+        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isGithubThrottled || isWorktreeSetupTimeout || isModelAuthMissing || isIsolationRefused || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
           const infraRetryCount = (taskCtxForRetry.infraRetryCount as number) || 0;
           if (infraRetryCount < MAX_INFRA_RETRIES_PATCH) {
             shouldAutoRetry = true;
@@ -4717,6 +4721,14 @@ async function patchWorker(
       // Resolve dependencies (check if parent's children all completed)
       await runStep('resolve-dependencies', async () => {
         await resolveCompletedTask(taskId, worker.workspaceId);
+      });
+
+      // The acceptance-tests task finished: record its tests against their checks
+      // in the spec's verified_by (spec 1dc6cc39 R-77, AC-123).
+      await runStep('acceptance-verified-by', async () => {
+        if (effectiveOutcome !== 'completed' || shouldAutoRetry) return;
+        const { recordAcceptanceVerifiedBy } = await import('@/lib/specs/acceptance-verified-by');
+        await recordAcceptanceVerifiedBy(taskId);
       });
 
       // A recoverable-blocker repair landed: resume the tasks parked on it
@@ -6359,16 +6371,16 @@ async function handleReviewerOutcomeIfNeeded(
   // postPrReview is idempotent per (PR, head SHA, resulting state), so a forced
   // re-review that reaches the same verdict on the same commit does not stack a
   // second approval.
-  if (!kernelOwnsVerdict && (effectiveVerdict === 'approve' || effectiveVerdict === 'request-changes')) {
+  // An approval posts nothing: it is the `Buildd / Review approval` commit status. Only a request
+  // for changes reaches the PR, as its actionable findings.
+  if (!kernelOwnsVerdict && effectiveVerdict === 'request-changes') {
     const reviewPostResult = await postPrReview({
       installationId,
       repoFullName,
       prNumber,
       headSha,
-      event: effectiveVerdict === 'approve' ? 'APPROVE' : 'REQUEST_CHANGES',
-      body: effectiveVerdict === 'approve'
-        ? `Approved by buildd reviewer (confidence ${output.confidence.toFixed(2)}): ${output.summary}`
-        : `Changes requested by buildd reviewer: ${output.feedback ?? output.summary}`,
+      event: 'REQUEST_CHANGES',
+      body: (output.feedback ?? output.summary ?? '').trim() || 'Changes requested. See the task for details.',
     }).catch((err) => ({
       posted: false as const,
       reason: err instanceof Error ? err.message : 'unknown error',

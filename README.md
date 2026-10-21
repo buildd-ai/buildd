@@ -78,7 +78,7 @@ Every prompt the server sends a model has a public default in this repo, and a d
 | `apps/model-policy` | Cloudflare Worker that maps a surface and tier to a provider and model |
 | `packages/core` | Drizzle schema and migrations, knowledge store, model routing, question gate |
 | `packages/shared` | Types shared by the server and the runner |
-| `packages/ai-kit` | Chat components, tool permissions and model plans for your own app (`@builddai/ai-kit`) |
+| `packages/ai-kit` | Chat components, tool permissions and model plans for your own app (`@buildd/ai-kit`) |
 | `packages/dispatch-contract` | Wire types between buildd and the dispatch Worker |
 
 The product spec lives in [docs/SPEC.md](docs/SPEC.md), with per-capability contracts in [docs/specs/](docs/specs/).

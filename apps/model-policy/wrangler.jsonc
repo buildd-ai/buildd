@@ -28,7 +28,7 @@
   // credential, and must not: apps call providers with their own.
   //
   // MODEL_POLICY is the policy document (JSON, `ModelPolicy` from
-  // @builddai/ai-kit/policy). Set it with `wrangler secret put MODEL_POLICY`
+  // @buildd/ai-kit/policy). Set it with `wrangler secret put MODEL_POLICY`
   // or `--var` so a deploy does not wipe a dashboard edit. Missing or invalid,
   // /v1/resolve answers 503 and clients serve their own fallback.
 }

@@ -86,7 +86,7 @@ beforeEach(() => {
   for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
   // Switched over: the web host in own mode (explicit, as on a local e2e), and the command key on both sides.
   process.env.EXECUTION_MODE = 'own';
-  process.env.KERNEL_COMMAND_SECRET = 'k1:db-test-command-secret';
+  process.env.KERNEL_COMMAND_SECRET = 'test:db-test-command-secret';
   delete process.env.CRON_SECRET;
   delete process.env.VERCEL;
   resetKernelModeCache();
@@ -405,6 +405,9 @@ describe('AC-9: a review verdict and a fix claim are applied by the control plan
     expect(kv).toMatchObject({ handled: true, toState: 'CHANGES_REQUESTED' });
     expect(cp.calls.filter((c) => c.op !== 'drain')).toEqual([{ path: '/v1/commands', op: 'record_review_verdict' }]);
     expect((await w!.delivery(pr)).state).toBe('CHANGES_REQUESTED');
+    // The fix task is an effect now: it drains after the command's answer, not inside it.
+    await seam.drainDelivery(pr.deliveryId);
+    cp.calls.length = 0;
 
     const [fix] = await q<{ id: string; workspace_id: string; delivery_id: string; delivery_role: string; context: Record<string, unknown> }>(
       sql`SELECT id, workspace_id, delivery_id, delivery_role, context FROM tasks WHERE delivery_id = ${pr.deliveryId}::uuid AND delivery_role = 'fix' ORDER BY created_at DESC LIMIT 1`);
@@ -593,7 +596,11 @@ describe('AC-74: a door command the control plane never answered lands once it r
 
   test('GitHub\'s one green while the control plane is down: the web host\'s floor re-submits it with the same key once it answers, and it is recorded once', async () => {
     const pr = await working('feat/park-green');
+    // Setup, not the act: in shadow the hand-on is applied here, so nothing is sent to a control plane that is not installed yet.
+    process.env.EXECUTION_MODE = 'shadow';
     await w!.handOn(pr);
+    process.env.EXECUTION_MODE = 'own';
+    resetKernelModeCache();
     const head = w!.gh.pr(w!.repo, pr.prNumber).headSha;
     w!.gh.greenCi(w!.repo, head, ['build', 'test']);
     cp = installControlPlane();
@@ -676,6 +683,7 @@ describe('AC-74: a door command the control plane never answered lands once it r
     expect((await w!.delivery(pr)).state).toBe('CHANGES_REQUESTED');
     expect(await countOf(pr, 'ReviewVerdictRecorded')).toBe(1);
     expect(await parked(key)).toMatchObject({ status: 'done', outcome: 'applied' });
+    await seam.drainDelivery(pr.deliveryId);
     const fixes = await w!.tasksOf(pr, 'fix');
     expect(fixes).toHaveLength(1);
 
@@ -716,7 +724,11 @@ describe('AC-74: a door command the control plane never answered lands once it r
 
   test('an old green re-sent after a newer head is answered as for another head and settled, never recorded for the new one', async () => {
     const pr = await working('feat/park-stale-green');
+    // Setup, not the act: in shadow the hand-on is applied here, so nothing is sent to a control plane that is not installed yet.
+    process.env.EXECUTION_MODE = 'shadow';
     await w!.handOn(pr);
+    process.env.EXECUTION_MODE = 'own';
+    resetKernelModeCache();
     const oldHead = w!.gh.pr(w!.repo, pr.prNumber).headSha;
     w!.gh.greenCi(w!.repo, oldHead, ['build', 'test']);
     cp = installControlPlane();
@@ -768,7 +780,7 @@ describe('AC-10: the drain and the floor on the control plane, with the web app 
     let floorRan = false;
     try {
       const r = await runScheduledKernelFloor({
-        env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:db-test-command-secret', CRON_SECRET: cronSecret },
+        env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'test:db-test-command-secret', CRON_SECRET: cronSecret },
         // Scoped to this world's delivery: the shared test database holds other files' rows.
         deps: {
           drainDueEffects: async () => (await seam.drainDelivery(pr.deliveryId))!,

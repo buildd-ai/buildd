@@ -9,7 +9,7 @@ import { createPalette, type Palette } from '../terminal-palette';
 import { probeRunnerSocket } from '../runner-socket';
 import { socketClient, type SocketClient } from './client';
 import { renderFrame } from './render';
-import { initialState, reduce, type TopEvent, type TopState } from './state';
+import { initialState, reduce, type TopDevBuild, type TopEvent, type TopState } from './state';
 import { EXIT_NO_RUNNER, noRunnerMessage } from './run';
 
 export interface FrameOnceOptions {
@@ -26,6 +26,8 @@ export interface FrameOnceOptions {
   now?: number;
   /** How long to wait for the runner's `init` frame (ms). */
   initTimeoutMs?: number;
+  /** `buildd top --dev`: the dev build, named in the header. */
+  build?: TopDevBuild | null;
 }
 
 /** The first `init` frame of /api/events, or null if none comes in time. */
@@ -49,7 +51,7 @@ async function firstInit(client: SocketClient, timeoutMs: number): Promise<any |
 /** Build the state `top` would have after its first reads, then draw one frame. */
 export async function frameOnce(opts: FrameOnceOptions): Promise<string[]> {
   const client = opts.client ?? socketClient(opts.socketPath);
-  let state: TopState = initialState({ hostname: opts.hostname ?? osHostname(), missionId: opts.missionId, workspace: opts.workspace, team: opts.team });
+  let state: TopState = initialState({ hostname: opts.hostname ?? osHostname(), missionId: opts.missionId, workspace: opts.workspace, team: opts.team, build: opts.build });
   const apply = (e: TopEvent) => { state = reduce(state, e); };
   const get = (path: string) => client.get(path).catch(() => null);
   const [runner, config, workers, workspaces, tasks, missions, queue, init] = await Promise.all([

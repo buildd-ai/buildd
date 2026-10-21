@@ -11,6 +11,7 @@ import { loadActivity, type ActivityData, type ActivityMissionRow } from './acti
 import { listLocalSessions, type LocalSessionView } from '@/lib/local-session-view';
 import { localHoldsByWorker } from '@/lib/local-session-display';
 import { HOME_MISSION_SUMMARIES } from '@/modules';
+import { withPageBudget } from '@/lib/page-budget-watch';
 
 /** Header for open missions with no stored summary yet: derived live now, stored after the response. */
 async function deriveHeads(ids: string[]): Promise<Map<string, ActivityMissionRow['head']>> {
@@ -19,7 +20,7 @@ async function deriveHeads(ids: string[]): Promise<Map<string, ActivityMissionRo
   return new Map(live.map(r => [r.id, { kind: r.home.delivery.kind, landed: r.home.delivery.landed, total: r.home.delivery.total, next: r.home.delivery.next }]));
 }
 
-export default async function TasksPage({
+async function TasksPage({
   searchParams,
 }: {
   searchParams: Promise<{ mission?: string; workspace?: string; initiative?: string; view?: string }>;
@@ -119,3 +120,5 @@ export default async function TasksPage({
     />
   );
 }
+
+export default withPageBudget('activity', TasksPage);

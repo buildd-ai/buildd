@@ -3,6 +3,7 @@ import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus, type TaskStatusValue } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { pinSpecSource } from '@/lib/specs/pin';
+import { openAcceptanceTestsTaskId } from '@/lib/specs/acceptance-tests';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions, workers, missionNotes } from '@buildd/core/db/schema';
 import { desc, asc, eq, and, or, not, gt, inArray, notInArray, gte, isNotNull, isNull, like, sql } from 'drizzle-orm';
@@ -737,8 +738,12 @@ export async function POST(req: NextRequest) {
     // schedule's or the task's own) grants tasks:create on
     // (packages/core/token-delegation.ts).
     if (apiAccount && !taskScopeAllowsDelegated(apiAccount, workspaceId, 'tasks:create')) {
+      // A schedule-spawned run refused on a workspace of its team counts toward proposing the move (I-29).
+      // Lazy: @/modules pulls the whole module graph, which a task-list import must not.
+      const { TASK_REACH_REFUSAL } = await import('@/modules');
+      await TASK_REACH_REFUSAL(apiAccount, workspaceId, 'tasks:create');
       return NextResponse.json({
-        error: "A task token may create tasks only in its own workspace, or one its delegation grants tasks:create on. Ask for it with request_capability { capability: 'tasks:create', resource: '<workspace UUID>' }: a person approves it and the run keeps going.",
+        error: "A task token may create tasks only in its own workspace, or one its delegation grants tasks:create on. Ask for it with request_capability { provider: 'buildd', access: 'write', resource: '<workspace UUID>' }: a person approves it and the run keeps going.",
         code: 'delegation_required',
       }, { status: 403 });
     }
@@ -1040,6 +1045,13 @@ export async function POST(req: NextRequest) {
         existingDepsSet.add(id);
       }
       softOverlaps = split.soft;
+    }
+
+    // Every building task in a mission with an outcome spec waits for its
+    // acceptance-tests task (spec 1dc6cc39 R-76).
+    if (missionId) {
+      const acceptanceId = await openAcceptanceTestsTaskId(missionId).catch(() => null);
+      if (acceptanceId && !resolvedDependsOn.includes(acceptanceId)) resolvedDependsOn.push(acceptanceId);
     }
 
     // Resolve creator context using the service

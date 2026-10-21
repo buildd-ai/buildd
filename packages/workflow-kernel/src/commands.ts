@@ -265,7 +265,14 @@ export type Command =
       /** Why (a short tag: `account_cap`, `orphaned_claim`, `retry_cap`, `workspace_mismatch`, `mission_budget`). */
       reason: string;
     })
-  | (Base & { type: 'ReviewRequested'; headSha: string; live: LivePr; forced?: boolean; decision?: HumanDecision })
+  | (Base & {
+      type: 'ReviewRequested'; headSha: string;
+      /** Omitted when dispatch will revalidate the recorded head in the outbox. */
+      live?: LivePr;
+      forced?: boolean;
+      decision?: HumanDecision;
+      reviewCallback?: { url: string; on: 'verdict' | 'merge' };
+    })
   | (Base & {
       type: 'ReviewVerdictRecorded';
       roundId: string;

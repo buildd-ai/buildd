@@ -1,5 +1,6 @@
 import { formatTaskEstimate, type TaskEstimatePayload } from '@buildd/shared';
 import { hasTokenScope, requiredScopeForAction } from './token-scopes';
+import { detectProviderAccessAsk, providerAccessRefusal } from './provider-access-ask';
 import { SUB_ACTIONS, subActionQuoted as quotedSubs } from './mcp-sub-actions';
 import { guidanceTopicReply, guidanceTopicsText } from './guidance-topics';
 /**
@@ -714,6 +715,7 @@ export const workerActions = [
   'explain',
   'list_artifact_templates',
   'suggest_schedule_update',
+  'propose_schedule_move',
   'post_note',
   'list_schedules', 'trace_schedule',
   'get_task_messages',
@@ -1124,18 +1126,19 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_decision: '{ decisionId (required, a decision_records id from get_decision_stats with capability) } — one decision with what judging it needs: the question the feature asks, the options (answers the feature has given recently and, for role routing, the workspace\'s roles with their when-to-use), the rule\'s answer, the model\'s answer and confidence, the answer in effect and why (a fallback reason in plain words), and the subject\'s later evidence (the task\'s role and status now, its PRs and where they ended, its mission), plus any labels already on it. answers.graded says what label_decision\'s label grades. Platform operators only; a team owner or admin is refused. [admin]',
     label_decision: '{ decisionId (required), label (required: right | wrong | unsure), rationale (required, at most 280 characters: the evidence, not a restatement), ruleLabel? (right | wrong | unsure: the rule\'s answer on the same decision, so the rule gets a baseline) } — grade one decision as an auditor (source agent_audit; the rule\'s grade under agent_audit_rule). label grades the model\'s answer, or the answer in effect when the model gave none. The first grade stands: the same one again is a duplicate, a different one comes back as a conflict with the existing label. These grades are the accuracy in get_decision_stats health and the decision features readout. Platform operators only; a team owner or admin is refused. [admin]',
     get_visual_review: '{ missionTitle? | missionId?, workspaceId?, awaitingOnly? } — a mission\'s visual QA: phase; each audit task (status, times, why); per route+viewport: round, agent verdict, finding, human decision, fix task, shot links; manual shots and reports; what needs you. missionTitle is team-wide unless workspaceId. No mission: missions waiting on you. [admin]',
-    resolve_capability: '{ capability?, roleSlug?, workspaceId? } — what could satisfy a semantic need in this workspace, before choosing a role. capability is domain:verb, domain one of observability|deployment|database|analytics|work_tracking|docs|source_control, verb read|query|write (e.g. "observability:query", "deployment:read"); omit it to list every need something here serves, with what is available now. Returns ranked candidates: provider (catalog slug), installed connector or null, match exact|partial|category, access permitted|auto_grant (route to a role in roles.withAccess)|ask_admin|forbidden (team blocked it)|reconnect|unhealthy, availableNow, health, workspace enablement, compatibility (unknown_until_tested = the provider may refuse a Buildd-run client), risk (writeToolsExposed: mounting exposes every native tool, so read does not mean read-only), runtimeNeeds, nextSteps. Plus operator (Operator deploy grant, deployment needs only) and unclassifiedConnectors. roleSlug defaults to your own task\'s role under a per-task token. Read-only: installing, enabling or granting stays a team admin act. Native tool names and schemas are untouched.',
-    request_capability: '{ capability, provider?, tool?, resource?, environment?, risk?, ttlSeconds?, reason?, workerId? } — ask for access this run needs, by need not by connector: capability is domain:verb (as in resolve_capability) or model.inference (then provider openrouter|litellm, models[], budget). Or tasks:create with resource = the UUID of another workspace of your team, to file tasks there: a person approves it and it lands on your task\'s delegation, which your token re-reads on every call; while it is pending_approval keep working and ask again (same row) — do not end the run or ask_human for the same access. Never pass a connector id or credential. Returns outcome: existing (your role already has it, or a live grant covers it), auto_granted (team policy granted it now, for ttlSeconds), pending_approval (a team admin decides; asking again returns the same request), denied (a person denied this exact ask for this run), forbidden (team blocked it; not appealable here), need_connection / need_reauth / unhealthy (someone must (re)connect the provider), unavailable (nothing serves it) — plus nextSteps and alternatives (e.g. a role that already mounts it). Writes (risk write/admin) always need a person. A grant is bound to this worker, task and role and ends with them; it is re-checked on every use, so a revoke stops the next call. Credentials stay server-side.',
+    resolve_capability: '{ capability?, provider?, access?, roleSlug?, workspaceId? } — what could serve a need in this workspace, before choosing a role. With provider (a catalog slug, access read|write, default read) it shows that one provider\'s state here. capability is a category search filter, domain:verb, domain one of observability|deployment|database|analytics|work_tracking|docs|source_control, verb read|query|write (e.g. "observability:query", "deployment:read"); omit it to list every need something here serves, with what is available now. Returns ranked candidates: provider (catalog slug), installed connector or null, match exact|partial|category, access permitted|auto_grant (route to a role in roles.withAccess)|ask_admin|forbidden (team blocked it)|reconnect|unhealthy, availableNow, health, workspace enablement, compatibility (unknown_until_tested = the provider may refuse a Buildd-run client), risk (writeToolsExposed: mounting exposes every native tool, so read does not mean read-only), runtimeNeeds, nextSteps. Plus operator (Operator deploy grant, deployment needs only) and unclassifiedConnectors. roleSlug defaults to your own task\'s role under a per-task token. Read-only: installing, enabling or granting stays a team admin act. Native tool names and schemas are untouched.',
+    request_capability: '{ provider, access, tool?, resource?, environment?, risk?, ttlSeconds?, reason?, workerId? } — ask for access this run needs: provider is the catalog slug (e.g. axiom, vercel) and access is read or write; never a connector id or credential. resolve_capability { capability: "observability:query" } searches which providers serve a category. For buildd itself use provider "buildd" with resource = the UUID of another workspace of your team: access write files tasks there (tasks:create), access read reads its analytics (analytics:read: buildd\'s own, never a provider\'s — for Axiom or any provider MCP ask provider + access, e.g. { provider: "axiom", access: "read", resource: "buildd-traces" }, and never ask a person to widen the worker key). A person approves it and it lands on your task\'s delegation, which your token re-reads on every call; while it is pending_approval keep working and ask again (same row) — do not end the run or ask_human for the same access. model.inference is still { capability: "model.inference", provider openrouter|litellm, models[], budget }. Returns outcome: existing (your role already has it, or a live grant covers it), auto_granted (team policy granted it now, for ttlSeconds), pending_approval (a team admin decides; asking again returns the same request), denied (a person denied this exact ask for this run), forbidden (team blocked it; not appealable here), need_connection / need_reauth / unhealthy (someone must (re)connect the provider), unavailable (nothing serves it) — plus nextSteps and alternatives (e.g. a role that already mounts it). Writes (access write, or a write/admin tool) always need a person. A grant is bound to this worker, task and role and ends with them; it is re-checked on every use, so a revoke stops the next call. Credentials stay server-side.',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
     list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10), sinceDays? } — list releases for a workspace or mission, newest first: version, state, deploy time, head SHA, id, and the tasks/PRs each shipped. "What shipped this week" = sinceDays: 7. get_release has the full record.',
     get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus workspaceName, commitRangeUrl, degradationTaskId, attributedTasks (task title, status, prNumber, missionId), and attributedMissions.',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
+    propose_schedule_move: '{ workspace (required: the workspace id, name or owner/repo of the team), reason (required), scheduleId? } — propose that the schedule which spawned this task starts its FUTURE runs in another workspace of the team. Only a task a schedule spawned can call it (anything else is refused). It records one open proposal per schedule (a newer one replaces it) and changes nothing else: a person with delegate_schedule_access answers it on Home or the schedule (Accept, Keep, or Accept with a read grant on the old home). The schedule keeps running where it is until then; if accepted, the next tick files in the new workspace, and this run and tasks already filed stay put. Use it when reads or filings for the workspace the work belongs to keep coming back FORBIDDEN or delegation_required, and say so in reason.',
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
     post_note: `{ type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply, and write it as a self-contained decision brief: the reader has not seen the task or the code, so the body says which task this is and what is being decided (one or two sentences), then one line per option of the form "<option>: what it leads to", and why you chose the default. User replies are delivered at your next turn boundary (or call receive_messages). missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.`,
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
-    ask_human: '{ workerId?, question (required), options? (string[] — quick replies shown as buttons), context? (one or two sentences: which task this is and what is being decided) } — park your own interactive worker (claimed with claim_task from this session) on a question for a person. It takes the same path as a runner agent\'s AskUserQuestion: the worker goes to waiting_input, the question shows in Needs you on the dashboard and the team gets the push. Returns { waiting: true, workerId, askedAt, waitCommand }. To wait, run waitCommand as a Bash command with run_in_background: it exits 0 once answered (non-zero with a reason otherwise) and costs no turns while waiting; then call await_answer { waitSeconds: 0 }. Without background commands, loop on await_answer. Unanswered, it expires like any question (24 h, 4 h in a mission). Refused for a runner-managed worker, which asks with AskUserQuestion instead. workerId auto-resolved from context if omitted.',
-    await_answer: '{ workerId?, waitSeconds? (0-45, default 40) } — read the answer to your ask_human question: after waitCommand exits 0, call with waitSeconds: 0. Otherwise it long-polls until answered. Answered: { answered: true, answer, question }, marked read so it comes back once (receive_messages would return it, also once). Timeout: { timedOut: true, stillWaiting: true }; call again straight away. Each call tells buildd your session is still there; one that stops for a few minutes has its answer sent to a follow-up task. { answered: false, stillWaiting: false } means nothing is waiting any more (reasonCode says why). Interactive sessions only; a runner-managed worker is resumed by its runner. workerId auto-resolved from context if omitted.',
-    answer_question: '{ taskId (required), message (required) } — answer the question a waiting_input agent is parked on (the task page\'s Answer link). Takes the same resume path as the dashboard: the parked session continues with your answer, or a continuation task starts if the session is gone. send_agent_message cannot do this — a parked agent takes no turn, so a queued message is never read. Refused unless the task\'s worker is waiting on a question. [admin]',
+    await_answer: '{ workerId?, waitSeconds? (0-45, default 40) } — read the answer to your ask_human question: after waitCommand exits 0, call with waitSeconds: 0. Otherwise it long-polls until answered. Answered: { answered: true, answer, question }, marked read so it comes back once (receive_messages would return it, also once). Timeout: { timedOut: true, stillWaiting: true }; call again straight away. Each call tells buildd your session is still there; one that stops for a few minutes has its answer sent to a new attempt of the same task. { answered: false, stillWaiting: false } means nothing is waiting any more (reasonCode says why). Interactive sessions only; a runner-managed worker is resumed by its runner. workerId auto-resolved from context if omitted.',
+    answer_question: '{ taskId (required), message (required) } — answer the question a waiting_input agent is parked on (the task page\'s Answer link). Takes the same resume path as the dashboard: the parked session continues with your answer, or a new attempt of the same task starts with it if the session is gone. send_agent_message cannot do this — a parked agent takes no turn, so a queued message is never read. Refused unless the task\'s worker is waiting on a question. [admin]',
+    ask_human: '{ workerId?, question (required), options? (string[] — quick replies shown as buttons), context? (one or two sentences: which task this is and what is being decided) } — park your own interactive worker (claimed with claim_task from this session) on a question for a person. It takes the same path as a runner agent\'s AskUserQuestion: the worker goes to waiting_input, the question shows in Needs you on the dashboard and the team gets the push. Returns { waiting: true, workerId, askedAt, waitCommand }. To wait, run waitCommand as a Bash command with run_in_background: it exits 0 once answered (non-zero with a reason otherwise) and costs no turns while waiting; then call await_answer { waitSeconds: 0 }. Without background commands, loop on await_answer. Unanswered, it expires like any question (24 h, 4 h in a mission). A question that asks for provider access (Axiom, Sentry, PostHog…) is refused with the request_capability call to make instead. Refused for a runner-managed worker, which asks with AskUserQuestion instead. workerId auto-resolved from context if omitted.',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs DOC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:docs) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
     correct_task_result: '{ taskId (required), summary?, prUrl?, prNumber? (at least one of summary / prUrl / prNumber) } — amend a completed or failed task\'s stored result after the fact. summary: replace result.summary (e.g. a stray assistant aside got captured, or a bug garbled it); the prior summary is preserved as result.previousSummary and the correction is stamped with result.summaryCorrectedAt so the durable record shows it was amended, not silently rewritten. prUrl/prNumber: attach the PR that delivered a task closed without a worker (e.g. by update_task status=completed) — the PR is verified in the workspace\'s GitHub repo via the GitHub App, mapped to the task with an external placeholder worker (as request_pr_review adoption does) and written to result.prUrl/prNumber, so the mission page lists it and mission completion sees it. Refused if another task owns the PR, unless that owner is an auto-adopted placeholder (a webhook-created bookkeeping task that only noticed the PR first, never did the work) — then the mapping moves onto this task instead of refusing. Also refused if the task already records a different PR; re-attaching the same PR is a no-op. Commit stats are never touched. Fails on a task that has not yet completed or failed — there is nothing to correct yet. [admin]',
@@ -1876,10 +1879,13 @@ const AMBIGUOUS_WORKSPACE_ACTIONS = new Set<string>([
 ]);
 
 /**
- * For OAuth tokens with access to multiple workspaces, refuse ambiguous
- * mutating/aggregating actions unless workspaceId is explicit (either via
- * URL pin at OAuth time or via params). API-key tokens are workspace-scoped
- * at creation and skip this guard.
+ * For any caller that reaches more than one workspace, refuse ambiguous
+ * mutating/aggregating actions unless workspaceId is explicit (via the URL
+ * pin or via params). That includes an unrestricted account key: it reaches
+ * its team's open workspaces, and without this its create_task fell back to
+ * getWorkspaceId()'s guess (spec workspace-routing-and-reach I-16). Restricted
+ * keys and task tokens are always pinned by the MCP route, so they pass on
+ * ctx.workspaceId.
  */
 async function requireExplicitWorkspace(
   api: ApiFn,
@@ -1888,9 +1894,8 @@ async function requireExplicitWorkspace(
   ctx: ActionContext,
 ): Promise<ToolResult | null> {
   if (!AMBIGUOUS_WORKSPACE_ACTIONS.has(action)) return null;
-  if (ctx.workspaceId) return null;          // URL-pinned at OAuth time
+  if (ctx.workspaceId) return null;          // URL-pinned
   if (params.workspaceId) return null;        // explicit per-call
-  if (ctx.authType !== 'oauth') return null;  // API keys are workspace-scoped
 
   let workspaces: Array<{ id: string; name: string; repo?: string | null }> = [];
   try {
@@ -1910,7 +1915,7 @@ async function requireExplicitWorkspace(
   return {
     content: [{
       type: 'text' as const,
-      text: `This OAuth token has access to ${workspaces.length} workspaces. Action "${action}" requires an explicit workspaceId to avoid misrouting (the 2026-05-25 incident). Pass workspaceId in params — workspace name is accepted:\n${choices}`,
+      text: `This ${ctx.authType === 'oauth' ? 'OAuth token' : 'key'} has access to ${workspaces.length} workspaces. Action "${action}" requires an explicit workspaceId to avoid misrouting (the 2026-05-25 incident). Pass workspaceId in params — workspace name is accepted:\n${choices}`,
     }],
     isError: true,
   };
@@ -1977,15 +1982,13 @@ async function resolveWorkspaceId(
   }
 
   // Fall back to name match across accessible workspaces. A per-task token
-  // (cloud container / worker session running under a `bldt_` token) has no
-  // auth path into this listing endpoint at all — it always 401s here,
-  // regardless of which name was passed, because listing is inherently
-  // team-wide and the token can only ever reach its own task's workspace.
-  // Such a caller already has that one workspace bound unambiguously
-  // (ctx.getWorkspaceId()), so a name match against it is a convenience
-  // confirmation, not a real lookup: fall back to the bound workspace instead
-  // of surfacing this scope-shaped 401 as a raw API error. Any other failure
-  // (a genuine outage, etc.) still propagates.
+  // (`bldt_`) gets a narrowed list here: its own task's workspace plus the
+  // ones its delegation grants analytics:read or tasks:create on. A 401 can
+  // still come back (a server predating that, or a token the listing rejects);
+  // such a caller has its own workspace bound unambiguously
+  // (ctx.getWorkspaceId()), so fall back to it instead of surfacing the 401
+  // as a raw API error. Any other failure (a genuine outage, etc.) still
+  // propagates.
   let wsData;
   try {
     wsData = await api('/api/workspaces');
@@ -1997,11 +2000,19 @@ async function resolveWorkspaceId(
     throw err;
   }
   const workspaces: Array<{ id: string; name: string; repo?: string | null }> = wsData?.workspaces || [];
-  const match = workspaces.find((ws: any) =>
-    ws.name.toLowerCase() === raw.toLowerCase() ||
-    ws.repo?.toLowerCase() === raw.toLowerCase() ||
-    ws.repo?.toLowerCase().endsWith('/' + raw.toLowerCase())
-  );
+  // Several reachable workspaces can match one bare name; list order must not
+  // pick. Exact name/repo beats a repo-suffix match, then the connection's own.
+  const needle = raw.toLowerCase();
+  const rank = (ws: { id: string; name: string; repo?: string | null }): number => {
+    const exact = ws.name.toLowerCase() === needle || ws.repo?.toLowerCase() === needle;
+    const suffix = !!ws.repo?.toLowerCase().endsWith('/' + needle);
+    if (!exact && !suffix) return -1;
+    return (exact ? 2 : 0) + (ws.id === ctx.workspaceId ? 1 : 0);
+  };
+  const match = workspaces
+    .map((ws) => ({ ws, r: rank(ws) }))
+    .filter((x) => x.r >= 0)
+    .sort((a, b) => b.r - a.r)[0]?.ws;
   if (match) return match.id;
   if (explicit) throw new Error(unknownWorkspaceMessage(explicit, workspaces));
   return null;
@@ -2047,9 +2058,7 @@ export function unknownWorkspaceMessage(value: string, visible: Array<{ name: st
   const seen = names.length === 0
     ? 'This key can see no workspaces.'
     : `You can see: ${names.slice(0, MAX).join(', ')}${names.length > MAX ? ` (+${names.length - MAX} more; manage_workspaces list)` : ''}.`;
-  const next = names.length === 0
-    ? ''
-    : ' A key cannot file into a workspace outside its scope: file the follow-up in a visible workspace and name the intended destination in its description.';
+  const next = ' A key cannot file into a workspace outside its scope, and a task filed in a different workspace is not a substitute. Either request_capability { provider: "buildd", access: "write", resource: <the intended workspace\'s UUID> } (a person approves it), or hand the work to a person.';
   return `Could not resolve workspace "${value}": not visible to this key. ${seen}${next}`;
 }
 
@@ -3078,6 +3087,10 @@ export async function handleBuilddAction(
       if (params.context !== undefined && typeof params.context !== 'string') {
         throw new Error('context must be a string.');
       }
+      // Provider access is a capability request, never a question (and never
+      // a wider worker key): hand back the canonical ask before anything parks.
+      const providerAsk = detectProviderAccessAsk(question, typeof params.context === 'string' ? params.context : undefined, ...(Array.isArray(params.options) ? (params.options as string[]) : []));
+      if (providerAsk) return { isError: true, content: [{ type: 'text', text: JSON.stringify(providerAccessRefusal(providerAsk), null, 2) }] };
       const workerId = resolveWorkerId(params.workerId, ctx);
       const worker = await api(`/api/workers/${workerId}`);
       // A runner-managed agent already asks with AskUserQuestion; its runner
@@ -6049,6 +6062,8 @@ export async function handleBuilddAction(
       }
       const q = new URLSearchParams({ workspaceId: wsId });
       if (typeof params.capability === 'string' && params.capability.trim()) q.set('capability', params.capability.trim());
+      if (typeof params.provider === 'string' && params.provider.trim()) q.set('provider', params.provider.trim());
+      if (typeof params.access === 'string' && params.access.trim()) q.set('access', params.access.trim());
       if (typeof params.roleSlug === 'string' && params.roleSlug.trim()) q.set('roleSlug', params.roleSlug.trim());
       const data = await api(`/api/connectors/capabilities?${q.toString()}`);
       return text(JSON.stringify(data, null, 2));
@@ -6056,7 +6071,11 @@ export async function handleBuilddAction(
 
     case 'request_capability': {
       const workerId = resolveWorkerId(params.workerId, ctx);
-      if (typeof params.capability !== 'string' || !params.capability.trim()) throw new Error('capability is required (e.g. observability:query)');
+      const asksModel = params.capability === 'model.inference';
+      const asksBuildd = typeof params.provider === 'string' && params.provider.trim().toLowerCase() === 'buildd';
+      if (!asksModel && !asksBuildd && (typeof params.provider !== 'string' || !params.provider.trim() || typeof params.access !== 'string')) {
+        throw new Error('provider and access are required (e.g. { provider: "axiom", access: "read" })');
+      }
       const { workerId: _w, ...ask } = params as Record<string, unknown>;
       const data = await api('/api/agent-capabilities/requests', {
         method: 'POST',
@@ -6201,6 +6220,28 @@ export async function handleBuilddAction(
       if (params.enabled !== undefined) changes.push(`enabled → ${params.enabled}`);
 
       return text(`Schedule suggestion created for schedule ${scheduleId}.\nProposed changes: ${changes.join(', ')}\nReason: ${params.reason}\n\nThe suggestion is now pending human approval in the dashboard.`);
+    }
+
+    case 'propose_schedule_move': {
+      if (!params.workspace || typeof params.workspace !== 'string') throw new Error('workspace is required');
+      if (!params.reason || typeof params.reason !== 'string') throw new Error('reason is required');
+      let scheduleId = params.scheduleId as string | undefined;
+      let wsId = ctx.workspaceId && UUID_RE.test(ctx.workspaceId) ? ctx.workspaceId : null;
+      if ((!scheduleId || !wsId) && ctx.workerId) {
+        const workerData = await api(`/api/workers/${ctx.workerId}`);
+        const taskContext = workerData?.task?.context || workerData?.context || {};
+        scheduleId = scheduleId ?? taskContext.scheduleId;
+        wsId = wsId ?? workerData?.workspaceId ?? workerData?.task?.workspaceId ?? null;
+      }
+      if (!scheduleId || !wsId) throw new Error('This task was not spawned by a schedule, so it cannot propose moving one.');
+      // The server resolves a name or owner/repo within the schedule's team: a task token's own
+      // workspace list does not show the workspace it wants to move to.
+      const result = await api(`/api/workspaces/${wsId}/schedules/${scheduleId}/move-proposal`, {
+        method: 'POST',
+        body: JSON.stringify({ workspace: params.workspace, reason: params.reason }),
+      });
+      const proposal = result?.proposal;
+      return text(`Move proposed${proposal?.id ? ` (${proposal.id})` : ''}: schedule ${scheduleId} → workspace ${params.workspace}.\nReason: ${params.reason}\n\nNothing has changed. A person with schedule access answers it; until then the schedule keeps running where it is, and an accepted move takes effect from the next run. This run and tasks already filed stay in their workspace.`);
     }
 
     case 'approve_plan': {

@@ -380,17 +380,23 @@ describe('an unterminated terminal string never eats the keyboard', () => {
 describe('s talks to a mission or steers a task', () => {
   test('in the missions pane it targets the selected mission', () => {
     const { effects } = press(fixtureState(), '\x1b[D', ch('s'));
-    expect(effects).toEqual([{ type: 'talk', kind: 'mission', id: 'm-tui-0000-0000', title: 'Runner TUI' }]);
+    expect(effects).toEqual([{ type: 'talk', kind: 'mission', id: 'm-tui-0000-0000', title: 'Runner TUI', agent: 'claude' }]);
   });
 
   test('in the task list it targets the selected task', () => {
     const { effects } = press(on('installer hint'), '\x1b[C', ch('s'));
-    expect(effects).toEqual([{ type: 'talk', kind: 'task', id: 't-hint', title: 'installer hint' }]);
+    expect(effects).toEqual([{ type: 'talk', kind: 'task', id: 't-hint', title: 'installer hint', agent: 'claude' }]);
+  });
+
+  test('S does the same in Codex', () => {
+    const r = press(fixtureState(), '\x1b[D', ch('S'));
+    expect(r.effects).toEqual([{ type: 'talk', kind: 'mission', id: 'm-tui-0000-0000', title: 'Runner TUI', agent: 'codex' }]);
+    expect(r.s.status?.text).toBe('Opening Codex on "Runner TUI"…');
   });
 
   test('in a task\'s detail it targets that task', () => {
     const { effects } = press(on('installer hint'), '\x1b[C', '\r', ch('s'));
-    expect(effects).toEqual([{ type: 'talk', kind: 'task', id: 't-hint', title: 'installer hint' }]);
+    expect(effects).toEqual([{ type: 'talk', kind: 'task', id: 't-hint', title: 'installer hint', agent: 'claude' }]);
   });
 
   test('the loose-task row is not a mission to talk to', () => {

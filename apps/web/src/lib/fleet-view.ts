@@ -9,7 +9,7 @@
  * with `SlotLanes`' own `assignSlots` (components/fleet/slot-lanes-layout.ts),
  * so the slot a row describes here is the slot the lanes chart draws.
  */
-import { INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, questionSessionEnded, activeRunnerHold, executorDisplayName, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
+import { INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, questionSessionEnded, activeRunnerHold, executorDisplayName, isRecordedModelRoute, type RecordedModelRoute, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSlotCounts, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
 import { assignSlots, fitLaneWindowStart } from '@/components/fleet/slot-lanes-layout';
 import { runnerIdentity, runnerNameFromUrl } from './runner-display';
 import { missionTaskHref } from './mission-task-href';
@@ -18,6 +18,7 @@ import { taskDisplayLabel } from '@buildd/core/task-label';
 import { taskShortName } from './task-title';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { runEndReason } from './fleet-view-end-reason';
+import { accountablePrincipal } from './fleet-occupancy';
 
 type DateLike = Date | string | null | undefined;
 
@@ -46,6 +47,8 @@ export interface FleetWorkerRow {
   accountId?: string | null;
   /** The user who claimed the run (`workers.claimedByUserId`); null when unknown. */
   ownerId?: string | null;
+  /** `tasks.createdByUserId`: decides `mine` on runner work (null: service-owned). Absent: the claimer decides. */
+  taskOwnerId?: string | null;
   runner: string;
   localUiUrl?: string | null;
   status: string;
@@ -58,6 +61,8 @@ export interface FleetWorkerRow {
   error?: string | null;
   /** This run's own PR merged. */
   mergedAt?: DateLike;
+  /** The model route the claim recorded for this run (`workers.modelRoute`). */
+  modelRoute?: string | null;
   /** A merged PR of the same task, from this run or a later one. */
   taskMergedPr?: number | null;
   /** Latest phase supported by lifecycle evidence. */
@@ -119,31 +124,53 @@ function barState(status: string): LaneBar['state'] {
   return 'done';
 }
 
+type CapacityBeat = Pick<FleetHeartbeatRow, 'maxConcurrentWorkers' | 'lastHeartbeatAt'> & Partial<Pick<FleetHeartbeatRow, 'localUiUrl' | 'environment' | 'activeWorkerCount'>>;
+
+/** The slots one runner advertises. */
+function advertisedSlots(hb: CapacityBeat): number {
+  // An ephemeral `--once` run is one slot while it runs and none after: it
+  // never takes a second task, and its container is gone once it is done.
+  // Rows written before the server stored 1 for these still say the
+  // account default, so the stored number is not trusted here.
+  if (hb.localUiUrl && isEphemeralRunner({ localUiUrl: hb.localUiUrl, environment: hb.environment })) {
+    return (hb.activeWorkerCount ?? 0) > 0 ? 1 : 0;
+  }
+  return hb.maxConcurrentWorkers ?? 0;
+}
+
+/**
+ * Runner slots now, by state (`FleetSlotCounts` without `busy`): configured
+ * on every runner given (the caller's not-dead rows), online on the ones
+ * whose beat is fresh, schedulable on the online ones not on hold (the claim
+ * route returns nothing to a held runner).
+ */
+export function fleetSlotCounts(
+  heartbeats: readonly CapacityBeat[],
+  opts: { now?: number; onlineThresholdMs?: number } = {},
+): Omit<FleetSlotCounts, 'busy'> {
+  const now = opts.now ?? Date.now();
+  const windowMs = opts.onlineThresholdMs ?? 90_000;
+  let configured = 0, online = 0, schedulable = 0;
+  for (const hb of heartbeats) {
+    const n = advertisedSlots(hb);
+    configured += n;
+    if (now - ms(hb.lastHeartbeatAt) > windowMs) continue;
+    online += n;
+    if (!activeRunnerHold(hb.environment, now)) schedulable += n;
+  }
+  return { configured, online, schedulable, asOf: now, windowMs };
+}
+
 /**
  * THE fleet capacity: `maxConcurrentWorkers` summed over the runners whose
  * heartbeat is fresh. Home's "AGENTS LIVE n/N" and the mission Lanes band's
  * "LIVE n/N slots" both read this, so the two denominators cannot disagree.
  */
 export function fleetCapacity(
-  heartbeats: readonly (Pick<FleetHeartbeatRow, 'maxConcurrentWorkers' | 'lastHeartbeatAt'> & Partial<Pick<FleetHeartbeatRow, 'localUiUrl' | 'environment' | 'activeWorkerCount'>>)[],
+  heartbeats: readonly CapacityBeat[],
   opts: { now?: number; onlineThresholdMs?: number } = {},
 ): number {
-  const now = opts.now ?? Date.now();
-  const onlineMs = opts.onlineThresholdMs ?? 90_000;
-  let n = 0;
-  for (const hb of heartbeats) {
-    if (now - ms(hb.lastHeartbeatAt) > onlineMs) continue;
-    // An ephemeral `--once` run is one slot while it runs and none after: it
-    // never takes a second task, and its container is gone once it is done.
-    // Rows written before the server stored 1 for these still say the
-    // account default, so the stored number is not trusted here.
-    if (hb.localUiUrl && isEphemeralRunner({ localUiUrl: hb.localUiUrl, environment: hb.environment })) {
-      n += (hb.activeWorkerCount ?? 0) > 0 ? 1 : 0;
-      continue;
-    }
-    n += hb.maxConcurrentWorkers ?? 0;
-  }
-  return n;
+  return fleetSlotCounts(heartbeats, opts).online;
 }
 
 export function buildFleetSnapshot(
@@ -202,12 +229,14 @@ export function buildFleetSnapshot(
 
   const runners: FleetRunner[] = [];
   let live = 0;
-  const capacity = fleetCapacity(heartbeats, { now, onlineThresholdMs: onlineMs });
+  const slotCounts = fleetSlotCounts(heartbeats, { now, onlineThresholdMs: onlineMs });
+  const capacity = slotCounts.online;
 
   /** One run onto its slot: the lane bar, and the live worker or the slot's last run. */
-  const place = (slot: FleetSlot, w: FleetWorkerRow, iv: { start: number; end: number | null }) => {
+  const place = (slot: FleetSlot, w: FleetWorkerRow, iv: { start: number; end: number | null }, isSession = false) => {
     const t = w.task ?? null;
-    const mine = opts.viewerId ? (w.ownerId ? w.ownerId === opts.viewerId : null) : undefined;
+    const principal = accountablePrincipal(isSession ? 'interactive' : 'runner', w.ownerId, w.taskOwnerId);
+    const mine = opts.viewerId ? (principal ? principal === opts.viewerId : null) : undefined;
     const { label, rest } = t ? taskShortLabel(t) : { label: 'task', rest: '' };
     // The task's own short label ("reconcile exports spec") names the run;
     // the one-word pick is only a chip beside it. "untitled" names nothing.
@@ -300,7 +329,10 @@ export function buildFleetSnapshot(
     }
     // A person's hold (`buildd hold`): shown as on hold, not idle, while in force.
     const hold = g.hb ? activeRunnerHold(g.hb.environment, now) : null;
-    runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: advertised, online, slots, ...(hold ? { hold } : {}) });
+    const routeCounts = new Map<RecordedModelRoute, number>();
+    for (const w of g.workers) if (isRecordedModelRoute(w.modelRoute)) routeCounts.set(w.modelRoute, (routeCounts.get(w.modelRoute) ?? 0) + 1);
+    const routes = [...routeCounts].map(([route, count]) => ({ route, count })).sort((a, b) => b.count - a.count || a.route.localeCompare(b.route));
+    runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: advertised, online, slots, ...(routes.length ? { routes } : {}), ...(hold ? { hold } : {}) });
   }
 
   runners.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
@@ -315,7 +347,7 @@ export function buildFleetSnapshot(
       .map(w => ({ w, start: [ms(w.startedAt), ms(w.updatedAt)].find(Number.isFinite) ?? now }))
       .sort((a, b) => a.start - b.start || a.w.id.localeCompare(b.w.id));
     const slots: FleetSlot[] = running.map((_, index) => ({ index, worker: null, last: null, lane: { id: `sessions:${index}`, bars: [] } }));
-    running.forEach(({ w, start }, i) => place(slots[i], w, { start, end: null }));
+    running.forEach(({ w, start }, i) => place(slots[i], w, { start, end: null }, true));
     live = liveBefore; // session claims are not runner slots
     sessions = {
       id: 'sessions', name: SESSIONS_LANE_NAME, machine: null, maxSlots: slots.length, online: true, slots,
@@ -333,7 +365,8 @@ export function buildFleetSnapshot(
     if (b.end == null || b.end >= recentCut) earliest = earliest == null ? b.start : Math.min(earliest, b.start);
   }
   const from = fitLaneWindowStart({ earliest, now, maxSpanMs: maxWindow });
-  return { runners, sessions, live, capacity, window: { from, to: now } };
+  const busy = runners.reduce((n, r) => n + (r.online ? r.slots.filter(sl => sl.worker).length : 0), 0);
+  return { runners, sessions, live, capacity, slots: { ...slotCounts, busy }, window: { from, to: now } };
 }
 
 /** One row of a runner's slot table: a slot, or every quiet slot folded into a count. */

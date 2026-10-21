@@ -24,6 +24,8 @@ import {
   parseInstallArgs,
   handleInstallCommand,
   SERVICE_STOP_TIMEOUT_S,
+  generateWindowsTaskXml,
+  windowsTaskXmlPath,
   type CommandResult,
   type CommandRunner,
 } from '../../src/service';
@@ -32,13 +34,13 @@ import { SHUTDOWN_DEADLINE_MS } from '../../src/restart-resume';
 describe('detectServicePlatform', () => {
   test('darwin', () => expect(detectServicePlatform('darwin')).toBe('darwin'));
   test('linux', () => expect(detectServicePlatform('linux')).toBe('linux'));
-  test('win32 is unsupported', () => expect(detectServicePlatform('win32')).toBe('unsupported'));
+  test('win32 is a Scheduled Task', () => expect(detectServicePlatform('win32')).toBe('win32'));
   test('freebsd is unsupported', () => expect(detectServicePlatform('freebsd')).toBe('unsupported'));
 });
 
 describe('resolveServicePaths', () => {
   test('derives builddBin, logs dir and labels from the given homes', () => {
-    const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd' });
+    const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd', platform: 'linux' });
     expect(paths.builddBin).toBe(join('/home/alice', '.local', 'bin', 'buildd'));
     expect(paths.logsDir).toBe(join('/home/alice/.buildd', 'logs'));
     expect(paths.stdoutLog).toBe(join('/home/alice/.buildd', 'logs', 'stdout.log'));
@@ -48,13 +50,13 @@ describe('resolveServicePaths', () => {
   });
 
   test('respects a custom BUILDD_HOME independent of the operator home', () => {
-    const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/mnt/data/buildd-home' });
+    const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/mnt/data/buildd-home', platform: 'linux' });
     expect(paths.logsDir).toBe(join('/mnt/data/buildd-home', 'logs'));
     expect(paths.builddBin).toBe(join('/home/alice', '.local', 'bin', 'buildd'));
   });
 
   test('pathEnv includes bun and local bin ahead of system paths', () => {
-    const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd' });
+    const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd', platform: 'linux' });
     const entries = paths.pathEnv.split(':');
     expect(entries[0]).toBe(join('/home/alice', '.bun', 'bin'));
     expect(entries[1]).toBe(join('/home/alice', '.local', 'bin'));
@@ -63,7 +65,7 @@ describe('resolveServicePaths', () => {
 });
 
 describe('launchdPlistPath / systemdUnitPath', () => {
-  const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd' });
+  const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd', platform: 'linux' });
 
   test('plist lives under ~/Library/LaunchAgents', () => {
     expect(launchdPlistPath(paths)).toBe('/home/alice/Library/LaunchAgents/dev.buildd.runner.plist');
@@ -76,7 +78,7 @@ describe('launchdPlistPath / systemdUnitPath', () => {
 
 describe('generateLaunchdPlist: the stop window (R-37)', () => {
   test('ExitTimeOut leaves the runner time to pause its agents before launchd kills it', () => {
-    const plist = generateLaunchdPlist(resolveServicePaths({ home: '/Users/alice', builddHome: '/Users/alice/.buildd' }));
+    const plist = generateLaunchdPlist(resolveServicePaths({ home: '/Users/alice', builddHome: '/Users/alice/.buildd', platform: 'linux' }));
     expect(plist).toMatch(new RegExp(`<key>ExitTimeOut</key>\\s*<integer>${SERVICE_STOP_TIMEOUT_S}</integer>`));
   });
 
@@ -86,7 +88,7 @@ describe('generateLaunchdPlist: the stop window (R-37)', () => {
 });
 
 describe('generateLaunchdPlist', () => {
-  const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd' });
+  const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd', platform: 'linux' });
   const plist = generateLaunchdPlist(paths);
 
   test('is well-formed XML with a plist root', () => {
@@ -118,7 +120,7 @@ describe('generateLaunchdPlist', () => {
   });
 
   test('escapes XML-significant characters in paths', () => {
-    const weird = resolveServicePaths({ home: '/home/a&b<c>', builddHome: '/home/a&b<c>/.buildd' });
+    const weird = resolveServicePaths({ home: '/home/a&b<c>', builddHome: '/home/a&b<c>/.buildd', platform: 'linux' });
     const out = generateLaunchdPlist(weird);
     expect(out).not.toContain('a&b<c>');
     expect(out).toContain('a&amp;b&lt;c&gt;');
@@ -130,7 +132,7 @@ describe('generateLaunchdPlist', () => {
 });
 
 describe('generateSystemdUnit', () => {
-  const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd' });
+  const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd', platform: 'linux' });
   const unit = generateSystemdUnit(paths);
 
   test('R-37: a stop signals the launcher only and waits longer than the runner takes to pause its agents', () => {
@@ -169,7 +171,7 @@ describe('generateSystemdUnit', () => {
 
 describe('serviceLogsHint', () => {
   test('names both log files and a tail command', () => {
-    const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd' });
+    const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd', platform: 'linux' });
     const hint = serviceLogsHint(paths);
     expect(hint).toContain(paths.stdoutLog);
     expect(hint).toContain(paths.stderrLog);
@@ -202,7 +204,7 @@ describe('installService / uninstallService / serviceStatus (darwin)', () => {
   });
 
   test('install writes the plist and calls launchctl load', () => {
-    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
     const { run, calls } = fakeRunner(0);
 
     const result = installService(paths, 'darwin', run);
@@ -216,7 +218,7 @@ describe('installService / uninstallService / serviceStatus (darwin)', () => {
   });
 
   test('install reports failure when launchctl load fails', () => {
-    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
     const { run } = fakeRunner(1);
 
     const result = installService(paths, 'darwin', run);
@@ -225,7 +227,7 @@ describe('installService / uninstallService / serviceStatus (darwin)', () => {
   });
 
   test('status reports not installed when no plist exists', () => {
-    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
     const { run } = fakeRunner(0);
 
     const result = serviceStatus(paths, 'darwin', run);
@@ -235,7 +237,7 @@ describe('installService / uninstallService / serviceStatus (darwin)', () => {
   });
 
   test('status reports running once installed and launchctl list succeeds', () => {
-    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
     installService(paths, 'darwin', fakeRunner(0).run);
 
     const result = serviceStatus(paths, 'darwin', fakeRunner(0).run);
@@ -244,7 +246,7 @@ describe('installService / uninstallService / serviceStatus (darwin)', () => {
   });
 
   test('uninstall removes the plist and calls launchctl unload', () => {
-    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
     installService(paths, 'darwin', fakeRunner(0).run);
     const { run, calls } = fakeRunner(0);
 
@@ -256,7 +258,7 @@ describe('installService / uninstallService / serviceStatus (darwin)', () => {
   });
 
   test('uninstall is a no-op (not an error) when nothing was installed', () => {
-    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
     const { run } = fakeRunner(0);
 
     const result = uninstallService(paths, 'darwin', run);
@@ -278,7 +280,7 @@ describe('installService / uninstallService / serviceStatus (linux)', () => {
   });
 
   test('install writes the unit and calls systemctl --user enable --now', () => {
-    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
     const { run, calls } = fakeRunner(0);
 
     const result = installService(paths, 'linux', run);
@@ -292,7 +294,7 @@ describe('installService / uninstallService / serviceStatus (linux)', () => {
   });
 
   test('install reports failure when systemctl enable fails', () => {
-    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
     const { run } = fakeRunner(1);
 
     const result = installService(paths, 'linux', run);
@@ -301,7 +303,7 @@ describe('installService / uninstallService / serviceStatus (linux)', () => {
   });
 
   test('uninstall removes the unit and calls systemctl --user disable --now', () => {
-    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
     installService(paths, 'linux', fakeRunner(0).run);
     const { run, calls } = fakeRunner(0);
 
@@ -313,7 +315,7 @@ describe('installService / uninstallService / serviceStatus (linux)', () => {
   });
 
   test('status reports not installed when no unit file exists', () => {
-    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
     const { run } = fakeRunner(0);
 
     const result = serviceStatus(paths, 'linux', run);
@@ -327,7 +329,7 @@ describe('unsupported platform', () => {
   test('install/uninstall/status all refuse cleanly', () => {
     const home = mkdtempSync(join(tmpdir(), 'buildd-service-test-unsupported-'));
     try {
-      const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+      const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
       const { run } = fakeRunner(0);
 
       expect(installService(paths, 'unsupported', run).ok).toBe(false);
@@ -348,7 +350,7 @@ describe('installService: how to watch the runner', () => {
 
   for (const platform of ['darwin', 'linux'] as const) {
     test(`${platform}: ends with buildd top, then buildd web`, () => {
-      const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+      const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
       const result = installService(paths, platform, fakeRunner(0).run);
       expect(result.ok).toBe(true);
       const lines = result.message.trimEnd().split('\n');
@@ -361,13 +363,13 @@ describe('installService: how to watch the runner', () => {
   }
 
   test('a failed install does not tell anyone to watch it', () => {
-    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
     expect(installService(paths, 'darwin', fakeRunner(1).run).message).not.toContain('buildd top');
   });
 });
 
 describe('--debug: the service serves the web UI', () => {
-  const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd' });
+  const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd', platform: 'linux' });
 
   test('off by default: the service runs the launcher with no arguments', () => {
     expect(generateLaunchdPlist(paths)).not.toContain('--debug');
@@ -385,7 +387,7 @@ describe('--debug: the service serves the web UI', () => {
   test('installService writes what it was asked for', () => {
     const home = mkdtempSync(join(tmpdir(), 'buildd-service-test-debug-'));
     try {
-      const p = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+      const p = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
       installService(p, 'linux', fakeRunner(0).run, { debug: true });
       expect(readFileSync(systemdUnitPath(p), 'utf-8')).toBe(generateSystemdUnit(p, { debug: true }));
     } finally {
@@ -414,7 +416,7 @@ describe('linux reinstall restarts a running unit', () => {
   afterEach(() => { rmSync(home, { recursive: true, force: true }); });
 
   test('already active: daemon-reload, then restart, so the new ExecStart takes effect', () => {
-    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
     const { run, calls } = scriptedRunner({ 'systemctl --user is-active': 0 });
     expect(installService(paths, 'linux', run, { debug: true }).ok).toBe(true);
     const reload = calls.indexOf('systemctl --user daemon-reload');
@@ -424,7 +426,7 @@ describe('linux reinstall restarts a running unit', () => {
   });
 
   test('not active yet: enable --now starts it, no extra restart', () => {
-    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
     const { run, calls } = scriptedRunner({ 'systemctl --user is-active': 3 });
     expect(installService(paths, 'linux', run).ok).toBe(true);
     expect(calls).toContain(`systemctl --user enable --now ${paths.unitName}.service`);
@@ -432,7 +434,7 @@ describe('linux reinstall restarts a running unit', () => {
   });
 
   test('a failed restart is reported', () => {
-    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
     const { run } = scriptedRunner({ 'systemctl --user is-active': 0, 'systemctl --user restart': 1 });
     const result = installService(paths, 'linux', run);
     expect(result.ok).toBe(false);
@@ -447,7 +449,7 @@ describe('--debug is kept across reinstalls', () => {
 
   for (const platform of ['darwin', 'linux'] as const) {
     test(`${platform}: reads whether the installed service runs with --debug`, () => {
-      const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+      const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
       expect(installedServiceDebug(paths, platform)).toBe(false);
       installService(paths, platform, fakeRunner(0).run, { debug: true });
       expect(installedServiceDebug(paths, platform)).toBe(true);
@@ -456,7 +458,7 @@ describe('--debug is kept across reinstalls', () => {
     });
 
     test.skipIf(process.getuid?.() === 0)(`${platform}: returns false if the service file is unreadable`, () => {
-      const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+      const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'linux' });
       installService(paths, platform, fakeRunner(0).run, { debug: true });
       const file = platform === 'darwin' ? launchdPlistPath(paths) : systemdUnitPath(paths);
       // Make file unreadable by changing its mode to write-only (fails for root, hence skipIf above)
@@ -494,7 +496,7 @@ describe('--debug is kept across reinstalls', () => {
     const testHome = mkdtempSync(join(tmpdir(), 'buildd-service-test-main-wiring-'));
     try {
       for (const platform of ['darwin', 'linux'] as const) {
-        const paths = resolveServicePaths({ home: testHome, builddHome: join(testHome, '.buildd') });
+        const paths = resolveServicePaths({ home: testHome, builddHome: join(testHome, '.buildd'), platform: 'linux' });
         // First install with --debug
         const firstResult = installService(paths, platform, fakeRunner(0).run, { debug: true });
         expect(firstResult.ok).toBe(true);
@@ -509,5 +511,177 @@ describe('--debug is kept across reinstalls', () => {
     } finally {
       rmSync(testHome, { recursive: true, force: true });
     }
+  });
+});
+
+// ── Windows: a per-user Scheduled Task ───────────────────────────────────────
+
+/** A schtasks fake: /Query answers per `state`, everything else exits 0 (or 1 for `failOn`). */
+function schtasksRunner(state: 'absent' | 'ready' | 'running', failOn?: string) {
+  const calls: Array<{ cmd: string; args: string[] }> = [];
+  const run: CommandRunner = (cmd, args) => {
+    calls.push({ cmd, args });
+    if (failOn && args.includes(failOn)) return { exitCode: 1, stdout: '', stderr: `ERROR: ${failOn} failed` };
+    if (args.includes('/Query')) {
+      if (state === 'absent') return { exitCode: 1, stdout: '', stderr: 'ERROR: The system cannot find the file specified.' };
+      return { exitCode: 0, stdout: `TaskName: \\buildd runner\nStatus: ${state === 'running' ? 'Running' : 'Ready'}\n`, stderr: '' };
+    }
+    return { exitCode: 0, stdout: 'SUCCESS', stderr: '' };
+  };
+  return { run, calls };
+}
+
+const WIN_USER = 'PC\\alice';
+const winPaths = (home: string, builddHome = `${home}\\.buildd`, windowsUser = WIN_USER) =>
+  resolveServicePaths({ home, builddHome, platform: 'win32', windowsUser });
+
+describe('resolveServicePaths (win32)', () => {
+  test('runs the cmd launcher install.ps1 writes, as the named user, under the task name install.ps1 used', () => {
+    const paths = winPaths('C:\\Users\\alice');
+    expect(paths.builddBin.endsWith('buildd.cmd')).toBe(true);
+    expect(paths.builddBin).toContain('.local');
+    expect(paths.taskName).toBe('buildd runner');
+    expect(paths.windowsUser).toBe(WIN_USER);
+  });
+});
+
+describe('generateWindowsTaskXml', () => {
+  const paths = winPaths('C:\\Users\\alice');
+  const xml = generateWindowsTaskXml(paths);
+  const argsOf = (x: string) => x.match(/<Arguments>([^<]*)<\/Arguments>/)?.[1] ?? '';
+
+  test('starts at logon of this user only, as this user, never elevated', () => {
+    expect(xml).toMatch(/<LogonTrigger>[\s\S]*<UserId>PC\\alice<\/UserId>[\s\S]*<\/LogonTrigger>/);
+    expect(xml).toMatch(/<Principal id="Author">[\s\S]*<UserId>PC\\alice<\/UserId>[\s\S]*<LogonType>InteractiveToken<\/LogonType>[\s\S]*<RunLevel>LeastPrivilege<\/RunLevel>/);
+    expect(xml).not.toContain('HighestAvailable');
+  });
+
+  test('restarts on failure, never times out, keeps running on battery, one instance', () => {
+    expect(xml).toContain('<RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>');
+    expect(xml).toContain('<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>');
+    expect(xml).toContain('<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>');
+    expect(xml).toContain('<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>');
+    expect(xml).toContain('<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>');
+  });
+
+  test('runs the launcher without a console window and appends to the service logs', () => {
+    expect(xml).toContain('<Command>conhost.exe</Command>');
+    const args = argsOf(xml);
+    expect(args.startsWith('--headless cmd.exe /d /c ')).toBe(true);
+    expect(args).toContain(`&quot;${paths.builddBin}&quot;`);
+    expect(args).toContain(`&gt;&gt;&quot;${paths.stdoutLog}&quot;`);
+    expect(args).toContain(`2&gt;&gt;&quot;${paths.stderrLog}&quot;`);
+    expect(args).not.toContain('--debug');
+  });
+
+  test('--debug reaches the launcher', () => {
+    expect(argsOf(generateWindowsTaskXml(paths, { debug: true }))).toContain(`&quot;${paths.builddBin}&quot; --debug`);
+  });
+
+  test('escapes XML-significant characters in the user and paths', () => {
+    const out = generateWindowsTaskXml(winPaths('C:\\Users\\a&b', 'C:\\Users\\a&b\\.buildd', 'PC\\a<b>'));
+    expect(out).toContain('a&amp;b');
+    expect(out).toContain('PC\\a&lt;b&gt;');
+    expect(out).not.toMatch(/a&b/);
+  });
+
+  test('is a pure function', () => {
+    expect(generateWindowsTaskXml(paths)).toBe(xml);
+  });
+});
+
+describe('installService / uninstallService / serviceStatus (win32)', () => {
+  let home: string;
+  let paths: ReturnType<typeof resolveServicePaths>;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'buildd-service-test-win32-'));
+    paths = winPaths(home, join(home, '.buildd'));
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test('install writes the task XML as UTF-16 (what schtasks reads), registers it with /F and starts it', () => {
+    const { run, calls } = schtasksRunner('absent');
+    const result = installService(paths, 'win32', run);
+    expect(result.ok).toBe(true);
+    const xmlPath = windowsTaskXmlPath(paths);
+    const bytes = readFileSync(xmlPath);
+    expect([bytes[0], bytes[1]]).toEqual([0xff, 0xfe]);
+    expect(bytes.subarray(2).toString('utf16le')).toBe(generateWindowsTaskXml(paths));
+    const create = calls.find((c) => c.args.includes('/Create'));
+    expect(create?.cmd).toBe('schtasks.exe');
+    expect(create?.args).toEqual(['/Create', '/TN', 'buildd runner', '/XML', xmlPath, '/F']);
+    expect(calls.some((c) => c.args.includes('/Run'))).toBe(true);
+    expect(calls.some((c) => c.args.includes('/End'))).toBe(false);
+    expect(existsSync(paths.logsDir)).toBe(true);
+  });
+
+  test('reinstall ends the running task first, so the new definition takes effect', () => {
+    const { run, calls } = schtasksRunner('running');
+    expect(installService(paths, 'win32', run).ok).toBe(true);
+    const order = calls.map((c) => c.args[0]);
+    expect(order.indexOf('/End')).toBeGreaterThan(-1);
+    expect(order.indexOf('/End')).toBeLessThan(order.indexOf('/Create'));
+    expect(order.indexOf('/Create')).toBeLessThan(order.indexOf('/Run'));
+  });
+
+  test('install reports schtasks failure', () => {
+    const result = installService(paths, 'win32', schtasksRunner('absent', '/Create').run);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('/Create failed');
+  });
+
+  test('reinstall without args keeps --debug; --no-debug turns it off', () => {
+    installService(paths, 'win32', schtasksRunner('absent').run, { debug: true });
+    expect(installedServiceDebug(paths, 'win32')).toBe(true);
+    handleInstallCommand(paths, 'win32', schtasksRunner('running').run, []);
+    expect(installedServiceDebug(paths, 'win32')).toBe(true);
+    handleInstallCommand(paths, 'win32', schtasksRunner('running').run, ['--no-debug']);
+    expect(installedServiceDebug(paths, 'win32')).toBe(false);
+  });
+
+  test('status: not installed', () => {
+    const result = serviceStatus(paths, 'win32', schtasksRunner('absent').run);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('buildd service install');
+  });
+
+  test('status: installed and running', () => {
+    const result = serviceStatus(paths, 'win32', schtasksRunner('running').run);
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain('Running');
+  });
+
+  test('status: installed but not running is not ok', () => {
+    const result = serviceStatus(paths, 'win32', schtasksRunner('ready').run);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('Ready');
+  });
+
+  test('uninstall ends and deletes the task and removes the XML', () => {
+    installService(paths, 'win32', schtasksRunner('absent').run);
+    const { run, calls } = schtasksRunner('running');
+    expect(uninstallService(paths, 'win32', run).ok).toBe(true);
+    expect(calls.some((c) => c.args.includes('/End'))).toBe(true);
+    expect(calls.find((c) => c.args.includes('/Delete'))?.args).toEqual(['/Delete', '/TN', 'buildd runner', '/F']);
+    expect(existsSync(windowsTaskXmlPath(paths))).toBe(false);
+  });
+
+  test('uninstall is a no-op when nothing was installed', () => {
+    const { run, calls } = schtasksRunner('absent');
+    expect(uninstallService(paths, 'win32', run).ok).toBe(true);
+    expect(calls.some((c) => c.args.includes('/Delete'))).toBe(false);
+  });
+});
+
+describe('serviceLogsHint (win32)', () => {
+  test('names a PowerShell tail, not tail -f', () => {
+    const hint = serviceLogsHint(winPaths('C:\\Users\\alice'));
+    expect(hint).toContain('Get-Content');
+    expect(hint).toContain('-Wait');
+    expect(hint).not.toContain('tail -f');
   });
 });

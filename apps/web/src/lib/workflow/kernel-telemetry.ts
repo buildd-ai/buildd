@@ -168,7 +168,7 @@ export interface FloorRepairs {
   parkedDead: number;
 }
 
-export function floorSpanAttributes(p: { host: KernelHost; depth: OutboxDepth | null; repairs: FloorRepairs; errors: number }): SpanAttributes {
+export function floorSpanAttributes(p: { host: KernelHost; depth: OutboxDepth | null; repairs: FloorRepairs; errors: number; deadEffects?: { closed: number; live: number; oldestAgeS: number } | null }): SpanAttributes {
   const r = p.repairs;
   return {
     'kernel.host': p.host,
@@ -188,6 +188,14 @@ export function floorSpanAttributes(p: { host: KernelHost; depth: OutboxDepth | 
     'kernel.floor.repairs.parked_dead': r.parkedDead,
     'kernel.floor.repairs.total': r.factsImported + r.effectsEnqueued + r.trunkRecovered + r.treadmillRestarted + r.parkedAnswered,
     'kernel.floor.errors': p.errors,
+    // Dead effects owed to a live delivery: the operator signal (Health kernel view lists them). Absent when the sweep failed.
+    ...(p.deadEffects
+      ? {
+        'kernel.floor.dead_effects.closed': p.deadEffects.closed,
+        'kernel.floor.dead_effects.live': p.deadEffects.live,
+        'kernel.floor.dead_effects.oldest_age_s': ms(p.deadEffects.oldestAgeS),
+      }
+      : {}),
   };
 }
 
@@ -202,15 +210,33 @@ export function commandOutcomeOf(status: number, body: { code?: unknown; replaye
   return 'refused';
 }
 
-export function commandSpanAttributes(p: { op: string | null; status: number; outcome: CommandOutcome; code?: string | null; latencyMs: number }): SpanAttributes {
+export function commandSpanAttributes(p: { op: string | null; status: number; outcome: CommandOutcome; code?: string | null; latencyMs: number; caller?: CommandCaller; authFailure?: CommandAuthFailure }): SpanAttributes {
   return {
     'kernel.op': p.op ?? 'unknown',
     'kernel.outcome': p.outcome,
     'kernel.status': p.status,
+    ...(p.caller ? { 'kernel.caller': p.caller } : {}),
+    ...(p.authFailure ? { 'kernel.auth_failure': p.authFailure } : {}),
     ...(p.code ? { 'kernel.error_code': p.code } : {}),
     'kernel.latency_ms': ms(p.latencyMs),
     'kernel.host': 'control-plane',
   };
+}
+
+/** Untrusted caller hints, classified only for diagnostics; never an authentication input. */
+export type CommandCaller = 'buildd-web' | 'curl' | 'python' | 'node' | 'browser' | 'other' | 'unknown';
+export type CommandAuthFailure = 'missing' | 'unknown_key' | 'skew' | 'bad_signature';
+
+/** Never export arbitrary user-agent text, routes, identities, or credential headers to telemetry. */
+export function commandCallerOf(headers: Pick<Headers, 'get'>): CommandCaller {
+  const agent = headers.get('user-agent') ?? '';
+  if (!agent) return 'unknown';
+  if (/^buildd-kernel-client\/1$/.test(agent)) return 'buildd-web';
+  if (/^curl\//i.test(agent)) return 'curl';
+  if (/^(python-urllib|python-requests|python-httpx)\//i.test(agent)) return 'python';
+  if (/^(node|undici)(?:\/|$)/i.test(agent)) return 'node';
+  if (/^Mozilla\//.test(agent)) return 'browser';
+  return 'other';
 }
 
 // ── The caller ─────────────────────────────────────────────────────────────

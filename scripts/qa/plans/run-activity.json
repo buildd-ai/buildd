@@ -123,5 +123,23 @@
         ]
       }
     ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=run-activity&scenario=evidence-states",
+    "states": [
+      {
+        "key": "layout",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:run-activity-evidence-states"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:run-activity-fixture"
+          }
+        ]
+      }
+    ]
   }
 ]

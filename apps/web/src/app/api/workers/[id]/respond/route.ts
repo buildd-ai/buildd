@@ -11,7 +11,7 @@ import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { releaseAndNotify } from '@/lib/path-claim-release';
-import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
+import { wakeTask } from '@/lib/dispatch-authority';
 import { dispatchResumedTask } from '@/lib/task-dispatch-delivery';
 import {
   appendInstructionHistory,
@@ -25,14 +25,15 @@ import {
   evaluateInteractiveAnswerPath,
   describeAnswerPath,
   buildAnswerDeliveryRecord,
-  buildContinuationTaskValues,
   explainNotWaiting,
+  isReopenableTaskStatus,
   isAnswerableWaitingFor,
   isAnswerQueued,
   recordedAnswerOf,
   type AnswerPathDecision,
 } from '@/lib/answer-resume';
 import { preflightBackendCredential } from '@/lib/answer-credential-preflight';
+import { reopenTaskForAnsweredAttempt, type ReopenForAnswerResult } from '@/lib/answer-attempt';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { clearTeamCache } from '@/lib/team-cache';
 
@@ -51,9 +52,10 @@ import { clearTeamCache } from '@/lib/team-cache';
 //              answer is queued as an `answer` worker message that the
 //              session's receive_messages returns, and the worker goes back to
 //              running. Same task, same worker, no continuation.
-//  - COLD    — the pre-existing behaviour: supersede the worker and insert a
-//              `Continue:` task. Correct when the session is genuinely gone,
-//              and never silent — the reason is recorded and shown.
+//  - COLD    — the session is genuinely gone: supersede the worker and reopen
+//              its OWN task for a new attempt carrying the answer (never a new
+//              task: same task id, mission slot and dependency node). Never
+//              silent — the reason is recorded and shown.
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const seen: { teamId?: string | null } = {};
   const res = await respond(req, ctx, seen);
@@ -218,7 +220,7 @@ async function respond(
   //
   // An EXPIRED-and-unrefreshable credential is different and falls through to
   // gate G5 below: it is recoverable without human action, so the answer is
-  // recorded durably as a cold continuation instead of being bounced.
+  // recorded durably on a new attempt of the task instead of being bounced.
   if (preflight.revoked) {
     return NextResponse.json({
       error: `Backend credential (${backend}) is revoked. Reconnect it under Settings, Runners before continuing.`
@@ -514,9 +516,12 @@ async function respondToInteractiveSession(args: {
 }
 
 /**
- * Cold path: the session cannot be resumed, so the answer becomes a new task.
- * This is the behaviour that shipped before resume existed, unchanged except
- * that it now says WHY it ran.
+ * Cold path: the session cannot be resumed, so the answer goes to a new attempt
+ * of the SAME task. The worker is superseded and its task reopened `pending`
+ * with the answer in `context.answeredQuestions` (lib/answer-attempt.ts); the
+ * next claim mints a new worker row under the same task id. No task is
+ * inserted, so a mission keeps its task count and the task keeps its place in
+ * the dependency graph: a dependent stays blocked until an attempt completes it.
  */
 async function respondByContinuation(args: {
   workerId: string;
@@ -530,26 +535,29 @@ async function respondByContinuation(args: {
   credentialDetail?: string;
 }) {
   const { workerId, worker, task, message, question, milestones, decision, deliveryRecord } = args;
+  const taskId: string | null = task?.id ?? worker.taskId ?? null;
+
+  // A task that finished or that a person cancelled is never reopened by an
+  // answer. Refused before anything is written, so the question stays parked.
+  if (!taskId) return notReopenedReply({ reopened: false, reason: 'task_missing' }, workerId, null);
+  if (task?.status && !isReopenableTaskStatus(task.status)) {
+    return notReopenedReply({ reopened: false, reason: 'task_closed' }, workerId, taskId);
+  }
 
   // Claim the answer FIRST, atomically. `worker.waitingFor` was read outside the
   // write, so two humans answering the same question (or one double-submitting)
-  // both passed the guard above: both inserted a "Continue:" retry task and both
-  // wrote the worker row. Gate the state flip on the question still being open —
-  // only the winner may create a task. Claiming before inserting also means a
-  // loser leaves nothing behind, instead of an orphan retry task.
+  // both passed the guard above. Gating the state flip on the question still
+  // being open means only the winner reopens the task, and a loser writes
+  // nothing.
   //
-  // Status is 'superseded', not 'completed': this worker did not finish its
-  // task, it was replaced by the continuation task inserted below. Recording it
-  // as 'completed' would count an answered question as a clean success in
-  // get_failure_analytics / success-rate-by-role — neither true nor the
-  // opposite (a genuine failure). 'superseded' is excluded from both buckets
-  // (see IN_FLIGHT_WORKER_STATUSES in lib/failure-analytics.ts) and is included
-  // in TERMINAL_WORKER_STATUSES (workers/[id]/route.ts) so a later PATCH from
-  // the runner for this same worker is rejected instead of resurrecting it.
-  //
-  // This is correct for THIS path only. On the resume path the same worker row
-  // goes on to reach a real terminal state, so superseding it there would hide
-  // a genuine success or failure behind an exclusion.
+  // Status is 'superseded', not 'completed': this attempt did not finish its
+  // task, a new attempt of the same task replaces it. 'completed' would count an
+  // answered question as a clean success in get_failure_analytics /
+  // success-rate-by-role, 'failed' as a failure. 'superseded' is excluded from
+  // both buckets (IN_FLIGHT_WORKER_STATUSES in lib/failure-analytics.ts) and is
+  // in TERMINAL_WORKER_STATUSES (workers/[id]/route.ts), so a later PATCH from
+  // the runner for this same worker is rejected instead of resurrecting it. The
+  // new attempt is its own worker row and is counted at its own real end.
   //
   // Known residual race, deliberately not closed here: this write and an
   // in-flight runner PATCH for the same worker use independent, uncoordinated
@@ -576,57 +584,44 @@ async function respondByContinuation(args: {
 
   if (!claimed) return alreadyAnsweredReply(workerId);
 
-  // Create the new retry task. The field-by-field inheritance rules live with
-  // buildContinuationTaskValues so this path and the unacknowledged-resume
-  // sweep cannot drift into building different rows for the same event.
-  let newTask;
+  // No transactions on neon-http: if the task cannot be reopened, put the
+  // question back exactly as it was, so the answer can simply be given again
+  // instead of leaving a superseded worker whose answer reached no attempt.
+  const restoreQuestion = () => db
+    .update(workers)
+    .set({
+      status: worker.status,
+      waitingFor: worker.waitingFor,
+      completedAt: worker.completedAt ?? null,
+      updatedAt: new Date(),
+    })
+    .where(eq(workers.id, workerId));
+
+  let reopened: ReopenForAnswerResult;
   try {
-    [newTask] = await db
-      .insert(tasks)
-      .values(
-        buildContinuationTaskValues({
-          task,
-          workspaceId: worker.workspaceId,
-          workerId: worker.id,
-          branch: worker.branch,
-          milestones,
-          question,
-          answer: message,
-          delivery: deliveryRecord,
-        }),
-      )
-      .returning();
+    reopened = await reopenTaskForAnsweredAttempt({
+      taskId,
+      worker: { id: worker.id, branch: worker.branch ?? null, lastCommitSha: worker.lastCommitSha ?? null, completedAt: claimed.completedAt ?? null },
+      milestones,
+      question,
+      answer: message,
+      delivery: deliveryRecord,
+      source: 'respond',
+    });
   } catch (err) {
-    // No transactions on neon-http: compensate by hand so a failed insert does
-    // not leave the worker completed with the question gone and no retry task.
-    console.error(`[Worker ${workerId}] Retry task insert failed, restoring question:`, err);
-    await db
-      .update(workers)
-      .set({
-        status: worker.status,
-        waitingFor: worker.waitingFor,
-        completedAt: worker.completedAt ?? null,
-        updatedAt: new Date(),
-      })
-      .where(eq(workers.id, workerId));
-    return NextResponse.json(
-      { error: 'Failed to record response' },
-      { status: 500 },
-    );
+    console.error(`[Worker ${workerId}] Reopening the task for a new attempt failed, restoring question:`, err);
+    await restoreQuestion();
+    return NextResponse.json({ error: 'Failed to record response' }, { status: 500 });
+  }
+  if (!reopened.reopened) {
+    await restoreQuestion();
+    return notReopenedReply(reopened, workerId, taskId);
   }
 
-  if (task?.id) {
-    await recordAnswerDelivery(task.id, task.context, deliveryRecord);
-
-    // The worker on the OLD task was just superseded outside
-    // PATCH /api/workers/[id], and the old task's own status is never flipped
-    // to a terminal one here (recordAnswerDelivery only touches context) — it
-    // stays whatever it was. Any path claims it held must still be released
-    // now: the work continues under `newTask`'s id, not this one, so a claim
-    // left here would strand every other task overlapping those paths
-    // indefinitely.
-    await releaseAndNotify(task.id, 'abandoned');
-  }
+  // The superseded attempt's path claims go, as on every requeue: the new
+  // attempt declares its own. Left in place they would strand every other task
+  // overlapping those paths until this task finishes.
+  await releaseAndNotify(taskId, 'abandoned');
 
   // Every other open view of this worker — a phone left on the task page, the
   // home and mission cards — is still showing the question, and nothing else
@@ -635,66 +630,57 @@ async function respondByContinuation(args: {
   // `worker:progress` is exactly what those views refresh on immediately.
   const supersededEvent = {
     workerId,
-    taskId: task?.id ?? null,
+    taskId,
     status: 'superseded',
     updatedAt: claimed.updatedAt ?? new Date().toISOString(),
   };
   await Promise.all([
     triggerEvent(channels.worker(workerId), events.WORKER_PROGRESS, supersededEvent),
-    task?.id ? triggerEvent(channels.task(task.id), events.WORKER_PROGRESS, supersededEvent) : null,
+    triggerEvent(channels.task(taskId), events.WORKER_PROGRESS, supersededEvent),
   ]).catch(() => { /* a missed push only leaves a stale card, which /respond now explains */ });
 
-  // Best-effort back-reference from the answered worker to its continuation, so
-  // a later reader of THIS worker's row (a task-detail page opened from a stale
-  // link, a post-supersession error report — see workers/[id]/route.ts) can
-  // point at where the work actually continued without reconstructing it from
-  // tasks.context.previousAttempt.workerId. Cold path only: on the resume path
-  // there is no second task, and writing this worker's OWN task id here would
-  // assert a supersession that did not happen. The answer already succeeded by
-  // this point, so a failure here only means the link is missing.
-  try {
-    await db
-      .update(workers)
-      .set({ continuationTaskId: newTask.id })
-      .where(eq(workers.id, workerId));
-  } catch (err) {
-    console.error(`[Worker ${workerId}] Failed to record continuation task link:`, err);
-  }
+  // Wake runners for the reopened task, as every requeue does. Polling runners
+  // would find it eventually; a webhook-only workspace never would. Held and
+  // local-executor missions are not filtered here: the claim route's gate
+  // refuses them. wakeTask never throws.
+  await wakeTask(taskId, 'task.requeued');
 
-  // Wake runners for the continuation, the way every new task is woken.
-  // Polling runners would find it eventually; a webhook-only workspace never
-  // would. Held and local-executor missions are not filtered here: the claim
-  // route's gate refuses them. Delivery reads the continuation's inherited
-  // runnerPreference off the row, so a webhook restricted to other runners
-  // does not take it. wakeTask never throws; the dashboard event is
-  // best-effort, since the answer is already recorded.
-  await wakeTask(newTask.id, 'task.created');
-  try {
-    await announceTaskCreated(newTask, worker.workspace ?? { id: worker.workspaceId });
-  } catch (err) {
-    console.error(`[Worker ${workerId}] Continuation task announce failed:`, err);
-  }
-
+  // An unhealthy credential still reopens the task (the answer is durable), but
+  // that is not progress: the new attempt cannot start until it is reconnected,
+  // and both the note and the reply say so.
   await postAnswerNote({
-    task,
+    task: task ?? { id: taskId, missionId: null },
     workerId,
     type: args.credentialDetail ? 'warning' : 'update',
     title: args.credentialDetail
       ? 'Answer recorded, but the agent credential needs attention'
-      : 'Answer started a fresh continuation',
+      : 'Answer handed to a new attempt of this task',
     body: args.credentialDetail
       ? `${describeAnswerPath(decision)} Specifically, ${args.credentialDetail}. `
-        + 'The continuation will not be able to run until it is reconnected.'
+        + 'The new attempt cannot start until the credential is reconnected.'
       : describeAnswerPath(decision),
   });
 
   return NextResponse.json({
     path: 'cold_continuation',
     reasonCode: decision.reasonCode,
-    taskId: newTask.id,
+    // The same task: the new attempt runs under it. Callers stay on this task.
+    taskId,
     workerId,
+    newAttempt: true,
+    ...(args.credentialDetail ? { blockedOn: 'credential' } : {}),
     message: describeAnswerPath(decision),
   });
+}
+
+/** Why an answer that would go cold could not reopen its task. Nothing stays written. */
+function notReopenedReply(r: Extract<ReopenForAnswerResult, { reopened: false }>, workerId: string, taskId: string | null) {
+  const error = r.reason === 'task_closed'
+    ? 'This task has already finished or was cancelled, so the answer cannot start a new attempt of it.'
+    : r.reason === 'task_missing'
+      ? 'This question has no task to continue.'
+      : 'The task could not be reopened for a new attempt right now (it changed while you answered). Refresh and try again.';
+  return NextResponse.json({ error, reasonCode: r.reason, workerId, taskId }, { status: 409 });
 }
 
 /**
@@ -715,17 +701,21 @@ async function alreadyAnsweredReply(workerId: string) {
 }
 
 /** What an answered question was answered with. Best effort: a failed read only drops the text. */
-async function readRecordedAnswer(worker: { status: string | null; instructionHistory?: unknown; continuationTaskId?: string | null }): Promise<string | null> {
+async function readRecordedAnswer(worker: { id?: string; taskId?: string | null; status: string | null; instructionHistory?: unknown; continuationTaskId?: string | null }): Promise<string | null> {
   try {
     let continuationContext: unknown = null;
-    if (worker.status === 'superseded' && worker.continuationTaskId) {
-      const next = await db.query.tasks.findFirst({
-        where: sqlWhere(eq(tasks.id, worker.continuationTaskId)),
-        columns: { context: true },
-      });
-      continuationContext = next?.context ?? null;
+    let taskContext: unknown = null;
+    if (worker.status === 'superseded') {
+      // A legacy record's answer is its continuation task's brief; a new
+      // attempt's is on the worker's own task.
+      const from = worker.continuationTaskId ?? worker.taskId ?? null;
+      const row = from
+        ? await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, from)), columns: { context: true } })
+        : null;
+      if (worker.continuationTaskId) continuationContext = row?.context ?? null;
+      else taskContext = row?.context ?? null;
     }
-    return recordedAnswerOf({ workerStatus: worker.status, instructionHistory: worker.instructionHistory, continuationContext });
+    return recordedAnswerOf({ workerStatus: worker.status, instructionHistory: worker.instructionHistory, continuationContext, taskContext, workerId: worker.id ?? null });
   } catch {
     return null;
   }

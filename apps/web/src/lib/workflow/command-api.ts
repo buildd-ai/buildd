@@ -39,10 +39,12 @@
  * code runs here, and on the web host in shadow (kernel-client.ts).
  */
 import { verifyRequest } from '@buildd/dispatch-contract';
+import { withDeferredEffectDrains } from './effect-drain-context';
+import { scheduleEffectDrain } from './effect-timer';
 import { commandKeyRing } from './command-keys';
 import type { DrainSummary } from './effects';
 import { kernelHost } from './kernel-host';
-import { KERNEL_SPAN, commandOutcomeOf, commandSpanAttributes, emitKernelSpan } from './kernel-telemetry';
+import { KERNEL_SPAN, commandOutcomeOf, commandSpanAttributes, commandCallerOf, emitKernelSpan, type CommandAuthFailure } from './kernel-telemetry';
 import type { InstallationResolution } from './command-installation';
 import { COMMAND_HEARTBEAT_MS, postgresCommandLedger, type CommandLedger, type StoredAnswer } from './command-ledger';
 
@@ -447,27 +449,27 @@ export async function principalReaches(principal: KernelPrincipal, workspaceId: 
 export async function handleCommandRequest(req: Request, deps: CommandServerDeps = {}): Promise<Response> {
   // The command's span (kernel-telemetry.ts `kernel.command`): op, outcome, status, latency, on the control plane.
   const startedAt = Date.now();
-  const seen: { op?: string } = {};
+  const seen: { op?: string; authFailure?: CommandAuthFailure } = {};
   const res = await handleCommandRequestUnreported(req, deps, seen);
-  if ((deps.host ?? kernelHost)() === 'control-plane') await reportCommand(res, seen.op ?? null, startedAt);
+  if ((deps.host ?? kernelHost)() === 'control-plane') await reportCommand(req, res, seen.op ?? null, startedAt, seen.authFailure);
   return res;
 }
 
-async function reportCommand(res: Response, op: string | null, startedAt: number): Promise<void> {
+async function reportCommand(req: Request, res: Response, op: string | null, startedAt: number, authFailure?: CommandAuthFailure): Promise<void> {
   try {
     const body = (await res.clone().json().catch(() => null)) as { code?: unknown; replayed?: unknown } | null;
     const outcome = commandOutcomeOf(res.status, body);
     const latencyMs = Date.now() - startedAt;
     emitKernelSpan({
       name: KERNEL_SPAN.command, startMs: startedAt, durationMs: latencyMs, error: outcome !== 'applied' && outcome !== 'replayed',
-      attributes: commandSpanAttributes({ op, status: res.status, outcome, code: typeof body?.code === 'string' ? body.code : null, latencyMs }),
+      attributes: commandSpanAttributes({ caller: commandCallerOf(req.headers), authFailure, op, status: res.status, outcome, code: typeof body?.code === 'string' ? body.code : null, latencyMs }),
     });
   } catch {
     // Telemetry never reaches the answer.
   }
 }
 
-async function handleCommandRequestUnreported(req: Request, deps: CommandServerDeps, seen: { op?: string }): Promise<Response> {
+async function handleCommandRequestUnreported(req: Request, deps: CommandServerDeps, seen: { op?: string; authFailure?: CommandAuthFailure }): Promise<Response> {
   const env = deps.env ?? process.env;
   const host = (deps.host ?? kernelHost)();
   if (req.method !== 'POST') return refuse(405, 'method_not_allowed', 'POST only');
@@ -481,7 +483,10 @@ async function handleCommandRequestUnreported(req: Request, deps: CommandServerD
   const url = new URL(req.url);
   const text = await req.text();
   const verdict = await verifyRequest({ keys, method: req.method, path: url.pathname + url.search, body: text, headers: req.headers });
-  if (!verdict.ok) return refuse(401, 'unauthorized', `signature ${verdict.why}`);
+  if (!verdict.ok) {
+    seen.authFailure = verdict.why;
+    return refuse(401, 'unauthorized', `signature ${verdict.why}`);
+  }
 
   let body: unknown;
   try { body = JSON.parse(text); } catch { return refuse(400, 'bad_request', 'body is not JSON'); }
@@ -616,10 +621,24 @@ async function execute(cmd: CommandRequest, token: string, ledger: CommandLedger
   }
 }
 
+/**
+ * Commands whose effect drain runs after the answer is stored, not inside the command: their effects
+ * (a reviewer dispatch, a CI-fix task filed from the failure logs, a GitHub comment) are durable rows
+ * that a slow GitHub call must not hold the caller's request open for. `attempt_ended` and
+ * `observe_ci_failure` ran 6-10 s on the control plane with the drain inline.
+ */
+const DEFERRED_DRAIN_OPS: ReadonlySet<string> = new Set(['request_review', 'record_review_verdict', 'attempt_ended', 'observe_ci_failure']);
+
 async function executeHeld(cmd: CommandRequest, token: string, ledger: CommandLedger, deps: CommandServerDeps, host: 'control-plane' | 'web'): Promise<Response> {
   let result: unknown;
+  let drains = new Map<string, () => Promise<unknown>>();
   try {
-    result = await (deps.run ?? runKernelOp)(cmd.op, cmd.input as never);
+    const run = () => (deps.run ?? runKernelOp)(cmd.op, cmd.input as never);
+    if (DEFERRED_DRAIN_OPS.has(cmd.op)) {
+      const deferred = await withDeferredEffectDrains(run);
+      result = deferred.value;
+      drains = deferred.drains;
+    } else result = await run();
   } catch (err) {
     // Nothing is stored: the same key may be tried again. Kernel commands are idempotent on their own keys.
     await ledger.release({ key: cmd.idempotencyKey, token }).catch(() => {});
@@ -633,5 +652,19 @@ async function executeHeld(cmd: CommandRequest, token: string, ledger: CommandLe
   const stored = await ledger.complete({ key: cmd.idempotencyKey, token, response: { status: 200, body }, deliveryId: delivery?.id ?? null, deliveryVersion: delivery?.version ?? null })
     .catch((err) => { console.error(`[kernel-command] storing ${cmd.idempotencyKey} failed:`, err); return false; });
   if (!stored) console.warn(`[kernel-command] ${cmd.idempotencyKey}: the claim was taken over before completion; answering this caller only`);
+  // The transition and its outbox are already durable, and the answer is stored.
+  // A slow GitHub effect must never hold the command ledger or its response open.
+  for (const [deliveryId, drain] of drains) {
+    if (deps.waitUntil) {
+      const work = drain().catch(async (err) => {
+        console.error('[kernel-command] deferred drain failed:', err);
+        await scheduleEffectDrain(deliveryId);
+      });
+      deps.waitUntil(work);
+    } else {
+      // A floor replay has no request lifetime: publish to the effect timer instead.
+      await scheduleEffectDrain(deliveryId);
+    }
+  }
   return json(body, 200);
 }

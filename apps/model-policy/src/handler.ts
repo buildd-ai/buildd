@@ -8,14 +8,14 @@
  *
  * What it never does: read a prompt or a reply (the request schema has no
  * room for one), hold or return a provider secret (`Env` has none), or ask
- * for a buildd session. All of the policy logic is `@builddai/ai-kit/policy`,
+ * for a buildd session. All of the policy logic is `@buildd/ai-kit/policy`,
  * the same code an app runs locally.
  */
 
 import {
   parseOutcomeReport, parsePolicyRequest, resolveModelPolicy, validateModelPolicy,
   type ModelPolicy, type PolicyDecision,
-} from '@builddai/ai-kit/policy';
+} from '@buildd/ai-kit/policy';
 import { authenticate, parseTokenRing } from './auth';
 
 /**

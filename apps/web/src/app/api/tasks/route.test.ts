@@ -42,7 +42,8 @@ let intakeOverride: ((...a: any[]) => Promise<any>) | null = null;
 // The missions module's stage reader, reached through the composition root
 // only when a caller asks for include=missionStages (buildd top).
 const mockTaskListMissionStages = mock(async (_ids: string[], _ws: string[]) => new Map<string, unknown>());
-mock.module('@/modules', () => ({ TASK_LIST_MISSION_STAGES: mockTaskListMissionStages }));
+const mockTaskReachRefusal = mock(async (..._args: unknown[]) => {});
+mock.module('@/modules', () => ({ TASK_LIST_MISSION_STAGES: mockTaskListMissionStages, TASK_REACH_REFUSAL: mockTaskReachRefusal }));
 
 mock.module('@/lib/subject-intake', () => ({
   ...realSubjectIntake,
@@ -163,6 +164,8 @@ mock.module('@buildd/core/task-estimate-source', () => ({ writeTaskEstimate: moc
 // Mock auth-helpers
 // Living Spec pinning (lib/specs/pin.ts): passes through unless a test sets an impl.
 let specPinImpl: ((ws: string, ctx: unknown) => Promise<unknown>) | null = null;
+let openAcceptanceId: string | null = null;
+mock.module('@/lib/specs/acceptance-tests', () => ({ openAcceptanceTestsTaskId: async () => openAcceptanceId }));
 mock.module('@/lib/specs/pin', () => ({
   pinSpecSource: (ws: string, ctx: unknown) => (specPinImpl ? specPinImpl(ws, ctx) : Promise.resolve({ ok: true, context: ctx })),
 }));
@@ -874,8 +877,9 @@ describe('POST /api/tasks', () => {
       const body = await response.json();
       expect(body.error).toMatch(/only in its own workspace, or one its delegation grants tasks:create on/);
       // It names the way to ask, so the agent asks instead of parking on a question.
-      expect(body.error).toContain("request_capability { capability: 'tasks:create'");
+      expect(body.error).toContain("request_capability { provider: 'buildd', access: 'write'");
       expect(body.code).toBe('delegation_required');
+      expect(mockTaskReachRefusal).toHaveBeenCalledWith(scoped, 'ws-2', 'tasks:create');
       expect(mockTasksInsert).not.toHaveBeenCalled();
     });
 
@@ -2230,6 +2234,22 @@ describe('POST /api/tasks', () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Mission not found' });
     expect(mockTasksInsert).not.toHaveBeenCalled();
+  });
+
+  it('makes a task filed into a mission depend on its open acceptance-tests task (spec 1dc6cc39 R-76)', async () => {
+    const captured = backendCase();
+    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1' });
+    openAcceptanceId = 'acc-1';
+    try {
+      await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      }));
+    } finally {
+      openAcceptanceId = null;
+    }
+    expect(captured().dependsOn).toContain('acc-1');
   });
 
   it('rejects a missionId that does not exist with the same 404', async () => {

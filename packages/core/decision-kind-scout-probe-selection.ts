@@ -25,8 +25,8 @@
  * Features are a closed probe vocabulary plus bounded counters: no paths, no text.
  */
 
-import { choice } from '@builddai/ai-kit/decide';
-import type { DecisionKindConfig, FeatureParse } from '@builddai/ai-kit/decide';
+import { choice } from '@buildd/ai-kit/decide';
+import type { DecisionKindConfig, FeatureParse } from '@buildd/ai-kit/decide';
 import { defineBuilddDecisionKind, type BuilddDecisionKindBinding } from './decision-kinds';
 import type { DecisionObjective } from './decision-readout';
 

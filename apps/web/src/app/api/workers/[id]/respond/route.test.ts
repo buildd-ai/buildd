@@ -177,6 +177,14 @@ mock.module('@buildd/core/worker-messages', () => ({
   WORKER_MESSAGE_CAP: 3,
 }));
 
+// The cold path's task write: one shared writer (lib/answer-attempt.ts), whose
+// SQL guards are exercised against real Postgres in tests/db.
+const mockReopen = mock(async (_input: any): Promise<any> => {
+  callOrder.push('reopen');
+  return { reopened: true, taskId: 'task-1', entryId: 'entry-1' };
+});
+mock.module('@/lib/answer-attempt', () => ({ reopenTaskForAnsweredAttempt: mockReopen }));
+
 import { POST } from './route';
 
 function createMockRequest(body?: any): NextRequest {
@@ -279,6 +287,10 @@ describe('POST /api/workers/[id]/respond', () => {
     mockWakeTask.mockReset();
     mockWakeTask.mockImplementation(async () => {});
     mockPreflight.mockImplementation(async () => ({ state: 'ok' as const }));
+    mockReopen.mockReset();
+    mockReopen.mockImplementation(async () => { callOrder.push('reopen'); return { reopened: true, taskId: 'task-1', entryId: 'entry-1' }; });
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockImplementation(async () => null);
     tasksUpdated.length = 0;
     notesInserted.length = 0;
     callOrder.length = 0;
@@ -373,23 +385,8 @@ describe('POST /api/workers/[id]/respond', () => {
   // Regression: the /respond endpoint MUST be status-agnostic — it gates on
   // waitingFor presence, not worker.status. The runner's inputAsRetry mode
   // aborts the SDK session when AskUserQuestion fires, leaving the worker in
-  // status='error' with waitingFor populated. The /tasks/[id]/respond landing
-  // page and the in-page banner both rely on this contract.
-  it.each([['error'], ['failed'], ['waiting_input']] as const)(
-    'accepts the answer when worker status=%s and waitingFor is set',
-    async ([status]) => {
-      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-      mockAuthenticateApiKey.mockResolvedValue(null);
-      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, status });
-
-      const res = await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
-
-      expect(res.status).toBe(200);
-      const data = await res.json();
-      expect(data.taskId).toBe('new-task-1');
-    },
-  );
+  // status='error' with waitingFor populated. Covered by the cold-fallback
+  // describe below ("answers a %s worker with its question still open").
 
   it('returns 400 when message is missing', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
@@ -405,418 +402,165 @@ describe('POST /api/workers/[id]/respond', () => {
     expect(data.error).toBe('Message is required');
   });
 
-  it('creates new task with correct context on happy path', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-
-    const req = createMockRequest({ message: 'Use JWT tokens' });
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.taskId).toBe('new-task-1');
-
-    // Verify task was inserted with correct values
-    expect(mockInsertValues).toHaveBeenCalledTimes(1);
-    const insertedValues = mockInsertValues.mock.calls[0][0];
-
-    expect(insertedValues.title).toBe('Continue: Fix auth bug');
-    expect(insertedValues.workspaceId).toBe('workspace-1');
-    expect(insertedValues.parentTaskId).toBe('task-1');
-    expect(insertedValues.missionId).toBe('mission-1');
-    expect(insertedValues.status).toBe('pending');
-
-    // Verify context
-    expect(insertedValues.context.baseBranch).toBe('buildd/task-1-fix-auth');
-    expect(insertedValues.context.userInput).toBe('Use JWT tokens');
-    expect(insertedValues.context.previousAttempt.question).toBe('Which authentication method should we use?');
-    expect(insertedValues.context.previousAttempt.milestones).toEqual(baseWorker.milestones);
-    expect(insertedValues.context.previousAttempt.branch).toBe('buildd/task-1-fix-auth');
-    expect(insertedValues.context.previousAttempt.workerId).toBe(WORKER_ID);
-  });
-
-  it('sets baseBranch and parentTaskId correctly', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-
-    const req = createMockRequest({ message: 'Use JWT tokens' });
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(200);
-
-    const insertedValues = mockInsertValues.mock.calls[0][0];
-    expect(insertedValues.context.baseBranch).toBe('buildd/task-1-fix-auth');
-    expect(insertedValues.parentTaskId).toBe('task-1');
-  });
-
-  // Regression: an answered worker did not complete its task — it was replaced
-  // by the continuation task. Recording 'completed' counted answered questions
-  // as clean successes in get_failure_analytics / success-rate-by-role.
-  // 'superseded' is excluded from both the success and failure buckets (see
-  // IN_FLIGHT_WORKER_STATUSES in lib/failure-analytics.ts).
-  it('marks original worker as superseded (not completed) after respond', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-
-    const req = createMockRequest({ message: 'Use JWT tokens' });
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(200);
-
-    // Verify worker was updated to superseded, not completed. A second call
-    // follows (the continuation-task link-back — see 'continuation task
-    // link-back' below), so this only asserts on the FIRST (claim) call.
-    const setValues = mockWorkersUpdateSet.mock.calls[0][0];
-    expect(setValues.status).toBe('superseded');
-    expect(setValues.status).not.toBe('completed');
-    expect(setValues.waitingFor).toBeNull();
-    expect(setValues.completedAt).toBeInstanceOf(Date);
-  });
-
-  it('allows API key auth', async () => {
-    mockGetCurrentUser.mockResolvedValue(null);
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
-    mockWorkersFindFirst.mockResolvedValue({
-      ...baseWorker,
-      accountId: 'account-1',
-    });
-
-    const req = createMockRequestWithAuth({ message: 'Use JWT tokens' }, 'bld_test');
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.taskId).toBe('new-task-1');
-  });
-
-  it('returns 403 when API key account does not own worker', async () => {
-    mockGetCurrentUser.mockResolvedValue(null);
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'other-account' });
-    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-
-    const req = createMockRequestWithAuth({ message: 'Use JWT tokens' }, 'bld_test');
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(403);
-  });
-
-  it('lets an admin-level token of the worker\'s team answer a worker it did not claim', async () => {
-    mockGetCurrentUser.mockResolvedValue(null);
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'other-account', teamId: 'team-1', level: 'admin' });
-    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-
-    const req = createMockRequestWithAuth({ message: 'Use JWT tokens' }, 'bld_test');
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(200);
-  });
-
-  it('still refuses an admin-level token of another team', async () => {
-    mockGetCurrentUser.mockResolvedValue(null);
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'other-account', teamId: 'team-2', level: 'admin' });
-    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-
-    const req = createMockRequestWithAuth({ message: 'Use JWT tokens' }, 'bld_test');
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(403);
-  });
-
-  it('includes iteration count in context', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-
-    // Worker from a task that already has iteration context
-    const workerWithIteration = {
-      ...baseWorker,
-      task: {
-        ...baseWorker.task,
-        context: { iteration: 2 },
-      },
-    };
-    mockWorkersFindFirst.mockResolvedValue(workerWithIteration);
-
-    const req = createMockRequest({ message: 'Use JWT tokens' });
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(200);
-
-    const insertedValues = mockInsertValues.mock.calls[0][0];
-    expect(insertedValues.context.iteration).toBe(3);
-  });
-
-  it('sets iteration to 2 when no previous iteration', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-
-    const req = createMockRequest({ message: 'Use JWT tokens' });
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(200);
-
-    const insertedValues = mockInsertValues.mock.calls[0][0];
-    expect(insertedValues.context.iteration).toBe(2);
-  });
-
-  it('inherits roleSlug and mode from original task', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-
-    const req = createMockRequest({ message: 'Use JWT tokens' });
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(200);
-
-    const insertedValues = mockInsertValues.mock.calls[0][0];
-    expect(insertedValues.roleSlug).toBe('frontend-dev');
-    expect(insertedValues.mode).toBe('execution');
-  });
-
-  // Defect 3: the continuation's job is the parent's job, so what-must-it-deliver
-  // fields carry over. Verified field by field rather than a blanket copy.
-  it('copies priority, outputRequirement, outputSchema, category, pathManifest, backend from the parent task', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-
-    const req = createMockRequest({ message: 'Use JWT tokens' });
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(200);
-
-    const insertedValues = mockInsertValues.mock.calls[0][0];
-    expect(insertedValues.priority).toBe(7);
-    expect(insertedValues.outputRequirement).toBe('pr_required');
-    expect(insertedValues.category).toBe('bug');
-    expect(insertedValues.pathManifest).toEqual(['apps/web/src/lib/auth.ts']);
-    expect(insertedValues.backend).toBe('claude');
-  });
-
-  it('copies a custom outputSchema from the parent task', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-    const customSchema = { type: 'object', properties: { verdict: { type: 'string' } } };
-    mockWorkersFindFirst.mockResolvedValue({
-      ...baseWorker,
-      task: { ...baseWorker.task, outputSchema: customSchema },
-    });
-
-    const req = createMockRequest({ message: 'Use JWT tokens' });
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(200);
-
-    const insertedValues = mockInsertValues.mock.calls[0][0];
-    expect(insertedValues.outputSchema).toEqual(customSchema);
-  });
-
-  // Defect 3: dependsOn/subjectAnchor describe the PARENT's gating and dedup
-  // identity, not the continuation's — copying them would either re-gate on
-  // already-satisfied prerequisites or collide with a dedup subsystem this
-  // route isn't part of. creationSource intentionally defaults to 'api' — this
-  // row was created by a human/API caller answering a question, not by the
-  // orchestrator (see the planning-contract guard's taskClass check for why
-  // that distinction matters).
-  it('does not copy dependsOn, subjectAnchor, or creationSource from the parent task', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-
-    const req = createMockRequest({ message: 'Use JWT tokens' });
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(200);
-
-    const insertedValues = mockInsertValues.mock.calls[0][0];
-    expect(insertedValues.dependsOn).toBeUndefined();
-    expect(insertedValues.subjectAnchor).toBeUndefined();
-    expect(insertedValues.creationSource).toBeUndefined();
-  });
-
-  it('preserves missionId on retry task', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-
-    const req = createMockRequest({ message: 'Use JWT tokens' });
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(200);
-
-    const insertedValues = mockInsertValues.mock.calls[0][0];
-    expect(insertedValues.missionId).toBe('mission-1');
-  });
-
-  it('handles structured WaitingForOption objects in waitingFor', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-
-    const workerWithStructuredOptions = {
-      ...baseWorker,
-      waitingFor: {
-        type: 'question',
-        prompt: 'Which database should we use?',
-        options: [
-          { label: 'PostgreSQL', description: 'Best for relational data', recommended: true },
-          { label: 'MongoDB', description: 'Good for document storage' },
-        ],
-      },
-    };
-    mockWorkersFindFirst.mockResolvedValue(workerWithStructuredOptions);
-
-    const req = createMockRequest({ message: 'PostgreSQL' });
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(200);
-
-    const insertedValues = mockInsertValues.mock.calls[0][0];
-    // The question should be preserved in the context
-    expect(insertedValues.context.previousAttempt.question).toBe('Which database should we use?');
-    // The description should contain the question
-    expect(insertedValues.description).toContain('Which database should we use?');
-    // The user's answer should be in the description
-    expect(insertedValues.description).toContain('PostgreSQL');
-  });
-
-  it('handles worker with null milestones gracefully', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-
-    const workerWithNullMilestones = {
-      ...baseWorker,
-      milestones: null,
-    };
-    mockWorkersFindFirst.mockResolvedValue(workerWithNullMilestones);
-
-    const req = createMockRequest({ message: 'Use JWT tokens' });
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(200);
-
-    const insertedValues = mockInsertValues.mock.calls[0][0];
-    expect(insertedValues.description).toContain('No milestones recorded');
-    expect(insertedValues.context.previousAttempt.milestones).toEqual([]);
-  });
-
-  it('includes structured description with milestones and question', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
-    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-
-    const req = createMockRequest({ message: 'Use JWT tokens' });
-    const res = await POST(req, { params: mockParams });
-
-    expect(res.status).toBe(200);
-
-    const insertedValues = mockInsertValues.mock.calls[0][0];
-    // Description should include original description, milestones, question, and answer
-    expect(insertedValues.description).toContain('Fix the authentication bug in login flow');
-    expect(insertedValues.description).toContain('Set up project structure');
-    expect(insertedValues.description).toContain('Which authentication method should we use?');
-    expect(insertedValues.description).toContain('Use JWT tokens');
-  });
-
   // ---------------------------------------------------------------------------
-  // C3: concurrent answers
+  // The cold path: a new attempt of the SAME task, never a new task
   // ---------------------------------------------------------------------------
-  // The route guarded only on `!worker.waitingFor` (read outside the write) and
-  // then updated by id alone, after having already inserted the retry task. Two
-  // humans answering the same question — or one human double-submitting — both
-  // got 200, both inserted a "Continue:" task, and both clobbered worker state.
-  describe('concurrency (CAS)', () => {
-    it('claims the answer with a CAS before inserting the retry task', async () => {
+  // It used to insert a `Continue:` task: a mission grew a card nobody planned,
+  // its counters grew, and the parent stayed open forever with its dependents
+  // waiting on it. See docs/specs/answered-question-resume.md, "The cold fallback".
+  describe('cold fallback: the same task, a new attempt', () => {
+    const answerCold = async (over: Record<string, unknown> = {}, message = 'Use JWT tokens') => {
       mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
       mockAuthenticateApiKey.mockResolvedValue(null);
       mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, ...over });
+      return POST(createMockRequest({ message }), { params: mockParams });
+    };
 
-      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+    it('inserts no task, reopens the answered worker\'s own task and answers with its id (AC-49)', async () => {
+      const res = await answerCold();
       expect(res.status).toBe(200);
-
-      // State flip must precede the insert, so a loser inserts nothing.
-      expect(callOrder[0]).toBe('update');
-      expect(callOrder).toContain('insert');
-      expect(callOrder.indexOf('update')).toBeLessThan(callOrder.indexOf('insert'));
-
-      // The write must be conditional on the question still being open.
-      const where = mockWorkersUpdateWhere.mock.calls[0][0] as any;
-      expect(JSON.stringify(where)).toContain('isNotNull');
-      expect(JSON.stringify(where)).toContain('workers.waitingFor');
-    });
-
-    it('returns 409 and inserts no retry task when another answer already won', async () => {
-      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-      mockAuthenticateApiKey.mockResolvedValue(null);
-      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-
-      // Racer already cleared waitingFor: the CAS matches no row.
-      mockWorkersUpdateReturning.mockReturnValue([]);
-
-      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
-
-      expect(res.status).toBe(409);
       const data = await res.json();
-      expect(data.error).toContain('already answered');
-      expect(data.reasonCode).toBe('already_answered');
+      expect(data).toMatchObject({ path: 'cold_continuation', taskId: 'task-1', workerId: WORKER_ID, newAttempt: true });
       expect(mockInsertValues).not.toHaveBeenCalled();
+      expect(mockReopen).toHaveBeenCalledTimes(1);
+      expect(mockReopen.mock.calls[0][0]).toMatchObject({
+        taskId: 'task-1',
+        worker: { id: WORKER_ID, branch: 'buildd/task-1-fix-auth' },
+        question: 'Which authentication method should we use?',
+        answer: 'Use JWT tokens',
+        milestones: baseWorker.milestones,
+        delivery: { path: 'cold_continuation', reasonCode: 'worker_not_parked', workerId: WORKER_ID },
+        source: 'respond',
+      });
     });
 
-    // A double tap: the card maps this to "answered", so it needs the winner's text.
-    it('names the winning answer, read back after the race, on a 409', async () => {
-      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-      mockAuthenticateApiKey.mockResolvedValue(null);
-      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-      mockWorkersFindFirst
-        .mockResolvedValueOnce({ ...baseWorker })
-        .mockResolvedValueOnce({ ...baseWorker, status: 'superseded', waitingFor: null, continuationTaskId: 'task-2' });
-      mockTasksFindFirst.mockResolvedValueOnce({ context: { userInput: 'Session cookies' } });
-      mockWorkersUpdateReturning.mockReturnValue([]);
+    // An answered worker did not complete its task — a new attempt replaces it.
+    // 'completed' counted answered questions as clean successes in
+    // get_failure_analytics; 'superseded' is in neither bucket.
+    it('supersedes the answered worker (not completed) and links no other task', async () => {
+      expect((await answerCold()).status).toBe(200);
+      expect(mockWorkersUpdateSet).toHaveBeenCalledTimes(1);
+      const setValues = mockWorkersUpdateSet.mock.calls[0][0] as any;
+      expect(setValues.status).toBe('superseded');
+      expect(setValues.waitingFor).toBeNull();
+      expect(setValues.completedAt).toBeInstanceOf(Date);
+      expect('continuationTaskId' in setValues).toBe(false);
+    });
 
-      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+    it('hands the reopen the end the supersede wrote, so a failed owner names the right attempt', async () => {
+      const ended = new Date(5_000);
+      mockWorkersUpdateReturning.mockReturnValue([{ id: WORKER_ID, status: 'superseded', completedAt: ended }]);
+      await answerCold();
+      expect(mockReopen.mock.calls[0][0].worker.completedAt).toEqual(ended);
+    });
 
+    it.each([['error'], ['failed'], ['waiting_input']] as const)(
+      'answers a %s worker with its question still open onto the same task',
+      async ([status]) => {
+        const res = await answerCold({ status });
+        expect(res.status).toBe(200);
+        expect((await res.json()).taskId).toBe('task-1');
+      },
+    );
+
+    it('releases the superseded attempt\'s path claims and wakes the task as a requeue, once', async () => {
+      await answerCold();
+      expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-1', 'abandoned');
+      expect(mockWakeTask).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask.mock.calls[0][0]).toBe('task-1');
+      expect(mockWakeTask.mock.calls[0][1]).toBe('task.requeued');
+      // No new task to announce.
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+    });
+
+    it.each([['completed'], ['cancelled']])('refuses an answer that would reopen a %s task, writing nothing (AC-52)', async (status) => {
+      const res = await answerCold({ task: { ...baseWorker.task, status } });
       expect(res.status).toBe(409);
       const data = await res.json();
-      expect(data.recordedAnswer).toBe('Session cookies');
+      expect(data.reasonCode).toBe('task_closed');
+      expect(mockWorkersUpdateSet).not.toHaveBeenCalled();
+      expect(mockReopen).not.toHaveBeenCalled();
+      expect(notesInserted).toHaveLength(0);
     });
 
-    it('restores the question when the retry task insert fails', async () => {
-      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-      mockAuthenticateApiKey.mockResolvedValue(null);
-      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
+    describe('concurrency (CAS) and compensation', () => {
+      it('claims the answer with a CAS before reopening the task', async () => {
+        expect((await answerCold()).status).toBe(200);
+        expect(callOrder[0]).toBe('update');
+        expect(callOrder.indexOf('update')).toBeLessThan(callOrder.indexOf('reopen'));
+        const where = mockWorkersUpdateWhere.mock.calls[0][0] as any;
+        expect(JSON.stringify(where)).toContain('isNotNull');
+        expect(JSON.stringify(where)).toContain('workers.waitingFor');
+      });
 
-      mockInsertReturning.mockImplementation((() => {
-        throw new Error('insert exploded');
-      }) as any);
+      it('returns 409 and reopens nothing when another answer already won (double answer)', async () => {
+        mockWorkersUpdateReturning.mockReturnValue([]);
+        const res = await answerCold();
+        expect(res.status).toBe(409);
+        const data = await res.json();
+        expect(data.reasonCode).toBe('already_answered');
+        expect(mockReopen).not.toHaveBeenCalled();
+        expect(mockInsertValues).not.toHaveBeenCalled();
+      });
 
-      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+      it('names the winning answer from a legacy continuation on a 409', async () => {
+        mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+        mockAuthenticateApiKey.mockResolvedValue(null);
+        mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+        mockWorkersFindFirst
+          .mockResolvedValueOnce({ ...baseWorker })
+          .mockResolvedValueOnce({ ...baseWorker, status: 'superseded', waitingFor: null, continuationTaskId: 'task-2' });
+        mockTasksFindFirst.mockResolvedValueOnce({ context: { userInput: 'Session cookies' } });
+        mockWorkersUpdateReturning.mockReturnValue([]);
+        const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+        expect(res.status).toBe(409);
+        expect((await res.json()).recordedAnswer).toBe('Session cookies');
+      });
 
-      expect(res.status).toBe(500);
-      // Claim + compensating restore — never leave a half-applied answer where
-      // the worker is completed but no retry task exists.
-      expect(mockWorkersUpdateSet).toHaveBeenCalledTimes(2);
-      const restore = mockWorkersUpdateSet.mock.calls[1][0] as any;
-      expect(restore.status).toBe(baseWorker.status);
-      expect(restore.waitingFor).toEqual(baseWorker.waitingFor);
+      it('names the winning answer from the task\'s own new attempt on a 409', async () => {
+        mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+        mockAuthenticateApiKey.mockResolvedValue(null);
+        mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+        mockWorkersFindFirst
+          .mockResolvedValueOnce({ ...baseWorker })
+          .mockResolvedValueOnce({ ...baseWorker, status: 'superseded', waitingFor: null, continuationTaskId: null });
+        mockTasksFindFirst.mockResolvedValueOnce({ context: { answeredQuestions: [
+          { id: 'e1', workerId: WORKER_ID, question: 'q', answer: 'Session cookies', milestones: [], branch: null, reasonCode: 'worker_not_parked', reason: 'r', answeredAt: '' },
+        ] } });
+        mockWorkersUpdateReturning.mockReturnValue([]);
+        const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+        expect(res.status).toBe(409);
+        expect((await res.json()).recordedAnswer).toBe('Session cookies');
+      });
+
+      it('restores the question and answers 500 when reopening the task throws (AC-51)', async () => {
+        mockReopen.mockImplementation(async () => { callOrder.push('reopen'); throw new Error('reopen exploded'); });
+        const res = await answerCold();
+        expect(res.status).toBe(500);
+        expect(mockWorkersUpdateSet).toHaveBeenCalledTimes(2);
+        const restore = mockWorkersUpdateSet.mock.calls[1][0] as any;
+        expect(restore.status).toBe(baseWorker.status);
+        expect(restore.waitingFor).toEqual(baseWorker.waitingFor);
+        expect(restore.completedAt).toBeNull();
+        expect(notesInserted).toHaveLength(0);
+        expect(mockWakeTask).not.toHaveBeenCalled();
+        expect(mockReleaseAndNotify).not.toHaveBeenCalled();
+      });
+
+      it.each([['task_closed'], ['not_reopenable'], ['kernel_refused']] as const)(
+        'restores the question and answers 409 when the task cannot be reopened (%s)',
+        async (reason) => {
+          mockReopen.mockImplementation(async () => { callOrder.push('reopen'); return { reopened: false, reason }; });
+          const res = await answerCold();
+          expect(res.status).toBe(409);
+          expect((await res.json()).reasonCode).toBe(reason);
+          const restore = mockWorkersUpdateSet.mock.calls[1][0] as any;
+          expect(restore.waitingFor).toEqual(baseWorker.waitingFor);
+          expect(mockWakeTask).not.toHaveBeenCalled();
+          expect(notesInserted).toHaveLength(0);
+        },
+      );
     });
   });
 
@@ -1057,7 +801,7 @@ describe('POST /api/workers/[id]/respond', () => {
         'runner_cannot_confirm_delivery',
       ],
       ['a session past the turn ceiling', { turns: 5000 }, 'context_ceiling'],
-    ])('falls back to a continuation for %s, recording the reason', async (_label, overrides, reasonCode) => {
+    ])('falls back to a new attempt of the same task for %s, recording the reason', async (_label, overrides, reasonCode) => {
       authorize();
       mockWorkersFindFirst.mockResolvedValue(parkedWorker(overrides as Record<string, unknown>));
 
@@ -1067,20 +811,17 @@ describe('POST /api/workers/[id]/respond', () => {
       const data = await res.json();
       expect(data.path).toBe('cold_continuation');
       expect(data.reasonCode).toBe(reasonCode);
-      expect(data.taskId).toBe('new-task-1');
+      // AC-14: the same task, never a new one.
+      expect(data.taskId).toBe('task-1');
+      expect(mockInsertValues).not.toHaveBeenCalled();
 
-      // Recorded on the continuation itself, on the answered task, and in the feed.
-      const insertedValues = mockInsertValues.mock.calls[0][0] as any;
-      expect(insertedValues.context.answerDelivery.reasonCode).toBe(reasonCode);
-      expect(tasksUpdated[0].context.answerDelivery.reasonCode).toBe(reasonCode);
+      // Recorded on the task (by the reopen, as answerDelivery) and in the feed (AC-15).
+      expect(mockReopen.mock.calls[0][0].delivery).toMatchObject({ path: 'cold_continuation', reasonCode });
       expect(notesInserted).toHaveLength(1);
-      expect(notesInserted[0].body).toContain('continuation');
+      expect(notesInserted[0].body).toContain('new attempt of this task');
 
-      // Path-claims leak regression: the OLD task's worker was just superseded
-      // outside PATCH /api/workers/[id], and the old task's own status is
-      // never flipped to terminal by this path — work continues under the
-      // new continuation task's id, so the old task's claims must be released
-      // here or they strand every sibling task overlapping those paths.
+      // The superseded attempt's path claims go, as on every requeue: the new
+      // attempt declares its own.
       expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-1', 'abandoned');
     });
 
@@ -1098,10 +839,15 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(res.status).toBe(200);
       const data = await res.json();
       expect(data.reasonCode).toBe('credential_unhealthy');
-      // The human's answer survives as a durable task.
-      expect(mockInsertValues).toHaveBeenCalledTimes(1);
+      // The human's answer survives on a new attempt of the same task (AC-23)...
+      expect(mockReopen).toHaveBeenCalledTimes(1);
+      expect(mockInsertValues).not.toHaveBeenCalled();
+      // ...but that is not progress (AC-55): blocked on the credential, said twice.
+      expect(data.blockedOn).toBe('credential');
+      expect(notesInserted).toHaveLength(1);
       expect(notesInserted[0].type).toBe('warning');
       expect(notesInserted[0].body).toContain('expired');
+      expect(notesInserted[0].body).toContain('cannot start until the credential is reconnected');
     });
 
     // AC-8 — an account supplying its own key has no managed row.
@@ -1201,6 +947,7 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(data.credentialRevoked).toBe(true);
       expect(data.backend).toBe('codex');
       expect(mockInsertValues).not.toHaveBeenCalled();
+      expect(mockReopen).not.toHaveBeenCalled();
     });
 
     it('proceeds when the credential is merely healthy or absent', async () => {
@@ -1212,55 +959,26 @@ describe('POST /api/workers/[id]/respond', () => {
 
       expect(res.status).toBe(200);
       const data = await res.json();
-      expect(data.taskId).toBe('new-task-1');
+      expect(data.taskId).toBe('task-1');
     });
   });
 
   // ---------------------------------------------------------------------------
-  // Continuation link-back (#2528): a later reader of the answered worker's row
-  // (the task-detail page, a post-supersession error report) needs a durable
-  // pointer to where the work continued. Cold path only — a resume has no
-  // second task, so asserting its absence there is part of the contract.
+  // No link to another task: a new attempt lives under the same task, so
+  // `continuationTaskId` (a legacy record's pointer) is never written.
   // ---------------------------------------------------------------------------
-  describe('continuation task link-back', () => {
+  describe('no continuation link', () => {
     function authorize() {
       mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
       mockAuthenticateApiKey.mockResolvedValue(null);
       mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     }
 
-    it('writes the continuation taskId back onto the answered worker after success', async () => {
+    it('writes no continuationTaskId on the cold path', async () => {
       authorize();
       mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-
-      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
-
-      expect(res.status).toBe(200);
-      // [0] = claim CAS, [1] = continuation link-back.
-      expect(mockWorkersUpdateSet).toHaveBeenCalledTimes(2);
-      const linkBack = mockWorkersUpdateSet.mock.calls[1][0] as any;
-      expect(linkBack.continuationTaskId).toBe('new-task-1');
-    });
-
-    it('does not fail the answer when the link-back write itself fails', async () => {
-      authorize();
-      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-
-      let calls = 0;
-      mockWorkersUpdateSet.mockImplementation((() => {
-        calls += 1;
-        callOrder.push('update');
-        if (calls === 2) {
-          return { where: mock(() => { throw new Error('link-back write exploded'); }) };
-        }
-        return { where: mockWorkersUpdateWhere };
-      }) as any);
-
-      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
-
-      expect(res.status).toBe(200);
-      const data = await res.json();
-      expect(data.taskId).toBe('new-task-1');
+      expect((await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams })).status).toBe(200);
+      for (const [set] of mockWorkersUpdateSet.mock.calls as any[]) expect(set.continuationTaskId).toBeUndefined();
     });
 
     it('does not link a continuation onto a RESUMED worker', async () => {
@@ -1281,61 +999,35 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(res.status).toBe(200);
       expect(data.path).toBe('resume');
       // One write only — the claim. Nothing claims a supersession that did not
-      // happen.
+      // happen, and nothing reopens the task.
       expect(mockWorkersUpdateSet).toHaveBeenCalledTimes(1);
       expect(mockWorkersUpdateSet.mock.calls[0][0].continuationTaskId).toBeUndefined();
+      expect(mockReopen).not.toHaveBeenCalled();
     });
   });
 
-  // The Continue: task the cold path inserts is a new task: nothing else wakes a
-  // runner for it, and a webhook-only workspace (no polling) never finds it.
-  describe('continuation dispatch', () => {
+  // The reopened task needs a wake: a webhook-only workspace (no polling)
+  // never finds it otherwise. It is a requeue, not a new task.
+  describe('new-attempt dispatch', () => {
     function authorize() {
       mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
       mockAuthenticateApiKey.mockResolvedValue(null);
       mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     }
 
-    const workspace = {
-      id: 'workspace-1',
-      teamId: 'team-1',
-      name: 'Example',
-      repo: 'https://github.com/example/repo',
-      webhookConfig: { enabled: true, url: 'https://hooks.example.test/buildd', token: 't', events: ['task.created'] },
-    };
-
-    it('dispatches the new continuation task once, with its workspace', async () => {
+    it('wakes the same task once as a requeue, and announces no new task', async () => {
       authorize();
-      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, workspace });
-
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
       const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
-
       expect(res.status).toBe(200);
-      expect((await res.json()).path).toBe('cold_continuation');
-      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
-      const [task, ws] = mockAnnounceTaskCreated.mock.calls[0] as any[];
-      expect(task.id).toBe('new-task-1');
-      expect(ws).toBe(workspace);
-      expect(mockWakeTask.mock.calls).toEqual([['new-task-1', 'task.created']]);
-    });
-
-    // Delivery reads runnerPreference off the task row, so inheriting it on the
-    // insert is what keeps a webhook restricted to other runners from taking it.
-    it("the continuation keeps the parent's runner preference", async () => {
-      authorize();
-      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, workspace, task: { ...baseWorker.task, runnerPreference: 'user' } });
-
-      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
-
-      expect(res.status).toBe(200);
-      expect((mockInsertValues.mock.calls.at(-1) as any[])[0].runnerPreference).toBe('user');
+      expect(mockWakeTask.mock.calls).toEqual([['task-1', 'task.requeued']]);
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
     });
 
     it('does not dispatch anything on the warm resume path', async () => {
       authorize();
       mockWorkersFindFirst.mockResolvedValue({
         ...baseWorker,
-        workspace,
         status: 'waiting_input',
         updatedAt: new Date(),
         turns: 42,
@@ -1344,40 +1036,18 @@ describe('POST /api/workers/[id]/respond', () => {
         instructionHistory: [],
         account: { teamId: 'team-1' },
       });
-
       const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
-
       expect(res.status).toBe(200);
       expect((await res.json()).path).toBe('resume');
-      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
       expect(mockWakeTask).not.toHaveBeenCalled();
     });
 
-    it('still records the answer when dispatch throws', async () => {
+    it('does not dispatch when the task cannot be reopened', async () => {
       authorize();
-      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, workspace });
-      mockAnnounceTaskCreated.mockImplementation(async () => { throw new Error('pusher exploded'); });
-
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
+      mockReopen.mockImplementation(async () => { throw new Error('reopen failed'); });
       const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
-
-      expect(res.status).toBe(200);
-      const data = await res.json();
-      expect(data.path).toBe('cold_continuation');
-      expect(data.taskId).toBe('new-task-1');
-      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
-      // The dashboard event failing must not cost the task its wake.
-      expect(mockWakeTask.mock.calls).toEqual([['new-task-1', 'task.created']]);
-    });
-
-    it('does not dispatch when the continuation insert fails', async () => {
-      authorize();
-      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, workspace });
-      mockInsertReturning.mockImplementation(() => { throw new Error('insert failed'); });
-
-      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
-
       expect(res.status).toBe(500);
-      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
       expect(mockWakeTask).not.toHaveBeenCalled();
     });
   });
@@ -1392,7 +1062,7 @@ describe('POST /api/workers/[id]/respond', () => {
       mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     }
 
-    it('points an already-answered question at its continuation task', async () => {
+    it('points a legacy already-answered question at its continuation task (AC-30)', async () => {
       authorize();
       mockWorkersFindFirst.mockResolvedValue({
         ...baseWorker,
@@ -1592,7 +1262,10 @@ describe('POST /api/workers/[id]/respond', () => {
       const data = await res.json();
       expect(data.path).toBe('cold_continuation');
       expect(data.reasonCode).toBe('interactive_session_stopped_polling');
-      expect(mockInsertValues).toHaveBeenCalledTimes(1);
+      // A new attempt of the same task, not a new task.
+      expect(mockInsertValues).not.toHaveBeenCalled();
+      expect(mockReopen).toHaveBeenCalledTimes(1);
+      expect(data.taskId).toBe('task-1');
       expect(mockEnqueueWorkerMessage).not.toHaveBeenCalled();
     });
 
@@ -1715,7 +1388,10 @@ describe('POST /api/workers/[id]/respond', () => {
       const data = await res.json();
       expect(data.path).toBe('cold_continuation');
       expect(data.reasonCode).toBe('interactive_session_gone');
-      expect(mockInsertValues).toHaveBeenCalledTimes(1);
+      // A new attempt of the same task, not a new task.
+      expect(mockInsertValues).not.toHaveBeenCalled();
+      expect(mockReopen).toHaveBeenCalledTimes(1);
+      expect(data.taskId).toBe('task-1');
       expect(mockEnqueueWorkerMessage).not.toHaveBeenCalled();
       expect(data.message).toContain('interactive session that asked');
       // The continuation runs on a runner, so its credential is preflighted.

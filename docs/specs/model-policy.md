@@ -57,7 +57,7 @@ assertions:
 # Standalone Model Policy
 
 Design: artifact "Standalone model policy: surface + tier, inferred intent".
-The protocol lives in `@builddai/ai-kit/policy`; `apps/model-policy` is the
+The protocol lives in `@buildd/ai-kit/policy`; `apps/model-policy` is the
 small Cloudflare Worker that serves it. Neither imports buildd code, and an app
 can use either with no buildd account.
 
@@ -118,7 +118,7 @@ no provider secret MUST ever cross the policy boundary.
   `findCredentialLike`); accepted decisions are rebuilt from known fields only.
 - The Worker's env is `POLICY_TOKENS` and `MODEL_POLICY`, nothing else; a buildd
   key is not a policy token; an empty or malformed token ring answers 503.
-- The Worker imports only `@builddai/ai-kit/policy` (`imports.test.ts`).
+- The Worker imports only `@buildd/ai-kit/policy` (`imports.test.ts`).
 
 ## Experiments and outcomes
 

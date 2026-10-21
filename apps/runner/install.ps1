@@ -15,8 +15,11 @@ Write-Host "Installing buildd runner..." -ForegroundColor Green
 # Check for bun
 if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
     Write-Host "Bun not found. Installing..." -ForegroundColor Yellow
+    # bun's installer rewrites this process's PATH from the registry, which
+    # drops entries added only to the session (e.g. git), so restore ours.
+    $SavedPath = $env:Path
     irm bun.sh/install.ps1 | iex
-    $env:Path = "$env:USERPROFILE\.bun\bin;$env:Path"
+    $env:Path = "$env:USERPROFILE\.bun\bin;$SavedPath"
 }
 
 $InstallDir = "$env:USERPROFILE\.buildd"
@@ -31,6 +34,12 @@ if (Test-Path "$InstallDir\.git") {
     @"
 apps/runner/
 packages/shared/
+packages/core/
+packages/ai-kit/
+packages/dispatch-contract/
+packages/spec-contract/
+scripts/stub-server-only.ts
+bunfig.toml
 package.json
 "@ | Set-Content ".git\info\sparse-checkout"
 
@@ -52,6 +61,12 @@ package.json
     @"
 apps/runner/
 packages/shared/
+packages/core/
+packages/ai-kit/
+packages/dispatch-contract/
+packages/spec-contract/
+scripts/stub-server-only.ts
+bunfig.toml
 package.json
 "@ | Set-Content ".git\info\sparse-checkout"
 
@@ -59,6 +74,24 @@ package.json
     git checkout dev
     Pop-Location
 }
+
+# Point the root package.json at only the sparse-checkout workspaces, as
+# install.sh does: the repo's "apps/*" and "packages/*" name workspaces that
+# are not checked out, so bun install cannot resolve them.
+@'
+{
+  "name": "buildd",
+  "private": true,
+  "workspaces": [
+    "apps/runner",
+    "packages/shared",
+    "packages/core",
+    "packages/ai-kit",
+    "packages/dispatch-contract",
+    "packages/spec-contract"
+  ]
+}
+'@ | Set-Content "$InstallDir\package.json"
 
 # Install dependencies
 Push-Location "$InstallDir\apps\runner"
@@ -70,7 +103,11 @@ New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 
 @'
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
+
+REM Every bun run preloads this stub, as in the bash launcher: bun reads
+REM bunfig.toml from the cwd only, and buildd runs from anywhere.
+set "BUILDD_PRELOAD=%USERPROFILE%\.buildd\scripts\stub-server-only.ts"
 
 REM Auto-detect project roots if not set
 if "%PROJECTS_ROOT%"=="" (
@@ -84,16 +121,38 @@ if "%PROJECTS_ROOT%"=="" (
     set "PROJECTS_ROOT=!ROOTS!"
 )
 
+REM The arguments after the subcommand (%* never shifts, so the runner still gets all of them).
+set "SUBCMD=%~1"
+set "REST="
+:collect
+shift
+if "%~1"=="" goto collected
+set "REST=!REST! %1"
+goto collect
+:collected
+
 REM `buildd login` connects this machine to an account, as in the bash launcher.
-if /i "%~1"=="login" (
-    bun --no-env-file run "%USERPROFILE%\.buildd\apps\runner\src\login.ts" %2 %3
+if /i "%SUBCMD%"=="login" (
+    bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\login.ts" !REST!
     exit /b
 )
 
-REM Restart loop (exit code 75 = update applied, restart) — mirrors install.sh's
+REM `buildd install` puts the agent plugin hooks into Claude Code, Codex and Cursor.
+if /i "%SUBCMD%"=="install" (
+    bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\agent-plugin-install.ts" !REST!
+    exit /b
+)
+
+REM `buildd service install|uninstall|status|logs` manages the background Scheduled Task.
+if /i "%SUBCMD%"=="service" (
+    bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\service.ts" !REST!
+    exit /b
+)
+
+REM Restart loop (exit code 75 = update applied, restart) - mirrors install.sh's
 REM bash launcher so the self-updater behaves the same on every platform.
 :runloop
-bun --no-env-file run "%USERPROFILE%\.buildd\apps\runner\src\index.ts" %*
+bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\index.ts" %*
 if %ERRORLEVEL% EQU 75 (
     echo Restarting after update...
     timeout /t 1 /nobreak >nul
@@ -114,10 +173,10 @@ Write-Host "Installation complete!" -ForegroundColor Green
 Write-Host ""
 
 # Offer to register buildd as a Scheduled Task that starts at logon and
-# restarts if it crashes, so it survives closing the terminal and reboots —
+# restarts if it crashes, so it survives closing the terminal and reboots -
 # see apps/runner/README.md "Running as a service". -Service registers
 # non-interactively; otherwise ask when there's an interactive session.
-$TaskName = "buildd runner"
+# `buildd service install` (apps/runner/src/service.ts) owns the task itself.
 $InstallService = $false
 if ($Service) {
     $InstallService = $true
@@ -127,18 +186,12 @@ if ($Service) {
 }
 
 if ($InstallService) {
-    try {
-        $Action = New-ScheduledTaskAction -Execute "$BinDir\buildd.cmd"
-        $Trigger = New-ScheduledTaskTrigger -AtLogOn
-        $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-            -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
-        $Principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
-        Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Force | Out-Null
-        Start-ScheduledTask -TaskName $TaskName
-        Write-Host "Registered Scheduled Task '$TaskName' (runs at logon, as your user, restarts on crash)." -ForegroundColor Green
-        Write-Host "Manage it with: Get-ScheduledTask -TaskName '$TaskName' | Unregister-ScheduledTask -Confirm:`$false"
-    } catch {
-        Write-Host "Could not register the Scheduled Task ($($_.Exception.Message)) — run buildd manually, or retry from an elevated PowerShell." -ForegroundColor Yellow
+    $env:BUILDD_INSTALLER = '1'
+    & "$BinDir\buildd.cmd" service install
+    $ServiceExit = $LASTEXITCODE
+    Remove-Item Env:BUILDD_INSTALLER
+    if ($ServiceExit -ne 0) {
+        Write-Host "Could not install the background service - run 'buildd service install' to retry, or 'buildd' to run it in the foreground." -ForegroundColor Yellow
     }
 } else {
     Write-Host "Tip: re-run this installer with -Service to run it in the background." -ForegroundColor Yellow
@@ -165,5 +218,5 @@ if (-not $LoggedIn) {
 if (-not $InstallService) {
     Write-Host "  buildd                   start the runner in this terminal"
 } elseif (-not $LoggedIn) {
-    Write-Host "  then restart the 'buildd runner' Scheduled Task so it picks up your account"
+    Write-Host "  buildd service install   restart the background service with your account"
 }

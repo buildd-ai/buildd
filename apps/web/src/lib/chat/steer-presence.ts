@@ -13,7 +13,7 @@ import { formatAge } from '@/lib/mission-board';
 import { resolveRunnerDisplay, type RunnerHeartbeatLike, type RunnerWorkerLike } from '@/lib/runner-display';
 
 /** "Builder @ atlas / rates service": the kit's words, so every app titles a steer alike. */
-export { steerTitle } from '@builddai/ai-kit/chat/react';
+export { steerTitle } from '@buildd/ai-kit/chat/react';
 
 export interface SteerPresence {
   runnerLabel: string | null;

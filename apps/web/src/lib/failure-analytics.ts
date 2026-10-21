@@ -70,7 +70,7 @@ import { FAILED_WORKER_STATUSES } from '@buildd/shared';
  * `superseded` (POST /api/workers/[id]/respond) is not literally in flight —
  * the session is over — but it belongs here for the same reason `waiting_input`
  * does: the worker never reached a real success/failure verdict, it was
- * replaced by a continuation task once a human answered its question. Counting
+ * replaced by a new attempt of its task once a human answered its question. Counting
  * it as a terminal "success" (the default for any status outside
  * FAILED_WORKER_STATUSES) would inflate the success rate on every answered
  * question; counting it as a failure would misrepresent an answered question as

@@ -93,7 +93,7 @@ describe('a review verdict for a replaced head arrives late', () => {
     const r2 = await w.reviewer(pr);
     expect(r2.context.headSha).toBe(h2);
     expect(await w.verdict(pr, r2, 'approve', h2)).toMatchObject({ toState: 'APPROVED' });
-    expect(w.gh.pr(w.repo, pr.prNumber).reviews).toEqual([expect.objectContaining({ state: 'APPROVED', commitId: h2 })]);
+    expect(w.gh.pr(w.repo, pr.prNumber).reviews).toEqual([]);
   });
 
   test('a request-changes for a replaced head arrives late → no fix is filed and the current round is untouched', async () => {

@@ -41,72 +41,15 @@ export const REVIEW_DISPATCH_RETRIES = 2;
 export const REVIEW_DISPATCH_BACKOFF_MS = 60_000;
 
 /**
- * The GitHub review body. A composition delta round (§5.9, S33) reviewed only
- * the paths new to the composed PR (a release's own changes, or what a mission
- * branch refresh's merge resolved), so its approval says so: it is not a
- * reviewer verdict on the whole PR.
+ * The GitHub review body for a request for changes: the actionable findings and nothing else.
+ * The verdict, confidence, rationale, scope, head and round stay in buildd (the round row and the
+ * `Buildd / Review approval` commit status); an approval posts no review at all, so there is no
+ * body for it. Nothing here explains GitHub's own limits or names buildd's internals.
  */
 export function postReviewBody(
-  event: 'APPROVE' | 'REQUEST_CHANGES',
-  out: { confidence?: number | null; summary?: string | null; feedback?: string | null },
-  scope: unknown,
-  at?: ReviewAt,
+  out: { summary?: string | null; feedback?: string | null },
 ): string {
-  const text = verdictText(event, out, scope);
-  return at ? `${text}\n\n${verdictTrailer(event, at)}` : text;
-}
-
-/** Where a review sits: the head and round it judged, and the earlier verdict it replaces, if any. */
-export interface ReviewAt {
-  headSha: string;
-  round: number;
-  /** The newest earlier decided round, whatever it said. */
-  prior?: { round: number; headSha: string; verdict: 'approve' | 'request_changes' | 'escalate' } | null;
-}
-
-/**
- * The machine-checkable line under a review's prose. A review whose state GitHub shows as COMMENTED
- * (the App opened the PR, so it cannot approve it) carries its verdict here, at the head it judged,
- * and says outright when it replaces an approval; nothing reads the prose above it as the verdict.
- */
-function verdictTrailer(event: 'APPROVE' | 'REQUEST_CHANGES', at: ReviewAt): string {
-  const sha = (h: string) => h.slice(0, 7);
-  const verdict = event === 'APPROVE' ? 'approve' : 'request_changes';
-  const head = `buildd verdict: ${verdict} · head ${sha(at.headSha)} · round ${at.round}`;
-  const p = at.prior;
-  if (!p) return head;
-  if (event === 'APPROVE') {
-    return p.verdict === 'approve' ? `${head} · renews the approval of ${sha(p.headSha)} (round ${p.round})`
-      : `${head} · clears the ${p.verdict === 'escalate' ? 'escalation' : 'request for changes'} of round ${p.round} at ${sha(p.headSha)}`;
-  }
-  return p.verdict === 'approve'
-    ? `${head} · supersedes the approval of ${sha(p.headSha)} (round ${p.round}): a blocking issue was found${p.headSha === at.headSha ? ' at the same commit' : ' in the changes since'}. That approval no longer allows a merge.`
-    : `${head} · still blocking (round ${p.round} at ${sha(p.headSha)} also asked for changes)`;
-}
-
-function verdictText(
-  event: 'APPROVE' | 'REQUEST_CHANGES',
-  out: { confidence?: number | null; summary?: string | null; feedback?: string | null },
-  scope: unknown,
-): string {
-  if (event !== 'APPROVE') return `Changes requested by buildd reviewer: ${out.feedback ?? out.summary ?? ''}`;
-  const sc = scope as { compositionDelta?: unknown; paths?: unknown } | null | undefined;
-  if (sc?.compositionDelta === true) {
-    const paths = Array.isArray(sc.paths) ? sc.paths.map(String) : [];
-    const list = paths.length ? `\n\n${paths.map((p) => `- \`${p}\``).join('\n')}` : '';
-    const text = `New changes approved by buildd reviewer (confidence ${(out.confidence ?? 0).toFixed(2)}). `
-      + `This review covers only the ${paths.length} ${paths.length === 1 ? 'path' : 'paths'} new to this PR; `
-      + `every other change was reviewed at its own head and is not re-reviewed here.${list}\n\n${out.summary ?? ''}`;
-    return text.trimEnd();
-  }
-  return `Approved by buildd reviewer (confidence ${(out.confidence ?? 0).toFixed(2)}): ${out.summary ?? ''}`;
-}
-
-/** The newest decided round before `round`, with the verdict it stands for. */
-function priorRoundOf(rounds: ReadonlyArray<{ round: number; headSha: string; status: string; verdict?: string | null; effectiveVerdict?: string | null }>, round: { round: number }): ReviewAt['prior'] {
-  const p = rounds.filter((r) => r.status === 'decided' && r.round < round.round).sort((a, b) => b.round - a.round)[0];
-  const v = p ? (p.effectiveVerdict ?? p.verdict) : null;
-  return p && (v === 'approve' || v === 'request_changes' || v === 'escalate') ? { round: p.round, headSha: p.headSha, verdict: v } : null;
+  return (out.feedback ?? out.summary ?? '').trim() || 'Changes requested. See the task for details.';
 }
 
 /**
@@ -167,6 +110,34 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
     if (!d || !round || (round.status !== 'queued' && round.status !== 'reviewing')) return { outcome: 'skipped:round_closed' };
     if (round.reviewerTaskId) return { outcome: 'skipped:already_dispatched' };
     if (!hasPr(d)) return { outcome: 'skipped:no_pr' };
+    // Explicit requests commit using the recorded head. Resolve the live GitHub
+    // facts here, where a slow read cannot hold up the command transition.
+    if (e.payload.revalidate === true || round.scope?.revalidate === true) {
+      const reader = await githubOf(ports, d.workspaceId);
+      if (!reader) throw new Error(NO_INSTALLATION);
+      const live = await reader.readPr(d.repoFullName, d.prNumber);
+      if (!live) throw new Error('live PR read failed before dispatching review');
+      const pinned = { ...reader, readPr: async () => live };
+      const subject = { workspaceId: d.workspaceId, source: 'effect:dispatch_review', repoFullName: d.repoFullName, prNumber: d.prNumber };
+      if (live.merged || live.state === 'closed') {
+        const r = await need(ports, 'ingest', e.kind).ingest({ kind: 'pr_closed', ...subject }, pinned);
+        return { outcome: `skipped:pr_${live.merged ? 'merged' : 'closed'}:${r.result}` };
+      }
+      if (live.headSha !== round.headSha) {
+        const r = await need(ports, 'ingest', e.kind).ingest({ kind: 'head_observed', ...subject }, pinned);
+        return { outcome: `skipped:head_moved:${r.result}` };
+      }
+      if (live.baseRef && d.baseRef && live.baseRef !== d.baseRef) {
+        const r = await need(ports, 'ingest', e.kind).ingest({ kind: 'base_changed', ...subject }, pinned);
+        return { outcome: `skipped:base_moved:${r.result}` };
+      }
+      // Another command may have superseded this round while GitHub was read.
+      const fresh = await ports.store.loadView({ deliveryId: d.id });
+      const current = fresh.rounds.find((r) => r.id === round.id);
+      if (!current || (current.status !== 'queued' && current.status !== 'reviewing')
+        || fresh.delivery?.state !== 'AWAITING_REVIEW' || fresh.delivery.currentHeadSha !== round.headSha) return { outcome: 'skipped:round_closed' };
+      if (current.reviewerTaskId) return { outcome: 'skipped:already_dispatched' };
+    }
     const reviews = need(ports, 'reviews', e.kind);
 
     // §5.9: once per round that is not itself the composition's delta round.
@@ -208,6 +179,7 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       dedupeKey: `review:${round.id}`,
       detail: {
         roundId: round.id, round: round.round, maxRounds: d.maxRounds,
+        ...(round.scope?.reviewCallback ? { reviewCallback: round.scope.reviewCallback } : {}),
         // 58c8961e: why the round started, and whether it is a delta review carrying an approval
         // (the reviewer then checks the delta for weakened tests, on a cheaper tier).
         ...(round.trigger ? { trigger: round.trigger } : {}),
@@ -324,15 +296,14 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
     const reviews = need(ports, 'reviews', e.kind);
     const out = await reviews.output(round);
     const event = e.payload.event === 'APPROVE' ? 'APPROVE' : 'REQUEST_CHANGES';
+    // An approval is the `Buildd / Review approval` commit status, never a PR comment.
+    if (event === 'APPROVE') return { outcome: 'skipped:approval_is_status' };
     const res = await writes.postReview({
       repoFullName: d.repoFullName, prNumber: d.prNumber,
       // §8.4: commit_id is the round's head, never whatever the PR shows now.
       commitId: String(e.payload.commitId ?? round.headSha),
       event,
-      body: postReviewBody(event, out, e.payload.scope, {
-        headSha: round.headSha, round: round.round,
-        prior: priorRoundOf(view.rounds, round),
-      }),
+      body: postReviewBody(out),
     }).catch((err: unknown): PostedReview => ({ id: null, posted: false, reason: err instanceof Error ? err.message : 'unknown error' }));
     if (res.posted === false && res.reason !== 'a matching review already exists for this commit') {
       await reviews.postFailed(d, { event, reason: res.reason ?? 'unknown error' });

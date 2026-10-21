@@ -155,9 +155,30 @@ mock.module('@buildd/core/worker-messages', () => ({
   buildClearContextSql: mock(() => ({})),
 }));
 
+// Both answer sweeps reopen the answered worker's own task through one writer
+// (lib/answer-attempt.ts; real SQL in apps/web/tests/db/answered-attempt-mission.test.ts).
+const mockReopen = mock(async (input: any): Promise<any> => ({ reopened: true, taskId: input.taskId, entryId: 'entry-1' }));
+mock.module('@/lib/answer-attempt', () => ({ reopenTaskForAnsweredAttempt: mockReopen }));
+
 import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers, cleanupUnreadInteractiveAnswers, resolveTasksOfReapedWorkers } from './stale-workers';
 import { INTERACTIVE_ABANDONED_ERROR } from './worker-exit-taxonomy';
 import { capturedWhere } from '@buildd/core/db/relational-sql';
+
+// A tasks update whose `.where()` is awaitable and also supports `.returning()`
+// (the same-task requeue moves a guarded row and reads it back).
+function taskUpdateChain(sets: any[] = [], rows: any[] = [{ id: 'task-1' }]) {
+  return {
+    set: mock((vals: any) => {
+      sets.push(vals);
+      return { where: mock(() => Object.assign(Promise.resolve(), { returning: async () => rows })) };
+    }),
+  };
+}
+// The JSON patch the requeue merges into the live context.
+function requeuedPatch(set: any) {
+  const json = set.context.values.find((v: unknown) => typeof v === 'string' && v.startsWith('{'));
+  return JSON.parse(json);
+}
 
 describe('cleanupStuckWaitingInput', () => {
   beforeEach(() => {
@@ -172,11 +193,7 @@ describe('cleanupStuckWaitingInput', () => {
         where: mock(() => Promise.resolve()),
       })),
     });
-    mockTasksUpdate.mockReturnValue({
-      set: mock(() => ({
-        where: mock(() => Promise.resolve()),
-      })),
-    });
+    mockTasksUpdate.mockReturnValue(taskUpdateChain());
     mockTasksInsert.mockReturnValue({
       values: mock(() => ({
         returning: mock(() => [{ id: 'new-task-id' }]),
@@ -286,17 +303,20 @@ describe('cleanupStuckWaitingInput', () => {
       expect(mockTasksInsert).not.toHaveBeenCalled();
     });
 
-    it('on a local mission: files the retry, which only a person\'s session can claim', async () => {
+    it('on a local mission: requeues the same task, which only a person\'s session can claim', async () => {
       mockWorkersFindMany.mockResolvedValue([stuck({ executor: 'local' })]);
       mockTasksFindFirst.mockResolvedValue(interactiveTask('mission-1'));
       captureWorkerSet();
       mockTasksInsert.mockClear();
-      mockTasksInsert.mockReturnValue({ values: mock(() => ({ returning: mock(() => [{ id: 'new-task-id' }]) })) });
+      const taskSets: any[] = [];
+      mockTasksUpdate.mockReturnValue(taskUpdateChain(taskSets));
 
       const result = await cleanupStuckWaitingInput('account-1');
 
       expect(result.retriedTasks).toBe(1);
-      expect(mockTasksInsert).toHaveBeenCalledTimes(1);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+      expect(taskSets).toHaveLength(1);
+      expect(taskSets[0].status).toBe('pending');
     });
   });
 
@@ -502,172 +522,92 @@ describe('cleanupStuckWaitingInput', () => {
     expect(result.retriedTasks).toBe(0);
   });
 
-  it('creates retry task with no-input instruction appended to description', async () => {
+  const plainTask = (over: Record<string, unknown> = {}) => ({
+    id: 'task-1', workspaceId: 'ws-1', title: 'Fix the bug', description: 'Fix the login bug', status: 'in_progress',
+    priority: 0, category: 'bug', project: 'web', context: { iteration: 1 }, requiredCapabilities: [],
+    missionId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null, ...over,
+  });
+
+  // AC-58: the last place a parked task changed identity. A question nobody
+  // answered requeues the SAME task: no clone, the mission grows no task, the
+  // original is never left `failed`, and its description is not rewritten.
+  it('requeues the same task for a new attempt: no clone, status pending, description untouched', async () => {
     const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: { type: 'question', prompt: 'Need clarification' } },
     ]);
-
-    mockTasksFindFirst.mockResolvedValue({
-      id: 'task-1',
-      workspaceId: 'ws-1',
-      title: 'Fix the bug',
-      description: 'Fix the login bug',
-      priority: 0,
-      category: 'bug',
-      project: 'web',
-      context: {},
-      requiredCapabilities: [],
-      missionId: null,
-      runnerPreference: 'any',
-      mode: 'execution',
-      outputRequirement: 'auto',
-      outputSchema: null,
-    });
-
-    let capturedValues: any = null;
-    mockTasksInsert.mockReturnValue({
-      values: mock((vals: any) => {
-        capturedValues = vals;
-        return { returning: mock(() => [{ id: 'new-task-id' }]) };
-      }),
-    });
-
+    mockTasksFindFirst.mockResolvedValue(plainTask());
+    const taskSets: any[] = [];
+    mockTasksUpdate.mockReturnValue(taskUpdateChain(taskSets));
+    mockTasksInsert.mockClear();
     mockWakeTask.mockClear();
-    await cleanupStuckWaitingInput('account-1');
 
-    expect(capturedValues).not.toBeNull();
-    expect(capturedValues.title).toBe('Fix the bug');
-    // The retry replaces a stalled attempt: woken as a requeue, not left to a poll.
-    expect(mockWakeTask.mock.calls).toEqual([['new-task-id', 'task.requeued']]);
-    expect(capturedValues.description).toContain('Fix the login bug');
-    expect(capturedValues.description).toContain('IMPORTANT: Do NOT ask for user input');
-    expect(capturedValues.workspaceId).toBe('ws-1');
+    const result = await cleanupStuckWaitingInput('account-1');
+
+    expect(result).toMatchObject({ failedWorkers: 1, retriedTasks: 1 });
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+    // One task write, and it is the requeue: the task is never failed.
+    expect(taskSets).toHaveLength(1);
+    expect(taskSets[0]).toMatchObject({ status: 'pending', claimedBy: null, claimedAt: null, expiresAt: null });
+    for (const k of ['title', 'description', 'roleSlug', 'dependsOn', 'parentTaskId', 'missionId']) expect(k in taskSets[0]).toBe(false);
+    // Woken as a requeue of the SAME task, not left to a poll.
+    expect(mockWakeTask.mock.calls).toEqual([['task-1', 'task.requeued']]);
   });
 
-  it('keeps roleSlug on the retry, so a visual-auditor audit stays browser-routed and evidence-gated', async () => {
+  it('carries the question and the do-not-ask-again guidance in context, bumping the iteration', async () => {
+    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, branch: 'buildd/task-1-slug',
+        waitingFor: { type: 'question', prompt: 'What database should I use?', options: ['PostgreSQL', 'MySQL'] } },
+    ]);
+    mockTasksFindFirst.mockResolvedValue(plainTask({ context: { iteration: 2 } }));
+    const taskSets: any[] = [];
+    mockTasksUpdate.mockReturnValue(taskUpdateChain(taskSets));
+
+    await cleanupStuckWaitingInput('account-1');
+
+    const patch = requeuedPatch(taskSets[0]);
+    expect(patch.unansweredQuestion).toMatchObject({ workerId: 'w1', prompt: 'What database should I use?', options: ['PostgreSQL', 'MySQL'] });
+    expect(patch.iteration).toBe(3);
+    expect(patch.failureContext).toBeDefined();
+    // The branch is resumed, not treated as a declared base.
+    expect(patch.baseBranch).toBe('buildd/task-1-slug');
+    expect(patch.resumeBranch).toBe('buildd/task-1-slug');
+  });
+
+  it('a requeue guarded out (the task closed in the window) is not counted and wakes nothing', async () => {
     const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: null },
     ]);
-    mockTasksFindFirst.mockResolvedValue({
-      id: 'task-1', workspaceId: 'ws-1', title: '[surface audit] M', description: 'd', priority: 0,
-      context: {}, requiredCapabilities: [], missionId: 'mission-1', runnerPreference: 'any',
-      mode: 'execution', outputRequirement: 'artifact_required', outputSchema: null,
-      roleSlug: 'visual-auditor', dependsOn: ['builder-a', 'builder-b'],
-    });
-    let capturedValues: any = null;
-    mockTasksInsert.mockReturnValue({
-      values: mock((vals: any) => {
-        capturedValues = vals;
-        return { returning: mock(() => [{ id: 'new-task-id' }]) };
-      }),
-    });
+    mockTasksFindFirst.mockResolvedValue(plainTask());
+    mockTasksUpdate.mockReturnValue(taskUpdateChain([], []));
+    mockWakeTask.mockClear();
 
-    await cleanupStuckWaitingInput('account-1');
+    const result = await cleanupStuckWaitingInput('account-1');
 
-    expect(capturedValues.roleSlug).toBe('visual-auditor');
-    // Required routes are re-derived at completion from dependsOn's
-    // pathManifests; a clone without it would fall back to "any one route".
-    expect(capturedValues.dependsOn).toEqual(['builder-a', 'builder-b']);
+    expect(result.retriedTasks).toBe(0);
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
-  it('does not copy dependsOn onto the retry of an ordinary task (unchanged behaviour)', async () => {
-    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
+  it('a mission task keeps its slot: the original id is requeued, nothing inserted', async () => {
+    const staleDate = new Date(Date.now() - 5 * 60 * 60 * 1000);
     mockWorkersFindMany.mockResolvedValue([
-      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: null },
+      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: null,
+        task: { missionId: 'mission-1', mission: { executor: 'runner' } } },
     ]);
-    mockTasksFindFirst.mockResolvedValue({
-      id: 'task-1', workspaceId: 'ws-1', title: 'T', description: 'd', priority: 0,
-      context: {}, requiredCapabilities: [], missionId: 'mission-1', runnerPreference: 'any',
-      mode: 'execution', outputRequirement: 'auto', outputSchema: null,
-      roleSlug: 'builder', dependsOn: ['dep-1'],
-    });
-    let capturedValues: any = null;
-    mockTasksInsert.mockReturnValue({
-      values: mock((vals: any) => {
-        capturedValues = vals;
-        return { returning: mock(() => [{ id: 'new-task-id' }]) };
-      }),
-    });
+    mockTasksFindFirst.mockResolvedValue(plainTask({
+      missionId: 'mission-1', roleSlug: 'visual-auditor', dependsOn: ['builder-a'], parentTaskId: 'parent-1',
+    }));
+    const taskSets: any[] = [];
+    mockTasksUpdate.mockReturnValue(taskUpdateChain(taskSets));
+    mockTasksInsert.mockClear();
 
-    await cleanupStuckWaitingInput('account-1');
+    const result = await cleanupStuckWaitingInput('account-1');
 
-    expect(capturedValues.dependsOn).toBeUndefined();
-  });
-
-  it('sets resumeBranch alongside baseBranch on the retry task, so the runner resumes the stalled branch rather than treating it as a declared base', async () => {
-    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
-    mockWorkersFindMany.mockResolvedValue([
-      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: { type: 'question', prompt: 'Need clarification' }, branch: 'buildd/task-1-slug' },
-    ]);
-
-    mockTasksFindFirst.mockResolvedValue({
-      id: 'task-1',
-      workspaceId: 'ws-1',
-      title: 'Fix the bug',
-      description: 'Fix the login bug',
-      priority: 0,
-      category: 'bug',
-      project: 'web',
-      context: {},
-      requiredCapabilities: [],
-      missionId: null,
-      runnerPreference: 'any',
-      mode: 'execution',
-      outputRequirement: 'auto',
-      outputSchema: null,
-    });
-
-    let capturedValues: any = null;
-    mockTasksInsert.mockReturnValue({
-      values: mock((vals: any) => {
-        capturedValues = vals;
-        return { returning: mock(() => [{ id: 'new-task-id' }]) };
-      }),
-    });
-
-    await cleanupStuckWaitingInput('account-1');
-
-    expect(capturedValues.context?.baseBranch).toBe('buildd/task-1-slug');
-    expect(capturedValues.context?.resumeBranch).toBe('buildd/task-1-slug');
-  });
-
-  it('fails the original task when creating retry', async () => {
-    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
-    mockWorkersFindMany.mockResolvedValue([
-      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: { type: 'question', prompt: 'Need input' } },
-    ]);
-
-    mockTasksFindFirst.mockResolvedValue({
-      id: 'task-1',
-      workspaceId: 'ws-1',
-      title: 'Build feature',
-      description: 'Build the feature',
-      priority: 5,
-      category: 'feature',
-      project: null,
-      context: { key: 'value' },
-      requiredCapabilities: ['docker'],
-      missionId: 'obj-1',
-      runnerPreference: 'any',
-      mode: 'execution',
-      outputRequirement: 'pr_required',
-      outputSchema: null,
-    });
-
-    let taskUpdateSet: any = null;
-    mockTasksUpdate.mockReturnValue({
-      set: mock((vals: any) => {
-        taskUpdateSet = vals;
-        return { where: mock(() => Promise.resolve()) };
-      }),
-    });
-
-    await cleanupStuckWaitingInput('account-1');
-
-    expect(taskUpdateSet).not.toBeNull();
-    expect(taskUpdateSet.status).toBe('failed');
+    expect(result.retriedTasks).toBe(1);
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+    expect(taskSets).toHaveLength(1);
   });
 
   it('handles multiple stuck workers across different tasks', async () => {
@@ -683,15 +623,12 @@ describe('cleanupStuckWaitingInput', () => {
         priority: 0, category: null, project: null, context: {}, requiredCapabilities: [],
         missionId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
       })
-      // resolveCompletedTask calls findFirst internally (no parentTaskId → no-op)
-      .mockResolvedValueOnce({ parentTaskId: null })
       .mockResolvedValueOnce({
         id: 'task-2', workspaceId: 'ws-1', title: 'Task 2', description: 'Desc 2',
         priority: 0, category: null, project: null, context: {}, requiredCapabilities: [],
         missionId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
       })
-      // resolveCompletedTask calls findFirst internally (no parentTaskId → no-op)
-      .mockResolvedValueOnce({ parentTaskId: null });
+    ;
 
     const result = await cleanupStuckWaitingInput('account-1');
 
@@ -767,34 +704,6 @@ describe('cleanupStuckWaitingInput', () => {
     // Only the mission task (w1) should be cleaned up, not the standalone (w2)
     expect(result.failedWorkers).toBe(1);
     expect(result.retriedTasks).toBe(1);
-  });
-
-  it('includes previous waiting_for context in retry task description', async () => {
-    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
-    mockWorkersFindMany.mockResolvedValue([
-      {
-        id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate,
-        waitingFor: { type: 'question', prompt: 'What database should I use?', options: ['PostgreSQL', 'MySQL'] },
-      },
-    ]);
-
-    mockTasksFindFirst.mockResolvedValue({
-      id: 'task-1', workspaceId: 'ws-1', title: 'Setup DB', description: 'Set up the database',
-      priority: 0, category: null, project: null, context: {}, requiredCapabilities: [],
-      missionId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
-    });
-
-    let capturedValues: any = null;
-    mockTasksInsert.mockReturnValue({
-      values: mock((vals: any) => {
-        capturedValues = vals;
-        return { returning: mock(() => [{ id: 'new-task-id' }]) };
-      }),
-    });
-
-    await cleanupStuckWaitingInput('account-1');
-
-    expect(capturedValues.description).toContain('What database should I use?');
   });
 });
 
@@ -2388,7 +2297,7 @@ describe('cleanupStuckWaitingInput — activeSessions seat release', () => {
     mockTasksInsert.mockReset();
     mockAccountsUpdate.mockReset();
     mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
-    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue(taskUpdateChain());
     mockTasksInsert.mockReturnValue({
       values: mock(() => ({ returning: mock(() => [{ id: 'new-task-id' }]) })),
     });
@@ -3070,7 +2979,7 @@ describe('cleanupStuckWaitingInput — account scoping', () => {
         }),
       })),
     });
-    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue(taskUpdateChain());
     mockTasksInsert.mockReturnValue({
       values: mock(() => ({ returning: mock(() => [{ id: 'new-task-id' }]) })),
     });
@@ -3102,8 +3011,9 @@ describe('cleanupStuckWaitingInput — account scoping', () => {
 
 // ---------------------------------------------------------------------------
 // cleanupUnresumedAnswers — an answer queued for a parked session that never
-// got acknowledged must degrade to the cold continuation it would have been,
-// carrying the human's text forward. See docs/specs/answered-question-resume.md.
+// got acknowledged must degrade to the cold path it would have taken: a new
+// attempt of the SAME task carrying the human's text, never a new task.
+// See docs/specs/answered-question-resume.md, "The cold fallback".
 // ---------------------------------------------------------------------------
 describe('cleanupUnresumedAnswers', () => {
   const PAST = new Date(Date.now() - 60 * 60 * 1000).toISOString();
@@ -3116,15 +3026,18 @@ describe('cleanupUnresumedAnswers', () => {
       accountId: 'account-1',
       workspaceId: 'workspace-1',
       branch: 'buildd/task-1-thing',
+      lastCommitSha: 'abc123',
       milestones: [{ label: 'Read the route', timestamp: 1 }],
       pendingInstructions: 'Use Postgres',
       instructionHistory: [{ type: 'instruction', message: 'Use Postgres', timestamp: 1, deliveryState: 'pending' }],
+      completedAt: null,
       task: {
         id: 'task-1',
         title: 'Pick a database',
         description: 'Choose and wire the store',
         missionId: 'mission-1',
         taskClass: 'work',
+        status: 'in_progress',
         context: {
           answerDelivery: {
             path: 'resume',
@@ -3147,9 +3060,14 @@ describe('cleanupUnresumedAnswers', () => {
     mockTasksInsert.mockReturnValue({
       values: mock(() => ({ returning: mock(() => [{ id: 'new-task-id' }]) })),
     } as any);
+    mockReopen.mockReset();
+    mockReopen.mockImplementation(async (input: any) => ({ reopened: true, taskId: input.taskId, entryId: 'entry-1' }));
+    mockWakeTask.mockReset();
+    mockWakeTask.mockImplementation(async () => {});
+    mockAnnounceTaskCreated.mockReset();
     capturedInsertValues = null;
     capturedWorkerUpdates.length = 0;
-    workersUpdateReturning = [{ id: 'worker-1' }];
+    workersUpdateReturning = [{ id: 'worker-1', completedAt: new Date(7_000) }];
     capturedAccountsSet = null;
     mockAccountsUpdate.mockReset();
     mockAccountsUpdate.mockReturnValue({
@@ -3172,14 +3090,14 @@ describe('cleanupUnresumedAnswers', () => {
   });
 
   // AC-16
-  it('creates a continuation carrying the queued answer and supersedes the worker', async () => {
+  it('reopens the worker\'s own task with the queued answer, supersedes the worker, and inserts no task', async () => {
     mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
 
     const result = await cleanupUnresumedAnswers('account-1');
 
     expect(result.degraded).toBe(1);
     // The worker is superseded and its queue cleared, so a late runner cannot
-    // inject the answer into a row that no longer owns the task.
+    // inject the answer into a row whose attempt has ended.
     const supersede = capturedWorkerUpdates[0];
     expect(supersede.status).toBe('superseded');
     expect(supersede.pendingInstructions).toBeNull();
@@ -3187,31 +3105,31 @@ describe('cleanupUnresumedAnswers', () => {
     // so nothing can re-attach to the superseded row.
     expect(supersede.parkedUntil).toBeNull();
 
-    expect(mockTasksInsert).toHaveBeenCalled();
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+    expect(mockReopen).toHaveBeenCalledTimes(1);
+    expect(mockReopen.mock.calls[0][0]).toMatchObject({
+      taskId: 'task-1',
+      worker: { id: 'worker-1', branch: 'buildd/task-1-thing', lastCommitSha: 'abc123', completedAt: new Date(7_000) },
+      answer: 'Use Postgres',
+      // The question was cleared from waitingFor at answer time; the delivery
+      // record kept a copy precisely so the new attempt can still be told it.
+      question: 'Which database?',
+      source: 'sweep:unresumed-answer',
+    });
   });
 
-  it('records resume_not_acknowledged as the reason on the continuation', async () => {
-    const insertedValues: any[] = [];
-    mockTasksInsert.mockReturnValue({
-      values: mock((v: any) => { insertedValues.push(v); return { returning: mock(() => [{ id: 'new-task' }]) }; }),
-    } as any);
+  it('records resume_not_acknowledged as the reason, with no deadline left', async () => {
     mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
 
     await cleanupUnresumedAnswers('account-1');
 
-    expect(insertedValues).toHaveLength(1);
-    expect(insertedValues[0].title).toBe('Continue: Pick a database');
-    expect(insertedValues[0].context.userInput).toBe('Use Postgres');
-    expect(insertedValues[0].context.answerDelivery.reasonCode).toBe('resume_not_acknowledged');
-    expect(insertedValues[0].context.answerDelivery.path).toBe('cold_continuation');
-    // The deadline is gone — there is nothing left to wait for.
-    expect(insertedValues[0].context.answerDelivery.ackDeadlineAt).toBeUndefined();
-    // The question was cleared from waitingFor at answer time; the delivery
-    // record kept a copy precisely so the description can still be built.
-    expect(insertedValues[0].description).toContain('Which database?');
+    const delivery = mockReopen.mock.calls[0][0].delivery;
+    expect(delivery.reasonCode).toBe('resume_not_acknowledged');
+    expect(delivery.path).toBe('cold_continuation');
+    expect(delivery.ackDeadlineAt).toBeUndefined();
   });
 
-  it('posts one warning note naming the failure to deliver', async () => {
+  it('posts one warning note naming the failure to deliver, and wakes the same task as a requeue', async () => {
     mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
 
     await cleanupUnresumedAnswers('account-1');
@@ -3219,6 +3137,9 @@ describe('cleanupUnresumedAnswers', () => {
     expect(capturedInsertValues?.type).toBe('warning');
     expect(capturedInsertValues?.taskId).toBe('task-1');
     expect(capturedInsertValues?.body).toContain('never acknowledged');
+    expect(capturedInsertValues?.body).toContain('new attempt of this task');
+    expect(mockWakeTask.mock.calls).toEqual([['task-1', 'task.requeued']]);
+    expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
   });
 
   it('leaves an answer alone before its deadline', async () => {
@@ -3239,6 +3160,7 @@ describe('cleanupUnresumedAnswers', () => {
     const result = await cleanupUnresumedAnswers('account-1');
 
     expect(result.degraded).toBe(0);
+    expect(mockReopen).not.toHaveBeenCalled();
   });
 
   // AC-18 — an acknowledged answer clears the queue; the SQL predicate
@@ -3271,8 +3193,8 @@ describe('cleanupUnresumedAnswers', () => {
     expect(result.degraded).toBe(0);
   });
 
-  // The runner can drain the queue in the exact window between the read and the
-  // write. It wins; the sweep does nothing.
+  // A sweep race: the runner can drain the queue in the exact window between
+  // the read and the write. It wins; the sweep does nothing.
   it('does nothing when the claiming compare-and-swap matches no row', async () => {
     mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
     workersUpdateReturning = [];
@@ -3280,7 +3202,8 @@ describe('cleanupUnresumedAnswers', () => {
     const result = await cleanupUnresumedAnswers('account-1');
 
     expect(result.degraded).toBe(0);
-    expect(mockTasksInsert).not.toHaveBeenCalled();
+    expect(mockReopen).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('releases one OAuth seat per degraded worker', async () => {
@@ -3300,161 +3223,58 @@ describe('cleanupUnresumedAnswers', () => {
   });
 
   // AC-19 — no transactions on neon-http: the worker is superseded and the
-  // continuation is inserted as two separate writes. If the insert throws, the
-  // worker must not be left permanently superseded with the answer discarded —
-  // it has to go back to waiting_input so a later sweep can still recover it.
-  it('restores the worker to waiting_input when the continuation insert fails', async () => {
-    mockTasksInsert.mockReturnValue({
-      values: mock(() => ({ returning: mock(() => Promise.reject(new Error('insert failed'))) })),
-    } as any);
+  // task reopened as two separate writes. If the reopen throws, the worker must
+  // not be left permanently superseded with the answer discarded — it goes back
+  // to waiting_input so a later sweep can still recover it.
+  it('restores the worker to waiting_input when reopening the task throws', async () => {
+    mockReopen.mockImplementation(async () => { throw new Error('reopen failed'); });
     mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
 
     const result = await cleanupUnresumedAnswers('account-1');
 
     expect(result.degraded).toBe(0);
-    // First write superseded the worker to claim the answer; second write is
-    // the compensation once the insert threw.
     expect(capturedWorkerUpdates).toHaveLength(2);
     const restore = capturedWorkerUpdates[1];
     expect(restore.status).toBe('waiting_input');
     expect(restore.pendingInstructions).toBe('Use Postgres');
     // No account seat is released for a worker that was never actually degraded.
     expect(capturedAccountsSet).toBeNull();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
-  // AC-26 — once the Continue: task insert has succeeded, the answer is
-  // durably recoverable, so the two remaining writes (context stamp, feed
-  // note) are best-effort: a throw there must not abort the sweep for the
-  // rest of the account's candidates.
-  it('keeps degrading later candidates when the downstream bookkeeping writes throw', async () => {
+  it('restores the worker when the task can no longer be reopened (closed in the window)', async () => {
+    mockReopen.mockImplementation(async () => ({ reopened: false, reason: 'not_reopenable' }));
+    mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
+
+    const result = await cleanupUnresumedAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+    expect(capturedWorkerUpdates[1]).toMatchObject({ status: 'waiting_input', pendingInstructions: 'Use Postgres' });
+  });
+
+  // AC-26 — once the task is reopened the answer is durable, so the feed note
+  // is best-effort: a throw there must not abort the sweep for the rest of the
+  // account's candidates.
+  it('keeps degrading later candidates when the feed note throws', async () => {
     const second = parkedWithQueuedAnswer({ workerId: 'worker-2' });
     second.id = 'worker-2';
     second.taskId = 'task-2';
     second.task = { ...second.task, id: 'task-2' };
     mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer(), second] as any);
-    mockTasksUpdate.mockReturnValue({
-      set: mock(() => ({ where: mock(() => Promise.reject(new Error('context stamp failed'))) })),
-    } as any);
-
-    const result = await cleanupUnresumedAnswers('account-1');
-
-    // Both candidates still degrade — the throw is swallowed, not propagated.
-    expect(result.degraded).toBe(2);
-    // Neither worker was rolled back: the continuation task already exists
-    // for both, so the answer was never at risk.
-    expect(capturedWorkerUpdates.some(u => u.status === 'waiting_input')).toBe(false);
-    // One OAuth seat released per degraded worker, same as the happy path.
-    expect(capturedAccountsSet).not.toBeNull();
-  });
-  // The continuation is a new task. Without a wake-up, polling runners find it
-  // eventually and a webhook-only workspace never does.
-  describe('continuation dispatch', () => {
-    const workspace = {
-      id: 'workspace-1',
-      name: 'Example',
-      repo: 'https://github.com/example/repo',
-      webhookConfig: { enabled: true, url: 'https://hooks.example.test/buildd', token: 't', events: ['task.created'] },
-    };
-
-    function withWorkspace(w: any) {
-      return { ...w, workspace };
-    }
-
-    function secondCandidate() {
-      const second = withWorkspace(parkedWithQueuedAnswer({ workerId: 'worker-2' }));
-      second.id = 'worker-2';
-      second.taskId = 'task-2';
-      second.task = { ...second.task, id: 'task-2' };
-      return second;
-    }
-
-    beforeEach(() => {
-      mockAnnounceTaskCreated.mockReset();
-      mockAnnounceTaskCreated.mockImplementation(async () => {});
-      mockWakeTask.mockReset();
-      mockWakeTask.mockImplementation(async () => {});
-      mockTasksUpdate.mockReset();
-      mockTasksUpdate.mockReturnValue({
-        set: mock(() => ({ where: mock(() => Promise.resolve()) })),
-      } as any);
-      let n = 0;
-      mockTasksInsert.mockReturnValue({
-        values: mock((v: any) => ({
-          returning: mock(() => [{ ...v, id: `continuation-${++n}` }]),
-        })),
-      } as any);
-    });
-
-    it('dispatches each continuation it creates once, with its workspace', async () => {
-      mockWorkersFindMany.mockReturnValue([withWorkspace(parkedWithQueuedAnswer()), secondCandidate()] as any);
-
+    const realInsert = (await import('@buildd/core/db')).db.insert;
+    const db = (await import('@buildd/core/db')).db as any;
+    db.insert = (table: any) => table === 'missionNotes'
+      ? { values: () => Promise.reject(new Error('note failed')) }
+      : realInsert(table);
+    try {
       const result = await cleanupUnresumedAnswers('account-1');
-
       expect(result.degraded).toBe(2);
-      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(2);
-      const calls = mockAnnounceTaskCreated.mock.calls as any[];
-      expect(calls.map(([t]) => t.id)).toEqual(['continuation-1', 'continuation-2']);
-      expect(calls[0][0].title).toBe('Continue: Pick a database');
-      expect(calls[0][1]).toBe(workspace);
-      expect(mockWakeTask.mock.calls).toEqual([['continuation-1', 'task.created'], ['continuation-2', 'task.created']]);
-    });
-
-    // Delivery reads runnerPreference off the task row, so the inherited value
-    // on the insert is what keeps a webhook restricted to other runners off it.
-    it("the continuation keeps the parent's runner preference", async () => {
-      const worker = withWorkspace(parkedWithQueuedAnswer());
-      worker.task = { ...worker.task, runnerPreference: 'service' } as any;
-      mockWorkersFindMany.mockReturnValue([worker] as any);
-
-      await cleanupUnresumedAnswers('account-1');
-
-      const [task] = mockAnnounceTaskCreated.mock.calls[0] as any[];
-      expect(task.runnerPreference).toBe('service');
-    });
-
-    it('does not re-dispatch a continuation on a later pass', async () => {
-      // The first pass flips the recorded path to cold_continuation; the next
-      // read of the same worker sees that and skips it.
-      const worker = withWorkspace(parkedWithQueuedAnswer());
-      mockWorkersFindMany.mockReturnValue([worker] as any);
-      mockTasksUpdate.mockReturnValue({
-        set: mock((vals: any) => {
-          if (vals.context) worker.task = { ...worker.task, context: vals.context };
-          return { where: mock(() => Promise.resolve()) };
-        }),
-      } as any);
-
-      await cleanupUnresumedAnswers('account-1');
-      const second = await cleanupUnresumedAnswers('account-1');
-
-      expect(second.degraded).toBe(0);
-      expect(mockWakeTask).toHaveBeenCalledTimes(1);
-    });
-
-    it('does not dispatch when the claiming compare-and-swap matches no row', async () => {
-      mockWorkersFindMany.mockReturnValue([withWorkspace(parkedWithQueuedAnswer())] as any);
-      workersUpdateReturning = [];
-
-      await cleanupUnresumedAnswers('account-1');
-
-      expect(mockWakeTask).not.toHaveBeenCalled();
-      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
-    });
-
-    it('keeps sweeping when an announce throws', async () => {
-      mockWorkersFindMany.mockReturnValue([withWorkspace(parkedWithQueuedAnswer()), secondCandidate()] as any);
-      mockAnnounceTaskCreated.mockImplementationOnce(async () => { throw new Error('pusher exploded'); });
-
-      const result = await cleanupUnresumedAnswers('account-1');
-
-      expect(result.degraded).toBe(2);
-      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(2);
-      // The announce failing does not cost either continuation its wake.
-      expect(mockWakeTask).toHaveBeenCalledTimes(2);
-      // Neither worker is rolled back: the continuation already exists.
       expect(capturedWorkerUpdates.some(u => u.status === 'waiting_input')).toBe(false);
+      expect(mockWakeTask.mock.calls.map(c => c[0])).toEqual(['task-1', 'task-2']);
       expect(capturedAccountsSet).not.toBeNull();
-    });
+    } finally {
+      db.insert = realInsert;
+    }
   });
 });
 
@@ -3525,8 +3345,8 @@ describe('resolveTasksOfReapedWorkers — never-started reap (no acknowledgement
 // ---------------------------------------------------------------------------
 // cleanupUnreadInteractiveAnswers — an answer sent back to an interactive
 // session that then went quiet without reading it (the session died between
-// the answer and its next poll) goes to a follow-up task instead of sitting on
-// a `running` worker nobody will ever drive again.
+// the answer and its next poll) goes to a new attempt of the same task instead
+// of sitting on a `running` worker nobody will ever drive again.
 // ---------------------------------------------------------------------------
 describe('cleanupUnreadInteractiveAnswers', () => {
   const QUIET = new Date(Date.now() - 60 * 60 * 1000);
@@ -3586,9 +3406,11 @@ describe('cleanupUnreadInteractiveAnswers', () => {
     mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) } as any);
     mockClearWorkerMessages.mockClear();
     mockWakeTask.mockClear();
+    mockReopen.mockReset();
+    mockReopen.mockImplementation(async (input: any) => ({ reopened: true, taskId: input.taskId, entryId: 'entry-1' }));
     capturedInsertValues = null;
     capturedWorkerUpdates.length = 0;
-    workersUpdateReturning = [{ id: 'worker-1' }];
+    workersUpdateReturning = [{ id: 'worker-1', completedAt: new Date(9_000) }];
     capturedAccountsSet = null;
     mockAccountsUpdate.mockReset();
     mockAccountsUpdate.mockReturnValue({
@@ -3610,25 +3432,30 @@ describe('cleanupUnreadInteractiveAnswers', () => {
     } as any);
   });
 
-  it('sends a quiet session\'s unread answer to a follow-up task and supersedes the worker', async () => {
+  // AC-45
+  it('sends a quiet session\'s unread answer to a new attempt of the same task and supersedes the worker', async () => {
     mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer()] as any);
 
     const result = await cleanupUnreadInteractiveAnswers('account-1');
 
     expect(result.degraded).toBe(1);
     expect(capturedWorkerUpdates[0].status).toBe('superseded');
-    expect(insertedValues).toHaveLength(1);
-    expect(insertedValues[0].title).toBe('Continue: Pick a database');
-    expect(insertedValues[0].context.userInput).toBe('Use Postgres');
-    expect(insertedValues[0].context.answerDelivery.path).toBe('cold_continuation');
-    expect(insertedValues[0].context.answerDelivery.reasonCode).toBe('interactive_answer_not_read');
-    expect(insertedValues[0].description).toContain('Which database?');
-    // The superseded worker points at where the work went on.
-    expect(capturedWorkerUpdates.some(u => u.continuationTaskId === 'new-task-id')).toBe(true);
-    expect(mockWakeTask).toHaveBeenCalledWith('new-task-id', 'task.created');
+    expect(insertedValues).toHaveLength(0);
+    expect(mockReopen).toHaveBeenCalledTimes(1);
+    expect(mockReopen.mock.calls[0][0]).toMatchObject({
+      taskId: 'task-1',
+      worker: { id: 'worker-1', completedAt: new Date(9_000) },
+      answer: 'Use Postgres',
+      question: 'Which database?',
+      delivery: { path: 'cold_continuation', reasonCode: 'interactive_answer_not_read' },
+      source: 'sweep:unread-interactive-answer',
+    });
+    // No other task to point at.
+    expect(capturedWorkerUpdates.some(u => 'continuationTaskId' in u)).toBe(false);
+    expect(mockWakeTask.mock.calls).toEqual([['task-1', 'task.requeued']]);
   });
 
-  it('takes the answer out of the old task\'s queue, so a session that comes back cannot also act on it', async () => {
+  it('takes the answer out of the task\'s message queue, so a session that comes back cannot also act on it', async () => {
     mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer()] as any);
 
     await cleanupUnreadInteractiveAnswers('account-1');
@@ -3690,14 +3517,15 @@ describe('cleanupUnreadInteractiveAnswers', () => {
     const result = await cleanupUnreadInteractiveAnswers('account-1');
 
     expect(result.degraded).toBe(0);
-    expect(mockTasksInsert).not.toHaveBeenCalled();
+    expect(mockReopen).not.toHaveBeenCalled();
     expect(mockClearWorkerMessages).not.toHaveBeenCalled();
   });
 
-  it('puts the worker back to running, answer still queued, when the follow-up insert fails', async () => {
-    mockTasksInsert.mockReturnValue({
-      values: mock(() => ({ returning: mock(() => Promise.reject(new Error('insert failed'))) })),
-    } as any);
+  it.each([
+    ['throws', async () => { throw new Error('reopen failed'); }],
+    ['moves nothing', async () => ({ reopened: false, reason: 'not_reopenable' })],
+  ] as const)('puts the worker back to running, answer still queued, when reopening the task %s', async (_label, impl) => {
+    mockReopen.mockImplementation(impl as any);
     mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer()] as any);
 
     const result = await cleanupUnreadInteractiveAnswers('account-1');

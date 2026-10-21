@@ -15,7 +15,7 @@ import {
   parseApprovalPreview,
   toolNameOf,
   type ChatToolPart,
-} from '@builddai/ai-kit/chat/contract';
+} from '@buildd/ai-kit/chat/contract';
 
 /** A write on an existing object: the server's before → after preview. */
 export interface PreviewDraft {

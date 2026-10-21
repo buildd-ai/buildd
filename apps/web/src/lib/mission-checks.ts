@@ -260,9 +260,9 @@ export function missionPrCheck(pr: MissionIntegrationPrView, ctx: { mergeTier: M
 // ── Release (R-22, P-3) ──────────────────────────────────────────────────────
 
 /** The release row, or null when no release is configured. Only healthy is delivered. */
-export function releaseCheck(status: MissionReleaseStatus, label?: string | null): CheckRow | null {
+export function releaseCheck(status: MissionReleaseStatus, label?: string | null, evidence: readonly { label: string; href: string }[] = []): CheckRow | null {
   if (status === 'not_configured') return null;
-  const base = { key: 'release', kind: 'release' as const, label: label ?? 'Release', chip: null, blocks: true, target: null, commit: null, findings: null, repairs: [], evidence: [] };
+  const base = { key: 'release', kind: 'release' as const, label: label ?? 'Release', chip: null, blocks: true, target: null, commit: null, findings: null, repairs: [], evidence: [...evidence] };
   const row = (s: CheckStatus, text: string, detail: string, actor: CheckActor, problem: CheckRow['problem'] = null): CheckRow => ({ ...base, status: s, state: text, detail, actor, problem });
   switch (status) {
     case 'waiting': return row('queued', 'waiting', 'Starts after the merge.', 'system');
@@ -291,7 +291,7 @@ export function missionChecks(input: MissionChecksInput): MissionChecks {
   const visualHolds = !!visual && input.visual!.blocksMerge && !SETTLED.has(visual.status);
   const criteria = criteriaChecks(input.criteria, input.criteriaState, { branch, prMerged, target, buildComplete });
   const pr = missionPr ? missionPrCheck(missionPr, { mergeTier: input.mergeTier, target, buildComplete, visualHolds }) : null;
-  const release = releaseCheck(input.release, input.releaseLabel);
+  const release = releaseCheck(input.release, input.releaseLabel, input.evidence?.release);
   const rows = [visual, pr, ...criteria, release].filter((r): r is CheckRow => r != null);
 
   // Verify: the visual review and the criteria. Deliver: the mission PR and the release.

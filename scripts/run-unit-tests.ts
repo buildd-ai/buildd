@@ -33,6 +33,7 @@ const UNIT_TEST_ROOTS = [
   'apps/web/tests/integration/verdict-acceptance.test.ts', // pure fold; the rest of that dir needs a live server
   'apps/web/tests/integration/verdict-integration.test.ts', // pure integrated verdict contract
   'apps/web/tests/integration/verdict-baseline.test.ts', // pure fold; same reason
+  'apps/web/tests/integration/start-commit-gate.test.ts', // pure decision; same reason
 ] as const;
 
 export function isUnitTestFile(path: string): boolean {
@@ -88,8 +89,13 @@ function isTestFileName(path: string): boolean {
 
 async function discoverUnitTests(): Promise<string[]> {
   const files: string[] = [];
-  for await (const path of new Bun.Glob('**/*.test.{ts,tsx}').scan({ cwd: '.', onlyFiles: true })) {
+  for await (const raw of new Bun.Glob('**/*.test.{ts,tsx}').scan({ cwd: '.', onlyFiles: true })) {
+    // Bun.Glob yields backslash separators on Windows; UNIT_TEST_ROOTS are slash prefixes.
+    const path = raw.replaceAll('\\', '/');
     if (isUnitTestFile(path)) files.push(path);
+  }
+  if (files.length === 0) {
+    throw new Error('discovered no unit test files at all — wrong cwd, or path separators not matching UNIT_TEST_ROOTS');
   }
   return files.sort();
 }
@@ -132,7 +138,7 @@ export async function discoverHiddenDirTests(
   for (const root of roots) {
     const glob = new Bun.Glob(`${root}**/.*/**/*.test.{ts,tsx}`);
     for await (const path of glob.scan({ cwd, onlyFiles: true, dot: true })) {
-      found.add(path);
+      found.add(path.replaceAll('\\', '/'));
     }
   }
   return [...found].sort();
@@ -642,6 +648,7 @@ function sampleHostBusy(): string {
 export async function runTestFile(
   file: string,
   spawn: SpawnTestProcess = (command, options) => Bun.spawn(command, options),
+  testNamePattern?: string,
 ): Promise<TestResult> {
   // Every test file gets its own throwaway BUILDD_HOME. Seven runner modules
   // resolve that env var when they are first imported (worker-store,
@@ -662,6 +669,14 @@ export async function runTestFile(
         { cause: err },
       );
     }
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'EPERM' || code === 'EACCES' || code === 'EROFS') {
+      throw new Error(
+        `Cannot create a per-file test home in ${tmpdir()} (${code}): the temp directory is read-only here. ` +
+          'Point TMPDIR at a writable directory (e.g. an ignored directory inside your worktree) and re-run.',
+        { cause: err },
+      );
+    }
     throw err;
   }
   const buildHome = join(testHome, 'home');
@@ -670,7 +685,7 @@ export async function runTestFile(
   const elapsed = (): number => Math.round(performance.now() - startedAt);
   try {
     const timeoutMs = getTestTimeoutMs(process.env.BUILDD_TEST_TIMEOUT_MS);
-    const child = spawn([process.execPath, 'test', '--preload', storeGuardPath(), '--timeout', String(timeoutMs), file], {
+    const child = spawn([process.execPath, 'test', '--preload', storeGuardPath(), '--timeout', String(timeoutMs), ...(testNamePattern ? ['--test-name-pattern', testNamePattern] : []), file], {
       stdout: 'pipe',
       stderr: 'pipe',
       // TMPDIR is the throwaway dir and BUILDD_HOME a child of it (the home

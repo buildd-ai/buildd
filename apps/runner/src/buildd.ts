@@ -513,6 +513,8 @@ export class BuilddClient {
     githubThrottled?: boolean;
     /** A Claude run refused before spawn for want of any model credential (host-seat.ts claudeModelAuthMissing): the server books infra_failure and requeues with backoff. */
     modelAuthMissing?: boolean;
+    /** The runner refused the session at preflight: its isolation record cannot honour the task's requirement. The server books infra_failure. */
+    isolationRefused?: boolean;
     /**
      * The server REFUSED a mutation for this session (a 4xx, or an unqueueable
      * 5xx) rather than the session crashing. Chargeability is the SERVER's

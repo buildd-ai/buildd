@@ -230,6 +230,7 @@ describe('buildPromptWithComposition — per-section byte accounting', () => {
       'user-preferences',
       'resolved-context-providers',
       'task-description',
+      'untestable-acceptance-checks',
       'design-source',
       'work-kind',
       'handoff-requirement',
@@ -238,6 +239,8 @@ describe('buildPromptWithComposition — per-section byte accounting', () => {
       'heartbeat-protocol',
       'aggregation-context',
       'retry-context',
+      'answered-question',
+      'unanswered-question',
       'communication',
       'task-metadata',
     ]);
@@ -305,4 +308,63 @@ describe('buildPromptWithComposition — refused tool calls are not a stop instr
       });
     }
   }
+});
+
+describe('R-82: acceptance checks that need judgement', () => {
+  it('requires a reason and a review method for every untestable check', () => {
+    const ctx = baseCtx();
+    ctx.task.title = '[acceptance tests] Prepare checks';
+    const { promptText } = buildPromptWithComposition(ctx);
+    expect(promptText).toContain('## Untestable acceptance checks');
+    expect(promptText).toContain('criterion id');
+    expect(promptText).toContain('why an executable test cannot check it');
+    expect(promptText).toContain('code review or screenshots');
+    expect(promptText).toContain('create_artifact');
+    expect(promptText).toContain('complete_task');
+  });
+
+  it('keeps the instructions when the acceptance task is renamed', () => {
+    const ctx = baseCtx();
+    ctx.task.context = { acceptanceTests: { missionId: 'm', specId: 's' } };
+    expect(buildPromptWithComposition(ctx).promptText).toContain('## Untestable acceptance checks');
+  });
+
+  it('does not ask ordinary building work to classify acceptance checks', () => {
+    expect(buildPromptWithComposition(baseCtx()).promptText).not.toContain('## Untestable acceptance checks');
+  });
+});
+
+// docs/specs/answered-question-resume.md AC-54: a cold answer reopens the SAME
+// task for a new attempt; the answer reaches that attempt through its context.
+describe('buildPromptWithComposition — answered question on a new attempt', () => {
+  const withAnswers = (answeredQuestions: unknown) => baseCtx({
+    task: {
+      id: 'task-2',
+      title: 'Build the parser',
+      description: 'Parse the feed',
+      outputRequirement: 'pr_required',
+      roleSlug: null,
+      context: { iteration: 2, resumeBranch: 'buildd/task-2-parser', answeredQuestions },
+    } as unknown as BuilddTask,
+  });
+
+  it('carries every answered question and the answer verbatim, and says not to ask again', () => {
+    const { promptText, sections } = buildPromptWithComposition(withAnswers([
+      { id: 'e1', workerId: 'w-1', question: 'Which format?', answer: 'JSON lines, one object per row', milestones: ['Wrote the reader'], branch: 'buildd/task-2-parser', reasonCode: 'runner_not_holding_transcript', reason: 'the runner stopped reporting', answeredAt: '2026-01-01T00:00:00.000Z' },
+    ]));
+    expect(promptText).toContain('## Answered Question');
+    expect(promptText).toContain('Which format?');
+    expect(promptText).toContain('JSON lines, one object per row');
+    expect(promptText).toContain('Wrote the reader');
+    expect(promptText).toMatch(/do not ask it again/i);
+    expect(sections.find(s => s.name === 'answered-question')!.rendered).toBe(true);
+  });
+
+  it('renders nothing without answered questions, or with a malformed list', () => {
+    for (const v of [undefined, 'nope', [null, 3]]) {
+      const { promptText, sections } = buildPromptWithComposition(withAnswers(v));
+      expect(promptText).not.toContain('## Answered Question');
+      expect(sections.find(s => s.name === 'answered-question')!.rendered).toBe(false);
+    }
+  });
 });

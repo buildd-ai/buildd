@@ -39,7 +39,7 @@ import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { ActionQueueItem, EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { gateEscalations } from '@/lib/escalation-gate-check';
 import { agentReviewsDataMigrations, MISSION_SUMMARY_VERSION } from '@buildd/shared';
-import { ACCESS_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, HOME_MISSION_SUMMARIES } from '@/modules';
+import { ACCESS_NEEDS_YOU, SCHEDULE_MOVE_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, HOME_MISSION_SUMMARIES } from '@/modules';
 import type { MissionHomeReading } from '@/lib/mission-summary';
 import type { LiveHomeReading } from '@/lib/mission-summary-home';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
@@ -83,6 +83,7 @@ import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { missionCardHref, type MissionCardRow } from '@/lib/mission-card-view';
 import type { MissionVisualReviewState } from '@/lib/workflow/visual-review-state';
 import { HOME_JUST_LANDED_WINDOW_MS, isRecentlyDelivered } from '@/lib/recently-delivered';
+import { withPageBudget } from '@/lib/page-budget-watch';
 
 export const dynamic = 'force-dynamic';
 
@@ -161,7 +162,7 @@ const EMPTY_VIEW: HomeView = {
  * 300px). side: nothing is moving, so Agents and Landed share the row. single:
  * one column. Below 900px every layout reads Agents, Moving, Landed.
  */
-export default async function HomePage({
+async function HomePage({
   searchParams,
 }: {
   searchParams?: Promise<{ workspace?: string; initiative?: string; pr?: string; t?: string }>;
@@ -433,6 +434,7 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
     home: sql<MissionHomeReading>`${home}`, computedAt: missionSummaries.computedAt,
   };
   const ACCESS = hasWs && roleHasPermission(role, 'manage_connectors') ? await ACCESS_NEEDS_YOU(teamId, wsIds) : null;
+  const SCHEDULE_MOVES = hasWs && roleHasPermission(role, 'delegate_schedule_access') ? await SCHEDULE_MOVE_NEEDS_YOU(wsIds) : null;
   const r1 = await readRound({
     ss0: statusPlan.queries[0], ss1: statusPlan.queries[1], ss2: statusPlan.queries[2], ss3: statusPlan.queries[3],
     ss4: statusPlan.queries[4], ss5: statusPlan.queries[5], ss6: statusPlan.queries[6],
@@ -562,6 +564,7 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
       extras: sqlExtras({ declaredStatus: sql<string | null>`${specDiscrepancies.evidence}->>'declaredStatus'` }),
     }) : null,
     access: ACCESS?.query ?? null,
+    scheduleMoves: SCHEDULE_MOVES?.query ?? null,
   });
 
   // Bookkeeping after the response: the PR fact import catches missed merge
@@ -975,6 +978,8 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
 
   // 7. Agent access requests team policy leaves to a person.
   if (ACCESS && r1.access) waitingOnYou.push(...ACCESS.items(r1.access));
+  // 8. Schedule move proposals, for whoever holds delegate_schedule_access.
+  if (SCHEDULE_MOVES && r1.scheduleMoves) waitingOnYou.push(...SCHEDULE_MOVES.items(r1.scheduleMoves));
 
   // ── Round 3: the escalation gate's stored verdicts and the merge advice ledger ──
   const snoozedSubjectKeys = new Set((r1.snoozes ?? []).map((s) => s.subjectKey));
@@ -1658,3 +1663,5 @@ async function gateInbox(
     return inbox.items;
   }
 }
+
+export default withPageBudget('home', HomePage);

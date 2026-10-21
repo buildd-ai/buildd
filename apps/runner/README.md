@@ -89,7 +89,7 @@ What `service install` does, per platform:
 |---|---|---|
 | macOS | a `launchd` LaunchAgent (`RunAtLoad` + `KeepAlive`) | `~/Library/LaunchAgents/dev.buildd.runner.plist` |
 | Linux | a `systemd --user` unit (`Restart=always`) | `~/.config/systemd/user/buildd-runner.service` |
-| Windows | a Scheduled Task (`AtLogOn` trigger, restart-on-crash settings) | registered task `buildd runner` |
+| Windows | a Scheduled Task (at your logon, limited token, restart on failure, no console window) | task `buildd runner`, defined by `~/.buildd/service/buildd-runner.xml` |
 
 Logs land in `~/.buildd/logs/stdout.log` and `~/.buildd/logs/stderr.log` (or
 under `$BUILDD_HOME/logs` if you've overridden `BUILDD_HOME`).
@@ -104,20 +104,14 @@ loginctl enable-linger $USER
 `buildd service install` prints this reminder; `buildd service status` warns
 if linger isn't enabled yet.
 
-On Windows, the Scheduled Task is registered by `install.ps1` directly (there
-is no `buildd service` subcommand on Windows — the launcher there,
-`buildd.cmd`, has no subcommand dispatch). Pass `-Service` to register it
-non-interactively:
+On Windows, `install.ps1 -Service` runs `buildd service install` for you:
 
 ```powershell
 &([ScriptBlock]::Create((irm buildd.dev/install.ps1))) -Service
 ```
 
-Manage or remove it with the standard `ScheduledTasks` PowerShell module:
-
-```powershell
-Get-ScheduledTask -TaskName 'buildd runner' | Unregister-ScheduledTask -Confirm:$false
-```
+**Windows only:** `buildd service uninstall` (or a stop from Task Scheduler)
+ends the runner at once, so its agents get no window to pause first.
 
 Either way, the service always runs **as the installing user** — never
 root/Administrator/SYSTEM — and it keeps the exact same self-update behavior
@@ -274,3 +268,41 @@ What remains:
   bwrap mount allowlist (`BUILDD_SANDBOX_MOUNT_ALLOWLIST=1`, Claude sessions)
   binds neither file into the agent's namespace; otherwise use a hosted or
   container runner, where the runner key never enters the agent's machine.
+
+## For buildd contributors
+
+### Trying the dev build of `buildd top`
+
+The runner always runs the latest production release. To look at the newest
+`dev` version of `buildd top` without moving the runner off it, turn the dev
+channel on for this machine once:
+
+```bash
+buildd config set devChannel on     # saved in ~/.buildd/config.json
+buildd top --dev                    # or: buildd top-dev
+```
+
+Or allow a single run without saving anything:
+
+```bash
+BUILDD_DEV_CHANNEL=1 buildd top --dev
+```
+
+It runs unreleased code that may break. Without either opt-in, `buildd top
+--dev` downloads nothing and says how to turn it on.
+
+Each run updates a separate copy in `~/.buildd-dev` (set `BUILDD_DEV_DIR` to
+put it elsewhere) to the newest `dev` commit, runs `bun install` there only
+when the lockfile changed, then opens top from it. The header reads
+`buildd dev <commit>` so you can tell it apart. It uses the same login and
+server as `buildd top` and watches the same runner.
+
+`~/.buildd`, the runner, its background service and its auto-update are never
+touched, and the dev copy only ever runs top: `--dev` on any other command is
+refused. If the update fails (no network, say), top opens from the last dev
+copy and says it is stale; the very first run needs the network. To go back,
+run `buildd top`.
+
+To turn it off, run `buildd config set devChannel off`. If `buildd top --dev`
+made `~/.buildd-dev`, it asks once whether to delete it (`y` deletes; any other
+answer, or no terminal, keeps it). It never deletes a folder it did not make.

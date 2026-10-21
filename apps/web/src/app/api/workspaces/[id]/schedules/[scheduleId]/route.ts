@@ -12,6 +12,8 @@ import { can } from '@/lib/permissions';
 import { parseScheduleDelegationInput, type ScheduleDelegation } from '@buildd/core/token-delegation';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { clearCallerCache, callerDep } from '@/lib/caller-cache';
+import { applyScheduleMove, validateScheduleMove } from '@/lib/schedule-move';
+import { moverOf } from '@/lib/schedule-move-auth';
 
 type RouteParams = { params: Promise<{ id: string; scheduleId: string }> };
 
@@ -142,14 +144,22 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
     if (body.oneShot !== undefined) updates.oneShot = body.oneShot;
     if (body.maxConcurrentFromSchedule !== undefined) updates.maxConcurrentFromSchedule = body.maxConcurrentFromSchedule;
     if (body.pauseAfterFailures !== undefined) updates.pauseAfterFailures = body.pauseAfterFailures;
-    if (body.workspaceId !== undefined) {
-      updates.workspaceId = body.workspaceId;
-      // A grant is made for one schedule in one workspace; it never travels.
-      if (body.workspaceId !== existing.workspaceId) updates.delegation = null;
+    // A move is validated before anything is written (I-26) and applied after
+    // the other edits, through the one path a proposal's acceptance also uses.
+    const moveTo: string | null = body.workspaceId !== undefined && body.workspaceId !== existing.workspaceId ? String(body.workspaceId) : null;
+    if (moveTo) {
+      const mover = moverOf(authResult);
+      const own = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, id)), columns: { teamId: true } });
+      if (!own?.teamId) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+      if (!(await can(authResult, 'delegate_schedule_access', own.teamId))) {
+        return NextResponse.json({ error: 'Moving a schedule requires team admin or owner' }, { status: 403 });
+      }
+      const check = await validateScheduleMove({ fromWorkspaceId: id, targetWorkspaceId: moveTo, canCreateIn: mover.canCreateIn });
+      if (!check.ok) return NextResponse.json({ error: check.error }, { status: check.status });
     }
 
     if (body.delegation !== undefined) {
-      if (body.workspaceId !== undefined && body.workspaceId !== existing.workspaceId) {
+      if (moveTo) {
         return NextResponse.json({ error: 'Move the schedule and set its delegation in separate requests' }, { status: 400 });
       }
       const delegation = await resolveDelegationWrite(authResult, id, body.delegation);
@@ -186,7 +196,7 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
       updates.nextRunAt = newEnabled ? computeNextRunAt(newCron, newTz) : null;
     }
 
-    const [updated] = await db
+    let [updated] = await db
       .update(taskSchedules)
       .set(updates)
       .where(eq(taskSchedules.id, scheduleId))
@@ -197,6 +207,15 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
     if ('delegation' in updates) {
       const scheduleWorkspaces = [existing.workspaceId, updated?.workspaceId, id].filter((w): w is string => !!w);
       await clearCallerCache(...scheduleWorkspaces.map(callerDep.workspaceSchedules));
+    }
+
+    if (moveTo && updated) {
+      const moved = await applyScheduleMove({
+        schedule: updated, targetWorkspaceId: moveTo, actor: moverOf(authResult).actor,
+        reason: typeof body.moveReason === 'string' ? body.moveReason : null,
+      });
+      if (!moved) return NextResponse.json({ error: 'The schedule was moved by someone else; reload it' }, { status: 409 });
+      updated = moved.schedule;
     }
 
     return NextResponse.json({ schedule: updated });

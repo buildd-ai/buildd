@@ -1474,6 +1474,18 @@ export function isRunnerCodexAuthSource(value: unknown): value is RunnerCodexAut
   return typeof value === 'string' && (RUNNER_CODEX_AUTH_SOURCES as readonly string[]).includes(value);
 }
 
+/**
+ * The model route a claim recorded for a task's run (`workers.model_route`):
+ * which credential the run was set up to spend, never the credential. Words
+ * mirror the claim's own route decision (api/workers/claim/claude-model-route.ts).
+ */
+export const RECORDED_MODEL_ROUTES = ['oauth_seat', 'agent_endpoint', 'anthropic_api_key', 'runner_provider', 'cloud_egress'] as const;
+export type RecordedModelRoute = (typeof RECORDED_MODEL_ROUTES)[number];
+
+export function isRecordedModelRoute(value: unknown): value is RecordedModelRoute {
+  return typeof value === 'string' && (RECORDED_MODEL_ROUTES as readonly string[]).includes(value);
+}
+
 /** The model-auth fields a runner adds to its heartbeat body. Both optional: older runners omit them. */
 export interface RunnerModelAuthHeartbeatFields {
   modelAuthSource?: RunnerModelAuthSource;
@@ -3275,6 +3287,8 @@ export interface LivingSpecCriterionStanding {
   standing: 'pass' | 'fail' | 'inconclusive' | 'unsupported' | 'missing' | 'stale' | 'waived';
   headSha: string | null;
   verdictId?: string;
+  /** Review verdicts a deciding test result outranks (spec 1dc6cc39 R-85); absent reads 0. */
+  overriddenReviews?: number;
 }
 
 /**
@@ -4273,6 +4287,8 @@ export interface FleetRunner {
   maxSlots: number;
   online: boolean;
   slots: FleetSlot[];
+  /** Recorded model route of the runs on this runner in the window, by count. Absent when none was recorded. */
+  routes?: { route: RecordedModelRoute; count: number }[];
   /**
    * Set when this row is an elastic group of ephemeral `--once` runs (one cloud
    * dispatcher, lib/fleet-view.ts) rather than one machine. Its slots are its
@@ -4307,8 +4323,30 @@ export interface FleetSnapshot {
   /** Live workers on runner slots (session claims are in `sessions`). */
   live: number;
   capacity: number;
+  /** Runner slots by state, now (lib/fleet-view.ts fleetSlotCounts). Absent on older snapshots. */
+  slots?: FleetSlotCounts;
   /** Timeline window, epoch ms. */
   window: { from: number; to: number };
+}
+
+/**
+ * Runner slots as of one moment, from the runners' heartbeats. configured ≥
+ * online ≥ schedulable, but busy can exceed schedulable (a held runner still
+ * finishing its work), so they are four numbers, never one derived from another.
+ */
+export interface FleetSlotCounts {
+  /** Advertised by every runner in scope that is not presumed dead, online or not. */
+  configured: number;
+  /** On runners whose last beat is inside `windowMs` of `asOf`. Equals `FleetSnapshot.capacity`. */
+  online: number;
+  /** Online slots a claim can fill: online, minus runners a person put on hold. */
+  schedulable: number;
+  /** Live runner workers on online runners. */
+  busy: number;
+  /** When the heartbeats were read, epoch ms. */
+  asOf: number;
+  /** How fresh a beat must be to count online, ms. */
+  windowMs: number;
 }
 
 // ── GET /api/prs (list_prs) ─────────────────────────────────────────────────

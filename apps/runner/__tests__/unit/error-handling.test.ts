@@ -165,7 +165,7 @@ mock.module('../../src/env-scan', () => ({
 }));
 
 // Import WorkerManager after all mocks
-const { WorkerManager, __setModelAuthPreflightForTest, __setIsolationHostForTest } = await import('../../src/workers');
+const { WorkerManager, __setModelAuthPreflightForTest, __setIsolationHostForTest, __resetBwrapSupportForTest } = await import('../../src/workers');
 // Mocked bwrap probe models a Linux host; don't run the real Seatbelt probe on macOS.
 __setIsolationHostForTest('linux');
 // Sessions here run a mocked SDK with no model credential: skip the
@@ -307,6 +307,62 @@ describe('Error Handling', () => {
       expect(pause?.reason).toContain('No model login on this runner');
       expect(pause?.reason).not.toContain('Billing');
       expect(pause.pausedUntil - Date.now()).toBeLessThanOrEqual(10 * 60_000);
+    });
+  });
+
+  // ─── 0b. Isolation refused at start (Living Spec "Runner isolation", R-4) ──
+
+  // Task 4ad0f95a: the claim's stamp is recorded on the worker so a resume,
+  // retry or recovery stub (recovery.ts) is decided under it, not as protected.
+  describe('isolation stamp on an opted-out runner', () => {
+    const prevDisable = process.env.BUILDD_DISABLE_SANDBOX;
+    beforeEach(() => {
+      process.env.BUILDD_DISABLE_SANDBOX = '1';
+      __resetBwrapSupportForTest();
+    });
+    afterEach(() => {
+      if (prevDisable === undefined) delete process.env.BUILDD_DISABLE_SANDBOX; else process.env.BUILDD_DISABLE_SANDBOX = prevDisable;
+      __resetBwrapSupportForTest();
+    });
+
+    test('a trusted_local stamp runs reduced and is kept on the worker for later resumes', async () => {
+      const stamped = { ...makeTask(), context: { isolation: { requirement: 'trusted_local', source: 'single_owner_team', mode: 'reduced' } } };
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-iso' },
+        { type: 'result', subtype: 'success', session_id: 'sess-iso', total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 } },
+      ];
+      mockClaimTask.mockImplementation(async () => ({ workers: [{ id: 'w-iso-ok', branch: 'buildd/iso-ok', task: stamped }] }));
+      lastQueryOptions = null;
+
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(stamped);
+      await waitFor(() => !!manager.getWorker('w-iso-ok')?.taskIsolation);
+
+      expect(manager.getWorker('w-iso-ok')?.taskIsolation).toEqual({ requirement: 'trusted_local', source: 'single_owner_team', mode: 'reduced' });
+      // It ran: the agent was spawned and no failure was reported.
+      await waitFor(() => lastQueryOptions !== null && manager.getWorker('w-iso-ok')?.status !== 'working');
+      expect(lastQueryOptions).not.toBeNull();
+      const failed = mockUpdateWorker.mock.calls.find((c: any[]) => c[0] === 'w-iso-ok' && c[1]?.status === 'failed');
+      expect(failed).toBeUndefined();
+    });
+
+    // A protected (here: unstamped) task is refused before spawn and handed
+    // back to the queue as infra, like a missing model login, never run reduced.
+    test('a protected task is refused before spawn and reported as an infra requeue', async () => {
+      lastQueryOptions = null;
+      mockClaimTask.mockImplementation(async () => ({ workers: [{ id: 'w-iso-refused', branch: 'buildd/iso-refused', task: makeTask() }] }));
+
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => mockUpdateWorker.mock.calls.some((c: any[]) => c[0] === 'w-iso-refused' && c[1]?.status === 'failed'));
+
+      // No agent was spawned, so nothing ran reduced.
+      expect(lastQueryOptions).toBeNull();
+      expect(manager.getWorker('w-iso-refused')?.taskIsolation).toBeUndefined();
+      const failed = mockUpdateWorker.mock.calls.find((c: any[]) => c[0] === 'w-iso-refused' && c[1]?.status === 'failed');
+      expect(failed![1].isolationRefused).toBe(true);
+      expect(failed![1].error).toContain('Not started: The task needs protected isolation');
+      expect(failed![1].resultMeta.closingTurnOutcome).toBe('skipped:infra_failure');
     });
   });
 

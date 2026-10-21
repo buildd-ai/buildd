@@ -55,23 +55,23 @@ beforeEach(() => {
 
 describe('POST /api/agent-capabilities/requests', () => {
   it('asks semantically under a task token, as its own worker', async () => {
-    const res = await POST(post({ workerId: WORKER, capability: 'observability:query', provider: 'axiom', reason: 'trace latency' }));
+    const res = await POST(post({ workerId: WORKER, provider: 'axiom', access: 'read', reason: 'trace latency' }));
     expect(res.status).toBe(201);
     const json = await res.json();
     expect(json).toMatchObject({ outcome: 'pending_approval', provider: 'axiom', connector: 'Axiom', grant: { id: 'g1' } });
     expect(mockRequest.mock.calls[0][0]).toMatchObject({ workerId: WORKER, via: 'task_token' });
-    expect(mockRequest.mock.calls[0][1]).toMatchObject({ capability: 'observability:query', provider: 'axiom', risk: 'query' });
+    expect(mockRequest.mock.calls[0][1]).toMatchObject({ capability: 'axiom:read', provider: 'axiom', risk: 'read' });
   });
 
   it('refuses a connector id or credential in the ask', async () => {
-    const res = await POST(post({ workerId: WORKER, capability: 'observability:query', connectorId: 'abc' }));
+    const res = await POST(post({ workerId: WORKER, provider: 'axiom', access: 'read', connectorId: 'abc' }));
     expect(res.status).toBe(400);
     expect(mockRequest).not.toHaveBeenCalled();
   });
 
   it("a task token cannot ask for another task's worker (replay / cross-task)", async () => {
     mockResolvePrincipal.mockResolvedValue({ ok: true, principal: { ...PRINCIPAL, taskId: '99999999-9999-4999-8999-999999999999' }, workspace: { id: WS } });
-    const res = await POST(post({ workerId: WORKER, capability: 'observability:query' }));
+    const res = await POST(post({ workerId: WORKER, provider: 'axiom', access: 'read' }));
     expect(res.status).toBe(404);
     expect(mockRequest).not.toHaveBeenCalled();
     expect(mockAudit.mock.calls.at(-1)![0]).toMatchObject({ capability: 'capability.request', decision: 'refused', reasonCode: 'task_scope_mismatch' });
@@ -79,17 +79,17 @@ describe('POST /api/agent-capabilities/requests', () => {
 
   it('a dead worker or another team’s worker is refused before any lookup', async () => {
     mockResolvePrincipal.mockResolvedValue({ ok: false, status: 404, error: 'Worker not found', reasonCode: 'not_found' });
-    expect((await POST(post({ workerId: WORKER, capability: 'observability:query' }))).status).toBe(404);
+    expect((await POST(post({ workerId: WORKER, provider: 'axiom', access: 'read' }))).status).toBe(404);
     mockResolvePrincipal.mockResolvedValue({ ok: false, status: 409, error: 'Worker is not live', reasonCode: 'worker_not_live' });
-    expect((await POST(post({ workerId: WORKER, capability: 'observability:query' }))).status).toBe(409);
+    expect((await POST(post({ workerId: WORKER, provider: 'axiom', access: 'read' }))).status).toBe(409);
     expect(mockRequest).not.toHaveBeenCalled();
   });
 
   it('401 without a key; 403 for a trigger token', async () => {
     mockAuth.mockResolvedValue(null);
-    expect((await POST(post({ workerId: WORKER, capability: 'observability:query' }, null))).status).toBe(401);
+    expect((await POST(post({ workerId: WORKER, provider: 'axiom', access: 'read' }, null))).status).toBe(401);
     mockAuth.mockResolvedValue({ ...ACCOUNT, level: 'trigger' });
-    expect((await POST(post({ workerId: WORKER, capability: 'observability:query' }))).status).toBe(403);
+    expect((await POST(post({ workerId: WORKER, provider: 'axiom', access: 'read' }))).status).toBe(403);
   });
 
   it('a repeat ask that returns the same row is 200, deduped', async () => {
@@ -97,7 +97,7 @@ describe('POST /api/agent-capabilities/requests', () => {
       ok: true, deduped: true, grant: { id: 'g1', status: 'pending' },
       resolution: { kind: 'pending_approval', reasonCode: 'already_pending', target: null, policy: null, ttlSeconds: 3600, grantId: 'g1', nextSteps: [], alternatives: [] },
     });
-    const res = await POST(post({ workerId: WORKER, capability: 'observability:query' }));
+    const res = await POST(post({ workerId: WORKER, provider: 'axiom', access: 'read' }));
     expect(res.status).toBe(200);
     expect((await res.json()).deduped).toBe(true);
     // The same row again is not a new ask: no second page.
@@ -105,7 +105,7 @@ describe('POST /api/agent-capabilities/requests', () => {
   });
 
   it('a new pending request pages the team once; an auto-grant does not page', async () => {
-    await POST(post({ workerId: WORKER, capability: 'observability:query', provider: 'axiom' }));
+    await POST(post({ workerId: WORKER, provider: 'axiom', access: 'read' }));
     expect(mockNotify).toHaveBeenCalledTimes(1);
     expect(mockNotify.mock.calls[0][0]).toBe('team-1');
     expect(mockNotify.mock.calls[0][1]).toMatchObject({ id: 'g1', status: 'pending' });
@@ -115,7 +115,7 @@ describe('POST /api/agent-capabilities/requests', () => {
       ok: true, deduped: false, grant: { id: 'g2', status: 'granted', decidedBy: 'policy' },
       resolution: { kind: 'auto_granted', reasonCode: 'policy_auto_grant', target: { provider: 'axiom', connectorId: 'c', connectorName: 'Axiom' }, policy: null, ttlSeconds: 3600, grantId: 'g2', nextSteps: [], alternatives: [] },
     });
-    await POST(post({ workerId: WORKER, capability: 'observability:query', provider: 'axiom' }));
+    await POST(post({ workerId: WORKER, provider: 'axiom', access: 'read' }));
     expect(mockNotify).not.toHaveBeenCalled();
   });
 });

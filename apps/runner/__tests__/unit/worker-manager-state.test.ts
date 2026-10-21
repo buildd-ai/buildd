@@ -692,7 +692,12 @@ describe('WorkerManager — state transitions', () => {
 
       manager = new WorkerManager(makeConfig({ inputAsRetry: true }));
       await manager.claimAndStart(task);
-      await new Promise(r => setTimeout(r, 300));
+      // Poll rather than a fixed sleep: loaded CI runners need longer than 300ms.
+      for (let i = 0; i < 100; i++) {
+        if (mockUpdateWorker.mock.calls.some((c: any[]) => c[1]?.status === 'waiting_input')) break;
+        await new Promise(r => setTimeout(r, 50));
+      }
+      await new Promise(r => setTimeout(r, 100));
 
       expect(mockQueryPrompts.length).toBe(2);
       expect(mockQueryPrompts[1]).toBe('Take one more shot at it.');

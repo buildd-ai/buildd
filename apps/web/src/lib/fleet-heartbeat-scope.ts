@@ -5,11 +5,15 @@
  * and /api/workers/active use, so Settings, Health and list_runners list the
  * same runners.
  *
+ * A person-granted link counts only while its grant holds (`liveLinkCondition`),
+ * as in the claim rule and the Health runner list: a lapsed grant adds no slots.
+ *
  * Not `worker_heartbeats.workspace_ids`: the heartbeat route writes it as an
  * empty array, so matching on it silently dropped every linked runner.
  */
 import { accounts, accountWorkspaces, workerHeartbeats } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { liveLinkCondition } from './granted-links';
 
 export function fleetHeartbeatScope(input: { teamId: string | null; wsIds: readonly string[] }): SQL | null {
   const { teamId, wsIds } = input;
@@ -18,6 +22,7 @@ export function fleetHeartbeatScope(input: { teamId: string | null; wsIds: reado
     ? sql`${workerHeartbeats.accountId} in (select ${accountWorkspaces.accountId} from ${accountWorkspaces} where ${and(
         inArray(accountWorkspaces.workspaceId, [...wsIds]),
         isNull(accountWorkspaces.removedAt),
+        liveLinkCondition(),
       )})`
     : undefined;
   const own = teamId

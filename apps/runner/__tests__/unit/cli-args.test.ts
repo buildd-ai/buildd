@@ -4,7 +4,7 @@
  * starts — classifyCliArgs is that decision.
  */
 import { describe, test, expect } from 'bun:test';
-import { classifyCliArgs, RUNNER_USAGE, EXIT_CLI_USAGE } from '../../src/cli-args';
+import { classifyCliArgs, refuseInDevCheckout, RUNNER_USAGE, EXIT_CLI_USAGE } from '../../src/cli-args';
 
 const argv = (...a: string[]) => ['bun', '/x/index.ts', ...a];
 
@@ -128,6 +128,63 @@ describe('buildd top', () => {
   });
   test('help lists top', () => {
     expect(RUNNER_USAGE).toMatch(/^ {2}buildd top {2,}\S/m);
+  });
+});
+
+describe('buildd top --dev / top-dev (the dev build of top)', () => {
+  test('top --dev and top-dev both route to the dev checkout, with the top args minus --dev', () => {
+    expect(classifyCliArgs(argv('top', '--dev'))).toEqual({ kind: 'top-dev', args: [] });
+    expect(classifyCliArgs(argv('top-dev'))).toEqual({ kind: 'top-dev', args: [] });
+    expect(classifyCliArgs(argv('top', '--mission', 'm1', '--dev'))).toEqual({ kind: 'top-dev', args: ['--mission', 'm1'] });
+    expect(classifyCliArgs(argv('top-dev', '--team=Acme'))).toEqual({ kind: 'top-dev', args: ['--team=Acme'] });
+  });
+  test('the top args are still checked', () => {
+    expect(classifyCliArgs(argv('top', '--dev', '--debug'))).toEqual({ kind: 'unknown', arg: '--debug' });
+    expect(classifyCliArgs(argv('top-dev', 'extra'))).toEqual({ kind: 'unknown', arg: 'extra' });
+  });
+  test.each([
+    [['--dev']],
+    [['--dev', '--debug']],
+    [['--debug', '--dev']],
+    [['--foreground', '--dev']],
+    [['hold', '--dev']],
+    [['resume', '--dev']],
+    [['stop', '--dev']],
+    [['slots', '3', '--dev']],
+    [['web', '--dev']],
+    [['name', '--dev']],
+    [['--once', '--task', 't1', '--dev']],
+  ])('anything but top with --dev is refused: %j', (args) => {
+    const d = classifyCliArgs(argv(...args));
+    expect(d.kind).toBe('dev-refused');
+    expect((d as { message: string }).message).toContain('only buildd top has a dev build');
+  });
+  test('the dev checkout runs top and nothing else', () => {
+    const env = { BUILDD_TOP_CHANNEL: 'dev' };
+    expect(refuseInDevCheckout(classifyCliArgs(argv('top')), env)).toBeNull();
+    expect(refuseInDevCheckout(classifyCliArgs(argv('top', '--mission', 'm1')), env)).toBeNull();
+    for (const args of [[], ['--debug'], ['hold'], ['top-dev'], ['top', '--dev'], ['stop', '--yes'], ['--once', '--task', 't']]) {
+      expect(refuseInDevCheckout(classifyCliArgs(argv(...args)), env)).toContain('dev checkout only runs buildd top');
+    }
+    // The production checkout (no channel) is unaffected.
+    expect(refuseInDevCheckout(classifyCliArgs(argv()), {})).toBeNull();
+    expect(refuseInDevCheckout(classifyCliArgs(argv('top-dev')), {})).toBeNull();
+  });
+  test('help does not list top --dev, top-dev or the config switch (contributors only)', () => {
+    expect(RUNNER_USAGE).not.toMatch(/--dev(?![a-z])/); // --device is login's
+    expect(RUNNER_USAGE).not.toContain('top-dev');
+    expect(RUNNER_USAGE).not.toContain('.buildd-dev');
+    expect(RUNNER_USAGE).not.toContain('devChannel');
+  });
+  test('config set devChannel on|off, and nothing else', () => {
+    expect(classifyCliArgs(argv('config', 'set', 'devChannel', 'on'))).toEqual({ kind: 'config-dev-channel', on: true });
+    expect(classifyCliArgs(argv('config', 'set', 'devChannel', 'off'))).toEqual({ kind: 'config-dev-channel', on: false });
+    expect(classifyCliArgs(argv('config'))).toEqual({ kind: 'unknown', arg: 'config' });
+    expect(classifyCliArgs(argv('config', 'set', 'devChannel'))).toEqual({ kind: 'unknown', arg: 'devChannel' });
+    expect(classifyCliArgs(argv('config', 'set', 'devChannel', 'yes'))).toEqual({ kind: 'unknown', arg: 'yes' });
+    expect(classifyCliArgs(argv('config', 'set', 'apiKey', 'x'))).toEqual({ kind: 'unknown', arg: 'apiKey' });
+    expect(classifyCliArgs(argv('config', 'get', 'devChannel'))).toEqual({ kind: 'unknown', arg: 'get' });
+    expect(classifyCliArgs(argv('config', 'set', 'devChannel', 'on', 'x'))).toEqual({ kind: 'unknown', arg: 'x' });
   });
 });
 

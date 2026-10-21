@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   buildFleetSnapshot,
   fleetCapacity,
+  fleetSlotCounts,
   fleetDisplayRows,
   fleetLabel,
   fleetSummary,
@@ -111,6 +112,23 @@ describe('buildFleetSnapshot', () => {
     const bar = s.runners[0].slots.flatMap(sl => sl.lane.bars)[0];
     expect(bar.end).toBeNull();
     expect(s.live).toBe(1);
+  });
+
+  it('tallies the recorded model route of each run on a runner, leaving unrecorded runs out', () => {
+    const s = buildFleetSnapshot(
+      [hb('h1', 'http://atlas.local:8766', 3)],
+      [
+        worker('a', 'http://atlas.local:8766', { modelRoute: 'anthropic_api_key' }),
+        worker('b', 'http://atlas.local:8766', { modelRoute: 'anthropic_api_key', status: 'completed', completedAt: min(5) }),
+        worker('c', 'http://atlas.local:8766', { modelRoute: 'oauth_seat', status: 'completed', completedAt: min(4) }),
+        worker('d', 'http://atlas.local:8766', { modelRoute: null }),
+      ],
+      { now: NOW },
+    );
+    expect(s.runners[0].routes).toEqual([
+      { route: 'anthropic_api_key', count: 2 },
+      { route: 'oauth_seat', count: 1 },
+    ]);
   });
 
   it('each bar carries its task\'s mission, so the lanes chart can light a mission up', () => {
@@ -591,5 +609,127 @@ describe('one runner, one count (Settings, Health and list_runners agree)', () =
   it('an offline runner says so instead of a count', () => {
     const s = buildFleetSnapshot([{ ...hb('h1', 2), lastHeartbeatAt: min(30) }], [], { now: NOW });
     expect(runnerBusyLine(s.runners[0])).toBe('Offline');
+  });
+});
+
+describe('slot "mine" follows the accountable principal', () => {
+  const hb: FleetHeartbeatRow = { id: 'h1', accountId: 'acct', localUiUrl: 'http://atlas.local:8766', maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW - 10_000) };
+  const w = (id: string, runner: string, over: Partial<FleetWorkerRow> = {}): FleetWorkerRow => ({
+    id, accountId: 'acct', runner, status: 'running', startedAt: min(10),
+    task: { id: `t-${id}`, title: `feat(${id}): something`, roleSlug: 'builder', missionId: null }, ...over,
+  });
+  const mineOf = (row: FleetWorkerRow) => buildFleetSnapshot([hb], [row], { now: NOW, viewerId: 'me' }).runners[0].slots.find(s => s.worker)!.worker!.mine;
+
+  it('runner work: the task owner decides, not the claimer', () => {
+    expect(mineOf(w('a', 'http://atlas.local:8766', { ownerId: 'claimer', taskOwnerId: 'me' }))).toBe(true);
+    expect(mineOf(w('b', 'http://atlas.local:8766', { ownerId: 'me', taskOwnerId: 'you' }))).toBe(false);
+  });
+  it('service-owned runner work with a claimer is unattributed, never someone', () => {
+    expect(mineOf(w('c', 'http://atlas.local:8766', { ownerId: 'me', taskOwnerId: null }))).toBeNull();
+  });
+  it('the claimer decides when the task owner is not supplied', () => {
+    expect(mineOf(w('d', 'http://atlas.local:8766', { ownerId: 'me' }))).toBe(true);
+  });
+  it('session claims are each their claimer\'s; a teammate\'s is not mine', () => {
+    const snap = buildFleetSnapshot([hb], [w('s1', 'mcp', { ownerId: 'me', taskOwnerId: 'you' }), w('s2', 'mcp', { ownerId: 'you', taskOwnerId: 'me' })], { now: NOW, viewerId: 'me' });
+    expect(snap.sessions!.slots.map(s => s.worker?.mine).sort()).toEqual([false, true]);
+  });
+});
+
+describe('slot `mine` follows the task owner, not the claimer', () => {
+  const hb: FleetHeartbeatRow = { id: 'h', accountId: 'acct', localUiUrl: 'http://atlas.local:1', maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW - 10_000) };
+  const w = (id: string, over: Partial<FleetWorkerRow>): FleetWorkerRow => ({
+    id, accountId: 'acct', runner: 'http://atlas.local:1', status: 'running', startedAt: min(10),
+    task: { id: `t-${id}`, title: id }, ...over,
+  });
+  const build = (rows: FleetWorkerRow[], viewerId: string) => buildFleetSnapshot([hb], rows, { now: NOW, viewerId });
+
+  it('live slot: task owner A claimed by B is mine for A and not for B', () => {
+    const rows = [w('x', { ownerId: 'B', taskOwnerId: 'A' })];
+    expect(build(rows, 'A').runners[0].slots[0].worker?.mine).toBe(true);
+    expect(build(rows, 'B').runners[0].slots[0].worker?.mine).toBe(false);
+  });
+
+  it('finished slot: the last run carries the same attribution', () => {
+    const rows = [w('x', { status: 'completed', completedAt: min(5), ownerId: 'B', taskOwnerId: 'A' })];
+    expect(build(rows, 'A').runners[0].slots[0].last?.mine).toBe(true);
+    expect(build(rows, 'B').runners[0].slots[0].last?.mine).toBe(false);
+  });
+
+  it('a service-owned task is unattributed (null), even for its claimer', () => {
+    const rows = [w('x', { ownerId: 'B', taskOwnerId: null })];
+    expect(build(rows, 'B').runners[0].slots[0].worker?.mine).toBeNull();
+  });
+
+  it('an interactive session stays its claimer\'s', () => {
+    const rows = [w('s', { runner: 'mcp', localUiUrl: null, ownerId: 'B', taskOwnerId: 'A' })];
+    expect(build(rows, 'B').sessions!.slots[0].worker?.mine).toBe(true);
+  });
+
+  it('without a task owner on the row the claimer decides', () => {
+    expect(build([w('x', { ownerId: 'B' })], 'B').runners[0].slots[0].worker?.mine).toBe(true);
+  });
+});
+
+
+/**
+ * "Slots online" on Health read 5 next to a runner listed Offline. Every slot
+ * number is a count of runners' heartbeats at one moment; an offline, stale
+ * or held runner adds nothing to what can take work now.
+ */
+describe('fleetSlotCounts', () => {
+  const beat = (id: string, max: number, agoMs: number, over: Partial<FleetHeartbeatRow> = {}): FleetHeartbeatRow => ({
+    id, accountId: 'acct', localUiUrl: `http://${id}:1`, maxConcurrentWorkers: max, lastHeartbeatAt: new Date(NOW - agoMs), ...over,
+  });
+  const opts = { now: NOW, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS };
+
+  it('an offline multi-slot runner is configured, not online', () => {
+    const c = fleetSlotCounts([beat('on', 1, 10_000), beat('off', 4, 40 * 60_000)], opts);
+    expect(c).toMatchObject({ configured: 5, online: 1, schedulable: 1 });
+    expect(c.online).toBe(fleetCapacity([beat('on', 1, 10_000), beat('off', 4, 40 * 60_000)], opts));
+  });
+
+  it('a beat just past the online window counts zero; just inside it counts', () => {
+    expect(fleetSlotCounts([beat('r', 3, FLEET_ONLINE_WINDOW_MS + 1)], opts).online).toBe(0);
+    expect(fleetSlotCounts([beat('r', 3, FLEET_ONLINE_WINDOW_MS - 1)], opts).online).toBe(3);
+  });
+
+  it('a runner that reconnects counts again from its next beat', () => {
+    const stale = beat('r', 3, 20 * 60_000);
+    expect(fleetSlotCounts([stale], opts).online).toBe(0);
+    expect(fleetSlotCounts([{ ...stale, lastHeartbeatAt: new Date(NOW - 5_000) }], opts).online).toBe(3);
+  });
+
+  it('a held runner is online but takes no claim', () => {
+    const held = beat('h', 4, 10_000, { environment: { hold: { since: new Date(NOW - 60_000).toISOString(), until: null } } });
+    const expired = beat('e', 2, 10_000, { environment: { hold: { since: new Date(NOW - 2 * 3_600_000).toISOString(), until: new Date(NOW - 3_600_000).toISOString() } } });
+    expect(fleetSlotCounts([held, expired], opts)).toMatchObject({ configured: 6, online: 6, schedulable: 2 });
+  });
+
+  it('mixed ownership: each account adds only its online runners', () => {
+    const c = fleetSlotCounts([
+      beat('mine', 2, 10_000, { accountId: 'personal' }),
+      beat('mine-off', 3, 30 * 60_000, { accountId: 'personal' }),
+      beat('team', 4, 10_000, { accountId: 'team' }),
+    ], opts);
+    expect(c).toMatchObject({ configured: 9, online: 6, schedulable: 6 });
+  });
+
+  it('a finished ephemeral run is neither configured nor online', () => {
+    const once = beat('x', 5, 10_000, { localUiUrl: 'headless://container/once/abc', activeWorkerCount: 0 });
+    expect(fleetSlotCounts([once], opts)).toMatchObject({ configured: 0, online: 0 });
+  });
+
+  it('the snapshot carries them with when they were read, and busy counts only online runners', () => {
+    const s = buildFleetSnapshot(
+      [beat('on', 5, 10_000), beat('off', 4, 40 * 60_000)],
+      [
+        { id: 'w1', accountId: 'acct', runner: 'http://on:1', status: 'running', startedAt: new Date(NOW - 60_000) },
+        { id: 'w2', accountId: 'acct', runner: 'http://off:1', status: 'running', startedAt: new Date(NOW - 60_000) },
+      ],
+      opts,
+    );
+    expect(s.slots).toEqual({ configured: 9, online: 5, schedulable: 5, busy: 1, asOf: NOW, windowMs: FLEET_ONLINE_WINDOW_MS });
+    expect(s.capacity).toBe(5);
   });
 });

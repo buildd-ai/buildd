@@ -414,7 +414,7 @@ describe('repo checks before approval (R-34, AC-96)', () => {
 // ── Slice 14: which specs leave buildd ──────────────────────────────────────
 
 const { decidePublication, specPublicationKind } = await import('../../src/lib/spec-publication-decision');
-const { runDecisionKind } = await import('@builddai/ai-kit/decide');
+const { runDecisionKind } = await import('@buildd/ai-kit/decide');
 
 /** A decision model that always gives this answer, through the real kind (rules first, then the model). */
 function modelSays(answer: string, p: number, line = 'line_1', bar?: number) {
