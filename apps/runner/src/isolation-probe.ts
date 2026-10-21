@@ -22,6 +22,7 @@ import {
   type RunnerIsolationRecord,
   type TaskIsolationDecision,
 } from '@buildd/shared';
+import { probeCodexWindowsSandbox } from './codex-windows-sandbox';
 
 /** Why a bwrap probe failed, in the isolation record's vocabulary. */
 export type BwrapProbeFailure = Extract<IsolationReason, 'opt_out' | 'userns_sysctl_denied' | 'bwrap_missing' | 'probe_exec_failed'>;
@@ -100,6 +101,7 @@ const realHostDeps = (): HostProbeDeps => ({
 export function detectHostPlatform(deps: HostProbeDeps = realHostDeps()): { platform: RunnerHostPlatform; evidence: string[] } {
   const evidence = [`process.platform=${deps.platform}`];
   if (deps.platform === 'darwin') return { platform: 'darwin', evidence };
+  if (deps.platform === 'win32') return { platform: 'windows', evidence };
   if (deps.platform !== 'linux') return { platform: 'other', evidence };
 
   if (deps.env.WSL_DISTRO_NAME) evidence.push('env WSL_DISTRO_NAME');
@@ -138,6 +140,8 @@ export interface IsolationProbeInputs {
   bwrap: BwrapProbeResult | null;
   /** darwin: the Seatbelt probe. Ignored elsewhere. */
   seatbelt: boolean | null;
+  /** windows: Codex's unelevated Windows sandbox probe (./codex-windows-sandbox). Ignored elsewhere. */
+  codexWindows?: boolean | null;
   probeAt: string;
   processStartedAt: string;
   runnerVersion: string;
@@ -147,6 +151,8 @@ export interface IsolationProbeInputs {
 
 const CONFINED_SCOPE: BackendConfinement['scope'] = ['write', 'network', 'env'];
 const CODEX_SCOPE: BackendConfinement['scope'] = ['write', 'network'];
+/** Codex's unelevated Windows sandbox: a restricted token, no network confinement. */
+const CODEX_WINDOWS_SCOPE: BackendConfinement['scope'] = ['write'];
 
 const none = (reason: IsolationReason): BackendConfinement => ({ mechanism: 'none', scope: [], reason });
 
@@ -156,7 +162,8 @@ const none = (reason: IsolationReason): BackendConfinement => ({ mechanism: 'non
  * Codex on Linux is still read through Claude's bwrap probe: that was PR
  * #2935's premise and the CLI's Linux mechanism for the pinned version is an
  * open question of the spec. On darwin both backends read Seatbelt, and the
- * bwrap probe is never consulted (R-6).
+ * bwrap probe is never consulted (R-6). On Windows Claude Code has no
+ * sandbox, and Codex reads its own Windows sandbox probe.
  */
 export function buildIsolationRecord(inputs: IsolationProbeInputs): RunnerIsolationRecord {
   const { host } = inputs;
@@ -172,6 +179,11 @@ export function buildIsolationRecord(inputs: IsolationProbeInputs): RunnerIsolat
     } else {
       claude = codex = none('backend_probe_failed');
     }
+  } else if (host.platform === 'windows') {
+    claude = none('unsupported_platform');
+    codex = inputs.codexWindows
+      ? { mechanism: 'windows_restricted_token', scope: CODEX_WINDOWS_SCOPE }
+      : none('backend_probe_failed');
   } else if (host.platform === 'other') {
     claude = codex = none('unsupported_platform');
   } else if (inputs.bwrap?.ok) {
@@ -226,6 +238,8 @@ export interface IsolationProbes {
   bwrap(): BwrapProbeResult;
   /** The darwin Seatbelt probe. */
   seatbelt(): boolean;
+  /** The Windows Codex sandbox probe; absent reads as not confined. */
+  codexWindows?(): boolean;
   /** The operator's reduced-confinement opt-in (R-5); absent reads as not opted in. */
   reducedOptIn?(): boolean;
 }
@@ -236,6 +250,7 @@ export const realIsolationProbes: IsolationProbes = {
   optOut: () => process.env.BUILDD_DISABLE_SANDBOX === '1',
   bwrap: () => probeBwrapNamespacesDetailed(CLAUDE_INNER_SANDBOX_UNSHARE, true),
   seatbelt: probeSeatbelt,
+  codexWindows: () => probeCodexWindowsSandbox(),
   reducedOptIn: () => reducedIsolationOptedIn(process.env),
 };
 
@@ -244,7 +259,8 @@ export const realIsolationProbes: IsolationProbes = {
  * whose record the heartbeat carries), `buildd doctor` and install.sh (through
  * isolation-check.ts) all build their record here, so one host gets one
  * verdict. Runs only the probe the host needs: Seatbelt on darwin, bwrap on
- * Linux, none on an opt-out or an unsupported platform. Probes only: nothing
+ * Linux, Codex's sandbox on Windows, none on an opt-out or an unsupported
+ * platform. Probes only: nothing
  * here changes a host setting.
  */
 export function probeIsolationRecord(
@@ -255,13 +271,16 @@ export function probeIsolationRecord(
   const optOut = probes.optOut();
   let bwrap: BwrapProbeResult | null = null;
   let seatbelt: boolean | null = null;
+  let codexWindows: boolean | null = null;
   if (!optOut && host.platform === 'darwin') seatbelt = probes.seatbelt();
+  else if (!optOut && host.platform === 'windows') codexWindows = probes.codexWindows?.() ?? false;
   else if (!optOut && host.platform !== 'other') bwrap = probes.bwrap();
   return buildIsolationRecord({
     host,
     optOut,
     bwrap,
     seatbelt,
+    codexWindows,
     probeAt: meta.probeAt?.() ?? new Date().toISOString(),
     processStartedAt: meta.processStartedAt,
     runnerVersion: meta.runnerVersion,
@@ -278,6 +297,7 @@ const MECHANISM_WORDS: Record<BackendConfinement['mechanism'], string> = {
   seatbelt: 'macOS Seatbelt',
   bwrap: 'bubblewrap',
   landlock: 'Landlock',
+  windows_restricted_token: "Codex's Windows sandbox (writes only)",
   none: 'nothing',
 };
 

@@ -165,6 +165,8 @@ export interface TopState {
     routeProblems: RouteProblem[];
     /** How the runner's own logins share its slots (spec 34a48877 R-14); null from a runner that predates it. */
     loginMode: LoginMode | null;
+    /** What confines each backend here, from the runner's isolationVerdict; null from a runner that predates it. */
+    sandbox: TopSandbox | null;
   };
   workers: Record<string, TopWorker>;
   tasks: TopTask[];
@@ -255,7 +257,7 @@ export const NO_MISSION_TITLE = 'Other tasks';
 export function initialState(opts: { hostname: string; missionId?: string | null; workspace?: string | null; team?: string | null; build?: TopDevBuild | null }): TopState {
   return {
     build: opts.build ?? null,
-    runner: { hostname: opts.hostname, version: null, pid: null, maxConcurrent: 1, builddServer: null, online: false, connectedOnce: false, hold: null, routes: [], routeProblems: [], loginMode: null },
+    runner: { hostname: opts.hostname, version: null, pid: null, maxConcurrent: 1, builddServer: null, online: false, connectedOnce: false, hold: null, routes: [], routeProblems: [], loginMode: null, sandbox: null },
     workers: {},
     tasks: [],
     workspaces: [],
@@ -284,7 +286,7 @@ export function initialState(opts: { hostname: string; missionId?: string | null
 
 export type TopEvent =
   | { type: 'runner'; pid?: number | null; version?: string | null }
-  | { type: 'config'; maxConcurrent?: number; builddServer?: string | null; routes?: RunRoute[]; routeProblems?: RouteProblem[]; loginMode?: unknown }
+  | { type: 'config'; maxConcurrent?: number; builddServer?: string | null; routes?: RunRoute[]; routeProblems?: RouteProblem[]; loginMode?: unknown; sandbox?: unknown }
   /** The runner's login mode changed (`buildd logins`, b; spec 34a48877 R-14). */
   | { type: 'logins'; loginMode: string }
   | { type: 'workers'; workers: TopWorker[]; fresher?: string[] }
@@ -342,6 +344,7 @@ export function reduce(state: TopState, event: TopEvent): TopState {
             ? e.routeProblems.filter((p): p is RouteProblem => !!p && typeof p.text === 'string')
             : state.runner.routeProblems,
           loginMode: parseLoginMode(e.loginMode) ?? state.runner.loginMode,
+          sandbox: parseTopSandbox(e.sandbox) ?? state.runner.sandbox,
         },
       };
     }
@@ -1672,6 +1675,32 @@ export function loginsLine(state: TopState, now: number): string | null {
 }
 
 /** Routes that do not work, each on its own line so a narrow terminal never cuts one off. */
+/** The runner's sandbox posture as /api/config sends it (index.ts, from isolationVerdict). */
+export interface TopSandbox {
+  summary: string;
+  backends: { line: string; level: 'full' | 'partial' | 'none' }[];
+}
+
+function parseTopSandbox(v: unknown): TopSandbox | null {
+  const s = v as Partial<TopSandbox> | null | undefined;
+  if (!s || typeof s.summary !== 'string' || !Array.isArray(s.backends)) return null;
+  const backends = s.backends.filter((b): b is TopSandbox['backends'][number] =>
+    !!b && typeof b.line === 'string' && (b.level === 'full' || b.level === 'partial' || b.level === 'none'));
+  return { summary: s.summary, backends };
+}
+
+/**
+ * The header's sandbox lines: the one-line summary when every backend is fully
+ * confined, else each backend's line (what confines it and where its tasks
+ * go), flagged when it is less than full.
+ */
+export function sandboxLines(state: TopState): { text: string; warn: boolean }[] {
+  const s = state.runner.sandbox;
+  if (!s) return [];
+  if (s.backends.every(b => b.level === 'full')) return [{ text: `Sandbox: ${s.summary}`, warn: false }];
+  return s.backends.map(b => ({ text: b.line, warn: b.level !== 'full' }));
+}
+
 export function routeProblemLines(state: TopState): string[] {
   return state.runner.routeProblems.map(p => p.text);
 }
