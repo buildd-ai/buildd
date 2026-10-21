@@ -12,9 +12,10 @@ export interface SemanticEvaluation {
   /** Chosen-label probability, separate from the model's raw confidence. Neither is calibrated here. */
   topProbability?: number;
   coalesced?: true;
-  cache?: { hit: true; recordedAt: number; historical: { attempts: number; latencyMs: number; costUsd: number | null } };
+  cache?: { hit: true; recordedAt: number; historical: { attempts: number; latencyMs: number; costUsd: number | null; receipt: DecisionReceipt | null } };
 }
-export type SemanticEvaluator = (subject: ChangedSubject, policy: ProjectPolicy, context?: SubjectContext) => Promise<SemanticEvaluation>;
+export type SemanticEvaluator = ((subject: ChangedSubject, policy: ProjectPolicy, context?: SubjectContext) => Promise<SemanticEvaluation>)
+  & { cacheStats?: { hits: number; misses: number; writes: number; errors: number } };
 
 /** No path, source, diff, old string, arbitrary context or repository contents. */
 export function buildSemanticState(subject: ChangedSubject, context?: SubjectContext) {
@@ -32,6 +33,12 @@ export function buildSemanticState(subject: ChangedSubject, context?: SubjectCon
 }
 
 type ClefRoute = { model: ClefModel; endpoint: DecisionEndpoint & { kind: 'workers-ai' } };
+export function semanticInputFingerprint(subject: ChangedSubject, policy: ProjectPolicy, context?: SubjectContext,
+  definition = semanticDecision(policy)) {
+  return createHash('sha256').update(canonicalJson({ state: buildSemanticState(subject, context), policy: `${policy.id}@${policy.version}`,
+    policyAuthority: policy.authority.hash, prompt: definition.fingerprint })).digest('hex');
+}
+
 export function semanticDecision(policy: ProjectPolicy, route?: ClefRoute) {
   const labels = ['useful', 'redundant', 'unclear', 'uncertain'] as const;
   if (Object.keys(policy.semantic.labels).sort().join(',') !== [...labels].sort().join(',')) throw new Error('Semantic labels must retain the fixed typed contract.');
@@ -57,8 +64,7 @@ function createSemanticEvaluator(apiKey?: string | null, fetcher?: DecideParams<
   return async (subject, policy, context) => {
     const definition = semanticDecision(policy, route);
     const state = buildSemanticState(subject, context);
-    const inputFingerprint = createHash('sha256').update(canonicalJson({ state, policy: `${policy.id}@${policy.version}`,
-      policyAuthority: policy.authority.hash, prompt: definition.fingerprint })).digest('hex');
+    const inputFingerprint = semanticInputFingerprint(subject, policy, context, definition);
     const base = { model: definition.model, version: definition.version, promptFingerprint: definition.fingerprint,
       inputFingerprint, confidence: null, latencyMs: 0, costUsd: null, attempts: 0, receipt: null };
     const unsupported = (reasonCode: string): SemanticEvaluation => ({ ...base, label: 'unsupported', reasonCode });

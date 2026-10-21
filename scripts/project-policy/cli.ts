@@ -76,7 +76,7 @@ export async function runLocalCheck(value: unknown, stage: Stage, semantic?: Sem
     exitCode: stage === 'agent' ? 0 : policyExitCode(findings),
     scope: 'Deterministic pass does not establish semantic quality or actual runtime state.',
     coverage: { command: 'executed', agentHook: 'not integrated', preCommitHook: 'not integrated', ci: 'not integrated', pr: 'existing copyReview unchanged' },
-    model: { status: decisions.length ? 'advisory exploration' : cacheHits ? 'cached advice' : 'not exercised', cacheHits,
+    model: { status: decisions.length ? 'advisory exploration' : cacheHits ? 'cached advice' : 'not exercised', cacheHits, cache: semantic?.cacheStats ?? null,
       provider: decisions.length || cacheHits ? 'openrouter' : null,
       version: decisions[0]?.model ?? evaluated.find(f => f.decision?.cache?.hit)?.decision?.model ?? null,
       decisions: decisions.length, latencyMs: decisions.length ? decisions.reduce((sum, d) => sum + d.latencyMs, 0) : cacheHits ? 0 : null,

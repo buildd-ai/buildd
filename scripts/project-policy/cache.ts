@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { canonicalJson, JEV_MODEL } from '../../packages/ai-kit/src/decide';
-import { buildSemanticState, semanticDecision, type SemanticEvaluation, type SemanticEvaluator } from './semantic';
+import { buildSemanticState, semanticDecision, semanticInputFingerprint, type SemanticEvaluation, type SemanticEvaluator } from './semantic';
 
 const digest = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
 const labels = new Set(['useful', 'redundant', 'unclear', 'uncertain']);
@@ -19,15 +19,16 @@ export function cachedJevEvaluator(evaluate: SemanticEvaluator, options: {
   const inFlight = new Map<string, Promise<SemanticEvaluation>>();
   const wrapped: SemanticEvaluator = async (subject, policy, context) => {
     const definition = semanticDecision(policy);
+    const inputFingerprint = semanticInputFingerprint(subject, policy, context, definition);
     const key = digest({ schema: 'copy-context-1', namespace: options.namespace, provider: 'openrouter', endpoint: 'systemone',
       model: JEV_MODEL, version: definition.version, prompt: definition.fingerprint, policy,
       state: buildSemanticState(subject, context) });
     const path = join(options.directory, `${key}.json`);
     const replay = (entry: RecordEntry): SemanticEvaluation => {
       stats.hits++;
-      return { ...entry.result, attempts: 0, latencyMs: 0, costUsd: 0,
+      return { ...entry.result, attempts: 0, latencyMs: 0, costUsd: 0, receipt: null,
         cache: { hit: true, recordedAt: entry.recordedAt,
-          historical: { attempts: entry.result.attempts, latencyMs: entry.result.latencyMs, costUsd: entry.result.costUsd } } };
+          historical: { attempts: entry.result.attempts, latencyMs: entry.result.latencyMs, costUsd: entry.result.costUsd, receipt: entry.result.receipt } } };
     };
     try {
       const entry = JSON.parse(readFileSync(path, 'utf8')) as RecordEntry;
@@ -35,11 +36,18 @@ export function cachedJevEvaluator(evaluate: SemanticEvaluator, options: {
       if (entry.schema === 1 && entry.key === key && Number.isFinite(entry.recordedAt)
         && now() >= entry.recordedAt && now() - entry.recordedAt < ttl && r && labels.has(r.label)
         && r.version === definition.version && r.promptFingerprint === definition.fingerprint
-        && typeof r.inputFingerprint === 'string' && typeof r.reasonCode === 'string'
+        && r.inputFingerprint === inputFingerprint && r.reasonCode === `model_${r.label}`
         && typeof r.model === 'string' && (r.model === JEV_MODEL || r.model.startsWith(`${JEV_MODEL}-`))
         && (r.confidence === null || Number.isFinite(r.confidence) && r.confidence >= 0 && r.confidence <= 1)
         && Number.isInteger(r.attempts) && r.attempts > 0 && Number.isFinite(r.latencyMs) && r.latencyMs >= 0
-        && (r.costUsd === null || Number.isFinite(r.costUsd) && r.costUsd >= 0)) return replay(entry);
+        && (r.costUsd === null || Number.isFinite(r.costUsd) && r.costUsd >= 0)
+        && (r.topProbability === undefined || Number.isFinite(r.topProbability) && r.topProbability >= 0 && r.topProbability <= 1)
+        && (r.receipt === null || r.receipt && r.receipt.kind === 'decision' && r.receipt.outcome === 'ok'
+          && r.receipt.decisionId === definition.id && r.receipt.provider === 'openrouter' && r.receipt.model === r.model
+          && (!r.receipt.endpoint || r.receipt.endpoint === 'systemone') && r.receipt.attempts === r.attempts
+          && r.receipt.latencyMs === r.latencyMs && r.receipt.usage && r.receipt.usage.costUsd === r.costUsd
+          && Number.isFinite(r.receipt.usage.inputTokens) && r.receipt.usage.inputTokens >= 0
+          && Number.isFinite(r.receipt.usage.outputTokens) && r.receipt.usage.outputTokens >= 0)) return replay(entry);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') stats.errors++;
     }
@@ -47,7 +55,7 @@ export function cachedJevEvaluator(evaluate: SemanticEvaluator, options: {
     if (pending) {
       const result = await pending;
       return labels.has(result.label) ? replay({ schema: 1, key, recordedAt: now(), result })
-        : { ...result, attempts: 0, latencyMs: 0, costUsd: 0, coalesced: true };
+        : { ...result, attempts: 0, latencyMs: 0, costUsd: 0, receipt: null, coalesced: true };
     }
     stats.misses++;
     const run = (async () => {
@@ -66,5 +74,5 @@ export function cachedJevEvaluator(evaluate: SemanticEvaluator, options: {
     inFlight.set(key, run);
     try { return await run; } finally { inFlight.delete(key); }
   };
-  return { evaluate: wrapped, stats };
+  return { evaluate: Object.assign(wrapped, { cacheStats: stats }), stats };
 }
