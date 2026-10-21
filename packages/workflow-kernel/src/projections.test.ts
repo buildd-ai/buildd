@@ -391,3 +391,22 @@ describe('c1d66a6a: the review-exhausted copy says what happened', () => {
     expect(v.addressedFindings).toBe(1);
   });
 });
+
+describe('a PR closed without merging says who closed it', () => {
+  const closed = (stateReason: string, evidence: Record<string, unknown> = {}) => view({
+    view: V(D({ state: 'CLOSED_UNMERGED', stateReason })),
+    lastTransition: { command: 'PrClosedUnmerged', fromState: 'AWAITING_REVIEW', toState: 'CLOSED_UNMERGED', evidence, createdAt: '2026-01-01T02:00:00Z' },
+  });
+  test('a buildd door names the task and keeps the caller\'s reason', () => {
+    const door = { login: 'example-app[bot]', type: 'Bot', door: { workerId: 'wk1', taskId: '0123abcd-0000-4000-8000-000000000000', accountId: null, principalVia: 'task_token', reason: 'superseded by #8' } };
+    expect(closed('buildd_close', { closedBy: door }).detail).toBe('closed through buildd by task `0123abcd` · superseded by #8');
+    expect(closed('buildd_close', { closedBy: { ...door, door: { ...door.door, taskId: null, reason: null } } }).detail).toBe('closed through buildd');
+  });
+  test('a person on GitHub is named; base_deleted and unknown read as before', () => {
+    expect(closed('manual', { closedBy: { login: 'some-human', type: 'User' } }).detail).toBe('closed by @some-human on GitHub');
+    expect(closed('manual').detail).toBe('closed by a person on GitHub');
+    expect(closed('base_deleted').detail).toBe('base branch deleted');
+    expect(closed('unknown', { closedBy: { login: 'other-bot[bot]', type: 'Bot' } }).detail).toBe('closed by @other-bot[bot]');
+    expect(closed('unknown').detail).toBe('unknown');
+  });
+});
