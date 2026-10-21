@@ -8,6 +8,7 @@ import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { VERIFICATION_VERDICTS, boundEvidenceRefs, verdictSourceOfEvidence, type VerificationVerdict } from '@buildd/core/verification-check';
 import type { LivingSpecGoalCriterion } from '@buildd/shared';
 import type { RequirementRef } from '@buildd/spec-contract/requirements';
+import { acceptanceEditOf, pendingAcceptance } from '@buildd/spec-contract/acceptance-edit';
 import { githubApi } from '@/lib/github';
 import { encodeRef, isAncestor } from '@/lib/integration-refresh';
 import { integrationTarget } from './mission-integration-target';
@@ -113,7 +114,20 @@ async function missionRows(missionId: string, specRevisionId: string, hashes: Re
     .where(and(eq(specOutcomeVerdicts.missionId, missionId), eq(specOutcomeVerdicts.specRevisionId, specRevisionId)))
     .orderBy(asc(specOutcomeVerdicts.createdAt));
   // A verdict on another wording does not count for this one (R-13); one recorded before wordings were kept does.
-  return rows.filter((r) => !r.textHash || r.textHash === hashes.get(r.criterionId)).map(({ textHash: _t, evidence, ...r }) => ({ ...r, source: verdictSourceOfEvidence(evidence) })) as MissionVerdictRow[];
+  return rows.filter((r) => !r.textHash || r.textHash === hashes.get(r.criterionId)).map(({ textHash: _t, evidence, ...r }) => ({ ...r, source: verdictSourceOfEvidence(evidence), evidence })) as MissionVerdictRow[];
+}
+
+async function unacceptedAcceptanceTestPaths(missionId: string): Promise<string[]> {
+  const buildingTasks = await db.select({ id: tasks.id, context: tasks.context })
+    .from(tasks)
+    .where(and(eq(tasks.missionId, missionId), eq(tasks.roleSlug, 'builder')));
+  const all: string[] = [];
+  for (const t of buildingTasks) {
+    const flag = acceptanceEditOf(t.context);
+    const pending = pendingAcceptance(flag);
+    all.push(...pending);
+  }
+  return all;
 }
 
 export type MissionSpecStanding = MissionSpecFold & { target: MissionTarget; scope: RequirementRef[]; title: string };
@@ -126,7 +140,8 @@ export async function readMissionSpecStanding(mission: MissionRow, c: LivingSpec
   }
   const rows = await missionRows(mission.id, c.specRevisionId, await revisionCriterionHashes(c.specId, c.revision));
   const target = await resolveMissionTarget(mission, rows.map((r) => r.headSha).filter((h): h is string => !!h), api);
-  const folded = foldMissionSpec({ scope: scope.criteria.map((r) => r.id), waived: (c.waived ?? []).map((w) => w.criterionId), rows, target });
+  const unaccepted = await unacceptedAcceptanceTestPaths(mission.id);
+  const folded = foldMissionSpec({ scope: scope.criteria.map((r) => r.id), waived: (c.waived ?? []).map((w) => w.criterionId), rows, target, unacceptedTestPaths: unaccepted });
   return { ...folded, target, scope: scope.criteria, title: scope.title };
 }
 
