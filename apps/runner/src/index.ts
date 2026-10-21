@@ -9,6 +9,7 @@ import { resolveBuilddHome } from './buildd-home';
 import { resolveBuilddServer } from './server-url';
 import type { LocalUIConfig, LLMProvider, LocalWorker, ProviderConfig } from './types';
 import { DEFAULT_LOGIN_MODE, parseLoginMode } from '@buildd/shared';
+import { sandboxPosture } from './isolation-check';
 import { BuilddClient, getLastServerContactAt } from './buildd';
 import { WorkerManager, getIsolationRecord } from './workers';
 import { toPublicEvent, toPublicWorker, toPublicWorkers } from './public-worker';
@@ -1613,6 +1614,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         maxConcurrent: config.maxConcurrent,
         // How this runner's own logins share its slots (spec 34a48877 R-14); top's header says it (c7410e76 R-60).
         loginMode: config.loginMode,
+        // What confines each backend here and where its tasks go (isolationVerdict); top's header says it.
+        ...(workerManager ? { sandbox: sandboxPosture(getIsolationRecord()) } : {}),
         acceptRemoteTasks: config.acceptRemoteTasks !== false,
         bypassPermissions: config.bypassPermissions || false,
         openBrowser: savedConfig.openBrowser !== false, // default true
@@ -3130,6 +3133,8 @@ for (const line of renderBanner({
   reposCached: reposLoadedFromCache,
   roots: projectRoots.length,
   serverless: !!config.serverless,
+  // The health probe never claims, so it skips the sandbox probes too.
+  sandbox: process.env.BUILDD_HEALTH_PROBE === '1' ? undefined : sandboxPosture(getIsolationRecord()).backends,
 }, PAL)) console.log(line);
 
 // Auto-install HTTP MCP for onboarded repos (non-blocking)

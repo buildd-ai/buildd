@@ -102,8 +102,11 @@ mock.module('@/lib/pr-landing-adoption', () => ({ adoptBeforeMerge: mockAdoptBef
 // Slice F: get_pr reads a kernel-owned PR's record from its DeliveryView.
 // Default: no kernel delivery, so every legacy case reads the columns.
 const mockGetDeliveryViewsForTasks = mock(async (..._a: any[]): Promise<Map<string, any>> => new Map());
+// A foreign close reads the PR's delivery (any authority). Default: none on record.
+const mockDeliveryBlockerFacts = mock(async (..._a: any[]): Promise<any> => null);
 mock.module('@/lib/workflow/delivery-view', () => ({
   getDeliveryViewsForTasks: mockGetDeliveryViewsForTasks,
+  deliveryBlockerFacts: mockDeliveryBlockerFacts,
   getOwnerDeliveryDisplays: async () => new Map(),
   kernelReplacedFailedTaskIds: async () => new Set(),
   replacedFailedTaskIds: () => new Set(),
@@ -341,10 +344,13 @@ mock.module('@/lib/base-refresh', () => ({
 }));
 // The runner's recorded resume cause for the worker opening the PR.
 const mockResolveSupersessionCause = mock(async (_workerId: any) => 'unknown' as string);
+// A foreign close records the supersession on the owning worker (lib/pr-supersession.ts has its own tests).
+const mockRecordPrSupersession = mock(async (_p: any): Promise<any> => ({ ok: true }));
 mock.module('@/lib/retry-pr-supersession', () => ({
   collectRetryLineage: async (taskId: string) => [taskId],
   closeAncestorRetryPrs: mockCloseAncestorRetryPrs,
   resolveSupersessionCause: mockResolveSupersessionCause,
+  recordForeignCloseSupersession: (p: any) => mockRecordPrSupersession(p),
 }));
 
 import { POST, PATCH, PUT, GET } from './route';
@@ -7513,9 +7519,10 @@ describe('per-task token on close / merge / get', () => {
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
-  it('closes a PR a person linked to its task when filing it', async () => {
+  it('closes a PR a person linked to its task when filing it, naming a merged successor', async () => {
     mockWorkersFindFirst.mockResolvedValue(ownWorker({ task: linkedTask }));
-    const res = await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 7 } }));
+    mockGithubApi.mockImplementation(async (_i: number, path: string) => (path.endsWith('/pulls/9') ? { number: 9, merged: true } : { number: 7, state: 'closed' }));
+    const res = await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 7, reason: 'landed in #9', supersedingPrNumber: 9 } }));
     expect(res.status).toBe(200);
   });
 
@@ -7549,6 +7556,11 @@ describe('agent run on the runner key — close / merge', () => {
   });
 
   const close = (prNumber: number) => PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-run', prNumber } }));
+  // A close of a PR another task owns: a reason and a merged successor (#9), as the close guard requires.
+  const closeFor = (prNumber: number) => {
+    mockGithubApi.mockImplementation(async (_i: number, path: string) => (path.endsWith('/pulls/9') ? { number: 9, merged: true } : { number: prNumber, state: 'closed' }));
+    return PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-run', prNumber, reason: 'landed in #9', supersedingPrNumber: 9 } }));
+  };
   const merge = (prNumber: number) => PUT(createPutRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-run', prNumber } }));
 
   it('refuses to close a PR its task does not name, before calling GitHub', async () => {
@@ -7559,9 +7571,9 @@ describe('agent run on the runner key — close / merge', () => {
     expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
-  it('closes a PR its task records link', async () => {
+  it('closes a PR its task records link, with a reason and a merged successor', async () => {
     mockWorkersFindFirst.mockResolvedValue(runWorker({ title: 'Close superseded PR #7', context: { prReach: { prNumbers: [7], grantedBy: 'task:task-organizer', grantedAt: 'x' } } }));
-    expect((await close(7)).status).toBe(200);
+    expect((await closeFor(7)).status).toBe(200);
   });
 
   it('refuses to close a PR its task only names in text, before calling GitHub', async () => {
@@ -7575,7 +7587,7 @@ describe('agent run on the runner key — close / merge', () => {
     mockWorkersFindFirst
       .mockResolvedValueOnce(runWorker({ roleSlug: 'organizer', missionId: 'mission-1' }))
       .mockResolvedValueOnce({ id: 'w-sibling', task: { missionId: 'mission-1' } });
-    expect((await close(7)).status).toBe(200);
+    expect((await closeFor(7)).status).toBe(200);
   });
 
   it('refuses an organizer task closing another mission’s PR, before calling GitHub', async () => {
@@ -7633,5 +7645,115 @@ describe('agent run on the runner key — close / merge', () => {
     const res = await updateBody(7);
     expect(res.status).toBe(403);
     expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+});
+
+// A sweep task filed about PR #7 links it, so the ownership rule lets it reach
+// #7. What it may do there depends on the delivery, and the close must leave a
+// record on the owning task (lib/agent-capabilities/pr-close-guard.ts).
+describe('close_pr on a PR another task owns', () => {
+  const SCOPED = { ...ACCOUNT, level: 'worker', taskScope: { taskId: 'task-sweep', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+  const sweepWorker = {
+    id: 'w-sweep', accountId: 'account-1', taskId: 'task-sweep', workspaceId: 'ws-1', prNumber: null, name: 'w',
+    workspace: { ...WORKSPACE_OK, id: 'ws-1' },
+    task: { id: 'task-sweep', title: '[friction] open_pr_outpaced_by_base: pull_request 7', description: 'PR #7', roleSlug: 'builder', mode: 'execution', missionId: null,
+      context: { prReach: { prNumbers: [7], grantedBy: 'system:mission-invariants', grantedAt: 'x' } } },
+  };
+  const close = (body: Record<string, unknown> = {}) =>
+    PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-sweep', prNumber: 7, ...body } }));
+  const githubWrites = () => mockGithubApi.mock.calls.filter((c: any[]) => (c[2] as { method?: string } | undefined)?.method);
+  const closeWrites = () => githubWrites().filter((c: any[]) => String(c[1]).endsWith('/pulls/7'));
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    mockGithubApi.mockReset();
+    mockGithubApi.mockImplementation(async (_i: number, path: string) =>
+      path.endsWith('/pulls/9') ? { number: 9, merged: true, state: 'closed' } : { number: 7, state: 'closed', html_url: 'https://github.com/owner/repo/pull/7', title: 't' });
+    mockWorkersFindFirst.mockReset();
+    mockWorkersFindFirst.mockResolvedValueOnce(sweepWorker).mockResolvedValue({ id: 'w-owner' });
+    mockGithubReposFindFirst.mockReset();
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockDeliveryBlockerFacts.mockReset();
+    mockDeliveryBlockerFacts.mockResolvedValue({ ownerTaskId: 'task-owner', state: 'AWAITING_REVIEW', mergedAt: null, lastMovedAt: null });
+    mockGetDeliveryViewsForTasks.mockReset();
+    mockGetDeliveryViewsForTasks.mockResolvedValue(new Map());
+    mockRecordPrSupersession.mockReset();
+    mockRecordPrSupersession.mockResolvedValue({ ok: true });
+  });
+
+  it('refuses to close an ESCALATED PR, before any GitHub write, even with a reason and a merged successor', async () => {
+    mockDeliveryBlockerFacts.mockResolvedValue({ ownerTaskId: 'task-owner', state: 'ESCALATED', mergedAt: null, lastMovedAt: null });
+    const res = await close({ reason: 'outpaced by base', supersedingPrNumber: 9 });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.reasonCode).toBe('pr_awaiting_person');
+    expect(body.hint).toContain('ask_human');
+    expect(githubWrites()).toEqual([]);
+  });
+
+  it('refuses to close an approved PR waiting on a person to merge it', async () => {
+    mockDeliveryBlockerFacts.mockResolvedValue({ ownerTaskId: 'task-owner', state: 'APPROVED', mergedAt: null, lastMovedAt: null });
+    mockGetDeliveryViewsForTasks.mockResolvedValue(new Map([['task-owner', { ownerTaskId: 'task-owner', prNumber: 7, state: 'APPROVED', needsYou: true }]]));
+    const res = await close({ reason: 'stale', supersedingPrNumber: 9 });
+    expect(res.status).toBe(409);
+    expect((await res.json()).reasonCode).toBe('pr_awaiting_person');
+    expect(githubWrites()).toEqual([]);
+  });
+
+  it('refuses a close without a reason', async () => {
+    const res = await close({ supersedingPrNumber: 9 });
+    expect(res.status).toBe(400);
+    expect((await res.json()).reasonCode).toBe('close_reason_required');
+    expect(githubWrites()).toEqual([]);
+  });
+
+  it('refuses a close with no successor, which would read as closed for an unknown cause', async () => {
+    const res = await close({ reason: 'outpaced by base' });
+    expect(res.status).toBe(409);
+    expect((await res.json()).reasonCode).toBe('close_successor_required');
+    expect(githubWrites()).toEqual([]);
+  });
+
+  it('refuses a successor that has not merged', async () => {
+    mockGithubApi.mockImplementation(async (_i: number, path: string) => (path.endsWith('/pulls/9') ? { number: 9, merged: false, state: 'open' } : { number: 7, state: 'open' }));
+    const res = await close({ reason: 'dup', supersedingPrNumber: 9 });
+    expect(res.status).toBe(409);
+    expect((await res.json()).reasonCode).toBe('successor_not_merged');
+    expect(githubWrites()).toEqual([]);
+  });
+
+  it('closes with a reason and a merged successor: comments on the PR and records the supersession on the owner', async () => {
+    const res = await close({ reason: 'landed in #9', supersedingPrNumber: 9 });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.foreignClose).toEqual({ reason: 'landed in #9', supersedingPrNumber: 9, commented: true, supersession: { recorded: true } });
+    expect(closeWrites()).toHaveLength(1);
+    const comment = githubWrites().find((c: any[]) => String(c[1]).endsWith('/issues/7/comments'));
+    expect(comment).toBeDefined();
+    const text = JSON.parse((comment![2] as { body: string }).body).body as string;
+    expect(text).toContain('landed in #9');
+    expect(text).toContain('`task-swe`');
+    expect(mockRecordPrSupersession).toHaveBeenCalledTimes(1);
+    const rec = mockRecordPrSupersession.mock.calls[0]![0];
+    expect(rec).toMatchObject({ workerId: 'w-owner', supersedingPrNumber: 9, reason: 'landed in #9', recordedBy: 'agent:task-sweep', targetRepoWithinWorkspace: true });
+  });
+
+  it('reports, without failing the close, a supersession the kernel could not record yet', async () => {
+    mockRecordPrSupersession.mockResolvedValue({ ok: false, error: 'PR #7 is not closed unmerged', status: 409 });
+    const res = await close({ reason: 'landed in #9', supersedingPrNumber: 9 });
+    expect(res.status).toBe(200);
+    const s = (await res.json()).foreignClose.supersession;
+    expect(s.recorded).toBe(false);
+    expect(s.hint).toContain('record_pr_supersession');
+  });
+
+  it('leaves the owning worker’s own close unchanged: no reason, no successor', async () => {
+    mockWorkersFindFirst.mockReset();
+    mockWorkersFindFirst.mockResolvedValue({ ...sweepWorker, prNumber: 7, task: { ...sweepWorker.task, context: {} } });
+    mockDeliveryBlockerFacts.mockResolvedValue({ ownerTaskId: 'task-sweep', state: 'ESCALATED', mergedAt: null, lastMovedAt: null });
+    const res = await close();
+    expect(res.status).toBe(200);
+    expect(mockRecordPrSupersession).not.toHaveBeenCalled();
   });
 });

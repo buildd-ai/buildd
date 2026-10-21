@@ -78,7 +78,8 @@ BEGIN
   IF ids = '' THEN
     RAISE EXCEPTION 'scrub guard: NO_PROD_DATA_IDENTIFIERS is empty or unset';
   END IF;
-  -- The secret is written for Python's re (see scripts/check_no_prod_data.py).
+  -- The secret is written for Python's re (scripts/check-no-prod-data.ts compiles
+  -- it with Python semantics via pyRegex).
   -- Postgres AREs spell word boundaries \y / \Y; \b there is a backspace, which
   -- would silently match nothing.
   ids := replace(replace(ids, '\b', '\y'), '\B', '\Y');

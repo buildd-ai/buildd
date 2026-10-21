@@ -17,7 +17,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missions, githubRepos } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace, taskScopeTaskLinksPr, type TaskScope } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace, taskScopeTaskLinksPr, taskScopeHoldsWorkspaceReviewReach, type TaskScope } from '@/lib/task-token-auth';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
@@ -259,7 +259,10 @@ export async function POST(req: NextRequest) {
   const ownsViaWorker = !!existingWorker && taskScopeAllowsWorkerPr(account, { ...existingWorker, prNumber }, prNumber);
   // Or a PR the token's OWN task's records link (a coordination task repairing a PR it never opened),
   // never one the owner's task links (§17.1 of docs/specs/workflow-state-kernel.md).
-  if (account.taskScope && !ownsViaWorker && !(await taskScopeTaskLinksPr(account, { workspaceId: account.taskScope.workspaceId, prNumber }))) {
+  // Or a person's workspace-wide review grant (prReach.scope): review only, never supersede.
+  if (account.taskScope && !ownsViaWorker
+    && !(await taskScopeTaskLinksPr(account, { workspaceId: account.taskScope.workspaceId, prNumber }))
+    && !(await taskScopeHoldsWorkspaceReviewReach(account, { workspaceId: account.taskScope.workspaceId }))) {
     return bad('A task token may request review only of its own PR, or one its task\'s records link', 403);
   }
 

@@ -1513,6 +1513,67 @@ describe('POST /api/tasks', () => {
       expect(res.status).toBe(200);
       expect(seen.values.context.prReach).toMatchObject({ prNumbers: [7], grantedBy: 'task:task-parent' });
     });
+
+    it('a person explicitly grants explicit PR numbers via prReachScope', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'user-account-123', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const seen = capture();
+      const res = await POST(createMockRequest({ method: 'POST', body: { workspaceId: 'ws-1', title: 'Request review on all PRs', prReachScope: { prNumbers: [1, 5, 10] } } }));
+      expect(res.status).toBe(200);
+      expect(seen.values.context.prReach).toMatchObject({ prNumbers: [1, 5, 10], grantedBy: 'human:user-123' });
+    });
+
+    it('a person explicitly grants workspace-wide PR reach via prReachScope', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-456', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'user-account-456', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const seen = capture();
+      const res = await POST(createMockRequest({ method: 'POST', body: { workspaceId: 'ws-1', title: 'Review all open PRs', prReachScope: { workspaceWide: true } } }));
+      expect(res.status).toBe(200);
+      expect(seen.values.context.prReach).toMatchObject({ prNumbers: [], scope: 'workspace', grantedBy: 'human:user-456' });
+    });
+
+    it('an API key is rejected if it tries to use prReachScope', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const res = await POST(createMockRequest({ method: 'POST', headers: { Authorization: 'Bearer bld_xxx' }, body: { workspaceId: 'ws-1', title: 'Review PRs', prReachScope: { prNumbers: [1, 2] } } }));
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/Only a person can grant PR reach scope/);
+    });
+
+    it('prReachScope keeps PRs the title names alongside the explicit ones', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'user-account-123', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const seen = capture();
+      const res = await POST(createMockRequest({ method: 'POST', body: { workspaceId: 'ws-1', title: 'Review #7 and others', prReachScope: { prNumbers: [1, 5] } } }));
+      expect(res.status).toBe(200);
+      expect(seen.values.context.prReach).toMatchObject({ prNumbers: [1, 5, 7] });
+    });
+
+    it('an empty prNumbers list in prReachScope is rejected', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'user-account-123', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const res = await POST(createMockRequest({ method: 'POST', body: { workspaceId: 'ws-1', title: 'Review PRs', prReachScope: { prNumbers: [] } } }));
+      expect(res.status).toBe(400);
+    });
+
+    it('an invalid prReachScope format is rejected', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'user-account-123', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const res = await POST(createMockRequest({ method: 'POST', body: { workspaceId: 'ws-1', title: 'Review PRs', prReachScope: { invalid: true } } }));
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/prReachScope must be either/);
+    });
   });
 
   // Living Specs Slice 12: the outcome-spec markers are the server's to write.
@@ -1756,6 +1817,20 @@ describe('POST /api/tasks', () => {
       body: { workspaceId: 'ws-1', title: 'Test Task', assignToLocalUiUrl: 'http://localhost:3456' },
     }));
 
+    expect(response.status).toBe(403);
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+  });
+
+  it('refuses prReachScope from a per-task token', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({
+      id: 'account-123', apiKey: 'bld_xxx', taskScope: { taskId: 't-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 },
+    });
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Test Task', prReachScope: { workspaceWide: true } },
+    }));
     expect(response.status).toBe(403);
     expect(mockTasksInsert).not.toHaveBeenCalled();
   });

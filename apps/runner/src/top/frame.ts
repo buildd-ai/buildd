@@ -61,7 +61,7 @@ export async function frameOnce(opts: FrameOnceOptions): Promise<string[]> {
   ]);
   if (workspaces?.status === 200 && Array.isArray(workspaces.body?.workspaces)) apply({ type: 'workspaces', workspaces: workspaces.body.workspaces });
   if (runner?.body) apply({ type: 'runner', pid: runner.body.pid, version: runner.body.version });
-  if (config?.body) apply({ type: 'config', maxConcurrent: config.body.maxConcurrent, builddServer: config.body.builddServer, routes: config.body.routes, routeProblems: config.body.routeProblems });
+  if (config?.body) apply({ type: 'config', maxConcurrent: config.body.maxConcurrent, builddServer: config.body.builddServer, routes: config.body.routes, routeProblems: config.body.routeProblems, sandbox: config.body.sandbox });
   if (tasks?.status === 200 && Array.isArray(tasks.body?.tasks)) apply({ type: 'tasks', tasks: tasks.body.tasks });
   if (missions?.status === 200 && Array.isArray(missions.body?.missions)) apply({ type: 'missions', missions: missions.body.missions });
   // init carries what held the last claims and the hold; its own worker list is the long form, so the top view's list wins.

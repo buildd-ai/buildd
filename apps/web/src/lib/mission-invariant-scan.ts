@@ -41,6 +41,7 @@ import {
 } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
+import { escalatedDeliveryPrs } from '@/lib/workflow/delivery-view';
 import { teamInstallationIdForOwner } from '@/lib/workspace-installation';
 import { normalizeRepoFullName, repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import {
@@ -425,6 +426,21 @@ export async function loadInvariantSnapshot(
 
   snapshot.tasks = [...taskById.values()];
   snapshot.workers = [...workerById.values()];
+
+  // ── Person-gated deliveries ───────────────────────────────────────────────
+  // Open PRs whose delivery is ESCALATED: `open_pr_outpaced_by_base` must not
+  // tell its sweep to close one. One bounded read; a failure leaves the map
+  // empty, which only means the default remedy (close_pr still refuses).
+  const openPrs = snapshot.workers
+    .filter(w => w.prNumber !== null && !w.mergedAt)
+    .map(w => ({ workspaceId: w.workspaceId, prNumber: w.prNumber as number }));
+  if (openPrs.length > 0) {
+    try {
+      snapshot.personGatedPrs = await escalatedDeliveryPrs(openPrs, MAX_WORKERS);
+    } catch (err) {
+      console.warn('[mission-invariants] person-gated delivery read failed; outpaced PRs get the default remedy:', err instanceof Error ? err.message : err);
+    }
+  }
 
   // ── Base drift ────────────────────────────────────────────────────────────
   // Merged rows, which every worker read above deliberately excludes. This is
