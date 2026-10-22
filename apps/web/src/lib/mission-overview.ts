@@ -242,10 +242,10 @@ export function overviewCounts(model: Pick<MissionBoardModel, 'landed' | 'criter
 // ── A task's status in words (spec d25d923d R-14) ─────────────────────────────
 
 /**
- * One status dot, one word, at most one short cause: `Queued · Waiting on
- * tasks`, `Running · Running unit tests`, `Failed · CI failed`, `Merged`,
- * `Closed → #N`. No sentences. R-14 names the words: a waiting task is
- * `Queued` whatever holds it (the cause says what), a working one `Running`.
+ * One status dot, one word, at most one short cause: `Blocked · Waiting on
+ * tasks`, `Working 12m 04s · Running unit tests`, `Failed · CI failed`,
+ * `Merged`, `Closed → #N`. No sentences. The words are the terms catalog's
+ * (`Working`, never "Running"; `Ready` / `Blocked`, never "Queued").
  */
 export interface OverviewStatus {
   word: string;
@@ -267,8 +267,7 @@ function prCause(state: string | undefined): string | null {
   return state === 'ci_failed' ? 'CI failed' : state === 'conflict' ? 'Merge conflict' : null;
 }
 
-const RUNNING = 'Running';
-const QUEUED = 'Queued';
+const WORKING = termWord('work.working');
 const FAILED = termWord('work.failed');
 
 /**
@@ -289,10 +288,10 @@ export function overviewStatus(model: Model, id: string): OverviewStatus {
     case 'landed':
       return t.pr?.state === 'merged' || t.status === 'merged' ? out(termWord('pr.merged'), 'ok') : out(termWord('work.done'), 'ok');
     case 'running':
-      return out(RUNNING, 'act', latestStep ?? null, live);
+      return out(WORKING, 'act', latestStep ?? null, live);
     case 'fixing':
       return t.executing
-        ? out(RUNNING, 'act', latestStep ?? (prCause(t.pr?.state) ? `Fixing ${prCause(t.pr?.state)!.toLowerCase()}` : null), live)
+        ? out(WORKING, 'act', latestStep ?? (prCause(t.pr?.state) ? `Fixing ${prCause(t.pr?.state)!.toLowerCase()}` : null), live)
         : out(FAILED, 'bad', prCause(t.pr?.state), { retryAt: t.startAt ?? null });
     case 'ci_failed':
       return out(FAILED, 'bad', prCause(t.pr?.state) ?? termWord('pr.ci_failed'), { retryAt: t.startAt ?? null });
@@ -300,7 +299,7 @@ export function overviewStatus(model: Model, id: string): OverviewStatus {
       return out(FAILED, 'bad', null, { retryAt: t.startAt ?? null });
     case 'ready': case 'blocked': case 'queued': {
       const wait = overviewWaitCause(model, id);
-      return out(QUEUED, 'q', wait ? waitWord(model, id, wait) : null);
+      return out(STATES[state].word, 'q', wait ? waitWord(model, id, wait) : null);
     }
     default:
       // In review, merging, an agent's question, a decision: the delivery's own label when the kernel owns it.

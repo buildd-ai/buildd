@@ -316,14 +316,12 @@ describe('overviewStatus', () => {
     const rows = tasks.map(t => (t.id === runId
       ? { ...t, workers: [{ ...t.workers![0], startedAt: NOW - 724_000, updatedAt: NOW - 60_000, milestones: [{ ts: NOW - 120_000, label: 'Cloned repo' }, { ts: NOW - 14_000, label: 'Running unit tests' }] }] }
       : t));
-    expect(overviewStatus(board(rows), runId)).toMatchObject({ word: 'Running', cause: 'Running unit tests', since: NOW - 724_000, lastEventAt: NOW - 14_000, retryAt: null, tone: 'act' });
+    expect(overviewStatus(board(rows), runId)).toMatchObject({ cause: 'Running unit tests', since: NOW - 724_000, lastEventAt: NOW - 14_000, retryAt: null, tone: 'act' });
   });
 
-  it('a waiting task reads Queued with its cause; a merged one reads Merged', () => {
+  it('a waiting task names its cause; a merged one reads Merged', () => {
     const m = board(tasks);
-    expect(overviewStatus(m, pendingId)).toMatchObject({ word: 'Queued', cause: 'Next in line', tone: 'q' });
-    const blockedId = Object.entries(kinds).find(([, k]) => k === 'tasks')?.[0];
-    if (blockedId) expect(overviewStatus(m, blockedId).word).toBe('Queued');
+    expect(overviewStatus(m, pendingId)).toMatchObject({ cause: 'Next in line', tone: 'q' });
     expect(overviewStatus(m, tasks[0].id).word).toBe('Merged');
   });
 });
