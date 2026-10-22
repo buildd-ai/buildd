@@ -1161,6 +1161,14 @@ Contract:
    (today `onlyIfPresent` leaves interactive-session PRs without any comment).
 7. **One writer of "merged".** The merge routes, the webhook, sweeps and the landing
    path all reach `PrMerged` (T17); the render is the single path from that to text.
+8. **Keep GitHub activity concise.** The activity comment shows current state and a
+   bounded timeline with links to Buildd. It MUST NOT append review-round summaries,
+   finding lists or explanations of GitHub's self-review restrictions. Actionable
+   findings belong in the review submission; detailed rounds, finding dispositions
+   and provenance remain available in Buildd. A required human decision may still
+   show the question and necessary action. The authoritative commit status and
+   merge gates are unchanged. Check:
+   `bun run scripts/run-unit-tests.ts apps/web/src/lib/workflow/pr-activity-render.test.ts`.
 
 **Canonical kinds.** The projection's vocabulary is derived from transitions and
 facts, one per row of `workflow_transitions` plus attributes. It MUST cover, in
