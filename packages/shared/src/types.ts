@@ -1019,6 +1019,17 @@ export interface Worker {
   artifacts?: Artifact[];
 }
 
+/**
+ * `POST /api/workers/[id]/replacement` (body `{ prNumber }`): a person named
+ * the PR that replaces this worker's closed-unmerged PR. Display only, stored
+ * as `workers.namedReplacementPrNumber` / `namedReplacementPrUrl`.
+ */
+export interface LinkWorkerReplacementResponse {
+  ok: true;
+  prNumber: number;
+  url: string;
+}
+
 export interface WaitingForOption {
   label: string;
   description?: string;

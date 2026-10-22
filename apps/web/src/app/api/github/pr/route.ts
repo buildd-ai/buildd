@@ -83,6 +83,8 @@ import { otherOpenTaskPrs, supersessionPrompt, workerIdForNewPr, wouldDisplaceLi
 import { findStackedReleaseForBase } from '@/lib/early-release-stacking';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { githubReviewCounts } from '@buildd/shared';
+import { replacementNamedInClose } from '@/lib/pr-named-replacement';
+import { recordNamedReplacement } from '@/lib/pr-named-replacement-store';
 
 
 /**
@@ -1679,6 +1681,13 @@ export async function PATCH(req: NextRequest) {
     }
 
     const foreign = foreignClose ? await recordForeignClose({ account, worker, prNumber, repo, ...foreignClose }) : null;
+
+    // A close whose reason names its replacement (`Replaced by #N`): display
+    // only, never a gate (lib/pr-named-replacement.ts). Never throws.
+    const namedReplacement = capability === 'pr.close' && typeof closeReason === 'string' ? replacementNamedInClose(closeReason) : null;
+    if (namedReplacement !== null) {
+      await recordNamedReplacement({ repoFullName: repo.fullName, closedPrNumber: prNumber, replacementPrNumber: namedReplacement });
+    }
 
     return NextResponse.json({
       ok: true,

@@ -13,6 +13,7 @@ const mockWorkersFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockMissionsFindFirst = mock(() => null as any);
+const mockMissionsFindMany = mock((_q?: any) => [] as any[]);
 const mockTasksFindFirst = mock(() => null as any);
 const mockGithubReposFindFirst = mock(() => null as any);
 const mockCreateReviewerTask = mock(() => ({ id: 'review-task-9' }) as any);
@@ -96,7 +97,7 @@ mock.module('@buildd/core/db', () => ({
       workers: { findFirst: mockWorkersFindFirst },
       tasks: { findFirst: mockTasksFindFirst },
       workspaces: { findFirst: mockWorkspacesFindFirst, findMany: mockWorkspacesFindMany },
-      missions: { findFirst: mockMissionsFindFirst },
+      missions: { findFirst: mockMissionsFindFirst, findMany: mockMissionsFindMany },
       githubRepos: { findFirst: mockGithubReposFindFirst },
     },
     insert: (table: any) => ({
@@ -209,6 +210,8 @@ beforeEach(() => {
   mockWorkspacesFindMany.mockReturnValue([WORKSPACE]);
   mockMissionsFindFirst.mockReset();
   mockMissionsFindFirst.mockReturnValue(null);
+  mockMissionsFindMany.mockReset();
+  mockMissionsFindMany.mockReturnValue([]);
   mockTasksFindFirst.mockReset();
   mockTasksFindFirst.mockReturnValue(null);
   mockGithubReposFindFirst.mockReset();
@@ -329,6 +332,41 @@ describe('POST /api/github/pr/review — adoption', () => {
     // Diff stats come from the PR so policy thresholds see real numbers.
     expect(workerInsert.values.linesAdded).toBe(40);
     expect(workerInsert.values.filesChanged).toBe(2);
+  });
+
+  it('an adopted PR based on an active mission\'s integration branch joins that mission', async () => {
+    mockGithubApi.mockImplementation((_i: number, path: string) => Promise.resolve(
+      typeof path === 'string' && path.includes('/files') ? [] : { ...OPEN_PR, base: { ref: 'mission/abc', sha: 'base-sha' } },
+    ));
+    mockMissionsFindMany.mockReturnValue([{ id: 'mission-7' }]);
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+    expect(res.status).toBe(201);
+    const taskInsert = insertCalls.find((c) => c.table === 'tasks_table')!;
+    expect(taskInsert.values.missionId).toBe('mission-7');
+    // Looked up in this workspace, on the PR's base, among integration-branch missions.
+    const where = JSON.stringify(mockMissionsFindMany.mock.calls[0]![0]);
+    expect(where).toContain('ws-1');
+    expect(where).toContain('mission/abc');
+    // The reviewer is filed with the mission the adopted task joined.
+    expect(JSON.stringify(mockCreateReviewerTask.mock.calls[0])).toContain('mission-7');
+  });
+
+  it('adopts with no mission when the base matches none, or more than one', async () => {
+    mockMissionsFindMany.mockReturnValue([{ id: 'm-1' }, { id: 'm-2' }]);
+    await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+    expect(insertCalls.find((c) => c.table === 'tasks_table')!.values.missionId).toBeUndefined();
+    insertCalls.length = 0;
+    mockMissionsFindMany.mockReturnValue([]);
+    await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+    expect(insertCalls.find((c) => c.table === 'tasks_table')!.values.missionId).toBeUndefined();
+  });
+
+  it('a failed mission lookup still adopts, with no mission', async () => {
+    mockMissionsFindMany.mockImplementation(() => { throw new Error('db down'); });
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+    expect(res.status).toBe(201);
+    expect(insertCalls.find((c) => c.table === 'tasks_table')!.values.missionId).toBeUndefined();
   });
 
   it('reuses the existing worker when buildd already owns the PR', async () => {
