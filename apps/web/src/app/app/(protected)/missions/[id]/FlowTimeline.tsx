@@ -20,7 +20,7 @@ import {
   FLOW_ROW_UNITS, FLOW_X_UNITS, layoutFlowTimeline, type FlowBarLayout, type FlowTimeline as FlowTimelineModel,
 } from '@/lib/flow-timeline';
 import { stripSelectionReason, type StripState } from '@/lib/mission-task-strip';
-import { taskSheetHref, useLiveBoard, useNow, type BoardLinkContext } from './MissionBoardParts';
+import { boardTaskHref, useLiveBoard, useNow, type BoardLinkContext } from './MissionBoardParts';
 
 export interface FlowTimelineProps extends BoardLinkContext {
   model: MissionBoardModel;
@@ -242,7 +242,7 @@ function SelectedTask({ model, timeline, id, link }: { model: MissionBoardModel;
       next={t.currentAction ?? undefined}
       reason={reason}
       footer={
-        <a href={taskSheetHref(link, id)} data-task-id={id} className="inline-flex min-h-11 items-center self-start text-meta text-text-secondary hover:text-text-primary md:min-h-0">
+        <a href={boardTaskHref(link, id)} data-task-id={id} className="inline-flex min-h-11 items-center self-start text-meta text-text-secondary hover:text-text-primary md:min-h-0">
           Open task ›
         </a>
       }

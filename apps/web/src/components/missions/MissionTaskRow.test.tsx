@@ -27,9 +27,9 @@ describe('MissionTaskRow DOM contract', () => {
   const tasks = [t('a', { ...BUILD, title: 'Add claim lease column', kind: 'engineering' })];
   const html = renderToStaticMarkup(<MissionTaskRow row={rowFor(tasks, 'a')} missionId="m1" from="home" now={NOW} />);
 
-  it('is a real link to the sheet URL with the #t- anchor id and data attributes', () => {
+  it('is a real link to the task page with the #t- anchor id and data attributes', () => {
     const a = anchor(html);
-    expect(a).toContain('href="/app/missions/m1?from=home&amp;task=a"');
+    expect(a).toContain('href="/app/tasks/a?from=home"');
     expect(a).toContain('id="t-a"');
     expect(a).toContain('data-task-id="a"');
     expect(a).toContain('data-status="queued"');

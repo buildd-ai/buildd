@@ -98,7 +98,7 @@ import { missionContextReads, missionContextRowOf } from './mission-context-load
 import { truncateExcerpt } from './error-excerpt';
 import { attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, isMeaningfulPlan, partitionChildTasks, selectExecutionPlan } from './execution-plan';
 import type { MissionCardRow } from '@/lib/mission-card-view';
-import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
+import { missionTaskHref, parseMissionOriginParams, taskPageHref } from '@/lib/mission-task-href';
 import WorkerSteerPanel from './WorkerSteerPanel';
 import { HeaderStatusPill, deliveryPillLabel, FactSheet, SideDescription, runnerFactRow, branchFactRow, type FactRow } from './TaskSidePanel';
 import { findTaskRole } from './role-lookup';
@@ -171,10 +171,12 @@ async function TaskDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ artifact?: string; respond?: string }>;
+  searchParams: Promise<{ artifact?: string; respond?: string; from?: string; initiativeId?: string }>;
 }) {
   const { id } = await params;
-  const { artifact: initialOpenArtifactId, respond } = await searchParams;
+  const { artifact: initialOpenArtifactId, respond, from, initiativeId } = await searchParams;
+  // Where the mission was opened from: the back link returns there (spec d25d923d AC-2).
+  const missionBack = parseMissionOriginParams({ from, initiativeId });
   // `?respond=1`: an answer link. The reply box below gets focus.
   const focusAnswer = respond === '1';
   if (!isValidTaskId(id)) notFound();
@@ -315,6 +317,7 @@ async function TaskDetailPage({
     missionContextRow as unknown as MissionCardRow | null,
     task.id,
     missionContextDeliveryViews,
+    missionBack,
   );
 
   // Read-through PR fact import: if the latest worker is completed with an
@@ -1470,7 +1473,7 @@ async function TaskDetailPage({
           // Back only: the title is the h1 right below.
           <nav aria-label="Breadcrumb" className="text-sm text-text-secondary -mt-2 mb-1 md:mt-0 md:mb-2">
             <Link
-              href={task.mission ? missionTaskHref({ missionId: task.mission.id, taskId: task.id, mode: 'focus' }) : '/app/tasks'}
+              href={task.mission ? missionTaskHref({ missionId: task.mission.id, taskId: task.id, ...missionBack, mode: 'focus' }) : '/app/tasks'}
               data-testid="task-back"
               className="inline-flex min-h-11 items-center hover:text-text-primary"
             >
@@ -1796,7 +1799,7 @@ async function TaskDetailPage({
             <p className="text-[12px] text-text-secondary ml-6">
               Every task in{' '}
               {task.mission ? (
-                <Link href={missionTaskHref({ missionId: task.mission.id, taskId: task.id, mode: 'focus' })} className="text-accent-text hover:underline">
+                <Link href={missionTaskHref({ missionId: task.mission.id, taskId: task.id, ...missionBack, mode: 'focus' })} className="text-accent-text hover:underline">
                   {task.mission.title}
                 </Link>
               ) : 'this mission'}{' '}

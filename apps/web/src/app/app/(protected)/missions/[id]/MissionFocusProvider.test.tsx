@@ -1,25 +1,28 @@
 /**
  * MissionFocusProvider: one selection shared by the pulse and the list, the
- * `#t-` hash, unfold-then-scroll, and the freeze window
+ * `#t-` hash, unfold-then-scroll, opening a task's page, and the freeze window
  * (docs/design/mission-feed-mobile-continuity.md, W3 "Pulse interaction" and
  * "Freeze rule"). AC-6 lives here.
  *
  * The store is driven through injected history/location/timers, so every
  * assertion uses a fake clock rather than real time.
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import {
-  FOCUS_OUTLINE_MS,
-  FREEZE_AFTER_POINTER_MS,
-  MissionFocusProvider,
-  createMissionFocusStore,
-  type MissionFocusDeps,
-} from './MissionFocusProvider';
-import MissionPulse from '@/components/missions/MissionPulse';
-import MissionTaskRow from '@/components/missions/MissionTaskRow';
-import { buildMissionFeedGroups } from '@/lib/mission-feed-groups';
-import { buildPulseSegments, type MissionFeedTaskInput } from '@/lib/mission-pulse';
+import type { MissionFocusDeps } from './MissionFocusProvider';
+import type { MissionFeedTaskInput } from '@/lib/mission-pulse';
+
+mock.module('next/navigation', () => ({
+  useRouter: () => ({ push: () => {}, replace: () => {}, refresh: () => {} }),
+  usePathname: () => '/app/missions/m1',
+  useSearchParams: () => new URLSearchParams(),
+}));
+
+const { FOCUS_OUTLINE_MS, FREEZE_AFTER_POINTER_MS, MissionFocusProvider, createMissionFocusStore } = await import('./MissionFocusProvider');
+const { default: MissionPulse } = await import('@/components/missions/MissionPulse');
+const { default: MissionTaskRow } = await import('@/components/missions/MissionTaskRow');
+const { buildMissionFeedGroups } = await import('@/lib/mission-feed-groups');
+const { buildPulseSegments } = await import('@/lib/mission-pulse');
 
 function fakeClock() {
   let now = 0;
@@ -52,6 +55,7 @@ function setup(initial: { search?: string; hash?: string } = {}) {
   const loc = { pathname: '/app/missions/m1', search: initial.search ?? '?from=home', hash: initial.hash ?? '' };
   const replaced: string[] = [];
   const pushed: string[] = [];
+  const found = new Map<string, HTMLElement>();
   const scrolled: Array<{ id: string; block: string }> = [];
   const apply = (url: string) => {
     const u = new URL(url, 'https://example.invalid');
@@ -62,8 +66,10 @@ function setup(initial: { search?: string; hash?: string } = {}) {
     history: {
       state: { keep: true },
       replaceState: (_s, _t, url) => { replaced.push(String(url)); apply(String(url)); },
-      pushState: (_s, _t, url) => { pushed.push(String(url)); apply(String(url)); },
     },
+    missionId: 'm1',
+    navigate: url => { pushed.push(url); },
+    findRow: taskId => found.get(taskId) ?? null,
     location: () => ({ ...loc }),
     scrollIntoView: (el, block) => scrolled.push({ id: (el as unknown as { id: string }).id, block }),
     now: clock.now,
@@ -72,7 +78,7 @@ function setup(initial: { search?: string; hash?: string } = {}) {
   };
   const store = createMissionFocusStore(deps);
   const el = (taskId: string) => ({ id: `t-${taskId}` }) as unknown as HTMLElement;
-  return { store, clock, loc, replaced, pushed, scrolled, el };
+  return { store, clock, loc, replaced, pushed, scrolled, el, found };
 }
 
 describe('segment select → focus (AC-6)', () => {
@@ -93,13 +99,19 @@ describe('segment select → focus (AC-6)', () => {
     expect(scrolled).toEqual([{ id: 't-b', block: 'start' }]);
   });
 
-  it('a second select on the same segment opens the sheet with pushState(?task=)', () => {
+  it('a second select on the same segment opens the task page, keeping the back context (spec d25d923d R-1)', () => {
     const { store, replaced, pushed, el } = setup();
     store.registerRow('b', el('b'));
     store.selectSegment('b');
     store.selectSegment('b');
     expect(replaced).toHaveLength(1);
-    expect(pushed).toEqual(['/app/missions/m1?from=home&task=b']);
+    expect(pushed).toEqual(['/app/tasks/b?from=home']);
+  });
+
+  it('openTask carries an initiative origin to the task page', () => {
+    const { store, pushed } = setup({ search: '?from=initiative&initiativeId=i1' });
+    store.openTask('b');
+    expect(pushed).toEqual(['/app/tasks/b?from=initiative&initiativeId=i1']);
   });
 
   it('a select on a different segment moves focus instead of opening', () => {
@@ -110,17 +122,6 @@ describe('segment select → focus (AC-6)', () => {
     store.selectSegment('b');
     expect(pushed).toEqual([]);
     expect(store.getSnapshot().selectedTaskId).toBe('b');
-  });
-
-  it('delegates opening to onOpenTask when the sheet owner supplies one', () => {
-    const { store, pushed, el } = setup();
-    const opened: string[] = [];
-    store.setOpenTask(id => opened.push(id));
-    store.registerRow('b', el('b'));
-    store.selectSegment('b');
-    store.selectSegment('b');
-    expect(opened).toEqual(['b']);
-    expect(pushed).toEqual([]);
   });
 
   it('the outline fades after 2s; the selection (aria-current) stays', () => {
@@ -169,6 +170,14 @@ describe('hash arrival', () => {
     expect(scrolled).toEqual([{ id: 't-c', block: 'center' }]);
   });
 
+  it('scrolls to any element the page draws for the task when no row registered (R-2: #t-T)', () => {
+    const { store, scrolled, found } = setup({ hash: '#t-c' });
+    found.set('c', { id: 'strip-cell-c' } as unknown as HTMLElement);
+    store.readHash();
+    expect(store.getSnapshot().selectedTaskId).toBe('c');
+    expect(scrolled).toEqual([{ id: 'strip-cell-c', block: 'center' }]);
+  });
+
   it('ignores a hash that is not a task anchor', () => {
     const { store } = setup({ hash: '#mission-artifacts' });
     store.readHash();
@@ -211,25 +220,6 @@ describe('freeze window', () => {
     clock.advance(1000);
     expect(store.getSnapshot().frozen).toBe(true);
     clock.advance(500);
-    expect(store.getSnapshot().frozen).toBe(false);
-  });
-
-  it('stays frozen while the sheet is open, regardless of time', () => {
-    const { store, clock } = setup();
-    store.setSheetOpen(true);
-    clock.advance(60_000);
-    expect(store.getSnapshot().frozen).toBe(true);
-    store.setSheetOpen(false);
-    expect(store.getSnapshot().frozen).toBe(false);
-  });
-
-  it('sheet close inside a pointer window stays frozen until the window ends', () => {
-    const { store, clock } = setup();
-    store.setSheetOpen(true);
-    store.notePointerDown();
-    store.setSheetOpen(false);
-    expect(store.getSnapshot().frozen).toBe(true);
-    clock.advance(FREEZE_AFTER_POINTER_MS);
     expect(store.getSnapshot().frozen).toBe(false);
   });
 
@@ -280,37 +270,25 @@ describe('MissionFocusProvider (connected render)', () => {
   });
 });
 
-describe('history writes reach useSearchParams (S4 crux)', () => {
+describe('history writes keep the caller’s state', () => {
   // The App Router skips its useSearchParams sync for any write whose data
-  // carries Next's own `__NA` marker (TaskSheet.next-history.test.ts). Passing
-  // `history.state` straight through therefore opened nothing: the address bar
-  // gained ?task= but the sheet owner never saw it.
-  function nextState() {
+  // carries Next's own `__NA` marker, so the hash write strips it.
+  it('focus writes the hash without Next’s internal markers', () => {
     const datas: unknown[] = [];
     const deps: MissionFocusDeps = {
       history: {
         state: { __NA: true, __PRIVATE_NEXTJS_INTERNALS_TREE: { tree: [] }, keep: true },
         replaceState: d => { datas.push(d); },
-        pushState: d => { datas.push(d); },
       },
+      missionId: 'm1',
+      navigate: () => {},
       location: () => ({ pathname: '/app/missions/m1', search: '', hash: '' }),
       scrollIntoView: () => {},
       now: () => 0,
       setTimeout: () => 0,
       clearTimeout: () => {},
     };
-    return { store: createMissionFocusStore(deps), datas };
-  }
-
-  it('openTask pushes without Next’s internal markers, keeping the caller’s own keys', () => {
-    const { store, datas } = nextState();
-    store.openTask('b');
-    expect(datas).toEqual([{ keep: true }]);
-  });
-
-  it('focus writes the hash without Next’s internal markers', () => {
-    const { store, datas } = nextState();
-    store.focus('b');
+    createMissionFocusStore(deps).focus('b');
     expect(datas).toEqual([{ keep: true }]);
   });
 });

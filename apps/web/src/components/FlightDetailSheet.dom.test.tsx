@@ -61,7 +61,7 @@ describe('FlightDetailSheet (mounted)', () => {
     render(true);
     const bar = document.body.querySelector('[data-testid="flight-detail-bar"][data-task-id="a"]') as Element;
     act(() => { bar.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
-    expect(openLink().getAttribute('href')).toBe('/app/missions/m1?from=home&task=a');
+    expect(openLink().getAttribute('href')).toBe('/app/tasks/a?from=home');
 
     render(false);
     render(true);

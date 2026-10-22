@@ -203,20 +203,20 @@ describe('MissionFeedList — phase folding defaults', () => {
 });
 
 describe('MissionFeedList — tap uniformity (AC-10)', () => {
-  it('never opts a row out of the sheet', () => {
+  it('never opts a row out of its task link', () => {
     const html = render(fixtureMission(45));
     expect(html).not.toContain('data-task-actionable');
     expect(html).toContain('data-testid="mission-feed"');
   });
 
-  it('links a completed task with no PR to the sheet like any other row', () => {
+  it('links a completed task with no PR to its page like any other row', () => {
     const html = render(fixtureMission(15));
-    expect(html).toContain('href="/app/missions/mission-1?task=th1"');
+    expect(html).toContain('href="/app/tasks/th1"');
   });
 
   it('carries ?from= onto every row link', () => {
     const html = render(fixtureMission(3), { from: 'home' });
-    expect(html).toContain('href="/app/missions/mission-1?from=home&amp;task=u1"');
+    expect(html).toContain('href="/app/tasks/u1?from=home"');
   });
 });
 

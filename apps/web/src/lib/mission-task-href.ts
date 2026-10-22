@@ -1,14 +1,17 @@
 /**
- * The ONE way to link to a mission-owned task
- * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, "Interaction, URL and scroll model").
+ * The ONE way to link to a mission-owned task (spec d25d923d "Navigation: one
+ * place per task", R-1).
  *
- * - `sheet`: `/app/missions/X?from=…&task=Y` — the mission renders with the task
- *   sheet open over it, so the list behind never loses its place.
- * - `focus`: `/app/missions/X?from=…#t-Y` — lands on the row, scrolled into view
- *   and outlined. A hash change triggers no server render.
+ * - default: `/app/tasks/Y?from=…` — the task page, the only task view. `from`
+ *   (and `initiativeId`) say where the mission was opened from, so the task
+ *   page's back link returns to the mission inside that context.
+ * - `focus`: `/app/missions/X?from=…#t-Y` — the mission page, landed on the
+ *   task's row, scrolled into view and outlined. Used for "back to the row".
  *
- * `?tab=` is retired and never emitted.
+ * `?task=` (the retired task sheet) and `?tab=` are never emitted.
  */
+
+import { isValidTaskId } from './task-id';
 
 export type MissionOrigin = 'home' | 'missions' | 'initiative';
 
@@ -18,7 +21,27 @@ export interface MissionTaskHrefInput {
   from?: MissionOrigin | null;
   /** Required for `from: 'initiative'` breadcrumbs; ignored otherwise. */
   initiativeId?: string | null;
-  mode: 'sheet' | 'focus';
+  /** `focus`: the mission page at the task's row. Absent: the task page. */
+  mode?: 'focus';
+}
+
+const ORIGINS: readonly MissionOrigin[] = ['home', 'missions', 'initiative'];
+
+/**
+ * `?from=` / `?initiativeId=` from a URL, narrowed to what links carry
+ * forward. An initiative id is kept only with the initiative origin.
+ */
+export function parseMissionOriginParams(params: { from?: unknown; initiativeId?: unknown }): {
+  from: MissionOrigin | null;
+  initiativeId: string | null;
+} {
+  const from = typeof params.from === 'string' && (ORIGINS as readonly string[]).includes(params.from)
+    ? (params.from as MissionOrigin)
+    : null;
+  const initiativeId = from === 'initiative' && typeof params.initiativeId === 'string' && params.initiativeId
+    ? params.initiativeId
+    : null;
+  return { from, initiativeId };
 }
 
 const enc = encodeURIComponent;
@@ -49,8 +72,7 @@ export function taskPageHref({ taskId, missionId }: { taskId: string; missionId?
 
 /**
  * Where "answer this question" goes: the task page, which is the full
- * answering experience, with its answer box focused (`?respond=1`). Never the
- * mission sheet, even for a mission task.
+ * answering experience, with its answer box focused (`?respond=1`).
  */
 export function taskAnswerHref({ taskId, missionId }: { taskId: string; missionId?: string | null }): string {
   const page = taskPageHref({ taskId, missionId });
@@ -62,41 +84,26 @@ export function missionTaskHref({ missionId, taskId, from, initiativeId, mode }:
   const params: string[] = [];
   if (from) params.push(`from=${enc(from)}`);
   if (from === 'initiative' && initiativeId) params.push(`initiativeId=${enc(initiativeId)}`);
-  if (mode === 'sheet') params.push(`task=${enc(taskId)}`);
   const query = params.length ? `?${params.join('&')}` : '';
-  const hash = mode === 'focus' ? `#${missionTaskAnchorId(enc(taskId))}` : '';
-  return `/app/missions/${enc(missionId)}${query}${hash}`;
+  if (mode !== 'focus') return `/app/tasks/${enc(taskId)}${query}`;
+  return `/app/missions/${enc(missionId)}${query}#${missionTaskAnchorId(enc(taskId))}`;
 }
 
-// ─── The navigation contract ────────────────────────────────────────────────
-
 /**
- * Whether pointing at a task should be a real navigation (a link the user can
- * open in a new tab, which may leave this page) or an in-page anchor onto
- * something already rendered here (the mission Board's own Landed-strip cell
- * and its tethered drawer). Both are legitimate; what is never legitimate is
- * a navigation-shaped label on an affordance that does not navigate — "Open"
- * promises the reader they will land somewhere, and an anchor never does.
- *
- * Callers own the `inPageAnchor` test (e.g. "is this task already drawn in
- * the strip on this render"); this function owns only the one rule that
- * follows from the answer — so a future surface (a retry CTA, a
- * switch-backend action) asks this instead of inventing its own label.
+ * `/app/missions/M?task=T` was the task sheet over the mission. The sheet is
+ * retired (spec d25d923d R-2): the same URL lands on T's page, with the back
+ * context it carried, and `respond=1` (focus the answer). A mission
+ * `?artifact=` stays with the mission: it names a mission artifact.
+ * Null when there is no task id, so the mission page renders as before.
  */
-export type TaskAffordanceMode =
-  | { kind: 'navigate'; label: string }
-  | { kind: 'anchor'; label: string };
-
-/**
- * Rephrase a navigation label ("Open the failed task", "View the open task")
- * for the anchor case. Idempotent on a label that already reads "Jump to …".
- */
-export function jumpToLabel(label: string): string {
-  if (/^Jump to\b/i.test(label)) return label;
-  const rephrased = label.replace(/^(Open|View)\b/, 'Jump to');
-  return rephrased === label ? `Jump to: ${label}` : rephrased;
-}
-
-export function taskAffordanceMode(label: string, opts: { inPageAnchor: boolean }): TaskAffordanceMode {
-  return opts.inPageAnchor ? { kind: 'anchor', label: jumpToLabel(label) } : { kind: 'navigate', label };
+export function legacyTaskSheetRedirect(
+  missionId: string,
+  search: { task?: unknown; from?: unknown; initiativeId?: unknown; respond?: unknown },
+): string | null {
+  const taskId = typeof search.task === 'string' ? search.task : null;
+  if (!isValidTaskId(taskId)) return null;
+  const { from, initiativeId } = parseMissionOriginParams(search);
+  const href = missionTaskHref({ missionId, taskId, from, initiativeId });
+  if (search.respond !== '1') return href;
+  return `${href}${href.includes('?') ? '&' : '?'}respond=1`;
 }

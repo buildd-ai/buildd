@@ -71,11 +71,11 @@ describe('resolveActionCardContext', () => {
 });
 
 describe('actionCardTaskHref', () => {
-  it('opens a mission task as the sheet over its mission', () => {
-    expect(actionCardTaskHref(item({ missionId: 'mis-1', taskId: 't-9' }))).toBe('/app/missions/mis-1?from=home&task=t-9');
+  it('opens a mission task on its task page, from Home', () => {
+    expect(actionCardTaskHref(item({ missionId: 'mis-1', taskId: 't-9' }))).toBe('/app/tasks/t-9?from=home');
   });
 
-  it('a question card opens the task page with the answer focused, never the sheet', () => {
+  it('a question card opens the task page with the answer focused', () => {
     expect(actionCardTaskHref(item({ missionId: 'mis-1', taskId: 't-9' }), { answer: true })).toBe('/app/tasks/t-9?from=mission&missionId=mis-1&respond=1');
   });
 
@@ -95,7 +95,7 @@ describe('actionCardTaskHref', () => {
 
 describe('actionCardTaskLink', () => {
   it('matches actionCardTaskHref when the card names a task', () => {
-    expect(actionCardTaskLink(item({ missionId: 'mis-1', taskId: 't-9' }))).toBe('/app/missions/mis-1?from=home&task=t-9');
+    expect(actionCardTaskLink(item({ missionId: 'mis-1', taskId: 't-9' }))).toBe('/app/tasks/t-9?from=home');
   });
 
   it('never returns null: a task-less mission card opens its mission', () => {

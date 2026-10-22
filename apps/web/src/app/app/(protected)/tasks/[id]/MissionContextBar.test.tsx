@@ -50,8 +50,8 @@ describe('MissionContextBarView', () => {
   });
 
   it('‹ › point at the sibling task pages in pulse order', () => {
-    expect(html).toMatch(/data-testid="mission-masthead-prev"[^>]*href="\/app\/tasks\/a\?from=mission&amp;missionId=m1"|href="\/app\/tasks\/a\?from=mission&amp;missionId=m1"[^>]*data-testid="mission-masthead-prev"/);
-    expect(html).toMatch(/href="\/app\/tasks\/c\?from=mission&amp;missionId=m1"/);
+    expect(html).toMatch(/data-testid="mission-masthead-prev"[^>]*href="\/app\/tasks\/a"|href="\/app\/tasks\/a"[^>]*data-testid="mission-masthead-prev"/);
+    expect(html).toMatch(/href="\/app\/tasks\/c"/);
   });
 
   it('the mission title is the up-link to this task’s row', () => {

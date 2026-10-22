@@ -721,7 +721,7 @@ export function buildMissionCardView(row: MissionCardRow, opts: BuildMissionCard
     const model = buildMissionFeedGroups(feedTasks);
     const needsYou = model.groups.find(g => g.kind === 'needs_you');
     const moving = model.groups.find(g => g.kind === 'moving');
-    const link = (taskId: string) => missionTaskHref({ missionId: row.id, taskId, from: opts.from, mode: 'sheet' });
+    const link = (taskId: string) => missionTaskHref({ missionId: row.id, taskId, from: opts.from });
     if (needsYou && needsYou.rows[0]) {
       const r = needsYou.rows[0];
       // A question is answered on the task page; every other ask opens the sheet.

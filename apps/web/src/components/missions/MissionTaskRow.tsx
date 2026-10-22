@@ -146,7 +146,7 @@ export default function MissionTaskRow<T extends MissionFeedTaskInput>({
   const token = PULSE_STATE_TOKEN[row.state];
   const kind = deriveWorkKind({ kind: task.kind, roleSlug: task.roleSlug });
   const meta = buildTaskRowMeta(row, { now, liveLine, recordsCount, blockedByTitle });
-  const href = missionTaskHref({ missionId, taskId, from, initiativeId, mode: 'sheet' });
+  const href = missionTaskHref({ missionId, taskId, from, initiativeId });
   const attempts = row.attempts;
   const [attemptsOpen, setAttemptsOpen] = useState(false);
   const attemptsListId = `${missionTaskAnchorId(taskId)}-attempts`;
