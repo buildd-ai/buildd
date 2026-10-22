@@ -3,6 +3,7 @@
 #   powershell -ExecutionPolicy ByPass -c "irm https://buildd.dev/install.ps1 | iex"
 # Scripted, with the background service and no prompt: set BUILDD_SERVICE=1 in
 # your shell first (PowerShell: $env:BUILDD_SERVICE=1), then run the line above.
+# BUILDD_SERVICE=0 skips the service, also without a prompt.
 
 param(
     # Register the background Scheduled Task non-interactively (for scripted
@@ -28,6 +29,12 @@ if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
 $InstallDir = "$env:USERPROFILE\.buildd"
 $BinDir = "$env:USERPROFILE\.local\bin"
 
+# What to install. Defaults to dev of the public repo; BUILDD_REF takes a branch
+# or a commit SHA (CI's Windows installer smoke installs the exact commit under
+# test), as install.sh's BUILDD_REF / BUILDD_REPO do.
+$Ref = if ($env:BUILDD_REF) { $env:BUILDD_REF } else { "dev" }
+$Repo = if ($env:BUILDD_REPO) { $env:BUILDD_REPO } else { "buildd-ai/buildd" }
+
 # Clone or update
 if (Test-Path "$InstallDir\.git") {
     Write-Host "Updating existing installation..."
@@ -47,9 +54,9 @@ bunfig.toml
 /bun.lock
 "@ | Set-Content ".git\info\sparse-checkout"
 
-    git fetch origin dev
+    git fetch origin $Ref
     git read-tree -mu HEAD
-    git reset --hard origin/dev
+    git reset --hard FETCH_HEAD
     Pop-Location
 } else {
     Write-Host "Cloning buildd (runner only)..."
@@ -59,7 +66,7 @@ bunfig.toml
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     Push-Location $InstallDir
     git init
-    git remote add origin https://github.com/buildd-ai/buildd.git
+    git remote add origin "https://github.com/$Repo.git"
     git config core.sparseCheckout true
 
     @"
@@ -75,8 +82,14 @@ bunfig.toml
 /bun.lock
 "@ | Set-Content ".git\info\sparse-checkout"
 
-    git fetch --depth 1 origin dev
-    git checkout dev
+    # A branch gets a local branch tracking it, a SHA is detached.
+    git fetch --depth 1 origin $Ref
+    git rev-parse -q --verify "refs/remotes/origin/$Ref" | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        git checkout -B $Ref "origin/$Ref"
+    } else {
+        git checkout --detach FETCH_HEAD
+    }
     Pop-Location
 }
 
@@ -184,6 +197,9 @@ Write-Host ""
 $InstallService = $false
 if ($Service -or $env:BUILDD_SERVICE -eq '1') {
     $InstallService = $true
+} elseif ($env:BUILDD_SERVICE -eq '0') {
+    # Scripted install that declines the service: never prompt.
+    $InstallService = $false
 } elseif ([Environment]::UserInteractive) {
     $Answer = Read-Host "Run buildd in the background so it survives closing this terminal and reboots? [Y/n]"
     $InstallService = -not ($Answer -match '^[nN]')

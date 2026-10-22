@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import {
   HEADLESS_SESSION_ENV,
   HEADLESS_DENIED_TOOLS,
@@ -39,7 +40,8 @@ describe('headless session: nothing can wake a session that ended its turn', () 
 // sessions silently going back to ending mid-wait.
 describe('the installed Claude Agent SDK still recognises the headless switches', () => {
   function sdkDir(): string | null {
-    let dir = dirname(new URL(import.meta.url).pathname);
+    // fileURLToPath, not URL.pathname: on Windows the latter is "/C:/..." and never exists.
+    let dir = dirname(fileURLToPath(import.meta.url));
     for (let i = 0; i < 6; i++) {
       const store = join(dir, 'node_modules', '.bun');
       if (existsSync(store)) {

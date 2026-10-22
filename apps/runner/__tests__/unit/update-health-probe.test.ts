@@ -120,7 +120,7 @@ describe('buildHealthProbeSpawn — isolation from live state', () => {
       baseEnv: { ...base.baseEnv, BUILDD_BROKER_SOCKET: '/tmp/buildd-broker.sock' },
     });
     expect(spawn.env.BUILDD_BROKER_SOCKET).toBeString();
-    expect(spawn.env.BUILDD_BROKER_SOCKET.startsWith('/home/coder/.buildd/.health-probe')).toBe(true);
+    expect(spawn.env.BUILDD_BROKER_SOCKET.startsWith(join('/home/coder/.buildd/.health-probe'))).toBe(true);
     expect(spawn.env.BUILDD_BROKER_SOCKET).not.toBe('/tmp/buildd-broker.sock');
   });
 

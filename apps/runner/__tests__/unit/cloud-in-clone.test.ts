@@ -5,6 +5,7 @@ const { execFileSync } = cp;
 import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
+import { posixShell } from '../../src/posix-shell';
 import { setupWorktree, cleanupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, __setGitOpsDeps, __resetGitOpsDeps } from '../../src/git-operations';
 
 const dirs: string[] = [];
@@ -15,7 +16,8 @@ beforeEach(() => {
   __setGitOpsDeps({ ...fs, execFile: cp.execFile, sessionLog: () => {},
     execSync: ((command: string, opts: any) => {
       commands.push(command);
-      return cp.execSync(command, opts);
+      // The runner's own exec is a POSIX sh on Windows too; cmd.exe keeps single quotes.
+      return cp.execSync(command, process.platform === 'win32' ? { ...opts, shell: posixShell() } : opts);
     }) as typeof cp.execSync,
   });
 });

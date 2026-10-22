@@ -17,6 +17,17 @@ const defaultExternals: string[] = JSON5.parse(
 );
 
 describe('next.config', () => {
+  it('disables Turbopack source maps for production while retaining them in development', () => {
+    const configUrl = new URL('../../next.config.mjs', import.meta.url).href;
+    for (const [nodeEnv, expected] of [['production', false], ['development', true]] as const) {
+      const loaded = Bun.spawnSync([process.execPath, '--eval',
+        `import config from ${JSON.stringify(configUrl)}; console.log(JSON.stringify({ maps: config.experimental?.turbopackSourceMaps, checks: config.typescript?.ignoreBuildErrors }));`,
+      ], { env: { ...process.env, NODE_ENV: nodeEnv, GITHUB_ACTIONS: '', CI_TYPECHECK_DONE: '' } });
+      expect(loaded.exitCode).toBe(0);
+      expect(JSON.parse(loaded.stdout.toString())).toEqual({ maps: expected, checks: false });
+    }
+  });
+
   it('bundles every direct dependency Next would auto-externalize', () => {
     const pkg = JSON.parse(readFileSync(join(webRoot, 'package.json'), 'utf8'));
     const deps = Object.keys(pkg.dependencies ?? {});

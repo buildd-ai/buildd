@@ -396,7 +396,9 @@ export const WORKTREE_DIR_MARKER = '.buildd-worktrees';
  */
 export function isRunnerWorktreePath(path: string | null | undefined): boolean {
   if (!path) return false;
-  return path.includes(`/${WORKTREE_DIR_MARKER}/`) || path.endsWith(`/${WORKTREE_DIR_MARKER}`);
+  // Worker records hold path.join output, so on Windows the separators are `\`.
+  const p = path.replace(/\\/g, '/');
+  return p.includes(`/${WORKTREE_DIR_MARKER}/`) || p.endsWith(`/${WORKTREE_DIR_MARKER}`);
 }
 
 // `isBuilddTaskBranch` used to live here as the sweep's eligibility gate. It is

@@ -15,7 +15,7 @@
  * No runner process is started; the server is a fake object.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { ScoutHostedProbeResult, ScoutRunClaimRequest, ScoutRunClaimResponse } from '@buildd/shared';
@@ -103,7 +103,11 @@ describe('sandbox resolution and advert', () => {
   });
 });
 
-describe('buildScoutBwrapArgv', () => {
+// bwrap is Linux-only, and its mount-parent walk never reaches '/' on a Windows path
+// (it loops forever), so the argv is not even built there.
+const IS_WIN = process.platform === 'win32';
+
+describe.skipIf(IS_WIN)('buildScoutBwrapArgv', () => {
   const ctx = {
     worktree: '/work/scout-1/wt',
     home: '/work/scout-1/home',
@@ -111,7 +115,7 @@ describe('buildScoutBwrapArgv', () => {
     bunInstallPath: '/home/runner/.bun',
     pathExists: () => true,
   };
-  const argv = buildScoutBwrapArgv(ctx);
+  const argv = IS_WIN ? [] : buildScoutBwrapArgv(ctx);
   const binds = (flag: string) => argv.flatMap((a, i) => (a === flag ? [argv[i + 1]] : []));
 
   test('worktree and probe home are writable; the clone\'s .git is read-only', () => {
@@ -227,7 +231,7 @@ describe('ScoutHostPoller', () => {
     expect(hosted).toBe(0);
   });
 
-  test('bwrap mode wraps every probe command; unsandboxed mode does not', async () => {
+  test.skipIf(IS_WIN)('bwrap mode wraps every probe command; unsandboxed mode does not', async () => {
     const seen: Array<((argv: string[]) => string[]) | undefined> = [];
     for (const mode of ['bwrap', 'unsandboxed'] as const) {
       const { api } = fakeApi(fakeClaim());
@@ -275,7 +279,7 @@ async function sh(cmd: string, cwd = repo) {
 beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), 'scout-host-test-'));
   repo = join(root, 'repo');
-  await sh(`mkdir -p ${repo}`, root);
+  mkdirSync(repo, { recursive: true });
   await sh('git init -q -b main && git config user.email t@example.invalid && git config user.name t && git config commit.gpgsign false');
   // A repo-local credential helper: the probe must not see it.
   await sh('git config credential.helper store');

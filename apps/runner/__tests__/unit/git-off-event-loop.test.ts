@@ -38,7 +38,12 @@ const SLEEP_S = 3;
 /** A request the event loop is free to answer comes back in a few ms. */
 const ANSWER_WITHIN_MS = 200;
 
-const REAL_GIT = execSync('command -v git', { encoding: 'utf-8' }).trim();
+// Unix-only harness: the slow fake git is a #!/bin/sh script found on a
+// ':'-separated PATH, which Windows process lookup never runs.
+const SKIP = process.platform === 'win32';
+const describeUnix = describe.skipIf(SKIP);
+
+const REAL_GIT = SKIP ? 'git' : execSync('command -v git', { encoding: 'utf-8' }).trim();
 const ORIGINAL_PATH = process.env.PATH;
 
 let tmp: string;
@@ -70,6 +75,7 @@ async function timeRequest(): Promise<number> {
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 beforeAll(() => {
+  if (SKIP) return;
   tmp = initTestWorkspace();
   binDir = join(tmp, 'bin');
   mkdirSync(binDir);
@@ -91,6 +97,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  if (SKIP) return;
   process.env.PATH = ORIGINAL_PATH;
   server?.stop(true);
   cleanupTestWorkspace();
@@ -101,7 +108,7 @@ const gitCalls = (): string[] => {
 };
 const clearGitCalls = () => writeFileSync(gitLog, '');
 
-describe('fake git harness', () => {
+describeUnix('fake git harness', () => {
   test('the fake git on PATH is the one the helpers run, and it is slow in a slow dir', async () => {
     const dir = join(tmp, 'harness-slow');
     makeRepo(dir, 'https://github.com/acme/harness.git');
@@ -132,7 +139,7 @@ describe('fake git harness', () => {
   }, 10_000);
 });
 
-describe('repo scan', () => {
+describeUnix('repo scan', () => {
   test('the socket answers while the scan waits on a slow git in every directory', async () => {
     const root = join(tmp, 'roots-slow');
     for (const name of ['one', 'two', 'three']) makeRepo(join(root, name), `https://github.com/acme/${name}.git`);
@@ -200,7 +207,7 @@ describe('repo scan', () => {
   }, 30_000);
 });
 
-describe('worker sync tick', () => {
+describeUnix('worker sync tick', () => {
   function makeWorker(id: string, worktreePath: string): any {
     return {
       id, taskId: `task-${id}`, status: 'working', currentAction: '', milestones: [], subagentTasks: [],

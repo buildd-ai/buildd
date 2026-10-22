@@ -19,8 +19,11 @@ function bindFlagsFor(argv: readonly string[], path: string): string[] {
   return flags;
 }
 
+// bwrap runs only on Linux: these paths are resolved as POSIX mount points, and
+// Windows path.resolve turns '/opt/x' into 'C:\opt\x'.
+const describeLinuxPaths = describe.skipIf(process.platform === 'win32');
 
-describe('parseExtraMounts', () => {
+describeLinuxPaths('parseExtraMounts', () => {
   test('parses absolute ro/rw entries and defaults the mode to ro', () => {
     expect(parseExtraMounts('/opt/tools:ro,/shared/cache:rw,/data', warn)).toEqual([
       { path: '/opt/tools', mode: 'ro' },
@@ -44,7 +47,7 @@ describe('parseExtraMounts', () => {
   });
 });
 
-describe('buildWorkerBwrapArgv', () => {
+describeLinuxPaths('buildWorkerBwrapArgv', () => {
   test('composes the Claude managed-credential bind table', () => {
     expect(buildWorkerBwrapArgv({
       worktreePath: '/repo/.buildd-worktrees/task',
@@ -123,7 +126,7 @@ describe('mount allowlist rollout gates', () => {
 // C25 — built-in binds must be un-overridable by operator input
 // ---------------------------------------------------------------------------
 
-describe('operator allowlist cannot override a built-in bind', () => {
+describeLinuxPaths('operator allowlist cannot override a built-in bind', () => {
   const base = {
     worktreePath: '/repo/.buildd-worktrees/task',
     repoPath: '/repo',
@@ -178,7 +181,7 @@ describe('operator allowlist cannot override a built-in bind', () => {
 // C14 — an absent mount is dropped with a warning
 // ---------------------------------------------------------------------------
 
-describe('missing mounts', () => {
+describeLinuxPaths('missing mounts', () => {
   const base = {
     worktreePath: '/repo/.buildd-worktrees/task',
     repoPath: '/repo',

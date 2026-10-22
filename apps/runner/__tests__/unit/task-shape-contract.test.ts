@@ -28,6 +28,7 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/task-shape-contract.test.ts
  */
 
+import { tmpdir as osTmpdir } from 'os';
 import { describe, test, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
 import { tmpdir } from 'os';
 import { readFileSync } from 'fs';
@@ -172,13 +173,13 @@ mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
     // A directory that exists: loop-command rows really run their
     // verification command there (child_process is not faked).
-    resolve: () => '/tmp',
+    resolve: () => osTmpdir(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [osTmpdir()],
   }),
 }));
 
@@ -392,11 +393,11 @@ const SHAPES: Shape[] = [
     // command must run BEFORE complete_task lands, and its evidence must
     // already be on the worker row the server evaluates the loop against.
     name: 'loop command: agent calls complete_task itself; the server already holds the evidence',
-    task: { outputRequirement: 'auto', loopIteration: 1, loopConfig: { exitCondition: { type: 'command', command: 'true' } } },
+    task: { outputRequirement: 'auto', loopIteration: 1, loopConfig: { exitCondition: { type: 'command', command: 'exit 0' } } },
     scripts: [[init(), say('Iteration done.'), ...completeTask('Made the check pass.'), success()]],
     expect: {
       status: 'completed', writer: 'agent', sessions: 1,
-      evidenceAtCompletion: { iteration: 1, conditionType: 'command', command: 'true', outcome: 'ok', exitCode: 0 },
+      evidenceAtCompletion: { iteration: 1, conditionType: 'command', command: 'exit 0', outcome: 'ok', exitCode: 0 },
     },
   },
 

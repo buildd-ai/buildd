@@ -12,8 +12,8 @@ import { keptDirForClone, seedCloneFromKept } from './container-reset';
 
 export { isolatedWorkspacePath };
 
-/** https://, git@, file:/// and absolute local paths, with no shell metacharacters. */
-const CLONE_URL_RE = /^(https?:\/\/|git@|file:\/\/\/|\/[\w./-]+)[\w.@:/-]*$/;
+/** https://, git@, file:/// and absolute local paths (POSIX or Windows drive), with no shell metacharacters. */
+const CLONE_URL_RE = /^(https?:\/\/|git@|file:\/\/\/|\/[\w./-]+|[A-Za-z]:[\\/][\w.\\/-]*)[\w.@:/-]*$/;
 
 /**
  * Clone a repo into the per-workspace isolation directory if the path does not

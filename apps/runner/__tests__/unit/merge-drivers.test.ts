@@ -328,9 +328,9 @@ describe('mergeBaseWithDerivedFiles: structural resolutions and slow merges (rea
     expect(git(dir, 'status', '--porcelain')).toBe('');
     // The driver outlives the killed git and may write git's temp file late:
     // it must never show up as something an agent could commit.
-    execFileSync('sleep', ['3']);
+    await Bun.sleep(3000);
     expect(git(dir, 'status', '--porcelain')).toBe('');
-  });
+  }, 15_000); // 1s limit + 3s wait + real git overruns the 5s default where git spawns slowly (Windows)
 });
 
 describe('shellSafeMergirafPath', () => {
