@@ -11,6 +11,8 @@ export interface TimelineEvent {
   id: string;
   label: string;
   detail: string | null;
+  /** When it happened, if a stored fact says; the page shows it as an age (R-8). */
+  at: string | null;
   taskId?: string | null;
   state: 'passed' | 'failed' | 'running' | 'pending' | 'muted';
   children: TimelineEvent[];
@@ -24,10 +26,13 @@ export interface TaskTimelineInput {
   kind: DeliveryKind;
   delivery?: DeliveryView | null;
   lineage?: readonly LineageStep[];
-  ciAttemptTasks?: readonly { id: string; status: string; workers?: readonly unknown[] }[];
+  ciAttemptTasks?: readonly { id: string; status: string; createdAt?: Date | string | null; workers?: readonly unknown[] }[];
+  /** The PR's merge time, for the Merged row. */
+  mergedAt?: Date | string | null;
 }
 const stateOf = (status: string): TimelineEvent['state'] => status === 'completed' ? 'passed' : status === 'failed' ? 'failed' : ['running', 'in_progress', 'assigned', 'starting'].includes(status) ? 'running' : 'muted';
-const event = (id: string, label: string, state: TimelineEvent['state'], detail: string | null = null, taskId?: string | null): TimelineEvent => ({ id, label, detail, state, taskId, children: [] });
+const iso = (v: Date | string | null | undefined): string | null => v == null ? null : new Date(v).toISOString();
+const event = (id: string, label: string, state: TimelineEvent['state'], detail: string | null = null, taskId?: string | null, at?: Date | string | null): TimelineEvent => ({ id, label, detail, at: iso(at), state, taskId, children: [] });
 
 export function buildTaskTimeline(input: TaskTimelineInput): TimelineGroup[] {
   const groups: TimelineGroup[] = DELIVERY_STAGES.map(label => ({ label, events: [] }));
@@ -39,7 +44,7 @@ export function buildTaskTimeline(input: TaskTimelineInput): TimelineGroup[] {
       const w = item.entry.worker;
       const duration = w.startedAt && w.completedAt ? new Date(w.completedAt).getTime() - new Date(w.startedAt).getTime() : null;
       const detail = [duration != null && duration >= 0 ? formatElapsed(duration) : null, w.turns ? `${w.turns} turns` : null, w.filesChanged ? `${w.filesChanged} files` : null, w.linesAdded || w.linesRemoved ? `+${w.linesAdded ?? 0} −${w.linesRemoved ?? 0} lines` : null].filter(Boolean).join(' · ') || null;
-      build.push(event(`worker:${w.id}`, w.status === 'completed' ? 'Built' : w.status === 'failed' ? 'Build stopped' : 'Builder started', stateOf(w.status), detail));
+      build.push(event(`worker:${w.id}`, w.status === 'completed' ? 'Built' : w.status === 'failed' ? 'Build stopped' : 'Builder started', stateOf(w.status), detail, null, w.completedAt ?? w.startedAt));
     }
   }
   const v = input.delivery;
@@ -69,7 +74,7 @@ export function buildTaskTimeline(input: TaskTimelineInput): TimelineGroup[] {
     if (v.prState === 'ci_passed') verify.push(event('ci:current', 'CI passed', 'passed'));
     else if (v.prState === 'ci_failed') verify.push(event('ci:current', 'CI failed on the current head', 'failed'));
     else if (v.prState === 'awaiting_ci' || v.prState === 'ci_running') verify.push(event('ci:current', 'CI checking', 'running'));
-    if (v.state === 'MERGED') deliver.push(event('merged', 'Merged', 'passed'));
+    if (v.state === 'MERGED') deliver.push(event('merged', 'Merged', 'passed', null, null, input.mergedAt));
     else if (v.state === 'LANDING') deliver.push(event('landing', 'Merging', 'running'));
     else if (v.state === 'CLOSED_UNMERGED' || v.state === 'ABANDONED') deliver.push(event('closed', 'Closed without merging', 'muted'));
   } else {
@@ -83,19 +88,19 @@ export function buildTaskTimeline(input: TaskTimelineInput): TimelineGroup[] {
         if ((step.n ?? 1) > 1 && cause) {
           const task = ranRetries[retryIndex++];
           if (task) shown.add(task.id);
-          cause.children.push(event(`legacy:fix:${i}`, `Fix ${retryIndex}`, task ? stateOf(task.status) : 'muted', step.sub || null, task?.id));
+          cause.children.push(event(`legacy:fix:${i}`, `Fix ${retryIndex}`, task ? stateOf(task.status) : 'muted', step.sub || null, task?.id, step.at));
         }
         continue;
       }
       if (step.kind === 'retry') continue;
-      const row = event(`legacy:${i}`, step.title, step.kind === 'ci_failed' ? 'failed' : step.kind === 'ci_running' ? 'running' : 'passed', step.sub || null);
+      const row = event(`legacy:${i}`, step.title, step.kind === 'ci_failed' ? 'failed' : step.kind === 'ci_running' ? 'running' : 'passed', step.sub || null, null, step.at);
       (step.kind === 'merged' ? deliver : verify).push(row);
       if (step.kind === 'ci_failed') cause = row;
     }
     // A dispatched legacy fix is still an attempt before a worker claims it.
     // It must not shift the links assigned to fixes that actually ran.
     for (const task of retries.filter(t => !shown.has(t.id))) {
-      const failure = event(`legacy:cause:${task.id}`, 'CI fix requested', 'failed');
+      const failure = event(`legacy:cause:${task.id}`, 'CI fix requested', 'failed', null, null, task.createdAt);
       failure.children.push(event(`legacy:fix:${task.id}`, 'Fix queued', task.status === 'pending' ? 'pending' : stateOf(task.status), null, task.id));
       verify.push(failure);
     }

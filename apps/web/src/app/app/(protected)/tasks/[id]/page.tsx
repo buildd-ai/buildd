@@ -892,7 +892,7 @@ async function TaskDetailPage({
   });
   const terminalSucceeded = verdict?.state === 'shipped' || verdict?.state === 'done';
 
-  const timeline = buildTaskTimeline({ task, workers: taskWorkers, kind: deliveryView ? projectKernelState(deliveryView.state) : prLife.mergedAt ? 'landed' : 'build', delivery: deliveryView, lineage: prOutcome?.lineage, ciAttemptTasks });
+  const timeline = buildTaskTimeline({ task, workers: taskWorkers, kind: deliveryView ? projectKernelState(deliveryView.state) : prLife.mergedAt ? 'landed' : 'build', delivery: deliveryView, lineage: prOutcome?.lineage, ciAttemptTasks, mergedAt: prLife.mergedAt as Date | string | null });
 
   // --- Helpers ---
 
@@ -1376,7 +1376,8 @@ async function TaskDetailPage({
     <DiagnosticsAudienceProvider visible={diagnosticsVisible}>
     <LiveData initial={{ taskStatus: task.status, worker: null }} load={loadRegion}>
     <div className="p-4 md:p-8 overflow-x-hidden overflow-y-auto h-full">
-      <div className="max-w-[900px] w-full">
+      {/* Reading width: at most 840px, never stretched to the window (Navigation R-21). */}
+      <div className="max-w-[840px] w-full" data-testid="task-content-column">
         {/* Auto-refresh when worker claims this task or deps resolve */}
         <TaskAutoRefresh
           taskId={task.id}
@@ -1531,7 +1532,7 @@ async function TaskDetailPage({
                 roleName,
               })}
               focusAnswer={focusAnswer}
-              controls={<WorkerSteerPanel {...workerSteerProps(activeWorker, taskWorkers, isTerminal)} showHistory={false} />}
+              controls={<WorkerSteerPanel {...workerSteerProps(activeWorker, taskWorkers, isTerminal)} taskId={task.id} showHistory={false} />}
             />
           </div>
         )}

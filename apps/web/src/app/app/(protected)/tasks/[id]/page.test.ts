@@ -332,3 +332,10 @@ describe('navigation task hierarchy (R-7 to R-10)', () => {
     expect(pageSource).toContain("item.presentation !== 'unclear'");
   });
 });
+
+describe('reading width (Navigation R-21)', () => {
+  it('keeps the content column at most 840px', () => {
+    expect(pageSource).toMatch(/className="max-w-\[840px\] w-full" data-testid="task-content-column"/);
+    expect(pageSource).not.toContain('max-w-[900px]');
+  });
+});

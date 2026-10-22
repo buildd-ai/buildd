@@ -8,7 +8,7 @@ domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/tasks/[id]/page.tsx, apps/web/src/lib/task-timeline.ts, apps/web/src/lib/task-checks.ts, apps/web/src/lib/task-result.ts, apps/web/src/lib/workflow/projections.ts]
 related: [workflow-state-kernel, mission-task-lifecycle, surface-ia-home-missions-initiatives]
 keywords: [task detail, mobile header, show full title, review queued, no findings yet, review of PR, what shipped, why this, verdict block, review approved, updating branch, awaiting merge, repair 1, checks list, review round, attempt, reviewer task, fix attempt, structured output, technical summary, raw output, lifecycle track]
-verified_by: [apps/web/src/lib/task-timeline.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/mission-sibling-nav.test.ts, apps/web/src/lib/workflow/escalation-copy.test.ts, apps/web/src/components/EscalationDecision.test.tsx, apps/web/src/lib/workflow/delivery-rounds.test.ts, apps/web/src/lib/projections-agree.test.tsx, packages/workflow-kernel/src/escalation-brief.test.ts, apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx, apps/web/src/lib/task-view.test.ts, apps/web/src/lib/task-sections.test.ts, apps/web/src/lib/task-live-view.test.ts, apps/web/src/lib/mission-board.test.ts]
+verified_by: [apps/web/src/lib/task-timeline.test.ts, apps/web/src/lib/run-stall.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/mission-sibling-nav.test.ts, apps/web/src/lib/workflow/escalation-copy.test.ts, apps/web/src/components/EscalationDecision.test.tsx, apps/web/src/lib/workflow/delivery-rounds.test.ts, apps/web/src/lib/projections-agree.test.tsx, packages/workflow-kernel/src/escalation-brief.test.ts, apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx, apps/web/src/lib/task-view.test.ts, apps/web/src/lib/task-sections.test.ts, apps/web/src/lib/task-live-view.test.ts, apps/web/src/lib/mission-board.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -126,11 +126,12 @@ Cases the model handles explicitly:
 
 ## Information hierarchy (wireframe)
 
-Phone (390px) and desktop use one reading column, at most 900px wide.
+Phone (390px) and desktop use one reading column, at most 840px wide, never stretched to the window.
 
 | Phase | First content after the header | Following content |
 | --- | --- | --- |
 | Builder running | Live Now line, elapsed time, turns, files, lines, activity strip, milestones; Steer, Pause and Stop in that block | Questions and current checks, Details |
+| Builder stalled (no reported progress for 30 minutes) | The same live block, flagged `Running 1h 12m · no progress for 48m` in amber, the Now line's age in amber; Restart and Stop, Steer kept | As running |
 | Builder stopped | Status, then one timeline grouped Build, Verify, Deliver | Two-line summary, PR link, checks, Run, Details |
 
 `buildTaskTimeline` is pure and uses stored delivery facts. Kernel review rounds
@@ -141,6 +142,15 @@ Legacy PRs use `buildLineage` and `ciAttemptTasks`. Build attempts use
 `groupAttemptHistory`, keeping consecutive lost claims as one bookkeeping event.
 Stage positions use `deliveryStageIndex`; an unstarted stage has no empty card.
 Round timestamps and CI results not present in the record are never invented.
+Times are ages (`12m ago`) from stored facts only: a build run's end (else start),
+the PR's merge time, a legacy lineage step's time, a queued fix's creation. A
+kernel round or attempt has no stored time and shows none. Durations stay in the
+event's subline.
+
+`runStall` (`apps/web/src/lib/run-stall.ts`) reads a stall from the newest reported
+milestone, else the run's start; a heartbeat is not progress. Only a `running`
+worker without an open question can stall. Restart re-queues the task
+(`/api/tasks/[id]/reassign?force=true`).
 
 Run, initially collapsed, holds the archived live view and milestones, session
 records, technical report, raw output, evidence files, artifacts, PR diagnostics,
@@ -343,6 +353,8 @@ branch update" for a carried approval), binding what follows to that round.
 - AC-23: GIVEN two review rounds and repairs whose triggerReason names each round WHEN the timeline renders THEN each repair appears once under its own round; mechanical refreshes read Branch update in Deliver.
 - AC-24: GIVEN a legacy task with CI retries WHEN the timeline renders THEN retries nest beneath their CI failure and are not repeated as build attempts or related tasks.
 - AC-25: GIVEN any task state WHEN Details opens THEN it names the spec and criteria, waits on and blocks by task name, attempts and time; no mission strip, Execution Plan or unknown-effect error renders.
+- AC-26: GIVEN a running builder with no reported progress for 30 minutes WHEN its page renders THEN the live block reads `Running <elapsed> · no progress for <quiet>` in amber and offers Restart and Stop with Steer, and no Pause.
+- AC-27: GIVEN a stopped task WHEN the timeline renders THEN every event with a stored time shows it as an age and its duration only in the subline; an event without a stored time shows no time.
 
 - AC-1: GIVEN a completed reviewer task with `structuredOutput {summary, verdict: "approve", confidence: 0.8}` whose parent delivery is `APPROVED` WHEN the page renders THEN the outcome row reads "Review approved", the track reads "Deliver · awaiting merge", the result is headed "Review of PR #N", and no element contains "What shipped", "Why this?", "repair 1" or the literal `"confidence"` outside Raw output.
 - AC-2: GIVEN a delivery `REPAIRING` with `stateReason` `behind` WHEN `deriveDeliveryView` runs THEN `headline` is "Updating branch", and `headerLifecycle` returns step Verify with phrase "updating branch" and not state `fixing`.

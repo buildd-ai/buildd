@@ -2,6 +2,8 @@
 
 import { resolvePrDisplayState, type PrDisplayState } from '@/lib/pr-presentation';
 import { isOpenAsk, recoveredRepairTaskId } from '@/lib/open-ask';
+import { runStall } from '@/lib/run-stall';
+import { RunStallContext } from './run-stall-context';
 
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
@@ -277,6 +279,8 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
     nowMs,
   });
   const elapsed = startMs != null ? elapsedLabel(nowMs - startMs) : null;
+  // No reported progress for 30 minutes: flagged, and the controls offer Restart (R-7).
+  const stall = worker.waitingFor ? null : runStall({ status: worker.status, startMs, progressMs: now.updatedTs, nowMs });
   const tokens = (worker.inputTokens || 0) + (worker.outputTokens || 0);
   // 0 tokens after real turns is a reporting gap, not a measurement: hide it.
   const tokensShown = showTokenCount(tokens, worker.turns);
@@ -391,10 +395,11 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
   }
 
   return (
-    <div data-testid="worker-view" data-state="running">
+    <RunStallContext.Provider value={stall}>
+    <div data-testid="worker-view" data-state={stall ? 'stalled' : 'running'}>
       {staleBanner}
       {isActive ? (
-        <NowStrip now={now} nowMs={nowMs} />
+        <NowStrip now={now} nowMs={nowMs} stall={stall} />
       ) : (
         worker.currentAction && (
           <p data-testid="worker-current-action" className="text-sm text-text-secondary truncate">{collapseWorkspacePath(worker.currentAction)}</p>
@@ -465,6 +470,7 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
         </div>
       )}
     </div>
+    </RunStallContext.Provider>
   );
 }
 
