@@ -1,0 +1,25 @@
+[
+  {
+    "route": "/app/missions/:id",
+    "states": [
+      {
+        "key": "flow-tab",
+        "steps": [
+          { "action": "waitFor", "selector": "testid:mission-layout-tabs", "timeoutMs": 30000 },
+          { "action": "click", "selector": "role:tab[name=Flow]" },
+          { "action": "waitFor", "selector": "css:[data-testid^=\"flow-timeline\"]", "timeoutMs": 30000 },
+          { "action": "assertLayout" }
+        ]
+      },
+      {
+        "key": "history-tab",
+        "steps": [
+          { "action": "waitFor", "selector": "testid:mission-layout-tabs", "timeoutMs": 30000 },
+          { "action": "click", "selector": "role:tab[name=History]" },
+          { "action": "waitFor", "selector": "testid:mission-event-feed", "timeoutMs": 30000 },
+          { "action": "assertLayout" }
+        ]
+      }
+    ]
+  }
+]
