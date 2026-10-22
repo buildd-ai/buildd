@@ -39,10 +39,10 @@ export default function ClosedPrFixture() {
     <div className="min-h-screen bg-surface-1 text-text-primary">
       <header className="border-b-2 border-border-strong px-4 py-4 md:px-8">
         <p className="section-label">Dev fixtures</p>
-        <h1 className="mt-1 font-mono text-[18px] font-semibold">Closed PR: {fixture.case}</h1>
+        <h1 className="mt-1 font-mono text-title font-semibold">Closed PR: {fixture.case}</h1>
         <nav aria-label="Fixture states" className="-mx-4 mt-3 flex gap-1.5 overflow-x-auto px-4 pb-1 md:mx-0 md:flex-wrap md:px-0">
           {closedPrFixtureLinks().map(l => (
-            <a key={l.href} href={l.href} className="shrink-0 border border-border-default bg-surface-2 px-2.5 py-1.5 font-mono text-[12px] text-text-secondary hover:border-border-strong hover:text-text-primary">
+            <a key={l.href} href={l.href} className="shrink-0 border border-border-default bg-surface-2 px-2.5 py-1.5 font-mono text-meta text-text-secondary hover:border-border-strong hover:text-text-primary">
               {l.label}
             </a>
           ))}
@@ -58,8 +58,8 @@ export default function ClosedPrFixture() {
         <section className="flex flex-col gap-2">
           <h2 className="section-label">Task</h2>
           <div data-testid="closed-pr-fixture-task" className="flex flex-wrap items-center gap-2.5 border border-border-default bg-surface-2 p-3">
-            <span className="font-mono text-[13px]">{task.title}</span>
-            <span className="font-mono text-[12px] text-text-muted">PR #{task.prNumber}</span>
+            <span className="font-mono text-body">{task.title}</span>
+            <span className="font-mono text-meta text-text-muted">PR #{task.prNumber}</span>
             {task.supersededByPr != null
               ? supersededPill(task.prNumber, task.supersededByPr)
               : <HeaderStatusPill status="completed" merged={false} />}
