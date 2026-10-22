@@ -78,7 +78,7 @@ describe('composition root', () => {
     expect(byEvent('task.pr_merge_delivered')).toEqual([
       'missions:loop-advance-on-merge', 'missions:open-mission-integration-pr', 'releases:early-release-undraft-stacked',
     ]);
-    expect(byEvent('pr.review_ready')).toEqual(['releases:early-release-dispatch', 'reviews:spec-checks-on-open', 'reviews:registered-checks-on-open']);
+    expect(byEvent('pr.review_ready')).toEqual(['releases:early-release-dispatch', 'reviews:spec-checks-on-open']);
     expect(byEvent('task.left_mission')).toEqual(['missions:withdraw-scope-decision', 'visual-qa:surface-audit-detach']);
     expect(byEvent('task.joined_mission')).toEqual(['missions:decide-linked-task-scope']);
     expect(byEvent('task.role_changed')).toEqual(['jev-decisions:task-role-correction']);
@@ -115,7 +115,7 @@ describe('composition root', () => {
     expect(byEvent('pr.ci_failed')).toEqual(['notifications:ledger-pr-ci-failed', 'reviews:ci-failure-retry', 'jev-decisions:verdict-on-ci-failed']);
     expect(byEvent('pr.ci_passed')).toEqual(['missions:loop-advance-on-ci-green', 'jev-decisions:verdict-on-ci-passed']);
     // The push is noted on the PR before a reviewer is re-dispatched.
-    expect(byEvent('pr.synchronized')).toEqual(['reviews:pr-activity-changes-pushed', 'reviews:reviewer-redispatch-on-push', 'reviews:spec-checks-on-push', 'reviews:registered-checks-on-push', 'jev-decisions:verdict-on-push']);
+    expect(byEvent('pr.synchronized')).toEqual(['reviews:pr-activity-changes-pushed', 'reviews:reviewer-redispatch-on-push', 'reviews:spec-checks-on-push', 'jev-decisions:verdict-on-push']);
   });
 
   it('completion policies: exactly one per core-declared slot, in core\'s order', () => {
