@@ -25,7 +25,7 @@ export default async function ProtectedLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const user = await getCurrentUser();
+  const [user, cookieStore] = await Promise.all([getCurrentUser(), cookies()]);
   let userTeams: { id: string; name: string; slug: string }[] = [];
   let currentTeamId: string | null = null;
   let workspaceIds: string[] = [];
@@ -41,8 +41,7 @@ export default async function ProtectedLayout({
     // (force-dynamic, inherited from app/app/layout.tsx), so a warm one reads
     // nothing. On failure the shell still renders: no teams, no workspace
     // scope, timestamps in the browser zone.
-    const chrome = await cookies()
-      .then((cookieStore) => loadAppChrome(user.id, cookieStore.get('buildd-team')?.value))
+    const chrome = await loadAppChrome(user.id, cookieStore.get('buildd-team')?.value)
       .catch(() => null);
     if (chrome) {
       userTeams = chrome.teams;
@@ -64,7 +63,7 @@ export default async function ProtectedLayout({
 
   // Docked Ask open or collapsed (from 1440px, Navigation R-21): read here so
   // the first paint already reserves the column, or doesn't.
-  const askDockOpen = askDockOpenFromCookie((await cookies()).get(ASK_DOCK_COOKIE)?.value);
+  const askDockOpen = askDockOpenFromCookie(cookieStore.get(ASK_DOCK_COOKIE)?.value);
 
   const userInitial = user?.name?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || 'U';
 
