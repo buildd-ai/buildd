@@ -8,6 +8,7 @@ const mockWorkspacesFindFirst = mock(() => null as any);
 const mockTeamMembersFindMany = mock(async () => [{ teamId: 'team-1' }] as any[]);
 const mockTeamsFindFirst = mock(async () => null as any);
 const mockTasksFindFirst = mock(async () => null as any);
+const mockMissionsFindFirst = mock(async () => null as any);
 
 // Mock the database module
 mock.module('@buildd/core/db', () => ({
@@ -31,11 +32,17 @@ mock.module('@buildd/core/db', () => ({
       tasks: {
         findFirst: mockTasksFindFirst,
       },
+      missions: {
+        findFirst: mockMissionsFindFirst,
+      },
+      taskSchedules: {
+        findFirst: mock(async () => null as any),
+      },
     },
   },
 }));
 
-import { resolveCreatorContext, resolveCreationSource } from './task-service';
+import { resolveCreatorContext, resolveCreationSource, resolveMissionCreator } from './task-service';
 
 describe('task-service', () => {
   beforeEach(() => {
@@ -430,5 +437,92 @@ describe('task-service', () => {
       const ctx = await resolveCreatorContext({ apiAccount: { id: 'acct-1' } });
       expect(ctx.createdByUserId).toBeNull();
     });
+  });
+});
+
+// Spec 7702c32a R-1/R-2, AC-1: who filed a mission (account, worker, its task)
+// is recorded apart from the person it is for, and an agent filing for a
+// person is never recorded as that person's direct action.
+describe('resolveMissionCreator', () => {
+  const agentTask = { id: 'task-agent', createdByUserId: 'user-requester', parentTaskId: null, missionId: null, scheduleId: null };
+
+  beforeEach(() => {
+    mockAccountsFindFirst.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockTeamMembersFindMany.mockReset();
+    mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'team-1' }]);
+  });
+
+  it('records a signed-in person as an explicit request', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-user' });
+    expect(await resolveMissionCreator({ user: { id: 'user-1' }, apiAccount: null })).toEqual({
+      createdByUserId: 'user-1', requesterSource: 'explicit',
+      createdByAccountId: 'acct-user', createdByWorkerId: null, createdByTaskId: null,
+    });
+  });
+
+  it("records the person's own OAuth session as an explicit request", async () => {
+    const r = await resolveMissionCreator({ user: null, apiAccount: { id: 'acct-team', sessionUserId: 'user-1', actsAs: 'person' } });
+    expect(r).toMatchObject({ createdByUserId: 'user-1', requesterSource: 'explicit', createdByAccountId: 'acct-team' });
+  });
+
+  it("records an agent's mission for its task's requester as derived, with the agent as the actor", async () => {
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'acct-runner', taskId: 'task-agent' });
+    mockTasksFindFirst.mockResolvedValue(agentTask);
+    const r = await resolveMissionCreator({ user: null, apiAccount: { id: 'acct-runner' }, createdByWorkerId: 'worker-1' });
+    expect(r).toEqual({
+      createdByUserId: 'user-requester', requesterSource: 'parent',
+      createdByAccountId: 'acct-runner', createdByWorkerId: 'worker-1', createdByTaskId: 'task-agent',
+    });
+  });
+
+  it('never takes a per-task token as a person, even one that carries a session user', async () => {
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'acct-runner', taskId: 'task-agent' });
+    mockTasksFindFirst.mockResolvedValue(agentTask);
+    const r = await resolveMissionCreator({
+      user: { id: 'user-cookie' },
+      apiAccount: { id: 'acct-runner', sessionUserId: 'user-other', taskScope: { taskId: 'task-agent' } },
+      createdByWorkerId: 'worker-1',
+    });
+    expect(r).toMatchObject({ createdByUserId: 'user-requester', requesterSource: 'parent', createdByTaskId: 'task-agent' });
+  });
+
+  it("records no person for an 'agent' grant with no task behind it, not the grant's user", async () => {
+    const r = await resolveMissionCreator({ user: null, apiAccount: { id: 'acct-team', actsAs: 'agent', oauthUserId: 'user-1' } });
+    expect(r).toEqual({ createdByUserId: null, requesterSource: 'none', createdByAccountId: 'acct-team', createdByWorkerId: null, createdByTaskId: null });
+  });
+
+  it("ignores a worker that is not the caller's", async () => {
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-x', accountId: 'acct-other', taskId: 'task-agent', workspaceId: 'ws-x' });
+    mockTasksFindFirst.mockResolvedValue(agentTask);
+    const r = await resolveMissionCreator({ user: null, apiAccount: { id: 'acct-runner' }, createdByWorkerId: 'worker-x' });
+    expect(r).toEqual({ createdByUserId: null, requesterSource: 'none', createdByAccountId: 'acct-runner', createdByWorkerId: null, createdByTaskId: null });
+  });
+});
+
+describe('resolveCreatorContext — an agent is never the person (spec 7702c32a R-2)', () => {
+  beforeEach(() => {
+    mockWorkersFindFirst.mockReset();
+    mockTasksFindFirst.mockReset();
+  });
+
+  it('writes no person for a per-task token, whatever it carries', async () => {
+    const r = await resolveCreatorContext({ apiAccount: { id: 'acct-runner', sessionUserId: 'user-1', taskScope: { taskId: 't' } } as any });
+    expect(r.createdByUserId).toBeNull();
+  });
+
+  it("writes no person for an 'agent' grant", async () => {
+    const r = await resolveCreatorContext({ apiAccount: { id: 'acct-team', actsAs: 'agent', oauthUserId: 'user-1' } as any });
+    expect(r.createdByUserId).toBeNull();
+  });
+
+  it('a bearer key decides over a browser cookie riding along', async () => {
+    const r = await resolveCreatorContext({ apiAccount: { id: 'acct-runner' }, userId: 'user-cookie' });
+    expect(r.createdByUserId).toBeNull();
   });
 });

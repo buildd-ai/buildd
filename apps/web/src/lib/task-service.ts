@@ -1,16 +1,19 @@
 import { db } from '@buildd/core/db';
-import { accounts, workers, workspaces } from '@buildd/core/db/schema';
+import { accounts, workers, workspaces, type missions } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
 import { getUserTeamIds } from '@/lib/team-access';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { resolveTaskRequesterUserId } from '@buildd/core/task-requester';
+import { requestingPerson } from '@/lib/request-person';
 
 export type CreationSource = 'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule';
 
 const VALID_CREATION_SOURCES: CreationSource[] = ['dashboard', 'api', 'mcp', 'github', 'local_ui', 'schedule'];
 
 export interface CreateTaskCreatorParams {
-  // Auth context - one of these should be provided
-  apiAccount?: { id: string; sessionUserId?: string } | null;
+  // Auth context - one of these should be provided. The whole authenticated
+  // account: requestingPerson reads its taskScope / actsAs as well.
+  apiAccount?: { id: string; sessionUserId?: string; taskScope?: unknown; actsAs?: unknown } | null;
   userId?: string | null;
   // Optional creator tracking from request
   createdByWorkerId?: string;
@@ -70,13 +73,56 @@ export async function resolveCreatorContext(
 
 /**
  * The authenticated person a new task is for: the signed-in user, or the person
- * behind an OAuth session. Only a person this request authenticated is written
- * here. A task an agent, retry, schedule or mission files gets its person from
- * the `tasks_resolve_requester` trigger (parent -> mission -> schedule), which
- * records it as derived rather than as named by the writer.
+ * behind their own OAuth session (lib/request-person.ts). A per-task token, an
+ * API key or an 'agent' grant is never a person, and a bearer decides over a
+ * cookie riding along. A task an agent, retry, schedule or mission files gets
+ * its person from the `tasks_resolve_requester` trigger (parent -> mission ->
+ * schedule), which records it as derived rather than as named by the writer.
  */
 function resolveRequesterUserId(params: CreateTaskCreatorParams): string | null {
-  return params.userId || params.apiAccount?.sessionUserId || null;
+  return requestingPerson(params.userId ? { id: params.userId } : null, params.apiAccount);
+}
+
+type MissionRequesterSource = NonNullable<typeof missions.$inferInsert['requesterSource']>;
+
+export interface ResolvedMissionCreator {
+  /** The person the mission is for; its tasks inherit them. */
+  createdByUserId: string | null;
+  requesterSource: MissionRequesterSource;
+  /** Who filed it: the authenticated account, and for an agent its worker and task. */
+  createdByAccountId: string | null;
+  createdByWorkerId: string | null;
+  createdByTaskId: string | null;
+}
+
+/**
+ * Who filed a new mission and who it is for, as distinct facts (spec 7702c32a
+ * R-1/R-2). A person filing it themselves is 'explicit'. An agent filing it
+ * (identified by its own worker, validated as for tasks) records the worker and
+ * its task as the actor and lineage, and the person is that task's requester,
+ * recorded as 'parent': never as the person's own action, and never the
+ * runner's owner, the key's creator or an agent grant's user.
+ */
+export async function resolveMissionCreator(params: {
+  user: { id: string } | null | undefined;
+  apiAccount: CreateTaskCreatorParams['apiAccount'];
+  createdByWorkerId?: string;
+}): Promise<ResolvedMissionCreator> {
+  const ctx = await resolveCreatorContext({
+    apiAccount: params.apiAccount,
+    userId: params.user?.id ?? null,
+    createdByWorkerId: params.createdByWorkerId,
+  });
+  const actor = {
+    createdByAccountId: ctx.createdByAccountId,
+    createdByWorkerId: ctx.createdByWorkerId,
+    createdByTaskId: ctx.createdByWorkerId ? ctx.parentTaskId : null,
+  };
+  if (ctx.createdByUserId) return { createdByUserId: ctx.createdByUserId, requesterSource: 'explicit', ...actor };
+  const derived = actor.createdByTaskId
+    ? await resolveTaskRequesterUserId({ parentTaskId: actor.createdByTaskId }).catch(() => null)
+    : null;
+  return { createdByUserId: derived, requesterSource: derived ? 'parent' : 'none', ...actor };
 }
 
 /**

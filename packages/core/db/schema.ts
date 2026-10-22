@@ -28,7 +28,7 @@ export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'st
 import { sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation, TaskDelegation } from '../token-delegation';
-import type { TaskRequesterSource } from '../task-requester-source';
+import type { MissionRequesterSource, TaskRequesterSource } from '../task-requester-source';
 import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, RootCauseClassification, RootCauseCapabilityKind, FailureIncidentRecovery } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
@@ -1477,7 +1477,20 @@ export const missions = pgTable('missions', {
   // mission a fresh run of N attempts before it can trip again, with no
   // separate clear step to keep in sync.
   heartbeatBreakerTrippedAt: timestamp('heartbeat_breaker_tripped_at', { withTimezone: true }),
+  // The person this mission is for; its tasks inherit them through
+  // tasks_derive_requester. How it was decided is missionRequesterSource below.
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  // Who actually filed the mission, kept apart from the person it is for (spec
+  // 7702c32a R-1): the authenticated account, the worker whose agent filed it,
+  // and that worker's task (its lineage parent). NULL on rows written before
+  // these columns: unknown, never back-filled.
+  createdByAccountId: uuid('created_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  createdByWorkerId: uuid('created_by_worker_id'),
+  createdByTaskId: uuid('created_by_task_id'),
+  // How createdByUserId was decided: 'explicit' (a person filed it themselves),
+  // 'parent' (an agent filed it; the person is its task's requester), 'none'.
+  // NULL: written before this column; unknown.
+  requesterSource: text('requester_source').$type<MissionRequesterSource>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
