@@ -26,6 +26,7 @@ import Card from '@/components/ui/Card';
 import { SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH } from '@buildd/core/surface-audit';
 import { saveSurfaceAuditWaiver, useSurfaceAuditWaiver } from './MissionSurfaceAuditWaiver';
 import type { CheckRow, CheckStatus, OutcomeSpecLine, RailStep } from '@/lib/mission-checks';
+import type { StandardItemStatus, StandardsLine } from '@/lib/specs/standards-gate';
 
 // The active stage is live work, so it takes the running hue, never ink beside
 // green (R-35): ink and green merge in low light. It is also thicker, so the
@@ -68,6 +69,33 @@ export function OutcomeSpecLines({ lines }: { lines: readonly OutcomeSpecLine[] 
         </li>
       ))}
     </ul>
+  );
+}
+
+const STANDARD_STATUS: Record<StandardItemStatus, string> = { met: 'met', not_met: 'not met', checking: 'checking', not_checked: 'not checked' };
+
+/**
+ * Verify's Standards line (Navigation R-17): CI and code review beside the
+ * mission's standards, one line that opens on its own only when one is not met.
+ */
+export function StandardsLineView({ line }: { line: StandardsLine }) {
+  return (
+    <details data-testid="mission-standards" open={line.open} className="text-body">
+      <summary className="flex min-h-11 cursor-pointer items-baseline gap-x-2 md:min-h-0">
+        <span className="shrink-0 text-text-muted">Standards</span>
+        <span data-testid="mission-standards-summary" className={`font-mono text-meta ${line.open ? 'text-status-error' : 'text-text-muted'}`}>{line.text}</span>
+      </summary>
+      <ul aria-label="Standards" className="mt-1 flex flex-col gap-1 pl-4">
+        {line.items.map(it => (
+          <li key={it.key} data-testid="mission-standards-item" data-status={it.status} className="flex min-w-0 items-baseline gap-x-2 whitespace-nowrap">
+            {it.href
+              ? <a href={it.href} title={it.label} className="min-w-0 truncate text-text-primary underline-offset-4 hover:underline">{it.label}</a>
+              : <span className="min-w-0 truncate text-text-primary">{it.label}</span>}
+            <span className="shrink-0 font-mono text-meta text-text-muted">{STANDARD_STATUS[it.status]}</span>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 

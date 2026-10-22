@@ -244,7 +244,7 @@ function StandardMark({ specId, standard }: { specId: string; standard: boolean 
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     setBusy(false);
     if (res.ok) { router.refresh(); return; }
-    setError(body.error ?? 'Could not change it. Try again.');
+    setError(body.error ?? 'Standard mark not changed. Retry.');
   };
   return (
     <div className="flex flex-col gap-2">

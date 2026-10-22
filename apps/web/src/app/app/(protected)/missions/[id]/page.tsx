@@ -116,6 +116,7 @@ import {
 import { MissionPrLine, MissionScopeUpdates } from './MissionPrLine';
 import MissionAcceptanceTests from './MissionAcceptanceTests';
 import { testsFromContext } from '@/lib/specs/acceptance-gate-apply';
+import { standardsGateEnforced } from '@/lib/specs/standards-gate';
 import { missionEpochsOf, scopeAmendmentsOf } from '@/lib/workflow/delivery-ship';
 import { describeScopeUpdates } from '@/lib/mission-scope-view';
 import { explainMission } from '@/lib/explain';
@@ -914,6 +915,7 @@ async function MissionDetailBody({
     criteriaState: goalCriteriaStateFull,
     integrationPr: missionIntegrationPr,
     release: releaseStatus,
+    standardsEnforced: standardsGateEnforced(),
     evidence: {
       ...(visualReviewState ? { visual: [{ label: 'Open screens', href: `/app/missions/${id}?visualReview=1` }] } : {}),
       // The Checks release row is the one place release state shows on the board.

@@ -18,6 +18,7 @@ import type { MissionIntegrationPrView } from './mission-integration-pr';
 import type { MissionReleaseStatus } from './mission-delivery';
 import { planMissions, type PlanTask } from './mission-plan';
 import { outcomeSpecView } from './mission-outcome-spec-view';
+import { standardsGateEnforced, standardsLine, type StandardItemStatus, type StandardsLine } from './specs/standards-gate';
 
 /** R-17's statuses. Only `passed` reads as passed; waived and not applicable never do. */
 export type CheckStatus = 'queued' | 'running' | 'passed' | 'finding' | 'unable' | 'owner' | 'stale' | 'waived' | 'not_applicable';
@@ -86,6 +87,11 @@ export interface MissionChecksInput {
   releaseLabel?: string | null;
   /** Links to existing evidence, by row key. */
   evidence?: Readonly<Record<string, readonly { label: string; href: string }[]>>;
+  /**
+   * Whether a standard holds the finish (STANDARDS_GATE=enforce). The server
+   * reads it and passes it on: a client component cannot see the flag.
+   */
+  standardsEnforced?: boolean;
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -180,15 +186,17 @@ export function criterionName(c: GoalCriterion): string {
  * UNVERIFIED, PENDING and NOT_EVALUATED never read as passed. On a mission
  * branch an unjudged criterion waits for the merge (R-13).
  */
-export function criteriaChecks(criteria: readonly GoalCriterion[], state: GoalCriteriaState | null, ctx: { branch: 'mission-branch' | 'direct'; prMerged: boolean; target: string | null; buildComplete?: boolean }): CheckRow[] {
+export function criteriaChecks(criteria: readonly GoalCriterion[], state: GoalCriteriaState | null, ctx: { branch: 'mission-branch' | 'direct'; prMerged: boolean; target: string | null; buildComplete?: boolean; standardsEnforced?: boolean }): CheckRow[] {
   const byIndex = new Map((state?.criteria ?? []).map(e => [e.index, e]));
   const where = ctx.target ? `on ${ctx.target}` : 'on the target branch';
+  const standardsBlock = ctx.standardsEnforced ?? standardsGateEnforced();
   return criteria.map((c, i) => {
     const e = byIndex.get(i) ?? null;
-    // A standard (D-43) holds the finish only once its gate is enforced; until then it is advisory.
+    // A standard (D-43) holds the finish only once its gate is enforced, as
+    // canCompleteMission does; until then it is advisory.
     const standard = isStandardCriterion(c);
     const base = {
-      key: `criterion-${i}`, kind: 'criterion' as const, label: criterionName(c), chip: standard ? 'standard' : 'goal', blocks: !standard,
+      key: `criterion-${i}`, kind: 'criterion' as const, label: criterionName(c), chip: standard ? 'standard' : 'goal', blocks: !standard || standardsBlock,
       target: ctx.target, commit: null, actor: 'system' as CheckActor, problem: null, findings: null, repairs: [], evidence: [],
     };
     const row = (status: CheckStatus, text: string, detail: string | null, extra: Partial<CheckRow> = {}): CheckRow => ({ ...base, status, state: text, detail, ...extra });
@@ -293,7 +301,7 @@ export function missionChecks(input: MissionChecksInput): MissionChecks {
 
   const visual = input.visual ? visualCheck(input.visual, { mergeTier: input.mergeTier, repairs: input.repairs, evidence: input.evidence?.visual }) : null;
   const visualHolds = !!visual && input.visual!.blocksMerge && !SETTLED.has(visual.status);
-  const criteria = criteriaChecks(input.criteria, input.criteriaState, { branch, prMerged, target, buildComplete });
+  const criteria = criteriaChecks(input.criteria, input.criteriaState, { branch, prMerged, target, buildComplete, standardsEnforced: input.standardsEnforced });
   const pr = missionPr ? missionPrCheck(missionPr, { mergeTier: input.mergeTier, target, buildComplete, visualHolds }) : null;
   const release = releaseCheck(input.release, input.releaseLabel, input.evidence?.release);
   const rows = [visual, pr, ...criteria, release].filter((r): r is CheckRow => r != null);
@@ -414,6 +422,32 @@ export function outcomeSpecLines(criteria: readonly GoalCriterion[], rows: reado
     });
   });
   return out;
+}
+
+// ── Standards (Navigation R-17) ──────────────────────────────────────────────
+
+/**
+ * Verify's Standards line: CI and code review as the merge policy applies
+ * them, beside the mission's spec standards. On a mission branch both are
+ * read from the mission PR; a direct mission's task PRs each merged past CI,
+ * so CI is met once the build has landed. Code review is left out under the
+ * auto-threshold tier, which has none. Null when the mission carries no
+ * standards: the line is not shown.
+ */
+export function missionStandardsLine(input: MissionChecksInput, titles: Readonly<Record<string, string>>): StandardsLine | null {
+  if (!input.criteria.some(c => c.type === 'living_spec' && isStandardCriterion(c))) return null;
+  const buildComplete = input.build.total > 0 && input.build.done >= input.build.total;
+  const pr = input.branch === 'mission-branch' ? input.integrationPr : null;
+  const merged: StandardItemStatus = input.branch === 'mission-branch'
+    ? pr?.state === 'merged' ? 'met' : pr?.state === 'open' ? 'checking' : 'not_checked'
+    : buildComplete ? 'met' : 'checking';
+  return standardsLine({
+    criteria: input.criteria,
+    state: input.criteriaState,
+    ci: merged,
+    codeReview: input.mergeTier === 'auto-threshold' ? null : merged,
+    titles,
+  });
 }
 
 // ── Build-only estimate (R-23, R-24) ─────────────────────────────────────────
