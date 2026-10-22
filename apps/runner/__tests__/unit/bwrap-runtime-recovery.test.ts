@@ -134,7 +134,7 @@ mock.module('../../src/env-scan', () => ({
 }));
 
 // Import WorkerManager after mocks
-const { WorkerManager, __resetBwrapSupportForTest, isBwrapSupported, __setModelAuthPreflightForTest } = await import('../../src/workers');
+const { WorkerManager, __resetBwrapSupportForTest, isBwrapSupported, __setModelAuthPreflightForTest, __setIsolationHostForTest } = await import('../../src/workers');
 // Sessions here run a mocked SDK with no model credential: skip the
 // pre-spawn model-auth refusal (claude-model-auth-preflight.test.ts covers it).
 __setModelAuthPreflightForTest(() => null);
@@ -277,6 +277,9 @@ describe('bwrap runtime recovery', () => {
     // Reset module-level bwrap cache so recovery fires from a clean state,
     // even when other test files have already set _bwrapSupported=false.
     __resetBwrapSupportForTest();
+    // The reset clears the host too. The mocked env-scan models a Linux host with
+    // bwrap: pin it, so a macOS or Windows machine doesn't take its own path.
+    __setIsolationHostForTest('linux');
     bwrapProbeOk = true;
     onFirstAbort = null;
     queryCallCount = 0;

@@ -177,7 +177,8 @@ function isAlive(pid: number): boolean {
 }
 
 describe('reapChild', () => {
-  test('resolves within a bounded time even when the child ignores SIGTERM, and leaves no surviving child', async () => {
+  // Windows has no catchable SIGTERM: kill() terminates outright, so no child can ignore it.
+  test.skipIf(process.platform === 'win32')('resolves within a bounded time even when the child ignores SIGTERM, and leaves no surviving child', async () => {
     const { proc, pid } = spawnSigtermIgnoringChild();
     // Let the child install its handlers before signalling it.
     await new Promise(r => setTimeout(r, 1200));

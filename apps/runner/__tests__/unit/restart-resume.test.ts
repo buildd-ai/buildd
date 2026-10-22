@@ -75,8 +75,8 @@ describe('session files on disk', () => {
   });
 
   test('claudeConfigDirs: CLAUDE_CONFIG_DIR, then ~/.claude', () => {
-    expect(claudeConfigDirs({ CLAUDE_CONFIG_DIR: '/c', HOME: '/h' })).toEqual(['/c', '/h/.claude']);
-    expect(claudeConfigDirs({ HOME: '/h' })).toEqual(['/h/.claude']);
+    expect(claudeConfigDirs({ CLAUDE_CONFIG_DIR: '/c', HOME: '/h' })).toEqual(['/c', join('/h', '.claude')]);
+    expect(claudeConfigDirs({ HOME: '/h' })).toEqual([join('/h', '.claude')]);
   });
 
   test('a Codex rollout carrying the thread id, under sessions/YYYY/MM/DD', () => {

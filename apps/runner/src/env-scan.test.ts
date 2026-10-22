@@ -301,11 +301,11 @@ describe('scanEnvironment', () => {
     const originalImpl = mockExistsSync.getMockImplementation();
     delete process.env.CODEX_HOME;
     try {
-      mockExistsSync.mockImplementation((p: string) => String(p).endsWith('/.codex/auth.json'));
+      mockExistsSync.mockImplementation((p: string) => String(p).replace(/\\/g, '/').endsWith('/.codex/auth.json'));
       expect(scanEnvironment().envKeys).toContain('CODEX_HOME');
       mockExistsSync.mockImplementation(() => false);
       expect(scanEnvironment().envKeys).not.toContain('CODEX_HOME');
-      mockExistsSync.mockImplementation((p: string) => String(p).endsWith('/.codex/auth.json'));
+      mockExistsSync.mockImplementation((p: string) => String(p).replace(/\\/g, '/').endsWith('/.codex/auth.json'));
     } finally {
       if (originalImpl) mockExistsSync.mockImplementation(originalImpl);
       if (originalCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = originalCodexHome;

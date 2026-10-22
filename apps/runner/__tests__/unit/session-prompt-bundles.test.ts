@@ -9,7 +9,7 @@
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, existsSync, readdirSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { join, sep } from 'path';
 import { tmpdir } from 'os';
 
 import { rehydratePromptBundles, writeSessionPromptFiles, type PromptBundlesPayload } from '../../src/session-prompt-bundles';
@@ -125,9 +125,9 @@ describe('a resumed session gets the same skill set as a fresh one', () => {
 
     // Every SKILL.md written, fresh or resumed, is under a session cwd — none
     // under BUILDD_HOME or anywhere else (the user's ~/.claude/skills is never a target).
-    const written = walk(sandbox).filter(p => p.endsWith('/SKILL.md'));
+    const written = walk(sandbox).filter(p => p.endsWith(`${sep}SKILL.md`));
     expect(written.length).toBe(3);
-    for (const p of written) expect(p.startsWith(join(resumedCwd, '.claude', 'skills') + '/')).toBe(true);
+    for (const p of written) expect(p.startsWith(join(resumedCwd, '.claude', 'skills') + sep)).toBe(true);
 
     cleanupSessionPromptFiles(restored.id);
     expect(skillSet(resumedCwd)).toEqual({});

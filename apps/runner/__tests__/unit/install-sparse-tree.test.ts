@@ -26,7 +26,8 @@ async function workspaceDirs(): Promise<Map<string, string>> {
   for (const pattern of ['apps/*/package.json', 'packages/*/package.json']) {
     for await (const rel of new Bun.Glob(pattern).scan({ cwd: repoRoot })) {
       const pkg = await Bun.file(join(repoRoot, rel)).json();
-      out.set(pkg.name, rel.replace(/\/package\.json$/, ''));
+      // Glob yields '\' separators on Windows; the sparse list and globs use '/'.
+      out.set(pkg.name, rel.replace(/\\/g, '/').replace(/\/package\.json$/, ''));
     }
   }
   return out;

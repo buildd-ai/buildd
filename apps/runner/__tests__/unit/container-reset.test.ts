@@ -180,6 +180,11 @@ function deps(w: World, over: Partial<ResetDeps> = {}): ResetDeps {
   };
 }
 
+// The reset runs only in a Linux cloud container: it reads process uids, walks
+// processes with `ps` and kills with SIGKILL, none of which Windows has.
+const describeContainer = describe.skipIf(process.platform === 'win32');
+const testContainer = test.skipIf(process.platform === 'win32');
+
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'container-reset-'));
   spawned = [];
@@ -190,7 +195,7 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-describe('resetContainer', () => {
+describeContainer('resetContainer', () => {
   test('nothing the previous task left is reachable: files, hooks, env, processes, token', () => {
     const w = makeWorld();
     const r = resetContainer(w.paths, deps(w));
@@ -261,7 +266,7 @@ describe('resetContainer', () => {
   });
 });
 
-describe('seedCloneFromKept', () => {
+describeContainer('seedCloneFromKept', () => {
   function fetchOrigin(p: string): string | null {
     const r = spawnSync('git', ['fetch', '-q', 'origin'], { cwd: p, encoding: 'utf-8' });
     return r.status === 0 ? null : r.stderr;
@@ -364,7 +369,7 @@ describe('readTipHint', () => {
   });
 });
 
- describe('verified dependency handover', () => {
+ describeContainer('verified dependency handover', () => {
   test('keeps verified dependency entries through reset and seed', () => {
     const w = makeWorld();
     const packageDir = join(w.clone, 'node_modules', 'tiny');
@@ -397,7 +402,7 @@ describe('readTipHint', () => {
   });
 });
 
- test('off keeps neither repository packs nor dependency cache', () => {
+ testContainer('off keeps neither repository packs nor dependency cache', () => {
   const w = makeWorld();
   w.paths.warmHandover = 'off';
   const reset = resetContainer(w.paths, deps(w));
@@ -407,7 +412,7 @@ describe('readTipHint', () => {
   expect(existsSync(w.paths.cacheDir)).toBe(false);
  });
 
- test('origin tracked fixtures named node_modules survive reset and seed', () => {
+ testContainer('origin tracked fixtures named node_modules survive reset and seed', () => {
   const w = makeWorld();
   const fixturePath = 'fixtures/node_modules/tiny/index.js';
   mkdirSync(join(w.origin, 'fixtures/node_modules/tiny'), { recursive: true });
