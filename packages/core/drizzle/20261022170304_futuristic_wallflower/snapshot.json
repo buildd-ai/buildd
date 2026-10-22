@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "1abbdb40-226a-4581-9f89-1c936c026066",
+  "id": "8498996c-1873-44da-9e29-6381891d5f57",
   "prevIds": [
-    "b747013a-bf5e-4718-b147-a6bceeefd109"
+    "eee8d1ba-cd5a-4fc8-834f-0362468828fe"
   ],
   "ddl": [
     {
@@ -1398,6 +1398,19 @@
       "generated": null,
       "identity": null,
       "name": "budget_resets_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "accounts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "budget_probe_requested_at",
       "entityType": "columns",
       "schema": "public",
       "table": "accounts"
