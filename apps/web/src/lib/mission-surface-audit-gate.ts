@@ -6,6 +6,7 @@ import {
   SURFACE_AUDIT_WAIVER_NOTE_TITLE,
   isRenderedSurfaceChange,
   isSurfaceAuditTask,
+  isBookkeepingKind,
   isTrunkRefreshTask,
 } from '@buildd/core/surface-audit';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -50,6 +51,7 @@ export interface SurfaceAuditGateTask {
   title?: string | null;
   status: string;
   taskClass?: string | null;
+  kind?: string | null;
   roleSlug?: string | null;
   workspaceId?: string | null;
   pathManifest?: string[] | null;
@@ -252,7 +254,7 @@ export async function evaluateSurfaceAuditGate(
   if (tasks.some(t => isAuditTask(t) && t.status === 'completed')) return { required: false, why: 'has_audit' };
 
   const builders = tasks.filter(t =>
-    t.taskClass === 'work' && t.status === 'completed' && !isAuditTask(t) && !isTrunkRefreshTask(t) && !isShipMissionTask(t));
+    t.taskClass === 'work' && t.status === 'completed' && !isAuditTask(t) && !isTrunkRefreshTask(t) && !isBookkeepingKind(t) && !isShipMissionTask(t));
   if (builders.length === 0) return { required: false, why: 'no_ui_change' };
 
   // Strict forbids waiving, so a recorded waiver does not count there.
@@ -352,7 +354,7 @@ export async function evaluateSurfaceAuditGate(
  * a mission's tasks carry kilobytes of context each and nothing here reads
  * any other key.
  */
-const GATE_TASK_COLUMNS = { id: true, missionId: true, title: true, status: true, taskClass: true, roleSlug: true, workspaceId: true, pathManifest: true } as const;
+const GATE_TASK_COLUMNS = { id: true, missionId: true, title: true, status: true, taskClass: true, kind: true, roleSlug: true, workspaceId: true, pathManifest: true } as const;
 const GATE_TASK_EXTRAS = {
   context: (t: any, { sql: s }: any) => s`jsonb_build_object('requireMergeCommit', ${t.context} -> 'requireMergeCommit', 'refreshTrunk', ${t.context} -> 'refreshTrunk')`.as('trunk_refresh_context'),
 };
