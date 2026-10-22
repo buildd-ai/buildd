@@ -24,7 +24,8 @@ const CEILINGS: Record<string, number> = {
   // navigation and live refresh: user -> the shell's one cached read
   // (lib/app-chrome.ts: teams + workspaces, two statements in one round).
   // Chat availability is read from its cache, never awaited (spec 3ef37387 R-17).
-  'layout.tsx': 2,
+  // 3: the Ask dock cookie read (request-local, not a database wait).
+  'layout.tsx': 3,
   'missions/page.tsx': 11,
   // 17: the live-region wrapper awaits its params and the body once each (not reads).
   'missions/[id]/page.tsx': 17,
