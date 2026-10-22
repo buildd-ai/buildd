@@ -7,6 +7,7 @@
  */
 export * from './requirements';
 export * from './check-lines';
+export * from './verification-bindings';
 export * from './criterion-records';
 export * from './criterion-review';
 export * from './scope';

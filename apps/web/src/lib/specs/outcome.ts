@@ -14,6 +14,7 @@ import { fail, reach, type SpecCaller, type SpecError } from './store';
 import { settleVerdictSource } from './verdict-source';
 import { criterionHashes } from './criteria';
 import { acceptanceEditOf, dropUnacceptedTestResults } from '@buildd/spec-contract/acceptance-edit';
+import { criterionVerifications } from '@buildd/spec-contract/verification-bindings';
 
 /**
  * Governed outcomes (Living Specs V1, decision D-5): whether a task's outcome
@@ -104,6 +105,20 @@ type Loaded = {
   task: TaskRow; pin: Record<string, unknown>; revision: number; specRevisionId: string; specId: string; criteria: RequirementRef[];
   /** Each criterion's text hash on the pinned revision: what a verdict records, and what it must match to count (R-13). */
   hashes: Map<string, string>;
+  requiredBindings: ReadonlyMap<string, readonly string[]>;
+};
+
+function requiredBindings(body: string): ReadonlyMap<string, readonly string[]> {
+  const required = new Map<string, string[]>();
+  for (const { criterionId, binding, fingerprint } of criterionVerifications(body)) {
+    if (binding.mode === 'required') required.set(criterionId, [...(required.get(criterionId) ?? []), fingerprint]);
+  }
+  return required;
+}
+
+const boundRow = <T extends { evidence?: unknown }>(row: T) => {
+  const evidence = row.evidence && typeof row.evidence === 'object' ? row.evidence as Record<string, unknown> : null;
+  return { ...row, source: verdictSourceOfEvidence(row.evidence), bindingFingerprint: typeof evidence?.bindingFingerprint === 'string' ? evidence.bindingFingerprint : null };
 };
 
 async function loadGoverned(caller: SpecCaller | null, taskId: unknown, mode: Mode): Promise<Loaded | SpecError> {
@@ -118,7 +133,10 @@ async function loadGoverned(caller: SpecCaller | null, taskId: unknown, mode: Mo
   if (!pin || typeof pin.specId !== 'string') return fail(409, 'This task is not pinned to a Living Spec, so it has no governed outcome');
   const read = await readPinnedSpecRevision(pin);
   if (!read.ok) return fail(409, `The pinned spec revision is unavailable: ${read.reason}`);
-  return { task, pin, revision: read.revision, specRevisionId: pin.specRevisionId as string, specId: read.specId, criteria: inScope(pin, specCriteria(read.body)), hashes: criterionHashes(read.body) };
+  let required: ReadonlyMap<string, readonly string[]>;
+  try { required = requiredBindings(read.body); }
+  catch { return fail(409, 'The pinned spec revision contains an invalid verifier binding'); }
+  return { task, pin, revision: read.revision, specRevisionId: pin.specRevisionId as string, specId: read.specId, criteria: inScope(pin, specCriteria(read.body)), hashes: criterionHashes(read.body), requiredBindings: required };
 }
 
 async function fold(l: Loaded): Promise<OutcomeView> {
@@ -129,7 +147,7 @@ async function fold(l: Loaded): Promise<OutcomeView> {
   // A verdict on another wording of a criterion does not count for this one (R-13); one recorded before wordings were kept does.
   const rows = all.filter((r) => !r.textHash || r.textHash === l.hashes.get(r.criterionId));
   const head = await currentPrHeadSha(l.task.id);
-  const r = foldGovernedOutcome(l.criteria.map((c) => c.id), dropUnacceptedTestResults(rows.map((x) => ({ ...x, source: verdictSourceOfEvidence(x.evidence) })), acceptanceEditOf(l.task.context)), head);
+  const r = foldGovernedOutcome(l.criteria.map((c) => c.id), dropUnacceptedTestResults(rows.map(boundRow), acceptanceEditOf(l.task.context)), head, l.requiredBindings);
   const text = new Map(l.criteria.map((c) => [c.id, c.text]));
   return { ...r, specId: l.specId, specRevisionId: l.specRevisionId, revision: l.revision, criteria: r.criteria.map((c) => ({ ...c, text: text.get(c.criterionId) ?? '' })) };
 }
@@ -181,7 +199,9 @@ export async function governedOutcomesFor(
   for (const { t, pin } of pinned) {
     const read = pinnedReadOf(reads, pin);
     if (!read?.ok) continue;
-    loaded.push({ id: t.id, l: { pin, revision: read.revision, specRevisionId: pin.specRevisionId as string, specId: read.specId, criteria: inScope(pin, specCriteria(read.body)), hashes: criterionHashes(read.body) } });
+    let required: ReadonlyMap<string, readonly string[]>;
+    try { required = requiredBindings(read.body); } catch { continue; }
+    loaded.push({ id: t.id, l: { pin, revision: read.revision, specRevisionId: pin.specRevisionId as string, specId: read.specId, criteria: inScope(pin, specCriteria(read.body)), hashes: criterionHashes(read.body), requiredBindings: required } });
   }
   if (!loaded.length) return out;
   const verdicts = verdictRows ?? await taskVerdictRows(loaded.map((x) => x.id));
@@ -190,7 +210,7 @@ export async function governedOutcomesFor(
     const rowsFor = verdicts
       .filter((r) => r.taskId === id && r.specRevisionId === l.specRevisionId)
       .filter((r) => !r.textHash || r.textHash === l.hashes.get(r.criterionId));
-    const r = foldGovernedOutcome(l.criteria.map((c) => c.id), dropUnacceptedTestResults(rowsFor.map((x) => ({ ...x, source: verdictSourceOfEvidence(x.evidence) })), acceptanceEditOf(contexts.get(id))) as never, heads.get(id) ?? null);
+    const r = foldGovernedOutcome(l.criteria.map((c) => c.id), dropUnacceptedTestResults(rowsFor.map(boundRow), acceptanceEditOf(contexts.get(id))) as never, heads.get(id) ?? null, l.requiredBindings);
     const text = new Map(l.criteria.map((c) => [c.id, c.text]));
     out.set(id, { ...r, specId: l.specId, specRevisionId: l.specRevisionId, revision: l.revision, criteria: r.criteria.map((c) => ({ ...c, text: text.get(c.criterionId) ?? '' })) });
   }
