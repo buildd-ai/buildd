@@ -173,6 +173,18 @@ export function isTrunkRefreshTask(task: { title?: string | null; context?: unkn
 }
 
 /**
+ * Kinds that are bookkeeping, not a deliverable: an organizer driving the
+ * mission (`coordination`) or a read-only analysis. They never change what a
+ * page renders, so an audit neither waits on them nor is held by them (an
+ * organizer whose job is to drive the audit would otherwise block it).
+ * `engineering` stays a dependency (a backend change can alter the UI), and a
+ * task with no kind (legacy) is treated as a deliverable.
+ */
+export function isBookkeepingKind(task: { kind?: string | null }): boolean {
+  return task.kind === 'coordination' || task.kind === 'analysis';
+}
+
+/**
  * Round 1 keeps the original title. A later round keeps the audit prefix, so
  * every caller that excludes audits by title (isNoOpenTasksCandidate, the
  * mission state view) still excludes it.

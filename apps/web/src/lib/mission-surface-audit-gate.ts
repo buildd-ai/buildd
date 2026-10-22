@@ -6,6 +6,7 @@ import {
   SURFACE_AUDIT_WAIVER_NOTE_TITLE,
   isRenderedSurfaceChange,
   isSurfaceAuditTask,
+  isBookkeepingKind,
   isTrunkRefreshTask,
 } from '@buildd/core/surface-audit';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -253,7 +254,7 @@ export async function evaluateSurfaceAuditGate(
   if (tasks.some(t => isAuditTask(t) && t.status === 'completed')) return { required: false, why: 'has_audit' };
 
   const builders = tasks.filter(t =>
-    t.taskClass === 'work' && t.status === 'completed' && !isAuditTask(t) && !isTrunkRefreshTask(t) && !isShipMissionTask(t));
+    t.taskClass === 'work' && t.status === 'completed' && !isAuditTask(t) && !isTrunkRefreshTask(t) && !isBookkeepingKind(t) && !isShipMissionTask(t));
   if (builders.length === 0) return { required: false, why: 'no_ui_change' };
 
   // Strict forbids waiving, so a recorded waiver does not count there.

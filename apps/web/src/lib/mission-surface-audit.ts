@@ -8,6 +8,7 @@ import {
   buildSurfaceAuditDescription,
   isAuditBuildKind,
   isSurfaceAuditTask,
+  isBookkeepingKind,
   isSurfaceFixTask,
   isTrunkRefreshTask,
   planSurfaceFixFollowUp,
@@ -36,7 +37,7 @@ export interface EnsureSurfaceAuditParams {
     id: string;
     title: string;
     taskClass: string | null;
-    /** Read to keep coordination/observation/analysis tasks off the audit's dependsOn. */
+    /** Bookkeeping kinds (`isBookkeepingKind`) and non-build kinds (`isAuditBuildKind`) never gate or extend the audit. */
     kind?: string | null;
     pathManifest: string[] | null;
     /** Read for the trunk-refresh marks (`isTrunkRefreshTask`). */
@@ -87,6 +88,7 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
   // chase our own tail, and never count bookkeeping rows (mission organizer
   // tasks, friction reports, etc.) as "builder work".
   if (createdTask.taskClass !== 'work') return;
+  if (isBookkeepingKind(createdTask)) return;
   if (isSurfaceAuditTask(createdTask.title)) return;
   // Merging trunk in is upkeep, not mission work: its manifest widens to
   // trunk's whole diff, which would make the audit demand every route.
@@ -157,7 +159,17 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
       : existingAudit;
     if (!roundOne) return;
     const currentDeps = Array.isArray(roundOne.dependsOn) ? roundOne.dependsOn : [];
-    const members = await missionMemberIds(missionId, currentDeps);
+    const memberIds = await missionMemberIds(missionId, currentDeps);
+    // Reconcile edges stored before bookkeeping kinds were excluded: an
+    // organizer the audit waits on can be the thing driving the audit.
+    const bookkeeping = memberIds.length > 0
+      ? await db.query.tasks.findMany({
+          where: sqlWhere(and(eq(tasks.missionId, missionId), inArray(tasks.id, memberIds))),
+          columns: { id: true, kind: true },
+        })
+      : [];
+    const drop = new Set(bookkeeping.filter(isBookkeepingKind).map(t => t.id));
+    const members = memberIds.filter(id => !drop.has(id));
     const nextDeps = members.includes(createdTask.id) ? members : [...members, createdTask.id];
     const changed = nextDeps.length !== currentDeps.length || nextDeps.some((d, i) => d !== currentDeps[i]);
     if (changed) {
@@ -180,7 +192,7 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
     )),
     columns: { id: true, title: true, kind: true, pathManifest: true, context: true },
   });
-  const nonAuditBuilderTasks = builderTasks.filter(t => isAuditBuildKind(t.kind) && !isSurfaceAuditTask(t.title) && !isTrunkRefreshTask(t));
+  const nonAuditBuilderTasks = builderTasks.filter(t => isAuditBuildKind(t.kind) && !isSurfaceAuditTask(t.title) && !isTrunkRefreshTask(t) && !isBookkeepingKind(t));
   const dependsOn = nonAuditBuilderTasks.map(t => t.id);
   const scopedPaths = Array.from(new Set(
     nonAuditBuilderTasks
@@ -314,7 +326,7 @@ export async function planMissionSurfaceAudit(missionId: string, opts: RequestSu
   if (!targetWorkspace) return { ok: false, reason: 'no_workspace' };
 
   const builders = missionTasks.filter(t =>
-    t.taskClass === 'work' && isAuditBuildKind(t.kind) && !isSurfaceAuditTask(t.title ?? '') && !isTrunkRefreshTask(t) && !finishedWithoutLooking(t.status));
+    t.taskClass === 'work' && isAuditBuildKind(t.kind) && !isSurfaceAuditTask(t.title ?? '') && !isTrunkRefreshTask(t) && !isBookkeepingKind(t) && !finishedWithoutLooking(t.status));
   const gate = await evaluateSurfaceAuditGate(mission, missionTasks, {
     // The workspace row is in hand: its policy needs no second read.
     workspacePolicy: visualReviewPolicyOf(targetWorkspace.gitConfig),
