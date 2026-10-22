@@ -131,7 +131,7 @@ function LinkReplacement({ workerId }: { workerId: string }) {
           aria-label="Replacement PR number"
           value={value}
           onChange={e => setValue(e.target.value)}
-          className="w-20 rounded-[var(--radius-cell)] border border-[var(--line-soft)] bg-card px-1.5 py-0.5 text-text-primary"
+          className="w-20 bg-card px-1.5 py-0.5 text-text-primary"
         />
       </label>
       <button type="submit" disabled={busy} className={BUTTON}>Link</button>
