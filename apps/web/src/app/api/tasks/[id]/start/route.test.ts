@@ -505,6 +505,31 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(ctx.bypassStartGate).toBeUndefined();
   });
 
+  it('Retry now brings a backoff forward and lifts no other gate', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-123',
+      title: 'Fix CI',
+      description: null,
+      status: 'pending',
+      mode: 'execution',
+      priority: 0,
+      workspaceId: 'ws-1',
+      missionId: 'mission-1',
+      startAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
+      context: {},
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    });
+
+    const response = await callHandler(createMockRequest({ body: { retryNow: true } }), 'task-123');
+    expect(response.status).toBe(200);
+    expect(mockWakeTask).toHaveBeenCalled();
+    expect(mockDbUpdate.set).toHaveBeenCalledWith(expect.objectContaining({ startAt: null }));
+    const ctx = (mockDbUpdate.set.mock.calls.at(-1) as any)[0].context;
+    expect(ctx.bypassHeldGate).toBeUndefined();
+    expect(ctx.bypassDepsGate).toBeUndefined();
+  });
+
   it('returns 422 when a completed dependency has an unmerged PR', async () => {
     const mockTask = {
       id: 'task-123',

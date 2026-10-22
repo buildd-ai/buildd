@@ -20,6 +20,22 @@ export interface TaskStripCell {
   word?: string;
 }
 
+/**
+ * A grouped strip's three looks (spec d25d923d R-4): merged is solid green,
+ * work in flight an accent hatch, everything else a dashed outline. Web
+ * rendering only: the cell's state (and so `buildd top`'s row) is unchanged.
+ */
+export type TaskStripLook = 'merged' | 'running' | 'waiting';
+const IN_FLIGHT: ReadonlySet<StateKey> = new Set<StateKey>(['running', 'review', 'fixing', 'landing', 'recovering']);
+export function stripLook(state: StateKey): TaskStripLook {
+  return state === 'landed' ? 'merged' : IN_FLIGHT.has(state) ? 'running' : 'waiting';
+}
+
+/** The small dot a look carries: amber when a person must act, red when it failed. */
+export function stripDot(state: StateKey): 'amber' | 'red' | null {
+  return state === 'needs_you' || state === 'waiting' ? 'amber' : state === 'failed' || state === 'ci_failed' ? 'red' : null;
+}
+
 /** A run of cells drawn as one group, a gap before it; `outline` encloses it (the work in progress). */
 export interface TaskStripGroup {
   key: string;
@@ -246,6 +262,9 @@ function LargeStrip({ cells, selectedId, onSelect, onOpen, marks, capped = true,
             const s = STATES[c.state];
             const tick = c.tick ?? tickOf(i);
             const selected = c.id === selectedId;
+            // A grouped strip (the mission bar) draws three looks plus a dot; a plain one keeps every state's texture.
+            const look = grouped ? stripLook(c.state) : undefined;
+            const dot = grouped ? stripDot(c.state) : null;
             return (
               <button
                 key={c.id}
@@ -274,9 +293,13 @@ function LargeStrip({ cells, selectedId, onSelect, onOpen, marks, capped = true,
                   data-pattern={s.pattern}
                   data-frame={s.frame}
                   data-wait={c.wait}
-                  className={`state-cell flex h-4 w-full shrink-0 items-center justify-center rounded-[var(--radius-cell)] font-mono text-chip font-semibold leading-none md:h-full ${selected ? 'md:[outline:2px_solid_var(--text-primary)] md:[outline-offset:2px]' : ''}`}
+                  data-look={look}
+                  // The running cell's hatch drifts (globals.css), under reduced motion too (R-4).
+                  data-drift={look && c.state === 'running' ? true : undefined}
+                  className={`state-cell relative flex h-4 w-full shrink-0 items-center justify-center rounded-[var(--radius-cell)] font-mono text-chip font-semibold leading-none md:h-full ${selected ? 'md:[outline:2px_solid_var(--text-primary)] md:[outline-offset:2px]' : ''}`}
                 >
-                  {c.wait && c.wait !== 'closed' ? null : s.cellGlyph ? s.glyph : null}
+                  {look ? null : c.wait && c.wait !== 'closed' ? null : s.cellGlyph ? s.glyph : null}
+                  {dot && <span data-testid="task-strip-dot" data-dot={dot} className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full md:right-1 md:top-1" />}
                 </span>
               </button>
             );

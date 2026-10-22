@@ -47,6 +47,8 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
  *   runner runs a Start aimed at it even while on hold (spec c7410e76 R-34), so
  *   an API key or per-task token sending it is refused 403.
  * - forceOverride?: boolean - lift the policy gates above (startAt, deps, holds, budget, subject)
+ * - retryNow?: boolean - the Overview's `Retry now`: lift only a deferred start
+ *   (a retry's backoff); every other gate still applies (spec d25d923d R-20)
  * - capExempt?: boolean - run past the workspace cap this once
  * - force?: { kinds: WaitingKind[], reasonsDigest, note? } - Force start past the
  *   waits a 422 `coordination_hold` named (docs/specs/force-start.md). The digest
@@ -91,6 +93,7 @@ export async function POST(
   try {
     const body = await req.json().catch(() => ({}));
     const { targetLocalUiUrl, forceOverride, capExempt } = body;
+    const liftStartAt = !!forceOverride || body.retryNow === true;
     const byPerson = !!requestingPerson(authType === 'session' ? { id: userId } : null, sessionAccount);
     if (targetLocalUiUrl && !byPerson) {
       return NextResponse.json({ error: 'Only a person can start a task on a specific runner; start it without targetLocalUiUrl.' }, { status: 403 });
@@ -142,7 +145,7 @@ export async function POST(
       }, { status: 400 });
     }
 
-    if (task.startAt && task.startAt > new Date() && !forceOverride) {
+    if (task.startAt && task.startAt > new Date() && !liftStartAt) {
       return NextResponse.json({
         error: `Task is deferred until ${task.startAt.toISOString()}`,
         gateReason: 'deferred_start',
@@ -458,7 +461,7 @@ export async function POST(
         // Boost priority once on first manual start so task floats to top of claim queue.
         // Idempotent: re-poking ('Poke workers again') does not compound the boost.
         ...(!alreadyManualStarted ? { priority: (task.priority ?? 0) + 1 } : {}),
-        ...(forceOverride && hasStartGate ? { startAt: null } : {}),
+        ...(liftStartAt && hasStartGate ? { startAt: null } : {}),
         updatedAt: now,
       })
       .where(and(eq(tasks.id, taskId), eq(tasks.status, 'pending')));
