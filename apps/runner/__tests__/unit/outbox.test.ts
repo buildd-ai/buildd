@@ -45,7 +45,7 @@ const { Outbox } = await import('../../src/outbox');
  * source of truth — and reading it here, rather than the real home, is what
  * keeps this file off scripts/test-home-isolation.test.ts's offender list.
  */
-const OUTBOX_FILE = `${process.env.BUILDD_HOME}/outbox.json`;
+const OUTBOX_FILE = join(process.env.BUILDD_HOME!, 'outbox.json');
 
 describe('Outbox', () => {
   beforeEach(() => {

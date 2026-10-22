@@ -285,21 +285,6 @@ export const KNOWN_EVOLUTIONS: KnownEvolution[] = [
     },
   },
   {
-    // a1f31c85: PrClosedUnmerged records why the PR closed (`closeCause`) and who closed it
-    // (`closedBy`). A recording from before carries neither: on the same decision the replay
-    // may drop exactly those evidence keys, and nothing else.
-    id: 'close cause and closer evidence (a1f31c85, workflow-state-kernel.md)',
-    apply(recorded, replayed) {
-      const p = replayed.transition;
-      const r = recorded.transition;
-      if (!p || !r || p.command !== 'PrClosedUnmerged' || !sameDecision(recorded, replayed) || !isObj(p.evidence) || !isObj(r.evidence)) return null;
-      const keys = ['closeCause', 'closedBy'].filter((k) => k in (p.evidence as J) && !(k in (r.evidence as J)));
-      if (keys.length === 0) return null;
-      const evidence = Object.fromEntries(Object.entries(p.evidence).filter(([k]) => !keys.includes(k)));
-      return { ...replayed, transition: { ...p, evidence } };
-    },
-  },
-  {
     // #4911 (workflow-state-kernel.md §8.3a): every round records why it started, and
     // dispatch_review carries that `trigger`. A recording from before carries none: on the
     // same decision the replay may drop exactly that key, holding a known trigger, from
@@ -380,6 +365,24 @@ export const KNOWN_EVOLUTIONS: KnownEvolution[] = [
         return { ...e, payload: rest };
       });
       return changed ? { ...replayed, effects } : null;
+    },
+  },
+  {
+    // a1f31c85 (workflow-state-kernel.md T18, CLOSED_UNMERGED): a close records its cause and,
+    // when the webhook or a buildd door named one, who closed it. A recording from before
+    // carries neither in the evidence, but its cancel_open_attempts effect already carried
+    // the cause: on the same decision the replay may drop exactly `closeCause` (only when it
+    // equals that recorded cause) and `closedBy`, and nothing else.
+    id: 'close cause and closer evidence (a1f31c85, workflow-state-kernel.md T18)',
+    apply(recorded, replayed) {
+      const p = replayed.transition;
+      const r = recorded.transition;
+      if (!p || !r || p.command !== 'PrClosedUnmerged' || !sameDecision(recorded, replayed) || !isObj(p.evidence) || !isObj(r.evidence)) return null;
+      if ('closeCause' in r.evidence || 'closedBy' in r.evidence || !('closeCause' in p.evidence)) return null;
+      const cancel = recorded.effects.find((e) => e.kind === 'cancel_open_attempts');
+      if (!cancel || !isObj(cancel.payload) || cancel.payload.closeCause !== p.evidence.closeCause) return null;
+      const { closeCause: _c, closedBy: _b, ...evidence } = p.evidence;
+      return { ...replayed, transition: { ...p, evidence } };
     },
   },
 ];

@@ -69,20 +69,25 @@ function usd(n: number): string {
   return `$${Math.round(n).toLocaleString('en-US')}`;
 }
 
-export function overviewStatusRows(s: OverviewState): OverviewStatusRow[] {
+export function overviewStatusRows(
+  s: OverviewState,
+  opts?: { hideOfflineRunners?: boolean },
+): OverviewStatusRow[] {
   const { runners, credentials, budget } = s;
 
-  const runnerRow: OverviewStatusRow = runners.total === 0
+  const runnerRow: OverviewStatusRow | null = runners.total === 0
     ? { key: 'runners', label: 'Runners', value: 'None connected', tone: 'error', href: RUNNERS_HREF }
-    : runners.online === 0
-      ? { key: 'runners', label: 'Runners', value: 'None online', tone: 'error', href: RUNNERS_HREF }
-      : {
-          key: 'runners',
-          label: 'Runners',
-          value: `${runners.online} of ${runners.total} online · ${runners.busySlots} of ${runners.slots} agents running`,
-          tone: runners.online === runners.total ? 'ok' : 'warning',
-          href: RUNNERS_HREF,
-        };
+    : runners.online === 0 && opts?.hideOfflineRunners
+      ? null
+      : runners.online === 0
+        ? { key: 'runners', label: 'Runners', value: 'None online', tone: 'error', href: RUNNERS_HREF }
+        : {
+            key: 'runners',
+            label: 'Runners',
+            value: `${runners.online} of ${runners.total} online · ${runners.busySlots} of ${runners.slots} agents running`,
+            tone: runners.online === runners.total ? 'ok' : 'warning',
+            href: RUNNERS_HREF,
+          };
 
   const credentialRow: OverviewStatusRow = credentials.total === 0
     // No stored credential is normal when runners use their own sign-in: neutral, not a warning.
@@ -109,5 +114,5 @@ export function overviewStatusRows(s: OverviewState): OverviewStatusRow[] {
         }
       : { key: 'budget', label: 'Budget', value: 'No monthly limit set', tone: 'muted', href: BUDGETS_HREF };
 
-  return [runnerRow, credentialRow, budgetRow];
+  return [runnerRow, credentialRow, budgetRow].filter((row): row is OverviewStatusRow => row !== null);
 }

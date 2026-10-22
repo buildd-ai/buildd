@@ -29,7 +29,10 @@ describe('overviewHeadline', () => {
 });
 
 describe('overviewStatusRows', () => {
-  const byKey = (s: OverviewState) => Object.fromEntries(overviewStatusRows(s).map(r => [r.key, r]));
+  const byKey = (s: OverviewState, hideOfflineRunners?: boolean) => {
+    const rows = overviewStatusRows(s, { hideOfflineRunners });
+    return Object.fromEntries(rows.map(r => [r.key, r]));
+  };
 
   it('budget links to Billing and budgets while capacity links to Runners', () => {
     expect(byKey(STATE).budget.href).toBe('/app/settings/billing');
@@ -44,6 +47,16 @@ describe('overviewStatusRows', () => {
       .toMatchObject({ value: 'None online', tone: 'error' });
     expect(byKey({ ...STATE, runners: { total: 0, online: 0, busySlots: 0, slots: 0 } }).runners)
       .toMatchObject({ value: 'None connected', tone: 'error' });
+  });
+
+  it('when offline runners are already shown in Problems, hide the error tone runners row from At a glance', () => {
+    const offlineState = { ...STATE, runners: { total: 2, online: 0, busySlots: 0, slots: 0 } };
+    // When offline runners are shown in Problems list, don't duplicate in At a glance
+    const rowsWhenHidden = overviewStatusRows(offlineState, { hideOfflineRunners: true });
+    expect(rowsWhenHidden.find(r => r.key === 'runners')).toBeUndefined();
+    // Without the hide flag, the runners error row is shown normally
+    const rowsNormal = overviewStatusRows(offlineState, { hideOfflineRunners: false });
+    expect(rowsNormal.find(r => r.key === 'runners')).toMatchObject({ value: 'None online', tone: 'error' });
   });
 
   it('credentials: working, broken, or none stored (runners may use their own sign-in)', () => {

@@ -54,6 +54,20 @@ describe('install.ps1 checks out what install.sh does', () => {
     for (const list of ps1Sparse) expect(list).toEqual(shSparse);
   });
 
+  // CI's Windows installer smoke installs the exact commit under test, as the
+  // Linux one does through install.sh's BUILDD_REF / BUILDD_REPO.
+  test('takes BUILDD_REF and BUILDD_REPO, defaulting to dev of the public repo', () => {
+    expect(ps1).toContain('$Ref = if ($env:BUILDD_REF) { $env:BUILDD_REF } else { "dev" }');
+    expect(ps1).toContain('$Repo = if ($env:BUILDD_REPO) { $env:BUILDD_REPO } else { "buildd-ai/buildd" }');
+    expect(ps1).toContain('git remote add origin "https://github.com/$Repo.git"');
+    expect(ps1).not.toMatch(/git (fetch|reset|checkout)[^\n]*\bdev\b/);
+  });
+
+  test('fetches the ref and checks out what it fetched, so a commit SHA works', () => {
+    expect(ps1.match(/git fetch[^\n]*origin \$Ref/g)?.length).toBe(2);
+    expect(ps1).toContain('git reset --hard FETCH_HEAD');
+    expect(ps1).toContain('git checkout --detach FETCH_HEAD');
+  });
 });
 
 describe('install.ps1 launcher', () => {

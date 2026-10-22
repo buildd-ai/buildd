@@ -25,7 +25,7 @@
  */
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, join, resolve } from 'path';
+import { dirname, join, resolve, sep } from 'path';
 // The hook's own helpers, so the installer and the hook agree on what a workspace repo is.
 import { fetchWorkspaces, gitRepo, gitRoot, hasProjectBuilddMcp, readWorkspaceCache, resolveAuth, writeWorkspaceCache } from '../plugin/scripts/buildd-hook.mjs';
 import { resolveBuilddHome } from './buildd-home';
@@ -490,7 +490,12 @@ function readBuilddConfig(home: string, env: Record<string, string | undefined>)
   };
 }
 
-const tilde = (path: string, home: string) => (path === home ? '~' : path.startsWith(home + '/') ? '~' + path.slice(home.length) : path);
+// On Windows the rest is shown with `/` (as ~/code/x); on Linux `\` is a filename character, so it stays.
+const tilde = (path: string, home: string) =>
+  path === home ? '~'
+    : path.startsWith(home + sep) ? '~/' + path.slice(home.length + 1).split(sep).join('/')
+      : path.startsWith(home + '/') ? '~' + path.slice(home.length)
+        : path;
 
 /** The bearer key of a buildd key entry, or null. Never printed. */
 function entryKey(entry: unknown): string | null {

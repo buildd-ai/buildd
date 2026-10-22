@@ -14,6 +14,7 @@
  */
 
 import { describe, test, expect, afterAll, beforeEach } from 'bun:test';
+import { join } from 'path';
 
 // ─── Mock state ───────────────────────────────────────────────────────────────
 
@@ -180,7 +181,8 @@ afterAll(() => {
   __resetGitOpsDeps();
 });
 
-const WORKTREE_PATH = '/repo/.buildd-worktrees/buildd_test-branch';
+// Built with path.join like the code under test ('\repo\...' on Windows).
+const WORKTREE_PATH = join('/repo', '.buildd-worktrees', 'buildd_test-branch');
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -193,7 +195,7 @@ describe('setupWorktree', () => {
     // planned from what is actually on disk, so the manifest has to be stated.
     // (See worktree-install-detect.test.ts for the detection rules and
     // worktree-install-outcome.test.ts for the no-manifest case.)
-    existsSyncMap = { [`${WORKTREE_PATH}/bun.lock`]: true };
+    existsSyncMap = { [join(WORKTREE_PATH, 'bun.lock')]: true };
     failBunInstall = { frozen: false, unfrozen: false };
     revListBehavior = 'ok';
     worktreeListOutput = '';
@@ -277,7 +279,7 @@ describe('setupWorktree', () => {
     const origLog = console.log;
     const lines: string[] = [];
     process.env.BUILDD_EXECUTOR = 'cloud';
-    existsSyncMap['/repo/bun.lock'] = true;
+    existsSyncMap[join('/repo', 'bun.lock')] = true;
     const ordering: string[] = [];
     __setGitOpsDeps({
       execSync: ((cmd: string, opts: Record<string, unknown>) => {

@@ -142,7 +142,8 @@ describe('review finding: the fetch never touches the agent\'s FETCH_HEAD and ne
   });
 });
 
-describe('review finding: the mergiraf path runs in CI with a stub driver', () => {
+// The stub is a #!/bin/sh script; Windows execFile cannot run it (a real mergiraf.exe it can).
+describe.skipIf(process.platform === 'win32')('review finding: the mergiraf path runs in CI with a stub driver', () => {
   function stub(exitCode: number): { path: string; log: string } {
     const d = mkdtempSync(join(tmpdir(), 'mergiraf-stub-'));
     dirs.push(d);

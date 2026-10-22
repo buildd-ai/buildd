@@ -23,21 +23,24 @@ afterEach(() => { rmSync(root, { recursive: true, force: true }); });
 
 /** Permission bits only — statSync().mode carries the file type in high bits. */
 const mode = (p: string) => statSync(p).mode & 0o777;
+// Windows has no POSIX mode bits (the DACL decides); the ACL path is covered by
+// __tests__/unit/secure-file.test.ts's real-icacls block.
+const posixIt = it.skipIf(process.platform === 'win32');
 
 describe('writeSecretJsonFile', () => {
-  it('creates the file owner-read/write only', () => {
+  posixIt('creates the file owner-read/write only', () => {
     const f = join(root, 'nested', 'config.json');
     writeSecretJsonFile(f, { apiKey: 'bld_example' });
     expect(mode(f)).toBe(SECRET_FILE_MODE);
   });
 
-  it('creates missing parent directories owner-only', () => {
+  posixIt('creates missing parent directories owner-only', () => {
     const dir = join(root, 'nested');
     writeSecretJsonFile(join(dir, 'config.json'), {});
     expect(mode(dir)).toBe(SECRET_DIR_MODE);
   });
 
-  it('tightens a file that already exists with wider permissions', () => {
+  posixIt('tightens a file that already exists with wider permissions', () => {
     const f = join(root, 'config.json');
     writeFileSync(f, '{"stale":true}');
     chmodSync(f, 0o644);
@@ -47,7 +50,7 @@ describe('writeSecretJsonFile', () => {
     expect(mode(f)).toBe(SECRET_FILE_MODE);
   });
 
-  it('tightens a directory that already exists with wider permissions', () => {
+  posixIt('tightens a directory that already exists with wider permissions', () => {
     const dir = join(root, 'nested');
     mkdirSync(dir);
     chmodSync(dir, 0o755);
@@ -63,7 +66,7 @@ describe('writeSecretJsonFile', () => {
     expect(JSON.parse(raw)).toEqual({ apiKey: 'bld_example', builddServer: 'https://buildd.dev' });
   });
 
-  it('is not group- or world-readable under a permissive umask', () => {
+  posixIt('is not group- or world-readable under a permissive umask', () => {
     const prev = process.umask(0o000);
     try {
       const f = join(root, 'umask.json');

@@ -6,3 +6,9 @@
 # Generated Drizzle ORM snapshot files — collapse in GitHub PR diff view
 packages/core/drizzle/meta/** linguist-generated=true
 packages/core/drizzle/*/snapshot.json linguist-generated=true
+
+# Tests read these as text and match on "\n"; a Windows autocrlf checkout must not rewrite them.
+*.ts text eol=lf
+*.ps1 text eol=lf
+Dockerfile* text eol=lf
+*.md text eol=lf
