@@ -443,7 +443,8 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       try {
         const r = await api(`/api/specs/${encodeURIComponent(specId)}/${op}`, { method: 'POST', body: JSON.stringify(payload) });
         if (op === 'approve' && r.pending) {
-          return text(`Not approved yet: approving a spec is the person's own decision, so it waits for them to confirm it on buildd.dev.\nConfirm revision ${r.pending.revision} of "${r.spec.title}": ${r.pending.confirmUrl}\nThe link works until ${r.pending.expiresAt}, and only while the spec stays at version ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);
+          const warns = (r.pending.gate?.warnings ?? []) as Array<{ message: string }>;
+          return text(`Sent to ${r.pending.sentTo ?? 'the approver'} to confirm; gate passed${warns.length ? ` with ${warns.length} ${warns.length === 1 ? 'warning' : 'warnings'}` : ''}.\nNot approved yet: approving a spec is the person's own decision, so it waits for them to confirm revision ${r.pending.revision} of "${r.spec.title}" on buildd.dev: ${r.pending.confirmUrl}\nThe link works until ${r.pending.expiresAt}, and only while the spec stays at version ${r.spec.version}.${warns.length ? `\nWarnings:\n${warns.map((w) => `- ${w.message}`).join('\n')}` : ''}\nSpec URL: ${specUrl(specId)}`);
         }
         return text(op === 'approve'
           ? `Approved: revision ${r.revision.revision} of "${r.spec.title}" is now in force (sha256 ${r.revision.contentHash}). Version ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`

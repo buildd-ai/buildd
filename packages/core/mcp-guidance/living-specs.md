@@ -59,9 +59,23 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
 4. **Submit and approve: a person's act.** `buildd action=manage_specs params={ action: "submit", specId, expectedVersion }`
    and `buildd action=manage_specs params={ action: "approve", specId, revision, expectedVersion }`
    return 403 to an agent run or API key. From a person's own OAuth session,
-   `approve` approves nothing: it returns a link the person opens on
-   buildd.dev to confirm. Hand that link to the person. Tell them what
-   changed (`diff`, below) and stop.
+   `approve` approves nothing. First a quality gate checks the revision; if
+   it passes, buildd notifies the person (their team's Pushover or webhook)
+   and the reply says `Sent to <name> to confirm; gate passed` with the link
+   to a confirm page showing what changed, the gate result and one Approve
+   button. Hand the link on, tell them what changed (`diff`, below) and stop.
+   The gate **refuses**, with reasons and no link, when: an id you
+   already had now means something else (a rewording is fine; a new meaning
+   needs a new id and a `replaces:` line), an id is defined twice or a retired
+   id is back, an `AC-n` has neither a `check:` line, `screen:` line nor a
+   GIVEN/WHEN/THEN with an observable result, or the design or a binding
+   attachment is pinned to a version that no longer exists. Fix it in a new
+   revision and ask again. It only **warns** on a missing change summary, a
+   revision over 400 changed lines, or criteria removed with no
+   `replaces:` and no mention in the summary. Never tell the person to
+   override: only they can, on the confirm page, with a reason that is
+   recorded on the approval with how it was approved (`mcp`, `chat` or
+   `dashboard`).
 5. **Pin:** file work with `create_task` and
    `context: { specSource: { specId, criteria, revision } }`. The server pins
    the approved revision itself. `criteria` (optional, 1 to 50 `R-n`/`AC-n`

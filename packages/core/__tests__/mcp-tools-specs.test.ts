@@ -222,11 +222,22 @@ describe('manage_specs', () => {
 
   it('approve from an OAuth session returns the confirmation link and says nothing is approved yet', async () => {
     const confirmUrl = `https://buildd.dev/app/specs/${SPEC}/approve?request=tok`;
-    api.mockResolvedValueOnce({ spec: { ...spec, version: 2 }, pending: { confirmUrl, revision: 2, expiresAt: '2026-10-12T20:00:00.000Z' } });
+    api.mockResolvedValueOnce({ spec: { ...spec, version: 2 }, pending: { confirmUrl, revision: 2, expiresAt: '2026-10-12T20:00:00.000Z', sentTo: 'Sam', gate: { passed: true, refusals: [], warnings: [{ code: 'no_change_summary', message: 'No change summary.' }] } } });
     const text = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'approve', specId: SPEC, revision: 2, expectedVersion: 2 }, ctx()));
+    expect(text.split('\n')[0]).toBe('Sent to Sam to confirm; gate passed with 1 warning.');
+    expect(text).toContain('No change summary.');
     expect(text).toContain('Not approved yet');
     expect(text).toContain(confirmUrl);
     expect(text).not.toContain('Approved:');
+  });
+
+  it('approve refused by the quality gate says why and gives no link', async () => {
+    api.mockRejectedValueOnce(new Error('API error: 409 - {"error":"Not sent for approval: the revision fails the quality gate.\\n- R-1 now means something else.","code":"gate_refused"}'));
+    const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'approve', specId: SPEC, revision: 2, expectedVersion: 2 }, ctx());
+    expect(r.isError).toBe(true);
+    expect(out(r)).toContain('Not sent for approval');
+    expect(out(r)).toContain('R-1 now means something else.');
+    expect(out(r)).not.toContain('/approve?request=');
   });
 
   it('submit POSTs the version, and a stale one surfaces currentVersion', async () => {
