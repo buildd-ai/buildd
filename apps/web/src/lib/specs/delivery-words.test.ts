@@ -61,9 +61,9 @@ describe('deliveredSentence', () => {
 
 describe('words', () => {
   it('AC-48: only the task page\'s words, plus waived; no em dash', () => {
-    const marks: CriterionMark[] = ['pass', 'fail', 'stale', 'none', 'inconclusive', 'unsupported', 'waived'];
+    const marks: CriterionMark[] = ['pass', 'fail', 'stale', 'stale-fail', 'none', 'inconclusive', 'unsupported', 'waived'];
     expect(marks.map((m) => criterionWords(m).label)).toEqual([
-      'Passes', 'Fails', 'Passed on an older commit', 'No verdict', 'Inconclusive', 'Unsupported', 'Waived',
+      'Passes', 'Fails', 'Passed on an older commit', 'Failed on an older commit', 'Not verified', 'Inconclusive', 'Unsupported', 'Waived',
     ]);
     const all = [
       ...marks.map((m) => criterionWords(m).label),
@@ -76,7 +76,9 @@ describe('words', () => {
   it('a stale pass is not a pass; a stale fail is still a fail', () => {
     expect(markOf({ verdict: 'pass', stale: true })).toBe('stale');
     expect(markOf({ verdict: 'pass', stale: false })).toBe('pass');
-    expect(markOf({ verdict: 'fail', stale: true })).toBe('fail');
+    // Said as on an older commit, and still counted as a fail (Living Specs §7).
+    expect(markOf({ verdict: 'fail', stale: true })).toBe('stale-fail');
+    expect(standingSentence({ builtTo: 1, approved: 1, outcome: 'fail', criteria: [{ criterionId: 'R-1', mark: 'stale-fail' }] }).text).toBe('R-1 fails against revision 1.');
     expect(markOf({ verdict: null, stale: false })).toBe('none');
   });
 });
