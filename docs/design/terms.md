@@ -74,7 +74,7 @@ One noun each. "Worker" is the internal row behind an agent and "seat" an old bi
 
 | Pattern | Say instead | Why |
 |---|---|---|
-| `\bheld\b\|\bon hold\b\|\bstart mode\b` | Not started, Paused, Scheduled, Usage limit, Waiting for files, or Waiting + the reason | "Held" covers a person’s pause, a schedule, a usage limit and a file lock, each with a different way out. Name the cause. |
+| `\bheld\b(?!: runs after )\|\bon hold\b\|\bstart mode\b` | Not started, Paused, Scheduled, Usage limit, Waiting for files, Queued · held: runs after <task>, or Waiting + the reason | "Held" covers a person’s pause, a schedule, a usage limit and a file lock, each with a different way out. Name the cause. |
 | `\bnot landed\b\|\blanded\b\|\blanding\b` | Merging, Merged, Merged in #N, Closed without merging | GitHub says Merged. "Landed" is the team’s own metaphor and reads differently on every screen. |
 | `\bshipped\b` | Merged, Merged in #N, Done, Released | One merged PR read Shipped, Landed, Merged and Completed depending on the screen. |
 | `\bdeliver(?:ed\|ing)\b` | Done, Merging, Done this week | "Delivery" is the kernel’s internal noun for a PR’s journey. |

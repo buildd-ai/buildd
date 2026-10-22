@@ -38,7 +38,8 @@ describe('R-33: a held open task names its hold', () => {
     const v = deriveMissionStateView({ ...base, openTasks: [{ id: 'b1', status: 'pending', title: 'Build it', holdReason: 'budget_paused' }] });
     expect(v.displayState).toBe('active');
     expect(v.chip.label).toBe('WAITING');
-    expect(v.situation?.headline).toContain('queued: runners paused new work until the model budget resets');
+    // Navigation R-14 words the budget hold; the bare reason carries no reset time.
+    expect(v.situation?.headline).toBe('The open task is queued · team daily budget reached.');
   });
 
   it('an unknown reason reads waiting, with no invented cause (AC-9)', () => {

@@ -72,6 +72,12 @@ export interface StateBecauseExtras {
     /** The claim loop's newest refusal reason for this pending row (spec f7f67f1a R-33). */
     holdReason?: string | null;
     /**
+     * The R-14 hold the view read for this pending row (`derivePendingTaskHold`):
+     * the row text and the task it waits behind. The chain prints the same
+     * words the list row shows, and refs the holder.
+     */
+    pendingHold?: { row: string; kind: string; holder: { id: string; title: string | null; note: string | null } | null } | null;
+    /**
      * Unmet dependencies of a pending row. Such a row cannot be claimed, so it
      * is described as waiting on them (and ref'd to the first), never as
      * orphaned — and it never leads the chain.
@@ -241,6 +247,14 @@ function openTaskLinks(
         'tasks.roleSlug + workerHeartbeats.environment + workspaces.gitConfig.executor',
         { ...base, taskId: t.id },
       );
+    }
+    // Navigation R-14: the row's own words, the holder named, never an id.
+    if (t.status === 'pending' && t.pendingHold && orphaned(t)) {
+      const h = t.pendingHold;
+      const derivedFrom = h.kind === 'dependency' ? 'tasks.dependsOn'
+        : h.kind === 'next_in_line' || h.kind === 'scheduled' ? 'tasks.status + workers.status'
+        : 'gate_events.detail';
+      return link(`${name(t)}: ${h.row}.`, derivedFrom, { ...base, taskId: h.holder?.id ?? t.id });
     }
     const hold = t.status === 'pending' ? claimHoldPhrase(t.holdReason) : null;
     if (hold && orphaned(t)) {
