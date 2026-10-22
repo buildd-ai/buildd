@@ -35,6 +35,21 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
 /** Consecutive unchanged-verdict cycles allowed before the owner is asked. */
 export const MAX_REARM_CYCLES = 3;
 
+/** The owner's note keeps the check evidence and next steps, without guessing why it failed. */
+export function formatCriteriaEscalationBody(input: {
+  blockReason: string;
+  evaluatedAt: string | null;
+  verdictLines: string;
+}): string {
+  return `Completion is blocked: ${input.blockReason}\n\n` +
+    `Last checked: ${input.evaluatedAt ?? 'unknown'}\n\n` +
+    `Checks needing review:\n${input.verdictLines || '- No check details recorded.'}\n\n` +
+    'Automatic retries are paused. Review the checks and file any missing work, ' +
+    'or update the mission\'s spec if its requirements have changed. ' +
+    'You can also waive the checks and complete the mission. ' +
+    'A changed check result lets automatic work resume.';
+}
+
 export type CriteriaRearmAction = 'rearm' | 'escalate' | 'wait';
 
 export interface CriteriaRearmDecision {
@@ -247,13 +262,6 @@ export async function applyCriteriaRearm(input: {
       updatedAt: now,
     }).where(eq(missions.id, input.missionId));
 
-    const reading = inferCriteriaFailureReading(state);
-    const readingLine = reading === 'criterion_unmeasurable'
-      ? 'Every blocking criterion is prose-graded and has failed identically across the retry budget — most likely the criterion is unmeasurable as written.\n\n'
-      : reading === 'work_unowned'
-        ? 'Every blocking criterion is machine-checked and has failed identically across the retry budget — most likely the underlying work has no owner.\n\n'
-        : '';
-
     // Stamps `criteriaEscalatedAt` and files the note in one atomic claim —
     // see criteria-escalation.ts for why this must be the only writer.
     await escalateCriteriaFailure({
@@ -263,17 +271,11 @@ export async function applyCriteriaRearm(input: {
         type: 'question',
         status: 'open',
         title: CRITERIA_ESCALATION_NOTE_TITLE,
-        body:
-          `${decision.reason}.\n\n` +
-          `Completion refusal: ${input.blockReason}\n\n` +
-          `Last evaluated: ${state?.evaluatedAt ?? 'unknown'}\n\n` +
-          `Blocking criteria:\n${verdictLines || '- (no per-criterion detail recorded)'}\n\n` +
-          readingLine +
-          `Check-ins have been stood down so this stops re-evaluating on a cadence. ` +
-          `Either the work it names has no owner (file it as a task), or the criterion is wrong or ` +
-          `unmeasurable as written: hand-written criteria are retired, so put the intent in the spec ` +
-          `this mission delivers (\`manage_missions action=update outcomeSpec={specId}\`) or have a ` +
-          `person waive it and complete. Changing any verdict re-arms the organizer automatically.`,
+        body: formatCriteriaEscalationBody({
+          blockReason: input.blockReason,
+          evaluatedAt: state?.evaluatedAt ?? null,
+          verdictLines,
+        }),
       },
       scheduleId: input.scheduleId,
     });

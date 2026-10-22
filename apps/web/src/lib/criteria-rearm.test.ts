@@ -4,10 +4,26 @@ import {
   decideCriteriaRearm,
   formatVerdictLines,
   inferCriteriaFailureReading,
+  formatCriteriaEscalationBody,
   MAX_REARM_CYCLES,
 } from './criteria-rearm';
 import type { GoalCriteriaState } from '@buildd/shared';
 import { describeCriteriaBlocker } from './criteria-blocker-copy';
+
+describe('criteria escalation note copy', () => {
+  it('retains the blocking evidence and recovery without inventing a cause', () => {
+    const body = formatCriteriaEscalationBody({
+      blockReason: 'Visual review has not passed.',
+      evaluatedAt: '2026-10-01T12:00:00Z',
+      verdictLines: '- [fail] Visual review — Layout overlaps on phone',
+    });
+    expect(body).toContain('Layout overlaps on phone');
+    expect(body).toContain('Visual review has not passed.');
+    expect(body).toContain('Automatic retries are paused.');
+    expect(body).toContain('Review the checks');
+    expect(body).not.toMatch(/no owner|unowned|unmeasurable|most likely|machine-checked|cadence/);
+  });
+});
 
 describe('describeCriteriaBlocker', () => {
   it('names the actual failed check without diagnosing its cause', () => {
