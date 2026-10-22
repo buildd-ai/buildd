@@ -35,7 +35,7 @@
 import { db } from '@buildd/core/db';
 import { tasks, workspaces } from '@buildd/core/db/schema';
 import { and, asc, eq, inArray, sql, type SQL } from 'drizzle-orm';
-import { notHeldOrLocal, missionNotHeld, missionNotLocal, taskNotHeld, TASK_RESERVATION_KEY } from '@/app/api/workers/claim/held-gate';
+import { notHeldOrLocal, TASK_RESERVATION_KEY } from '@/app/api/workers/claim/held-gate';
 import {
   BACKEND_REGISTRY,
   DISPATCHABLE_BACKENDS,
@@ -101,14 +101,12 @@ const DEFAULT_SAMPLE_LIMIT = 5;
  * held or local-executor mission, is waiting on a person, not a credential, so
  * the claim route's own gates exclude it here.
  */
-export function strandedPendingWhere(workspaceIds: string[], backends?: AgentBackend[], includeReservations = false): SQL {
+export function strandedPendingWhere(workspaceIds: string[], backends?: AgentBackend[]): SQL {
   return and(
     eq(tasks.status, 'pending'),
     inArray(tasks.workspaceId, workspaceIds),
     ...(backends ? [inArray(tasks.backend, backends)] : []),
-    // Include reservations in Health's diagnostic samples: they are temporary
-    // ownership, not a backend preference or a credential decision.
-    ...(includeReservations ? [missionNotHeld(), missionNotLocal(), taskNotHeld()] : [notHeldOrLocal()]),
+    notHeldOrLocal(),
   )!;
 }
 
@@ -158,7 +156,7 @@ export async function getBackendStrandSummary(opts: {
       count: sql<number>`count(*)::int`,
     })
     .from(tasks)
-    .where(strandedPendingWhere(opts.workspaceIds, undefined, true))
+    .where(strandedPendingWhere(opts.workspaceIds))
     .groupBy(tasks.workspaceId, tasks.backend)) as unknown as Array<{
     workspaceId: string;
     backend: string | null;
@@ -191,7 +189,7 @@ export async function getBackendStrandSummary(opts: {
         .select({ id: tasks.id, title: tasks.title, workspaceName: workspaces.name, backend: tasks.backend, context: tasks.context })
         .from(tasks)
         .leftJoin(workspaces, eq(tasks.workspaceId, workspaces.id))
-        .where(strandedPendingWhere(wsIds, [...stored], true))
+        .where(strandedPendingWhere(wsIds, [...stored]))
         .orderBy(asc(tasks.createdAt))
         .limit(sampleLimit)) as unknown as Array<StrandedTaskSample & { backend: string | null; context?: unknown }>;
       // What the task actually ran/runs on: a recorded failover beats the stored
@@ -297,7 +295,7 @@ async function safeConfigured(
   }
 }
 
-/** Expose expiry only, never the reserving account's identity. The claim gate
+/** A lapsed reservation is claimable, so it can appear in samples; an active one never does. Expose expiry only, never the reserving account's identity. The claim gate
  * owns expiry semantics; this projection simply carries its persisted stamp. */
 function reservationOf(context: unknown): { expiresAt: string } | null {
   if (!context || typeof context !== 'object') return null;

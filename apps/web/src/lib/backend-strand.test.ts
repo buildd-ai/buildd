@@ -59,9 +59,6 @@ const mockTeamEnabledBackends = mock(() => Promise.resolve(enabledMask));
 // its SQL is asserted in a PgDialect test, so a marker suffices here.
 mock.module('@/app/api/workers/claim/held-gate', () => ({
   notHeldOrLocal: () => ({ _op: 'notHeldOrLocal' }),
-  missionNotHeld: () => ({ _op: 'missionNotHeld' }),
-  missionNotLocal: () => ({ _op: 'missionNotLocal' }),
-  taskNotHeld: () => ({ _op: 'taskNotHeld' }),
   TASK_RESERVATION_KEY: 'reservedBy',
 }));
 
@@ -281,16 +278,16 @@ describe('getBackendStrandSummary — executed route, not the stored preference'
     expect(blockerBackends?.get('t-1')).toBe('claude');
     expect(blockerBackends?.get('t-3')).toBe('codex');
   });
-});
 
- it('projects temporary reservations separately from pins and executed routes', async () => {
+  it('projects an expired reservation separately from pins and executed routes', async () => {
     countRows = [{ workspaceId: 'ws-1', backend: 'codex', count: 1 }];
-    const expiresAt = new Date(Date.now() + 60_000).toISOString();
-    sampleRowsByCall = [[{ id: 'reserved', title: 'Reserved', workspaceName: 'alpha', backend: 'codex',
+    const expiresAt = new Date(Date.now() - 60_000).toISOString();
+    sampleRowsByCall = [[{ id: 'lapsed', title: 'Lapsed', workspaceName: 'alpha', backend: 'codex',
       context: { reservedBy: { accountId: 'private-account', expiresAt } } }]];
     const summary = await getBackendStrandSummary({ teamId: 'team-1', workspaceIds: ['ws-1'] });
     expect(stat(summary, 'codex').sampleTasks[0].route).toMatchObject({
       pinned: false, executed: null, reservation: { expiresAt },
     });
     expect(JSON.stringify(stat(summary, 'codex').sampleTasks)).not.toContain('private-account');
- });
+  });
+});
