@@ -62,7 +62,7 @@ export function MissionLayoutTabs({ className = '' }: { className?: string }) {
             tabIndex={on ? 0 : -1}
             data-layout={l}
             onClick={() => ctx.setLayout(l)}
-            className={`-mb-px min-h-11 border-b-2 text-title md:min-h-10 ${on ? 'border-text-primary font-semibold text-text-primary' : 'border-transparent font-medium text-text-muted hover:text-text-primary'}`}
+            className={`-mb-px min-h-11 min-w-11 border-b-2 text-title md:min-h-10 md:min-w-0 ${on ? 'border-text-primary font-semibold text-text-primary' : 'border-transparent font-medium text-text-muted hover:text-text-primary'}`}
           >
             {MISSION_LAYOUT_LABEL[l]}
           </button>
