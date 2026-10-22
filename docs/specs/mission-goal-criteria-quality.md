@@ -2,7 +2,7 @@
 title: Mission Goal Criteria Quality (Advisory Verdict)
 status: active
 owner: max
-last_verified: 2026-10-03
+last_verified: 2026-10-22
 summary: A mission's goal criteria MUST be graded advisorily on write (noticeable outcome, checkable proof) without ever blocking, rewriting or changing the stored goal; fails open; surfaces an advisory by default.
 domain: missions
 surfaces: [packages/core/mission-helpers.ts, packages/core/gate-slugs.ts, apps/web/src/app/api/missions/route.ts, apps/web/src/app/api/missions/[id]/route.ts, apps/web/src/lib/goal-criteria-quality-decision.ts, apps/web/src/lib/goal-criteria-quality-shadow.ts]
@@ -133,8 +133,10 @@ MUST NOT block the write, rewrite a criterion, or change the stored goal.
 
 **Trigger points**:
 
-- `POST /api/missions` with a non-empty `goalCriteria`: every criterion is
-  graded.
+- `POST /api/missions` no longer grades anything: hand-written goal criteria
+  are retired (Living Specs D-44), so a new mission cannot carry one and the
+  create is refused 400 before any grading. Only missions that already carry
+  criteria are graded, on PATCH, until they complete.
 - `PATCH /api/missions/[id]` carrying `goalCriteria`: only criteria that are
   not byte-identical to a stored criterion are graded (the same grandfathering
   rule `validateGoalCriteria` applies via `opts.stored`). A PATCH that adds or
@@ -199,8 +201,8 @@ the judge's false-positive rate is readable without new storage.
   existing `goal_criteria` slug (validation 400s) is not renamed or reused —
   renaming forks a slug's history.
 - **`warned`**: one row per weak criterion, written through
-  `recordGateEvent`, with `surface` `POST /api/missions` or
-  `PATCH /api/missions/[id]`, the mission and workspace ids, and `detail`
+  `recordGateEvent`, with `surface` `PATCH /api/missions/[id]` (rows with
+  `POST /api/missions` predate Living Specs D-44), the mission and workspace ids, and `detail`
   carrying `fingerprint` (`criterionFingerprint`), `type`, the two answers and
   their confidences, the rewrite label, `promptVersion`, `model`, and `mode`
   (`shadow` | `surface`). `detail` never carries criterion text.
@@ -383,17 +385,17 @@ bookkeeping as the default.
 ## Acceptance criteria
 
 - AC-1: GIVEN a team with the goal-criteria quality capability off WHEN
-  `POST /api/missions` is called with valid goal criteria THEN the response is
+  `PATCH /api/missions/[id]` adds a valid goal criterion THEN the response is
   2xx, no decision call is made, and no `goal_criteria_quality` row is written.
 - AC-2: GIVEN the decision call times out, errors, or throws WHEN
-  `POST /api/missions` is called with valid goal criteria THEN the mission is
-  created with the submitted criteria and the response is 2xx with no
-  `advisory` field.
+  `PATCH /api/missions/[id]` adds a valid goal criterion THEN the mission
+  stores the submitted criteria and the response is 2xx with no `advisory`
+  field.
 - AC-3: GIVEN the capability is on and every criterion is graded weak WHEN
-  `POST /api/missions` is called THEN the response status is the same as with
+  `PATCH /api/missions/[id]` is called THEN the response status is the same as with
   the capability off (2xx) — the verdict never blocks.
 - AC-4: GIVEN the capability is on and a criterion is graded weak with a
-  rewrite suggested WHEN `POST /api/missions` or `PATCH /api/missions/[id]`
+  rewrite suggested WHEN `PATCH /api/missions/[id]`
   completes THEN the stored `goalCriteria` equals the submitted array exactly
   (deep-equal) — the verdict never rewrites.
 - AC-5: GIVEN a workspace with `gitConfig.dataClass === 'sensitive'` and the
@@ -416,23 +418,24 @@ bookkeeping as the default.
 - AC-9: GIVEN a mission with a `warned` row for fingerprint F WHEN a later PATCH
   removes or changes that criterion THEN no `bypassed` row is recorded.
 - AC-10: GIVEN an active accepted-pattern memory for the workspace carrying
-  fingerprint F WHEN a new mission in that workspace is created with a criterion
+  fingerprint F WHEN a mission in that workspace that carries criteria adds one
   of fingerprint F THEN that criterion is not sent to the decision call and no
   `warned` row is written for it.
 - AC-11: GIVEN the rubric memory read throws WHEN goal criteria are written with
   the capability on THEN the decision call is still made with the code default
   rubric and the write succeeds.
 - AC-12: GIVEN the mode constant is `shadow` and the capability is on and a
-  criterion is graded weak WHEN `POST /api/missions` or
+  criterion is graded weak WHEN
   `PATCH /api/missions/[id]` responds THEN the response body has no `advisory`
   field, and one `[decision-shadow]` line is logged.
 - AC-12b: GIVEN the mode constant is `surface` (the shipped default since
   2026-10-03) and the capability is on and a criterion is graded weak within
-  `GOAL_QUALITY_TIMEOUT_MS` WHEN `POST /api/missions` or
+  `GOAL_QUALITY_TIMEOUT_MS` WHEN
   `PATCH /api/missions/[id]` responds THEN the response body carries an
   `advisory` field, and the stored goal is still exactly what was submitted.
-- AC-13: GIVEN a non-empty goal-criteria array with no mechanical criterion WHEN
-  `POST /api/missions` is called THEN it rejects with HTTP 400, and the error
+- AC-13: GIVEN a mission that carries criteria and a non-empty goal-criteria
+  array with no mechanical criterion WHEN `PATCH /api/missions/[id]` is called
+  THEN it rejects with HTTP 400, and the error
   message does not contain `all_prs_merged + no_open_tasks` and does contain
   `command` and `artifact_exists`.
 - AC-14: GIVEN a `PATCH /api/missions/[id]` whose goal criteria are
