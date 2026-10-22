@@ -6,8 +6,11 @@
  *
  * Collection is explicit, never inferred:
  *  - The card is the one element with `data-verify-surface="<id>"`.
- *  - Its text is the elements marked `data-verify-block="heading|status|body|label|hint"`,
- *    in document order (blocks do not nest).
+ *  - Its text is the elements marked `data-verify-block="<role>"`, in document
+ *    order (blocks do not nest). A role is heading, status, body, label or hint,
+ *    or one of the material roles a copy check never calls dispensable: a line
+ *    stating a consequence, permission, prerequisite or recovery step says so.
+ *    Any other role is not captured and marks the text partial.
  *  - Its actions are every interactive element inside it. What an action does
  *    is its `data-verify-action="<operation>"`, set by the component that owns
  *    the button. The label is recorded as shown and never read for meaning: an
@@ -31,9 +34,9 @@
  * grants nothing: the server admits a capture only by the lineage of the
  * artifact it is uploaded as (lib/specs/registered-verification-store.ts).
  */
-import { parseSurfaceEvidence, UI_SURFACE_OPERATIONS, type SurfaceEvidence } from '../../packages/core/ui-verification';
+import { parseSurfaceEvidence, UI_SURFACE_BLOCK_ROLES, UI_SURFACE_OPERATIONS, type SurfaceEvidence } from '../../packages/core/ui-verification';
 
-export const SURFACE_BLOCK_ROLES = ['heading', 'status', 'body', 'label', 'hint'] as const;
+export const SURFACE_BLOCK_ROLES = UI_SURFACE_BLOCK_ROLES;
 export const SURFACE_OPERATIONS = UI_SURFACE_OPERATIONS;
 export const SURFACE_COLLECTOR_VERSION = 'buildd-qa-capture@1';
 const MAX_BLOCKS = 32;

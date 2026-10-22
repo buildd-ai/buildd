@@ -32,7 +32,7 @@ const { CLOSED_PR_MISSION_ID, closedPrFixture } = await import('@/app/app/dev/fi
 const { parseVisualReviewFixtureParams } = await import('@/app/app/dev/fixtures/visual-review-fixtures');
 const { composeSurfaceEvidence, parseSurfaceFacts, readSurfaceDom } = await import('../../../../../scripts/qa/surface-evidence');
 const { parsePlan } = await import('../../../../../scripts/qa/steps');
-const { runUiActionStateCheck } = await import('@buildd/core/ui-verification');
+const { runUiActionStateCheck, uiCopyFeaturesFromSurface, uiCopyFindings } = await import('@buildd/core/ui-verification');
 
 const QA = join(import.meta.dir, '../../../../../scripts/qa/plans');
 const facts = parseSurfaceFacts(join(QA, 'ui-verify-surfaces.facts.json'), p => readFileSync(p, 'utf-8'))!;
@@ -91,9 +91,9 @@ describe('closed PR awaiting replacement confirmation', () => {
   it('measures the operational facts as shown: visible blocks, and nothing on the card says it merges', () => {
     closedPr('awaiting-confirmation');
     const { evidence } = capture(MISSION_SITUATION_SURFACE, 'closed-pr-awaiting-confirmation');
-    expect(evidence.visible.blocks.map(b => b.role)).toEqual(['heading', 'body']);
+    expect(evidence.visible.blocks.map(b => b.role)).toEqual(['heading', 'consequence']);
     expect(evidence.visible.blocks.every(b => b.disclosure === 'visible')).toBe(true);
-    // The reason the replacement is suggested sits in the visible body, not behind a disclosure.
+    // Where the closed PR's work went sits in a visible consequence line, not behind a disclosure.
     expect(evidence.visible.blocks[1]!.text).toMatch(/likely superseded by .*#41 \(merged by/);
     // No action and no block offers a merge: the only primary is the confirm.
     expect(evidence.visible.actions.filter(a => a.prominence === 'primary').map(a => a.operation).sort()).toEqual(['confirm_replacement', 'view_detail']);
@@ -102,12 +102,27 @@ describe('closed PR awaiting replacement confirmation', () => {
 
   it('a collapsed operational fact is recorded as collapsed, not as shown', () => {
     closedPr('awaiting-confirmation');
-    const body = container.querySelector<HTMLElement>('[data-testid="closed-pr-row"] [data-verify-block="body"]')!;
+    const body = container.querySelector<HTMLElement>('[data-testid="closed-pr-row"] [data-verify-block="consequence"]')!;
     body.style.display = 'none';
     const { evidence } = capture(MISSION_SITUATION_SURFACE, 'closed-pr-awaiting-confirmation');
-    expect(evidence.visible.blocks.find(b => b.role === 'body')!.disclosure).toBe('collapsed');
+    expect(evidence.visible.blocks.find(b => b.role === 'consequence')!.disclosure).toBe('collapsed');
     // The PR link inside it collapses with it.
     expect(evidence.visible.actions.find(a => /#41/.test(a.label) && a.operation === 'view_detail')!.disclosure).toBe('collapsed');
+  });
+
+  it('R-13: the copy check sees the consequence line as material, with the facts and criterion it judges against', () => {
+    closedPr('awaiting-confirmation');
+    const { evidence } = capture(MISSION_SITUATION_SURFACE, 'closed-pr-awaiting-confirmation');
+    const features = uiCopyFeaturesFromSurface(evidence, undefined, { id: 'R-13', text: 'A card keeps its consequences.' });
+    const consequence = features.segments.find(s => s.role === 'consequence')!;
+    expect(consequence.text).toMatch(/likely superseded by/);
+    expect(features.state).toEqual({ factVersion: facts.factVersion, facts: facts.scenarios['closed-pr-awaiting-confirmation']! });
+    expect(features.criterion).toEqual({ id: 'R-13', text: 'A card keeps its consequences.' });
+    // A model calling the consequence repetition does not make it dispensable.
+    const heading = features.segments.find(s => s.role === 'heading')!;
+    expect(uiCopyFindings({ findings: [{ kind: 'repetition', segmentIds: [consequence.id, heading.id] }] }, features))
+      .toEqual([{ kind: 'repetition', segmentIds: [heading.id] }]);
+    expect(uiCopyFindings({ findings: [{ kind: 'repetition', segmentIds: [consequence.id] }] }, features)).toEqual([]);
   });
 
   it('the same confirm, captured once the replacement is verified, fails the check', () => {
@@ -140,7 +155,7 @@ describe('visual review tray', () => {
       tray(phase);
       const { evidence } = capture(VISUAL_REVIEW_SURFACE, `visual-review-${phase}`);
       expect(evidence.visible.actions.map(a => [a.operation, a.prominence])).toEqual([['retry_visual_review', 'primary'], ['skip_visual_review', 'secondary']]);
-      expect(evidence.visible.blocks.map(b => b.role)).toEqual(['status', 'body']);
+      expect(evidence.visible.blocks.map(b => b.role)).toEqual(['status', 'recovery']);
       expect(runUiActionStateCheck(evidence).verdict).toBe('pass');
     }
   });

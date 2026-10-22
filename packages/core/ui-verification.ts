@@ -20,6 +20,20 @@ export const UI_SURFACE_OPERATIONS = [
 const bounded = (max: number) => z.string().trim().min(1).max(max);
 const coverage = z.enum(['complete', 'partial', 'absent']);
 const disclosure = z.enum(['visible', 'collapsed']);
+/**
+ * Roles whose text carries a fact the person needs: what an action does to the work (`consequence`), who may
+ * take it (`permission`), what must hold first (`prerequisite`) and how to get out of a failure (`recovery`).
+ * A copy check never reports one dispensable, whatever the model says.
+ */
+export const UI_MATERIAL_ROLES = ['consequence', 'permission', 'prerequisite', 'recovery'] as const;
+/** What a `data-verify-block` may declare. The owning component says it; nothing infers it from the words. */
+export const UI_SURFACE_BLOCK_ROLES = ['heading', 'status', 'body', 'label', 'hint', ...UI_MATERIAL_ROLES] as const;
+const surfaceFacts = z.object({
+  prState: z.enum(['open', 'closed', 'merged', 'unknown']).optional(),
+  replacementState: z.enum(['none', 'candidate', 'verified', 'unknown']).optional(),
+  verificationState: z.enum(['not_started', 'pending_recapture', 'passed', 'failed', 'unknown']).optional(),
+  shownVerificationState: z.enum(['pending', 'verified_pass', 'failed', 'unknown']).optional(),
+}).strict();
 const schema = z.object({
   schemaVersion: z.literal(1),
   subject: z.object({
@@ -29,15 +43,10 @@ const schema = z.object({
   }).strict(),
   capture: z.object({ captureId: bounded(160), capturedAt: z.iso.datetime(), snapshotRef: bounded(200), screenshotRef: bounded(200).optional() }).strict(),
   visible: z.object({
-    blocks: z.array(z.object({ id: bounded(80), role: z.enum(['heading', 'status', 'body', 'label', 'hint']), text: bounded(1000), order: z.number().int().min(0).max(1000), disclosure }).strict()).max(32),
+    blocks: z.array(z.object({ id: bounded(80), role: z.enum(UI_SURFACE_BLOCK_ROLES), text: bounded(1000), order: z.number().int().min(0).max(1000), disclosure }).strict()).max(32),
     actions: z.array(z.object({ id: bounded(80), label: bounded(120), operation: z.enum(UI_SURFACE_OPERATIONS), enabled: z.boolean(), prominence: z.enum(['primary', 'secondary', 'menu']), disclosure }).strict()).max(16),
   }).strict(),
-  facts: z.object({
-    prState: z.enum(['open', 'closed', 'merged', 'unknown']).optional(),
-    replacementState: z.enum(['none', 'candidate', 'verified', 'unknown']).optional(),
-    verificationState: z.enum(['not_started', 'pending_recapture', 'passed', 'failed', 'unknown']).optional(),
-    shownVerificationState: z.enum(['pending', 'verified_pass', 'failed', 'unknown']).optional(),
-  }).strict(),
+  facts: surfaceFacts,
   provenance: z.object({ collector: z.enum(['runner', 'visual_auditor', 'agent']), collectorVersion: bounded(80), reportedVia: z.enum(['runner', 'task_token', 'server']), factVersion: bounded(80) }).strict(),
   coverage: z.object({ renderedText: coverage, actions: coverage, runtimeState: coverage, screenshot: coverage }).strict(),
 }).strict();
@@ -242,9 +251,7 @@ export const MAX_UI_COPY_ACTIONS = 16;
 export const UI_COPY_DECISIONS = ['concise', 'needs_edit', 'insufficient_evidence'] as const;
 export type UiCopyDecision = (typeof UI_COPY_DECISIONS)[number];
 
-/** Roles whose text carries a fact the person needs: never dispensable, whatever the model says. */
-const MATERIAL_ROLES = ['consequence', 'permission', 'prerequisite', 'recovery'] as const;
-const SEGMENT_ROLES = ['heading', 'status', 'body', 'label', 'hint', 'narration', ...MATERIAL_ROLES] as const;
+const SEGMENT_ROLES = ['heading', 'status', 'body', 'label', 'hint', 'narration', ...UI_MATERIAL_ROLES] as const;
 
 const copyId = z.string().trim().min(1).max(80);
 // Strict at every level: features carry the card and the profile, never a model, endpoint, credential or prompt.
@@ -252,6 +259,10 @@ const featuresSchema = z.object({
   profile: z.object({ id: z.string().trim().min(1).max(100), version: z.number().int().min(1) }).strict(),
   segments: z.array(z.object({ id: copyId, text: z.string().trim().min(1).max(1000), role: z.enum(SEGMENT_ROLES) }).strict()).min(1).max(MAX_UI_COPY_SEGMENTS),
   actions: z.array(z.object({ id: copyId, label: z.string().trim().min(1).max(120), operation: z.enum(UI_ACTION_OPERATIONS) }).strict()).max(MAX_UI_COPY_ACTIONS),
+  // The runtime state the card describes, as the capture was supplied it (never read off the page), and its version.
+  state: z.object({ factVersion: z.string().trim().min(1).max(80), facts: surfaceFacts }).strict().optional(),
+  // The requirement being judged, so the card is read against what it is for.
+  criterion: z.object({ id: z.string().regex(/^(R|AC)-\d{1,4}$/), text: z.string().trim().min(1).max(2000) }).strict().optional(),
 }).strict();
 
 export type UiCopyFeatures = z.infer<typeof featuresSchema>;
@@ -266,6 +277,7 @@ export function parseUiCopyFeatures(input: unknown): FeatureParse<UiCopyFeatures
 
 const SURFACE_ROLE: Record<SurfaceEvidence['visible']['blocks'][number]['role'], UiCopyFeatures['segments'][number]['role']> = {
   heading: 'heading', status: 'status', body: 'body', label: 'label', hint: 'hint',
+  consequence: 'consequence', permission: 'permission', prerequisite: 'prerequisite', recovery: 'recovery',
 };
 const SURFACE_OPERATION: Record<SurfaceEvidence['visible']['actions'][number]['operation'], UiCopyFeatures['actions'][number]['operation']> = {
   merge_pr: 'merge', confirm_replacement: 'confirm_replacement', resolve_pr_closure: 'resolve_pr_closure',
@@ -274,12 +286,22 @@ const SURFACE_OPERATION: Record<SurfaceEvidence['visible']['actions'][number]['o
   turn_off_visual_review: 'turn_off_visual_review', view_detail: 'open_details',
 };
 
-/** A stored capture as this kind's features: every block in order and every action by its operation. */
-export function uiCopyFeaturesFromSurface(e: SurfaceEvidence, profile: UiCopyFeatures['profile'] = { id: 'buildd-ui', version: 1 }): UiCopyFeatures {
+/**
+ * A stored capture as this kind's features: every block in order by its declared role, every action by its
+ * operation, the supplied runtime facts when the capture had any, and the criterion when the caller names one.
+ */
+export function uiCopyFeaturesFromSurface(
+  e: SurfaceEvidence,
+  profile: UiCopyFeatures['profile'] = { id: 'buildd-ui', version: 1 },
+  criterion?: UiCopyFeatures['criterion'],
+): UiCopyFeatures {
+  const known = Object.keys(e.facts).length > 0 && e.provenance.factVersion !== 'none';
   return {
     profile,
     segments: [...e.visible.blocks].sort((a, b) => a.order - b.order).map((b) => ({ id: b.id, text: b.text, role: SURFACE_ROLE[b.role] })),
     actions: e.visible.actions.map((a) => ({ id: a.id, label: a.label, operation: SURFACE_OPERATION[a.operation] })),
+    ...(known ? { state: { factVersion: e.provenance.factVersion, facts: { ...e.facts } } } : {}),
+    ...(criterion ? { criterion: { id: criterion.id, text: criterion.text } } : {}),
   };
 }
 
@@ -314,7 +336,7 @@ export function uiCopyFindings(raw: unknown, features: UiCopyFeatures): UiCopyFi
     const kind = (item as { kind?: unknown })?.kind;
     if (typeof kind !== 'string' || !FINDING_KINDS.includes(kind)) continue;
     const segmentIds = [...new Set(ids((item as { segmentIds?: unknown }).segmentIds))]
-      .filter((s) => segments.has(s) && !(MATERIAL_ROLES as readonly string[]).includes(segments.get(s)!.role));
+      .filter((s) => segments.has(s) && !(UI_MATERIAL_ROLES as readonly string[]).includes(segments.get(s)!.role));
     const found = [...new Set(ids((item as { actionIds?: unknown }).actionIds))].filter((a) => actions.has(a))
       .map((a) => ({ id: a, operation: actions.get(a)!.operation }));
     if (kind === 'unclear_action' ? !found.length : !segmentIds.length) continue;

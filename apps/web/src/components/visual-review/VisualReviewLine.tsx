@@ -11,7 +11,7 @@
  * here as `visualReviewPhaseCopy` for callers that need the bare strings.
  */
 import type { VisualReviewModel, VisualReviewPhase } from '@buildd/shared';
-import { awaitingCapture, describeVisualPhase } from '@/lib/visual-review-model';
+import { awaitingCapture, describeVisualPhase, visualPhaseDetailRole } from '@/lib/visual-review-model';
 import { VERDICT_DOT } from './ShotImage';
 
 export const visualReviewPhaseCopy = describeVisualPhase;
@@ -107,7 +107,7 @@ export default function VisualReviewLine({ model, variant = 'compact', className
         <VerdictDots cells={model.cells} />
       </div>
       {variant === 'full' && (
-        <p data-testid="visual-review-line-detail" data-verify-block="body" className="mt-1 text-[13px] leading-[1.45] text-text-secondary">
+        <p data-testid="visual-review-line-detail" data-verify-block={visualPhaseDetailRole(model.phase)} className="mt-1 text-[13px] leading-[1.45] text-text-secondary">
           {copy.detail}
         </p>
       )}
