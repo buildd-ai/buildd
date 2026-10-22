@@ -6344,7 +6344,7 @@ export async function handleBuilddAction(
       // manage_missions action=create above, which makes this identical call.
       const mission = await api('/api/missions', {
         method: 'POST',
-        body: JSON.stringify({ title, description, workspaceId: row.workspaceId }),
+        body: JSON.stringify({ title, description, workspaceId: row.workspaceId, ...(ctx.workerId ? { createdByWorkerId: ctx.workerId } : {}) }),
       });
 
       const linked = await api(`/api/discrepancies/${params.discrepancyId}/promote`, {
@@ -6446,6 +6446,9 @@ export async function handleBuilddAction(
           if (params.autoVerify !== undefined) body.autoVerify = params.autoVerify;
           if (params.branchStrategy !== undefined) body.branchStrategy = params.branchStrategy;
           if (params.autoSurfaceAudit !== undefined) body.autoSurfaceAudit = params.autoSurfaceAudit;
+          // The agent filing it, so the mission records its worker and task as
+          // the actor and lineage, apart from the person it is for.
+          if (ctx.workerId) body.createdByWorkerId = ctx.workerId;
           const data = await api('/api/missions', {
             method: 'POST',
             body: JSON.stringify(body),
