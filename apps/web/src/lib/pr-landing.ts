@@ -887,7 +887,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
             true,
           );
         }
-        return waiting(reason);
+        return (await earlyRefreshWhileCiPending(reason)) ?? waiting(reason);
       }
       case 'stale_head':
       case 'github_read':
@@ -1284,6 +1284,52 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       deps.dispatchFix ?? reReviewVia(judged.why),
       staleExtra,
     );
+  }
+
+  /**
+   * CI is still running on a head that is already approved and behind its base.
+   * Landing would refresh it the moment CI finishes, which restarts CI and
+   * wastes the whole first run; refresh now, while that run is the cheaper one
+   * to lose. Same refresh door, lease, budget and carry-forward as the later
+   * refresh: nothing here relaxes a rail, it only moves the refresh earlier.
+   *
+   * Returns null (caller keeps waiting) unless every condition holds:
+   *  - the head is approved at exactly this head (kernel APPROVED, or a stored
+   *    approve on this head): a refresh before approval would only discard it;
+   *  - a check is still running (a queued/in-progress run);
+   *  - the head is not one a platform refresh already produced: its CI is the
+   *    run the refresh bought, and a base that moved again meanwhile is the
+   *    ordinary post-CI treadmill's call, so a busy base cannot restart CI forever;
+   *  - the PR is actually behind (a failed compare reads as not behind).
+   * The refresh budget and single-flight lease are refreshOrTolerate's own, so a
+   * duplicate event while a refresh is in flight waits, and a spent cycle holds.
+   */
+  async function earlyRefreshWhileCiPending(waitReason: string): Promise<LandingOutcome | null> {
+    if (!act || !baseRef || override.freshness) return null;
+    if (!(observed.checkRuns ?? []).some((r) => r.status !== 'completed')) return null;
+    if (marker?.pendingHeadSha === liveHead) return null;
+    if (!owner.taskId || !owner.workerId) return null;
+    const view = await kernelStatus();
+    // A spent legacy cycle is the post-CI path's page to raise, not ours.
+    if (!view && refreshCycleCount(marker, liveHead, now()) >= policyValue('treadmillMaxRefreshes')) return null;
+    if (view) {
+      if (view.current.state !== 'APPROVED' || view.current.head !== liveHead) return null;
+    } else {
+      const status = await reviewStatus();
+      if (!status || status.verdict !== 'approve' || status.reviewHeadSha !== liveHead) return null;
+    }
+    let behindBy = 0;
+    try {
+      const cmp = await githubApi(installationId, `${ghPath}/compare/${encodeURIComponent(baseRef)}...${liveHead}`);
+      behindBy = typeof cmp?.behind_by === 'number' ? cmp.behind_by : 0;
+    } catch {
+      return null;
+    }
+    if (behindBy <= 0) return null;
+    kernelView = view;
+    const r = await refreshOrTolerate(`${waitReason}; PR is ${behindBy} commit${behindBy === 1 ? '' : 's'} behind ${baseRef}, refreshing now rather than after CI`, baseRef);
+    // Tolerated: the kernel will land it behind once CI is green.
+    return r === 'tolerated' ? null : r;
   }
 
   async function treadmillAccepts(base: string, spent = false): Promise<TreadmillVerdict> {
