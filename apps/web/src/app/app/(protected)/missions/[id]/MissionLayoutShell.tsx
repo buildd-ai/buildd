@@ -140,7 +140,7 @@ function LayoutLoading({ layout }: { layout: MissionLayout }) {
             type="button"
             data-testid="mission-layout-retry"
             onClick={() => setAttempt(a => a + 1)}
-            className="min-h-11 rounded-md border border-border-default px-3 text-body font-medium text-text-primary hover:bg-surface-2 md:min-h-9"
+            className="btn h-11 md:h-8"
           >
             Try again
           </button>
