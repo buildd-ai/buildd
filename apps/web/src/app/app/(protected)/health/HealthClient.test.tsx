@@ -267,11 +267,31 @@ describe('HealthClient — Problems', () => {
     expect(html).not.toContain('All systems healthy');
   });
 
-  it('opens a lost sandbox with what the runner takes and who fixes it', () => {
+  it('opens a setup issue without dumping diagnostics into the runner row', () => {
     const html = render({ runners: [runner({ lastHeartbeatAt: ago(60 * 1000), mine: true, isolation: isolation('linux', none('bwrap_missing')) })] });
     expect(html).toContain('data-state="failed"');
     expect(html).toContain('Takes no tasks');
-    expect(html).toContain('You fix this');
+    expect(html).toContain('Sandbox details');
+    expect(html).not.toContain('You fix this');
+    expect(html).not.toContain('runner-isolation-eligibility');
+  });
+
+  it('names Claude setup separately from a working Codex Windows sandbox', () => {
+    const record = isolation('windows', none('unsupported_platform'));
+    record.codex = {
+      'read-only': { mechanism: 'windows_restricted_token', scope: ['write'] },
+      'workspace-write': { mechanism: 'windows_restricted_token', scope: ['write'] },
+    };
+    const html = render({ runners: [runner({ lastHeartbeatAt: ago(60 * 1000), mine: true,
+      shared: false, isolation: record, isolationBlocked: { protected: 0, trustedLocal: 7 } })] });
+    expect(html).toContain('Claude needs setup');
+    expect(html).toContain('7 trusted tasks need permission');
+    expect(html).toContain('Set up Claude');
+    expect(html).not.toContain('Protected tasks go to another runner');
+    expect(html).not.toContain('You fix this');
+    expect(html).not.toContain('Codex, read-only');
+    expect(html).not.toContain('BUILDD_ALLOW_REDUCED_ISOLATION');
+    expect(html).not.toContain('never changes host security settings');
   });
 
   it('drops the redundant working / idle label from an online runner row', () => {
