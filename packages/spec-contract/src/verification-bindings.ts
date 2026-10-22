@@ -16,35 +16,6 @@ export interface CriterionVerification {
   fingerprint: string;
 }
 
-// SHA-256 of JSON.stringify({ id, version, profile, mode }), in that field order.
-// The accepted domain has four values. Keeping their digests here preserves a
-// synchronous, browser-portable contract without a runtime crypto dependency.
-// Tests recompute every digest; a new verifier/version/profile must add its identity.
-const FINGERPRINTS: Record<RegisteredBinding['id'], Record<RegisteredBinding['mode'], string>> = {
-  'ui.actions_match_state': {
-    required: 'ffc325f5782d0a117564efc87001725ee9c24701e424c16d6f74f5e75d0f8907',
-    advisory: '0bb949e50af6c25ee4c77277cbf0e7116736b788fb4e26227d243dd74151a68a',
-  },
-  'ui.card_clarity': {
-    required: 'b4ced2cb050e7d910e8ac5d2c5fbcbc8d9e523084d110781894969d07b8da91e',
-    advisory: '4491f1819cdb698ee6a7104aa40fb343935f0a7fc212aef337104dc3e4552e60',
-  },
-};
-
-function parseBinding(value: string, criterionId: string): RegisteredBinding {
-  const invalid = () => new Error(`${criterionId}: verify must be a registered id, version, profile and mode JSON object`);
-  let parsed: unknown;
-  try { parsed = JSON.parse(value); } catch { throw invalid(); }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw invalid();
-  const record = parsed as Record<string, unknown>;
-  const keys = Object.keys(record);
-  if (keys.length !== 4 || keys.some((key) => !['id', 'version', 'profile', 'mode'].includes(key))
-    || (record.id !== 'ui.actions_match_state' && record.id !== 'ui.card_clarity')
-    || record.version !== 1 || record.profile !== 'buildd.enterprise@1'
-    || (record.mode !== 'required' && record.mode !== 'advisory')) throw invalid();
-  return { id: record.id, version: record.version, profile: record.profile, mode: record.mode };
-}
-
 /**
  * Registered checks under each R/AC, using the same ownership rules as check:
  * and screen:. Malformed owned declarations throw, so a required check cannot
@@ -52,13 +23,15 @@ function parseBinding(value: string, criterionId: string): RegisteredBinding {
  * occur only once per criterion, even if repeated with identical settings.
  */
 export function criterionVerifications(body: string): CriterionVerification[] {
-  const seen = new Set<string>();
-  return criterionLines(body, 'verify').map(({ criterionId, value }) => {
-    const binding = parseBinding(value, criterionId);
-    const key = `${criterionId}:${binding.id}`;
-    if (seen.has(key)) throw new Error(`${criterionId}: duplicate verify registration for ${binding.id}`);
-    seen.add(key);
-    return { criterionId, binding, fingerprint: FINGERPRINTS[binding.id][binding.mode] };
+  const { bindings, refused } = criterionBindings(body);
+  if (refused.length) {
+    const first = refused[0]!;
+    throw new Error(`${first.criterionId}: verify must be a registered binding (${first.reason})`);
+  }
+  return bindings.map((canonical) => {
+    const binding = toRegisteredBinding(canonical);
+    if (!binding) throw new Error(`${canonical.criterionId}: verify must be a registered production binding`);
+    return { criterionId: canonical.criterionId, binding, fingerprint: bindingFingerprint(canonical) };
   });
 }
 
@@ -140,18 +113,7 @@ export function criterionVerificationCoverage(body: string): CriterionVerificati
   });
 }
 
-/*
- * The key=value form of a `verify:` line, checked against a registry of
- * verifiers and profiles rather than a fixed list:
- *
- *   verify: verifier=<id>@<version> profile=<id>@<version> mode=<required|advisory> evidence=<a>,<b>
- *
- * Pure, like the JSON form above, and read by the same ownership rule as
- * `check:` (nearest R-n / AC-n above it; fenced blocks skipped). A JSON value
- * on a `verify:` line belongs to criterionVerifications and is not read here.
- * Nothing is dropped: every line is either a binding or a refusal with a reason.
- */
-
+/** Both declaration forms are normalized through the same registry and identity. */
 export interface VerifierIdentity { id: string; version: number }
 
 /** One registered binding as declared under its criterion. */
@@ -175,6 +137,33 @@ export interface VerifierRegistry {
   profiles: readonly VerifierIdentity[];
 }
 
+/** Built-in executable contract. Legacy names are aliases, never separate registrations. */
+export const REGISTERED_VERIFIER_REGISTRY: VerifierRegistry = {
+  verifiers: [
+    { id: 'ui.action-state', version: 1, method: 'deterministic', evidence: ['ui.text', 'ui.actions', 'ui.state'] },
+    { id: 'ui.copy', version: 1, method: 'model', evidence: ['ui.text', 'ui.actions'] },
+  ],
+  profiles: [{ id: 'buildd-ui', version: 1 }],
+};
+
+function canonicalVerifier(v: VerifierIdentity): VerifierIdentity {
+  if (v.version !== 1) return v;
+  return { ...v, id: v.id === 'ui.actions_match_state' ? 'ui.action-state' : v.id === 'ui.card_clarity' ? 'ui.copy' : v.id };
+}
+
+function canonicalProfile(v: VerifierIdentity): VerifierIdentity {
+  return v.id === 'buildd.enterprise' && v.version === 1 ? { id: 'buildd-ui', version: 1 } : v;
+}
+
+/** Compatibility adapter for existing production executors; unsupported profiles stay refused. */
+export function toRegisteredBinding(b: VerificationBinding): RegisteredBinding | null {
+  const verifier = canonicalVerifier(b.verifier);
+  const profile = canonicalProfile(b.profile);
+  if (verifier.version !== 1 || profile.id !== 'buildd-ui' || profile.version !== 1) return null;
+  const id = verifier.id === 'ui.action-state' ? 'ui.actions_match_state' : verifier.id === 'ui.copy' ? 'ui.card_clarity' : null;
+  return id ? { id, version: 1, profile: 'buildd.enterprise@1', mode: b.mode } : null;
+}
+
 export type BindingRefusal = 'malformed' | 'unknown_verifier' | 'unknown_profile' | 'incompatible_evidence';
 export interface RefusedBinding { criterionId: string; value: string; reason: BindingRefusal }
 
@@ -188,35 +177,61 @@ const identity = (v: string | undefined): VerifierIdentity | null => {
 };
 
 function readBinding(criterionId: string, value: string, registry: VerifierRegistry): VerificationBinding | BindingRefusal {
-  const fields = new Map<string, string>();
-  for (const token of value.replace(/`/g, '').trim().split(/\s+/)) {
-    const eq = token.indexOf('=');
-    const key = eq > 0 ? token.slice(0, eq) : '';
-    if (!(BINDING_KEYS as readonly string[]).includes(key) || fields.has(key)) return 'malformed';
-    fields.set(key, token.slice(eq + 1));
+  let verifier: VerifierIdentity | null;
+  let profile: VerifierIdentity | null;
+  let mode: unknown;
+  let evidence: string[] | null = null;
+  const text = value.replace(/`/g, '').trim();
+  if (text.startsWith('{')) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch { return 'malformed'; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 'malformed';
+    const record = parsed as Record<string, unknown>;
+    const keys = Object.keys(record);
+    if (keys.length !== 4 || keys.some((k) => !['id', 'version', 'profile', 'mode'].includes(k))
+      || typeof record.id !== 'string' || typeof record.version !== 'number'
+      || typeof record.profile !== 'string') return 'malformed';
+    verifier = identity(`${record.id}@${record.version}`);
+    profile = identity(record.profile);
+    mode = record.mode;
+  } else {
+    const fields = new Map<string, string>();
+    for (const token of text.split(/\s+/)) {
+      const eq = token.indexOf('=');
+      const key = eq > 0 ? token.slice(0, eq) : '';
+      if (!(BINDING_KEYS as readonly string[]).includes(key) || fields.has(key)) return 'malformed';
+      fields.set(key, token.slice(eq + 1));
+    }
+    verifier = identity(fields.get('verifier'));
+    profile = identity(fields.get('profile'));
+    mode = fields.get('mode');
+    evidence = (fields.get('evidence') ?? '').split(',');
+    if (!evidence.length || evidence.some((e) => !EVIDENCE.test(e))
+      || new Set(evidence).size !== evidence.length) return 'malformed';
   }
-  const verifier = identity(fields.get('verifier'));
-  const profile = identity(fields.get('profile'));
-  const mode = fields.get('mode');
-  const evidence = (fields.get('evidence') ?? '').split(',').map((e) => e.trim()).filter(Boolean);
-  if (!verifier || !profile || (mode !== 'required' && mode !== 'advisory') || !evidence.length
-    || evidence.some((e) => !EVIDENCE.test(e)) || new Set(evidence).size !== evidence.length) return 'malformed';
+  if (!verifier || !profile || (mode !== 'required' && mode !== 'advisory')) return 'malformed';
+  verifier = canonicalVerifier(verifier);
+  profile = canonicalProfile(profile);
   const known = registry.verifiers.find((v) => v.id === verifier.id && v.version === verifier.version);
   if (!known) return 'unknown_verifier';
   if (!registry.profiles.some((p) => p.id === profile.id && p.version === profile.version)) return 'unknown_profile';
+  // Legacy JSON did not declare capabilities: preserve exactly its verifier's minimum.
+  evidence ??= [...known.evidence];
   if (known.evidence.some((e) => !evidence.includes(e))) return 'incompatible_evidence';
   return { criterionId, verifier, profile, mode, evidence };
 }
 
-/** Every key=value binding the body declares, and every one it refuses, by reason. */
-export function criterionBindings(body: string, registry: VerifierRegistry): { bindings: VerificationBinding[]; refused: RefusedBinding[] } {
+/** Every owned declaration, including legacy JSON, is accepted or refused explicitly. */
+export function criterionBindings(body: string, registry: VerifierRegistry = REGISTERED_VERIFIER_REGISTRY): { bindings: VerificationBinding[]; refused: RefusedBinding[] } {
   const bindings: VerificationBinding[] = [];
   const refused: RefusedBinding[] = [];
+  const seen = new Set<string>();
   for (const { criterionId, value } of criterionLines(body, 'verify')) {
-    if (value.trim().startsWith('{')) continue;
     const read = readBinding(criterionId, value, registry);
-    if (typeof read === 'string') refused.push({ criterionId, value, reason: read });
-    else bindings.push(read);
+    if (typeof read === 'string') { refused.push({ criterionId, value, reason: read }); continue; }
+    const key = `${criterionId}:${read.verifier.id}@${read.verifier.version}`;
+    if (seen.has(key)) refused.push({ criterionId, value, reason: 'malformed' });
+    else { seen.add(key); bindings.push(read); }
   }
   return { bindings, refused };
 }
@@ -228,7 +243,9 @@ export function bindingLine(b: VerificationBinding): string {
 
 /** Stable SHA-256 of the binding's complete identity: criterion, verifier, profile, mode and evidence. */
 export function bindingFingerprint(b: VerificationBinding): string {
-  return sha256Sync(JSON.stringify([b.criterionId, b.verifier.id, b.verifier.version, b.profile.id, b.profile.version, b.mode, [...b.evidence].sort()]));
+  const verifier = canonicalVerifier(b.verifier);
+  const profile = canonicalProfile(b.profile);
+  return sha256Sync(JSON.stringify([b.criterionId, verifier.id, verifier.version, profile.id, profile.version, b.mode, [...b.evidence].sort()]));
 }
 
 export type CoverageKind = 'command' | 'registered' | 'unsupported' | 'none';
@@ -242,10 +259,6 @@ export function verificationCoverage(body: string, registry: VerifierRegistry): 
   const commands = new Set(criterionChecks(body).map((c) => c.criterionId));
   const { bindings, refused } = criterionBindings(body, registry);
   const accepted = new Set(bindings.map((b) => b.criterionId));
-  for (const { criterionId, value } of criterionLines(body, 'verify')) {
-    if (!value.trim().startsWith('{')) continue;
-    try { parseBinding(value, criterionId); accepted.add(criterionId); } catch { refused.push({ criterionId, value, reason: 'malformed' }); }
-  }
   const unsupported = new Set(refused.map((r) => r.criterionId));
   return specCriteria(body).map(({ id: criterionId }) => ({
     criterionId,
