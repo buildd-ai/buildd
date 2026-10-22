@@ -402,7 +402,7 @@ jobs:
   # a failed or cancelled part must make this red, never Skipped — a Skipped
   # check satisfies branch protection without running.
   build:
-    needs: [build-checks, build-unit-tests, build-next]
+    needs: [build-checks, build-unit-tests, build-next, runner-changes, runner-unit-tests-windows]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -411,10 +411,19 @@ jobs:
           failed=0
           for r in "checks=${{ needs.build-checks.result }}" \
                    "unit-tests=${{ needs.build-unit-tests.result }}" \
-                   "next=${{ needs.build-next.result }}"; do
+                   "next=${{ needs.build-next.result }}" \
+                   "runner-changes=${{ needs.runner-changes.result }}"; do
             echo "$r"
             [ "${r#*=}" = "success" ] || failed=1
           done
+          # Windows: skipped is fine only when the gate ran and found no runner change.
+          win="${{ needs.runner-unit-tests-windows.result }}"
+          echo "runner-windows=$win (runner changed: ${{ needs.runner-changes.outputs.runner }})"
+          if [ "${{ needs.runner-changes.outputs.runner }}" = "true" ]; then
+            [ "$win" = "success" ] || failed=1
+          else
+            [ "$win" = "skipped" ] || [ "$win" = "success" ] || failed=1
+          fi
           [ "$failed" -eq 0 ] || { echo "::error::a build part did not succeed (see above)"; exit 1; }
 
   # The ONLY test that spawns a real bwrap namespace and asserts that blocked paths
@@ -540,16 +549,47 @@ jobs:
           done
           exit $status
 
+  # Whether runner-unit-tests-windows has anything to test: the paths the runner
+  # loads (the same tree install.sh/install.ps1 check out), the test runner and
+  # this workflow. Pushes to dev always run it; each commit's verdict is the
+  # record. Never skipped itself, so `build` can tell "nothing to test" apart
+  # from "the gate broke".
+  runner-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.filter.outputs.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Detect runner changes
+        id: filter
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "runner=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::runner=true (push)"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          RUNNER=$(echo "$CHANGED" | grep -qE '^(apps/runner/|packages/(core|shared|ai-kit|dispatch-contract|spec-contract)/|scripts/(run-unit-tests|stub-server-only)\.ts$|bunfig\.toml$|bun\.lock$|package\.json$|\.gitattributes$|\.github/workflows/build\.yml$)' && echo "true" || echo "false")
+          echo "runner=$RUNNER" >> "$GITHUB_OUTPUT"
+          echo "::notice::runner=$RUNNER"
+
   # The runner's unit tests on Windows. Every other job here runs on ubuntu, so
   # Windows-only breakages (a launcher that did not dispatch `status`, a stale
   # runner.sock, an installer one-liner) shipped and were found on a real
   # Windows machine instead. Tests of genuinely Unix-only features (bwrap, POSIX
   # uids, the bash launcher) are skipped on win32 in the test files themselves.
   #
-  # Not in `build`'s needs, so branch protection does not require it yet; it
-  # joins the aggregator once it has stayed green for a while.
+  # Required through `build`, but only run when something the runner loads
+  # changed (runner-changes): a Windows runner costs minutes, and most PRs never
+  # touch the runner. `build` accepts its Skipped only when runner-changes ran
+  # and said so, never because something upstream failed.
   runner-unit-tests-windows:
     name: Runner unit tests (windows)
+    needs: runner-changes
+    if: needs.runner-changes.outputs.runner == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
 

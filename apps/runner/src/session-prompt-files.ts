@@ -240,12 +240,16 @@ export function sweepStaleSessionPromptFiles(opts: {
  * ancestor. Used when a workspace opted out of CLAUDE.md (`useClaudeMd: false`)
  * but the session still needs the `project` setting source to discover the
  * skills written into `<cwd>/.claude/skills`.
+ *
+ * Patterns use forward slashes, as the CLI matches candidates. A Windows cwd
+ * keeps its drive as the root (`C:/a/CLAUDE.md`, never `/C:/a/CLAUDE.md`).
  */
 export function projectMemoryExcludes(cwd: string): string[] {
   const parts = cwd.replaceAll('\\', '/').split('/').filter(Boolean);
+  const root = /^[A-Za-z]:$/.test(parts[0] ?? '') ? parts.shift()! : '';
   const out: string[] = [];
   for (let i = parts.length; i >= 0; i--) {
-    const base = i === 0 ? '' : '/' + parts.slice(0, i).join('/');
+    const base = root + (i === 0 ? '' : '/' + parts.slice(0, i).join('/'));
     out.push(`${base}/CLAUDE.md`, `${base}/CLAUDE.local.md`, `${base}/.claude/CLAUDE.md`, `${base}/.claude/rules/**`);
   }
   return [...new Set(out)];
