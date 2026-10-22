@@ -11,7 +11,7 @@
  * and every POST to `/api/tasks/[id]/reassign` through `requestTaskRetry`.
  */
 import { deriveTaskPhase, type TaskPhase } from './task-presentation';
-import type { TaskFailureKind } from './task-failure-kind';
+import type { TaskFailureKind, TaskTrouble } from './task-failure-kind';
 import type { ForceChecklistItem, WaitingKind, WaitingReason } from '@buildd/core/waiting-reason';
 import { MISSION_START_COPY, type MissionStartState } from './mission-start-state';
 
@@ -92,10 +92,14 @@ export const STARTABLE_PHASES: ReadonlySet<TaskPhase> = new Set<TaskPhase>([
  * - `waiting_on_failed` / `history`: a task that never ran because a task it
  *   depends on failed — no retry of its own, a link to that task (spec 072de598 I-14);
  * - `blocked`: the dependency notice (no action, by design);
+ * - `start_anyway` / `cancel`: a task waiting on another task (R-20): start it
+ *   past the wait, or drop it. Never Retry: it starts again by itself;
  * - `claim_hint`: `claim_task {taskId}` for a task only a local session claims;
+ * - `retry_now`: a task buildd is retrying by itself (`trouble.kind ===
+ *   'retrying'`): clears its scheduled start, nothing more. Replaces Run now;
  * - `run_now`: ask for a start now (a gate refusal becomes Force start inline).
  */
-export type TaskActionId = 'answer' | 'retry' | 'switch_backend' | 'history' | 'verification_failed' | 'waiting_on_failed' | 'blocked' | 'claim_hint' | 'run_now';
+export type TaskActionId = 'answer' | 'retry' | 'switch_backend' | 'history' | 'verification_failed' | 'waiting_on_failed' | 'blocked' | 'start_anyway' | 'cancel' | 'claim_hint' | 'retry_now' | 'run_now';
 
 export interface TaskActionState {
   phase: TaskPhase;
@@ -115,6 +119,12 @@ export interface TaskActionState {
   otherBackendAvailable?: boolean;
   /** `classifyTaskFailure`; `verification` swaps the build's recovery for the audit's, `dependency` drops it for a link to the failed task. */
   failureKind?: TaskFailureKind | null;
+  /**
+   * `classifyTaskTrouble`: who acts next. `waiting` (or a dead blocker) on a
+   * pending task offers Start now anyway and Cancel; `retrying` offers Retry
+   * now in place of Run now. Omitted: the action set is as before.
+   */
+  trouble?: TaskTrouble | null;
 }
 
 /** A backend as a product name: "Claude", "Codex". */
@@ -144,9 +154,13 @@ export function taskActionSet(s: TaskActionState): TaskActionId[] {
     if (s.hasHistory) out.push('history');
   }
   if (s.isBlocked) out.push('blocked');
-  if (STARTABLE_PHASES.has(s.phase) && !s.isBlocked) {
+  const t = s.trouble ?? null;
+  const heldByTask = (s.phase === 'pending' || s.phase === 'blocked') && (t?.kind === 'waiting' || (t?.kind === 'needs_person' && !!t.on));
+  if (heldByTask) {
+    out.push('start_anyway', 'cancel');
+  } else if (STARTABLE_PHASES.has(s.phase) && !s.isBlocked) {
     if (s.missionExecutor === 'local') out.push('claim_hint');
-    out.push('run_now');
+    out.push(s.phase === 'pending' && t?.kind === 'retrying' && t.resumesAt ? 'retry_now' : 'run_now');
   }
   return out;
 }
@@ -248,6 +262,41 @@ export async function requestTaskRetry(taskId: string, opts: { backend?: Backend
     return { ok: false, error: typeof body.error === 'string' ? body.error : 'Failed to retry task' };
   } catch {
     return { ok: false, error: 'Failed to retry task' };
+  }
+}
+
+/**
+ * Retry now: a task buildd is already retrying, sooner. Clears the scheduled
+ * start (the backoff or pause) and nothing else, so the same claim gates run.
+ */
+export async function requestRetryNow(taskId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const res = await fetch(`/api/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ startAt: null }),
+    });
+    if (res.ok) return { ok: true };
+    const body = await res.json().catch(() => ({})) as { error?: unknown };
+    return { ok: false, error: typeof body.error === 'string' ? body.error : 'Failed to retry task' };
+  } catch {
+    return { ok: false, error: 'Failed to retry task' };
+  }
+}
+
+/** Cancel a task that is not running (a person's own act: no reason is asked for). */
+export async function requestTaskCancel(taskId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const res = await fetch(`/api/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'cancelled' }),
+    });
+    if (res.ok) return { ok: true };
+    const body = await res.json().catch(() => ({})) as { error?: unknown };
+    return { ok: false, error: typeof body.error === 'string' ? body.error : 'Failed to cancel task' };
+  } catch {
+    return { ok: false, error: 'Failed to cancel task' };
   }
 }
 
