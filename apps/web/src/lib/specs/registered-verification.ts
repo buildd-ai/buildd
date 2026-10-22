@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
-import { criterionVerifications, criterionVerificationCoverage, type CriterionVerification, type VerificationBinding } from '@buildd/spec-contract/verification-bindings';
+import {
+  criterionVerifications, criterionVerificationCoverage, criterionVerificationScenarios,
+  type CriterionVerification, type VerificationBinding, type VerificationScenario,
+} from '@buildd/spec-contract/verification-bindings';
 import type { VerificationResult, VerificationVerdict } from '@buildd/core/verification-check';
 import type { BuilddDecisionScope } from '@buildd/core/decision-policy';
 import { registeredAuthor, type RegisteredMethod } from './registered-author';
@@ -20,10 +23,20 @@ import { registeredAuthor, type RegisteredMethod } from './registered-author';
  * transient failures (provider, budget, a held reservation) also record nothing:
  * the criterion stays missing or keeps its last result, and never reads as a pass.
  *
+ * Coverage: a binding judges the captures its criterion declares on a
+ * `scenarios:` line (scenario at viewport). A pass certifies the criterion
+ * only when every declared capture was judged; a partial set, or a binding
+ * that declares none (a revision stored before declarations were required),
+ * reports what is missing and records nothing. A failing capture still fails
+ * the binding. A model is not asked about an incomplete set at all.
+ *
  * Only deterministic runs are cached, by an identity that covers subject,
- * revision, wording, binding, evaluator, head and every admitted capture. Model
- * judgments are never served from a cache: the broker resolves team policy on
- * every call, and we cannot yet prove that policy unchanged.
+ * revision, wording, binding, declared captures, evaluator, head and every
+ * judged capture. Model judgments are never served from a cache: the broker
+ * resolves team policy on every call, and we cannot yet prove that policy
+ * unchanged. An automatic trigger (`trigger: 'event'`: a PR event, a capture
+ * arriving) does not re-ask a model whose identical run is already the
+ * standing row; an explicit request always asks again.
  */
 
 export const MAX_REGISTERED_SURFACES = 8;
@@ -55,6 +68,8 @@ export interface CollectedSurface {
   provenance: { artifactId: string; revision: number; auditTaskId: string; captureSha: string };
   /** Canonical fingerprint of the capture as stored (normalized evidence when it parses). */
   fingerprint: string;
+  /** Which declared capture this is. A surface without one matches no declaration. */
+  scenario?: VerificationScenario;
 }
 export interface RefusedSurface { ref: string; reason: string }
 export interface Collection {
@@ -85,6 +100,10 @@ export interface RegisteredRun {
   replayOf?: string;
   /** Set when this run took over a reservation an abandoned run left behind. */
   recoveredReservation?: boolean;
+  /** The captures the criterion declares (`scenario@viewport`). */
+  scenarios?: string[];
+  /** Declared captures this run did not see: set only on a fail, which one failing capture decides. */
+  missing?: string[];
 }
 export interface Execution {
   result: VerificationResult;
@@ -140,12 +159,22 @@ export function canonical(v: unknown): string {
 export const sha256 = (v: unknown) => createHash('sha256').update(canonical(v)).digest('hex');
 
 /** Identity of one run. Workspace is part of it, so a key never matches across tenants. */
-export function registeredRunKey(s: RegisteredSubject, c: CriterionVerification, evaluatorKey: string, inputFingerprint: string): string {
+export function registeredRunKey(s: RegisteredSubject, c: CriterionVerification, evaluatorKey: string, inputFingerprint: string, scenarios: readonly string[] = []): string {
   return sha256({
     workspace: s.workspaceId, subject: `${s.kind}:${s.subjectId}`, revision: s.specRevisionId, criterion: c.criterionId,
     words: s.criterionHashes.get(c.criterionId) ?? null, binding: c.fingerprint, head: s.headSha.toLowerCase(),
-    evaluator: evaluatorKey, input: inputFingerprint,
+    evaluator: evaluatorKey, input: inputFingerprint, ...(scenarios.length ? { scenarios } : {}),
   });
+}
+
+export const scenarioKey = (x: VerificationScenario) => `${x.scenarioId}@${x.viewport}`;
+
+/** The surfaces a binding judges and the declared captures none of them supplies. Pure. */
+export function bindingCoverage(declared: readonly VerificationScenario[], surfaces: readonly CollectedSurface[]): { judged: CollectedSurface[]; missing: string[] } {
+  const wanted = new Set(declared.map(scenarioKey));
+  const judged = surfaces.filter((e) => e.scenario && wanted.has(scenarioKey(e.scenario)));
+  const seen = new Set(judged.map((e) => scenarioKey(e.scenario!)));
+  return { judged, missing: declared.map(scenarioKey).filter((k) => !seen.has(k)) };
 }
 
 const SHA40 = /^[0-9a-f]{40}$/i;
@@ -163,7 +192,7 @@ function aggregate(checks: readonly Execution[], bindingId: VerificationBinding[
 }
 
 export async function dispatchRegisteredVerification(
-  opts: { taskId: string; headSha: string; evidenceRef?: string },
+  opts: { taskId: string; headSha: string; evidenceRef?: string; trigger?: 'request' | 'event' },
   deps: RegisteredVerificationDeps,
 ): Promise<RegisteredVerification> {
   const results: RegisteredResult[] = [];
@@ -176,10 +205,12 @@ export async function dispatchRegisteredVerification(
 
   let coverage: RegisteredVerification['coverage'];
   let bindings: CriterionVerification[];
+  let declared: Map<string, VerificationScenario[]>;
   try {
     const inScope = new Set(s.criterionIds);
     coverage = criterionVerificationCoverage(s.body).filter((c) => inScope.has(c.criterionId));
     bindings = criterionVerifications(s.body).filter((c) => inScope.has(c.criterionId));
+    declared = criterionVerificationScenarios(s.body);
   } catch {
     return empty('the revision contains an invalid verifier binding');
   }
@@ -210,17 +241,36 @@ export async function dispatchRegisteredVerification(
   }
 
   const scope: BuilddDecisionScope = { teamId: s.teamId, workspaceId: s.workspaceId, taskId: s.taskId, missionId: s.missionId ?? null };
-  const inputFingerprint = sha256(surfaces.map((e) => ({ ref: e.ref, fingerprint: e.fingerprint })));
   for (const c of bindings) {
+    const wanted = declared.get(c.criterionId) ?? [];
+    const { judged, missing } = bindingCoverage(wanted, surfaces);
+    // Undeclared (an older revision): every admitted capture is judged, but none can certify a pass.
+    const set = wanted.length ? judged : surfaces;
+    const incomplete = !wanted.length ? 'the criterion declares no scenarios, so no set of captures is complete'
+      : missing.length ? `no independent capture of ${missing.join(', ')} at the current target` : null;
+    if (!set.length) { note(c, 'inconclusive', incomplete ?? 'no independent capture at the current target'); continue; }
+    const deterministic = c.binding.id === 'ui.actions_match_state';
+    // A model is never asked to judge part of what the criterion needs; a deterministic check
+    // still runs, so a failing capture is seen.
+    if (incomplete && !deterministic) { note(c, 'inconclusive', incomplete); continue; }
+    const scenarios = wanted.map(scenarioKey);
+    const inputFingerprint = sha256(set.map((e) => ({ ref: e.ref, fingerprint: e.fingerprint })));
     const evaluator = await deps.evaluator(c.binding.id, scope);
-    const runKey = registeredRunKey(s, c, evaluator.key, inputFingerprint);
+    const runKey = registeredRunKey(s, c, evaluator.key, inputFingerprint, scenarios);
+    if (!evaluator.cacheable && opts.trigger === 'event') {
+      const standing = await deps.cached(s, runKey);
+      if (standing?.current) {
+        results.push({ criterionId: c.criterionId, bindingId: c.binding.id, verdict: standing.run.verdict, method: standing.run.method, cached: true, recorded: false, reason: 'an identical run is already the standing result' });
+        continue;
+      }
+    }
     if (evaluator.cacheable) {
       const hit = await deps.cached(s, runKey);
-      if (hit && (hit.run.verdict === 'pass' || hit.run.verdict === 'fail') && hit.run.method === 'deterministic') {
+      if (hit && (hit.run.verdict === 'fail' || (hit.run.verdict === 'pass' && !incomplete)) && hit.run.method === 'deterministic') {
         let recorded = true;
         // A newer row for this binding superseded the identical run: replay it, without executing.
         if (!hit.current) {
-          const replay = await deps.record(s, { ...hit.run, runKey, replayOf: hit.verdictId }, surfaces);
+          const replay = await deps.record(s, { ...hit.run, runKey, replayOf: hit.verdictId }, set);
           recorded = replay.ok;
         }
         results.push({ criterionId: c.criterionId, bindingId: c.binding.id, verdict: hit.run.verdict, method: hit.run.method, cached: true, recorded });
@@ -232,22 +282,26 @@ export async function dispatchRegisteredVerification(
     try {
       const checks: Execution[] = [];
       try {
-        for (const e of surfaces) checks.push(await deps.execute(c.binding.id, e.input, scope));
+        for (const e of set) checks.push(await deps.execute(c.binding.id, e.input, scope));
       } catch (err) {
         note(c, 'inconclusive', `the verifier could not finish (${err instanceof Error ? err.message.slice(0, 120) : 'error'}); retry later`);
         continue;
       }
       const { verdict, method, observed } = aggregate(checks, c.binding.id);
+      // A pass over an incomplete set certifies nothing: say what is missing, record nothing.
+      if (incomplete && verdict !== 'fail') { note(c, 'inconclusive', incomplete, method); continue; }
       const run: RegisteredRun = {
         criterionId: c.criterionId, bindingId: c.binding.id, bindingFingerprint: c.fingerprint, inputFingerprint,
         evaluatorVersion: evaluator.key, runKey, headSha: s.headSha.toLowerCase(), verdict, method,
         recordedBy: registeredAuthor(c.binding.id, method), observed,
         decisionRecordIds: checks.flatMap((x) => x.decisionRecordIds), receipts: checks.flatMap((x) => x.receipts),
-        evidence: checks.map((x, i) => ({ ref: surfaces[i]!.ref, inputFingerprint: x.inputFingerprint, verdict: x.result.verdict, observed: x.result.observed ?? null })),
-        evidenceRefs: surfaces.map((e) => e.ref),
+        evidence: checks.map((x, i) => ({ ref: set[i]!.ref, inputFingerprint: x.inputFingerprint, verdict: x.result.verdict, observed: x.result.observed ?? null })),
+        evidenceRefs: set.map((e) => e.ref),
         ...(lease.recovered ? { recoveredReservation: true } : {}),
+        ...(scenarios.length ? { scenarios } : {}),
+        ...(missing.length ? { missing } : {}),
       };
-      const rec = await deps.record(s, run, surfaces, { ...lease, runKey });
+      const rec = await deps.record(s, run, set, { ...lease, runKey });
       results.push({ criterionId: c.criterionId, bindingId: c.binding.id, verdict: rec.ok ? verdict : 'inconclusive', method, cached: false, recorded: rec.ok, ...(rec.ok ? {} : { reason: rec.reason }) });
     } finally {
       await deps.release(s, runKey, lease.owner);

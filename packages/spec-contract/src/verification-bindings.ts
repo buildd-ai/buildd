@@ -61,6 +61,62 @@ export function criterionVerifications(body: string): CriterionVerification[] {
   });
 }
 
+/** One capture a registered check needs: a named UI scenario at one viewport. */
+export interface VerificationScenario { scenarioId: string; viewport: 'mobile' | 'desktop' }
+
+/** At most this many captures per criterion: what one registered run may judge. */
+export const MAX_VERIFICATION_SCENARIOS = 8;
+const SCENARIO = /^([a-z0-9][a-z0-9-]{0,99})@(mobile|desktop)$/;
+
+/**
+ * The captures each criterion's registered checks need, from `scenarios:`
+ * lines under it (same ownership rule as `verify:`):
+ *
+ *   - AC-2: A closed PR offers nothing to merge.
+ *     verify: {"id":"ui.actions_match_state","version":1,"profile":"buildd.enterprise@1","mode":"required"}
+ *     scenarios: closed-pr@mobile, closed-pr@desktop
+ *
+ * A check passes only when every declared capture was judged: a convenient
+ * subset never certifies the criterion. Several lines add up; repeats are
+ * dropped; a malformed item throws, like a malformed binding.
+ */
+export function criterionVerificationScenarios(body: string): Map<string, VerificationScenario[]> {
+  const out = new Map<string, VerificationScenario[]>();
+  for (const { criterionId, value } of criterionLines(body, 'scenarios')) {
+    const list = out.get(criterionId) ?? [];
+    for (const item of value.split(',').map((x) => x.replace(/`/g, '').trim())) {
+      const m = SCENARIO.exec(item);
+      if (!m) throw new Error(`${criterionId}: scenarios must be <scenario>@mobile or <scenario>@desktop items, comma-separated`);
+      if (!list.some((s) => s.scenarioId === m[1] && s.viewport === m[2])) list.push({ scenarioId: m[1]!, viewport: m[2] as VerificationScenario['viewport'] });
+    }
+    if (list.length > MAX_VERIFICATION_SCENARIOS) throw new Error(`${criterionId}: at most ${MAX_VERIFICATION_SCENARIOS} scenarios`);
+    out.set(criterionId, list);
+  }
+  return out;
+}
+
+/**
+ * Why a revision body's verification declarations cannot be stored or pinned,
+ * or null when they can: every `verify:` parses, names its captures on a
+ * `scenarios:` line, and no `scenarios:` line stands under a criterion with no
+ * `verify:`. A body with neither is unaffected.
+ */
+export function verificationDeclarationError(body: string): string | null {
+  try {
+    const bound = new Set(criterionVerifications(body).map((v) => v.criterionId));
+    const scenarios = criterionVerificationScenarios(body);
+    for (const id of bound) {
+      if (!scenarios.get(id)?.length) return `${id}: a verify binding must name the captures it needs on a scenarios: line (e.g. scenarios: closed-pr@mobile)`;
+    }
+    for (const id of scenarios.keys()) {
+      if (!bound.has(id)) return `${id}: scenarios is declared, but the criterion has no verify binding`;
+    }
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : 'invalid verification declaration';
+  }
+}
+
 export interface CriterionVerificationCoverage {
   criterionId: string;
   command: boolean;

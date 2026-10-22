@@ -46,6 +46,11 @@ mock.module('@/lib/pr-surface-evidence', () => ({
   loadPrSurfaceFiles: async () => null,
 }));
 
+const reruns: string[] = [];
+mock.module('@/lib/specs/registered-verification-store', () => ({
+  rerunRegisteredVerificationForAudit: async (id: string) => { reruns.push(id); if (id === 'boom') throw new Error('store down'); },
+}));
+
 const { surfaceAuditSubscribers } = await import('./surface-audit-subscribers');
 const run = (missionId: string, taskId: string) =>
   (surfaceAuditSubscribers[0] as any).run({ type: 'task.left_mission', taskId, missionId, workspaceId: 'ws-1' });
@@ -62,6 +67,7 @@ describe('surface audit: task.left_mission', () => {
     expect(surfaceAuditSubscribers.map(s => `${s.module}:${s.on}:${s.label}`)).toEqual([
       'visual-qa:task.left_mission:surface-audit-detach',
       'visual-qa:pr.closed:surface-evidence-on-merge',
+      'visual-qa:worker.reported:registered-checks-on-captures',
     ]);
   });
 
@@ -105,3 +111,26 @@ describe('surface audit: pr.closed records merged file evidence', () => {
     expect(persisted).toEqual([]);
   });
 });
+
+describe('surface audit: worker.reported re-verifies on arrived captures', () => {
+  const reported = (e: Record<string, unknown>) => (surfaceAuditSubscribers[2] as any).run({
+    type: 'worker.reported', taskId: 'audit-1', workerId: 'w', workspaceId: 'ws-1', missionId: 'm-1', status: 'completed',
+    finalStatus: 'completed', releaseHeld: false, structuredOutput: null, verificationEvidence: null, ...e,
+  });
+  beforeEach(() => { reruns.length = 0; });
+
+  it('R-6/AC-5: a mission task\'s report asks the store to re-verify what its captures can decide', async () => {
+    await reported({});
+    expect(reruns).toEqual(['audit-1']);
+  });
+
+  it('a task outside any mission is never an audit: nothing is read', async () => {
+    await reported({ missionId: null });
+    expect(reruns).toEqual([]);
+  });
+
+  it('a store failure is logged, never thrown into the report', async () => {
+    await expect(reported({ taskId: 'boom' })).resolves.toBeUndefined();
+  });
+});
+

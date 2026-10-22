@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { criterionRecords, otherTextBySection } from './criterion-records';
-import { criterionVerifications, criterionVerificationCoverage, type VerificationBinding } from './verification-bindings';
+import {
+  MAX_VERIFICATION_SCENARIOS, criterionVerifications, criterionVerificationCoverage, criterionVerificationScenarios, verificationDeclarationError,
+  type VerificationBinding,
+} from './verification-bindings';
 
 const action: VerificationBinding = { id: 'ui.actions_match_state', version: 1, profile: 'buildd.enterprise@1', mode: 'required' };
 const clarity: VerificationBinding = { id: 'ui.card_clarity', version: 1, profile: 'buildd.enterprise@1', mode: 'advisory' };
@@ -96,5 +99,32 @@ describe('criterionVerificationCoverage', () => {
     expect(criterionVerificationCoverage('R-1: Not runnable.\n check: ``\n screen: ``')).toEqual([
       { criterionId: 'R-1', command: false, visual: false, registered: false, status: 'missing' },
     ]);
+  });
+});
+
+describe('declared captures (scenarios:)', () => {
+  it('R-1/R-16: reads each criterion\'s required captures by the verify ownership rule, deduped, in order', () => {
+    const body = ['R-1: Actions.', line(action), ' scenarios: closed-pr@mobile, `closed-pr@desktop`', ' scenarios: closed-pr@mobile, open-pr@desktop',
+      '```', 'R-9: Example.', 'scenarios: not owned', '```', 'R-2: Other.'].join('\n');
+    expect([...criterionVerificationScenarios(body)]).toEqual([['R-1', [
+      { scenarioId: 'closed-pr', viewport: 'mobile' }, { scenarioId: 'closed-pr', viewport: 'desktop' }, { scenarioId: 'open-pr', viewport: 'desktop' },
+    ]]]);
+  });
+
+  it('R-3: a malformed or oversized scenario list throws instead of shrinking what a check must see', () => {
+    for (const v of ['closed-pr', 'closed-pr@tablet', 'Closed@mobile', '@mobile', 'a@mobile,,b@mobile']) {
+      expect(() => criterionVerificationScenarios(`R-1: Cards.\n scenarios: ${v}`)).toThrow(/R-1/);
+    }
+    const many = Array.from({ length: MAX_VERIFICATION_SCENARIOS + 1 }, (_, i) => `s${i}@mobile`).join(', ');
+    expect(() => criterionVerificationScenarios(`R-1: Cards.\n scenarios: ${many}`)).toThrow(/at most/);
+  });
+
+  it('R-2: a stored body must declare its captures with every verify, and only with one', () => {
+    expect(verificationDeclarationError('R-1: Plain.\n check: bun test')).toBeNull();
+    expect(verificationDeclarationError(`R-1: Cards.\n${line(action)}\n scenarios: closed-pr@mobile`)).toBeNull();
+    expect(verificationDeclarationError(`R-1: Cards.\n${line(action)}`)).toMatch(/^R-1: .*scenarios:/);
+    expect(verificationDeclarationError('R-1: Cards.\n scenarios: closed-pr@mobile')).toMatch(/^R-1: .*no verify binding/);
+    expect(verificationDeclarationError('R-1: Cards.\n verify: {"id":"ui.unknown"}\n scenarios: closed-pr@mobile')).toMatch(/^R-1: verify must be/);
+    expect(verificationDeclarationError(`R-1: Cards.\n${line(action)}\n scenarios: closed-pr@tablet`)).toMatch(/^R-1: scenarios must be/);
   });
 });

@@ -84,3 +84,52 @@ test('a 5xx document is a typed visual_qa.boot failure, beside the shots', async
     expect(f).toMatchObject({ ownership: 'infrastructure', component: 'visual_qa.boot' });
   } finally { rmSync(output, { recursive: true, force: true }); }
 }, 30_000);
+
+// scripts/qa/surface-evidence.ts: a plan surface becomes evidence beside the
+// shot, with facts from QA_SURFACE_FACTS; without a capture SHA it says why not.
+for (const sha of ['b'.repeat(40), ''] as const) {
+  test(`a plan surface ${sha ? 'is written as surface evidence' : 'without QA_CAPTURE_SHA records why there is none'}`, async () => {
+    const output = mkdtempSync(join(import.meta.dir, '.capture-test-'));
+    const preload = join(output, 'browser.ts');
+    writeFileSync(preload, `
+      import { mock } from 'bun:test';
+      import { writeFileSync } from 'fs';
+      let url = '';
+      const locator = { first() { return this; }, count: async () => 0 };
+      const raw = { found: 1, blocks: [{ id: 'status', role: 'status', text: 'Closed', collapsed: false, nested: false }],
+        actions: [{ id: 'merge', operation: 'merge_pr', prominence: 'primary', inMenu: false, label: 'Merge', enabled: true, collapsed: false }] };
+      const page = { on() {}, goto: async (next) => { url = next; return { status: () => 200 }; },
+        url: () => url, locator: () => locator, evaluate: async (_fn, arg) => (arg === 'task-pr-card' ? raw : undefined),
+        screenshot: async ({path}) => writeFileSync(path, 'shot'), ariaSnapshot: async () => 'Fixture' };
+      mock.module('playwright', () => ({ chromium: { launch: async () => ({
+        newContext: async () => ({ newPage: async () => page }), close: async () => {}, version: () => 'mock'
+      }) } }));
+    `);
+    try {
+      const child = Bun.spawn(['bun', '--preload', preload, 'scripts/qa/capture.ts'], {
+        cwd: join(import.meta.dir, '../..'),
+        env: {
+          ...process.env, BUILDD_BROWSER_PROVIDER: 'local', QA_NO_LOGIN: '1', QA_OUTPUT: output, QA_VIEWPORT: 'mobile', QA_CAPTURE_SHA: sha,
+          QA_PLAN: JSON.stringify([{ route: '/fixture', surface: { id: 'task-pr-card', scenario: 'closed-pr' } }]),
+          QA_SURFACE_FACTS: JSON.stringify({ factVersion: 'seed@1', scenarios: { 'closed-pr': { prState: 'closed' } } }),
+          QA_SURFACE_COLLECTOR: 'visual_auditor',
+        },
+        stdout: 'pipe', stderr: 'pipe',
+      });
+      expect(await child.exited).toBe(0);
+      const [shot] = JSON.parse(readFileSync(join(output, 'captures.json'), 'utf8'));
+      if (sha) {
+        expect(shot.surface).toEqual({ id: 'task-pr-card', scenarioId: 'closed-pr', file: 'surfaces/fixture.json' });
+        const e = JSON.parse(readFileSync(join(output, 'surfaces', 'fixture.json'), 'utf8'));
+        expect(e).toMatchObject({
+          subject: { commitSha: sha, route: '/fixture', scenarioId: 'closed-pr', viewport: 'mobile' },
+          facts: { prState: 'closed' }, provenance: { collector: 'visual_auditor', factVersion: 'seed@1' },
+          visible: { actions: [{ operation: 'merge_pr', enabled: true }] },
+        });
+      } else {
+        expect(shot.surface).toMatchObject({ id: 'task-pr-card', missing: expect.stringContaining('capture_sha_unset') });
+        expect(existsSync(join(output, 'surfaces', 'fixture.json'))).toBe(false);
+      }
+    } finally { rmSync(output, { recursive: true, force: true }); }
+  }, 30_000);
+}

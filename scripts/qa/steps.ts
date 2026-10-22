@@ -174,13 +174,31 @@ export function describeStep(step: Step): string {
 
 // --- Plans ---
 
-export type PlanState = { key: string; steps: Step[] };
-export type PlanRoute = { route: string; states: PlanState[] };
+/**
+ * A composed card to collect as surface evidence (scripts/qa/surface-evidence.ts):
+ * the `data-verify-surface` id on the page, and the scenario this shot is
+ * (what a spec criterion's `scenarios:` line names, and what QA_SURFACE_FACTS
+ * supplies facts for).
+ */
+export type PlanSurface = { id: string; scenario: string };
+export type PlanState = { key: string; steps: Step[]; surface?: PlanSurface };
+export type PlanRoute = { route: string; states: PlanState[]; surface?: PlanSurface };
 
 const STATE_KEY = /^[a-z0-9][a-z0-9-]*$/;
+const SURFACE_ID = /^[a-z0-9][a-z0-9-]{0,99}$/;
+
+function validateSurface(raw: unknown, where: string): PlanSurface | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw) || typeof raw.id !== 'string' || typeof raw.scenario !== 'string' || !SURFACE_ID.test(raw.id) || !SURFACE_ID.test(raw.scenario)) {
+    throw new Error(`${where}: surface must be { id, scenario }, each lower-case letters, digits and dashes`);
+  }
+  const extra = Object.keys(raw).filter((k) => k !== 'id' && k !== 'scenario');
+  if (extra.length) throw new Error(`${where}: surface has unknown keys ${extra.join(', ')}`);
+  return { id: raw.id, scenario: raw.scenario };
+}
 
 /**
- * A QA_PLAN, validated whole: `[{ route, states?: [{ key, steps }] }]`.
+ * A QA_PLAN, validated whole: `[{ route, surface?, states?: [{ key, steps, surface? }] }]`.
  *
  * The safety rule lives here, so it holds however the plan got in: a step
  * that commits (`commit: true`) is allowed only when the pages come from the
@@ -218,9 +236,11 @@ export function validatePlan(raw: unknown, opts: { pageSource: string }): PlanRo
         }
         return step;
       });
-      return { key: s.key, steps };
+      const surface = validateSurface(s.surface, `QA_PLAN route "${route}" state "${s.key}"`);
+      return { key: s.key, steps, ...(surface ? { surface } : {}) };
     });
-    return { route, states };
+    const surface = validateSurface(r.surface, `QA_PLAN route "${route}"`);
+    return { route, states, ...(surface ? { surface } : {}) };
   });
 }
 

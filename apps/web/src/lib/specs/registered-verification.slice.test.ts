@@ -11,14 +11,18 @@ import {
  */
 
 const HEAD = 'a'.repeat(40);
-const binding = (id: string, mode = 'required') => JSON.stringify({ id, version: 1, profile: 'buildd.enterprise@1', mode });
+const json = (id: string, mode = 'required') => JSON.stringify({ id, version: 1, profile: 'buildd.enterprise@1', mode });
+/** A `verify:` value and, on the next line, the one capture it needs. */
+const binding = (id: string, mode = 'required') => `${json(id, mode)}\n scenarios: card@mobile`;
 const subject = (body = `R-1: Actions agree with state.\n verify: ${binding('ui.actions_match_state')}`): RegisteredSubject => ({
   kind: 'task', taskId: 'subject', subjectId: 'subject', workspaceId: 'workspace', teamId: 'team', specRevisionId: 'revision',
   headSha: HEAD, body, criterionIds: ['R-1', 'AC-1'], criterionHashes: new Map([['R-1', 'words']]),
 });
 const shot = (n: number): CollectedSurface => ({
   input: { n }, ref: `art-${n}:hash`, fingerprint: `fp-${n}`, provenance: { artifactId: `art-${n}`, revision: 1, auditTaskId: 'audit', captureSha: HEAD },
+  scenario: { scenarioId: 'card', viewport: 'mobile' },
 });
+const shotOf = (n: number, scenarioId: string, viewport: 'mobile' | 'desktop'): CollectedSurface => ({ ...shot(n), scenario: { scenarioId, viewport } });
 const exec = (verdict: Execution['result']['verdict'], method: Execution['method']): Execution => ({
   result: { verdict, observed: verdict } as Execution['result'], method, inputFingerprint: 'x', decisionRecordIds: method === 'model' ? ['d'] : [], receipts: [],
 });
@@ -40,7 +44,8 @@ function harness(over: Partial<{ s: RegisteredSubject; collection: Collection; v
   };
   return { deps, writes, calls, released, setVerdicts: (v: Execution[]) => { verdicts = v; } };
 }
-const run = (deps: RegisteredVerificationDeps, evidenceRef?: string) => dispatchRegisteredVerification({ taskId: 'subject', headSha: HEAD, ...(evidenceRef ? { evidenceRef } : {}) }, deps);
+const run = (deps: RegisteredVerificationDeps, evidenceRef?: string, trigger?: 'request' | 'event') =>
+  dispatchRegisteredVerification({ taskId: 'subject', headSha: HEAD, ...(evidenceRef ? { evidenceRef } : {}), ...(trigger ? { trigger } : {}) }, deps);
 
 describe('registered verification coordinator', () => {
   it('judges every admitted capture: one failing surface fails the binding', async () => {
@@ -140,5 +145,73 @@ describe('registered verification coordinator', () => {
     expect(looked).toBe(0);
     expect(model.calls).toHaveLength(2);
     expect(model.writes.map((w) => w.recordedBy)).toEqual(['registered:ui.card_clarity', 'registered:ui.card_clarity']);
+  });
+
+  it('R-16: a pass over part of the declared captures certifies nothing; a failing capture still fails; a model is not asked about part', async () => {
+    const two = (id: string) => subject(`R-1: Cards.\n verify: ${json(id)}\n scenarios: card@mobile, card@desktop`);
+    const partial = harness({ s: two('ui.actions_match_state'), collection: { admitted: [shotOf(1, 'card', 'mobile'), shotOf(2, 'other', 'desktop')], refused: [] } });
+    const r = await run(partial.deps);
+    expect(r.results[0]).toMatchObject({ verdict: 'inconclusive', recorded: false, reason: expect.stringContaining('card@desktop') });
+    // Only the declared capture was judged: an unrelated scenario neither passes nor fails this criterion.
+    expect(partial.calls).toEqual([{ id: 'ui.actions_match_state', input: { n: 1 } }]);
+    expect(partial.writes).toEqual([]);
+
+    const failing = harness({ s: two('ui.actions_match_state'), collection: { admitted: [shotOf(1, 'card', 'mobile')], refused: [] }, verdicts: [exec('fail', 'deterministic')] });
+    expect((await run(failing.deps)).results[0]).toMatchObject({ verdict: 'fail', recorded: true });
+    expect(failing.writes[0]).toMatchObject({ scenarios: ['card@mobile', 'card@desktop'], missing: ['card@desktop'] });
+
+    const model = harness({ s: two('ui.card_clarity'), collection: { admitted: [shotOf(1, 'card', 'mobile')], refused: [] } });
+    expect((await run(model.deps)).results[0]).toMatchObject({ verdict: 'inconclusive', recorded: false, reason: expect.stringContaining('card@desktop') });
+    expect(model.calls).toEqual([]);
+
+    const complete = harness({ s: two('ui.actions_match_state'), collection: { admitted: [shotOf(1, 'card', 'mobile'), shotOf(2, 'card', 'desktop')], refused: [] } });
+    expect((await run(complete.deps)).results[0]).toMatchObject({ verdict: 'pass', recorded: true });
+    expect(complete.writes[0]).toMatchObject({ scenarios: ['card@mobile', 'card@desktop'] });
+    expect(complete.writes[0]!.missing).toBeUndefined();
+
+    const none = harness({ s: two('ui.actions_match_state'), collection: { admitted: [shotOf(1, 'other', 'mobile')], refused: [] } });
+    expect((await run(none.deps)).results[0]).toMatchObject({ verdict: 'inconclusive', recorded: false, reason: expect.stringContaining('card@mobile, card@desktop') });
+    expect(none.calls).toEqual([]);
+  });
+
+  it('R-16: a binding with no declared captures (an older revision) never certifies a pass', async () => {
+    const h = harness({ s: subject(`R-1: Cards.\n verify: ${json('ui.actions_match_state')}`) });
+    expect((await run(h.deps)).results[0]).toMatchObject({ verdict: 'inconclusive', recorded: false, reason: expect.stringContaining('declares no scenarios') });
+    const f = harness({ s: subject(`R-1: Cards.\n verify: ${json('ui.actions_match_state')}`), verdicts: [exec('fail', 'deterministic')] });
+    expect((await run(f.deps)).results[0]).toMatchObject({ verdict: 'fail', recorded: true });
+  });
+
+  it('R-4: the declared captures are part of the run identity', async () => {
+    const one = harness(); await run(one.deps);
+    const wider = harness({ s: subject(`R-1: Cards.\n verify: ${json('ui.actions_match_state')}\n scenarios: card@mobile, other@desktop`),
+      collection: { admitted: [shot(1), shotOf(2, 'other', 'desktop')], refused: [] } });
+    await run(wider.deps);
+    expect(one.writes[0]!.runKey).not.toBe(wider.writes[0]!.runKey);
+  });
+
+  it('R-6: an automatic trigger does not re-ask a model whose identical run is the standing row; a request does', async () => {
+    const clarity = subject(`R-1: Clear.\n verify: ${binding('ui.card_clarity')}`);
+    const standing = { verdict: 'pass', method: 'model' } as RegisteredRun;
+    const event = harness({ s: clarity }); event.deps.cached = async () => ({ verdictId: 'old', run: standing, current: true });
+    expect((await run(event.deps, undefined, 'event')).results[0]).toMatchObject({ verdict: 'pass', cached: true, recorded: false });
+    expect(event.calls).toEqual([]); expect(event.writes).toEqual([]);
+
+    // Superseded by a newer row, or never recorded: the event runs it.
+    const superseded = harness({ s: clarity }); superseded.deps.cached = async () => ({ verdictId: 'old', run: standing, current: false });
+    await run(superseded.deps, undefined, 'event');
+    expect(superseded.calls).toHaveLength(1);
+
+    const asked = harness({ s: clarity }); asked.deps.cached = async () => ({ verdictId: 'old', run: standing, current: true });
+    await run(asked.deps, undefined, 'request');
+    expect(asked.calls).toHaveLength(1);
+  });
+
+  it('a body with no verify binding is untouched: nothing is collected, nothing runs', async () => {
+    const h = harness({ s: subject('R-1: Plain.\n check: bun test') });
+    let collected = 0; h.deps.collect = async () => { collected++; return { admitted: [shot(1)], refused: [] }; };
+    const r = await run(h.deps, undefined, 'event');
+    expect(r.results).toEqual([]);
+    expect(collected).toBe(0);
+    expect(h.calls).toEqual([]);
   });
 });

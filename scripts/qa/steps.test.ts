@@ -71,6 +71,16 @@ describe('validatePlan', () => {
     expect(validatePlan([{ route: '/app/home' }], { pageSource: 'sandbox' })).toEqual([{ route: '/app/home', states: [] }]);
   });
 
+  it('names a surface to collect on a route or a state, strictly', () => {
+    const surface = { id: 'task-pr-card', scenario: 'closed-pr' };
+    expect(validatePlan([{ route: '/app/tasks/:id', surface, states: [{ key: 'menu', steps: [{ action: 'waitMs', ms: 1 }], surface: { id: 'task-pr-card', scenario: 'closed-pr-menu' } }] }], { pageSource: 'sandbox' }))
+      .toEqual([{ route: '/app/tasks/:id', surface, states: [{ key: 'menu', steps: [{ action: 'waitMs', ms: 1 }], surface: { id: 'task-pr-card', scenario: 'closed-pr-menu' } }] }]);
+    const v = (p: unknown) => () => validatePlan(p, { pageSource: 'sandbox' });
+    expect(v([{ route: '/x', surface: { id: 'card' } }])).toThrow(/surface must be \{ id, scenario \}/);
+    expect(v([{ route: '/x', surface: { id: 'Card', scenario: 'a' } }])).toThrow(/surface must be/);
+    expect(v([{ route: '/x', surface: { id: 'card', scenario: 'a', label: 'Merge' } }])).toThrow(/unknown keys label/);
+  });
+
   it('rejects actions outside the closed list', () => {
     expect(() => validatePlan([{ route: '/x', states: [{ key: 'a', steps: [{ action: 'evaluate', selector: 'x' }] }] }], { pageSource: 'sandbox' }))
       .toThrow(/action must be one of click, hover, fill, press, select, waitFor, waitMs/);
