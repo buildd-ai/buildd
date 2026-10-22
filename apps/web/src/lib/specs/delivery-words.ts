@@ -24,9 +24,11 @@ export type DeliveryTone = 'success' | 'error' | 'muted';
  * A criterion as the drill-down shows it. `waived` comes only from a mission's
  * outcome spec. `earlier-pass` / `earlier-fail`: the verdict judged words the
  * revision in force has since changed, so it does not count for them
- * ("Reviewing a spec revision" R-13).
+ * ("Reviewing a spec revision" R-13). `stale-fail`: a fail judged an older
+ * commit; still a fail (Living Specs §7), said as on that commit, so `Fails`
+ * only ever means the current one.
  */
-export type CriterionMark = 'pass' | 'fail' | 'stale' | 'none' | 'inconclusive' | 'unsupported' | 'waived' | 'earlier-pass' | 'earlier-fail';
+export type CriterionMark = 'pass' | 'fail' | 'stale' | 'stale-fail' | 'none' | 'inconclusive' | 'unsupported' | 'waived' | 'earlier-pass' | 'earlier-fail';
 
 export interface StandingInput {
   /** The revision the work was built to (its pin). */
@@ -55,7 +57,7 @@ export function standingSentence(s: StandingInput): { tone: DeliveryTone; text: 
     return { tone: 'muted', text: notVerified(s.approved) };
   }
   if (s.outcome === 'fail') {
-    const failed = s.criteria.filter((c) => c.mark === 'fail').map((c) => c.criterionId);
+    const failed = s.criteria.filter((c) => c.mark === 'fail' || c.mark === 'stale-fail').map((c) => c.criterionId);
     return { tone: 'error', text: withWaived(failed.length ? `${list(failed)} fails against revision ${against}.` : `Fails against revision ${against}.`) };
   }
   if (s.outcome === 'verified') return { tone: 'success', text: withWaived(`Verified against revision ${against}.`) };
@@ -84,7 +86,9 @@ export function criterionWords(mark: CriterionMark): { label: string; tone: Deli
     case 'pass': return { label: 'Passes', tone: 'success' };
     case 'fail': return { label: 'Fails', tone: 'error' };
     case 'stale': return { label: 'Passed on an older commit', tone: 'muted' };
-    case 'none': return { label: 'No verdict', tone: 'muted' };
+    case 'stale-fail': return { label: 'Failed on an older commit', tone: 'error' };
+    // Nothing judged it: not verified, never a fail.
+    case 'none': return { label: 'Not verified', tone: 'muted' };
     case 'inconclusive': return { label: 'Inconclusive', tone: 'warning' };
     case 'unsupported': return { label: 'Unsupported', tone: 'warning' };
     case 'waived': return { label: 'Waived', tone: 'muted' };
@@ -101,13 +105,14 @@ export function criterionWords(mark: CriterionMark): { label: string; tone: Deli
 export function wordingMark(mark: CriterionMark, wordingChanged: boolean): CriterionMark {
   if (!wordingChanged) return mark;
   if (mark === 'pass' || mark === 'stale') return 'earlier-pass';
-  if (mark === 'fail') return 'earlier-fail';
+  if (mark === 'fail' || mark === 'stale-fail') return 'earlier-fail';
   return mark;
 }
 
-/** A task-page criterion standing as a mark. A stale fail is still a fail; a stale pass is not a pass. */
+/** A task-page criterion standing as a mark. A stale fail is still a fail (on an older commit); a stale pass is not a pass. */
 export function markOf(c: { verdict: 'pass' | 'fail' | 'inconclusive' | 'unsupported' | null; stale: boolean }): CriterionMark {
   if (c.verdict === null) return 'none';
   if (c.verdict === 'pass') return c.stale ? 'stale' : 'pass';
+  if (c.verdict === 'fail') return c.stale ? 'stale-fail' : 'fail';
   return c.verdict;
 }

@@ -48,7 +48,11 @@ export interface VerdictInput {
   live: { status: string; waitingForInput: boolean } | null;
   /** An open question note on this task. */
   openQuestion: boolean;
-  pr: { url: string; number: number; lifecycle: string | null; merged: boolean } | null;
+  pr: {
+    url: string; number: number; lifecycle: string | null; merged: boolean;
+    /** The supersession record: the PR this one's change merged in (written only once that PR merged). */
+    supersededBy?: { prNumber: number | null; url: string | null } | null;
+  } | null;
   /** The checks on the PR's latest head, as far as the record knows. Null: unknown. */
   checks: VerdictCheck[] | null;
   openAttempt: VerdictOpenAttempt | null;
@@ -212,6 +216,20 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
       cause: input.claimToMerge ? `${input.claimToMerge} from claim to merge.` : null,
       actions: [link(`View PR #${pr.number}`, pr.url)],
       causeKey: 'shipped',
+    };
+  }
+
+  // 1b. Closed, but its change merged in another PR (the supersession record):
+  // shipped there, the same as a merge, never "closed without merging".
+  if (pr?.supersededBy) {
+    const { prNumber: n, url } = pr.supersededBy;
+    return {
+      ...base,
+      state: 'shipped',
+      headline: n != null ? `Merged in #${n}` : 'Merged in another PR',
+      cause: null,
+      actions: url ? [link(n != null ? `View PR #${n}` : 'View the PR it merged in', url)] : [link(`View PR #${pr.number}`, pr.url)],
+      causeKey: 'shipped:superseded',
     };
   }
 

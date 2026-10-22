@@ -84,6 +84,12 @@ export function isolationProblem(
     const reason = rec.claude.reason ?? 'backend_probe_failed';
     // The operator chose reduced confinement on a runner only they use.
     if (!hb.shared && (reason === 'opt_out' || rec.reducedOptIn === true)) return null;
+    if (!hb.shared && rec.platform === 'windows' && reason === 'unsupported_platform') {
+      return {
+        title: `${name}: Claude needs setup`,
+        detail: 'Allow Claude to run trusted tasks on this computer.',
+      };
+    }
     if (reason === 'opt_out') {
       return {
         title: `${name}: sandbox turned off`,
@@ -92,13 +98,13 @@ export function isolationProblem(
     }
     return {
       title: `${name}: not sandboxed`,
-      detail: `${sentence(plainCause(reason, rec.platform))}, so tasks that need a sandbox wait for another runner. ${FIXER}`,
+      detail: `${sentence(plainCause(reason, rec.platform))}. See runner details for setup.`,
     };
   }
   if (hb.sandboxEnabled === false) {
     return {
       title: `${name}: not sandboxed`,
-      detail: `The sandbox check failed, and this runner is too old to say why; it takes no tasks until it is updated. ${FIXER}`,
+      detail: 'Update this runner to check its sandbox.',
     };
   }
   return null;
@@ -183,6 +189,9 @@ function blockedLine(hb: IsolationRunner, state: RunnerIsolationState): string |
   const tasks = n === 1 ? '1 waiting task' : `${n} waiting tasks`;
   // Its eligibility line already says it takes nothing; the row's summary carries the count.
   if (state === 'unknown' || state === 'stale') return null;
+  if (b.protected === 0) {
+    return `${n} trusted ${n === 1 ? 'task needs' : 'tasks need'} permission to run on this computer.`;
+  }
   if (b.trustedLocal === 0) {
     const need = n === 1 ? 'needs' : 'need';
     const change = state === 'opted_out'
@@ -190,7 +199,7 @@ function blockedLine(hb: IsolationRunner, state: RunnerIsolationState): string |
       : 'To run them here, fix its sandbox; otherwise they wait for a sandboxed runner.';
     return `${tasks} ${need} a sandbox, so they can't run here. ${change}`;
   }
-  return `${tasks} can't run here: protected tasks need a sandbox, and trusted local ones need its operator's opt-in to run without one.`;
+  return `${b.trustedLocal} trusted ${b.trustedLocal === 1 ? 'task needs' : 'tasks need'} local permission. ${b.protected} protected ${b.protected === 1 ? 'task needs' : 'tasks need'} another runner.`;
 }
 
 /** Runner detail for isolation (R-10): state, platform, each backend and mode, eligibility, cause, probe age, fixer and steps. */
@@ -291,7 +300,11 @@ export function runnerIsolationDetail(hb: IsolationRunner): RunnerIsolationDetai
     ? 'Sandbox on'
     : state === 'opted_out'
       ? hb.mine ? 'Sandbox disabled by you' : 'Sandbox disabled by its operator'
-      : 'No sandbox';
+      : rec.reducedOptIn && !hb.shared ? 'Trusted tasks enabled'
+      : rec.platform === 'windows' && rec.claude.mechanism === 'none'
+          && [rec.codex['read-only'], rec.codex['workspace-write']].some(c => c && c.mechanism !== 'none')
+        ? 'Claude needs setup'
+        : 'No sandbox';
   return {
     state,
     headline,

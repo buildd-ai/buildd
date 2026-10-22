@@ -179,7 +179,9 @@ const TABLE: Row[] = [
   { name: 'red base', input: V({ state: 'BLOCKED_ON_TRUNK' }), label: 'Blocked on base', tone: 'stalled' },
   { name: 'merging', input: V({ state: 'LANDING' }), label: 'Merging', tone: 'live' },
   { name: 'merged', input: V({ state: 'MERGED' }), label: 'Merged', tone: 'landed' },
-  { name: 'superseded', input: V({ state: 'SUPERSEDED', supersededByPr: 9 }), label: 'Merged in another PR', tone: 'landed' },
+  // The supersession record names the PR the work merged in: every surface links it the same way.
+  { name: 'superseded', input: V({ state: 'SUPERSEDED', supersededByPr: 9 }), label: 'Merged in #9', tone: 'landed' },
+  { name: 'superseded, the merging PR unknown', input: V({ state: 'SUPERSEDED', supersededByPr: null }), label: 'Merged in another PR', tone: 'landed' },
   { name: 'closed', input: V({ state: 'CLOSED_UNMERGED' }), label: 'Closed without merging', tone: 'closed' },
   { name: 'abandoned', input: V({ state: 'ABANDONED' }), label: 'Closed without merging', tone: 'closed' },
   { name: 'failed', input: V({ state: 'FAILED', stateReason: 'attempt_failed' }), label: 'Failed', tone: 'failed' },
@@ -260,7 +262,7 @@ describe('S17: each canonical state reads the same label, tone and counts on eve
       // landing path is still merging.
       const headerHtml = renderToStaticMarkup(HeaderStatusPill({
         status: 'running', merged: false,
-        delivery: { headline: d.headline, owner: d.owner, needsYou: r.needsYou, stage: d.stage, detail: d.detail, state: d.state, escalationTitle: d.escalationTitle, prState: d.prState },
+        delivery: { headline: d.headline, owner: d.owner, needsYou: r.needsYou, stage: d.stage, detail: d.detail, state: d.state, escalationTitle: d.escalationTitle, prState: d.prState, supersededByPr: d.supersededByPr },
       }));
       expect(headerHtml.replace(/<[^>]+>/g, '')).toBe(r.label);
       const pillClasses = new Set(headerHtml.match(/class="([^"]*)"/)![1].split(/\s+/));

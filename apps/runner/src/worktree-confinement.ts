@@ -39,13 +39,31 @@ export interface WorktreeScope {
 
 export type WorktreePathClass = 'own' | 'primary' | 'other_worktree' | 'outside';
 
-function clean(p: string): string {
-  const n = normalize(p);
-  return n.length > 1 && n.endsWith(sep) ? n.slice(0, -1) : n;
+/**
+ * A Git Bash drive path (`/c/code/repo`) as the Windows path it names
+ * (`C:\code\repo`). Workers' Bash on Windows is Git Bash, but Node reads
+ * `/c/code/repo` as root-relative on the current drive (`C:\c\code\repo`), so
+ * `cd /c/<primary>` classified as outside. Other paths, and every path off
+ * win32, are returned unchanged.
+ */
+export function fromGitBashPath(p: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== 'win32') return p;
+  const m = /^[\\/]([A-Za-z])(?:[\\/](.*))?$/.exec(p);
+  return m ? `${m[1].toUpperCase()}:\\${(m[2] ?? '').replaceAll('/', '\\')}` : p;
 }
 
+function clean(p: string): string {
+  const n = normalize(p);
+  return n.length > 1 && n.endsWith(sep) && !/^[A-Za-z]:\\$/.test(n) ? n.slice(0, -1) : n;
+}
+
+// Windows paths are case-insensitive: `c:\Repo` is `C:\repo`.
+const fold = process.platform === 'win32' ? (p: string) => p.toLowerCase() : (p: string) => p;
+
 function under(abs: string, root: string): boolean {
-  return abs === root || abs.startsWith(root + sep);
+  const a = fold(abs);
+  const r = fold(root);
+  return a === r || a.startsWith(r + sep);
 }
 
 function expandTilde(p: string): string {
@@ -56,13 +74,13 @@ function expandTilde(p: string): string {
 
 /** Where an absolute path sits relative to the worker's worktree and the primary clone. */
 export function classifyWorktreePath(absPath: string, scope: WorktreeScope): WorktreePathClass {
-  const abs = clean(resolvePath(absPath));
+  const abs = clean(resolvePath(fromGitBashPath(absPath)));
   const own = clean(scope.worktreePath);
   const primary = clean(scope.primaryPath);
   if (under(abs, own)) return 'own';
   if (!under(abs, primary)) return 'outside';
   const worktrees = join(primary, WORKTREE_DIR_MARKER);
-  if (abs.startsWith(worktrees + sep)) return 'other_worktree';
+  if (fold(abs).startsWith(fold(worktrees) + sep)) return 'other_worktree';
   return 'primary';
 }
 
@@ -217,7 +235,7 @@ export function findWorktreeEscape(
 
   const resolveTarget = (w: Word): string | undefined => {
     if (w.dynamic) return undefined;
-    const p = expandTilde(w.text);
+    const p = fromGitBashPath(expandTilde(w.text));
     if (isAbsolute(p)) return clean(p);
     return cur === undefined ? undefined : clean(resolvePath(cur, p));
   };
@@ -271,7 +289,7 @@ export function findWorktreeEscape(
  * the worktree.
  */
 export function findWriteEscape(rawPath: string, scope: WorktreeScope): string | null {
-  const p = expandTilde(rawPath);
+  const p = fromGitBashPath(expandTilde(rawPath));
   const abs = isAbsolute(p) ? p : resolvePath(scope.worktreePath, p);
   const cls = classifyWorktreePath(abs, scope);
   return isForbidden(cls) ? denyMessage(clean(abs), cls, scope, 'this edit targets') : null;
