@@ -62,6 +62,12 @@ Details, including `discardEdits` and `alreadyShippedIn`: topic
 
 - Soft question you can proceed on: `buildd action=post_note` with
   `type: "question"` and `defaultChoice`. Work continues.
+- Blocked by another task (it must merge first, or it is fixing the same
+  root cause): wait on it, do not fail.
+  `buildd action=complete_task params={ blockedOnTaskId, summary }` puts this
+  task back in the queue and it starts again by itself when that task merges.
+  If the server refuses (that task merged, was cancelled, or already waits on
+  this one), fail with `error` or ask a person.
 - Hard block in a runner session: `AskUserQuestion`. The task waits; it is not
   a failure and is not retried into the same wall.
 - Hard block in your own interactive session (you called `claim_task`):

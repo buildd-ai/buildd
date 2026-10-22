@@ -396,6 +396,12 @@ export async function PATCH(
           return NextResponse.json({ error: 'gitConfig.mergiraf must be a boolean or null' }, { status: 400 });
         }
       }
+      if ('waitOnTask' in gitConfig) {
+        const on = (gitConfig as Record<string, unknown>).waitOnTask;
+        if (on !== null && typeof on !== 'boolean') {
+          return NextResponse.json({ error: 'gitConfig.waitOnTask must be a boolean or null' }, { status: 400 });
+        }
+      }
       // Where the workspace's work runs: exact values only, so a typo can never
       // quietly reserve (or un-reserve) its tasks for a runner kind.
       if ('executor' in gitConfig) {
