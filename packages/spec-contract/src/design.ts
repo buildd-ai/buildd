@@ -24,15 +24,16 @@ export function parseDesignRef(raw: unknown): DesignParse {
   const ref = refOk ? (r.ref as string).trim() : '';
   if (refOk && kindOk && kind === 'url' && !/^https:\/\/\S+$/.test(ref)) problems.push('design.ref must be an https URL for kind url');
   let version: string | undefined;
+  let versionInvalid = false;
   if (r.version !== undefined && r.version !== null) {
-    if (typeof r.version !== 'string' && typeof r.version !== 'number') problems.push('design.version must be a string or number');
+    if (typeof r.version !== 'string' && typeof r.version !== 'number') { problems.push('design.version must be a string or number'); versionInvalid = true; }
     else {
       version = String(r.version).trim();
-      if (!version || version.length > 100) { problems.push('design.version must be 1 to 100 characters'); version = undefined; }
+      if (!version || version.length > 100) { problems.push('design.version must be 1 to 100 characters'); version = undefined; versionInvalid = true; }
     }
   }
   // Only an artifact can be versioned by its host; anything else names its version.
-  if (kindOk && !version && kind !== 'artifact' && r.version === undefined) problems.push(`design.version is required for kind ${kind}: an approval binds to one version of the design`);
+  if (kindOk && !version && kind !== 'artifact' && !versionInvalid) problems.push(`design.version is required for kind ${kind}: an approval binds to one version of the design`);
   if (kindOk && kind === 'artifact' && version !== undefined && !/^[1-9]\d*$/.test(version)) problems.push('design.version for an artifact is its revision number');
   let screens: DesignScreen[] | undefined;
   if (r.screens !== undefined) {
