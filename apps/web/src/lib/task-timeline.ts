@@ -4,6 +4,7 @@ import { repairLabelOf, repairPhaseOf } from './workflow/projections';
 import { roundReading } from './task-checks';
 import { DELIVERY_STAGES, deliveryStageIndex, type DeliveryKind } from './delivery-projection';
 import { groupAttemptHistory } from '@/app/app/(protected)/tasks/[id]/bookkeeping-attempt';
+import { formatElapsed } from '@/app/app/(protected)/tasks/[id]/format-elapsed';
 import type { LineageStep } from '@/app/app/(protected)/tasks/[id]/pr-lineage';
 
 export interface TimelineEvent {
@@ -15,7 +16,7 @@ export interface TimelineEvent {
   children: TimelineEvent[];
 }
 export interface TimelineGroup { label: typeof DELIVERY_STAGES[number]; events: TimelineEvent[] }
-interface BuildWorker { id: string; status: string; exitCause?: string | null; error?: string | null; startedAt?: Date | string | null; completedAt?: Date | string | null }
+interface BuildWorker { id: string; status: string; exitCause?: string | null; error?: string | null; startedAt?: Date | string | null; completedAt?: Date | string | null; turns?: number; filesChanged?: number; linesAdded?: number; linesRemoved?: number }
 export interface TaskTimelineInput {
   task: { status: string; startAt?: Date | string | null };
   /** Newest first, just this task's workers; child repairs are separate events. */
@@ -36,7 +37,9 @@ export function buildTaskTimeline(input: TaskTimelineInput): TimelineGroup[] {
       build.push(event(`claims:${item.entries[0].worker.id}`, `${item.entries.length} ${item.entries.length === 1 ? 'claim' : 'claims'} without a session`, 'muted'));
     } else {
       const w = item.entry.worker;
-      build.push(event(`worker:${w.id}`, w.status === 'completed' ? 'Built' : w.status === 'failed' ? 'Build stopped' : 'Builder started', stateOf(w.status)));
+      const duration = w.startedAt && w.completedAt ? new Date(w.completedAt).getTime() - new Date(w.startedAt).getTime() : null;
+      const detail = [duration != null && duration >= 0 ? formatElapsed(duration) : null, w.turns ? `${w.turns} turns` : null, w.filesChanged ? `${w.filesChanged} files` : null, w.linesAdded || w.linesRemoved ? `+${w.linesAdded ?? 0} −${w.linesRemoved ?? 0} lines` : null].filter(Boolean).join(' · ') || null;
+      build.push(event(`worker:${w.id}`, w.status === 'completed' ? 'Built' : w.status === 'failed' ? 'Build stopped' : 'Builder started', stateOf(w.status), detail));
     }
   }
   const v = input.delivery;

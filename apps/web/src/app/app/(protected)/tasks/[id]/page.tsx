@@ -115,7 +115,7 @@ import { buildHeroPool, pickHeroShots } from '@/lib/mission-shipped';
 import { toVisualShots } from '@/lib/mission-visual-review';
 import { parseTaskShippedRecord } from '@/lib/task-shipped';
 import { buildTaskShippedView } from './task-shipped-header';
-import { TaskShippedBody, TaskShippedTitle, type RunDetail } from './TaskShippedHeader';
+import { TaskShippedTitle, type RunDetail } from './TaskShippedHeader';
 import { taskHostedRunnerUsage } from '@/lib/hosted-runner-usage-store';
 import { taskRunnerLine } from '@/lib/hosted-runner-usage';
 import { TaskShippedDetails } from './TaskShippedHeader';
@@ -1059,6 +1059,7 @@ async function TaskDetailPage({
     shipped: deliveryView ? deliveryView.state === 'MERGED' : !(prWorker && !(prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')),
     heroShots: pickHeroShots(undefined, buildHeroPool(toVisualShots(taskArtifacts))),
   });
+  const stoppedSummary = shippedView?.lede ?? readableTaskResult(ownResult?.summary, ownResult?.structuredOutput).prose;
   const hostedRunnerUsage = await hostedRunnerUsagePromise;
   const runDetails: RunDetail[] = [];
   {
@@ -1548,8 +1549,7 @@ async function TaskDetailPage({
         )}
 
         {!activeWorker && <TaskTimeline groups={timeline} />}
-        {!activeWorker && shippedView && <TaskShippedBody view={{ ...shippedView, heroShots: [] }} />}
-        {!activeWorker && !shippedView && resultSummary && <p className="mb-4 text-body text-text-secondary line-clamp-2">{resultSummary}</p>}
+        {!activeWorker && stoppedSummary && <p aria-label="Summary" className="mb-4 text-body text-text-secondary line-clamp-2">{stoppedSummary}</p>}
         {!activeWorker && prWorker?.prUrl && <a href={prWorker.prUrl} target="_blank" rel="noopener noreferrer" className="flex min-h-11 items-center justify-center border border-border-default mb-5 text-body hover:bg-surface-2">PR #{prWorker.prNumber} ↗</a>}
 
         {/* Checks on the delivery's current head, by round (task-page spec). */}
