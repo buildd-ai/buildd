@@ -25,7 +25,6 @@ export default async function ProtectedLayout({
 }: {
   children: React.ReactNode;
 }) {
-  // One round for the user and the request cookies (team scope, Ask dock).
   const [user, cookieStore] = await Promise.all([getCurrentUser(), cookies()]);
   let userTeams: { id: string; name: string; slug: string }[] = [];
   let currentTeamId: string | null = null;
