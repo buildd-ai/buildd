@@ -42,6 +42,14 @@ import { statusPill } from '@/components/ui/states';
  */
 export const MISSION_CRITERIA_ANCHOR = 'mission-criteria';
 
+/**
+ * The block's `data-verify-surface`, so registered UI checks can capture it
+ * (scripts/qa/surface-evidence.ts). One id in every situation: a closed PR
+ * awaiting a decision and the same mission after its replacement is recorded
+ * are two scenarios of one card, and a check compares them by scenario.
+ */
+export const MISSION_SITUATION_SURFACE = 'mission-situation';
+
 const TONE_TEXT_CLASS: Record<WaitingOnTone, string> = {
   neutral: 'text-text-muted',
   info: 'text-status-info',
@@ -221,29 +229,33 @@ export default function MissionSituationBlock({ missionId, situation, because, c
       // No frame of its own: the page's notice slot (MissionNoticeSlot) frames
       // it as a decision only when a person has to act.
       data-tone={situation.tone}
+      data-verify-surface={MISSION_SITUATION_SURFACE}
     >
       <p
         data-testid="mission-situation-headline"
+        data-verify-block="heading"
         className="text-title font-semibold text-text-primary leading-snug"
       >
         {situation.headline}
       </p>
 
       {detail?.kind === 'why' && (
-        <p className="mt-1 text-body text-text-secondary leading-snug">
+        <p data-verify-block="body" className="mt-1 text-body text-text-secondary leading-snug">
           {detail.link.claim} <RefLink refs={detail.link.refs} missionId={missionId} />
         </p>
       )}
       {detail?.kind === 'text' && (
-        <p className="mt-1 text-body text-text-secondary leading-snug">{detail.text}</p>
+        <p data-verify-block="body" className="mt-1 text-body text-text-secondary leading-snug">{detail.text}</p>
       )}
       {detail?.kind === 'blockers' && (
-        <ul data-testid="mission-situation-blockers" className="mt-1 text-body leading-snug">
+        <ul data-testid="mission-situation-blockers" data-verify-block="body" className="mt-1 text-body leading-snug">
           {detail.items.map(b => (
             <li key={b.taskId}>
               <Link
                 href={missionTaskHref({ missionId, taskId: b.taskId, mode: 'sheet' })}
                 data-task-id={b.taskId}
+                data-verify-action="view_detail"
+                data-verify-prominence="secondary"
                 className="inline-flex min-h-11 md:min-h-0 items-center gap-1.5 text-accent-text hover:underline"
               >
                 <span className="truncate">{b.title}</span>
@@ -266,6 +278,9 @@ export default function MissionSituationBlock({ missionId, situation, because, c
           {affordance.kind === 'external' ? (
             <a
               data-testid="mission-primary-action"
+              // Every external affordance opens a PR on the forge to look at; none merges from here.
+              data-verify-action="view_detail"
+              data-verify-prominence="primary"
               href={affordance.href}
               target="_blank"
               rel="noopener noreferrer"
@@ -279,6 +294,8 @@ export default function MissionSituationBlock({ missionId, situation, because, c
           ) : (
             <Link
               data-testid="mission-primary-action"
+              data-verify-action="view_detail"
+              data-verify-prominence="primary"
               href={affordance.href}
               className="btn btn-primary h-11 w-full md:h-9 md:w-auto"
             >
@@ -289,7 +306,7 @@ export default function MissionSituationBlock({ missionId, situation, because, c
       )}
 
       {situation.alsoOutstanding.length > 0 && (
-        <ul data-testid="mission-also-outstanding" className="mt-2.5 space-y-0.5">
+        <ul data-testid="mission-also-outstanding" data-verify-block="hint" className="mt-2.5 space-y-0.5">
           {situation.alsoOutstanding.map(fact => (
             <li key={fact.kind} className="text-body leading-snug">
               <span className={`mr-1.5 ${TONE_TEXT_CLASS[fact.tone]}`}>·</span>

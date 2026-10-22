@@ -57,6 +57,8 @@ import MissionDetailCompactFixture from './MissionDetailCompactFixture';
 import BranchPanelFixture from './BranchPanelFixture';
 import HomeCardsFixture from './HomeCardsFixture';
 import ServiceStatusFixture from './ServiceStatusFixture';
+import ClosedPrFixture from './ClosedPrFixture';
+import { CLOSED_PR_FIXTURE_STATE } from './closed-pr-fixtures';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
@@ -320,6 +322,10 @@ export default function DevFixturesPage() {
 
     if (state === MISSION_DETAIL_COMPACT_FIXTURE_STATE) {
         return <MissionDetailCompactFixture />;
+    }
+
+    if (state === CLOSED_PR_FIXTURE_STATE) {
+        return <ClosedPrFixture />;
     }
 
     if (state === VISUAL_REVIEW_FIXTURE_STATE) {

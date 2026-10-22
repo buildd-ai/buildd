@@ -31,10 +31,10 @@
  * grants nothing: the server admits a capture only by the lineage of the
  * artifact it is uploaded as (lib/specs/registered-verification-store.ts).
  */
-import { parseSurfaceEvidence, type SurfaceEvidence } from '../../packages/core/ui-verification';
+import { parseSurfaceEvidence, UI_SURFACE_OPERATIONS, type SurfaceEvidence } from '../../packages/core/ui-verification';
 
 export const SURFACE_BLOCK_ROLES = ['heading', 'status', 'body', 'label', 'hint'] as const;
-export const SURFACE_OPERATIONS = ['merge_pr', 'confirm_replacement', 'resolve_pr_closure', 'retry_visual_review', 'skip_visual_review', 'other'] as const;
+export const SURFACE_OPERATIONS = UI_SURFACE_OPERATIONS;
 export const SURFACE_COLLECTOR_VERSION = 'buildd-qa-capture@1';
 const MAX_BLOCKS = 32;
 const MAX_ACTIONS = 16;
