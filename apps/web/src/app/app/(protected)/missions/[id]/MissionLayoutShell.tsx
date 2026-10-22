@@ -19,6 +19,7 @@ import { formatClock } from '@/lib/mission-board';
 import { describeMissionDuration, formatDuration } from '@/lib/mission-duration';
 import { useNow } from './MissionBoardParts';
 import MissionSheetRow from './MissionSheetRow';
+import { nativeHistoryData } from '@/lib/native-history';
 
 const LayoutContext = createContext<{ layout: MissionLayout; setLayout: (l: MissionLayout) => void } | null>(null);
 
@@ -89,7 +90,9 @@ export default function MissionLayoutShell({ initial, board, flow, feed }: Missi
   const setLayout = useCallback((l: MissionLayout) => {
     set(l);
     try {
-      window.history.replaceState(window.history.state, '', missionLayoutHref(window.location.href, l));
+      // Without Next's markers, or the router never sees the URL (its patch
+      // skips a write carrying `__NA`) and the refresh rebuilds the old layout.
+      window.history.replaceState(nativeHistoryData(window.history.state), '', missionLayoutHref(window.location.href, l));
     } catch {
       // A sandboxed frame can refuse history writes; the tab still switches.
     }
@@ -105,17 +108,46 @@ export default function MissionLayoutShell({ initial, board, flow, feed }: Missi
   );
 }
 
+/** How long a layout may take before the panel says it did not load. */
+export const LAYOUT_LOAD_TIMEOUT_MS = 15_000;
+
 /**
  * A layout the server has not built: it builds it for the URL that now names
- * it (one refresh when this mounts), and the tabs stay usable meanwhile.
+ * it (one refresh when this mounts), and the tabs stay usable meanwhile. A
+ * refresh that brings nothing within the timeout says so, with a retry.
  */
 function LayoutLoading({ layout }: { layout: MissionLayout }) {
   const router = useRouter();
-  useEffect(() => { router.refresh(); }, [router, layout]);
+  const routerRef = useRef(router);
+  routerRef.current = router;
+  const [attempt, setAttempt] = useState(0);
+  const [failed, setFailed] = useState(false);
+  // One refresh per layout and per retry, whatever the router's identity.
+  useEffect(() => {
+    setFailed(false);
+    routerRef.current.refresh();
+    const t = setTimeout(() => setFailed(true), LAYOUT_LOAD_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [layout, attempt]);
+  const label = MISSION_LAYOUT_LABEL[layout];
   return (
-    <div data-testid="mission-layout-loading" className="py-10">
+    <div className="py-10">
       <MissionLayoutTabs />
-      <p className="mt-6 text-body text-text-muted">Loading {MISSION_LAYOUT_LABEL[layout]}…</p>
+      {failed ? (
+        <div data-testid="mission-layout-error" role="alert" className="mt-6 flex flex-wrap items-center gap-3">
+          <p className="text-body text-text-secondary">{label} didn’t load.</p>
+          <button
+            type="button"
+            data-testid="mission-layout-retry"
+            onClick={() => setAttempt(a => a + 1)}
+            className="min-h-11 rounded-md border border-border-default px-3 text-body font-medium text-text-primary hover:bg-surface-2 md:min-h-9"
+          >
+            Try again
+          </button>
+        </div>
+      ) : (
+        <p data-testid="mission-layout-loading" className="mt-6 text-body text-text-muted">Loading {label}…</p>
+      )}
     </div>
   );
 }
