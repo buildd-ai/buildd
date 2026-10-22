@@ -271,6 +271,12 @@ export interface LocalWorker {
    */
   prBaseRef?: string;
   /**
+   * Set when setupWorktree resumed a prior attempt's branch instead of cutting
+   * fresh from a base (SetupWorktreeResult.resumed). The provision gate treats a
+   * readiness failure on such a tree as repair work, not a block.
+   */
+  resumedFrom?: string;
+  /**
    * What the runner's pre-agent base merge did on a conflict retry (merged, or
    * left in progress with the real conflicts). Appended to the system prompt.
    */
