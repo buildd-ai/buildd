@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "8498996c-1873-44da-9e29-6381891d5f57",
+  "id": "c2ef131d-bce9-4063-a866-c22313622c77",
   "prevIds": [
-    "eee8d1ba-cd5a-4fc8-834f-0362468828fe"
+    "54e77718-88f4-433f-88a0-3d35300a4c87"
   ],
   "ddl": [
     {
@@ -29429,6 +29429,32 @@
       "generated": null,
       "identity": null,
       "name": "superseded_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workers"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "named_replacement_pr_number",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workers"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "named_replacement_pr_url",
       "entityType": "columns",
       "schema": "public",
       "table": "workers"
