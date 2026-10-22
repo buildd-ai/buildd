@@ -6,6 +6,7 @@ import {
   SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE,
   SURFACE_AUDIT_TITLE_PREFIX,
   buildSurfaceAuditDescription,
+  isAuditBuildKind,
   isSurfaceAuditTask,
   isSurfaceFixTask,
   isTrunkRefreshTask,
@@ -35,6 +36,8 @@ export interface EnsureSurfaceAuditParams {
     id: string;
     title: string;
     taskClass: string | null;
+    /** Read to keep coordination/observation/analysis tasks off the audit's dependsOn. */
+    kind?: string | null;
     pathManifest: string[] | null;
     /** Read for the trunk-refresh marks (`isTrunkRefreshTask`). */
     context?: unknown;
@@ -88,6 +91,8 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
   // Merging trunk in is upkeep, not mission work: its manifest widens to
   // trunk's whole diff, which would make the audit demand every route.
   if (isTrunkRefreshTask(createdTask)) return;
+  // A coordination/observation/analysis task ships nothing to capture.
+  if (!isAuditBuildKind(createdTask.kind)) return;
 
   const mission = await db.query.missions.findFirst({
     where: sqlWhere(eq(missions.id, missionId)),
@@ -173,9 +178,9 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
       eq(tasks.missionId, missionId),
       eq(tasks.taskClass, 'work'),
     )),
-    columns: { id: true, title: true, pathManifest: true, context: true },
+    columns: { id: true, title: true, kind: true, pathManifest: true, context: true },
   });
-  const nonAuditBuilderTasks = builderTasks.filter(t => !isSurfaceAuditTask(t.title) && !isTrunkRefreshTask(t));
+  const nonAuditBuilderTasks = builderTasks.filter(t => isAuditBuildKind(t.kind) && !isSurfaceAuditTask(t.title) && !isTrunkRefreshTask(t));
   const dependsOn = nonAuditBuilderTasks.map(t => t.id);
   const scopedPaths = Array.from(new Set(
     nonAuditBuilderTasks
@@ -309,7 +314,7 @@ export async function planMissionSurfaceAudit(missionId: string, opts: RequestSu
   if (!targetWorkspace) return { ok: false, reason: 'no_workspace' };
 
   const builders = missionTasks.filter(t =>
-    t.taskClass === 'work' && !isSurfaceAuditTask(t.title ?? '') && !isTrunkRefreshTask(t) && !finishedWithoutLooking(t.status));
+    t.taskClass === 'work' && isAuditBuildKind(t.kind) && !isSurfaceAuditTask(t.title ?? '') && !isTrunkRefreshTask(t) && !finishedWithoutLooking(t.status));
   const gate = await evaluateSurfaceAuditGate(mission, missionTasks, {
     // The workspace row is in hand: its policy needs no second read.
     workspacePolicy: visualReviewPolicyOf(targetWorkspace.gitConfig),
