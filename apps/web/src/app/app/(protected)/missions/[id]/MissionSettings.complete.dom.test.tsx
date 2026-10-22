@@ -58,7 +58,7 @@ const button = (label: string) =>
 const patches = () => calls.filter(c => c.method === 'PATCH');
 
 const AUDIT = { paths: ['apps/web/src/app/page.tsx'], executorLocal: false };
-const DECISION = { goalCriteria: [], failingCriterionIndex: null, fileWorkHref: '/x', criteriaUnmet: false };
+const DECISION = { fileWorkHref: '/x', criteriaUnmet: false };
 
 async function mount(extra: Record<string, unknown> = {}) {
   await act(async () => {

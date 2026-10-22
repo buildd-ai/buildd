@@ -114,14 +114,14 @@ export function isAllowlistedSelfOp(tool: string, input: unknown): boolean {
 
 const ws = z.string().optional().describe('Workspace id or name; defaults to the conversation workspace.');
 
-const criterion = z.object({
-  type: z.enum(['command', 'all_prs_merged', 'no_open_tasks', 'artifact_exists', 'description']),
-  label: z.string().optional(),
-  command: z.string().optional(),
-  description: z.string().optional(),
-  notMechanizableReason: z.string().optional(),
-  key: z.string().optional(),
-}).describe('A completion gate. Prefer a proof of the outcome: a command that exits 0 only when it holds, or artifact_exists for a named deliverable; all_prs_merged / no_open_tasks only close out the work. "description" needs description + notMechanizableReason (10+ chars).');
+// Living Specs D-44: a mission's "done" is the spec it delivers, selected
+// here. Hand-written goal criteria are retired and no longer offered.
+const outcomeSpec = z.object({
+  specId: z.string().describe('The spec this mission delivers: an existing spec, never one written for the mission.'),
+  revision: z.number().int().optional().describe('Pin this revision; default the approved one.'),
+  criteria: z.array(z.string()).optional().describe('Narrow to the R-n / AC-n ids this mission moves.'),
+  narrowedReason: z.string().optional().describe('Why it is narrowed (10+ chars); required with criteria.'),
+}).describe('Select the spec this mission delivers. The mission completes when the spec\'s criteria in scope pass on its merged work. A chore with no product intent selects none.');
 
 /** Hand-written schemas where the generic one would read worse to the model. */
 function explicitSchema(action: string, ops: [string, ...string[]] | null): z.ZodType | null {
@@ -146,9 +146,7 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
         limit: z.number().int().min(1).max(100).optional().describe('list: default 20'),
         title: z.string().max(200).optional().describe('create: a short mission title'),
         description: z.string().max(8000).optional().describe('create: the goal, in the words settled with the user'),
-        goalCriteria: z.array(criterion).max(12).optional().describe('create: the criteria. update: REPLACES the list; prefer addGoalCriteria / removeGoalCriteria.'),
-        addGoalCriteria: z.array(criterion).max(12).optional().describe('update: criteria to add to the current list.'),
-        removeGoalCriteria: z.array(z.string()).max(12).optional().describe('update: labels of criteria to remove from the current list.'),
+        outcomeSpec: outcomeSpec.optional().describe('update: select the spec this mission delivers.'),
         startMode: z.enum(['armed', 'held']).optional().describe('update: "held" pauses it — no task is claimed by anyone until armed. Not for work someone runs locally; use executor.'),
         executor: z.enum(['runner', 'local']).optional().describe('create / update: "local" when a person runs its tasks from their own session (runners leave them alone; the session claims each one). "runner" (default) for background runners.'),
         autoSurfaceAudit: z.boolean().optional().describe('update: false turns off the automatic visual audit (screenshot QA of UI changes) for this mission; true turns it back on.'),
@@ -351,7 +349,7 @@ const NATIVE_DESCRIPTIONS: Record<string, string> = {
 const CHAT_DESCRIPTIONS: Record<string, string> = {
   list_tasks: 'List tasks. status "active" (default) is claimable or in-progress work; a terminal status (completed, failed, cancelled) lists them all, with PR and artifact attribution.',
   get_task: 'One task: its fields, loop state, latest workers and artifacts.',
-  manage_missions: 'Missions: goals with completion criteria that group tasks. list (open by default) / get / get_criteria_state (last verdict per criterion) read. create files one (title, description, goalCriteria). update edits goal, criteria or priority, holds it (startMode "held", a pause), sets who runs it (executor "local" = someone runs it from their own session, "runner" = background runners), or turns its automatic visual audit off or on (autoSurfaceAudit). arm releases a held mission. link_task / unlink_task move a task in or out. evaluate re-checks the criteria now (rate-limited). delete removes it.',
+  manage_missions: 'Missions: goals that group tasks; one is done when the spec it delivers passes. list (open by default) / get / get_criteria_state (last verdict per criterion) read. create files one (title, description). update edits goal or priority, selects the spec it delivers (outcomeSpec), holds it (startMode "held", a pause), sets who runs it (executor "local" = someone runs it from their own session, "runner" = background runners), or turns its automatic visual audit off or on (autoSurfaceAudit). arm releases a held mission. link_task / unlink_task move a task in or out. evaluate re-checks the criteria now (rate-limited). delete removes it.',
   create_task: 'File one task: a title, a description of what should change and where, and, for a mission task that opens a PR, the files it will touch (pathManifest). dependsOn and baseBranch when it must follow another task or land on its branch. Mission: omitted joins the docked or conversation-filed mission, shown on the card; missionId null files it standalone. Join a mission only when the request is about it; for an unrelated task pass null, and if unsure ask the user.',
   merge_pr: 'Merge one PR as the user, through the same rails as the landing page (CI, protected paths, review verdict, size, base freshness). overrides is the escape hatch for a PR stuck because its base kept moving or it is over the size cap: use it only when the user decides to, with their reason. Always shows the user a card first.',
   send_agent_message: 'Tell the agent running a task something mid-flight. The agent confirms delivery; get_task_messages shows anything still undelivered. Use this, not update_task, to redirect work in progress.',

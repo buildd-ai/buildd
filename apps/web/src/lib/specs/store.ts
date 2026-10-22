@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { artifacts, specRevisions, specs, SPEC_SCOPES, type SpecMetadataBlock, type SpecRevisionImport, type SpecScope } from '@buildd/core/db/schema';
+import { artifacts, specRevisions, specs, type SpecMetadataBlock, type SpecRevisionImport, type SpecScope } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
 import { cache } from 'react';
 import { workspaces } from '@buildd/core/db/schema';
@@ -9,6 +9,7 @@ import { resolveWorkspaceAccess, type WorkspaceAccessCaller } from '@/lib/worksp
 import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { requirementIds, type RequirementRef } from '@buildd/spec-contract/requirements';
 import { newRepoRefs, normalizeRepoPath, parseRepoRefs, sameRepoRefs, type RepoRef } from './repo-refs';
+import { specScopeRefusal } from './scopes';
 import { ArtifactReadError, AUTO_FULL_MAX_CHARS, readArtifactBody, type ArtifactReadResult, type ArtifactReadSelector } from '@buildd/core/artifact-read';
 import { readRepoFileAtCommit } from './repo-source';
 import { resolveDesign } from './design';
@@ -159,7 +160,8 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   const scope = (input.scope ?? 'feature') as SpecScope;
   if (typeof workspaceId !== 'string' || !isUuid(workspaceId)) return fail(400, 'workspaceId must be a UUID');
   if (typeof title !== 'string' || !title.trim() || title.length > 200) return fail(400, 'title is required (at most 200 characters)');
-  if (!SPEC_SCOPES.includes(scope)) return fail(400, `scope must be one of: ${SPEC_SCOPES.join(', ')}`);
+  const scopeError = specScopeRefusal(scope);
+  if (scopeError) return fail(400, scopeError);
   const body = checkBody(input.body);
   if (typeof body !== 'string') return body;
   const repoRefs = readRefsInput(input.repoRefs);

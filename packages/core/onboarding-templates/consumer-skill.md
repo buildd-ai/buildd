@@ -134,6 +134,11 @@ sub-actions (`create_draft`, `revise`, `read_ref`, ...) are in the topic.
   It then completes only when every in-scope criterion passes on the
   integrated result, recorded by its `[final verification]` task or a person,
   never by builder, fix or review work, and never from PR reviews alone.
+- A mission's "done" is the spec it selects, never hand-written
+  `goalCriteria`: those are retired, and a mission holding none is refused
+  400 when it adds one. Put product intent in the spec as a criterion, with a
+  `check:` line for a command. Select an existing spec; never write one for a
+  mission (the `mission` scope is refused). A chore selects none.
 - Call `help {topic:"living-specs"}` before any spec work.
 
 Not the same as a repo-docs skill such as `spec-sync` (buildd's own repo has

@@ -36,6 +36,7 @@ import {
   type ScopeCriterion, type ScopePlan, type ScopeProposal, type ScopeResolutionPlan,
 } from '@buildd/workflow-kernel/scope-amendments';
 import type { Decide, Store } from '@buildd/workflow-kernel/ports';
+import { handWrittenCriteriaRefusal, outcomeSpecWriteRefusal } from '@buildd/shared';
 import type { Exec } from './kernel';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
@@ -177,6 +178,19 @@ function proposalOf(context: Record<string, unknown> | null): ScopeProposal | nu
   };
 }
 
+/**
+ * The proposal as this mission may take it. An amendment writes the mission
+ * row directly, so it is held to the same write boundary as PATCH
+ * /api/missions: proposed criteria that would start hand-written criteria on a
+ * mission holding none (Living Specs D-44), or drop or change its outcome
+ * spec, are ignored and the mission keeps its own. The description still moves.
+ */
+export function admissibleProposal(proposal: ScopeProposal | null, stored: ScopeCriterion[] | null): ScopeProposal | null {
+  if (!proposal || proposal.goalCriteria === undefined) return proposal;
+  const refused = handWrittenCriteriaRefusal(stored, proposal.goalCriteria) ?? outcomeSpecWriteRefusal(stored, proposal.goalCriteria);
+  return refused ? { ...proposal, goalCriteria: undefined } : proposal;
+}
+
 const labelOf = (c: ScopeCriterion): string => c.label?.trim() || (c.type === 'description' ? String(c.description ?? '') : c.type === 'command' ? `command: ${c.command ?? ''}` : c.type);
 
 async function taskRow(exec: Exec, taskId: string): Promise<TaskRow | undefined> {
@@ -259,7 +273,7 @@ SELECT count(*) AS n FROM workflow_mission_epochs WHERE mission_id = ${mission.i
     );
     const plan = planScope({
       verdict: fact.verdict, reason: fact.reason,
-      mission: missionScope(mission), task: { id: task.id, title: task.title }, proposal,
+      mission: missionScope(mission), task: { id: task.id, title: task.title }, proposal: admissibleProposal(proposal, mission.goal_criteria),
     });
     const at = (deps.now ?? (() => new Date()))().toISOString();
     const hold = plan.status === 'held' ? {
@@ -363,7 +377,7 @@ WHERE mission_id = ${p.missionId}::uuid AND source_task_id = ${p.taskId}::uuid`)
     if (p.answer !== 'withdrawn' && task.mission_id !== p.missionId) return { resolved: false, reason: 'not_in_mission' };
     const plan = planScopeResolution({
       answer: p.answer, held: { status: String(row.status) }, mission: missionScope(mission),
-      task: { id: task.id, title: task.title }, proposal: proposalOf(task.context),
+      task: { id: task.id, title: task.title }, proposal: admissibleProposal(proposalOf(task.context), mission.goal_criteria),
     });
     if (!plan.act) return plan.reason === 'not_held' ? { resolved: false, reason: 'no_decision' } : { resolved: false, reason: plan.reason };
     const r = ((await exec(resolveScopeSql({ missionId: p.missionId, taskId: p.taskId, plan, actor: p.actor }))).rows ?? [])[0] as
