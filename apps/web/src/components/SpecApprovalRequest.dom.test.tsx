@@ -90,7 +90,7 @@ describe('SpecApprovalRequest', () => {
     const view = { ...ready, gate: { passed: false, refusals: [{ code: 'duplicate_id', message: 'R-2 is defined more than once.' }], warnings: [] } };
     act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={view} />));
     expect(q('spec-approval-refusals')!.textContent).toContain('R-2 is defined more than once.');
-    expect(approveButton()!.textContent).toBe('Approve anyway revision 3');
+    expect(approveButton()!.textContent).toBe('Override and approve revision 3');
     expect(approveButton()!.disabled).toBe(true);
     const box = q('spec-approval-override-reason') as unknown as HTMLTextAreaElement;
     await act(async () => {

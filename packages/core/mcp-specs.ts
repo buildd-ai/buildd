@@ -439,7 +439,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       const specId = need(params.specId, 'specId');
       if (!Number.isInteger(params.expectedVersion)) throw new Error('expectedVersion (the version you read with get) is required');
       if (op === 'approve' && !Number.isInteger(params.revision)) throw new Error('revision (the head revision you read and are approving) is required');
-      const payload = op === 'approve' ? { revision: params.revision, expectedVersion: params.expectedVersion } : { expectedVersion: params.expectedVersion };
+      const payload = op === 'approve' ? { revision: params.revision, expectedVersion: params.expectedVersion, via: params.via === 'chat' ? 'chat' : 'mcp' } : { expectedVersion: params.expectedVersion };
       try {
         const r = await api(`/api/specs/${encodeURIComponent(specId)}/${op}`, { method: 'POST', body: JSON.stringify(payload) });
         if (op === 'approve' && r.pending) {
@@ -452,6 +452,8 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       } catch (err) {
         const e = apiError(err);
         if (e?.status === 403) return errorResult(String(e.body?.error ?? 'Only a person decides on a spec.'));
+        // A gate refusal also carries currentVersion; its reasons are the answer, not a stale version.
+        if (e?.status === 409 && e.body?.code === 'gate_refused') return errorResult(String(e.body.error ?? 'The quality gate refused this revision.'));
         if (e?.status === 409) return errorResult(`${String(e.body?.error ?? 'Conflict.')}${typeof e.body?.currentVersion === 'number' ? `\ncurrentVersion: ${e.body.currentVersion}` : ''}`);
         throw err;
       }

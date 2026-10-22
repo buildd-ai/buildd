@@ -72,7 +72,7 @@ export default function SpecApprovalRequest({ specId, token, view }: { specId: s
       <section className="flex flex-col gap-2" aria-label="Quality gate" data-testid="spec-approval-gate">
         {view.gate.passed && !view.gate.warnings.length ? <Notice tone="ok">Quality gate passed.</Notice> : null}
         {view.gate.refusals.length ? (
-          <Notice tone="err" title="The quality gate refuses this revision" data-testid="spec-approval-refusals">
+          <Notice tone="err" title="Quality gate failed" data-testid="spec-approval-refusals">
             <ul className="flex list-disc flex-col gap-1 pl-5">
               {view.gate.refusals.map((f) => <li key={f.code} data-code={f.code} className="[overflow-wrap:anywhere]">{f.message}</li>)}
             </ul>
@@ -87,7 +87,7 @@ export default function SpecApprovalRequest({ specId, token, view }: { specId: s
         ) : null}
         {refused && (!result || retry) ? (
           <label className="flex flex-col gap-1 text-body text-text-primary">
-            Why approve anyway? The reason is recorded on the approval.
+            Override reason (recorded on the approval)
             <textarea
               value={reason}
               onChange={(e) => setReason(e.target.value)}
@@ -103,7 +103,7 @@ export default function SpecApprovalRequest({ specId, token, view }: { specId: s
       {!result || retry ? (
         <div>
           <PrimaryAction onClick={approve} disabled={refused && reason.trim().length < MIN_REASON} fullWidthOnMobile data-testid="spec-approval-approve">
-            {refused ? 'Approve anyway' : 'Approve'} revision {view.revision}
+            {refused ? 'Override and approve' : 'Approve'} revision {view.revision}
           </PrimaryAction>
         </div>
       ) : null}
