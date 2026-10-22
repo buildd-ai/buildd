@@ -246,6 +246,7 @@ dots only.
 | Segmented | `--q-tint` trough, 6px radius, 3px inset, no frame; chosen option on `--card`, ink, 1px ring. Never orange | `.seg` / `.seg-item-active`, `components/ui/Segmented.tsx`; guarded by `chrome-refinement.test.ts` |
 | Shadows | **None.** `--card-shadow` and `--accent-shadow` are `none`; every Tailwind `boxShadow` step is `none` | `globals.css`, `tailwind.config.ts`; guarded by `card-shadow.test.ts` |
 | Focus | `2px solid var(--accent)`, offset 2px | `:focus-visible` |
+| Reading width | `--content-measure` **840px**: a page's content column, centred, never stretched to the window (Navigation R-21). Use `PageColumn`, not a page-local `max-w-*` | `globals.css`, `components/ui/PageColumn.tsx` |
 | Touch target | ≥ 44px on mobile | follow `BottomSheet` close button (`w-11 h-11`) |
 | Button heights | `.btn-sm` 24 · `.btn` 32 · `.btn-lg` 40 | `globals.css` |
 | Z-index | 10 mobile header · 20 bottom nav · 30 sidebar backdrop · 40 sidebar panel · 50 modals, sheets, dropdowns | comment at the top of `globals.css` |
@@ -539,7 +540,10 @@ re-export so its current importers do not change. Add what it lacks: return
 focus to the trigger on close (as `FlightDetailSheet.tsx` and
 `SwipeableRow.tsx` do), and the 2px `--border-strong` top edge instead of the
 1px `--border` it draws now. `SideSheet.tsx` (the docked desktop panel) already
-reuses its `lockScroll` and `nextTrappedFocus` helpers and stays separate.
+reuses its `lockScroll` and `nextTrappedFocus` helpers and stays separate. From
+1440px, while Ask is docked open (Navigation R-21), a docked `SideSheet`
+stacks inside the Ask column instead of opening a second panel beside it
+(`lib/ask-dock-host.ts`).
 
 **Props:** as `BottomSheet` had: `open`, `onClose`, `title`, `children`,
 `height?: 'auto' | 'tall'`, `handle?`, `trapFocus?`, `flush?`, `lockTarget?`,
