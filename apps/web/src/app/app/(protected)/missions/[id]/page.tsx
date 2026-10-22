@@ -116,7 +116,7 @@ import {
 import { MissionPrLine, MissionScopeUpdates } from './MissionPrLine';
 import MissionAcceptanceTests from './MissionAcceptanceTests';
 import { testsFromContext } from '@/lib/specs/acceptance-gate-apply';
-import { standardsGateEnforced } from '@/lib/specs/standards-gate';
+import { standardsGateEnforced } from '@/lib/specs/mission-standards-gate';
 import { missionEpochsOf, scopeAmendmentsOf } from '@/lib/workflow/delivery-ship';
 import { describeScopeUpdates } from '@/lib/mission-scope-view';
 import { explainMission } from '@/lib/explain';

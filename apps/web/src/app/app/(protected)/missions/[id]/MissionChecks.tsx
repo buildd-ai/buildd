@@ -26,7 +26,7 @@ import Card from '@/components/ui/Card';
 import { SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH } from '@buildd/core/surface-audit';
 import { saveSurfaceAuditWaiver, useSurfaceAuditWaiver } from './MissionSurfaceAuditWaiver';
 import type { CheckRow, CheckStatus, OutcomeSpecLine, RailStep } from '@/lib/mission-checks';
-import type { StandardItemStatus, StandardsLine } from '@/lib/specs/standards-gate';
+import type { StandardItemStatus, StandardsLine } from '@/lib/specs/mission-standards-gate';
 
 // The active stage is live work, so it takes the running hue, never ink beside
 // green (R-35): ink and green merge in low light. It is also thicker, so the

@@ -27,8 +27,8 @@ let afterRuns: Array<() => unknown> = [];
 const realNextServer = await import('next/server');
 mock.module('next/server', () => ({ ...realNextServer, after: (fn: () => unknown) => { afterRuns.push(fn); } }));
 
-const { planStandardsSnapshot, snapshotMissionStandards, standardMarkRefusal, scheduleStandardsSnapshots, STANDARD_MARK_REFUSAL } = await import('./standards');
-const { standardsHoldOf, standardsLine } = await import('./standards-gate');
+const { planStandardsSnapshot, snapshotMissionStandards, standardMarkRefusal, scheduleStandardsSnapshots, STANDARD_MARK_REFUSAL } = await import('./mission-standards');
+const { standardsHoldOf, standardsLine } = await import('./mission-standards-gate');
 const { evaluateGoalCriteria } = await import('@buildd/core/mission-helpers');
 
 const pin = (specId: string, title = specId) => ({ specId, specRevisionId: `${specId}-r1`, revision: 1, contentHash: 'h', title });

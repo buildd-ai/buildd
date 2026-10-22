@@ -12,7 +12,7 @@ import type { GoalCriterion, LivingSpecGoalCriterion } from '@buildd/shared';
  *
  * - The mark is a person's: an owner or admin of the workspace's team, from
  *   their own dashboard session. An agent run, an API key or an OAuth bearer
- *   session (an agent may be driving it) is refused (`standardMarkRefusal`).
+ *   session (an agent may be driving it) is refused (`standardMarkRefusal`, ./standard-mark.ts).
  * - When a mission's build starts (its first build task is claimed), the
  *   workspace's standards, at their approved revisions, are snapshotted onto
  *   it as `living_spec` goal entries tagged `role: 'standard'`. Never
@@ -21,23 +21,14 @@ import type { GoalCriterion, LivingSpecGoalCriterion } from '@buildd/shared';
  * - Their verdicts are mission-level rows in `spec_outcome_verdicts`, recorded
  *   by the final verification like an outcome spec's (./mission-outcome.ts).
  * - Completion: `canCompleteMission` reads them on their own. Shadow (logged,
- *   reported on the decision) unless STANDARDS_GATE=enforce (./standards-gate.ts,
+ *   reported on the decision) unless STANDARDS_GATE=enforce (./mission-standards-gate.ts,
  *   kept free of the database so the completion gate and pages import it cheaply).
  */
 
-export { standardsGateEnforced, standardsHoldOf, standardsLine, type StandardsHold, type StandardsLine, type StandardItem, type StandardItemStatus } from './standards-gate';
+export { standardsGateEnforced, standardsHoldOf, standardsLine, type StandardsHold, type StandardsLine, type StandardItem, type StandardItemStatus } from './mission-standards-gate';
+export { STANDARD_MARK_REFUSAL, standardMarkRefusal } from './standard-mark';
 
 const GONE = ['retired', 'superseded'] as const;
-
-export const STANDARD_MARK_REFUSAL = 'Marking a spec a standard is a person\'s decision: an owner or admin of this team, from their own session. An agent run or API key cannot set or clear it.';
-
-/**
- * Who may set or clear `standard` (pure): a dashboard session (`user`) of an
- * owner or admin of the workspace's team. Every other caller is refused.
- */
-export function standardMarkRefusal(input: { callerKind: 'user' | 'account' | 'system'; ownerOrAdmin: boolean }): string | null {
-  return input.callerKind === 'user' && input.ownerOrAdmin ? null : STANDARD_MARK_REFUSAL;
-}
 
 /** A workspace standard at its approved revision. */
 export interface StandardPin { specId: string; specRevisionId: string; revision: number; contentHash: string; title: string }

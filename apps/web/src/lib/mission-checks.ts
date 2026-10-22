@@ -18,7 +18,7 @@ import type { MissionIntegrationPrView } from './mission-integration-pr';
 import type { MissionReleaseStatus } from './mission-delivery';
 import { planMissions, type PlanTask } from './mission-plan';
 import { outcomeSpecView } from './mission-outcome-spec-view';
-import { standardsGateEnforced, standardsLine, type StandardItemStatus, type StandardsLine } from './specs/standards-gate';
+import { standardsGateEnforced, standardsLine, type StandardItemStatus, type StandardsLine } from './specs/mission-standards-gate';
 
 /** R-17's statuses. Only `passed` reads as passed; waived and not applicable never do. */
 export type CheckStatus = 'queued' | 'running' | 'passed' | 'finding' | 'unable' | 'owner' | 'stale' | 'waived' | 'not_applicable';

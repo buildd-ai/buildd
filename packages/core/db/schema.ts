@@ -2916,7 +2916,7 @@ export interface SpecMetadataBlock {
   /**
    * Living Specs D-43: a person (owner or admin, own session) marked this spec
    * a standard of its workspace. Its approved criteria apply to every mission
-   * whose build starts after (apps/web/src/lib/specs/standards.ts).
+   * whose build starts after (apps/web/src/lib/specs/mission-standards.ts).
    */
   standard?: true;
   /**

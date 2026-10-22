@@ -4,7 +4,7 @@
  *
  * `tasks.claimed`: the integration branch is refreshed before the work
  * starts, and a mission's first build claim snapshots its workspace's
- * standards (lib/specs/standards.ts).
+ * standards (lib/specs/mission-standards.ts).
  *
  * `task.created`: a task filed against a mission (dashboard, API, an external
  * MCP caller) is attributed in the mission feed, reopens a completed mission,
@@ -39,7 +39,7 @@ import { recordMissionVerdictServer } from '@/lib/specs/mission-outcome';
 registerMissionVerdictRecorder((missionId, input) => recordMissionVerdictServer(missionId, input as Parameters<typeof recordMissionVerdictServer>[1]));
 import { after } from 'next/server';
 import { refreshMissionBranchesBeforeStart } from '@/lib/mission-branch-refresh';
-import { scheduleStandardsSnapshots } from '@/lib/specs/standards';
+import { scheduleStandardsSnapshots } from '@/lib/specs/mission-standards';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
 import { evaluateAndAdvanceLoopOnMerge, evaluateAndAdvanceLoopOnCiGreen } from '@/lib/loop-webhook';
 import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';

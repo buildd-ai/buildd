@@ -9,7 +9,7 @@ import { author, fail, reach, type SpecCaller, type SpecError, type SpecRow } fr
 import { specApprovalDeps } from './approval';
 import { AREA_GONE_STATUSES } from './areas';
 import { holdsInWorkspace } from '@/lib/team-access';
-import { standardMarkRefusal } from './standards';
+import { standardMarkRefusal } from './standard-mark';
 
 /**
  * A spec's metadata block (docs/specs/living-specs.md §18, R-14, R-31): the
@@ -22,7 +22,7 @@ import { standardMarkRefusal } from './standards';
  * private, public, or absent to follow the policy. Only a person marks one
  * public or lifts a private mark.
  *
- * `standard` (Living Specs D-43, ./standards.ts) makes the spec a standard of
+ * `standard` (Living Specs D-43, ./mission-standards.ts) makes the spec a standard of
  * its workspace: its criteria apply to every mission that starts building
  * after. Only an owner or admin sets or clears it, from their own session.
  *
