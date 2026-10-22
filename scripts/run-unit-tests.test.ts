@@ -127,8 +127,10 @@ describe('selectTestFiles', () => {
 describe('run-unit-tests exit code', () => {
   it('exits non-zero when named test files select nothing', () => {
     const run = Bun.spawnSync(['bun', 'scripts/run-unit-tests.ts', 'tests/e2e/not-a-unit.test.ts'], { stdout: 'pipe', stderr: 'pipe' });
-    expect(run.exitCode).not.toBe(0);
-    expect(run.stderr.toString()).toContain('tests/e2e/not-a-unit.test.ts');
+    expect(run.exitCode).toBe(1);
+    // One plain line naming the files, not an uncaught stack trace.
+    expect(run.stderr.toString()).toContain('run-unit-tests: named test files selected none: tests/e2e/not-a-unit.test.ts');
+    expect(run.stdout.toString()).not.toContain('No unit test files selected.');
   }, 60_000);
 });
 

@@ -43,11 +43,10 @@ const UNIT_TEST_ROOTS = [
  * per criterion. The build task removes each entry once its file passes.
  */
 export const ACCEPTANCE_ONLY_TESTS: readonly string[] = [
-  'apps/web/src/lib/specs/mission-registered-verification.test.ts',
+  // R-6 expects dispatchCriterionChecks to file a runner task per `verify:`
+  // binding; the shipped design runs registered checks in-process on the same
+  // PR events instead. Left red pending a decision on that criterion.
   'apps/web/src/lib/specs/registered-verification.test.ts',
-  'packages/core/decision-kind-ui-copy.test.ts',
-  'packages/core/ui-verification.test.ts',
-  'packages/spec-contract/src/verification-bindings.test.ts',
 ];
 
 export function isUnitTestFile(path: string): boolean {
@@ -1039,7 +1038,15 @@ async function main(): Promise<void> {
   const { named, updateDurations, shard } = parseRunnerArgs(Bun.argv.slice(2));
   const discovered = await discoverUnitTests();
   const hints = readDurationHints();
-  const selected = selectTestFiles(named, discovered);
+  let selected: string[];
+  try {
+    selected = selectTestFiles(named, discovered);
+  } catch (err) {
+    // Named files that select nothing are a failure, not an empty pass.
+    console.error(`run-unit-tests: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+    return;
+  }
   const sliced = shard ? shardFiles(selected, hints, shard.index, shard.count) : selected;
   if (shard) {
     console.log(`Shard ${shard.index}/${shard.count}: ${sliced.length} of ${selected.length} selected files.`);

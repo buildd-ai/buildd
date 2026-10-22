@@ -3,11 +3,11 @@ import { createHash } from 'node:crypto';
 import { criterionRecords, otherTextBySection } from './criterion-records';
 import {
   MAX_VERIFICATION_SCENARIOS, criterionVerifications, criterionVerificationCoverage, criterionVerificationScenarios, verificationDeclarationError,
-  type VerificationBinding,
+  type RegisteredBinding,
 } from './verification-bindings';
 
-const action: VerificationBinding = { id: 'ui.actions_match_state', version: 1, profile: 'buildd.enterprise@1', mode: 'required' };
-const clarity: VerificationBinding = { id: 'ui.card_clarity', version: 1, profile: 'buildd.enterprise@1', mode: 'advisory' };
+const action: RegisteredBinding = { id: 'ui.actions_match_state', version: 1, profile: 'buildd.enterprise@1', mode: 'required' };
+const clarity: RegisteredBinding = { id: 'ui.card_clarity', version: 1, profile: 'buildd.enterprise@1', mode: 'advisory' };
 const line = (value: unknown) => `  verify: ${JSON.stringify(value)}`;
 
 describe('criterionVerifications', () => {
@@ -34,7 +34,7 @@ describe('criterionVerifications', () => {
   it('AC-1: fingerprints the canonical full binding with portable SHA-256 identities', () => {
     for (const id of ['ui.actions_match_state', 'ui.card_clarity'] as const) {
       for (const mode of ['required', 'advisory'] as const) {
-        const binding: VerificationBinding = { id, version: 1, profile: 'buildd.enterprise@1', mode };
+        const binding: RegisteredBinding = { id, version: 1, profile: 'buildd.enterprise@1', mode };
         const expected = createHash('sha256').update(JSON.stringify(binding)).digest('hex');
         expect(criterionVerifications(`R-1: Actions.\n${line(binding)}`)[0].fingerprint).toBe(expected);
       }

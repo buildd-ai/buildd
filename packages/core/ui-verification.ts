@@ -121,3 +121,112 @@ export function runUiActionStateCheck(evidence: SurfaceEvidence, now = new Date(
   ) observation = { verdict: 'inconclusive', observed: 'runtime_state_unknown' };
   return runUiSurfaceCheck('ui.actions_match_state', evidence, observation, now);
 }
+
+/*
+ * The registry-facing form of the same checks (spec "Registered requirement
+ * verification" r1): `ui.action-state@1` over a portable UI evidence snapshot.
+ * The snapshot names actions by semantic operation and carries state facts
+ * supplied independently of the text; the label and prose are never read for
+ * meaning. Pixels are a separate capability, present only with a screenshot.
+ */
+
+export const UI_ACTION_OPERATIONS = ['merge', 'confirm_replacement', 'dismiss_replacement', 'resolve_pr_closure', 'retry_visual_review', 'skip_visual_review', 'turn_off_visual_review', 'answer_question', 'cancel', 'open_details', 'other'] as const;
+export type UiActionOperation = (typeof UI_ACTION_OPERATIONS)[number];
+export type UiEvidenceCapability = 'text' | 'actions' | 'state' | 'pixels';
+
+const prominence = z.enum(['primary', 'secondary', 'menu']);
+const uiEvidenceSchema = z.object({
+  route: bounded(240).refine(s => s.startsWith('/') && !s.startsWith('//') && !/[?#]/.test(s)),
+  scenario: bounded(100),
+  codeSha: z.string().regex(/^[a-f0-9]{40}$/i),
+  captureSha: z.string().regex(/^[a-f0-9]{40}$/i).optional(),
+  text: z.array(z.object({ text: bounded(1000), prominence }).strict()).max(32),
+  actions: z.array(z.object({ label: bounded(120), operation: z.enum(UI_ACTION_OPERATIONS), enabled: z.boolean(), prominence }).strict()).max(16),
+  claims: z.array(z.object({ kind: z.literal('verification'), value: z.enum(['verified', 'unverified', 'pending', 'failed']) }).strict()).max(8).default([]),
+  state: z.object({
+    pr: z.enum(['open', 'closed', 'merged']).optional(),
+    verification: z.enum(['verified', 'unverified', 'pending', 'failed']).optional(),
+    replacementPending: z.boolean().optional(),
+  }).strict().optional(),
+  coverage: z.object({ text: coverage, actions: coverage, state: coverage }).strict(),
+  pixels: z.object({ screenshotArtifactId: bounded(200) }).strict().optional(),
+  collection: z.object({ ok: z.boolean() }).strict().optional(),
+}).strict();
+
+export type UiEvidence = z.input<typeof uiEvidenceSchema>;
+export type ParsedUiEvidence = z.output<typeof uiEvidenceSchema>;
+
+export function parseUiEvidence(input: unknown): { ok: true; evidence: ParsedUiEvidence; capabilities: UiEvidenceCapability[] } | { ok: false; reason: string } {
+  // The same secret screen as a stored capture: refuse before anything reads it.
+  const screened = parseSurfaceEvidence(input);
+  if (!screened.ok && screened.message !== 'invalid_surface_evidence') return { ok: false, reason: screened.message };
+  const parsed = uiEvidenceSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, reason: 'invalid_ui_evidence' };
+  const e = parsed.data;
+  const capabilities: UiEvidenceCapability[] = ['text', 'actions'];
+  if (e.state) capabilities.push('state');
+  if (e.pixels) capabilities.push('pixels');
+  return { ok: true, evidence: e, capabilities };
+}
+
+export const UI_ACTION_STATE_VERIFIER = {
+  id: 'ui.action-state', version: 1, method: 'deterministic', evidence: ['ui.text', 'ui.actions', 'ui.state'],
+} as const;
+
+export interface UiActionStateFinding {
+  kind: 'action_state_contradiction' | 'claim_state_contradiction';
+  fact: 'pr' | 'verification' | 'replacementPending';
+  operation?: UiActionOperation;
+  observed: string;
+}
+export interface UiActionStateResult {
+  verifier: { id: string; version: number };
+  method: 'deterministic';
+  verdict: Extract<VerificationResult['verdict'], 'pass' | 'fail' | 'inconclusive'>;
+  findings: UiActionStateFinding[];
+  missingFacts: string[];
+}
+
+/** `ui.action-state@1`: enabled operations and displayed claims against the supplied state. Never mutates its input. */
+export function checkUiActionState(e: ParsedUiEvidence): UiActionStateResult {
+  const findings: UiActionStateFinding[] = [];
+  const missing = new Set<string>();
+  const state = e.state ?? {};
+  const fact = <K extends keyof typeof state>(k: K) => { if (state[k] === undefined) missing.add(k); return state[k]; };
+  for (const a of e.actions.filter(x => x.enabled)) {
+    if (a.operation === 'merge') {
+      const pr = fact('pr');
+      if (pr && pr !== 'open') findings.push({ kind: 'action_state_contradiction', operation: 'merge', fact: 'pr', observed: `merge offered on a ${pr} PR` });
+    } else if (a.operation === 'confirm_replacement') {
+      if (fact('replacementPending') === false) findings.push({ kind: 'action_state_contradiction', operation: a.operation, fact: 'replacementPending', observed: 'replacement confirmation with no replacement pending' });
+    }
+  }
+  for (const c of e.claims) {
+    const actual = fact('verification');
+    if (actual && actual !== c.value) findings.push({ kind: 'claim_state_contradiction', fact: 'verification', observed: `shows ${c.value}, state is ${actual}` });
+  }
+  if (!e.state) for (const k of ['pr', 'verification', 'replacementPending']) missing.add(k);
+  const partial = Object.values(e.coverage).some(v => v !== 'complete');
+  const verdict = partial ? 'inconclusive' : findings.length ? 'fail' : missing.size ? 'inconclusive' : 'pass';
+  return { verifier: { id: UI_ACTION_STATE_VERIFIER.id, version: UI_ACTION_STATE_VERIFIER.version }, method: 'deterministic', verdict, findings, missingFacts: [...missing] };
+}
+
+export interface EvaluationCase { evidence: ParsedUiEvidence; expected: 'pass' | 'fail'; confirmedBy: { kind: 'person'; id: string } }
+
+/** Only a person's confirmed correction becomes an evaluation case; an agent's edit is not ground truth. */
+export function evaluationCaseFromCorrection(input: { evidence: ParsedUiEvidence; expected: 'pass' | 'fail'; confirmedBy: { kind: string; id: string } | null }): EvaluationCase | null {
+  if (input.confirmedBy?.kind !== 'person' || !input.confirmedBy.id) return null;
+  return { evidence: input.evidence, expected: input.expected, confirmedBy: { kind: 'person', id: input.confirmedBy.id } };
+}
+
+/** A verifier version is promoted only as a newer version of the same verifier that reproduces every confirmed case. */
+export function canPromoteVerifier(input: {
+  current: { id: string; version: number };
+  candidate: { id: string; version: number };
+  results: ReadonlyArray<{ case: EvaluationCase; verdict: string }>;
+}): { ok: true } | { ok: false; reason: 'not_a_new_version' | 'no_evaluation_cases' | 'regressed_cases' } {
+  if (input.candidate.id !== input.current.id || input.candidate.version <= input.current.version) return { ok: false, reason: 'not_a_new_version' };
+  if (!input.results.length) return { ok: false, reason: 'no_evaluation_cases' };
+  if (input.results.some(r => r.verdict !== r.case.expected)) return { ok: false, reason: 'regressed_cases' };
+  return { ok: true };
+}

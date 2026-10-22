@@ -1,6 +1,6 @@
 /** Production adapter. The coordinator authorizes captures, loads owned artifacts and persists spec outcomes. */
 import type { DecisionReceipt } from '@buildd/ai-kit/decide';
-import { uiCopyKind } from '@buildd/core/decision-kind-ui-copy';
+import { UI_COPY_VERDICT, uiCopyFeaturesFromSurface, uiCopyKind } from '@buildd/core/decision-kind-ui-copy';
 import { runBuilddDecision, type BuilddDecisionDeps, type BuilddDecisionScope } from '@buildd/core/decision-policy';
 import { parseSurfaceEvidence, runUiActionStateCheck, runUiSurfaceCheck, uiVerificationFingerprint, type UiVerifierId } from '@buildd/core/ui-verification';
 import type { VerificationResult } from '@buildd/core/verification-check';
@@ -29,7 +29,7 @@ export async function executeUiVerification(id: UiVerifierId, input: unknown, sc
   const preflight = runUiSurfaceCheck(id, evidence, { verdict: 'inconclusive', observed: 'model_judgment_required' }, now);
   if (preflight.evidenceShortfall.length || preflight.observed !== 'model_judgment_required') return { ...base, method: 'fallback', decisionKind: null, result: preflight };
   const { secrets: _secrets, nowDate: _nowDate, ...brokerDeps } = deps;
-  const answer = await runBuilddDecision(uiCopyKind, { features: evidence, subjectRef: { type: 'ui_surface', id: base.inputFingerprint! } }, {
+  const answer = await runBuilddDecision(uiCopyKind, { features: uiCopyFeaturesFromSurface(evidence), subjectRef: { type: 'ui_surface', id: base.inputFingerprint! } }, {
     ...scope, onUsage: async receipt => { base.receipts.push(receipt); await scope.onUsage?.(receipt); },
   }, {
     ...brokerDeps,
@@ -42,7 +42,7 @@ export async function executeUiVerification(id: UiVerifierId, input: unknown, sc
     },
   });
   const authoritative = answer.source === 'model' && base.decisionRecordIds.length > 0;
-  const verdict = authoritative ? answer.decision : 'inconclusive';
+  const verdict = authoritative ? UI_COPY_VERDICT[answer.decision] : 'inconclusive';
   return {
     ...base, method: authoritative ? 'model' : 'fallback', decisionKind: uiCopyKind.kind,
     result: runUiSurfaceCheck(id, evidence, { verdict, confidence: authoritative ? answer.confidence ?? undefined : undefined, observed: authoritative ? answer.reasonCode : base.decisionRecordIds.length ? answer.reasonCode : 'decision_record_missing' }, now),
