@@ -18,22 +18,25 @@ export interface TaskStripCell {
   wait?: TaskStripWait;
   /** The cell's state word, when it says more than the state's (`Next in line`). */
   word?: string;
+  /** An agent is working on it right now (a fix attempt included): the hatch. A `fixing` cell waiting out a retry is dashed. */
+  live?: boolean;
 }
 
 /**
- * A grouped strip's three looks (spec d25d923d R-4): merged is solid green,
- * work in flight an accent hatch, everything else a dashed outline. Web
+ * A grouped strip's looks (spec d25d923d R-4): merged is solid green, an
+ * agent working (a fix attempt included) an accent hatch that drifts, a task
+ * that needs a person an outlined amber cell, a failure a person must fix an
+ * outlined red cell, and everything waiting or queued a dashed outline. Web
  * rendering only: the cell's state (and so `buildd top`'s row) is unchanged.
  */
-export type TaskStripLook = 'merged' | 'running' | 'waiting';
+export type TaskStripLook = 'merged' | 'running' | 'person' | 'failed' | 'waiting';
 const IN_FLIGHT: ReadonlySet<StateKey> = new Set<StateKey>(['running', 'review', 'fixing', 'landing', 'recovering']);
-export function stripLook(state: StateKey): TaskStripLook {
-  return state === 'landed' ? 'merged' : IN_FLIGHT.has(state) ? 'running' : 'waiting';
-}
-
-/** The small dot a look carries: amber when a person must act, red when it failed. */
-export function stripDot(state: StateKey): 'amber' | 'red' | null {
-  return state === 'needs_you' || state === 'waiting' ? 'amber' : state === 'failed' || state === 'ci_failed' ? 'red' : null;
+export function stripLook(state: StateKey, live = true): TaskStripLook {
+  if (state === 'landed') return 'merged';
+  if (state === 'needs_you' || state === 'waiting') return 'person';
+  if (state === 'failed' || state === 'ci_failed') return 'failed';
+  if (state === 'fixing' && !live) return 'waiting';
+  return IN_FLIGHT.has(state) ? 'running' : 'waiting';
 }
 
 /** A run of cells drawn as one group, a gap before it; `outline` encloses it (the work in progress). */
@@ -67,6 +70,12 @@ export interface TaskStripProps {
    * groups and an outline round each `outline` group. Absent: one plain row.
    */
   groups?: readonly TaskStripGroup[];
+  /**
+   * `lg` only. Default true. False: no tick row, and each cell's accessible
+   * name and hover label are the task's name and state, never a number (the
+   * mission bar, spec d25d923d R-4).
+   */
+  ticks?: boolean;
   label?: string;
   className?: string;
 }
@@ -215,7 +224,7 @@ function useRowCapacity(box: RefObject<HTMLDivElement | null>, groupCount: numbe
   return perRow;
 }
 
-function LargeStrip({ cells, selectedId, onSelect, onOpen, marks, capped = true, label = 'Tasks', className = '', groups }: TaskStripProps) {
+function LargeStrip({ cells, selectedId, onSelect, onOpen, marks, capped = true, label = 'Tasks', className = '', groups, ticks: showTicks = true }: TaskStripProps) {
   const ref = useRef<HTMLDivElement>(null);
   const n = cells.length;
   const isGrouped = !!groups && groups.length > 0;
@@ -262,9 +271,11 @@ function LargeStrip({ cells, selectedId, onSelect, onOpen, marks, capped = true,
             const s = STATES[c.state];
             const tick = c.tick ?? tickOf(i);
             const selected = c.id === selectedId;
-            // A grouped strip (the mission bar) draws three looks plus a dot; a plain one keeps every state's texture.
-            const look = grouped ? stripLook(c.state) : undefined;
-            const dot = grouped ? stripDot(c.state) : null;
+            // A grouped strip (the mission bar) draws the looks; a plain one keeps every state's texture.
+            const look = grouped ? stripLook(c.state, c.live ?? true) : undefined;
+            const word = c.word ?? s.word;
+            // The mission bar names the task and its state (R-4); a numbered strip leads with the tick.
+            const name = showTicks ? `${tick} ${word}${c.title ? `: ${c.title}` : ''}` : c.title ? `${c.title}: ${word.toLowerCase()}` : word;
             return (
               <button
                 key={c.id}
@@ -277,13 +288,13 @@ function LargeStrip({ cells, selectedId, onSelect, onOpen, marks, capped = true,
                 data-wait={c.wait}
                 style={place(c.id)}
                 aria-pressed={selected}
-                aria-label={`${tick} ${c.word ?? s.word}${c.title ? `: ${c.title}` : ''}`}
-                title={c.title}
+                aria-label={name}
+                title={showTicks ? c.title : name}
                 tabIndex={i === focusIndex ? 0 : -1}
                 onClick={() => (onOpen ?? onSelect)?.(c.id)}
                 className="flex h-11 min-w-0 cursor-pointer flex-col justify-end gap-[3px] rounded-[var(--radius-cell)] md:h-16 md:gap-0"
               >
-                {/* Below md the cell is a slim bar in a full-height tap target; the
+                {/* Below md the cell is a bar in a full-height tap target; the
                     selection is a separate ink marker above it, not a frame. */}
                 <span aria-hidden="true" data-testid="task-strip-marker" className={`h-[3px] w-full shrink-0 rounded-full md:hidden ${selected ? 'bg-text-primary' : ''}`} />
                 <span
@@ -295,17 +306,17 @@ function LargeStrip({ cells, selectedId, onSelect, onOpen, marks, capped = true,
                   data-wait={c.wait}
                   data-look={look}
                   // The running cell's hatch drifts (globals.css), under reduced motion too (R-4).
-                  data-drift={look && c.state === 'running' ? true : undefined}
-                  className={`state-cell relative flex h-4 w-full shrink-0 items-center justify-center rounded-[var(--radius-cell)] font-mono text-chip font-semibold leading-none md:h-full ${selected ? 'md:[outline:2px_solid_var(--text-primary)] md:[outline-offset:2px]' : ''}`}
+                  data-drift={look === 'running' ? true : undefined}
+                  // A grouped cell is at least 32px tall on a phone (R-4); a plain cell stays a slim bar.
+                  className={`state-cell relative flex w-full shrink-0 items-center justify-center rounded-[var(--radius-cell)] font-mono text-chip font-semibold leading-none md:h-full ${grouped ? 'h-8' : 'h-4'} ${selected ? 'md:[outline:2px_solid_var(--text-primary)] md:[outline-offset:2px]' : ''}`}
                 >
                   {look ? null : c.wait && c.wait !== 'closed' ? null : s.cellGlyph ? s.glyph : null}
-                  {dot && <span data-testid="task-strip-dot" data-dot={dot} className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full md:right-1 md:top-1" />}
                 </span>
               </button>
             );
           })}
         </div>
-        <div aria-hidden="true" data-testid="task-strip-ticks" className={`grid gap-1 text-center font-mono text-chip ${columns} ${outline.pad}`} style={style}>
+        {showTicks && <div aria-hidden="true" data-testid="task-strip-ticks" className={`grid gap-1 text-center font-mono text-chip ${columns} ${outline.pad}`} style={style}>
           {rowCells.map(c => {
             const i = indexOf.get(c.id) ?? 0;
             const selected = c.id === selectedId;
@@ -317,7 +328,7 @@ function LargeStrip({ cells, selectedId, onSelect, onOpen, marks, capped = true,
               </span>
             );
           })}
-        </div>
+        </div>}
       </div>
     );
   };
