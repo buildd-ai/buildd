@@ -22,6 +22,7 @@ const DELIBERATELY_NOT_IN_THE_UNIT_SUITE: Array<[pattern: RegExp, runBy: string]
   [/^apps\/web\/tests\/integration\/(?!(?:verdict-(?:acceptance|baseline|integration)|start-commit-gate)\.test\.ts$)/, 'bun run test:integration (needs a live server + API key)'],
   [/^apps\/runner\/__tests__\/integration/, 'bun run test:integration (spawns real sessions)'],
   [/^tests\/e2e\//, 'bun run test:e2e (needs BUILDD_TEST_SERVER)'],
+  [/^apps\/web\/tests\/acceptance\//, 'bun run scripts/run-acceptance-tests.ts <id> <file> (test-first checks; red until the spec is built, run by verified_by)'],
   [/^apps\/web\/tests\/db\//, 'bun run test:db (real Postgres; CI db-architecture job in build.yml)'],
 ];
 
