@@ -237,7 +237,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   spec_compare: 'listed', // spec-sync skill; spec-validator role
   manage_workspaces: 'listed', // workspace-onboarding skill; organizer prompts
   list_runners: 'listed', // default role prompts
-  probe_budget_wall: 'listed', // runner budget-wall recovery
+  probe_budget_wall: 'more', // runner budget-wall recovery
   get_usage_stats: 'listed', // default role prompts
   get_budget_forecast: 'listed', // default role prompts
   get_manifest_coverage: 'listed', // default role prompts
@@ -449,7 +449,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   resolve_capability: 'who serves a need',
   request_capability: 'ask for access',
   list_runners: 'slots, branch, build, heartbeat',
-  probe_budget_wall: 'recheck a held limit',
+  probe_budget_wall: 'recheck a limit',
   read_evidence: 'stored run logs',
   get_pr: 'PR state, CI, reviews',
   list_prs: 'open PRs (conflicts/red CI first) or merged',
