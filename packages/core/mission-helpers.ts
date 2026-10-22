@@ -288,6 +288,53 @@ export function outcomeSpecWriteRefusal(stored: unknown, incoming: unknown): str
   );
 }
 
+/**
+ * Goal-criterion types a person or agent writes by hand. Living Specs D-44
+ * retires them: product intent is a criterion in the mission's outcome spec, a
+ * command is that criterion's check line, merged and no-open-tasks are what
+ * delivery already means, and an unchecked metric is dropped. Only
+ * `living_spec` (written by selecting a spec) is not in this list.
+ */
+export const HAND_WRITTEN_CRITERION_TYPES = [
+  'command',
+  'all_prs_merged',
+  'no_open_tasks',
+  'artifact_exists',
+  'metric',
+  'description',
+] as const;
+
+/** True when `criteria` holds at least one hand-written (retired) criterion. */
+export function hasHandWrittenCriteria(criteria: unknown): boolean {
+  return (Array.isArray(criteria) ? criteria : []).some(
+    c => !!c && typeof c === 'object'
+      && (HAND_WRITTEN_CRITERION_TYPES as readonly string[]).includes((c as { type?: unknown }).type as string),
+  );
+}
+
+/**
+ * Refuse a `goalCriteria` write that starts hand-written criteria on a mission
+ * that holds none (Living Specs D-44). A mission that already carries them is
+ * grandfathered as a whole: it keeps, edits or removes them under
+ * `validateGoalCriteria` until it completes. Nothing is migrated.
+ *
+ * Shape faults are left to `validateGoalCriteria`; this only answers "may this
+ * mission have hand-written criteria at all". Shared by POST and PATCH
+ * /api/missions.
+ */
+export function handWrittenCriteriaRefusal(stored: unknown, incoming: unknown): string | null {
+  if (!Array.isArray(incoming) || hasHandWrittenCriteria(stored)) return null;
+  const i = incoming.findIndex(c => hasHandWrittenCriteria([c]));
+  if (i < 0) return null;
+  const type = (incoming[i] as { type: string }).type;
+  return (
+    `goalCriteria[${i}]: hand-written ${type} criteria are retired. Select the spec this mission ` +
+    `delivers instead (outcomeSpec: { specId, revision?, criteria?, narrowedReason? }): put product ` +
+    `intent in that spec as a criterion, and a command as the criterion's check line. Merged PRs ` +
+    `and no open tasks are what delivery already means. A mission with no product intent selects no spec.`
+  );
+}
+
 // ─── Goal criteria evaluator ──────────────────────────────────────────────────
 
 /**
