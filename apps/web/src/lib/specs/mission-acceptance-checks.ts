@@ -12,7 +12,8 @@ export async function runFinalAcceptanceChecks(taskId: string, missionId: string
   await dispatchCriterionChecks({ taskId, headSha: target.headSha, headBranch: target.branch });
   try {
     const { dispatchRegisteredVerification } = await import('./registered-verification');
-    const r = await dispatchRegisteredVerification({ taskId, headSha: target.headSha });
+    const { registeredVerificationDeps } = await import('./registered-verification-store');
+    const r = await dispatchRegisteredVerification({ taskId, headSha: target.headSha }, registeredVerificationDeps);
     if (r.reason) console.warn(`[registered-verification] final verification ${taskId}: ${r.reason}`);
   } catch (err) {
     // Registered checks never stop the command checks or the final verifier; their absence reads as unverified.

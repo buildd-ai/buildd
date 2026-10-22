@@ -4,7 +4,7 @@ import { governedTaskWorkspace } from '@/lib/specs/outcome';
 import { reach } from '@/lib/specs/store';
 import { isUuid } from '@/lib/uuid';
 import { dispatchRegisteredVerification } from '@/lib/specs/registered-verification';
-import { registeredVerificationHead, verificationRequesterRefusal } from '@/lib/specs/registered-verification-store';
+import { REGISTERED_VERIFICATION } from '@/modules';
 
 type Ctx = { params: Promise<{ taskId: string }> };
 
@@ -30,7 +30,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     return NextResponse.json({ error: 'Requesting verification requires write access to this workspace' }, { status: 403 });
   }
   if (taskScope) {
-    const refusal = taskScope.taskId ? await verificationRequesterRefusal(taskScope.taskId, taskId) : 'a task token names no task';
+    const refusal = taskScope.taskId ? await REGISTERED_VERIFICATION.requesterRefusal(taskScope.taskId, taskId) : 'a task token names no task';
     if (refusal) return NextResponse.json({ error: `You may not request this verification: ${refusal}` }, { status: 403 });
   }
 
@@ -43,8 +43,8 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   if (evidenceRef !== undefined && !isUuid(evidenceRef)) {
     return NextResponse.json({ error: 'evidenceRef must be an artifact UUID' }, { status: 400 });
   }
-  const headSha = await registeredVerificationHead(taskId);
+  const headSha = await REGISTERED_VERIFICATION.head(taskId);
   if (!headSha) return NextResponse.json({ error: 'The current verification head is unavailable' }, { status: 409 });
-  const verification = await dispatchRegisteredVerification({ taskId, headSha, ...(evidenceRef ? { evidenceRef: evidenceRef as string } : {}) });
+  const verification = await dispatchRegisteredVerification({ taskId, headSha, ...(evidenceRef ? { evidenceRef: evidenceRef as string } : {}) }, REGISTERED_VERIFICATION.deps);
   return NextResponse.json({ verification });
 }

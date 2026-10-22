@@ -164,13 +164,12 @@ function aggregate(checks: readonly Execution[], bindingId: VerificationBinding[
 
 export async function dispatchRegisteredVerification(
   opts: { taskId: string; headSha: string; evidenceRef?: string },
-  supplied?: RegisteredVerificationDeps,
+  deps: RegisteredVerificationDeps,
 ): Promise<RegisteredVerification> {
   const results: RegisteredResult[] = [];
   const refused: RefusedSurface[] = [];
   const empty = (reason: string, coverage: RegisteredVerification['coverage'] = []): RegisteredVerification => ({ results, coverage, refused, reason });
   if (!SHA40.test(opts.headSha)) return empty('target must be a full commit SHA');
-  const deps = supplied ?? (await import('./registered-verification-store')).registeredVerificationDeps;
   const s = await deps.load(opts.taskId);
   if ('error' in s) return empty(s.error);
   if (s.headSha.toLowerCase() !== opts.headSha.toLowerCase()) return empty('the verification target is no longer current');

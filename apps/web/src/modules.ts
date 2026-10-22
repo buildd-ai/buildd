@@ -27,6 +27,7 @@ import { MAX_STAGE_MISSION_IDS } from '@/lib/mission-stage';
 import { probeDecisionModel } from '@buildd/core/decision-probe';
 import type { CompletionPolicies } from '@/lib/completion-policy';
 import { visualAuditEvidencePolicy } from '@/lib/visual-audit-evidence-policy';
+import { registeredVerificationDeps, registeredVerificationHead, verificationRequesterRefusal } from '@/lib/specs/registered-verification-store';
 import { loopPolicy } from '@/lib/loop-dispatcher-policy';
 import { releasePolicy } from '@/lib/release-completion-policy';
 import { knowledgeSubscribers } from '@/lib/knowledge-subscribers';
@@ -377,6 +378,19 @@ export const VISUAL_AUDIT_ROUTES: ClaimContextInjection = async (claimedWorkers,
  * mission's [surface audit] saw on a spec criterion.
  */
 export const VISUAL_SPEC_VERDICT = recordVisualVerdict;
+
+/**
+ * The visual-qa module's registered verification slot
+ * (lib/specs/registered-verification-store.ts): the store behind the core
+ * coordinator (lib/specs/registered-verification.ts). It admits only captures an
+ * independent [surface audit] uploaded, and resolves the head and who may ask.
+ * POST /api/specs/outcomes/[taskId]/verify runs the coordinator with it.
+ */
+export const REGISTERED_VERIFICATION = {
+  deps: registeredVerificationDeps,
+  head: registeredVerificationHead,
+  requesterRefusal: verificationRequesterRefusal,
+};
 
 /**
  * The decisions module's spec duplicate slot (lib/spec-duplicate-decision.ts):

@@ -12,16 +12,18 @@ let writable: boolean;
 let head: string | null;
 let requesterRefusal: string | null;
 const calls: unknown[] = [];
-const dispatch = mock(async (input: unknown) => { calls.push(['dispatch', input]); return { results: [], coverage: [], refused: [] }; });
+const dispatch = mock(async (input: unknown, deps: unknown) => { calls.push(['dispatch', input, deps]); return { results: [], coverage: [], refused: [] }; });
 mock.module('@/lib/specs/caller', () => ({ specCaller: async () => caller }));
 mock.module('@/lib/specs/outcome', () => ({ governedTaskWorkspace: async () => workspace }));
 mock.module('@/lib/specs/store', () => ({ reach: async (_caller: unknown, ws: string, write: boolean) => {
   calls.push(['reach', ws, write]); return write ? writable : readable;
 } }));
-mock.module('@/lib/specs/registered-verification-store', () => ({
-  registeredVerificationHead: async (taskId: string) => { calls.push(['head', taskId]); return head; },
-  verificationRequesterRefusal: async (requester: string, subject: string) => { calls.push(['requester', requester, subject]); return requesterRefusal; },
-}));
+const STORE = { name: 'production store' };
+mock.module('@/modules', () => ({ REGISTERED_VERIFICATION: {
+  deps: STORE,
+  head: async (taskId: string) => { calls.push(['head', taskId]); return head; },
+  requesterRefusal: async (requester: string, subject: string) => { calls.push(['requester', requester, subject]); return requesterRefusal; },
+} }));
 mock.module('@/lib/specs/registered-verification', () => ({ dispatchRegisteredVerification: dispatch }));
 const { POST } = await import('./route');
 const post = (body: unknown, taskId = TASK) => POST(new NextRequest(`http://l/api/specs/outcomes/${taskId}/verify`, {
@@ -39,14 +41,14 @@ describe('POST /api/specs/outcomes/[taskId]/verify', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ verification: { results: [], coverage: [], refused: [] } });
     expect(calls).toEqual([['reach', 'ws-a', false], ['reach', 'ws-a', true], ['head', TASK],
-      ['dispatch', { taskId: TASK, headSha: SHA, evidenceRef: ART }]]);
+      ['dispatch', { taskId: TASK, headSha: SHA, evidenceRef: ART }, STORE]]);
   });
 
   it('R-18: a reviewer\'s task token may request it; the subject\'s own token, or a task filed under it, may not', async () => {
     caller = { kind: 'account', account: { id: 'a1', taskScope: { taskId: REVIEWER, workspaceId: 'ws-a' } } };
     expect((await post({})).status).toBe(200);
     expect(calls).toContainEqual(['requester', REVIEWER, TASK]);
-    expect(dispatch).toHaveBeenCalledWith({ taskId: TASK, headSha: SHA });
+    expect(dispatch).toHaveBeenCalledWith({ taskId: TASK, headSha: SHA }, STORE);
 
     dispatch.mockClear(); calls.length = 0;
     requesterRefusal = 'a task never requests grading of its own outcome';
