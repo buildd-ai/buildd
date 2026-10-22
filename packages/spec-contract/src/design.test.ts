@@ -64,3 +64,11 @@ describe('criterionScreens', () => {
     ]);
   });
 });
+
+describe('parseDesignRef: all problems at once', () => {
+  it('reports every bad screen and accepts bare ids', () => {
+    const r = parseDesignRef({ kind: 'artifact', ref: 'a1', screens: [{ id: 'bad id' }, { name: 'x' }] });
+    expect(r).toMatchObject({ ok: false, error: expect.stringMatching(/screens\[0\].*screens\[1\]/) });
+    expect(parseDesignRef({ kind: 'artifact', ref: 'a1', screens: ['home'] })).toMatchObject({ ok: true, design: { screens: [{ id: 'home', name: 'home' }] } });
+  });
+});
