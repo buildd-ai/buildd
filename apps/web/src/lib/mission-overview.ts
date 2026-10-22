@@ -182,12 +182,12 @@ const NEVER_LINE: Partial<Record<WaitingKind, string>> = {
 export function overviewCells(model: Model, order: readonly string[] = stripOrder(model)): TaskStripCell[] {
   return order.map((id, i) => {
     const wait = overviewWaitCause(model, id);
-    // A closed PR someone replaced reads `Closed → #N`; a red PR its R-14 words (`Failed · CI failed`).
+    // A closed PR someone replaced reads `Closed → #N`; a red PR its R-14 words (`Fixing · CI failed`, `Failed · …`).
     const replacement = wait === 'closed' ? model.tasks[id].replacement ?? null : null;
     const status = overviewStatus(model, id);
     const word = replacement ? `Closed → #${replacement.number}`
       : wait ? waitWord(model, id, wait)
-      : status.tone === 'bad' && status.cause ? overviewStatusText(status) : null;
+      : (status.tone === 'bad' || status.retryAt != null) && status.cause ? overviewStatusText(status) : null;
     return { id, state: overviewCellState(model, id), tick: stripTick(i), title: model.tasks[id].title, ...(wait ? { wait } : {}), ...(word ? { word } : {}) };
   });
 }
@@ -242,10 +242,10 @@ export function overviewCounts(model: Pick<MissionBoardModel, 'landed' | 'criter
 // ── A task's status in words (spec d25d923d R-14) ─────────────────────────────
 
 /**
- * One status dot, one word, at most one short cause: `Blocked · Waiting on
- * tasks`, `Working 12m 04s · Running unit tests`, `Failed · CI failed`,
- * `Merged`, `Closed → #N`. No sentences. The words are the terms catalog's
- * (`Working`, never "Running"; `Ready` / `Blocked`, never "Queued").
+ * One status dot, one word, at most one short cause: `Queued · Next in line`,
+ * `Running 12m 04s · Running unit tests`, `Fixing · CI failed`, `Failed`,
+ * `Merged`, `Closed → #N`. No sentences. The words are Navigation R-14's,
+ * read from the terms catalog.
  */
 export interface OverviewStatus {
   word: string;
@@ -256,7 +256,7 @@ export interface OverviewStatus {
   since: number | null;
   /** Running: its last event (`lastEventOf`), for `updated 14s ago`. */
   lastEventAt: number | null;
-  /** A failed task waiting out a retry backoff: when the retry starts. */
+  /** A fix waiting out a retry backoff or its checks: when it resumes (`Retry in 3h 52m`). */
   retryAt: number | null;
   /** Closed without merging: the replacement someone named, if any. */
   closed: { replacement: { number: number; url: string | null } | null } | null;
@@ -267,13 +267,15 @@ function prCause(state: string | undefined): string | null {
   return state === 'ci_failed' ? 'CI failed' : state === 'conflict' ? 'Merge conflict' : null;
 }
 
-const WORKING = termWord('work.working');
+const RUNNING = termWord('work.working');
+const FIXING = termWord('pr.fixing');
 const FAILED = termWord('work.failed');
 
 /**
  * The selected task's status in the shared vocabulary. The true state wins:
- * a task whose PR is red reads `Failed` with the PR's cause even while a
- * retry backoff runs (strip §3.2a), and the backoff is `retryAt`, beside it.
+ * a task whose PR is red reads `Fixing` with the PR's cause even while a
+ * retry backoff runs, never `Queued` (R-20: buildd retries it by itself), and
+ * the backoff is `retryAt`, beside it. `Failed` is a failure a person acts on.
  */
 export function overviewStatus(model: Model, id: string): OverviewStatus {
   const t = model.tasks[id];
@@ -288,11 +290,11 @@ export function overviewStatus(model: Model, id: string): OverviewStatus {
     case 'landed':
       return t.pr?.state === 'merged' || t.status === 'merged' ? out(termWord('pr.merged'), 'ok') : out(termWord('work.done'), 'ok');
     case 'running':
-      return out(WORKING, 'act', latestStep ?? null, live);
+      return out(RUNNING, 'act', latestStep ?? null, live);
     case 'fixing':
       return t.executing
-        ? out(WORKING, 'act', latestStep ?? (prCause(t.pr?.state) ? `Fixing ${prCause(t.pr?.state)!.toLowerCase()}` : null), live)
-        : out(FAILED, 'bad', prCause(t.pr?.state), { retryAt: t.startAt ?? null });
+        ? out(FIXING, 'act', latestStep ?? prCause(t.pr?.state), live)
+        : out(FIXING, 'act', prCause(t.pr?.state), { retryAt: t.startAt ?? null });
     case 'ci_failed':
       return out(FAILED, 'bad', prCause(t.pr?.state) ?? termWord('pr.ci_failed'), { retryAt: t.startAt ?? null });
     case 'failed':
@@ -322,7 +324,10 @@ export function overviewStatusText(s: Pick<OverviewStatus, 'word' | 'cause'>): s
   return s.cause ? `${s.word} · ${s.cause}` : s.word;
 }
 
-/** A failed task's pending retry: `Retry in 3h 52m`, or null when none waits. */
+/** The action beside `Retry in …`: it only brings the retry forward (R-20). */
+export const RETRY_NOW = 'Retry now';
+
+/** A fix's pending retry: `Retry in 3h 52m`, or null when none waits. */
 export function retryText(s: Pick<OverviewStatus, 'retryAt'>, now: number): string | null {
   return s.retryAt != null && s.retryAt > now ? `Retry in ${formatCountdown(s.retryAt - now)}` : null;
 }

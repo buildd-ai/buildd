@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { dagBoard, dagId, DAG_SPECS, overviewWavesBoard, overviewWavesInput } from '@/app/app/dev/fixtures/mission-task-strip-fixtures';
 import { buildMissionBoard, lastEventOf } from './mission-board';
 import { stripOrder } from './mission-task-strip';
-import { formatCountdown, overviewStatus, overviewStatusText, retryText } from './mission-overview';
+import { formatCountdown, overviewStatus, overviewStatusText, retryText, RETRY_NOW } from './mission-overview';
 import { finishSettingTaskId, overviewCells, overviewWaitLine, overviewCounts, overviewDefaultSelection, overviewLayout, overviewLegend, overviewProgress, overviewSelection, overviewWaitCause } from './mission-overview';
 
 const spec = DAG_SPECS.linear; // A landed, B running, C blocked, D/E queued
@@ -279,7 +279,7 @@ describe('overviewWaitLine', () => {
   });
 });
 
-// Spec d25d923d R-14; strip R-8a: the true state wins over a retry backoff.
+// Spec d25d923d R-14, R-20; strip R-8a: the true state wins over a retry backoff.
 describe('overviewStatus', () => {
   const NOW = Date.UTC(2026, 0, 1, 14, 0, 0);
   const { tasks, gateFacts, kinds } = overviewWavesInput(10);
@@ -292,23 +292,33 @@ describe('overviewStatus', () => {
   });
   const board = (rows: unknown[]) => buildMissionBoard({ now: NOW, missionCreatedAt: 0, missionStatus: 'active', tasks: rows as never, gateFacts });
 
-  it('a re-queued task with red CI in a retry backoff reads Failed · CI failed and Retry in 3h 52m, never Ready', () => {
+  it('a re-queued task with red CI in a retry backoff reads Fixing · CI failed and Retry in 3h 52m, never Queued', () => {
     const m = board(redPr('ci_failed'));
-    expect(m.tasks[pendingId].status).toBe('ci_failed');
+    expect(m.tasks[pendingId].status).toBe('fixing');
     const st = overviewStatus(m, pendingId);
-    expect(st).toMatchObject({ word: 'Failed', cause: 'CI failed', tone: 'bad', retryAt: NOW + BACKOFF });
-    expect(overviewStatusText(st)).toBe('Failed · CI failed');
+    expect(st).toMatchObject({ word: 'Fixing', cause: 'CI failed', tone: 'act', retryAt: NOW + BACKOFF });
+    expect(overviewStatusText(st)).toBe('Fixing · CI failed');
     expect(retryText(st, NOW)).toBe('Retry in 3h 52m');
+    expect(RETRY_NOW).toBe('Retry now');
     expect(retryText(st, NOW + BACKOFF + 1)).toBeNull();
     const cell = overviewCells(m, overviewLayout(m).order).find(c => c.id === pendingId)!;
-    expect(cell.state).toBe('ci_failed');
-    expect(cell.word).toBe('Failed · CI failed');
+    expect(cell.state).toBe('fixing');
+    expect(cell.word).toBe('Fixing · CI failed');
     expect(overviewWaitCause(m, pendingId)).toBeNull();
     expect(m.tasks[pendingId].waitingKind).toBeUndefined();
   });
 
   it('a merge conflict names its cause', () => {
-    expect(overviewStatusText(overviewStatus(board(redPr('conflict')), pendingId))).toBe('Failed · Merge conflict');
+    expect(overviewStatusText(overviewStatus(board(redPr('conflict')), pendingId))).toBe('Fixing · Merge conflict');
+  });
+
+  it('a task the loop holds for its checks until a future start reads Fixing; once the start passes it is Queued again', () => {
+    const held = (startAt: number) => tasks.map(t => (t.id === pendingId ? { ...t, startAt, loopWebhookWait: true } : t));
+    expect(board(held(NOW + BACKOFF)).tasks[pendingId].status).toBe('fixing');
+    expect(overviewStatus(board(held(NOW + BACKOFF)), pendingId)).toMatchObject({ word: 'Fixing', retryAt: NOW + BACKOFF });
+    expect(board(held(NOW - 1)).tasks[pendingId].status).toBe('ready');
+    // A plain scheduled start with no red PR and no loop wait stays Queued.
+    expect(board(tasks.map(t => (t.id === pendingId ? { ...t, startAt: NOW + BACKOFF } : t))).tasks[pendingId].status).toBe('ready');
   });
 
   it('a running task ticks from its start and names its latest milestone and last event', () => {
@@ -316,12 +326,12 @@ describe('overviewStatus', () => {
     const rows = tasks.map(t => (t.id === runId
       ? { ...t, workers: [{ ...t.workers![0], startedAt: NOW - 724_000, updatedAt: NOW - 60_000, milestones: [{ ts: NOW - 120_000, label: 'Cloned repo' }, { ts: NOW - 14_000, label: 'Running unit tests' }] }] }
       : t));
-    expect(overviewStatus(board(rows), runId)).toMatchObject({ cause: 'Running unit tests', since: NOW - 724_000, lastEventAt: NOW - 14_000, retryAt: null, tone: 'act' });
+    expect(overviewStatus(board(rows), runId)).toMatchObject({ word: 'Running', cause: 'Running unit tests', since: NOW - 724_000, lastEventAt: NOW - 14_000, retryAt: null, tone: 'act' });
   });
 
-  it('a waiting task names its cause; a merged one reads Merged', () => {
+  it('a waiting task reads Queued and names its cause; a merged one reads Merged', () => {
     const m = board(tasks);
-    expect(overviewStatus(m, pendingId)).toMatchObject({ cause: 'Next in line', tone: 'q' });
+    expect(overviewStatus(m, pendingId)).toMatchObject({ word: 'Queued', cause: 'Next in line', tone: 'q' });
     expect(overviewStatus(m, tasks[0].id).word).toBe('Merged');
   });
 });

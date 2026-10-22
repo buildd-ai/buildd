@@ -828,15 +828,13 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   [data-dot="red"] { background: var(--status-error); }
   /* The running cell's hatch drifts: one 135° stripe period (6px × √2 across)
      every 2.4s, so it loops without a jump. */
-  .state-cell[data-drift] { animation: cell-drift 2.4s linear infinite; }
+  .state-cell[data-drift] { animation: cell-hatch-drift 2.4s linear infinite; }
 }
-@keyframes cell-drift {
+/* The drift runs under reduced motion too (R-4): a slow, small background
+   shift is the one cue that a task is live, not a decorative animation. */
+@keyframes cell-hatch-drift {
   from { background-position: 0 0; }
   to { background-position: 8.4853px 0; }
-}
-/* Unlayered, so it beats any layered animation: reduced motion keeps the hatch, still. */
-@media (prefers-reduced-motion: reduce) {
-  .state-cell[data-drift] { animation: none; }
 }
 
 /* ── Chat canvas (knowledge-base: buildd/design/chat-canvas.md). Two materials, one rule: the

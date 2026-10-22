@@ -254,6 +254,8 @@ export const CONTEXT_DIGEST_KEYS = [
   'reviewerFor',
   'budgetExhausted',
   'infraRetryCount',
+  // The loop holds a task for its PR's checks (loop-dispatcher-policy webhookHold): the bar reads Fixing until startAt.
+  'loopWebhookWait',
   // Which kind of deliverable a task is (`deliverableRole`, with `isTrunkRefreshTask`).
   ...DELIVERABLE_ROLE_CONTEXT_KEYS.values,
 ] as const;

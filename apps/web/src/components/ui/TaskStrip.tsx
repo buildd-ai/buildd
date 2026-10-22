@@ -294,7 +294,7 @@ function LargeStrip({ cells, selectedId, onSelect, onOpen, marks, capped = true,
                   data-frame={s.frame}
                   data-wait={c.wait}
                   data-look={look}
-                  // The running cell's hatch drifts (globals.css); reduced motion keeps it still.
+                  // The running cell's hatch drifts (globals.css), under reduced motion too (R-4).
                   data-drift={look && c.state === 'running' ? true : undefined}
                   className={`state-cell relative flex h-4 w-full shrink-0 items-center justify-center rounded-[var(--radius-cell)] font-mono text-chip font-semibold leading-none md:h-full ${selected ? 'md:[outline:2px_solid_var(--text-primary)] md:[outline-offset:2px]' : ''}`}
                 >

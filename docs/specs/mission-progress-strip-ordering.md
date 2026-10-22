@@ -231,7 +231,8 @@ in greyscale.
 | `review` | `border-status-success` | `fleet-hatch-ok` (vertical) | unchanged |
 | `running` | `border-accent` | `fleet-hatch-accent` (dense diagonal) | unchanged |
 | `waiting` | `border-accent`, 2.5px | `bg-card` (empty) | was shared with running; now `METER_CLASS.waiting` |
-| `ci_failed`, `failed`, `fixing` | `border-status-error` | `fleet-hatch-err` | unchanged |
+| `ci_failed`, `failed` | `border-status-error` | `fleet-hatch-err` | unchanged |
+| `fixing` | per `STATES.fixing` | per `STATES.fixing` | tone is **active**, not error (R-8a): buildd is retrying it |
 | `ready` | `border-border-strong` | `bg-card` (empty, no hatch) | **new**: an open slot, nothing holding it |
 | `blocked` | `border-[var(--fleet-border-mid)]` | `fleet-hatch` (dense diagonal, 2px/6px) | unchanged texture, now `blocked` only |
 | `queued` | `border-[var(--fleet-border-mid)]` | `fleet-hatch-future` (sparse diagonal, 1px/7px) | **new mapping**, existing class |
@@ -240,17 +241,21 @@ in greyscale.
 class strings, and the three fills MUST differ in texture (none / dense /
 sparse), not only in colour.
 
-### 3.2a A red PR wins over a backoff
+### 3.2a The true state wins over a backoff
 
-**R-8a**: a task whose PR has failing checks or a merge conflict MUST have
-the display state `ci_failed`, never `ready`, `blocked` or `queued`, even
-while it is pending behind a retry backoff (`tasks.startAt` in the future).
-The PR state comes from the page's one projection (`deriveFeedPrState` over
-the worker and the kernel's delivery display, in `deriveBoardStatus`); no new
-state store. Its words follow Navigation d25d923d R-14
-(`overviewStatus`): `Failed · CI failed` or `Failed · Merge conflict`, and
-the backoff as `Retry in 3h 52m` (`retryText`), never `Ready · Scheduled start`.
-Because this is the strip state, Home and `buildd top` read the same cell.
+**R-8a**: a re-queued task whose PR has failing checks or a merge conflict,
+or that the loop holds for its PR's checks (`tasks.context.loopWebhookWait`)
+with `tasks.startAt` in the future, MUST have the display state `fixing`,
+never `ready`, `blocked` or `queued`. buildd retries that failure by itself,
+so per Navigation d25d923d R-20 it is work in motion: `fixing` is not in the
+error bucket (`isErrorState` is `ci_failed` and `failed` only) and carries no
+red dot. The PR state comes from the page's one projection
+(`deriveFeedPrState` over the worker and the kernel's delivery display, in
+`deriveBoardStatus`); no new state store. Its words follow R-14
+(`overviewStatus`): `Fixing · CI failed` or `Fixing · Merge conflict`, with
+the backoff as `Retry in 3h 52m` (`retryText`) beside `Retry now`
+(`RETRY_NOW`), never `Queued · Scheduled start`. Because this is the strip
+state, Home and `buildd top` read the same cell.
 
 ### 3.2b The mission bar's looks (Navigation d25d923d R-4)
 
@@ -265,10 +270,13 @@ small amber dot, a failed one (`failed`, `ci_failed`) a small red dot
 terminal R-29) reads the same cells.
 
 **R-8c**: the `running` cell's hatch drifts slowly, one stripe period per
-2.4s, in CSS only (`.state-cell[data-drift]`). Nothing else on the bar moves.
-`prefers-reduced-motion: reduce` MUST stop the drift and keep the hatch,
-still (an unlayered rule in `globals.css`). Before this the running cell was
-static.
+2.4s, in CSS only (`.state-cell[data-drift]`, `@keyframes cell-hatch-drift`).
+Nothing else on the bar moves. The drift runs under
+`prefers-reduced-motion: reduce` too (Navigation R-4): it is a small, slow
+background shift and the one cue that a task is live, so no reduced-motion
+rule may set its animation to `none`
+(`apps/web/tests/acceptance/navigation-one-place.test.ts`). Before this the
+running cell was static.
 
 **R-8d**: a closed, unmerged PR whose replacement is known reads
 `Closed → #N` (the cell's word, `BoardTask.replacement`), from a close comment
@@ -279,9 +287,11 @@ completion or merge gate reads it.
 
 ### 3.3 Words
 
-`STATUS_PILL` and `STATUS_WORDS` gain the split: `ready` → "Ready" / "ready"
-(today "Queued" / "open" — the old pill word now belongs to the queued state),
-`blocked` → "Blocked" / "blocked", `queued` → "Queued" / "queued behind".
+The words come from the terms catalog (`packages/shared/src/terms.ts`), which
+follows Navigation d25d923d R-14: `ready` → "Queued", `blocked` and `queued`
+→ "Waiting on a task" (a surface that knows the task names it:
+`Waiting on <task>`), `running` → "Running", `fixing` → "Fixing". The three
+textures of R-8 still tell `ready`, `blocked` and `queued` apart.
 
 ---
 

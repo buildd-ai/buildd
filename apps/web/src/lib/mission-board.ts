@@ -90,6 +90,8 @@ export interface BoardTaskInput extends MissionFeedTaskInput {
   backend?: string | null;
   /** `tasks.startAt`, epoch ms: a deferred start (a retry's backoff). */
   startAt?: number | null;
+  /** `tasks.context.loopWebhookWait` is set: the loop holds the task until its PR's checks report. */
+  loopWebhookWait?: boolean;
   /** Newest first, as the mission query orders them. */
   workers: BoardWorkerInput[];
   /** The task's `result` digest (`errorType`, `error`): a dependency failure is read from it. */
@@ -570,6 +572,7 @@ export function toBoardTaskInput(t: Record<string, unknown> & { id: string; titl
     ciRetryPrNumber: num(t.ciRetryPrNumber),
     backend: str(t.backend),
     startAt: epoch(t.startAt),
+    loopWebhookWait: !!(t.contextDigest as { loopWebhookWait?: unknown } | null | undefined)?.loopWebhookWait,
     // The page's digest under its own key: a caller that loads no result (Home's cards) never touches `result`.
     result: t.resultDigest ?? null,
     delivery: (t.delivery as DeliveryDisplay | null | undefined) ?? null,
@@ -634,7 +637,7 @@ export function boardDeliveryReading(row: DeliverableRow<BoardTaskInput>): Deliv
   return asked ? null : deliveryReading(task.delivery);
 }
 
-export function deriveBoardStatus(row: DeliverableRow<BoardTaskInput>, depsLanded: boolean): BoardStatus {
+export function deriveBoardStatus(row: DeliverableRow<BoardTaskInput>, depsLanded: boolean, now: number = Date.now()): BoardStatus {
   const { task } = row;
   const kernel = boardDeliveryReading(row);
   if (kernel) return BOARD_STATUS_FOR_DELIVERY_TONE[kernel.tone];
@@ -658,9 +661,12 @@ export function deriveBoardStatus(row: DeliverableRow<BoardTaskInput>, depsLande
       return redPr || openAttempt ? 'fixing' : 'failed';
     case 'queued':
       if (openAttempt && pr) return 'fixing';
-      // The true state wins over a backoff: a re-queued task whose PR is red
-      // (failing checks, a conflict) is failed, never ready (strip §3.2a).
-      if (redPr) return 'ci_failed';
+      // The true state wins over a backoff (Navigation R-20): buildd retries a
+      // red PR (failing checks, a conflict) by itself, so a re-queued task
+      // whose PR is red, or that the loop holds for its checks until a future
+      // start, reads Fixing with when it resumes, never Ready.
+      if (redPr) return 'fixing';
+      if (task.loopWebhookWait && task.startAt != null && task.startAt > now) return 'fixing';
       return depsLanded ? 'ready' : 'blocked';
     case 'done':
       return pr?.state === 'merged' ? 'merged' : 'done';
@@ -758,8 +764,9 @@ export interface BoardCells {
 const sentence = (s: string) => (/[.!?]$/.test(s.trimEnd()) ? s.trimEnd() : `${s.trimEnd()}.`);
 
 export function buildBoardCells(
-  input: Pick<MissionBoardInput, 'tasks' | 'roles' | 'runnerHeartbeats' | 'externalDeps' | 'gateFacts'>,
+  input: Pick<MissionBoardInput, 'tasks' | 'roles' | 'runnerHeartbeats' | 'externalDeps' | 'gateFacts'> & { now?: number },
 ): BoardCells {
+  const now = input.now ?? Date.now();
   const roles = new Map((input.roles ?? []).map(r => [r.slug, r]));
   const displayOf = (w: BoardWorkerInput) => resolveRunnerDisplay(w, input.runnerHeartbeats);
   const allById = new Map(input.tasks.map(t => [t.id, t]));
@@ -806,7 +813,7 @@ export function buildBoardCells(
       otherMission: !allById.has(id),
     }));
     const frontier = reduceToFrontier([...offStrip.map(b => ({ id: b.id })), ...blockers.map(id => ({ id }))], reach).map(b => b.id);
-    const status = deriveBoardStatus(r, blockers.length === 0 && offStrip.length === 0);
+    const status = deriveBoardStatus(r, blockers.length === 0 && offStrip.length === 0, now);
     const openAttempt = [...r.attempts].reverse().find(a => !TERMINAL.has(a.status));
     const activeWorker = (status === 'fixing' && openAttempt?.workers[0]) || t.workers[0] || null;
     const own = t.workers[0] ?? null;

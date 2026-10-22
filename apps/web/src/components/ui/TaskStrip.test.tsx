@@ -230,10 +230,11 @@ describe('TaskStrip grouped looks', () => {
     expect(plain).not.toContain('data-drift');
   });
 
-  it('the drift is CSS only, and prefers-reduced-motion keeps the hatch still', () => {
+  it('the drift is CSS only, and keeps drifting under prefers-reduced-motion (R-4)', () => {
     const css = readFileSync(join(import.meta.dir, '..', '..', 'app', 'globals.css'), 'utf8');
-    expect(css).toMatch(/\.state-cell\[data-drift\] \{ animation: cell-drift/);
-    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\s*\.state-cell\[data-drift\] \{ animation: none; \}/);
+    expect(css).toMatch(/\.state-cell\[data-drift\] \{ animation: cell-hatch-drift/);
+    expect(css).toMatch(/@keyframes cell-hatch-drift/);
+    expect(css).not.toMatch(/data-drift\][^{]*\{[^}]*animation:\s*none/);
     expect(css).toMatch(/\.state-cell\[data-look="waiting"\] \{[^}]*dashed/);
   });
 });
