@@ -12,6 +12,7 @@ import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { assertDbConfigured, q, seedMission, seedWorkspace } from './harness';
 import type { SurfaceEvidence } from '@buildd/core/ui-verification';
+import { bindingFingerprint, criterionBindings } from '@buildd/spec-contract/verification-bindings';
 
 const { createSpecDraft } = await import('../../src/lib/specs/store');
 const { approveSpecRevision } = await import('../../src/lib/specs/approval');
@@ -84,8 +85,8 @@ async function storeCapture(workspaceId: string, workerId: string, content: unkn
 }
 
 /** An approved spec; a builder pinned to AC-1 and AC-2; a platform-filed audit depending on it, with one stored capture. */
-async function setup(opts: { auditCreatedByWorker?: boolean; content?: unknown } = {}) {
-  const d = await createSpecDraft(user(), { workspaceId: wsA, title: `Card ${rand()}`, body: BODY });
+async function setup(opts: { auditCreatedByWorker?: boolean; content?: unknown; body?: string } = {}) {
+  const d = await createSpecDraft(user(), { workspaceId: wsA, title: `Card ${rand()}`, body: opts.body ?? BODY });
   if (!d.ok) throw new Error(d.error);
   const a = await approveSpecRevision(user(), d.spec.id, { revision: 1, expectedVersion: 1 });
   if (!a.ok) throw new Error(a.error);
@@ -136,6 +137,26 @@ const outcome = async (taskId: string) => {
 };
 
 describe('registered verification on a task, with its production store', () => {
+  test('canonical key=value declarations are written, pinned, executed and read through the real store', async () => {
+    const body = BODY
+      .replace(JSON.stringify(STATE), 'verifier=ui.action-state@1 profile=buildd-ui@1 mode=required evidence=ui.text,ui.actions,ui.state')
+      .replace(JSON.stringify(CLARITY), 'verifier=ui.copy@1 profile=buildd-ui@1 mode=required evidence=ui.text,ui.actions');
+    const s = await setup({ body });
+    const h = harness({ model: modelPass });
+    const r = await dispatchRegisteredVerification({ taskId: s.builderId, headSha: HEAD }, h.deps);
+    expect(r.results).toHaveLength(2);
+    expect(r.results.every(x => x.recorded && x.verdict === 'pass')).toBe(true);
+    const canonical = criterionBindings(body).bindings;
+    const legacy = criterionBindings(BODY).bindings;
+    const rows = await verdictRows(s.builderId);
+    for (const row of rows) {
+      const binding = canonical.find(x => x.criterionId === row.criterion_id)!;
+      expect(row.evidence.bindingFingerprint).toBe(bindingFingerprint(binding));
+      expect(bindingFingerprint(binding)).toBe(bindingFingerprint(legacy.find(x => x.criterionId === row.criterion_id)!));
+    }
+    expect((await outcome(s.builderId)).criteria.every(c => c.verdict === 'pass')).toBe(true);
+  });
+
   test('AC-2: a deterministic check runs on the audit\'s own capture at the PR head and lands as a test verdict the outcome reads', async () => {
     const s = await setup();
     const h = harness({ model: modelPass });

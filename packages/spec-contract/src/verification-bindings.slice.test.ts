@@ -4,6 +4,7 @@ import { criterionRecords, otherTextBySection } from './criterion-records';
 import {
   MAX_VERIFICATION_SCENARIOS, criterionVerifications, criterionVerificationCoverage, criterionVerificationScenarios, verificationDeclarationError,
   type RegisteredBinding,
+  bindingFingerprint, criterionBindings, REGISTERED_VERIFIER_REGISTRY, verificationCoverage,
 } from './verification-bindings';
 
 const action: RegisteredBinding = { id: 'ui.actions_match_state', version: 1, profile: 'buildd.enterprise@1', mode: 'required' };
@@ -31,12 +32,14 @@ describe('criterionVerifications', () => {
     expect(a.fingerprint).not.toBe(differentCheck.fingerprint);
   });
 
-  it('AC-1: fingerprints the canonical full binding with portable SHA-256 identities', () => {
+  it('AC-1: fingerprints the same complete canonical binding for JSON and key=value declarations', () => {
     for (const id of ['ui.actions_match_state', 'ui.card_clarity'] as const) {
       for (const mode of ['required', 'advisory'] as const) {
         const binding: RegisteredBinding = { id, version: 1, profile: 'buildd.enterprise@1', mode };
-        const expected = createHash('sha256').update(JSON.stringify(binding)).digest('hex');
-        expect(criterionVerifications(`R-1: Actions.\n${line(binding)}`)[0].fingerprint).toBe(expected);
+        const canonical = criterionBindings(`R-1: Actions.\n${line(binding)}`, REGISTERED_VERIFIER_REGISTRY);
+        expect(canonical.refused).toEqual([]);
+        expect(canonical.bindings).toHaveLength(1);
+        expect(criterionVerifications(`R-1: Actions.\n${line(binding)}`)[0].fingerprint).toBe(bindingFingerprint(canonical.bindings[0]!));
       }
     }
   });
@@ -74,6 +77,39 @@ describe('criterionVerifications', () => {
     expect(hash(a.text)).toBe(hash(b.text));
     expect(otherTextBySection(before).get('UI')).toContain('"required"');
     expect(otherTextBySection(after).get('UI')).toContain('"advisory"');
+  });
+});
+
+describe('one registered binding contract', () => {
+  const canonical = 'verify: verifier=ui.action-state@1 profile=buildd-ui@1 mode=required evidence=ui.text,ui.actions,ui.state';
+  const legacy = `verify: ${JSON.stringify(action)}`;
+  const body = (declaration: string) => `R-1: Actions.\n ${declaration}\n scenarios: card@mobile`;
+
+  it('normalizes legacy aliases and shares fingerprints and coverage across both declaration forms', () => {
+    const json = criterionBindings(body(legacy));
+    const pairs = criterionBindings(body(canonical));
+    const aliases = criterionBindings(body('verify: verifier=ui.actions_match_state@1 profile=buildd.enterprise@1 mode=required evidence=ui.text,ui.actions,ui.state'));
+    expect(json).toEqual(pairs);
+    expect(aliases).toEqual(pairs);
+    expect(criterionVerifications(body(canonical))).toEqual(criterionVerifications(body(legacy)));
+    expect(verificationDeclarationError(body(canonical))).toBeNull();
+    expect(verificationCoverage(body(canonical), REGISTERED_VERIFIER_REGISTRY)).toEqual(verificationCoverage(body(legacy), REGISTERED_VERIFIER_REGISTRY));
+  });
+
+  it('refuses mixed-format duplicates and never hides malformed JSON declarations', () => {
+    const mixed = body(`${legacy}\n ${canonical}`);
+    expect(criterionBindings(mixed).refused).toEqual([expect.objectContaining({ reason: 'malformed', criterionId: 'R-1' })]);
+    expect(() => criterionVerifications(mixed)).toThrow(/R-1/);
+    expect(verificationCoverage(mixed, REGISTERED_VERIFIER_REGISTRY)[0].coverage).toBe('unsupported');
+    expect(criterionBindings(body('verify: {"id":"unknown"}')).refused).toEqual([expect.objectContaining({ reason: 'malformed' })]);
+  });
+
+  it('includes criterion and declared evidence in the identity without accepting omitted evidence', () => {
+    const parsed = criterionBindings(body(canonical)).bindings[0]!;
+    expect(bindingFingerprint({ ...parsed, criterionId: 'R-2' })).not.toBe(bindingFingerprint(parsed));
+    const pixels = canonical.replace('ui.state', 'ui.state,ui.pixels');
+    expect(criterionVerifications(body(pixels))[0].fingerprint).not.toBe(criterionVerifications(body(canonical))[0].fingerprint);
+    expect(criterionBindings(body(canonical.replace('ui.text,ui.actions,ui.state', 'ui.text'))).refused[0].reason).toBe('incompatible_evidence');
   });
 });
 
