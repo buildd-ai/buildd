@@ -196,6 +196,8 @@ describe('recordOutcome — trip rule', () => {
     'Task failed or was cancelled on remote server',
     'Deferred: another codex worker is active',
     'needs_input: which branch?',
+    'Worktree setup failed for branch buildd/c5aafb24-check-spec in /Users/x/buildd; refusing to run in the shared clone: git worktree add failed (timed out): branch "buildd/c5aafb24-check-spec" could not be created at /Users/x/buildd/.buildd-worktrees/buildd_c5',
+    'git checkout failed (timed out): branch "b" could not be created',
   ];
   for (const text of infra) {
     test(`no trip on infra-class failure: ${text.slice(0, 40)}`, () => {
