@@ -71,9 +71,9 @@ export function classifyHolderStall(input: {
   prClosedUnmerged?: boolean;
   now?: number;
 }): HolderStall | null {
-  const ctx = input.context as { credentialHold?: { releasedAt?: string; label?: string } } | null | undefined;
-  const hold = ctx?.credentialHold;
-  if (hold && typeof hold === 'object' && !hold.releasedAt) return { kind: 'credential_hold', label: typeof hold.label === 'string' ? hold.label : null };
+  const ctx = input.context && typeof input.context === 'object' ? (input.context as { credentialHold?: unknown }) : null;
+  const hold = ctx?.credentialHold && typeof ctx.credentialHold === 'object' ? (ctx.credentialHold as { releasedAt?: unknown; label?: unknown }) : null;
+  if (hold && !hold.releasedAt) return { kind: 'credential_hold', label: typeof hold.label === 'string' ? hold.label : null };
   const at = input.startAt ? new Date(input.startAt).getTime() : NaN;
   if (Number.isFinite(at) && at - (input.now ?? Date.now()) > HOLDER_DEFERRED_STALL_MS) return { kind: 'deferred', until: new Date(at).toISOString() };
   if (input.prClosedUnmerged) return { kind: 'pr_closed_unmerged' };
