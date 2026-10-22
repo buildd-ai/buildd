@@ -1,15 +1,16 @@
 'use client';
 
 /**
- * Home's one-tap Needs-you cards: a parked worker's question (answer with one
- * tap, or a note — POSTs the existing /api/workers/[id]/respond route) and a
- * held mission (Arm).
+ * Home's one-tap Needs-you cards: a parked worker's question (the one
+ * decision card every surface shares, Navigation d25d923d R-16) and a held
+ * mission (Arm). Home keeps its own layout; only the card takes that shape.
  */
 import { MISSION_START_COPY, type MissionStartState } from '@/lib/mission-start-state';
 import Link from 'next/link';
-import { useState, useTransition } from 'react';
-import { useRouter } from 'next/navigation';
 import { ArmButton } from '@/components/missions/MissionListCards';
+import DecisionCard from '@/components/DecisionCard';
+import { decisionFromQuestion, type DecisionView } from '@/lib/needs-you-card';
+import { taskPageHref } from '@/lib/mission-task-href';
 import type { UnifiedQuestion } from '../tasks/[id]/question-hero';
 
 export interface HomeQuestion {
@@ -29,103 +30,25 @@ export function splitOption(opt: string): { main: string; sub: string | null } {
   return m ? { main: m[1], sub: m[2] } : { main: opt, sub: null };
 }
 
-function ago(iso: string | null): string {
-  if (!iso) return '';
-  const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
-  return m < 1 ? 'just now' : m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h ago`;
+/**
+ * A Home question as the shared decision card reads it (Navigation R-16):
+ * the task it belongs to (its page is where the full answer lives), its
+ * age, the brief, and the worker the answer goes to. Home does not load who
+ * waits on the task; the mission page names them.
+ */
+export function questionDecisionView(q: HomeQuestion): DecisionView {
+  return decisionFromQuestion({
+    key: `question:${q.taskId ?? q.workerId}`,
+    question: q.question,
+    task: q.taskId ? { id: q.taskId, title: q.label, href: q.href ?? taskPageHref({ taskId: q.taskId }) } : null,
+    askedAt: q.askedAt ? new Date(q.askedAt).getTime() : null,
+    answer: { kind: 'worker', workerId: q.workerId, taskId: q.taskId, noteId: q.question.noteId },
+  });
 }
 
-export function QuestionCard({ q }: { q: HomeQuestion }) {
-  const router = useRouter();
-  const [note, setNote] = useState('');
-  const [sent, setSent] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
-  const { headline, context, body } = q.question;
-  // The agent's default first, so it is the highlighted one-tap answer.
-  const options = [...q.question.options].sort((a, b) => Number(b.recommended) - Number(a.recommended));
-
-  async function send(message: string) {
-    if (!message.trim() || sent) return;
-    setSent(message);
-    setError(null);
-    try {
-      const res = await fetch(`/api/workers/${encodeURIComponent(q.workerId)}/respond`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: message.trim() }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Could not send the answer');
-      }
-      startTransition(() => router.refresh());
-    } catch (e: any) {
-      setSent(null);
-      setError(e?.message || 'Could not send the answer');
-    }
-  }
-
-  return (
-    <article data-testid="needs-you-card" data-kind="question" className="card border-l-[6px] border-l-status-warning px-4 py-4 md:px-6">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <span className="inline-flex items-center gap-2 font-mono text-[11px] font-bold uppercase tracking-[1.5px] text-status-warning">
-          <span aria-hidden="true" className="grid h-[18px] w-[18px] place-items-center border border-status-warning text-[11px]">?</span>
-          Question
-        </span>
-        <span className="truncate font-mono text-[11px] text-text-muted">
-          {[q.label, q.runnerName, ago(q.askedAt)].filter(Boolean).join(' · ')}
-        </span>
-      </div>
-      <p className="mb-1.5 font-mono text-[13px] leading-relaxed text-text-primary">{headline}</p>
-      {(context ?? body) && (
-        <p data-testid="needs-you-context" className="mb-3.5 line-clamp-3 font-mono text-[12px] leading-relaxed text-text-secondary [overflow-wrap:anywhere]">{context ?? body}</p>
-      )}
-      {options.length > 0 && (
-        <div className="mb-2.5 mt-2 grid grid-cols-2 gap-2.5">
-          {options.slice(0, 4).map((opt, i) => {
-            const split = splitOption(opt.label);
-            const main = opt.description ? opt.label : split.main;
-            const sub = opt.description ?? split.sub;
-            return (
-              <button
-                key={opt.label}
-                type="button"
-                data-testid="needs-you-answer"
-                disabled={!!sent || pending}
-                onClick={() => send(opt.label)}
-                className={`flex min-h-12 flex-col items-center justify-center border-2 px-2 py-1.5 font-mono disabled:opacity-60 ${
-                  i === 0 ? 'border-primary bg-primary text-white shadow-sm' : 'border-border-strong bg-surface-3 text-text-primary'
-                }`}
-              >
-                <span className="text-[13px] font-semibold">{sent === opt.label ? 'Sent…' : main}</span>
-                {sub && <span className={`line-clamp-2 text-[11px] ${i === 0 ? 'text-white/85' : 'text-text-muted'}`}>{sub}</span>}
-              </button>
-            );
-          })}
-        </div>
-      )}
-      <form
-        className="flex gap-2.5"
-        onSubmit={(e) => { e.preventDefault(); send(note); }}
-      >
-        <input
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          placeholder="Reply with a note…"
-          aria-label="Reply with a note"
-          disabled={!!sent}
-          className="min-h-11 min-w-0 flex-1 border-2 border-border-default bg-surface-1 px-3 font-mono text-[13px] text-text-primary placeholder:text-text-muted focus:border-primary focus:outline-none"
-        />
-        {q.href && (
-          <Link href={q.href} className="inline-flex min-h-11 items-center border-2 border-border-default px-3 font-mono text-[12.5px] text-text-primary hover:bg-surface-3">
-            Open task
-          </Link>
-        )}
-      </form>
-      {error && <p role="alert" className="mt-2 font-mono text-[11px] text-status-error">{error}</p>}
-    </article>
-  );
+/** A parked worker's question on Home: the one decision card. */
+export function QuestionCard({ q, now = Date.now(), onAnswered }: { q: HomeQuestion; now?: number; onAnswered?: (label: string) => void }) {
+  return <DecisionCard view={questionDecisionView(q)} now={now} onAnswered={onAnswered} testId="needs-you-card" />;
 }
 
 export interface HomeHeldMission {
