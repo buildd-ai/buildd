@@ -5,10 +5,10 @@
  * On Windows `codex exec --sandbox workspace-write` without `windows.sandbox`
  * set silently runs read-only, so the runner names the mode on every Codex run
  * and the probe checks that mode actually confines. buildd uses the
- * `unelevated` mode only: a restricted token for the runner's own user, which
+ * explicitly verified MXC when available, else a restricted token for the runner's own user, which
  * needs no admin rights and changes nothing on the host. It confines writes to
  * the workspace and temp dirs but leaves the network open. The `elevated` mode
- * also blocks the network, but sets itself up per CODEX_HOME by creating local
+ * can restrict the network, but sets itself up per CODEX_HOME by creating local
  * accounts and firewall rules: a host security change buildd does not make.
  *
  * Namespace imports, not named ones: tests across the suite mock
@@ -28,6 +28,9 @@ export const CODEX_WINDOWS_SANDBOX_MODE = 'unelevated';
 
 /** The Codex config override that selects it, for the SDK's `config` option. */
 export const CODEX_WINDOWS_SANDBOX_CONFIG = { windows: { sandbox: CODEX_WINDOWS_SANDBOX_MODE } } as const;
+export type WindowsSandboxImplementation = 'mxc' | 'unelevated';
+export type WindowsSandboxMode = 'read-only' | 'workspace-write';
+export type WindowsSandboxModes = Record<WindowsSandboxMode, WindowsSandboxImplementation | null>;
 
 const WINDOWS_TRIPLE: Record<string, string> = { x64: 'x86_64-pc-windows-msvc', arm64: 'aarch64-pc-windows-msvc' };
 
@@ -53,27 +56,31 @@ export function resolveCodexBinary(env: Record<string, string | undefined> = pro
 
 export interface CodexSandboxRun {
   /** Runs `codex sandbox ... -- cmd.exe /d /c <command>` in `cwd`; true when it exited 0. */
-  (codexBin: string, cwd: string, codexHome: string, command: string): boolean;
+  (codexBin: string, cwd: string, codexHome: string, command: string, implementation?: WindowsSandboxImplementation, mode?: WindowsSandboxMode): boolean;
 }
 
 // The temp dirs stay out of the probe's writable roots: in a fresh CODEX_HOME,
 // Codex first grants its sandbox ACLs on every writable root, and on %TEMP%
 // that took about a minute on a real host. (`-C` is not used: it requires a
 // permissions profile; the spawn's cwd is the workspace.)
-const runInCodexSandbox: CodexSandboxRun = (codexBin, cwd, codexHome, command) => {
+export const runInCodexSandbox: CodexSandboxRun = (codexBin, cwd, codexHome, command, implementation = 'unelevated', mode = 'workspace-write') => {
   const r = childProcess.spawnSync(
     codexBin,
     [
       'sandbox',
-      '-c', `windows.sandbox="${CODEX_WINDOWS_SANDBOX_MODE}"`,
-      '-c', 'sandbox_mode="workspace-write"',
+      '--include-managed-config',
+      '--permission-profile', mode === 'read-only' ? ':read-only' : ':workspace',
+      '-c', `windows.sandbox="${implementation}"`,
+      '-c', 'features.prefer_mxc=false',
+      '-c', `sandbox_mode="${mode}"`,
+      '-c', 'sandbox_workspace_write.network_access=true',
       '-c', 'sandbox_workspace_write.exclude_tmpdir_env_var=true',
       '-c', 'sandbox_workspace_write.exclude_slash_tmp=true',
       '--', 'cmd.exe', '/d', '/c', command,
     ],
     { cwd, env: { ...process.env, CODEX_HOME: codexHome }, timeout: 20_000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
   );
-  return r.status === 0;
+  return r.status === 0 && r.stdout?.toString().includes('BUILDD_SANDBOX_CONTROL_OK') === true;
 };
 
 export interface CodexWindowsProbeDeps {
@@ -81,6 +88,8 @@ export interface CodexWindowsProbeDeps {
   run: CodexSandboxRun;
   /** Where the probe's workspace and its outside target go: not under the temp dir. */
   probeRoot(): string;
+  /** Startup rechecks the actual worker home, including managed requirements. */
+  codexHome?: string;
 }
 
 const realDeps: CodexWindowsProbeDeps = {
@@ -94,7 +103,7 @@ const realDeps: CodexWindowsProbeDeps = {
  * started": a write inside the workspace must succeed and a write outside it
  * must be refused. Throwaway CODEX_HOME and dirs, removed afterwards.
  */
-export function probeCodexWindowsSandbox(deps: CodexWindowsProbeDeps = realDeps): boolean {
+export function probeCodexWindowsSandbox(deps: CodexWindowsProbeDeps = realDeps, implementation: WindowsSandboxImplementation = 'unelevated', mode: WindowsSandboxMode = 'workspace-write'): boolean {
   const bin = deps.codexBin();
   if (!bin) return false;
   let ws: string | null = null;
@@ -105,17 +114,54 @@ export function probeCodexWindowsSandbox(deps: CodexWindowsProbeDeps = realDeps)
     fs.mkdirSync(root, { recursive: true });
     ws = fs.mkdtempSync(join(root, 'codex-sbx-ws-'));
     outside = fs.mkdtempSync(join(root, 'codex-sbx-out-'));
-    home = fs.mkdtempSync(join(tmpdir(), 'buildd-codex-sbx-home-'));
+    home = deps.codexHome ?? fs.mkdtempSync(join(tmpdir(), 'buildd-codex-sbx-home-'));
+    // Positive host control: absence is meaningful only for a writable target.
+    const escaped = join(outside, 'escaped.txt');
+    fs.writeFileSync(escaped, 'host-control');
+    fs.unlinkSync(escaped);
     // Relative targets: the names are ours and carry no spaces, so cmd needs no quoting.
-    const wroteInside = deps.run(bin, ws, home, 'echo ok> inside.txt') && fs.existsSync(join(ws, 'inside.txt'));
-    if (!wroteInside) return false;
-    deps.run(bin, ws, home, `echo x> ..\\${basename(outside)}\\escaped.txt`);
-    return !fs.existsSync(join(outside, 'escaped.txt'));
+    // Always finish successfully when cmd actually ran, even if the write was
+    // denied. A launch failure/timeout is not evidence of confinement.
+    const insideRan = deps.run(bin, ws, home, '(echo ok> inside.txt) 2>nul & echo BUILDD_SANDBOX_CONTROL_OK', implementation, mode);
+    if (!insideRan || fs.existsSync(join(ws, 'inside.txt')) !== (mode === 'workspace-write')) return false;
+    const outsideRan = deps.run(bin, ws, home, `(echo x> ..\\${basename(outside)}\\escaped.txt) 2>nul & echo BUILDD_SANDBOX_CONTROL_OK`, implementation, mode);
+    return outsideRan && !fs.existsSync(join(outside, 'escaped.txt'));
   } catch {
     return false;
   } finally {
-    for (const dir of [ws, home, outside]) {
+    for (const dir of [ws, deps.codexHome ? null : home, outside]) {
       if (dir) try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
     }
   }
+}
+
+/** Explicit MXC fails closed; never use prefer_mxc's implicit legacy fallback.
+ * Elevated setup can provision accounts/firewall per home, so it is deliberately
+ * not a candidate. Both implementations remain write-only in buildd: the worker
+ * requires network_access=true for git/MCP. No network scope is inferred here.
+ */
+export function probeCodexWindowsModes(deps: CodexWindowsProbeDeps = realDeps): WindowsSandboxModes {
+  const result: WindowsSandboxModes = { 'read-only': null, 'workspace-write': null };
+  for (const mode of ['read-only', 'workspace-write'] as const) {
+    for (const implementation of ['mxc', 'unelevated'] as const) {
+      if (probeCodexWindowsSandbox(deps, implementation, mode)) {
+        result[mode] = implementation;
+        break;
+      }
+    }
+  }
+  return result;
+}
+
+/** No fallback on startup failure, even for an opted-in run: its advertised
+ * confinement is no longer verified. The caller must report the failed attempt.
+ */
+export function verifiedWindowsSandboxConfig(
+  binary: string, home: string, mode: WindowsSandboxMode, implementation: WindowsSandboxImplementation,
+  deps: Pick<CodexWindowsProbeDeps, 'run' | 'probeRoot'> = realDeps,
+) {
+  if (!binary || !home || !probeCodexWindowsSandbox({ ...deps, codexBin: () => binary, codexHome: home }, implementation, mode)) {
+    throw new Error(`Windows sandbox startup probe failed (${implementation}, ${mode}); not running with less confinement.`);
+  }
+  return { windows: { sandbox: implementation }, features: { prefer_mxc: false }, sandbox_workspace_write: { network_access: true } };
 }

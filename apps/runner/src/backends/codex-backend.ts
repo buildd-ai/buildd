@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { AgentBackend, RunStreamedOpts, BackendEvent } from './types.js';
 import { isolationReasonText, isolationRemediation, type BackendConfinement, type RunnerHostPlatform } from '@buildd/shared';
-import { CODEX_WINDOWS_SANDBOX_CONFIG } from '../codex-windows-sandbox.js';
+import { resolveCodexBinary, verifiedWindowsSandboxConfig } from '../codex-windows-sandbox.js';
 import { mapCodexEventToSdkMessages } from './codex-events.js';
 import { catalogPriceFor } from '@buildd/core/model-prices';
 import { SESSION_BUDGET_CAP_ERROR } from '../claim-budget-signals.js';
@@ -69,18 +69,25 @@ export class CodexBackend implements AgentBackend {
     // the one bundled with @openai/codex-sdk. The bundled binary's version gates
     // which models are accepted; a host with a newer codex CLI can run newer
     // account models (e.g. gpt-5.5) that the bundled binary rejects.
-    const codexPathOverride = opts.env?.CODEX_PATH_OVERRIDE || process.env.CODEX_PATH_OVERRIDE;
-    const spawnEnv = auth.codexHome
-      ? { ...(opts.env || {}), CODEX_HOME: auth.codexHome }
+    let codexPathOverride = opts.env?.CODEX_PATH_OVERRIDE || process.env.CODEX_PATH_OVERRIDE;
+    const workerHome = auth.codexHome || this.config.codexHome || opts.env?.CODEX_HOME || process.env.CODEX_HOME;
+    const spawnEnv = workerHome
+      ? { ...(opts.env || {}), CODEX_HOME: workerHome }
       : opts.env;
+    let windowsConfig;
+    if (sandbox !== 'danger-full-access' && (opts.sandboxConfinement?.mechanism === 'windows_restricted_token' || opts.sandboxConfinement?.mechanism === 'windows_mxc')) {
+      const selected = opts.sandboxConfinement.windowsSandbox;
+      // Pin SDK execution to the probed executable, not PATH or a task override.
+      codexPathOverride = selected?.binary ?? resolveCodexBinary() ?? undefined;
+      windowsConfig = verifiedWindowsSandboxConfig(codexPathOverride ?? '', workerHome ?? '',
+        opts.sandboxMode ?? 'workspace-write', selected?.implementation ?? 'unelevated');
+    }
     const codex = new Codex({
       ...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
       // On Windows, Codex without `windows.sandbox` runs workspace-write as
       // read-only; the runner probed this mode (./codex-windows-sandbox) and
       // names it so the sandbox the record reports is the one that runs.
-      ...(opts.sandboxConfinement?.mechanism === 'windows_restricted_token' && sandbox !== 'danger-full-access'
-        ? { config: CODEX_WINDOWS_SANDBOX_CONFIG }
-        : {}),
+      ...(windowsConfig ? { config: windowsConfig } : {}),
       workingDirectory: opts.cwd,
       ...(opts.env?.OPENAI_BASE_URL ? { baseUrl: opts.env.OPENAI_BASE_URL } : {}),
       ...(codexPathOverride ? { codexPathOverride } : {}),
