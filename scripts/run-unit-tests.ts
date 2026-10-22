@@ -42,12 +42,7 @@ const UNIT_TEST_ROOTS = [
  * the unit gate must not collect them; scripts/run-acceptance-tests.ts runs them
  * per criterion. The build task removes each entry once its file passes.
  */
-export const ACCEPTANCE_ONLY_TESTS: readonly string[] = [
-  // R-6 expects dispatchCriterionChecks to file a runner task per `verify:`
-  // binding; the shipped design runs registered checks in-process on the same
-  // PR events instead. Left red pending a decision on that criterion.
-  'apps/web/src/lib/specs/registered-verification.test.ts',
-];
+export const ACCEPTANCE_ONLY_TESTS: readonly string[] = [];
 
 export function isUnitTestFile(path: string): boolean {
   if (ACCEPTANCE_ONLY_TESTS.includes(path)) return false;
