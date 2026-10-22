@@ -87,6 +87,7 @@ import { advertisedRoleSlugs } from './role-advertising';
 import { outputRequirementNudge } from './output-requirement-nudge';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
+import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepairSection, type DeferredReadiness } from './resumed-readiness';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate } from './update-drain';
@@ -2970,6 +2971,7 @@ export class WorkerManager {
         // so later steps (git stats, the prompt, parking) read the ref the
         // worktree really uses instead of re-deriving it.
         worker.worktreeBaseRef = setupResult.base;
+        worker.resumedFrom = setupResult.resumed?.from;
         // The PR's base, which the path-claim sweep measures against. Read
         // after setup: a fallback to a fresh base has already cleared the
         // resume fields from the context.
@@ -4800,6 +4802,7 @@ export class WorkerManager {
       // Codex has no such tool. See @buildd/shared claude-ai-artifacts.ts.
       applyClaudeAiArtifactEnv(cleanEnv, isCodexTask ? 'off' : (worker.claudeAiArtifacts ?? 'off'));
 
+      let deferredReadiness: DeferredReadiness | null = null;
       // Provision gate — prove the environment is runnable BEFORE the budget loop.
       // cleanEnv is now fully assembled (server creds + connector + role secrets),
       // so env.required is validated against exactly what the agent will see, not
@@ -4842,7 +4845,23 @@ export class WorkerManager {
             const dur = s.durationMs != null ? ` (${s.durationMs}ms)` : '';
             console.log(`[Worker ${worker.id}] provision ${s.status} [${s.phase}] ${s.label} — ${s.message}${dur}`);
           }
-          if (!gate.ok) {
+          // A resumed checkpoint that fails ONLY readiness is this task's own
+          // unfinished work: start the session to repair it rather than block
+          // every retry before an agent turn. The check is re-run before every
+          // ship (createResumedReadinessGuard below). A fresh claim, or any other
+          // phase, still blocks. See resumed-readiness.ts.
+          deferredReadiness = gate.ok ? null : deferrableReadinessFailure({
+            gate,
+            resumed: worker.resumedFrom ? { from: worker.resumedFrom } : resumeSessionId ? { from: worker.branch } : null,
+            canEnforceAtShip: !isCodexTask,
+            root: cwd,
+          });
+          if (deferredReadiness) {
+            const label = `Readiness fails on the resumed branch — repairing it first (${deferredReadiness.message})`;
+            console.warn(`[Worker ${worker.id}] ${label}`);
+            sessionLog(worker.id, 'warn', 'readiness_deferred_for_repair', `${deferredReadiness.step.command}: ${deferredReadiness.message}`, worker.taskId);
+            this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+          } else if (!gate.ok) {
             this.addMilestone(worker, { type: 'status', label: 'Provision failed', ts: Date.now() });
             // Attach the stable failure classification so the outer catch can
             // surface it as structured resultMeta (server/organizer act on the code).
@@ -4850,8 +4869,10 @@ export class WorkerManager {
             provErr.provisionFailure = gate.failure;
             throw provErr;
           }
-          console.log(`[Worker ${worker.id}] Environment verified${gate.cached ? ' (cached)' : ''}`);
-          this.addMilestone(worker, { type: 'status', label: gate.cached ? 'Environment verified (cached)' : 'Environment verified', ts: Date.now() });
+          if (gate.ok) {
+            console.log(`[Worker ${worker.id}] Environment verified${gate.cached ? ' (cached)' : ''}`);
+            this.addMilestone(worker, { type: 'status', label: gate.cached ? 'Environment verified (cached)' : 'Environment verified', ts: Date.now() });
+          }
         }
       } catch (gateErr) {
         const msg = gateErr instanceof Error ? gateErr.message : String(gateErr);
@@ -4915,6 +4936,9 @@ export class WorkerManager {
       });
       if (retryContinuitySection) {
         systemPrompt.append = (systemPrompt.append ?? '') + retryContinuitySection;
+      }
+      if (deferredReadiness) {
+        systemPrompt.append = (systemPrompt.append ?? '') + readinessRepairSection(deferredReadiness);
       }
       if (worker.derivedMergeNote) {
         systemPrompt.append = (systemPrompt.append ?? '') + worker.derivedMergeNote;
@@ -5435,6 +5459,21 @@ export class WorkerManager {
                 matcher: BUILDD_MCP_TOOL_MATCHER,
                 timeout: Math.ceil(VERIFICATION_COMMAND_TIMEOUT_MS / 1000) + 30,
                 hooks: [this.hookFactory.createLoopVerificationHook(worker, () => this.runLoopVerification(worker, task, cwd))],
+              }]
+            : []),
+          // Resumed checkpoint that failed readiness at start: re-run the same
+          // command before every push, create_pr and successful complete_task,
+          // and refuse the call until it passes (resumed-readiness.ts). Only
+          // ever set for a backend with this seam, so never for Codex.
+          ...(deferredReadiness
+            ? [{
+                timeout: Math.ceil((deferredReadiness.step.timeoutMs ?? 180_000) / 1000) + 15,
+                hooks: [createResumedReadinessGuard({
+                  deferred: deferredReadiness,
+                  cwd,
+                  env: cleanEnv,
+                  milestone: (label) => this.addMilestone(worker, { type: 'status', label, ts: Date.now() }),
+                })],
               }]
             : []),
           // Workspace preflight (workflow-state-kernel.md §6.10, S31): the cheap
