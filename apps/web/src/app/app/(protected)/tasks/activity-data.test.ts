@@ -43,13 +43,14 @@ const NOW = Date.parse('2026-10-18T12:00:00Z');
 // Rows come back positionally, in the order of the select's fields.
 const taskRow = (id: string, over: Partial<Record<string, unknown>> = {}) => {
   const r = { id, title: `Task ${id}`, status: 'completed', mode: null, taskClass: 'work', parentTaskId: null, missionId: null,
-    createdAt: NOW - 3_600_000, updatedAt: NOW - 1_800_000, dependsOn: null, reviewVerdict: null, reviewHeadSha: null, ...over };
+    createdAt: NOW - 3_600_000, updatedAt: NOW - 1_800_000, dependsOn: null, reviewVerdict: null, reviewHeadSha: null,
+    createdByUserId: null, requesterSource: null, createdByWorkerId: null, specSource: null, ...over };
   return Object.values(r);
 };
 
-async function load(tab: 'now' | 'history', scope: Record<string, unknown> = {}) {
+async function load(tab: 'now' | 'history', scope: Record<string, unknown> = {}, extra: Partial<Parameters<typeof loadActivity>[0]> = {}) {
   statements.length = 0;
-  return loadActivity({ scope: { workspaceIds: WS, ...scope }, tab, localHolds: new Map(), now: NOW, rules });
+  return loadActivity({ scope: { workspaceIds: WS, ...scope }, tab, localHolds: new Map(), now: NOW, rules, ...extra });
 }
 
 describe('task reads', () => {
@@ -260,5 +261,66 @@ describe('live work with context (spec 9430a28f R-2, R-3)', () => {
     expect(out.history.filter(e => e.event === 'created').map(e => e.id)).toEqual(['created:m-new']);
     const now = await load('now');
     expect(now.now.groups.find(g => g.missionId === 'm-new')?.isNew).toBe(true);
+  });
+});
+
+describe('attribution and verification (spec 9430a28f R-4, R-6, AC-4)', () => {
+  const ME = '00000000-0000-4000-8000-0000000000e1';
+  const ADA = '00000000-0000-4000-8000-0000000000e2';
+
+  it('reads the recorded lineage columns and only the spec pin out of context', async () => {
+    answer = (s) => (isRecentRead(s) ? [taskRow('r1')] : []);
+    await load('history');
+    const head = norm(statements.find(isRecentRead)!).split(' from "tasks"')[0];
+    expect(head).toContain('"created_by_user_id"');
+    expect(head).toContain('"requester_source"');
+    expect(head).toContain('"created_by_worker_id"');
+    expect(head).toContain(`"context"->'specsource' end`);
+  });
+
+  it('attributes only recorded lineage, names people from users, and offers identity filters when they can be answered', async () => {
+    answer = (s) => {
+      if (isRecentRead(s)) return [
+        taskRow('r1', { createdByUserId: ME, requesterSource: 'explicit' }),
+        taskRow('r2', { createdByUserId: ADA, requesterSource: 'parent', createdByWorkerId: 'w-1' }),
+        taskRow('r3', { createdByUserId: ADA, requesterSource: null }),
+        taskRow('r4'),
+      ];
+      if (norm(s).includes(' from "users"')) return [[ADA, 'Ada']];
+      return [];
+    };
+    const out = await load('history', {}, { viewerUserId: ME });
+    const text = new Map(out.history.map(e => [e.id, e.attribution?.text]));
+    expect(Object.fromEntries(text)).toEqual({ r1: 'Filed by you', r2: 'For Ada · filed by an agent', r3: 'Unattributed', r4: 'Unattributed' });
+    expect(out.identityFilters).toBe(true);
+    const users = statements.find(s => norm(s).includes(' from "users"'))!;
+    expect(norm(users)).toContain('"users"."id" in ($, $)');
+  });
+
+  it('with no viewer or no recorded lineage, no identity filter is offered', async () => {
+    answer = (s) => (isRecentRead(s) ? [taskRow('r1')] : []);
+    expect((await load('history', {}, { viewerUserId: ME })).identityFilters).toBe(false);
+    answer = (s) => (isRecentRead(s) ? [taskRow('r1', { createdByUserId: ME, requesterSource: 'explicit' })] : []);
+    expect((await load('history')).identityFilters).toBe(false);
+  });
+
+  it('asks for verification only for pinned roots, and shows the claims it returns', async () => {
+    const pin = { specId: 's1', specRevisionId: 'sr1' };
+    answer = (s) => (isRecentRead(s) ? [taskRow('r1', { specSource: pin }), taskRow('r2')] : []);
+    let asked: string[] = [];
+    const claim = { state: 'passed', label: 'Verified' } as never;
+    const out = await load('history', {}, {
+      readVerifications: async (roots) => { asked = roots.map(r => r.id); return new Map([['r1', claim]]); },
+    });
+    expect(asked).toEqual(['r1']);
+    expect(out.history.find(e => e.id === 'r1')?.verification).toBe(claim);
+    expect(out.history.find(e => e.id === 'r2')?.verification).toBeNull();
+  });
+
+  it('a verification read that fails shows no claim rather than failing the page', async () => {
+    const pin = { specId: 's1', specRevisionId: 'sr1' };
+    answer = (s) => (isRecentRead(s) ? [taskRow('r1', { specSource: pin })] : []);
+    const out = await load('history', {}, { readVerifications: async () => { throw new Error('down'); } });
+    expect(out.history.find(e => e.id === 'r1')?.verification).toBeNull();
   });
 });

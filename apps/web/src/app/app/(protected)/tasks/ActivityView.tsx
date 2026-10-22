@@ -11,6 +11,12 @@
  * transition and created time) with the reviews and repairs derived from it
  * folded beneath. New work carries a New marker where it already is.
  * History is day sections with a tally and "Show more", filtered by outcome.
+ * Highlights (the default) tell each delivery's meaningful steps; All
+ * activity tells every step (spec 9430a28f R-5).
+ * A recorded spec verification shows on its row or episode; nothing is shown
+ * where none was recorded (R-6). Who work is for shows only from recorded
+ * lineage, else "Unattributed"; the identity filters appear only when the
+ * page says they can be answered, and never hide unattributed work from All (R-4).
  */
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
@@ -24,9 +30,12 @@ import Disclosure from '@/components/ui/Disclosure';
 import { STATES, TONE_TEXT as STATE_TONE_TEXT, type StateKey } from '@/components/ui/states';
 import { DELIVERY_KIND, repairBadge, type DeliveryKind } from '@/lib/delivery-projection';
 import {
-  age, filterEpisodes, filterNow,
+  age, filterEpisodes, filterNow, hiddenUnattributed,
   type ActivityNow, type ActivityOutcome, type ActivityScope, type DerivedChild, type EvidenceEntry, type Episode, type NowGroup, type NowRow, type Transition,
 } from '@/lib/activity-delivery';
+import type { ActivityWho, Attribution } from '@/lib/activity-attribution';
+import type { VerificationClaim } from '@/lib/activity-verification';
+import type { HistoryLens } from '@/lib/mission-history-episodes';
 import type { LocalSessionView } from '@/lib/local-session-view';
 import { groupSessionsForDisplay } from '@/lib/local-session-display';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
@@ -56,7 +65,9 @@ export interface ActivityViewProps {
   /** The load hit its root cap: History reaches back only to this time, not the full window. */
   historyReach?: { oldestAt: string } | null;
   /** Filters to start with (fixtures). The filters are kept across Now and History. */
-  initialFilters?: { scope?: ActivityScope; outcome?: ActivityOutcome };
+  initialFilters?: { scope?: ActivityScope; outcome?: ActivityOutcome; who?: ActivityWho };
+  /** "For me" / "Filed by me" can be answered from recorded lineage; otherwise they are not offered. */
+  identityFilters?: boolean;
 }
 
 /** History's outcome chips, in the prototype's words. */
@@ -79,6 +90,19 @@ const BREAKDOWN: ReadonlyArray<{ kind: DeliveryKind; word: string }> = [
   { kind: 'notlanded', word: TERMS['pr.closed'].word.toLowerCase() },
 ];
 const NOT_STARTED: ReadonlySet<DeliveryKind> = new Set(['waiting', 'held', 'planning']);
+
+/** Identity filters, offered only when recorded lineage can answer them. "All" is everyone's work, unattributed included. */
+const WHO: ReadonlyArray<{ key: ActivityWho; label: string }> = [
+  { key: 'all', label: 'All' },
+  { key: 'for-me', label: 'For me' },
+  { key: 'filed-by-me', label: 'Filed by me' },
+];
+
+/** History's two lenses, in Mission History's words. */
+const LENSES: ReadonlyArray<{ key: HistoryLens; label: string }> = [
+  { key: 'highlights', label: 'Highlights' },
+  { key: 'all', label: 'All activity' },
+];
 
 /** Per-state counts for the headline line: `▶ 4 building · ◐ 1 auditing · 2 waiting`. */
 export function deliveryBreakdown(now: ActivityNow): { kind: DeliveryKind | 'waiting'; text: string; tone: string | null }[] {
@@ -104,12 +128,16 @@ export function deliveryBreakdown(now: ActivityNow): { kind: DeliveryKind | 'wai
 
 export { age };
 
-export default function ActivityView({ mode, now, history, nowMs, hrefs, missionFilter, initiativeTitle, localSessions = [], openRowIds = [], loadError = false, historyReach = null, initialFilters }: ActivityViewProps) {
+export default function ActivityView({ mode, now, history, nowMs, hrefs, missionFilter, initiativeTitle, localSessions = [], openRowIds = [], loadError = false, historyReach = null, initialFilters, identityFilters = false }: ActivityViewProps) {
   const breakdown = deliveryBreakdown(now);
   const [nowOutcome, setNowOutcome] = useState<ActivityOutcome>(initialFilters?.outcome ?? 'any');
+  const [whoPicked, setWho] = useState<ActivityWho>(initialFilters?.who ?? 'all');
+  // Without reliable lineage there is no identity filter: everything shows.
+  const who = identityFilters ? whoPicked : 'all';
   // A History-only outcome stays selected there, but cannot hide all of Now.
   const nowFilterOutcome = nowOutcome === 'landed' || nowOutcome === 'you' ? 'any' : nowOutcome;
-  const groups = useMemo(() => filterNow(now, { scope: initialFilters?.scope ?? 'all', outcome: nowFilterOutcome }), [now, initialFilters?.scope, nowFilterOutcome]);
+  const groups = useMemo(() => filterNow(now, { scope: initialFilters?.scope ?? 'all', outcome: nowFilterOutcome, who }), [now, initialFilters?.scope, nowFilterOutcome, who]);
+  const nowHidden = hiddenUnattributed(now.groups.flatMap(g => [...g.rows, ...g.hiddenWaitingRows]), who);
   return (
     <div className="h-full overflow-y-auto">
       <div data-testid="activity-view" data-mode={mode} className="mx-auto max-w-[1000px] px-4 pb-10 pt-14 md:px-6 md:pt-8">
@@ -160,17 +188,18 @@ export default function ActivityView({ mode, now, history, nowMs, hrefs, mission
               )}
             </div>
             {!missionFilter && <SessionsLine sessions={localSessions} nowMs={nowMs} />}
-            <div className="mt-3" data-testid="activity-filters">
+            <div className="mt-3 flex flex-col gap-2" data-testid="activity-filters">
               <FilterGroup label="Filter" options={[{ key: 'any', label: 'All' }, { key: 'retries', label: 'Had repairs' }, { key: 'exceptions', label: 'Needs attention' }]} value={nowFilterOutcome} onChange={setNowOutcome} />
+              {identityFilters && <WhoFilter value={who} onChange={setWho} hidden={nowHidden} />}
             </div>
             {groups.length === 0
               ? (now.groups.length === 0
                 ? <Empty text="Nothing in motion. Finished work is in History." />
-                : <FilteredEmpty text="Nothing in motion matches these filters." available={`${now.groups.reduce((n, g) => n + g.rows.length + g.moreWaiting, 0)} deliveries in Now`} onClear={() => setNowOutcome('any')} />)
+                : <FilteredEmpty text="Nothing in motion matches these filters." available={`${now.groups.reduce((n, g) => n + g.rows.length + g.moreWaiting, 0)} deliveries in Now`} onClear={() => { setNowOutcome('any'); setWho('all'); }} />)
               : groups.map(g => <NowGroupView key={g.missionId ?? '__standalone__'} group={g} nowMs={nowMs} openRowIds={openRowIds} />)}
           </>
         ) : (
-          <HistoryView history={history} nowMs={nowMs} historyReach={historyReach} outcome={nowOutcome} onOutcomeChange={setNowOutcome} />
+          <HistoryView history={history} nowMs={nowMs} historyReach={historyReach} outcome={nowOutcome} onOutcomeChange={setNowOutcome} who={who} onWhoChange={identityFilters ? setWho : null} />
         )}
       </div>
     </div>
@@ -199,29 +228,35 @@ function SessionsLine({ sessions, nowMs }: { sessions: LocalSessionView[]; nowMs
   );
 }
 
-function HistoryView({ history, nowMs, historyReach, outcome, onOutcomeChange: setOutcome }: { history: Episode[]; nowMs: number; historyReach: { oldestAt: string } | null; outcome: ActivityOutcome; onOutcomeChange: (outcome: ActivityOutcome) => void }) {
+function HistoryView({ history, nowMs, historyReach, outcome, onOutcomeChange: setOutcome, who, onWhoChange }: {
+  history: Episode[]; nowMs: number; historyReach: { oldestAt: string } | null; outcome: ActivityOutcome; onOutcomeChange: (outcome: ActivityOutcome) => void;
+  who: ActivityWho; onWhoChange: ((who: ActivityWho) => void) | null;
+}) {
   const [shown, setShown] = useState(HISTORY_PAGE);
+  const [lens, setLens] = useState<HistoryLens>('highlights');
   // The team's zone, else the browser's once mounted; UTC until then so the server render matches.
   const tz = useDisplayTimezone() ?? 'UTC';
-  const episodes = useMemo(() => filterEpisodes(history, { scope: 'all', outcome }), [history, outcome]);
+  const episodes = useMemo(() => filterEpisodes(history, { scope: 'all', outcome, who }), [history, outcome, who]);
   const days = useMemo(() => groupEpisodesByDay(episodes, shown, nowMs, tz), [episodes, shown, nowMs, tz]);
   const remaining = episodes.length - Math.min(shown, episodes.length);
   return (
     <>
-      <div className="mt-4" data-testid="activity-filters">
+      <div className="mt-4 flex flex-col gap-2" data-testid="activity-filters">
         <FilterGroup label="Outcome" options={OUTCOMES} value={outcome} onChange={k => { setOutcome(k); setShown(HISTORY_PAGE); }} />
+        {onWhoChange && <WhoFilter value={who} onChange={k => { onWhoChange(k); setShown(HISTORY_PAGE); }} hidden={hiddenUnattributed(history, who)} />}
+        <div data-testid="activity-history-lens"><FilterGroup label="Steps" options={LENSES} value={lens} onChange={setLens} /></div>
       </div>
       {episodes.length === 0
         ? (history.length === 0 || outcome === 'any'
           ? <Empty text="Nothing finished in the last 30 days." />
-          : <FilteredEmpty text="No deliveries match this filter." available={`${history.length} ${history.length === 1 ? 'episode' : 'episodes'} in History`} onClear={() => { setOutcome('any'); setShown(HISTORY_PAGE); }} />)
+          : <FilteredEmpty text="No deliveries match this filter." available={`${history.length} ${history.length === 1 ? 'episode' : 'episodes'} in History`} onClear={() => { setOutcome('any'); onWhoChange?.('all'); setShown(HISTORY_PAGE); }} />)
         : days.map(d => (
             <section key={d.key} data-testid="activity-day" className="mt-5">
               <div className="flex items-baseline justify-between gap-3 border-b border-border-default pb-1">
                 <h2 className="text-meta font-semibold text-text-secondary">{d.label}</h2>
                 <span className="font-mono text-meta text-text-muted">{d.tally}</span>
               </div>
-              {d.episodes.map(e => <EpisodeView key={e.id} episode={e} nowMs={nowMs} />)}
+              {d.episodes.map(e => <EpisodeView key={e.id} episode={e} nowMs={nowMs} lens={lens} />)}
             </section>
           ))}
       {episodes.length > 0 && remaining === 0 && historyReach && (
@@ -235,7 +270,7 @@ function HistoryView({ history, nowMs, historyReach, outcome, onOutcomeChange: s
           Show {Math.min(remaining, HISTORY_PAGE)} more
         </button>
       )}
-      <p className="mt-4 text-meta text-text-muted">One line per delivery, newest first. Retries and reviews stay inside it, in the order they happened.</p>
+      <p className="mt-4 text-meta text-text-muted">One line per delivery, newest first. Retries and reviews stay inside it, in the order they happened.{lens === 'highlights' ? ' All activity adds every step.' : ''}</p>
     </>
   );
 }
@@ -254,6 +289,24 @@ function FilterGroup<K extends string>({ label, options, value, onChange }: { la
           {o.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+/**
+ * Who the work is for. A narrower choice says how much unattributed work it
+ * leaves out and brings it back in one tap: unknown work is never hidden silently.
+ */
+function WhoFilter({ value, onChange, hidden }: { value: ActivityWho; onChange: (who: ActivityWho) => void; hidden: number }) {
+  return (
+    <div data-testid="activity-who" className="flex flex-col gap-1">
+      <FilterGroup label="Who" options={WHO} value={value} onChange={onChange} />
+      {hidden > 0 && (
+        <p data-testid="activity-unattributed-hidden" className="text-meta text-text-muted">
+          {hidden} unattributed {hidden === 1 ? 'item is' : 'items are'} not shown.{' '}
+          <button type="button" onClick={() => onChange('all')} className="inline-flex min-h-11 items-center text-accent-text md:min-h-0">Show all</button>
+        </p>
+      )}
     </div>
   );
 }
@@ -348,6 +401,8 @@ function NowRowView({ row, nowMs, startOpen, groupNew }: { row: NowRow; nowMs: n
         {row.transition && <span data-testid="activity-transition">{transitionText(row.transition, nowMs)}</span>}
         {row.transition && <span aria-hidden="true">·</span>}
         <span data-testid="activity-created">{createdText(row.createdAt, nowMs)}</span>
+        <span aria-hidden="true">·</span>
+        <AttributionText attribution={row.attribution} />
       </span>
     </>
   );
@@ -368,6 +423,7 @@ function NowRowView({ row, nowMs, startOpen, groupNew }: { row: NowRow; nowMs: n
         </ul>
       )}
       {row.children.length > 0 && <DerivedChildren items={row.children} />}
+      {row.verification && <VerificationView claim={row.verification} />}
       {expandable && open && (
         <div id={`ev-${row.id}`} data-testid="activity-evidence" className="pb-3">
           {row.evidence.filter(e => e.type !== 'repair').map((e, i) => <DeliveryEvidence key={i} entry={e} />)}
@@ -379,6 +435,47 @@ function NowRowView({ row, nowMs, startOpen, groupNew }: { row: NowRow; nowMs: n
 }
 
 const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** Who it is for, from recorded lineage; "Unattributed" when none was recorded. */
+function AttributionText({ attribution }: { attribution: Attribution | null | undefined }) {
+  return <span data-testid="activity-attribution" data-known={attribution?.known ? 'true' : 'false'}>{attribution?.text ?? 'Unattributed'}</span>;
+}
+
+/**
+ * A recorded spec verification: the state, the spec revision and the commit it
+ * is read on, then the criteria and their evidence commits on demand. Only
+ * rendered when an outcome was recorded; a merged PR alone never gets one.
+ */
+function VerificationView({ claim }: { claim: VerificationClaim }) {
+  const rev = claim.approvedRevision ?? claim.revision;
+  const summary = (
+    <span className="min-w-0 break-words text-meta text-text-muted">
+      Spec <span className={`font-semibold ${TONE_TEXT[claim.tone]}`}>{claim.label}</span>
+      {' · '}revision {rev}{claim.approvedRevision == null ? ' (not approved)' : ''}
+      {claim.headSha && <> · on <span className="font-mono">{claim.headSha}</span></>}
+    </span>
+  );
+  return (
+    <div data-testid="activity-verification" data-state={claim.state} className="mb-2">
+      <Disclosure summary={summary}>
+        <div className="ml-3 border-l border-border-strong pl-3 text-meta">
+          <p className="text-text-secondary">{claim.line}</p>
+          <ul className="mt-1">
+            {claim.criteria.map(c => (
+              <li key={c.criterionId} data-testid="activity-verification-criterion" className="py-0.5">
+                <span className="font-mono text-text-primary">{c.criterionId}</span>{' '}
+                <span className={TONE_TEXT[c.tone]}>{c.label}</span>
+                {c.headSha && <span className="font-mono text-text-muted"> · {c.headSha}</span>}
+                {c.text && <span className="block break-words text-text-muted">{c.text}</span>}
+              </li>
+            ))}
+          </ul>
+          <Link href={claim.href} className="inline-flex min-h-11 min-w-0 items-center break-words text-accent-text md:min-h-0">{claim.specTitle} ›</Link>
+        </div>
+      </Disclosure>
+    </div>
+  );
+}
 
 /**
  * Reviews and repairs derived from a task, every generation, folded beneath it:
@@ -449,15 +546,19 @@ function CreatedEventView({ episode, nowMs }: { episode: Episode; nowMs: number 
   );
 }
 
-function EpisodeView({ episode, nowMs }: { episode: Episode; nowMs: number }) {
+function EpisodeView({ episode, nowMs, lens }: { episode: Episode; nowMs: number; lens: HistoryLens }) {
   if (episode.event === 'created') return <CreatedEventView episode={episode} nowMs={nowMs} />;
-  return <DeliveryEpisodeView episode={episode} nowMs={nowMs} />;
+  return <DeliveryEpisodeView episode={episode} nowMs={nowMs} lens={lens} />;
 }
 
-function DeliveryEpisodeView({ episode, nowMs }: { episode: Episode; nowMs: number }) {
+function DeliveryEpisodeView({ episode, nowMs, lens }: { episode: Episode; nowMs: number; lens: HistoryLens }) {
   const [all, setAll] = useState(false);
-  const hidden = all ? 0 : Math.max(0, episode.steps.length - STEPS_SHOWN);
-  const steps = episode.steps.slice(hidden);
+  // Highlights leave detail out (a new head, a review that could not run), unless detail is all there is.
+  const meaningful = episode.steps.filter(s => !s.detail);
+  const told = lens === 'all' || meaningful.length === 0 ? episode.steps : meaningful;
+  // All activity is the full chronology: nothing folded.
+  const hidden = all || lens === 'all' ? 0 : Math.max(0, told.length - STEPS_SHOWN);
+  const steps = told.slice(hidden);
   return (
     <article data-testid="activity-episode" data-kind={episode.kind} className="border-b border-border-default py-3">
       <div className="flex items-start justify-between gap-3">
@@ -468,7 +569,10 @@ function DeliveryEpisodeView({ episode, nowMs }: { episode: Episode; nowMs: numb
         <StatePill state={STATE_KEY_OF_DELIVERY[episode.kind]} label={DELIVERY_KIND[episode.kind].label} variant="plain" data-testid="delivery-state" />
         {episode.repairRounds > 0 && <span className="font-mono text-meta text-status-warning">{repairBadge(episode.repairRounds)}</span>}
         <span className="min-w-0 break-words text-meta text-text-muted">{episode.missionTitle ?? 'Standalone'}</span>
+        <span aria-hidden="true" className="text-meta text-text-muted">·</span>
+        <span className="text-meta text-text-muted"><AttributionText attribution={episode.attribution} /></span>
       </div>
+      {episode.verification && <div className="mt-1"><VerificationView claim={episode.verification} /></div>}
       {hidden > 0 && (
         <button type="button" onClick={() => setAll(true)} className="mt-1 inline-flex min-h-11 items-center text-meta text-text-muted md:min-h-0">
           Show {hidden} earlier {hidden === 1 ? 'step' : 'steps'}

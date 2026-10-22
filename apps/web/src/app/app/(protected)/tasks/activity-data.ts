@@ -25,7 +25,7 @@
  * (scripts/module-boundaries.test.ts), as they do for the projection.
  */
 import { db } from '@buildd/core/db';
-import { missionSummaries, missions, tasks as tasksTable, workers, workflowDeliveries } from '@buildd/core/db/schema';
+import { missionSummaries, missions, tasks as tasksTable, users, workers, workflowDeliveries } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, isNull, lte, notInArray, or, sql, type AnyColumn, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { LIVE_WORKER_STATUSES, MISSION_SUMMARY_VERSION, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import {
@@ -39,12 +39,17 @@ import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
 import { LINEAGE_MAX_DEPTH } from '@/lib/attempt-lineage';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import type { LocalHold } from '@/lib/local-session-display';
+import { attributionOf, whoFiltersReliable, type Attribution } from '@/lib/activity-attribution';
+import type { VerificationClaim } from '@/lib/activity-verification';
+import { readVerificationClaims, type PinnedRoot } from '@/lib/activity-verification-read';
 
 export type ActivityTab = 'now' | 'history';
 
 export interface ActivityData {
   now: ActivityNow;
   history: Episode[];
+  /** "For me" / "Filed by me" can be answered: a known viewer and recorded lineage in view (spec 9430a28f R-4). */
+  identityFilters?: boolean;
 }
 
 /**
@@ -98,6 +103,12 @@ export const ACTIVITY_TASK_COLUMNS = {
     when ${isString(sql`${tasksTable.result}->'effectiveVerdict'`)} then ${tasksTable.result}->>'effectiveVerdict'
     when ${isString(sql`${tasksTable.result}->'structuredOutput'->'verdict'`)} then ${tasksTable.result}->'structuredOutput'->>'verdict' end`,
   reviewHeadSha: sql<string | null>`case when ${isString(sql`${tasksTable.context}->'headSha'`)} then ${tasksTable.context}->>'headSha' end`,
+  // Recorded lineage (spec 9430a28f R-4): who it is for, how that was decided, and an agent filer.
+  createdByUserId: tasksTable.createdByUserId,
+  requesterSource: tasksTable.requesterSource,
+  createdByWorkerId: tasksTable.createdByWorkerId,
+  // The Living Spec pin only (R-6): the rest of the context is never read here.
+  specSource: sql<Record<string, unknown> | null>`case when jsonb_typeof(${tasksTable.context}->'specSource') = 'object' then ${tasksTable.context}->'specSource' end`,
 };
 
 export interface ActivityTaskRow {
@@ -114,6 +125,10 @@ export interface ActivityTaskRow {
   dependsOn: string[] | null;
   reviewVerdict: string | null;
   reviewHeadSha: string | null;
+  createdByUserId?: string | null;
+  requesterSource?: string | null;
+  createdByWorkerId?: string | null;
+  specSource?: Record<string, unknown> | null;
 }
 
 export interface ActivityWorkerRow {
@@ -400,9 +415,34 @@ export async function loadActivity(input: {
   rules: MissionTaskRules;
   /** Live header for open missions with no stored summary yet (lib/mission-summary-home.ts). */
   deriveHeads?: (ids: string[]) => Promise<Map<string, ActivityMissionRow['head']>>;
+  /** The signed-in person: "you" in attribution, and whether identity filters can be offered. */
+  viewerUserId?: string | null;
+  /** Recorded spec outcomes of the pinned roots in view (lib/activity-verification-read.ts). */
+  readVerifications?: (roots: PinnedRoot[], views: Awaited<ReturnType<typeof getDeliveryViewsForTasks>>) => Promise<Map<string, VerificationClaim>>;
 }): Promise<ActivityData & { historyReach: ActivityLoad['historyReach']; missionTitle: string | null }> {
   const { rules, scope } = input;
+  const viewer = input.viewerUserId ?? null;
   const [load, localHolds] = await Promise.all([loadActivityRows(scope, input.tab, input.now), input.localHolds]);
+
+  // Roots only: an attempt carries its root's pin and lineage, and is never a row of its own.
+  const rootRows = load.rows.filter(t => !t.parentTaskId || t.taskClass !== 'attempt');
+  const pinned = rootRows.filter(t => t.specSource && typeof t.specSource.specId === 'string').map(t => ({ id: t.id, specSource: t.specSource }));
+  const people = uniq(rootRows.filter(t => t.requesterSource).map(t => t.createdByUserId));
+  // Both best-effort: a claim or a name that cannot be read is not shown, and never fails the page.
+  const [claims, names] = await Promise.all([
+    pinned.length > 0
+      ? (input.readVerifications ?? readVerificationClaims)(pinned, load.views).catch((err) => {
+          console.warn('[activity] verification read failed:', err instanceof Error ? err.message : err);
+          return new Map<string, VerificationClaim>();
+        })
+      : Promise.resolve(new Map<string, VerificationClaim>()),
+    people.length > 0
+      ? db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, people))
+          .then(rows => new Map(rows.filter(r => r.name).map(r => [r.id, r.name as string])))
+          .catch(() => new Map<string, string>())
+      : Promise.resolve(new Map<string, string>()),
+  ]);
+  const attributions = new Map<string, Attribution>(rootRows.map(t => [t.id, attributionOf(t, viewer, names)]));
 
   const byTask = new Map<string, ActivityWorkerRow[]>();
   for (const w of load.workers) if (w.taskId) byTask.set(w.taskId, [...(byTask.get(w.taskId) ?? []), w]);
@@ -453,6 +493,8 @@ export async function loadActivity(input: {
       review: isReview ? reviewOf({ effectiveVerdict: t.reviewVerdict }, { headSha: t.reviewHeadSha }) : null,
       // The delivery this task owns: its revision card reads the kernel's rounds and ledger.
       kernel: kernelOwnedBy(load.views, t.id),
+      verification: claims.get(t.id) ?? null,
+      attribution: attributions.get(t.id) ?? null,
       workers: ws.map(w => ({
         status: w.status,
         name: (w.id && localHolds.get(w.id)?.client) || w.name,
@@ -479,6 +521,7 @@ export async function loadActivity(input: {
   return {
     now: input.tab === 'now' ? buildActivityNow({ ...args, now: input.now }) : { groups: [], inMotion: 0, liveAgents: 0 },
     history: input.tab === 'history' ? buildActivityHistory({ ...args, creations }) : [],
+    identityFilters: whoFiltersReliable([...attributions.values()], viewer),
     historyReach: load.historyReach,
     missionTitle: scope.missionId ? missionById.get(scope.missionId)?.title ?? null : null,
   };
