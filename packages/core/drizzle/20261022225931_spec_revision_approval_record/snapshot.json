@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "0685753c-05fd-4236-84c2-4a7ce9957421",
+  "id": "adeed96e-fbea-46d8-861f-c5d41a647eb3",
   "prevIds": [
-    "90c0811c-4bc9-4cec-b475-5c5761ea698f"
+    "c2ef131d-bce9-4063-a866-c22313622c77"
   ],
   "ddl": [
     {
@@ -1398,6 +1398,19 @@
       "generated": null,
       "identity": null,
       "name": "budget_resets_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "accounts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "budget_probe_requested_at",
       "entityType": "columns",
       "schema": "public",
       "table": "accounts"
@@ -13374,6 +13387,58 @@
       "generated": null,
       "identity": null,
       "name": "created_by_user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "missions"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "created_by_account_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "missions"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "created_by_worker_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "missions"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "created_by_task_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "missions"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "requester_source",
       "entityType": "columns",
       "schema": "public",
       "table": "missions"
@@ -29377,6 +29442,32 @@
       "generated": null,
       "identity": null,
       "name": "superseded_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workers"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "named_replacement_pr_number",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workers"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "named_replacement_pr_url",
       "entityType": "columns",
       "schema": "public",
       "table": "workers"
@@ -46367,6 +46458,23 @@
       "onUpdate": "NO ACTION",
       "onDelete": "SET NULL",
       "name": "missions_created_by_user_id_users_id_fk",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "missions"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "created_by_account_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "accounts",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "missions_created_by_account_id_accounts_id_fkey",
       "entityType": "fks",
       "schema": "public",
       "table": "missions"
