@@ -10,6 +10,7 @@
  */
 import { execFileSync } from 'child_process';
 import { join } from 'path';
+import { pathToFileURL } from 'url';
 
 export const DEEP_ORIGIN_COMMITS = 80;
 
@@ -40,7 +41,7 @@ export function makeDeepOrigin(dir: string): { origin: string; url: string } {
   execFileSync('git', ['fast-import', '--quiet'], { cwd: origin, input: stream });
   // GitHub serves any reachable commit by id; a local bare repo needs telling.
   git(origin, 'config', 'uploadpack.allowReachableSHA1InWant', 'true');
-  return { origin, url: `file://${origin}` };
+  return { origin, url: pathToFileURL(origin).href };
 }
 
 /** `refs/remotes/origin/*` names in `repo`, without origin/HEAD. */

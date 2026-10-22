@@ -24,7 +24,8 @@ const launcher = installScript.match(/cat > "\$BIN_DIR\/buildd" << 'LAUNCHER'\n(
 const TMP = nodeFs.mkdtempSync(join(os.tmpdir(), 'top-dev-launcher-'));
 afterAll(() => nodeFs.rmSync(TMP, { recursive: true, force: true }));
 
-describe('the launcher', () => {
+// The launcher is install.sh's bash script; Windows installs via install.ps1 and never runs it.
+describe.skipIf(process.platform === 'win32')('the launcher', () => {
   const HOME = join(TMP, 'launcher-home');
   const LOG = join(HOME, 'bun.log');
   nodeFs.mkdirSync(join(HOME, '.buildd', 'apps', 'runner', 'node_modules'), { recursive: true });

@@ -27,7 +27,7 @@
 import { execFileSync } from 'child_process';
 import { existsSync, realpathSync, rmSync } from 'fs';
 import { homedir } from 'os';
-import { join, sep } from 'path';
+import { join, resolve, sep } from 'path';
 import { parseWorktreeList } from './worktree-utils';
 
 export const BRANCH_PREFIX = 'buildd/';
@@ -106,7 +106,8 @@ export function pruneLocalBranches(repoDir: string, opts: PruneOptions = {}): Pr
   const seedPrefixes = [seedDir];
   try { seedPrefixes.push(realpathSync(seedDir)); } catch { /* not created */ }
   const asPrefix = (d: string) => (d.endsWith(sep) ? d : d + sep);
-  const seeds = worktrees.filter(w => seedPrefixes.some(d => w.path.startsWith(asPrefix(d))));
+  // resolve(): git for Windows prints C:/..., the prefixes are C:\... (no-op on POSIX).
+  const seeds = worktrees.filter(w => seedPrefixes.some(d => resolve(w.path).startsWith(asPrefix(d))));
   const removedSeeds = new Set<string>();
   for (const w of seeds.slice(0, opts.maxSeedRemovals ?? DEFAULT_MAX_SEED_REMOVALS_PER_TICK)) {
     try {

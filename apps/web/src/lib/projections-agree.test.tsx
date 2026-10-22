@@ -92,13 +92,12 @@ describe('AC-24: the three surfaces agree on a delivery with two review rounds',
     expect(card).not.toContain('no reviews');
   });
 
-  test('the PR activity comment', () => {
+  test('the PR activity comment stays compact and leaves round detail to the other surfaces', () => {
     const body = renderDeliveryActivity({ view, transitions: [] });
-    expect(body).toContain(`Review: ${LINE}`);
-    expect(body).toContain(`Rounds: ${ROUNDS}`);
-    expect(body).toContain(NOTE);
-    // Its findings block counts the same open findings.
-    expect(body).toContain('Findings: 2 open of 3');
+    expect(body).not.toContain('Review:');
+    expect(body).not.toContain(ROUNDS);
+    expect(body).not.toContain(NOTE);
+    expect(body).not.toContain('Findings:');
   });
 });
 
@@ -148,8 +147,8 @@ describe('AC-24: GitHub COMMENTED is shown beside, never as, buildd\'s changes r
     expect(card).toContain(LINE);
     expect(card).toContain('On GitHub: two reviews Commented');
   });
-  test('the activity comment, which sits beside those reviews, says how GitHub lists them', () => {
-    expect(renderDeliveryActivity({ view, transitions: [] })).toContain(NOTE);
+  test('the activity comment does not repeat the GitHub self-review explanation', () => {
+    expect(renderDeliveryActivity({ view, transitions: [] })).not.toContain(NOTE);
   });
 });
 

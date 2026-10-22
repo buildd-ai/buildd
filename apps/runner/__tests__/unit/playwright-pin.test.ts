@@ -43,7 +43,7 @@ describe('pinned build paths', () => {
   });
 
   it('lists only the pinned build dirs that exist', () => {
-    const present = new Set(['/b/chromium-1228']);
-    expect(installedPinnedBuilds(['/a', '/b'], pin, p => present.has(p))).toEqual(['/b/chromium-1228']);
+    const present = new Set([join('/b', 'chromium-1228')]);
+    expect(installedPinnedBuilds(['/a', '/b'], pin, p => present.has(p))).toEqual([join('/b', 'chromium-1228')]);
   });
 });

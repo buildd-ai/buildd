@@ -27,7 +27,9 @@ import { HookFactory } from '../../src/hook-factory';
 import { buildPromptWithComposition } from '../../src/prompt-builder';
 import { primaryCloneMemoryExcludes } from '../../src/host-memory-excludes';
 
-const PRIMARY = '/home/coder/project/demo';
+// A real Windows worktree path carries a drive: the guard resolves targets
+// (adding one) and compares them with the scope paths as given.
+const PRIMARY = process.platform === 'win32' ? 'C:/home/coder/project/demo' : '/home/coder/project/demo';
 const OWN = `${PRIMARY}/.buildd-worktrees/buildd-abc-my-task`;
 const SIBLING = `${PRIMARY}/.buildd-worktrees/buildd-def-other-task`;
 const scope = { worktreePath: OWN, primaryPath: PRIMARY };

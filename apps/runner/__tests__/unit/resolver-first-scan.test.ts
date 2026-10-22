@@ -28,7 +28,10 @@ import { initTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 
 const { WorkerManager } = await import('../../src/workers');
 
-const REAL_GIT = execSync('command -v git', { encoding: 'utf-8' }).trim();
+// Scans are counted by a `#!/bin/sh` git shim on PATH, which Windows cannot exec:
+// there the shim is not installed and the tests that count scans are skipped.
+const IS_WIN = process.platform === 'win32';
+const REAL_GIT = IS_WIN ? 'git' : execSync('command -v git', { encoding: 'utf-8' }).trim();
 const ORIGINAL = { PATH: process.env.PATH, GIT_ALLOW_PROTOCOL: process.env.GIT_ALLOW_PROTOCOL };
 let tmp: string;
 let gitLog: string;
@@ -48,11 +51,12 @@ beforeAll(() => {
   const bin = join(tmp, 'bin');
   mkdirSync(bin);
   gitLog = join(tmp, 'git.log');
+  // An auto-clone in a failing case must never reach the network.
+  process.env.GIT_ALLOW_PROTOCOL = 'file';
+  if (IS_WIN) return;
   writeFileSync(join(bin, 'git'), `#!/bin/sh\necho "$PWD $*" >> "${gitLog}"\nexec "${REAL_GIT}" "$@"\n`);
   chmodSync(join(bin, 'git'), 0o755);
   process.env.PATH = `${bin}:${ORIGINAL.PATH}`;
-  // An auto-clone in a failing case must never reach the network.
-  process.env.GIT_ALLOW_PROTOCOL = 'file';
 });
 
 afterAll(() => {
@@ -64,7 +68,7 @@ afterAll(() => {
 });
 
 describe('whenScanned', () => {
-  test('a cold resolver lands its first scan; afterwards it returns without scanning again', async () => {
+  test.skipIf(IS_WIN)('a cold resolver lands its first scan; afterwards it returns without scanning again', async () => {
     const root = join(tmp, 'roots-cold');
     makeRepo(join(root, 'one'), 'https://github.com/acme/one.git');
     const resolver = createWorkspaceResolver(root);
@@ -90,7 +94,7 @@ describe('claim: rescan once on a miss before auto-cloning', () => {
     expect(path).toBe(join(root, 'my-checkout'));
   });
 
-  test('a hit in a fresh snapshot does not rescan', async () => {
+  test.skipIf(IS_WIN)('a hit in a fresh snapshot does not rescan', async () => {
     const root = join(tmp, 'roots-hit');
     makeRepo(join(root, 'existing'), 'https://github.com/acme/hit.git');
     const resolver = createWorkspaceResolver(root);

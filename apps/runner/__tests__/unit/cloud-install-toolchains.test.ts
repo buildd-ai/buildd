@@ -23,6 +23,8 @@ let manifestYaml: string | null = null;
 let failures: Record<string, string> = {};
 
 function rel(abs: string): string | null {
+  // The code joins with path.join, which uses '\' on Windows.
+  abs = abs.replace(/\\/g, '/');
   if (abs === WT) return '.';
   if (abs.startsWith(`${WT}/`)) return abs.slice(WT.length + 1);
   return null;

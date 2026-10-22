@@ -10,7 +10,7 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
-import { join, resolve } from 'path';
+import { delimiter, join, resolve } from 'path';
 import {
   currentKey, editLine, picksEditUrl, resolvePicksEdit, runWorkspacesEdit,
 } from '../../src/login-workspaces';
@@ -166,17 +166,25 @@ function sandbox() {
     writeFileSync(join(bin, name), `#!/bin/sh\necho "$1" >> "${openLog}"\n`);
     chmodSync(join(bin, name), 0o755);
   }
+  // Windows opens with `rundll32 url.dll,FileProtocolHandler <url>`; a .cmd earlier on PATH wins the lookup. It hands
+  // the raw args to bun, because cmd's own %N parsing splits at the `,` and `=` in them.
+  writeFileSync(join(bin, 'rec.js'), `require('fs').appendFileSync(${JSON.stringify(openLog)}, process.argv.at(-1) + '\\n');\n`);
+  writeFileSync(join(bin, 'rundll32.cmd'), `@"${process.execPath}" "%~dp0rec.js" %*\r\n`);
   return { home, cwd, bin, openLog };
 }
 
+/** The child's environment: HOME for POSIX, USERPROFILE for os.homedir() on Windows. */
+const childEnv = (sb: ReturnType<typeof sandbox>, extra: Record<string, string> = {}): Record<string, string> => ({
+  PATH: `${sb.bin}${delimiter}${process.env.PATH ?? ''}`,
+  HOME: sb.home,
+  USERPROFILE: sb.home,
+  BUILDD_HOME: join(sb.home, '.buildd'),
+  NODE_ENV: 'production',
+  ...extra,
+});
+
 function runLogin(args: string[], sb: ReturnType<typeof sandbox>) {
-  const env: Record<string, string> = {
-    PATH: `${sb.bin}:${process.env.PATH ?? ''}`,
-    HOME: sb.home,
-    BUILDD_HOME: join(sb.home, '.buildd'),
-    NODE_ENV: 'production',
-  };
-  const p = Bun.spawnSync([process.execPath, '--no-env-file', 'run', LOGIN, ...args], { cwd: sb.cwd, env, stdout: 'pipe', stderr: 'pipe' });
+  const p = Bun.spawnSync([process.execPath, '--no-env-file', 'run', LOGIN, ...args], { cwd: sb.cwd, env: childEnv(sb), stdout: 'pipe', stderr: 'pipe' });
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
 }
 
@@ -210,7 +218,7 @@ describe('buildd login --workspaces (login.ts)', () => {
 
       const p = Bun.spawn([process.execPath, '--no-env-file', 'run', LOGIN, '--workspaces'], {
         cwd: sb.cwd,
-        env: { PATH: `${sb.bin}:${process.env.PATH ?? ''}`, HOME: sb.home, BUILDD_HOME: join(sb.home, '.buildd'), NODE_ENV: 'production' },
+        env: childEnv(sb),
         stdout: 'pipe', stderr: 'pipe',
       });
       const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
@@ -246,7 +254,7 @@ describe('buildd login --workspaces (login.ts)', () => {
       writeFileSync(join(sb.home, '.buildd', 'config.json'), JSON.stringify({ apiKey: 'bld_current' }));
       const p = Bun.spawn([process.execPath, '--no-env-file', 'run', LOGIN, '--workspaces'], {
         cwd: sb.cwd,
-        env: { PATH: `${sb.bin}:${process.env.PATH ?? ''}`, HOME: sb.home, BUILDD_HOME: join(sb.home, '.buildd'), NODE_ENV: 'production', BUILDD_SERVER: base },
+        env: childEnv(sb, { BUILDD_SERVER: base }),
         stdout: 'pipe', stderr: 'pipe',
       });
       const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);

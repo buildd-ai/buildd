@@ -54,7 +54,8 @@ function start() {
   });
 }
 
-describe('the launcher under a service manager', () => {
+// install.sh's bash launcher and POSIX signals are Unix-only; Windows uses install.ps1.
+describe.skipIf(process.platform === 'win32')('the launcher under a service manager', () => {
   test('the launcher heredoc was found', () => expect(launcher.length).toBeGreaterThan(0));
 
   test('a stop signal reaches the runner, which finishes its own shutdown, and the launcher exits with its code', async () => {

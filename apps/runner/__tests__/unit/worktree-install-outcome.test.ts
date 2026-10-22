@@ -15,11 +15,13 @@
  */
 
 import { describe, test, expect, afterAll, beforeEach } from 'bun:test';
+import { join } from 'path';
 
 const REPO = '/repo';
 const DEFAULT_BRANCH = 'main';
 const BRANCH = 'buildd/0000abcd-slug';
-const WT = `${REPO}/.buildd-worktrees/buildd_0000abcd-slug`;
+// path.join: the source builds the worktree path with it (backslashes on Windows).
+const WT = join(REPO, '.buildd-worktrees', 'buildd_0000abcd-slug');
 
 type FileCall = { file: string; args: string[]; opts: Record<string, unknown> };
 
@@ -66,7 +68,10 @@ function mockExecFile(
 
 /** Absolute path → repo-relative-inside-the-worktree, or null if outside. */
 function relInWorktree(abs: string): string | null {
-  for (const root of [WT, `${WT}-wworker-1`]) {
+  // Compare with forward slashes: on Windows path.join gives backslashes.
+  const slash = (p: string) => p.replace(/\\/g, '/');
+  abs = slash(abs);
+  for (const root of [WT, `${WT}-wworker-1`].map(slash)) {
     if (abs === root) return '.';
     if (abs.startsWith(`${root}/`)) return abs.slice(root.length + 1);
   }
@@ -159,7 +164,7 @@ describe('install location', () => {
     const result = await setup();
 
     expect(installs().length).toBe(1);
-    expect(installs()[0].opts.cwd).toBe(`${WT}/packages/api`);
+    expect(installs()[0].opts.cwd).toBe(join(WT, 'packages', 'api'));
     expect(result.install).toEqual({ status: 'ok', dirs: ['packages/api'] });
   });
 
@@ -359,7 +364,7 @@ describe('install env (undeclared repos get the worker-resolved secrets)', () =>
     await setup({ NODE_AUTH_TOKEN: TOKEN });
 
     expect(installs().length).toBe(1);
-    expect(installs()[0].opts.cwd).toBe(`${WT}/packages/api`);
-    expect(String(installs()[0].opts.cwd).startsWith(`${REPO}/.buildd-worktrees/`)).toBe(true);
+    expect(installs()[0].opts.cwd).toBe(join(WT, 'packages', 'api'));
+    expect(String(installs()[0].opts.cwd).startsWith(join(REPO, '.buildd-worktrees', '/'))).toBe(true);
   });
 });

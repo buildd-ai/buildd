@@ -14,7 +14,7 @@
  * No runner process is started; the server is a fake object.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { ScoutCaptureGrant, ScoutHostedProbeResult, ScoutRunClaimRequest, ScoutRunClaimResponse } from '@buildd/shared';
@@ -42,7 +42,7 @@ async function sh(cmd: string, cwd = repo) {
 beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), 'scout-capture-test-'));
   repo = join(root, 'repo');
-  await sh(`mkdir -p ${repo}`, root);
+  mkdirSync(repo, { recursive: true });
   await sh('git init -q -b main && git config user.email t@example.invalid && git config user.name t && git config commit.gpgsign false');
   writeFileSync(join(repo, 'README.md'), 'tool\n');
   await sh('git add -A && git commit -qm c0');
