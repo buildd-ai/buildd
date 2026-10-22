@@ -15,6 +15,12 @@ Windows, from any shell (PowerShell, cmd, Git Bash):
 powershell -ExecutionPolicy ByPass -c "irm https://buildd.dev/install.ps1 | iex"
 ```
 
+Native Windows Claude has no built-in sandbox. For protected Claude work, run
+both the runner and Claude inside WSL2: follow [WSL2 setup](WSL2.md). From a
+current source checkout in PowerShell, `bun run wsl:setup [--distro Ubuntu]`
+probes prerequisites without installing or changing host security settings.
+Detecting WSL on Windows does not confine a native Windows Claude process.
+
 This installs Bun, a sparse
 clone of this repo under `~/.buildd`, headless Chromium, and the `buildd`
 launcher at `~/.local/bin/buildd`.
