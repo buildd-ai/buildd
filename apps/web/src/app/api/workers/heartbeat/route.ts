@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workerHeartbeats, workers } from '@buildd/core/db/schema';
+import { accounts, workerHeartbeats, workers } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import {
   WORKER_LEASE_TTL_MS,
@@ -345,7 +345,20 @@ export async function POST(req: NextRequest) {
       // Non-fatal — version check is optional
     }
 
-    return NextResponse.json({ ok: true, viewerToken, pendingTaskCount: 0, latestCommit, leasesRenewed, claimsReleased });
+    // A client asked this account's runners to probe their provider wall
+    // (lib/budget-wall-probe.ts). Read fresh: the cached caller can be stale.
+    let budgetProbeRequestedAt: string | null = null;
+    try {
+      const row = await db.query.accounts.findFirst({
+        where: sqlWhere(eq(accounts.id, account.id)),
+        columns: { budgetProbeRequestedAt: true },
+      });
+      budgetProbeRequestedAt = row?.budgetProbeRequestedAt?.toISOString() ?? null;
+    } catch {
+      // Best effort: a missed nudge is picked up by the runner's own interval.
+    }
+
+    return NextResponse.json({ ok: true, viewerToken, pendingTaskCount: 0, latestCommit, leasesRenewed, claimsReleased, budgetProbeRequestedAt });
   } catch (error) {
     console.error('Heartbeat error:', error);
     return NextResponse.json({ error: 'Failed to process heartbeat' }, { status: 500 });

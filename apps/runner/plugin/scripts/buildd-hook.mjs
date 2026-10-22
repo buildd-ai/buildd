@@ -60,13 +60,17 @@ const WORKER_ID_RE = /Worker ID:\**\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 
 const debug = (...a) => { if (process.env.BUILDD_HOOK_DEBUG === '1') console.error('[buildd-hook]', ...a); };
 
-/** buildd's MCP tool, under any server name the client gave it (buildd, plugin_buildd_buildd, ...). */
-export function isBuilddTool(toolName, serverName) {
+/**
+ * buildd's MCP tool, under any server name the client gave it: buildd,
+ * plugin_buildd_buildd, a claude.ai connector's id (Claude Desktop) or
+ * claude_ai_<Connector_Name> (the CLI). The server name is not checked, so
+ * this alone binds nothing: claimedWorkerId must also find buildd's claim
+ * reply (a claim_task call answered with a `Worker ID:`).
+ */
+export function isBuilddTool(toolName) {
   if (typeof toolName !== 'string') return false;
-  const prefixed = /^mcp__(.+)__buildd(_work)?$/i.exec(toolName);
-  if (prefixed) return /buildd/i.test(prefixed[1]);
   // Cursor names the tool without the server prefix and reports the server separately.
-  return /^buildd(_work)?$/i.test(toolName) && (serverName == null || /buildd/i.test(String(serverName)));
+  return /^(mcp__.+__)?buildd(_work)?$/i.test(toolName);
 }
 
 function parseMaybeJson(v) {
@@ -188,7 +192,7 @@ function normalizeCursor(p) {
     case 'stop':
       return { ...base, event: 'touch' };
     case 'afterMCPExecution': {
-      if (!isBuilddTool(p.tool_name, p.mcp_server_name)) return null;
+      if (!isBuilddTool(p.tool_name)) return null;
       const workerId = claimedWorkerId(p.tool_input, p.result_json);
       return workerId ? { ...base, event: 'bind', workerId } : null;
     }
@@ -680,6 +684,17 @@ export function askRedirectReason(workerId) {
     + `Also write the question in your reply, so a person at this terminal can answer by typing; if they do, use that answer (buildd withdraws the open question).`;
 }
 
+/**
+ * What a Claude Code session starting in a workspace repo is told: which
+ * workspace this folder is. An account-level buildd connection refuses a call
+ * that names no workspace, and with one connector per workspace this picks
+ * the matching one. The repo comes from the cached workspace list only.
+ */
+export function workspaceContext(repo) {
+  return `This folder is the buildd workspace repo ${repo}. `
+    + `buildd tool calls from this session pass workspaceId: "${repo}", through the buildd connection for that workspace when there is one per workspace.`;
+}
+
 export function hookOutput(client, hookEventName, result, payload = null, mode = null) {
   // The AskUserQuestion entry (ask mode) prints a deny or nothing at all.
   if (mode === 'ask') {
@@ -822,6 +837,12 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
   });
   if (n.event === 'end' && n.reason === 'clear' && Object.keys(claims).length > 0) {
     writeClearHandoff(env, client, n.cwd, n.clientSessionId, now);
+  }
+  // A start in a repo on this key's workspace list names that workspace. A
+  // repo in scope only through its own .mcp.json may be no workspace at all.
+  if (client === 'claude' && hookEventName === 'SessionStart' && n.event === 'start' && repo
+    && readWorkspaceCache(env, auth.apiKey)?.repos.includes(repo.toLowerCase())) {
+    return { sent: true, ok: !!result, body, output: JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: workspaceContext(repo) } }) };
   }
   return { sent: true, ok: !!result, body, output: hookOutput(client, hookEventName, result, payload, ask ? 'ask' : null) };
 }
