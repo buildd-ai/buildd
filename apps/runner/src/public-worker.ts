@@ -90,6 +90,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   sessionCwd: true,
   worktreeBaseRef: true,
   prBaseRef: true,
+  resumedFrom: true,
   derivedMergeNote: true,
   mergirafLedgerOffset: true,
   envDegraded: true,

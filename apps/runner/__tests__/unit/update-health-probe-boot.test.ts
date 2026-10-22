@@ -37,7 +37,9 @@ async function bootAndWaitForHealth(port: number, probe: boolean) {
     try { proc.kill('SIGKILL'); } catch { /* gone */ }
     // Windows keeps the dir locked until the killed child has actually exited.
     await proc.exited;
-    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    // Best effort: a grandchild (the scan's git) can still hold the dir on Windows;
+    // it is a temp dir, so a leftover must not fail an otherwise passing test.
+    try { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); } catch { /* temp dir */ }
   });
 
   const start = Date.now();
