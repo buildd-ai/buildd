@@ -1320,7 +1320,7 @@ async function TaskDetailPage({
 
   </>);
   const archivedWorkerSection = (<>
-{!activeWorker && taskWorkers[0] && <RealTimeWorkerView {...liveWorkerViewProps({ task: { id: task.id, status: task.status, outputRequirement: task.outputRequirement }, worker: taskWorkers[0], delivery: deliveryPill, deliverableArtifactCount: evidenceArtifactCount, usesReviewer: RUN_PROGRESS_READERS.usesReviewer(task.workspace, task.mission, task, { baseRef: taskWorkers[0].prBaseRef }), modelTier: modelSummary.tierLabel, roleName })} />}
+    {!activeWorker && taskWorkers[0] && <RealTimeWorkerView {...liveWorkerViewProps({ task: { id: task.id, status: task.status, outputRequirement: task.outputRequirement }, worker: taskWorkers[0], delivery: deliveryPill, deliverableArtifactCount: evidenceArtifactCount, usesReviewer: RUN_PROGRESS_READERS.usesReviewer(task.workspace, task.mission, task, { baseRef: taskWorkers[0].prBaseRef }), modelTier: modelSummary.tierLabel, roleName })} />}
   </>);
   const archivedPrSection = (<>
         {/* PR outcome — the diff split by attempt, "How it landed" (attempt →
@@ -1786,13 +1786,7 @@ async function TaskDetailPage({
 
         {activeWorker && <TaskEvidenceCard status={task.status} result={task.result} workerError={taskWorkers[0]?.error ?? null} backend={taskBackend} failingChecks={verdict?.failingChecks ?? []} />}
 
-        {/* A completed task keeps its evidence files in Run details. */}
-
-
-        {/* Agent errors: every captured trace, sorted by what it means for the
-            outcome (needs attention / unclear / recovered / exploration noise).
-            Any row opens the complete redacted evidence. */}
-
+        {/* A completed task keeps its evidence files and error traces in Run details. */}
 
         {/* Attachments */}
         {attachments && attachments.length > 0 && (
@@ -1847,13 +1841,10 @@ async function TaskDetailPage({
             >
               {archivedWorkerSection}
               {workerHistorySection}
-        <TaskErrorEvidence items={errorEvidenceItems.filter(item => item.presentation !== 'unclear')} taskTitle={displayTaskTitle(task.title)} terminalSucceeded={terminalSucceeded} taskState={verdict?.headline ?? null} />
+              <TaskErrorEvidence items={errorEvidenceItems.filter(item => item.presentation !== 'unclear')} taskTitle={displayTaskTitle(task.title)} terminalSucceeded={terminalSucceeded} taskState={verdict?.headline ?? null} />
               {archivedPrSection}
               {runArtifacts}
-
-
               {evidenceFiles.length > 0 && evidenceFilesSection}
-
             </TaskShippedDetails>
           </div>
         )}
@@ -1876,13 +1867,12 @@ async function TaskDetailPage({
         {!shippedView && <details open={!!initialOpenArtifactId} className="border-y border-border-default mb-6"><summary className="min-h-11 flex items-center cursor-pointer text-body">Run</summary>
           <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-3 pb-4 text-body">{runDetails.map(row => <div className="contents" key={row.label}><dt className="text-text-muted">{row.label}</dt><dd className="min-w-0 break-words">{row.value}</dd></div>)}</dl>
           {archivedWorkerSection}
-          <TaskDeliverables taskId={task.id} result={withTaskPr(task.result as Record<string, unknown> | null, taskPr) as TaskDeliverablesResult | null} prCard summaryInPrCard suppressedSummary={suppressedSummaryArtifact} baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'} />
+          {!activeWorker && <TaskDeliverables taskId={task.id} result={withTaskPr(task.result as Record<string, unknown> | null, taskPr) as TaskDeliverablesResult | null} prCard summaryInPrCard suppressedSummary={suppressedSummaryArtifact} baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'} />}
           {workerHistorySection}
           {evidenceFilesSection}
-        <TaskErrorEvidence items={errorEvidenceItems.filter(item => item.presentation !== 'unclear')} taskTitle={displayTaskTitle(task.title)} terminalSucceeded={terminalSucceeded} taskState={verdict?.headline ?? null} />
+          <TaskErrorEvidence items={errorEvidenceItems.filter(item => item.presentation !== 'unclear')} taskTitle={displayTaskTitle(task.title)} terminalSucceeded={terminalSucceeded} taskState={verdict?.headline ?? null} />
           {archivedPrSection}
           {!activeWorker && runArtifacts}
-
         </details>}
 
 

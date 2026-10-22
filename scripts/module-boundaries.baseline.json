@@ -631,9 +631,6 @@
       "apps/web/src/components/visual-review/review-transport.ts": "visual-qa",
       "apps/web/src/lib/visual-review-rounds.ts": "visual-qa"
     },
-    "apps/web/src/app/app/(protected)/tasks/[id]/MissionContextBar.tsx": {
-      "apps/web/src/components/missions/MissionMasthead.tsx": "missions"
-    },
     "apps/web/src/app/app/(protected)/tasks/[id]/TaskArtifactsSection.tsx": {
       "apps/web/src/components/visual-review/VisualReviewTray.tsx": "visual-qa",
       "apps/web/src/lib/mission-visual-review.ts": "visual-qa",
