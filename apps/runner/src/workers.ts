@@ -1081,7 +1081,7 @@ export class WorkerManager {
     });
 
     this.budgetWallProber = new BudgetWallProber({
-      probe: () => sdkProbe(process.env.BUILDD_BUDGET_PROBE_MODEL || 'claude-haiku-4-5'),
+      probe: () => sdkProbe(process.env.BUILDD_BUDGET_PROBE_MODEL || 'haiku'),
       report: (r) => this.buildd.reportBudgetWall({
         ...r,
         backend: 'claude',
