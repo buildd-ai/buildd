@@ -44,6 +44,12 @@ describe('R-2 / AC-2: a five-generation review/repair chain reads as one outcome
     expect(row.children.filter(c => c.live).map(c => c.id)).toEqual(['fx-chain-g5']);
   });
 
+  it('the mission projection Home and Missions read counts every generation\'s repairs, as the row shows them', () => {
+    const row = rowsOf(n)[0];
+    expect(row.delivery.kind).toBe('repair');
+    expect(row.delivery.repairRounds).toBe(3);
+  });
+
   it('its repairs past the first generation are evidence on the one row', () => {
     const repairs = rowsOf(n)[0].evidence.filter(e => e.type === 'repair');
     expect(repairs).toHaveLength(3);
