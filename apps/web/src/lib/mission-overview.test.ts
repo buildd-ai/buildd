@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { dagBoard, dagId, DAG_SPECS, overviewWavesBoard, overviewWavesInput } from '@/app/app/dev/fixtures/mission-task-strip-fixtures';
 import { buildMissionBoard, lastEventOf } from './mission-board';
 import { stripOrder } from './mission-task-strip';
-import { formatCountdown, overviewStatus, overviewStatusText, retryText, RETRY_NOW } from './mission-overview';
+import { formatCountdown, formatElapsed, liveLine, NO_ACTIVITY_MS, overviewStatus, overviewStatusText, retryText, RETRY_NOW } from './mission-overview';
 import { finishSettingTaskId, overviewCells, overviewWaitLine, overviewCounts, overviewDefaultSelection, overviewLayout, overviewLegend, overviewProgress, overviewSelection, overviewWaitCause } from './mission-overview';
 
 const spec = DAG_SPECS.linear; // A landed, B running, C blocked, D/E queued
@@ -350,5 +350,40 @@ describe('formatCountdown', () => {
     expect(formatCountdown(12 * 60_000)).toBe('12m');
     expect(formatCountdown(10_000)).toBe('1m');
     expect(formatCountdown(0)).toBe('under 1m');
+  });
+});
+
+describe('formatElapsed', () => {
+  it('12m 04s under an hour, 1h 02m past it', () => {
+    expect(formatElapsed(724_000)).toBe('12m 04s');
+    expect(formatElapsed(45_000)).toBe('0m 45s');
+    expect(formatElapsed(62 * 60_000 + 5_000)).toBe('1h 02m');
+    expect(formatElapsed(-5)).toBe('0m 00s');
+  });
+});
+
+describe('liveLine', () => {
+  const NOW = 10_000_000;
+  const running = { word: 'Running', since: NOW - 724_000, lastEventAt: NOW - 14_000 };
+
+  it('a live task: Running 12m 04s and Updated 14s ago', () => {
+    expect(liveLine(running, NOW)).toEqual({ elapsed: 'Running 12m 04s', activity: 'Updated 14s ago', quiet: false });
+  });
+
+  it('a minute or more since the last event reads in minutes', () => {
+    expect(liveLine({ ...running, lastEventAt: NOW - 3 * 60_000 }, NOW)?.activity).toBe('Updated 3m ago');
+  });
+
+  it('no event for the stall threshold reads No activity for 12m, in the warning tone', () => {
+    expect(NO_ACTIVITY_MS).toBe(5 * 60_000);
+    expect(liveLine({ ...running, lastEventAt: NOW - 12 * 60_000 }, NOW)).toEqual({ elapsed: 'Running 12m 04s', activity: 'No activity for 12m', quiet: true });
+  });
+
+  it('with no event yet, the quiet clock runs from the start', () => {
+    expect(liveLine({ ...running, lastEventAt: null }, NOW)?.activity).toBe('No activity for 12m');
+  });
+
+  it('nothing executing: no live line', () => {
+    expect(liveLine({ ...running, since: null }, NOW)).toBeNull();
   });
 });

@@ -10,6 +10,7 @@ import { reasonLine, type StripMark } from '@/components/ui/task-strip';
 import { WAITING_KIND_SPEC, type WaitingKind } from '@buildd/core/waiting-reason';
 import { termFor, termWord } from '@buildd/shared';
 import { BOARD_LANDED, type MissionBoardModel } from './mission-board';
+import { STALL_GRACE_MS } from './mission-helpers';
 import { isActiveState, isHeldState, stripMarks, stripOrder, stripState, stripTick } from './mission-task-strip';
 
 type Model = Pick<MissionBoardModel, 'phases' | 'tasks'>;
@@ -317,6 +318,48 @@ export function formatCountdown(ms: number): string {
   if (m < 1) return 'under 1m';
   if (m < 60) return `${m}m`;
   return `${Math.floor(m / 60)}h ${pad2(m % 60)}m`;
+}
+
+/** An elapsed clock: `12m 04s` under an hour, `1h 02m` past it. */
+export function formatElapsed(ms: number): string {
+  const s = Math.floor(Math.max(0, ms) / 1000);
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m}m ${pad2(s % 60)}s` : `${Math.floor(m / 60)}h ${pad2(m % 60)}m`;
+}
+
+/** Time since an event, rounded down: `14s`, `12m`, `1h 02m`. */
+function formatAgo(ms: number): string {
+  const s = Math.floor(Math.max(0, ms) / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${pad2(m % 60)}m`;
+}
+
+/**
+ * How long a live task may go without an event before its line reads
+ * `No activity for 12m`: the stall grace a mission already allows open work
+ * with no live worker (`STALL_GRACE_MS`, lib/mission-helpers.ts).
+ */
+export const NO_ACTIVITY_MS = STALL_GRACE_MS;
+
+/** A live task's line: `Running 12m 04s`, then `Updated 14s ago` or, quiet, `No activity for 12m`. */
+export interface LiveLine {
+  elapsed: string;
+  activity: string;
+  /** No event for `NO_ACTIVITY_MS`: the warning tone. */
+  quiet: boolean;
+}
+
+/** The live line for a status whose worker is executing (`since` set), else null. */
+export function liveLine(s: Pick<OverviewStatus, 'word' | 'since' | 'lastEventAt'>, now: number): LiveLine | null {
+  if (s.since == null) return null;
+  const quietFor = now - (s.lastEventAt ?? s.since);
+  const quiet = quietFor >= NO_ACTIVITY_MS;
+  return {
+    elapsed: `${s.word} ${formatElapsed(now - s.since)}`,
+    activity: quiet ? `No activity for ${formatAgo(quietFor)}` : `Updated ${formatAgo(quietFor)} ago`,
+    quiet,
+  };
 }
 
 /** `Failed · CI failed`: the word and its one cause. */

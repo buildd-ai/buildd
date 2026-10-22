@@ -8,7 +8,7 @@ domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.tsx, apps/web/src/app/app/(protected)/missions/[id]/MissionBoardParts.tsx, apps/web/src/lib/mission-task-strip.ts, apps/web/src/lib/mission-board.ts]
 related: [timeline-dependency-geometry, timeline-mobile-rail, mission-structure-view, mission-legibility]
 keywords: [landed strip, segment strip, 04 / 14, waiting on 8 dependencies, next open, tick row, topological order, queued behind, stripOrder]
-verified_by: [apps/web/src/lib/mission-task-strip.test.ts, apps/web/src/lib/mission-overview.test.ts, apps/web/src/components/ui/TaskStrip.test.tsx, apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.dom.test.tsx, apps/web/src/lib/condensed-timeline.test.ts]
+verified_by: [apps/web/src/lib/mission-task-strip.test.ts, apps/web/src/lib/mission-overview.test.ts, apps/web/src/app/app/(protected)/missions/[id]/OverviewTaskStatus.dom.test.tsx, apps/web/src/components/ui/TaskStrip.test.tsx, apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.dom.test.tsx, apps/web/src/lib/condensed-timeline.test.ts]
 assertions:
   - id: "build-mission-adjacency"
     type: "symbol"
@@ -257,6 +257,22 @@ the backoff as `Retry in 3h 52m` (`retryText`) beside `Retry now`
 (`RETRY_NOW`), never `Queued · Scheduled start`. Because this is the strip
 state, Home and `buildd top` read the same cell.
 
+**R-8a1**: the Overview names the selected task's status on a line under
+the strip (`OverviewTaskStatus`): a dot in the status tone, the word and its
+one cause, then what that state needs. A pending retry shows
+`Retry in 3h 52m` and a `Retry now` button. The button posts
+`POST /api/tasks/[id]/start` with `retryNow: true`, which lifts only the
+deferred start (it clears `tasks.startAt`), and every other start gate still
+applies. A refusal shows its error in place.
+
+**R-8a2**: a task with an executing worker shows its live line beside the
+word: `Running 12m 04s`, ticking each second from the worker's start
+(`formatElapsed`), then `Updated 14s ago` from its last event
+(`lastEventOf`). Once `NO_ACTIVITY_MS` passes with no event (the mission
+stall grace, `STALL_GRACE_MS`, 5 min), the line reads `No activity for 12m`
+in the warning tone, timed from the start when no event has arrived
+(`liveLine`). It shows no spinner.
+
 ### 3.2b The mission bar's looks (Navigation d25d923d R-4)
 
 **R-8b**: a grouped strip (the mission bar, `TaskStrip` with `groups`) draws
@@ -281,8 +297,10 @@ running cell was static.
 **R-8d**: a closed, unmerged PR whose replacement is known reads
 `Closed → #N` (the cell's word, `BoardTask.replacement`), from a close comment
 (`Replaced by #N`), a PR body (`replaces #N`) or a person's link
-(`POST /api/workers/[id]/replacement`), before the replacement merges. It is
-display only: the formal supersession still records on merge, and no
+(`POST /api/workers/[id]/replacement`), before the replacement merges. With
+none known, the selected task's status line reads `Closed` with a
+`Link replacement` action, which takes a PR number and posts it to that
+route for the PR's worker (`BoardTask.prWorkerId`). It is display only: the formal supersession still records on merge, and no
 completion or merge gate reads it.
 
 ### 3.3 Words
@@ -754,15 +772,24 @@ Each criterion is checkable against a board model built from fixtures
   appears at most once.
 - **AC-23**: GIVEN a pending task whose PR is `ci_failed` or `conflict` and
   whose `startAt` is 3h 52m ahead, WHEN the board is built, THEN its state is
-  `ci_failed`, it reads `Failed · CI failed` (or `· Merge conflict`) and
-  `Retry in 3h 52m`, and it carries no waiting cause (R-8a).
+  `fixing`, it reads `Fixing · CI failed` (or `· Merge conflict`), the
+  Overview's status line shows `Retry in 3h 52m` and `Retry now`, and it
+  carries no waiting cause (R-8a, R-8a1).
 - **AC-24**: GIVEN a grouped strip with every state, WHEN it renders, THEN
   each fill's look is merged, running or waiting as R-8b says, only `ci_failed`
   and `failed` carry a red dot and `needs_you` / `waiting` an amber one, only
   the running cell carries `data-drift`, every button keeps its `data-state`,
-  and `globals.css` stops the drift under `prefers-reduced-motion: reduce`.
+  and no reduced-motion rule in `globals.css` stops the drift (R-8c).
 - **AC-25**: GIVEN a closed, unshipped PR with a named replacement #812, WHEN
   the Overview cells are built, THEN its word is `Closed → #812` (R-8d).
+- **AC-26**: GIVEN a closed, unshipped PR with no replacement known, WHEN it
+  is selected, THEN the status line reads `Closed` with `Link replacement`,
+  and submitting `#812` posts `{ prNumber: 812 }` to
+  `/api/workers/<its PR's worker>/replacement` (R-8d).
+- **AC-27**: GIVEN a running task started 12m 04s ago whose last event was
+  14s ago, WHEN it is selected, THEN the status line reads
+  `Running 12m 04s · Updated 14s ago`. With no event for 12m it reads
+  `No activity for 12m` in the warning tone (R-8a2).
 - **AC-22** (rejection): GIVEN any strip rendered with state-compacted order
   (R-5), WHEN inspected, THEN it carries no tick numbers, no ordinal and no
   selectable cell.
