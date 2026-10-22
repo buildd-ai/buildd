@@ -1610,8 +1610,11 @@ export const tasks = pgTable('tasks', {
   // How createdByUserId was decided (TaskRequesterSource in core/task-requester-source.ts):
   // 'explicit' (the writer named the person), 'parent' | 'mission' | 'schedule'
   // (derived at insert), 'none' (no person: service or API-key work), and the
-  // same with a 'backfill_' prefix for rows filled in after the fact. NULL: not
-  // yet decided — nothing writes this column until the insert trigger lands.
+  // same with a 'backfill_' prefix for rows filled in after the fact
+  // ('backfill_none' / 'backfill_not_member': unknown, left NULL, never guessed).
+  // Written only by the tasks_resolve_requester trigger (migration
+  // *_task_requester_trigger). NULL: a row written before the trigger that
+  // already named a person; how it was decided was not recorded.
   requesterSource: text('requester_source').$type<TaskRequesterSource>(),
   creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook' | 'orchestrator' | 'conflict'>(),
   // Direct link to the task_schedule that spawned this task (when creationSource = 'schedule' or 'orchestrator').
