@@ -74,7 +74,7 @@ export async function loadRunnerBeats(accountId: string): Promise<RunnerBeat[]> 
     accountId: r.accountId,
     localUiUrl: r.localUiUrl,
     lastHeartbeatAt: r.lastHeartbeatAt,
-    environment: { labels: (r.environment as { labels?: Record<string, string> | null } | null)?.labels ?? null },
+    environment: { labels: r.environment?.labels ?? null },
   })));
   return live.map(r => ({ ...r, lastHeartbeatAt: r.lastHeartbeatAt instanceof Date ? r.lastHeartbeatAt : new Date(r.lastHeartbeatAt as string) }));
 }
