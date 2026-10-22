@@ -1,7 +1,7 @@
 /**
  * How a task's person (`tasks.createdByUserId`) was decided, stored in
- * `tasks.requesterSource`. To be written by a database insert trigger (a
- * follow-up migration), never by application code; until then it stays NULL.
+ * `tasks.requesterSource`. Written by the `tasks_resolve_requester` trigger
+ * (migration *_task_requester_trigger), never by application code.
  *
  * Pure: no imports, safe for schema.ts and client bundles.
  */
