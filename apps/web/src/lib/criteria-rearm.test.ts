@@ -7,6 +7,34 @@ import {
   MAX_REARM_CYCLES,
 } from './criteria-rearm';
 import type { GoalCriteriaState } from '@buildd/shared';
+import { describeCriteriaBlocker } from './criteria-blocker-copy';
+
+describe('describeCriteriaBlocker', () => {
+  it('names the actual failed check without diagnosing its cause', () => {
+    expect(describeCriteriaBlocker(state('fail', [
+      { label: 'Build succeeds', verdict: 'pass' },
+      { label: 'Visual review passes', verdict: 'fail' },
+    ]))).toBe('Failed check: Visual review passes');
+  });
+
+  it('distinguishes an unverified check from a failed check', () => {
+    expect(describeCriteriaBlocker(state('fail', [
+      { label: 'Release checks', verdict: 'NOT_EVALUATED' },
+    ]))).toBe('Check not verified: Release checks');
+  });
+
+  it('summarizes multiple blockers without expanding the whole report', () => {
+    expect(describeCriteriaBlocker(state('fail', [
+      { label: 'Build succeeds', verdict: 'fail' },
+      { label: 'Visual review passes', verdict: 'fail' },
+    ]))).toBe('2 completion checks need review.');
+  });
+
+  it('keeps missing or lengthy detail factual and compact', () => {
+    expect(describeCriteriaBlocker(null)).toBe('Completion checks need review.');
+    expect(describeCriteriaBlocker(state('fail', [{ label: 'x'.repeat(200), verdict: 'fail' }]))).toBe('Completion checks need review.');
+  });
+});
 
 function state(overall: GoalCriteriaState['overall'], criteria: Array<Partial<GoalCriteriaState['criteria'][number]>>): GoalCriteriaState {
   return {

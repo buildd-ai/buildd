@@ -32,7 +32,7 @@ import { prLifecycleFor } from '@/lib/delivery-overlay';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
 import { isActionableChip, kernelInboxMembership, missionPrRoleOf, reviewMachineActing, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
-import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
+import { describeCriteriaBlocker } from '@/lib/criteria-blocker-copy';
 import { resolveCiGate } from '@/lib/ci-gate';
 import { DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
 import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
@@ -931,7 +931,7 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
         openNote: note ? { id: note.id, title: note.title, body: note.body } : null,
         status: m.status,
         criteriaOverallVerdict: (state as { overall?: string } | null)?.overall ?? null,
-        recommendation: describeCriteriaFailureReading(inferCriteriaFailureReading(state)),
+        recommendation: describeCriteriaBlocker(state),
       };
     })));
   }

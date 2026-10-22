@@ -98,22 +98,6 @@ export function inferCriteriaFailureReading(
 }
 
 /**
- * Renders `inferCriteriaFailureReading`'s output as a sentence a human can
- * read directly — on the mission-detail banner and on the Home DECIDE card
- * (`AgentRecommendation`), so both surfaces say the same thing about the same
- * escalation instead of drifting into two hand-written copies.
- */
-export function describeCriteriaFailureReading(reading: CriteriaFailureReading | null): string {
-  if (reading === 'criterion_unmeasurable') {
-    return 'The same prose criterion has failed unchanged across every retry — it is likely unmeasurable as written.';
-  }
-  if (reading === 'work_unowned') {
-    return 'The same machine-checked criterion has failed unchanged across every retry — the work it names likely has no owner.';
-  }
-  return 'Goal criteria failed unchanged across every retry the organizer had.';
-}
-
-/**
  * Pure re-arm decision. No DB, no clock — the caller supplies the history.
  *
  * `tasksCreatedSinceRearm` is what separates "the organizer looked and did

@@ -19,7 +19,7 @@ import { computeMissionProgress, deriveMissionProgressMetric, deriveCriteriaGate
 import { isMissionAuditTask, isSurfaceFixTask, surfaceAuditHeadline } from '@buildd/core/surface-audit';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
-import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
+import { describeCriteriaBlocker } from '@/lib/criteria-blocker-copy';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { describeLastCheck, selectOrganizerRuns } from '@/lib/mission-checkins';
@@ -1016,8 +1016,7 @@ async function MissionDetailBody({
   const recordItems = artifactItems.filter(a => recordIds.has(a.id));
 
   const decisionBlock = displayState === 'waiting_decision' && (() => {
-        const reading = inferCriteriaFailureReading(goalCriteriaStateFull);
-        const readingCopy = describeCriteriaFailureReading(reading);
+        const readingCopy = describeCriteriaBlocker(goalCriteriaStateFull);
         // First non-passing criterion, by its stable `index` — not array
         // position in `criteria`, which can skip entries.
         const failingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
