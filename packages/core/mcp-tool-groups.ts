@@ -64,6 +64,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   resolve_capability: 'workers',
   request_capability: 'workers',
   list_runners: 'workers',
+  probe_budget_wall: 'workers',
   read_evidence: 'workers',
   // PRs, reviews, releases
   get_pr: 'prs',
@@ -158,6 +159,7 @@ const MCP_GROUP_OVERRIDES: Partial<Record<BuilddAction, McpToolGroup>> = {
   get_budget_forecast: 'analytics',
   get_usage_stats: 'analytics',
   list_runners: 'analytics',
+  probe_budget_wall: 'analytics',
   get_manifest_coverage: 'analytics',
   get_path_claim_stats: 'analytics',
   get_decision_stats: 'analytics',
@@ -235,6 +237,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   spec_compare: 'listed', // spec-sync skill; spec-validator role
   manage_workspaces: 'listed', // workspace-onboarding skill; organizer prompts
   list_runners: 'listed', // default role prompts
+  probe_budget_wall: 'listed', // runner budget-wall recovery
   get_usage_stats: 'listed', // default role prompts
   get_budget_forecast: 'listed', // default role prompts
   get_manifest_coverage: 'listed', // default role prompts
@@ -363,7 +366,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'stuck work', actions: ['explain'] },
       { text: 'errors, run logs', actions: ['get_error_traces', 'get_failure_analytics', 'read_evidence'] },
       { text: 'budget, usage', actions: ['get_budget_forecast', 'get_usage_stats'] },
-      { text: 'runners', actions: ['list_runners'] },
+      { text: 'runners', actions: ['list_runners', 'probe_budget_wall'] },
       { text: 'dispatch', actions: ['dispatch_health'] },
     ],
   },
@@ -446,6 +449,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   resolve_capability: 'who serves a need',
   request_capability: 'ask for access',
   list_runners: 'slots, branch, build, heartbeat',
+  probe_budget_wall: 'recheck a held limit',
   read_evidence: 'stored run logs',
   get_pr: 'PR state, CI, reviews',
   list_prs: 'open PRs (conflicts/red CI first) or merged',
