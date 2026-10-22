@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { accounts, workers, workspaces, type missions } from '@buildd/core/db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { getUserTeamIds } from '@/lib/team-access';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { resolveTaskRequesterUserId } from '@buildd/core/task-requester';
@@ -34,7 +34,7 @@ export interface ResolvedCreatorContext {
  * Resolves the creator context for a new task based on authentication and request params.
  *
  * Logic:
- * - createdByAccountId: From API account or user's primary account
+ * - createdByAccountId: From API account, or a key the signed-in person minted
  * - creationSource: Explicit value > 'dashboard' for session auth > 'api' default
  * - createdByWorkerId: Validated to belong to authenticated account
  * - parentTaskId: Explicit value > derived from worker's current task
@@ -126,7 +126,11 @@ export async function resolveMissionCreator(params: {
 }
 
 /**
- * Resolves the account ID from API account or user's primary account
+ * The account that filed the task: the authenticated API account, or for a
+ * signed-in person a key that person minted on one of their teams. Never just
+ * any account on the team: that is often a shared team runner, which would
+ * record the runner as the filer of the person's own request (spec 7702c32a
+ * R-1). None found: NULL, and the person is on createdByUserId.
  */
 async function resolveAccountId(
   apiAccount?: { id: string } | null,
@@ -140,7 +144,7 @@ async function resolveAccountId(
     const teamIds = await getUserTeamIds(userId);
     if (teamIds.length > 0) {
       const userAccount = await db.query.accounts.findFirst({
-        where: sqlWhere(inArray(accounts.teamId, teamIds)),
+        where: sqlWhere(and(inArray(accounts.teamId, teamIds), eq(accounts.createdByUserId, userId))),
       });
       return userAccount?.id || null;
     }
