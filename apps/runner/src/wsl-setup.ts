@@ -13,7 +13,8 @@ export function parseDistributions(output: string): { name: string; version: num
 const PREREQUISITES = ['git', 'curl', 'bun', 'bwrap', 'socat', 'claude', 'runner'];
 // Fixed script: distribution names never enter a shell command. Starting a stopped
 // distribution is the only lifecycle effect; no security configuration is changed.
-export const WSL_RUNTIME_PROBE = `printf 'BUILDD_WSL_SETUP='; for c in git curl bun bwrap socat claude; do p=$(command -v "$c" 2>/dev/null); case "$p" in /mnt/*|*.exe|'') ;; *) printf '%s,' "$c" ;; esac; done; test ! -f "$HOME/.buildd/apps/runner/src/isolation-check.ts" || printf runner; printf '\\n'`;
+// Same user bin directories the install.sh launcher adds, so tools installed via interactive-shell config are found.
+export const WSL_RUNTIME_PROBE = `PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"; export PATH; printf 'BUILDD_WSL_SETUP='; for c in git curl bun bwrap socat claude; do p=$(command -v "$c" 2>/dev/null); case "$p" in /mnt/*|*.exe|'') ;; *) printf '%s,' "$c" ;; esac; done; test ! -f "$HOME/.buildd/apps/runner/src/isolation-check.ts" || printf runner; printf '\\n'`;
 const install = 'Operator only, in PowerShell as Administrator: wsl --install -d Ubuntu; reboot if requested, then open Ubuntu and create a Linux user.';
 export function inspectWsl(platform: string, requested: string | undefined, run: RunCommand): { code: number; lines: string[] } {
   const lines = ['Claude confinement requires BOTH the runner and Claude inside WSL2. Native Windows Claude remains unsupported.'];

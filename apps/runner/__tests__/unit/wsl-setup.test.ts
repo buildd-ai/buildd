@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import { inspectWsl, parseDistributions, type CommandResult } from '../../src/wsl-setup';
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { spawnSync } from 'child_process';
+import { WSL_RUNTIME_PROBE, inspectWsl, parseDistributions, type CommandResult } from '../../src/wsl-setup';
 const ok = (stdout: string): CommandResult => ({ code: 0, stdout });
 const listing = '  NAME STATE VERSION\n* Ubuntu Running 2\n  Debian Stopped 1\n';
 describe('WSL setup preflight', () => {
@@ -50,5 +54,22 @@ describe('WSL setup preflight', () => {
   test('no distributions and unknown selection produce distinct guidance', () => {
     expect(inspectWsl('win32', undefined, () => ok('')).lines.join('\n')).toContain('wsl --install');
     expect(inspectWsl('win32', 'Unknown', () => ok(listing)).lines.join('\n')).toContain('not found');
+  });
+  test('probe finds tools in standard user bin dirs with a minimal PATH', () => {
+    const home = mkdtempSync(join(tmpdir(), 'wsl-probe-'));
+    try {
+      for (const [dir, tools] of [['.bun/bin', ['bun']], ['.local/bin', ['claude']], ['sysbin', ['git', 'curl', 'bwrap', 'socat']]] as const) {
+        mkdirSync(join(home, dir), { recursive: true });
+        for (const t of tools) { writeFileSync(join(home, dir, t), '#!/bin/sh\n'); chmodSync(join(home, dir, t), 0o755); }
+      }
+      const run = (path: string) => spawnSync('sh', ['-c', WSL_RUNTIME_PROBE], { env: { HOME: home, PATH: path }, encoding: 'utf8' }).stdout;
+      const found = run(`${join(home, 'sysbin')}:/usr/bin:/bin`);
+      expect(found).toContain('bun,');
+      expect(found).toContain('claude,');
+      // Windows-mounted executables stay rejected
+      mkdirSync(join(home, 'mnt'));
+      writeFileSync(join(home, 'mnt', 'bun.exe'), '#!/bin/sh\n'); chmodSync(join(home, 'mnt', 'bun.exe'), 0o755);
+      expect(run(`${join(home, 'sysbin')}:/usr/bin:/bin`)).not.toContain('bun.exe');
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 });
