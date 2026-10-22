@@ -255,7 +255,7 @@ export function buildFleetSnapshot(
         mergedAt: w.mergedAt ? new Date(w.mergedAt) : null, taskMergedPr: w.taskMergedPr ?? null, waitingFor: w.waitingFor ?? null,
         now,
       }),
-      href: t ? missionTaskHref({ missionId: t.missionId ?? null, taskId: t.id, from: 'home', mode: 'sheet' }) : null,
+      href: t ? missionTaskHref({ missionId: t.missionId ?? null, taskId: t.id, from: 'home' }) : null,
     });
     if (runsNow(w)) {
       live++;

@@ -6,7 +6,7 @@ owner: builder
 last_verified: 2026-09-23
 summary: Below the md breakpoint, the mission Timeline MUST render as one continuous vertical rail from chain heads to the goal root, in which every disclosure is in-place and only a row standing for exactly one task navigates.
 domain: surfaces
-surfaces: [apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx, apps/web/src/lib/condensed-timeline.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskPanelWrapper.tsx, apps/web/src/lib/attempt-strip.ts]
+surfaces: [apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx, apps/web/src/lib/condensed-timeline.ts, apps/web/src/lib/attempt-strip.ts]
 related: [timeline-dependency-geometry, mission-structure-view, mission-task-lifecycle]
 keywords: [rail, git log --graph, day tick, now tick, goal root, chain collapse, pathmanifest edge, retry stub, attempt ledger, outcome mark, disclosure, touch target, mobile, task sheet, task peek, delegated click, chain badge, criteria evaluator, verification task, bookkeeping footer]
 verified_by: [apps/web/src/lib/condensed-timeline.test.ts, apps/web/src/lib/condensed-timeline-rail.test.ts, apps/web/src/lib/attempt-strip.test.ts, apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.rail.test.tsx]
@@ -2249,7 +2249,7 @@ count equals the count before the evaluator ran (Rule D5-6, D12-6, §11.21b).
   (line 1265) clicks gain `stopPropagation` (Rule D13-14)** — and gives
   `RailTaskLine` (line 1070) a PR source distinct from its title task
   (Rule D1-5)
-- `apps/web/src/app/app/(protected)/missions/[id]/TaskPanelWrapper.tsx` —
+- Retired task-panel wrapper —
   `TaskPanelWrapper`, its delegated `[data-task-id]` click handler
   (lines 37–52) and the `task` search parameter the sheet addresses itself with
   (lines 21–34). **Unchanged by v3** — the rail conforms to it; the peek is a

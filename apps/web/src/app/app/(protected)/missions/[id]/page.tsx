@@ -43,7 +43,7 @@ import { shippedArtifactKey } from '@/lib/mission-shipped-report';
 import MissionAutoRefresh from './MissionAutoRefresh';
 import { LiveRegion } from '@/components/LiveRegion';
 import MissionReconcileOnOpen from './MissionReconcileOnOpen';
-import TaskPanelWrapper from './TaskPanelWrapper';
+import MissionFocusProvider from './MissionFocusProvider';
 import { buildMissionFeedView, type MissionFeedViewTask } from './mission-feed-view';
 import { pulseDoneCounts } from '@/lib/mission-pulse';
 import { MISSION_DETAIL_WITH, TASK_DIGEST_SELECTION, taskDigestWhere, indexTaskDigests } from './mission-page-query';
@@ -64,10 +64,9 @@ import { missionPlanInputs } from '@/lib/mission-plan-source';
 import MissionFeedLayout from './MissionFeedLayout';
 import { missionSummaryLine } from '@/lib/mission-summary-line';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
-import { buildActivityEpisodes, kernelOwnedBy } from '@/lib/activity-delivery';
+import { buildActivityEpisodes } from '@/lib/activity-delivery';
 import { missionHistoryInputs } from '@/lib/mission-history-input';
 import * as missionHelpers from '@buildd/core/mission-helpers';
-import { missionTaskDeliveries, type MissionDeliveryTaskRow } from './mission-task-delivery';
 import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { loadFleetCapacity } from '@/lib/home-fleet';
 import { parseMissionLayout } from '@/lib/mission-layout';
@@ -90,7 +89,7 @@ import MissionRecordsSheet from './MissionRecordsSheet';
 import { MissionReleaseSection, missionReleaseRow } from './MissionReleaseSection';
 import { buildDeliverySteps, deliveryReleaseInput, missionPrCount, missionReleaseStatus, missionTrunkMergedAt } from '@/lib/mission-delivery';
 import { classifyReleaseState } from '@/lib/release-state';
-import { taskPageHref } from '@/lib/mission-task-href';
+import { legacyTaskSheetRedirect, taskPageHref } from '@/lib/mission-task-href';
 import MissionDecisionSheet from './MissionDecisionSheet';
 import { buildFileWorkHref } from '@/lib/criteria-decision-links';
 import RaiseBudgetButton from './RaiseBudgetButton';
@@ -137,7 +136,7 @@ export const dynamic = 'force-dynamic';
 
 type PageProps = {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string; visualReview?: string; qaHistory?: string }>;
+  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string; visualReview?: string; qaHistory?: string; task?: string; respond?: string }>;
 };
 
 /**
@@ -149,6 +148,9 @@ type PageProps = {
  */
 async function MissionDetailPage(props: PageProps) {
   const [{ id }, search] = await Promise.all([props.params, props.searchParams]);
+  // `?task=T` was the task sheet over this page; it is the task page now (spec d25d923d R-2).
+  const taskPage = legacyTaskSheetRedirect(id, search);
+  if (taskPage) redirect(taskPage);
   async function loadRegion() {
     'use server';
     return MissionDetailBody({ params: Promise.resolve({ id }), searchParams: Promise.resolve(search) });
@@ -172,7 +174,7 @@ async function MissionDetailBody({
   // The protected layout's reads, shared per request (React cache()).
   const [teamIds, wsIds] = await Promise.all([getUserTeamIds(user.id), getUserWorkspaceIds(user.id)]);
   // Only the layout on screen is built (spec 3ef37387 R-18), with the reads only it shows.
-  const layout = parseMissionLayout(layoutParam, listViewParam);
+  const layout = parseMissionLayout(layoutParam, listViewParam, qaHistoryParam);
 
   // ── Round 1: everything that needs only the mission id and the viewer, in
   // one round trip (spec 3ef37387 R-3). S7 / AC-18: the shared shape selects
@@ -700,12 +702,12 @@ async function MissionDetailBody({
   const autoVerifyFlag = (mission as any).autoVerify as boolean | null;
 
   // ── Mission feed (knowledge-base: buildd/design/mission-feed-mobile-continuity.md) ──────────
-  // Every mission task in the one input shape the pulse, the grouped list and
-  // the task sheet all read — so the header pulse, the list and `n / N` count
+  // Every mission task in the one input shape the pulse and the grouped list
+  // read — so the header pulse, the list and `n / N` count
   // the same rows (addendum D1). Attempts and bookkeeping are folded by the
   // builders, never here (mission-feed-view.ts, unit-tested).
   const {
-    feedTasks, pulseSegments, segmentLabels, pulseCaption, recordsCountByTask, liveLines,
+    pulseSegments, segmentLabels, pulseCaption, recordsCountByTask, liveLines,
   } = buildMissionFeedView(allTasks as unknown as MissionFeedViewTask[], { activeAgents, liveStatuses });
   const feedCounts = pulseDoneCounts(pulseSegments);
   const renderedAt = Date.now();
@@ -1218,15 +1220,6 @@ async function MissionDetailBody({
   // Flow: the same-files waits Buildd added, and each task's expected size.
   const flowSameFiles = sameFilesFromRows(allTasks as Array<{ id: string; pathDeclaration?: unknown }>);
   const flowExpectedMinutes = expectedMinutesFromPredictions(sizePredictions);
-  // The drawer's per-task Build › Verify › Deliver and audit/repair evidence: the
-  // shared delivery projection over the same rows (Home, Missions, Activity).
-  const taskDeliveries = missionTaskDeliveries({
-    mission: { id, title: mission.title, status: mission.status, isHeld, armedAt, integrationBranch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true },
-    tasks: allTasks as unknown as MissionDeliveryTaskRow[],
-    digestOf,
-    rules: missionHelpers,
-    kernelOf: (taskId) => kernelOwnedBy(deliveryViews, taskId),
-  });
   // The lede answers "what changed for me?" in place of the D3 text; every
   // other header variant sits above it.
   const completionText = completionPick && !shippedView?.lede
@@ -1269,12 +1262,9 @@ async function MissionDetailBody({
   // when the situation block's one affordance is a single task, the drawer
   // opens on it with the accessor's sentence (and the block points at it).
   const boardStrip = {
-    workspaceId: mission.workspaceId ?? null,
-    executor: ((mission as any).executor === 'local' ? 'local' : (mission as any).executor === 'runner' ? 'runner' : null) as 'local' | 'runner' | null,
     stripFocus: !quietState && missionAnswer && primaryAffordance?.kind === 'internal' && primaryAffordance.taskId
       ? { taskId: primaryAffordance.taskId, reason: missionAnswer.situation.headline }
       : null,
-    deliveries: taskDeliveries,
   };
   // Verified reads current verdicts, never a stale stored overall: a criterion not
   // passing on the board's live counts, or a blocking visual review not clear, holds it.
@@ -1399,16 +1389,8 @@ async function MissionDetailBody({
   return (
     <DisplayTimezoneProvider teamTimezone={teamTimezone}>
     <SwipeProvider>
-    {/* Task sheet owner (S4): ?task= via native history, never the router. */}
-    <TaskPanelWrapper
-      missionId={id}
-      workspaceId={mission.workspaceId}
-      missionTitle={mission.title}
-      chip={stateChip}
-      feedTasks={feedTasks}
-      from={from === 'home' || from === 'missions' || from === 'initiative' ? from : null}
-      initiativeId={initiativeId ?? null}
-    >
+    {/* The page's one selection: `#t-<id>` lands on a task's row (spec d25d923d R-2). */}
+    <MissionFocusProvider missionId={id}>
       {/* Real-time (S7): progress patches the live store the list reads;
           structural events re-render at most once per 3s, scroll-anchored. */}
       <MissionAutoRefresh
@@ -1441,7 +1423,7 @@ async function MissionDetailBody({
       </MissionSurfaceAuditWaiverProvider>
       </MissionVisualReviewProvider>
       </MissionAutoRefresh>
-    </TaskPanelWrapper>
+    </MissionFocusProvider>
     </SwipeProvider>
     </DisplayTimezoneProvider>
   );
