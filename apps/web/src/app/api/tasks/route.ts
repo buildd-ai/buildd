@@ -2068,6 +2068,7 @@ export async function POST(req: NextRequest) {
             id: task.id,
             title: task.title,
             taskClass: task.taskClass,
+            kind: task.kind,
             pathManifest: (task.pathManifest as string[] | null) ?? null,
             context: task.context,
           },

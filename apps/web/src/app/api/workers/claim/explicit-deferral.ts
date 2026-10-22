@@ -125,6 +125,8 @@ export function describeExplicitDeferral(
       };
     }
     case 'runner_capability': {
+      const pinned = str(detail.pinnedRunner);
+      if (pinned) return { code: reason, detail: `waiting for runner ${pinned}: it is pinned to that runner and this caller is a different one.` };
       const model = str(detail.model);
       const req = str(detail.requiredVersion);
       return {

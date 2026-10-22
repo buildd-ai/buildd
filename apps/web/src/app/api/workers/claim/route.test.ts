@@ -3449,6 +3449,62 @@ describe('POST /api/workers/claim', () => {
     expect(data.workers.length).toBe(1);
   });
 
+  // --- Runner pin (requiredCapabilities `runner:<name>`) ---
+
+  describe('runner pin', () => {
+    const pinnedTask = (requiredCapabilities: unknown) => ({
+      id: 'task-1',
+      workspaceId: 'ws-1',
+      title: 'pinned task',
+      kind: 'engineering',
+      complexity: 'normal',
+      priority: 0,
+      dependsOn: [],
+      requiredCapabilities,
+      context: {},
+      workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
+    });
+
+    const claimAs = async (runner: string, requiredCapabilities: unknown) => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        maxConcurrentWorkers: 3,
+        type: 'user',
+        authType: 'api',
+      });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([pinnedTask(requiredCapabilities)]);
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      }));
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner },
+      }));
+      expect(res.status).toBe(200);
+      return res.json();
+    };
+
+    it('defers a pinned task for a different runner, naming the pin', async () => {
+      const data = await claimAs('coder', ['runner:the-mac']);
+      expect(data.workers).toEqual([]);
+      expect(data.diagnostics.reason).toBe('all_candidates_deferred');
+      expect(data.diagnostics.deferrals.runner_capability).toBe(1);
+    });
+
+    it('lets the named runner claim the pinned task', async () => {
+      const data = await claimAs('the-mac', ['runner:the-mac']);
+      expect(data.workers.length).toBe(1);
+    });
+
+    it.each([[null], [[]], [['gpu']]])('leaves a task with no runner: entry (%p) unpinned', async (caps) => {
+      const data = await claimAs('coder', caps);
+      expect(data.workers.length).toBe(1);
+    });
+  });
+
   // --- Per-workspace concurrency cap tests ---
 
   it('caps concurrent workers per repo-backed workspace at maxConcurrentTasks', async () => {

@@ -327,6 +327,25 @@ describe('create_task — parentTaskId support', () => {
     expect(result.content[0].text).toContain('Resolution: relative');
   });
 
+  it('forwards requiredCapabilities and a runner pin as a runner:<name> capability', async () => {
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'Probe', description: 'Mac probe', requiredCapabilities: ['browser'], runner: 'the-mac' },
+      createMockContext(),
+    );
+    expect(JSON.parse(mockApi.mock.calls[0][1].body).requiredCapabilities).toEqual(['browser', 'runner:the-mac']);
+  });
+
+  it('rejects a malformed runner pin', async () => {
+    await expect(handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'Probe', description: 'x', runner: '  ' },
+      createMockContext(),
+    )).rejects.toThrow('runner must be');
+  });
+
   it('rejects unknown parameters instead of silently dropping them', async () => {
     expect(handleBuilddAction(
       mockApi as unknown as ApiFn,
