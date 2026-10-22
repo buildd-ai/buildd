@@ -2,14 +2,14 @@
  * The mission page's feed derivation (`buildMissionFeedView`) and the page's
  * wiring of it. The view-level tests render `MissionDetailView` with
  * hand-built props, so without these the page could stop passing the feed,
- * pass a different task set to the pulse and the sheet, or go back to the
+ * pass a different task set to the pulse and the list, or go back to the
  * first-wins reviewer-retry loop (AC-21) and nothing would fail.
  */
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildPulseSegments } from '@/lib/mission-pulse';
-import { buildMissionFeedView } from './mission-feed-view';
+import { buildMissionFeedView, toMissionFeedTaskInput } from './mission-feed-view';
 
 const t = (id: string, over: Record<string, unknown> = {}) => ({
   id,
@@ -65,8 +65,10 @@ describe('mission page wiring (source shape)', () => {
     expect(src).not.toMatch(/\.map\(toMissionFeedTaskInput\)/);
   });
 
-  it('passes feedTasks to the sheet owner (its ‹ › and n / N)', () => {
-    expect(src).toMatch(/<TaskPanelWrapper[\s\S]*?feedTasks=\{feedTasks\}/);
+  it('mounts no task sheet: ?task= redirects to the task page, #t- lands through the focus store (spec d25d923d)', () => {
+    expect(src).not.toMatch(/TaskPanelWrapper|<TaskSheet|from '\.\/TaskSheet'/);
+    expect(src).toMatch(/const taskPage = legacyTaskSheetRedirect\(id, search\);\s*if \(taskPage\) redirect\(taskPage\);/);
+    expect(src).toMatch(/<MissionFocusProvider missionId=\{id\}>/);
   });
 
   it('every layout reads the one board model: Overview, Flow and History', () => {
@@ -87,5 +89,32 @@ describe('mission page wiring (source shape)', () => {
     expect(src).not.toMatch(/groupChainUnits\(/);
     expect(src).not.toMatch(/reviewerRetryMap\.has\(/);
     expect(src).not.toMatch(/StructureView|MissionLanes/);
+  });
+});
+
+describe('toMissionFeedTaskInput', () => {
+  it('keeps only what the feed model reads, with the latest worker', () => {
+    const input = toMissionFeedTaskInput({
+      id: 'a', title: 'A', status: 'in_progress', createdAt: '2026-01-01T00:00:00Z', taskClass: 'work',
+      missionPhaseIndex: 1, missionPhaseLabel: 'BUILD', dependsOn: ['z'], roleSlug: 'builder',
+      result: { summary: 'large payload' }, context: { big: true },
+      workers: [
+        { status: 'running', prNumber: 7, prUrl: 'https://example.invalid/pr/7', startedAt: '2026-01-01T00:01:00Z', artifacts: [{ content: 'x' }] },
+        { status: 'failed' },
+      ],
+    });
+    expect(input).toEqual({
+      id: 'a', title: 'A', status: 'in_progress', createdAt: '2026-01-01T00:00:00Z', updatedAt: null,
+      taskClass: 'work', parentTaskId: null, mode: null, kind: null, roleSlug: 'builder', category: null,
+      creationSource: null, dependsOn: ['z'], missionPhaseIndex: 1, missionPhaseLabel: 'BUILD',
+      worker: {
+        status: 'running', startedAt: '2026-01-01T00:01:00Z', updatedAt: null, prNumber: 7,
+        prUrl: 'https://example.invalid/pr/7', prLifecycleStatus: null, mergedAt: null,
+      },
+    });
+  });
+
+  it('a task that never ran has a null worker', () => {
+    expect(toMissionFeedTaskInput({ id: 'a', title: 'A', status: 'pending', createdAt: '2026-01-01T00:00:00Z' }).worker).toBeNull();
   });
 });

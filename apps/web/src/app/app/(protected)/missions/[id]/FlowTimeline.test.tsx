@@ -21,6 +21,8 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { renderToStaticMarkup } = await import('react-dom/server');
 const { default: FlowTimeline } = await import('./FlowTimeline');
+const { createMissionFocusStore } = await import('./MissionFocusProvider');
+const { MissionFocusContext } = await import('@/components/missions/mission-focus-context');
 const { missionFlowFixture } = await import('../../../dev/fixtures/mission-flow-fixtures');
 
 let container: HTMLElement;
@@ -50,6 +52,34 @@ const litEdges = () => [...container.querySelectorAll('[data-testid="flow-edges"
 const allEdges = () => container.querySelectorAll('[data-testid="flow-edges"] path');
 
 describe('FlowTimeline', () => {
+  for (const target of [1, 7]) it(`a hash arrival selects and scrolls task ${target}, revealing merged rows without navigating`, () => {
+    const f = missionFlowFixture('wide', Date.now());
+    const id = f.idOf(target);
+    const scrolled: HTMLElement[] = [];
+    const navigated: string[] = [];
+    const store = createMissionFocusStore({
+      missionId: 'm1',
+      history: { state: null, replaceState: () => { throw new Error('hash arrival must not write history'); } },
+      navigate: url => navigated.push(url),
+      location: () => ({ pathname: '/app/missions/m1', search: '?layout=flow', hash: `#t-${id}` }),
+      scrollIntoView: el => scrolled.push(el),
+      now: Date.now,
+      setTimeout,
+      clearTimeout,
+    });
+    act(() => root.render(
+      <MissionFocusContext.Provider value={store}>
+        <FlowTimeline model={f.model} sameFiles={f.sameFiles} expectedMinutes={f.expectedMinutes} missionId="m1" />
+      </MissionFocusContext.Provider>,
+    ));
+    act(() => store.readHash());
+    const targetRow = container.querySelector<HTMLElement>(`[data-task-row="${id}"]`);
+    expect(targetRow).not.toBeNull();
+    expect(targetRow?.getAttribute('aria-pressed')).toBe('true');
+    expect(scrolled).toEqual([targetRow!]);
+    expect(navigated).toEqual([]);
+  });
+
   it('draws one row per task and says what sets the finish', () => {
     mount('small');
     expect(rows().map(r => r.dataset.tick)).toEqual(['01', '02', '03', '04', '05', '06', '07']);

@@ -2,13 +2,14 @@
 
 /**
  * `?state=mission-task-strip`: the real mission Board with its interactive
- * Landed strip and tethered drawer, plus the real situation block wired the
- * way the mission page wires it (its single-task affordance points at the
- * drawer). See mission-task-strip-fixtures.ts for `&variant=`.
+ * Landed strip (a tap opens the task's page), plus the real situation block
+ * wired the way the mission page wires it. See mission-task-strip-fixtures.ts
+ * for `&variant=`.
  *
  * Display only: the drawer's actions post to the live routes, so do not press
  * them here.
  */
+import { selectStripCell } from './strip-select';
 import { useEffect, useState } from 'react';
 import MissionBoard from '@/app/app/(protected)/missions/[id]/MissionBoard';
 import MissionOverview from '@/app/app/(protected)/missions/[id]/MissionOverview';
@@ -52,10 +53,11 @@ export default function MissionTaskStripFixture() {
     const variant = parseMissionTaskStripVariant(q);
     setState({ variant, fixture: missionTaskStripFixture(variant, Date.now()), select: dagSelection(variant, q) });
   }, []);
-  // `&select=`: open on that cell, the way a tap would (the strip owns its selection).
+  // `&select=`: land on that cell's selection, the way the arrow keys would (the strip owns its selection).
   useEffect(() => {
     if (!state?.select) return;
-    document.querySelector<HTMLButtonElement>(`[data-testid="landed-strip-cell"][data-task-ref="${state.select}"]`)?.click();
+    const cells = [...document.querySelectorAll<HTMLButtonElement>('[data-testid="landed-strip-cell"]')];
+    selectStripCell(cells, cells.findIndex(c => c.dataset.taskRef === state.select));
   }, [state]);
   if (!state) return <div className="min-h-screen bg-surface-1" />;
   const { variant, fixture } = state;
@@ -81,8 +83,6 @@ export default function MissionTaskStripFixture() {
           <MissionOverview
             model={fixture.model}
             missionId={MISSION_ID}
-            workspaceId={WORKSPACE_ID}
-            executor={fixture.executor}
             checks={fixture.checks ?? null}
             planTasks={fixture.planTasks ?? null}
             held={fixture.held ?? false}

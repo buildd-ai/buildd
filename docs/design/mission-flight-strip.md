@@ -5,7 +5,13 @@ status: implemented
 # The retirement is pinned by a git-grep test
 # (missions/[id]/mission-detail-retirements.test.ts), since no assertion type
 # expresses an absence. Every assertion below passes for the reason it names.
+# Task activation now opens the task page; the flight-detail sheet is still
+# a mission-level visualization, not an alternative task view.
 assertions:
+  - id: "flight-detail-task-page-navigation"
+    type: "symbol_reachable"
+    symbol: "missionTaskHref"
+    entry: "apps/web/src/components/FlightDetailSheet.tsx"
   - id: "compute-mission-flight-strip"
     type: "symbol"
     name: "computeMissionFlightStrip"
