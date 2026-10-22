@@ -4,10 +4,10 @@
  *
  * On Windows `codex exec --sandbox workspace-write` without `windows.sandbox`
  * set silently runs read-only, so the runner names the mode on every Codex run
- * and the probe checks that mode actually confines. buildd uses the
- * explicitly verified MXC when available, else a restricted token for the runner's own user, which
- * needs no admin rights and changes nothing on the host. It confines writes to
- * the workspace and temp dirs but leaves the network open. The `elevated` mode
+ * and the probe checks that mode actually confines. buildd prefers explicit
+ * MXC, then the unelevated restricted token for the runner's own user. Neither
+ * requires administrator provisioning. Codex may ACL its disposable writable
+ * roots. The worker's network remains open. The `elevated` mode
  * can restrict the network, but sets itself up per CODEX_HOME by creating local
  * accounts and firewall rules: a host security change buildd does not make.
  *
@@ -23,11 +23,6 @@ import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { resolveBuilddHome } from './buildd-home';
 
-/** The `windows.sandbox` mode the runner probes and passes to Codex. */
-export const CODEX_WINDOWS_SANDBOX_MODE = 'unelevated';
-
-/** The Codex config override that selects it, for the SDK's `config` option. */
-export const CODEX_WINDOWS_SANDBOX_CONFIG = { windows: { sandbox: CODEX_WINDOWS_SANDBOX_MODE } } as const;
 export type WindowsSandboxImplementation = 'mxc' | 'unelevated';
 export type WindowsSandboxMode = 'read-only' | 'workspace-write';
 export type WindowsSandboxModes = Record<WindowsSandboxMode, WindowsSandboxImplementation | null>;
@@ -55,14 +50,13 @@ export function resolveCodexBinary(env: Record<string, string | undefined> = pro
 }
 
 export interface CodexSandboxRun {
-  /** Runs `codex sandbox ... -- cmd.exe /d /c <command>` in `cwd`; true when it exited 0. */
+  /** True only when cmd exited 0 and its success marker proves the command ran. */
   (codexBin: string, cwd: string, codexHome: string, command: string, implementation?: WindowsSandboxImplementation, mode?: WindowsSandboxMode): boolean;
 }
 
 // The temp dirs stay out of the probe's writable roots: in a fresh CODEX_HOME,
 // Codex first grants its sandbox ACLs on every writable root, and on %TEMP%
-// that took about a minute on a real host. (`-C` is not used: it requires a
-// permissions profile; the spawn's cwd is the workspace.)
+// that took about a minute on a real host. The spawn's cwd is the workspace.
 export const runInCodexSandbox: CodexSandboxRun = (codexBin, cwd, codexHome, command, implementation = 'unelevated', mode = 'workspace-write') => {
   const r = childProcess.spawnSync(
     codexBin,
@@ -99,9 +93,9 @@ const realDeps: CodexWindowsProbeDeps = {
 };
 
 /**
- * Does Codex's unelevated Windows sandbox confine here? Functional, not "it
- * started": a write inside the workspace must succeed and a write outside it
- * must be refused. Throwaway CODEX_HOME and dirs, removed afterwards.
+ * Does the selected implementation enforce this permission mode? Workspace
+ * writes succeed only in workspace-write; outside writes never succeed. Both
+ * commands must actually run. The supplied worker home is never removed.
  */
 export function probeCodexWindowsSandbox(deps: CodexWindowsProbeDeps = realDeps, implementation: WindowsSandboxImplementation = 'unelevated', mode: WindowsSandboxMode = 'workspace-write'): boolean {
   const bin = deps.codexBin();
@@ -117,6 +111,9 @@ export function probeCodexWindowsSandbox(deps: CodexWindowsProbeDeps = realDeps,
     home = deps.codexHome ?? fs.mkdtempSync(join(tmpdir(), 'buildd-codex-sbx-home-'));
     // Positive host control: absence is meaningful only for a writable target.
     const escaped = join(outside, 'escaped.txt');
+    const inside = join(ws, 'inside.txt');
+    fs.writeFileSync(inside, 'host-control');
+    fs.unlinkSync(inside);
     fs.writeFileSync(escaped, 'host-control');
     fs.unlinkSync(escaped);
     // Relative targets: the names are ours and carry no spaces, so cmd needs no quoting.

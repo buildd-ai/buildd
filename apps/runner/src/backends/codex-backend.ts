@@ -96,7 +96,7 @@ export class CodexBackend implements AgentBackend {
       // env), and every other runner secret the allowlisted agent env exists
       // to withhold (agent-env.ts).
       // No task env (direct callers) keeps the SDK default.
-      ...(opts.env && spawnEnv ? { env: spawnEnv } : {}),
+      ...(spawnEnv && (opts.env || windowsConfig) ? { env: spawnEnv } : {}),
     });
     const threadOpts = {
       workingDirectory: opts.cwd,
