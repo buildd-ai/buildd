@@ -332,6 +332,7 @@ export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string
   emit_event: { reason: 'worker-only', note: 'Worker milestone events.' },
   request_capability: { reason: 'worker-only', note: 'A running agent asks for access for its own worker; people decide on Settings.' },
   upload_artifact: { reason: 'worker-only', note: 'Uploads a worker-produced file.' },
+  probe_budget_wall: { reason: 'not-yet', note: 'Asks runners to recheck a provider limit; chat has no runner-control tool yet.' },
   get_page_source: { reason: 'worker-only', note: 'The visual auditor asks where its own pages come from.' },
   deploy: { reason: 'worker-only', note: 'Authority is an Operator task\'s role grant in its workspace; a person in chat has no task.' },
   record_pr_supersession: { reason: 'worker-only', note: 'Recorded by the worker that superseded a PR.' },

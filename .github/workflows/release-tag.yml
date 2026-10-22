@@ -148,7 +148,7 @@ jobs:
         if: steps.version.outputs.needs_tag == 'true'
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.3"
+          bun-version: "1.4.4"
 
       - name: Warn on a semver under-bump
         # A release PR's version is computed at cut time. A frozen candidate

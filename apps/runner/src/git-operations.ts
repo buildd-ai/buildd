@@ -566,6 +566,14 @@ export interface SetupWorktreeResult {
    * trace on the worker, visible on the dashboard and to `get_error_traces`.
    */
   staleBase?: { ref: string; defaultBranch: string; commitsBehind: number };
+  /**
+   * Set when the worktree's tree is a prior attempt's branch rather than a
+   * clean base: `base` IS the resume candidate (pushed or local-only), whatever
+   * branch name the worktree landed on. A fresh claim never sets it. The
+   * provision gate reads it to tell a broken checkpoint, which this task can
+   * repair, from a broken base, which it cannot (resumed-readiness.ts).
+   */
+  resumed?: { from: string };
 }
 
 /**
@@ -1452,6 +1460,7 @@ export async function setupWorktree(
       ...(fallback ? { fallback } : {}),
       ...(sharedBranch ? { sharedBranch } : {}),
       ...(staleBase ? { staleBase } : {}),
+      ...(isDirectResumeTarget ? { resumed: { from: resumeCandidate as string } } : {}),
     };
   } catch (err) {
     console.error(`[Worker ${workerId}] Failed to set up worktree:`, err instanceof Error ? err.message : err);

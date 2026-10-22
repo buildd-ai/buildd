@@ -332,6 +332,10 @@ export const accounts = pgTable('accounts', {
   // Budget exhaustion tracking (OAuth accounts)
   budgetExhaustedAt: timestamp('budget_exhausted_at', { withTimezone: true }),
   budgetResetsAt: timestamp('budget_resets_at', { withTimezone: true }),
+  // A client (dashboard, API, MCP) asked this account's runners to probe their
+  // provider wall now. The heartbeat answers it back; a runner probes once per
+  // new value. It asks only: the wall is cleared by a passing probe, never here.
+  budgetProbeRequestedAt: timestamp('budget_probe_requested_at', { withTimezone: true }),
 
   // Monthly budget tracking (Agent SDK credit pool, post 2026-06-15).
   // monthlyBudgetUsd is the cap (e.g. 100); null falls back to the BUDGET_MONTHLY_USD env.
