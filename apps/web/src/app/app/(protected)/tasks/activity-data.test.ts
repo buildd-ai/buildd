@@ -28,7 +28,7 @@ mock.module('@buildd/core/db', () => ({
 }));
 
 const {
-  loadActivity, overlayActivityRows, mayBeInMotionSql, mayBeFinishedSql, activityScopeWhere, liveRootsWhere,
+  loadActivity, overlayActivityRows, mayBeInMotionSql, mayBeFinishedSql, activityScopeWhere, liveRootsWhere, attemptChainIds,
   ACTIVITY_WORKERS_PER_TASK, ACTIVITY_LIVE_ROOT_LIMIT, ACTIVITY_ROOT_LIMIT, ACTIVITY_CHILD_LIMIT,
 } = await import('./activity-data');
 const rules = await import('@buildd/core/mission-helpers');
@@ -199,6 +199,15 @@ describe('the scope and live-root predicates, rendered', () => {
     expect(now).not.toContain(finished);
     expect(render(liveRootsWhere({ workspaceIds: WS }, recent, 'history')!)).toContain(finished);
     expect(ACTIVITY_LIVE_ROOT_LIMIT).toBeGreaterThan(0);
+  });
+
+  it('attemptChainIds walks children of the roots, then only through attempts, depth-bounded', () => {
+    const q = render(attemptChainIds(['r1', 'r2']));
+    expect(q).toContain('with recursive chain(id, task_class, depth) as (');
+    expect(q).toContain('where "tasks"."parent_task_id" in ($, $)');
+    expect(q).toContain('join chain on t.parent_task_id = chain.id');
+    expect(q).toContain(`where chain.task_class = 'attempt' and chain.depth < $`);
+    expect(q.endsWith('select id from chain)')).toBe(true);
   });
 });
 
