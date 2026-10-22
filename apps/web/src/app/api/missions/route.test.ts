@@ -103,6 +103,16 @@ mock.module('@/lib/team-access', () => ({
   resolveAccountTeamIds: mockResolveAccountTeamIds,
 }));
 
+// Who filed the mission and who it is for (spec 7702c32a); the resolver itself
+// is covered in lib/task-service.test.ts and tests/db/work-lineage-identity.test.ts.
+let missionCreatorAnswer: any = null;
+const mockResolveMissionCreator = mock(async (p: any) => missionCreatorAnswer ?? (p.user
+  ? { createdByUserId: p.user.id, requesterSource: 'explicit', createdByAccountId: null, createdByWorkerId: null, createdByTaskId: null }
+  : { createdByUserId: null, requesterSource: 'none', createdByAccountId: p.apiAccount?.id ?? null, createdByWorkerId: null, createdByTaskId: null }));
+mock.module('@/lib/task-service', () => ({
+  resolveMissionCreator: mockResolveMissionCreator,
+}));
+
 mock.module('@/lib/schedule-helpers', () => ({
   computeNextRunAt: () => new Date('2026-01-01'),
 }));
@@ -1233,56 +1243,37 @@ describe('POST /api/missions — goalCriteria validation', () => {
     expect(body.error).toMatch(/goalCriteria\[0\]/);
   });
 
-  it('accepts goalCriteria with valid types', async () => {
-    const req = new NextRequest('http://localhost/api/missions', {
-      method: 'POST',
-      body: JSON.stringify({
-        title: 'Mission with good criteria',
-        goalCriteria: [
-          { type: 'all_prs_merged' },
-          { type: 'command', command: 'bun run test' },
-          { type: 'no_open_tasks' },
-        ],
-      }),
+  // Living Specs D-44: hand-written criteria retire. A new mission selects a
+  // spec instead; the legacy shape rules stay for missions that already carry
+  // them (PATCH, route.test.ts under [id]).
+  for (const criterion of [
+    { type: 'all_prs_merged' },
+    { type: 'command', command: 'bun run test' },
+    { type: 'no_open_tasks' },
+    { type: 'artifact_exists', key: 'report' },
+    { type: 'metric', query: 'coverage', operator: 'gte', threshold: 80 },
+    { type: 'description', description: 'The error copy reads as helpful', notMechanizableReason: 'Tone is a human judgement.' },
+  ]) {
+    it(`refuses a hand-written ${criterion.type} criterion on a new mission, pointing at selecting a spec`, async () => {
+      recordedGateEvents.length = 0;
+      const res = await POST(new NextRequest('http://localhost/api/missions', {
+        method: 'POST',
+        body: JSON.stringify({ title: 'Mission with hand-written criteria', goalCriteria: [criterion] }),
+      }));
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('retired');
+      expect(body.error).toContain('outcomeSpec');
+      expect(insertedMissionValues).toBeNull();
+      expect(recordedGateEvents.some(e => e.gate === 'goal_criteria' && e.outcome === 'rejected')).toBe(true);
     });
-    const res = await POST(req);
-    expect(res.status).toBe(201);
-  });
+  }
 
-  it('rejects a prose criterion that does not say why it cannot be mechanized', async () => {
-    // A description criterion's verdict needs a live model, so it is the one
-    // form that can silently degrade to NOT_EVALUATED. Writing one is allowed,
-    // but only deliberately.
-    const req = new NextRequest('http://localhost/api/missions', {
+  it('accepts an empty goalCriteria list', async () => {
+    const res = await POST(new NextRequest('http://localhost/api/missions', {
       method: 'POST',
-      body: JSON.stringify({
-        title: 'Mission with prose criteria',
-        goalCriteria: [{ type: 'description', description: 'All tasks reviewed', label: 'Reviewed' }],
-      }),
-    });
-    const res = await POST(req);
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.error).toMatch(/notMechanizableReason/);
-    expect(body.error).toMatch(/command/);
-  });
-
-  it('accepts a prose criterion that states its reason, paired with a mechanical one', async () => {
-    const req = new NextRequest('http://localhost/api/missions', {
-      method: 'POST',
-      body: JSON.stringify({
-        title: 'Mission with justified prose criteria',
-        goalCriteria: [
-          {
-            type: 'description',
-            description: 'The error copy reads as helpful rather than accusatory',
-            notMechanizableReason: 'Tone is a human judgement; no command can assert it.',
-          },
-          { type: 'no_open_tasks' },
-        ],
-      }),
-    });
-    const res = await POST(req);
+      body: JSON.stringify({ title: 'Mission with no hand-written goal', goalCriteria: [] }),
+    }));
     expect(res.status).toBe(201);
   });
 
@@ -1293,41 +1284,6 @@ describe('POST /api/missions — goalCriteria validation', () => {
     });
     const res = await POST(req);
     expect(res.status).toBe(201);
-  });
-
-  it('rejects goalCriteria with no mechanical criterion, naming the accepted types', async () => {
-    const req = new NextRequest('http://localhost/api/missions', {
-      method: 'POST',
-      body: JSON.stringify({
-        title: 'Mission with prose-only criteria',
-        goalCriteria: [{
-          type: 'description',
-          description: 'The error copy reads as helpful rather than accusatory',
-          notMechanizableReason: 'Tone is a human judgement; no command can assert it.',
-        }],
-      }),
-    });
-    const res = await POST(req);
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.error).toMatch(/mechanical criterion/);
-    expect(body.error).not.toContain('all_prs_merged + no_open_tasks');
-    expect(body.error).toContain('command');
-    expect(body.error).toContain('artifact_exists');
-  });
-
-  it('rejects a command criterion with no command (previously accepted, then unevaluatable)', async () => {
-    const req = new NextRequest('http://localhost/api/missions', {
-      method: 'POST',
-      body: JSON.stringify({
-        title: 'Mission with empty command criterion',
-        goalCriteria: [{ type: 'command', label: 'tests pass' }],
-      }),
-    });
-    const res = await POST(req);
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.error).toMatch(/command is required/);
   });
 
   it('rejects non-object criterion (e.g. string)', async () => {
@@ -1342,115 +1298,6 @@ describe('POST /api/missions — goalCriteria validation', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toMatch(/goalCriteria\[0\]/);
-  });
-  describe('goal-criteria quality shadow (docs/specs/mission-goal-criteria-quality.md)', () => {
-    const allowed = async () => ({ ok: true, apiKey: 'k', model: 'jev-test' });
-    const disabled = async () => ({ ok: false, error: { kind: 'capability_disabled', capability: 'mission_goal_quality' } });
-    /** Grades a criterion labelled "...tests pass" as not noticeable; everything else as an outcome. */
-    const grading = async (req: any) => {
-      const answers: Record<string, unknown> = {};
-      for (const name of Object.keys(req.questions)) {
-        const i = Number(/^c(\d+)_/.exec(name)?.[1]);
-        const weak = Number.isFinite(i) && /tests pass$/.test(req.state.criteria[i]?.label ?? '');
-        answers[name] = { type: 'choice', confidence: 0.95, probabilities: {}, choice: name === 'rewrite' ? 'state-outcome' : weak ? 'no' : 'yes' };
-      }
-      return { ok: true, answers, model: 'jev-test', latencyMs: 4, usage: null, attempts: 1 };
-    };
-    const flush = () => new Promise(r => setTimeout(r, 20));
-    const create = (criteria: unknown[]) => POST(new NextRequest('http://localhost/api/missions', {
-      method: 'POST',
-      body: JSON.stringify({ title: 'Goal quality', orchestrationMode: 'manual', goalCriteria: criteria }),
-    }));
-    const quality = () => recordedGateEvents.filter(e => e.gate === 'goal_criteria_quality');
-
-    beforeEach(() => {
-      recordedGateEvents.length = 0;
-      goalQualityDecideCalls.length = 0;
-      goalQualityAccess = disabled;
-      goalQualityDecide = grading;
-    });
-
-    it('capability off: 201, no decision call, no goal_criteria_quality row (AC-1)', async () => {
-      const res = await create([{ type: 'command', command: 'bun run test', label: 'off: tests pass' }]);
-      expect(res.status).toBe(201);
-      await flush();
-      expect(goalQualityDecideCalls).toHaveLength(0);
-      expect(quality()).toEqual([]);
-    });
-
-    it('surface (default): the response includes advisory, the stored goal is the submitted one, and shadow verdict is logged (AC-3, AC-4, AC-10, AC-11)', async () => {
-      const criteria = [{ type: 'command', command: 'bun run test', label: 'surface: tests pass' }, { type: 'all_prs_merged' }];
-      const off = await (await create(criteria)).json();
-      await flush();
-      goalQualityAccess = allowed;
-      const res = await create(criteria);
-      expect(res.status).toBe(201);
-      const on = await res.json();
-      // Surface mode: response includes advisory field
-      expect(on.advisory).toBeDefined();
-      expect(typeof on.advisory.suggestion).toBe('string');
-      expect(Array.isArray(on.advisory.criteria)).toBe(true);
-      // But the stored goal criteria is untouched
-      expect(insertedMissionValues.goalCriteria).toEqual(criteria);
-      // Goal criteria itself is unchanged in response
-      expect(on.goalCriteria).toEqual(criteria);
-      await flush();
-      expect(goalQualityDecideCalls).toHaveLength(1);
-    });
-
-    it('a weak criterion records one warned row, without its text (AC-7)', async () => {
-      goalQualityAccess = allowed;
-      await create([
-        { type: 'command', command: 'bun run e2e signup', label: 'warned: a visitor can sign up' },
-        { type: 'command', command: 'bun run test', label: 'warned: tests pass' },
-      ]);
-      await flush();
-      const rows = quality();
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({ outcome: 'warned', surface: 'POST /api/missions', missionId: 'obj-1', detail: { index: 1, type: 'command' } });
-      expect(JSON.stringify(rows[0])).not.toContain('tests pass');
-      expect(JSON.stringify(rows[0])).not.toContain('bun run test');
-    });
-
-    it('a strong criterion records no warned row', async () => {
-      goalQualityAccess = allowed;
-      await create([{ type: 'command', command: 'bun run e2e signup', label: 'strong: a visitor can sign up' }]);
-      await flush();
-      expect(goalQualityDecideCalls).toHaveLength(1);
-      expect(quality()).toEqual([]);
-    });
-
-    it('the decision call never sends the command string (AC-6)', async () => {
-      goalQualityAccess = allowed;
-      await create([{ type: 'command', command: 'bun run scripts/secret-check.ts', label: 'sent: a visitor can sign up' }]);
-      await flush();
-      expect(JSON.stringify(goalQualityDecideCalls[0].state)).not.toContain('secret-check');
-    });
-
-    it('a never-resolving decision call cannot delay the response (AC-2)', async () => {
-      goalQualityAccess = allowed;
-      goalQualityDecide = () => new Promise(() => {});
-      const res = await create([{ type: 'command', command: 'bun run test', label: 'hang: tests pass' }]);
-      expect(res.status).toBe(201);
-      expect(await res.json()).not.toHaveProperty('advisory');
-    });
-
-    it('a throwing decision call cannot fail the response (AC-2)', async () => {
-      goalQualityAccess = allowed;
-      goalQualityDecide = async () => { throw new Error('provider down'); };
-      const res = await create([{ type: 'command', command: 'bun run test', label: 'throw: tests pass' }]);
-      expect(res.status).toBe(201);
-      await flush();
-      expect(quality()).toEqual([]);
-    });
-
-    it('a 400 from validation makes no decision call', async () => {
-      goalQualityAccess = allowed;
-      const res = await create([{ type: 'description', description: 'feels nice', notMechanizableReason: 'it is a feeling, nothing to run' }]);
-      expect(res.status).toBe(400);
-      await flush();
-      expect(goalQualityDecideCalls).toHaveLength(0);
-    });
   });
 });
 
@@ -1540,5 +1387,34 @@ describe('POST /api/missions — workspace reach (shared rule)', () => {
     expect(res.status).toBe(404);
     expect((await res.json()).error).toContain('No workspace found');
     expect(insertedMissionValues).toBeNull();
+  });
+});
+
+describe('POST /api/missions — who filed it (spec 7702c32a AC-1)', () => {
+  beforeEach(() => {
+    missionCreatorAnswer = null;
+    mockResolveMissionCreator.mockClear();
+    insertedMissionValues = null;
+    insertedScheduleValues = null;
+    mockGetCurrentUser.mockResolvedValue(null);
+  });
+
+  it("records an agent's mission with its worker and task as the actor and the person as derived", async () => {
+    missionCreatorAnswer = {
+      createdByUserId: 'user-requester', requesterSource: 'parent',
+      createdByAccountId: 'acct-runner', createdByWorkerId: 'worker-1', createdByTaskId: 'task-agent',
+    };
+    mockAuthenticateApiKey.mockReturnValue({ id: 'acct-runner', level: 'admin', teamId: 'team-1' } as any);
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      headers: { authorization: 'Bearer bld_test' },
+      body: JSON.stringify({ title: 'Agent mission', createdByWorkerId: 'worker-1' }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(mockResolveMissionCreator.mock.calls[0][0]).toMatchObject({ createdByWorkerId: 'worker-1' });
+    expect(insertedMissionValues).toMatchObject(missionCreatorAnswer);
+    // A schedule names only a person who filed the mission themselves.
+    expect(insertedScheduleValues?.createdByUserId ?? null).toBeNull();
   });
 });

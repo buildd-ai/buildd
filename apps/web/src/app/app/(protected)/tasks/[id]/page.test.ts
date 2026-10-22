@@ -319,11 +319,8 @@ describe('task header — full-width title on a phone, actions on the title row 
   });
 });
 
-describe('one worker pick — tasks/[id]/page.tsx and the sheet', () => {
-  it('reads its workers and question as /api/tasks/[id]/summary does, and picks them with the same pickTaskView', async () => {
-    const summarySource = await Bun.file(new URL('../../../../api/tasks/[id]/summary/route.ts', import.meta.url)).text();
-    expect(summarySource).toContain("import { loadTaskView } from '@/lib/task-view'");
-    expect(summarySource).toContain('loadTaskView(task, ');
+describe('one worker pick — tasks/[id]/page.tsx', () => {
+  it('reads its workers and question through lib/task-view.ts and picks them with pickTaskView', async () => {
     // The page batches the same two reads with its own (lib/task-view.ts taskViewReads) and picks as loadTaskView does.
     expect(pageSource).toContain('taskViewReads(task.id)');
     expect(pageSource).toContain('loadTaskViewRecovery(task, viewer)');
@@ -332,7 +329,6 @@ describe('one worker pick — tasks/[id]/page.tsx and the sheet', () => {
     // No second worker pick beside it.
     expect(pageSource).not.toContain('selectTaskWorkers(');
     expect(pageSource).not.toContain('linkQuestionNote(');
-    expect(summarySource).not.toContain('linkQuestionNote(');
   });
 });
 

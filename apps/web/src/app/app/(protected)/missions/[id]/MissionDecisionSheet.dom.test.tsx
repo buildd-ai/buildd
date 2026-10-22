@@ -7,7 +7,6 @@ import { GlobalRegistrator } from '@happy-dom/global-registrator';
 GlobalRegistrator.register({ url: 'http://localhost/app/missions/m1' });
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import type { GoalCriterion } from '@buildd/shared';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -20,7 +19,6 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: MissionDecisionSheet } = await import('./MissionDecisionSheet');
 
-const CRITERIA: GoalCriterion[] = [{ type: 'command', command: 'bun test' }];
 const AUDIT = { paths: ['apps/web/src/app/page.tsx', 'apps/web/src/components/Nav.tsx'], executorLocal: false };
 
 let container: HTMLElement;
@@ -73,8 +71,6 @@ async function mount(props: { criteriaUnmet?: boolean } = {}) {
     root.render(
       <MissionDecisionSheet
         missionId="m1"
-        goalCriteria={CRITERIA}
-        failingCriterionIndex={0}
         fileWorkHref="/app/tasks/new?missionId=m1"
         criteriaUnmet={props.criteriaUnmet ?? false}
         surfaceAudit={AUDIT}

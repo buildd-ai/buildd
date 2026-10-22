@@ -86,6 +86,17 @@ most every 10 minutes when an unknown repo starts), in a repo whose own
 Anywhere else they send nothing, not even the folder name. If the list cannot
 be loaded they send nothing.
 
+A Claude Code session that starts in one of your workspace repos is told, from
+that cached list, which workspace the folder is (`owner/name`) and to pass it as
+`workspaceId` on buildd calls. An account-level buildd connection needs that to
+know the workspace; with one claude.ai connector per workspace it picks the
+matching one. It costs no network call.
+
+The claim binding works however buildd is connected: a local `buildd` MCP
+entry, the plugin, or a claude.ai connector (Claude Desktop names its tools
+`mcp__<connector-id>__buildd`, the CLI `mcp__claude_ai_<Connector_Name>__buildd`).
+Only a `claim_task` whose reply carries buildd's `Worker ID:` binds.
+
 `buildd install --global` registers the buildd MCP server the same way: per
 folder, for the folders Claude Code has opened whose repo is a workspace in
 any team you are in (your presence token's list, from `buildd login`).

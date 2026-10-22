@@ -212,13 +212,16 @@ export interface LandedMeterSelection {
   selectedId: string;
   /** Per slot: how it relates to the selection (`slotMarks`). */
   marks: ReadonlyArray<StripMark | null>;
+  /** Arrow keys, Home and End: move the selection (and its marks). */
   onSelect(taskId: string): void;
+  /** A tap, Enter or Space: open the cell's task page. */
+  onOpen(taskId: string): void;
 }
 
 /**
  * One square per deliverable, grouped by phase. With `selection` (the mission
  * page's Board) the band is a toolbar of real buttons in strip order: a click
- * selects without navigating, ArrowLeft/Right step and Home/End jump.
+ * opens the task's page, ArrowLeft/Right step the selection and Home/End jump.
  */
 export function LandedMeter({ model, variant, compact = false, selection }: { model: MissionBoardModel; variant: 'band' | 'strip'; compact?: boolean; selection?: LandedMeterSelection }) {
   if (variant === 'band' && selection) return <StripCells model={model} compact={compact} selection={selection} />;
@@ -277,7 +280,7 @@ const TICK_MARK_BAR: Record<StripMark, string> = {
 };
 
 function StripCells({ model, compact, selection }: { model: MissionBoardModel; compact: boolean; selection: LandedMeterSelection }) {
-  const { slots, marks, onSelect } = selection;
+  const { slots, marks, onSelect, onOpen } = selection;
   const n = slots.length;
   const sel = Math.max(0, slots.findIndex(s => s.id === selection.selectedId));
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -308,7 +311,7 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
                 selected={i === sel}
                 tall={!compact}
                 label={`${s.taskIds.length} ${s.state === 'landed' ? 'merged' : 'queued'} tasks`}
-                onSelect={onSelect}
+                onOpen={onOpen}
               />
             );
           }
@@ -322,7 +325,7 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
               selected={i === sel}
               tall={!compact}
               label={`Cell ${i + 1} of ${n}${level}, ${t.delivery && s.state !== 'landed' ? t.delivery.label.toLowerCase() : STATUS_WORDS[s.state]}: ${t.title}`}
-              onSelect={onSelect}
+              onOpen={onOpen}
             />
           );
         })}
@@ -362,13 +365,13 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
 }
 
 /** Memoised: a selection change re-renders the two cells it touches, not the strip. */
-const StripCell = memo(function StripCell({ id, state, selected, tall, label, onSelect }: {
+const StripCell = memo(function StripCell({ id, state, selected, tall, label, onOpen }: {
   id: string;
   state: StripState;
   selected: boolean;
   tall: boolean;
   label: string;
-  onSelect(taskId: string): void;
+  onOpen(taskId: string): void;
 }) {
   return (
     <button
@@ -378,18 +381,14 @@ const StripCell = memo(function StripCell({ id, state, selected, tall, label, on
       data-status={state}
       aria-label={label}
       aria-pressed={selected}
-      aria-controls={STRIP_DRAWER_ID}
       tabIndex={selected ? 0 : -1}
-      onClick={() => onSelect(id)}
+      onClick={() => onOpen(id)}
       className={`block h-11 min-w-0 flex-1 basis-0 cursor-pointer p-0 transition-transform duration-150 motion-reduce:transition-none ${tall ? 'md:h-14' : ''} ${STRIP_CELL_CLASS[state]} ${
         selected ? `-translate-y-1 ${STRIP_SELECTED}` : 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-text-primary'
       }`}
     />
   );
 });
-
-/** The tethered drawer's element id (the cells' `aria-controls`). */
-export const STRIP_DRAWER_ID = 'mission-strip-drawer';
 
 export function SectionLabel({ children, className = '', title, 'data-testid': testId }: { children: ReactNode; className?: string; title?: string; 'data-testid'?: string }) {
   return (
@@ -407,7 +406,7 @@ export interface BoardLinkContext {
   initiativeId?: string | null;
 }
 
-/** The task sheet link: a real href, opened by TaskPanelWrapper's `data-task-id` handler. */
-export function taskSheetHref(ctx: BoardLinkContext, taskId: string): string {
-  return missionTaskHref({ missionId: ctx.missionId, taskId, from: ctx.from ?? null, initiativeId: ctx.initiativeId ?? null, mode: 'sheet' });
+/** A board task's link: its task page, carrying where the mission was opened from. */
+export function boardTaskHref(ctx: BoardLinkContext, taskId: string): string {
+  return missionTaskHref({ missionId: ctx.missionId, taskId, from: ctx.from ?? null, initiativeId: ctx.initiativeId ?? null });
 }

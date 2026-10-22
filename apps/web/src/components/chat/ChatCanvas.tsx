@@ -9,14 +9,23 @@
  * the screen; on desktop it peeks as a solid 600px panel anchored right over a
  * heavy scrim, with no sea (knowledge-base: buildd/design/chat-v3-desktop.md, "Peek").
  *
+ * From 1440px wide it docks instead (Navigation R-21): a column of the shell
+ * beside the page (`AskDockSlot`, rail | main | ask), open by default, with no
+ * scrim, no `aria-modal`, no scroll lock and the banners left alone. ⌘K moves
+ * focus into its composer and Esc gives it back; collapsing it is remembered in
+ * a cookie the server layout reads, so the column is reserved on first paint.
+ * While docked open, a SideSheet stacks inside it (lib/ask-dock-host.ts).
+ * Presentation follows the window live, not only at open.
+ *
  * The conversation stays mounted while closed, so reopening on the same page
  * continues it. Opening it about something else starts a fresh one (the old
- * one is in the chat list).
+ * one is in the chat list). Docked, it follows the page until a conversation
+ * starts.
  */
 import { usePathname, useRouter } from 'next/navigation';
 import { createPortal } from 'react-dom';
 import type { ChatTierName } from '@buildd/shared';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import ChatConversation from './ChatConversation';
 import SteerConversation from './SteerConversation';
 import type { ChatAgent } from './ChatFeed';
@@ -29,7 +38,12 @@ import { findScrollRoot } from '@/lib/scroll-root';
 import { useHideNeedsInputBanner } from '@/lib/needs-input-hidden';
 import { useAskButtonHidden } from '@/lib/ask-button-hidden';
 import { askAboutHref, conversationHref, type ChatAbout } from '@/lib/chat/entry-points';
-import { canvasPresentation, canvasScopeFromPath, isCanvasToggle, showsAskButton, type CanvasScope } from '@/lib/chat/canvas-scope';
+import {
+  CANVAS_DOCK_QUERY, CANVAS_PEEK_QUERY, canvasPresentation, canvasScopeFromPath, isCanvasToggle, showsAskButton,
+  type CanvasPresentation, type CanvasScope,
+} from '@/lib/chat/canvas-scope';
+import { setAskDockHost } from '@/lib/ask-dock-host';
+import { askDockCookie } from '@/lib/ask-dock';
 import { COMPOSER_INPUT_ID, useChatEntry } from './ChatEntry';
 
 import { CanvasContext, type ChatCanvasApi } from './canvas-context';
@@ -44,19 +58,66 @@ function aboutRef(about: ChatAbout): BuilddObjectRef {
 
 interface Shell { agent: ChatAgent; canManageTeamKeys: boolean }
 
-export function ChatCanvasProvider({ available: availableProp, teamId, workspaces, viewerName, children }: {
+function subscribePresentation(onChange: () => void) {
+  if (typeof window === 'undefined' || !window.matchMedia) return () => {};
+  const mqs = [window.matchMedia(CANVAS_DOCK_QUERY), window.matchMedia(CANVAS_PEEK_QUERY)];
+  for (const mq of mqs) mq.addEventListener('change', onChange);
+  return () => { for (const mq of mqs) mq.removeEventListener('change', onChange); };
+}
+function readPresentation(): CanvasPresentation {
+  if (typeof window === 'undefined' || !window.matchMedia) return 'peek';
+  if (window.matchMedia(CANVAS_DOCK_QUERY).matches) return 'docked';
+  return window.matchMedia(CANVAS_PEEK_QUERY).matches ? 'peek' : 'takeover';
+}
+
+/** Live, like useSideSheetLayout: `peek` on the server, the window's answer after. */
+export function useCanvasPresentation(): CanvasPresentation {
+  return useSyncExternalStore(subscribePresentation, readPresentation, () => 'peek');
+}
+
+interface DockSlot {
+  /** Hold the column open: chat can run here and the person hasn't collapsed it. */
+  reserve: boolean;
+  setSlot(el: HTMLElement | null): void;
+}
+const DockSlotContext = createContext<DockSlot | null>(null);
+
+/**
+ * The Ask column of the shell (rail | main | ask). Rendered by the protected
+ * layout after `<main>`; shown only from 1440px, by CSS, so the server's first
+ * paint already reserves it when the cookie says open.
+ */
+export function AskDockSlot() {
+  const dock = useContext(DockSlotContext);
+  const reserve = !!dock?.reserve;
+  return (
+    <div
+      ref={dock?.setSlot}
+      data-testid="ask-dock"
+      data-open={reserve ? 'true' : 'false'}
+      className={reserve ? 'relative hidden w-[400px] shrink-0 flex-col border-l border-border-default min-[1440px]:flex' : 'hidden'}
+    />
+  );
+}
+
+const isChatPath = (p: string | null | undefined) => p === '/app/chat' || !!p?.startsWith('/app/chat/');
+
+export function ChatCanvasProvider({ available: availableProp, teamId, workspaces, viewerName, dockOpen: dockOpenInitial = true, children }: {
   /** Defaults to the chat entry's answer (ChatEntryProvider), which may arrive after paint. */
   available?: boolean;
   teamId: string | null;
   workspaces: readonly ComposerWorkspace[];
   viewerName: string | null;
+  /** Docked Ask open (true) or collapsed, from the cookie (askDockOpenFromCookie). */
+  dockOpen?: boolean;
   children: ReactNode;
 }) {
   const pathname = usePathname();
   const router = useRouter();
   const chatEntry = useChatEntry();
   const available = availableProp ?? chatEntry.available;
-  const [isOpen, setOpen] = useState(false);
+  const [overlayOpen, setOverlayOpen] = useState(false);
+  const [dockOpen, setDockOpenState] = useState(dockOpenInitial);
   const [mounted, setMounted] = useState(false);
   const [scope, setScope] = useState<CanvasScope>({ about: null, workspaceId: null, steer: null });
   const scopeRef = useRef<CanvasScope>(scope);
@@ -66,8 +127,29 @@ export function ChatCanvasProvider({ available: availableProp, teamId, workspace
   const [created, setCreated] = useState<{ tier: ChatTierName | null; workspaceId: string | null } | null>(null);
   const [shell, setShell] = useState<Shell | null>(null);
   const [shellError, setShellError] = useState(false);
-  const [presentation, setPresentation] = useState<'peek' | 'takeover'>('peek');
+  const presentation = useCanvasPresentation();
+  const docked = presentation === 'docked';
+  const dockedRef = useRef(docked);
+  dockedRef.current = docked;
   const enabled = available && !!teamId;
+  const onChat = isChatPath(pathname);
+  const dockShown = enabled && docked && dockOpen && !onChat;
+  const isOpen = docked ? dockShown : overlayOpen;
+  // Asked for focus (the Ask button, ⌘K, an "Ask about" link): a docked column
+  // open on page load never takes it.
+  const [focusAsk, setFocusAsk] = useState(0);
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  const [sheetHost, setSheetHost] = useState<HTMLElement | null>(null);
+  const dockPanelRef = useRef<HTMLElement | null>(null);
+  // Where focus was before ⌘K moved it into the docked composer; Esc goes back.
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const conversationRef = useRef(conversationId);
+  conversationRef.current = conversationId;
+
+  const setDockOpen = useCallback((next: boolean) => {
+    setDockOpenState(next);
+    document.cookie = askDockCookie(next);
+  }, []);
 
   const openScope = useCallback((next: CanvasScope) => {
     if (scopeKey(scopeRef.current) !== scopeKey(next)) {
@@ -77,10 +159,16 @@ export function ChatCanvasProvider({ available: availableProp, teamId, workspace
     }
     scopeRef.current = next;
     setScope(next);
-    setPresentation(canvasPresentation(window.innerWidth));
     setMounted(true);
-    setOpen(true);
   }, []);
+
+  const show = useCallback(() => {
+    const active = document.activeElement as HTMLElement | null;
+    if (active && active !== document.body && !dockPanelRef.current?.contains(active)) returnFocusRef.current = active;
+    if (dockedRef.current) setDockOpen(true);
+    else setOverlayOpen(true);
+    setFocusAsk(n => n + 1);
+  }, [setDockOpen]);
 
   const open = useCallback((over?: Partial<CanvasScope>) => {
     if (!enabled) return;
@@ -88,14 +176,20 @@ export function ChatCanvasProvider({ available: availableProp, teamId, workspace
       ? { about: over.about ?? null, workspaceId: over.workspaceId ?? null, steer: over.steer ?? null }
       : canvasScopeFromPath(pathname);
     openScope(next);
-  }, [enabled, pathname, openScope]);
+    show();
+  }, [enabled, pathname, openScope, show]);
 
   const openSteer = useCallback((taskId: string) => {
     if (!enabled) return;
     openScope({ about: null, workspaceId: null, steer: { taskId } });
-  }, [enabled, openScope]);
+    show();
+  }, [enabled, openScope, show]);
 
-  const close = useCallback(() => setOpen(false), []);
+  // Docked, close collapses the column (and is remembered); otherwise it closes the overlay.
+  const close = useCallback(() => {
+    if (dockedRef.current) setDockOpen(false);
+    else setOverlayOpen(false);
+  }, [setDockOpen]);
   const onConversationCreated = useCallback((id: string, c: { tier: ChatTierName | null; workspaceId: string | null }) => {
     setCreated(c);
     setConversationId(id);
@@ -115,20 +209,55 @@ export function ChatCanvasProvider({ available: availableProp, teamId, workspace
     return () => { live = false; };
   }, [mounted, shell, teamId]);
 
-  // Going to the full chat closes the canvas.
+  // Going to the full chat closes the canvas (the docked column just steps aside there).
   useEffect(() => {
-    if (pathname === '/app/chat' || pathname?.startsWith('/app/chat/')) setOpen(false);
+    if (isChatPath(pathname)) setOverlayOpen(false);
   }, [pathname]);
 
+  // Docked, the column knows the page's mission or task: it follows the page
+  // until a conversation starts, then keeps that conversation.
+  useEffect(() => {
+    if (!dockShown || scopeRef.current.steer || conversationRef.current) return;
+    openScope(canvasScopeFromPath(pathname));
+  }, [dockShown, pathname, openScope]);
+
+  // A docked SideSheet stacks inside the column while it is open.
+  useEffect(() => {
+    if (!dockShown || !sheetHost) return;
+    setAskDockHost(sheetHost);
+    return () => setAskDockHost(null);
+  }, [dockShown, sheetHost]);
+
+  const returnFocus = useCallback(() => {
+    const back = returnFocusRef.current;
+    returnFocusRef.current = null;
+    if (back && back.isConnected) back.focus();
+    else (document.activeElement as HTMLElement | null)?.blur?.();
+  }, []);
+
+  // Focus inside the conversation part of the dock (not a sheet stacked over it).
+  const focusInDock = () => {
+    const active = document.activeElement;
+    return !!active && !!dockPanelRef.current?.contains(active) && !active.closest('[data-side-sheet]');
+  };
+
   // ⌘K / Ctrl+K toggles; Esc closes. Both work whether or not hints are shown.
+  // Docked, they move focus instead: ⌘K into the composer, Esc (or ⌘K again) back.
   const openRef = useRef(isOpen);
   openRef.current = isOpen;
+  const dockShownRef = useRef(dockShown);
+  dockShownRef.current = dockShown;
   useEffect(() => {
     if (!enabled) return;
     const onKey = (e: KeyboardEvent) => {
       if (isCanvasToggle({ key: e.key, metaKey: e.metaKey, ctrlKey: e.ctrlKey, altKey: e.altKey, shiftKey: e.shiftKey, repeat: e.repeat })) {
         e.preventDefault();
-        if (openRef.current) { setOpen(false); return; }
+        if (dockShownRef.current) {
+          if (focusInDock()) returnFocus();
+          else show();
+          return;
+        }
+        if (openRef.current && !dockedRef.current) { setOverlayOpen(false); return; }
         // On the chat page the composer is right there.
         if (!showsAskButton(window.location.pathname, true)) {
           (document.getElementById(COMPOSER_INPUT_ID) as HTMLTextAreaElement | null)?.focus();
@@ -137,22 +266,35 @@ export function ChatCanvasProvider({ available: availableProp, teamId, workspace
         open();
         return;
       }
-      if (e.key === 'Escape' && openRef.current && !e.defaultPrevented) setOpen(false);
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      if (dockedRef.current) { if (dockShownRef.current && focusInDock()) returnFocus(); return; }
+      if (openRef.current) setOverlayOpen(false);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [enabled, open]);
+    // focusInDock reads refs only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, open, show, returnFocus]);
 
-  // The page behind doesn't scroll while the canvas is up; the composer takes focus.
+  // The overlay: the page behind doesn't scroll while it is up. Docked, the page stays live.
+  const overlayUp = enabled && !docked && overlayOpen;
   useEffect(() => {
-    if (!isOpen) return;
-    const unlock = lockScroll(findScrollRoot(document));
-    const t = window.setTimeout(() => (document.getElementById(COMPOSER_INPUT_ID) as HTMLTextAreaElement | null)?.focus(), 60);
-    return () => { unlock(); window.clearTimeout(t); };
-  }, [isOpen, shell]);
+    if (!overlayUp) return;
+    return lockScroll(findScrollRoot(document));
+  }, [overlayUp]);
+
+  // Asked for: the composer takes focus (once the conversation has loaded).
+  useEffect(() => {
+    if (!focusAsk || !isOpen) return;
+    const t = window.setTimeout(() => {
+      const scopeEl = dockedRef.current ? dockPanelRef.current : document.querySelector('[data-testid="canvas-dialog"]');
+      (scopeEl?.querySelector(`#${COMPOSER_INPUT_ID}`) as HTMLTextAreaElement | null)?.focus();
+    }, 60);
+    return () => window.clearTimeout(t);
+  }, [focusAsk, isOpen, shell]);
 
   // The global banner paints in the layout's stack, above this scrim: hold it off while up.
-  useHideNeedsInputBanner(isOpen);
+  useHideNeedsInputBanner(overlayUp);
 
   const api = useMemo<ChatCanvasApi>(() => ({ open, openSteer, close, isOpen }), [open, openSteer, close, isOpen]);
 
@@ -162,7 +304,7 @@ export function ChatCanvasProvider({ available: availableProp, teamId, workspace
     if (/^https?:/.test(href)) { window.open(href, '_blank', 'noopener'); return; }
     router.push(href);
     // Desktop keeps the conversation beside the object; a phone shows the page.
-    if (canvasPresentation(window.innerWidth) === 'takeover') setOpen(false);
+    if (canvasPresentation(window.innerWidth) === 'takeover') setOverlayOpen(false);
   }, [router]);
 
   const entry = { intent: null, about: scope.about, workspaceId: scope.workspaceId };
@@ -174,13 +316,57 @@ export function ChatCanvasProvider({ available: availableProp, teamId, workspace
   const aboutIsPage = !!scope.about && scopeKey(canvasScopeFromPath(pathname)) === scopeKey(scope);
 
   const missionSheet = !scope.steer && scope.about?.kind === 'mission';
-  const overlay = enabled && mounted && (
+  const body = scope.steer ? (
+    <SteerConversation key={scope.steer.taskId} taskId={scope.steer.taskId} onClose={close} />
+  ) : shell ? (
+    <ChatConversation
+      key={`${session}:${conversationId ?? 'new'}`}
+      conversationId={conversationId}
+      teamId={teamId!}
+      teamName={null}
+      initialMessages={[]}
+      title={null}
+      titleSource="auto"
+      tier={null}
+      pinnedTier={created?.tier ?? null}
+      agent={shell.agent}
+      workspaces={workspaces}
+      workspaceId={created ? created.workspaceId : scope.workspaceId}
+      viewerName={viewerName}
+      canManageTeamKeys={shell.canManageTeamKeys}
+      focusRef={scope.about ? aboutRef(scope.about) : null}
+      entry={entry}
+      onConversationCreated={onConversationCreated}
+      autoFocusAbout={!docked}
+      canvas={{ variant: 'overlay', onClose: close, onOpenObject, fullChatHref, closeAs: docked ? 'collapse' : 'close', ...(aboutIsPage ? { pinOpenLabel: null } : {}) }}
+    />
+  ) : (
+    <div data-testid="canvas-loading" className="flex flex-1 items-center justify-center font-convo text-[14px] text-text-muted">
+      {shellError ? "Chat didn't load. Close and try again." : 'Opening chat…'}
+    </div>
+  );
+
+  // Docked: a labelled landmark in the shell's Ask column, the page beside it untouched.
+  const dockPanel = dockShown && mounted && slot && (
+    <aside
+      ref={dockPanelRef}
+      role="complementary"
+      aria-label={scope.steer ? 'Steer' : missionSheet ? 'Ask about this mission' : scope.about?.kind === 'task' ? 'Ask about this task' : 'Ask'}
+      data-testid="ask-dock-panel"
+      className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--chat-bar)]"
+    >
+      {body}
+      <div ref={setSheetHost} data-testid="ask-dock-sheets" />
+    </aside>
+  );
+
+  const overlay = enabled && mounted && !docked && (
     <div
       data-testid="chat-canvas-overlay"
       data-presentation={presentation}
       data-sheet={missionSheet ? 'mission' : undefined}
-      data-open={isOpen ? 'true' : 'false'}
-      className={isOpen ? 'fixed inset-0 z-[55]' : 'hidden'}
+      data-open={overlayOpen ? 'true' : 'false'}
+      className={overlayOpen ? 'fixed inset-0 z-[55]' : 'hidden'}
     >
       {/* A flat dim. Over a mission on a phone, and behind the desktop peek, the
           scrim is near-opaque: the page's shapes show, its text does not read. */}
@@ -203,40 +389,20 @@ export function ChatCanvasProvider({ available: availableProp, teamId, workspace
             <span className="h-1 w-9 bg-[var(--chat-rule-strong)]" />
           </div>
         )}
-        {scope.steer ? (
-          <SteerConversation key={scope.steer.taskId} taskId={scope.steer.taskId} onClose={close} />
-        ) : shell ? (
-          <ChatConversation
-            key={`${session}:${conversationId ?? 'new'}`}
-            conversationId={conversationId}
-            teamId={teamId!}
-            teamName={null}
-            initialMessages={[]}
-            title={null}
-            titleSource="auto"
-            tier={null}
-            pinnedTier={created?.tier ?? null}
-            agent={shell.agent}
-            workspaces={workspaces}
-            workspaceId={created ? created.workspaceId : scope.workspaceId}
-            viewerName={viewerName}
-            canManageTeamKeys={shell.canManageTeamKeys}
-            focusRef={scope.about ? aboutRef(scope.about) : null}
-            entry={entry}
-            onConversationCreated={onConversationCreated}
-            canvas={{ variant: 'overlay', onClose: close, onOpenObject, fullChatHref, ...(aboutIsPage ? { pinOpenLabel: null } : {}) }}
-          />
-        ) : (
-          <div data-testid="canvas-loading" className="flex flex-1 items-center justify-center font-convo text-[14px] text-text-muted">
-            {shellError ? "Chat didn't load. Close and try again." : 'Opening chat…'}
-          </div>
-        )}
+        {body}
       </div>
     </div>
   );
 
+  const dockSlot = useMemo<DockSlot>(() => ({
+    // Before the chat entry answers, trust the cookie: the column is reserved, not reflowed in.
+    reserve: (available || (availableProp === undefined && !!chatEntry.pending)) && !!teamId && dockOpen && !onChat,
+    setSlot,
+  }), [available, availableProp, chatEntry.pending, teamId, dockOpen, onChat]);
+
   return (
     <CanvasContext.Provider value={enabled ? api : null}>
+    <DockSlotContext.Provider value={dockSlot}>
       {children}
       {/* Desktop only: on a phone, Chat is a tab and objects carry their own Ask. */}
       {showFab && (
@@ -271,6 +437,8 @@ export function ChatCanvasProvider({ available: availableProp, teamId, workspace
        * browser, so the ternary is only for the type.
        */}
       {typeof document !== 'undefined' ? createPortal(overlay, document.body) : overlay}
+      {dockPanel && slot ? createPortal(dockPanel, slot) : null}
+    </DockSlotContext.Provider>
     </CanvasContext.Provider>
   );
 }

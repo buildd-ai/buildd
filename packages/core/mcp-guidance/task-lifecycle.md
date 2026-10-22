@@ -53,6 +53,15 @@ waiting. Each message comes back once.
 
 ## Blocked or just unsure
 
+- **Blocked by another task** (it has to merge first, or it is already fixing
+  the same root cause): wait on it, do not fail.
+  `buildd action=complete_task params={ blockedOnTaskId, summary }` with that
+  task's full id and what you need from it. This task goes back to the queue
+  and starts again by itself when that task merges; nobody has to retry it.
+  The server refuses a task that already merged (pull it and carry on), was
+  cancelled, or already waits on this one, and a workspace without the wait
+  exit turned on: then fail with `error` naming the blocker, or ask a person.
+
 - **Soft question, you can proceed on a default:**
   `buildd action=post_note params={ type: "question", title, body, defaultChoice }`.
   Write the body for someone who has not seen the task: what is being decided,

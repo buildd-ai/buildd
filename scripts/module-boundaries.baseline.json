@@ -124,12 +124,6 @@
       "apps/web/src/app/api/workers/claim/mission-budget-gate.ts": "missions",
       "apps/web/src/lib/subject-gate-contract.ts": "missions"
     },
-    "apps/web/src/app/api/tasks/[id]/summary/route.ts": {
-      "apps/web/src/lib/mission-visual-review.ts": "visual-qa",
-      "apps/web/src/lib/task-failure-kind-load.ts": "health-quality",
-      "apps/web/src/lib/visual-review-load.ts": "visual-qa",
-      "apps/web/src/lib/visual-review-rounds.ts": "visual-qa"
-    },
     "apps/web/src/app/api/tasks/route.ts": {
       "apps/web/src/lib/change-intent.ts": "missions",
       "apps/web/src/lib/mission-integration-branch.ts": "missions",

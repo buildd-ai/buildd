@@ -4,6 +4,7 @@ import {
   criterionFingerprint,
   evaluateGoalCriteria,
   validateGoalCriteria,
+  handWrittenCriteriaRefusal,
   MECHANICAL_CRITERION_TYPES,
 } from '@buildd/core/mission-helpers';
 import {
@@ -11,7 +12,6 @@ import {
   joinCriteriaState,
   verificationReadiness,
   plainCriteriaError,
-  validateCriterionInContext,
 } from './goal-criteria-panel';
 
 const RAW_ENUMS = [...MECHANICAL_CRITERION_TYPES];
@@ -99,35 +99,24 @@ describe('verificationReadiness — preflight for "Run verification"', () => {
   };
 
   it('is empty with no criteria', () => {
-    expect(verificationReadiness({ criteria: [], missionPrCount: 0 }).kind).toBe('empty');
+    expect(verificationReadiness({ criteria: [] }).kind).toBe('empty');
   });
 
   it('is ready when any automatic check is bound', () => {
-    expect(verificationReadiness({ criteria: [prose, { type: 'no_open_tasks' }], missionPrCount: 0 }).kind).toBe('ready');
+    expect(verificationReadiness({ criteria: [prose, { type: 'no_open_tasks' }] }).kind).toBe('ready');
   });
 
-  it('blocks the run when only AI-judged criteria are bound, in two short plain sentences', () => {
-    const r = verificationReadiness({ criteria: [prose], missionPrCount: 0 });
+  it('blocks the run when only AI-judged criteria are bound, and points at selecting a spec, never at adding a check (D-44)', () => {
+    const r = verificationReadiness({ criteria: [prose] });
     expect(r.kind).toBe('needs_check');
     if (r.kind !== 'needs_check') return;
     expect(r.headline).toBe('Can’t verify automatically yet.');
-    expect(r.reason.split(/(?<=\.)\s/).length).toBe(1);
-    expect(r.suggestion).toBeNull();
-    expect(r.actionLabel).toBe('Add check');
+    expect(r.reason).toContain('Select the spec this mission delivers');
+    expect(r).not.toHaveProperty('suggestion');
+    expect(r).not.toHaveProperty('actionLabel');
     for (const raw of RAW_ENUMS) {
-      expect(`${r.headline} ${r.reason} ${r.actionLabel}`).not.toContain(raw);
+      expect(`${r.headline} ${r.reason}`).not.toContain(raw);
     }
-  });
-
-  it('offers the PR check Buildd can already answer when the mission has PRs', () => {
-    const r = verificationReadiness({ criteria: [prose], missionPrCount: 3 });
-    expect(r.kind).toBe('needs_check');
-    if (r.kind !== 'needs_check') return;
-    expect(r.suggestion).toEqual({ type: 'all_prs_merged' });
-    expect(r.actionLabel).toBe('Check that every PR merged');
-    // The suggestion, once added, makes the list valid and the run possible.
-    expect(validateGoalCriteria([prose, r.suggestion!], { stored: [prose] })).toBeNull();
-    expect(verificationReadiness({ criteria: [prose, r.suggestion!], missionPrCount: 3 }).kind).toBe('ready');
   });
 
   it('isAutomaticCheck separates machine checks from AI-judged ones', () => {
@@ -163,37 +152,15 @@ describe('plainCriteriaError — no backend taxonomy in the default view', () =>
     expect(out.text).not.toContain('goalCriteria');
   });
 
+  it('says the retirement refusal in product words, pointing at a spec', () => {
+    const raw = handWrittenCriteriaRefusal(null, [{ type: 'command', command: 'bun test' }])!;
+    const out = plainCriteriaError(raw);
+    expect(out.text).toContain('spec');
+    expect(out.text).not.toContain('goalCriteria');
+    expect(out.detail).toBe(raw);
+  });
+
   it('passes plain messages through untouched', () => {
     expect(plainCriteriaError('Could not reach buildd.')).toEqual({ text: 'Could not reach buildd.', detail: null });
-  });
-});
-
-describe('validateCriterionInContext — a new row is judged with the rows it joins', () => {
-  const prose: GoalCriterion = {
-    type: 'description',
-    description: 'Reads well',
-    notMechanizableReason: 'Taste is not scriptable here',
-  };
-
-  it('accepts a written goal added beside an existing automatic check', () => {
-    // Regression: the add form validated the new row alone, so it always
-    // failed the "needs an automatic check" rule even when the mission had one.
-    expect(validateCriterionInContext(prose, [{ type: 'all_prs_merged' }])).toBeNull();
-  });
-
-  it('refuses a written goal when nothing else can be checked automatically, in plain words', () => {
-    const out = validateCriterionInContext(prose, []);
-    expect(out).not.toBeNull();
-    for (const t of RAW_ENUMS) expect(out!.text).not.toContain(t);
-  });
-
-  it('still reports a row-level fault on the row', () => {
-    const out = validateCriterionInContext({ type: 'command', command: '' } as GoalCriterion, [{ type: 'no_open_tasks' }]);
-    expect(out).not.toBeNull();
-  });
-
-  it('grandfathers untouched siblings the server would also grandfather', () => {
-    const legacyProse = { type: 'description', description: 'old prose' } as GoalCriterion;
-    expect(validateCriterionInContext({ type: 'no_open_tasks' }, [legacyProse])).toBeNull();
   });
 });

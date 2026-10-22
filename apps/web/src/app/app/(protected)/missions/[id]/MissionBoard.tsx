@@ -22,7 +22,7 @@
  * opens the task sheet.
  */
 import { displayTaskTitle } from '@/lib/task-title';
-import { useCallback, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import TaskQuestion from '@/components/tasks/TaskQuestion';
 import { TERMS, type VisualReviewModel } from '@buildd/shared';
@@ -31,16 +31,17 @@ import VisualReviewLine from '@/components/visual-review/VisualReviewLine';
 import { BOARD_LANDED, boardNeedsYouCount, concurrencyBins, formatAge, formatClock, type BoardStatus, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
 import {
   CriterionBox, LandedMeter, RoleGlyph, RunnerAvatar, ScopeChip, SectionLabel,
-  taskSheetHref, useLiveBoard, useNow, type BoardLinkContext,
+  boardTaskHref, useLiveBoard, useNow, type BoardLinkContext,
 } from './MissionBoardParts';
 import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { MissionStripContext, createMissionStripStore, type MissionStripValue } from '@/components/missions/mission-strip-context';
 import type { MissionExecutor } from '@/lib/task-actions';
-import { defaultStripSelection, stripOrder, stripSlots } from '@/lib/mission-task-strip';
+import { stripOrder } from '@/lib/mission-task-strip';
 import { missionAgentLine } from '@/lib/mission-agents';
 import type { DeliveryTone } from '@/lib/workflow/delivery-display';
 import { screensToReview } from '@/lib/visual-review-model';
 import { LandedStrip, type LandedStripProps, type StripFocus } from './MissionTaskStrip';
+import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
 import { useMissionLiveSnapshot } from './MissionLiveStore';
 import {
   MissionVisualAsk, MissionVisualTray, WithMissionVisualReview,
@@ -84,15 +85,14 @@ export interface MissionBoardProps extends BoardLinkContext {
   executor?: MissionExecutor | null;
   /**
    * The situation block's task, when its one affordance targets a single task:
-   * the drawer opens on it and says the accessor's sentence for it, and the
-   * block points at the drawer instead of drawing a second call to action.
+   * the strip's default selection, so its marks show what holds it.
    */
   stripFocus?: StripFocus | null;
   /**
    * Each deliverable's own Build › Verify › Deliver and audit/repair evidence
-   * (`missionTaskDeliveries`): the drawer's stage row and disclosure.
+   * (`missionTaskDeliveries`): the tiles' retry badge.
    */
-  deliveries?: LandedStripProps['deliveries'];
+  deliveries?: Readonly<Record<string, TaskDeliveryDetail>> | null;
 }
 
 /** Tile order inside a column: what needs you, then red, then live, then review, then queued. */
@@ -116,21 +116,13 @@ function BoardView({
   workspaceId = null, executor = null, stripFocus = null, deliveries = null, ...link
 }: MissionBoardProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
-  // The Landed strip's selection: a store, so selecting re-renders the strip
-  // and its drawer only. The situation block (in `notice`) reads it too.
+  // The Landed strip's selection: a store, so selecting re-renders the strip only.
   const [stripStore] = useState(createMissionStripStore);
   const stripIds = useMemo(() => stripOrder(serverModel), [serverModel]);
   const stripValue = useMemo<MissionStripValue | null>(
     () => (workspaceId && stripIds.length > 0 ? { store: stripStore, taskIds: stripIds } : null),
     [workspaceId, stripStore, stripIds],
   );
-  // The task the strip's drawer already shows in full: its column tile would
-  // draw the same card a second time, so the column skips it.
-  const stripSlotList = useMemo(() => (stripValue ? stripSlots(model) : []), [stripValue, model]);
-  const chosenId = useSyncExternalStore(stripStore.subscribe, stripStore.getSelected, () => null);
-  const drawerTaskId = stripValue
-    ? (chosenId && stripSlotList.some(s => s.id === chosenId) ? chosenId : defaultStripSelection(stripSlotList, stripFocus?.taskId))
-    : null;
   const now = useNow(model.now, 15_000, !model.complete);
   const liveSpans = Object.values(model.tasks)
     .filter(t => t.status === 'running' || t.status === 'fixing')
@@ -158,10 +150,10 @@ function BoardView({
         missionId={link.missionId}
         visual={vm}
         onReview={review ? () => review.openDeck(null) : undefined}
-        strip={stripValue && workspaceId ? { link, workspaceId, executor, focus: stripFocus, deliveries } : null}
+        strip={stripValue ? { link, focus: stripFocus } : null}
       />
       {notice && <div className="mt-4">{notice}</div>}
-      {/* An agent's question gets its Ask; a delivery that needs you is its tile and the strip drawer. */}
+      {/* An agent's question gets its Ask; a delivery that needs you is its tile. */}
       {model.needsYou.filter(id => !model.tasks[id].delivery).map(id => (
         <AskBanner key={id} task={model.tasks[id]} now={now} />
       ))}
@@ -182,7 +174,7 @@ function BoardView({
           // One unlabeled phase is the whole mission: its header says the total,
           // and the Landed band above already carries done/total.
           const wholeMission = !p.label && model.phases.length === 1;
-          const active = tasks.filter(t => !BOARD_LANDED.has(t.status) && t.id !== drawerTaskId).sort((a, b) => ORDER[a.status] - ORDER[b.status]);
+          const active = tasks.filter(t => !BOARD_LANDED.has(t.status)).sort((a, b) => ORDER[a.status] - ORDER[b.status]);
           const landed = tasks.filter(t => BOARD_LANDED.has(t.status));
           return (
             <div key={p.key} data-testid="board-column" data-phase={p.key} className="flex min-w-0 flex-col gap-2.5">
@@ -257,7 +249,7 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
   visual?: VisualReviewModel | null;
   onReview?: () => void;
   /** The interactive Landed strip (the mission page's Board); absent: the plain meter. */
-  strip?: Pick<LandedStripProps, 'link' | 'workspaceId' | 'executor' | 'focus' | 'deliveries'> | null;
+  strip?: Pick<LandedStripProps, 'link' | 'focus'> | null;
 }) {
   const needs = boardNeedsYouCount(model, visual);
   const agentLine = missionAgentLine(model);
@@ -353,8 +345,7 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
 
 /**
  * The band's grid, per layout. `meter`: the four cells in a row at desktop
- * width. `strip`: the interactive Landed strip is the left column (its drawer
- * needs the width) and Goal, Fleet and Needs you stack on the right.
+ * width. `strip`: the interactive Landed strip is the left column and Goal, Fleet and Needs you stack on the right.
  * `strip-compact` (the chat's docked pane): the phone arrangement at any width.
  */
 function bandLayout(name: 'meter' | 'strip' | 'strip-compact') {
@@ -531,7 +522,7 @@ const DELIVERY_TEXT: Record<DeliveryTone, string> = {
 };
 
 function Tile({ task: t, retry, model, now, span, link, popSide, compact = false, visualStuck = null, executor = null }: { task: BoardTask; retry: string; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popSide: PopoverSide; compact?: boolean; visualStuck?: string | null; executor?: MissionExecutor | null }) {
-  const href = taskSheetHref(link, t.id);
+  const href = boardTaskHref(link, t.id);
   const queued = t.status === 'ready' || t.status === 'blocked';
   // A delivery the kernel reads is never a live agent on this tile: its own worker ended.
   const live = !t.delivery && (t.status === 'running' || t.status === 'fixing');
@@ -734,7 +725,7 @@ function TilePopover({ task: t, model, now, side, href }: { task: BoardTask; mod
 function LandedRow({ task: t, retry, link, complete }: { task: BoardTask; retry: string; link: BoardLinkContext; complete: boolean }) {
   return (
     <a
-      href={taskSheetHref(link, t.id)}
+      href={boardTaskHref(link, t.id)}
       data-task-id={t.id}
       data-testid="board-tile"
       data-status={t.status}
@@ -775,7 +766,7 @@ function Ticker({ model, now, link }: { model: MissionBoardModel; now: number; l
       {model.ticker.map((e, i) => (
         <a
           key={`${e.kind}:${e.taskId}:${e.at}:${i}`}
-          href={taskSheetHref(link, e.taskId)}
+          href={boardTaskHref(link, e.taskId)}
           data-task-id={e.taskId}
           data-testid="mission-ticker-event"
           className="inline-flex min-h-11 md:min-h-0 md:h-6 items-center gap-1.5 border border-border-default px-2 text-text-secondary hover:bg-card-hover"
@@ -803,7 +794,7 @@ export function PlanningPlaceholder({ planning: p, now, link }: { planning: NonN
   const detail = action ?? milestone;
   return (
     <a
-      href={taskSheetHref(link, p.taskId)}
+      href={boardTaskHref(link, p.taskId)}
       data-testid="board-planning"
       data-task-id={p.taskId}
       data-live={String(p.live)}

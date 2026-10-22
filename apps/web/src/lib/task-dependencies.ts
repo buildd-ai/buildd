@@ -506,7 +506,9 @@ async function maybeCreateAggregationTask(
   // a role-less parent (the plan that fanned out) falls back to the Organizer.
   // Either only when it resolves in this workspace (role-routing §1 row 9, §3.1),
   // looked up for the parent's requester so a parent on its owner's private
-  // role hands that role on; the aggregator is filed for the same person.
+  // role hands that role on. The aggregator is for the same person, recorded by
+  // the tasks_resolve_requester trigger from parentTaskId ('parent'), not named
+  // here as a direct request.
   const requesterUserId = await resolveTaskRequesterUserId(parent).catch(() => null);
   const roleSlug = await pickEffectiveRole(parent.workspaceId, [parent.roleSlug, 'organizer'], { requesterUserId });
 
@@ -519,7 +521,6 @@ async function maybeCreateAggregationTask(
     roleSlug,
     parentTaskId,
     missionId: parent.missionId,
-    createdByUserId: requesterUserId,
     status: 'pending',
     creationSource: 'api',
     outputRequirement: 'artifact_required',

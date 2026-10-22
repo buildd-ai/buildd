@@ -134,8 +134,8 @@ describe('MissionBoard — running', () => {
     expect(count(many, 'notifications')).toBeGreaterThan(0);
   });
 
-  it('tiles open the task sheet: a real href plus data-task-id', () => {
-    expect(html).toMatch(/href="\/app\/missions\/mission-1\?task=api" data-task-id="api"/);
+  it('tiles open the task page: a real href plus data-task-id', () => {
+    expect(html).toMatch(/href="\/app\/tasks\/api\?from=mission&amp;missionId=mission-1" data-task-id="api"/);
   });
 
   it('shows the just-now ticker and no completion record', () => {

@@ -8,14 +8,15 @@
  *   - join stored verdicts to criteria by identity, not array slot, so a row
  *     never shows evidence produced for a criterion that is no longer there;
  *   - preflight "Run verification": a list with no automatic check cannot
- *     reach a verdict without a model, so the sheet offers the fix instead;
+ *     reach a verdict without a model, so the sheet says so and points at
+ *     selecting a spec. It never offers to add a hand-written criterion:
+ *     those are retired (Living Specs D-44);
  *   - say the validator's refusals in product words. The raw text (which names
  *     backend criterion types) stays available as an optional detail.
  */
 import type { GoalCriterion, GoalCriteriaState } from '@buildd/shared';
 import {
   criterionFingerprint,
-  validateGoalCriteria,
   MECHANICAL_CRITERION_TYPES,
 } from '@buildd/core/mission-helpers';
 
@@ -67,40 +68,24 @@ export function joinCriteriaState(
 export type VerificationReadiness =
   | { kind: 'empty' }
   | { kind: 'ready' }
-  | {
-      kind: 'needs_check';
-      headline: string;
-      reason: string;
-      actionLabel: string;
-      /**
-       * A check Buildd can already answer from what the mission has produced,
-       * added in one tap. Null when there is nothing to infer from — the action
-       * then opens the add form.
-       */
-      suggestion: GoalCriterion | null;
-    };
+  | { kind: 'needs_check'; headline: string; reason: string };
 
 /**
  * Can "Run verification" reach a verdict? Not without at least one automatic
  * check: the server refuses to store such a list, and a grandfathered one
- * could only ever be graded by a model.
+ * could only ever be graded by a model. The way out is the mission's outcome
+ * spec, whose criteria carry their own checks; adding a hand-written check is
+ * no longer offered (Living Specs D-44).
  */
 export function verificationReadiness(args: {
   criteria: readonly GoalCriterion[];
-  /** Distinct PRs the mission has opened. */
-  missionPrCount: number;
 }): VerificationReadiness {
   if (args.criteria.length === 0) return { kind: 'empty' };
   if (args.criteria.some(isAutomaticCheck)) return { kind: 'ready' };
-  const suggestion: GoalCriterion | null = args.missionPrCount > 0 ? { type: 'all_prs_merged' } : null;
   return {
     kind: 'needs_check',
     headline: 'Can’t verify automatically yet.',
-    reason: suggestion
-      ? 'Nothing here can be checked without AI, but this mission’s PRs can be.'
-      : 'This mission doesn’t have a check buildd can run on its own.',
-    actionLabel: suggestion ? 'Check that every PR merged' : 'Add check',
-    suggestion,
+    reason: 'Nothing here can be checked without AI. Select the spec this mission delivers: its checks run on their own.',
   };
 }
 
@@ -115,6 +100,9 @@ const NEEDS_AUTOMATIC_CHECK =
 
 /** Say a criteria refusal in product words; keep the raw text as an optional detail. */
 export function plainCriteriaError(message: string): PlainError {
+  if (/criteria are retired/.test(message)) {
+    return { text: 'Hand-written criteria are retired. Select the spec this mission delivers instead.', detail: message };
+  }
   if (/must include at least one mechanical criterion/.test(message)) {
     return { text: NEEDS_AUTOMATIC_CHECK, detail: message };
   }
@@ -134,19 +122,4 @@ export function plainCriteriaError(message: string): PlainError {
     return { text, detail: message };
   }
   return { text: message, detail: null };
-}
-
-/**
- * Validate a criterion the way the server will see it: as one row of the
- * whole list it joins. `siblings` are the other criteria that will be saved
- * with it, already stored, so they are grandfathered exactly as PATCH does.
- */
-export function validateCriterionInContext(
-  candidate: GoalCriterion,
-  siblings: readonly GoalCriterion[],
-): PlainError | null {
-  const row = validateGoalCriteria([candidate], { requireMechanical: false });
-  if (row) return plainCriteriaError(row);
-  const whole = validateGoalCriteria([...siblings, candidate], { stored: siblings });
-  return whole ? plainCriteriaError(whole) : null;
 }

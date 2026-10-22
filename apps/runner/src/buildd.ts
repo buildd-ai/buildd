@@ -1261,7 +1261,7 @@ export class BuilddClient {
      * older callers; the server then keeps the account's default.
      */
     maxConcurrent?: number,
-  ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number; claimsReleased?: number }> {
+  ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number; claimsReleased?: number; budgetProbeRequestedAt?: string | null }> {
     const payload: Record<string, unknown> = {
       localUiUrl,
       activeWorkerCount,
@@ -1309,7 +1309,12 @@ export class BuilddClient {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit, leasesRenewed: data.leasesRenewed, claimsReleased: data.claimsReleased };
+    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit, leasesRenewed: data.leasesRenewed, claimsReleased: data.claimsReleased, budgetProbeRequestedAt: data.budgetProbeRequestedAt };
+  }
+
+  /** Report a provider-wall probe result (budget-wall-probe.ts); the server clears or keeps the wall. */
+  async reportBudgetWall(body: { outcome: string; trigger: string; resetsAt: string | null; backend?: string; runner?: string; claudeLoginId?: string | null }): Promise<{ cleared?: number }> {
+    return this.fetch('/api/runner/budget-wall', { method: 'POST', body: JSON.stringify(body) });
   }
 
   /** Set once the server refuses cleanup to this key (it needs an admin key): never asked again this process. */

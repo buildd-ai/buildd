@@ -10,7 +10,7 @@ mock.module('next/navigation', () => ({
 }));
 
 import { MonthlySpend } from './usage/MonthlySpend';
-import { HealthClient } from './HealthClient';
+import { HealthClient, routeLine } from './HealthClient';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import type { BackendConfinement, RunnerIsolationRecord } from '@buildd/shared';
 import type { CredentialHealthItem, RecentFailure, ScheduleRow } from './page';
@@ -945,5 +945,27 @@ describe('HealthClient — stranded backend headline (spec R-10)', () => {
     expect(html).toContain('data-confirmed="true"');
     expect(html).toContain('Codex has no credential');
     expect(html).toContain('2 tasks unclaimable');
+  });
+});
+
+describe('sample task route words', () => {
+  it('separates preference, pin, temporary reservation and executed route', () => {
+    const line = routeLine({ requested: 'codex', effective: 'codex', pinned: true,
+      reservation: { expiresAt: '2099-01-01T00:00:00.000Z' }, executed: null });
+    expect(line).toContain('preference codex');
+    expect(line).toContain('explicit pin codex');
+    expect(line).toContain('temporary claim reservation until');
+    expect(line).toContain('executed route unknown');
+  });
+  it('labels recorded failover as execution rather than a team mask', () => {
+    const line = routeLine({ requested: 'codex', effective: 'claude', pinned: false,
+      reservation: null, executed: 'claude' });
+    expect(line).toContain('executed route claude');
+    expect(line).not.toContain('team mask moves');
+  });
+  it('shows expired reservations as expired', () => {
+    expect(routeLine({ requested: 'claude', effective: 'claude', pinned: false,
+      reservation: { expiresAt: '2000-01-01T00:00:00.000Z' }, executed: null }))
+      .toContain('temporary claim reservation expired');
   });
 });

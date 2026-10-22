@@ -500,6 +500,12 @@ export interface SupersessionStore {
   applyCancelEffects(task: SupersessionCandidate, rule: SupersessionRule, event: SubjectEvent): Promise<void>;
   /** One `supersession` ledger row and one activity entry. Winner only. */
   recordSupersession(task: SupersessionCandidate, rule: SupersessionRule, event: SubjectEvent): Promise<void>;
+  /**
+   * A review fix cancelled because another attempt holds the PR: hand its
+   * findings to those holders (the one-fixer-per-PR cancel must not drop them).
+   * Winner only; optional so a store without a findings channel still works.
+   */
+  carryFindings?(task: SupersessionCandidate, holderIds: string[]): Promise<void>;
   /** The over-limit refusal: ledger row with the would-cancel set, and a note. */
   recordBulkRefusal(event: SubjectEvent, wouldCancel: CancelDecision[]): Promise<void>;
 }
@@ -643,6 +649,13 @@ export async function guardDispatchedTask(
     if (await store.casCancel(task, { ...rule, casStatuses: OPEN_STATUSES })) {
       await store.applyCancelEffects(task, rule, event);
       await store.recordSupersession(task, rule, event);
+      if (rule.id === 'open_retry_supersedes_duplicate' && proposal.kind === 'fix' && store.carryFindings) {
+        const holders = decision.blockers ?? [];
+        if (holders.length > 0) {
+          await store.carryFindings(task, holders).catch(err =>
+            console.error(`[supersession] carrying findings of ${taskId} failed:`, err));
+        }
+      }
     }
     return true;
   } catch (err) {

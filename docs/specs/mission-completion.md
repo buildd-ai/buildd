@@ -889,7 +889,7 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   `status` to `'answered'` — it never touches `criteriaEscalatedAt` or
   re-enables the schedule, so replying would mute the card while leaving the
   mission stood down forever. The mission-detail decision sheet (file the
-  work / fix the criterion / waive), which routes every exit through
+  work / waive; editing a criterion is not offered since Living Specs D-44), which routes every exit through
   `resolveCriteriaEscalation()`, is the only surface that can clear it.
 
 **Code surface**:
@@ -914,8 +914,9 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   `buildDecideItems()`, `EscalatedMissionCandidate`
 - Home DECIDE card (one CTA, recommendation only — never a pre-selected
   exit): `apps/web/src/components/WaitingOnYouDecideCard.tsx`
-- Mission-detail decision sheet (the three goal-criteria exits — file the work
-  / fix the criterion / waive — plus the two visual-audit exits, see the
+- Mission-detail decision sheet (the goal-criteria exits — file the work
+  / waive; no "fix the criterion" since Living Specs D-44 retired hand-written
+  criteria — plus the two visual-audit exits, see the
   surface-audit gate below): `apps/web/src/app/app/(protected)/missions/[id]/MissionDecisionSheet.tsx`,
   `apps/web/src/lib/criteria-decision-links.ts` (task-composer link),
   `apps/web/src/lib/goal-criterion-label.ts` (client-safe criterion labeling)

@@ -329,15 +329,11 @@ const updateMission: Builder = async (input, env) => {
     input = { ...input, autoSurfaceAudit: on };
   }
   if (input.executor !== undefined) changes.push({ label: 'Runs in', before: m.executor === 'local' ? 'your session' : 'runners', after: input.executor === 'local' ? 'your session' : 'runners' });
-  // Add or remove criteria against the mission's CURRENT list, so a change
-  // never drops a criterion the model couldn't see in full.
-  const add = listOf(input.addGoalCriteria).filter((c): c is Obj => !!c && typeof c === 'object');
-  const remove = listOf(input.removeGoalCriteria).map(String);
-  if (add.length || remove.length) {
-    const current = Array.isArray(m.goalCriteria) ? m.goalCriteria : [];
-    const kept = current.filter((c: Obj) => !remove.includes(criterionText(c)));
-    const { addGoalCriteria: _a, removeGoalCriteria: _r, ...rest } = input;
-    input = { ...rest, goalCriteria: [...kept, ...add] };
+  if (input.outcomeSpec && typeof input.outcomeSpec === 'object') {
+    // Living Specs D-44: the spec the mission delivers is its "done".
+    const spec = input.outcomeSpec as Obj;
+    const scope = Array.isArray(spec.criteria) && spec.criteria.length ? ` (${spec.criteria.map(String).join(', ')})` : '';
+    changes.push({ label: 'Delivers spec', before: null, after: `${String(spec.specId ?? '')}${scope}` });
   }
   if (Array.isArray(input.goalCriteria)) {
     const before = (Array.isArray(m.goalCriteria) ? m.goalCriteria : []).map(criterionText);

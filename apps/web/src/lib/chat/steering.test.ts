@@ -282,28 +282,22 @@ describe('the owner\'s examples', () => {
     expect(writes[0]).toContain('"baseBranch":"buildd/stripe-currency"');
   });
 
-  it('"Add JPY e2e to the goal" → Edit mission card with a criteria diff', async () => {
-    const { preview } = await proposeAndApprove('manage_missions', {
-      action: 'update',
-      goalCriteria: [
-        { type: 'command', label: 'EUR e2e passes', command: 'bun test e2e/eur' },
-        { type: 'command', label: 'JPY e2e passes', command: 'bun test e2e/jpy' },
-      ],
-    });
+  it('"This mission delivers the checkout spec" → Edit mission card naming the spec, and the PATCH carries outcomeSpec (Living Specs D-44)', async () => {
+    const outcomeSpec = { specId: 'spec-checkout', criteria: ['R-2'], narrowedReason: 'only the JPY half ships here' };
+    const { preview } = await proposeAndApprove('manage_missions', { action: 'update', outcomeSpec });
     expect(approvalHeadline(preview)).toBe('Edit mission: Multi-currency checkout (active)');
-    expect(preview.changes.map(approvalChangeLine)).toEqual(['Goal criteria: + JPY e2e passes']);
+    expect(preview.changes.map(approvalChangeLine)).toEqual(['Delivers spec: + spec-checkout (R-2)']);
     expect(writes[0]).toStartWith(`PATCH /api/missions/${MISSION.slice(0, 8)}`);
+    const body = JSON.parse(writes[0].slice(writes[0].indexOf('{')));
+    expect(body.outcomeSpec).toEqual(outcomeSpec);
   });
 
-  it('addGoalCriteria appends to the CURRENT list (nothing the model couldn\'t see is dropped)', async () => {
-    const { preview } = await proposeAndApprove('manage_missions', {
+  it('addGoalCriteria is no longer merged into the list: hand-written criteria are retired', async () => {
+    const p = await buildPreview('manage_missions', {
       action: 'update', addGoalCriteria: [{ type: 'command', label: 'JPY e2e passes', command: 'bun test e2e/jpy' }],
-    });
-    expect(preview.changes.map(approvalChangeLine)).toEqual(['Goal criteria: + JPY e2e passes']);
-    const body = JSON.parse(writes[0].slice(writes[0].indexOf('{')));
-    expect(body.goalCriteria.map((c: Obj) => c.label)).toEqual(['EUR e2e passes', 'JPY e2e passes']);
-    expect(body.goalCriteria[0].command).toBe('bun test e2e/eur');
-    expect(body.addGoalCriteria).toBeUndefined();
+    }, docked);
+    expect(p.ok).toBe(false);
+    expect(writes).toEqual([]);
   });
 
   it('"Turn off the automatic visual audit" → Edit mission card with an honest before/after, and the PATCH carries it', async () => {

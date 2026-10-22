@@ -219,7 +219,9 @@ async function runSession(
     if (count !== lastCount) {
       lastCount = count;
       quietSince = Date.now();
-    } else if (Date.now() - quietSince >= 300) {
+    } else if (Date.now() - quietSince >= (completionCall() || failedCall() ? 300 : 1_000)) {
+      // Until a terminal update lands, the closing-turn follow-up may still be
+      // pending: a 300ms lull on a loaded host is not "the session is over".
       break;
     }
     await new Promise(r => setTimeout(r, 25));
