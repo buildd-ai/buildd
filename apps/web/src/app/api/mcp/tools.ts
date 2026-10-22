@@ -338,7 +338,7 @@ If the path is already claimed by a sibling task, you receive blockingTaskId and
 If a deadlock cycle is detected (the blocking task is transitively waiting on you), deadlock=true is returned with a cycle array and actionable guidance on how to break it: cancel and retry, escalate to the blocking task's owner, or use mission-level maxConcurrentTasks=1.
 With release=true, gives the paths back instead: frees your leases on them (and under them), drops them from your manifest, and wakes only tasks waiting on them.
 
-Requires a worker context (?worker=<workerId> in the MCP URL).`,
+Requires a worker context: ?worker=<workerId> in the MCP URL, or pass workerId (it must be reachable by your token).`,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -364,6 +364,10 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
             type: "number" as const,
             description: "CAS token.",
           },
+          workerId: {
+            type: "string" as const,
+            description: "Your worker, if the URL has no ?worker=.",
+          },
         },
         required: ["paths"],
       },
@@ -387,7 +391,7 @@ Recipient terminal → returns { delivered: false, reason: "recipient_terminal" 
 Rate limit: 5 messages per sender per minute per recipient task (retryAfter in error).
 Body size limit: 2 KB. Hop cap: 5 (prevents ping-pong loops — messages with hopCount >= 5 are dropped).
 
-Requires a worker context (?worker=<workerId> in the MCP URL).`,
+Requires a worker context: ?worker=<workerId> in the MCP URL, or pass workerId (it must be reachable by your token).`,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
