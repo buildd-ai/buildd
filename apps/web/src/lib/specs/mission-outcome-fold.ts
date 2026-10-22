@@ -40,6 +40,8 @@ export interface MissionVerdictRow {
   bindingFingerprint?: string | null;
   /** The verdict's evidence, for filtering unaccepted acceptance test edits. */
   evidence?: Record<string, unknown>;
+  /** Set on a registered check's outcome: how it was actually evaluated. Never makes it a test. */
+  method?: 'deterministic' | 'model' | 'visual' | 'fallback';
 }
 
 export interface MissionSpecFold {
@@ -77,10 +79,18 @@ export function foldMissionSpec(input: {
   target: MissionTarget;
   /** Required fingerprints from the selected immutable revision, by criterion. */
   requiredBindings?: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Criteria with a required registered check whose outcomes arrive as rows
+   * carrying `method` (./mission-registered-verification.ts). Each needs a
+   * current registered pass whatever the method; a test on it still decides too.
+   */
+  required?: readonly string[];
   /** Acceptance test file paths that have been edited but not accepted yet (R-80). */
   unacceptedTestPaths?: readonly string[];
 }): MissionSpecFold {
   const waived = new Set(input.waived);
+  const requiredCriteria = new Set(input.required ?? []);
+  const isRequired = (id: string) => !!input.requiredBindings?.get(id)?.length || requiredCriteria.has(id);
   // If any building task edited acceptance tests without accepting, drop acceptance test verdicts (R-80).
   const hasUnacceptedEdits = (input.unacceptedTestPaths?.length ?? 0) > 0;
   const filtered = hasUnacceptedEdits ? input.rows.filter((r) => {
@@ -123,7 +133,7 @@ export function foldMissionSpec(input: {
     const row = newest.get(criterionId);
     if (waived.has(criterionId)) return { criterionId, standing: 'waived', headSha: row?.headSha ?? null, ...(row ? { verdictId: row.id, source: row.source ?? 'review' } : {}) };
     const required = input.requiredBindings?.get(criterionId) ?? [];
-    if (!required.length) return standingOf(criterionId, row);
+    if (!required.length && !requiredCriteria.has(criterionId)) return standingOf(criterionId, row);
     const rows = grouped.get(criterionId) ?? [];
     // Each binding is an independent obligation. An unrelated review or a
     // passing command cannot stand in for missing/failed registered evidence.
@@ -131,8 +141,12 @@ export function foldMissionSpec(input: {
       const current = candidates.filter((r) => verdictIsCurrent(input.target, r.headSha));
       return determiningVerdict(current.length ? current : candidates);
     };
-    const checks = [...new Set(required)].map((fingerprint) =>
-      standingOf(criterionId, currentOrLatest(rows.filter((r) => r.bindingFingerprint === fingerprint)), true));
+    const withMethod = (s: LivingSpecCriterionStanding, r: MissionVerdictRow | null | undefined): LivingSpecCriterionStanding =>
+      (r?.method && s.standing !== 'missing' ? { ...s, method: r.method } : s);
+    const checks = required.length
+      ? [...new Set(required)].map((fingerprint) =>
+        standingOf(criterionId, currentOrLatest(rows.filter((r) => r.bindingFingerprint === fingerprint)), true))
+      : [((r) => withMethod(standingOf(criterionId, r, true), r))(currentOrLatest(rows.filter((r) => r.method && !r.bindingFingerprint)))];
     const tests = rows.filter((r) => r.source === 'test' && !r.bindingFingerprint);
     if (tests.length) checks.push(standingOf(criterionId, currentOrLatest(tests)));
     return checks.find((s) => s.standing === 'fail')
@@ -141,14 +155,14 @@ export function foldMissionSpec(input: {
   };
   const standings: LivingSpecCriterionStanding[] = input.scope.map((criterionId) => {
     const s = fold(criterionId);
-    const n = input.requiredBindings?.get(criterionId)?.length ? 0 : outranked.get(criterionId);
+    const n = isRequired(criterionId) ? 0 : outranked.get(criterionId);
     return n ? { ...s, overriddenReviews: n } : s;
   });
 
   const active = standings.filter((s) => s.standing !== 'waived');
   // Missing results remain open rather than silently shrinking the scope.
-  const registered = active.some((s) => input.requiredBindings?.get(s.criterionId)?.length);
-  const tested = active.filter((s) => s.source === 'test' || s.standing === 'missing' || input.requiredBindings?.get(s.criterionId)?.length);
+  const registered = active.some((s) => isRequired(s.criterionId));
+  const tested = active.filter((s) => s.source === 'test' || s.standing === 'missing' || isRequired(s.criterionId));
   const failed = tested.filter((s) => s.standing === 'fail');
   const passing = tested.filter((s) => s.standing === 'pass');
   const open = tested.filter((s) => s.standing !== 'pass');

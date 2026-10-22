@@ -1,4 +1,4 @@
-import type { VerificationBinding } from '@buildd/spec-contract/verification-bindings';
+import type { RegisteredBinding } from '@buildd/spec-contract/verification-bindings';
 
 export type RegisteredMethod = 'deterministic' | 'model' | 'fallback';
 
@@ -7,6 +7,6 @@ export type RegisteredMethod = 'deterministic' | 'model' | 'fallback';
  * the deterministic verifier is a test result (`check:`, outranks reviews);
  * a model judgment or a fallback is a review. Both recorders enforce it.
  */
-export function registeredAuthor(bindingId: VerificationBinding['id'], method: RegisteredMethod): string {
+export function registeredAuthor(bindingId: RegisteredBinding['id'], method: RegisteredMethod): string {
   return method === 'deterministic' && bindingId === 'ui.actions_match_state' ? `check:registered:${bindingId}` : `registered:${bindingId}`;
 }

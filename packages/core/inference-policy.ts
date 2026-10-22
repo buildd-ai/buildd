@@ -36,6 +36,7 @@ export type InferenceCapability =
   | 'task_category'
   | 'surface_audit_advice'
   | 'ui_verification'
+  | 'ui_copy'
   | 'task_role_shadow'
   | 'task_role_apply'
   | 'orchestration_manifest'
@@ -77,6 +78,11 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
   ui_verification: {
     id: 'ui_verification', kind: 'built_in', label: 'UI specification checks',
     description: 'Checks captured interface cards against registered product requirements.',
+    costHint: 'metered per captured card',
+  },
+  ui_copy: {
+    id: 'ui_copy', kind: 'opt_in', label: 'UI copy checks',
+    description: 'Judges a captured card for repeated status, unclear actions and process narration.',
     costHint: 'metered per captured card',
   },
   criteria_grading: {
