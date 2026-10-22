@@ -475,12 +475,27 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
   const visualOpen = visual ? null : visualOpenState(audits, input.visualReview);
   const missionPrMerged = !!input.integrationBranch && input.missionPrMerged === true;
   const progress = computeMissionProgress(m.tasks.map(t => ({ ...t, dependsOn: undefined, workers: (t.workers ?? []).map(w => ({ ...w })) })));
+  const byId = new Map(m.tasks.map(t => [t.id, t]));
+  // Every generation of a chain belongs to the task it started from: a repair spawned
+  // from a review spawned from a repair is still that task's repair.
+  const chainRoot = (t: MissionTaskRow): string => {
+    const seen = new Set([t.id]);
+    let parentId = t.parentTaskId!;
+    for (;;) {
+      const parent = byId.get(parentId);
+      // Stop at a task that is not itself an attempt, one not loaded, or a cycle.
+      if (!parent || !(isAttempt(parent) && parent.parentTaskId) || seen.has(parent.id)) return parentId;
+      seen.add(parent.id);
+      parentId = parent.parentTaskId;
+    }
+  };
   const attempts = new Map<string, MissionTaskRow[]>();
   for (const t of m.tasks) {
-    if (isAttempt(t) && t.parentTaskId) attempts.set(t.parentTaskId, [...(attempts.get(t.parentTaskId) ?? []), t]);
+    if (!(isAttempt(t) && t.parentTaskId)) continue;
+    const root = chainRoot(t);
+    attempts.set(root, [...(attempts.get(root) ?? []), t]);
   }
   const roots = m.tasks.filter(t => !(isAttempt(t) && t.parentTaskId) && t.status !== 'cancelled');
-  const byId = new Map(m.tasks.map(t => [t.id, t]));
 
   const first = roots.map(t => {
     const kids = attempts.get(t.id) ?? [];

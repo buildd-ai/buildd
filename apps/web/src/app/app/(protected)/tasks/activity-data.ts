@@ -36,6 +36,7 @@ import {
   type ActivityMission, type ActivityNow, type ActivityTaskInput, type Episode,
 } from '@/lib/activity-delivery';
 import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
+import { LINEAGE_MAX_DEPTH } from '@/lib/attempt-lineage';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import type { LocalHold } from '@/lib/local-session-display';
 
@@ -61,7 +62,7 @@ export function overlayActivityRows<W extends object, M extends { tasks?: unknow
   return { workersByTask, missions };
 }
 
-const iso = (d: Date | string | null | undefined) => (d ? new Date(d).toISOString() : null);
+const iso = (d: Date | string | number | null | undefined) => (d != null && d !== '' ? new Date(d).toISOString() : null);
 
 /** Recent roots: the History window. Live work outside it is added on Now. */
 export const ACTIVITY_WINDOW_DAYS = 30;
@@ -143,6 +144,8 @@ export interface ActivityMissionRow {
   title: string;
   status: string;
   head: Pick<MissionDeliveryHead, 'kind' | 'landed' | 'total' | 'next'> | null;
+  /** Epoch ms. */
+  createdAt: number | null;
 }
 
 export interface ActivityScope {
@@ -161,6 +164,24 @@ export function activityScopeWhere(scope: ActivityScope): SQL | undefined {
   );
 }
 
+/** An attempt's `context.rootTaskId`, when it is a well-formed id. */
+const stampedRoot = sql`case when ${tasksTable.context}->>'rootTaskId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    then (${tasksTable.context}->>'rootTaskId')::uuid end`;
+
+/**
+ * Every generation of the roots' attempts: their children, and the children of
+ * any child that is itself an attempt, down to `LINEAGE_MAX_DEPTH`. Walks
+ * `parent_task_id` (indexed); a cycle ends at the depth bound.
+ */
+export function attemptChainIds(rootIds: readonly string[]): SQL {
+  return sql`(with recursive chain(id, task_class, depth) as (
+      select ${tasksTable.id}, ${tasksTable.taskClass}, 1 from ${tasksTable} where ${inArray(tasksTable.parentTaskId, [...rootIds])}
+      union all
+      select t.id, t.task_class, chain.depth + 1 from ${tasksTable} t join chain on t.parent_task_id = chain.id
+        where chain.task_class = 'attempt' and chain.depth < ${LINEAGE_MAX_DEPTH}
+    ) select id from chain)`;
+}
+
 /**
  * Roots that belong in Now however long ago they were last touched: not
  * terminal, or with an agent live on them or on one of their attempts.
@@ -174,7 +195,8 @@ export function liveRootsWhere(scope: ActivityScope, recentIds: SQLWrapper, tab:
     .where(and(where, isNull(tasksTable.parentTaskId), notInArray(tasksTable.status, [...TERMINAL_TASK_STATUSES])))
     .orderBy(desc(tasksTable.updatedAt), desc(tasksTable.id))
     .limit(ACTIVITY_LIVE_ROOT_LIMIT);
-  const held = db.select({ id: sql`coalesce(${tasksTable.parentTaskId}, ${tasksTable.id})` }).from(workers)
+  // An attempt deep in a chain holds the chain's root: its lineage stamp names it (attempt-lineage.ts).
+  const held = db.select({ id: sql`coalesce(${stampedRoot}, ${tasksTable.parentTaskId}, ${tasksTable.id})` }).from(workers)
     .innerJoin(tasksTable, eq(workers.taskId, tasksTable.id))
     .where(and(inArray(workers.workspaceId, [...scope.workspaceIds]), where, inArray(workers.status, [...LIVE_WORKER_STATUSES])))
     .limit(ACTIVITY_LIVE_ROOT_LIMIT);
@@ -261,6 +283,7 @@ function missionsQuery(ids: string[]) {
   const d = sql`(${missionSummaries.summary}->'home'->'delivery')`;
   return db.select({
     id: missions.id, title: missions.title, status: missions.status,
+    createdAt: epochMs(missions.createdAt).mapWith(Number),
     head: sql<ActivityMissionRow['head']>`case when ${d} is null then null else jsonb_build_object(
       'kind', ${d}->'kind', 'landed', ${d}->'landed', 'total', ${d}->'total', 'next', ${d}->'next') end`,
   })
@@ -308,13 +331,13 @@ export async function loadActivityRows(scope: ActivityScope, tab: ActivityTab, n
   const roots = [...recent, ...live];
   if (roots.length === 0) return { ...empty, historyReach };
 
-  // Attempts (retry/reviewer) of the loaded roots, newest first so a cap drops
+  // Attempts (retry/reviewer) of the loaded roots, every generation, newest first so a cap drops
   // the oldest attempts, never a live one; every loaded task's workers; and
   // the in-mission tasks a waiting root depends on, with their attempts.
   const rootIds = roots.map(t => t.id);
   const loaded = new Set(rootIds);
   const depIds = uniq(roots.filter(t => t.missionId).flatMap(t => t.dependsOn ?? [])).filter(id => !loaded.has(id));
-  const childWhere = and(where, inArray(tasksTable.parentTaskId, rootIds));
+  const childWhere = and(where, inArray(tasksTable.id, attemptChainIds(rootIds)));
   const childIds = db.select({ id: tasksTable.id }).from(tasksTable).where(childWhere)
     .orderBy(desc(tasksTable.createdAt), desc(tasksTable.id)).limit(ACTIVITY_CHILD_LIMIT);
   const depWhere = depIds.length > 0
@@ -407,7 +430,7 @@ export async function loadActivity(input: {
     const tasks = projectionRows.filter(t => t.missionId === m.id && deliveries.has(t.id)).map(t => ({ id: t.id, title: t.title, delivery: deliveries.get(t.id)! }));
     // Not stored and not derived (past the cap): the projection over the rows in view.
     const head = m.head ?? projectMissionDelivery({ id: m.id, title: m.title, status: m.status, href: '', tasks: projectionRows.filter(t => t.missionId === m.id) }, rules);
-    return { id: m.id, title: m.title, kind: head.kind, landed: head.landed, total: head.total, next: head.next, tasks };
+    return { id: m.id, title: m.title, kind: head.kind, landed: head.landed, total: head.total, next: head.next, tasks, createdAt: iso(m.createdAt) };
   });
 
   const tasks: ActivityTaskInput[] = load.rows.map(t => {
@@ -450,9 +473,12 @@ export async function loadActivity(input: {
 
   // Only the tab on screen is built (R-12).
   const args = { tasks, missions: missionsInView, rules };
+  // A mission created inside History's window is an event there, open or done (spec 9430a28f R-3).
+  const windowStart = input.now - ACTIVITY_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  const creations = load.missions.filter(m => m.createdAt != null && m.createdAt >= windowStart).map(m => ({ id: m.id, title: m.title, createdAt: iso(m.createdAt) }));
   return {
     now: input.tab === 'now' ? buildActivityNow({ ...args, now: input.now }) : { groups: [], inMotion: 0, liveAgents: 0 },
-    history: input.tab === 'history' ? buildActivityHistory(args) : [],
+    history: input.tab === 'history' ? buildActivityHistory({ ...args, creations }) : [],
     historyReach: load.historyReach,
     missionTitle: scope.missionId ? missionById.get(scope.missionId)?.title ?? null : null,
   };

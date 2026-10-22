@@ -6,7 +6,10 @@
  * nothing here derives delivery state.
  *
  * Design: docs/prototypes/cross-surface-delivery (`#activity`, `#activity/history`).
- * Now has no filters: a row is title, the one Lifecycle track and one line.
+ * A Now group is one mission's outcome: its current task and last transition,
+ * then a row per task (title, the one Lifecycle track, one line, its last
+ * transition and created time) with the reviews and repairs derived from it
+ * folded beneath. New work carries a New marker where it already is.
  * History is day sections with a tally and "Show more", filtered by outcome.
  */
 import { useMemo, useState } from 'react';
@@ -16,13 +19,13 @@ import { DeliveryEvidence, TONE_TEXT } from '@/components/delivery/DeliveryParts
 import { lifecycleState } from '@/components/delivery/lifecycle-state';
 import Lifecycle, { STEP_OF } from '@/components/ui/Lifecycle';
 import { STATE_KEY_OF_DELIVERY } from '@/components/delivery/DeliveryStatePill';
-import StatePill from '@/components/ui/StatePill';
+import StatePill, { StatusPill, TonePill } from '@/components/ui/StatePill';
 import Disclosure from '@/components/ui/Disclosure';
 import { STATES, TONE_TEXT as STATE_TONE_TEXT, type StateKey } from '@/components/ui/states';
 import { DELIVERY_KIND, repairBadge, type DeliveryKind } from '@/lib/delivery-projection';
 import {
   age, filterEpisodes, filterNow,
-  type ActivityNow, type ActivityOutcome, type ActivityScope, type EvidenceEntry, type Episode, type NowGroup, type NowRow,
+  type ActivityNow, type ActivityOutcome, type ActivityScope, type DerivedChild, type EvidenceEntry, type Episode, type NowGroup, type NowRow, type Transition,
 } from '@/lib/activity-delivery';
 import type { LocalSessionView } from '@/lib/local-session-view';
 import { groupSessionsForDisplay } from '@/lib/local-session-display';
@@ -275,29 +278,47 @@ function FilteredEmpty({ text, available, onClear }: { text: string; available: 
 
 const taskCount = (n: number) => `${n} ${n === 1 ? 'task' : 'tasks'}`;
 
+/** The New marker: one per new mission or task, on the group or row it already has. */
+const NewMarker = () => <span data-testid="activity-new" className="shrink-0"><TonePill tone="act">New</TonePill></span>;
+const transitionText = (t: Transition, nowMs: number) => `${t.text} · ${age(t.at, nowMs) === 'now' ? 'just now' : `${age(t.at, nowMs)} ago`}`;
+const createdText = (at: number, nowMs: number) => `created ${age(at, nowMs) === 'now' ? 'just now' : `${age(at, nowMs)} ago`}`;
+
 function NowGroupView({ group, nowMs, openRowIds }: { group: NowGroup; nowMs: number; openRowIds: readonly string[] }) {
+  const rowProps = { nowMs, groupNew: group.isNew };
+  // A mission's group is one outcome: name the task that moved last, unless it is the only row.
+  const current = group.missionId && group.current && group.rows.length > 1 ? group.current : null;
   return (
     <section data-testid="activity-group" data-mission={group.missionId ?? 'standalone'} className="mt-6">
       <div className="flex items-baseline justify-between gap-3 border-b border-border-default pb-1">
-        <h2 className="line-clamp-2 min-w-0 break-words text-meta font-semibold text-text-secondary">{group.title}</h2>
+        <h2 className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 text-meta font-semibold text-text-secondary">
+          <span className="line-clamp-2 min-w-0 break-words">{group.title}</span>
+          {group.isNew && <NewMarker />}
+          {group.isNew && group.createdAt != null && <span data-testid="activity-created" className="font-mono font-normal text-text-muted">{createdText(group.createdAt, nowMs)}</span>}
+        </h2>
         {/* "n/m landed" only when the mission's projection loaded; never "0/0". */}
         {group.href
           ? <Link href={group.href} className="inline-flex min-h-11 shrink-0 items-center whitespace-nowrap font-mono text-meta text-text-muted md:min-h-0">{group.total > 0 ? `${group.landed}/${group.total} merged` : taskCount(group.rows.length)} ›</Link>
           : <span className="shrink-0 whitespace-nowrap font-mono text-meta text-text-muted">{taskCount(group.rows.length)}</span>}
       </div>
-      {group.rows.map(r => <NowRowView key={r.id} row={r} nowMs={nowMs} startOpen={openRowIds.includes(r.id)} />)}
+      {current && (
+        <p data-testid="activity-current" className="mt-1.5 min-w-0 break-words text-meta text-text-muted">
+          Latest: <Link href={current.href} className="text-text-secondary underline-offset-2 hover:underline">{displayTaskTitle(current.title)}</Link>
+          {current.transition && <> · {transitionText(current.transition, nowMs)}</>}
+        </p>
+      )}
+      {group.rows.map(r => <NowRowView key={r.id} row={r} {...rowProps} startOpen={openRowIds.includes(r.id)} />)}
       {group.moreWaiting > 0 && (
         group.href
           ? <Link href={group.href} className="flex min-h-11 items-center text-meta text-text-muted">+{group.moreWaiting} more waiting ›</Link>
           : <Disclosure summary={`+${group.moreWaiting} more waiting`}>
-              {group.hiddenWaitingRows.map(r => <NowRowView key={r.id} row={r} nowMs={nowMs} startOpen={openRowIds.includes(r.id)} />)}
+              {group.hiddenWaitingRows.map(r => <NowRowView key={r.id} row={r} {...rowProps} startOpen={openRowIds.includes(r.id)} />)}
             </Disclosure>
       )}
     </section>
   );
 }
 
-function NowRowView({ row, nowMs, startOpen }: { row: NowRow; nowMs: number; startOpen: boolean }) {
+function NowRowView({ row, nowMs, startOpen, groupNew }: { row: NowRow; nowMs: number; startOpen: boolean; groupNew: boolean }) {
   const [open, setOpen] = useState(startOpen);
   const expandable = row.evidence.length > 0;
   const rounds = row.delivery.repairRounds;
@@ -321,11 +342,18 @@ function NowRowView({ row, nowMs, startOpen }: { row: NowRow; nowMs: number; sta
         {row.quietHold && <span data-testid="activity-quiet-hold" className="text-meta text-text-muted">session {row.quietHold.state === 'ended' ? 'ended' : 'quiet'} · slot in use</span>}
       </span>
       <span className="col-span-2 text-meta text-text-secondary">{row.line}</span>
+      <span className="col-span-2 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-meta text-text-muted">
+        {/* New once: on the mission's group when the mission is new, else on the task. */}
+        {row.isNew && !groupNew && <NewMarker />}
+        {row.transition && <span data-testid="activity-transition">{transitionText(row.transition, nowMs)}</span>}
+        {row.transition && <span aria-hidden="true">·</span>}
+        <span data-testid="activity-created">{createdText(row.createdAt, nowMs)}</span>
+      </span>
     </>
   );
   const grid = 'grid w-full grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 py-2.5 text-left min-h-14';
   return (
-    <div data-testid="activity-now-row" data-kind={row.delivery.kind} className="border-b border-border-default">
+    <div data-testid="activity-now-row" data-row={row.id} data-kind={row.delivery.kind} className="border-b border-border-default">
       {expandable ? (
         <button type="button" aria-expanded={open} aria-controls={`ev-${row.id}`} onClick={() => setOpen(o => !o)} className={grid}>{head}</button>
       ) : (
@@ -339,12 +367,48 @@ function NowRowView({ row, nowMs, startOpen }: { row: NowRow; nowMs: number; sta
           {repairs.map((r, i) => <RepairChild key={i} entry={r} />)}
         </ul>
       )}
+      {row.children.length > 0 && <DerivedChildren items={row.children} />}
       {expandable && open && (
         <div id={`ev-${row.id}`} data-testid="activity-evidence" className="pb-3">
           {row.evidence.filter(e => e.type !== 'repair').map((e, i) => <DeliveryEvidence key={i} entry={e} />)}
           <Link href={row.href} className="btn mt-3 min-h-11 md:min-h-0">Task page ›</Link>
         </div>
       )}
+    </div>
+  );
+}
+
+const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * Reviews and repairs derived from a task, every generation, folded beneath it:
+ * each links to its own task, to the task it was spawned from and to the mission.
+ */
+function DerivedChildren({ items }: { items: readonly DerivedChild[] }) {
+  const reviews = items.filter(c => c.role === 'review').length;
+  const repairs = items.length - reviews;
+  const parts = [reviews > 0 && count(reviews, 'review', 'reviews'), repairs > 0 && count(repairs, 'repair', 'repairs')].filter(Boolean).join(' · ');
+  return (
+    <div data-testid="activity-derived" className="mb-2">
+      <Disclosure summary={<span className="text-meta text-text-muted">{count(items.length, 'attempt', 'attempts')}: {parts}</span>}>
+        <ol className="ml-3 border-l border-border-strong pl-3">
+          {items.map(c => (
+            <li key={c.id} data-testid="activity-derived-child" data-generation={c.generation} className="py-1 text-meta">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <StatusPill status={c.live ? 'running' : c.status} variant="plain" />
+                <span className="font-mono text-text-muted">{c.role === 'review' ? 'Review' : 'Repair'} · generation {c.generation}</span>
+              </div>
+              <Link href={c.href} data-testid="activity-derived-task" className="mt-0.5 inline-flex min-h-11 min-w-0 items-center break-words text-text-primary md:min-h-0">{displayTaskTitle(c.title)}</Link>
+              <div className="flex flex-wrap gap-x-3 text-text-muted">
+                <Link href={c.parent.href} data-testid="activity-derived-parent" className="inline-flex min-h-11 min-w-0 items-center break-words md:min-h-0">
+                  from {c.generation === 1 ? 'the task' : displayTaskTitle(c.parent.title)} ›
+                </Link>
+                {c.missionHref && <Link href={c.missionHref} data-testid="activity-derived-mission" className="inline-flex min-h-11 items-center md:min-h-0">Mission ›</Link>}
+              </div>
+            </li>
+          ))}
+        </ol>
+      </Disclosure>
     </div>
   );
 }
@@ -372,7 +436,25 @@ function RepairChild({ entry }: { entry: Extract<EvidenceEntry, { type: 'repair'
 /** Steps shown before the earliest fold behind "earlier steps". */
 const STEPS_SHOWN = 6;
 
+/** A mission's creation: one line beside the deliveries, linking to the mission. */
+function CreatedEventView({ episode, nowMs }: { episode: Episode; nowMs: number }) {
+  return (
+    <article data-testid="activity-created-event" className="flex items-start justify-between gap-3 border-b border-border-default py-3">
+      <p className="min-w-0 break-words text-meta text-text-secondary">
+        <span className="font-semibold text-text-primary">Mission created</span>{' · '}
+        <Link href={episode.href} className="break-words text-text-primary underline-offset-2 hover:underline">{episode.title}</Link>
+      </p>
+      <span className="shrink-0 whitespace-nowrap font-mono text-meta text-text-muted">{age(episode.at, nowMs)}</span>
+    </article>
+  );
+}
+
 function EpisodeView({ episode, nowMs }: { episode: Episode; nowMs: number }) {
+  if (episode.event === 'created') return <CreatedEventView episode={episode} nowMs={nowMs} />;
+  return <DeliveryEpisodeView episode={episode} nowMs={nowMs} />;
+}
+
+function DeliveryEpisodeView({ episode, nowMs }: { episode: Episode; nowMs: number }) {
   const [all, setAll] = useState(false);
   const hidden = all ? 0 : Math.max(0, episode.steps.length - STEPS_SHOWN);
   const steps = episode.steps.slice(hidden);
