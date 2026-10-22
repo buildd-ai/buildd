@@ -6245,7 +6245,7 @@ async function handleReviewerOutcomeIfNeeded(
   }
 
   // 968aebfd: every gate above has run. `settledVerdict` says so, and is the verdict a delivery
-  // opened later adopts as this head's review (legacy-review-import.ts); without it nothing is adopted.
+  // opened later adopts as this head's review (legacy-verdict-import.ts); without it nothing is adopted.
   await db
     .update(tasks)
     .set({

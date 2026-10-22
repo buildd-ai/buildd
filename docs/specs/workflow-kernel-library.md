@@ -1285,7 +1285,7 @@ push, refresh, completion or owner change can make it disappear.
   does), and a verdict on another head is stale. The same head is never reviewed twice for it, and `explain`
   calls an open reviewer a review, never "Fix 0 of 3".
 - A legacy review that ended before the delivery opened is adopted too (968aebfd,
-  `legacy-review-import.ts`). When the delivery opens (or the floor finds it
+  `legacy-verdict-import.ts`). When the delivery opens (or the floor finds it
   `WORKING`), the PR's newest legacy reviewer at the live head decides. A settled
   verdict (`result.settledVerdict`, written once every server-side gate has run), read
   at that head (`result.evidenceSha`), against the delivery's base (`context.baseRef`),

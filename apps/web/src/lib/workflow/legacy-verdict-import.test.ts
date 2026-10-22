@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { LIVE_LEGACY_REVIEWER_MAX_AGE_MS, SETTLING_LEGACY_VERDICT_MS, readLegacyReview, type LegacyReviewerRow } from './legacy-review-import';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { LIVE_LEGACY_REVIEWER_MAX_AGE_MS, SETTLING_LEGACY_VERDICT_MS, legacyReviewersSql, readLegacyReview, type LegacyReviewerRow } from './legacy-verdict-import';
 
 const NOW = Date.parse('2026-10-21T12:00:00Z');
 const H = 'a'.repeat(40);
@@ -61,5 +62,17 @@ describe('readLegacyReview (968aebfd)', () => {
     expect(readLegacyReview([row({ id: 'new', res: { evidenceSha: null } }), older], at)).toMatchObject({ kind: 'none', reviewerTaskId: 'new' });
     // A newer reviewer of an earlier head says nothing about this one.
     expect(readLegacyReview([row({ id: 'prior', ctx: { headSha: 'd'.repeat(40) } }), older], at)).toMatchObject({ kind: 'adopt', reviewerTaskId: 'old' });
+  });
+});
+
+describe('legacyReviewersSql', () => {
+  test('reads the PR\'s legacy reviewers in the workspace, newest first', () => {
+    const q = new PgDialect().sqlToQuery(legacyReviewersSql({ workspaceId: 'ws', prNumber: 7 }));
+    expect(q.sql).toContain('-- workflow:legacy_reviewers');
+    expect(q.sql).toContain("t.workspace_id = $1::uuid AND t.category = 'review'");
+    expect(q.sql).toContain("t.context->>'prNumber' = $2::text");
+    expect(q.sql).toContain("t.context->>'workflowRoundId' IS NULL");
+    expect(q.sql).toContain('ORDER BY t.created_at DESC, t.id DESC');
+    expect(q.params).toEqual(['ws', '7']);
   });
 });

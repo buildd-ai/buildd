@@ -33,7 +33,7 @@ import { policyValue } from '@/lib/policy-overrides';
 import { preflightMissOf } from './preflight-miss';
 import { landThroughKernel as landThroughKernelImpl, type KernelLanding, type LandingInput } from './landing';
 import { enqueueEffectSql, enqueueMissingEffects, existingEffectsSql } from './enqueue-missing';
-import { legacyReviewersSql, readLegacyReview, type LegacyReviewReading, type LegacyReviewerRow } from './legacy-review-import';
+import { legacyReviewersSql, readLegacyReview, type LegacyReviewReading, type LegacyReviewerRow } from './legacy-verdict-import';
 import { ENDED_REVIEWER_GRACE_MS, endedReviewerSql, floorCandidatesSql, floorCheckedSql, roundWaitingOnReviewer, strandedMechanicalRepair, treadmillCycleCandidatesSql, type FloorCandidate, type TreadmillCycleCandidate } from './reconcile';
 
 // The worker PATCH's reading of a terminal report (S30), exported here because routes reach the kernel only through the seam.
@@ -294,7 +294,7 @@ export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Pro
 }
 
 /**
- * 968aebfd (legacy-review-import.ts): what the PR's legacy reviewers say about the delivery's
+ * 968aebfd (legacy-verdict-import.ts): what the PR's legacy reviewers say about the delivery's
  * head while it is WORKING. A settled verdict at that head and base is adopted as a decided round
  * (`ReviewVerdictAdopted`, its findings with it), so the owner's hand-off applies it instead of
  * reviewing the same head again. `live`: a legacy reviewer is still judging that head; the caller
