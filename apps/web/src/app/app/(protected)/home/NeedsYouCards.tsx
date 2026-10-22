@@ -10,7 +10,6 @@ import Link from 'next/link';
 import { ArmButton } from '@/components/missions/MissionListCards';
 import DecisionCard from '@/components/DecisionCard';
 import { decisionFromQuestion, type DecisionView } from '@/lib/needs-you-card';
-import { taskPageHref } from '@/lib/mission-task-href';
 import type { UnifiedQuestion } from '../tasks/[id]/question-hero';
 
 export interface HomeQuestion {
@@ -40,7 +39,8 @@ export function questionDecisionView(q: HomeQuestion): DecisionView {
   return decisionFromQuestion({
     key: `question:${q.taskId ?? q.workerId}`,
     question: q.question,
-    task: q.taskId ? { id: q.taskId, title: q.label, href: q.href ?? taskPageHref({ taskId: q.taskId }) } : null,
+    // Home already built the task page link (`taskAnswerHref`); a question with no task names none.
+    task: q.taskId && q.href ? { id: q.taskId, title: q.label, href: q.href } : null,
     askedAt: q.askedAt ? new Date(q.askedAt).getTime() : null,
     answer: { kind: 'worker', workerId: q.workerId, taskId: q.taskId, noteId: q.question.noteId },
   });

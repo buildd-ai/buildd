@@ -66,7 +66,8 @@ function OptionButton({ option, primary, shortcut, href, onPick, disabled, pendi
         {pending ? 'Sending…' : option.label}
         {primary && shortcut && <Kbd tone="accent">⌘⏎</Kbd>}
       </span>
-      {option.effect && <span data-testid="decision-option-effect" className={`text-meta ${primary ? 'text-[var(--on-accent)] opacity-85' : 'text-text-muted'}`}>{option.effect}</span>}
+      {/* The effect inherits the button's own ink (on-ink on the primary), so both themes keep it readable. */}
+      {option.effect && <span data-testid="decision-option-effect" className={`text-meta font-normal ${primary ? 'opacity-80' : 'text-text-muted'}`}>{option.effect}</span>}
     </>
   );
   const cls = primary ? PRIMARY : SECONDARY;
@@ -94,7 +95,7 @@ function OptionButton({ option, primary, shortcut, href, onPick, disabled, pendi
           id={tipId}
           role="tooltip"
           data-testid="decision-option-tip"
-          className="pointer-events-none absolute bottom-full left-0 z-10 mb-2 hidden w-72 max-w-[80vw] rounded-[var(--radius-card)] border border-border-default bg-card p-3 text-body text-text-secondary shadow-[var(--card-shadow)] md:group-hover:block md:group-focus-within:block"
+          className="card pointer-events-none absolute bottom-full left-0 z-10 mb-2 hidden w-72 max-w-[80vw] p-3 text-body text-text-secondary md:group-hover:block md:group-focus-within:block"
         >
           {option.tip}
         </span>
