@@ -3368,6 +3368,15 @@ export interface LivingSpecGoalCriterion {
   narrowedReason?: string;
   /** Criteria a person waived, with why. Shown as waived, never as passed. */
   waived?: Array<{ criterionId: string; reason: string; by: string; at: string }>;
+  /**
+   * `standard`: a workspace standard (Living Specs D-43), snapshotted when the
+   * mission's build started (`snapshotMissionStandards`), not selected. Its
+   * criteria are checked like an outcome spec's, but it never counts toward
+   * `MAX_GOAL_CRITERIA` or the goal criteria's overall verdict: the completion
+   * gate reads it separately (shadow unless STANDARDS_GATE=enforce).
+   * Absent: the mission's selected outcome spec.
+   */
+  role?: 'standard';
   label?: string;
 }
 
@@ -3702,6 +3711,12 @@ export interface GoalCriteriaState {
       /** Whether the mission's build work was done when this was evaluated. Absent on older states. */
       buildDone?: boolean;
     };
+    /**
+     * A workspace standard's entry (`LivingSpecGoalCriterion.role`): left out
+     * of `overall`, which is the goal criteria's verdict. The completion gate
+     * reads standards on their own.
+     */
+    standard?: true;
   }>;
 }
 

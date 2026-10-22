@@ -33,6 +33,13 @@ export type CompletionDecisionCode =
    */
   | 'visual_review_open'
   /**
+   * A workspace standard snapshotted onto the mission (Living Specs D-43)
+   * does not pass on the integrated result. Produced only under
+   * `STANDARDS_GATE=enforce`; by default the hold is shadow and rides along on
+   * the decision as `standardsHold`.
+   */
+  | 'standards_unmet'
+  /**
    * The mission's shipped work changed UI (by its merged PRs' diffs or its
    * tasks' declared paths) and no surface audit completed. Cleared by a
    * completed audit, or by a human waiver with a recorded reason.

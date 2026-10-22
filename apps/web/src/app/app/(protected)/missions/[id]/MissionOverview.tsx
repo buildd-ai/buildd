@@ -25,7 +25,7 @@ import TaskStrip from '@/components/ui/TaskStrip';
 import { useMissionFocusSnapshot } from '@/components/missions/mission-focus-context';
 import { MissionStripContext, createMissionStripStore, type MissionStripValue } from '@/components/missions/mission-strip-context';
 import { BOARD_LANDED, boardNeedsYouCount, type MissionBoardModel } from '@/lib/mission-board';
-import { buildEstimate, missionChecks, outcomeSpecLines, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
+import { buildEstimate, missionChecks, missionStandardsLine, outcomeSpecLines, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
 import { isClosedUnshipped, overviewCells, overviewDefaultSelection, overviewLayout, overviewLegend, overviewSelection, railLines, type OverviewLegendEntry } from '@/lib/mission-overview';
 import { stripOrder } from '@/lib/mission-task-strip';
 import { STATES, type StateKey } from '@/components/ui/states';
@@ -36,7 +36,7 @@ import type { StripFocus } from './MissionTaskStrip';
 import CriteriaCheckNow from './CriteriaCheckNow';
 import { MissionVisualAsk, WithMissionVisualReview, type MissionVisualReviewValue } from './MissionVisualReview';
 import type { PlanTask } from '@/lib/mission-plan';
-import { BuildCompleteBar, CheckRail, ChecksCard, OutcomeSpecLines } from './MissionChecks';
+import { BuildCompleteBar, CheckRail, ChecksCard, OutcomeSpecLines, StandardsLineView } from './MissionChecks';
 import OverviewTaskStatus from './OverviewTaskStatus';
 
 /** What the page knows about the checks; the build counts and repairs come from the live board. */
@@ -56,7 +56,7 @@ export interface MissionOverviewProps extends BoardLinkContext {
   planTasks?: readonly PlanTask[] | null;
   /** A hold or empty budget: no time promise (R-24). */
   held?: boolean;
-  /** Titles of the selected outcome specs, by spec id, for the line under the rail (R-40). */
+  /** Titles of the selected outcome specs and the standards, by spec id, for the lines under the rail (R-40, Navigation R-17). */
   outcomeSpecTitles?: Readonly<Record<string, string>> | null;
 }
 
@@ -106,6 +106,10 @@ function OverviewView({
     () => (checksSource ? missionChecks({ ...checksSource, build: { done: doneCount, total: buildIds.length }, repairs }) : null),
     [checksSource, doneCount, buildIds.length, repairs],
   );
+  const standards = useMemo(
+    () => (checksSource ? missionStandardsLine({ ...checksSource, build: { done: doneCount, total: buildIds.length } }, outcomeSpecTitles ?? {}) : null),
+    [checksSource, doneCount, buildIds.length, outcomeSpecTitles],
+  );
   // A check the owner must act on (a final merge under the human tier) is a decision too.
   // Max, not sum: the visual review's own ask may already count the same decision.
   const needs = Math.max(boardNeedsYouCount(model, vm), handoff?.rows.filter(r => r.status === 'owner').length ?? 0);
@@ -135,6 +139,7 @@ function OverviewView({
         <div className="flex min-w-0 flex-col gap-4">
           {handoff && <CheckRail steps={handoff.rail} />}
           {handoff && checksSource && <OutcomeSpecLines lines={outcomeSpecLines(checksSource.criteria, handoff.rows, outcomeSpecTitles ?? {})} />}
+          {standards && <StandardsLineView line={standards} />}
           {/* Build counts only: criteria are the header's Verified pill and the rail's list. */}
           {!handoff?.buildComplete && <Legend entries={legend} />}
           {notice}

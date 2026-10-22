@@ -4,7 +4,7 @@ import { artifactReads, githubRepos, missions, specOutcomeVerdicts, tasks, works
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
-import { isDeliverableTask } from '@buildd/core/mission-helpers';
+import { isDeliverableTask, isStandardCriterion } from '@buildd/core/mission-helpers';
 import { VERIFICATION_VERDICTS, boundEvidenceRefs, verdictSourceOfEvidence, type VerificationVerdict } from '@buildd/core/verification-check';
 import type { LivingSpecGoalCriterion } from '@buildd/shared';
 import type { RequirementRef } from '@buildd/spec-contract/requirements';
@@ -183,8 +183,27 @@ export function missionVerdictAuthority(input: {
 }
 
 /**
+ * Which of the mission's `living_spec` entries a verdict is for (pure). Named
+ * by `specId`: a selected outcome spec or a standard (D-43). Unnamed: the one
+ * selected outcome spec; standards never make that ambiguous.
+ */
+export function missionVerdictCriterion(all: readonly LivingSpecGoalCriterion[], specId: unknown): { ok: true; criterion: LivingSpecGoalCriterion } | { ok: false; reason: string } {
+  if (typeof specId === 'string') {
+    const c = all.find((s) => s.specId === specId);
+    return c ? { ok: true, criterion: c } : { ok: false, reason: 'This mission neither selected that spec nor carries it as a standard' };
+  }
+  const outcomes = all.filter((s) => !isStandardCriterion(s));
+  if (outcomes.length === 1) return { ok: true, criterion: outcomes[0] };
+  if (outcomes.length > 1) return { ok: false, reason: 'This mission selected more than one outcome spec: pass specId to say which' };
+  return { ok: false, reason: all.length > 0
+    ? 'This mission has no selected outcome spec; pass specId to record a verdict on one of its standards'
+    : 'This mission has no selected outcome spec, so it has no mission-level verdicts to record' };
+}
+
+/**
  * Record one mission-level verdict on one in-scope criterion of the mission's
- * selected outcome spec, at the mission's current integrated target.
+ * selected outcome spec, or of one of its standards (D-43), at the mission's
+ * current integrated target.
  */
 export async function recordMissionSpecVerdict(caller: SpecCaller, missionId: unknown, input: {
   specId?: unknown; criterionId: unknown; verdict: unknown; headSha: unknown; evidenceRefs?: unknown; readIds?: unknown; observed?: unknown; reaffirms?: unknown;
@@ -206,13 +225,9 @@ export async function recordMissionSpecVerdict(caller: SpecCaller, missionId: un
   const who = missionVerdictAuthority({ personId: writable ? personId : null, taskScoped: !!taskScope, ownTask, missionId });
   if (!who.ok) return fail(403, who.reason);
 
-  const selected = livingSpecCriteriaOf(mission.goalCriteria);
-  const c = typeof input.specId === 'string' ? selected.find((s) => s.specId === input.specId) : selected.length === 1 ? selected[0] : undefined;
-  if (!c) {
-    return fail(409, selected.length === 0
-      ? 'This mission has no selected outcome spec, so it has no mission-level verdicts to record'
-      : 'This mission selected more than one outcome spec: pass specId to say which');
-  }
+  const picked = missionVerdictCriterion(livingSpecCriteriaOf(mission.goalCriteria), input.specId);
+  if (!picked.ok) return fail(409, picked.reason);
+  const c = picked.criterion;
   const scope = await selectedScope(c);
   if (!scope.ok) return fail(409, `The selected spec revision is unavailable: ${scope.reason}`);
   const { criterionId, headSha } = input;
@@ -301,7 +316,7 @@ export async function recordMissionVerdictServer(missionId: string, input: {
   return { ok: true, verdictId: row.id };
 }
 
-/** Read every selected outcome spec's standing on a mission. `caller` null = server-side. */
+/** Read every selected outcome spec's and standard's standing on a mission (`criterion.role` tells them apart). `caller` null = server-side. */
 export async function readMissionSpecOutcomes(caller: SpecCaller | null, missionId: unknown, api: Api = githubApi): Promise<{ ok: true; outcomes: Array<{ criterion: LivingSpecGoalCriterion; standing: MissionSpecStanding }> } | SpecError> {
   if (typeof missionId !== 'string' || !isUuid(missionId)) return fail(404, 'Mission not found');
   const mission = await loadMission(missionId);

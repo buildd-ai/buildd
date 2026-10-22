@@ -11,7 +11,7 @@ mock.module('@buildd/core/db', () => ({
   db: { select: () => ({ from: () => ({ where: async () => { selects++; return taskRows; } }) }) },
 }));
 
-const { filterMissionRowsByAcceptanceEdit } = await import('./mission-outcome');
+const { filterMissionRowsByAcceptanceEdit, missionVerdictCriterion } = await import('./mission-outcome');
 
 const row = (id: string, source: MissionVerdictRow['source']): MissionVerdictRow =>
   ({ id, criterionId: 'AC-1', verdict: 'pass', headSha: HEAD, at: new Date(0), source });
@@ -58,5 +58,29 @@ describe('filterMissionRowsByAcceptanceEdit (R-80, AC-126)', () => {
     const out = await filterMissionRowsByAcceptanceEdit([row('t', 'test')], [evidence('t', 'check:not-a-uuid')]);
     expect(out.map((r) => r.id)).toEqual(['t']);
     expect(selects).toBe(0);
+  });
+});
+
+describe('missionVerdictCriterion: outcome specs and standards (D-43)', () => {
+  const outcome = { type: 'living_spec' as const, specId: 'o', specRevisionId: 'ro', revision: 1, contentHash: 'h' };
+  const voice = { type: 'living_spec' as const, specId: 'voice', specRevisionId: 'rv', revision: 2, contentHash: 'h', role: 'standard' as const };
+
+  it('named by specId: a standard resolves like a selected spec', () => {
+    expect(missionVerdictCriterion([outcome, voice], 'voice')).toEqual({ ok: true, criterion: voice });
+    expect(missionVerdictCriterion([outcome, voice], 'o')).toEqual({ ok: true, criterion: outcome });
+  });
+
+  it('unnamed: the one outcome spec, standards never making it ambiguous', () => {
+    expect(missionVerdictCriterion([outcome, voice], undefined)).toEqual({ ok: true, criterion: outcome });
+  });
+
+  it('unnamed with only standards: asks for specId instead of guessing a standard', () => {
+    const r = missionVerdictCriterion([voice], undefined);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain('specId');
+  });
+
+  it('a spec the mission neither selected nor carries as a standard is refused', () => {
+    expect(missionVerdictCriterion([outcome, voice], 'other').ok).toBe(false);
   });
 });

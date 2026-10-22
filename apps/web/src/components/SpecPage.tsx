@@ -228,6 +228,36 @@ function PublishAnyway({ specId }: { specId: string }) {
   );
 }
 
+/** Living Specs D-43: an owner or admin marks the spec a standard of its workspace, or clears the mark. */
+function StandardMark({ specId, standard }: { specId: string; standard: boolean }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const toggle = async () => {
+    setBusy(true);
+    setError(null);
+    const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/metadata`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ changes: { standard: !standard }, reason: standard ? 'Standard mark cleared on the spec page' : 'Marked a standard on the spec page' }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    setBusy(false);
+    if (res.ok) { router.refresh(); return; }
+    setError(body.error ?? 'Standard mark not changed. Retry.');
+  };
+  return (
+    <div className="flex flex-col gap-2">
+      {error ? <Notice tone="err" data-testid="spec-page-standard-error">{error}</Notice> : null}
+      <div>
+        <button type="button" className="btn btn-quiet btn-sm h-11 md:h-8" onClick={toggle} disabled={busy} data-testid="spec-page-standard-toggle">
+          {standard ? 'Stop applying to every change' : 'Apply to every change'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Compare({ specId, revisions, from, to }: { specId: string; revisions: number[]; from: number; to: number }) {
   const [a, setA] = useState(String(from));
   const [b, setB] = useState(String(to));
@@ -583,7 +613,10 @@ export default function SpecPage({ view }: { view: Ok }) {
           {spec.workspaceName ? `Specs in ${spec.workspaceName}` : 'Specs'}
         </Link>
         <h1 className="font-voice text-2xl text-text-primary [overflow-wrap:anywhere] md:text-3xl" data-testid="spec-page-title">{spec.title}</h1>
-        <p className="text-meta text-text-muted">{spec.scope} · {view.standing}</p>
+        <p className="text-meta text-text-muted">
+          {spec.scope} · {view.standing}
+          {view.standard ? <> · <span className="font-medium text-text-secondary" data-testid="spec-page-standard">standard, applies to every change</span></> : null}
+        </p>
         {/* An unconfirmed import names its file and commit in its own panel, below. */}
         {importing ? null : view.source?.path ? (
           <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-source">
@@ -600,6 +633,7 @@ export default function SpecPage({ view }: { view: Ok }) {
           : <p className="text-meta text-text-muted" data-testid="spec-page-repo-copy">{view.source.copy}</p>
       ) : null}
       {view.canPublishAnyway ? <PublishAnyway specId={spec.id} /> : null}
+      {view.canMarkStandard ? <StandardMark specId={spec.id} standard={!!view.standard} /> : null}
       {view.criteriaUnread ? <Notice tone="warn" data-testid="spec-page-criteria-unread">{view.criteriaUnread}</Notice> : null}
 
       {line ? <Lede><span data-testid="spec-page-reading">{line}</span></Lede> : null}
