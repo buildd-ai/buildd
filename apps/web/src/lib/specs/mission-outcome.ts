@@ -23,6 +23,7 @@ import { fail, reach, type SpecCaller, type SpecError } from './store';
 import { settleVerdictSource } from './verdict-source';
 import { revisionCriterionHashes } from './criteria';
 import { readPinnedSpecRevision } from './pin';
+import { registeredAuthor as authorFor } from './registered-author';
 import { checkTaskIdOf, holdUnacceptedTestRows } from './acceptance-hold';
 
 /**
@@ -316,9 +317,9 @@ export async function recordMissionVerdictServer(missionId: string, input: {
       return fail(409, 'Registered evidence must name the matching approved verifier binding');
     }
     const method = input.evidence.method;
-    const expectedAuthor = method === 'deterministic' && matched.binding.id === 'ui.actions_match_state'
-      ? `check:registered:${matched.binding.id}`
-      : method === 'model' || method === 'fallback' ? `registered:${matched.binding.id}` : null;
+    const expectedAuthor = (method === 'deterministic' && matched.binding.id === 'ui.actions_match_state')
+      || (method === 'model' && matched.binding.id === 'ui.card_clarity') || method === 'fallback'
+      ? authorFor(matched.binding.id, method) : null;
     if (input.recordedBy !== expectedAuthor) return fail(409, 'Registered evidence author must match its verifier and evaluation method');
   }
   if (!SHA.test(input.headSha)) return fail(400, 'headSha must be a commit SHA');
