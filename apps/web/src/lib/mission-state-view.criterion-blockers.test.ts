@@ -49,8 +49,8 @@ describe('F2: a failing "no open tasks" names the open tasks', () => {
     const fact = view.outstanding.find(f => f.kind === 'criterion_failing');
     if (!fact || fact.kind !== 'criterion_failing') throw new Error('expected a criterion fact');
     expect(fact.blockers?.map(b => b.taskId)).toEqual(['t1', 't2', 't3', 't4']);
-    expect(fact.blockers?.[0]).toEqual({ taskId: 't1', title: 'Wire the claim route', status: 'ready' });
-    expect(fact.blockers?.[1].status).toBe('working');
+    expect(fact.blockers?.[0]).toEqual({ taskId: 't1', title: 'Wire the claim route', status: 'queued' });
+    expect(fact.blockers?.[1].status).toBe('running');
     expect(CRITERION_BLOCKERS_VISIBLE).toBe(3);
   });
 

@@ -191,7 +191,7 @@ describe('F2: a failing criterion is said once, and names what holds it', () => 
     expect(html).toContain('+1 more');
     expect(html).toContain('data-task-id="t-a"');
     expect(html).toContain('href="/app/tasks/t-a?from=mission&amp;missionId=m-1"');
-    expect(html).toContain('· ready');
+    expect(html).toContain('· queued');
   });
 });
 

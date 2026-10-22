@@ -373,6 +373,12 @@ describe('helpers', () => {
     expect(t.worker?.status).toBe('waiting_input');
   });
 
+  it('reads the loop\'s checks wait from the context digest (R-20)', () => {
+    const base = { id: 'x', title: 'feat(x): y', status: 'pending', createdAt: new Date(T0).toISOString(), workers: [] };
+    expect(toBoardTaskInput({ ...base, contextDigest: { loopWebhookWait: { prNumber: 7 } } }).loopWebhookWait).toBe(true);
+    expect(toBoardTaskInput(base).loopWebhookWait).toBe(false);
+  });
+
   // The board, the mission sheet and the task page show one worker per task:
   // pickTaskView's (lib/task-view.ts), never whichever the query returned first.
   it('picks the worker the task page shows, whatever order the query returned', () => {

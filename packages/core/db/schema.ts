@@ -2230,6 +2230,14 @@ export const workers = pgTable('workers', {
   // the account being deleted.
   supersededRecordedBy: text('superseded_recorded_by'),
   supersededAt: timestamp('superseded_at', { withTimezone: true }),
+  // A closed-unmerged PR whose replacement someone NAMED: a close comment
+  // `Replaced by #N`, a later PR body `replaces #N`, or a person's "Link
+  // replacement" (lib/pr-named-replacement-store.ts). Not verified merged, so it
+  // is display only: never read by a completion or merge gate. The formal
+  // supersession (`supersededByPrNumber`) still records when the replacement
+  // merges.
+  namedReplacementPrNumber: integer('named_replacement_pr_number'),
+  namedReplacementPrUrl: text('named_replacement_pr_url'),
   // A closed-unmerged PR a person declared abandoned: the work is deliberately
   // not shipping, and the reason says why. Not a supersession (nothing landed)
   // and not a fake one — `prShipState` reads it as its own `abandoned` state,

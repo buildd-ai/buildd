@@ -354,9 +354,9 @@ describe('TONE-1: failed is its own tone, not "open" (the chip-vs-outline gotcha
   it('stripTone: error, ok, held (gray), open (ready), active (in motion)', () => {
     expect(stripTone('failed')).toBe('error');
     expect(stripTone('ci_failed')).toBe('error');
-    expect(stripTone('fixing')).toBe('error');
     expect(stripTone('landed')).toBe('ok');
-    for (const s of ['review', 'running', 'waiting'] as const) expect(stripTone(s)).toBe('active');
+    // R-20: buildd retries a fix by itself, so it is work in motion, not red.
+    for (const s of ['review', 'running', 'waiting', 'fixing'] as const) expect(stripTone(s)).toBe('active');
     for (const s of ['blocked', 'queued'] as const) expect(stripTone(s)).toBe('held');
     expect(stripTone('ready')).toBe('open');
   });
