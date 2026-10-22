@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Task PRs no longer inherit foreign commits, and tasks no longer stall silently on owner questions (#5409)
+- Web build: Turbopack's Rayon pool is capped at 2 threads (#5415)
+- Tasks: a superseded PR reads "Merged in #N" everywhere, and unjudged criteria read "Not verified" (#5414)
+- Health: the actual runner setup blocker is shown without a wall of text (#5413)
+- Missions: the Flow and History tabs load when switched to from Overview (#5412)
+- Runner: `~/.claude.json` project keys are written in Claude Code's Windows form (#5397)
+- Runner: three Windows-only gaps closed (index.lock, memory excludes, Git Bash paths) (#5406)
+- Review: a settled legacy review is adopted when the kernel opens a delivery (#5407)
+
 ## [0.353.0] - 2026-10-16
 
 ### Added
