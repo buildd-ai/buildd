@@ -39,10 +39,11 @@ import { useHideNeedsInputBanner } from '@/lib/needs-input-hidden';
 import { useAskButtonHidden } from '@/lib/ask-button-hidden';
 import { askAboutHref, conversationHref, type ChatAbout } from '@/lib/chat/entry-points';
 import {
-  CANVAS_DOCK_QUERY, CANVAS_PEEK_QUERY, askDockCookie, canvasPresentation, canvasScopeFromPath, isCanvasToggle, showsAskButton,
+  CANVAS_DOCK_QUERY, CANVAS_PEEK_QUERY, canvasPresentation, canvasScopeFromPath, isCanvasToggle, showsAskButton,
   type CanvasPresentation, type CanvasScope,
 } from '@/lib/chat/canvas-scope';
 import { setAskDockHost } from '@/lib/ask-dock-host';
+import { askDockCookie } from '@/lib/ask-dock';
 import { COMPOSER_INPUT_ID, useChatEntry } from './ChatEntry';
 
 import { CanvasContext, type ChatCanvasApi } from './canvas-context';

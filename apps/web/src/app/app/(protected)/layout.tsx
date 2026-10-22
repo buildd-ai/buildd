@@ -18,7 +18,7 @@ import { chatEntryFromAvailability } from '@/components/chat/ChatSetupCard';
 import { ChatEntryProvider, ChatShortcut, type ChatEntryValue } from '@/components/chat/ChatEntry';
 import { KeyHintsProvider } from '@/components/KeyHints';
 import { AskDockSlot, ChatCanvasProvider } from '@/components/chat/ChatCanvas';
-import { ASK_DOCK_COOKIE, askDockOpenFromCookie } from '@/lib/chat/canvas-scope';
+import { ASK_DOCK_COOKIE, askDockOpenFromCookie } from '@/lib/ask-dock';
 
 export default async function ProtectedLayout({
   children,

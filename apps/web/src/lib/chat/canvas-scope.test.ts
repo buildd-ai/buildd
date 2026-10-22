@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import {
-  ASK_DOCK_COOKIE, CANVAS_DOCK_MIN_WIDTH, askDockCookie, askDockOpenFromCookie, canvasPresentation, canvasScopeFromPath, isCanvasToggle, showsAskButton,
-} from './canvas-scope';
+import { CANVAS_DOCK_MIN_WIDTH, canvasPresentation, canvasScopeFromPath, isCanvasToggle, showsAskButton } from './canvas-scope';
+import { ASK_DOCK_COOKIE, askDockCookie, askDockOpenFromCookie } from '@/lib/ask-dock';
 
 const M = '11111111-1111-4111-8111-111111111111';
 const T = '22222222-2222-4222-8222-222222222222';
