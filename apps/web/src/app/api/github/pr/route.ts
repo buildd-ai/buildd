@@ -27,6 +27,7 @@ import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsW
 import { agentRunMayActOnPr, authorizeWorkerPrCapability } from '@/lib/agent-capabilities/worker-pr';
 import { ownershipApplies, verifyPrOwnership, type PrOwnershipVerdict, type InteractiveHeadHolder } from '@/lib/agent-capabilities/pr-ownership';
 import { INTERACTIVE_RUNNER } from '@/lib/interactive-session';
+import { evaluatePrScope, scopeCommitsFrom, scopeRefusalMessage } from '@/lib/pr-scope';
 import { repoProtectedBranches } from '@/lib/agent-capabilities/github';
 import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
 import { getTeamWorkspaceIds, verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
@@ -266,6 +267,62 @@ function refusePrOwnership(
 }
 
 /**
+ * PR scope guard (lib/pr-scope.ts), for a head an interactive session chose
+ * itself (`interactive_head`): the PR may carry only what the task's worker
+ * produced. Refuses with the commits named; a session may pass `scopeOverride`
+ * with a reason, which is recorded as a bypass. Fails open on any read error.
+ */
+async function scopeGuard(p: {
+  worker: { id: string; workspaceId: string | null; taskId: string | null; accountId?: string | null; createdAt?: Date | string | null; startedAt?: Date | string | null; task?: { missionId?: string | null } | null };
+  head: string;
+  baseRef: string | null;
+  installationId: number;
+  repoFullName: string;
+  override: unknown;
+  surface: 'pr.create' | 'pr.adopt';
+}): Promise<NextResponse | null> {
+  const { worker, head, baseRef } = p;
+  if (!baseRef) return null;
+  const times = [worker.startedAt, worker.createdAt].flatMap(t => (t ? [new Date(t)] : [])).filter(d => !Number.isNaN(d.getTime()));
+  const claimedAt = times.length ? new Date(Math.min(...times.map(d => d.getTime()))) : null;
+  let verdict: ReturnType<typeof evaluatePrScope>;
+  try {
+    const compare = await githubApi(p.installationId, `/repos/${p.repoFullName}/compare/${encodeURIComponent(baseRef)}...${encodeURIComponent(head)}`);
+    verdict = evaluatePrScope(scopeCommitsFrom(compare), claimedAt);
+  } catch {
+    return null;
+  }
+  if (verdict.ok) return null;
+  const reason = typeof p.override === 'string' ? p.override.trim() : '';
+  if (reason) {
+    void recordCapabilityDecision({
+      capability: p.surface, decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id,
+      accountId: worker.accountId ?? null, principalVia: 'worker_account', reasonCode: 'scope_override',
+    });
+    fireGateEvent({
+      gate: GATE_SLUGS.PR_OWNERSHIP, surface: 'POST /api/github/pr', outcome: 'bypassed', reason: 'scope_override',
+      workspaceId: worker.workspaceId, missionId: worker.task?.missionId ?? null, taskId: worker.taskId, workerId: worker.id,
+      callerOrigin: 'worker', detail: { overrideReason: reason.slice(0, 500), foreignCommits: verdict.foreign.length },
+    });
+    return null;
+  }
+  void recordCapabilityDecision({
+    capability: p.surface, decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id,
+    accountId: worker.accountId ?? null, principalVia: 'worker_account', reasonCode: 'scope_foreign_commits',
+  });
+  fireGateEvent({
+    gate: GATE_SLUGS.PR_OWNERSHIP, surface: 'POST /api/github/pr', outcome: 'rejected', reason: 'scope_foreign_commits',
+    workspaceId: worker.workspaceId, missionId: worker.task?.missionId ?? null, taskId: worker.taskId, workerId: worker.id,
+    callerOrigin: 'worker', detail: { foreignCommits: verdict.foreign.length },
+  });
+  return NextResponse.json({
+    error: scopeRefusalMessage(verdict.foreign, baseRef, head),
+    code: 'scope_foreign_commits',
+    foreignCommits: verdict.foreign.map(c => ({ sha: c.sha, message: c.message, authoredAt: c.authoredAt })),
+  }, { status: 400 });
+}
+
+/**
  * Other workers (any task) already recorded on `head` in this workspace —
  * the DB half of the `interactive_head` ownership basis (pr-ownership.ts).
  * Only called for a verified interactive worker, since it is the only caller
@@ -302,6 +359,7 @@ export async function POST(req: NextRequest) {
       base,
       draft,
       prUrl: existingPrUrl,
+      scopeOverride,
     } = body;
     // This worker's PR fields are about to change: its mission's summary is
     // refreshed after the response, once, whatever branch below writes them.
@@ -497,6 +555,11 @@ export async function POST(req: NextRequest) {
         if (ownership.basis === 'interactive_head' && worker.branch !== observedHead) {
           await db.update(workers).set({ branch: observedHead, updatedAt: new Date() }).where(eq(workers.id, workerId));
           worker.branch = observedHead;
+        }
+        if (ownership.basis === 'interactive_head' && ownRepo?.installation) {
+          const adoptBase = (typeof realPr?.base?.ref === 'string' && realPr.base.ref) || (typeof base === 'string' && base) || ownRepo.defaultBranch || null;
+          const scope = await scopeGuard({ worker, head: observedHead, baseRef: adoptBase, installationId: ownRepo.installation.installationId, repoFullName: ownRepo.fullName, override: scopeOverride, surface: 'pr.adopt' });
+          if (scope) return scope;
         }
       }
       if (missionBaseGuard.enforced && worker.task?.missionId && integrationBase) {
@@ -755,6 +818,11 @@ export async function POST(req: NextRequest) {
       worker.branch = head;
     }
 
+    const scopeApplies = !!headOwnership && headOwnership.owned && headOwnership.basis === 'interactive_head';
+    const scopeCheck = (baseRef: string | null) => scopeApplies
+      ? scopeGuard({ worker, head, baseRef, installationId: repo.installation.installationId, repoFullName: repo.fullName, override: scopeOverride, surface: 'pr.create' })
+      : Promise.resolve(null);
+
     const retryIteration = typeof taskContext?.iteration === 'number' ? taskContext.iteration : 0;
     const maxIterations = typeof taskContext?.maxIterations === 'number' ? taskContext.maxIterations : 3;
 
@@ -792,6 +860,8 @@ export async function POST(req: NextRequest) {
         if (dedupRefusal) {
           return NextResponse.json(dedupRefusal, { status: 400 });
         }
+        const dedupScope = await scopeCheck(dedupBaseRef);
+        if (dedupScope) return dedupScope;
         if (ownershipInput && headOwnership && !headOwnership.owned) {
           const named = await verifyPrOwnership({ ...ownershipInput, head, prNumber: existing.number }, collectRetryLineage);
           if (!named.owned) return refusePrOwnership(worker, named);
@@ -1174,6 +1244,8 @@ export async function POST(req: NextRequest) {
 
     // Create the PR via GitHub API
     const effectiveBase = prBase.base ?? 'main';
+    const freshScope = await scopeCheck(effectiveBase);
+    if (freshScope) return freshScope;
     // Early release's stacking mechanics (docs/design/early-release.md): a
     // `start_stacked` dependent's PR targets its upstream's own branch, not a
     // merge candidate yet, so it opens as a draft regardless of what the
