@@ -26,6 +26,7 @@ import { specRetirement, type RetirementView } from './retire';
 import { revisionReview, type RevisionReview } from './revision-changes';
 import { readCriterionHistory, type CriterionHistory } from './criteria';
 import { importConfirmPath } from './import';
+import { holdsInWorkspace } from '@/lib/team-access';
 
 /**
  * What the dashboard's spec pages show (living-specs.md §9): a workspace's
@@ -333,6 +334,10 @@ export type SpecPageView =
     source?: { source: string | null; path?: string; href?: string; copy: string | null; behind: boolean; publishAnyway?: boolean } | null;
     /** Slice 14, R-68: the reader may publish a kept-private revision anyway (a person who may approve here). */
     canPublishAnyway?: boolean;
+    /** A standard of its workspace (Living Specs D-43): its criteria apply to every mission that starts building. */
+    standard?: boolean;
+    /** The reader may set or clear the standard mark: an owner or admin, from this session. */
+    canMarkStandard?: boolean;
     /** An imported spec's criteria the parser could not read, in words ("N criteria could not be read; ..."); null when none. */
     criteriaUnread?: string | null;
     /** The review panel shows the repo checks on the would-be copy (R-34): the workspace writes repo copies and the reader may approve. Fetched by the panel, never read here (they ask GitHub). */
@@ -462,6 +467,8 @@ export async function specPageView(userId: string, specId: string, opts: { revis
   const wsRowP = personReach(userId, spec.workspaceId);
   const reached = wsRowP.then((w) => !!w);
   const approverP = specApprover(caller, spec.workspaceId, reached);
+  // The standard mark (D-43) is an owner's or admin's: the same cached role read specApprover makes first.
+  const ownerOrAdminP = holdsInWorkspace(userId, spec.workspaceId, 'approve_specs').catch(() => false);
   if (!(await reached)) {
     await approverP.catch(() => null);
     return { state: 'not_found' };
@@ -590,6 +597,7 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     ...outlineOf(read.body).map((s) => ({ kind: 'section' as const, id: s.id, label: s.title })),
   ];
   const approver = !!approverId;
+  const ownerOrAdmin = await ownerOrAdminP;
   const native = nativeSourceOn(ws?.gitConfig);
   const source: (ReturnType<typeof repoCopyLine> & { href?: string }) | null = repoCopyLine(native, spec.repoCopy, spec.approvedRevision != null, spec.repoSource);
   const fullName = source?.path || imported ? await linkedRepoFullName(spec.workspaceId) : null;
@@ -607,6 +615,8 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     // Slice 14, R-68: a person who may approve here.
     canPublishAnyway: !!source?.publishAnyway && approver,
     criteriaUnread: criteriaUnreadText(spec.metadata?.criteria_unread) || null,
+    standard: spec.metadata?.standard === true,
+    canMarkStandard: ownerOrAdmin && open,
     repoChecks: native && pending && open && approver,
     delivery,
     spec: { id: spec.id, title: spec.title, scope: spec.scope, status: spec.status, workspaceId: spec.workspaceId, workspaceName: ws?.name ?? '', version: spec.version, headRevision: spec.headRevision, approvedRevision: spec.approvedRevision },

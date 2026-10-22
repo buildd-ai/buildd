@@ -1,7 +1,7 @@
 /**
  * How a task's person (`tasks.createdByUserId`) was decided, stored in
- * `tasks.requesterSource`. To be written by a database insert trigger (a
- * follow-up migration), never by application code; until then it stays NULL.
+ * `tasks.requesterSource`. Written by the `tasks_resolve_requester` trigger
+ * (migration *_task_requester_trigger), never by application code.
  *
  * Pure: no imports, safe for schema.ts and client bundles.
  */
@@ -14,3 +14,13 @@ export type BackfillRequesterSource = (typeof BACKFILL_REQUESTER_SOURCES)[number
 
 export type TaskRequesterSource = LiveRequesterSource | BackfillRequesterSource;
 
+
+/**
+ * How a mission's person (`missions.createdByUserId`) was decided, stored in
+ * `missions.requesterSource`: 'explicit' when a person filed it themselves,
+ * 'parent' when an agent filed it and the person is the requester of the
+ * agent's task, 'none' when there is no person. Never the agent's own
+ * authority: an agent filing for a person is not that person's direct action.
+ */
+export const MISSION_REQUESTER_SOURCES = ['explicit', 'parent', 'none'] as const;
+export type MissionRequesterSource = (typeof MISSION_REQUESTER_SOURCES)[number];

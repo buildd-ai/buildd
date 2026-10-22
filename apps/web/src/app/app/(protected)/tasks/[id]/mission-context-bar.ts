@@ -4,8 +4,8 @@
  * this task, `n / N · PHASE`, ‹ › to the pulse-order siblings' pages, and the
  * up-link to this task's row. Pure.
  *
- * Every number comes from the builders the mission page, the sheet and the Home
- * card already use — `buildMissionCardView` (chip, pulse) and
+ * Every number comes from the builders the mission page and the Home card
+ * already use — `buildMissionCardView` (chip, pulse) and
  * `buildMissionFeedGroups` (position, siblings) — so the task page cannot count
  * a mission differently from the mission itself.
  */
@@ -14,8 +14,8 @@ import { buildMissionCardView, failedDeliverableTaskIds, toFeedTask, type Missio
 import type { DeliveryView } from '@/lib/workflow/projections';
 import { buildMissionFeedGroups } from '@/lib/mission-feed-groups';
 import type { PulseSegment } from '@/lib/mission-pulse';
-import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
-import { buildTaskSheetNav } from '../../missions/[id]/task-sheet-nav';
+import { missionTaskHref, type MissionOrigin } from '@/lib/mission-task-href';
+import { buildMissionSiblingNav } from './mission-sibling-nav';
 
 export interface MissionContextBarData {
   missionId: string;
@@ -29,11 +29,18 @@ export interface MissionContextBarData {
   upHref: string;
 }
 
+/** Where the mission was opened from (`?from=`, `?initiativeId=`): the back link returns there. */
+export interface MissionBackContext {
+  from?: MissionOrigin | null;
+  initiativeId?: string | null;
+}
+
 /** `deliveryViews`: S35, the same reading the mission's card makes (see `summarizeMissionForCard`). */
 export function buildMissionContextBar(
   row: MissionCardRow,
   taskId: string,
   deliveryViews?: ReadonlyMap<string, DeliveryView> | null,
+  back: MissionBackContext = {},
 ): MissionContextBarData {
   const card = buildMissionCardView(row, { from: 'missions', deliveryViews });
   const model = buildMissionFeedGroups((row.tasks ?? []).map(toFeedTask));
@@ -45,11 +52,8 @@ export function buildMissionContextBar(
     }
   }
 
-  const nav = rowId ? buildTaskSheetNav(model, rowId, { missionId: row.id }) : null;
-  const pageHref = (id: string | null) => (id ? taskPageHref({ taskId: id, missionId: row.id }) : null);
-  const position: MastheadPosition | null = nav?.position
-    ? { ...nav.position, prevHref: pageHref(nav.prevTaskId), nextHref: pageHref(nav.nextTaskId) }
-    : null;
+  const ctx = { missionId: row.id, from: back.from ?? null, initiativeId: back.initiativeId ?? null };
+  const position: MastheadPosition | null = rowId ? buildMissionSiblingNav(model, rowId, ctx).position : null;
 
   return {
     missionId: row.id,
@@ -58,7 +62,7 @@ export function buildMissionContextBar(
     segments: card.segments,
     selectedTaskId: rowId,
     position,
-    upHref: missionTaskHref({ missionId: row.id, taskId: rowId ?? taskId, mode: 'focus' }),
+    upHref: missionTaskHref({ ...ctx, taskId: rowId ?? taskId, mode: 'focus' }),
   };
 }
 
@@ -72,6 +76,7 @@ export function missionContextBarFor(
   row: MissionCardRow | null | undefined,
   taskId: string,
   deliveryViews?: ReadonlyMap<string, DeliveryView> | null,
+  back: MissionBackContext = {},
 ): MissionContextBarData | null {
-  return row ? buildMissionContextBar(row, taskId, deliveryViews) : null;
+  return row ? buildMissionContextBar(row, taskId, deliveryViews, back) : null;
 }

@@ -238,7 +238,7 @@ export default function MissionFeed({ missionId }: { missionId: string }) {
                   {/* No reply/skip here — see the decision panel above instead */}
                   {isCriteriaEscalationNote && note.status === 'open' && (
                     <p className="text-[11px] text-text-muted mt-1">
-                      Decide above ↑: file the work, fix the criterion, or waive and complete.
+                      Decide above ↑: file the work, or waive and complete.
                     </p>
                   )}
 

@@ -26,8 +26,8 @@ import Spinner from '@/components/Spinner';
 import ClaimTaskHint, { CLAIM_ROW_BTN } from '@/components/tasks/ClaimTaskHint';
 import RunnerPicker from '@/components/tasks/RunnerPicker';
 import Disclosure from '@/components/ui/Disclosure';
-import type { TaskFailureKind } from '@/lib/task-failure-kind';
-import { verificationFailedCopy, waitingOnFailedCopy } from '@/lib/task-failure-kind';
+import type { TaskFailureKind, TaskTrouble } from '@/lib/task-failure-kind';
+import { troubleLine, verificationFailedCopy, waitingOnFailedCopy } from '@/lib/task-failure-kind';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { explainProviderAuthFailure } from '@/lib/provider-auth-failure';
 import EntitlementBlockedNotice from '@/components/entitlements/EntitlementBlockedNotice';
@@ -52,6 +52,8 @@ import {
   getGateReasonTitle,
   otherBackendOf,
   backendDisplayName,
+  requestRetryNow,
+  requestTaskCancel,
   requestTaskRetry,
   taskActionSet,
 } from '@/lib/task-actions';
@@ -84,6 +86,8 @@ export interface TaskActionZoneProps {
   failureKind?: TaskFailureKind | null;
   /** Set when this task IS the surface audit: a verification failure then offers "Retry the audit". */
   auditTaskId?: string | null;
+  /** `classifyTaskTrouble`: waiting on a task (Start now anyway, Cancel) or buildd retrying (Retry now). */
+  trouble?: TaskTrouble | null;
   /** For a `dependency` failure: the failed task it waits on (`failedDependencyOf`). */
   waitingOn?: { taskId: string; title: string | null } | null;
   worker: {
@@ -153,6 +157,7 @@ export default function TaskActionZone({
   failureKind = null,
   auditTaskId = null,
   waitingOn = null,
+  trouble = null,
   worker,
   historyHref,
   roleSlug,
@@ -201,6 +206,7 @@ export default function TaskActionZone({
     missionExecutor,
     otherBackendAvailable,
     failureKind,
+    trouble,
   });
   const has = (id: (typeof actions)[number]) => actions.includes(id);
   // "Not logged in · Please run /login" and kin: say what to do instead.
@@ -229,6 +235,18 @@ export default function TaskActionZone({
     else setRetryError(out.error);
     setRetrying(null);
   }, [taskId, otherBackend, onChanged]);
+
+  // Start now anyway, Cancel, Retry now: one request each, then the host refetches.
+  const [acting, setActing] = useState<'cancel' | 'retry_now' | null>(null);
+  const [actError, setActError] = useState<string | null>(null);
+  const act = useCallback(async (which: 'cancel' | 'retry_now') => {
+    setActing(which);
+    setActError(null);
+    const out = which === 'cancel' ? await requestTaskCancel(taskId) : await requestRetryNow(taskId);
+    if (out.ok) await onChanged?.();
+    else setActError(out.error);
+    setActing(null);
+  }, [taskId, onChanged]);
 
   // What holds a queued or blocked task, from the same probe /start refuses
   // on: a local mission's hand-over, coordination holds, and which
@@ -408,6 +426,51 @@ export default function TaskActionZone({
           <p className="mt-1 font-mono text-[11px] text-text-muted">
             Starts when its dependencies complete.
           </p>
+        </div>
+      )}
+
+      {/* What holds it and, for a buildd retry, when it resumes (R-20) */}
+      {(has('start_anyway') || has('retry_now')) && (() => {
+        const line = troubleLine(trouble);
+        if (!line) return null;
+        return (
+          <p data-testid="task-trouble-line" className="text-body text-text-secondary [overflow-wrap:anywhere]">
+            {line.text}
+            {line.resumesAt && (
+              <>
+                {' '}
+                <time data-testid="task-resumes-at" dateTime={line.resumesAt} suppressHydrationWarning>
+                  {new Date(line.resumesAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                </time>
+                .
+              </>
+            )}
+          </p>
+        );
+      })()}
+
+      {/* Waiting on another task (R-20): it starts by itself when that merges; a person may start it past the wait or drop it */}
+      {has('start_anyway') && start.status === 'idle' && (
+        <div data-testid="task-waiting-on-task" className="flex flex-wrap items-center gap-2">
+          <button type="button" data-action="start_anyway" onClick={() => start.start({ forceOverride: true })} disabled={starting || acting !== null} className={SECONDARY_BTN}>
+            {start.pending === 'start' ? 'Starting…' : 'Start now anyway'}
+          </button>
+          {has('cancel') && (
+            <button type="button" data-action="cancel" onClick={() => act('cancel')} disabled={starting || acting !== null} className={QUIET_BTN}>
+              {acting === 'cancel' ? 'Cancelling…' : 'Cancel'}
+            </button>
+          )}
+          {actError && <p className="w-full font-mono text-meta text-status-error">{actError}</p>}
+        </div>
+      )}
+
+      {/* buildd is retrying it by itself: Retry now only brings the retry forward */}
+      {has('retry_now') && (
+        <div data-testid="task-retry-now" className="flex flex-wrap items-center gap-2">
+          <button type="button" data-action="retry_now" onClick={() => act('retry_now')} disabled={acting !== null} className={SECONDARY_BTN}>
+            {acting === 'retry_now' ? 'Retrying…' : 'Retry now'}
+          </button>
+          {actError && <p className="w-full font-mono text-meta text-status-error">{actError}</p>}
         </div>
       )}
 

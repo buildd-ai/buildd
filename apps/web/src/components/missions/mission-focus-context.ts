@@ -21,7 +21,7 @@ export interface MissionFocusSnapshot {
   inViewTaskIds: ReadonlySet<string>;
   /** Rows the list must unfold (collapsed phase, `+N`) so focus can land. */
   revealedTaskIds: ReadonlySet<string>;
-  /** Group and row order must not change while true (sheet open, or just touched). */
+  /** Group and row order must not change while true (the list was just touched). */
   frozen: boolean;
 }
 
@@ -32,16 +32,14 @@ export interface MissionFocusStore {
   selectSegment(taskId: string): void;
   /** Focus a row without opening it. `writeHash` false for hash arrivals. */
   focus(taskId: string, opts?: { writeHash?: boolean; block?: ScrollLogicalPosition }): void;
-  /** Open the task (sheet). Delegates to the sheet owner when one registered. */
+  /** Open the task: its page, the only task view. */
   openTask(taskId: string): void;
-  setOpenTask(fn: ((taskId: string) => void) | null): void;
   /** Read `#t-<id>` from the current location and focus it (no history write). */
   readHash(): void;
   registerRow(taskId: string, el: HTMLElement): void;
   unregisterRow(taskId: string): void;
   setInView(taskId: string, inView: boolean): void;
   notePointerDown(): void;
-  setSheetOpen(open: boolean): void;
   /**
    * A gate for list data: returns the last value committed while unfrozen, so
    * realtime updates never move rows under a finger. Once the freeze ends the

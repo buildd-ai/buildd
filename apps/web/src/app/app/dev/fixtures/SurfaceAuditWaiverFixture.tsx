@@ -20,7 +20,6 @@ import {
   type MissionSurfaceAuditWaiverProps,
 } from '@/app/app/(protected)/missions/[id]/MissionSurfaceAuditWaiver';
 import {
-  SURFACE_AUDIT_FIXTURE_TASK,
   stripFixtureId,
   surfaceAuditStripFixture,
   type MissionTaskStripFixture as Fixture,
@@ -50,13 +49,9 @@ export default function SurfaceAuditWaiverFixture() {
     const variant: Variant = (VARIANTS as readonly string[]).includes(v ?? '') ? (v as Variant) : 'mission-branch';
     setState({ variant, fixture: surfaceAuditStripFixture(Date.now()), sheet: q.get('sheet') === '1' });
   }, []);
-  // Open on the audit's cell, the way a tap would.
   useEffect(() => {
-    if (!state) return;
-    document.querySelector<HTMLButtonElement>(`[data-testid="landed-strip-cell"][data-task-ref="${SURFACE_AUDIT_FIXTURE_TASK}"]`)?.click();
-    if (state.sheet) {
-      requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[data-testid="landed-strip-drawer"] [data-action="waive-visual-audit"]')?.click());
-    }
+    if (!state?.sheet) return;
+    requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[data-action="waive-visual-audit"]')?.click());
   }, [state]);
   if (!state) return <div className="min-h-screen bg-surface-1" />;
   const props = waiverProps(state.variant);

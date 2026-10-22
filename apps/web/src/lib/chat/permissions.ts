@@ -59,7 +59,7 @@ export const TOOL_GROUP_LABELS: Record<ToolGroup, string> = {
 const SKIPPABLE_FIELDS: Record<string, readonly string[]> = {
   manage_missions: [
     'action', 'missionId', 'workspaceId', 'title', 'description',
-    'goalCriteria', 'addGoalCriteria', 'removeGoalCriteria', 'priority',
+    'priority',
   ],
   create_task: [
     'title', 'description', 'missionId', 'dependsOn', 'baseBranch', 'pathManifest',

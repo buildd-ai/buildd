@@ -260,14 +260,16 @@ describe('listMcpTools — group tools', () => {
   // has to pay for itself.
   // manage_specs specId + expectedVersion typed on More: (task e2d6728b):
   // +37, measured 5.94k admin / 4.77k task token.
+  // probe_budget_wall named on More: (runner budget-wall nudge): +8, measured
+  // 4.81k task token, so the task-token ceiling moves 4.8k -> 4.85k.
   it('keeps the whole groups surface under the 6k spec budget', () => {
     const all = tools({ accountLevel: 'admin', isSensitive: false, surface: 'groups' });
     expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(6000);
   });
 
-  it('keeps a runner worker session (task token) under 4.8k tokens', () => {
+  it('keeps a runner worker session (task token) under 4.85k tokens', () => {
     const all = tools({ accountLevel: 'worker', isSensitive: false, surface: 'groups', principal: 'task_token' });
-    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(4800);
+    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(4850);
   });
 
   it('names the rare actions on one More: line per group, and keeps them callable', () => {

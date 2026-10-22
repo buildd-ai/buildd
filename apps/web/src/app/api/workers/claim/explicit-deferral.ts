@@ -97,6 +97,13 @@ export function describeExplicitDeferral(
         code: reason,
         detail: 'Another fix attempt for the same PR is already open, so this one was cancelled rather than started beside it: one retry lineage updates one PR.',
       };
+    case 'awaiting_owner_answer': {
+      const q = str(detail.question);
+      return {
+        code: reason,
+        detail: `The last attempt stopped to ask a person${q ? `: "${q}"` : ''}. Claiming it again would reach the same question, so it is held until that is answered.`,
+      };
+    }
     case 'fix_not_needed': {
       const why = str(detail.reason);
       return {
