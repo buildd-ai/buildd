@@ -38,3 +38,14 @@ describe('mergeSelection (outcome spec, Slice 12)', () => {
     expect(r.criteria[0]).toEqual({ type: 'no_open_tasks' });
   });
 });
+
+describe('mergeSelection and standards (D-43)', () => {
+  it('selecting a spec the mission carries as a standard turns that entry into the outcome: one entry per spec', () => {
+    const standard = sel({ role: 'standard', label: 'Standard "X" revision 3' });
+    const r = mergeSelection([{ type: 'no_open_tasks' }, standard], sel());
+    expect(r.changed).toBe(true);
+    const specs = r.criteria.filter((c) => c.type === 'living_spec') as LivingSpecGoalCriterion[];
+    expect(specs).toHaveLength(1);
+    expect(specs[0].role).toBeUndefined();
+  });
+});

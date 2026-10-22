@@ -51,6 +51,9 @@ export const MISSION_WORKER_COLUMNS = {
   prLifecycleStatus: true,
   mergedAt: true,
   supersededByPrNumber: true,
+  // The Overview's `Closed → #N`: a replacement someone named before it merged.
+  namedReplacementPrNumber: true,
+  namedReplacementPrUrl: true,
   abandonedAt: true,
   supersededByPrUrl: true,
   supersededReason: true,
@@ -251,6 +254,8 @@ export const CONTEXT_DIGEST_KEYS = [
   'reviewerFor',
   'budgetExhausted',
   'infraRetryCount',
+  // The loop holds a task for its PR's checks (loop-dispatcher-policy webhookHold): the bar reads Fixing until startAt.
+  'loopWebhookWait',
   // Which kind of deliverable a task is (`deliverableRole`, with `isTrunkRefreshTask`).
   ...DELIVERABLE_ROLE_CONTEXT_KEYS.values,
 ] as const;

@@ -5,10 +5,10 @@
  * The preview and field drafts, and the label lookup, are the kit's
  * (`approvalDraft` / `approvalLabel` from @buildd/ai-kit/chat/react). buildd
  * adds one richer draft through the kit's `custom` hook, a new mission with
- * its goal, done-when criteria, constraints and plan, and its own words for
- * each write (LABELS).
+ * its goal, constraints and plan, and its own words for each write (LABELS).
+ * A new mission carries no hand-written criteria (Living Specs D-44): its
+ * "done" is the spec it selects.
  */
-import type { GoalCriterion } from '@buildd/shared';
 import {
   approvalDraft as kitApprovalDraft,
   approvalLabel as kitApprovalLabel,
@@ -17,23 +17,15 @@ import {
   toolInput,
   type ApprovalDraft as KitApprovalDraft,
 } from '@buildd/ai-kit/chat/react';
-import { criterionLabel } from '@/lib/goal-criterion-label';
 import { toolNameOf, type ChatToolPart } from './chat-contract';
 
 export { firstParagraph };
 export type { GenericDraft, PreviewDraft } from '@buildd/ai-kit/chat/react';
 
-export interface DraftCriterion {
-  label: string;
-  /** The mechanical detail under the label: the command, the artifact key. */
-  hint: string | null;
-}
-
 export interface MissionDraft {
   kind: 'mission';
   title: string;
   goal: string | null;
-  criteria: DraftCriterion[];
   /** Plain lines under CONSTRAINTS, when the draft lists any. */
   constraints: string | null;
   /** "Plan first · starts now", "held until you arm it" … */
@@ -44,21 +36,6 @@ export interface MissionDraft {
 export type ApprovalDraft = KitApprovalDraft<MissionDraft>;
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
-
-function criterionHint(c: GoalCriterion): string | null {
-  switch (c.type) {
-    case 'command':
-      return c.label ? c.command : null;
-    case 'artifact_exists':
-      return c.key ? `artifact · ${c.key}` : c.artifactType ? `artifact · ${c.artifactType}` : null;
-    default:
-      return null;
-  }
-}
-
-function isCriterion(v: unknown): v is GoalCriterion {
-  return !!v && typeof v === 'object' && typeof (v as { type?: unknown }).type === 'string';
-}
 
 function missionPlan(input: Record<string, unknown>): string | null {
   const bits: string[] = [];
@@ -87,14 +64,10 @@ function missionDraft(part: ChatToolPart): MissionDraft | null {
   if (toolNameOf(part) !== 'manage_missions' || toolAction(part) !== 'create') return null;
   const input = toolInput(part);
   const description = str(input.description);
-  const criteria = Array.isArray(input.goalCriteria)
-    ? input.goalCriteria.filter(isCriterion).map(c => ({ label: criterionLabel(c), hint: criterionHint(c) }))
-    : [];
   return {
     kind: 'mission',
     title: str(input.title) ?? 'Untitled mission',
     goal: firstParagraph(description),
-    criteria,
     constraints: constraintsFrom(description),
     plan: missionPlan(input),
     workspaceId: str(input.workspaceId),

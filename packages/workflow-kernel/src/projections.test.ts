@@ -410,3 +410,29 @@ describe('a PR closed without merging says who closed it', () => {
     expect(closed('unknown').detail).toBe('unknown');
   });
 });
+
+describe('an owner-blocked fix attempt', () => {
+  const asked = [
+    { taskId: 'own', role: 'owner', status: 'in_progress', createdAt: '2026-10-01T00:00:00Z' },
+    { taskId: 'ci1', role: 'ci_fix', status: 'pending', createdAt: '2026-10-02T00:00:00Z', ownerQuestion: 'The branch carries commits that are not this task\'s. Split it?' },
+  ];
+
+  test('CHANGES_REQUESTED with an open question reads as needs-you, with the question', () => {
+    const v = view({ view: V(D({ state: 'CHANGES_REQUESTED' })), attemptTasks: asked });
+    expect(v.owner).toBe('human');
+    expect(v.needsYou).toBe(true);
+    expect(v.stage).toBe('needs_you');
+    expect(v.headline).not.toContain('fix queued');
+    expect(v.detail).toContain('Split it?');
+  });
+
+  test('a REPAIRING delivery asked the same way is needs-you too', () => {
+    const v = view({ view: V(D({ state: 'REPAIRING', stateReason: 'ci' })), attemptTasks: asked });
+    expect(v.needsYou).toBe(true);
+  });
+
+  test('no question, or a terminal delivery, changes nothing', () => {
+    expect(view({ view: V(D({ state: 'CHANGES_REQUESTED' })), attemptTasks: [{ ...asked[1]!, ownerQuestion: null }] }).needsYou).toBe(false);
+    expect(view({ view: V(D({ state: 'MERGED' })), attemptTasks: asked }).needsYou).toBe(false);
+  });
+});

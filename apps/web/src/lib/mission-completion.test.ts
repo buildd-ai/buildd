@@ -270,6 +270,7 @@ function reset() {
   auditRequestResult = { ok: true, created: true, taskId: 'audit-new', status: 'pending' };
   mockRequestMissionSurfaceAudit.mockClear();
   delete process.env.VISUAL_REVIEW_GATE;
+  delete process.env.STANDARDS_GATE;
 }
 
 /** A real CI-retry row: taskClass 'attempt', which is NOT a deliverable. */
@@ -1758,6 +1759,85 @@ describe('canCompleteMission — visual review hold', () => {
     mockLoadVisualReview.mockImplementationOnce(async () => { throw new Error('db down'); });
     const d = await canCompleteMission('m1');
     expect(d.ok).toBe(true);
+  });
+});
+
+// Living Specs D-43: a workspace standard snapshotted onto the mission. The
+// goal criteria's overall verdict leaves it out; the gate reads it on its own,
+// shadow unless STANDARDS_GATE=enforce.
+describe('canCompleteMission — standards (D-43)', () => {
+  beforeEach(reset);
+
+  const standard = { type: 'living_spec', specId: 's-voice', specRevisionId: 'r2', revision: 2, contentHash: 'h', role: 'standard', label: 'Standard "Product voice" revision 2' };
+  const withStandard = (verdict: string) => {
+    const criteria = [{ type: 'command', command: 'bun test' }, standard];
+    // The fingerprint the evaluator stamps, so the entry reads as current.
+    const evaluated = evaluateGoalCriteria({ id: 'm1' }, criteria as any, { tasks: [], workers: [], artifacts: [], evaluatedBy: 'auto' } as any);
+    activeMission({
+      goalCriteria: criteria,
+      goalCriteriaState: {
+        ...PASSING_STATE,
+        criteria: [
+          { index: 0, type: 'command', verdict: 'pass', evidence: 'exited 0' },
+          { ...evaluated.criteria[1], verdict },
+        ],
+      },
+    });
+    taskRows = [work('completed')];
+  };
+
+  it('shadow (default): a standard that does not pass is logged and reported, and the mission still completes', async () => {
+    withStandard('fail');
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => { logs.push(a.join(' ')); };
+    let d;
+    try {
+      d = await canCompleteMission('m1', { evaluateCriteria: false });
+    } finally {
+      console.log = orig;
+    }
+    expect(d.ok).toBe(true);
+    expect(d.code).toBe('ok');
+    expect(d.standardsHold).toEqual({ unmet: [{ specId: 's-voice', label: 'Standard "Product voice" revision 2', verdict: 'fail' }], enforced: false });
+    expect(logs.some(l => l.startsWith('[standards-shadow] m1 would hold'))).toBe(true);
+    // The count names the goal criteria, never the standards.
+    expect(d.reason).toBe('All 1 goal criteria pass');
+  });
+
+  it('STANDARDS_GATE=enforce refuses with standards_unmet, naming the standard', async () => {
+    process.env.STANDARDS_GATE = 'enforce';
+    withStandard('UNVERIFIED');
+    const d = await canCompleteMission('m1', { evaluateCriteria: false });
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('standards_unmet');
+    expect(d.reason).toContain('Product voice');
+    expect(d.standardsHold?.enforced).toBe(true);
+  });
+
+  it('enforced, every standard passing: completes with no hold', async () => {
+    process.env.STANDARDS_GATE = 'enforce';
+    withStandard('pass');
+    const d = await canCompleteMission('m1', { evaluateCriteria: false });
+    expect(d.ok).toBe(true);
+    expect(d.standardsHold ?? null).toBeNull();
+  });
+
+  it('a mission with no standards is not touched by the gate, even enforced', async () => {
+    process.env.STANDARDS_GATE = 'enforce';
+    activeMission({ goalCriteria: [{ type: 'command', command: 'bun test' }], goalCriteriaState: PASSING_STATE });
+    taskRows = [work('completed')];
+    const d = await canCompleteMission('m1', { evaluateCriteria: false });
+    expect(d.ok).toBe(true);
+    expect(d.standardsHold ?? null).toBeNull();
+  });
+
+  it('a failing goal criterion still refuses first, with its own code', async () => {
+    process.env.STANDARDS_GATE = 'enforce';
+    withStandard('fail');
+    missionRow.goalCriteriaState = { ...missionRow.goalCriteriaState, overall: 'fail', criteria: [{ index: 0, type: 'command', verdict: 'fail' }, missionRow.goalCriteriaState.criteria[1]] };
+    const d = await canCompleteMission('m1', { evaluateCriteria: false });
+    expect(d.code).toBe('criteria_failed');
   });
 });
 

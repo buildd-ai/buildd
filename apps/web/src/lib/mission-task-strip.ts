@@ -38,11 +38,13 @@ export const isHeldState = (s: StripState) => HELD.has(s);
 export const isActiveState = (s: StripState) => s !== 'landed' && !HELD.has(s);
 
 /**
- * The one failed/error bucket (ci_failed, fixing, failed): everywhere a cell's
- * state is painted — the strip cell, its outline, a tick's digit, a count — it
- * is this check or `stripTone`, never a second "is this cell red" test.
+ * The one failed/error bucket (ci_failed, failed): everywhere a cell's state is
+ * painted — the strip cell, its outline, a tick's digit, a count — it is this
+ * check or `stripTone`, never a second "is this cell red" test. `fixing` is not
+ * in it: buildd retries that failure by itself, so it is work in motion
+ * (Navigation R-20 reserves red for a failure a person must act on).
  */
-const ERROR: ReadonlySet<StripState> = new Set(['ci_failed', 'fixing', 'failed']);
+const ERROR: ReadonlySet<StripState> = new Set(['ci_failed', 'failed']);
 export const isErrorState = (s: StripState) => ERROR.has(s);
 
 /**

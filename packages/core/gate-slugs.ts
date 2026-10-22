@@ -96,6 +96,8 @@ export const GATE_SLUGS = {
   REVIEWER_SINGLE_FLIGHT: 'reviewer_single_flight',
   /** POST /api/workers/claim — a candidate task examined and deferred in the dispatch loop, or a claim attempt itself refused. Also carries the stranded-task sweep's `outcome: 'stranded'` rows. */
   CLAIM_LOOP_DEFERRAL: 'claim_loop_deferral',
+  /** POST /api/runner/budget-wall — a runner's probe of a recorded provider wall: capacity found (wall cleared, `accepted`) or still limited (wall kept, reset time refreshed, `warned`). */
+  BUDGET_WALL_PROBE: 'budget_wall_probe',
   /** Mission goal-criteria evaluation resolving to NOT_EVALUATED/UNVERIFIED instead of a real verdict. */
   CRITERIA_NOT_EVALUATED: 'criteria_not_evaluated',
   /**

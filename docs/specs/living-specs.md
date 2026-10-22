@@ -1987,6 +1987,16 @@ mission that selects no spec MUST behave exactly as before.
 - A `goalCriteria` write that drops or changes a stored `living_spec` entry,
   `null` included, is refused (`outcomeSpecWriteRefusal`); it leaves only
   through `outcomeSpec { remove: true, reason }`.
+- Hand-written goal criteria are retired (umbrella D-44): a `goalCriteria`
+  write that adds `command`, `all_prs_merged`, `no_open_tasks`,
+  `artifact_exists`, `metric` or `description` criteria to a mission holding
+  none is refused 400 (`handWrittenCriteriaRefusal`, POST and PATCH
+  `/api/missions`, and scope amendments). A mission that already carries them
+  keeps them until it completes; nothing is migrated, and every reader and
+  evaluator stays.
+- A new spec may not take scope `mission` (umbrella D-45, `specScopeRefusal`
+  in `apps/web/src/lib/specs/scopes.ts`, copies included). Existing
+  mission-scope specs stay readable and can be re-filed under an area.
 - `context.finalVerification` and `context.specRepair` are the server's to
   write: a caller's copy is dropped on every create path and template
   (`withoutMissionVerificationMarkers`), and a repair is marked only when the

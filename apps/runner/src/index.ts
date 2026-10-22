@@ -152,6 +152,25 @@ if (CLI.kind === 'logins') {
   process.exit(r.code);
 }
 
+// `buildd budget reset`: probe a held provider wall now and clear it when the
+// probe passes (budget-wall-probe.ts). Asks the running runner; never starts one.
+if (CLI.kind === 'budget-reset') {
+  const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
+  const { RUNNER_SOCKET_TIMEOUT_MS } = await import('./runner-hold');
+  try {
+    const res = await fetch('http://localhost/api/budget/probe', {
+      unix: socketPathFor(BUILDD_DIR), method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      signal: AbortSignal.timeout(Math.max(RUNNER_SOCKET_TIMEOUT_MS, 150_000)),
+    } as RequestInit);
+    const b = await res.json().catch(() => ({})) as { message?: string; error?: string };
+    if (res.ok) { console.log(b.message ?? 'Probed.'); process.exit(0); }
+    console.error(b.error ?? `The runner refused (HTTP ${res.status}).`);
+  } catch (err) {
+    console.error(`No runner answered on this machine (${(err as Error)?.message ?? err}).`);
+  }
+  process.exit(1);
+}
+
 // `buildd web`: open the running runner's web UI, or say in one line how to
 // turn it on. It never starts or restarts a runner (runner-web.ts).
 if (CLI.kind === 'web') {
@@ -2203,6 +2222,12 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       // Without a worker manager nothing else says it; with one, setSlots did.
       if (result.status === 200 && !wm) broadcast({ type: 'slots', maxConcurrent: config.maxConcurrent });
       return Response.json(result.body, { status: result.status, headers: corsHeaders });
+    }
+
+    // `buildd budget reset`: probe the held provider wall now (budget-wall-probe.ts).
+    if (path === '/api/budget/probe' && req.method === 'POST') {
+      if (!workerManager) return Response.json({ error: 'This runner is not set up to claim work.' }, { status: 409, headers: corsHeaders });
+      return Response.json({ message: await workerManager.probeBudgetWall('cli') }, { headers: corsHeaders });
     }
 
     if (path === '/api/workers/purge' && req.method === 'POST') {

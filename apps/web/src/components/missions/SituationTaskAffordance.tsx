@@ -1,45 +1,12 @@
 'use client';
 
 /**
- * The situation block's primary affordance when it targets one task.
- *
- * On the Board, that task is a cell of the Landed strip and its drawer already
- * carries its actions (the drawer opens on it): drawing a second call to
- * action here would put two primaries on one screen (PR #2520's rule). So the
- * block only points at the drawer — selecting the cell and moving focus there.
- * Anywhere without the strip (the Feed layout, a task not in the strip) it is
- * the link to the task sheet it always was.
- *
- * Which of those two this is comes from the shared navigation contract
- * (`taskAffordanceMode`): the strip case never navigates — it only scrolls and
- * focuses — so its label is never "Open"/"View", which promise the reader
- * they will land somewhere. It reads "Jump to …" instead.
+ * The situation block's primary affordance when it targets one task: a link
+ * to that task's page, the only task view (spec d25d923d R-1).
  */
 import Link from 'next/link';
-import { taskAffordanceMode } from '@/lib/mission-task-href';
-import { useMissionStrip } from './mission-strip-context';
 
-export default function SituationTaskAffordance({ label, href, taskId, navigate = false }: { label: string; href: string; taskId: string; navigate?: boolean }) {
-  const strip = useMissionStrip();
-  // `navigate`: the action lives on another page (answering a question), so it
-  // is a link even when the task is drawn in the strip here.
-  const inPageAnchor = !navigate && !!strip && strip.taskIds.includes(taskId);
-  const affordance = taskAffordanceMode(label, { inPageAnchor });
-  if (affordance.kind === 'anchor') {
-    const n = String(strip!.taskIds.indexOf(taskId) + 1).padStart(2, '0');
-    return (
-      <button
-        type="button"
-        data-testid="mission-primary-action-strip"
-        data-task-ref={taskId}
-        onClick={() => strip!.store.select(taskId, { focus: true })}
-        className="inline-flex min-h-11 items-center gap-1.5 font-mono text-meta font-semibold text-accent-text hover:underline"
-      >
-        {`${affordance.label} · ${n}`}
-        <span aria-hidden="true">↓</span>
-      </button>
-    );
-  }
+export default function SituationTaskAffordance({ label, href, taskId }: { label: string; href: string; taskId: string; navigate?: boolean }) {
   return (
     <Link
       data-testid="mission-primary-action"
@@ -47,7 +14,7 @@ export default function SituationTaskAffordance({ label, href, taskId, navigate 
       data-task-id={taskId}
       className="btn btn-primary h-11 w-full md:h-9 md:w-auto"
     >
-      {affordance.label} →
+      {label} →
     </Link>
   );
 }

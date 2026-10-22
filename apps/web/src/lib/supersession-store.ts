@@ -13,6 +13,7 @@ import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { and, desc, eq, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import { appendPrActivity, type PrActivityEntry } from './pr-activity-comment';
 import { releaseAndNotify } from './path-claim-release';
+import { queueSystemInstruction } from './system-instruction-queue';
 import { channels, events, triggerEvent } from './pusher';
 import {
   MAX_CANCELS_PER_EVENT,
@@ -324,6 +325,29 @@ async function applyCancelEffects(task: SupersessionCandidate, rule: Supersessio
   }
 }
 
+/**
+ * A review fix cancelled for another attempt holding the PR: that attempt gets
+ * the cancelled fix's description (the review findings) appended once, and any
+ * live worker of it is told, so the verdict is answered by whoever is pushing.
+ */
+async function carryFindings(task: SupersessionCandidate, holderIds: string[]): Promise<void> {
+  const from = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, task.id)), columns: { description: true } });
+  const findings = from?.description?.trim();
+  if (!findings) return;
+  const marker = `review-findings-carried:${task.id.slice(0, 8)}`;
+  const note = `[${marker}] A review requested changes on this PR while you hold it. Address these findings in this attempt as well:\n\n${findings}`;
+  for (const holderId of holderIds) {
+    await db.update(tasks)
+      .set({ description: sql`COALESCE(${tasks.description}, '') || E'\n\n' || ${note}::text`, updatedAt: new Date() })
+      .where(and(eq(tasks.id, holderId), sql`strpos(COALESCE(${tasks.description}, ''), ${marker}::text) = 0`));
+    const live = await db.query.workers.findMany({
+      where: sqlWhere(and(eq(workers.taskId, holderId), inArray(workers.status, [...LIVE_WORKER_STATUSES]))),
+      columns: { id: true },
+    });
+    for (const w of live) await queueSystemInstruction(w.id, note, { marker });
+  }
+}
+
 /** Existing activity kinds keep their wording; the rest share one row. */
 function activityEntry(rule: SupersessionRule): PrActivityEntry {
   if (rule.id === 'approve_supersedes_fix') return { kind: 'fix_superseded_by_approval' };
@@ -418,5 +442,6 @@ export const supersessionStore: SupersessionStore = {
   casCancel,
   applyCancelEffects,
   recordSupersession,
+  carryFindings,
   recordBulkRefusal,
 };

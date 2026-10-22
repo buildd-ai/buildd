@@ -19,7 +19,7 @@ import HistoryIcon, { type HistoryIconKind } from '@/components/missions/History
 import type { Episode } from '@/lib/activity-delivery';
 import { buildMissionHistory, type EpisodeItem, type EventItem, type HistoryLens } from '@/lib/mission-history-episodes';
 import { AskBanner } from './MissionBoard';
-import { SectionLabel, taskSheetHref, useLiveBoard, useNow, type BoardLinkContext } from './MissionBoardParts';
+import { SectionLabel, boardTaskHref, useLiveBoard, useNow, type BoardLinkContext } from './MissionBoardParts';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
 import {
   MissionVisualAsk, WithMissionVisualReview,
@@ -74,7 +74,7 @@ function FeedView({
   return (
     <div data-testid="mission-feed-layout" className="flex flex-col">
       {notice && <div className="mt-4">{notice}</div>}
-      {model.needsYou.map(id => <AskBanner key={id} task={model.tasks[id]} now={now} href={taskSheetHref(link, id)} />)}
+      {model.needsYou.map(id => <AskBanner key={id} task={model.tasks[id]} now={now} href={boardTaskHref(link, id)} />)}
       {model.needsYou.length === 0 && !model.complete && (
         <p data-testid="history-run-state" className="mt-4 text-body text-text-secondary">{executionState(model)}</p>
       )}
@@ -187,7 +187,7 @@ function EventRow({ item, tz, link }: { item: EventItem; tz: string | null | und
     </>
   );
   return e.taskId ? (
-    <a href={taskSheetHref(link, e.taskId)} data-task-id={e.taskId} className={`${ROW} hover:bg-card-hover`}>{body}</a>
+    <a href={boardTaskHref(link, e.taskId)} data-task-id={e.taskId} className={`${ROW} hover:bg-card-hover`}>{body}</a>
   ) : (
     <div className={ROW}>{body}</div>
   );
@@ -198,7 +198,7 @@ function EpisodeRow({ item, tz, link }: { item: EpisodeItem; tz: string | null |
   const icon: HistoryIconKind = item.deliveryKind === 'landed' ? 'merged' : item.deliveryKind === 'notlanded' ? 'failed' : item.prNumber ? 'pr' : 'start';
   return (
     <>
-      <a href={taskSheetHref(link, item.taskId)} data-task-id={item.taskId} className={`${ROW} hover:bg-card-hover`}>
+      <a href={boardTaskHref(link, item.taskId)} data-task-id={item.taskId} className={`${ROW} hover:bg-card-hover`}>
         <Time tz={tz} time={item.time} />
         <HistoryIcon kind={icon} />
         <span className="flex min-w-0 flex-1 flex-col">

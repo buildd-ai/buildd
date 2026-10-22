@@ -12,7 +12,7 @@ import { describe, expect, it } from 'bun:test';
 import { Glob } from 'bun';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { missionTaskHref, taskPageHref } from '../../src/lib/mission-task-href';
+import { legacyTaskSheetRedirect, missionTaskHref, taskPageHref } from '../../src/lib/mission-task-href';
 import { parseMissionLayout } from '../../src/lib/mission-layout';
 import { taskRowsProgress } from '../../src/lib/mission-strip-order';
 
@@ -50,26 +50,26 @@ describe('one task view', () => {
     'app/app/(protected)/missions/[id]/TaskSheet.tsx',
     'app/app/(protected)/missions/[id]/TaskPanel.tsx',
     'app/app/(protected)/missions/[id]/TaskPanelWrapper.tsx',
-    'components/ui/FocusCard.tsx',
   ];
 
-  it('R-1: the sheet, the dock and the focus card are removed', () => {
+  it('R-1: the sheet and dock are removed, and Overview has no focus card', () => {
     expect(RETIRED.filter(rel => existsSync(join(SRC, rel)))).toEqual([]);
+    expect(code(read(join(MISSION_DIR, 'MissionOverview.tsx')))).not.toMatch(/\bFocusCard\b/);
   });
 
-  it('AC-1: missionTaskHref sends a mission task to /app/tasks/T in every mode and origin', () => {
-    for (const mode of ['sheet', 'focus'] as const) {
-      for (const from of [undefined, 'home', 'missions', 'initiative'] as const) {
-        const href = missionTaskHref({ missionId: 'm1', taskId: 't1', from, initiativeId: 'i1', mode });
-        expect(pathOf(href)).toBe('/app/tasks/t1');
-      }
+  it('AC-1: missionTaskHref opens the task page from every origin', () => {
+    for (const from of [undefined, 'home', 'missions', 'initiative'] as const) {
+      const href = missionTaskHref({ missionId: 'm1', taskId: 't1', from, initiativeId: 'i1' });
+      expect(pathOf(href)).toBe('/app/tasks/t1');
     }
   });
 
   it('AC-1: the task page link keeps the mission back-link context', () => {
-    const href = missionTaskHref({ missionId: 'm1', taskId: 't1', from: 'initiative', initiativeId: 'i1', mode: 'sheet' });
+    const href = missionTaskHref({ missionId: 'm1', taskId: 't1', from: 'initiative', initiativeId: 'i1' });
     const q = new URL(href, 'http://x').searchParams;
     expect(q.get('missionId')).toBe('m1');
+    expect(q.get('from')).toBe('initiative');
+    expect(q.get('initiativeId')).toBe('i1');
     expect(q.get('task')).toBeNull();
     expect(taskPageHref({ taskId: 't1', missionId: 'm1' })).toContain('/app/tasks/t1');
   });
@@ -78,7 +78,7 @@ describe('one task view', () => {
     const offenders: string[] = [];
     for (const [rel, text] of sources(SRC)) {
       const c = code(text);
-      if (/from ['"][^'"]*\/(TaskSheet|TaskPanel|TaskPanelWrapper|FocusCard)['"]/.test(c)) offenders.push(rel);
+      if (/from ['"][^'"]*\/(TaskSheet|TaskPanel|TaskPanelWrapper)['"]/.test(c)) offenders.push(rel);
     }
     expect(offenders).toEqual([]);
   });
@@ -87,21 +87,27 @@ describe('one task view', () => {
 describe('links that work today keep working', () => {
   const missionPage = () => code(read(join(MISSION_DIR, 'page.tsx')));
 
-  it('R-2: /app/missions/M?task=T redirects to the task page, carrying from and initiativeId', () => {
+  const taskId = '00000000-0000-4000-8000-000000000001';
+
+  it('R-2: /app/missions/M?task=T redirects through the compatibility helper', () => {
     const page = missionPage();
     matches(page, /\btask\??:\s*string/);
-    matches(page, /redirect\(/);
-    matches(page, '/app/tasks/');
-    matches(page, /initiativeId/);
+    matches(page, /legacyTaskSheetRedirect\(id, search\)/);
+    matches(page, /redirect\(taskPage\)/);
+    expect(pathOf(legacyTaskSheetRedirect('m1', { task: taskId })!)).toBe(`/app/tasks/${taskId}`);
   });
 
   it('AC-2: ?task=T&from=initiative&initiativeId=I lands on task T with a back link to M inside I', () => {
-    const redirectTarget = missionPage().match(/redirect\([^)]*\)/g)?.join('\n') ?? '';
-    matches(redirectTarget, '/app/tasks/');
-    // The task page already draws the mission and initiative back link from these params.
+    const href = legacyTaskSheetRedirect('m1', { task: taskId, from: 'initiative', initiativeId: 'i1', respond: '1' });
+    const target = new URL(href!, 'http://x');
+    expect(target.pathname).toBe(`/app/tasks/${taskId}`);
+    expect(target.searchParams.get('missionId')).toBe('m1');
+    expect(target.searchParams.get('from')).toBe('initiative');
+    expect(target.searchParams.get('initiativeId')).toBe('i1');
+    expect(target.searchParams.get('respond')).toBe('1');
+    // The task page draws the mission and initiative back link from these params.
     const ctx = code(read(join(TASK_DIR, 'mission-context-bar.ts')));
     matches(ctx, /initiative/i);
-    matches(redirectTarget, /from|initiative/);
   });
 
   it('AC-3: every row of the R-2 table lands where it says', () => {
@@ -115,7 +121,9 @@ describe('links that work today keep working', () => {
     expect(parseMissionLayout('feed')).toBe('feed');
     expect(parseMissionLayout(undefined, 'timeline')).toBe('feed');
     // #t-T stays on the mission page: the link helper still builds the anchor.
-    expect(missionTaskHref({ missionId: 'M', taskId: 'T', mode: 'focus' })).toContain('#t-T');
+    const focus = missionTaskHref({ missionId: 'M', taskId: 'T', mode: 'focus' });
+    expect(pathOf(focus)).toBe('/app/missions/M');
+    expect(new URL(focus, 'http://x').hash).toBe('#t-T');
     // ?qaHistory=1 -> History, ?visualReview=1 / ?artifact= unchanged
     const page = missionPage();
     matches(page, /qaHistory/);
@@ -123,7 +131,7 @@ describe('links that work today keep working', () => {
     matches(page, /artifact/);
     // ?task=T -> the task page (the one row that changes)
     matches(page, /redirect\(/);
-    matches(page, '/app/tasks/');
+    expect(pathOf(legacyTaskSheetRedirect('m1', { task: taskId })!)).toBe(`/app/tasks/${taskId}`);
   });
 });
 

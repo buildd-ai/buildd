@@ -2,7 +2,7 @@
 title: Mission Flow Timeline
 status: active
 owner: builder
-last_verified: 2026-10-15
+last_verified: 2026-10-22
 summary: The mission Flow tab MUST draw one row per task in dependency order on one time axis, every gate as an edge lit by the strip's relation rule, and one sentence naming what sets the finish.
 domain: surfaces
 surfaces: [apps/web/src/lib/flow-timeline.ts, "apps/web/src/app/app/(protected)/missions/[id]/FlowTimeline.tsx", apps/web/src/lib/mission-layout.ts, apps/web/src/lib/mission-task-strip.ts]
@@ -123,7 +123,8 @@ in ink; any other lit edge draws in the accent.
 **R-11**: The tab MUST open on the task that sets the finish (R-16), or
 on the last row once the critical path has landed (`defaultFlowSelection`). The
 selected task's card sits beside the timeline on desktop and below it on a
-phone, and opens the task sheet.
+phone. Its Open task link opens the task page, carrying mission back
+context; selecting a timeline row only updates the card and lit edges.
 
 ## 4. Merged fold
 

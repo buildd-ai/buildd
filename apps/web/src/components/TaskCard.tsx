@@ -313,7 +313,7 @@ export function TaskCard({
   });
 
   // A mission task opens as the sheet over its mission (mission-task-href.ts).
-  const href = missionTaskHref({ missionId, taskId: id, mode: 'sheet' });
+  const href = missionTaskHref({ missionId, taskId: id });
   const showAttempt = (attemptCurrent ?? 0) >= 2;
   // Row/full densities pass prNumber to the chip. When it shows `#N`, the
   // title and the PR link must not say it again.

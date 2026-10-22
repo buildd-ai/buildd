@@ -99,6 +99,12 @@ mock.module('@/lib/workflow/landing', () => ({
 const mockAdoptBeforeMerge = mock(async (..._a: any[]): Promise<any> => ({ kind: 'legacy', reason: 'kernel_off' }));
 const mockMergeOutsideKernel = mock(async (..._a: any[]): Promise<any> => ({ merged: true, message: 'PR merged' }));
 mock.module('@/lib/pr-landing-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge, mergeOutsideKernel: mockMergeOutsideKernel }));
+// Named replacements: the writer is stood in (lib/pr-named-replacement-store.test.ts); the parser stays real.
+const mockRecordNamedReplacement = mock(async (_a: any) => 1);
+mock.module('@/lib/pr-named-replacement-store', () => ({
+  recordNamedReplacement: mockRecordNamedReplacement,
+  linkNamedReplacement: mock(async () => ({ updated: true, url: '' })),
+}));
 // Slice F: get_pr reads a kernel-owned PR's record from its DeliveryView.
 // Default: no kernel delivery, so every legacy case reads the columns.
 const mockGetDeliveryViewsForTasks = mock(async (..._a: any[]): Promise<Map<string, any>> => new Map());
@@ -1253,6 +1259,64 @@ describe('POST /api/github/pr', () => {
         const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
         expect(JSON.parse((createCall as any[])[2].body).head).toBe(CUSTOM);
         expect(payloads.some(p => p.branch === CUSTOM)).toBe(true);
+      });
+
+      describe('scope guard: commits that predate the claim', () => {
+        const compareWith = (commits: unknown[]) => mockGithubApi.mockImplementation((_i: number, path: string) => {
+          if (path.includes('/compare/')) return Promise.resolve({ commits });
+          if (path.includes('/pulls?head=')) return Promise.resolve([]);
+          return Promise.resolve(created);
+        });
+        const commit = (sha: string, date: string, parents = 1) => ({ sha, parents: Array.from({ length: parents }, () => ({})), commit: { message: `work ${sha}`, author: { date } } });
+        const claimed = { createdAt: new Date('2026-10-20T12:00:00Z') };
+
+        it('refuses a head carrying commits authored before the claim, naming them and the two fixes', async () => {
+          mockWorkersFindFirst.mockResolvedValue(interactiveWorker(claimed));
+          mockWorkersFindMany.mockReturnValue([]);
+          compareWith([commit('aaaaaaa1', '2026-10-01T00:00:00Z'), commit('bbbbbbb2', '2026-10-20T13:00:00Z')]);
+
+          const res = await post({ head: CUSTOM });
+
+          expect(res.status).toBe(400);
+          const data = await res.json();
+          expect(data.code).toBe('scope_foreign_commits');
+          expect(data.error).toContain('aaaaaaa');
+          expect(data.error).not.toContain('bbbbbbb');
+          expect(data.error).toContain('fresh branch');
+          expect(opened()).toBe(false);
+        });
+
+        it('a recorded scopeOverride with a reason opens it anyway', async () => {
+          mockWorkersFindFirst.mockResolvedValue(interactiveWorker(claimed));
+          mockWorkersFindMany.mockReturnValue([]);
+          compareWith([commit('aaaaaaa1', '2026-10-01T00:00:00Z')]);
+
+          const res = await post({ head: CUSTOM, scopeOverride: 'the owner asked for the earlier commits to ship together' });
+
+          expect(res.status).toBe(200);
+          expect(opened()).toBe(true);
+        });
+
+        it('only the task’s own commits and merges of the base pass', async () => {
+          mockWorkersFindFirst.mockResolvedValue(interactiveWorker(claimed));
+          mockWorkersFindMany.mockReturnValue([]);
+          compareWith([commit('own00001', '2026-10-20T12:30:00Z'), commit('merge001', '2026-10-01T00:00:00Z', 2)]);
+
+          const res = await post({ head: CUSTOM });
+
+          expect(res.status).toBe(200);
+          expect(opened()).toBe(true);
+        });
+
+        it('does not apply to the task’s own assigned branch', async () => {
+          mockWorkersFindFirst.mockResolvedValue(interactiveWorker(claimed));
+          mockWorkersFindMany.mockReturnValue([]);
+          compareWith([commit('aaaaaaa1', '2026-10-01T00:00:00Z')]);
+
+          const res = await post({ head: OWN });
+
+          expect(res.status).toBe(200);
+        });
       });
 
       it('refuses a custom head a live worker on another task already holds, and says whose', async () => {
@@ -3857,6 +3921,36 @@ describe('PATCH /api/github/pr', () => {
     expect(mockRecordCapabilityDecision).toHaveBeenCalledWith(expect.objectContaining({
       capability: 'pr.close', decision: 'allowed', resource: 'pr:42', sideEffect: { reason: 'superseded by #43' },
     }));
+  });
+
+  it('a close whose reason names its replacement records it as a named replacement, after the close', async () => {
+    mockRecordNamedReplacement.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', accountId: 'account-1', prNumber: 42, workspace: WORKSPACE_OK });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    const order: string[] = [];
+    mockGithubApi.mockImplementation(async () => { order.push('github'); return { number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'closed', title: 'x' }; });
+    mockRecordNamedReplacement.mockImplementationOnce(async () => { order.push('named'); return 1; });
+
+    const res = await PATCH(createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, reason: 'Replaced by #43' },
+    }));
+
+    expect(res.status).toBe(200);
+    expect(order).toEqual(['github', 'named']);
+    expect(mockRecordNamedReplacement).toHaveBeenCalledWith({ repoFullName: 'owner/repo', closedPrNumber: 42, replacementPrNumber: 43 });
+  });
+
+  it('a close reason naming no replacement, and a body update, record none', async () => {
+    mockRecordNamedReplacement.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', accountId: 'account-1', prNumber: 42, workspace: WORKSPACE_OK });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValue({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'closed', title: 'x' });
+    await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-1', prNumber: 42, reason: 'not needed' } }));
+    await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-1', prNumber: 42, body: 'Replaced by #43', reason: 'Replaced by #43' } }));
+    expect(mockRecordNamedReplacement).not.toHaveBeenCalled();
   });
 
   it('calls githubApi with PATCH and state: closed', async () => {

@@ -97,7 +97,9 @@ describe('canSkipCard', () => {
     }
     // The plain edits the allow is for still skip.
     expect(canSkipCard({ tool: 'manage_missions', input: upd({ title: 't', description: 'd', priority: 3 }), allowedGroups: allowed('missions'), ...clean })).toBe(true);
-    expect(canSkipCard({ tool: 'manage_missions', input: upd({ addGoalCriteria: [{ type: 'all_prs_merged' }] }), allowedGroups: allowed('missions'), ...clean })).toBe(true);
+    // Hand-written criteria are retired (Living Specs D-44), and selecting a spec asks.
+    expect(canSkipCard({ tool: 'manage_missions', input: upd({ addGoalCriteria: [{ type: 'all_prs_merged' }] }), allowedGroups: allowed('missions'), ...clean })).toBe(false);
+    expect(canSkipCard({ tool: 'manage_missions', input: upd({ outcomeSpec: { specId: 's' } }), allowedGroups: allowed('missions'), ...clean })).toBe(false);
   });
 
   it('anything that starts recurring or unattended work always asks, even in an allowed group', () => {

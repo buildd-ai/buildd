@@ -20,7 +20,6 @@
 // forever. Keep this contract here, imported by both the runner and the web
 // app, so the boundaries cannot drift apart again.
 
-import type { GoalCriterion } from './types';
 import { shippedOutputSchema, type ShippedOutput } from './shipped';
 
 /**
@@ -77,8 +76,8 @@ export interface PlanningStructuredOutput {
   summary: string;
   missionComplete: boolean;
   questions?: PlanQuestion[];
-  /** Mission-level completion gates the agent proposes — see manage_missions goalCriteria. */
-  goalCriteria?: GoalCriterion[];
+  // No goalCriteria: hand-written criteria are retired (Living Specs D-44). A
+  // mission's "done" is the spec it delivers, selected by a person or the organizer.
   /** Owner-facing "what shipped" answer, filled alongside missionComplete. */
   shipped?: ShippedOutput;
 }
@@ -209,39 +208,6 @@ export const planningOutputSchema = {
       },
     },
     shipped: shippedOutputSchema,
-    goalCriteria: {
-      type: 'array',
-      description:
-        'Mission-level completion gates this plan proposes — see manage_missions goalCriteria. At least one ' +
-        'MECHANICAL criterion (command / all_prs_merged / no_open_tasks / artifact_exists) is required. ' +
-        'Prove the outcome: a command that exits 0 only when it holds, or artifact_exists for a named ' +
-        'deliverable; all_prs_merged / no_open_tasks only close out the work and prove nothing a user would notice. ' +
-        '"metric" has no evaluator yet and "description" requires notMechanizableReason.',
-      items: {
-        type: 'object',
-        properties: {
-          type: {
-            type: 'string',
-            enum: ['all_prs_merged', 'command', 'no_open_tasks', 'artifact_exists', 'metric', 'description'],
-          },
-          label: { type: 'string' },
-          command: { type: 'string', description: 'Required when type is "command": a shell command that must exit 0.' },
-          requireBranchDeleted: { type: 'boolean', description: 'Used with type "all_prs_merged".' },
-          key: { type: 'string', description: 'Used with type "artifact_exists".' },
-          artifactType: { type: 'string', description: 'Used with type "artifact_exists".' },
-          query: { type: 'string', description: 'Used with type "metric" (reserved — do not use as a gate).' },
-          operator: { type: 'string', enum: ['gt', 'gte', 'lt', 'lte', 'eq', 'neq'], description: 'Used with type "metric".' },
-          threshold: { type: 'number', description: 'Used with type "metric".' },
-          unit: { type: 'string', description: 'Used with type "metric".' },
-          description: { type: 'string', description: 'Required when type is "description": free-form criterion, graded by an API call or a runner agent.' },
-          notMechanizableReason: {
-            type: 'string',
-            description: 'Required when type is "description": why no mechanical form could express this.',
-          },
-        },
-        required: ['type'],
-      },
-    },
   },
   required: ['plan', 'summary', 'missionComplete'],
 } as const satisfies Record<string, unknown>;

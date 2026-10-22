@@ -293,6 +293,23 @@ import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 const makeParams = (id: string) => Promise.resolve({ id });
 
+// Living Specs D-44: only a mission that already carries hand-written goal
+// criteria may keep editing them. These tests exercise those legacy rules, so
+// their mission carries one.
+function carryingLegacyCriteria(extra: Record<string, unknown> = {}) {
+  mockMissionsFindFirst.mockReturnValue({
+    id: '11111111-1111-4111-8111-111111111111',
+    teamId: 'team-1',
+    title: 'Existing Mission',
+    workspaceId: 'ws-1',
+    scheduleId: null,
+    status: 'active',
+    priority: 0,
+    goalCriteria: [{ type: 'all_prs_merged' }],
+    ...extra,
+  });
+}
+
 describe('PATCH /api/missions/[id]', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
@@ -963,7 +980,32 @@ describe('PATCH /api/missions/[id]', () => {
     expect(body.error).toMatch(/goalCriteria\[0\]/);
   });
 
+  it('refuses hand-written criteria on a mission that carries none, pointing at selecting a spec (D-44)', async () => {
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      body: JSON.stringify({ goalCriteria: [{ type: 'command', command: 'bun run test' }] }),
+    });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('retired');
+    expect(body.error).toContain('outcomeSpec');
+    expect(updatedSetData?.goalCriteria).toBeUndefined();
+  });
+
+  it('a grandfathered mission keeps its hand-written criteria on a full-list re-save (D-44)', async () => {
+    carryingLegacyCriteria({ goalCriteria: [{ type: 'command', command: 'bun run test' }, { type: 'no_open_tasks' }] });
+    const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      body: JSON.stringify({ goalCriteria: [{ type: 'command', command: 'bun run test' }, { type: 'no_open_tasks' }] }),
+    });
+    const res = await PATCH(req, { params: makeParams('11111111-1111-4111-8111-111111111111') });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.goalCriteria).toEqual([{ type: 'command', command: 'bun run test' }, { type: 'no_open_tasks' }]);
+  });
+
   it('accepts PATCH goalCriteria with valid types', async () => {
+    carryingLegacyCriteria();
     const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({
@@ -982,6 +1024,7 @@ describe('PATCH /api/missions/[id]', () => {
   });
 
   it('rejects a PATCH goalCriteria array with no mechanical criterion, naming the accepted types', async () => {
+    carryingLegacyCriteria();
     const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({
@@ -1027,6 +1070,7 @@ describe('PATCH /api/missions/[id]', () => {
   });
 
   it('rejects a PATCH that adds a prose criterion with no stated reason', async () => {
+    carryingLegacyCriteria();
     const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({
@@ -1565,6 +1609,7 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
   });
 
   it('resolves the criteria escalation when goalCriteria is edited', async () => {
+    carryingLegacyCriteria();
     const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }] }),
@@ -1588,6 +1633,7 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
   });
 
   it('names each added goal criterion', async () => {
+    carryingLegacyCriteria();
     const req = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
       body: JSON.stringify({ goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }] }),

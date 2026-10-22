@@ -2,7 +2,7 @@ import { db } from '@buildd/core/db';
 import { missionNotes, missions } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import { MAX_GOAL_CRITERIA } from '@buildd/core/mission-helpers';
+import { MAX_GOAL_CRITERIA, countedGoalCriteria, isStandardCriterion } from '@buildd/core/mission-helpers';
 import type { GoalCriterion, LivingSpecGoalCriterion } from '@buildd/shared';
 import { checkCriteriaScope } from '@buildd/spec-contract/scope';
 import { specCriteria } from '@buildd/spec-contract/requirements';
@@ -45,7 +45,9 @@ const asSpecs = (raw: unknown): GoalCriterion[] => (Array.isArray(raw) ? (raw as
 const personOf = (caller: SpecCaller) => (caller.kind === 'user' ? caller.userId : requestingPerson(null, caller.account));
 
 /**
- * Pure: merge a pinned selection into the mission's criteria. Returns the new
+ * Pure: merge a pinned selection into the mission's criteria. Selecting a spec
+ * the mission carries as a standard turns that entry into the outcome spec,
+ * which is gated the same way and stricter, so one spec is never on a mission twice. Returns the new
  * array and whether anything changed (a no-op keeps the fingerprint, so every
  * recorded verdict stays valid).
  */
@@ -71,7 +73,8 @@ export async function selectMissionSpec(caller: SpecCaller, missionId: string, i
   if ('remove' in input) {
     if (!person) return fail(403, 'Removing a mission\'s outcome spec is a person\'s decision: it lets the mission complete without the requirement audit');
     if (typeof input.reason !== 'string' || input.reason.trim().length < 10) return fail(400, 'reason (10+ characters: why the mission no longer answers to this spec) is required');
-    const keep = stored.filter((c) => !(c.type === 'living_spec' && (input.specId === undefined || c.specId === input.specId)));
+    // A standard (D-43) is not a selection: removing outcome specs never drops one.
+    const keep = stored.filter((c) => !(c.type === 'living_spec' && !isStandardCriterion(c) && (input.specId === undefined || c.specId === input.specId)));
     if (keep.length === stored.length) return { ok: true, criterion: null, changed: false, goalCriteria: stored };
     await db.update(missions).set({ goalCriteria: keep, goalCriteriaState: null, updatedAt: now } as any).where(eq(missions.id, missionId));
     await note(missionId, caller, 'Outcome spec removed', input.reason.trim());
@@ -149,7 +152,7 @@ export async function selectMissionSpec(caller: SpecCaller, missionId: string, i
   };
   const merged = mergeSelection(stored, next);
   if (!merged.changed) return { ok: true, criterion: next, changed: false, goalCriteria: merged.criteria };
-  if (merged.criteria.length > MAX_GOAL_CRITERIA) return fail(400, `A mission has at most ${MAX_GOAL_CRITERIA} goal criteria`);
+  if (countedGoalCriteria(merged.criteria) > MAX_GOAL_CRITERIA) return fail(400, `A mission has at most ${MAX_GOAL_CRITERIA} goal criteria`);
   await db.update(missions).set({ goalCriteria: merged.criteria, updatedAt: now } as any).where(eq(missions.id, missionId));
   // The mission starts with its acceptance tests (spec 1dc6cc39 R-76): filed once,
   // every building task waits for it, and its role is never the builder's.

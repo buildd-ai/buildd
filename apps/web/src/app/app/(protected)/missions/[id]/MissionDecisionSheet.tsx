@@ -3,10 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import type { GoalCriterion } from '@buildd/shared';
 import { SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH } from '@buildd/core/surface-audit';
-import { AddCriterionForm } from './MissionGoalCriteria';
-import { plainCriteriaError } from '@/lib/goal-criteria-panel';
 import {
   requestMissionVisualReview,
   visualReviewOutcomeText,
@@ -22,10 +19,6 @@ export interface SurfaceAuditDecision {
 
 interface Props {
   missionId: string;
-  /** Every stored criterion — needed so "fix" can splice the edited one back in. */
-  goalCriteria: GoalCriterion[];
-  /** Index (into `goalCriteria`) of the first non-passing criterion, if any. */
-  failingCriterionIndex: number | null;
   fileWorkHref: string;
   /** The mission states criteria and they have not all passed. The criteria exits render only then. */
   criteriaUnmet: boolean;
@@ -75,8 +68,9 @@ function Action({ children, subtitle, suggested }: { children: ReactNode; subtit
  *   written reason. A decision model may suggest one (pre-selected, reason
  *   prefilled); the person always confirms, and no suggestion means both
  *   actions stand bare.
- * - **Unmet goal criteria** (`criteriaUnmet`): file the work, fix the
- *   criterion, or waive and complete.
+ * - **Unmet goal criteria** (`criteriaUnmet`): file the work, or waive and
+ *   complete. Editing a criterion is not offered: hand-written criteria are
+ *   retired (Living Specs D-44), and a mission's "done" is its outcome spec.
  *
  * Neither ⇒ nothing renders. The criteria heuristic
  * (`inferCriteriaFailureReading`) is shown as a recommendation elsewhere and
@@ -85,8 +79,6 @@ function Action({ children, subtitle, suggested }: { children: ReactNode; subtit
  */
 export default function MissionDecisionSheet({
   missionId,
-  goalCriteria,
-  failingCriterionIndex,
   fileWorkHref,
   criteriaUnmet,
   surfaceAudit = null,
@@ -94,9 +86,6 @@ export default function MissionDecisionSheet({
   const router = useRouter();
 
   // Criteria exits
-  const [fixOpen, setFixOpen] = useState(false);
-  const [fixSaving, setFixSaving] = useState(false);
-  const [fixError, setFixError] = useState<string | null>(null);
   const [waiveOpen, setWaiveOpen] = useState(false);
   const [waiving, setWaiving] = useState(false);
   const [waiveError, setWaiveError] = useState<string | null>(null);
@@ -113,7 +102,6 @@ export default function MissionDecisionSheet({
   const [auditWaiving, setAuditWaiving] = useState(false);
   const [auditWaived, setAuditWaived] = useState<{ reason: string; completed: boolean } | null>(null);
 
-  const failingCriterion = criteriaUnmet && failingCriterionIndex != null ? goalCriteria[failingCriterionIndex] ?? null : null;
   const asksAboutAudit = !!surfaceAudit;
 
   useEffect(() => {
@@ -138,34 +126,6 @@ export default function MissionDecisionSheet({
     })();
     return () => { clearTimeout(timer); controller.abort(); };
   }, [asksAboutAudit, missionId]);
-
-  async function handleFix(updated: GoalCriterion) {
-    if (failingCriterionIndex == null) return;
-    setFixSaving(true);
-    setFixError(null);
-    try {
-      const next = goalCriteria.map((c, i) => (i === failingCriterionIndex ? updated : c));
-      const res = await fetch(`/api/missions/${missionId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ goalCriteria: next }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        setFixError(plainCriteriaError(body.error ?? 'Couldn’t save the criterion. Try again.').text);
-        return;
-      }
-      // The owner should see the new verdict in this same interaction — the
-      // mission's heartbeat is stood down and will not produce one on its own.
-      await fetch(`/api/missions/${missionId}/evaluate`, { method: 'POST' }).catch(() => {});
-      setFixOpen(false);
-      router.refresh();
-    } catch {
-      setFixError('Could not reach buildd. Criterion not saved.');
-    } finally {
-      setFixSaving(false);
-    }
-  }
 
   async function handleWaiveConfirm() {
     setWaiving(true);
@@ -375,33 +335,11 @@ export default function MissionDecisionSheet({
             </Link>
           </Action>
 
-          {failingCriterion && (
-            <Action subtitle="Edit the criterion that is not passing, then re-check it now.">
-              <button type="button" onClick={() => setFixOpen(v => !v)} className={BUTTON}>
-                Fix the criterion
-              </button>
-            </Action>
-          )}
-
           <Action subtitle="Completes the mission with its goal criteria unmet. The mission feed records the override.">
             <button type="button" onClick={() => setWaiveOpen(v => !v)} className={BUTTON}>
               Waive and complete
             </button>
           </Action>
-
-          {fixOpen && failingCriterion && (
-            <div className="mt-2">
-              <AddCriterionForm
-                initial={failingCriterion}
-                siblings={goalCriteria.filter((_, i) => i !== failingCriterionIndex)}
-                submitLabel="Save & re-run"
-                onAdd={handleFix}
-                onCancel={() => setFixOpen(false)}
-              />
-              {fixSaving && <p className="text-[11px] text-text-muted mt-1">Saving…</p>}
-              {fixError && <p role="alert" className="text-[11px] text-status-error mt-1">{fixError}</p>}
-            </div>
-          )}
 
           {waiveOpen && (
             <div className="mt-2 border border-status-warning/30 bg-status-warning/5 rounded-sm p-3">

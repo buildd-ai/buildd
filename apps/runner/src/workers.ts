@@ -87,6 +87,7 @@ import { advertisedRoleSlugs } from './role-advertising';
 import { outputRequirementNudge } from './output-requirement-nudge';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
+import { createResumedReadinessGuard, deferrableReadinessFailure, readinessRepairSection, type DeferredReadiness } from './resumed-readiness';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate } from './update-drain';
@@ -131,6 +132,7 @@ import { buildPromptCompositionRecord, appendPromptCompositionEvent, resolveRunn
 import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath, resolveClaudeCliVersion } from './sdk-binary-path';
 import { ModelProbePoller, createModelProbeHttpApi, sdkProbe } from './model-probe';
+import { BudgetWallProber, describeBudgetProbeRun, type BudgetProbeTrigger } from './budget-wall-probe';
 import { HookFactory } from './hook-factory';
 import { resolvePathClaimMode, describeEnforcement, resolvePrBaseRef, type PathCollision } from './path-claim-enforcement';
 import { deferOnPathCollision } from './path-collision-defer';
@@ -886,6 +888,8 @@ export class WorkerManager {
   // Quality Scout command probes (runner-host design §6) — idle ticks only, never a worker slot.
   private scoutHostPoller: ScoutHostPoller;
   private modelProbePoller: ModelProbePoller;
+  /** Probes a held provider wall on an interval, on `buildd budget reset` and on a server request (budget-wall-probe.ts). */
+  private budgetWallProber: BudgetWallProber;
   // Adaptive idle timeout: track recent worker durations to calibrate stale threshold
   private recentCycleTimes: number[] = [];  // Duration in ms of last N completed workers
   private adaptiveStaleTimeout: number = 300_000;  // Start at 5 min, adapt from cycle data
@@ -1074,6 +1078,18 @@ export class WorkerManager {
       probe: sdkProbe,
       cliVersion: () => resolveClaudeCliVersion(),
       enabled: process.env.BUILDD_MODEL_PROBE !== '0',
+    });
+
+    this.budgetWallProber = new BudgetWallProber({
+      probe: () => sdkProbe(process.env.BUILDD_BUDGET_PROBE_MODEL || 'haiku'),
+      report: (r) => this.buildd.reportBudgetWall({
+        ...r,
+        backend: 'claude',
+        runner: this.config.localUiUrl,
+        claudeLoginId: this.claimLoginIdentity(),
+      }),
+      // The wall is gone: claim the held work now rather than at the old reset.
+      onCleared: () => { this.pastResetStreak = 0; this.claimPendingTasks().catch(() => {}); },
     });
 
     // Send heartbeat to register availability (immediate + periodic)
@@ -1450,6 +1466,11 @@ export class WorkerManager {
     this.modelProbePoller.poll().catch(() => {});
   }
 
+  /** `buildd budget reset`: probe the held wall now. Resolves the line to print. */
+  async probeBudgetWall(trigger: BudgetProbeTrigger = 'cli'): Promise<string> {
+    return describeBudgetProbeRun(await this.budgetWallProber.probeNow(trigger));
+  }
+
   private async sendHeartbeat() {
     try {
       // A paused worker holds no slot (pause.ts), nor a question whose session
@@ -1470,9 +1491,15 @@ export class WorkerManager {
       // whether Claude is confined here, not whether bwrap is installed, so a
       // macOS runner on Seatbelt no longer reads as "user namespaces denied".
       const sandboxEnabled = probeAt !== null ? isConfined(getIsolationRecord().claude) : null;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth }, this.config.singleTask ? undefined : this.config.maxConcurrent);
+      const { viewerToken, pendingTaskCount, latestCommit, budgetProbeRequestedAt } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth }, this.config.singleTask ? undefined : this.config.maxConcurrent);
       if (viewerToken) {
         this.viewerToken = viewerToken;
+      }
+      // A held wall is probed on an interval; a client's request probes at once.
+      // Neither takes a slot, and neither runs while a person holds this runner.
+      if (!this.config.singleTask && !claimsHeldByPerson()) {
+        this.budgetWallProber.noteNudge(budgetProbeRequestedAt).catch(() => {});
+        this.budgetWallProber.tick().catch(() => {});
       }
       // Emit version info for auto-update checks
       if (latestCommit) {
@@ -2155,6 +2182,7 @@ export class WorkerManager {
         const wallSummary = diagnostics?.budgetBlock?.summary;
         console.warn(`[WorkerManager] ${wallSummary ?? 'Account OAuth budget exhausted.'} Next claim at ${budgetResetsAt} (${Math.round(delayMs / 60_000)} min)`);
         this.emit({ type: 'budget_exhausted', budgetResetsAt, delayMs });
+        this.budgetWallProber.noteWall(budgetResetsAt);
         // Wake up to poll the instant the budget resets. Without this the runner
         // only recovered on its hourly fallback poll (RUNNER_HEARTBEAT_INTERVAL_MS)
         // — the budget-reset re-queue deliberately emits `task:updated`, which the
@@ -2970,6 +2998,7 @@ export class WorkerManager {
         // so later steps (git stats, the prompt, parking) read the ref the
         // worktree really uses instead of re-deriving it.
         worker.worktreeBaseRef = setupResult.base;
+        worker.resumedFrom = setupResult.resumed?.from;
         // The PR's base, which the path-claim sweep measures against. Read
         // after setup: a fallback to a fresh base has already cleared the
         // resume fields from the context.
@@ -4800,6 +4829,7 @@ export class WorkerManager {
       // Codex has no such tool. See @buildd/shared claude-ai-artifacts.ts.
       applyClaudeAiArtifactEnv(cleanEnv, isCodexTask ? 'off' : (worker.claudeAiArtifacts ?? 'off'));
 
+      let deferredReadiness: DeferredReadiness | null = null;
       // Provision gate — prove the environment is runnable BEFORE the budget loop.
       // cleanEnv is now fully assembled (server creds + connector + role secrets),
       // so env.required is validated against exactly what the agent will see, not
@@ -4842,7 +4872,23 @@ export class WorkerManager {
             const dur = s.durationMs != null ? ` (${s.durationMs}ms)` : '';
             console.log(`[Worker ${worker.id}] provision ${s.status} [${s.phase}] ${s.label} — ${s.message}${dur}`);
           }
-          if (!gate.ok) {
+          // A resumed checkpoint that fails ONLY readiness is this task's own
+          // unfinished work: start the session to repair it rather than block
+          // every retry before an agent turn. The check is re-run before every
+          // ship (createResumedReadinessGuard below). A fresh claim, or any other
+          // phase, still blocks. See resumed-readiness.ts.
+          deferredReadiness = gate.ok ? null : deferrableReadinessFailure({
+            gate,
+            resumed: worker.resumedFrom ? { from: worker.resumedFrom } : resumeSessionId ? { from: worker.branch } : null,
+            canEnforceAtShip: !isCodexTask,
+            root: cwd,
+          });
+          if (deferredReadiness) {
+            const label = `Readiness fails on the resumed branch — repairing it first (${deferredReadiness.message})`;
+            console.warn(`[Worker ${worker.id}] ${label}`);
+            sessionLog(worker.id, 'warn', 'readiness_deferred_for_repair', `${deferredReadiness.step.command}: ${deferredReadiness.message}`, worker.taskId);
+            this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+          } else if (!gate.ok) {
             this.addMilestone(worker, { type: 'status', label: 'Provision failed', ts: Date.now() });
             // Attach the stable failure classification so the outer catch can
             // surface it as structured resultMeta (server/organizer act on the code).
@@ -4850,8 +4896,10 @@ export class WorkerManager {
             provErr.provisionFailure = gate.failure;
             throw provErr;
           }
-          console.log(`[Worker ${worker.id}] Environment verified${gate.cached ? ' (cached)' : ''}`);
-          this.addMilestone(worker, { type: 'status', label: gate.cached ? 'Environment verified (cached)' : 'Environment verified', ts: Date.now() });
+          if (gate.ok) {
+            console.log(`[Worker ${worker.id}] Environment verified${gate.cached ? ' (cached)' : ''}`);
+            this.addMilestone(worker, { type: 'status', label: gate.cached ? 'Environment verified (cached)' : 'Environment verified', ts: Date.now() });
+          }
         }
       } catch (gateErr) {
         const msg = gateErr instanceof Error ? gateErr.message : String(gateErr);
@@ -4915,6 +4963,9 @@ export class WorkerManager {
       });
       if (retryContinuitySection) {
         systemPrompt.append = (systemPrompt.append ?? '') + retryContinuitySection;
+      }
+      if (deferredReadiness) {
+        systemPrompt.append = (systemPrompt.append ?? '') + readinessRepairSection(deferredReadiness);
       }
       if (worker.derivedMergeNote) {
         systemPrompt.append = (systemPrompt.append ?? '') + worker.derivedMergeNote;
@@ -5435,6 +5486,21 @@ export class WorkerManager {
                 matcher: BUILDD_MCP_TOOL_MATCHER,
                 timeout: Math.ceil(VERIFICATION_COMMAND_TIMEOUT_MS / 1000) + 30,
                 hooks: [this.hookFactory.createLoopVerificationHook(worker, () => this.runLoopVerification(worker, task, cwd))],
+              }]
+            : []),
+          // Resumed checkpoint that failed readiness at start: re-run the same
+          // command before every push, create_pr and successful complete_task,
+          // and refuse the call until it passes (resumed-readiness.ts). Only
+          // ever set for a backend with this seam, so never for Codex.
+          ...(deferredReadiness
+            ? [{
+                timeout: Math.ceil((deferredReadiness.step.timeoutMs ?? 180_000) / 1000) + 15,
+                hooks: [createResumedReadinessGuard({
+                  deferred: deferredReadiness,
+                  cwd,
+                  env: cleanEnv,
+                  milestone: (label) => this.addMilestone(worker, { type: 'status', label, ts: Date.now() }),
+                })],
               }]
             : []),
           // Workspace preflight (workflow-state-kernel.md §6.10, S31): the cheap
