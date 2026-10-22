@@ -1,15 +1,15 @@
 import { db } from '@buildd/core/db';
 import { workerHeartbeats } from '@buildd/core/db/schema';
 import { reportOps } from '@buildd/core/report-ops';
-import { lt } from 'drizzle-orm';
-import { HEARTBEAT_STALE_MS, failWorkersOfOfflineRunners, notifyStalledVisualAudits } from '@/lib/stale-workers';
+import { and, lt } from 'drizzle-orm';
+import { HEARTBEAT_STALE_MS, failWorkersOfOfflineRunners, heartbeatRowHasNoLiveWorkers, notifyStalledVisualAudits } from '@/lib/stale-workers';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Lightweight stale-worker cleanup: find heartbeat rows past the "not dead"
  * cutoff (HEARTBEAT_STALE_MS) and hand their accounts to the shared
- * offline-runner rule (failWorkersOfOfflineRunners), which fails an account's
- * runner workers only when no runner on it is alive. Runs on the hourly
+ * offline-runner rule (failWorkersOfOfflineRunners), which fails each worker
+ * whose OWN runner is past the cutoff. Runs on the hourly
  * `maintenance` cron tick so orphans are caught without waiting for a runner
  * to call /api/tasks/cleanup — a dead runner never will.
  *
@@ -28,9 +28,9 @@ export async function runStaleWorkerCleanup(now: Date): Promise<number> {
     });
     if (staleHBs.length > 0) {
       const staleAccountIds = [...new Set(staleHBs.map(hb => hb.accountId))];
-      // A stale row only says ONE runner went quiet. Whether that account's
-      // workers are orphaned — no runner on the account alive at all — is the
-      // shared rule's call. This used to fail every live worker of the account
+      // A stale row only says ONE runner went quiet. Which of that account's
+      // workers are orphaned — the ones under THAT runner — is the shared
+      // rule's call. This used to fail every live worker of the account
       // itself, including those under its other, live runner and its
       // interactive (MCP) workers (task 5c0ea9bc).
       heartbeatOrphans = await failWorkersOfOfflineRunners({ accountIds: staleAccountIds }, now);
@@ -45,8 +45,9 @@ export async function runStaleWorkerCleanup(now: Date): Promise<number> {
         message: 'Runner heartbeat stale — runner offline or not reaching the server',
         detail: `${staleHBs.length} stale heartbeat(s); accounts: ${staleAccountIds.join(', ')}; orphaned workers failed: ${heartbeatOrphans}`,
       });
-      // Delete stale heartbeat records
-      await db.delete(workerHeartbeats).where(lt(workerHeartbeats.lastHeartbeatAt, heartbeatCutoff));
+      // Delete stale heartbeat records — never one a live-status worker still
+      // names, so the rule above can keep judging that worker by its runner.
+      await db.delete(workerHeartbeats).where(and(lt(workerHeartbeats.lastHeartbeatAt, heartbeatCutoff), heartbeatRowHasNoLiveWorkers()));
     }
   } catch (cleanupErr) {
     console.warn('[Cron] Stale worker cleanup failed:', cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);

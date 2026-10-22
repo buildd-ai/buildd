@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildCoordinationHolds, coordinationLink, coordinationGateDetail, latestOverlapStarts, overlapStartLink, startsAlongsideWords } from './explain-coordination';
+import { buildCoordinationHolds, classifyHolderStall, coordinationLink, coordinationGateDetail, latestOverlapStarts, overlapStartLink, startsAlongsideWords } from './explain-coordination';
 
 /**
  * `explain` for a task held on coordination: who holds what, on which paths,
@@ -119,5 +119,25 @@ describe('a task that started past an overlap', () => {
 
   it('is absent without a start row', () => {
     expect(overlapStartLink(latestOverlapStarts([{ reason: 'path_overlap', detail: { prNumber: 41 } }]), {})).toBeNull();
+  });
+});
+
+describe('holder stall on an inferred edge', () => {
+  it('classifies deferral, credential hold and closed PR; a near start is not a stall', () => {
+    const now = Date.parse('2026-10-22T00:00:00Z');
+    expect(classifyHolderStall({ startAt: '2026-10-24T00:00:00Z', now })?.kind).toBe('deferred');
+    expect(classifyHolderStall({ startAt: '2026-10-22T01:00:00Z', now })).toBeNull();
+    expect(classifyHolderStall({ context: { credentialHold: { credentialKey: 'k', since: 's' } } })?.kind).toBe('credential_hold');
+    expect(classifyHolderStall({ context: { credentialHold: { releasedAt: 'x' } } })).toBeNull();
+    expect(classifyHolderStall({ prClosedUnmerged: true })?.kind).toBe('pr_closed_unmerged');
+  });
+
+  it('names the stall in the causal link', () => {
+    const holds = buildCoordinationHolds({
+      task: { status: 'pending', dependsOn: ['inf-1'], pathDeclaration: { inferredDependsOn: ['inf-1'] } },
+      holders: new Map([['inf-1', { id: 'inf-1', title: 'Intake', status: 'pending', pathManifest: null, stall: { kind: 'credential_hold' as const, label: null } }]]),
+      gateDetails: [],
+    });
+    expect(coordinationLink(holds, {})?.claim).toContain('held for credentials');
   });
 });
