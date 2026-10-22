@@ -85,6 +85,12 @@ export interface AttemptTaskRef {
   role: string;
   status: string;
   createdAt: string;
+  /**
+   * The open question this attempt ended on, when it stopped to ask a person
+   * (a question, a post_note question without a default, a failure whose
+   * evidence needs an owner decision). Set by the loader, null/absent otherwise.
+   */
+  ownerQuestion?: string | null;
 }
 
 export interface TransitionRef {
@@ -480,6 +486,19 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
       owner = 'platform';
       cta = { action: 'create_conflict_fix', label: 'Resolve conflicts' };
     }
+  }
+
+  // A fix attempt that ended asking a person: the next move is theirs, whatever
+  // state the ledger is in. Requeueing the attempt would stall the same way.
+  const FIX_ROLES = new Set(['fix', 'ci_fix', 'conflict_fix', 'migration_fix', 'trunk_fix']);
+  const OPEN_STATES: DeliveryState[] = ['CHANGES_REQUESTED', 'FIXING', 'REPAIRING', 'AWAITING_PUSH', 'AWAITING_REVIEW', 'WORKING'];
+  const asked = [...tasks].filter((t) => FIX_ROLES.has(t.role) && t.ownerQuestion).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  if (asked && OPEN_STATES.includes(d.state)) {
+    owner = 'human';
+    stage = 'needs_you';
+    headline = 'Waiting on you: a fix attempt asked a question';
+    detail = asked.ownerQuestion!;
+    cta = null;
   }
 
   const attempts: DeliveryView['attempts'] = {};
