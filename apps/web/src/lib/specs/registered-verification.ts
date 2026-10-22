@@ -9,8 +9,10 @@ import {
   bindingFingerprint, criterionBindings, type VerificationBinding, type VerifierRegistry,
 } from '@buildd/spec-contract/verification-bindings';
 import { criterionRecords } from '@buildd/spec-contract/criterion-records';
-import { UI_ACTION_STATE_VERIFIER, checkUiActionState, parseUiEvidence, type ParsedUiEvidence, type UiEvidenceCapability } from '@buildd/core/ui-verification';
-import { UI_COPY_VERDICT, uiCopyFindings, type UiCopyDecision, type UiCopyFeatures } from '@buildd/core/decision-kind-ui-copy';
+import {
+  UI_ACTION_STATE_VERIFIER, UI_COPY_VERDICT, checkUiActionState, parseUiEvidence, uiCopyFindings,
+  type ParsedUiEvidence, type UiCopyDecision, type UiCopyFeatures, type UiEvidenceCapability,
+} from '@buildd/core/ui-verification';
 import { registeredAuthor, type RegisteredMethod } from './registered-author';
 
 /**

@@ -230,3 +230,95 @@ export function canPromoteVerifier(input: {
   if (input.results.some(r => r.verdict !== r.case.expected)) return { ok: false, reason: 'regressed_cases' };
   return { ok: true };
 }
+
+/*
+ * The `buildd.ui_copy` decision kind's features, vocabulary and findings
+ * (./decision-kind-ui-copy holds the prompts and the broker binding).
+ */
+
+/** A card past this many segments is refused, never truncated: a judgment of part of a card is not a judgment of the card. */
+export const MAX_UI_COPY_SEGMENTS = 32;
+export const MAX_UI_COPY_ACTIONS = 16;
+export const UI_COPY_DECISIONS = ['concise', 'needs_edit', 'insufficient_evidence'] as const;
+export type UiCopyDecision = (typeof UI_COPY_DECISIONS)[number];
+
+/** Roles whose text carries a fact the person needs: never dispensable, whatever the model says. */
+const MATERIAL_ROLES = ['consequence', 'permission', 'prerequisite', 'recovery'] as const;
+const SEGMENT_ROLES = ['heading', 'status', 'body', 'label', 'hint', 'narration', ...MATERIAL_ROLES] as const;
+
+const copyId = z.string().trim().min(1).max(80);
+// Strict at every level: features carry the card and the profile, never a model, endpoint, credential or prompt.
+const featuresSchema = z.object({
+  profile: z.object({ id: z.string().trim().min(1).max(100), version: z.number().int().min(1) }).strict(),
+  segments: z.array(z.object({ id: copyId, text: z.string().trim().min(1).max(1000), role: z.enum(SEGMENT_ROLES) }).strict()).min(1).max(MAX_UI_COPY_SEGMENTS),
+  actions: z.array(z.object({ id: copyId, label: z.string().trim().min(1).max(120), operation: z.enum(UI_ACTION_OPERATIONS) }).strict()).max(MAX_UI_COPY_ACTIONS),
+}).strict();
+
+export type UiCopyFeatures = z.infer<typeof featuresSchema>;
+
+export function parseUiCopyFeatures(input: unknown): FeatureParse<UiCopyFeatures> {
+  const parsed = featuresSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, message: 'invalid_ui_copy_features' };
+  const ids = [...parsed.data.segments, ...parsed.data.actions].map((x) => x.id);
+  if (new Set(ids).size !== ids.length) return { ok: false, message: 'duplicate_ui_copy_element' };
+  return { ok: true, features: parsed.data };
+}
+
+const SURFACE_ROLE: Record<SurfaceEvidence['visible']['blocks'][number]['role'], UiCopyFeatures['segments'][number]['role']> = {
+  heading: 'heading', status: 'status', body: 'body', label: 'label', hint: 'hint',
+};
+const SURFACE_OPERATION: Record<SurfaceEvidence['visible']['actions'][number]['operation'], UiCopyFeatures['actions'][number]['operation']> = {
+  merge_pr: 'merge', confirm_replacement: 'confirm_replacement', resolve_pr_closure: 'resolve_pr_closure',
+  retry_visual_review: 'retry_visual_review', skip_visual_review: 'skip_visual_review', other: 'other',
+  answer_question: 'answer_question', cancel: 'cancel', dismiss_replacement: 'dismiss_replacement',
+  turn_off_visual_review: 'turn_off_visual_review', view_detail: 'open_details',
+};
+
+/** A stored capture as this kind's features: every block in order and every action by its operation. */
+export function uiCopyFeaturesFromSurface(e: SurfaceEvidence, profile: UiCopyFeatures['profile'] = { id: 'buildd-ui', version: 1 }): UiCopyFeatures {
+  return {
+    profile,
+    segments: [...e.visible.blocks].sort((a, b) => a.order - b.order).map((b) => ({ id: b.id, text: b.text, role: SURFACE_ROLE[b.role] })),
+    actions: e.visible.actions.map((a) => ({ id: a.id, label: a.label, operation: SURFACE_OPERATION[a.operation] })),
+  };
+}
+
+/** The verification verdict a ui_copy decision stands for. */
+export const UI_COPY_VERDICT: Record<UiCopyDecision, 'pass' | 'fail' | 'inconclusive'> = {
+  concise: 'pass', needs_edit: 'fail', insufficient_evidence: 'inconclusive',
+};
+
+export type UiCopyFindingKind = 'repetition' | 'unclear_action' | 'process_narration';
+export interface UiCopyFinding {
+  kind: UiCopyFindingKind;
+  segmentIds?: string[];
+  actions?: Array<{ id: string; operation: UiCopyFeatures['actions'][number]['operation'] }>;
+}
+const FINDING_KINDS: readonly string[] = ['repetition', 'unclear_action', 'process_narration'];
+
+/**
+ * A model's structured answer as findings on the supplied card. Only this
+ * verifier's three kinds survive (action state belongs to the deterministic
+ * verifier); ids the card does not hold are dropped, never invented; a
+ * material segment is never reported dispensable; an action is reported by its
+ * own operation. Findings carry ids, never replacement text.
+ */
+export function uiCopyFindings(raw: unknown, features: UiCopyFeatures): UiCopyFinding[] {
+  const list = (raw as { findings?: unknown } | null)?.findings;
+  if (!Array.isArray(list)) return [];
+  const segments = new Map(features.segments.map((s) => [s.id, s]));
+  const actions = new Map(features.actions.map((a) => [a.id, a]));
+  const ids = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+  const out: UiCopyFinding[] = [];
+  for (const item of list) {
+    const kind = (item as { kind?: unknown })?.kind;
+    if (typeof kind !== 'string' || !FINDING_KINDS.includes(kind)) continue;
+    const segmentIds = [...new Set(ids((item as { segmentIds?: unknown }).segmentIds))]
+      .filter((s) => segments.has(s) && !(MATERIAL_ROLES as readonly string[]).includes(segments.get(s)!.role));
+    const found = [...new Set(ids((item as { actionIds?: unknown }).actionIds))].filter((a) => actions.has(a))
+      .map((a) => ({ id: a, operation: actions.get(a)!.operation }));
+    if (kind === 'unclear_action' ? !found.length : !segmentIds.length) continue;
+    out.push({ kind: kind as UiCopyFindingKind, ...(segmentIds.length ? { segmentIds } : {}), ...(found.length ? { actions: found } : {}) });
+  }
+  return out;
+}
