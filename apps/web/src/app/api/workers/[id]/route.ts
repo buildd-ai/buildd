@@ -6244,6 +6244,19 @@ async function handleReviewerOutcomeIfNeeded(
       );
   }
 
+  // 968aebfd: every gate above has run. `settledVerdict` says so, and is the verdict a delivery
+  // opened later adopts as this head's review (legacy-review-import.ts); without it nothing is adopted.
+  await db
+    .update(tasks)
+    .set({
+      result: sql`COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('settledVerdict', ${effectiveVerdict}::text)`,
+      updatedAt: new Date(),
+    })
+    .where(eq(tasks.id, reviewerTaskId))
+    .catch((err: unknown) =>
+      console.error(`[reviewer] could not record the settled verdict for PR #${prNumber}:`, err),
+    );
+
   // The verdict is stored: a release candidate's approval status follows it now, not at the hourly floor (AC-78).
   await republishPrHeads(installationId, repoFullName, [{ number: prNumber, sha: headSha }]);
 

@@ -1284,6 +1284,19 @@ push, refresh, completion or owner change can make it disappear.
   own open round at that head is never answered from outside (its reviewer
   does), and a verdict on another head is stale. The same head is never reviewed twice for it, and `explain`
   calls an open reviewer a review, never "Fix 0 of 3".
+- A legacy review that ended before the delivery opened is adopted too (968aebfd,
+  `legacy-review-import.ts`). When the delivery opens (or the floor finds it
+  `WORKING`), the PR's newest legacy reviewer at the live head decides. A settled
+  verdict (`result.settledVerdict`, written once every server-side gate has run), read
+  at that head (`result.evidenceSha`), against the delivery's base (`context.baseRef`),
+  and not composition-scoped, is adopted with its findings before the owner's end is
+  handed on, so the hand-off applies it instead of reviewing the head again. A legacy
+  reviewer still running at that head holds the hand-off (at the open and on the
+  floor) for up to two hours; its verdict is adopted when it lands and the end is
+  handed on then, or the floor hands on once it ends without one. Anything else
+  (another head or base, evidence at another commit, an unsettled verdict, a failed
+  reviewer) is not evidence, and the kernel reviews the head. A person's forced review
+  of an adopted head still runs.
 - A push after an escalation that touches a finding's path marks the finding
   `addressed` (AC-17's interim disposition), held deliveries included. No
   review is queued for it while the hold stands, but the person sees it: the

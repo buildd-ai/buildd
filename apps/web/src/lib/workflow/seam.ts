@@ -33,6 +33,7 @@ import { policyValue } from '@/lib/policy-overrides';
 import { preflightMissOf } from './preflight-miss';
 import { landThroughKernel as landThroughKernelImpl, type KernelLanding, type LandingInput } from './landing';
 import { enqueueEffectSql, enqueueMissingEffects, existingEffectsSql } from './enqueue-missing';
+import { legacyReviewersSql, readLegacyReview, type LegacyReviewReading, type LegacyReviewerRow } from './legacy-review-import';
 import { ENDED_REVIEWER_GRACE_MS, endedReviewerSql, floorCandidatesSql, floorCheckedSql, roundWaitingOnReviewer, strandedMechanicalRepair, treadmillCycleCandidatesSql, type FloorCandidate, type TreadmillCycleCandidate } from './reconcile';
 
 // The worker PATCH's reading of a terminal report (S30), exported here because routes reach the kernel only through the seam.
@@ -209,7 +210,8 @@ export async function recordPolicyEvidence(p: {
  * review). Opens the delivery (T1), binds the PR (T2) and records its head
  * (T3), all from a live read. Returns `owned: true` when the kernel now owns
  * the PR: the caller then dispatches nothing — the first round is queued when
- * the owner attempt ends (§6.5 row 1, §15 step 2).
+ * the owner attempt ends (§6.5 row 1, §15 step 2). A legacy review of the live
+ * head that ran before the open is adopted instead of repeated (968aebfd).
  *
  * Idempotent: both doors may call it for the same PR.
  */
@@ -271,8 +273,11 @@ export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Pro
   // reads and saw no delivery yet). An ended attempt with nobody to hand on would
   // leave the delivery in WORKING with no owner of the next move. The task and
   // worker are re-read here, not taken from the read at the top (bb6a3a56).
-  const sent = await forwardOwnerEnd({ workspaceId: p.workspaceId, ownerTaskId: p.ownerTaskId, deliveryId, source: `${p.source}:late_open` }, deps);
-  if (!sent && task.kind === 'coordination') {
+  // 968aebfd: a legacy review of this head (filed before the delivery opened) is its review, not
+  // a reason for a second one; one still running is waited for, and the hand-off runs when it ends.
+  const legacy = await adoptLegacyReview({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, prNumber: p.prNumber, deliveryId }, deps);
+  const sent = legacy === 'live' ? false : await forwardOwnerEnd({ workspaceId: p.workspaceId, ownerTaskId: p.ownerTaskId, deliveryId, source: `${p.source}:late_open` }, deps);
+  if (!sent && legacy !== 'live' && task.kind === 'coordination') {
     // edc02148: a coordination owner keeps running after it opens its PR (it watches other PRs,
     // or this one land), so its hand-off (§6.5 row 1) can be hours away. Its PR is reviewed now
     // (T5 from WORKING), not when the coordination ends.
@@ -286,6 +291,46 @@ export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Pro
   }
   if (!sent) await drainDelivery(deliveryId, deps);
   return { owned: true, deliveryId };
+}
+
+/**
+ * 968aebfd (legacy-review-import.ts): what the PR's legacy reviewers say about the delivery's
+ * head while it is WORKING. A settled verdict at that head and base is adopted as a decided round
+ * (`ReviewVerdictAdopted`, its findings with it), so the owner's hand-off applies it instead of
+ * reviewing the same head again. `live`: a legacy reviewer is still judging that head; the caller
+ * holds the hand-off for it. Anything else reads `none` and the kernel reviews the head itself.
+ * Never throws: an unreadable answer is `none`, the kernel's own review.
+ */
+async function adoptLegacyReview(
+  p: { workspaceId: string; repoFullName: string; prNumber: number; deliveryId: string },
+  deps: SeamDeps,
+): Promise<LegacyReviewReading['kind']> {
+  try {
+    const d = (await loadView({ deliveryId: p.deliveryId }, deps.exec)).delivery;
+    if (!d?.currentHeadSha || d.state !== 'WORKING') return 'none';
+    const rows = ((await (deps.exec ?? seamExec)(legacyReviewersSql(p))).rows ?? []) as LegacyReviewerRow[];
+    const r = readLegacyReview(rows, { repoFullName: p.repoFullName, prNumber: p.prNumber, headSha: d.currentHeadSha, baseRef: d.baseRef, now: Date.now() });
+    if (r.kind !== 'adopt') {
+      if (r.reviewerTaskId) console.log(`[workflow] ${p.repoFullName}#${p.prNumber}: legacy reviewer ${r.reviewerTaskId} ${r.kind === 'live' ? 'still judging the head; the hand-off waits for it' : `not adopted (${r.reason})`}`);
+      return r.kind;
+    }
+    const res = await applyCommand({
+      type: 'ReviewVerdictAdopted',
+      actor: `reviewer:${r.reviewerTaskId}`,
+      reviewerTaskId: r.reviewerTaskId,
+      verdict: toKernelVerdict(r.verdict),
+      effectiveVerdict: toKernelVerdict(r.effectiveVerdict),
+      headBound: d.currentHeadSha,
+      confidence: r.confidence,
+      evidenceSha: r.evidenceSha,
+      ...(await resolveDeferralTasks(verdictFindingsOf(r.output), p.deliveryId, deps.exec ?? seamExec)),
+    }, { ref: { deliveryId: p.deliveryId }, exec: deps.exec });
+    console.log(`[workflow] ${p.repoFullName}#${p.prNumber}: legacy verdict of ${r.reviewerTaskId} at ${d.currentHeadSha.slice(0, 7)} ${res.result}${'reason' in res ? ` (${res.reason})` : ''}`);
+    return res.result === 'applied' || res.result === 'duplicate' ? 'adopt' : 'none';
+  } catch (err) {
+    console.error(`[workflow] ${p.repoFullName}#${p.prNumber}: reading the legacy review failed; the kernel reviews the head:`, err);
+    return 'none';
+  }
 }
 
 /**
@@ -1316,6 +1361,13 @@ export async function adoptReviewVerdict(p: {
     ...(p.evidenceSha !== undefined ? { evidenceSha: p.evidenceSha } : {}),
     ...(await resolveDeferralTasks(verdictFindingsOf(p.output), deliveryId, deps.exec ?? seamExec)),
   }, { ref: { deliveryId }, exec: deps.exec });
+  // 968aebfd: the open may have held the owner's hand-off for this reviewer (a legacy reviewer
+  // still judging the head). It has ended: hand on now, kept verdict or not. An owner still
+  // working has no end to send, and one the kernel already has is a duplicate.
+  const view = await loadView({ deliveryId }, deps.exec);
+  if (view.delivery?.state === 'WORKING' && p.workspaceId) {
+    await forwardOwnerEnd({ workspaceId: p.workspaceId, ownerTaskId: view.delivery.ownerTaskId, deliveryId, source: `reviewer:${p.reviewerTaskId}:adopted` }, deps);
+  }
   await drainDelivery(deliveryId, deps);
   return result;
 }
@@ -1953,7 +2005,9 @@ export async function reconcileKernelDeliveries(
       // bb6a3a56: WORKING with the owner already ended means the kernel never got that end
       // (a completion that raced the PR open, a crash before tasks.delivery_id, a command that
       // lost the version race twice). Re-send it from the workers row; a held end is a duplicate.
-      if (view.delivery?.state === 'WORKING') {
+      // 968aebfd: unless a legacy reviewer is still judging the head (the hand-off waits for its
+      // verdict); a settled one nobody adopted yet is adopted first, so the end applies it.
+      if (view.delivery?.state === 'WORKING' && await adoptLegacyReview({ workspaceId, repoFullName, prNumber, deliveryId }, deps) !== 'live') {
         const ended = await forwardOwnerEnd({ workspaceId, ownerTaskId: view.delivery.ownerTaskId, deliveryId, source }, deps);
         if (ended) {
           view = await loadView({ deliveryId }, deps.exec);
