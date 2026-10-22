@@ -9,6 +9,7 @@ import { resolveBranchStrategy, isValidBranchStrategy, BRANCH_STRATEGIES } from 
 import { generateMissionBranchName } from '@buildd/core/branch-names';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { resolveMissionCreator } from '@/lib/task-service';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds, resolveAccountTeamIds } from '@/lib/team-access';
 import { resolveWorkspaceAccess } from '@/lib/workspace-access';
@@ -189,7 +190,7 @@ export async function POST(req: NextRequest) {
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
       status: requestedStatus, dependsOnMission, gateCondition, mergePolicy, orchestrationMode, costBudgetUsd,
       pacingMode, pacingMaxPerHour, goalCriteria, autoVerify, branchStrategy, autoSurfaceAudit,
-      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode, executor, decomposition } = body;
+      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode, executor, decomposition, createdByWorkerId } = body;
 
     if (autoSurfaceAudit !== undefined && typeof autoSurfaceAudit !== 'boolean') {
       return NextResponse.json({ error: 'autoSurfaceAudit must be a boolean' }, { status: 400 });
@@ -402,6 +403,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: contextArtifacts.error }, { status: 400 });
     }
 
+    // Who filed it and who it is for, kept apart (spec 7702c32a R-1/R-2).
+    const creator = await resolveMissionCreator({
+      user,
+      apiAccount,
+      createdByWorkerId: typeof createdByWorkerId === 'string' ? createdByWorkerId : undefined,
+    });
+
     const [mission] = await db
       .insert(missions)
       .values({
@@ -415,7 +423,7 @@ export async function POST(req: NextRequest) {
         initiativeId: initiativeId || null,
         contextArtifactIds: contextArtifacts.ids,
         maxConcurrentTasks: maxConcurrentTasks ?? null,
-        createdByUserId: user?.id || null,
+        ...creator,
         orchestrationMode: effectiveOrchestrationMode,
         ...(decompositionSkippedAtCreate ? { decompositionSkipped: true } : {}),
         isHeld: effectiveIsHeld,
@@ -491,7 +499,9 @@ export async function POST(req: NextRequest) {
               ...(Object.keys(templateContext).length > 0 ? { context: templateContext } : {}),
             },
             nextRunAt,
-            createdByUserId: user?.id || null,
+            // Only a person who filed the mission themselves names the schedule;
+            // otherwise its tasks reach the person through the mission.
+            createdByUserId: creator.requesterSource === 'explicit' ? creator.createdByUserId : null,
           })
           .returning();
         createdScheduleId = schedule.id;

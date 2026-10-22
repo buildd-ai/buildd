@@ -551,3 +551,88 @@ describe('POST /api/tasks/[id]/approve-plan — per-task token', () => {
     expect(mockInsertValues).toHaveLength(0);
   });
 });
+
+// Spec 7702c32a AC-3: a person's approval is a person's, recorded as theirs and
+// distinct from whoever filed the work; a caller that is not a person cannot
+// give it.
+describe('POST /api/tasks/[id]/approve-plan — who approved (spec 7702c32a AC-3)', () => {
+  const PLAN_TASK = '44444444-4444-4444-8444-444444444444';
+  const OWN_TASK = '55555555-5555-4555-8555-555555555555';
+  const taskScope = { taskId: OWN_TASK, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 };
+  const planRow = (over: Record<string, unknown> = {}) => ({
+    id: PLAN_TASK, mode: 'planning', status: 'completed', workspaceId: 'ws-1', missionId: 'm-1',
+    parentTaskId: null, createdByUserId: null, priority: 1, context: {}, description: 'Plan',
+    result: { structuredOutput: { plan: [{ ref: 'step-1', title: 'Do it', description: 'Work' }] } },
+    workspace: { id: 'ws-1' }, ...over,
+  });
+  let row: any;
+  const withKey = () => callHandler(POST, createMockRequest({ headers: { Authorization: 'Bearer bld_key' } }), PLAN_TASK);
+  const asSession = () => callHandler(POST, createMockRequest(), PLAN_TASK);
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockInsertValues = [];
+    mockUpdateSetCalls = [];
+    insertCount = 0;
+    row = planRow();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockImplementation(async (args: any) =>
+      args?.with?.mission?.columns?.initiativeId ? { missionId: 'm-1', workspaceId: 'ws-1', mission: { initiativeId: null } } : row);
+  });
+
+  afterAll(() => { mockApiAccount = { id: 'account-1', type: 'user' }; });
+
+  it('refuses a runner API key a plan marked for a person, whatever its level', async () => {
+    mockApiAccount = { id: 'account-1', level: 'admin', scopes: null };
+    row = planRow({ context: { requiresPlanApproval: true } });
+    expect((await withKey()).status).toBe(403);
+    expect(mockInsertValues).toHaveLength(0);
+  });
+
+  it("refuses an OAuth session on an 'agent' grant a plan marked for a person", async () => {
+    mockApiAccount = { id: 'account-1', level: 'admin', scopes: null, actsAs: 'agent', oauthUserId: 'user-9' };
+    row = planRow({ context: { requiresPlanApproval: true } });
+    expect((await withKey()).status).toBe(403);
+    expect(mockInsertValues).toHaveLength(0);
+  });
+
+  it("lets the person's own OAuth session approve it, and records them as the approver", async () => {
+    mockApiAccount = { id: 'account-1', level: 'admin', scopes: null, actsAs: 'person', sessionUserId: 'user-9' };
+    row = planRow({ context: { requiresPlanApproval: true } });
+    expect((await withKey()).status).toBe(200);
+    expect(mockInsertValues).toHaveLength(1);
+    expect(mockInsertValues[0].context.planApprovedBy).toBe('human:user-9');
+  });
+
+  it('records a dashboard approver as the approver, never as the person the work is for', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    row = planRow({ context: { requiresPlanApproval: true } });
+    expect((await asSession()).status).toBe(200);
+    expect(mockInsertValues[0].context.planApprovedBy).toBe('human:user-123');
+    // Who the children are for is derived from the plan at insert (the
+    // tasks_resolve_requester trigger), not named by the approve call.
+    expect(mockInsertValues[0].createdByUserId).toBeUndefined();
+    expect(mockInsertValues[0].parentTaskId).toBe(PLAN_TASK);
+    expect(mockInsertValues[0].missionId).toBe('m-1');
+  });
+
+  it("records an orchestration run's approval as the agent's, never as a person's", async () => {
+    mockApiAccount = { id: 'account-1', level: 'admin', scopes: null, taskScope, sessionUserId: 'user-9' };
+    expect((await withKey()).status).toBe(200);
+    expect(mockInsertValues[0].context.planApprovedBy).toBe(`agent:task:${OWN_TASK}`);
+    expect(mockInsertValues[0].createdByUserId).toBeUndefined();
+  });
+
+  it("records a plain API key's approval of an unmarked plan as that account's", async () => {
+    mockApiAccount = { id: 'account-1', level: 'admin', scopes: null };
+    expect((await withKey()).status).toBe(200);
+    expect(mockInsertValues[0].context.planApprovedBy).toBe('agent:account:account-1');
+  });
+});
