@@ -144,7 +144,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A mission's phases and each task's work-kind MUST be stored facts written once at their source, read by every surface through one derivation helper, and never inferred from a task's title.
 - [Mission Progress Strip — Topological Order and Dependency-on-Selection](./mission-progress-strip-ordering.md) · @builder — verified 2026-10-15
   The mission Landed strip MUST place every dependency left of its dependents, give blocked, queued and ready distinct textures, and mark a selected cell's blockers or unblocked work on the existing tick row.
-- [QA Capture Interaction Steps](./qa-capture-steps.md) · @builder — verified 2026-10-05
+- [QA Capture Interaction Steps](./qa-capture-steps.md) · @builder — verified 2026-10-22
   Visual QA capture MUST be able to open a modal, menu or gated state through a validated, closed list of steps before a shot, and MUST NOT commit a write on a page backed by real data.
 - [Settings Audiences](./settings-audiences.md) · @max — verified 2026-10-15
   Every setting MUST live on the page of whose it is (you, the team, one workspace), show a member one read-only line instead of controls, and never surface platform-operator machinery to a team.

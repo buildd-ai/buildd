@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { db } from '@buildd/core/db';
 import { artifactRevisions, artifacts, missions, specOutcomeVerdicts, systemCache, tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { parseSurfaceEvidence, UI_VERIFICATION_PROFILE, UI_VERIFICATION_PROFILE_VERSION, type SurfaceEvidence } from '@buildd/core/ui-verification';
@@ -20,7 +20,8 @@ import { linkedRepo } from './repo-source';
 import { livingSpecCriteriaOf } from './selected-scope';
 import { criterionHashes } from './criteria';
 import {
-  MAX_REGISTERED_SURFACES, sha256,
+  MAX_REGISTERED_SURFACES, dispatchRegisteredVerification, sha256,
+  type RegisteredVerification, type RegisteredVerificationDeps as Deps,
   type Collection, type CollectedSurface, type RefusedSurface, type RegisteredRun, type RegisteredSubject, type RegisteredVerificationDeps,
 } from './registered-verification';
 
@@ -208,6 +209,7 @@ Promise<{ ok: true; surface: CollectedSurface; evidence: SurfaceEvidence; at: nu
     ok: true, evidence: e, at: rev.at.getTime(),
     surface: {
       input: e, ref: `${c.id}:${rev.contentHash}`, fingerprint: sha256(e),
+      scenario: { scenarioId: e.subject.scenarioId, viewport: e.subject.viewport },
       provenance: { artifactId: c.id, revision: c.currentRevision, auditTaskId: audit.id, captureSha },
     },
   };
@@ -361,4 +363,65 @@ export async function verificationRequesterRefusal(requesterTaskId: string, subj
   if (!own) return 'unknown requesting task';
   if (own.parentTaskId === subjectTaskId) return 'a task filed under the subject never requests its grading';
   return null;
+}
+
+/**
+ * An automatic run of the coordinator with this store: a PR became ready or
+ * moved (`headSha` from the event), or an independent capture arrived (`null`:
+ * the head the store resolves). Idempotent per exact identity (the coordinator's
+ * `trigger: 'event'`), so a redelivered event changes nothing. Never throws: a
+ * registered check that cannot run reads as unverified, and blocks nothing.
+ */
+export async function runRegisteredVerificationOnEvent(
+  taskId: string, headSha: string | null, source: string, deps: Deps = registeredVerificationDeps,
+): Promise<RegisteredVerification | null> {
+  try {
+    const head = headSha ?? (await registeredVerificationHeadWith(taskId, deps));
+    if (!head) return null;
+    const r = await dispatchRegisteredVerification({ taskId, headSha: head, trigger: 'event' }, deps);
+    if (r.reason) console.warn(`[registered-verification] ${source} ${taskId}: ${r.reason}`);
+    return r;
+  } catch (err) {
+    console.error(`[registered-verification] ${source} ${taskId} failed:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+async function registeredVerificationHeadWith(taskId: string, deps: Deps): Promise<string | null> {
+  const s = await deps.load(taskId);
+  return 'error' in s ? null : s.headSha;
+}
+
+/** How many of an audit's dependencies one capture arrival re-verifies. */
+export const MAX_ARRIVAL_SUBJECTS = 20;
+
+/**
+ * The tasks whose registered checks a [surface audit]'s captures can now
+ * decide: the pinned tasks it reviews (its dependencies), and its mission's
+ * newest platform final verification. Only those, so an audit's captures are
+ * never offered to a subject it does not review; the store still applies the
+ * full lineage rule to each capture. Empty for anything but a mission's audit.
+ */
+export async function subjectsForArrivedCaptures(auditTaskId: string): Promise<string[]> {
+  if (!isUuid(auditTaskId)) return [];
+  const [audit] = await db.select(auditColumns).from(tasks).where(eq(tasks.id, auditTaskId)).limit(1);
+  if (!audit?.missionId || audit.roleSlug !== VISUAL_AUDITOR_ROLE_SLUG || !isSurfaceAuditTask(audit.title)) return [];
+  const deps = (Array.isArray(audit.dependsOn) ? audit.dependsOn : []).filter((x): x is string => typeof x === 'string' && isUuid(x)).slice(0, MAX_ARRIVAL_SUBJECTS);
+  const pinned = deps.length
+    ? (await db.select({ id: tasks.id, workspaceId: tasks.workspaceId, context: tasks.context }).from(tasks).where(inArray(tasks.id, deps)))
+      .filter((t) => t.workspaceId === audit.workspaceId && typeof asRecord(asRecord(t.context)?.specSource)?.specRevisionId === 'string')
+      .map((t) => t.id)
+    : [];
+  const [final] = await db.select({ id: tasks.id }).from(tasks)
+    .where(and(eq(tasks.missionId, audit.missionId), eq(tasks.workspaceId, audit.workspaceId), eq(tasks.creationSource, 'orchestrator'),
+      sql`${tasks.context}->'finalVerification'->>'missionId' = ${audit.missionId}`))
+    .orderBy(desc(tasks.createdAt)).limit(1);
+  return [...pinned, ...(final ? [final.id] : [])];
+}
+
+/** An independent capture arrived (its audit run reported): re-verify every subject it can decide. */
+export async function rerunRegisteredVerificationForAudit(auditTaskId: string, deps: Deps = registeredVerificationDeps): Promise<void> {
+  for (const taskId of await subjectsForArrivedCaptures(auditTaskId)) {
+    await runRegisteredVerificationOnEvent(taskId, null, `captures from audit ${auditTaskId}`, deps);
+  }
 }

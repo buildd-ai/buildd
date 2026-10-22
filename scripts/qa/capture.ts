@@ -61,6 +61,18 @@
  *   QA_KEEP_DEV_OVERLAY             — keep the Next.js dev error overlay in shots (default: hide it)
  *   QA_TEAM_ID                      — render as this team (sets the `buildd-team` cookie)
  *   QA_VIEWPORT                     — "mobile" (390x844 touch phone), "desktop", or WIDTHxHEIGHT (default: 1280x900)
+ *   QA_CAPTURE_SHA                  — the full commit SHA the page was built from. Needed for any
+ *                                     surface evidence (a plan route or state with `surface`): without
+ *                                     it, the capture records why no evidence was written.
+ *   QA_SURFACE_FACTS                — runtime facts per scenario for surface evidence, supplied
+ *                                     independently of the page: a path or inline JSON
+ *                                     `{ factVersion, scenarios: { <scenario>: { prState, ... } } }`.
+ *                                     Never read off the page; a scenario without facts records none.
+ *   QA_SURFACE_COLLECTOR            — visual_auditor | runner | agent (default agent), recorded on the
+ *                                     evidence. It grants nothing: the server admits a capture only by
+ *                                     the lineage of the artifact it is uploaded as.
+ *                                     Evidence lands in QA_OUTPUT/surfaces/<shot id>.json, see
+ *                                     scripts/qa/surface-evidence.ts.
  *   QA_THEME                        — "light" or "dark": emulates prefers-color-scheme, so any app that
  *                                     follows the OS theme renders in it, and also seeds buildd's own
  *                                     `buildd-theme` key. Recorded on every capture as `theme` (copy into
@@ -75,7 +87,8 @@ import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { resolveTheme, resolveViewport, type QaTheme } from './viewport';
 import { bootFailure, isModuleLoadError } from './boot';
-import { describeStep, guardWrites, parsePlan, planText, runSteps, type BlockedWrite, type PlanRoute, type Step, type StepFailure } from './steps';
+import { describeStep, guardWrites, parsePlan, planText, runSteps, type BlockedWrite, type PlanRoute, type PlanSurface, type Step, type StepFailure } from './steps';
+import { composeSurfaceEvidence, parseSurfaceFacts, readSurfaceDom, surfaceCollector, type SurfaceFacts } from './surface-evidence';
 import {
   classifyCaptureFailure,
   classifyConfigError,
@@ -146,6 +159,18 @@ if (process.env.QA_PLAN?.trim()) {
   }
 }
 
+// Surface evidence settings, validated before the first await for the same reason.
+let SURFACE_FACTS: SurfaceFacts | null = null;
+let SURFACE_COLLECTOR: ReturnType<typeof surfaceCollector>;
+try {
+  SURFACE_FACTS = parseSurfaceFacts(process.env.QA_SURFACE_FACTS, (p) => readFileSync(resolve(p), 'utf-8'));
+  SURFACE_COLLECTOR = surfaceCollector(process.env.QA_SURFACE_COLLECTOR);
+} catch (err) {
+  console.error(`[capture] ${(err as Error).message}`);
+  process.exit(1);
+}
+const CAPTURE_SHA = process.env.QA_CAPTURE_SHA?.trim() || undefined;
+
 // Playwright 1.61 can throw unhandled errors from internal cookie/URL handling when
 // a response URL is relative. Suppress these non-fatal background exceptions so the
 // process exits cleanly with the captures it managed to collect.
@@ -172,10 +197,12 @@ const DYNAMIC_PARAMS: Record<string, string | undefined> = {
 
 mkdirSync(join(OUTPUT_DIR, 'screenshots'), { recursive: true });
 mkdirSync(join(OUTPUT_DIR, 'a11y'), { recursive: true });
+mkdirSync(join(OUTPUT_DIR, 'surfaces'), { recursive: true });
 
 // --- Build the route list ---
 /** `state` + `steps`: a QA_PLAN state, shot after its steps on a fresh load. */
-type Route = { id: string; path: string; skipReason?: string; state?: string; steps?: Step[] };
+/** `surface` + `pattern`: a composed card to collect, and the plan route it was captured on (never a real id). */
+type Route = { id: string; path: string; skipReason?: string; state?: string; steps?: Step[]; surface?: PlanSurface; pattern?: string };
 
 /** Turn an ad-hoc path into a filesystem-safe id, e.g. /app/tasks/abc → app-tasks-abc */
 function slugify(path: string): string {
@@ -210,8 +237,8 @@ if (plan) {
     const { path, skipReason } = resolveManifestPath(r.route);
     const id = slugify(r.route.includes(':') ? path : r.route);
     return [
-      { id, path, skipReason },
-      ...r.states.map((s) => ({ id: `${id}--${s.key}`, path, skipReason, state: s.key, steps: s.steps })),
+      { id, path, skipReason, surface: r.surface, pattern: r.route },
+      ...r.states.map((s) => ({ id: `${id}--${s.key}`, path, skipReason, state: s.key, steps: s.steps, surface: s.surface, pattern: r.route })),
     ];
   });
   console.log(`[capture] plan mode — ${plan.length} route(s), ${routes.length - plan.length} state(s) from QA_PLAN`);
@@ -366,6 +393,8 @@ type Capture = {
   stepFailed?: StepFailure;
   /** Writes the page tried during the steps, aborted by the guard. */
   blockedWrites?: BlockedWrite[];
+  /** The surface evidence written for this shot, or why there is none. Present only when the plan named a surface. */
+  surface?: { id: string; scenarioId: string; file?: string; missing?: string; notes?: string[] };
   /** An auth wall, not a page: no screenshot was taken. */
   configError?: CaptureConfigError;
   configErrorMessage?: string;
@@ -508,6 +537,27 @@ for (const route of routes) {
       JSON.stringify({ ariaSnapshot: a11yData }, null, 2),
     );
 
+    // Surface evidence: the named card read off this same rendered page, with
+    // facts from QA_SURFACE_FACTS, never from the page.
+    let surface: Capture['surface'];
+    if (route.surface) {
+      const capturedAt = new Date().toISOString();
+      const file = `${route.id}.json`;
+      const composed = composeSurfaceEvidence(await page.evaluate(readSurfaceDom, route.surface.id), {
+        commitSha: CAPTURE_SHA, route: route.pattern ?? route.path, scenarioId: route.surface.scenario,
+        viewport: (contextOptions.viewport?.width ?? 1280) < 768 ? 'mobile' : 'desktop',
+        captureId: `${route.id}@${capturedAt}`, capturedAt, snapshotRef: `surfaces/${file}`, screenshot: true,
+        facts: SURFACE_FACTS, collector: SURFACE_COLLECTOR,
+      });
+      if (composed.ok) {
+        writeFileSync(join(OUTPUT_DIR, 'surfaces', file), JSON.stringify(composed.evidence, null, 2));
+        surface = { id: route.surface.id, scenarioId: route.surface.scenario, file: `surfaces/${file}`, ...(composed.notes.length ? { notes: composed.notes } : {}) };
+      } else {
+        surface = { id: route.surface.id, scenarioId: route.surface.scenario, missing: composed.reason };
+        console.warn(`[capture] SURFACE ${route.id}: no evidence for ${route.surface.id} (${composed.reason})`);
+      }
+    }
+
     const finalUrl = page.url();
     const boot = bootFailure(navStatus, moduleErrors);
     captures.push({
@@ -526,6 +576,7 @@ for (const route of routes) {
       devOverlay,
       ...(stepFailed ? { stepFailed } : {}),
       ...(guard?.blocked.length ? { blockedWrites: [...guard.blocked] } : {}),
+      ...(surface ? { surface } : {}),
       capturedAt: new Date().toISOString(),
     });
     if (boot) console.error(`[capture] FAIL  ${route.id}: app did not boot (${boot})`);

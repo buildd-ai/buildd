@@ -18,7 +18,7 @@ const { approveSpecRevision } = await import('../../src/lib/specs/approval');
 const { pinSpecSource } = await import('../../src/lib/specs/pin');
 const { readGovernedOutcome, recordRegisteredVerdict } = await import('../../src/lib/specs/outcome');
 const { dispatchRegisteredVerification } = await import('../../src/lib/specs/registered-verification');
-const { createRegisteredVerificationDeps, surfaceAuditorRefusal, verificationRequesterRefusal } = await import('../../src/lib/specs/registered-verification-store');
+const { createRegisteredVerificationDeps, rerunRegisteredVerificationForAudit, subjectsForArrivedCaptures, surfaceAuditorRefusal, verificationRequesterRefusal } = await import('../../src/lib/specs/registered-verification-store');
 const { executeUiVerification } = await import('../../src/lib/specs/ui-verification-decision');
 const { buildAuditScreenshotKey } = await import('../../src/lib/storage-keys');
 
@@ -32,8 +32,10 @@ const BODY = [
   '# Task card',
   '- AC-1: The card offers only actions the PR state allows.',
   `  verify: ${JSON.stringify(STATE)}`,
+  '  scenarios: closed-pr@mobile',
   '- AC-2: The card says each thing once.',
   `  verify: ${JSON.stringify(CLARITY)}`,
+  '  scenarios: closed-pr@mobile',
   '- AC-3: Out of scope for this task.',
   '',
 ].join('\n');
@@ -344,6 +346,8 @@ describe('registered verification on a task, with its production store', () => {
     expect(calls).toEqual([]);
 
     await storeCapture(ws.id, auditWorker, capture({}, TARGET));
+    // A capture arriving from the mission's audit re-verifies the mission's final verification.
+    expect(await subjectsForArrivedCaptures(audit.id)).toEqual([final.id]);
     const r = await dispatchRegisteredVerification({ taskId: final.id, headSha: TARGET }, deps);
     expect(r.results).toEqual([{ criterionId: 'AC-1', bindingId: 'ui.actions_match_state', verdict: 'pass', method: 'deterministic', cached: false, recorded: true }]);
     const rows = await q<{ mission_id: string; task_id: string | null; head_sha: string; evidence: any }>(sql`SELECT mission_id, task_id, head_sha, evidence FROM spec_outcome_verdicts WHERE mission_id = ${m.id}::uuid`);
@@ -353,6 +357,38 @@ describe('registered verification on a task, with its production store', () => {
     const read = await readMissionSpecOutcomes(null, m.id, githubApi);
     if (!read.ok) throw new Error(read.error);
     expect(read.outcomes[0].standing.standings.find((x) => x.criterionId === 'AC-1')).toMatchObject({ standing: 'pass', headSha: TARGET });
+  });
+
+  test('R-6/AC-5: an audit\'s captures arriving verify the task it reviews; a redelivered arrival records nothing new and asks no model again', async () => {
+    const s = await setup();
+    const h = harness({ model: modelPass });
+    expect(await subjectsForArrivedCaptures(s.auditId)).toEqual([s.builderId]);
+    // Not an audit: the builder's own report decides nothing for anyone.
+    expect(await subjectsForArrivedCaptures(s.builderId)).toEqual([]);
+    await rerunRegisteredVerificationForAudit(s.auditId, h.deps);
+    const rows = await verdictRows(s.builderId);
+    expect(rows.map((x) => [x.criterion_id, x.verdict])).toEqual([['AC-1', 'pass'], ['AC-2', 'pass']]);
+    expect(rows[0].evidence.run.scenarios).toEqual(['closed-pr@mobile']);
+    const calls = h.calls.length;
+    await rerunRegisteredVerificationForAudit(s.auditId, h.deps);
+    expect(h.calls).toHaveLength(calls);
+    expect(await verdictRows(s.builderId)).toHaveLength(2);
+  });
+
+  test('R-16: a capture of a scenario the criterion does not declare certifies nothing', async () => {
+    const other = capture();
+    const s = await setup({ content: { ...other, subject: { ...other.subject, scenarioId: 'open-pr' } } });
+    const h = harness({ model: modelPass });
+    const r = await dispatchRegisteredVerification({ taskId: s.builderId, headSha: HEAD }, h.deps);
+    expect(r.results.map((x) => [x.criterionId, x.verdict, x.recorded])).toEqual([['AC-1', 'inconclusive', false], ['AC-2', 'inconclusive', false]]);
+    expect(r.results[0].reason).toContain('closed-pr@mobile');
+    expect(h.calls).toEqual([]);
+    expect(await verdictRows(s.builderId)).toEqual([]);
+  });
+
+  test('R-2: a revision with a verify that names no captures is never written', async () => {
+    const r = await createSpecDraft(user(), { workspaceId: wsA, title: `Card ${rand()}`, body: `- AC-1: The card.\n  verify: ${JSON.stringify(STATE)}\n` });
+    expect(r).toMatchObject({ ok: false, status: 400, code: 'invalid_verification_declaration' });
   });
 
   test('R-18: a task token asking for verification is neither the subject nor filed under it', async () => {
