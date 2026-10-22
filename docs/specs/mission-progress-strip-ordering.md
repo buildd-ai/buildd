@@ -2,7 +2,7 @@
 title: Mission Progress Strip — Topological Order and Dependency-on-Selection
 status: active
 owner: builder
-last_verified: 2026-10-15
+last_verified: 2026-10-22
 summary: The mission Landed strip MUST place every dependency left of its dependents, give blocked, queued and ready distinct textures, and mark a selected cell's blockers or unblocked work on the existing tick row.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.tsx, apps/web/src/app/app/(protected)/missions/[id]/MissionBoardParts.tsx, apps/web/src/lib/mission-task-strip.ts, apps/web/src/lib/mission-board.ts]
@@ -63,42 +63,14 @@ and the Flow tab (the Structure canvas it once shared with is removed).
 
 ---
 
-## 0. The field defect, and which component it is
+## 0. Navigation amendment
 
-This section records the defects as found, before this spec was built. All
-three are fixed: order (§2), textures (§3.2) and the drawer count (§5).
-
-The screenshot (mission detail → Landed card, 14 cells, drawer reading
-`04 / 14  BLOCKED`, "Blocked · waiting on 8 dependencies") is **not**
-`SegmentStrip` or `MissionProgressBar`. It is `LandedStrip`
-(`apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.tsx`), which
-renders `LandedMeter` → `StripCells` → `StripCell`
-(`MissionBoardParts.tsx`) and the tethered `StripDrawer`. The order comes from
-`stripOrder` in `apps/web/src/lib/mission-task-strip.ts`:
-
-```ts
-export function stripOrder(model) { return model.phases.flatMap(p => p.taskIds); }
-```
-
-`model.phases` is `groupTasksByPhase` over `orderDeliverables`, i.e. **phase
-index, then `createdAt`**. `dependsOn` is never consulted. That is the whole of
-defect 1: a task created fourth that depends on eight tasks created after it is
-drawn fourth.
-
-Defect 2 is `STRIP_CELL_CLASS`: `ready` and `blocked` both map to
-`border-[var(--fleet-border-mid)] fleet-hatch`, so cells 07–14 are
-indistinguishable.
-
-Defect 3 is `StripDrawer`: the count comes from
-`t.deps.filter(d => !d.ok).length` and is handed to `TaskActionZone`, which
-prints "waiting on N dependencies". The tick row in `StripCells` knows nothing
-about the selection beyond the selected cell's own number.
-
-`SegmentStrip` and `MissionProgressBar` are in scope only for the delete list
-(§10) and the "unaddressable strips" rule (§2.6). The constraint "zero new
-components" holds: every change below is a helper, a class table, or a prop on
-`LandedMeter` / `StripCells` / `StripDrawer`. TypeGlyph is named in the brief
-but does not exist (see `timeline-mobile-rail.md` §10.3); nothing here needs it.
+The strip keeps its ordering, textures and dependency marks. The former
+`StripDrawer` is retired: clicking a task cell (or pressing Enter/Space) opens
+the task page with mission back context. ArrowLeft/Right/Home/End move the
+selection and its marks without navigating. References below to the old drawer
+record the ordering work's original presentation; the current interaction is
+specified by R-11, R-27 and R-31..R-35 and the task-page contract.
 
 ---
 
@@ -282,26 +254,14 @@ sparse), not only in colour.
 false whenever two cells are parallel, and the band already shows "9 of 14" as
 the landed count.
 
-The drawer header becomes:
+The task cell's accessible name carries its position and topology:
+`Cell {pos} of {n}, level {l} of {L}, {state words}: {title}`.
 
-```
-13 · LEVEL 9 OF 10   QUEUED   builder
-```
-
-- `13` — the cell's position, the same string as its tick. It is an address,
-  and after §2 it is a true lower bound: every task this one waits on is in
-  positions 01–12.
-- `LEVEL l OF L` — l = the cell's level, L = the deepest level in its
-  component. It says "at least l − 1 tasks have to land one after another
-  before this one can". That is true; "4th of 14" was not.
-- **R-9**: the level segment is omitted for a cell with no on-strip
-  edges (its component has one level). Any cell with an on-strip edge is in a
-  component of at least two levels and shows it.
-- **R-10**: no string matching `/\d+ \/ \d+/` is rendered in the drawer
-  header.
-- The cell `aria-label` becomes
-  `Cell {pos} of {n}, level {l} of {L}, {state words}: {title}` (level omitted
-  per R-9). "Task 4 of 14" is deleted for the same reason as the header.
+- **R-9**: omit the level segment for a component with one level. Any cell
+  with an on-strip edge belongs to a component of at least two levels.
+- **R-10**: the strip renders no drawer header or drawer ordinal. The task
+  page's mission bar may show `n / N` as a sibling navigation position; it is
+  not a dependency level or an execution sequence.
 
 ---
 
@@ -309,7 +269,7 @@ The drawer header becomes:
 
 ### 5.1 Direction is chosen by the selected cell's state
 
-| Selected cell | Marks show | Drawer reason line |
+| Selected cell | Marks show | Dependency reason (Flow card) |
 |---|---|---|
 | `blocked`, `queued` | **upstream**: frontier(T) = direct marks; upstream(T) − frontier(T) = transitive marks | `After 12 {label} (+7 upstream).` |
 | any **active** state with a non-empty downstream(T) | **downstream**: non-landed direct dependents = direct marks; rest of downstream(T) = transitive marks | `Unblocks 08, 13 (+3 downstream).` |
@@ -318,13 +278,13 @@ The drawer header becomes:
 
 Because of R-1, upstream marks always fall left of the selected cell and
 downstream marks always fall right of it, so one mark vocabulary serves both
-directions; the side of the screen, and the drawer's "After" / "Unblocks",
+directions; the side of the screen, and the reason's "After" / "Unblocks",
 say which.
 
-**R-11**: marks are recomputed from the selected task id only; the
-selection store (`useMissionStrip`) and the "a selection change re-renders two
-cells" property of `StripCell` stay. Marks live on the tick row, which
-re-renders as one unit.
+**R-11**: marks are derived from the board model and selected task id.
+The selection store (`useMissionStrip`) keeps keyboard selection local: the two
+changed `StripCell` buttons and the tick row update. A click, Enter or Space
+opens that task's page instead of a drawer.
 
 **R-12**: the reason line names at most two cells, frontier-first, as
 `{tick} {label}`, and tails the rest as `+N upstream` / `+N downstream`
@@ -598,8 +558,8 @@ the gotcha recorded for `computeMissionFlightStrip` (dropping live work at the
 cap) MUST NOT recur here.
 **R-26**: the summary cell is exempt from R-1. A mark whose target is
 folded marks the summary cell's tick instead.
-**R-27**: selecting a summary cell opens a drawer with the count and a
-link to the History tab (`?view=timeline`); it has no task actions.
+**R-27**: activating a summary cell opens the mission's History tab
+(`?layout=feed`); a fold never opens a task page or offers task actions.
 
 ---
 
@@ -619,52 +579,42 @@ n > 24 (6px / 1px at `md`). `stripCaretLeft` already reads the variable, so
 the caret and tether stay exact.
 
 **R-29** (tap targets): cells stay `h-11` (44px tall). Width falls under
-24px from n = 12 at 360px. The ‹ / › stepper buttons (44×44) and the Next
-open button are the conforming equivalent control (WCAG 2.5.8 equivalent
-exception); they MUST remain rendered whenever the strip is.
+24px from n = 12 at 360px. The Next open link remains a 44px control and
+opens the task page, whose mission sibling controls reach every task.
+History also provides task links at row size. These replace the retired
+inline drawer's stepper; dense cells are never the only way to open a task.
 
 **R-30** (marks never vanish): a mark is drawn at the full width of its
 cell's tick slot, minimum 1px, at every n ≤ 64. At 4.1px a direct mark is a
 4×6px block, a transitive mark a 4×2px line.
 
-**R-31** (truncation): the drawer reason line names at most two cells
-(R-12) and wraps with `[overflow-wrap:anywhere]` (existing); the header
-`13 · LEVEL 9 OF 10` never truncates (at most 20 characters at n ≤ 64).
+**R-31** (truncation): no drawer, drawer reason or drawer ordinal is
+rendered. Task cells keep their full title, level and state in their accessible
+name. Dependency reason text remains available to Flow's selected-task card
+through `stripSelectionReason` (R-12).
 
 ---
 
 ## 9. Next open
 
-**R-32**: Next open cycles through **open** cells only (active and not
-failed, `openIndices`), in strip order (§2.1), starting after the selection
-and wrapping. Held cells are skipped: there is nothing to do on a held task
-except look at its blockers, which the marks already show. Failed cells are
-skipped too: the header counts them apart (TONE-1), so the cycle must not
-visit a cell the count does not call open.
+**R-32**: the header link targets the next **open** task after the
+selection, wrapping in strip order (`openIndices`, `nextOpenIndex`). Held and
+failed tasks are skipped when an open task exists. It navigates to that task's
+page with mission context, rather than changing an inline drawer.
 
-Readiness decides membership (active vs held); topology decides sequence
-(strip order). The two are not alternatives: Next open uses both, and because
-the strip is topological, stepping forward through active cells walks
-dependencies before dependents.
+**R-33**: the header uses `stripCountsLabel`: open tasks, then failed tasks,
+then waiting tasks, omitting zero buckets, followed by ›. Folded cells count
+the tasks they contain (`stripSlotCounts`), not one cell.
 
-**R-33**: the header button reads `{a} open ›` where a = number of active
-cells, plus ` · {h} held` when h > 0. Today's "open" means "not landed",
-which counts held cells the button then visits; after this change the count
-and the cycle set are the same set.
+**R-34**: with no open task, the header targets the first failed task, else
+the first held task. With no target task it draws no link. It never opens a fold
+as though it were a single task.
 
-**R-34**: label states: `Next open · 06` / `Only open task · 06` /
-`All tasks landed` (unchanged) / `Nothing open · 2 failed` when a = 0 and a
-cell has failed (it selects the leftmost failed cell) / **new**
-`Nothing open · 3 held` when a = 0, nothing failed
-and h > 0 — enabled, and it selects the leftmost held cell (whose blocker is
-off-strip or in a cycle; there is no other way for every non-landed cell to
-be held).
-
-**R-35**: `defaultStripSelection` order of preference: the focus task;
-else the first active cell; else the first held cell; else the last cell.
-
-‹ / › and ArrowLeft/Right/Home/End keep stepping by position
-(`stepIndex`, `stripKeyTarget`), unchanged.
+**R-35**: `defaultStripSelection` prefers the focus task, else the first
+active cell, else the first held cell, else the last cell. ArrowLeft/Right,
+Home and End move selection by position (`stripKeyTarget`) and focus the
+selected cell; Enter/Space opens it. Sibling page navigation belongs to the
+task page's mission context bar.
 
 ---
 
@@ -727,20 +677,18 @@ Each criterion is checkable against a board model built from fixtures
   and no tick left of 06 is marked.
 - **AC-12**: GIVEN a landed cell selected, WHEN the strip renders, THEN no
   tick has `data-mark`.
-- **AC-13**: GIVEN any selected held task, WHEN the drawer renders, THEN the
-  "waiting on N" count equals |blockers(T)| (on-strip plus off-strip) and every
-  on-strip member of blockers(T) has a marked tick. Transitive marks beyond
-  blockers(T) are extra context, not counted: in a linear chain A→B→C→D→E,
-  selecting E reads "waiting on 1" and marks D, C and B (§7.1). Where every
-  upstream task is a direct dependency (§7.8) count and marks coincide.
-- **AC-14** (rejection): GIVEN any selected cell, WHEN the drawer renders,
-  THEN its header matches no `/\d+ \/ \d+/` and reads `{pos} · LEVEL l OF L`
-  (or `{pos}` alone for a single-level component).
-- **AC-15**: GIVEN the §7.8 fixture, WHEN Next open is pressed repeatedly from
-  position 01, THEN it visits 05, 06, 05, … and never a held cell.
+- **AC-13**: GIVEN a selected held task, WHEN dependency marks are derived,
+  THEN every on-strip unsatisfied blocker is marked and satisfied dependencies
+  are never marked. Transitive marks add context beyond the direct blocker set.
+- **AC-14** (rejection): GIVEN any selected cell, WHEN the strip renders,
+  THEN no task drawer or drawer ordinal is present; activating the cell opens
+  its task page with mission back context.
+- **AC-15**: GIVEN the §7.8 fixture with position 01 selected, WHEN the
+  header link renders, THEN it targets task 05's page, the next open task;
+  keyboard stepping still selects adjacent rendered cells.
 - **AC-16**: GIVEN a model where every non-landed task is held behind an
-  off-strip blocker, WHEN the strip renders, THEN the button reads
-  `Nothing open · {h} held`, is enabled, and selects the leftmost held cell.
+  off-strip blocker, WHEN the header renders, THEN it counts the waiting tasks
+  and links to the first held task's page.
 - **AC-17**: GIVEN a cycle A↔B plus C→A, WHEN `stripOrder` runs, THEN it
   terminates, returns each of A, B, C exactly once, after every released task
   of the component (R-22, R-23).
@@ -766,7 +714,7 @@ Each criterion is checkable against a board model built from fixtures
 ## Code surface
 
 - `apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.tsx` —
-  `LandedStrip`, `StripDrawer`, `stripReason`
+  `LandedStrip`, `stripReason`
 - `apps/web/src/app/app/(protected)/missions/[id]/MissionBoardParts.tsx` —
   `LandedMeter`, `StripCells`, `StripCell`, `STRIP_CELL_CLASS`,
   `STATUS_WORDS`, `MAX_NUMBERED_TICKS`, `stripTone`

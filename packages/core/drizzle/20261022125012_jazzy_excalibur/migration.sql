@@ -1,0 +1,1 @@
+ALTER TABLE "accounts" ADD COLUMN "budget_probe_requested_at" timestamp with time zone;

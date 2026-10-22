@@ -73,7 +73,9 @@ export interface ChatConversationProps {
    * through to ChatWorkspace.
    */
   onConversationCreated?: (id: string, created: { tier: ChatTierName | null; workspaceId: string | null }) => void;
-  canvas?: Pick<ChatWorkspaceProps, 'variant' | 'onClose' | 'onOpenObject' | 'fullChatHref' | 'crumbs' | 'strip' | 'pinOpenLabel'>;
+  canvas?: Pick<ChatWorkspaceProps, 'variant' | 'onClose' | 'onOpenObject' | 'fullChatHref' | 'crumbs' | 'strip' | 'pinOpenLabel' | 'closeAs'>;
+  /** Take focus when opened about something. Default true; docked Ask focuses only when asked. */
+  autoFocusAbout?: boolean;
 }
 
 /** A saved message (DTO) → the UIMessage `useChat` holds. Pure. */
@@ -90,7 +92,7 @@ export default function ChatConversation(props: ChatConversationProps) {
   const {
     conversationId, teamId, teamName, initialMessages, tier: initialTier, agent, workspaces, viewerName,
     canManageTeamKeys, aside, emptyState, historyOpen = false, focusRef, entry = EMPTY_CHAT_ENTRY, pulse = null,
-    onConversationCreated, canvas,
+    onConversationCreated, canvas, autoFocusAbout = true,
   } = props;
   const router = useRouter();
   const [title, setTitle] = useState(props.title);
@@ -270,7 +272,7 @@ export default function ChatConversation(props: ChatConversationProps) {
         focusRef={focusRef}
         focusOpensSheet={!entry.about}
         composerPlaceholder={messages.length === 0 ? composerHint(entry) : undefined}
-        autoFocus={!conversationId && (entry.intent !== null || entry.about !== null)}
+        autoFocus={!conversationId && (entry.intent !== null || (autoFocusAbout && entry.about !== null))}
         entryIntent={entry.intent}
         pulse={pulse}
         {...canvas}

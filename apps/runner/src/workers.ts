@@ -132,6 +132,7 @@ import { buildPromptCompositionRecord, appendPromptCompositionEvent, resolveRunn
 import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath, resolveClaudeCliVersion } from './sdk-binary-path';
 import { ModelProbePoller, createModelProbeHttpApi, sdkProbe } from './model-probe';
+import { BudgetWallProber, describeBudgetProbeRun, type BudgetProbeTrigger } from './budget-wall-probe';
 import { HookFactory } from './hook-factory';
 import { resolvePathClaimMode, describeEnforcement, resolvePrBaseRef, type PathCollision } from './path-claim-enforcement';
 import { deferOnPathCollision } from './path-collision-defer';
@@ -887,6 +888,8 @@ export class WorkerManager {
   // Quality Scout command probes (runner-host design §6) — idle ticks only, never a worker slot.
   private scoutHostPoller: ScoutHostPoller;
   private modelProbePoller: ModelProbePoller;
+  /** Probes a held provider wall on an interval, on `buildd budget reset` and on a server request (budget-wall-probe.ts). */
+  private budgetWallProber: BudgetWallProber;
   // Adaptive idle timeout: track recent worker durations to calibrate stale threshold
   private recentCycleTimes: number[] = [];  // Duration in ms of last N completed workers
   private adaptiveStaleTimeout: number = 300_000;  // Start at 5 min, adapt from cycle data
@@ -1075,6 +1078,18 @@ export class WorkerManager {
       probe: sdkProbe,
       cliVersion: () => resolveClaudeCliVersion(),
       enabled: process.env.BUILDD_MODEL_PROBE !== '0',
+    });
+
+    this.budgetWallProber = new BudgetWallProber({
+      probe: () => sdkProbe(process.env.BUILDD_BUDGET_PROBE_MODEL || 'haiku'),
+      report: (r) => this.buildd.reportBudgetWall({
+        ...r,
+        backend: 'claude',
+        runner: this.config.localUiUrl,
+        claudeLoginId: this.claimLoginIdentity(),
+      }),
+      // The wall is gone: claim the held work now rather than at the old reset.
+      onCleared: () => { this.pastResetStreak = 0; this.claimPendingTasks().catch(() => {}); },
     });
 
     // Send heartbeat to register availability (immediate + periodic)
@@ -1451,6 +1466,11 @@ export class WorkerManager {
     this.modelProbePoller.poll().catch(() => {});
   }
 
+  /** `buildd budget reset`: probe the held wall now. Resolves the line to print. */
+  async probeBudgetWall(trigger: BudgetProbeTrigger = 'cli'): Promise<string> {
+    return describeBudgetProbeRun(await this.budgetWallProber.probeNow(trigger));
+  }
+
   private async sendHeartbeat() {
     try {
       // A paused worker holds no slot (pause.ts), nor a question whose session
@@ -1471,9 +1491,15 @@ export class WorkerManager {
       // whether Claude is confined here, not whether bwrap is installed, so a
       // macOS runner on Seatbelt no longer reads as "user namespaces denied".
       const sandboxEnabled = probeAt !== null ? isConfined(getIsolationRecord().claude) : null;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth }, this.config.singleTask ? undefined : this.config.maxConcurrent);
+      const { viewerToken, pendingTaskCount, latestCommit, budgetProbeRequestedAt } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth }, this.config.singleTask ? undefined : this.config.maxConcurrent);
       if (viewerToken) {
         this.viewerToken = viewerToken;
+      }
+      // A held wall is probed on an interval; a client's request probes at once.
+      // Neither takes a slot, and neither runs while a person holds this runner.
+      if (!this.config.singleTask && !claimsHeldByPerson()) {
+        this.budgetWallProber.noteNudge(budgetProbeRequestedAt).catch(() => {});
+        this.budgetWallProber.tick().catch(() => {});
       }
       // Emit version info for auto-update checks
       if (latestCommit) {
@@ -2156,6 +2182,7 @@ export class WorkerManager {
         const wallSummary = diagnostics?.budgetBlock?.summary;
         console.warn(`[WorkerManager] ${wallSummary ?? 'Account OAuth budget exhausted.'} Next claim at ${budgetResetsAt} (${Math.round(delayMs / 60_000)} min)`);
         this.emit({ type: 'budget_exhausted', budgetResetsAt, delayMs });
+        this.budgetWallProber.noteWall(budgetResetsAt);
         // Wake up to poll the instant the budget resets. Without this the runner
         // only recovered on its hourly fallback poll (RUNNER_HEARTBEAT_INTERVAL_MS)
         // — the budget-reset re-queue deliberately emits `task:updated`, which the

@@ -332,6 +332,10 @@ export const accounts = pgTable('accounts', {
   // Budget exhaustion tracking (OAuth accounts)
   budgetExhaustedAt: timestamp('budget_exhausted_at', { withTimezone: true }),
   budgetResetsAt: timestamp('budget_resets_at', { withTimezone: true }),
+  // A client (dashboard, API, MCP) asked this account's runners to probe their
+  // provider wall now. The heartbeat answers it back; a runner probes once per
+  // new value. It asks only: the wall is cleared by a passing probe, never here.
+  budgetProbeRequestedAt: timestamp('budget_probe_requested_at', { withTimezone: true }),
 
   // Monthly budget tracking (Agent SDK credit pool, post 2026-06-15).
   // monthlyBudgetUsd is the cap (e.g. 100); null falls back to the BUDGET_MONTHLY_USD env.
@@ -605,6 +609,10 @@ export interface WorkspaceGitConfig {
   // Register mergiraf (structural merge) as a driver in runner clones for the
   // languages it parses. Off by default; skipped quietly if the binary is absent.
   mergiraf?: boolean;
+  // The wait exit (apps/web/src/lib/task-wait-exit.ts): an agent blocked by
+  // another task may end its run waiting on it (complete_task blockedOnTaskId)
+  // instead of failing. Off by default.
+  waitOnTask?: boolean;
   // Explicit overlap hotspots: paths or `dir/**` patterns where a same-file
   // overlap with an in-flight task is a deterministic hold, never a claim-time
   // HOLD/START decision (apps/web/src/lib/hard-overlap-surfaces.ts). Absent:

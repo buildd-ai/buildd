@@ -2,7 +2,7 @@
 title: Agent Question Protocol
 status: active
 owner: max
-last_verified: 2026-10-19
+last_verified: 2026-10-22
 summary: An agent question MUST include an actionable brief, pass the question gate and park only when human input is required.
 domain: tasks
 surfaces: [apps/web/src/lib/question-gate-check.ts, packages/core/needs-you.ts, apps/web/src/lib/sessionless-worker-settle.ts]
@@ -115,14 +115,13 @@ assertions:
   body means that; a worker row whose own `error` column carries
   `needs_input:` is a parked question, not a 404.
 - **A task's open question is one card on every surface.** The task page,
-  the mission task sheet, the Board and the timeline all answer with
+  the Board and the timeline all answer with
   `TaskQuestion` (`apps/web/src/components/tasks/TaskQuestion.tsx`), which
   folds `waitingFor` and the question note recording the same ask
   (`linkQuestionNote`) into one question. The note's title leads, its
   default choice is the recommendation, and an answer marks it answered
-  through the same `submitAnswer` path. The sheet reads the note from
-  `GET /api/tasks/[id]/summary` (`questionNote`), so it shows the note's
-  title and marks the note answered, as the page does.
+  through the same `submitAnswer` path. The task page loads the linked note
+  through `loadTaskView`; mission links open that page with their back context.
 - **The mission auto-retry gate excludes `needs_input`.** The PATCH route's
   per-task auto-retry (`shouldAutoRetry`, gated on `status === 'failed'`) must
   never blind-requeue a task whose failure is a parked question — that

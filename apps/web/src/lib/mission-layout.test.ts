@@ -22,6 +22,12 @@ describe('parseMissionLayout', () => {
     expect(parseMissionLayout('flow', 'timeline')).toBe('flow');
   });
 
+  it('a legacy QA History link opens History at either viewport', () => {
+    expect(parseMissionLayout(undefined, undefined, '1')).toBe('feed');
+    expect(parseMissionLayout('board', undefined, '1')).toBe('feed');
+    expect(parseMissionLayout(undefined, undefined, '0')).toBe('board');
+  });
+
   it('the tabs are Overview · Flow · History: no Lanes or Structure tab, no Graph/Timeline toggle', () => {
     expect(MISSION_LAYOUT_TABS.map(l => MISSION_LAYOUT_LABEL[l])).toEqual(['Overview', 'Flow', 'History']);
   });

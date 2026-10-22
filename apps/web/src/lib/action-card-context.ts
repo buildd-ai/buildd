@@ -71,7 +71,7 @@ export function actionCardTaskHref(
   if (!taskId) return null;
   if (opts.answer) return taskAnswerHref({ taskId, missionId: item.missionId ?? null });
   if (opts.page) return taskPageHref({ taskId, missionId: item.missionId ?? null });
-  return missionTaskHref({ missionId: item.missionId ?? null, taskId, from: 'home', mode: 'sheet' });
+  return missionTaskHref({ missionId: item.missionId ?? null, taskId, from: 'home' });
 }
 
 /**
