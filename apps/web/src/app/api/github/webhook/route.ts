@@ -40,6 +40,8 @@ import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { recordPrReverts } from '@/lib/pr-reverts';
+import { replacedNamedInBody, replacementNamedInClose } from '@/lib/pr-named-replacement';
+import { recordNamedReplacement } from '@/lib/pr-named-replacement-store';
 import { recordPrFact } from '@buildd/core/pr-facts';
 import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { authorsFromPushCommits, changedFilesFromPush, isPossibleBaseRef, type BaseAdvanceInput, type BaseResolver } from '@/lib/base-advance-notice';
@@ -123,6 +125,10 @@ async function dispatchEvent(event: string, data: any): Promise<void> {
 
       case 'pull_request_review':
         await handlePullRequestReviewEvent(data);
+        break;
+
+      case 'issue_comment':
+        await handleIssueCommentEvent(data);
         break;
 
       case 'pull_request_review_comment':
@@ -719,6 +725,27 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
   }
 }
 
+/**
+ * A comment on a PR that names its replacement (`Replaced by #N`, `superseded
+ * by #N`): recorded on the PR's unmerged worker as a named replacement, display
+ * only. The issue's state is not required to read `closed`: "Close with
+ * comment" posts the comment before the close, and the column is only shown on
+ * a closed-unmerged PR anyway. Never throws.
+ */
+async function handleIssueCommentEvent(event: {
+  action?: string;
+  issue?: { number?: number; state?: string; pull_request?: unknown } | null;
+  comment?: { body?: string | null } | null;
+  repository?: { full_name?: string } | null;
+}): Promise<void> {
+  const repo = event.repository?.full_name;
+  const prNumber = event.issue?.number;
+  if (event.action !== 'created' || !event.issue?.pull_request || !repo || typeof prNumber !== 'number') return;
+  const replacementPrNumber = replacementNamedInClose(event.comment?.body);
+  if (replacementPrNumber === null) return;
+  await recordNamedReplacement({ repoFullName: repo, closedPrNumber: prNumber, replacementPrNumber });
+}
+
 async function handlePullRequestEvent(event: {
   action: string;
   pull_request: {
@@ -755,6 +782,15 @@ async function handlePullRequestEvent(event: {
   if (action === 'opened' || action === 'reopened' || action === 'synchronize' || action === 'ready_for_review') {
     await registerLocalPr({ branch: pr.head.ref, repo: repository.full_name, headRepo: pr.head.repo?.full_name ?? null, number: pr.number,
       url: pr.html_url, headSha: pr.head.sha, baseRef: pr.base?.ref ?? null, draft: pr.draft ?? false });
+  }
+
+  // A PR whose body names what it replaces (`replaces #N`) names itself the
+  // replacement of each N: display only, never a gate (lib/pr-named-replacement.ts).
+  // Never throws.
+  if (action === 'opened' || action === 'edited' || action === 'reopened') {
+    for (const closedPrNumber of replacedNamedInBody(pr.body)) {
+      await recordNamedReplacement({ repoFullName: repository.full_name, closedPrNumber, replacementPrNumber: pr.number });
+    }
   }
 
   // ── Keep workers.prBaseRef in step with GitHub's base ref ────────────────

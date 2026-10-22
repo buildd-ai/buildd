@@ -37,6 +37,7 @@ import CriteriaCheckNow from './CriteriaCheckNow';
 import { MissionVisualAsk, WithMissionVisualReview, type MissionVisualReviewValue } from './MissionVisualReview';
 import type { PlanTask } from '@/lib/mission-plan';
 import { BuildCompleteBar, CheckRail, ChecksCard, OutcomeSpecLines } from './MissionChecks';
+import OverviewTaskStatus from './OverviewTaskStatus';
 
 /** What the page knows about the checks; the build counts and repairs come from the live board. */
 export type MissionChecksSource = Omit<MissionChecksInput, 'build' | 'repairs'>;
@@ -120,8 +121,12 @@ function OverviewView({
     : null;
   const where = checksSource?.branch === 'mission-branch' ? 'the mission branch' : checksSource?.target ?? 'the target branch';
 
+  // The selected task's status sits under the strip: its live clock, a pending retry, a closed PR's replacement.
   const strip = selectedId && (
-    <TaskStrip cells={cells} groups={groups} selectedId={selectedId} onSelect={select} onOpen={openTask} marks={overviewSelection(model, order, selectedId).marks} label="Mission tasks, done first" />
+    <>
+      <TaskStrip cells={cells} groups={groups} selectedId={selectedId} onSelect={select} onOpen={openTask} marks={overviewSelection(model, order, selectedId).marks} label="Mission tasks, done first" />
+      <OverviewTaskStatus model={model} id={selectedId} />
+    </>
   );
 
   return (
