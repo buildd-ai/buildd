@@ -2,7 +2,9 @@
  * The summoned canvas, mounted (happy-dom): the Ask button floats on app pages
  * (not on chat itself), opens the canvas over the page scoped to the page's
  * object, ⌘K toggles it and Esc closes it, and it peeks on desktop but takes
- * over a phone.
+ * over a phone. From 1440px it docks as the shell's Ask column (Navigation
+ * R-21): no scrim, no aria-modal, no scroll lock, ⌘K/Esc move focus, the
+ * collapsed state kept in a cookie, a SideSheet stacked inside it.
  *
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.
  */
@@ -24,7 +26,9 @@ mock.module('next/navigation', () => ({
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { ChatCanvasProvider, useChatCanvas } = await import('./ChatCanvas');
+const { AskDockSlot, ChatCanvasProvider, useChatCanvas } = await import('./ChatCanvas');
+const { default: SideSheet } = await import('@/components/SideSheet');
+const { closeAllSheets } = await import('@/lib/side-sheet-stack');
 
 let container: HTMLElement;
 let root: ReturnType<typeof createRoot>;
@@ -42,26 +46,41 @@ beforeEach(() => {
     // The pinned object's live view: not needed for these assertions.
     return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 });
   };
-  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 });
-  (window as any).matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
+  // Desktop below the dock width: the peek. Media queries answer against innerWidth.
+  setWidth(1280);
+  (window as any).matchMedia = (query: string) => {
+    const min = /min-width:\s*(\d+)px/.exec(query);
+    const max = /max-width:\s*(\d+)px/.exec(query);
+    const w = window.innerWidth;
+    return { matches: (!min || w >= Number(min[1])) && (!max || w <= Number(max[1])), addEventListener() {}, removeEventListener() {} };
+  };
+  document.cookie = 'buildd-ask-dock=; Max-Age=0; Path=/';
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
 });
 afterEach(() => {
+  act(() => closeAllSheets());
   act(() => root.unmount());
   container.remove();
 });
 
+function setWidth(w: number) {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: w });
+}
+
 let api: ReturnType<typeof useChatCanvas> = null;
 function Probe() { api = useChatCanvas(); return null; }
 
-async function render(available = true) {
+async function render(available = true, opts: { dockOpen?: boolean; page?: React.ReactNode } = {}) {
   await act(async () => {
     root.render(
-      <ChatCanvasProvider available={available} teamId="team-1" workspaces={[{ id: 'ws-1', name: 'billing-web' }]} viewerName="Maya">
+      <ChatCanvasProvider available={available} teamId="team-1" workspaces={[{ id: 'ws-1', name: 'billing-web' }]} viewerName="Maya" dockOpen={opts.dockOpen}>
         <Probe />
-        <p>the page</p>
+        <div className="flex">
+          <main data-scroll-root=""><p>the page</p><button type="button" data-testid="page-button">page</button>{opts.page}</main>
+          <AskDockSlot />
+        </div>
       </ChatCanvasProvider>,
     );
   });
@@ -192,6 +211,148 @@ describe('desktop peek (docs/design/chat-v3-desktop.md)', () => {
     expect(bannerHiddenSnapshot()).toBe(true);
     await act(async () => { api!.close(); });
     expect(bannerHiddenSnapshot()).toBe(false);
+  });
+});
+
+describe('docked from 1440px (Navigation R-21, AC-13)', () => {
+  const dock = () => q('[data-testid="ask-dock"]');
+  const panel = () => q('[data-testid="ask-dock-panel"]');
+
+  it('at 1600px Ask is docked open beside the page, about its mission, with no scrim and no aria-modal', async () => {
+    setWidth(1600);
+    await render();
+    await settle();
+    expect(dock()?.dataset.open).toBe('true');
+    expect(dock()!.className.split(/\s+/)).toEqual(expect.arrayContaining(['min-[1440px]:flex', 'w-[400px]', 'shrink-0']));
+    const p = panel()!;
+    expect(p.getAttribute('role')).toBe('complementary');
+    expect(p.getAttribute('aria-label')).toBe('Ask about this mission');
+    expect(p.hasAttribute('aria-modal')).toBe(false);
+    expect(dock()!.contains(p)).toBe(true);
+    // No overlay, no dim, no dialog.
+    expect(q('[data-testid="chat-canvas-overlay"]')).toBeNull();
+    expect(q('[data-testid="canvas-dim"]')).toBeNull();
+    expect(q('[aria-modal="true"]')).toBeNull();
+    expect(q('[data-testid="chat-column"]')?.dataset.canvas).toBe('overlay');
+    expect(api!.isOpen).toBe(true);
+    // The Ask button is not needed while the column is there.
+    expect(q('[data-testid="canvas-ask"]')).toBeNull();
+  });
+
+  it('locks no scroll, hides no banner and takes no focus on page load', async () => {
+    const { bannerHiddenSnapshot } = await import('@/lib/needs-input-hidden');
+    setWidth(1440);
+    await render();
+    await settle();
+    expect(panel()).not.toBeNull();
+    expect(q('main')!.style.overflow).toBe('');
+    expect(bannerHiddenSnapshot()).toBe(false);
+    expect(panel()!.contains(document.activeElement)).toBe(false);
+  });
+
+  it('at 1280px it stays the overlay (the peek), and the column is not reserved for it', async () => {
+    setWidth(1280);
+    await render();
+    await settle();
+    expect(panel()).toBeNull();
+    await act(async () => { api!.open(); });
+    await settle();
+    expect(q('[data-testid="chat-canvas-overlay"]')?.dataset.presentation).toBe('peek');
+    expect(q('[data-testid="canvas-dialog"]')?.getAttribute('aria-modal')).toBe('true');
+    expect(panel()).toBeNull();
+  });
+
+  it('⌘K moves focus into the composer, Esc gives it back, without closing', async () => {
+    setWidth(1600);
+    await render();
+    await settle();
+    const pageButton = q('[data-testid="page-button"]')!;
+    pageButton.focus();
+    await key({ key: 'k', metaKey: true });
+    // The composer takes focus after a 60ms beat (the conversation may still be loading).
+    await act(async () => { await new Promise(r => setTimeout(r, 100)); });
+    const composer = panel()!.querySelector('#chat-composer-input, textarea');
+    expect(composer).not.toBeNull();
+    expect(document.activeElement === composer).toBe(true);
+    await key({ key: 'Escape' });
+    expect(document.activeElement === pageButton).toBe(true);
+    expect(panel()).not.toBeNull();
+    expect(api!.isOpen).toBe(true);
+  });
+
+  it('collapsing is remembered in a cookie; a collapsed dock reopens from Ask and ⌘K', async () => {
+    setWidth(1600);
+    await render();
+    await settle();
+    await act(async () => { q('[data-testid="ask-dock-panel"] [data-testid="canvas-close"]')!.click(); });
+    expect(q('[data-testid="ask-dock-panel"] [aria-label="Collapse Ask"]')).toBeNull();
+    expect(document.cookie).toContain('buildd-ask-dock=collapsed');
+    expect(dock()?.dataset.open).toBe('false');
+    expect(panel()).toBeNull();
+    // Ask is back in its corner to bring the column back.
+    await act(async () => { q('[data-testid="canvas-ask"]')!.click(); });
+    await settle();
+    expect(document.cookie).toContain('buildd-ask-dock=open');
+    expect(panel()).not.toBeNull();
+    await act(async () => { api!.close(); });
+    await key({ key: 'k', ctrlKey: true });
+    await settle();
+    expect(panel()).not.toBeNull();
+  });
+
+  it('the server layout’s cookie decides the first render: collapsed reserves no column', async () => {
+    setWidth(1600);
+    await render(true, { dockOpen: false });
+    await settle();
+    expect(dock()?.dataset.open).toBe('false');
+    expect(dock()!.className).toBe('hidden');
+    expect(panel()).toBeNull();
+    expect(q('[data-testid="canvas-ask"]')).not.toBeNull();
+  });
+
+  it('the docked close button collapses rather than closes', async () => {
+    setWidth(1600);
+    await render();
+    await settle();
+    const btn = q('[data-testid="ask-dock-panel"] [data-testid="canvas-close"]')!;
+    expect(btn.getAttribute('aria-label')).toBe('Collapse Ask');
+    expect(btn.querySelector('[data-testid="key-hint"]')).toBeNull();
+  });
+
+  it('is not docked on the chat page itself', async () => {
+    pathname = '/app/chat';
+    setWidth(1600);
+    await render();
+    await settle();
+    expect(dock()?.dataset.open).toBe('false');
+    expect(panel()).toBeNull();
+  });
+
+  it('a SideSheet opened while docked stacks inside the Ask column, and returns to its own dock when Ask collapses', async () => {
+    setWidth(1600);
+    await render(true, { page: <SideSheet open onClose={() => {}} title="Records" testId="records-sheet"><p>records</p></SideSheet> });
+    await settle();
+    const sheet = q('[data-testid="records-sheet"]')!;
+    expect(sheet.dataset.layout).toBe('docked');
+    expect(sheet.dataset.inAsk).toBe('true');
+    expect(panel()!.contains(sheet)).toBe(true);
+    expect(sheet.className).toContain('absolute');
+    expect(sheet.className).not.toContain('w-[420px]');
+    await act(async () => { api!.close(); });
+    await settle();
+    const alone = q('[data-testid="records-sheet"]')!;
+    expect(alone.dataset.inAsk).toBeUndefined();
+    expect(alone.className).toContain('w-[420px]');
+    expect(alone.parentElement?.parentElement).toBe(document.body);
+  });
+
+  it('below 1440 a SideSheet docks on its own as before', async () => {
+    setWidth(1280);
+    await render(true, { page: <SideSheet open onClose={() => {}} title="Records" testId="records-sheet"><p>records</p></SideSheet> });
+    await settle();
+    const sheet = q('[data-testid="records-sheet"]')!;
+    expect(sheet.dataset.inAsk).toBeUndefined();
+    expect(sheet.className).toContain('fixed');
   });
 });
 

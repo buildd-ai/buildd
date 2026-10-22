@@ -609,6 +609,10 @@ export interface WorkspaceGitConfig {
   // Register mergiraf (structural merge) as a driver in runner clones for the
   // languages it parses. Off by default; skipped quietly if the binary is absent.
   mergiraf?: boolean;
+  // The wait exit (apps/web/src/lib/task-wait-exit.ts): an agent blocked by
+  // another task may end its run waiting on it (complete_task blockedOnTaskId)
+  // instead of failing. Off by default.
+  waitOnTask?: boolean;
   // Explicit overlap hotspots: paths or `dir/**` patterns where a same-file
   // overlap with an in-flight task is a deterministic hold, never a claim-time
   // HOLD/START decision (apps/web/src/lib/hard-overlap-surfaces.ts). Absent:
