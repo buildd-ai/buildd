@@ -172,4 +172,44 @@ export function classifyTaskTrouble(task: TroubleTaskLike, siblings: readonly Fa
   return null;
 }
 
+/**
+ * The task page's trouble. A failed task was already classified against its
+ * mission (`loadTaskFailure`), so that reading is reused: a `dependency`
+ * failure waits on the failed task. A pending one is read against its own
+ * `dependsOn` rows (`deps`, newest worker first), which may sit outside its
+ * mission.
+ */
+export function taskPageTrouble(
+  task: TroubleTaskLike,
+  deps: readonly FailureTaskLike[],
+  failure: { kind: TaskFailureKind | null; waitingOn: { taskId: string; title: string | null } | null } | null,
+  now: Date = new Date(),
+): TaskTrouble | null {
+  if (task.status === 'failed') {
+    if (failure?.kind === 'dependency' && failure.waitingOn) return { kind: 'waiting', on: { taskId: failure.waitingOn.taskId, title: failure.waitingOn.title } };
+    if (failure?.kind === 'verification') return { kind: 'needs_person', cause: 'verification' };
+    return { kind: 'needs_person', cause: personCauseOf(task.result) };
+  }
+  return classifyTaskTrouble(task, deps, now);
+}
+
+/**
+ * The one line the action zone says about a held task: what it waits on and,
+ * for a buildd retry, when it resumes (`resumesAt`, rendered as a time).
+ * `null` when the zone's own notices already say it (a failed task's cards).
+ */
+export function troubleLine(t: TaskTrouble | null): { text: string; on: { taskId: string; title: string | null } | null; resumesAt: string | null } | null {
+  if (!t) return null;
+  const name = (on: { title: string | null }) => (on.title?.trim() ? `“${on.title.trim()}”` : 'the task it depends on');
+  if (t.kind === 'waiting') return { text: `Waiting on ${name(t.on)}. It starts by itself when that task merges.`, on: t.on, resumesAt: null };
+  if (t.kind === 'retrying') {
+    return { text: t.resumesAt ? 'buildd retries this by itself. Resumes at' : 'buildd retries this by itself.', on: null, resumesAt: t.resumesAt };
+  }
+  if (t.on) {
+    const how = t.cause === 'blocker_cancelled' ? 'was cancelled' : 'failed';
+    return { text: `${name(t.on)} ${how}, so nothing will start this. Start it anyway or cancel it.`, on: t.on, resumesAt: null };
+  }
+  return null;
+}
+
 export { waitingOnFailedCopy } from '@buildd/core/dependency-failure';

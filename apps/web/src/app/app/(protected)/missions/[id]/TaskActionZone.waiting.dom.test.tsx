@@ -65,6 +65,14 @@ describe('TaskActionZone — waiting on a task', () => {
     expect(button('Cancel')).toBeDefined();
     expect(button('Retry')).toBeUndefined();
     expect(button('Run now')).toBeUndefined();
+    expect(container.querySelector('[data-testid="task-trouble-line"]')?.textContent).toContain('Waiting on “Runner image”');
+  });
+
+  it('a blocker that was cancelled says a person must act', async () => {
+    await mount({ trouble: { kind: 'needs_person', cause: 'blocker_cancelled', on } });
+    await flush();
+    expect(button('Start now anyway')).toBeDefined();
+    expect(container.querySelector('[data-testid="task-trouble-line"]')?.textContent).toContain('was cancelled');
   });
 
   it('Start now anyway lifts the wait through /start', async () => {
@@ -89,6 +97,7 @@ describe('TaskActionZone — buildd retrying', () => {
     await mount({ trouble: { kind: 'retrying', cause: 'infra', resumesAt: '2026-10-22T13:00:00Z' } });
     await flush();
     expect(button('Run now')).toBeUndefined();
+    expect(container.querySelector('[data-testid="task-resumes-at"]')?.getAttribute('dateTime')).toBe('2026-10-22T13:00:00Z');
     await act(async () => { button('Retry now')!.click(); });
     await flush();
     expect(calls.filter(c => c.method === 'PATCH')).toEqual([{ url: '/api/tasks/t1', method: 'PATCH', body: { startAt: null } }]);

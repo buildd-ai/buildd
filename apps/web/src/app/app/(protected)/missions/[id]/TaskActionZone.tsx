@@ -27,7 +27,7 @@ import ClaimTaskHint, { CLAIM_ROW_BTN } from '@/components/tasks/ClaimTaskHint';
 import RunnerPicker from '@/components/tasks/RunnerPicker';
 import Disclosure from '@/components/ui/Disclosure';
 import type { TaskFailureKind, TaskTrouble } from '@/lib/task-failure-kind';
-import { verificationFailedCopy, waitingOnFailedCopy } from '@/lib/task-failure-kind';
+import { troubleLine, verificationFailedCopy, waitingOnFailedCopy } from '@/lib/task-failure-kind';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { explainProviderAuthFailure } from '@/lib/provider-auth-failure';
 import EntitlementBlockedNotice from '@/components/entitlements/EntitlementBlockedNotice';
@@ -428,6 +428,26 @@ export default function TaskActionZone({
           </p>
         </div>
       )}
+
+      {/* What holds it and, for a buildd retry, when it resumes (R-20) */}
+      {(has('start_anyway') || has('retry_now')) && (() => {
+        const line = troubleLine(trouble);
+        if (!line) return null;
+        return (
+          <p data-testid="task-trouble-line" className="text-body text-text-secondary [overflow-wrap:anywhere]">
+            {line.text}
+            {line.resumesAt && (
+              <>
+                {' '}
+                <time data-testid="task-resumes-at" dateTime={line.resumesAt} suppressHydrationWarning>
+                  {new Date(line.resumesAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                </time>
+                .
+              </>
+            )}
+          </p>
+        );
+      })()}
 
       {/* Waiting on another task (R-20): it starts by itself when that merges; a person may start it past the wait or drop it */}
       {has('start_anyway') && start.status === 'idle' && (

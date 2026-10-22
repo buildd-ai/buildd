@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import { classifyTaskFailure, classifyTaskTrouble, verificationFailedCopy } from './task-failure-kind';
+import { classifyTaskFailure, classifyTaskTrouble, taskPageTrouble, troubleLine, verificationFailedCopy } from './task-failure-kind';
+import { taskActionSet } from './task-actions';
 
 const merged = { status: 'completed', prUrl: 'https://github.com/o/r/pull/1', mergedAt: '2026-01-01', prLifecycleStatus: 'merged' };
 const died = { status: 'failed', prUrl: null, mergedAt: null, prLifecycleStatus: null };
@@ -90,5 +91,57 @@ describe('classifyTaskTrouble (R-20: waiting, buildd retrying, or a person acts)
   it('a running or merged task is in no trouble', () => {
     expect(classifyTaskTrouble({ id: 'a', title: 'Build', status: 'in_progress' }, [], now)).toBeNull();
     expect(classifyTaskTrouble({ id: 'a', title: 'Build', status: 'completed', workers: [merged] }, [], now)).toBeNull();
+  });
+});
+
+describe('taskPageTrouble: what the task page passes to its action zone', () => {
+  const now = new Date('2026-10-22T12:00:00Z');
+  const later = '2026-10-22T13:00:00.000Z';
+  // The page's dependsOn rows: workers carry no status (depQuery's columns).
+  const dep = (status: string, workers: any[] = []) => ({ id: 'b', title: 'Runner image', status, workers });
+  const zone = { isBlocked: false, backend: null, hasQuestion: false, hasHistory: false } as const;
+  const row = { id: 'a', title: 'Build', status: 'pending', dependsOn: ['b'], startAt: null, context: {}, loopState: null, taskClass: null, result: null };
+
+  it('a pending task with an unmerged blocker is waiting, and the page offers Start now anyway and Cancel, no Retry', () => {
+    const openPr = { prUrl: 'https://github.com/o/r/pull/2', mergedAt: null, prLifecycleStatus: 'open' };
+    for (const blocker of [dep('in_progress'), dep('completed', [openPr])]) {
+      const trouble = taskPageTrouble(row, [blocker], null, now);
+      expect(trouble).toEqual({ kind: 'waiting', on: { taskId: 'b', title: 'Runner image' } });
+      const actions = taskActionSet({ ...zone, phase: 'blocked', isBlocked: true, trouble });
+      expect(actions).toContain('start_anyway');
+      expect(actions).toContain('cancel');
+      expect(actions).not.toContain('retry');
+    }
+  });
+  it('a dependency failure on the page reads as waiting on the failed task', () => {
+    const failed = { ...row, status: 'failed', dependsOn: [] };
+    expect(taskPageTrouble(failed, [], { kind: 'dependency', waitingOn: { taskId: 'b', title: 'Runner image' } }, now))
+      .toEqual({ kind: 'waiting', on: { taskId: 'b', title: 'Runner image' } });
+  });
+  it('a pending task whose blocker was cancelled needs a person (safety net)', () => {
+    const trouble = taskPageTrouble(row, [dep('cancelled')], null, now);
+    expect(trouble).toMatchObject({ kind: 'needs_person', cause: 'blocker_cancelled' });
+    expect(taskActionSet({ ...zone, phase: 'pending', trouble })).toEqual(expect.arrayContaining(['start_anyway', 'cancel']));
+  });
+  it('a buildd retry carries its resume time to Retry now', () => {
+    const trouble = taskPageTrouble({ ...row, dependsOn: [], startAt: later, context: { infraRetryCount: 2 } }, [], null, now);
+    expect(trouble).toEqual({ kind: 'retrying', cause: 'infra', resumesAt: later });
+    expect(taskActionSet({ ...zone, phase: 'pending', trouble })).toContain('retry_now');
+  });
+});
+
+describe('troubleLine', () => {
+  it('names the blocker of a waiting task', () => {
+    expect(troubleLine({ kind: 'waiting', on: { taskId: 'b', title: 'Runner image' } })?.text).toBe('Waiting on “Runner image”. It starts by itself when that task merges.');
+  });
+  it('exposes the resume time of a buildd retry', () => {
+    expect(troubleLine({ kind: 'retrying', cause: 'infra', resumesAt: '2026-10-22T13:00:00.000Z' })).toMatchObject({ resumesAt: '2026-10-22T13:00:00.000Z' });
+  });
+  it('says a dead blocker leaves the task to a person', () => {
+    expect(troubleLine({ kind: 'needs_person', cause: 'blocker_failed', on: { taskId: 'b', title: null } })?.text).toContain('nothing will start this');
+  });
+  it('says nothing for a failed task of its own (its cards say it)', () => {
+    expect(troubleLine({ kind: 'needs_person', cause: 'auth' })).toBeNull();
+    expect(troubleLine(null)).toBeNull();
   });
 });
