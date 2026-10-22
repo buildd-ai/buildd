@@ -135,7 +135,7 @@ describe('MissionBoard — running', () => {
   });
 
   it('tiles open the task page: a real href plus data-task-id', () => {
-    expect(html).toMatch(/href="\/app\/tasks\/api" data-task-id="api"/);
+    expect(html).toMatch(/href="\/app\/tasks\/api\?from=mission&amp;missionId=mission-1" data-task-id="api"/);
   });
 
   it('shows the just-now ticker and no completion record', () => {

@@ -3,9 +3,20 @@ import { legacyTaskSheetRedirect, missionTaskAnchorId, missionTaskHref, parseMis
 
 describe('missionTaskHref', () => {
   it('a task link is the task page, never the mission with ?task= (spec d25d923d R-1)', () => {
-    expect(missionTaskHref({ missionId: 'm1', taskId: 't1' })).toBe('/app/tasks/t1');
-    expect(missionTaskHref({ missionId: 'm1', taskId: 't1', from: 'home' })).toBe('/app/tasks/t1?from=home');
+    expect(missionTaskHref({ missionId: 'm1', taskId: 't1' })).toBe('/app/tasks/t1?from=mission&missionId=m1');
+    expect(missionTaskHref({ missionId: 'm1', taskId: 't1', from: 'home' })).toBe('/app/tasks/t1?from=home&missionId=m1');
     expect(missionTaskHref({ missionId: 'm1', taskId: 't1', from: 'home' })).not.toContain('task=');
+  });
+
+  it('retains mission identity and origin through task navigation', () => {
+    for (const from of [undefined, 'home', 'missions', 'initiative'] as const) {
+      const href = missionTaskHref({ missionId: 'm1', taskId: 't1', from, initiativeId: 'i1' });
+      const url = new URL(href, 'http://x');
+      expect(url.pathname).toBe('/app/tasks/t1');
+      expect(url.searchParams.get('missionId')).toBe('m1');
+      expect(url.searchParams.get('from')).toBe(from ?? 'mission');
+      expect(url.searchParams.get('initiativeId')).toBe(from === 'initiative' ? 'i1' : null);
+    }
   });
 
   it('focus mode lands on the row via the #t- hash, with no task param', () => {
@@ -15,7 +26,7 @@ describe('missionTaskHref', () => {
 
   it('initiative origin carries initiativeId, so the back link returns inside the initiative', () => {
     expect(missionTaskHref({ missionId: 'm1', taskId: 't1', from: 'initiative', initiativeId: 'i1' }))
-      .toBe('/app/tasks/t1?from=initiative&initiativeId=i1');
+      .toBe('/app/tasks/t1?from=initiative&missionId=m1&initiativeId=i1');
     expect(missionTaskHref({ missionId: 'm1', taskId: 't1', from: 'initiative', initiativeId: 'i1', mode: 'focus' }))
       .toBe('/app/missions/m1?from=initiative&initiativeId=i1#t-t1');
   });
@@ -30,7 +41,7 @@ describe('missionTaskHref', () => {
   });
 
   it('encodes ids', () => {
-    expect(missionTaskHref({ missionId: 'm 1', taskId: 't/1' })).toBe('/app/tasks/t%2F1');
+    expect(missionTaskHref({ missionId: 'm 1', taskId: 't/1' })).toBe('/app/tasks/t%2F1?from=mission&missionId=m%201');
     expect(missionTaskHref({ missionId: 'm 1', taskId: 't/1', mode: 'focus' })).toBe('/app/missions/m%201#t-t%2F1');
   });
 });
@@ -90,18 +101,18 @@ describe('legacyTaskSheetRedirect', () => {
   const I = '7d2e9c41-8b3a-4f6e-a1c2-5e4d3c2b1a09';
 
   it('?task=T goes to /app/tasks/T', () => {
-    expect(legacyTaskSheetRedirect('m1', { task: T })).toBe(`/app/tasks/${T}`);
+    expect(legacyTaskSheetRedirect('m1', { task: T })).toBe(`/app/tasks/${T}?from=mission&missionId=m1`);
   });
 
   it('keeps the back context: from, and an initiative id with the initiative origin', () => {
-    expect(legacyTaskSheetRedirect('m1', { task: T, from: 'home' })).toBe(`/app/tasks/${T}?from=home`);
+    expect(legacyTaskSheetRedirect('m1', { task: T, from: 'home' })).toBe(`/app/tasks/${T}?from=home&missionId=m1`);
     expect(legacyTaskSheetRedirect('m1', { task: T, from: 'initiative', initiativeId: I }))
-      .toBe(`/app/tasks/${T}?from=initiative&initiativeId=${I}`);
+      .toBe(`/app/tasks/${T}?from=initiative&missionId=m1&initiativeId=${I}`);
   });
 
   it('carries respond=1; a mission artifact param stays behind', () => {
-    expect(legacyTaskSheetRedirect('m1', { task: T, respond: '1' })).toBe(`/app/tasks/${T}?respond=1`);
-    expect(legacyTaskSheetRedirect('m1', { task: T, from: 'home', respond: '1' })).toBe(`/app/tasks/${T}?from=home&respond=1`);
+    expect(legacyTaskSheetRedirect('m1', { task: T, respond: '1' })).toBe(`/app/tasks/${T}?from=mission&missionId=m1&respond=1`);
+    expect(legacyTaskSheetRedirect('m1', { task: T, from: 'home', respond: '1' })).toBe(`/app/tasks/${T}?from=home&missionId=m1&respond=1`);
   });
 
   it('no task, or one that is not a task id: no redirect, the mission page renders', () => {

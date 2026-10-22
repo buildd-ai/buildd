@@ -44,7 +44,7 @@ describe('MissionFeedLayout', () => {
     // Highlights hides plain claims.
     expect(html).not.toContain('data-kind="claim"');
     expect(html).toContain('escalated to you: Retry for 4 hours or 24?');
-    expect(html).toMatch(/href="\/app\/tasks\/retry"[^>]*data-task-id="retry"/);
+    expect(html).toMatch(/href="\/app\/tasks\/retry\?from=mission&amp;missionId=mission-1"[^>]*data-task-id="retry"/);
   });
 
   it('says when the mission went quiet for weeks', () => {
@@ -80,7 +80,7 @@ describe('MissionFeedLayout: Highlights over delivery episodes', () => {
     expect(withEpisodes).toContain('data-kind="episode"');
     expect(withEpisodes).toContain('Fold retries into the delivery');
     expect(withEpisodes).toMatch(/data-testid="feed-context"[^>]*>[^<]+</);
-    expect(withEpisodes).toMatch(new RegExp(`href="/app/tasks/${task.id}"[^>]*data-task-id="${task.id}"`));
+    expect(withEpisodes).toMatch(new RegExp(`href="/app/tasks/${task.id}\\?from=mission&amp;missionId=mission-1"[^>]*data-task-id="${task.id}"`));
     expect(withEpisodes).toContain('PR #7 · Merged');
     expect(withEpisodes).toContain('3 steps');
   });

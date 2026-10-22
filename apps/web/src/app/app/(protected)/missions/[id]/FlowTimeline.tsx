@@ -11,7 +11,8 @@
  * Spec: docs/specs/mission-flow-timeline.md. The model is
  * `lib/flow-timeline.ts`; this file only draws it, in percentages and rows.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useMissionFocusSnapshot, useMissionFocusStore } from '@/components/missions/mission-focus-context';
 import FocusCard from '@/components/ui/FocusCard';
 import { STATES } from '@/components/ui/states';
 import type { MissionBoardModel } from '@/lib/mission-board';
@@ -48,6 +49,16 @@ export default function FlowTimeline({ model: serverModel, sameFiles, expectedMi
   const timeline = useMemo(() => buildFlowTimeline({ model, now, sameFiles, expectedMinutes }), [model, now, sameFiles, expectedMinutes]);
   const [picked, setPicked] = useState<string | null>(initialSelected ?? null);
   const [mergedOpen, setMergedOpen] = useState(false);
+  const focus = useMissionFocusStore();
+  const hashed = useMissionFocusSnapshot()?.selectedTaskId ?? null;
+  const hashedKind = hashed ? timeline.tasks[hashed]?.kind : undefined;
+  // A legacy #t-T arrival selects T without opening its page. Merged tasks
+  // must be unfolded before their row can register and complete the scroll.
+  useEffect(() => {
+    if (!hashed || !hashedKind) return;
+    setPicked(hashed);
+    if (hashedKind === 'done') setMergedOpen(true);
+  }, [hashed, hashedKind]);
   const selected = picked && timeline.tasks[picked] ? picked : defaultFlowSelection(timeline);
 
   const layout = useMemo(() => layoutFlowTimeline(timeline, { mergedOpen }), [timeline, mergedOpen]);
@@ -140,6 +151,10 @@ export default function FlowTimeline({ model: serverModel, sameFiles, expectedMi
                       type="button"
                       data-testid="flow-row"
                       data-task-row={row.id}
+                      ref={el => {
+                        if (el) focus?.registerRow(row.id, el);
+                        else focus?.unregisterRow(row.id);
+                      }}
                       data-tick={ft.tick}
                       aria-pressed={on}
                       aria-label={`${ft.tick} ${t.scope ?? t.label}: ${word(ft.state)}`}

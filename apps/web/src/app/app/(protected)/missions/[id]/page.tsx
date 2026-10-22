@@ -174,7 +174,7 @@ async function MissionDetailBody({
   // The protected layout's reads, shared per request (React cache()).
   const [teamIds, wsIds] = await Promise.all([getUserTeamIds(user.id), getUserWorkspaceIds(user.id)]);
   // Only the layout on screen is built (spec 3ef37387 R-18), with the reads only it shows.
-  const layout = parseMissionLayout(layoutParam, listViewParam);
+  const layout = parseMissionLayout(layoutParam, listViewParam, qaHistoryParam);
 
   // ── Round 1: everything that needs only the mission id and the viewer, in
   // one round trip (spec 3ef37387 R-3). S7 / AC-18: the shared shape selects

@@ -39,8 +39,8 @@ describe('buildMissionSiblingNav', () => {
     const nav = buildMissionSiblingNav(mission(), 'b1', hrefs);
     expect(nav.prevTaskId).toBe('th2');
     expect(nav.nextTaskId).toBe('b2');
-    expect(nav.position?.prevHref).toBe('/app/tasks/th2?from=home');
-    expect(nav.position?.nextHref).toBe('/app/tasks/b2?from=home');
+    expect(nav.position?.prevHref).toBe('/app/tasks/th2?from=home&missionId=m1');
+    expect(nav.position?.nextHref).toBe('/app/tasks/b2?from=home&missionId=m1');
   });
 
   it('the ends have no sibling in that direction', () => {

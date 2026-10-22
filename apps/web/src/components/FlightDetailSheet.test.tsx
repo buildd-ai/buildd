@@ -106,7 +106,7 @@ describe('FlightDetailSheet', () => {
         initialTaskId="a"
       />,
     );
-    expect(selected).toContain('href="/app/tasks/a?from=home"');
+    expect(selected).toContain('href="/app/tasks/a?from=home&amp;missionId=m1"');
     expect(selected).toContain('data-testid="flight-detail-open-mission"');
   });
 

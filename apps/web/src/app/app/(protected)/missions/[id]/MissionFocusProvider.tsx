@@ -69,6 +69,7 @@ export function createMissionFocusStore(deps: MissionFocusDeps): MissionFocusSto
   let lastPointerDown = -Infinity;
   let outlineTimer: TimerId | null = null;
   let freezeTimer: TimerId | null = null;
+  let fallbackTimer: TimerId | null = null;
   let pendingScroll: { taskId: string; block: ScrollLogicalPosition } | null = null;
   let observer: ReturnType<NonNullable<MissionFocusDeps['createObserver']>> | undefined;
 
@@ -88,6 +89,28 @@ export function createMissionFocusStore(deps: MissionFocusDeps): MissionFocusSto
     return observer;
   }
 
+  function cancelFallback() {
+    if (fallbackTimer !== null) deps.clearTimeout(fallbackTimer);
+    fallbackTimer = null;
+  }
+
+  // Overview reveals a completed build strip after the focus snapshot changes.
+  // Its cells do not register as feed rows, so look again during the outline
+  // window, then stop even when a stale hash names no element on this page.
+  function retryFallback(until: number) {
+    if (!deps.findRow || !pendingScroll || deps.now() >= until) return;
+    fallbackTimer = deps.setTimeout(() => {
+      fallbackTimer = null;
+      if (!pendingScroll) return;
+      const el = deps.findRow?.(pendingScroll.taskId);
+      if (el) {
+        const { block } = pendingScroll;
+        pendingScroll = null;
+        deps.scrollIntoView(el, block);
+      } else retryFallback(until);
+    }, 50);
+  }
+
   const store: MissionFocusStore = {
     getSnapshot: () => snapshot,
     subscribe(listener) {
@@ -101,6 +124,7 @@ export function createMissionFocusStore(deps: MissionFocusDeps): MissionFocusSto
     },
 
     focus(taskId, { writeHash = true, block = 'start' } = {}) {
+      cancelFallback();
       selectedTaskId = taskId;
       outlinedTaskId = taskId;
       if (outlineTimer !== null) deps.clearTimeout(outlineTimer);
@@ -126,6 +150,7 @@ export function createMissionFocusStore(deps: MissionFocusDeps): MissionFocusSto
         deps.scrollIntoView(el, block);
       } else {
         pendingScroll = { taskId, block };
+        retryFallback(deps.now() + FOCUS_OUTLINE_MS);
       }
       emit();
     },
@@ -150,6 +175,7 @@ export function createMissionFocusStore(deps: MissionFocusDeps): MissionFocusSto
         obs.observe(el);
       }
       if (pendingScroll?.taskId === taskId) {
+        cancelFallback();
         const { block } = pendingScroll;
         pendingScroll = null;
         deps.scrollIntoView(el, block);

@@ -105,13 +105,13 @@ describe('segment select → focus (AC-6)', () => {
     store.selectSegment('b');
     store.selectSegment('b');
     expect(replaced).toHaveLength(1);
-    expect(pushed).toEqual(['/app/tasks/b?from=home']);
+    expect(pushed).toEqual(['/app/tasks/b?from=home&missionId=m1']);
   });
 
   it('openTask carries an initiative origin to the task page', () => {
     const { store, pushed } = setup({ search: '?from=initiative&initiativeId=i1' });
     store.openTask('b');
-    expect(pushed).toEqual(['/app/tasks/b?from=initiative&initiativeId=i1']);
+    expect(pushed).toEqual(['/app/tasks/b?from=initiative&missionId=m1&initiativeId=i1']);
   });
 
   it('a select on a different segment moves focus instead of opening', () => {
@@ -176,6 +176,29 @@ describe('hash arrival', () => {
     store.readHash();
     expect(store.getSnapshot().selectedTaskId).toBe('c');
     expect(scrolled).toEqual([{ id: 'strip-cell-c', block: 'center' }]);
+  });
+
+  it('scrolls after a completed Overview unfolds its unregistered strip cell', () => {
+    const { store, scrolled, found, clock } = setup({ hash: '#t-c' });
+    store.readHash();
+    expect(scrolled).toEqual([]);
+    // Overview reveals its completed build strip in response to the focus
+    // snapshot, after readHash has already looked for the cell.
+    found.set('c', { id: 'strip-cell-c' } as unknown as HTMLElement);
+    clock.advance(50);
+    expect(scrolled).toEqual([{ id: 'strip-cell-c', block: 'center' }]);
+    clock.advance(FOCUS_OUTLINE_MS);
+    expect(scrolled).toHaveLength(1);
+  });
+
+  it('a later focus cancels the pending fallback scroll for the previous hash', () => {
+    const { store, scrolled, found, clock } = setup({ hash: '#t-c' });
+    store.readHash();
+    found.set('d', { id: 'strip-cell-d' } as unknown as HTMLElement);
+    store.focus('d');
+    found.set('c', { id: 'strip-cell-c' } as unknown as HTMLElement);
+    clock.advance(FOCUS_OUTLINE_MS);
+    expect(scrolled).toEqual([{ id: 'strip-cell-d', block: 'start' }]);
   });
 
   it('ignores a hash that is not a task anchor', () => {

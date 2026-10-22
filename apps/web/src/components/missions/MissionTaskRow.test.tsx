@@ -29,7 +29,7 @@ describe('MissionTaskRow DOM contract', () => {
 
   it('is a real link to the task page with the #t- anchor id and data attributes', () => {
     const a = anchor(html);
-    expect(a).toContain('href="/app/tasks/a?from=home"');
+    expect(a).toContain('href="/app/tasks/a?from=home&amp;missionId=m1"');
     expect(a).toContain('id="t-a"');
     expect(a).toContain('data-task-id="a"');
     expect(a).toContain('data-status="queued"');

@@ -69,8 +69,13 @@ describe('buildMissionListCard — running mission', () => {
     expect(card.sentence).toBeNull();
   });
 
-  it('links cells into the mission, never to a bare task page', () => {
-    for (const c of card.phases.flatMap(p => p.cells)) expect(c.href).toStartWith('/app/missions/m1?');
+  it('links cells to task pages with the mission back context', () => {
+    for (const c of card.phases.flatMap(p => p.cells)) {
+      const url = new URL(c.href, 'http://x');
+      expect(url.pathname).toStartWith('/app/tasks/');
+      expect(url.searchParams.get('missionId')).toBe('m1');
+      expect(url.searchParams.get('from')).toBe('missions');
+    }
   });
 });
 

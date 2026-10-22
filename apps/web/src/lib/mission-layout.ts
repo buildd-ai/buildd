@@ -16,7 +16,8 @@ export const MISSION_LAYOUT_LABEL: Record<MissionLayout, string> = {
 /** The tabs, in order: Overview · Flow · History. */
 export const MISSION_LAYOUT_TABS: readonly MissionLayout[] = ['board', 'flow', 'feed'];
 
-export function parseMissionLayout(layout: string | null | undefined, view?: string | null): MissionLayout {
+export function parseMissionLayout(layout: string | null | undefined, view?: string | null, qaHistory?: string | null): MissionLayout {
+  if (qaHistory === '1') return 'feed';
   if ((MISSION_LAYOUTS as readonly string[]).includes(layout ?? '')) return layout as MissionLayout;
   if (layout === 'lanes' || view === 'structure') return 'flow';
   if (view === 'timeline') return 'feed';

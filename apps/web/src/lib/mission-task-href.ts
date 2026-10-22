@@ -82,7 +82,11 @@ export function taskAnswerHref({ taskId, missionId }: { taskId: string; missionI
 export function missionTaskHref({ missionId, taskId, from, initiativeId, mode }: MissionTaskHrefInput): string {
   if (!missionId) return taskPageHref({ taskId });
   const params: string[] = [];
-  if (from) params.push(`from=${enc(from)}`);
+  if (mode !== 'focus') {
+    params.push(`from=${enc(from ?? 'mission')}`, `missionId=${enc(missionId)}`);
+  } else if (from) {
+    params.push(`from=${enc(from)}`);
+  }
   if (from === 'initiative' && initiativeId) params.push(`initiativeId=${enc(initiativeId)}`);
   const query = params.length ? `?${params.join('&')}` : '';
   if (mode !== 'focus') return `/app/tasks/${enc(taskId)}${query}`;

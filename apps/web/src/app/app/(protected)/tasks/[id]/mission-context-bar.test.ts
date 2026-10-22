@@ -42,14 +42,14 @@ describe('buildMissionContextBar', () => {
 
   it('‹ › link to the pulse-order siblings’ full pages', () => {
     const bar = buildMissionContextBar(mission(tasks), 'b2');
-    expect(bar.position?.prevHref).toBe('/app/tasks/b1');
-    expect(bar.position?.nextHref).toBe('/app/tasks/b3');
+    expect(bar.position?.prevHref).toBe('/app/tasks/b1?from=mission&missionId=m1');
+    expect(bar.position?.nextHref).toBe('/app/tasks/b3?from=mission&missionId=m1');
   });
 
   it('opened from an initiative, the up-link returns to the mission inside it, and ‹ › keep it (spec d25d923d AC-2)', () => {
     const bar = buildMissionContextBar(mission(tasks), 'b2', null, { from: 'initiative', initiativeId: 'i1' });
     expect(bar.upHref).toBe('/app/missions/m1?from=initiative&initiativeId=i1#t-b2');
-    expect(bar.position?.prevHref).toBe('/app/tasks/b1?from=initiative&initiativeId=i1');
+    expect(bar.position?.prevHref).toBe('/app/tasks/b1?from=initiative&missionId=m1&initiativeId=i1');
   });
 
   it('the ends of the pulse have no sibling link', () => {

@@ -190,7 +190,7 @@ describe('F2: a failing criterion is said once, and names what holds it', () => 
     expect(html).not.toContain('Blocker d');
     expect(html).toContain('+1 more');
     expect(html).toContain('data-task-id="t-a"');
-    expect(html).toContain('href="/app/tasks/t-a"');
+    expect(html).toContain('href="/app/tasks/t-a?from=mission&amp;missionId=m-1"');
     expect(html).toContain('· ready');
   });
 });
@@ -363,7 +363,7 @@ describe('affordanceFor', () => {
     expect(affordanceFor(failed, { missionId: 'm-1' })).toEqual({
       kind: 'internal',
       label: 'Open the failed task',
-      href: '/app/tasks/t-9',
+      href: '/app/tasks/t-9?from=mission&missionId=m-1',
       taskId: 't-9',
     });
   });
@@ -373,7 +373,7 @@ describe('affordanceFor', () => {
     const situation = { ...view.situation, focus: { kind: 'task_failed' as const, tone: 'error' as const, label: 'A task failed', infra: false, taskIds: ['t-9'], titles: ['Example'] } };
     const html = renderToStaticMarkup(<MissionSituationBlock missionId="m-1" situation={situation} because={[]} />);
     expect(html).toContain('data-task-id="t-9"');
-    expect(html).toContain('href="/app/tasks/t-9"');
+    expect(html).toContain('href="/app/tasks/t-9?from=mission&amp;missionId=m-1"');
   });
 });
 

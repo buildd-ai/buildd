@@ -211,12 +211,12 @@ describe('MissionFeedList — tap uniformity (AC-10)', () => {
 
   it('links a completed task with no PR to its page like any other row', () => {
     const html = render(fixtureMission(15));
-    expect(html).toContain('href="/app/tasks/th1"');
+    expect(html).toContain('href="/app/tasks/th1?from=mission&amp;missionId=mission-1"');
   });
 
   it('carries ?from= onto every row link', () => {
     const html = render(fixtureMission(3), { from: 'home' });
-    expect(html).toContain('href="/app/tasks/u1?from=home"');
+    expect(html).toContain('href="/app/tasks/u1?from=home&amp;missionId=mission-1"');
   });
 });
 

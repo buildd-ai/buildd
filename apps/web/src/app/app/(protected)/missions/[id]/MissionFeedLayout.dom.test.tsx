@@ -112,6 +112,6 @@ it('lens switch and the steps disclosure keep the page where it was: nothing rem
     act(() => { steps.open = true; });
     expect(steps.open).toBe(true);
     expect(container.querySelector('[data-testid="episode-steps"]')).toBe(steps);
-    expect(link.getAttribute('href')).toBe(`/app/tasks/${taskId}`);
+    expect(link.getAttribute('href')).toBe(`/app/tasks/${taskId}?from=mission&missionId=mission-1`);
   } finally { done(); }
 });

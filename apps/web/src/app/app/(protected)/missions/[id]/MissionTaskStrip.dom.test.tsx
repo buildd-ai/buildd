@@ -116,7 +116,7 @@ describe('Landed strip', () => {
     await mount(missionTaskStripFixture('mid-open'));
     fetches = [];
     await click(cells()[2]);
-    expect(pushed).toEqual([`/app/tasks/${stripFixtureId(3)}?from=home`]);
+    expect(pushed).toEqual([`/app/tasks/${stripFixtureId(3)}?from=home&missionId=m1`]);
     expect(fetches).toEqual([]);
   });
 
@@ -141,7 +141,7 @@ describe('Landed strip', () => {
   it('the header jump is a link to the next open task’s page', async () => {
     await mount(missionTaskStripFixture('mid-open'));
     expect(jump()?.textContent).toBe('1 open ›');
-    expect(jump()?.getAttribute('href')).toBe(`/app/tasks/${stripFixtureId(9)}?from=home`);
+    expect(jump()?.getAttribute('href')).toBe(`/app/tasks/${stripFixtureId(9)}?from=home&missionId=m1`);
   });
 
   it('opens on the situation block\'s task', async () => {
@@ -226,16 +226,16 @@ describe('Landed strip', () => {
     await mount({ model: dagBoard(spec) });
     expect(jump()?.textContent).toBe('2 open · 8 waiting ›');
     await selectAt(0);
-    expect(jump()?.getAttribute('href')).toBe(`/app/tasks/${cells()[4].dataset.taskRef}?from=home`);
+    expect(jump()?.getAttribute('href')).toBe(`/app/tasks/${cells()[4].dataset.taskRef}?from=home&missionId=m1`);
     await selectAt(4);
-    expect(jump()?.getAttribute('href')).toBe(`/app/tasks/${cells()[5].dataset.taskRef}?from=home`);
+    expect(jump()?.getAttribute('href')).toBe(`/app/tasks/${cells()[5].dataset.taskRef}?from=home&missionId=m1`);
   });
 
   it('AC-16: nothing active — the jump names the held work and links to it', async () => {
     const spec = { tasks: ['A', 'B'], edges: { B: ['A'] }, states: { A: 'landed' as const }, external: { B: ['x'] } };
     await mount({ model: dagBoard(spec, { externalDeps: [{ id: 'x', title: 'other work', status: 'pending' }] }) });
     expect(jump()?.textContent).toBe('1 waiting ›');
-    expect(jump()?.getAttribute('href')).toBe(`/app/tasks/${dagId(spec, 'B')}?from=home`);
+    expect(jump()?.getAttribute('href')).toBe(`/app/tasks/${dagId(spec, 'B')}?from=home&missionId=m1`);
   });
 
   it('AC-19: past 24 cells the gap tightens to 1px and a mark is still drawn per cell', async () => {

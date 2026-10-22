@@ -248,7 +248,7 @@ describe('buildMissionCardView', () => {
     const view = buildMissionCardView(row, { from: 'missions', now: NOW });
     expect(view.primary?.kind).toBe('moving');
     expect(view.primary?.label).toBe('Heartbeat renew · running');
-    expect(view.primary?.href).toBe('/app/tasks/run?from=missions');
+    expect(view.primary?.href).toBe('/app/tasks/run?from=missions&missionId=m1');
   });
 
   it('primary line: a cross-mission blocked-on-PR task links to that task, not to Home', () => {
@@ -257,7 +257,7 @@ describe('buildMissionCardView', () => {
     const index = new Map([[dep.id, dep], ...row.tasks!.map(t => [t.id, t] as const)]);
     const view = buildMissionCardView(row, { from: 'home', now: NOW, taskIndex: index });
     expect(view.primary).toEqual({
-      kind: 'blocked_pr', taskId: 'wait', label: 'Blocked on 1 PR', href: '/app/tasks/wait?from=home',
+      kind: 'blocked_pr', taskId: 'wait', label: 'Blocked on 1 PR', href: '/app/tasks/wait?from=home&missionId=m1',
     });
   });
 
