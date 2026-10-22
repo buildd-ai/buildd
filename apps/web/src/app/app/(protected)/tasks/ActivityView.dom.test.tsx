@@ -157,7 +157,7 @@ it('AC-1: a new mission that started at once shows once, marked New, created apa
   } finally { act(() => root.unmount()); }
 });
 
-it('AC-2: a five-generation chain is one row whose derived tasks expand, each linking to its task and its real parent', async () => {
+it('AC-2: a five-generation chain is one row whose attempts expand, each linking to its task and its real parent', async () => {
   const { activityContextFixture, ACTIVITY_FIXTURE_NOW, CHAIN_ROOT } = await import('@/app/app/dev/fixtures/activity-delivery-fixtures');
   const f = activityContextFixture();
   const container = document.createElement('div');
@@ -168,11 +168,14 @@ it('AC-2: a five-generation chain is one row whose derived tasks expand, each li
     expect(rows).toHaveLength(1);
     const derived = rows[0].querySelector('[data-testid="activity-derived"]')!;
     const toggle = derived.querySelector('button')!;
-    expect(toggle.textContent).toContain('5 derived tasks');
+    expect(toggle.textContent).toContain('5 attempts');
+    expect(toggle.textContent).not.toContain('derived');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(derived.querySelectorAll('[data-testid="activity-derived-child"]')).toHaveLength(0);
     act(() => toggle.click());
     const kids = [...derived.querySelectorAll('[data-testid="activity-derived-child"]')];
+    expect(kids[0].textContent).toMatch(/· generation 1/);
+    expect(kids.some(k => /· gen \d/.test(k.textContent ?? ''))).toBe(false);
     expect(kids.map(k => k.querySelector('[data-testid="activity-derived-task"]')?.getAttribute('href')))
       .toEqual(['g1', 'g2', 'g3', 'g4', 'g5'].map(g => `/app/tasks/fx-chain-${g}`));
     expect(kids.map(k => k.querySelector('[data-testid="activity-derived-parent"]')?.getAttribute('href')))

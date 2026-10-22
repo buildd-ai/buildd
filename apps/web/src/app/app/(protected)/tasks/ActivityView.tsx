@@ -390,13 +390,13 @@ function DerivedChildren({ items }: { items: readonly DerivedChild[] }) {
   const parts = [reviews > 0 && count(reviews, 'review', 'reviews'), repairs > 0 && count(repairs, 'repair', 'repairs')].filter(Boolean).join(' · ');
   return (
     <div data-testid="activity-derived" className="mb-2">
-      <Disclosure summary={<span className="text-meta text-text-muted">{count(items.length, 'derived task', 'derived tasks')}: {parts}</span>}>
+      <Disclosure summary={<span className="text-meta text-text-muted">{count(items.length, 'attempt', 'attempts')}: {parts}</span>}>
         <ol className="ml-3 border-l border-border-strong pl-3">
           {items.map(c => (
             <li key={c.id} data-testid="activity-derived-child" data-generation={c.generation} className="py-1 text-meta">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <StatusPill status={c.live ? 'running' : c.status} variant="plain" />
-                <span className="font-mono text-text-muted">{c.role === 'review' ? 'Review' : 'Repair'} · gen {c.generation}</span>
+                <span className="font-mono text-text-muted">{c.role === 'review' ? 'Review' : 'Repair'} · generation {c.generation}</span>
               </div>
               <Link href={c.href} data-testid="activity-derived-task" className="mt-0.5 inline-flex min-h-11 min-w-0 items-center break-words text-text-primary md:min-h-0">{displayTaskTitle(c.title)}</Link>
               <div className="flex flex-wrap gap-x-3 text-text-muted">
