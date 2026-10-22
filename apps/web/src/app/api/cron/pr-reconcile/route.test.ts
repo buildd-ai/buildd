@@ -237,7 +237,7 @@ describe('GET /api/cron/pr-reconcile', () => {
   // Incident 197552dc: a run that hit the function limit logged nothing after its first seconds, and a
   // run that finished logged every step at the end, so nobody could tell which step was slow.
   it('times every step of the merge-state pass, logs each as it finishes, and reports the slowest', async () => {
-    mockClosedPrSweep.mockImplementationOnce(async () => { await new Promise((r) => setTimeout(r, 40)); return CLOSED_ZERO; });
+    mockClosedPrSweep.mockImplementationOnce(async () => { await new Promise((r) => setTimeout(r, 600)); return CLOSED_ZERO; });
     const lines: string[] = [];
     const realLog = console.log;
     console.log = (...a: unknown[]) => { lines.push(a.map(String).join(' ')); };
@@ -251,7 +251,7 @@ describe('GET /api/cron/pr-reconcile', () => {
       expect(typeof body.timings[step]).toBe('number');
       expect(lines.some((l) => l.startsWith(`[PrReconcile] step=${step} ms=`))).toBe(true);
     }
-    expect(body.timings.closedPrs).toBeGreaterThanOrEqual(30);
+    expect(body.timings.closedPrs).toBeGreaterThanOrEqual(500);
     expect(lines.find((l) => l.startsWith('[PrReconcile] timings='))).toContain('slowest=closedPrs:');
     // A step's own line comes before the pass's summary, so a run cut off mid-pass still shows what finished.
     expect(lines.findIndex((l) => l.startsWith('[PrReconcile] step=reconcile'))).toBeLessThan(lines.findIndex((l) => l.startsWith('[PrReconcile] timings=')));
