@@ -417,8 +417,8 @@ describe('isolatedWorkspacePath', () => {
     // Characters outside [a-zA-Z0-9_-] are replaced with _
     const result = isolatedWorkspacePath('../../../etc', '/isolation');
     expect(result).not.toContain('..');
-    expect(result).not.toContain('/etc');
-    expect(result.startsWith('/isolation/')).toBe(true);
+    expect(result).not.toContain(join('/', 'etc'));
+    expect(result.startsWith(join('/isolation', '/'))).toBe(true);
   });
 
   test('different workspace IDs produce different paths', () => {
@@ -451,7 +451,7 @@ describe('stableCodexHomeIsolatedPath (codex-auth)', () => {
   test('sanitizes workspace and worker ids', () => {
     const result = stableCodexHomeIsolatedPath('../../../etc', '../worker', '/root');
     expect(result).not.toContain('..');
-    expect(result.startsWith('/root/')).toBe(true);
+    expect(result.startsWith(join('/root', '/'))).toBe(true);
   });
 });
 

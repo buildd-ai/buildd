@@ -1,6 +1,7 @@
 /**
- * The Overview: the lg strip with the finish-setting task selected, its focus
- * card, and the right rail. Static markup from the strip fixtures.
+ * The Overview: the lg strip with the finish-setting task selected (its marks
+ * only: a tap opens the task page), and the right rail. Static markup from the
+ * strip fixtures.
  */
 import { describe, expect, it, mock } from 'bun:test';
 
@@ -17,7 +18,7 @@ const { dagBoard, dagId, DAG_SPECS, overviewWavesBoard } = await import('@/app/a
 const legendText = (markup: string) => [...(markup.match(/data-testid="overview-counts"[\s\S]*?<\/p>/)?.[0] ?? '').matchAll(/data-legend="[^"]+"[^>]*>(?:<span[^>]*><\/span>)?([^<]*)</g)].map(m => m[1]);
 
 const spec = DAG_SPECS.linear;
-const html = renderToStaticMarkup(<MissionOverview model={dagBoard(spec)} missionId="mission-1" workspaceId="ws-1" />);
+const html = renderToStaticMarkup(<MissionOverview model={dagBoard(spec)} missionId="mission-1" />);
 
 const compact = await import('@/app/app/dev/fixtures/mission-detail-compact-fixtures');
 
@@ -27,11 +28,12 @@ describe('MissionOverview', () => {
     expect(selected).toBe(dagId(spec, 'B'));
   });
 
-  it('draws the lg strip, a focus card and the counts', () => {
+  it('draws the lg strip and the counts, with no focus card or ‹ › stepper (spec d25d923d R-1)', () => {
     expect(html).toContain('data-size="lg"');
-    expect(html).toContain('data-testid="focus-card"');
     expect(legendText(html)).toEqual(['1 done', '1 in progress', '3 waiting on tasks']);
-    expect(html).toContain('data-testid="overview-stepper"');
+    expect(html).not.toContain('data-testid="focus-card"');
+    expect(html).not.toContain('data-testid="overview-stepper"');
+    expect(html).not.toMatch(/role="dialog"|data-testid="task-sheet/);
   });
 
   it('puts the agents and needs-you counts in the rail, capped to a 720px main column', () => {
@@ -48,20 +50,14 @@ describe('MissionOverview', () => {
     expect(railLines(1, 1)).toEqual({ agents: '1 agent working', needs: '1 decision to make' });
     expect(railLines(3, 2)).toEqual({ agents: '3 agents working', needs: '2 decisions to make' });
   });
-
-  it('names the selection once: "02 of 05" in the card, the stepper keeps only the state', () => {
-    expect(html).toContain('02 of 05');
-    const stepper = html.slice(html.indexOf('data-testid="overview-stepper"'));
-    expect(stepper).not.toMatch(/\d\d of \d\d/);
-  });
 });
 
 describe('MissionOverview, 11 tasks with delivery', () => {
   const f = compact.missionDetailCompactFixture('eleven', null);
-  const out = renderToStaticMarkup(<MissionOverview model={f.model} deliveries={f.deliveries} missionId="mission-1" workspaceId="ws-1" />);
+  const out = renderToStaticMarkup(<MissionOverview model={f.model} missionId="mission-1" />);
 
-  it('draws Build › Verify › Deliver once (the Lifecycle line), not a second stage grid', () => {
-    expect(out.match(/data-testid="lifecycle"/g)).toHaveLength(1);
+  it('draws no per-task stage grid: a task’s track is on its page', () => {
+    expect(out).not.toContain('data-testid="lifecycle"');
     expect(out).not.toContain('data-testid="delivery-stages"');
   });
 
@@ -76,7 +72,7 @@ describe('MissionOverview, 11 tasks with delivery', () => {
 describe('MissionOverview groups', () => {
   const model = overviewWavesBoard(20);
   const layout = overviewLayout(model);
-  const out = renderToStaticMarkup(<MissionOverview model={model} missionId="mission-1" workspaceId="ws-1" />);
+  const out = renderToStaticMarkup(<MissionOverview model={model} missionId="mission-1" />);
   const cellIds = [...out.matchAll(/<button[^>]*data-id="([^"]+)"/g)].map(m => m[1]);
 
   it('draws cells Done first, then In progress, Waiting and checks, so the keys step in that order', () => {
@@ -108,7 +104,7 @@ describe('MissionOverview groups', () => {
   });
 
   it('a two-task mission draws two compact cells, not two wide slabs', () => {
-    const two = renderToStaticMarkup(<MissionOverview model={overviewWavesBoard(2)} missionId="mission-1" workspaceId="ws-1" />);
+    const two = renderToStaticMarkup(<MissionOverview model={overviewWavesBoard(2)} missionId="mission-1" />);
     expect(two).toContain('md:[--cell:minmax(0,56px)]');
     expect(two.match(/<button[^>]*data-id=/g)).toHaveLength(2);
   });
@@ -121,7 +117,7 @@ describe('MissionOverview handoff (spec f7f67f1a R-11 to R-24)', () => {
   const render = (variant: Parameters<typeof handoffFixture>[0]) => {
     const f = handoffFixture(variant, base);
     return renderToStaticMarkup(
-      <MissionOverview model={f.model} missionId="mission-1" workspaceId="ws-1" executor={f.executor} checks={f.checks} planTasks={f.planTasks} held={f.held} />,
+      <MissionOverview model={f.model} missionId="mission-1" executor={f.executor} checks={f.checks} planTasks={f.planTasks} held={f.held} />,
     );
   };
   const rows = (markup: string) => [...markup.matchAll(/data-testid="mission-check" data-kind="([^"]+)" data-status="([^"]+)"/g)].map(m => `${m[1]}:${m[2]}`);

@@ -190,9 +190,9 @@ describe('the install lock', () => {
   });
 
   test('a live install by another process refuses a second one without touching the tree', async () => {
-    nodeFs.writeFileSync(lockPath(), JSON.stringify({ pid: 1, startedAt: Date.now() }));
+    nodeFs.writeFileSync(lockPath(), JSON.stringify({ pid: process.ppid, startedAt: Date.now() }));
     const o = ops();
-    // pid 1 (init/launchd) is always alive
+    // our parent (the test runner) is alive and is not us; pid 1 does not exist on Windows
     const r = await applyUpdate(HOME, nodeFs, o);
     expect(r.success).toBe(false);
     expect(r.error).toContain('another package install is running');

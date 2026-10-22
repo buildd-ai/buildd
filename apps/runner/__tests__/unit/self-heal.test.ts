@@ -1,7 +1,8 @@
 import { expect, test } from 'bun:test';
 import { createPeriodicSelfHeal, SELF_HEAL_INTERVAL_MS } from '../../src/self-heal';
+import { fileURLToPath } from 'url';
 
-const fixture = new URL('../fixtures/self-heal-child.ts', import.meta.url).pathname;
+const fixture = fileURLToPath(new URL('../fixtures/self-heal-child.ts', import.meta.url));
 function setup(mode: string, timeoutMs = 5000) {
   let now = 0;
   const logs: string[] = [];
@@ -47,7 +48,8 @@ test('no fix output stays quiet; timer calls are gated for thirty minutes', asyn
 });
 
 for (const [mode, detail] of [['timeout', 'repair stalled'], ['crash', 'repair crashed'], ['signal', 'repair interrupted']]) {
-  test(`partial stdout does not hide ${mode}`, async () => {
+  // Windows has no signals: a self-SIGTERM exits with plain code 1, which is the doctor's "findings" exit.
+  test.skipIf(mode === 'signal' && process.platform === 'win32')(`partial stdout does not hide ${mode}`, async () => {
     const s = setup(mode, mode === 'timeout' ? 500 : 5000);
     s.advance(SELF_HEAL_INTERVAL_MS);
     await s.tick();

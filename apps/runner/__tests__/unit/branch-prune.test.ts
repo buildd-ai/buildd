@@ -22,7 +22,7 @@ let root: string;
 let repo: string;
 let origin: string;
 
-const branches = () => git(repo, "for-each-ref --format='%(refname:short)' refs/heads/buildd/").split('\n').filter(Boolean).sort();
+const branches = () => git(repo, 'for-each-ref --format="%(refname:short)" refs/heads/buildd/').split('\n').filter(Boolean).sort();
 const config = () => readFileSync(join(repo, '.git', 'config'), 'utf-8');
 
 function commitOn(name: string, base = 'origin/main') {

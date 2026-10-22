@@ -25,7 +25,7 @@
  */
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, join, resolve } from 'path';
+import { dirname, join, resolve, sep } from 'path';
 // The hook's own helpers, so the installer and the hook agree on what a workspace repo is.
 import { fetchWorkspaces, gitRepo, gitRoot, hasProjectBuilddMcp, readWorkspaceCache, resolveAuth, writeWorkspaceCache } from '../plugin/scripts/buildd-hook.mjs';
 import { resolveBuilddHome } from './buildd-home';
@@ -418,6 +418,31 @@ function entryLabel(entry: unknown): string | null {
   return actsAs === 'key' ? 'key' : `OAuth, ${ACTS_AS_LABEL[actsAs]}`;
 }
 
+/**
+ * The ~/.claude.json `projects` key Claude Code uses for a folder. On Windows it
+ * keys by the path with forward slashes (`C:/code/buildd`), while process.cwd()
+ * gives `C:\code\buildd`: an entry under the backslash key is never read.
+ */
+export function claudeProjectKey(path: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? path.replace(/\\/g, '/') : path;
+}
+
+/**
+ * Move each buildd entry an older install wrote under a key Claude Code does not
+ * read (a backslash path on Windows) into the entry it does read. The readable
+ * entry's own fields win; keys with no buildd entry are not buildd's to touch.
+ */
+function foldProjectKeys(projects: Record<string, Json>, platform: NodeJS.Platform): void {
+  for (const path of Object.keys(projects)) {
+    const key = claudeProjectKey(path, platform);
+    if (key === path || !isBuilddMcpEntry(projects[path]?.mcpServers?.buildd)) continue;
+    const stale = projects[path];
+    const kept = projects[key] ?? {};
+    projects[key] = { ...stale, ...kept, mcpServers: { ...(stale.mcpServers ?? {}), ...(kept.mcpServers ?? {}) } };
+    delete projects[path];
+  }
+}
+
 export function planMcpRegistration(opts: {
   claudeJson: Json;
   /** The key entry, used everywhere unless oauthEntry gives one for the folder. */
@@ -431,8 +456,11 @@ export function planMcpRegistration(opts: {
   /** Candidate folders with their repo (owner/name), e.g. every folder Claude Code has opened. */
   candidates: Array<{ path: string; repo: string | null; projectMcp?: boolean }>;
   workspaceRepos: string[];
+  /** Whose path form the keys take; defaults to this machine's. */
+  platform?: NodeJS.Platform;
 }): McpPlan {
   const config: Json = structuredClone(opts.claudeJson ?? {});
+  const platform = opts.platform ?? process.platform;
   if (opts.mode === 'everywhere') {
     config.mcpServers = { ...(config.mcpServers ?? {}), buildd: opts.entry };
     return { config, folders: [], selfConfigured: [], removedGlobal: false, repaired: [] };
@@ -441,11 +469,14 @@ export function planMcpRegistration(opts: {
   const repaired: string[] = [];
   const repos = new Set(opts.workspaceRepos.map(r => r.toLowerCase()));
   const isWorkspace = (c: { repo: string | null }) => !!c.repo && repos.has(c.repo.toLowerCase());
-  const selfConfigured = opts.mode === 'here' ? [] : opts.candidates.filter(c => c.projectMcp);
+  const candidates = opts.candidates.map(c => ({ ...c, path: claudeProjectKey(c.path, platform) }));
+  const cwd = claudeProjectKey(opts.cwd, platform);
+  const selfConfigured = opts.mode === 'here' ? [] : candidates.filter(c => c.projectMcp);
   const folders = opts.mode === 'here'
-    ? [opts.candidates.find(c => c.path === opts.cwd) ?? { path: opts.cwd, repo: null }]
-    : opts.candidates.filter(c => isWorkspace(c) && !c.projectMcp);
+    ? [candidates.find(c => c.path === cwd) ?? { path: cwd, repo: null }]
+    : candidates.filter(c => isWorkspace(c) && !c.projectMcp);
   config.projects = { ...(config.projects ?? {}) };
+  foldProjectKeys(config.projects, platform);
   const written: McpPlan['folders'] = [];
   for (const f of folders) {
     const oauth = opts.oauthEntry?.(f.repo) ?? null;
@@ -475,8 +506,8 @@ export function planMcpRegistration(opts: {
 }
 
 /** Folders Claude Code has opened (its own project list) plus cwd, that still exist, with their repo. */
-export function candidateFolders(claudeJson: Json, cwd: string): Array<{ path: string; repo: string | null; projectMcp: boolean }> {
-  const paths = new Set<string>([...Object.keys(claudeJson?.projects ?? {}), cwd]);
+export function candidateFolders(claudeJson: Json, cwd: string, platform: NodeJS.Platform = process.platform): Array<{ path: string; repo: string | null; projectMcp: boolean }> {
+  const paths = new Set<string>([...Object.keys(claudeJson?.projects ?? {}), cwd].map(p => claudeProjectKey(p, platform)));
   return [...paths].filter(p => existsSync(p)).sort()
     .map(path => ({ path, repo: gitRepo(path), projectMcp: hasProjectBuilddMcp(gitRoot(path) ?? path) }));
 }
@@ -490,7 +521,15 @@ function readBuilddConfig(home: string, env: Record<string, string | undefined>)
   };
 }
 
-const tilde = (path: string, home: string) => (path === home ? '~' : path.startsWith(home + '/') ? '~' + path.slice(home.length) : path);
+// On Windows the rest is shown with `/` (as ~/code/x); on Linux `\` is a filename character, so it stays.
+const tilde = (path: string, home: string) => {
+  // A Windows home (backslashes) also matches the forward-slash project keys.
+  if (home.includes('\\')) { path = path.replace(/\\/g, '/'); home = home.replace(/\\/g, '/'); }
+  return path === home ? '~'
+    : path.startsWith(home + sep) ? '~/' + path.slice(home.length + 1).split(sep).join('/')
+      : path.startsWith(home + '/') ? '~' + path.slice(home.length)
+        : path;
+};
 
 /** The bearer key of a buildd key entry, or null. Never printed. */
 function entryKey(entry: unknown): string | null {
@@ -503,7 +542,7 @@ function entryKey(entry: unknown): string | null {
  * key entry is flagged when the cached lists (written by install and the hooks)
  * say the person reaches the folder's workspace but that key's team does not.
  */
-export function mcpStatusLines(home: string, env: Record<string, string | undefined> = process.env): string[] {
+export function mcpStatusLines(home: string, env: Record<string, string | undefined> = process.env, platform: NodeJS.Platform = process.platform): string[] {
   let cfg: Json;
   try { cfg = readJson(join(home, '.claude.json')); } catch { return ['buildd MCP server: ~/.claude.json could not be parsed.']; }
   const rows: Array<[string, string]> = [];
@@ -521,6 +560,10 @@ export function mcpStatusLines(home: string, env: Record<string, string | undefi
     const kind = builddMcpAuthKind(entry);
     if (!kind) continue;
     let note = '';
+    if (claudeProjectKey(path, platform) !== path) {
+      rows.push([path, `${entryLabel(entry)}  Claude Code doesn't read this entry: run buildd install --here there (or --global) to move it`]);
+      continue;
+    }
     const key = kind === 'key' ? entryKey(entry) : null;
     if (key && hookEnv && personRepos && existsSync(path)) {
       const repo = gitRepo(path)?.toLowerCase() ?? null;
@@ -589,6 +632,8 @@ export interface CliEnv {
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
   now?: number;
+  /** Whose path form ~/.claude.json keys take; defaults to this machine's. */
+  platform?: NodeJS.Platform;
 }
 
 /** Register the MCP server per --global/--here/--everywhere. Returns the lines to print. */
@@ -633,7 +678,7 @@ async function registerMcp(mode: McpMode, oauth: boolean, asAgent: boolean, home
     return { ok: false, lines: [`${tilde(file, home)} could not be parsed; left untouched (${(err as Error).message}).`], workspaceRepos };
   }
   const plan = planMcpRegistration({
-    claudeJson, entry: builddMcpEntry(server, apiKey), mode, cwd,
+    claudeJson, entry: builddMcpEntry(server, apiKey), mode, cwd, platform: e.platform,
     oauthEntry: repo => {
       // The one connection needs no workspace id, so it also covers a folder that is not a workspace yet.
       if (accountEntry) return accountEntry;
@@ -642,7 +687,7 @@ async function registerMcp(mode: McpMode, oauth: boolean, asAgent: boolean, home
       return id ? builddOAuthMcpEntry(server, id) : null;
     },
     isOtherTeam,
-    candidates: mode === 'here' ? [{ path: cwd, repo: gitRepo(cwd) }] : candidateFolders(claudeJson, cwd),
+    candidates: mode === 'here' ? [{ path: cwd, repo: gitRepo(cwd) }] : candidateFolders(claudeJson, cwd, e.platform),
     workspaceRepos: allRepos,
   });
   writeJson(file, plan.config);
@@ -717,7 +762,7 @@ export async function runCli(argv: string[], e: CliEnv = {}): Promise<{ code: nu
   const cwd = e.cwd ?? process.cwd();
   const lines: string[] = [];
   let workspaceRepos: string[] | null = null;
-  if (parsed.mode === 'status' && parsed.scope === 'global') lines.push(...mcpStatusLines(home, e.env ?? process.env), '');
+  if (parsed.mode === 'status' && parsed.scope === 'global') lines.push(...mcpStatusLines(home, e.env ?? process.env, e.platform), '');
   if (parsed.mcp) {
     const r = await registerMcp(parsed.mcp, parsed.oauth, parsed.asAgent, home, cwd, e);
     if (!r.ok) return { code: 1, lines: r.lines };

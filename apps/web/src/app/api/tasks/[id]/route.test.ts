@@ -75,6 +75,15 @@ mock.module('@/lib/dispatch-authority', () => ({
   DRAIN_BATCH: 25,
 }));
 
+// The wait exit's own rules are tested in lib/task-wait-exit.test.ts; here only the route's wiring.
+const mockApplyWaitExit = mock(async (_i: any) => ({ ok: true, taskId: TASK_ID, blocker: { id: 'b', title: 'Blocker' }, dependsOn: ['b'], workerId: 'w-1' }) as any);
+mock.module('@/lib/task-wait-exit', () => ({
+  applyWaitExit: mockApplyWaitExit,
+  parseWaitOn: (raw: any) => raw?.taskId && raw?.reason
+    ? { ok: true, blockerTaskId: raw.taskId, reason: raw.reason }
+    : { ok: false, status: 400, code: 'invalid_wait', error: 'waitOn must be { taskId, reason }' },
+}));
+
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -2884,6 +2893,45 @@ describe('PATCH /api/tasks/[id] — per-task token', () => {
     const res = await patch({ description: 'x' });
     expect(res.status).toBe(403);
     expect(mockTasksUpdate).not.toHaveBeenCalled();
+  });
+
+  describe('waitOn (the wait exit)', () => {
+    const BLOCKER = '22222222-2222-2222-2222-222222222222';
+    beforeEach(() => {
+      mockApplyWaitExit.mockClear();
+      mockTasksFindFirst.mockResolvedValue({ ...own, workspace: { ...own.workspace, gitConfig: { waitOnTask: true } } });
+    });
+
+    it('lets the task’s own token wait on another task and answers pending', async () => {
+      const res = await patch({ waitOn: { taskId: BLOCKER, reason: 'needs the R-1 repair', workerId: 'w-1' } });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe('pending');
+      expect(body.waitingOn).toEqual({ id: 'b', title: 'Blocker' });
+      const call = mockApplyWaitExit.mock.calls[0][0];
+      expect(call.blockerTaskId).toBe(BLOCKER);
+      expect(call.workerId).toBe('w-1');
+      expect(call.task.gitConfig).toEqual({ waitOnTask: true });
+    });
+
+    it('passes a refusal through with its status and code', async () => {
+      mockApplyWaitExit.mockResolvedValueOnce({ ok: false, status: 409, code: 'cycle', error: 'already waits on this task' });
+      const res = await patch({ waitOn: { taskId: BLOCKER, reason: 'r' } });
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('cycle');
+    });
+
+    it('is sent on its own', async () => {
+      const res = await patch({ waitOn: { taskId: BLOCKER, reason: 'r' }, description: 'x' });
+      expect(res.status).toBe(400);
+      expect(mockApplyWaitExit).not.toHaveBeenCalled();
+    });
+
+    it('refuses a malformed waitOn before reading anything', async () => {
+      const res = await patch({ waitOn: { taskId: BLOCKER } });
+      expect(res.status).toBe(400);
+      expect(mockApplyWaitExit).not.toHaveBeenCalled();
+    });
   });
 
   it('leaves an account key’s fields unrestricted', async () => {

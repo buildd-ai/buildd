@@ -23,6 +23,7 @@
  */
 
 import { describe, test, expect, afterAll, beforeEach } from 'bun:test';
+import { join } from 'path';
 
 const MAIN_WORKTREE = '/repo';
 const DEFAULT_BRANCH = 'dev';
@@ -134,8 +135,8 @@ describe('worktree path follows the branch that is actually checked out', () => 
     expect(a.path).not.toBe(b.path);
     expect(a.branch).not.toBe(b.branch);
     // Each directory is named after the branch it actually holds.
-    expect(a.path).toBe(`${MAIN_WORKTREE}/.buildd-worktrees/${a.branch.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
-    expect(b.path).toBe(`${MAIN_WORKTREE}/.buildd-worktrees/${b.branch.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
+    expect(a.path).toBe(join(MAIN_WORKTREE, '.buildd-worktrees', a.branch.replace(/[^a-zA-Z0-9_-]/g, '_')));
+    expect(b.path).toBe(join(MAIN_WORKTREE, '.buildd-worktrees', b.branch.replace(/[^a-zA-Z0-9_-]/g, '_')));
     // And both `git worktree add` calls name distinct branches AND distinct paths.
     const adds = addCmds();
     expect(adds.length).toBe(2);
@@ -148,8 +149,8 @@ describe('worktree path follows the branch that is actually checked out', () => 
 
     expect(a.path).not.toBe(b.path);
     // Never the bare `<default>` directory, which every such worker shared.
-    expect(a.path).not.toBe(`${MAIN_WORKTREE}/.buildd-worktrees/${DEFAULT_BRANCH}`);
-    expect(b.path).not.toBe(`${MAIN_WORKTREE}/.buildd-worktrees/${DEFAULT_BRANCH}`);
+    expect(a.path).not.toBe(join(MAIN_WORKTREE, '.buildd-worktrees', DEFAULT_BRANCH));
+    expect(b.path).not.toBe(join(MAIN_WORKTREE, '.buildd-worktrees', DEFAULT_BRANCH));
   });
 
   test('an ordinary per-task branch keeps its path byte-for-byte', async () => {
@@ -158,7 +159,7 @@ describe('worktree path follows the branch that is actually checked out', () => 
     const result = await setupWorktree(MAIN_WORKTREE, 'buildd/0000abcd-slug', DEFAULT_BRANCH, 'worker-e5');
 
     expect(result.branch).toBe('buildd/0000abcd-slug');
-    expect(result.path).toBe(`${MAIN_WORKTREE}/.buildd-worktrees/buildd_0000abcd-slug`);
+    expect(result.path).toBe(join(MAIN_WORKTREE, '.buildd-worktrees', 'buildd_0000abcd-slug'));
   });
 
   test('a resume checkout keeps the task-branch-keyed path (unchanged behaviour)', async () => {
@@ -171,7 +172,7 @@ describe('worktree path follows the branch that is actually checked out', () => 
     );
 
     expect(result.branch).toBe('buildd/00001111-prior');
-    expect(result.path).toBe(`${MAIN_WORKTREE}/.buildd-worktrees/buildd_0000abcd-retry`);
+    expect(result.path).toBe(join(MAIN_WORKTREE, '.buildd-worktrees', 'buildd_0000abcd-retry'));
   });
 
   test('the same worker retrying the same mission branch is idempotent (same path, leftover reclaimed)', async () => {

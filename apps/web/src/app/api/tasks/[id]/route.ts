@@ -35,7 +35,8 @@ import { authenticateTaskScopedCaller, isOrchestrationTaskToken, taskScopeAllows
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
-import { applyTaskCancelSideEffects, applyTaskDeleteSideEffects, emitTaskUpdated } from '@/lib/task-cancel';
+import { applyWaitExit, parseWaitOn } from '@/lib/task-wait-exit';
+import { applyTaskCancelSideEffects, applyTaskDeleteSideEffects, emitTaskUpdated, endLiveWorkersForRequeue } from '@/lib/task-cancel';
 import { resolveDeferredStart } from '@/lib/deferred-start';
 import { wakeTask } from '@/lib/dispatch-authority';
 import { parseLoopConfig } from '@buildd/core/loop-config';
@@ -285,7 +286,7 @@ export async function GET(
  * how it runs or ends. Status, mission, dependencies, role, model, hold and
  * result go through complete_task and the gates behind it, or through a person.
  */
-const TASK_TOKEN_PATCH_FIELDS = new Set(['title', 'description', 'priority', 'project', 'externalIssueId', 'externalIssueUrl']);
+const TASK_TOKEN_PATCH_FIELDS = new Set(['title', 'description', 'priority', 'project', 'externalIssueId', 'externalIssueUrl', 'waitOn']);
 
 export async function PATCH(
   req: NextRequest,
@@ -383,6 +384,28 @@ export async function PATCH(
       // A token minted for this task reads its delegation through the caller cache.
       await clearCallerCache(callerDep.task(id));
       return NextResponse.json({ id: updated.id, delegation: updated.delegation });
+    }
+
+    // waitOn: the agent working this task found another task holds it, so the
+    // run ends waiting on that task instead of failing (lib/task-wait-exit.ts,
+    // Living Spec d25d923d R-20). Its own request, like pause.
+    if (body?.waitOn !== undefined) {
+      if (Object.keys(body).some(k => k !== 'waitOn')) {
+        return NextResponse.json({ error: 'waitOn is sent on its own, with no other fields' }, { status: 400 });
+      }
+      const parsed = parseWaitOn(body.waitOn);
+      if (!parsed.ok) return NextResponse.json({ error: parsed.error, code: parsed.code }, { status: parsed.status });
+      const workerId = typeof body.waitOn.workerId === 'string' ? body.waitOn.workerId : null;
+      const out = await applyWaitExit({
+        task: { ...task, dependsOn: (task.dependsOn as string[] | null) ?? null, gitConfig: task.workspace?.gitConfig ?? null },
+        blockerTaskId: parsed.blockerTaskId,
+        reason: parsed.reason,
+        workerId,
+      });
+      if (!out.ok) return NextResponse.json({ error: out.error, code: out.code }, { status: out.status });
+      noteWorkChanged({ missionIds: [task.missionId] });
+      await emitTaskUpdated({ id, workspaceId: task.workspaceId, missionId: task.missionId ?? null, status: 'pending' });
+      return NextResponse.json({ id, status: 'pending', waitingOn: out.blocker, dependsOn: out.dependsOn, workerId: out.workerId });
     }
 
     // pause: true pauses the agent working on this task instead of cancelling
@@ -778,6 +801,10 @@ export async function PATCH(
 
       // When resetting to pending, clear claim fields so the task is claimable again
       if (status === 'pending') {
+        // The owner's requeue also ends the task's live workers (their runner
+        // may be gone); otherwise they stay running and the task never leaves
+        // RUNNING until the stale-worker reap.
+        await endLiveWorkersForRequeue(id);
         updateData.claimedBy = null;
         updateData.claimedAt = null;
         updateData.expiresAt = null;

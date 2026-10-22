@@ -40,9 +40,9 @@ describe('StatePill', () => {
 
 // Regression (task page Related tasks): an attempt's badge read the raw DB value.
 describe('StatusPill', () => {
-  it('reads an in-progress task as Working, never the raw enum', () => {
+  it('reads an in-progress task as Running, never the raw enum', () => {
     const html = renderToStaticMarkup(<StatusPill status="in_progress" />);
-    expect(html).toContain('Working');
+    expect(html).toContain('Running');
     expect(html).toContain(STATES.running.glyph);
     expect(html).not.toContain('in_progress');
   });

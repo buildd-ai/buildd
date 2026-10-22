@@ -51,7 +51,8 @@ async function runProbe(env: Record<string, string>): Promise<{ lines: string[];
   return { lines: out.split('\n').filter(Boolean), code: code as number | null };
 }
 
-describe('SIGTERM with the real credential broker running', () => {
+// Windows has no SIGTERM: kill() terminates the child outright, so no handler runs.
+describe.skipIf(process.platform === 'win32')('SIGTERM with the real credential broker running', () => {
   test('the runner exits only after the pause finished, then the broker released its leases', async () => {
     const { lines, code } = await runProbe({});
     expect(lines).toContain('ready');

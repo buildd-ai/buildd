@@ -11,11 +11,15 @@
  * Records in the same place with `‹ Back` to the task, never a centered modal
  * over the docked sheet. Back and Escape pop the top sheet; ✕ closes them all.
  *
+ * While Ask is docked open (from 1440px, lib/ask-dock-host.ts) a docked sheet
+ * stacks inside the Ask column instead of opening a second panel beside it.
+ *
  * Confirmations for destructive actions are not sheets; they stay dialogs.
  */
 import { useEffect, useId, useRef, useSyncExternalStore, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { lockScroll, nextTrappedFocus } from '@/components/BottomSheet';
+import { useAskDockHost } from '@/lib/ask-dock-host';
 import {
   closeAllSheets, getServerSheetStack, getSheetStack, pushSheet, removeSheet, sheetPosition, subscribeSheets, updateSheet,
 } from '@/lib/side-sheet-stack';
@@ -73,6 +77,8 @@ export default function SideSheet({ open, onClose, title, children, testId, layo
   const viewportLayout = useSideSheetLayout();
   const layout = forced ?? viewportLayout;
   const docked = layout === 'docked';
+  const askHost = useAskDockHost();
+  const inAsk = docked && !!askHost;
   const stack = useSyncExternalStore(subscribeSheets, getSheetStack, getServerSheetStack);
   const { top, below } = sheetPosition(stack, id);
 
@@ -142,11 +148,14 @@ export default function SideSheet({ open, onClose, title, children, testId, layo
         tabIndex={-1}
         data-testid={testId}
         data-layout={layout}
+        data-in-ask={inAsk ? 'true' : undefined}
         {...(panelData ?? {})}
-        className={`fixed flex flex-col bg-surface-1 focus:outline-none focus-visible:outline-none ${
-          docked
-            ? 'bottom-0 right-0 top-0 z-40 w-[420px] max-w-full border-l-2 border-border-strong'
-            : 'inset-x-0 bottom-0 z-50 h-[88dvh] overflow-hidden border-t-2 border-border-strong pb-[env(safe-area-inset-bottom)]'
+        className={`flex flex-col bg-surface-1 focus:outline-none focus-visible:outline-none ${
+          inAsk
+            ? 'absolute inset-0 z-10'
+            : docked
+            ? 'fixed bottom-0 right-0 top-0 z-40 w-[420px] max-w-full border-l-2 border-border-strong'
+            : 'fixed inset-x-0 bottom-0 z-50 h-[88dvh] overflow-hidden border-t-2 border-border-strong pb-[env(safe-area-inset-bottom)]'
         }`}
       >
         {!docked && handle}
@@ -181,6 +190,6 @@ export default function SideSheet({ open, onClose, title, children, testId, layo
   );
 
   // Portal to <body>, as BottomSheet does: a sticky ancestor would otherwise
-  // trap the fixed panel under the bottom nav.
-  return canPortal ? createPortal(sheet, document.body) : sheet;
+  // trap the fixed panel under the bottom nav. Into the Ask column while it is docked open.
+  return canPortal ? createPortal(sheet, inAsk ? askHost : document.body) : sheet;
 }

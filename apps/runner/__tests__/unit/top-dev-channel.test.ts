@@ -146,7 +146,8 @@ describe('first run', () => {
     expect(await run(['--mission', 'm1'])).toBe(0);
 
     expect(devHead()).toBe(upstreamDev());
-    expect(nodeFs.readFileSync(join(DEV, 'apps/runner/src/index.ts'), 'utf-8')).toBe('// dev 1\n');
+    // Git for Windows' system config checks out with core.autocrlf=true.
+    expect(nodeFs.readFileSync(join(DEV, 'apps/runner/src/index.ts'), 'utf-8').replace(/\r\n/g, '\n')).toBe('// dev 1\n');
     expect(calls.installs).toEqual([DEV]);
     expect(calls.tops).toHaveLength(1);
     expect(calls.tops[0].dir).toBe(DEV);

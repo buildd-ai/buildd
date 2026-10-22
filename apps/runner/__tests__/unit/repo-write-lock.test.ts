@@ -33,7 +33,10 @@ import { gitRunAsync, KILL_GRACE_MS } from '../../src/git-async';
 import { gitCommonDirKey } from '../../src/repo-lock';
 import { initTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 
-const REAL_GIT = execSync('command -v git', { encoding: 'utf-8' }).trim();
+// The fake git below is a `#!/bin/sh` script found on PATH, which Windows cannot
+// exec: there the shim is not installed and the tests that need it are skipped.
+const IS_WIN = process.platform === 'win32';
+const REAL_GIT = IS_WIN ? 'git' : execSync('command -v git', { encoding: 'utf-8' }).trim();
 const KEYS = ['PATH', 'BUILDD_EXECUTOR', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL'];
 const ORIGINAL: Record<string, string | undefined> = Object.fromEntries(KEYS.map(k => [k, process.env[k]]));
 
@@ -58,6 +61,7 @@ beforeAll(() => {
   mkdirSync(binDir);
   collisions = join(tmp, 'collisions.log');
   writeFileSync(collisions, '');
+  if (IS_WIN) return;
   const lockDir = join(tmp, 'shared-git-write.lock');
   // Writers of the shared .git hold one exclusive lock while they run (and
   // sleep inside it). A second writer that finds it held fails, as git does on
@@ -119,7 +123,7 @@ describe('one writer per clone', () => {
     expect(gitCommonDirKey(wt)).toBe(gitCommonDirKey(repo));
   });
 
-  test('two concurrent setups in one clone never overlap their writes, and both are fully configured', async () => {
+  test.skipIf(IS_WIN)('two concurrent setups in one clone never overlap their writes, and both are fully configured', async () => {
     const clone = makeClone('concurrent');
     writeFileSync(collisions, '');
     const rules = [{ glob: 'bun.lock', strategy: 'theirs' as const, regenerate: 'true' }];
@@ -146,6 +150,8 @@ describe('one writer per clone', () => {
 });
 
 describe('a timed-out git has exited, locks dropped, before the call returns', () => {
+  // Windows has no SIGTERM: the tree is force-killed, git never drops index.lock,
+  // and the runner removes the lock the killed git left instead.
   test('a merge killed at its timeout leaves no index.lock', async () => {
     const repo = join(tmp, 'lock-merge');
     mkdirSync(repo);
@@ -166,7 +172,8 @@ describe('a timed-out git has exited, locks dropped, before the call returns', (
     expect(() => realGit(repo, 'status', '--porcelain')).not.toThrow();
   }, 20_000);
 
-  test('a child that ignores SIGTERM is SIGKILLed after the grace, and only then does the call settle', async () => {
+  // A shell trap on SIGTERM, from a shim git: neither exists on Windows.
+  test.skipIf(IS_WIN)('a child that ignores SIGTERM is SIGKILLed after the grace, and only then does the call settle', async () => {
     const dir = join(tmp, 'stubborn');
     mkdirSync(join(dir, 'bin'), { recursive: true });
     const pidFile = join(dir, 'pid');

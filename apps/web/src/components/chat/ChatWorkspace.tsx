@@ -131,6 +131,8 @@ export interface ChatWorkspaceProps {
   strip?: ReactNode;
   /** The pinned object's desktop button; null hides it. Default "Open beside ▸". */
   pinOpenLabel?: string | null;
+  /** Overlay: `collapse` when docked beside the page (Navigation R-21): the button folds the column, Esc doesn't close it. */
+  closeAs?: 'close' | 'collapse';
 }
 
 /**
@@ -216,8 +218,9 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     agent, tier, teamId = null, conversationId = null, pinnedTier = null, onTierChange, costRefreshKey = 0, workspaces, workspaceId, onWorkspaceChange, viewerName, aside, focusRef = null,
     newChatHref = '/app/chat', emptyState, historyOpen = false, initialPaneClosed = false,
     composerPlaceholder, autoFocus = false, focusOpensSheet = true, entryIntent = null, pulse = null,
-    variant = 'page', onClose, onOpenObject, fullChatHref = null, crumbs, strip, pinOpenLabel,
+    variant = 'page', onClose, onOpenObject, fullChatHref = null, crumbs, strip, pinOpenLabel, closeAs = 'close',
   } = props;
+  const collapse = closeAs === 'collapse';
   const overlay = variant === 'overlay';
   const [pane, dispatch] = useReducer(paneReducer, INITIAL_PANE, s => (
     // The overlay has no pane: the page behind is the object's full view.
@@ -486,10 +489,10 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         type="button"
         data-testid={ids.close}
         onClick={onClose}
-        aria-label="Close chat"
+        aria-label={collapse ? 'Collapse Ask' : 'Close chat'}
         className="grid w-12 shrink-0 place-items-center border-l border-[var(--chat-rule)] font-mono text-[16px] text-[var(--chat-text)] hover:bg-[var(--chat-raised)] lg:w-14"
       >
-        <span aria-hidden="true">✕</span>
+        <span aria-hidden="true">{collapse ? '→' : '✕'}</span>
       </button>
     </header>
   );
@@ -531,11 +534,11 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             type="button"
             data-testid="canvas-close"
             onClick={onClose}
-            aria-label="Close chat"
+            aria-label={collapse ? 'Collapse Ask' : 'Close chat'}
             className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 px-2 font-convo text-[18px] text-text-secondary hover:bg-[var(--convo-soft)] hover:text-text-primary"
           >
-            <Kbd>Esc</Kbd>
-            <span aria-hidden="true">✕</span>
+            {!collapse && <Kbd>Esc</Kbd>}
+            <span aria-hidden="true">{collapse ? '→' : '✕'}</span>
           </button>
         </>
       ) : (

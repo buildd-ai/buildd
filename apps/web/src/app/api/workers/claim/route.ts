@@ -95,6 +95,8 @@ import { workspaceExecutorGate } from './workspace-executor-gate';
 import { appliesWorkspacePausedGate, workspaceNotPausedGate } from './workspace-paused-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
+import { claimBranchHint } from '@/lib/claim-branch-hint';
+import { openOwnerQuestion } from '@/lib/owner-blocked-fix';
 import { repinSpecAtClaim, type ClaimPin } from '@/lib/specs/claim-pin';
 import { cancelSkippedTask, isRepairRole, notOwnerTaskSql, ownerClaimOpenSql, projectAttemptStart } from '@/lib/workflow/seam';
 import { isOwnerTask, withdrawOwner, type OwnerTask } from '@/lib/workflow/owner-attempt';
@@ -1242,6 +1244,7 @@ export async function POST(req: NextRequest) {
     routing_paused: 0,
     duplicate_worker: 0,
     sibling_retry_open: 0,
+    awaiting_owner_answer: 0,
     fix_not_needed: 0,
     kernel_unavailable: 0,
     kernel_refused: 0,
@@ -2939,6 +2942,17 @@ export async function POST(req: NextRequest) {
     // resolved while it queued (approved, merged, head moved, round superseded)
     // is cancelled as skipped — never started, and not a worker failure.
     if (isRepairRole((task as any).deliveryRole) && (task as any).deliveryId) {
+      // A fix attempt that ended asking a person is held until they answer: claiming it again
+      // reaches the same question. The delivery view shows the PR as waiting on them meanwhile.
+      const ownerQuestion = await openOwnerQuestion(task.id);
+      if (ownerQuestion) {
+        if (gatedStartLeaseIds.length > 0) {
+          await releaseGatedStartPaths({ workspaceId: task.workspaceId, taskId: task.id, insertedIds: gatedStartLeaseIds });
+        }
+        await rollBackClaim(task.id, account.id);
+        deferTask(task, 'awaiting_owner_answer', { question: ownerQuestion });
+        continue;
+      }
       fixClaimDeadline ??= Date.now() + (Number(process.env.KERNEL_CLAIM_BUDGET_MS) || CLAIM_FIX_CONTROL_PLANE_BUDGET_MS);
       const { value: fixDecision } = await withControlPlaneBudget('claim', Math.max(0, fixClaimDeadline - Date.now()), () => claimKernelFix({
         id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: (task as any).deliveryRole, context: task.context,
@@ -3179,10 +3193,18 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const branchHint = claimBranchHint({
+      interactive: !!interactiveSession,
+      sessionBranch: body.sessionBranch,
+      sessionCommitsAhead: body.sessionCommitsAhead,
+      assignedBranch: branch,
+      base: (patchedContext as Record<string, unknown> | null)?.baseBranch as string | undefined,
+    });
     claimedWorkers.push({
       id: worker.id,
       taskId: task.id,
       branch,
+      ...(branchHint ? { branchHint } : {}),
       task: task as any,
     });
     // Learning observes only successful claims, never a decision that later lost a rail or race.

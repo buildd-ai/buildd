@@ -2,7 +2,7 @@
 title: Mission Legibility
 status: active
 owner: builder
-last_verified: 2026-10-15
+last_verified: 2026-10-22
 summary: A mission's phases and each task's work-kind MUST be stored facts written once at their source, read by every surface through one derivation helper, and never inferred from a task's title.
 domain: surfaces
 surfaces: [apps/web/src/lib/task-presentation.ts, apps/web/src/lib/approve-plan.ts, apps/web/src/lib/mission-feed-groups.ts, "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.tsx"]
@@ -30,6 +30,8 @@ assertions:
   - id: "feed-phase-render-tests"
     type: "test_file"
     path: "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.test.tsx"
+  # This verifies the retained row component; it does not claim the current
+  # Overview renders the old grouped feed. Task navigation uses the task page.
   - id: "feed-row-glyph-reads-work-kind"
     type: "symbol_reachable"
     symbol: "deriveWorkKind"
@@ -102,7 +104,7 @@ this read are recorded in the team knowledge base, not this public repo — see
 task's **lifecycle** phase — `running`, `waiting_input`, `blocked`,
 `plan_review`, `completed` — and is described in its own doc comment as the
 "single source of truth" that "UI surfaces must not fork". It is consumed by
-`TaskPanel.tsx` and by the task detail page at
+the task detail page at
 `apps/web/src/app/app/(protected)/tasks/[id]/page.tsx`.
 
 A mission phase is an unrelated concept: a named stretch of a plan. Shipping a

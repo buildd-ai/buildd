@@ -446,6 +446,7 @@ const TASK_STATUS_WRITERS: Record<string, string> = {
   'apps/web/src/lib/held-pr-tasks.ts': NON_DELIVERY('settles a release task held on its release PR (context.releasePrPending); release PRs never open a delivery'),
   'apps/web/src/lib/mission-surface-audit.ts': NON_DELIVERY('cancels a pending, unclaimed surface audit left with no dependencies'),
   'apps/web/src/lib/quality-scout-actions.ts': NON_DELIVERY('retires a pending, unclaimed scout follow-up'),
+  'apps/web/src/lib/task-wait-exit.ts': NON_DELIVERY('the wait exit moves an open task back to pending to wait on its blocker; it refuses a task with a deliveryId and its WHERE skips a delivery-owned task (notDeliveryOwnedTaskSql)'),
   'apps/web/src/lib/supersession-store.ts': NON_DELIVERY('supersession rules bind away from a task with its own live PR (boundFor own_live_pr), and the not-started rules exclude owners'),
   'apps/web/src/lib/task-evidence-store.ts': 'NOT_LIFECYCLE: merges run evidence and mismatch flags into result',
   'apps/web/src/lib/task-shipped-store.ts': 'NOT_LIFECYCLE: merges the "what shipped" display record into result',
@@ -515,6 +516,7 @@ const ATTEMPT_SITES: Record<string, AttemptSite[]> = {
     { at: /'effectiveVerdictReason', \$\{copyGate\.reason/, kind: 'NO_STATUS', why: 'the copy review\'s verdict on the reviewer task\'s result' },
     { at: /'effectiveVerdictReason', \$\{serverOverrideReason\}/, kind: 'NO_STATUS', why: 'the server\'s escalation on the reviewer task\'s result' },
     { at: /'evidenceSha', \$\{evidenceSha\}/, kind: 'NO_STATUS', why: 'the commit the reviewer read its verdict at, on the reviewer task\'s result' },
+    { at: /'settledVerdict', \$\{effectiveVerdict\}/, kind: 'NO_STATUS', why: 'the verdict once every gate ran, on the reviewer task\'s result (a later delivery open adopts it)' },
   ],
   'apps/web/src/app/api/workers/claim/route.ts': [
     { at: /claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending'/, kind: 'NOT_OWNER', predicate: true, why: 'rollBackClaim gives back the route\'s own assigned claim (a fix the kernel deferred, a worker the account cap refused); an owner\'s is AttemptWithdrawn(requeued) on exactly that claim (AC-1 slice 9)' },

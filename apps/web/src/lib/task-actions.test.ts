@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import {
   claimTaskCommand,
   getGateReasonTitle,
+  requestRetryNow,
+  requestTaskCancel,
   requestTaskRetry,
   requestTaskStart,
   taskActionPhase,
@@ -51,6 +53,37 @@ describe('taskActionSet', () => {
   it('the pending family the page used to start (budget paused, subject dead) still offers Run now', () => {
     expect(taskActionSet({ ...base, phase: 'budget_paused' })).toEqual(['run_now']);
     expect(taskActionSet({ ...base, phase: 'subject_dead' })).toEqual(['run_now']);
+  });
+});
+
+describe('taskActionSet with who acts next (R-20)', () => {
+  const on = { taskId: 'b', title: 'Runner image' };
+
+  it('a task waiting on another task offers Start now anyway and Cancel, never Retry or Run now', () => {
+    expect(taskActionSet({ ...base, phase: 'blocked', isBlocked: true, trouble: { kind: 'waiting', on } })).toEqual(['blocked', 'start_anyway', 'cancel']);
+    expect(taskActionSet({ ...base, trouble: { kind: 'waiting', on } })).toEqual(['start_anyway', 'cancel']);
+  });
+
+  it('a waiting task whose blocker died keeps the same two ways on', () => {
+    expect(taskActionSet({ ...base, trouble: { kind: 'needs_person', cause: 'blocker_cancelled', on } })).toEqual(['start_anyway', 'cancel']);
+  });
+
+  it('a task buildd is retrying offers Retry now in place of Run now', () => {
+    expect(taskActionSet({ ...base, trouble: { kind: 'retrying', cause: 'infra', resumesAt: '2026-10-22T13:00:00Z' } })).toEqual(['retry_now']);
+  });
+
+  it('a retry with no known resume time has nothing to speed up: Run now as before', () => {
+    expect(taskActionSet({ ...base, trouble: { kind: 'retrying', cause: 'attempt', resumesAt: null } })).toEqual(['run_now']);
+  });
+
+  it('a cascade-failed task reads as waiting on its dependency: no Retry', () => {
+    const set = taskActionSet({ ...base, phase: 'failed', failureKind: 'dependency', trouble: { kind: 'waiting', on } });
+    expect(set).toEqual(['waiting_on_failed', 'history']);
+    expect(set).not.toContain('retry');
+  });
+
+  it('a failure a person must act on keeps Retry', () => {
+    expect(taskActionSet({ ...base, phase: 'failed', trouble: { kind: 'needs_person', cause: 'auth' } })).toEqual(['retry', 'switch_backend', 'history']);
   });
 });
 
@@ -126,6 +159,20 @@ describe('requests', () => {
     ]);
     stub(409, { error: 'nope' });
     expect(await requestTaskRetry('t1')).toEqual({ ok: false, error: 'nope' });
+  });
+
+  it('requestRetryNow clears only the scheduled start', async () => {
+    stub(200);
+    expect(await requestRetryNow('t1')).toEqual({ ok: true });
+    expect(calls).toEqual([{ url: '/api/tasks/t1', method: 'PATCH', body: { startAt: null } }]);
+  });
+
+  it('requestTaskCancel cancels, and passes a refusal through', async () => {
+    stub(200);
+    await requestTaskCancel('t1');
+    expect(calls).toEqual([{ url: '/api/tasks/t1', method: 'PATCH', body: { status: 'cancelled' } }]);
+    stub(409, { error: 'An agent is working on this task right now' });
+    expect(await requestTaskCancel('t1')).toEqual({ ok: false, error: 'An agent is working on this task right now' });
   });
 });
 

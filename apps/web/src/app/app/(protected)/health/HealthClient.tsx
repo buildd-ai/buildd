@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, useTransition, useCallback } from 'react';
 import { FailureGroupsSection, failureProblemLine } from './_components/FailureGroups';
+import type { SampleTaskRoute } from '@/lib/backend-strand';
 import type { ClaimBlocker } from '@/lib/claim-blocker-projection';
 import type { FailureGroupsView } from '@/lib/health-failure-groups';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
@@ -528,21 +529,24 @@ export function HealthClient({
           failureGroups: overviewFailureGroups,
           accessProblems: accessProblems.length,
         }),
-        rows: overviewStatusRows({
-          runners: {
-            total: runners.length,
-            online: runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now)).length,
-            busySlots: runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0),
-            slots: runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0),
+        rows: overviewStatusRows(
+          {
+            runners: {
+              total: runners.length,
+              online: runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now)).length,
+              busySlots: runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0),
+              slots: runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0),
+            },
+            credentials: { total: credentialHealth.length, broken: brokenCredentials.length },
+            budget: {
+              monthly: budgetForecast?.monthly
+                ? { spentUsd: budgetForecast.monthly.spentUsd, budgetUsd: budgetForecast.monthly.budgetUsd, pctUsed: budgetForecast.monthly.pctUsed }
+                : null,
+              pausedProviders: (budgetForecast?.codex?.isExhausted ? 1 : 0) + (budgetForecast?.claudeTenant?.isExhausted ? 1 : 0),
+            },
           },
-          credentials: { total: credentialHealth.length, broken: brokenCredentials.length },
-          budget: {
-            monthly: budgetForecast?.monthly
-              ? { spentUsd: budgetForecast.monthly.spentUsd, budgetUsd: budgetForecast.monthly.budgetUsd, pctUsed: budgetForecast.monthly.pctUsed }
-              : null,
-            pausedProviders: (budgetForecast?.codex?.isExhausted ? 1 : 0) + (budgetForecast?.claudeTenant?.isExhausted ? 1 : 0),
-          },
-        }),
+          { hideOfflineRunners: offlineRunners.length > 0 },
+        ),
       }
     : null;
 
@@ -673,7 +677,7 @@ export function HealthClient({
                     {b.sampleTasks.some((t) => t.claim) && (
                       <ul data-testid={`strand-claim-${b.backend}`} className="mt-1 space-y-0.5 text-xs text-text-muted">
                         {b.sampleTasks.map((t) => (
-                          <li key={t.id} className="truncate">{t.title}: {routeLine(t.route)}{claimBlockerLine(t.claim)}</li>
+                          <li key={t.id} className="break-words">{t.title}: {routeLine(t.route)}{claimBlockerLine(t.claim)}</li>
                         ))}
                       </ul>
                     )}
@@ -2413,11 +2417,20 @@ function FailureAnalyticsSection({
 
 
 /** Where a queued task actually routes (spec 97b1bd0b AC-7): the effective backend, and what it asked for when the team's mask moved it. */
-export function routeLine(r: { requested: string; effective: string } | undefined): string {
+export function routeLine(r: SampleTaskRoute | undefined): string {
   if (!r) return '';
-  return r.requested === r.effective
-    ? `preference ${r.requested}, routes to ${r.effective}, queued; `
-    : `preference ${r.requested}, team mask moves it to ${r.effective}, queued; `;
+  const words = [`preference ${r.requested}`];
+  if (r.pinned) words.push(`explicit pin ${r.requested}`);
+  if (r.reservation) {
+    const expired = Date.parse(r.reservation.expiresAt) <= Date.now();
+    words.push(`temporary claim reservation ${expired ? 'expired' : 'until'} ${r.reservation.expiresAt}`);
+  }
+  if (r.executed) words.push(`executed route ${r.executed}`);
+  else {
+    words.push(r.requested === r.effective ? `routes to ${r.effective}` : `team mask moves it to ${r.effective}`);
+    words.push('executed route unknown');
+  }
+  return `${words.join(', ')}, queued; `;
 }
 
 /**

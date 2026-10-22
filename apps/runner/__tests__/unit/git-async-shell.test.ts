@@ -7,10 +7,10 @@
  * through posixShell() (Git for Windows' sh.exe there, /bin/sh elsewhere).
  */
 import { describe, test, expect, afterAll } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { GitAsyncError, gitShellAsync } from '../../src/git-async';
+import { GitAsyncError, gitShellAsync, indexLockPath } from '../../src/git-async';
 
 const dir = mkdtempSync(join(tmpdir(), 'git-async-shell-'));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -35,6 +35,40 @@ describe('gitShellAsync', () => {
     const err = await gitShellAsync('sleep 20; echo late', { cwd: dir, timeoutMs: 300 }).catch((e) => e);
     expect(err).toBeInstanceOf(GitAsyncError);
     expect((err as GitAsyncError).timedOut).toBe(true);
-    expect(Date.now() - started).toBeLessThan(3_000);
+    const bound = process.platform === 'win32' ? 10_000 : 3_000;
+    expect(Date.now() - started).toBeLessThan(bound);
+  });
+});
+
+// Windows has no SIGTERM: a timed-out git is force-killed and never drops its
+// index.lock, so the caller's next git (the merge abort) failed on it.
+describe('index.lock after a timeout kill', () => {
+  const repo = join(dir, 'lock-repo');
+  const lock = join(repo, '.git', 'index.lock');
+  mkdirSync(join(repo, '.git'), { recursive: true });
+
+  test('indexLockPath finds the lock of a clone and of a linked worktree', () => {
+    expect(indexLockPath(join(repo, 'sub', 'dir'))).toBe(lock);
+    const wt = join(dir, 'wt');
+    mkdirSync(wt, { recursive: true });
+    writeFileSync(join(wt, '.git'), `gitdir: ${join(repo, '.git', 'worktrees', 'wt')}\n`);
+    expect(indexLockPath(wt)).toBe(join(repo, '.git', 'worktrees', 'wt', 'index.lock'));
+    writeFileSync(join(wt, '.git'), 'gitdir: ../lock-repo/.git/worktrees/wt\n');
+    expect(indexLockPath(wt)).toBe(join(repo, '.git', 'worktrees', 'wt', 'index.lock'));
+  });
+
+  test.skipIf(process.platform !== 'win32')('a lock the killed command created is removed before the call settles', async () => {
+    rmSync(lock, { force: true });
+    const err = await gitShellAsync('touch .git/index.lock; sleep 20', { cwd: repo, timeoutMs: 700 }).catch((e) => e);
+    expect((err as GitAsyncError).timedOut).toBe(true);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test('a lock that was already there (another git’s) is left alone', async () => {
+    writeFileSync(lock, '');
+    const err = await gitShellAsync('sleep 20', { cwd: repo, timeoutMs: 300 }).catch((e) => e);
+    expect((err as GitAsyncError).timedOut).toBe(true);
+    expect(existsSync(lock)).toBe(true);
+    rmSync(lock, { force: true });
   });
 });

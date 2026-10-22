@@ -3,7 +3,7 @@ import { missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
-import { criterionFingerprint } from '@buildd/core/mission-helpers';
+import { criterionFingerprint, isStandardCriterion } from '@buildd/core/mission-helpers';
 import { TERMINAL_TASK_STATUSES, type LivingSpecGoalCriterion } from '@buildd/shared';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
@@ -113,11 +113,13 @@ export async function ensureFinalVerification(missionId: string, criterion: Livi
   const roleSlug = await pickEffectiveRole(mission.workspaceId, ['reviewer', 'researcher']);
   const base = missionIntegrationBase(mission);
   const open = standing.standings.filter((s) => s.standing !== 'pass' && s.standing !== 'waived');
-  const title = `${FINAL_VERIFICATION_PREFIX} ${standing.title || 'outcome spec'} revision ${criterion.revision}`;
+  const standard = isStandardCriterion(criterion);
+  const title = `${FINAL_VERIFICATION_PREFIX} ${standard ? 'standard ' : ''}${standing.title || (standard ? 'spec' : 'outcome spec')} revision ${criterion.revision}`;
   const description = [
     `## Final requirement verification`,
     ``,
     `Mission: **${mission.title}**. Check the integrated result against spec revision ${criterion.revision}${criterion.provisional ? ' (provisional: not approved yet)' : ''}, not any one PR.`,
+    ...(standard ? [`This spec is a standard of the workspace: its criteria apply to every change, so judge the whole of the mission's change against each.`] : []),
     targetSha ? `Integrated target: \`${base}\` at \`${targetSha}\`. Check out exactly that commit.` : `Integrated target: a commit on trunk that contains every merged mission PR. Use the newest trunk commit and record its full SHA.`,
     ``,
     `In scope (${standing.scope.length}):`,
@@ -127,10 +129,11 @@ export async function ensureFinalVerification(missionId: string, criterion: Livi
     `Still open: ${open.length ? open.map((s) => `${s.criterionId} (${s.standing})`).join(', ') : 'none'}.`,
     ``,
     `Runner-owned check tasks run the acceptance commands at the integrated commit and record test verdicts from exit codes. For each in-scope criterion, read the code, inspect its \`check:\` line where it has one, and record one verdict at the target:`,
-    `\`manage_specs action=verdict { missionId: "${missionId}", criterionId, verdict: pass|fail|inconclusive|unsupported, headSha: <target>, evidenceRefs, observed }\`.`,
+    `\`manage_specs action=verdict { missionId: "${missionId}", specId: "${criterion.specId}", criterionId, verdict: pass|fail|inconclusive|unsupported, headSha: <target>, evidenceRefs, observed }\`.`,
     `For a criterion whose acceptance test you ran at the target, pass the run instead of a verdict: \`acceptanceTest: { exitCode, testName, stdout, stderr }\`. The exit code decides the result (0 pass, any other code fail, a run that never started inconclusive) and the row is recorded as a test, which outranks any reviewer on the same commit.`,
     `A criterion that passed on an earlier target and that the new commits did not touch is re-affirmed explicitly: record a new verdict at the target with \`reaffirms: <earlier verdict id>\` and say which diff you read. Nothing carries over on its own.`,
     `On a fail, file one \`[spec repair] <criterion>: <what is wrong>\` task in this mission with \`context.specRepair: { missionId, criterionId }\`. Do not fix it yourself: this task only verifies.`,
+    `A repair with the same root cause as another open repair, or that needs another task to merge first, is filed with \`dependsOn\` on that task. A repair that finds this out mid-run waits on it with \`complete_task { blockedOnTaskId, summary }\`; it does not fail.`,
     `Finish with a report artifact mapping each criterion to its verdict and evidence. PR reviews and visual evidence may inform a verdict; they never replace it.`,
   ].join('\n');
 

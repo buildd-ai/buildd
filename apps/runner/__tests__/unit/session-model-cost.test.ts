@@ -168,7 +168,15 @@ async function runSession(
 ) {
   mockClaimTask.mockImplementation(async () => ({ workers: [{ id: workerId, branch: 'buildd/test', task }] }));
   await manager.claimAndStart(task);
-  await new Promise(r => setTimeout(r, 300));
+  // Poll for the terminal update rather than a fixed sleep: slow runners
+  // (Windows CI) take longer than 300ms to finish the session.
+  const deadline = Date.now() + 10_000;
+  while (
+    Date.now() < deadline &&
+    !mockUpdateWorker.mock.calls.some((c: any[]) => c[1]?.status === 'completed')
+  ) {
+    await new Promise(r => setTimeout(r, 25));
+  }
 }
 
 /** Claude-API (API-key) shape: per-model attribution present. */

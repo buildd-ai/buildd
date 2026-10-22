@@ -5,11 +5,12 @@
  * is tested over real board models without a DOM.
  */
 import type { TaskStripCell, TaskStripWait } from '@/components/ui/TaskStrip';
-import type { StateKey } from '@/components/ui/states';
+import { STATES, type StateKey, type StateTone } from '@/components/ui/states';
 import { reasonLine, type StripMark } from '@/components/ui/task-strip';
 import { WAITING_KIND_SPEC, type WaitingKind } from '@buildd/core/waiting-reason';
-import { termFor } from '@buildd/shared';
+import { termFor, termWord } from '@buildd/shared';
 import { BOARD_LANDED, type MissionBoardModel } from './mission-board';
+import { STALL_GRACE_MS } from './mission-helpers';
 import { isActiveState, isHeldState, stripMarks, stripOrder, stripState, stripTick } from './mission-task-strip';
 
 type Model = Pick<MissionBoardModel, 'phases' | 'tasks'>;
@@ -182,7 +183,13 @@ const NEVER_LINE: Partial<Record<WaitingKind, string>> = {
 export function overviewCells(model: Model, order: readonly string[] = stripOrder(model)): TaskStripCell[] {
   return order.map((id, i) => {
     const wait = overviewWaitCause(model, id);
-    return { id, state: overviewCellState(model, id), tick: stripTick(i), title: model.tasks[id].title, ...(wait ? { wait, word: waitWord(model, id, wait) } : {}) };
+    // A closed PR someone replaced reads `Closed → #N`; a red PR its R-14 words (`Fixing · CI failed`, `Failed · …`).
+    const replacement = wait === 'closed' ? model.tasks[id].replacement ?? null : null;
+    const status = overviewStatus(model, id);
+    const word = replacement ? `Closed → #${replacement.number}`
+      : wait ? waitWord(model, id, wait)
+      : (status.tone === 'bad' || status.retryAt != null) && status.cause ? overviewStatusText(status) : null;
+    return { id, state: overviewCellState(model, id), tick: stripTick(i), title: model.tasks[id].title, ...(wait ? { wait } : {}), ...(word ? { word } : {}) };
   });
 }
 
@@ -231,4 +238,139 @@ export function overviewCounts(model: Pick<MissionBoardModel, 'landed' | 'criter
   const parts = [model.landed.total === 0 ? 'No tasks' : `${model.landed.done} of ${model.landed.total} done`];
   if (opts.criteria !== false && model.criteria.length > 0) parts.push(`${model.criteriaPassed} of ${model.criteria.length} criteria`);
   return parts.join(' · ');
+}
+
+// ── A task's status in words (spec d25d923d R-14) ─────────────────────────────
+
+/**
+ * One status dot, one word, at most one short cause: `Queued · Next in line`,
+ * `Running 12m 04s · Running unit tests`, `Fixing · CI failed`, `Failed`,
+ * `Merged`, `Closed → #N`. No sentences. The words are Navigation R-14's,
+ * read from the terms catalog.
+ */
+export interface OverviewStatus {
+  word: string;
+  /** The dot's colour family. */
+  tone: StateTone;
+  cause: string | null;
+  /** Running: when the worker started, for a ticking elapsed clock. */
+  since: number | null;
+  /** Running: its last event (`lastEventOf`), for `updated 14s ago`. */
+  lastEventAt: number | null;
+  /** A fix waiting out a retry backoff or its checks: when it resumes (`Retry in 3h 52m`). */
+  retryAt: number | null;
+  /** Closed without merging: the replacement someone named, if any. */
+  closed: { replacement: { number: number; url: string | null } | null } | null;
+}
+
+/** A red PR's cause in the PR's own words. */
+function prCause(state: string | undefined): string | null {
+  return state === 'ci_failed' ? 'CI failed' : state === 'conflict' ? 'Merge conflict' : null;
+}
+
+const RUNNING = termWord('work.working');
+const FIXING = termWord('pr.fixing');
+const FAILED = termWord('work.failed');
+
+/**
+ * The selected task's status in the shared vocabulary. The true state wins:
+ * a task whose PR is red reads `Fixing` with the PR's cause even while a
+ * retry backoff runs, never `Queued` (R-20: buildd retries it by itself), and
+ * the backoff is `retryAt`, beside it. `Failed` is a failure a person acts on.
+ */
+export function overviewStatus(model: Model, id: string): OverviewStatus {
+  const t = model.tasks[id];
+  const state = overviewCellState(model, id);
+  const out = (word: string, tone: StateTone, cause: string | null = null, extra: Partial<OverviewStatus> = {}): OverviewStatus => ({
+    word, tone, cause, since: null, lastEventAt: null, retryAt: null, closed: null, ...extra,
+  });
+  const latestStep = t.milestones.length ? t.milestones[t.milestones.length - 1].label : t.currentAction;
+  const live = { since: t.startedAt, lastEventAt: t.lastEventAt ?? null };
+  if (isClosedUnshipped(model, id)) return out('Closed', 'q', null, { closed: { replacement: t.replacement ?? null } });
+  switch (state) {
+    case 'landed':
+      return t.pr?.state === 'merged' || t.status === 'merged' ? out(termWord('pr.merged'), 'ok') : out(termWord('work.done'), 'ok');
+    case 'running':
+      return out(RUNNING, 'act', latestStep ?? null, live);
+    case 'fixing':
+      return t.executing
+        ? out(FIXING, 'act', latestStep ?? prCause(t.pr?.state), live)
+        : out(FIXING, 'act', prCause(t.pr?.state), { retryAt: t.startAt ?? null });
+    case 'ci_failed':
+      return out(FAILED, 'bad', prCause(t.pr?.state) ?? termWord('pr.ci_failed'), { retryAt: t.startAt ?? null });
+    case 'failed':
+      return out(FAILED, 'bad', null, { retryAt: t.startAt ?? null });
+    case 'ready': case 'blocked': case 'queued': {
+      const wait = overviewWaitCause(model, id);
+      return out(STATES[state].word, 'q', wait ? waitWord(model, id, wait) : null);
+    }
+    default:
+      // In review, merging, an agent's question, a decision: the delivery's own label when the kernel owns it.
+      return out(t.delivery?.label ?? STATES[state].word, STATES[state].tone);
+  }
+}
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/** A countdown: `3h 52m`, `12m`, `under 1m`. */
+export function formatCountdown(ms: number): string {
+  const m = Math.ceil(Math.max(0, ms) / 60_000);
+  if (m < 1) return 'under 1m';
+  if (m < 60) return `${m}m`;
+  return `${Math.floor(m / 60)}h ${pad2(m % 60)}m`;
+}
+
+/** An elapsed clock: `12m 04s` under an hour, `1h 02m` past it. */
+export function formatElapsed(ms: number): string {
+  const s = Math.floor(Math.max(0, ms) / 1000);
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m}m ${pad2(s % 60)}s` : `${Math.floor(m / 60)}h ${pad2(m % 60)}m`;
+}
+
+/** Time since an event, rounded down: `14s`, `12m`, `1h 02m`. */
+function formatAgo(ms: number): string {
+  const s = Math.floor(Math.max(0, ms) / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${pad2(m % 60)}m`;
+}
+
+/**
+ * How long a live task may go without an event before its line reads
+ * `No activity for 12m`: the stall grace a mission already allows open work
+ * with no live worker (`STALL_GRACE_MS`, lib/mission-helpers.ts).
+ */
+export const NO_ACTIVITY_MS = STALL_GRACE_MS;
+
+/** A live task's line: `Running 12m 04s`, then `Updated 14s ago` or, quiet, `No activity for 12m`. */
+export interface LiveLine {
+  elapsed: string;
+  activity: string;
+  /** No event for `NO_ACTIVITY_MS`: the warning tone. */
+  quiet: boolean;
+}
+
+/** The live line for a status whose worker is executing (`since` set), else null. */
+export function liveLine(s: Pick<OverviewStatus, 'word' | 'since' | 'lastEventAt'>, now: number): LiveLine | null {
+  if (s.since == null) return null;
+  const quietFor = now - (s.lastEventAt ?? s.since);
+  const quiet = quietFor >= NO_ACTIVITY_MS;
+  return {
+    elapsed: `${s.word} ${formatElapsed(now - s.since)}`,
+    activity: quiet ? `No activity for ${formatAgo(quietFor)}` : `Updated ${formatAgo(quietFor)} ago`,
+    quiet,
+  };
+}
+
+/** `Failed · CI failed`: the word and its one cause. */
+export function overviewStatusText(s: Pick<OverviewStatus, 'word' | 'cause'>): string {
+  return s.cause ? `${s.word} · ${s.cause}` : s.word;
+}
+
+/** The action beside `Retry in …`: it only brings the retry forward (R-20). */
+export const RETRY_NOW = 'Retry now';
+
+/** A fix's pending retry: `Retry in 3h 52m`, or null when none waits. */
+export function retryText(s: Pick<OverviewStatus, 'retryAt'>, now: number): string | null {
+  return s.retryAt != null && s.retryAt > now ? `Retry in ${formatCountdown(s.retryAt - now)}` : null;
 }

@@ -9,6 +9,7 @@ import { resolveBranchStrategy, isValidBranchStrategy, BRANCH_STRATEGIES } from 
 import { generateMissionBranchName } from '@buildd/core/branch-names';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { resolveMissionCreator } from '@/lib/task-service';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds, resolveAccountTeamIds } from '@/lib/team-access';
 import { resolveWorkspaceAccess } from '@/lib/workspace-access';
@@ -21,7 +22,7 @@ import {
   reportMissionBranchUnresolved,
 } from '@/lib/mission-integration-branch';
 import { resolveFeedActor, postMissionFeedEvent } from '@/lib/mission-feed';
-import { computeMissionProgress, validateGoalCriteria } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, handWrittenCriteriaRefusal, validateGoalCriteria } from '@buildd/core/mission-helpers';
 import { parseMergePolicy, findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError } from '@buildd/shared';
 import {
   DEFAULT_HEARTBEAT_CRON,
@@ -33,7 +34,6 @@ import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { getTeamTimezone } from '@/lib/team-timezone';
 import { GATE_SLUGS, fireGateEventForWorkspaceRef, gateCallerOrigin } from '@/lib/gate-ledger';
 import { buildMissionListWhere, missionListOrderBy, parseMissionListSort } from '@/lib/mission-list-query';
-import { withGoalQualityAdvisory } from '@/lib/goal-criteria-quality-shadow';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 import { settleWorkChanges } from '@/lib/settle-work-changes';
 import { noteWorkChanged } from '@/lib/work-changed';
@@ -190,7 +190,7 @@ export async function POST(req: NextRequest) {
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
       status: requestedStatus, dependsOnMission, gateCondition, mergePolicy, orchestrationMode, costBudgetUsd,
       pacingMode, pacingMaxPerHour, goalCriteria, autoVerify, branchStrategy, autoSurfaceAudit,
-      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode, executor, decomposition } = body;
+      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode, executor, decomposition, createdByWorkerId } = body;
 
     if (autoSurfaceAudit !== undefined && typeof autoSurfaceAudit !== 'boolean') {
       return NextResponse.json({ error: 'autoSurfaceAudit must be a boolean' }, { status: 400 });
@@ -293,7 +293,9 @@ export async function POST(req: NextRequest) {
     }
 
     if (goalCriteria !== undefined && goalCriteria !== null) {
-      const criteriaError = validateGoalCriteria(goalCriteria);
+      // Living Specs D-44: a new mission holds no hand-written criteria, so it
+      // may not start any. Its completion bar is the spec it selects.
+      const criteriaError = handWrittenCriteriaRefusal(undefined, goalCriteria) ?? validateGoalCriteria(goalCriteria);
       if (criteriaError) {
         // Includes the notMechanizableReason requirement on prose criteria —
         // the gate most likely to be rewriting how people phrase a mission.
@@ -401,6 +403,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: contextArtifacts.error }, { status: 400 });
     }
 
+    // Who filed it and who it is for, kept apart (spec 7702c32a R-1/R-2).
+    const creator = await resolveMissionCreator({
+      user,
+      apiAccount,
+      createdByWorkerId: typeof createdByWorkerId === 'string' ? createdByWorkerId : undefined,
+    });
+
     const [mission] = await db
       .insert(missions)
       .values({
@@ -414,7 +423,7 @@ export async function POST(req: NextRequest) {
         initiativeId: initiativeId || null,
         contextArtifactIds: contextArtifacts.ids,
         maxConcurrentTasks: maxConcurrentTasks ?? null,
-        createdByUserId: user?.id || null,
+        ...creator,
         orchestrationMode: effectiveOrchestrationMode,
         ...(decompositionSkippedAtCreate ? { decompositionSkipped: true } : {}),
         isHeld: effectiveIsHeld,
@@ -490,7 +499,9 @@ export async function POST(req: NextRequest) {
               ...(Object.keys(templateContext).length > 0 ? { context: templateContext } : {}),
             },
             nextRunAt,
-            createdByUserId: user?.id || null,
+            // Only a person who filed the mission themselves names the schedule;
+            // otherwise its tasks reach the person through the mission.
+            createdByUserId: creator.requesterSource === 'explicit' ? creator.createdByUserId : null,
           })
           .returning();
         createdScheduleId = schedule.id;
@@ -613,23 +624,10 @@ export async function POST(req: NextRequest) {
       ...(nextRunInfo ? { heartbeatInfo: nextRunInfo } : {}),
     };
 
-    // Advisory goal-criteria verdict (docs/specs/mission-goal-criteria-quality.md).
-    // Only once validation passed and the row exists. In shadow mode it runs
-    // after the response and the body is unchanged; it never blocks or rewrites.
-    const responseBody = Array.isArray(goalCriteria) && goalCriteria.length > 0
-      ? await withGoalQualityAdvisory(created, {
-          missionId: mission.id,
-          teamId,
-          workspaceId: resolvedWorkspaceId,
-          criteria: goalCriteria,
-          accountId: apiAccount?.id ?? null,
-          userId: user?.id ?? null,
-          surface: 'POST /api/missions',
-          callerOrigin: gateCaller,
-        })
-      : created;
-
-    return NextResponse.json(responseBody, { status: 201 });
+    // No create-time goal-quality advisory: a new mission cannot carry
+    // hand-written criteria (Living Specs D-44), so there is nothing to grade.
+    // PATCH still grades edits on missions that already carry them.
+    return NextResponse.json(created, { status: 201 });
   } catch (error) {
     console.error('Create mission error:', error);
     return NextResponse.json({ error: 'Failed to create mission' }, { status: 500 });

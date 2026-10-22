@@ -2,7 +2,7 @@
 title: Local Agent Presence
 status: active
 owner: max
-last_verified: 2026-10-18
+last_verified: 2026-10-21
 summary: A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
 domain: runners
 surfaces: [apps/web/src/lib/local-session.ts, apps/web/src/app/api/workers/local-sessions/route.ts, packages/shared/src/local-session.ts, apps/runner/plugin/scripts/buildd-hook.mjs]
@@ -77,7 +77,7 @@ agent loop it runs in.
 
 **Acceptance criteria**:
 - AC-1: WHEN a body carries a field outside the contract (e.g. `prompt`) THEN the endpoint answers 400 and writes nothing.
-- AC-2: GIVEN buildd is unreachable WHEN the hook runs THEN it exits 0 with empty stdout.
+- AC-2: GIVEN buildd is unreachable WHEN the hook runs THEN it exits 0, and its stdout is empty apart from the workspace hint of a Claude Code `SessionStart` (below), which needs no network.
 - AC-3: GIVEN a touch less than a minute after the last write WHEN it arrives THEN nothing is written (`coalesced`).
 - AC-3a: GIVEN a session touching every 30 s for an hour with nothing else changing WHEN Redis is available THEN the database is written at most 13 times (`local-session.test.ts`).
 
@@ -98,12 +98,16 @@ become tracked work only through that session's own verified `claim_task`.
 - A hook `touch` refreshes `workers.updated_at` only for the presence's own held workers, each under the same once-a-minute guard as the MCP touch. Another session's hooks never touch them.
 - A `touch` may carry `busy`: `true` from `UserPromptSubmit` and `PreToolUse` (a turn or a tool is starting), `false` from `Stop`. The server writes `local_sessions.busy_since` only when the mark changes, never throttled, with `last_seen_at`; a `start` clears it. A long command fires no hook until it returns, so this is what tells the interactive reaper the client is still working (see Interactive worker reaper, below). Client side, a flip is sent at once and an unchanged mark is throttled like any touch; `PreToolUse` is async on Claude Code, reads no tool input and no transcript, and a racing write never drops a recorded claim (claims are merged with the state file at write time).
 - The hook binds deterministically: its post-tool hook reads the worker id from buildd's own `claim_task` reply. It reads no other tool output.
+- The bind hook recognises buildd's tool by its name alone (`buildd` or `buildd_work`), under any server name the client gives it: a local entry (`mcp__buildd__buildd`), a plugin (`mcp__plugin_buildd_buildd__buildd`), a claude.ai connector in Claude Desktop (named by connector id, `mcp__<connector-id>__buildd`) or in the Claude Code CLI (`mcp__claude_ai_<Connector_Name>__buildd`), or Cursor's unprefixed name with any `mcp_server_name`. The server name decides nothing: a call binds only when its input is `action: claim_task` and its reply carries buildd's `Worker ID: <uuid>` line and no `isError`, and the server's `bind` checks then apply as above.
+- On a Claude Code `SessionStart` in a repo on the key's cached workspace list, the hook prints `hookSpecificOutput.additionalContext` naming that repo (`owner/name`) as the `workspaceId` to pass on buildd tool calls, which picks the workspace on an account-level connection (one that refuses a call naming none) and the matching connector when there is one per workspace. It is read from the cached list, so it costs no network call and is printed whether or not buildd answers. A repo in scope only through its own `.mcp.json`, Codex and Cursor get no hint. The hook is async, so Claude Code delivers it with the session's first turn.
 
 **Acceptance criteria**:
 - AC-4: WHEN `start` is posted THEN one presence row exists and no worker or seat was created.
 - AC-5: GIVEN a verified interactive claim WHEN its session posts `bind` THEN that presence holds that worker; a second session's `bind` of the same worker answers 409 `bound_elsewhere`.
 - AC-12: GIVEN two verified claims from one session (e.g. two subagents) WHEN both bind THEN the presence holds both.
 - AC-6: WHEN `bind` names a runner worker or an `mcp-unverified` one THEN 409 `not_interactive`.
+- AC-6a: GIVEN a successful `claim_task` through a claude.ai connector (`mcp__<connector-id>__buildd` or `mcp__claude_ai_<Name>__buildd`) WHEN `PostToolUse` runs THEN the hook sends `bind` with that worker; GIVEN another server's tool named `buildd` whose reply carries no `Worker ID:` line THEN it sends a plain `touch`.
+- AC-6b: GIVEN a Claude Code session starting in a repo on the cached workspace list WHEN `SessionStart` runs THEN stdout is `hookSpecificOutput.additionalContext` naming the repo and `workspaceId`; outside a workspace repo stdout is empty.
 
 **Code surface**: `local_sessions` and `local_session_workers` tables (`packages/core/db/schema.ts`), `bindInsertSql`, `boundWorkerTouchWhere`, `presenceTouchWhere` (`apps/web/src/lib/local-session.ts`).
 

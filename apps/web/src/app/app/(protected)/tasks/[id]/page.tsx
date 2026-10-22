@@ -85,7 +85,7 @@ import { evidenceViewOf } from '@/lib/task-evidence';
 import { TaskTitle as TaskTitleText } from '@/components/tasks/TaskTitle';
 import MissionContextBar from './MissionContextBar';
 import TaskPageActionZone from './TaskPageActionZone';
-import { auditTaskIdFor, loadTaskFailure } from '@/lib/task-failure-kind-load';
+import { auditTaskIdFor, loadTaskFailure, taskPageTrouble } from '@/lib/task-failure-kind-load';
 import RunnerReachBanner from './RunnerReachBanner';
 import { loadServiceStatus } from '@/lib/service-status-loader';
 import { ServiceStatusList } from '@/components/service-status/ServiceStatusList';
@@ -96,9 +96,9 @@ import { AskAboutLink } from '@/components/chat/ChatEntry';
 import { missionContextBarFor, missionContextDeliveryTaskIds, type MissionContextBarData } from './mission-context-bar';
 import { missionContextReads, missionContextRowOf } from './mission-context-load';
 import { truncateExcerpt } from './error-excerpt';
-import { attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, isMeaningfulPlan, partitionChildTasks, selectExecutionPlan } from './execution-plan';
+import { attemptRowLabel, attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, isMeaningfulPlan, partitionChildTasks, selectExecutionPlan } from './execution-plan';
 import type { MissionCardRow } from '@/lib/mission-card-view';
-import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
+import { missionTaskHref, parseMissionOriginParams, taskPageHref } from '@/lib/mission-task-href';
 import WorkerSteerPanel from './WorkerSteerPanel';
 import { HeaderStatusPill, deliveryPillLabel, FactSheet, SideDescription, runnerFactRow, branchFactRow, type FactRow } from './TaskSidePanel';
 import { findTaskRole } from './role-lookup';
@@ -171,10 +171,12 @@ async function TaskDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ artifact?: string; respond?: string }>;
+  searchParams: Promise<{ artifact?: string; respond?: string; from?: string; initiativeId?: string }>;
 }) {
   const { id } = await params;
-  const { artifact: initialOpenArtifactId, respond } = await searchParams;
+  const { artifact: initialOpenArtifactId, respond, from, initiativeId } = await searchParams;
+  // Where the mission was opened from: the back link returns there (spec d25d923d AC-2).
+  const missionBack = parseMissionOriginParams({ from, initiativeId });
   // `?respond=1`: an answer link. The reply box below gets focus.
   const focusAnswer = respond === '1';
   if (!isValidTaskId(id)) notFound();
@@ -257,7 +259,7 @@ async function TaskDetailPage({
         columns: { id: true, title: true, status: true, result: true },
         with: {
           workers: {
-            columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
+            columns: { status: true, prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
             // Every worker, newest first — NOT limit 1. The gate asks whether
             // ANY worker holds an open PR, the same read the list and the
             // claim route make; the newest alone hid an older open PR.
@@ -315,6 +317,7 @@ async function TaskDetailPage({
     missionContextRow as unknown as MissionCardRow | null,
     task.id,
     missionContextDeliveryViews,
+    missionBack,
   );
 
   // Read-through PR fact import: if the latest worker is completed with an
@@ -871,6 +874,20 @@ async function TaskDetailPage({
   const failureKind = phase === 'failed' ? failureRaw?.kind ?? null : null;
   // Never ran: a task it depends on failed. Its action zone names that task instead of offering a retry (spec 072de598 I-14).
   const failureWaitingOn = failureKind === 'dependency' ? failureRaw?.waitingOn ?? null : null;
+  // Who acts next (R-20): waiting on a task, buildd retrying (with its resume
+  // time), or a person. A pending task reads its own dependsOn rows, so a
+  // blocker that was cancelled or failed surfaces as needing a person.
+  const trouble = phase === 'failed' || task.status === 'pending'
+    ? taskPageTrouble(
+        {
+          id: task.id, title: task.title, status: task.status, result: task.result,
+          startAt: task.startAt, context: task.context as Record<string, unknown> | null,
+          dependsOn: depTaskIds, loopState: task.loopState, taskClass: task.taskClass,
+        },
+        depTasks,
+        phase === 'failed' ? failureRaw ?? null : null,
+      )
+    : null;
   // Triage metadata (priority / runner / backend) only earns top-level space in
   // the pending family; everywhere else it demotes into the Details disclosure.
   const isPendingFamily = phase === 'pending' || phase === 'blocked' || phase === 'budget_paused' || phase === 'assigned' || phase === 'subject_dead' || phase === 'mission_budget_exhausted';
@@ -979,6 +996,7 @@ async function TaskDetailPage({
     inRelease: !!shippedRelease,
     // §17.5: a kernel-owned PR's state is the delivery's, not the columns'.
     deliveryPrState: deliveryView?.prState ?? null,
+    deliverySupersededBy: deliveryView?.supersededBy ?? null,
   }), review: reviewOutcome,
     waitingOnFailed: failureWaitingOn,
     escalation: escalationCopy && deliveryView?.escalation
@@ -1470,7 +1488,7 @@ async function TaskDetailPage({
           // Back only: the title is the h1 right below.
           <nav aria-label="Breadcrumb" className="text-sm text-text-secondary -mt-2 mb-1 md:mt-0 md:mb-2">
             <Link
-              href={task.mission ? missionTaskHref({ missionId: task.mission.id, taskId: task.id, mode: 'focus' }) : '/app/tasks'}
+              href={task.mission ? missionTaskHref({ missionId: task.mission.id, taskId: task.id, ...missionBack, mode: 'focus' }) : '/app/tasks'}
               data-testid="task-back"
               className="inline-flex min-h-11 items-center hover:text-text-primary"
             >
@@ -1640,6 +1658,7 @@ async function TaskDetailPage({
               deliveryReading={deliveryPillLabel(deliveryPill)}
               failureKind={failureKind}
               waitingOn={failureWaitingOn}
+              trouble={trouble}
               auditTaskId={auditTaskIdFor(task, failureKind)}
               lastError={failedExcerpt ? { excerpt: failedExcerpt, raw: taskWorkers[0]?.error ?? null } : null}
               worker={null}
@@ -1796,7 +1815,7 @@ async function TaskDetailPage({
             <p className="text-[12px] text-text-secondary ml-6">
               Every task in{' '}
               {task.mission ? (
-                <Link href={missionTaskHref({ missionId: task.mission.id, taskId: task.id, mode: 'focus' })} className="text-accent-text hover:underline">
+                <Link href={missionTaskHref({ missionId: task.mission.id, taskId: task.id, ...missionBack, mode: 'focus' })} className="text-accent-text hover:underline">
                   {task.mission.title}
                 </Link>
               ) : 'this mission'}{' '}
@@ -1879,10 +1898,12 @@ async function TaskDetailPage({
                         <Link
                           href={taskPageHref({ taskId: sub.id, missionId: task.missionId })}
                           className="min-w-0 text-sm text-primary-400 hover:underline [overflow-wrap:anywhere]"
+                          title={sub.title}
                         >
-                          {displayTaskTitle(sub.title)}
+                          {/* An attempt's title is this task's again: it reads by what started it and how it ended. */}
+                          {label === 'Attempts' ? attemptRowLabel(sub) : displayTaskTitle(sub.title)}
                         </Link>
-                        <StatusPill status={deriveDisplayStatus(sub.status)} />
+                        {label !== 'Attempts' && <StatusPill status={deriveDisplayStatus(sub.status)} />}
                       </div>
                     ))}
                   </div>

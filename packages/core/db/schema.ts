@@ -28,7 +28,7 @@ export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'st
 import { sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation, TaskDelegation } from '../token-delegation';
-import type { TaskRequesterSource } from '../task-requester-source';
+import type { MissionRequesterSource, TaskRequesterSource } from '../task-requester-source';
 import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, RootCauseClassification, RootCauseCapabilityKind, FailureIncidentRecovery } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
@@ -332,6 +332,10 @@ export const accounts = pgTable('accounts', {
   // Budget exhaustion tracking (OAuth accounts)
   budgetExhaustedAt: timestamp('budget_exhausted_at', { withTimezone: true }),
   budgetResetsAt: timestamp('budget_resets_at', { withTimezone: true }),
+  // A client (dashboard, API, MCP) asked this account's runners to probe their
+  // provider wall now. The heartbeat answers it back; a runner probes once per
+  // new value. It asks only: the wall is cleared by a passing probe, never here.
+  budgetProbeRequestedAt: timestamp('budget_probe_requested_at', { withTimezone: true }),
 
   // Monthly budget tracking (Agent SDK credit pool, post 2026-06-15).
   // monthlyBudgetUsd is the cap (e.g. 100); null falls back to the BUDGET_MONTHLY_USD env.
@@ -605,6 +609,10 @@ export interface WorkspaceGitConfig {
   // Register mergiraf (structural merge) as a driver in runner clones for the
   // languages it parses. Off by default; skipped quietly if the binary is absent.
   mergiraf?: boolean;
+  // The wait exit (apps/web/src/lib/task-wait-exit.ts): an agent blocked by
+  // another task may end its run waiting on it (complete_task blockedOnTaskId)
+  // instead of failing. Off by default.
+  waitOnTask?: boolean;
   // Explicit overlap hotspots: paths or `dir/**` patterns where a same-file
   // overlap with an in-flight task is a deterministic hold, never a claim-time
   // HOLD/START decision (apps/web/src/lib/hard-overlap-surfaces.ts). Absent:
@@ -1477,7 +1485,20 @@ export const missions = pgTable('missions', {
   // mission a fresh run of N attempts before it can trip again, with no
   // separate clear step to keep in sync.
   heartbeatBreakerTrippedAt: timestamp('heartbeat_breaker_tripped_at', { withTimezone: true }),
+  // The person this mission is for; its tasks inherit them through
+  // tasks_derive_requester. How it was decided is missionRequesterSource below.
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  // Who actually filed the mission, kept apart from the person it is for (spec
+  // 7702c32a R-1): the authenticated account, the worker whose agent filed it,
+  // and that worker's task (its lineage parent). NULL on rows written before
+  // these columns: unknown, never back-filled.
+  createdByAccountId: uuid('created_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  createdByWorkerId: uuid('created_by_worker_id'),
+  createdByTaskId: uuid('created_by_task_id'),
+  // How createdByUserId was decided: 'explicit' (a person filed it themselves),
+  // 'parent' (an agent filed it; the person is its task's requester), 'none'.
+  // NULL: written before this column; unknown.
+  requesterSource: text('requester_source').$type<MissionRequesterSource>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -1610,8 +1631,11 @@ export const tasks = pgTable('tasks', {
   // How createdByUserId was decided (TaskRequesterSource in core/task-requester-source.ts):
   // 'explicit' (the writer named the person), 'parent' | 'mission' | 'schedule'
   // (derived at insert), 'none' (no person: service or API-key work), and the
-  // same with a 'backfill_' prefix for rows filled in after the fact. NULL: not
-  // yet decided — nothing writes this column until the insert trigger lands.
+  // same with a 'backfill_' prefix for rows filled in after the fact
+  // ('backfill_none' / 'backfill_not_member': unknown, left NULL, never guessed).
+  // Written only by the tasks_resolve_requester trigger (migration
+  // *_task_requester_trigger). NULL: a row written before the trigger that
+  // already named a person; how it was decided was not recorded.
   requesterSource: text('requester_source').$type<TaskRequesterSource>(),
   creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook' | 'orchestrator' | 'conflict'>(),
   // Direct link to the task_schedule that spawned this task (when creationSource = 'schedule' or 'orchestrator').
@@ -2222,6 +2246,14 @@ export const workers = pgTable('workers', {
   // the account being deleted.
   supersededRecordedBy: text('superseded_recorded_by'),
   supersededAt: timestamp('superseded_at', { withTimezone: true }),
+  // A closed-unmerged PR whose replacement someone NAMED: a close comment
+  // `Replaced by #N`, a later PR body `replaces #N`, or a person's "Link
+  // replacement" (lib/pr-named-replacement-store.ts). Not verified merged, so it
+  // is display only: never read by a completion or merge gate. The formal
+  // supersession (`supersededByPrNumber`) still records when the replacement
+  // merges.
+  namedReplacementPrNumber: integer('named_replacement_pr_number'),
+  namedReplacementPrUrl: text('named_replacement_pr_url'),
   // A closed-unmerged PR a person declared abandoned: the work is deliberately
   // not shipping, and the reason says why. Not a supersession (nothing landed)
   // and not a fake one — `prShipState` reads it as its own `abandoned` state,
@@ -2897,6 +2929,12 @@ export interface SpecMetadataBlock {
    * Cleared by a re-import that finds none.
    */
   criteria_unread?: { unreadable: Array<{ id: string; line: number }>; duplicates: Array<{ id: string; lines: number[] }> };
+  /**
+   * Living Specs D-43: a person (owner or admin, own session) marked this spec
+   * a standard of its workspace. Its approved criteria apply to every mission
+   * whose build starts after (apps/web/src/lib/specs/mission-standards.ts).
+   */
+  standard?: true;
   /**
    * Set by a copy from another workspace (apps/web/src/lib/specs/copy.ts): the
    * source revision this spec's head is byte for byte, by hash. Server-written

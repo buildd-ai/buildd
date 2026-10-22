@@ -10,7 +10,7 @@ interface WaitingOnYouDecideCardProps {
  * DECIDE card for Home. Home stays a router: this card names the mission and
  * the blocking question, surfaces the failure-pattern reading as a
  * recommendation (never a preselected exit), and offers exactly one filled
- * CTA — the actual three exits (file the work / fix the criterion / waive)
+ * CTA — the actual exits (file the work / waive)
  * live on the mission-detail decision sheet, not here.
  */
 export function WaitingOnYouDecideCard({ item }: WaitingOnYouDecideCardProps) {

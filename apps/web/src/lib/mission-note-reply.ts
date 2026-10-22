@@ -7,7 +7,7 @@ import { CRITERIA_ESCALATION_NOTE_TITLE } from './escalation-note-title';
  * reply flow flips `status` to 'answered' without touching
  * `criteriaEscalatedAt` or re-enabling the schedule, which would mute the
  * card while leaving the mission stood down forever — a dressed-up no-op,
- * not a resolution. Its three real exits (file the work / fix the criterion
+ * not a resolution. Its real exits (file the work
  * / waive) live on the mission-detail decision sheet and route through
  * `resolveCriteriaEscalation`, which genuinely clears it.
  */

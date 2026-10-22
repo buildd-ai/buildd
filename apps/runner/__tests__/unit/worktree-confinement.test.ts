@@ -22,12 +22,15 @@ import {
   findWorktreeEscape,
   findWriteEscape,
   describePrimaryCloneDrift,
+  fromGitBashPath,
 } from '../../src/worktree-confinement';
 import { HookFactory } from '../../src/hook-factory';
 import { buildPromptWithComposition } from '../../src/prompt-builder';
 import { primaryCloneMemoryExcludes } from '../../src/host-memory-excludes';
 
-const PRIMARY = '/home/coder/project/demo';
+// A real Windows worktree path carries a drive: the guard resolves targets
+// (adding one) and compares them with the scope paths as given.
+const PRIMARY = process.platform === 'win32' ? 'C:/home/coder/project/demo' : '/home/coder/project/demo';
 const OWN = `${PRIMARY}/.buildd-worktrees/buildd-abc-my-task`;
 const SIBLING = `${PRIMARY}/.buildd-worktrees/buildd-def-other-task`;
 const scope = { worktreePath: OWN, primaryPath: PRIMARY };
@@ -161,6 +164,51 @@ describe('findWriteEscape — Edit/Write', () => {
 
   test('writing outside the primary (scratch, tmp) is allowed', async () => {
     expect(findWriteEscape('/tmp/scratch/notes.txt', scope)).toBeNull();
+  });
+});
+
+// Workers' Bash on Windows is Git Bash, where `/c/code/repo` is `C:\code\repo`.
+// Node reads it as root-relative on the current drive (`C:\c\code\repo`), so
+// `cd /c/<primary>` classified as outside and reached the primary clone.
+describe('Git Bash drive paths', () => {
+  test('fromGitBashPath maps /<drive>/... to <DRIVE>:\\... on win32 only', () => {
+    expect(fromGitBashPath('/c/code/repo', 'win32')).toBe('C:\\code\\repo');
+    expect(fromGitBashPath('/D/x', 'win32')).toBe('D:\\x');
+    expect(fromGitBashPath('/c', 'win32')).toBe('C:\\');
+    expect(fromGitBashPath('/c/', 'win32')).toBe('C:\\');
+    expect(fromGitBashPath('\\c\\code', 'win32')).toBe('C:\\code');
+    // Not a drive: left alone.
+    expect(fromGitBashPath('/code/repo', 'win32')).toBe('/code/repo');
+    expect(fromGitBashPath('/tmp', 'win32')).toBe('/tmp');
+    expect(fromGitBashPath('C:/code', 'win32')).toBe('C:/code');
+    expect(fromGitBashPath('c/code', 'win32')).toBe('c/code');
+    // `/c/...` is a real directory on POSIX.
+    expect(fromGitBashPath('/c/code/repo', 'linux')).toBe('/c/code/repo');
+  });
+
+  const gitBash = (p: string) => '/' + p[0].toLowerCase() + p.slice(2);
+  const deny = (command: string) => findWorktreeEscape(command, { ...scope, cwd: OWN });
+
+  test.skipIf(process.platform !== 'win32')('cd into the primary clone by its Git Bash path is denied', () => {
+    expect(classifyWorktreePath(gitBash(PRIMARY), scope)).toBe('primary');
+    expect(deny(`cd ${gitBash(PRIMARY)} && git status`)).not.toBeNull();
+    expect(deny(`cd ${gitBash(PRIMARY)} && git status`)).toContain(PRIMARY.slice(2).replaceAll('/', '\\'));
+    expect(deny(`git -C ${gitBash(PRIMARY)} stash`)).not.toBeNull();
+    expect(deny(`cd ${gitBash(SIBLING)}`)).not.toBeNull();
+    expect(findWriteEscape(`${gitBash(PRIMARY)}/apps/web/page.tsx`, scope)).not.toBeNull();
+  });
+
+  test.skipIf(process.platform !== 'win32')('the own worktree by its Git Bash path stays allowed', () => {
+    expect(classifyWorktreePath(gitBash(OWN), scope)).toBe('own');
+    expect(deny(`cd ${gitBash(OWN)} && bun run test`)).toBeNull();
+    expect(findWriteEscape(`${gitBash(OWN)}/apps/web/page.tsx`, scope)).toBeNull();
+  });
+
+  // Windows paths are case-insensitive: `c:\HOME\...` is the same directory.
+  test.skipIf(process.platform !== 'win32')('a differently cased path to the primary is denied', () => {
+    expect(deny(`cd ${PRIMARY.toLowerCase()} && git status`)).not.toBeNull();
+    expect(deny(`cd ${PRIMARY.toUpperCase()} && git status`)).not.toBeNull();
+    expect(classifyWorktreePath(OWN.toUpperCase(), scope)).toBe('own');
   });
 });
 

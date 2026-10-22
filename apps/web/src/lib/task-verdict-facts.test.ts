@@ -51,6 +51,18 @@ describe('buildVerdictInput', () => {
     expect(deriveTaskVerdict(buildVerdictInput(facts({ workers: [{ ...PR, prLifecycleStatus: 'merged', mergedAt: new Date() }] })))!.state).toBe('shipped');
   });
 
+  it('a superseded PR reads Merged in #N from the record: the delivery\'s when it owns the PR, else the worker columns', () => {
+    const edge = { prNumber: 5408, url: 'https://github.com/acme/app/pull/5408', reason: 'carried over' };
+    const kernel = deriveTaskVerdict(buildVerdictInput(facts({ deliveryPrState: 'closed', deliverySupersededBy: edge })))!;
+    expect(kernel).toMatchObject({ state: 'shipped', headline: 'Merged in #5408' });
+    const legacy = deriveTaskVerdict(buildVerdictInput(facts({
+      workers: [{ ...PR, prLifecycleStatus: 'closed', supersededByPrNumber: 5408, supersededByPrUrl: edge.url }],
+    })))!;
+    expect(legacy).toMatchObject({ state: 'shipped', headline: 'Merged in #5408' });
+    // No record: a closed PR stays closed without merging.
+    expect(deriveTaskVerdict(buildVerdictInput(facts({ deliveryPrState: 'closed' })))!.headline).toBe('PR #12 closed without merging');
+  });
+
   it('a kernel-owned PR reads the delivery state, not the worker columns (§17.5)', () => {
     const merged = buildVerdictInput(facts({ deliveryPrState: 'merged' }));
     expect(merged.pr).toMatchObject({ lifecycle: 'merged', merged: true });

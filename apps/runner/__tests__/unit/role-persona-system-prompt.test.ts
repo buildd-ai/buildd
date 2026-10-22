@@ -115,13 +115,15 @@ mock.module('pusher-js', () => ({
  * repo task from starting at all. Everything else reads as absent.
  */
 let claudeMdInCwd: string | null = null;
+// Either separator: the runner builds these paths with path.join.
+const isCwdClaudeMd = (p: unknown) => /[\\/]CLAUDE\.md$/.test(String(p));
 mock.module('fs', () => ({
   existsSync: (p: string) => {
     const path = String(p);
-    if (path.endsWith('/CLAUDE.md')) return claudeMdInCwd !== null;
-    return path.endsWith('/.git');
+    if (isCwdClaudeMd(path)) return claudeMdInCwd !== null;
+    return /[\\/]\.git$/.test(path);
   },
-  readFileSync: (p: string) => (String(p).endsWith('/CLAUDE.md') && claudeMdInCwd !== null ? claudeMdInCwd : '{}'),
+  readFileSync: (p: string) => (isCwdClaudeMd(p) && claudeMdInCwd !== null ? claudeMdInCwd : '{}'),
   writeFileSync: () => {},
   mkdirSync: () => {},
   chmodSync: () => {},

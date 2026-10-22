@@ -302,6 +302,25 @@ describe('projectMemoryExcludes', () => {
     expect(ex).toContain('/a/b/.claude/rules/**');
     expect(ex).toContain('/a/b/CLAUDE.local.md');
   });
+
+  // The CLI matches candidates as `C:/a/b/CLAUDE.md` (backslashes turned into
+  // `/`). A leading `/` before the drive (`/C:/a/b/CLAUDE.md`) never matches,
+  // so the opted-out memory loaded anyway.
+  test('a Windows cwd keeps its drive letter and gets no leading slash', () => {
+    const ex = projectMemoryExcludes('C:\\a\\b');
+    expect(ex).toContain('C:/a/b/CLAUDE.md');
+    expect(ex).toContain('C:/a/CLAUDE.md');
+    expect(ex).toContain('C:/CLAUDE.md');
+    expect(ex).toContain('C:/a/b/.claude/rules/**');
+    for (const p of ex) {
+      expect(p.startsWith('C:/')).toBe(true);
+      expect(p).not.toContain('\\');
+    }
+  });
+
+  test('a forward-slash Windows cwd gives the same patterns', () => {
+    expect(projectMemoryExcludes('C:/a/b')).toEqual(projectMemoryExcludes('C:\\a\\b'));
+  });
 });
 
 // ─── Source-shape guards on workers.ts ───────────────────────────────────────

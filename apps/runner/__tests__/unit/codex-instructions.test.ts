@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtemp, rm, readFile, writeFile, access } from 'fs/promises';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
 import {
   buildCodexInstructionDoc,
   writeCodexAgentsMd,
@@ -176,6 +176,10 @@ describe('Codex instruction block never reaches a commit', () => {
     g('config', 'user.email', 't@example.com');
     g('config', 'user.name', 't');
     g('config', 'commit.gpgsign', 'false');
+    // Git for Windows defaults: CRLF on checkout and symlinks checked out as
+    // plain files. Pin the POSIX behaviour these tests assert.
+    g('config', 'core.autocrlf', 'false');
+    g('config', 'core.symlinks', 'true');
   });
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
@@ -243,6 +247,10 @@ describe('Codex instruction block: review findings on restore', () => {
     g('config', 'user.email', 't@example.com');
     g('config', 'user.name', 't');
     g('config', 'commit.gpgsign', 'false');
+    // Git for Windows defaults: CRLF on checkout and symlinks checked out as
+    // plain files. Pin the POSIX behaviour these tests assert.
+    g('config', 'core.autocrlf', 'false');
+    g('config', 'core.symlinks', 'true');
   });
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
@@ -316,7 +324,7 @@ describe('Codex instruction block: review findings on restore', () => {
     await mkdir(join(dir, '.git', 'info'), { recursive: true });
     const user = '# mine\n*.log\n\n\n\nscratch/\n';
     await writeFile(excl, user);
-    const wt2 = join(dir, '..', `${dir.split('/').pop()}-wt2`);
+    const wt2 = join(dir, '..', `${basename(dir)}-wt2`);
     g('worktree', 'add', '-q', '-b', 'other', wt2);
     try {
       const r1 = await writeCodexAgentsMd(dir, 'ONE');

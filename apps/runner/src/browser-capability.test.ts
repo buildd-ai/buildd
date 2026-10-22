@@ -41,6 +41,8 @@ import { setPlaywrightPinForTests } from './playwright-pin';
 const HTML = '<html><head></head><body></body></html>\n';
 const SHELL = `${SYSTEM_PLAYWRIGHT_DIR}/chromium_headless_shell-1200/chrome-linux/headless_shell`;
 const HANG = Symbol('hang');
+/** The source builds paths with path.join; on a Windows host that means backslashes. */
+const slash = (p: string) => p.replace(/\\/g, '/');
 
 function execError(status: number | null, stderr: string, extra: Record<string, unknown> = {}) {
   return Object.assign(new Error(`Command failed`), { status, stderr: Buffer.from(stderr), ...extra });
@@ -106,7 +108,7 @@ beforeEach(() => {
   host = {};
   delete process.env.PLAYWRIGHT_BROWSERS_PATH;
   mockExistsSync.mockReset();
-  mockExistsSync.mockImplementation((p: string) => (host.dirs ?? []).includes(p));
+  mockExistsSync.mockImplementation((p: string) => (host.dirs ?? []).includes(slash(p)));
   mockStatSync.mockReset();
   mockStatSync.mockImplementation((p: string) => ({ mtimeMs: host.mtime?.[p] ?? 1, ino: 7 }));
   mockRealpathSync.mockReset();
@@ -196,8 +198,11 @@ describe('detectBrowser', () => {
     const macDir = '/Users/u/Library/Caches/ms-playwright';
     const macShell = `${macDir}/chromium_headless_shell-1200/chrome-headless-shell-mac-arm64/chrome-headless-shell`;
     install({ dirs: [macDir] });
-    expect(playwrightDirs('darwin', '/Users/u')).toEqual([macDir]);
+    expect(playwrightDirs('darwin', '/Users/u').map(slash)).toEqual([macDir]);
 
+    // The end-to-end half models a real Mac's POSIX paths, which path.join on a
+    // Windows host cannot produce.
+    if (process.platform === 'win32') return;
     // End to end: a Mac runner with only that build installed advertises a browser.
     // Whatever the home directory is, its Library/Caches/ms-playwright is the one that exists.
     const prevPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
@@ -232,7 +237,7 @@ describe('detectBrowser', () => {
     process.env.LOCALAPPDATA = 'C:/Users/u/AppData/Local';
     try {
       install({ dirs: ['C:/Users/u/AppData/Local/ms-playwright'] });
-      expect(playwrightDirs('win32', 'C:/Users/u')).toEqual(['C:/Users/u/AppData/Local/ms-playwright']);
+      expect(playwrightDirs('win32', 'C:/Users/u').map(slash)).toEqual(['C:/Users/u/AppData/Local/ms-playwright']);
     } finally {
       if (prev === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = prev;
     }
@@ -241,7 +246,7 @@ describe('detectBrowser', () => {
   it('keeps the Linux search list unchanged', () => {
     const all = ['/home/u/.cache/ms-playwright', SYSTEM_PLAYWRIGHT_DIR, '/home/u/Library/Caches/ms-playwright'];
     install({ dirs: all });
-    expect(playwrightDirs('linux', '/home/u')).toEqual(['/home/u/.cache/ms-playwright', SYSTEM_PLAYWRIGHT_DIR]);
+    expect(playwrightDirs('linux', '/home/u').map(slash)).toEqual(['/home/u/.cache/ms-playwright', SYSTEM_PLAYWRIGHT_DIR]);
   });
 
   it('runs find with -H so a symlinked search root is descended into (BSD find skips it otherwise)', () => {
@@ -671,7 +676,7 @@ describe('pinned Playwright build', () => {
     setPlaywrightPinForTests(PIN);
     const dir = `${SYSTEM_PLAYWRIGHT_DIR}/chromium-1228`;
     install({ dirs: [SYSTEM_PLAYWRIGHT_DIR, dir], found: [PINNED_CHROME], launch: { [PINNED_CHROME]: () => { throw execError(127, 'libnss3.so missing'); } } });
-    const line = formatBrowserDetection(detectBrowser());
+    const line = slash(formatBrowserDetection(detectBrowser()));
     expect(line).toContain(`installed: ${dir}`);
     expect(line).toContain('libnss3.so missing');
   });
