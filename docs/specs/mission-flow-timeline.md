@@ -2,7 +2,7 @@
 title: Mission Flow Timeline
 status: active
 owner: builder
-last_verified: 2026-10-15
+last_verified: 2026-10-22
 summary: The mission Flow tab MUST draw one row per task in dependency order on one time axis, every gate as an edge lit by the strip's relation rule, and one sentence naming what sets the finish.
 domain: surfaces
 surfaces: [apps/web/src/lib/flow-timeline.ts, "apps/web/src/app/app/(protected)/missions/[id]/FlowTimeline.tsx", apps/web/src/lib/mission-layout.ts, apps/web/src/lib/mission-task-strip.ts]
@@ -81,10 +81,14 @@ derive its own order or walk `dependsOn` itself.
 
 **R-3**: A task's duration MUST be its expected size in minutes (the
 newest size prediction for the task, `expectedMinutesFromPredictions`) when one
-exists, else `FLOW_DEFAULT_TASK_MS`. Until the estimates work lands, the tab
-MUST NOT name, label or explain estimates: no "estimate", "forecast" or "p80"
-text. A thin p80 line MUST render only when a p80 is supplied, and the legend
-mentions it only then.
+exists, else `FLOW_DEFAULT_TASK_MS`. That size prediction only places a bar;
+it is not a task estimate and MUST NOT be named, labelled or explained as one:
+no "estimate", "forecast" or "p80" text for it. A per-task indicative estimate
+MAY show where `task-estimates.md` allows it: the task's frozen estimate from
+the exact-version rows that spec's availability and calibration gate admit
+(`loadBuildEstimateRows`), as the Overview card's `Est. 40 min` does. A mission
+completion date or finish clock never shows. A thin p80 line MUST render only
+when a p80 is supplied, and the legend mentions it only then.
 
 **R-4**: The solid part reads "done or so far"; the rest is hatched and
 reads "still to come". A landed bar is the landed cell texture; a started bar's
@@ -225,8 +229,9 @@ start, plus `now` while the mission runs.
 
 ## Out of scope
 
-- Estimates: p50/p80 values, calibration, the finish clock and any text about
-  them (the estimates work supplies p80 later; R-3 says what renders until then).
+- Estimates: p50/p80 values, calibration and any mission finish clock. What a
+  task's estimate may say, and where, is `task-estimates.md`; R-3 says what this
+  tab draws.
 - Runner slots and concurrency over time (the old Lanes view); the fleet's own
   slot lanes are a separate surface.
 - Visual review on this tab: the Overview and History tabs carry it.

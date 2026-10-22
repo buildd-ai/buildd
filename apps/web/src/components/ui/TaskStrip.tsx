@@ -18,6 +18,8 @@ export interface TaskStripCell {
   wait?: TaskStripWait;
   /** The cell's state word, when it says more than the state's (`Next in line`). */
   word?: string;
+  /** A closed PR someone replaced (`Closed → #N`): drawn neutral with →, never the failure ✕. */
+  replaced?: boolean;
 }
 
 /** A run of cells drawn as one group, a gap before it; `outline` encloses it (the work in progress). */
@@ -241,6 +243,7 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
           {rowCells.map(c => {
             const i = indexOf.get(c.id) ?? 0;
             const s = STATES[c.state];
+            const tone = c.replaced ? 'q' : s.tone;
             const tick = c.tick ?? tickOf(i);
             const selected = c.id === selectedId;
             return (
@@ -249,7 +252,7 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
                 type="button"
                 data-id={c.id}
                 data-state={c.state}
-                data-tone={s.tone}
+                data-tone={tone}
                 data-pattern={s.pattern}
                 data-frame={s.frame}
                 data-wait={c.wait}
@@ -267,13 +270,15 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
                 <span
                   aria-hidden="true"
                   data-testid="task-strip-fill"
-                  data-tone={s.tone}
+                  data-tone={tone}
                   data-pattern={s.pattern}
                   data-frame={s.frame}
                   data-wait={c.wait}
+                  // The running cell's hatch drifts (globals.css, off under reduced motion): work is moving.
+                  data-drift={c.state === 'running' || undefined}
                   className={`state-cell flex h-4 w-full shrink-0 items-center justify-center rounded-[var(--radius-cell)] font-mono text-chip font-semibold leading-none md:h-full ${selected ? 'md:[outline:2px_solid_var(--text-primary)] md:[outline-offset:2px]' : ''}`}
                 >
-                  {c.wait && c.wait !== 'closed' ? null : s.cellGlyph ? s.glyph : null}
+                  {c.replaced ? '→' : c.wait && c.wait !== 'closed' ? null : s.cellGlyph ? s.glyph : null}
                 </span>
               </button>
             );

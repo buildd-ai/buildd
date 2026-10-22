@@ -11,10 +11,10 @@ mock.module('next/navigation', () => ({
 }));
 
 const { renderToStaticMarkup } = await import('react-dom/server');
-const { default: MissionOverview } = await import('./MissionOverview');
+const { default: MissionOverview, FocusStatus } = await import('./MissionOverview');
 const { railLines, overviewLayout } = await import('@/lib/mission-overview');
 const { dagBoard, dagId, DAG_SPECS, overviewWavesBoard } = await import('@/app/app/dev/fixtures/mission-task-strip-fixtures');
-const legendText = (markup: string) => [...(markup.match(/data-testid="overview-counts"[\s\S]*?<\/p>/)?.[0] ?? '').matchAll(/data-legend="[^"]+"[^>]*>(?:<span[^>]*><\/span>)?([^<]*)</g)].map(m => m[1]);
+const countsText = (markup: string) => markup.match(/data-testid="overview-counts"[^>]*>([^<]*)<\/p>/)?.[1] ?? null;
 
 const spec = DAG_SPECS.linear;
 const html = renderToStaticMarkup(<MissionOverview model={dagBoard(spec)} missionId="mission-1" workspaceId="ws-1" />);
@@ -30,7 +30,9 @@ describe('MissionOverview', () => {
   it('draws the lg strip, a focus card and the counts', () => {
     expect(html).toContain('data-size="lg"');
     expect(html).toContain('data-testid="focus-card"');
-    expect(legendText(html)).toEqual(['1 done', '1 in progress', '3 waiting on tasks']);
+    expect(countsText(html)).toBe('1 of 5 merged');
+    // No legend row of states: each cell's state is named on its card.
+    expect(html).not.toContain('data-legend=');
     expect(html).toContain('data-testid="overview-stepper"');
   });
 
@@ -66,9 +68,9 @@ describe('MissionOverview, 11 tasks with delivery', () => {
   });
 
   it('the counts line is build counts only; criteria live in the Verified pill and the rail', () => {
-    const counts = legendText(out);
-    expect(counts[0]).toBe('3 done');
-    expect(counts.join(' ')).not.toMatch(/criteri/);
+    const counts = countsText(out)!;
+    expect(counts).toMatch(/^3 of \d+ merged$/);
+    expect(counts).not.toMatch(/criteri/);
   });
 });
 
@@ -103,8 +105,9 @@ describe('MissionOverview groups', () => {
     expect(out).not.toMatch(/aria-label="\d\d Held: /);
   });
 
-  it('the legend says the groups in words', () => {
-    expect(legendText(out)).toEqual(['10 done', '2 in progress', '4 waiting on tasks', '2 next in line', '1 blocked', '1 not started', '1 check']);
+  it('counts merged build work only, never a row of states', () => {
+    expect(countsText(out)).toBe('10 of 20 merged');
+    expect(out).not.toContain('data-legend=');
   });
 
   it('a two-task mission draws two compact cells, not two wide slabs', () => {
@@ -189,5 +192,67 @@ describe('MissionOverview handoff (spec f7f67f1a R-11 to R-24)', () => {
 
   it('a budget hold removes the time promise', () => {
     expect(render('handoff-budget')).not.toContain('data-testid="overview-estimate"');
+  });
+});
+
+// mission-feed §Status vocabulary: one dot, one word, one short cause; no Next sentence.
+describe('MissionOverview focus status line', () => {
+  const model = dagBoard(spec);
+  const running = dagId(spec, 'B');
+  const status = (markup: string) => markup.match(/data-testid="focus-status" data-word="([^"]+)"/)?.[1] ?? null;
+
+  it('the running task reads Working with a ticking clock, and the flow is one line', () => {
+    expect(status(html)).toBe('Working');
+    expect(html).toMatch(/data-testid="focus-status-word"[^>]*>Working \d/);
+    expect(html).toContain('data-variant="line"');
+    expect(html).not.toContain('>Next</dt>');
+  });
+
+  it('Est. and its bar appear only with a frozen estimate the page loaded', () => {
+    expect(html).not.toContain('data-testid="focus-estimate"');
+    const plan = [{ id: running, status: 'in_progress', dependsOn: [], startedAt: model.tasks[running].startedAt, endedAt: null, p50Minutes: 40, p80Minutes: 60 }];
+    const withEst = renderToStaticMarkup(<MissionOverview model={model} missionId="mission-1" workspaceId="ws-1" planTasks={plan} />);
+    expect(withEst).toContain('Est. 40 min');
+    expect(withEst).toContain('data-testid="focus-estimate"');
+    // A task's indicative estimate only: no date, no mission finish.
+    expect(withEst.match(/data-testid="focus-estimate"[^>]*><span>([^<]*)</)?.[1]).toBe('Est. 40 min');
+  });
+
+  const base = { tone: 'q' as const, cause: null, since: null, lastEventAt: null, retryAt: null, closed: null };
+  const render = (st: Partial<Parameters<typeof FocusStatus>[0]['status']>, now = 1_000_000) =>
+    renderToStaticMarkup(<FocusStatus status={{ ...base, word: 'Ready', ...st }} taskId="t1" prWorkerId="w1" serverNow={now} estimateMinutes={null} />);
+
+  it('a failed task in backoff says Failed · CI failed, Retry in 3h 52m and Retry now', () => {
+    const out = render({ word: 'Failed', tone: 'bad', cause: 'CI failed', retryAt: 1_000_000 + (3 * 60 + 52) * 60_000 });
+    expect(out).toContain('>Failed</span>');
+    expect(out).toContain('· CI failed');
+    expect(out).toContain('Retry in 3h 52m');
+    expect(out).toContain('data-testid="focus-retry-now"');
+    expect(out).not.toMatch(/Ready|Scheduled start/);
+  });
+
+  it('a running task past the stale threshold reads No activity for 12m in the warning tone', () => {
+    const now = 10_000_000;
+    const out = render({ word: 'Working', tone: 'act', since: now - 900_000, lastEventAt: now - 12 * 60_000 }, now);
+    expect(out).toContain('No activity for 12m');
+    expect(out).toContain('data-stale="true"');
+    expect(out).toContain('text-status-warning');
+    const fresh = render({ word: 'Working', tone: 'act', since: now - 900_000, lastEventAt: now - 14_000 }, now);
+    expect(fresh).toContain('Updated 14s ago');
+    expect(fresh).toContain('Working 15m 00s');
+  });
+
+  it('a replaced PR reads Closed → #N, linked, neutral, with no ✕', () => {
+    const out = render({ word: 'Closed', closed: { replacement: { number: 812, url: 'https://github.com/example/app/pull/812' } } });
+    expect(out).toMatch(/<a data-testid="focus-status-replacement" href="https:\/\/github.com\/example\/app\/pull\/812"[^>]*>Closed → #812<\/a>/);
+    expect(out).not.toContain('✕');
+    expect(out).not.toContain('focus-link-replacement');
+  });
+
+  it('a closed PR with no known replacement reads Closed, with Link replacement', () => {
+    const out = render({ word: 'Closed', closed: { replacement: null } });
+    expect(out).toContain('>Closed</span>');
+    expect(out).toContain('data-testid="focus-link-replacement"');
+    expect(out).toContain('>Link replacement</button>');
   });
 });

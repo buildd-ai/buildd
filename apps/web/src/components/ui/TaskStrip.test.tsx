@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 import TaskStrip, { stripRowCapacity, wrapStripGroups, type TaskStripCell } from './TaskStrip';
 import { STATES, type StateKey } from './states';
@@ -185,5 +187,32 @@ describe('TaskStrip sm', () => {
     expect(html.match(/class="state-cell/g)).toHaveLength(4);
     expect(html).toContain('grid-template-columns:12fr minmax(6px,1fr) minmax(6px,1fr) 5fr');
     expect(html).toContain('12 merged');
+  });
+});
+
+// strip §3.2b: the running cell's hatch drifts; reduced motion stills it.
+describe('TaskStrip running drift', () => {
+  it('marks only the running cell to drift', () => {
+    const html = renderToStaticMarkup(<TaskStrip cells={cells} />);
+    const drifting = fills(html).filter(f => f.includes('data-drift'));
+    expect(drifting).toHaveLength(1);
+    expect(drifting[0]).toContain('data-pattern="hatch-bold"');
+  });
+
+  it('the drift is CSS only, and prefers-reduced-motion turns it off', () => {
+    const css = readFileSync(join(import.meta.dir, '..', '..', 'app', 'globals.css'), 'utf8');
+    expect(css).toMatch(/\.state-cell\[data-drift\] \{ animation: cell-drift/);
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\s*\.state-cell\[data-drift\] \{ animation: none; \}/);
+  });
+});
+
+describe('TaskStrip replaced cell', () => {
+  it('a closed PR someone replaced is neutral with →, never ✕', () => {
+    const html = renderToStaticMarkup(<TaskStrip cells={[{ id: 'c1', state: 'not_landed', wait: 'closed', word: 'Closed → #812', replaced: true }]} />);
+    const [fill] = fills(html);
+    expect(fill).toContain('data-tone="q"');
+    expect(fill).toContain('>→</span>');
+    expect(html).toContain('aria-label="01 Closed → #812"');
+    expect(html).not.toContain('✕');
   });
 });

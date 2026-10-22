@@ -50,12 +50,17 @@ export function useLiveBoard(model: MissionBoardModel): MissionBoardModel {
       if (!t || (p.workerId && t.workerId && p.workerId !== t.workerId)) continue;
       const last = t.milestones.length ? t.milestones[t.milestones.length - 1].ts : -Infinity;
       const fresh = p.milestones.filter(m => m.ts > last && m.label !== t.milestones[t.milestones.length - 1]?.label);
-      if (fresh.length === 0 && (!p.currentAction || p.currentAction === t.currentAction)) continue;
+      // A heartbeat is an event: the Overview's `Updated 14s ago` reads it between renders.
+      const beat = p.updatedAt ? Date.parse(p.updatedAt) : NaN;
+      const newer = t.lastEventAt != null && Number.isFinite(beat) && beat > t.lastEventAt ? beat : null;
+      if (fresh.length === 0 && newer == null && (!p.currentAction || p.currentAction === t.currentAction)) continue;
       changed = true;
+      const lastEventAt = Math.max(t.lastEventAt ?? -Infinity, newer ?? -Infinity, fresh.length ? fresh[fresh.length - 1].ts : -Infinity);
       tasks[id] = {
         ...t,
         milestones: [...t.milestones, ...fresh],
         currentAction: p.currentAction ?? t.currentAction,
+        ...(t.lastEventAt != null ? { lastEventAt } : {}),
       };
     }
     return changed ? { ...model, tasks } : model;

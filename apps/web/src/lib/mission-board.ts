@@ -71,6 +71,9 @@ export interface BoardWorkerInput {
   supersededByPrNumber?: number | null;
   /** A person settled this closed PR as deliberately not shipping. */
   abandonedAt?: number | null;
+  /** The PR someone named as this closed PR's replacement, before (or without) a recorded supersession. */
+  namedReplacementPrNumber?: number | null;
+  namedReplacementPrUrl?: string | null;
   currentAction: string | null;
   waitingFor: { prompt: string; options: string[] } | null;
   milestones: BoardMilestone[];
@@ -85,6 +88,8 @@ export interface BoardTaskInput extends MissionFeedTaskInput {
   ciRetryPrNumber?: number | null;
   /** `tasks.backend` (null: the default). The Landed drawer's task actions read it. */
   backend?: string | null;
+  /** `tasks.startAt`, epoch ms: a deferred start (a retry's backoff). */
+  startAt?: number | null;
   /** Newest first, as the mission query orders them. */
   workers: BoardWorkerInput[];
   /** The task's `result` digest (`errorType`, `error`): a dependency failure is read from it. */
@@ -250,6 +255,17 @@ export interface BoardTask {
   executing?: boolean;
   startedAt: number | null;
   endedAt: number | null;
+  /**
+   * A live worker's last event: its newest write or milestone, whichever is
+   * later. Null when nothing is executing. The Overview's `Updated 14s ago`.
+   */
+  lastEventAt?: number | null;
+  /** A pending task's deferred start (a retry's backoff), epoch ms; the reader compares it with now. */
+  startAt?: number | null;
+  /** The worker that owns the task's PR (the Link replacement action writes to it). */
+  prWorkerId?: string | null;
+  /** A closed, unshipped PR's named replacement (`Closed → #N`). Null when none is known. */
+  replacement?: { number: number; url: string | null } | null;
   /** When the current wait began (a waiting task). */
   waitStartedAt: number | null;
   milestones: BoardMilestone[];
@@ -509,6 +525,8 @@ export function toBoardWorkerInput(w: Record<string, unknown>): BoardWorkerInput
     prLifecycleStatus: str(w.prLifecycleStatus),
     supersededByPrNumber: num(w.supersededByPrNumber),
     abandonedAt: epoch(w.abandonedAt),
+    namedReplacementPrNumber: num(w.namedReplacementPrNumber),
+    namedReplacementPrUrl: str(w.namedReplacementPrUrl),
     currentAction: str(w.currentAction),
     waitingFor: wf && typeof wf.prompt === 'string' ? { prompt: wf.prompt, options } : null,
     milestones: selectMilestones(w.milestones),
@@ -551,6 +569,7 @@ export function toBoardTaskInput(t: Record<string, unknown> & { id: string; titl
     outputRequirement: str(t.outputRequirement),
     ciRetryPrNumber: num(t.ciRetryPrNumber),
     backend: str(t.backend),
+    startAt: epoch(t.startAt),
     // The page's digest under its own key: a caller that loads no result (Home's cards) never touches `result`.
     result: t.resultDigest ?? null,
     delivery: (t.delivery as DeliveryDisplay | null | undefined) ?? null,
@@ -575,6 +594,12 @@ const phaseKeyOf = (t: MissionFeedTaskInput) =>
   t.missionPhaseIndex != null && t.missionPhaseLabel != null ? `p${t.missionPhaseIndex}` : 'none';
 
 const isLiveWorker = (w: BoardWorkerInput | null | undefined) => !!w && LIVE.has(w.status);
+
+/** A worker's newest write or milestone, whichever is later; null when it has neither. */
+export function lastEventOf(w: Pick<BoardWorkerInput, 'updatedAt' | 'milestones'>): number | null {
+  const m = w.milestones.length ? w.milestones[w.milestones.length - 1].ts : null;
+  return w.updatedAt == null ? m : m == null ? w.updatedAt : Math.max(w.updatedAt, m);
+}
 
 /**
  * The Board's state for one deliverable row, refining the feed's
@@ -614,7 +639,7 @@ export function deriveBoardStatus(row: DeliverableRow<BoardTaskInput>, depsLande
   const kernel = boardDeliveryReading(row);
   if (kernel) return BOARD_STATUS_FOR_DELIVERY_TONE[kernel.tone];
   const feed = deriveFeedTaskState(row);
-  const pr = deriveFeedPrState(task.worker);
+  const pr = deriveFeedPrState(task.worker, task.delivery);
   const openAttempt = [...row.attempts].reverse().find(a => !TERMINAL.has(a.status) && a.taskClass !== 'work');
   const attemptLive = !!openAttempt && (isLiveWorker(openAttempt.workers[0]) || openAttempt.status === 'in_progress' || openAttempt.status === 'assigned');
   const redPr = pr?.state === 'ci_failed' || pr?.state === 'conflict';
@@ -633,6 +658,9 @@ export function deriveBoardStatus(row: DeliverableRow<BoardTaskInput>, depsLande
       return redPr || openAttempt ? 'fixing' : 'failed';
     case 'queued':
       if (openAttempt && pr) return 'fixing';
+      // The true state wins over a backoff: a re-queued task whose PR is red
+      // (failing checks, a conflict) is failed, never ready (strip §3.2a).
+      if (redPr) return 'ci_failed';
       return depsLanded ? 'ready' : 'blocked';
     case 'done':
       return pr?.state === 'merged' ? 'merged' : 'done';
@@ -806,6 +834,10 @@ export function buildBoardCells(
       executing: isLiveWorker(activeWorker),
       startedAt: activeWorker?.startedAt ?? null,
       endedAt: activeWorker && !isLiveWorker(activeWorker) ? activeWorker.completedAt ?? activeWorker.updatedAt : null,
+      lastEventAt: isLiveWorker(activeWorker) ? lastEventOf(activeWorker!) : null,
+      startAt: t.startAt != null && t.status === 'pending' ? t.startAt : null,
+      prWorkerId: own?.prNumber != null ? own.id : null,
+      replacement: own?.namedReplacementPrNumber != null ? { number: own.namedReplacementPrNumber, url: own.namedReplacementPrUrl ?? null } : null,
       waitStartedAt: status === 'waiting' ? activeWorker?.updatedAt ?? null : null,
       milestones: activeWorker?.milestones ?? [],
       currentAction: isLiveWorker(activeWorker) ? activeWorker?.currentAction ?? null : null,

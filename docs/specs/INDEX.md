@@ -134,15 +134,15 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   An initiative MUST be a container above missions with a human-set status, owner and optional target date; progress MUST be missions done over missions, and attention MUST come from its missions.
 - [Insights Shipping Metrics](./insights-shipping-metrics.md) · @max — verified 2026-10-17
   Insights MUST label shipping comparisons with exact rolling spans, count tasks shipped and failed or abandoned inside them, and report waiting as item counts with median and p90.
-- [Mission Feed](./mission-feed.md) · @builder — verified 2026-09-23
+- [Mission Feed](./mission-feed.md) · @builder — verified 2026-10-22
   The mission detail page MUST answer "is this done" before listing tasks, and below md MUST render every deliverable exactly once in one grouped list under a sticky masthead.
-- [Mission Flow Timeline](./mission-flow-timeline.md) · @builder — verified 2026-10-15
+- [Mission Flow Timeline](./mission-flow-timeline.md) · @builder — verified 2026-10-22
   The mission Flow tab MUST draw one row per task in dependency order on one time axis, every gate as an edge lit by the strip's relation rule, and one sentence naming what sets the finish.
 - [Mission Goal Criteria Display](./mission-goal-criteria-display.md) · @max — verified 2026-10-11
   A goal criterion's glyph and its live value MUST come from one evaluation, and a complete count nothing has evaluated reads "not checked", never unmet.
 - [Mission Legibility](./mission-legibility.md) · @builder — verified 2026-10-15
   A mission's phases and each task's work-kind MUST be stored facts written once at their source, read by every surface through one derivation helper, and never inferred from a task's title.
-- [Mission Progress Strip — Topological Order and Dependency-on-Selection](./mission-progress-strip-ordering.md) · @builder — verified 2026-10-15
+- [Mission Progress Strip — Topological Order and Dependency-on-Selection](./mission-progress-strip-ordering.md) · @builder — verified 2026-10-22
   The mission Landed strip MUST place every dependency left of its dependents, give blocked, queued and ready distinct textures, and mark a selected cell's blockers or unblocked work on the existing tick row.
 - [QA Capture Interaction Steps](./qa-capture-steps.md) · @builder — verified 2026-10-05
   Visual QA capture MUST be able to open a modal, menu or gated state through a validated, closed list of steps before a shot, and MUST NOT commit a write on a page backed by real data.

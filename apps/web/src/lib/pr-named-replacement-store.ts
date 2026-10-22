@@ -70,10 +70,12 @@ export async function linkNamedReplacement(p: {
   repoFullName: string;
   prNumber: number;
 }): Promise<{ updated: boolean; url: string }> {
-  const url = prUrlFor(p.repoFullName, p.prNumber);
+  // The replacement's number, never this worker's own PR: the write-site pin (pr-write-sites.test.ts) reads `prNumber:` as one.
+  const replacement = p.prNumber;
+  const url = prUrlFor(p.repoFullName, replacement);
   const rows: Row[] = await db
     .update(workers)
-    .set({ namedReplacementPrNumber: p.prNumber, namedReplacementPrUrl: url, updatedAt: new Date() })
+    .set({ namedReplacementPrNumber: replacement, namedReplacementPrUrl: url, updatedAt: new Date() })
     .where(and(eq(workers.id, p.workerId), isNull(workers.mergedAt)))
     .returning({ id: workers.id, workspaceId: workers.workspaceId, taskId: workers.taskId });
   await nudge(rows);

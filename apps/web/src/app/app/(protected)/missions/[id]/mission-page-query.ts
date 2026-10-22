@@ -51,6 +51,9 @@ export const MISSION_WORKER_COLUMNS = {
   prLifecycleStatus: true,
   mergedAt: true,
   supersededByPrNumber: true,
+  // The Overview's `Closed → #N`: a replacement someone named before it merged.
+  namedReplacementPrNumber: true,
+  namedReplacementPrUrl: true,
   abandonedAt: true,
   supersededByPrUrl: true,
   supersededReason: true,

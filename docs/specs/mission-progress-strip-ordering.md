@@ -2,7 +2,7 @@
 title: Mission Progress Strip — Topological Order and Dependency-on-Selection
 status: active
 owner: builder
-last_verified: 2026-10-15
+last_verified: 2026-10-22
 summary: The mission Landed strip MUST place every dependency left of its dependents, give blocked, queued and ready distinct textures, and mark a selected cell's blockers or unblocked work on the existing tick row.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.tsx, apps/web/src/app/app/(protected)/missions/[id]/MissionBoardParts.tsx, apps/web/src/lib/mission-task-strip.ts, apps/web/src/lib/mission-board.ts]
@@ -268,6 +268,31 @@ in greyscale.
 class strings, and the three fills MUST differ in texture (none / dense /
 sparse), not only in colour.
 
+### 3.2a A red PR wins over a backoff
+
+**R-8a**: a task whose PR has failing checks or a merge conflict MUST read
+`ci_failed` (the card: `Failed · CI failed` / `Failed · Merge conflict`),
+never `ready`, `blocked` or `queued`, even while it is pending behind a
+retry backoff (`tasks.startAt` in the future). The PR state is read from the
+same projection as the rest of the page (`deriveFeedPrState` over the
+worker and the kernel's delivery display; `deriveBoardStatus`). The backoff
+is not hidden: the card names it beside the cause as `Retry in 3h 52m`, with
+a `Retry now` action (the start route's override). A red PR never reads
+`Ready · Scheduled start`.
+
+### 3.2b The running cell moves
+
+**R-8b**: the `running` cell's hatch drifts slowly, one stripe period per
+2.4s, in CSS only (`.state-cell[data-drift]`, `TaskStrip` sets `data-drift`
+on a running cell's fill). Nothing else on the strip animates.
+`prefers-reduced-motion: reduce` MUST turn the drift off (an unlayered rule in
+`globals.css`); the hatch stays, still. Before this amendment the running cell
+was static.
+
+**R-8c**: on the Overview, a closed PR someone replaced (`Closed → #N`,
+`BoardTask.replacement`) draws its cell in the neutral tone with `→`, never
+the failure ✕ (`TaskStripCell.replaced`).
+
 ### 3.3 Words
 
 `STATUS_PILL` and `STATUS_WORDS` gain the split: `ready` → "Ready" / "ready"
@@ -312,7 +337,7 @@ The drawer header becomes:
 | Selected cell | Marks show | Drawer reason line |
 |---|---|---|
 | `blocked`, `queued` | **upstream**: frontier(T) = direct marks; upstream(T) − frontier(T) = transitive marks | `After 12 {label} (+7 upstream).` |
-| any **active** state with a non-empty downstream(T) | **downstream**: non-landed direct dependents = direct marks; rest of downstream(T) = transitive marks | `Unblocks 08, 13 (+3 downstream).` |
+| any **active** state with a non-empty downstream(T) | **downstream**: non-landed direct dependents = direct marks; rest of downstream(T) = transitive marks | `Unblocks 08, 13 (+3 downstream).` (the Overview card: `Blocks 08, 13`, R-12a) |
 | active with empty downstream(T) | none | unchanged |
 | `landed` | none | unchanged |
 
@@ -330,6 +355,11 @@ re-renders as one unit.
 `{tick} {label}`, and tails the rest as `+N upstream` / `+N downstream`
 (CC-3/CC-4 parity with `DependencyRail`). Off-strip blockers are named by
 title plus `· other mission` and are always named before on-strip ones.
+
+**R-12a** (Overview focus card, `reasonLine`): a label, not a sentence: no
+full stop. Downstream reads `Blocks 04, 06`, naming only what the task blocks
+directly (`+1` past two); the transitive tail is the tick row's marks, not
+words. Upstream reads `After 03 Projection, 04 List (+2 upstream)`.
 
 **R-13**: the "waiting on N dependencies" count in `TaskActionZone`
 MUST equal |blockers(T)|, including off-strip blockers — the same set the
@@ -757,6 +787,13 @@ Each criterion is checkable against a board model built from fixtures
 - **AC-21**: GIVEN `MissionProgressBar.tsx` after the change, WHEN searched,
   THEN the literal `{ solid: 0, half: 1, ghost: 2, notch: 3, empty: 4 }`
   appears at most once.
+- **AC-23**: GIVEN a pending task whose PR is `ci_failed` or `conflict` and
+  whose `startAt` is 4h ahead, WHEN the board is built, THEN its status is
+  `ci_failed`, its Overview status is `Failed` with the PR's cause and a
+  `retryAt`, and it carries no waiting cause (R-8a).
+- **AC-24**: GIVEN a strip with one running cell, WHEN it renders, THEN only
+  that cell's fill carries `data-drift`, and `globals.css` turns the drift's
+  animation off under `prefers-reduced-motion: reduce` (R-8b).
 - **AC-22** (rejection): GIVEN any strip rendered with state-compacted order
   (R-5), WHEN inspected, THEN it carries no tick numbers, no ordinal and no
   selectable cell.

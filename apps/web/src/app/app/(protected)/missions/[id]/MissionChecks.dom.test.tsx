@@ -137,12 +137,20 @@ describe('the stage rail (R-35, AC-18)', () => {
 });
 
 describe('the outcome spec line (R-40)', () => {
-  it('stays on one line: the title truncates, the revision and status never wrap', () => {
-    act(() => root.render(<OutcomeSpecLines lines={[{ specId: 's1', title: 'Mission Overview: progress waves, verification handoff and honest delivery', revision: 'rev 8', status: 'not checked', href: '/app/specs/s1' }]} />));
+  it('reads Spec r1 · Draft on one line, linking to the spec by its title', () => {
+    act(() => root.render(<OutcomeSpecLines lines={[{ specId: 's1', title: 'Mission Overview: progress waves, verification handoff and honest delivery', revision: 'r1', draft: true, verdict: null, href: '/app/specs/s1' }]} />));
     const li = q('[data-testid="mission-outcome-spec-line"]')!;
     expect(li.className).toContain('whitespace-nowrap');
     expect(li.className).not.toContain('flex-wrap');
-    expect(li.querySelector('a')!.className).toContain('truncate');
-    expect(li.querySelector('a')!.getAttribute('href')).toBe('/app/specs/s1');
+    expect(li.textContent).toBe('Spec r1· Draft');
+    expect(li.textContent).not.toContain('not checked');
+    const a = li.querySelector('a')!;
+    expect(a.getAttribute('href')).toBe('/app/specs/s1');
+    expect(a.getAttribute('title')).toBe('Mission Overview: progress waves, verification handoff and honest delivery');
+  });
+
+  it('names the verdict only once one exists', () => {
+    act(() => root.render(<OutcomeSpecLines lines={[{ specId: 's1', title: 'T', revision: 'r2', draft: false, verdict: 'Failing', href: '/app/specs/s1' }]} />));
+    expect(q('[data-testid="mission-outcome-spec-line"]')!.textContent).toBe('Spec r2· Failing');
   });
 });

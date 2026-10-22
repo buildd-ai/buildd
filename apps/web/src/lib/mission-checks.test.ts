@@ -393,16 +393,24 @@ describe('buildEstimate (R-23, R-24, R-25, AC-10)', () => {
 describe('outcomeSpecLines (spec f7f67f1a R-40)', () => {
   const spec: GoalCriterion = { type: 'living_spec', specId: 'spec-1', specRevisionId: 'rev-8', revision: 8, contentHash: 'h' } as GoalCriterion;
 
-  it('one line per selected spec: title, pinned revision, the Verify row\'s status and a link', () => {
+  it('one line per selected spec: `Spec r8`, a link named by its title, no status before a verdict', () => {
     const { rows } = missionChecks(input({ criteria: [unitTests, spec] }));
     const lines = outcomeSpecLines([unitTests, spec], rows, { 'spec-1': 'Mission Overview' });
-    expect(lines).toEqual([{ specId: 'spec-1', title: 'Mission Overview', revision: 'rev 8', status: rows.find(r => r.key === 'criterion-1')!.state, href: '/app/specs/spec-1' }]);
+    expect(lines).toEqual([{ specId: 'spec-1', title: 'Mission Overview', revision: 'r8', draft: false, verdict: null, href: '/app/specs/spec-1' }]);
   });
 
-  it('no selected spec, no line; an unreadable title still names the revision', () => {
+  it('a proposed revision reads Draft; never "not checked"', () => {
     expect(outcomeSpecLines([unitTests], [], {})).toEqual([]);
     const [line] = outcomeSpecLines([{ ...spec, provisional: true } as GoalCriterion], [], {});
-    expect(line).toMatchObject({ title: 'Outcome spec', revision: 'rev 8, proposed', status: 'not checked' });
+    expect(line).toMatchObject({ title: 'Outcome spec', revision: 'r8', draft: true, verdict: null });
+    expect(JSON.stringify(line)).not.toContain('not checked');
+  });
+
+  it('a verdict reads Passing or Failing', () => {
+    const row = (status: string) => [{ key: 'criterion-0', status } as never];
+    expect(outcomeSpecLines([spec], row('passed'), {})[0].verdict).toBe('Passing');
+    expect(outcomeSpecLines([spec], row('finding'), {})[0].verdict).toBe('Failing');
+    expect(outcomeSpecLines([spec], row('running'), {})[0].verdict).toBeNull();
   });
 });
 
