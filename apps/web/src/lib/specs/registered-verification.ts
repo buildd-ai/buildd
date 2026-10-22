@@ -6,12 +6,12 @@ import {
 import type { VerificationResult, VerificationVerdict } from '@buildd/core/verification-check';
 import type { BuilddDecisionScope } from '@buildd/core/decision-policy';
 import {
-  bindingFingerprint, criterionBindings, type VerificationBinding, type VerifierRegistry,
+  bindingFingerprint, criterionBindings, type VerificationBinding, type VerifierIdentity, type VerifierRegistry,
 } from '@buildd/spec-contract/verification-bindings';
 import { criterionRecords } from '@buildd/spec-contract/criterion-records';
 import {
-  UI_ACTION_STATE_VERIFIER, UI_COPY_VERDICT, checkUiActionState, parseUiEvidence, uiCopyFindings,
-  type ParsedUiEvidence, type UiCopyDecision, type UiCopyFeatures, type UiEvidenceCapability,
+  UI_ACTION_STATE_VERIFIER, evaluateUiSurface, parseUiEvidence, surfaceFromUiEvidence,
+  type UiCopyFeatures, type UiEvidenceCapability, type UiModelDecision, type UiSurfaceOutcome,
 } from '@buildd/core/ui-verification';
 import { registeredAuthor, type RegisteredMethod } from './registered-author';
 
@@ -112,6 +112,15 @@ export interface RegisteredRun {
   scenarios?: string[];
   /** Declared captures this run did not see: set only on a fail, which one failing capture decides. */
   missing?: string[];
+  /** Findings on the judged captures, each linked to its capture's element ids. */
+  findings?: Array<Record<string, unknown>>;
+  /** Capabilities every judged capture was actually inspected for. */
+  inspected?: UiEvidenceCapability[];
+  coverage?: UiSurfaceOutcome['coverage'];
+  /** The model, prompt and policy each decision ran under (model runs only). */
+  evaluators?: Array<NonNullable<UiSurfaceOutcome['evaluator']>>;
+  /** The planned run this records (planRegisteredChecks): what reusablePass and the verdict record answer to. */
+  plan?: { key: string; fingerprint: string; verifier: VerifierIdentity; profile: VerifierIdentity; subject: PlannedSubject };
 }
 export interface Execution {
   result: VerificationResult;
@@ -119,6 +128,15 @@ export interface Execution {
   inputFingerprint: string | null;
   decisionRecordIds: string[];
   receipts: unknown[];
+  findings?: UiSurfaceOutcome['findings'];
+  inspected?: UiEvidenceCapability[];
+  coverage?: UiSurfaceOutcome['coverage'];
+  evaluator?: UiSurfaceOutcome['evaluator'];
+}
+/** What a check is judged against, beyond the capture: the binding's profile and the criterion's words. */
+export interface ExecutionContext {
+  profile: UiCopyFeatures['profile'];
+  criterion?: UiCopyFeatures['criterion'];
 }
 export interface Reservation { owner: string; recovered: boolean }
 export interface CachedRun { verdictId: string; run: RegisteredRun; current: boolean }
@@ -132,7 +150,7 @@ export interface RegisteredVerificationDeps {
   /** Atomic: null while another live reservation holds the key. */
   reserve(subject: RegisteredSubject, runKey: string): Promise<Reservation | null>;
   release(subject: RegisteredSubject, runKey: string, owner: string): Promise<void>;
-  execute(id: RegisteredBinding['id'], input: unknown, scope: BuilddDecisionScope): Promise<Execution>;
+  execute(id: RegisteredBinding['id'], input: unknown, scope: BuilddDecisionScope, ctx: ExecutionContext): Promise<Execution>;
   /**
    * Revalidates subject, head, binding, captures and (when given) that the
    * reservation is still this run's, then appends a verdict row.
@@ -187,7 +205,36 @@ export function bindingCoverage(declared: readonly VerificationScenario[], surfa
 
 const SHA40 = /^[0-9a-f]{40}$/i;
 
-function aggregate(checks: readonly Execution[], bindingId: RegisteredBinding['id']): Pick<RegisteredRun, 'verdict' | 'method' | 'observed'> {
+/** Who collected and who records production runs: the store admits only an independent audit's own captures. */
+const AUDITOR = 'visual_verifier';
+export const REGISTERED_RECORDER = { kind: 'harness', id: 'registered-verification' } as const;
+
+/** The judged captures as one stamped snapshot: its fingerprint is the run's input identity. */
+function stampedSet(s: RegisteredSubject, set: readonly CollectedSurface[]): StampedEvidence {
+  const snapshot = set.map((e) => ({ ref: e.ref, fingerprint: e.fingerprint }));
+  return {
+    workspaceId: s.workspaceId, targetSha: s.headSha.toLowerCase(),
+    collectedBy: { kind: AUDITOR, id: [...new Set(set.map((e) => e.provenance.auditTaskId))].join(',') },
+    snapshot, fingerprint: evidenceFingerprint(snapshot),
+  };
+}
+
+/** A stored production run as the shared outcome (toVerdictRecord, reusablePass, registeredMissionRow read this). */
+export function storedOutcome(s: Pick<RegisteredSubject, 'specRevisionId'>, run: RegisteredRun, collectedBy?: Actor): RegisteredOutcome | null {
+  if (!run.plan) return null;
+  return {
+    criterionId: run.criterionId, subject: run.plan.subject, specRevisionId: s.specRevisionId, targetSha: run.headSha.toLowerCase(),
+    verdict: run.verdict, method: run.method, authoritative: true, coverage: run.coverage ?? 'partial', findings: run.findings ?? [],
+    fingerprint: run.plan.fingerprint, key: run.plan.key,
+    provenance: {
+      verifier: run.plan.verifier, profile: run.plan.profile, specRevisionId: s.specRevisionId, targetSha: run.headSha.toLowerCase(),
+      evidenceFingerprint: run.inputFingerprint, collectedBy: collectedBy ?? { kind: AUDITOR, id: 'stored' }, recordedBy: REGISTERED_RECORDER,
+      inspected: run.inspected ?? [], ...(run.evaluators?.[0] ? { evaluator: run.evaluators[0] } : {}),
+    },
+  };
+}
+
+function aggregate(checks: readonly Execution[], bindingId: RegisteredBinding['id']): Pick<RegisteredRun, 'verdict' | 'method' | 'observed' | 'inspected' | 'coverage'> {
   const verdicts = checks.map((x) => x.result.verdict);
   const verdict: VerificationVerdict = verdicts.includes('fail') ? 'fail' : verdicts.includes('unsupported') ? 'unsupported'
     : verdicts.includes('inconclusive') ? 'inconclusive' : 'pass';
@@ -196,7 +243,14 @@ function aggregate(checks: readonly Execution[], bindingId: RegisteredBinding['i
   const own: RegisteredMethod = bindingId === 'ui.actions_match_state' ? 'deterministic' : 'model';
   const method: RegisteredMethod = checks.every((x) => x.method === own) ? own : 'fallback';
   const observed = checks.map((x) => x.result.observed || x.result.reason).filter(Boolean).join(' ').slice(0, 500) || null;
-  return { verdict, method, observed };
+  // Only what every capture was inspected for: a capture judged on less narrows the claim, never widens it.
+  const inspected = checks.reduce<UiEvidenceCapability[] | null>((acc, x) => {
+    const mine = x.inspected ?? [];
+    return acc === null ? [...mine] : acc.filter((c) => mine.includes(c));
+  }, null) ?? [];
+  const coverage: UiSurfaceOutcome['coverage'] = checks.every((x) => x.coverage === 'complete') ? 'complete'
+    : checks.every((x) => x.coverage === 'absent') ? 'absent' : 'partial';
+  return { verdict, method, observed, inspected, coverage };
 }
 
 export async function dispatchRegisteredVerification(
@@ -274,7 +328,9 @@ export async function dispatchRegisteredVerification(
     // still runs, so a failing capture is seen.
     if (incomplete && !deterministic) { note(c, 'inconclusive', incomplete); continue; }
     const scenarios = wanted.map(scenarioKey);
-    const inputFingerprint = sha256(set.map((e) => ({ ref: e.ref, fingerprint: e.fingerprint })));
+    const stamped = stampedSet(s, set);
+    const inputFingerprint = stamped.fingerprint;
+    const ctx: ExecutionContext = { profile: planned.binding.profile, ...(planned.criterionText ? { criterion: { id: c.criterionId, text: planned.criterionText } } : {}) };
     const evaluator = await deps.evaluator(c.binding.id, scope);
     const runKey = registeredRunKey(s, c, evaluator.key, inputFingerprint, scenarios);
     if (!evaluator.cacheable && opts.trigger === 'event') {
@@ -286,7 +342,9 @@ export async function dispatchRegisteredVerification(
     }
     if (evaluator.cacheable) {
       const hit = await deps.cached(s, runKey);
-      if (hit && (hit.run.verdict === 'fail' || (hit.run.verdict === 'pass' && !incomplete)) && hit.run.method === 'deterministic') {
+      // A stored pass replays only as reusablePass allows (same run, same evidence); a stored fail at the same key stands.
+      const reusable = hit?.run.verdict === 'pass' && !incomplete && !!reusablePass(storedOutcome(s, hit.run), planned, stamped);
+      if (hit?.run.plan && (hit.run.verdict === 'fail' || reusable) && hit.run.method === 'deterministic') {
         let recorded = true;
         // A newer row for this binding superseded the identical run: replay it, without executing.
         if (!hit.current) {
@@ -302,12 +360,15 @@ export async function dispatchRegisteredVerification(
     try {
       const checks: Execution[] = [];
       try {
-        for (const e of set) checks.push(await deps.execute(c.binding.id, e.input, scope));
+        for (const e of set) checks.push(await deps.execute(c.binding.id, e.input, scope, ctx));
       } catch (err) {
         note(c, 'inconclusive', `the verifier could not finish (${err instanceof Error ? err.message.slice(0, 120) : 'error'}); retry later`);
         continue;
       }
-      const { verdict, method, observed } = aggregate(checks, c.binding.id);
+      const { verdict, method, observed, inspected, coverage: judged } = aggregate(checks, c.binding.id);
+      // No model answer (provider down, budget, an abstention, a lost decision record): a transient
+      // non-result. Record nothing, so the criterion keeps its last result rather than reading as unknown.
+      if (method === 'fallback' && !deterministic) { note(c, 'inconclusive', `the model gave no result (${observed ?? 'no answer'}); nothing was recorded`); continue; }
       // A pass over an incomplete set certifies nothing: say what is missing, record nothing.
       if (incomplete && verdict !== 'fail') { note(c, 'inconclusive', incomplete, method); continue; }
       const run: RegisteredRun = {
@@ -317,6 +378,10 @@ export async function dispatchRegisteredVerification(
         decisionRecordIds: checks.flatMap((x) => x.decisionRecordIds), receipts: checks.flatMap((x) => x.receipts),
         evidence: checks.map((x, i) => ({ ref: set[i]!.ref, inputFingerprint: x.inputFingerprint, verdict: x.result.verdict, observed: x.result.observed ?? null })),
         evidenceRefs: set.map((e) => e.ref),
+        findings: checks.flatMap((x, i) => (x.findings ?? []).map((f) => ({ ...f, ref: set[i]!.ref }))).slice(0, 64),
+        inspected, coverage: judged,
+        ...(checks.some((x) => x.evaluator) ? { evaluators: checks.flatMap((x) => (x.evaluator ? [x.evaluator] : [])) } : {}),
+        plan: { key: planned.key, fingerprint: planned.fingerprint, verifier: planned.binding.verifier, profile: planned.binding.profile, subject: planned.subject },
         ...(lease.recovered ? { recoveredReservation: true } : {}),
         ...(scenarios.length ? { scenarios } : {}),
         ...(missing.length ? { missing } : {}),
@@ -395,9 +460,7 @@ export interface StampedEvidence {
   snapshot: unknown;
   fingerprint: string;
 }
-export type ModelDecision =
-  | { ok: true; decision: UiCopyDecision; raw: unknown; evaluator: { model: string; promptFingerprint: string; policyVersion: string; decisionId: string } }
-  | { ok: false; error: 'provider_error' | 'budget_exhausted' | 'no_provider' | string };
+export type ModelDecision = UiModelDecision;
 export interface EvaluateDeps {
   recordedBy: Actor;
   /** The `buildd.ui_copy` decision for these features, through the team's decision policy. */
@@ -409,7 +472,8 @@ export interface RegisteredOutcome {
   specRevisionId: string;
   targetSha: string;
   verdict: 'pass' | 'fail' | 'inconclusive' | 'unsupported';
-  method: PlannedRegisteredCheck['method'];
+  /** How it was actually judged; `fallback` when the verifier's own method could not run. */
+  method: PlannedRegisteredCheck['method'] | 'fallback';
   /** Collected and recorded by an independent harness or reviewer: a builder's own evidence is advice. */
   authoritative: boolean;
   coverage: 'complete' | 'partial' | 'absent';
@@ -426,26 +490,19 @@ export interface RegisteredOutcome {
     recordedBy: Actor;
     /** What the evaluator actually looked at; a text-only model never lists pixels. */
     inspected: UiEvidenceCapability[];
-    evaluator?: Extract<ModelDecision, { ok: true }>['evaluator'];
+    evaluator?: Extract<UiModelDecision, { ok: true }>['evaluator'];
   };
 }
 
-const INDEPENDENT = new Set(['harness', 'reviewer', 'visual_verifier', 'person']);
+const INDEPENDENT = new Set(['harness', 'reviewer', AUDITOR, 'person']);
 const CAPABILITY: Record<string, UiEvidenceCapability> = { 'ui.text': 'text', 'ui.actions': 'actions', 'ui.state': 'state', 'ui.pixels': 'pixels' };
 
-function copyFeatures(e: ParsedUiEvidence, profile: VerificationBinding['profile']): UiCopyFeatures {
-  return {
-    profile,
-    segments: e.text.map((t, i) => ({ id: `s${i + 1}`, text: t.text, role: t.prominence === 'primary' ? 'status' : 'body' })),
-    actions: e.actions.map((a, i) => ({ id: `a${i + 1}`, label: a.label, operation: a.operation })),
-  };
-}
-
 /**
- * Judge one planned run on stamped evidence. Evidence from another workspace,
- * for another target, or whose stamp does not match its snapshot is refused
- * and judges nothing. Missing, partial or unreadable evidence and an
- * unavailable model are inconclusive, never a pass.
+ * Judge one planned run on stamped evidence, with the production evaluator (evaluateUiSurface): the snapshot
+ * is normalized to the canonical stored capture first, so a portable snapshot and a stored capture are judged
+ * by the same code. Evidence from another workspace, for another target, or whose stamp does not match its
+ * snapshot is refused and judges nothing. Missing, partial or unreadable evidence and an unavailable model are
+ * inconclusive, never a pass.
  */
 export async function evaluateRegisteredCheck(
   run: PlannedRegisteredCheck, evidence: StampedEvidence, deps: EvaluateDeps,
@@ -456,7 +513,7 @@ export async function evaluateRegisteredCheck(
   const declared = run.binding.evidence.map((e) => CAPABILITY[e]).filter((c): c is UiEvidenceCapability => !!c);
   const base = {
     criterionId: run.criterionId, subject: run.subject, specRevisionId: run.specRevisionId, targetSha: run.targetSha,
-    method: run.method, fingerprint: run.fingerprint, key: run.key,
+    fingerprint: run.fingerprint, key: run.key,
     authoritative: INDEPENDENT.has(evidence.collectedBy.kind) && INDEPENDENT.has(deps.recordedBy.kind),
   };
   const provenance = (inspected: UiEvidenceCapability[], evaluator?: RegisteredOutcome['provenance']['evaluator']): RegisteredOutcome['provenance'] => ({
@@ -464,34 +521,25 @@ export async function evaluateRegisteredCheck(
     evidenceFingerprint: evidence.fingerprint, collectedBy: evidence.collectedBy, recordedBy: deps.recordedBy, inspected,
     ...(evaluator ? { evaluator } : {}),
   });
-  const inconclusive = (coverage: RegisteredOutcome['coverage'], finding: Record<string, unknown>, inspected: UiEvidenceCapability[] = []) =>
-    ({ ok: true as const, outcome: { ...base, verdict: 'inconclusive' as const, coverage, findings: [finding], provenance: provenance(inspected) } });
+  const inconclusive = (coverage: RegisteredOutcome['coverage'], finding: Record<string, unknown>) =>
+    ({ ok: true as const, outcome: { ...base, method: 'fallback' as const, verdict: 'inconclusive' as const, coverage, findings: [finding], provenance: provenance([]) } });
 
   if (evidence.snapshot == null) return inconclusive('absent', { kind: 'no_evidence' });
   const parsed = parseUiEvidence(evidence.snapshot);
   if (!parsed.ok) return inconclusive('absent', { kind: 'invalid_evidence', reason: parsed.reason });
-  const e = parsed.evidence;
   const absent = declared.filter((c) => !parsed.capabilities.includes(c));
   if (absent.length) return inconclusive('partial', { kind: 'missing_evidence', capabilities: absent });
+  const canonical = surfaceFromUiEvidence(parsed.evidence, { independent: INDEPENDENT.has(evidence.collectedBy.kind) });
+  if (!canonical.ok) return inconclusive('partial', { kind: 'invalid_evidence', reason: canonical.reason });
 
-  if (run.binding.verifier.id === UI_ACTION_STATE_VERIFIER.id) {
-    const r = checkUiActionState(e);
-    const partial = Object.values(e.coverage).some((v) => v !== 'complete') || r.missingFacts.length > 0;
-    const findings = [...r.findings, ...(r.missingFacts.length ? [{ kind: 'missing_facts', facts: r.missingFacts }] : [])] as Array<Record<string, unknown>>;
-    return { ok: true, outcome: { ...base, verdict: r.verdict, coverage: partial ? 'partial' : 'complete', findings, provenance: provenance(['text', 'actions', 'state']) } };
-  }
-  // Model: the card's text and actions only. It never claims the pixels, even when a screenshot rides along.
-  const inspected: UiEvidenceCapability[] = ['text', 'actions'];
-  if (e.coverage.text !== 'complete' || e.coverage.actions !== 'complete') return inconclusive('partial', { kind: 'partial_evidence' }, inspected);
-  if (!deps.decide) return inconclusive('partial', { kind: 'evaluator_unavailable', reason: 'no_provider' }, inspected);
-  const features = copyFeatures(e, run.binding.profile);
-  const answer = await deps.decide(features, run);
-  if (!answer.ok) return inconclusive('partial', { kind: 'evaluator_unavailable', reason: answer.error }, inspected);
-  const verdict = UI_COPY_VERDICT[answer.decision] ?? 'inconclusive';
+  const id = run.binding.verifier.id === UI_ACTION_STATE_VERIFIER.id ? 'ui.actions_match_state' : 'ui.card_clarity';
+  const decide = deps.decide;
+  const out = await evaluateUiSurface(id, canonical.evidence, {
+    profile: run.binding.profile, ...(run.criterionText ? { criterion: { id: run.criterionId, text: run.criterionText } } : {}),
+  }, decide ? (features) => decide(features, run) : undefined);
   return { ok: true, outcome: {
-    ...base, verdict, coverage: verdict === 'inconclusive' ? 'partial' : 'complete',
-    findings: uiCopyFindings(answer.raw, features) as unknown as Array<Record<string, unknown>>,
-    provenance: provenance(inspected, answer.evaluator),
+    ...base, method: out.method, verdict: out.verdict as RegisteredOutcome['verdict'],
+    coverage: out.coverage, findings: out.findings, provenance: provenance(out.inspected, out.evaluator),
   } };
 }
 

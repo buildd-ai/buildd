@@ -24,6 +24,7 @@ import { settleVerdictSource } from './verdict-source';
 import { revisionCriterionHashes } from './criteria';
 import { readPinnedSpecRevision } from './pin';
 import { registeredAuthor as authorFor } from './registered-author';
+import { registeredMissionRow } from './mission-registered-verification';
 import { checkTaskIdOf, holdUnacceptedTestRows } from './acceptance-hold';
 
 /**
@@ -135,6 +136,20 @@ export async function resolveMissionTarget(mission: MissionRow, candidateHeads: 
   return { kind: 'direct', mergeShas, validHeads };
 }
 
+const METHODS = ['deterministic', 'model', 'visual', 'fallback'] as const;
+
+/** A stored registered row through the shared mission adapter: a review, carrying the method it actually ran with. */
+function storedRegisteredRow(r: { id: string; criterionId: string; verdict: string; headSha: string | null }, evidence: Record<string, unknown> | null | undefined) {
+  if (evidence?.kind !== 'registered') return null;
+  const method = METHODS.find((m) => m === evidence.method);
+  if (!method) return null;
+  return registeredMissionRow(r.id, {
+    criterionId: r.criterionId, verdict: r.verdict as MissionVerdictRow['verdict'], targetSha: r.headSha ?? '', method,
+    fingerprint: typeof evidence.fingerprint === 'string' ? evidence.fingerprint : '',
+    provenance: { evidenceFingerprint: typeof evidence.evidenceFingerprint === 'string' ? evidence.evidenceFingerprint : String(evidence.inputFingerprint ?? '') },
+  });
+}
+
 async function missionRows(missionId: string, specRevisionId: string, hashes: ReadonlyMap<string, string>): Promise<MissionVerdictRow[]> {
   const rows = await db.select({ id: specOutcomeVerdicts.id, criterionId: specOutcomeVerdicts.criterionId, verdict: specOutcomeVerdicts.verdict, headSha: specOutcomeVerdicts.headSha, at: specOutcomeVerdicts.createdAt, textHash: specOutcomeVerdicts.criterionTextHash, evidence: specOutcomeVerdicts.evidence })
     .from(specOutcomeVerdicts)
@@ -142,11 +157,11 @@ async function missionRows(missionId: string, specRevisionId: string, hashes: Re
     .orderBy(asc(specOutcomeVerdicts.createdAt));
   // A verdict on another wording does not count for this one (R-13); one recorded before wordings were kept does.
   const filtered = rows.filter((r) => !r.textHash || r.textHash === hashes.get(r.criterionId));
-  const mapped = filtered.map(({ textHash: _t, evidence, ...r }) => ({
-    ...r, source: verdictSourceOfEvidence(evidence),
-    bindingFingerprint: typeof evidence?.bindingFingerprint === 'string' ? evidence.bindingFingerprint : null,
-    evidence,
-  })) as MissionVerdictRow[];
+  const mapped = filtered.map(({ textHash: _t, evidence, ...r }) => {
+    const bindingFingerprint = typeof evidence?.bindingFingerprint === 'string' ? evidence.bindingFingerprint : null;
+    const registered = storedRegisteredRow(r, evidence);
+    return { ...r, source: verdictSourceOfEvidence(evidence), bindingFingerprint, evidence, ...(registered ? { source: registered.source, method: registered.method } : {}) };
+  }) as MissionVerdictRow[];
   return filterMissionRowsByAcceptanceEdit(mapped, filtered);
 }
 

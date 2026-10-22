@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { FeatureParse } from '@buildd/ai-kit/decide';
-import { runVerificationCheck, type VerificationObservation, type VerificationResult } from './verification-check';
+import { runVerificationCheck, type VerificationObservation, type VerificationResult, type VerificationVerdict } from './verification-check';
 
 export const UI_VERIFICATION_PROFILE = 'buildd.enterprise' as const;
 export const UI_VERIFICATION_PROFILE_VERSION = 1;
@@ -91,44 +91,108 @@ export function runUiSurfaceCheck(id: UiVerifierId, evidence: SurfaceEvidence | 
     { kind: 'surface_snapshot', ref: evidence.capture.snapshotRef },
     ...(evidence.capture.screenshotRef ? [{ kind: 'screenshot', ref: evidence.capture.screenshotRef }] : []),
   ] : [];
+  const actionState = id === 'ui.actions_match_state';
   return runVerificationCheck({
     id, version: 1,
-    invariant: id === 'ui.actions_match_state' ? 'Available UI actions and status agree with captured runtime state.' : 'A composed card is concise, actionable, and free of workflow narration.',
+    invariant: actionState ? 'Available UI actions and status agree with captured runtime state.' : 'A composed card is concise, actionable, and free of workflow narration.',
     subject: { kind: 'ui_surface', ref: evidence ? `${evidence.subject.commitSha}:${evidence.subject.route}:${evidence.subject.scenarioId}:${evidence.subject.viewport}` : 'unknown' },
     provenance: { flavor: 'living_spec', origin: `${UI_VERIFICATION_PROFILE}@${UI_VERIFICATION_PROFILE_VERSION}` },
     defaultSeverity: 'medium',
-    evidenceRequirements: [
-      { key: 'actions', need: 'complete' }, { key: 'runtimeState', need: 'complete' },
-      ...(id === 'ui.card_clarity' ? [{ key: 'renderedText', need: 'complete' as const }] : []),
-    ],
-    executor: { kind: id === 'ui.actions_match_state' ? 'deterministic' : 'model', requires: [], run: () => {
+    // Copy is judged on the words and the actions; runtime facts are context it may use, never a precondition.
+    evidenceRequirements: actionState
+      ? [{ key: 'actions', need: 'complete' }, { key: 'runtimeState', need: 'complete' }]
+      : [{ key: 'renderedText', need: 'complete' }, { key: 'actions', need: 'complete' }],
+    executor: { kind: actionState ? 'deterministic' : 'model', requires: [], run: () => {
       if (!evidence || evidence.provenance.collector === 'agent') return { verdict: 'inconclusive', observed: 'independent_capture_required', evidenceRefs: refs };
-      if (!Object.values(evidence.facts).some(v => v !== 'unknown')) return { verdict: 'inconclusive', observed: 'runtime_state_unknown', evidenceRefs: refs };
+      if (actionState && !Object.values(evidence.facts).some(v => v !== 'unknown')) return { verdict: 'inconclusive', observed: 'runtime_state_unknown', evidenceRefs: refs };
       if (!evidence.visible.blocks.length && !evidence.visible.actions.length) return { verdict: 'inconclusive', observed: 'rendered_card_empty', evidenceRefs: refs };
       return { ...observation, evidenceRefs: refs };
     } },
   }, { input: evidence, evidence: evidence?.coverage ?? {}, capabilities: [], now });
 }
 
+type SurfaceFacts = SurfaceEvidence['facts'];
+type SurfaceOperation = (typeof UI_SURFACE_OPERATIONS)[number];
+type SurfaceFact = 'prState' | 'replacementState' | 'verificationState';
+/** What a card shows about verification. `not_verified` exists only on portable evidence (a claim of `unverified`). */
+type ShownVerification = Exclude<NonNullable<SurfaceFacts['shownVerificationState']>, 'unknown'> | 'not_verified';
+const SHOWN_MATCHES: Record<ShownVerification, NonNullable<SurfaceFacts['verificationState']>> = {
+  verified_pass: 'passed', failed: 'failed', pending: 'pending_recapture', not_verified: 'not_started',
+};
+
+export interface UiSurfaceFinding {
+  kind: 'action_state_contradiction' | 'claim_state_contradiction';
+  code: 'terminal_pr_offers_merge' | 'verified_replacement_offers_unresolved_closure' | 'no_replacement_offers_confirmation' | 'pending_recapture_claims_verified_pass' | 'shown_verification_contradicts_state';
+  fact: SurfaceFact;
+  /** The captured elements the finding is about (`data-verify-action` ids). */
+  actionIds?: string[];
+  operation?: SurfaceOperation;
+  observed: string;
+}
+export interface UiSurfaceActionState {
+  findings: UiSurfaceFinding[];
+  /** Facts an enabled action or a shown status needs that the capture did not supply. */
+  missingFacts: SurfaceFact[];
+  /** Enabled actions whose operation is undeclared (`other`): never approved by their label. */
+  unmapped: string[];
+}
+
+const known = <T>(v: T | 'unknown' | undefined): v is T => v !== undefined && v !== 'unknown';
+
+/**
+ * `ui.actions_match_state`, the one deterministic action/state engine: every enabled action and every shown
+ * verification status against the supplied runtime facts. Reads operations and facts only, never labels or prose.
+ * Both evidence shapes go through it (runUiActionStateCheck for a stored capture, checkUiActionState for portable).
+ */
+export function surfaceActionState(
+  facts: SurfaceFacts,
+  actions: ReadonlyArray<{ id: string; operation: SurfaceOperation; enabled: boolean }>,
+  shown: readonly ShownVerification[],
+): UiSurfaceActionState {
+  const findings: UiSurfaceFinding[] = [];
+  const missing = new Set<SurfaceFact>();
+  const enabled = actions.filter(a => a.enabled);
+  const of = (...ops: SurfaceOperation[]) => enabled.filter(a => ops.includes(a.operation));
+  const finding = (f: Omit<UiSurfaceFinding, 'actionIds' | 'operation'>, on: typeof enabled = []) =>
+    findings.push({ ...f, ...(on.length ? { actionIds: on.map(a => a.id), operation: on[0]!.operation } : {}) });
+
+  const merges = of('merge_pr');
+  if (merges.length && !known(facts.prState)) missing.add('prState');
+  if (merges.length && (facts.prState === 'closed' || facts.prState === 'merged')) {
+    finding({ kind: 'action_state_contradiction', code: 'terminal_pr_offers_merge', fact: 'prState', observed: `merge offered on a ${facts.prState} PR` }, merges);
+  }
+  if (of('confirm_replacement', 'dismiss_replacement', 'resolve_pr_closure').length && !known(facts.replacementState)) missing.add('replacementState');
+  const closure = of('resolve_pr_closure', 'confirm_replacement');
+  if (facts.replacementState === 'verified' && closure.length) {
+    finding({ kind: 'action_state_contradiction', code: 'verified_replacement_offers_unresolved_closure', fact: 'replacementState', observed: 'closure still offered after its replacement was verified' }, closure);
+  }
+  const confirms = of('confirm_replacement');
+  if (facts.replacementState === 'none' && confirms.length) {
+    finding({ kind: 'action_state_contradiction', code: 'no_replacement_offers_confirmation', fact: 'replacementState', observed: 'replacement confirmation with no replacement pending' }, confirms);
+  }
+  for (const s of new Set(shown)) {
+    if (!known(facts.verificationState)) { missing.add('verificationState'); continue; }
+    if (SHOWN_MATCHES[s] === facts.verificationState) continue;
+    const pending = s === 'verified_pass' && facts.verificationState === 'pending_recapture';
+    finding({ kind: 'claim_state_contradiction', code: pending ? 'pending_recapture_claims_verified_pass' : 'shown_verification_contradicts_state', fact: 'verificationState', observed: `shows ${s}, state is ${facts.verificationState}` });
+  }
+  if (!Object.values(facts).some(known)) for (const k of ['prState', 'replacementState', 'verificationState'] as const) missing.add(k);
+  return { findings, missingFacts: [...missing], unmapped: of('other').map(a => a.id) };
+}
+
+const shownOf = (facts: SurfaceFacts): ShownVerification[] => (known(facts.shownVerificationState) ? [facts.shownVerificationState] : []);
+
+/** Verdict precedence: a contradiction fails; an undeclared operation is unsupported; a missing fact is unknown. */
+function actionStateObservation(r: UiSurfaceActionState): VerificationObservation {
+  if (r.findings.length) return { verdict: 'fail', confidence: 1, observed: r.findings[0]!.code };
+  if (r.unmapped.length) return { verdict: 'unsupported', observed: 'unmapped_action_operation' };
+  if (r.missingFacts.length) return { verdict: 'inconclusive', observed: 'runtime_state_unknown' };
+  return { verdict: 'pass', confidence: 1, observed: 'captured_actions_match_state' };
+}
+
 export function runUiActionStateCheck(evidence: SurfaceEvidence, now = new Date()): VerificationResult {
-  const { facts, visible } = evidence;
-  const enabled = visible.actions.filter(a => a.enabled);
-  let observation: VerificationObservation = { verdict: 'pass', confidence: 1, observed: 'captured_actions_match_state' };
-  if (enabled.some(a => a.operation === 'merge_pr') && ['closed', 'merged'].includes(facts.prState ?? '')) {
-    observation = { verdict: 'fail', confidence: 1, observed: 'terminal_pr_offers_merge' };
-  } else if (facts.replacementState === 'verified' && enabled.some(a => a.operation === 'resolve_pr_closure' || a.operation === 'confirm_replacement')) {
-    observation = { verdict: 'fail', confidence: 1, observed: 'verified_replacement_offers_unresolved_closure' };
-  } else if (facts.verificationState === 'pending_recapture' && facts.shownVerificationState === 'verified_pass') {
-    observation = { verdict: 'fail', confidence: 1, observed: 'pending_recapture_claims_verified_pass' };
-  } else if (enabled.some(a => a.operation === 'other')) {
-    observation = { verdict: 'unsupported', observed: 'unmapped_action_operation' };
-  } else if (
-    !Object.values(facts).some(v => v !== 'unknown') ||
-    (enabled.some(a => a.operation === 'merge_pr') && (!facts.prState || facts.prState === 'unknown')) ||
-    (enabled.some(a => a.operation === 'confirm_replacement' || a.operation === 'dismiss_replacement' || a.operation === 'resolve_pr_closure') && (!facts.replacementState || facts.replacementState === 'unknown')) ||
-    (facts.shownVerificationState && facts.shownVerificationState !== 'unknown' && (!facts.verificationState || facts.verificationState === 'unknown'))
-  ) observation = { verdict: 'inconclusive', observed: 'runtime_state_unknown' };
-  return runUiSurfaceCheck('ui.actions_match_state', evidence, observation, now);
+  const r = surfaceActionState(evidence.facts, evidence.visible.actions, shownOf(evidence.facts));
+  return runUiSurfaceCheck('ui.actions_match_state', evidence, actionStateObservation(r), now);
 }
 
 /*
@@ -186,38 +250,77 @@ export interface UiActionStateFinding {
   kind: 'action_state_contradiction' | 'claim_state_contradiction';
   fact: 'pr' | 'verification' | 'replacementPending';
   operation?: UiActionOperation;
+  /** The actions it is about, by their position on the card (`a1` is the first). */
+  actionIds?: string[];
+  code: UiSurfaceFinding['code'];
   observed: string;
 }
 export interface UiActionStateResult {
   verifier: { id: string; version: number };
   method: 'deterministic';
-  verdict: Extract<VerificationResult['verdict'], 'pass' | 'fail' | 'inconclusive'>;
+  verdict: Extract<VerificationResult['verdict'], 'pass' | 'fail' | 'inconclusive' | 'unsupported'>;
   findings: UiActionStateFinding[];
   missingFacts: string[];
 }
 
-/** `ui.action-state@1`: enabled operations and displayed claims against the supplied state. Never mutates its input. */
+const PORTABLE_FACT: Record<SurfaceFact, UiActionStateFinding['fact']> = { prState: 'pr', replacementState: 'replacementPending', verificationState: 'verification' };
+const TO_SURFACE_OPERATION: Record<UiActionOperation, SurfaceOperation> = {
+  merge: 'merge_pr', open_details: 'view_detail', confirm_replacement: 'confirm_replacement', dismiss_replacement: 'dismiss_replacement',
+  resolve_pr_closure: 'resolve_pr_closure', retry_visual_review: 'retry_visual_review', skip_visual_review: 'skip_visual_review',
+  turn_off_visual_review: 'turn_off_visual_review', answer_question: 'answer_question', cancel: 'cancel', other: 'other',
+};
+const TO_PORTABLE_OPERATION = Object.fromEntries(Object.entries(TO_SURFACE_OPERATION).map(([k, v]) => [v, k])) as Record<SurfaceOperation, UiActionOperation>;
+const TO_SURFACE_VERIFICATION = { verified: 'passed', unverified: 'not_started', pending: 'pending_recapture', failed: 'failed' } as const;
+const TO_SHOWN: Record<ParsedUiEvidence['claims'][number]['value'], ShownVerification> = { verified: 'verified_pass', unverified: 'not_verified', pending: 'pending', failed: 'failed' };
+const TO_ROLE = { primary: 'status', secondary: 'body', menu: 'hint' } as const;
+
+const portableFacts = (e: ParsedUiEvidence): SurfaceFacts => ({
+  ...(e.state?.pr ? { prState: e.state.pr } : {}),
+  ...(e.state?.verification ? { verificationState: TO_SURFACE_VERIFICATION[e.state.verification] } : {}),
+  ...(e.state?.replacementPending !== undefined ? { replacementState: e.state.replacementPending ? 'candidate' : 'none' } : {}),
+});
+const portableActions = (e: ParsedUiEvidence) => e.actions.map((a, i) => ({ id: `a${i + 1}`, operation: TO_SURFACE_OPERATION[a.operation], enabled: a.enabled }));
+
+/** `ui.action-state@1` on portable evidence: the same engine as a stored capture (surfaceActionState). Never mutates its input. */
 export function checkUiActionState(e: ParsedUiEvidence): UiActionStateResult {
-  const findings: UiActionStateFinding[] = [];
-  const missing = new Set<string>();
-  const state = e.state ?? {};
-  const fact = <K extends keyof typeof state>(k: K) => { if (state[k] === undefined) missing.add(k); return state[k]; };
-  for (const a of e.actions.filter(x => x.enabled)) {
-    if (a.operation === 'merge') {
-      const pr = fact('pr');
-      if (pr && pr !== 'open') findings.push({ kind: 'action_state_contradiction', operation: 'merge', fact: 'pr', observed: `merge offered on a ${pr} PR` });
-    } else if (a.operation === 'confirm_replacement') {
-      if (fact('replacementPending') === false) findings.push({ kind: 'action_state_contradiction', operation: a.operation, fact: 'replacementPending', observed: 'replacement confirmation with no replacement pending' });
-    }
-  }
-  for (const c of e.claims) {
-    const actual = fact('verification');
-    if (actual && actual !== c.value) findings.push({ kind: 'claim_state_contradiction', fact: 'verification', observed: `shows ${c.value}, state is ${actual}` });
-  }
-  if (!e.state) for (const k of ['pr', 'verification', 'replacementPending']) missing.add(k);
+  const r = surfaceActionState(portableFacts(e), portableActions(e), e.claims.map(c => TO_SHOWN[c.value]));
   const partial = Object.values(e.coverage).some(v => v !== 'complete');
-  const verdict = partial ? 'inconclusive' : findings.length ? 'fail' : missing.size ? 'inconclusive' : 'pass';
-  return { verifier: { id: UI_ACTION_STATE_VERIFIER.id, version: UI_ACTION_STATE_VERIFIER.version }, method: 'deterministic', verdict, findings, missingFacts: [...missing] };
+  const observation = actionStateObservation(r);
+  return {
+    verifier: { id: UI_ACTION_STATE_VERIFIER.id, version: UI_ACTION_STATE_VERIFIER.version }, method: 'deterministic',
+    verdict: partial ? 'inconclusive' : observation.verdict as UiActionStateResult['verdict'],
+    findings: r.findings.map(f => ({
+      kind: f.kind, fact: PORTABLE_FACT[f.fact], code: f.code, observed: f.observed,
+      ...(f.operation ? { operation: TO_PORTABLE_OPERATION[f.operation] } : {}), ...(f.actionIds ? { actionIds: f.actionIds } : {}),
+    })),
+    missingFacts: r.missingFacts.map(f => PORTABLE_FACT[f]),
+  };
+}
+
+/**
+ * Portable evidence as the canonical stored capture, so one evaluator judges both. Every part of it is kept:
+ * text in order (as blocks `s1`.., prominence as role), actions in order (`a1`.., operation, label, enabled,
+ * prominence), the supplied facts, per-part coverage and the screenshot. What the canonical form cannot hold
+ * (more than one shown verification claim, or a claim of `unverified`) is refused, never dropped.
+ * `collection` is not carried: a collector's own success report is never evidence.
+ */
+export function surfaceFromUiEvidence(e: ParsedUiEvidence, opts: { independent: boolean }):
+{ ok: true; evidence: SurfaceEvidence } | { ok: false; reason: 'claims_not_representable' } {
+  if (e.claims.length > 1 || e.claims.some(c => c.value === 'unverified')) return { ok: false, reason: 'claims_not_representable' };
+  const facts = portableFacts(e);
+  const shown = e.claims[0] ? TO_SHOWN[e.claims[0].value] as Exclude<ShownVerification, 'not_verified'> : undefined;
+  return { ok: true, evidence: {
+    schemaVersion: 1,
+    subject: { commitSha: (e.captureSha ?? e.codeSha).toLowerCase(), route: e.route, scenarioId: e.scenario, viewport: 'desktop' },
+    capture: { captureId: `ui-evidence:${e.codeSha.toLowerCase()}`, capturedAt: new Date(0).toISOString(), snapshotRef: `ui-evidence:${e.codeSha.toLowerCase()}`, ...(e.pixels ? { screenshotRef: e.pixels.screenshotArtifactId } : {}) },
+    visible: {
+      blocks: e.text.map((t, i) => ({ id: `s${i + 1}`, role: TO_ROLE[t.prominence], text: t.text, order: i, disclosure: 'visible' as const })),
+      actions: e.actions.map((a, i) => ({ id: `a${i + 1}`, label: a.label, operation: TO_SURFACE_OPERATION[a.operation], enabled: a.enabled, prominence: a.prominence, disclosure: 'visible' as const })),
+    },
+    facts: { ...facts, ...(shown ? { shownVerificationState: shown } : {}) },
+    provenance: { collector: opts.independent ? 'runner' : 'agent', collectorVersion: 'ui-evidence@1', reportedVia: 'runner', factVersion: e.state ? 'ui-evidence@1' : 'none' },
+    coverage: { renderedText: e.coverage.text, actions: e.coverage.actions, runtimeState: e.coverage.state, screenshot: e.pixels ? 'complete' : 'absent' },
+  } };
 }
 
 export interface EvaluationCase { evidence: ParsedUiEvidence; expected: 'pass' | 'fail'; confirmedBy: { kind: 'person'; id: string } }
@@ -279,13 +382,6 @@ const SURFACE_ROLE: Record<SurfaceEvidence['visible']['blocks'][number]['role'],
   heading: 'heading', status: 'status', body: 'body', label: 'label', hint: 'hint',
   consequence: 'consequence', permission: 'permission', prerequisite: 'prerequisite', recovery: 'recovery',
 };
-const SURFACE_OPERATION: Record<SurfaceEvidence['visible']['actions'][number]['operation'], UiCopyFeatures['actions'][number]['operation']> = {
-  merge_pr: 'merge', confirm_replacement: 'confirm_replacement', resolve_pr_closure: 'resolve_pr_closure',
-  retry_visual_review: 'retry_visual_review', skip_visual_review: 'skip_visual_review', other: 'other',
-  answer_question: 'answer_question', cancel: 'cancel', dismiss_replacement: 'dismiss_replacement',
-  turn_off_visual_review: 'turn_off_visual_review', view_detail: 'open_details',
-};
-
 /**
  * A stored capture as this kind's features: every block in order by its declared role, every action by its
  * operation, the supplied runtime facts when the capture had any, and the criterion when the caller names one.
@@ -299,7 +395,7 @@ export function uiCopyFeaturesFromSurface(
   return {
     profile,
     segments: [...e.visible.blocks].sort((a, b) => a.order - b.order).map((b) => ({ id: b.id, text: b.text, role: SURFACE_ROLE[b.role] })),
-    actions: e.visible.actions.map((a) => ({ id: a.id, label: a.label, operation: SURFACE_OPERATION[a.operation] })),
+    actions: e.visible.actions.map((a) => ({ id: a.id, label: a.label, operation: TO_PORTABLE_OPERATION[a.operation] })),
     ...(known ? { state: { factVersion: e.provenance.factVersion, facts: { ...e.facts } } } : {}),
     ...(criterion ? { criterion: { id: criterion.id, text: criterion.text } } : {}),
   };
@@ -343,4 +439,78 @@ export function uiCopyFindings(raw: unknown, features: UiCopyFeatures): UiCopyFi
     out.push({ kind: kind as UiCopyFindingKind, ...(segmentIds.length ? { segmentIds } : {}), ...(found.length ? { actions: found } : {}) });
   }
   return out;
+}
+
+/** A `buildd.ui_copy` answer as the evaluator receives it. `ok` only for a model answer whose decision record was persisted. */
+export type UiModelDecision =
+  | { ok: true; decision: UiCopyDecision; raw: unknown; confidence?: number | null; reasonCode?: string; evaluator: { model: string; promptFingerprint: string; policyVersion: string; decisionId: string } }
+  | { ok: false; error: string };
+
+export interface UiSurfaceOutcome {
+  verdict: VerificationVerdict;
+  /** How it was actually judged: a model answer that could not be had is a fallback, never a model result. */
+  method: 'deterministic' | 'model' | 'fallback';
+  coverage: 'complete' | 'partial' | 'absent';
+  /** Linked to the capture's own element ids. */
+  findings: Array<Record<string, unknown>>;
+  /** What the evaluator actually looked at. Text-only judgment never lists pixels. */
+  inspected: UiEvidenceCapability[];
+  result: VerificationResult;
+  evaluator?: Extract<UiModelDecision, { ok: true }>['evaluator'];
+}
+
+/** The copy axes a `revise_<axis>..` reason names, as this verifier's finding kinds. */
+const AXIS_FINDING: ReadonlyArray<[string, UiCopyFindingKind]> = [['action_clarity', 'unclear_action'], ['workflow_narration', 'process_narration'], ['repetition', 'repetition']];
+
+/**
+ * The one evaluator for registered UI checks, over a canonical stored capture. Production (a stored capture)
+ * and portable acceptance evidence (surfaceFromUiEvidence) both come through here, so they cannot diverge.
+ * `decide` is the single model call for a copy check; the host supplies it (the decision broker in production).
+ */
+export async function evaluateUiSurface(
+  id: UiVerifierId,
+  e: SurfaceEvidence,
+  ctx: { profile?: UiCopyFeatures['profile']; criterion?: UiCopyFeatures['criterion']; now?: Date } = {},
+  decide?: (features: UiCopyFeatures) => Promise<UiModelDecision>,
+): Promise<UiSurfaceOutcome> {
+  const now = ctx.now ?? new Date();
+  if (id === 'ui.actions_match_state') {
+    const r = surfaceActionState(e.facts, e.visible.actions, shownOf(e.facts));
+    const result = runUiSurfaceCheck(id, e, actionStateObservation(r), now);
+    const findings: Array<Record<string, unknown>> = [
+      ...r.findings.map(f => ({ ...f })),
+      ...(r.unmapped.length ? [{ kind: 'unmapped_action', actionIds: r.unmapped }] : []),
+      ...(r.missingFacts.length ? [{ kind: 'missing_facts', facts: r.missingFacts }] : []),
+    ];
+    const partial = result.evidenceShortfall.length > 0 || r.missingFacts.length > 0 || [e.coverage.renderedText, e.coverage.actions, e.coverage.runtimeState].some(c => c !== 'complete');
+    return { verdict: result.verdict, method: 'deterministic', coverage: partial ? 'partial' : 'complete', findings, inspected: ['text', 'actions', 'state'], result };
+  }
+  const fallback = (result: VerificationResult, finding: Record<string, unknown>): UiSurfaceOutcome =>
+    ({ verdict: 'inconclusive', method: 'fallback', coverage: 'partial', findings: [finding], inspected: [], result: { ...result, verdict: 'inconclusive' } });
+  const preflight = runUiSurfaceCheck(id, e, { verdict: 'inconclusive', observed: 'model_judgment_required' }, now);
+  if (preflight.evidenceShortfall.length || preflight.observed !== 'model_judgment_required') {
+    return fallback(preflight, { kind: 'partial_evidence', reason: preflight.reason ?? preflight.observed });
+  }
+  const features = uiCopyFeaturesFromSurface(e, ctx.profile, ctx.criterion);
+  const valid = parseUiCopyFeatures(features);
+  if (!valid.ok) return fallback(preflight, { kind: 'invalid_evidence', reason: valid.message });
+  const unavailable = (reason: string) => fallback(runUiSurfaceCheck(id, e, { verdict: 'inconclusive', observed: reason }, now), { kind: 'evaluator_unavailable', reason });
+  if (!decide) return unavailable('no_provider');
+  const answer = await decide(features);
+  if (!answer.ok) return unavailable(answer.error);
+  const verdict = UI_COPY_VERDICT[answer.decision] ?? 'inconclusive';
+  const result = runUiSurfaceCheck(id, e, { verdict, confidence: answer.confidence ?? undefined, observed: answer.reasonCode ?? answer.decision }, now);
+  // Structured findings when the answer carries them; else the card-level axes the decision failed on.
+  let findings: Array<Record<string, unknown>> = uiCopyFindings(answer.raw, features) as unknown as Array<Record<string, unknown>>;
+  if (!findings.length && verdict === 'fail' && answer.reasonCode?.startsWith('revise_')) {
+    const segmentIds = features.segments.filter(x => !(UI_MATERIAL_ROLES as readonly string[]).includes(x.role)).map(x => x.id);
+    findings = AXIS_FINDING.filter(([axis]) => answer.reasonCode!.includes(axis)).map(([axis, kind]) => ({
+      kind, axis, scope: 'card',
+      ...(kind === 'unclear_action' ? { actions: features.actions.map(a => ({ id: a.id, operation: a.operation })) } : { segmentIds }),
+    }));
+  }
+  return {
+    verdict, method: 'model', coverage: verdict === 'inconclusive' ? 'partial' : 'complete', findings,
+    inspected: features.state ? ['text', 'actions', 'state'] : ['text', 'actions'], result, evaluator: answer.evaluator,
+  };
 }

@@ -20,7 +20,7 @@ import { linkedRepo } from './repo-source';
 import { livingSpecCriteriaOf } from './selected-scope';
 import { criterionHashes } from './criteria';
 import {
-  MAX_REGISTERED_SURFACES, dispatchRegisteredVerification, sha256,
+  MAX_REGISTERED_SURFACES, dispatchRegisteredVerification, sha256, storedOutcome, toVerdictRecord,
   type RegisteredVerification, type RegisteredVerificationDeps as Deps,
   type Collection, type CollectedSurface, type RefusedSurface, type RegisteredRun, type RegisteredSubject, type RegisteredVerificationDeps,
 } from './registered-verification';
@@ -304,7 +304,13 @@ async function record(
   }
   if (lease && !(await holds(lease.runKey, lease.owner))) return { ok: false, reason: 'the reservation lapsed and another run took it over' };
 
+  // The shared outcome record (toVerdictRecord) is the row's core: method, verifier, profile, coverage, the
+  // findings and what was actually inspected. The store adds the run's identity and the captures' lineage.
+  const outcome = storedOutcome(s, run, { kind: 'visual_verifier', id: [...new Set(surfaces.map((e) => e.provenance.auditTaskId))].join(',') });
+  const shared = outcome ? toVerdictRecord(outcome) : null;
+  if (!shared) return { ok: false, reason: 'the run has no planned identity to record' };
   const evidence: Record<string, unknown> = {
+    ...shared.evidence,
     kind: 'registered', bindingId: run.bindingId, bindingFingerprint: run.bindingFingerprint, method: run.method,
     runKey: run.runKey, evaluatorVersion: run.evaluatorVersion, inputFingerprint: run.inputFingerprint,
     ...(run.observed ? { observed: run.observed } : {}),
@@ -312,7 +318,6 @@ async function record(
     evidenceRefs: run.evidenceRefs,
     captures: surfaces.map((e) => e.provenance),
     refs: surfaces.map((e) => ({ kind: 'capture', ref: e.provenance.artifactId })),
-    inspected: ['text', 'actions', 'state'],
     ...(run.replayOf ? { replayOf: run.replayOf } : {}),
     ...(run.recoveredReservation ? { recoveredReservation: true } : {}),
     run: { ...run, receipts: run.receipts.slice(0, 16) },
@@ -329,15 +334,16 @@ export function createRegisteredVerificationDeps(overrides: Partial<RegisteredSt
   return {
     load: (taskId) => loadSubject(taskId, ext),
     collect: (s, evidenceRef) => collect(s, evidenceRef, ext),
+    // v2: the shared action/state engine (surfaceActionState) checks more than v1 did; v1 runs do not replay.
     evaluator: async (id) => id === 'ui.actions_match_state'
-      ? { key: `${id}@1:${UI_VERIFICATION_PROFILE}@${UI_VERIFICATION_PROFILE_VERSION}:deterministic`, cacheable: true }
+      ? { key: `${id}@1:${UI_VERIFICATION_PROFILE}@${UI_VERIFICATION_PROFILE_VERSION}:deterministic-v2`, cacheable: true }
       // The broker resolves team policy, route and measurements on every call; until that
       // effective identity can be proven unchanged, a model judgment is never replayed.
       : { key: `${id}@1:${uiCopyKind.kind}:${uiCopyKind.policyVersion}:${uiCopyKind.promptFingerprint}`, cacheable: false },
     cached,
     reserve: (s, runKey) => reserve(s, runKey, ext.leaseMs),
     release: (_s, runKey, owner) => release(runKey, owner),
-    execute: (id, input, scope) => ext.execute(id, input, scope),
+    execute: (id, input, scope, ctx) => ext.execute(id, input, scope, ctx),
     record: (s, run, surfaces, lease) => record(s, run, surfaces, lease, ext),
   };
 }

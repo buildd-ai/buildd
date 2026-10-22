@@ -47,8 +47,15 @@ export function requiredRegisteredCriteria(body: string, registry: VerifierRegis
   return [...new Set(ids)];
 }
 
-/** A registered outcome as a mission verdict row: a review, with its real method. The caller stamps `at`. */
-export function registeredMissionRow(id: string, outcome: RegisteredOutcome): Omit<MissionVerdictRow, 'at'> {
+/**
+ * A registered outcome as a mission verdict row: a review, with its real method. The caller stamps `at`.
+ * The mission standing reads stored rows through this too (mission-outcome.ts), so a live outcome and a
+ * stored one fold the same way.
+ */
+export function registeredMissionRow(
+  id: string,
+  outcome: Pick<RegisteredOutcome, 'criterionId' | 'verdict' | 'targetSha' | 'method' | 'fingerprint'> & { provenance: Pick<RegisteredOutcome['provenance'], 'evidenceFingerprint'> },
+): Omit<MissionVerdictRow, 'at'> {
   return {
     id,
     criterionId: outcome.criterionId,

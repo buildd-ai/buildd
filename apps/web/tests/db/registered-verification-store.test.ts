@@ -157,7 +157,7 @@ describe('registered verification on a task, with its production store', () => {
     expect((await outcome(s.builderId)).criteria.every(c => c.verdict === 'pass')).toBe(true);
   });
 
-  test('AC-2: a deterministic check runs on the audit\'s own capture at the PR head and lands as a test verdict the outcome reads', async () => {
+  test('AC-2: a deterministic check runs on the audit\'s own capture at the PR head and lands as a review, with its method, that the outcome reads', async () => {
     const s = await setup();
     const h = harness({ model: modelPass });
     const r = await dispatchRegisteredVerification({ taskId: s.builderId, headSha: HEAD }, h.deps);
@@ -168,7 +168,7 @@ describe('registered verification on a task, with its production store', () => {
     ]);
     const rows = await verdictRows(s.builderId);
     expect(rows.map((x) => [x.criterion_id, x.verdict, x.head_sha])).toEqual([['AC-1', 'pass', HEAD], ['AC-2', 'pass', HEAD]]);
-    expect(rows[0].evidence).toMatchObject({ kind: 'registered', method: 'deterministic', recordedBy: 'check:registered:ui.actions_match_state', bindingId: 'ui.actions_match_state' });
+    expect(rows[0].evidence).toMatchObject({ kind: 'registered', method: 'deterministic', recordedBy: 'registered:ui.actions_match_state', bindingId: 'ui.actions_match_state' });
     expect(rows[0].evidence.bindingFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(rows[0].evidence.evidenceRefs).toEqual([expect.stringMatching(new RegExp(`^${s.evidenceId}:[0-9a-f]{64}$`))]);
     expect(rows[0].evidence.captures).toEqual([{ artifactId: s.evidenceId, revision: 1, auditTaskId: s.auditId, captureSha: HEAD }]);
@@ -176,7 +176,7 @@ describe('registered verification on a task, with its production store', () => {
     expect(rows[1].evidence).toMatchObject({ method: 'model', recordedBy: 'registered:ui.card_clarity', decisionRecordIds: ['00000000-0000-4000-8000-00000000d001'] });
     // The governed outcome reads both rows (no kernel delivery here, so it has no PR head to call them current).
     const o = await outcome(s.builderId);
-    expect(o.criteria.map((c) => [c.criterionId, c.verdict, c.source, c.headSha])).toEqual([['AC-1', 'pass', 'test', HEAD], ['AC-2', 'pass', 'review', HEAD]]);
+    expect(o.criteria.map((c) => [c.criterionId, c.verdict, c.source, c.headSha])).toEqual([['AC-1', 'pass', 'review', HEAD], ['AC-2', 'pass', 'review', HEAD]]);
   });
 
   test('AC-5: an identical deterministic request replays from storage; the model is called again; concurrent identical requests execute once', async () => {
@@ -322,7 +322,9 @@ describe('registered verification on a task, with its production store', () => {
     if ('error' in held) throw new Error(held.error);
     const base = { specRevisionId: held.specRevisionId, criterionId: 'AC-1', verdict: 'pass' as const, headSha: HEAD, evidence: {} as Record<string, unknown> };
     const fp = (await import('@buildd/spec-contract/verification-bindings')).criterionVerifications(BODY)[0].fingerprint;
-    const ok = { bindingFingerprint: fp, method: 'deterministic', recordedBy: 'check:registered:ui.actions_match_state' };
+    const ok = { bindingFingerprint: fp, method: 'deterministic', recordedBy: 'registered:ui.actions_match_state' };
+    // The old test-source author is refused for a new row.
+    expect(await recordRegisteredVerdict(s.builderId, { ...base, evidence: { ...ok, recordedBy: 'check:registered:ui.actions_match_state' } }, async () => HEAD)).toMatchObject({ ok: false, status: 409 });
     expect(await recordRegisteredVerdict(s.builderId, { ...base, evidence: { ...ok, bindingFingerprint: 'f'.repeat(64) } }, async () => HEAD)).toMatchObject({ ok: false, status: 409 });
     expect(await recordRegisteredVerdict(s.builderId, { ...base, evidence: { ...ok, method: 'model' } }, async () => HEAD)).toMatchObject({ ok: false, status: 409 });
     expect(await recordRegisteredVerdict(s.builderId, { ...base, criterionId: 'AC-3', evidence: ok }, async () => HEAD)).toMatchObject({ ok: false });
@@ -373,7 +375,7 @@ describe('registered verification on a task, with its production store', () => {
     expect(r.results).toEqual([{ criterionId: 'AC-1', bindingId: 'ui.actions_match_state', verdict: 'pass', method: 'deterministic', cached: false, recorded: true }]);
     const rows = await q<{ mission_id: string; task_id: string | null; head_sha: string; evidence: any }>(sql`SELECT mission_id, task_id, head_sha, evidence FROM spec_outcome_verdicts WHERE mission_id = ${m.id}::uuid`);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ task_id: null, head_sha: TARGET, evidence: { recordedBy: 'check:registered:ui.actions_match_state', method: 'deterministic' } });
+    expect(rows[0]).toMatchObject({ task_id: null, head_sha: TARGET, evidence: { recordedBy: 'registered:ui.actions_match_state', method: 'deterministic' } });
     const { readMissionSpecOutcomes } = await import('../../src/lib/specs/mission-outcome');
     const read = await readMissionSpecOutcomes(null, m.id, githubApi);
     if (!read.ok) throw new Error(read.error);

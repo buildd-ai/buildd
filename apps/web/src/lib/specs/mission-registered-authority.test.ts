@@ -29,7 +29,8 @@ mock.module('./pin', () => ({ readPinnedSpecRevision: async (pin: unknown) => {
   expect(pin).toMatchObject({ specId: 'spec', specRevisionId: 'revision', contentHash: 'approved-hash' });
   return readOk ? { ok: true, body: pinnedBody } : { ok: false, reason: 'missing approved body' };
 } }));
-mock.module('@buildd/spec-contract/verification-bindings', () => ({ criterionVerifications: (body: string) => {
+const actualBindings = { ...(await import('@buildd/spec-contract/verification-bindings')) };
+mock.module('@buildd/spec-contract/verification-bindings', () => ({ ...actualBindings, criterionVerifications: (body: string) => {
   inspectedBodies.push(body);
   return [{ criterionId: 'R-1', binding: { id: body === 'action body' ? 'ui.actions_match_state' : 'ui.card_clarity', version: 1, profile: 'buildd.enterprise@1', mode: 'required' }, fingerprint: body === 'approved body' ? 'approved-binding' : body === 'action body' ? 'action-binding' : 'replacement-binding' }];
 } }));
@@ -84,7 +85,9 @@ describe('mission registered evidence authority', () => {
       expect((await recordMissionVerdictServer('mission', { ...input({ bindingFingerprint: 'approved-binding', method }), recordedBy: 'check:registered:ui.card_clarity' })).ok).toBe(false);
     }
     pinnedBody = 'action body';
-    expect((await recordMissionVerdictServer('mission', { ...input({ bindingFingerprint: 'action-binding', method: 'deterministic' }), recordedBy: 'check:registered:ui.actions_match_state' })).ok).toBe(true);
+    // A deterministic registered result is a review too (its method is kept); the old test-source author is refused for new rows.
+    expect((await recordMissionVerdictServer('mission', { ...input({ bindingFingerprint: 'action-binding', method: 'deterministic' }), recordedBy: 'check:registered:ui.actions_match_state' })).ok).toBe(false);
+    expect((await recordMissionVerdictServer('mission', { ...input({ bindingFingerprint: 'action-binding', method: 'deterministic' }), recordedBy: 'registered:ui.actions_match_state' })).ok).toBe(true);
     expect(writes).toHaveLength(1);
   });
 

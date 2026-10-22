@@ -3,10 +3,13 @@ import type { RegisteredBinding } from '@buildd/spec-contract/verification-bindi
 export type RegisteredMethod = 'deterministic' | 'model' | 'fallback';
 
 /**
- * The author a registered `verify:` row must carry. Only a deterministic run of
- * the deterministic verifier is a test result (`check:`, outranks reviews);
- * a model judgment or a fallback is a review. Both recorders enforce it.
+ * The author a registered `verify:` row must carry: always a review
+ * (`registered:<binding>`), whatever its method, which the row records
+ * separately in `evidence.method`. A registered result is never a test result
+ * (spec "Registered requirement verification" R-9). Rows written before this
+ * carried `check:registered:` for deterministic runs; they stay readable, and
+ * no recorder accepts that author for a new row. Both recorders enforce it.
  */
-export function registeredAuthor(bindingId: RegisteredBinding['id'], method: RegisteredMethod): string {
-  return method === 'deterministic' && bindingId === 'ui.actions_match_state' ? `check:registered:${bindingId}` : `registered:${bindingId}`;
+export function registeredAuthor(bindingId: RegisteredBinding['id'], _method: RegisteredMethod): string {
+  return `registered:${bindingId}`;
 }
