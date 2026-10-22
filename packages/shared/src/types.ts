@@ -1010,6 +1010,12 @@ export interface Worker {
   completedAt: Date | null;
   error: string | null;
   exitCause?: WorkerExitCause | null;
+  /**
+   * A running worker with no progress (milestone, tool call, MCP call) for
+   * longer than 30 minutes: how long, in ms. Absent when not stalled. Heartbeats
+   * do not count. Computed by `stalledFor` (apps/web/src/lib/stalled-run.ts).
+   */
+  stalledForMs?: number;
   createdAt: Date;
   updatedAt: Date;
   mcpCalls?: McpToolCall[];

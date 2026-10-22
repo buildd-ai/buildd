@@ -78,8 +78,9 @@ function ClosedPrRow({ missionId, item }: { missionId: string; item: ClosedPrIte
 
   return (
     <div data-testid="closed-pr-row" className="text-[12px] leading-snug">
+      {/* Both lines say where the closed PR's work went: material, never trimmed as wordiness. */}
       {s ? (
-        <p data-verify-block="body" className="text-text-secondary">
+        <p data-verify-block="consequence" className="text-text-secondary">
           {prRef} is likely superseded by{' '}
           <a href={s.prUrl} target="_blank" rel="noopener noreferrer" data-verify-action="view_detail" data-verify-prominence="secondary" className="font-mono text-accent-text hover:underline">
             {s.repo}#{s.prNumber}
@@ -87,7 +88,7 @@ function ClosedPrRow({ missionId, item }: { missionId: string; item: ClosedPrIte
           <span className="text-text-muted"> ({s.why})</span>
         </p>
       ) : (
-        <p data-verify-block="body" className="text-text-secondary">{prRef} closed without merging and nothing says where its work went.</p>
+        <p data-verify-block="consequence" className="text-text-secondary">{prRef} closed without merging and nothing says where its work went.</p>
       )}
 
       <div className="mt-1.5 flex flex-wrap gap-2">

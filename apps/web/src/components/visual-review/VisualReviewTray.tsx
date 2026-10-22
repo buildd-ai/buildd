@@ -24,7 +24,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import type { VisualReviewCell, VisualReviewMarker, VisualReviewModel } from '@buildd/shared';
-import { awaitingCapture, describeVisualPhase, screensToReview } from '@/lib/visual-review-model';
+import { awaitingCapture, describeVisualPhase, screensToReview, visualPhaseDetailRole } from '@/lib/visual-review-model';
 import ShotImage, { VERDICT_DOT, VIEWPORT_LABEL, viewportAspect } from './ShotImage';
 import VisualReviewLine from './VisualReviewLine';
 import { AnswerRow, type OnAnswer } from './VisualReviewAsk';
@@ -168,7 +168,7 @@ function EmptyPhase({ model, actions }: { model: VisualReviewModel; actions?: Vi
           {a.onAnswer && <AnswerRow target={{ workerId: boot.workerId, taskId: boot.taskId }} options={a.answerOptions} onAnswer={a.onAnswer} />}
         </>
       ) : (
-        <p data-verify-block="body" className="text-[13px] leading-[1.5] text-text-secondary">{copy.detail}</p>
+        <p data-verify-block={visualPhaseDetailRole(model.phase)} className="text-[13px] leading-[1.5] text-text-secondary">{copy.detail}</p>
       )}
       {buttons.length > 0 && <div className="flex flex-wrap gap-2">{buttons}</div>}
       {error && <p role="alert" data-testid="visual-review-action-error" data-verify-block="status" className="font-mono text-[12px] text-status-error">{error}</p>}
