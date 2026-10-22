@@ -5,7 +5,6 @@
   "apps/web/src/app/api/connectors/route.ts": 1,
   "apps/web/src/app/api/missions/[id]/route.ts": 2,
   "apps/web/src/app/api/prs/[prNumber]/retry-ci/route.ts": 1,
-  "apps/web/src/app/api/tasks/[id]/summary/route.ts": 1,
   "apps/web/src/app/api/workers/[id]/respond/route.ts": 2,
   "apps/web/src/app/api/workers/[id]/route.ts": 4,
   "apps/web/src/app/api/workers/claim/context-injection.ts": 1,

@@ -3,9 +3,10 @@
 /**
  * Overview · Flow · History. The shell mounts one layout at a time and switches on
  * the client: the tab writes `?layout=` with `replaceState` (never a router
- * navigation, so the task sheet's own history entries are left alone). The
- * server builds only the layout the URL names; a tab it has not built yet is
- * fetched with one `router.refresh()`, and one shown before switches back at once.
+ * navigation). The server builds only the layout the URL names; a tab it has
+ * not built yet is fetched with one `router.refresh()`, and one shown before
+ * switches back at once. Flow is a desktop view: a Flow link opened below md
+ * lands on the mission page (spec d25d923d R-2).
  *
  * Board and Flow share `MissionBoardHeader`; the Feed keeps its masthead and
  * carries the same tabs in it.
@@ -80,6 +81,9 @@ export interface MissionLayoutShellProps {
   feed: ReactNode;
 }
 
+/** Tailwind's `md` is 768px: below it, Flow opens as the mission page. */
+export const BELOW_MD = '(max-width: 767.98px)';
+
 export default function MissionLayoutShell({ initial, board, flow, feed }: MissionLayoutShellProps) {
   const [layout, set] = useState<MissionLayout>(initial);
   // The last render of each layout the server sent, so a tab shown before
@@ -97,6 +101,11 @@ export default function MissionLayoutShell({ initial, board, flow, feed }: Missi
       // A sandboxed frame can refuse history writes; the tab still switches.
     }
   }, []);
+  // On arrival only: a Flow link opened on a phone shows the mission page.
+  const arrival = useRef(initial);
+  useEffect(() => {
+    if (arrival.current === 'flow' && window.matchMedia?.(BELOW_MD).matches) setLayout('board');
+  }, [setLayout]);
   const value = useMemo(() => ({ layout, setLayout }), [layout, setLayout]);
   const content = shown.current[layout];
   return (

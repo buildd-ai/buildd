@@ -326,23 +326,6 @@ function LegendSwatch({ children, label }: { children: React.ReactNode; label: s
   );
 }
 
-/** Dispatched on the sheet's dialog element to ask it to close. */
-const FLIGHT_DETAIL_CLOSE_EVENT = 'flightdetail:close';
-
-/**
- * Close the flight detail sheet `target` sits in, if any. The mission page's
- * task-sheet owner calls this when a bar tap opens a task, so the flight sheet
- * can never stay stacked over (or under) the task sheet. Returns whether a
- * sheet was asked to close.
- */
-export function closeEnclosingFlightDetailSheet(target: EventTarget | null): boolean {
-  const el = target as { closest?: (sel: string) => Element | null } | null;
-  const dialog = el?.closest?.('[data-flight-detail-sheet]');
-  if (!dialog) return false;
-  dialog.dispatchEvent(new CustomEvent(FLIGHT_DETAIL_CLOSE_EVENT));
-  return true;
-}
-
 export interface FlightDetailSheetProps {
   open: boolean;
   onClose: () => void;
@@ -393,12 +376,8 @@ export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle
       }
     }
     document.addEventListener('keydown', handleKeyDown);
-    const dialog = dialogRef.current;
-    const handleCloseRequest = () => onClose();
-    dialog?.addEventListener(FLIGHT_DETAIL_CLOSE_EVENT, handleCloseRequest);
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
-      dialog?.removeEventListener(FLIGHT_DETAIL_CLOSE_EVENT, handleCloseRequest);
       scrollRoot.style.overflow = previousOverflow;
       if (restoreFocusRef.current instanceof HTMLElement) restoreFocusRef.current.focus();
     };
@@ -408,7 +387,7 @@ export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle
 
   const stats = computeFlightDetailStats(data);
   const openHref = selectedTaskId
-    ? missionTaskHref({ missionId, taskId: selectedTaskId, from, mode: 'sheet' })
+    ? missionTaskHref({ missionId, taskId: selectedTaskId, from })
     : `/app/missions/${encodeURIComponent(missionId)}${from ? `?from=${encodeURIComponent(from)}` : ''}`;
   const summary = describeSteeringPattern(data);
 

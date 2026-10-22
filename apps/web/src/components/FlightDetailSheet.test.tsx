@@ -89,7 +89,7 @@ describe('FlightDetailSheet', () => {
   });
 
   // AC-20: "Open mission →" carries the selected bar into mission context.
-  it('Open mission carries the origin, and the selected bar as the task sheet', () => {
+  it('Open mission carries the origin, and the selected bar opens its task page', () => {
     const plain = renderToStaticMarkup(
       <FlightDetailSheet open={true} onClose={() => {}} data={BASE_DATA} missionId="m1" missionTitle="Ship the thing" from="home" />,
     );
@@ -106,7 +106,7 @@ describe('FlightDetailSheet', () => {
         initialTaskId="a"
       />,
     );
-    expect(selected).toContain('href="/app/missions/m1?from=home&amp;task=a"');
+    expect(selected).toContain('href="/app/tasks/a?from=home&amp;missionId=m1"');
     expect(selected).toContain('data-testid="flight-detail-open-mission"');
   });
 

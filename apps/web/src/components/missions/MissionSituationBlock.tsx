@@ -160,7 +160,7 @@ export function closedPrItems(focus: Extract<WaitingOnDescriptor, { kind: 'pr_cl
 
 function taskAffordance(label: string, taskId: string | undefined, missionId: string): PrimaryAffordance {
   if (!taskId) return null;
-  return { kind: 'internal', label, href: missionTaskHref({ missionId, taskId, mode: 'sheet' }), taskId };
+  return { kind: 'internal', label, href: missionTaskHref({ missionId, taskId }), taskId };
 }
 
 /** Render a causal link's hard ref as something clickable. Prose is never a ref. */
@@ -242,7 +242,7 @@ export default function MissionSituationBlock({ missionId, situation, because, c
           {detail.items.map(b => (
             <li key={b.taskId}>
               <Link
-                href={missionTaskHref({ missionId, taskId: b.taskId, mode: 'sheet' })}
+                href={missionTaskHref({ missionId, taskId: b.taskId })}
                 data-task-id={b.taskId}
                 className="inline-flex min-h-11 md:min-h-0 items-center gap-1.5 text-accent-text hover:underline"
               >

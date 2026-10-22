@@ -160,7 +160,7 @@ function FullBar({
       </div>
       {primary && (
         <div className="flex min-w-0 items-center gap-1 font-mono text-[11px] text-text-muted">
-          <Link href={missionTaskHref({ missionId, taskId: primary.id, mode: 'sheet' })} className="min-w-0 truncate hover:text-accent-text">
+          <Link href={missionTaskHref({ missionId, taskId: primary.id })} className="min-w-0 truncate hover:text-accent-text">
             ▸ {primary.title} · {primary.meta}
           </Link>
           {overflow > 0 && (

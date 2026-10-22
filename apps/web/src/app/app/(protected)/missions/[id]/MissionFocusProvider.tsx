@@ -11,20 +11,21 @@
  * - unfold-then-scroll: focusing a row that is folded away marks it revealed,
  *   and the scroll happens when the row mounts and registers;
  * - the IntersectionObserver feeding the pulse's in-view underline;
- * - the freeze window: while the sheet is open, or within 1.5s of a pointerdown
- *   on the list, list order is held (`createFreezeGate`).
+ * - the freeze window: within 1.5s of a pointerdown on the list, list order is
+ *   held (`createFreezeGate`).
  *
- * Opening a task is `pushState(?task=)` by default — never `router.push` — and
- * every native write passes `nativeHistoryData(history.state)`, never the raw
- * state: Next skips its useSearchParams sync for data carrying its own `__NA`.
- *
- * the sheet owner (slice S4) may take it over with `setOpenTask`, and reports
- * open/closed with `setSheetOpen`.
+ * Opening a task goes to its page, the only task view (spec d25d923d R-1),
+ * with the page's own `?from=` back context. A `#t-<id>` with no registered
+ * row scrolls to whatever the page draws for that task (a strip cell, a Flow
+ * or History row). The hash write passes `nativeHistoryData(history.state)`,
+ * never the raw state: Next skips its useSearchParams sync for data carrying
+ * its own `__NA`.
  */
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useRouter } from 'next/navigation';
 import { MissionFocusContext, type MissionFocusSnapshot, type MissionFocusStore } from '@/components/missions/mission-focus-context';
 import { MISSION_MASTHEAD_FOLDED_PX } from '@/components/missions/MissionMasthead';
-import { missionTaskAnchorId, parseMissionTaskHash } from '@/lib/mission-task-href';
+import { missionTaskAnchorId, missionTaskHref, parseMissionOriginParams, parseMissionTaskHash } from '@/lib/mission-task-href';
 import { nativeHistoryData } from '@/lib/native-history';
 
 export type { MissionFocusSnapshot, MissionFocusStore };
@@ -40,8 +41,12 @@ export interface MissionFocusDeps {
   history: {
     readonly state: unknown;
     replaceState(data: unknown, unused: string, url?: string | URL | null): void;
-    pushState(data: unknown, unused: string, url?: string | URL | null): void;
   };
+  missionId: string;
+  /** Leave for another page (the task page). */
+  navigate(url: string): void;
+  /** Something the page draws for the task when no row registered (strip cell, Flow/History row). */
+  findRow?(taskId: string): HTMLElement | null;
   location(): { pathname: string; search: string; hash: string };
   scrollIntoView(el: HTMLElement, block: ScrollLogicalPosition): void;
   now(): number;
@@ -61,15 +66,14 @@ export function createMissionFocusStore(deps: MissionFocusDeps): MissionFocusSto
   let outlinedTaskId: string | null = null;
   let inViewTaskIds: ReadonlySet<string> = new Set();
   let revealedTaskIds: ReadonlySet<string> = new Set();
-  let sheetOpen = false;
   let lastPointerDown = -Infinity;
   let outlineTimer: TimerId | null = null;
   let freezeTimer: TimerId | null = null;
+  let fallbackTimer: TimerId | null = null;
   let pendingScroll: { taskId: string; block: ScrollLogicalPosition } | null = null;
-  let openTaskFn: ((taskId: string) => void) | null = null;
   let observer: ReturnType<NonNullable<MissionFocusDeps['createObserver']>> | undefined;
 
-  const isFrozenNow = () => sheetOpen || deps.now() - lastPointerDown < FREEZE_AFTER_POINTER_MS;
+  const isFrozenNow = () => deps.now() - lastPointerDown < FREEZE_AFTER_POINTER_MS;
 
   let snapshot: MissionFocusSnapshot = build();
   function build(): MissionFocusSnapshot {
@@ -85,6 +89,28 @@ export function createMissionFocusStore(deps: MissionFocusDeps): MissionFocusSto
     return observer;
   }
 
+  function cancelFallback() {
+    if (fallbackTimer !== null) deps.clearTimeout(fallbackTimer);
+    fallbackTimer = null;
+  }
+
+  // Overview reveals a completed build strip after the focus snapshot changes.
+  // Its cells do not register as feed rows, so look again during the outline
+  // window, then stop even when a stale hash names no element on this page.
+  function retryFallback(until: number) {
+    if (!deps.findRow || !pendingScroll || deps.now() >= until) return;
+    fallbackTimer = deps.setTimeout(() => {
+      fallbackTimer = null;
+      if (!pendingScroll) return;
+      const el = deps.findRow?.(pendingScroll.taskId);
+      if (el) {
+        const { block } = pendingScroll;
+        pendingScroll = null;
+        deps.scrollIntoView(el, block);
+      } else retryFallback(until);
+    }, 50);
+  }
+
   const store: MissionFocusStore = {
     getSnapshot: () => snapshot,
     subscribe(listener) {
@@ -98,6 +124,7 @@ export function createMissionFocusStore(deps: MissionFocusDeps): MissionFocusSto
     },
 
     focus(taskId, { writeHash = true, block = 'start' } = {}) {
+      cancelFallback();
       selectedTaskId = taskId;
       outlinedTaskId = taskId;
       if (outlineTimer !== null) deps.clearTimeout(outlineTimer);
@@ -117,29 +144,21 @@ export function createMissionFocusStore(deps: MissionFocusDeps): MissionFocusSto
       }
       if (!revealedTaskIds.has(taskId)) revealedTaskIds = new Set([...revealedTaskIds, taskId]);
 
-      const el = rows.get(taskId);
+      const el = rows.get(taskId) ?? deps.findRow?.(taskId) ?? null;
       if (el) {
         pendingScroll = null;
         deps.scrollIntoView(el, block);
       } else {
         pendingScroll = { taskId, block };
+        retryFallback(deps.now() + FOCUS_OUTLINE_MS);
       }
       emit();
     },
 
     openTask(taskId) {
-      if (openTaskFn) {
-        openTaskFn(taskId);
-        return;
-      }
-      const loc = deps.location();
-      const params = new URLSearchParams(loc.search);
-      params.set('task', taskId);
-      deps.history.pushState(nativeHistoryData(deps.history.state), '', `${loc.pathname}?${params.toString()}`);
-    },
-
-    setOpenTask(fn) {
-      openTaskFn = fn;
+      const params = new URLSearchParams(deps.location().search);
+      const origin = parseMissionOriginParams({ from: params.get('from'), initiativeId: params.get('initiativeId') });
+      deps.navigate(missionTaskHref({ missionId: deps.missionId, taskId, ...origin }));
     },
 
     readHash() {
@@ -156,6 +175,7 @@ export function createMissionFocusStore(deps: MissionFocusDeps): MissionFocusSto
         obs.observe(el);
       }
       if (pendingScroll?.taskId === taskId) {
+        cancelFallback();
         const { block } = pendingScroll;
         pendingScroll = null;
         deps.scrollIntoView(el, block);
@@ -194,12 +214,6 @@ export function createMissionFocusStore(deps: MissionFocusDeps): MissionFocusSto
       if (!wasFrozen) emit();
     },
 
-    setSheetOpen(open) {
-      if (sheetOpen === open) return;
-      sheetOpen = open;
-      emit();
-    },
-
     createFreezeGate<T>() {
       let has = false;
       let committed: T;
@@ -216,12 +230,17 @@ export function createMissionFocusStore(deps: MissionFocusDeps): MissionFocusSto
 }
 
 /** Real browser wiring. Every call is lazy, so creating the store during SSR is inert. */
-function browserDeps(): MissionFocusDeps {
+function browserDeps(missionId: string, navigate: (url: string) => void): MissionFocusDeps {
   return {
     history: {
       get state() { return window.history.state; },
       replaceState: (d, u, url) => window.history.replaceState(d, u, url),
-      pushState: (d, u, url) => window.history.pushState(d, u, url),
+    },
+    missionId,
+    navigate,
+    findRow(taskId) {
+      const id = CSS.escape(taskId);
+      return document.querySelector<HTMLElement>(`#${CSS.escape(missionTaskAnchorId(taskId))}, [data-task-id="${id}"], [data-id="${id}"]`);
     },
     location: () => ({ pathname: window.location.pathname, search: window.location.search, hash: window.location.hash }),
     scrollIntoView(el, block) {
@@ -258,7 +277,10 @@ export interface MissionFocusProviderProps {
 export function MissionFocusProvider({ missionId, children, store: injected }: MissionFocusProviderProps) {
   // One store per mounted mission page. Navigating to another mission changes
   // the `[id]` segment, which remounts the page and so this provider.
-  const [owned] = useState(() => injected ?? createMissionFocusStore(browserDeps()));
+  const router = useRouter();
+  const routerRef = useRef(router);
+  routerRef.current = router;
+  const [owned] = useState(() => injected ?? createMissionFocusStore(browserDeps(missionId, url => routerRef.current.push(url))));
   const store = injected ?? owned;
 
   useEffect(() => {
