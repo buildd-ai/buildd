@@ -51,13 +51,6 @@ export interface FocusCardProps {
   /** Required checks, PR line: anything between the lifecycle and the facts. */
   children?: ReactNode;
   footer?: ReactNode;
-  /**
-   * The status line in place of the Next row: one dot, one word, one cause
-   * (`Failed · CI failed`). With it the meta line drops its held-state pill.
-   */
-  status?: ReactNode;
-  /** The lifecycle's form (`Lifecycle` variant). Default `track`. */
-  flow?: 'track' | 'line';
   /** The 1.5px ink frame of a focused card. Default true; false is a plain L2 card. */
   focused?: boolean;
   className?: string;
@@ -69,7 +62,7 @@ export interface FocusCardProps {
  * card already fills the width. Lifecycle first, then Next / reason / Time /
  * Needs you.
  */
-export default function FocusCard({ meta, title, state, repairs, next, reason, estimate, needs, note, children, footer, status, flow = 'track', focused = true, className = '' }: FocusCardProps) {
+export default function FocusCard({ meta, title, state, repairs, next, reason, estimate, needs, note, children, footer, focused = true, className = '' }: FocusCardProps) {
   return (
     <section
       data-testid="focus-card"
@@ -78,11 +71,10 @@ export default function FocusCard({ meta, title, state, repairs, next, reason, e
     >
       <div className="font-mono text-meta text-text-muted">
         {meta}
-        {status == null && HELD.has(state) && <> · <StatePill state={state} variant="plain" /></>}
+        {HELD.has(state) && <> · <StatePill state={state} variant="plain" /></>}
       </div>
       <h2 className="text-lede font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] md:text-[18px]">{title}</h2>
-      <Lifecycle state={state} repairs={repairs} variant={flow} />
-      {status}
+      <Lifecycle state={state} repairs={repairs} />
       {children}
       <dl className="grid grid-cols-[82px_minmax(0,1fr)] gap-x-2.5 gap-y-1.5 text-title">
         {next != null && <><dt className="text-text-muted">Next</dt><dd>{next}</dd></>}

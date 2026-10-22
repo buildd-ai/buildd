@@ -9,8 +9,8 @@ describe('FocusCard', () => {
   it('renders the lifecycle and the reason line', () => {
     const html = renderToStaticMarkup(<FocusCard {...base} next="Opens a PR when the build finishes" reason={reasonLine('downstream', ['06'])} />);
     expect(html).toContain('data-testid="lifecycle"');
-    expect(html).toContain('>Blocks</dt>');
-    expect(html).toContain('>06</dd>');
+    expect(html).toContain('>Unblocks</dt>');
+    expect(html).toContain('06.');
   });
 
   it('a focused card carries the 1.5px ink frame from md, a quiet hairline on a phone', () => {

@@ -8,7 +8,7 @@ domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.tsx, apps/web/src/app/app/(protected)/missions/[id]/MissionBoardParts.tsx, apps/web/src/lib/mission-task-strip.ts, apps/web/src/lib/mission-board.ts]
 related: [timeline-dependency-geometry, timeline-mobile-rail, mission-structure-view, mission-legibility]
 keywords: [landed strip, segment strip, 04 / 14, waiting on 8 dependencies, next open, tick row, topological order, queued behind, stripOrder]
-verified_by: [apps/web/src/lib/mission-task-strip.test.ts, apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.dom.test.tsx, apps/web/src/lib/condensed-timeline.test.ts]
+verified_by: [apps/web/src/lib/mission-task-strip.test.ts, apps/web/src/lib/mission-overview.test.ts, apps/web/src/components/ui/TaskStrip.test.tsx, apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.dom.test.tsx, apps/web/src/lib/condensed-timeline.test.ts]
 assertions:
   - id: "build-mission-adjacency"
     type: "symbol"
@@ -270,28 +270,40 @@ sparse), not only in colour.
 
 ### 3.2a A red PR wins over a backoff
 
-**R-8a**: a task whose PR has failing checks or a merge conflict MUST read
-`ci_failed` (the card: `Failed · CI failed` / `Failed · Merge conflict`),
-never `ready`, `blocked` or `queued`, even while it is pending behind a
-retry backoff (`tasks.startAt` in the future). The PR state is read from the
-same projection as the rest of the page (`deriveFeedPrState` over the
-worker and the kernel's delivery display; `deriveBoardStatus`). The backoff
-is not hidden: the card names it beside the cause as `Retry in 3h 52m`, with
-a `Retry now` action (the start route's override). A red PR never reads
-`Ready · Scheduled start`.
+**R-8a**: a task whose PR has failing checks or a merge conflict MUST have
+the display state `ci_failed`, never `ready`, `blocked` or `queued`, even
+while it is pending behind a retry backoff (`tasks.startAt` in the future).
+The PR state comes from the page's one projection (`deriveFeedPrState` over
+the worker and the kernel's delivery display, in `deriveBoardStatus`); no new
+state store. Its words follow Navigation d25d923d R-14
+(`overviewStatus`): `Failed · CI failed` or `Failed · Merge conflict`, and
+the backoff as `Retry in 3h 52m` (`retryText`), never `Ready · Scheduled start`.
+Because this is the strip state, Home and `buildd top` read the same cell.
 
-### 3.2b The running cell moves
+### 3.2b The mission bar's looks (Navigation d25d923d R-4)
 
-**R-8b**: the `running` cell's hatch drifts slowly, one stripe period per
-2.4s, in CSS only (`.state-cell[data-drift]`, `TaskStrip` sets `data-drift`
-on a running cell's fill). Nothing else on the strip animates.
-`prefers-reduced-motion: reduce` MUST turn the drift off (an unlayered rule in
-`globals.css`); the hatch stays, still. Before this amendment the running cell
-was static.
+**R-8b**: a grouped strip (the mission bar, `TaskStrip` with `groups`) draws
+three looks over the §3.2 states, in web rendering only (`stripLook`,
+`data-look`): `landed` is solid green; work in flight (`running`, `review`,
+`fixing`, `landing`, `recovering`) is an accent hatch; every other state is a
+dashed outline. A task that needs a person (`needs_you`, `waiting`) carries a
+small amber dot, a failed one (`failed`, `ci_failed`) a small red dot
+(`stripDot`). The cell's state, order and grouping are unchanged, so the
+§3.2 table still holds for every other strip and `buildd top` (Runner on your
+terminal R-29) reads the same cells.
 
-**R-8c**: on the Overview, a closed PR someone replaced (`Closed → #N`,
-`BoardTask.replacement`) draws its cell in the neutral tone with `→`, never
-the failure ✕ (`TaskStripCell.replaced`).
+**R-8c**: the `running` cell's hatch drifts slowly, one stripe period per
+2.4s, in CSS only (`.state-cell[data-drift]`). Nothing else on the bar moves.
+`prefers-reduced-motion: reduce` MUST stop the drift and keep the hatch,
+still (an unlayered rule in `globals.css`). Before this the running cell was
+static.
+
+**R-8d**: a closed, unmerged PR whose replacement is known reads
+`Closed → #N` (the cell's word, `BoardTask.replacement`), from a close comment
+(`Replaced by #N`), a PR body (`replaces #N`) or a person's link
+(`POST /api/workers/[id]/replacement`), before the replacement merges. It is
+display only: the formal supersession still records on merge, and no
+completion or merge gate reads it.
 
 ### 3.3 Words
 
@@ -337,7 +349,7 @@ The drawer header becomes:
 | Selected cell | Marks show | Drawer reason line |
 |---|---|---|
 | `blocked`, `queued` | **upstream**: frontier(T) = direct marks; upstream(T) − frontier(T) = transitive marks | `After 12 {label} (+7 upstream).` |
-| any **active** state with a non-empty downstream(T) | **downstream**: non-landed direct dependents = direct marks; rest of downstream(T) = transitive marks | `Unblocks 08, 13 (+3 downstream).` (the Overview card: `Blocks 08, 13`, R-12a) |
+| any **active** state with a non-empty downstream(T) | **downstream**: non-landed direct dependents = direct marks; rest of downstream(T) = transitive marks | `Unblocks 08, 13 (+3 downstream).` |
 | active with empty downstream(T) | none | unchanged |
 | `landed` | none | unchanged |
 
@@ -355,11 +367,6 @@ re-renders as one unit.
 `{tick} {label}`, and tails the rest as `+N upstream` / `+N downstream`
 (CC-3/CC-4 parity with `DependencyRail`). Off-strip blockers are named by
 title plus `· other mission` and are always named before on-strip ones.
-
-**R-12a** (Overview focus card, `reasonLine`): a label, not a sentence: no
-full stop. Downstream reads `Blocks 04, 06`, naming only what the task blocks
-directly (`+1` past two); the transitive tail is the tick row's marks, not
-words. Upstream reads `After 03 Projection, 04 List (+2 upstream)`.
 
 **R-13**: the "waiting on N dependencies" count in `TaskActionZone`
 MUST equal |blockers(T)|, including off-strip blockers — the same set the
@@ -788,12 +795,16 @@ Each criterion is checkable against a board model built from fixtures
   THEN the literal `{ solid: 0, half: 1, ghost: 2, notch: 3, empty: 4 }`
   appears at most once.
 - **AC-23**: GIVEN a pending task whose PR is `ci_failed` or `conflict` and
-  whose `startAt` is 4h ahead, WHEN the board is built, THEN its status is
-  `ci_failed`, its Overview status is `Failed` with the PR's cause and a
-  `retryAt`, and it carries no waiting cause (R-8a).
-- **AC-24**: GIVEN a strip with one running cell, WHEN it renders, THEN only
-  that cell's fill carries `data-drift`, and `globals.css` turns the drift's
-  animation off under `prefers-reduced-motion: reduce` (R-8b).
+  whose `startAt` is 3h 52m ahead, WHEN the board is built, THEN its state is
+  `ci_failed`, it reads `Failed · CI failed` (or `· Merge conflict`) and
+  `Retry in 3h 52m`, and it carries no waiting cause (R-8a).
+- **AC-24**: GIVEN a grouped strip with every state, WHEN it renders, THEN
+  each fill's look is merged, running or waiting as R-8b says, only `ci_failed`
+  and `failed` carry a red dot and `needs_you` / `waiting` an amber one, only
+  the running cell carries `data-drift`, every button keeps its `data-state`,
+  and `globals.css` stops the drift under `prefers-reduced-motion: reduce`.
+- **AC-25**: GIVEN a closed, unshipped PR with a named replacement #812, WHEN
+  the Overview cells are built, THEN its word is `Closed → #812` (R-8d).
 - **AC-22** (rejection): GIVEN any strip rendered with state-compacted order
   (R-5), WHEN inspected, THEN it carries no tick numbers, no ordinal and no
   selectable cell.

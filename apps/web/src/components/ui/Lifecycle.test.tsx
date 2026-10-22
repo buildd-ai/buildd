@@ -89,31 +89,3 @@ describe('Lifecycle: phrase (docs/specs/task-page.md, State mapping)', () => {
     expect(html).toContain('✓ Verify');
   });
 });
-
-// mission-feed §Status vocabulary: the flow on the card is one line at 320px.
-describe('Lifecycle line', () => {
-  const steps = (html: string) => [...html.matchAll(/data-step="(\w+)"[^>]*>([^<]*)</g)].map(m => m[2]);
-
-  it('reads Build ✓  Verify  Deliver: no arrows, the tick after the name, no variant text', () => {
-    const html = renderToStaticMarkup(<Lifecycle state="ci_failed" variant="line" />);
-    expect(steps(html)).toEqual(['Build ✓', 'Verify', 'Deliver']);
-    expect(html).not.toContain('→');
-    expect(html.replace(/aria-label="[^"]*"/, '')).not.toContain('CI failed');
-    expect(html).toContain('whitespace-nowrap');
-    expect(html).not.toContain('flex-wrap');
-  });
-
-  it('only the current step takes colour', () => {
-    const html = renderToStaticMarkup(<Lifecycle state="running" variant="line" />);
-    expect(html).toMatch(/data-step="Build" aria-current="step" class="font-semibold text-accent-text">Build</);
-    expect(html).toMatch(/data-step="Verify" class="text-text-muted">Verify</);
-    const done = renderToStaticMarkup(<Lifecycle state="landing" variant="line" />);
-    expect(done).toMatch(/data-step="Build" data-done="true" class="text-text-secondary">Build ✓</);
-  });
-
-  it('a closed, unshipped PR is neutral, never the failure red', () => {
-    const html = renderToStaticMarkup(<Lifecycle state="not_landed" variant="line" />);
-    expect(html).toMatch(/aria-current="step" class="font-semibold text-\[var\(--q\)\]">Deliver</);
-    expect(html).not.toContain('text-status-error');
-  });
-});

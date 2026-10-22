@@ -2,8 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import { dagBoard, dagId, DAG_SPECS, overviewWavesBoard, overviewWavesInput } from '@/app/app/dev/fixtures/mission-task-strip-fixtures';
 import { buildMissionBoard, lastEventOf } from './mission-board';
 import { stripOrder } from './mission-task-strip';
-import { finishSettingTaskId, formatCountdown, formatElapsed, formatSpan, liveLine, overviewCells, overviewWaitLine, overviewCounts, overviewDefaultSelection, overviewLayout, overviewMergedLine, overviewProgress, overviewSelection, overviewStatus, overviewWaitCause, taskEstimate } from './mission-overview';
-import { STALENESS_THRESHOLD_MS } from './task-presentation';
+import { formatCountdown, overviewStatus, overviewStatusText, retryText } from './mission-overview';
+import { finishSettingTaskId, overviewCells, overviewWaitLine, overviewCounts, overviewDefaultSelection, overviewLayout, overviewLegend, overviewProgress, overviewSelection, overviewWaitCause } from './mission-overview';
 
 const spec = DAG_SPECS.linear; // A landed, B running, C blocked, D/E queued
 const model = dagBoard(spec);
@@ -57,13 +57,13 @@ describe('overviewSelection', () => {
   it('a running task marks and names what it unblocks', () => {
     const s = overviewSelection(model, order, dagId(spec, 'B'));
     expect(s.marks.get(dagId(spec, 'C'))).toBe('direct');
-    expect(s.reason).toEqual({ lead: 'Blocks', text: '03' });
+    expect(s.reason).toEqual({ lead: 'Unblocks', text: '03 (+2 downstream).' });
   });
 
   it('a held task names what it waits behind, frontier first', () => {
     const s = overviewSelection(model, order, dagId(spec, 'E'));
     expect(s.reason?.lead).toBe('After');
-    expect(s.reason?.text).toBe('04 D (+2 upstream)');
+    expect(s.reason?.text).toBe('04 D (+2 upstream).');
   });
 
   it('a landed task marks nothing', () => {
@@ -160,12 +160,15 @@ describe('overviewWaitCause', () => {
   });
 });
 
-describe('overviewMergedLine (no legend row)', () => {
-  it('counts merged build work over all build work; checks never count', () => {
+describe('overviewLegend', () => {
+  it('says each group in words, waiting split by cause', () => {
     const ten = overviewWavesBoard(20);
-    expect(overviewMergedLine(overviewLayout(ten))).toBe('10 of 20 merged');
-    expect(overviewMergedLine(overviewLayout(overviewWavesBoard(2)))).toBe('1 of 2 merged');
-    expect(overviewMergedLine({ order: [], groups: [] })).toBe('No tasks');
+    expect(overviewLegend(ten, overviewLayout(ten)).map(e => e.text)).toEqual(['10 done', '2 in progress', '4 waiting on tasks', '2 next in line', '1 blocked', '1 not started', '1 check']);
+  });
+
+  it('drops a cause nothing has', () => {
+    const two = overviewWavesBoard(2);
+    expect(overviewLegend(two, overviewLayout(two)).map(e => e.text)).toEqual(['1 done', '1 in progress']);
   });
 });
 
@@ -220,7 +223,7 @@ describe('a kernel-owned PR closed without merging', () => {
     : t));
   const board = (rows: unknown[]) => buildMissionBoard({ now: 0, missionCreatedAt: 0, missionStatus: 'active', tasks: rows as never, gateFacts });
 
-  it('sits in Waiting, reads Closed, and is not green', () => {
+  it('sits in Waiting, says it closed without merging, and is not green', () => {
     const m = board(closed);
     expect(m.tasks[closedId].status).toBe('done');
     const layout = overviewLayout(m);
@@ -229,23 +232,18 @@ describe('a kernel-owned PR closed without merging', () => {
     expect(overviewWaitCause(m, closedId)).toBe('closed');
     const cell = overviewCells(m, layout.order).find(c => c.id === closedId)!;
     expect(cell.state).toBe('not_landed');
-    expect(cell.word).toBe('Closed');
-    expect(cell.replaced).toBeUndefined();
-    // No sentence on the card: the status line says Closed, with a Link replacement action.
-    expect(overviewWaitLine(m, closedId)).toBeNull();
-    expect(overviewStatus(m, closedId)).toMatchObject({ word: 'Closed', tone: 'q', closed: { replacement: null } });
+    expect(cell.word).toBe('Closed without merging');
+    expect(overviewLegend(m, layout).map(e => e.text)).toContain('1 closed without merging');
   });
 
-  it('a replacement someone named reads Closed → #N, neutral, linking it', () => {
+  it('a replacement someone named reads Closed → #N on its cell, linked from the task', () => {
     const named = closed.map(t => (t.id === closedId
       ? { ...t, workers: [{ ...t.workers![0], prNumber: 401, namedReplacementPrNumber: 812, namedReplacementPrUrl: 'https://github.com/example/app/pull/812' }] }
       : t));
     const m = board(named);
-    const cell = overviewCells(m, overviewLayout(m).order).find(c => c.id === closedId)!;
-    expect(cell.word).toBe('Closed → #812');
-    expect(cell.replaced).toBe(true);
+    expect(overviewCells(m, overviewLayout(m).order).find(c => c.id === closedId)!.word).toBe('Closed → #812');
     const st = overviewStatus(m, closedId);
-    expect(st.tone).toBe('q');
+    expect(st).toMatchObject({ word: 'Closed', tone: 'q' });
     expect(st.closed?.replacement).toEqual({ number: 812, url: 'https://github.com/example/app/pull/812' });
     expect(m.tasks[closedId].prWorkerId).toBe(m.tasks[closedId].workerId);
   });
@@ -281,50 +279,49 @@ describe('overviewWaitLine', () => {
   });
 });
 
-// mission-feed §Status vocabulary; strip §3.2a (the true state wins over a backoff).
+// Spec d25d923d R-14; strip R-8a: the true state wins over a retry backoff.
 describe('overviewStatus', () => {
   const NOW = Date.UTC(2026, 0, 1, 14, 0, 0);
-  const { tasks, gateFacts } = overviewWavesInput(10);
-  const pendingId = Object.entries(overviewWavesInput(10).kinds).find(([, k]) => k === 'slot')![0];
+  const { tasks, gateFacts, kinds } = overviewWavesInput(10);
+  const pendingId = Object.entries(kinds).find(([, k]) => k === 'slot')![0];
+  const BACKOFF = (3 * 60 + 52) * 60_000;
   const redPr = (state: 'ci_failed' | 'conflict') => tasks.map(t => {
     if (t.id !== pendingId) return t;
     const w = { id: 'w-red', status: 'completed', runner: 'alpha', startedAt: NOW - 3_600_000, completedAt: NOW - 3_000_000, updatedAt: NOW - 3_000_000, mergedAt: null, prNumber: 777, prUrl: 'https://github.com/example/app/pull/777', prLifecycleStatus: state, currentAction: null, waitingFor: null, milestones: [], linesAdded: null, linesRemoved: null };
-    return { ...t, startAt: NOW + (3 * 60 + 52) * 60_000, workers: [w], worker: { status: 'completed', startedAt: new Date(w.startedAt), updatedAt: new Date(w.updatedAt), prNumber: 777, prUrl: w.prUrl, prLifecycleStatus: state, mergedAt: null } };
+    return { ...t, startAt: NOW + BACKOFF, workers: [w], worker: { status: 'completed', startedAt: new Date(w.startedAt), updatedAt: new Date(w.updatedAt), prNumber: 777, prUrl: w.prUrl, prLifecycleStatus: state, mergedAt: null } };
   });
   const board = (rows: unknown[]) => buildMissionBoard({ now: NOW, missionCreatedAt: 0, missionStatus: 'active', tasks: rows as never, gateFacts });
 
-  it('a re-queued task with red CI in a retry backoff reads Failed · CI failed, never Ready', () => {
+  it('a re-queued task with red CI in a retry backoff reads Failed · CI failed and Retry in 3h 52m, never Ready', () => {
     const m = board(redPr('ci_failed'));
     expect(m.tasks[pendingId].status).toBe('ci_failed');
     const st = overviewStatus(m, pendingId);
-    expect(st).toMatchObject({ word: 'Failed', cause: 'CI failed', tone: 'bad', retryAt: NOW + (3 * 60 + 52) * 60_000 });
-    expect(overviewCells(m, overviewLayout(m).order).find(c => c.id === pendingId)!.state).not.toBe('ready');
+    expect(st).toMatchObject({ word: 'Failed', cause: 'CI failed', tone: 'bad', retryAt: NOW + BACKOFF });
+    expect(overviewStatusText(st)).toBe('Failed · CI failed');
+    expect(retryText(st, NOW)).toBe('Retry in 3h 52m');
+    expect(retryText(st, NOW + BACKOFF + 1)).toBeNull();
+    const cell = overviewCells(m, overviewLayout(m).order).find(c => c.id === pendingId)!;
+    expect(cell.state).toBe('ci_failed');
+    expect(cell.word).toBe('Failed · CI failed');
     expect(overviewWaitCause(m, pendingId)).toBeNull();
-    expect(formatCountdown(st.retryAt! - NOW)).toBe('3h 52m');
+    expect(m.tasks[pendingId].waitingKind).toBeUndefined();
   });
 
   it('a merge conflict names its cause', () => {
-    expect(overviewStatus(board(redPr('conflict')), pendingId)).toMatchObject({ word: 'Failed', cause: 'Merge conflict' });
+    expect(overviewStatusText(overviewStatus(board(redPr('conflict')), pendingId))).toBe('Failed · Merge conflict');
   });
 
-  it('a running task ticks from its start, names its latest milestone and its last event', () => {
+  it('a running task ticks from its start and names its latest milestone and last event', () => {
     const runId = tasks.find(t => t.status === 'in_progress')!.id;
     const rows = tasks.map(t => (t.id === runId
       ? { ...t, workers: [{ ...t.workers![0], startedAt: NOW - 724_000, updatedAt: NOW - 60_000, milestones: [{ ts: NOW - 120_000, label: 'Cloned repo' }, { ts: NOW - 14_000, label: 'Running unit tests' }] }] }
       : t));
-    const m = board(rows);
-    const st = overviewStatus(m, runId);
-    expect(st).toMatchObject({ word: 'Working', cause: 'Running unit tests', since: NOW - 724_000, lastEventAt: NOW - 14_000, retryAt: null });
-    expect(`${st.word} ${formatElapsed(NOW - st.since!)}`).toBe('Working 12m 04s');
+    expect(overviewStatus(board(rows), runId)).toMatchObject({ cause: 'Running unit tests', since: NOW - 724_000, lastEventAt: NOW - 14_000, retryAt: null, tone: 'act' });
   });
 
-  it('a waiting task reads Ready (next in line) or Blocked with its cause, never "Queued"', () => {
+  it('a waiting task names its cause; a merged one reads Merged', () => {
     const m = board(tasks);
-    expect(overviewStatus(m, pendingId)).toMatchObject({ word: 'Ready', cause: 'Next in line', tone: 'q' });
-  });
-
-  it('a merged task reads Merged', () => {
-    const m = board(tasks);
+    expect(overviewStatus(m, pendingId)).toMatchObject({ cause: 'Next in line', tone: 'q' });
     expect(overviewStatus(m, tasks[0].id).word).toBe('Merged');
   });
 });
@@ -337,32 +334,11 @@ describe('lastEventOf', () => {
   });
 });
 
-describe('the status line formats', () => {
-  it('formatElapsed: 45s, 12m 04s, 2h 05m', () => {
-    expect(formatElapsed(45_000)).toBe('45s');
-    expect(formatElapsed(724_000)).toBe('12m 04s');
-    expect(formatElapsed((2 * 60 + 5) * 60_000)).toBe('2h 05m');
-  });
-
-  it('formatSpan: 14s, 12m, 2h, 3d', () => {
-    expect(formatSpan(14_000)).toBe('14s');
-    expect(formatSpan(12 * 60_000)).toBe('12m');
-    expect(formatSpan(2 * 3_600_000)).toBe('2h');
-    expect(formatSpan(3 * 86_400_000)).toBe('3d');
-  });
-
-  it('liveLine: Updated 14s ago, then No activity for 12m past the stale-worker threshold', () => {
-    expect(liveLine(1_000_000 - 14_000, 1_000_000)).toEqual({ text: 'Updated 14s ago', stale: false });
-    expect(liveLine(0, STALENESS_THRESHOLD_MS)).toEqual({ text: 'Updated 10m ago', stale: false });
-    expect(liveLine(0, 12 * 60_000)).toEqual({ text: 'No activity for 12m', stale: true });
-    expect(liveLine(null, 0)).toBeNull();
-  });
-
-  it('taskEstimate: Est. 40 min and the share used; nothing without a frozen estimate', () => {
-    expect(taskEstimate(40, 0, 10 * 60_000)).toEqual({ text: 'Est. 40 min', frac: 0.25 });
-    expect(taskEstimate(40, 0, 90 * 60_000)!.frac).toBe(1);
-    expect(taskEstimate(120, 0, 0)!.text).toBe('Est. 2 h');
-    expect(taskEstimate(null, 0, 0)).toBeNull();
-    expect(taskEstimate(0, 0, 0)).toBeNull();
+describe('formatCountdown', () => {
+  it('3h 52m, 12m, under 1m', () => {
+    expect(formatCountdown((3 * 60 + 52) * 60_000)).toBe('3h 52m');
+    expect(formatCountdown(12 * 60_000)).toBe('12m');
+    expect(formatCountdown(10_000)).toBe('1m');
+    expect(formatCountdown(0)).toBe('under 1m');
   });
 });

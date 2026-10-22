@@ -134,9 +134,9 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   An initiative MUST be a container above missions with a human-set status, owner and optional target date; progress MUST be missions done over missions, and attention MUST come from its missions.
 - [Insights Shipping Metrics](./insights-shipping-metrics.md) · @max — verified 2026-10-17
   Insights MUST label shipping comparisons with exact rolling spans, count tasks shipped and failed or abandoned inside them, and report waiting as item counts with median and p90.
-- [Mission Feed](./mission-feed.md) · @builder — verified 2026-10-22
+- [Mission Feed](./mission-feed.md) · @builder — verified 2026-09-23
   The mission detail page MUST answer "is this done" before listing tasks, and below md MUST render every deliverable exactly once in one grouped list under a sticky masthead.
-- [Mission Flow Timeline](./mission-flow-timeline.md) · @builder — verified 2026-10-22
+- [Mission Flow Timeline](./mission-flow-timeline.md) · @builder — verified 2026-10-15
   The mission Flow tab MUST draw one row per task in dependency order on one time axis, every gate as an edge lit by the strip's relation rule, and one sentence naming what sets the finish.
 - [Mission Goal Criteria Display](./mission-goal-criteria-display.md) · @max — verified 2026-10-11
   A goal criterion's glyph and its live value MUST come from one evaluation, and a complete count nothing has evaluated reads "not checked", never unmet.

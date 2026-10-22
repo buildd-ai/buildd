@@ -62,36 +62,7 @@ export interface LifecycleProps {
   phrase?: string | null;
   /** One short phrase per step (Build, Verify, Deliver), shown under each step's label. */
   notes?: readonly [string, string, string];
-  /**
-   * `line`: `Build ✓  Verify  Deliver` on one line at 320px. No arrows, no
-   * glyph or variant on the current step (the card's status line says it);
-   * only the current step takes colour. Default `track`.
-   */
-  variant?: 'track' | 'line';
   className?: string;
-}
-
-/** A closed, unshipped delivery is not a failure: on the line it reads neutral. */
-const LINE_TONE: Partial<Record<StateKey, StateTone>> = { not_landed: 'q' };
-
-function LifecycleLine({ state, className }: { state: StateKey; className: string }) {
-  const at = STEP_OF[state];
-  const tone = LINE_TONE[state] ?? current(state, Math.max(0, at), undefined).tone;
-  return (
-    <span
-      className={`flex items-center gap-3 whitespace-nowrap font-mono text-meta ${className}`}
-      data-testid="lifecycle"
-      data-variant="line"
-      data-state={state}
-      aria-label={`Lifecycle: ${STATES[state].word}`}
-    >
-      {STEPS.map((name, i) => (
-        at > i ? <span key={name} data-step={name} data-done="true" className="text-text-secondary">{name} ✓</span>
-          : at === i ? <span key={name} data-step={name} aria-current="step" className={`font-semibold ${TONE_TEXT[tone]}`}>{name}</span>
-          : <span key={name} data-step={name} className="text-text-muted">{name}</span>
-      ))}
-    </span>
-  );
 }
 
 /**
@@ -101,8 +72,7 @@ function LifecycleLine({ state, className }: { state: StateKey; className: strin
  * Verify → Deliver track: every surface that shows a delivery's stage draws this.
  * With `notes`, each step also carries its own phrase below the label.
  */
-export default function Lifecycle({ state, repairs, phrase, notes, variant = 'track', className = '' }: LifecycleProps) {
-  if (variant === 'line') return <LifecycleLine state={state} className={className} />;
+export default function Lifecycle({ state, repairs, phrase, notes, className = '' }: LifecycleProps) {
   const at = STEP_OF[state];
   return (
     <span

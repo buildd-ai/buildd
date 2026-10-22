@@ -60,11 +60,11 @@ export function OutcomeSpecLines({ lines }: { lines: readonly OutcomeSpecLine[] 
   return (
     <ul data-testid="mission-outcome-spec" aria-label="Outcome spec" className="flex flex-col gap-1">
       {lines.map(l => (
-        // One line at every width: `Spec r1 · Draft · Passing`; the spec's title is the link's name.
+        // One line at every width: the title truncates, the revision and status never wrap.
         <li key={l.specId} data-testid="mission-outcome-spec-line" className="flex min-w-0 items-baseline gap-x-2 whitespace-nowrap text-body">
-          <a href={l.href} title={l.title} aria-label={`Spec ${l.revision}: ${l.title}`} className="shrink-0 font-medium text-text-primary underline-offset-4 hover:underline">Spec {l.revision}</a>
-          {l.draft && <span className="shrink-0 text-text-muted">· Draft</span>}
-          {l.verdict && <span data-verdict={l.verdict} className={`shrink-0 ${l.verdict === 'Passing' ? 'text-status-success' : 'text-status-error'}`}>· {l.verdict}</span>}
+          <span className="shrink-0 text-text-muted">Spec</span>
+          <a href={l.href} title={l.title} className="min-w-0 truncate font-medium text-text-primary underline-offset-4 hover:underline">{l.title}</a>
+          <span className="shrink-0 font-mono text-meta text-text-muted">{l.revision} · {l.status}</span>
         </li>
       ))}
     </ul>

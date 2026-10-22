@@ -818,15 +818,23 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .state-cell[data-frame="decision"] { box-shadow: inset 0 0 0 1.5px var(--dec-frame); }
   .state-cell[data-frame="heavy"] { box-shadow: inset 0 0 0 2.5px var(--accent); }
 
-  /* The running cell's hatch drifts (strip §3.2b): one 135° stripe period
-     (6px × √2 across) every 2.4s, so it loops without a jump. */
+  /* The mission bar's three looks (spec d25d923d R-4), after every texture so
+     they win: merged solid green, in flight an accent hatch, the rest a dashed
+     outline. A person's move carries an amber dot, a failure a red one. */
+  .state-cell[data-look="merged"] { background: var(--ok-cell); box-shadow: none; border: 0; }
+  .state-cell[data-look="running"] { background: repeating-linear-gradient(135deg, var(--act-hatch) 0 3px, var(--accent-soft) 3px 6px); box-shadow: none; border: 0; }
+  .state-cell[data-look="waiting"] { background: transparent; box-shadow: none; border: 1px dashed var(--faint); }
+  [data-dot="amber"] { background: var(--status-warning); }
+  [data-dot="red"] { background: var(--status-error); }
+  /* The running cell's hatch drifts: one 135° stripe period (6px × √2 across)
+     every 2.4s, so it loops without a jump. */
   .state-cell[data-drift] { animation: cell-drift 2.4s linear infinite; }
 }
 @keyframes cell-drift {
   from { background-position: 0 0; }
   to { background-position: 8.4853px 0; }
 }
-/* Unlayered, so it beats any layered animation: reduced motion keeps the hatch still. */
+/* Unlayered, so it beats any layered animation: reduced motion keeps the hatch, still. */
 @media (prefers-reduced-motion: reduce) {
   .state-cell[data-drift] { animation: none; }
 }

@@ -9,7 +9,6 @@ import { STATES, type StateKey, type StateTone } from '@/components/ui/states';
 import { reasonLine, type StripMark } from '@/components/ui/task-strip';
 import { WAITING_KIND_SPEC, type WaitingKind } from '@buildd/core/waiting-reason';
 import { termFor, termWord } from '@buildd/shared';
-import { STALENESS_THRESHOLD_MS } from './task-presentation';
 import { BOARD_LANDED, type MissionBoardModel } from './mission-board';
 import { isActiveState, isHeldState, stripMarks, stripOrder, stripState, stripTick } from './mission-task-strip';
 
@@ -126,21 +125,34 @@ export function overviewWaitCause(model: Model, id: string): OverviewWaitCause |
   return isHeldState(stripState(model, id)) ? 'tasks' : 'slot';
 }
 
-const WAIT_WORD: Record<OverviewWaitCause, string> = { tasks: 'Waiting on tasks', slot: 'Next in line', hold: 'Waiting', unknown: 'Waiting', closed: 'Closed' };
+const WAIT_WORD: Record<OverviewWaitCause, string> = { tasks: 'Waiting on tasks', slot: 'Next in line', hold: 'Waiting', unknown: 'Waiting', closed: 'Closed without merging' };
 
 /** A cell's wait word. A hold says its cause in the catalog's word (Paused, Usage limit, Budget reached…). */
 function waitWord(model: Model, id: string, wait: OverviewWaitCause): string {
   const kind = model.tasks[id]?.waitingKind;
   return wait === 'hold' && kind ? termFor({ kind: 'waiting', value: kind }).word : WAIT_WORD[wait];
 }
-/**
- * The line beside the strip: `1 of 6 merged`, build tasks only. A cell's own
- * state is named on its card; there is no legend row of states.
- */
-export function overviewMergedLine(layout: OverviewLayout): string {
-  const total = layout.groups.filter(g => g.key !== 'checks').reduce((n, g) => n + g.ids.length, 0);
-  const done = layout.groups.find(g => g.key === 'done')?.ids.length ?? 0;
-  return total === 0 ? 'No tasks' : `${done} of ${total} merged`;
+const WAIT_LEGEND: Record<OverviewWaitCause, string> = { tasks: 'waiting on tasks', slot: 'next in line', hold: 'blocked', unknown: 'not started', closed: 'closed without merging' };
+
+export interface OverviewLegendEntry {
+  key: 'done' | 'active' | OverviewWaitCause | 'checks';
+  count: number;
+  text: string;
+}
+
+/** The counts beside the strip, in words: `5 done`, `2 in progress`, waiting split by cause. */
+export function overviewLegend(model: Model, layout: OverviewLayout): OverviewLegendEntry[] {
+  const ids = (k: OverviewGroupKey) => layout.groups.find(g => g.key === k)?.ids ?? [];
+  const waiting = ids('waiting');
+  const byCause = (c: OverviewWaitCause) => waiting.filter(id => overviewWaitCause(model, id) === c).length;
+  const checks = ids('checks').length;
+  const entries: OverviewLegendEntry[] = [
+    { key: 'done', count: ids('done').length, text: `${ids('done').length} done` },
+    { key: 'active', count: ids('active').length, text: `${ids('active').length} in progress` },
+    ...(['tasks', 'slot', 'hold', 'unknown', 'closed'] as const).map(c => ({ key: c, count: byCause(c), text: `${byCause(c)} ${WAIT_LEGEND[c]}` })),
+    { key: 'checks', count: checks, text: `${checks} ${checks === 1 ? 'check' : 'checks'}` },
+  ];
+  return entries.filter(e => e.count > 0);
 }
 
 /**
@@ -150,8 +162,7 @@ export function overviewMergedLine(layout: OverviewLayout): string {
  */
 export function overviewWaitLine(model: Model, id: string): string | null {
   const cause = overviewWaitCause(model, id);
-  // A closed PR says `Closed` or `Closed → #N` on its status line, never a sentence.
-  if (cause === 'closed') return null;
+  if (cause === 'closed') return 'Closed without merging. The mission cannot finish until it is reopened or replaced.';
   if (cause === 'unknown') return 'Not started, and no reason is recorded.';
   const kind = model.tasks[id]?.waitingKind;
   if (!kind || cause === 'tasks' || cause == null) return null;
@@ -171,9 +182,13 @@ const NEVER_LINE: Partial<Record<WaitingKind, string>> = {
 export function overviewCells(model: Model, order: readonly string[] = stripOrder(model)): TaskStripCell[] {
   return order.map((id, i) => {
     const wait = overviewWaitCause(model, id);
+    // A closed PR someone replaced reads `Closed → #N`; a red PR its R-14 words (`Failed · CI failed`).
     const replacement = wait === 'closed' ? model.tasks[id].replacement ?? null : null;
-    const word = replacement ? `Closed → #${replacement.number}` : wait ? waitWord(model, id, wait) : null;
-    return { id, state: overviewCellState(model, id), tick: stripTick(i), title: model.tasks[id].title, ...(wait ? { wait, word: word! } : {}), ...(replacement ? { replaced: true } : {}) };
+    const status = overviewStatus(model, id);
+    const word = replacement ? `Closed → #${replacement.number}`
+      : wait ? waitWord(model, id, wait)
+      : status.tone === 'bad' && status.cause ? overviewStatusText(status) : null;
+    return { id, state: overviewCellState(model, id), tick: stripTick(i), title: model.tasks[id].title, ...(wait ? { wait } : {}), ...(word ? { word } : {}) };
   });
 }
 
@@ -224,7 +239,7 @@ export function overviewCounts(model: Pick<MissionBoardModel, 'landed' | 'criter
   return parts.join(' · ');
 }
 
-// ── The focus card's status line (mission-feed §Status vocabulary) ────────────
+// ── A task's status in words (spec d25d923d R-14) ─────────────────────────────
 
 /**
  * One status dot, one word, at most one short cause: `Blocked · Waiting on
@@ -237,9 +252,9 @@ export interface OverviewStatus {
   /** The dot's colour family. */
   tone: StateTone;
   cause: string | null;
-  /** Running: when the worker started, for the ticking `Running 12m 04s`. */
+  /** Running: when the worker started, for a ticking elapsed clock. */
   since: number | null;
-  /** Running: its last event, for `Updated 14s ago` / `No activity for 12m`. */
+  /** Running: its last event (`lastEventOf`), for `updated 14s ago`. */
   lastEventAt: number | null;
   /** A failed task waiting out a retry backoff: when the retry starts. */
   retryAt: number | null;
@@ -294,25 +309,6 @@ export function overviewStatus(model: Model, id: string): OverviewStatus {
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
-/** A running clock: `45s`, `12m 04s`, `2h 05m`. */
-export function formatElapsed(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${pad2(s % 60)}s`;
-  return `${Math.floor(m / 60)}h ${pad2(m % 60)}m`;
-}
-
-/** A coarse span: `14s`, `12m`, `2h`, `3d`. */
-export function formatSpan(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  return h < 48 ? `${h}h` : `${Math.floor(h / 24)}d`;
-}
-
 /** A countdown: `3h 52m`, `12m`, `under 1m`. */
 export function formatCountdown(ms: number): string {
   const m = Math.ceil(Math.max(0, ms) / 60_000);
@@ -321,28 +317,12 @@ export function formatCountdown(ms: number): string {
   return `${Math.floor(m / 60)}h ${pad2(m % 60)}m`;
 }
 
-/**
- * A running task's liveness: `Updated 14s ago`, or past the stale-worker
- * threshold (`STALENESS_THRESHOLD_MS`, the rule `isStaleWorker` applies)
- * `No activity for 12m`, in the warning tone. Null with no event to read.
- */
-export function liveLine(lastEventAt: number | null, now: number): { text: string; stale: boolean } | null {
-  if (lastEventAt == null) return null;
-  const quiet = Math.max(0, now - lastEventAt);
-  return quiet > STALENESS_THRESHOLD_MS
-    ? { text: `No activity for ${formatSpan(quiet)}`, stale: true }
-    : { text: `Updated ${formatSpan(quiet)} ago`, stale: false };
+/** `Failed · CI failed`: the word and its one cause. */
+export function overviewStatusText(s: Pick<OverviewStatus, 'word' | 'cause'>): string {
+  return s.cause ? `${s.word} · ${s.cause}` : s.word;
 }
 
-/**
- * A running task's frozen estimate (task-estimates.md: the gated, exact-version
- * rows the Overview already loads): `Est. 40 min` and how much of it has gone,
- * 0..1. Null without an estimate; never a mission date.
- */
-export function taskEstimate(p50Minutes: number | null | undefined, since: number | null, now: number): { text: string; frac: number } | null {
-  if (p50Minutes == null || !(p50Minutes > 0)) return null;
-  const m = Math.round(p50Minutes);
-  const text = m < 90 ? `Est. ${m} min` : `Est. ${Math.round(m / 30) / 2} h`;
-  const frac = since == null ? 0 : Math.min(1, Math.max(0, (now - since) / (p50Minutes * 60_000)));
-  return { text, frac };
+/** A failed task's pending retry: `Retry in 3h 52m`, or null when none waits. */
+export function retryText(s: Pick<OverviewStatus, 'retryAt'>, now: number): string | null {
+  return s.retryAt != null && s.retryAt > now ? `Retry in ${formatCountdown(s.retryAt - now)}` : null;
 }

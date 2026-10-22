@@ -45,17 +45,16 @@ describe('reasonLine (strip R-12)', () => {
   it('names at most two and tails the rest upstream', () => {
     expect(reasonLine('upstream', ['03 Projection', '04 List', '05 Activity'], 5)).toEqual({
       lead: 'After',
-      text: '03 Projection, 04 List (+3 upstream)',
+      text: '03 Projection, 04 List (+3 upstream).',
     });
   });
 
-  it('downstream reads Blocks, a label with no full stop', () => {
-    expect(reasonLine('downstream', ['05', '06'])).toEqual({ lead: 'Blocks', text: '05, 06' });
+  it('downstream reads Unblocks, with no tail when nothing is left', () => {
+    expect(reasonLine('downstream', ['05', '06'])).toEqual({ lead: 'Unblocks', text: '05, 06.' });
   });
 
-  it('downstream names only what it blocks directly: no transitive tail', () => {
-    expect(reasonLine('downstream', ['04', '06'], 3)?.text).toBe('04, 06');
-    expect(reasonLine('downstream', ['08', '13', '14'], 6)?.text).toBe('08, 13 +1');
+  it('tails the rest downstream', () => {
+    expect(reasonLine('downstream', ['08', '13', '14'], 6)?.text).toBe('08, 13 (+4 downstream).');
   });
 
   it('has nothing to say with no names', () => {

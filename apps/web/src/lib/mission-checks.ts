@@ -390,22 +390,12 @@ export function waiverActorEmails(labels: readonly (string | null | undefined)[]
 
 // ── The selected outcome spec, as one line (R-40) ────────────────────────────
 
-export interface OutcomeSpecLine {
-  specId: string;
-  title: string;
-  /** `r1`: the pinned revision. */
-  revision: string;
-  /** The pinned revision is a proposal no person approved yet. */
-  draft: boolean;
-  /** Only once a verdict exists: `Passing` or `Failing`. Never "not checked". */
-  verdict: 'Passing' | 'Failing' | null;
-  href: string;
-}
+export interface OutcomeSpecLine { specId: string; title: string; revision: string; status: string; href: string }
 
 /**
- * One line per selected outcome spec, under the stage rail: `Spec r1 · Draft`,
- * linking to the spec (its title is the link's name), then `Passing` /
- * `Failing` once its Verify row has a verdict. Nothing until then.
+ * One line per selected outcome spec, under the stage rail: its title, the
+ * revision it is pinned to and the same status its Verify row shows. A spec
+ * whose title could not be read still gets its line, named by revision.
  */
 export function outcomeSpecLines(criteria: readonly GoalCriterion[], rows: readonly CheckRow[], titles: Readonly<Record<string, string>>): OutcomeSpecLine[] {
   const out: OutcomeSpecLine[] = [];
@@ -415,9 +405,8 @@ export function outcomeSpecLines(criteria: readonly GoalCriterion[], rows: reado
     out.push({
       specId: c.specId,
       title: titles[c.specId] ?? 'Outcome spec',
-      revision: `r${c.revision}`,
-      draft: !!c.provisional,
-      verdict: row?.status === 'passed' ? 'Passing' : row?.status === 'finding' ? 'Failing' : null,
+      revision: `rev ${c.revision}${c.provisional ? ', proposed' : ''}`,
+      status: row?.state ?? 'not checked',
       href: `/app/specs/${c.specId}`,
     });
   });

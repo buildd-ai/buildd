@@ -71,21 +71,16 @@ export const REASON_MAX_NAMED = 2;
  * The focus card's reason line (spec §5.1, strip R-12): names at most two,
  * frontier first, and tails the rest. `names` is every name in order;
  * `total` is how many tasks the line stands for (defaults to `names.length`).
- * A label, not a sentence: no full stop.
  *
- *   upstream   → { lead: 'After',  text: '03 Projection, 04 List (+2 upstream)' }
- *   downstream → { lead: 'Blocks', text: '05, 06' }
- *
- * Downstream names only what the task blocks directly (`+1` past two); the
- * transitive tail is the tick row's marks, not words.
+ *   upstream   → { lead: 'After',    text: '03 Projection, 04 List (+2 upstream).' }
+ *   downstream → { lead: 'Unblocks', text: '05, 06 (+1 downstream).' }
  */
-export function reasonLine(direction: ReasonDirection, names: readonly string[], total = names.length): { lead: 'After' | 'Blocks'; text: string } | null {
+export function reasonLine(direction: ReasonDirection, names: readonly string[], total = names.length): { lead: 'After' | 'Unblocks'; text: string } | null {
   if (names.length === 0) return null;
   const named = names.slice(0, REASON_MAX_NAMED);
-  if (direction === 'downstream') {
-    const more = names.length - named.length;
-    return { lead: 'Blocks', text: `${named.join(', ')}${more > 0 ? ` +${more}` : ''}` };
-  }
   const rest = Math.max(0, total - named.length);
-  return { lead: 'After', text: `${named.join(', ')}${rest > 0 ? ` (+${rest} upstream)` : ''}` };
+  return {
+    lead: direction === 'upstream' ? 'After' : 'Unblocks',
+    text: `${named.join(', ')}${rest > 0 ? ` (+${rest} ${direction})` : ''}.`,
+  };
 }

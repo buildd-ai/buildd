@@ -4,13 +4,12 @@
  * Mission · Overview: what the mission is doing and what sets its finish.
  *
  * ```
- * 2 of 6 merged
+ * 2 done · 1 in progress · 2 waiting on tasks · 1 next in line
  * [■][■] ┌[▶]┐ [┊][┊][▢]  [◐]   TaskStrip (lg): Done, In progress (outlined),
  *  01 02    03   04 05 06   07    Waiting, then checks (spec f7f67f1a R-1)
  * ┌ 03 of 07 · level 1 of 3 ───┐   FocusCard: the selected task
  * │ Shared delivery projection  │
- * │ Build ✓  Verify  Deliver    │   one line at 320px (once: no second stage grid)
- * │ ● Running 12m 04s · Running unit tests   Updated 14s ago │   status line
+ * │ Build › Verify › Deliver        │   (once: no second stage grid)
  * └─────────────────────────────┘
  * ‹ ›                                           Goal · 1 of 4 criteria
  * ```
@@ -21,8 +20,7 @@
  * goal criteria and the agent counts sit in a right rail beside it.
  */
 import { displayTaskTitle } from '@/lib/task-title';
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
-import { useRouter } from 'next/navigation';
+import { useCallback, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { VisualReviewModel } from '@buildd/shared';
 import Criteria, { type Criterion } from '@/components/ui/Criteria';
 import FocusCard from '@/components/ui/FocusCard';
@@ -30,9 +28,9 @@ import TaskStrip from '@/components/ui/TaskStrip';
 import { MissionStripContext, createMissionStripStore, type MissionStripValue } from '@/components/missions/mission-strip-context';
 import { BOARD_LANDED, boardNeedsYouCount, type MissionBoardModel } from '@/lib/mission-board';
 import { buildEstimate, missionChecks, outcomeSpecLines, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
-import { formatCountdown, formatElapsed, isClosedUnshipped, liveLine, overviewCellState, overviewCells, overviewDefaultSelection, overviewLayout, overviewMergedLine, overviewSelection, overviewStatus, railLines, taskEstimate, type OverviewStatus } from '@/lib/mission-overview';
+import { isClosedUnshipped, overviewCellState, overviewCells, overviewDefaultSelection, overviewLayout, overviewLegend, overviewSelection, overviewWaitLine, railLines, type OverviewLegendEntry } from '@/lib/mission-overview';
 import { stepIndex, stripOrder, stripState } from '@/lib/mission-task-strip';
-import { TONE_TEXT } from '@/components/ui/states';
+import { STATES, type StateKey } from '@/components/ui/states';
 import type { MissionExecutor } from '@/lib/task-actions';
 import { AskBanner, CompletionRecord, PlanningPlaceholder } from './MissionBoard';
 import { useLiveBoard, useNow, type BoardLinkContext } from './MissionBoardParts';
@@ -89,8 +87,7 @@ function OverviewView({
   const order = layout.order;
   const cells = useMemo(() => overviewCells(model, order), [model, order]);
   const groups = useMemo(() => layout.groups.map(g => ({ key: g.key, ids: g.ids, outline: g.key === 'active' })), [layout]);
-  const mergedLine = overviewMergedLine(layout);
-  const estimates = useMemo(() => new Map((planTasks ?? []).map(p => [p.id, p.p50Minutes])), [planTasks]);
+  const legend = useMemo(() => overviewLegend(model, layout), [model, layout]);
   const [store] = useState(createMissionStripStore);
   const stripValue = useMemo<MissionStripValue | null>(() => (order.length > 0 ? { store, taskIds: order } : null), [store, order]);
   const chosen = useSyncExternalStore(store.subscribe, store.getSelected, () => null);
@@ -127,7 +124,7 @@ function OverviewView({
   const stripAndFocus = selectedId && (
     <>
       <TaskStrip cells={cells} groups={groups} selectedId={selectedId} onSelect={select} marks={overviewSelection(model, order, selectedId).marks} label="Mission tasks, done first" />
-      <Focus model={model} order={order} id={selectedId} onSelect={select} link={link} workspaceId={workspaceId} executor={executor} focusReason={stripFocus?.taskId === selectedId ? stripFocus.reason : null} delivery={deliveries?.[selectedId] ?? null} estimateMinutes={estimates.get(selectedId) ?? null} />
+      <Focus model={model} order={order} id={selectedId} onSelect={select} link={link} workspaceId={workspaceId} executor={executor} focusReason={stripFocus?.taskId === selectedId ? stripFocus.reason : null} delivery={deliveries?.[selectedId] ?? null} />
     </>
   );
 
@@ -138,7 +135,7 @@ function OverviewView({
           {handoff && <CheckRail steps={handoff.rail} />}
           {handoff && checksSource && <OutcomeSpecLines lines={outcomeSpecLines(checksSource.criteria, handoff.rows, outcomeSpecTitles ?? {})} />}
           {/* Build counts only: criteria are the header's Verified pill and the rail's list. */}
-          {!handoff?.buildComplete && <p data-testid="overview-counts" className="font-mono text-meta text-text-muted">{mergedLine}</p>}
+          {!handoff?.buildComplete && <Legend entries={legend} />}
           {notice}
           {model.needsYou.filter(id => !model.tasks[id].delivery).map(id => (
             <AskBanner key={id} task={model.tasks[id]} now={now} />
@@ -184,9 +181,39 @@ function OverviewView({
   );
 }
 
+/** Each legend entry's swatch: the same cell fill the strip draws for it. */
+const SWATCH: Record<OverviewLegendEntry['key'], { state: StateKey; wait?: string }> = {
+  done: { state: 'landed' },
+  active: { state: 'running' },
+  tasks: { state: 'blocked', wait: 'tasks' },
+  slot: { state: 'ready', wait: 'slot' },
+  hold: { state: 'ready', wait: 'hold' },
+  unknown: { state: 'ready', wait: 'unknown' },
+  closed: { state: 'not_landed' },
+  checks: { state: 'review' },
+};
+
+function Legend({ entries }: { entries: readonly OverviewLegendEntry[] }) {
+  if (entries.length === 0) return <p data-testid="overview-counts" className="font-mono text-meta text-text-muted">No tasks</p>;
+  return (
+    <p data-testid="overview-counts" className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-meta text-text-muted">
+      {entries.map(e => {
+        const sw = SWATCH[e.key];
+        const s = STATES[sw.state];
+        return (
+          <span key={e.key} data-legend={e.key} className="inline-flex items-center gap-1.5">
+            <span aria-hidden="true" className="state-cell inline-block h-2.5 w-2.5 rounded-sm" data-tone={s.tone} data-pattern={s.pattern} data-frame={s.frame} data-wait={sw.wait} />
+            {e.text}
+          </span>
+        );
+      })}
+    </p>
+  );
+}
+
 const STEP_BTN = 'inline-flex h-11 w-11 items-center justify-center rounded-[var(--radius-card)] border border-border-default text-heading text-text-primary hover:bg-surface-3 md:h-9 md:w-9';
 
-function Focus({ model, order, id, onSelect, link, workspaceId, executor, focusReason, delivery, estimateMinutes }: {
+function Focus({ model, order, id, onSelect, link, workspaceId, executor, focusReason, delivery }: {
   model: MissionBoardModel;
   order: readonly string[];
   id: string;
@@ -196,17 +223,13 @@ function Focus({ model, order, id, onSelect, link, workspaceId, executor, focusR
   executor: MissionExecutor | null;
   focusReason: string | null;
   delivery: TaskDeliveryDetail | null;
-  /** The task's frozen p50 when task-estimates allows showing it (the gated rows the page loads). */
-  estimateMinutes: number | null;
 }) {
   const t = model.tasks[id];
-  const status = overviewStatus(model, id);
   const i = order.indexOf(id);
   const state = overviewCellState(model, id);
   const actionState = stripState(model, id);
   const { reason } = overviewSelection(model, order, id);
-  // Kept for the action zone (its queued note); the card itself says the status line, no Next sentence.
-  const why = state === 'landed' ? null : focusReason ?? stripReason(t, executor);
+  const why = state === 'landed' ? null : focusReason ?? overviewWaitLine(model, id) ?? stripReason(t, executor);
   const tick = String(i + 1).padStart(2, '0');
   const of = `${tick} of ${String(order.length).padStart(2, '0')}`;
   const meta = [of, t.levels > 1 ? `level ${t.level} of ${t.levels}` : null, t.roleName?.toLowerCase() ?? null, t.pr ? `PR #${t.pr.number}` : null].filter(Boolean).join(' · ');
@@ -222,8 +245,7 @@ function Focus({ model, order, id, onSelect, link, workspaceId, executor, focusR
         title={displayTaskTitle(t.title)}
         state={state}
         repairs={delivery?.repairs || undefined}
-        flow="line"
-        status={<FocusStatus status={status} taskId={t.id} prWorkerId={t.prWorkerId ?? null} serverNow={model.now} estimateMinutes={estimateMinutes} />}
+        next={why ?? undefined}
         reason={reason}
         needs={needsYou ?? undefined}
         footer={
@@ -239,138 +261,5 @@ function Focus({ model, order, id, onSelect, link, workspaceId, executor, focusR
         <span className="ml-auto hidden font-mono text-meta text-text-muted md:inline">← → to move between tasks</span>
       </div>
     </div>
-  );
-}
-
-/** Ticks every `ms` while `on`; the server's clock until the first tick. */
-function useTick(serverNow: number, ms: number, on: boolean): number {
-  const [now, setNow] = useState(serverNow);
-  useEffect(() => {
-    if (!on) return;
-    setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), ms);
-    return () => clearInterval(t);
-  }, [ms, on]);
-  return on ? Math.max(now, serverNow) : serverNow;
-}
-
-const DOT = 'inline-block h-2 w-2 shrink-0 rounded-full bg-current';
-
-/**
- * The selected task's status line (mission-feed §Status vocabulary): one dot,
- * one word, one short cause. Running ticks from the worker's start and says
- * when it last did anything; a failed task in backoff says when it retries.
- */
-export function FocusStatus({ status, taskId, prWorkerId, serverNow, estimateMinutes }: {
-  status: OverviewStatus;
-  taskId: string;
-  prWorkerId: string | null;
-  serverNow: number;
-  estimateMinutes: number | null;
-}) {
-  const running = status.since != null;
-  const now = useTick(serverNow, 1000, running || status.retryAt != null);
-  const live = running ? liveLine(status.lastEventAt, now) : null;
-  const est = running ? taskEstimate(estimateMinutes, status.since, now) : null;
-  const word = running ? `${status.word} ${formatElapsed(now - status.since!)}` : status.word;
-  const replacement = status.closed?.replacement ?? null;
-  return (
-    <div data-testid="focus-status" data-word={status.word} className="flex min-w-0 flex-col gap-1.5">
-      <p className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-title">
-        <span aria-hidden="true" className={`${DOT} ${TONE_TEXT[status.tone]}`} />
-        {replacement ? (
-          <a data-testid="focus-status-replacement" href={replacement.url ?? undefined} className="font-medium text-text-primary underline-offset-4 hover:underline">
-            Closed → #{replacement.number}
-          </a>
-        ) : (
-          <span data-testid="focus-status-word" className="font-medium tabular-nums text-text-primary">{word}</span>
-        )}
-        {status.cause && <span data-testid="focus-status-cause" className="min-w-0 truncate text-text-secondary">· {status.cause}</span>}
-        {live && (
-          <span data-testid="focus-status-live" data-stale={live.stale || undefined} className={`ml-auto font-mono text-meta ${live.stale ? TONE_TEXT.dec : 'text-text-muted'}`}>
-            {live.text}
-          </span>
-        )}
-      </p>
-      {est && (
-        <div data-testid="focus-estimate" className="flex items-center gap-2 font-mono text-meta text-text-muted">
-          <span>{est.text}</span>
-          <span aria-hidden="true" className="h-1 min-w-0 max-w-40 flex-1 overflow-hidden rounded-full bg-[var(--line-soft)]">
-            <span className="block h-full rounded-full bg-text-secondary" style={{ width: `${Math.round(est.frac * 100)}%` }} />
-          </span>
-        </div>
-      )}
-      {status.retryAt != null && status.retryAt > now && <RetryRow taskId={taskId} retryAt={status.retryAt} now={now} />}
-      {status.closed && !replacement && prWorkerId && <LinkReplacement workerId={prWorkerId} />}
-    </div>
-  );
-}
-
-/** `Retry in 3h 52m` beside `Retry now`: the backoff's start time, lifted on request. */
-function RetryRow({ taskId, retryAt, now }: { taskId: string; retryAt: number; now: number }) {
-  const router = useRouter();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const retry = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/tasks/${taskId}/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ forceOverride: true }) });
-      if (!res.ok) throw new Error(((await res.json().catch(() => null)) as { error?: string } | null)?.error ?? 'Retry failed');
-      router.refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Retry failed');
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div data-testid="focus-retry" className="flex flex-wrap items-center gap-x-3 gap-y-1">
-      <span className="font-mono text-meta text-text-muted">Retry in {formatCountdown(retryAt - now)}</span>
-      <button type="button" data-testid="focus-retry-now" disabled={busy} onClick={retry} className="btn btn-sm min-h-11 md:min-h-0">Retry now</button>
-      {error && <span role="alert" className="text-meta text-status-error">{error}</span>}
-    </div>
-  );
-}
-
-/** `Link replacement`: name the PR that replaces a closed one. It shows as `Closed → #N`; the supersession still records on merge. */
-function LinkReplacement({ workerId }: { workerId: string }) {
-  const router = useRouter();
-  const [open, setOpen] = useState(false);
-  const [value, setValue] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  if (!open) {
-    return (
-      <div>
-        <button type="button" data-testid="focus-link-replacement" onClick={() => setOpen(true)} className="btn btn-sm min-h-11 md:min-h-0">Link replacement</button>
-      </div>
-    );
-  }
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    const prNumber = Number(value.replace(/^#/, '').trim());
-    if (!Number.isInteger(prNumber) || prNumber <= 0) { setError('Enter a PR number'); return; }
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/workers/${workerId}/replacement`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prNumber }) });
-      if (!res.ok) throw new Error(((await res.json().catch(() => null)) as { error?: string } | null)?.error ?? 'Could not link');
-      setOpen(false);
-      router.refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not link');
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <form data-testid="focus-link-replacement-form" onSubmit={submit} className="flex flex-wrap items-center gap-2">
-      <label className="sr-only" htmlFor={`replacement-${workerId}`}>Replacement PR number</label>
-      <input id={`replacement-${workerId}`} inputMode="numeric" autoFocus placeholder="PR number" value={value} onChange={e => setValue(e.target.value)} className="h-11 w-28 px-2 font-mono text-meta md:h-8" />
-      <button type="submit" disabled={busy} className="btn btn-sm min-h-11 md:min-h-0">Link</button>
-      <button type="button" onClick={() => setOpen(false)} className="btn btn-sm btn-quiet min-h-11 md:min-h-0">Cancel</button>
-      {error && <span role="alert" className="text-meta text-status-error">{error}</span>}
-    </form>
   );
 }
