@@ -55,6 +55,7 @@ import { attemptLine } from '@/lib/workflow/projections';
 import { loadClaimHoldReasons, loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { isMissionAuditTask } from '@buildd/core/surface-audit';
 import { openCriteriaChecks, summarizeVisualReview } from '@/lib/mission-open-checks';
+import { isBuildComplete } from '@/lib/mission-checks';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
@@ -688,7 +689,8 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
     openChecks: openCriteriaChecks(m.goalCriteria, m.goalCriteriaState, {
       branch: m.integrationBranchEnabled ? 'mission-branch' : 'direct',
       prMerged: integrationPr?.state === 'merged',
-      buildComplete: progress !== undefined && progress >= 100,
+      // The one build-complete predicate every surface reads (Navigation R-15).
+      buildComplete: isBuildComplete(counted),
     }),
     missionPrMerged: integrationPr?.state === 'merged',
     openQuestions: missionOpenQuestions(loaded),
