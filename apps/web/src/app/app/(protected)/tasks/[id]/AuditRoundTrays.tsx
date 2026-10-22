@@ -77,6 +77,7 @@ export default function AuditRoundTrays({ visual, layout = 'dialog', columns = '
             onReview={g.deckModel ? (k => setDeck({ round: g.round, startKey: k })) : undefined}
             hideLine={i > 0}
             columns={columns}
+            verifySurface={multi ? `visual-review-round-${g.round}` : undefined}
           />
         </section>
       ))}

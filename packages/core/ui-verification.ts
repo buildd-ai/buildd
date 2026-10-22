@@ -8,6 +8,15 @@ export const UI_VERIFICATION_PROFILE = 'buildd.enterprise' as const;
 export const UI_VERIFICATION_PROFILE_VERSION = 1;
 export const UI_VERIFIER_IDS = ['ui.actions_match_state', 'ui.card_clarity'] as const;
 export type UiVerifierId = (typeof UI_VERIFIER_IDS)[number];
+/**
+ * What an action does, as its owning component declares it (`data-verify-action`), never read off its label.
+ * `dismiss_replacement` rejects a suggested replacement without resolving the closure; `view_detail` only opens
+ * something to look at; `answer_question` answers a parked worker; `cancel` closes a form; `other` is undeclared.
+ */
+export const UI_SURFACE_OPERATIONS = [
+  'merge_pr', 'confirm_replacement', 'dismiss_replacement', 'resolve_pr_closure', 'retry_visual_review', 'skip_visual_review',
+  'turn_off_visual_review', 'answer_question', 'view_detail', 'cancel', 'other',
+] as const;
 const bounded = (max: number) => z.string().trim().min(1).max(max);
 const coverage = z.enum(['complete', 'partial', 'absent']);
 const disclosure = z.enum(['visible', 'collapsed']);
@@ -21,7 +30,7 @@ const schema = z.object({
   capture: z.object({ captureId: bounded(160), capturedAt: z.iso.datetime(), snapshotRef: bounded(200), screenshotRef: bounded(200).optional() }).strict(),
   visible: z.object({
     blocks: z.array(z.object({ id: bounded(80), role: z.enum(['heading', 'status', 'body', 'label', 'hint']), text: bounded(1000), order: z.number().int().min(0).max(1000), disclosure }).strict()).max(32),
-    actions: z.array(z.object({ id: bounded(80), label: bounded(120), operation: z.enum(['merge_pr', 'confirm_replacement', 'resolve_pr_closure', 'retry_visual_review', 'skip_visual_review', 'other']), enabled: z.boolean(), prominence: z.enum(['primary', 'secondary', 'menu']), disclosure }).strict()).max(16),
+    actions: z.array(z.object({ id: bounded(80), label: bounded(120), operation: z.enum(UI_SURFACE_OPERATIONS), enabled: z.boolean(), prominence: z.enum(['primary', 'secondary', 'menu']), disclosure }).strict()).max(16),
   }).strict(),
   facts: z.object({
     prState: z.enum(['open', 'closed', 'merged', 'unknown']).optional(),
@@ -107,7 +116,7 @@ export function runUiActionStateCheck(evidence: SurfaceEvidence, now = new Date(
   } else if (
     !Object.values(facts).some(v => v !== 'unknown') ||
     (enabled.some(a => a.operation === 'merge_pr') && (!facts.prState || facts.prState === 'unknown')) ||
-    (enabled.some(a => a.operation === 'confirm_replacement' || a.operation === 'resolve_pr_closure') && (!facts.replacementState || facts.replacementState === 'unknown')) ||
+    (enabled.some(a => a.operation === 'confirm_replacement' || a.operation === 'dismiss_replacement' || a.operation === 'resolve_pr_closure') && (!facts.replacementState || facts.replacementState === 'unknown')) ||
     (facts.shownVerificationState && facts.shownVerificationState !== 'unknown' && (!facts.verificationState || facts.verificationState === 'unknown'))
   ) observation = { verdict: 'inconclusive', observed: 'runtime_state_unknown' };
   return runUiSurfaceCheck('ui.actions_match_state', evidence, observation, now);

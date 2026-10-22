@@ -14,6 +14,9 @@
  *
  * Every tap posts to /api/missions/[id]/closed-prs and refreshes the page; a
  * refusal (the suggested PR is no longer merged, say) is shown in place.
+ *
+ * `data-verify-*` declares what each control does for registered UI checks
+ * (scripts/qa/surface-evidence.ts); the surface is the mission situation block (MISSION_SITUATION_SURFACE).
  */
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
@@ -76,15 +79,15 @@ function ClosedPrRow({ missionId, item }: { missionId: string; item: ClosedPrIte
   return (
     <div data-testid="closed-pr-row" className="text-[12px] leading-snug">
       {s ? (
-        <p className="text-text-secondary">
+        <p data-verify-block="body" className="text-text-secondary">
           {prRef} is likely superseded by{' '}
-          <a href={s.prUrl} target="_blank" rel="noopener noreferrer" className="font-mono text-accent-text hover:underline">
+          <a href={s.prUrl} target="_blank" rel="noopener noreferrer" data-verify-action="view_detail" data-verify-prominence="secondary" className="font-mono text-accent-text hover:underline">
             {s.repo}#{s.prNumber}
           </a>
           <span className="text-text-muted"> ({s.why})</span>
         </p>
       ) : (
-        <p className="text-text-secondary">{prRef} closed without merging and nothing says where its work went.</p>
+        <p data-verify-block="body" className="text-text-secondary">{prRef} closed without merging and nothing says where its work went.</p>
       )}
 
       <div className="mt-1.5 flex flex-wrap gap-2">
@@ -93,19 +96,21 @@ function ClosedPrRow({ missionId, item }: { missionId: string; item: ClosedPrIte
             <button
               type="button"
               data-testid="closed-pr-confirm"
+              data-verify-action="confirm_replacement"
+              data-verify-prominence="primary"
               onClick={() => send('confirm')}
               disabled={disabled}
               className="btn btn-primary h-11 md:h-8"
             >
               Confirm #{s.prNumber}
             </button>
-            <button type="button" data-testid="closed-pr-dismiss" onClick={() => send('dismiss')} disabled={disabled} className={secondary}>
+            <button type="button" data-testid="closed-pr-dismiss" data-verify-action="dismiss_replacement" data-verify-prominence="secondary" onClick={() => send('dismiss')} disabled={disabled} className={secondary}>
               Not this
             </button>
           </>
         )}
         {!abandoning && (
-          <button type="button" data-testid="closed-pr-abandon" onClick={() => setAbandoning(true)} disabled={disabled} className={secondary}>
+          <button type="button" data-testid="closed-pr-abandon" data-verify-action="resolve_pr_closure" data-verify-prominence="secondary" onClick={() => setAbandoning(true)} disabled={disabled} className={secondary}>
             Mark abandoned
           </button>
         )}
@@ -126,17 +131,17 @@ function ClosedPrRow({ missionId, item }: { missionId: string; item: ClosedPrIte
             className="min-h-11 md:min-h-0 md:py-1.5 flex-1 border border-border-default bg-surface-2 px-2.5 text-[12px] text-text-primary placeholder:text-text-muted"
           />
           <div className="flex gap-2">
-            <button type="submit" data-testid="closed-pr-abandon-submit" disabled={disabled || !reason.trim()} className={secondary}>
+            <button type="submit" data-testid="closed-pr-abandon-submit" data-verify-action="resolve_pr_closure" data-verify-prominence="secondary" disabled={disabled || !reason.trim()} className={secondary}>
               Mark abandoned
             </button>
-            <button type="button" onClick={() => { setAbandoning(false); setReason(''); }} disabled={disabled} className={secondary}>
+            <button type="button" data-verify-action="cancel" data-verify-prominence="secondary" onClick={() => { setAbandoning(false); setReason(''); }} disabled={disabled} className={secondary}>
               Cancel
             </button>
           </div>
         </form>
       )}
 
-      {error && <p role="alert" className="mt-1 text-status-error">{error}</p>}
+      {error && <p role="alert" data-verify-block="status" className="mt-1 text-status-error">{error}</p>}
     </div>
   );
 }
