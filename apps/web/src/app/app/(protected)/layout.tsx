@@ -17,7 +17,8 @@ import { peekChatAvailability } from '@/lib/chat-availability';
 import { chatEntryFromAvailability } from '@/components/chat/ChatSetupCard';
 import { ChatEntryProvider, ChatShortcut, type ChatEntryValue } from '@/components/chat/ChatEntry';
 import { KeyHintsProvider } from '@/components/KeyHints';
-import { ChatCanvasProvider } from '@/components/chat/ChatCanvas';
+import { AskDockSlot, ChatCanvasProvider } from '@/components/chat/ChatCanvas';
+import { ASK_DOCK_COOKIE, askDockOpenFromCookie } from '@/lib/chat/canvas-scope';
 
 export default async function ProtectedLayout({
   children,
@@ -61,6 +62,10 @@ export default async function ProtectedLayout({
     }
   }
 
+  // Docked Ask open or collapsed (from 1440px, Navigation R-21): read here so
+  // the first paint already reserves the column, or doesn't.
+  const askDockOpen = askDockOpenFromCookie((await cookies()).get(ASK_DOCK_COOKIE)?.value);
+
   const userInitial = user?.name?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || 'U';
 
   return (
@@ -72,6 +77,7 @@ export default async function ProtectedLayout({
         teamId={chatEntry.teamId}
         workspaces={teamWorkspaces}
         viewerName={user?.name?.trim().split(/\s+/)[0] ?? user?.email?.split('@')[0] ?? null}
+        dockOpen={askDockOpen}
       >
       <ChatShortcut />
       <DisplayTimezoneProvider teamTimezone={teamTimezone}>
@@ -114,6 +120,9 @@ export default async function ProtectedLayout({
                 {children}
               </main>
             </div>
+
+            {/* From 1440px: Ask docked as the shell's third column, so main reflows beside it */}
+            <AskDockSlot />
           </div>
 
           {/* Catch up on resume / reconnect / back-nav, and pull-to-refresh on mobile */}

@@ -40,13 +40,38 @@ export function showsAskButton(pathname: string | null | undefined, chatAvailabl
   return !(pathname === '/app/chat' || pathname.startsWith('/app/chat/'));
 }
 
+/** From this width Ask docks as a column beside the page (Navigation R-21). */
+export const CANVAS_DOCK_MIN_WIDTH = 1440;
+export const CANVAS_DOCK_QUERY = `(min-width: ${CANVAS_DOCK_MIN_WIDTH}px)`;
+export const CANVAS_PEEK_QUERY = '(min-width: 768px)';
+
+export type CanvasPresentation = 'takeover' | 'peek' | 'docked';
+
 /**
  * Below 768px the canvas takes over the screen (a full-height sheet: the page
  * behind is out of reach anyway). From 768px it peeks: a panel anchored right
- * over a flat dim, the page still readable beside it.
+ * over a flat dim, the page still readable beside it. From 1440px it docks: a
+ * column of the shell, no dim, the page reflowing beside it.
  */
-export function canvasPresentation(viewportWidth: number): 'takeover' | 'peek' {
-  return viewportWidth < 768 ? 'takeover' : 'peek';
+export function canvasPresentation(viewportWidth: number): CanvasPresentation {
+  if (viewportWidth < 768) return 'takeover';
+  return viewportWidth < CANVAS_DOCK_MIN_WIDTH ? 'peek' : 'docked';
+}
+
+/**
+ * Whether the docked Ask is open or collapsed, kept in a cookie so the server
+ * layout reserves (or doesn't) the column on first paint: no reflow when the
+ * client takes over.
+ */
+export const ASK_DOCK_COOKIE = 'buildd-ask-dock';
+
+/** Open unless the person collapsed it. */
+export function askDockOpenFromCookie(value: string | null | undefined): boolean {
+  return value !== 'collapsed';
+}
+
+export function askDockCookie(open: boolean): string {
+  return `${ASK_DOCK_COOKIE}=${open ? 'open' : 'collapsed'}; Path=/; Max-Age=31536000; SameSite=Lax`;
 }
 
 /** ⌘K / Ctrl+K toggles the canvas, from anywhere, including a text field. */
