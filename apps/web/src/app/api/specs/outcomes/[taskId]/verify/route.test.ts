@@ -20,7 +20,7 @@ mock.module('@/lib/specs/store', () => ({ reach: async (_caller: unknown, ws: st
 } }));
 const STORE = { name: 'production store' };
 mock.module('@/modules', () => ({ REGISTERED_VERIFICATION: {
-  deps: STORE,
+  deps: async () => STORE,
   head: async (taskId: string) => { calls.push(['head', taskId]); return head; },
   requesterRefusal: async (requester: string, subject: string) => { calls.push(['requester', requester, subject]); return requesterRefusal; },
 } }));

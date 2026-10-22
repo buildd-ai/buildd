@@ -45,6 +45,6 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   }
   const headSha = await REGISTERED_VERIFICATION.head(taskId);
   if (!headSha) return NextResponse.json({ error: 'The current verification head is unavailable' }, { status: 409 });
-  const verification = await dispatchRegisteredVerification({ taskId, headSha, ...(evidenceRef ? { evidenceRef: evidenceRef as string } : {}) }, REGISTERED_VERIFICATION.deps);
+  const verification = await dispatchRegisteredVerification({ taskId, headSha, ...(evidenceRef ? { evidenceRef: evidenceRef as string } : {}) }, await REGISTERED_VERIFICATION.deps());
   return NextResponse.json({ verification });
 }

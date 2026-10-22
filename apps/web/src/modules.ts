@@ -27,7 +27,6 @@ import { MAX_STAGE_MISSION_IDS } from '@/lib/mission-stage';
 import { probeDecisionModel } from '@buildd/core/decision-probe';
 import type { CompletionPolicies } from '@/lib/completion-policy';
 import { visualAuditEvidencePolicy } from '@/lib/visual-audit-evidence-policy';
-import { registeredVerificationDeps, registeredVerificationHead, verificationRequesterRefusal } from '@/lib/specs/registered-verification-store';
 import { loopPolicy } from '@/lib/loop-dispatcher-policy';
 import { releasePolicy } from '@/lib/release-completion-policy';
 import { knowledgeSubscribers } from '@/lib/knowledge-subscribers';
@@ -386,10 +385,12 @@ export const VISUAL_SPEC_VERDICT = recordVisualVerdict;
  * independent [surface audit] uploaded, and resolves the head and who may ask.
  * POST /api/specs/outcomes/[taskId]/verify runs the coordinator with it.
  */
+const registeredStore = () => import('@/lib/specs/registered-verification-store');
 export const REGISTERED_VERIFICATION = {
-  deps: registeredVerificationDeps,
-  head: registeredVerificationHead,
-  requesterRefusal: verificationRequesterRefusal,
+  deps: async () => (await registeredStore()).registeredVerificationDeps,
+  head: async (taskId: string) => (await registeredStore()).registeredVerificationHead(taskId),
+  requesterRefusal: async (requesterTaskId: string, subjectTaskId: string) =>
+    (await registeredStore()).verificationRequesterRefusal(requesterTaskId, subjectTaskId),
 };
 
 /**
