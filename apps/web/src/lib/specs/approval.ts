@@ -12,7 +12,15 @@ import { approvedAttachmentsSql } from './attachment-pins';
 import { after } from 'next/server';
 import type { SpecApprovalRecord, SpecGateResult } from '@buildd/core/db/schema';
 import { users } from '@buildd/core/db/schema';
-import { notifyApprovalRequested } from './approval-notify';
+
+/** What a request tells the approver: the confirm page's address and the gate's verdict. */
+export interface ApprovalRequestedNotice {
+  workspaceId: string;
+  title: string;
+  revision: number;
+  confirmUrl: string;
+  gate: SpecGateResult;
+}
 
 /**
  * Living Specs approval (G2, decision D-4): a person decides that one revision
@@ -41,8 +49,11 @@ import { notifyApprovalRequested } from './approval-notify';
  * embedding call, so it runs after the response (`after()`), never while a
  * person waits on the Approve button. Overridable for tests.
  */
-export const specApprovalDeps: { afterResponse: (task: () => Promise<unknown>) => void; notify: typeof notifyApprovalRequested } = {
-  notify: notifyApprovalRequested,
+export const specApprovalDeps: { afterResponse: (task: () => Promise<unknown>) => void; notify: (n: ApprovalRequestedNotice) => Promise<void> } = {
+  notify: n => emit({
+    type: 'spec.approval_requested', workspaceId: n.workspaceId, title: n.title, revision: n.revision,
+    confirmUrl: n.confirmUrl, warnings: n.gate.warnings.length,
+  }),
   afterResponse: task => {
     const run = () => task().catch(() => {});
     // Outside a request (a script, a test) there is no response to wait for.

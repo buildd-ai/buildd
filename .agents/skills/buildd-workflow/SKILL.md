@@ -1,0 +1,392 @@
+---
+name: buildd-workflow
+description: "Workflow skill that helps agents work effectively in buildd. Enforces disciplined development — TDD, quality gates, proper planning, progress reporting, and no shortcuts."
+author: buildd
+---
+
+# Buildd Workflow Skill
+
+Enforced workflow for agents working in buildd. Not suggestions — process.
+
+## When to Use This Skill
+
+- Starting work on a buildd task
+- Need a refresher on the claim → work → ship lifecycle
+- Unsure about quality gates, TDD enforcement, or escalation rules
+
+## Task Lifecycle
+
+```
+claim → understand → plan → implement (TDD) → verify → PR → document → complete
+```
+
+---
+
+## Step 1: Claim a Task
+
+```
+buildd action=claim_task
+```
+
+You'll receive:
+- **Worker ID** — your identity for all subsequent calls
+- **Branch name** — the git branch to work on
+- **Task description** — what to build/fix
+- **Relevant memories** — prior context from workspace knowledge base
+- **Open PRs** — concurrent work by other agents (avoid conflicting files)
+
+Save the worker ID. You need it for every subsequent call.
+
+### Organizing a mission you run locally
+
+If you are working a mission's tasks from this session (with local subagents)
+instead of dispatching them, set the mission's `executor` to `"local"`
+(`manage_missions` action=create/update). Runners then leave its tasks alone;
+claim each one explicitly with `claim_task params={ taskId }`, ship it, and
+finish it with `complete_task`. Do not hold the mission (`startMode: "held"`)
+to keep runners off: held is a pause, it refuses your own claims too, and it
+leaves tasks with no worker, PR link or cost.
+
+## Step 2: Understand Before Acting
+
+**Gate: Do not write any code until you understand the problem and the codebase.**
+
+1. Read the task description fully
+2. Search workspace memory for relevant context:
+   ```
+   recall query="relevant topic" scope=["memory","task"]
+   ```
+3. Read every file you plan to modify
+4. Read related tests
+5. Check how similar features are implemented
+6. If Open PRs were returned, check which files they touch
+
+Report understanding:
+```
+buildd action=update_progress params={ "progress": 10, "message": "Reviewed codebase, identified files to change" }
+```
+
+## Step 3: Plan the Work
+
+**Gate: Have a concrete plan before writing code.**
+
+For anything beyond a trivial fix, create a plan listing:
+- Each file to modify and the change in that file
+- The test that validates each change
+- The verification command to run
+
+For tasks with `planRequired: true`, submit formally:
+```
+buildd action=update_progress params={
+  "plan": "## Changes\n1. `packages/core/db/schema.ts` — add column X\n2. `apps/web/src/app/api/tasks/route.ts` — handle new field\n\n## Tests\n- Test 1: verify column migration\n- Test 2: API returns new field\n\n## Verification\n- `bun run build` passes\n- `bun run test` passes (NOT `bun test` — see AGENTS.md)"
+}
+```
+
+**Wait for approval** before writing any code if plan was submitted.
+
+### Adaptive Rigor
+
+Match planning depth to task complexity:
+
+| Task | Workflow |
+|------|----------|
+| Typo / config fix | Direct fix → verify → commit |
+| Single-function change | Mental plan → implement → test → commit |
+| Feature (1-3 files) | Written plan → TDD → review → PR |
+| Multi-file feature | Detailed plan → TDD with subagents → review → PR |
+| Architecture change | Plan → human approval → phased execution → review each phase |
+
+## Step 4: Implement with TDD
+
+**Gate: No production code without a failing test first.**
+
+Follow strict RED-GREEN-REFACTOR:
+
+1. **RED** — Write a failing test that defines the expected behavior
+2. **GREEN** — Write the minimum code to make the test pass
+3. **REFACTOR** — Clean up without changing behavior, tests still pass
+4. Repeat for each change in the plan
+
+```bash
+git checkout <branch-name>
+# Write test first → run it → watch it fail
+# Write implementation → run test → watch it pass
+# Refactor → run test → still passes
+```
+
+Report progress at milestones:
+```
+buildd action=update_progress params={ "progress": 25, "message": "Tests written for new endpoint" }
+buildd action=update_progress params={ "progress": 50, "message": "Core implementation passing tests" }
+```
+
+### When TDD Doesn't Apply
+
+Not everything needs a test-first approach:
+- Config changes, documentation, migrations — verify by running/building instead
+- UI-only changes without logic — visual verification is acceptable
+- But if there's logic, there's a test.
+
+## Step 5: Verify Before Claiming Done
+
+**Gate: No completion claims without fresh verification evidence.**
+
+Before creating a PR, run and confirm:
+
+1. **Tests pass**: Run the full test suite, not just your new tests
+2. **Build succeeds**: `bun run build` (or the relevant build command)
+3. **Types check**: `npx tsc --noEmit` for TypeScript projects
+4. **No regressions**: Verify you haven't broken existing functionality
+
+```
+buildd action=update_progress params={ "progress": 75, "message": "All tests passing, build clean, ready for PR" }
+```
+
+Do NOT skip verification to save time. Run the commands. Read the output. Report what you found.
+
+### If You Are a Retry Attempt
+
+A retry lands with the previous attempt's work already in your worktree. Read
+these context fields before you touch anything:
+
+| Field | Meaning |
+|-------|---------|
+| `failureContext` | What failed last time. Read this first — it usually names the fix. |
+| `baseBranch` / `resumeBranch` | Your worktree is cut from the previous attempt's branch, not from trunk. |
+| `iteration` / `maxIterations` | Which attempt this is, and when to stop. |
+| `verificationCommand` | Run this locally before completing. |
+| `prNumber` | A PR already exists — push to the same branch, it auto-updates. |
+
+Three ways to waste the attempt:
+
+- **Starting from scratch.** Your branch already has the prior work. A rewrite
+  throws away the part that was right and usually reintroduces the bug.
+- **Opening a second PR.** If `prNumber` is set, push to the existing branch.
+- **Fixing broadly instead of narrowly.** `failureContext` points at one thing.
+  A targeted fix is reviewable; a rewrite is not.
+
+Past `maxIterations` — or roughly three attempts at the same failure — stop and
+say the approach looks wrong. That is a more useful report than a fourth patch.
+
+**"It passes locally but fails in CI" is usually not an environment difference.**
+Check first whether your working tree contains something the repo does not: an
+untracked file (note `.Codex/` is gitignored), a generated artifact you never
+committed, or a stale `node_modules`. `git status --short` and
+`git show --stat HEAD` answer it faster than reading CI logs.
+
+## Step 6: Push and Create PR
+
+```bash
+git add -A
+git commit -m "feat: description of changes"
+git push origin <branch-name>
+```
+
+Create the PR through buildd (never `gh pr create`):
+```
+buildd action=create_pr params={
+  "title": "feat: description of changes",
+  "head": "<branch-name>",
+  "lede": "One plain sentence: what changed and why it matters to someone who was not in this task",
+  "body": "## Changes\n- What changed and why\n\n## Testing\n- Tests added/modified\n- Verification commands run and their output"
+}
+```
+
+**PR rules**:
+- Conventional title format: `feat:`, `fix:`, `refactor:`, `ci:`, `docs:`
+- Target `dev` for features, `main` only for hotfixes
+- Keep PRs under 400 lines when possible — split larger changes
+- `lede` is **required** and leads the PR body. One sentence, plain language,
+  for a reader who was not in the task. No file paths, no endpoint names, no
+  symbol names — those go in `body`, below it. Nothing grades what you write;
+  the only way it fails is by being missing, and then no PR is created and you
+  simply call again. The owner reads this on a phone.
+  - BAD: `Widened POST /api/prs/[prNumber]/apply-recommendation to accept an open reviewer_escalated note free-text reason as the dispatch instruction`
+  - GOOD: `An escalation that names a real defect can now dispatch the fix, instead of only offering to merge past it`
+
+## Step 7: Document What You Did
+
+**Gate: No task completion without a summary artifact and relevant memory entries.**
+
+Before calling `complete_task`, capture what you did so future agents and reviewers can understand the work without reading every commit.
+
+### Write a Summary Artifact
+
+Create a summary artifact that captures the key decisions, changes, and gotchas:
+
+```
+buildd action=create_artifact params={
+  "type": "summary",
+  "title": "Summary: <task title>",
+  "content": "## What Changed\n- <file/area>: <what and why>\n\n## Key Decisions\n- <decision>: <reasoning>\n\n## Gotchas / Things to Know\n- <anything surprising or non-obvious>\n\n## Files Changed\n- `path/to/file.ts` — <what changed>\n\n## Testing\n- <what was tested and how>"
+}
+```
+
+The summary should answer: *What changed? Why this approach? What should the next person know?*
+
+### Save Workspace Memories
+
+Save anything you learned that future agents should know — patterns, gotchas, architectural decisions:
+
+```
+learn type="discovery" title="How X works in this codebase" content="Explanation of the pattern, gotcha, or insight" files=["path/to/relevant/file.ts"] tags=["relevant","tags"]
+```
+
+**What to save as memory:**
+- Non-obvious patterns you discovered (type: `pattern`)
+- Gotchas that tripped you up or almost did (type: `gotcha`)
+- Architecture decisions you made or uncovered (type: `architecture`)
+- Discoveries about how something works (type: `discovery`)
+
+**What NOT to save:**
+- Task-specific details (that's what the summary artifact is for)
+- Things already documented in code comments or docs
+- Obvious patterns any agent would find by reading the code
+
+### Skip Conditions
+
+You can skip the summary artifact for:
+- Trivial changes (typo fixes, config tweaks, single-line changes)
+- Failed tasks (the error message in `complete_task` is sufficient)
+
+You should still save memories even for trivial tasks if you discovered something non-obvious.
+
+## Step 8: Complete the Task
+
+```
+buildd action=complete_task params={
+  "summary": "Added X feature. Created migration, updated API, added tests. PR #123."
+}
+```
+
+If the task failed:
+```
+buildd action=complete_task params={
+  "error": "Could not complete because X. Attempted Y but Z blocked progress."
+}
+```
+
+---
+
+## Non-Negotiables
+
+These rules apply to every task regardless of size or urgency:
+
+- **Never commit directly to `main` or `dev`** — use the assigned branch
+- **Never skip tests to save time** — if there's logic, there's a test
+- **Never use `gh pr create`** — buildd can't track PRs it didn't create
+- **Never use `db:push` in production** — use `db:generate` + `db:migrate`
+- **Never claim completion without running verification** — evidence, not promises
+- **Always check progress responses for admin instructions** — they override your plan
+- **Always stop on 409** — your worker was terminated, do not push/commit/PR
+
+## Escalation Rules
+
+Know when to stop and involve a human:
+
+| Trigger | Action |
+|---------|--------|
+| 3+ failed attempts at the same fix | Stop patching. Question the approach. Describe what you tried. |
+| Change affects >3 unrelated subsystems | Present plan for review before executing |
+| Blocked on external dependency or missing access | Report blocker, move to next task if possible |
+| Test suite broken before your changes | Report the pre-existing failure, don't paper over it |
+| Stuck for >2 attempts with no progress | Stop. Describe the problem and what you've tried. Ask for guidance. |
+| DB migration needed | Flag for human review before applying in production |
+
+### Two ways to bring in a human — pick the right one
+
+- **Hard block, no correct path forward** (a required tool/credential/service is
+  genuinely unavailable, an instruction is impossible to satisfy as written, or
+  you cannot proceed without a decision only a human can make): use the
+  **`AskUserQuestion`** tool. This ends your turn cleanly — the task is parked
+  waiting for input, NOT recorded as a failure, does not count against
+  success-rate metrics, and is never auto-retried into the same dead end. The
+  owner is notified and answering resumes the work from where you left off.
+- **The same hard block, from an interactive session** (you claimed the task
+  with `claim_task` from a person's own Codex; no runner manages you):
+  `buildd action=ask_human params={ question, options?, context? }`, then run
+  the reply's `waitCommand` as a Bash command with `run_in_background: true`
+  (plain `sh` + `curl`; costs no turns while waiting). It exits 0 once
+  answered, non-zero with a one-line reason otherwise; on 0 call
+  `buildd action=await_answer params={ waitSeconds: 0 }` to read the answer.
+  Fallback without background commands: loop on `await_answer` (each call
+  waits up to 45 s; on `timedOut: true` call again at once). Don't call
+  `update_progress` while parked (it marks you running): the wait command's
+  polls (or the loop) are the heartbeat, and a session silent for ~5 minutes
+  has its answer sent to a follow-up task. Once answered, resume the `update_progress`
+  cadence. Unanswered, it expires (24 h, 4 h in a mission) and the task fails
+  with no runner retry.
+  The agent plugin refuses `AskUserQuestion` in such a session and points at
+  `ask_human`; also write the question in your reply, and if the person answers
+  by typing at the terminal (which withdraws the buildd question), use that.
+- **Everything else** — uncertainty, permission-seeking, a design choice you're
+  capable of making, "should I do A or B": do **not** ask. Pick the more
+  reasonable option, do the work, and state your reasoning in the summary. If
+  you want to flag a choice for the record without waiting on it, use
+  `buildd action=post_note params={ type: "question", title, defaultChoice: "<what you chose>" }`
+  — this is non-blocking and work continues immediately under the default.
+- Asking `AskUserQuestion` because a task is hard, ambiguous, or you're not
+  sure your approach is right is a misuse of the escalation path — that is
+  exactly the "3+ failed attempts" or "stuck for >2 attempts" row above, not a
+  hard block. Reserve it for cases where no amount of additional thinking
+  produces a path forward.
+
+### A refused tool call is not an instruction to stop
+
+A tool call can come back refused, blocked or cancelled, sometimes with Codex
+Code's own text: "The user doesn't want to take this action right now. STOP
+what you are doing and wait…". That refuses **that one call**. It does not
+mean a person asked you to stop. A worker session has no terminal, so nobody
+is watching live to tell you to carry on, and waiting ends the session with
+nothing shipped. Read the reason if there is one (runner refusals say they come
+from the runner's policy and usually name an alternative). If the call was only
+cancelled, retry it once. Otherwise take another approach or skip the step,
+and finish the task: PR or artifact where required, then `complete_task`. If
+the refusal really leaves no way forward, that is a hard block, so handle it as
+above.
+
+## Anti-Shortcut Guardrails
+
+Thoughts that indicate you're about to take a shortcut:
+
+- "I'll add tests later" — No. Write the test now.
+- "This is too simple to need a test" — If it has logic, it needs a test.
+- "I'll just skip the build check, my changes are small" — Run it anyway.
+- "Let me just fix this quick without reading the existing code" — Read first.
+- "The existing tests are probably fine, I don't need to run them" — Run them.
+- "I can commit to dev directly, it's just a small fix" — Use the branch.
+- "I'll clean this up in a follow-up PR" — Clean it up now.
+
+## Using Workspace Memory
+
+### Search Before You Start
+```
+recall query="relevant topic" scope=["memory","task"]
+```
+
+### Save What You Learn
+```
+learn type="discovery" title="How to handle X in this codebase" content="Explanation of the pattern or solution" tags=["relevant","tags"]
+```
+
+Save: non-obvious patterns, gotchas, architecture decisions. Don't save: task-specific details or things already in docs.
+
+## Avoiding Conflicts with Other Agents
+
+When claim_task returns Open PRs:
+1. Check which files those PRs touch
+2. Rebase on top of the other agent's branch if overlapping
+3. Or coordinate changes to non-overlapping sections
+4. At minimum, note the conflict risk in your PR description
+
+## Quick Reference
+
+| Action | When |
+|--------|------|
+| `buildd action=claim_task` | Start of work |
+| `buildd action=update_progress` | At 10% (understood), 25% (tests written), 50% (implementation), 75% (verified) |
+| `buildd action=create_pr` | After pushing commits |
+| `buildd action=create_artifact` | After PR, before completing — write a summary of what changed and why |
+| `buildd action=complete_task` | After summary artifact is created |
+| `recall scope=["memory","task"]` | Before starting, when stuck |
+| `learn` | After discovering something useful — patterns, gotchas, decisions |
