@@ -36,7 +36,7 @@ import {
   type ScopeCriterion, type ScopePlan, type ScopeProposal, type ScopeResolutionPlan,
 } from '@buildd/workflow-kernel/scope-amendments';
 import type { Decide, Store } from '@buildd/workflow-kernel/ports';
-import { handWrittenCriteriaRefusal, outcomeSpecWriteRefusal } from '@buildd/core/mission-helpers';
+import { handWrittenCriteriaRefusal, outcomeSpecWriteRefusal } from '@buildd/shared';
 import type { Exec } from './kernel';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
