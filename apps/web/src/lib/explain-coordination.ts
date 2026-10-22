@@ -36,6 +36,8 @@ export interface CoordinationHold {
   /** HOLD / START / deterministic_hold for a soft overlap; null when no decision applies. */
   verdict: string | null;
   overlapKind: string | null;
+  /** Set when the holder cannot run soon, so the wait is not "next in line". */
+  holderStall?: HolderStall | null;
 }
 
 export interface CoordinationHolder {
@@ -43,6 +45,39 @@ export interface CoordinationHolder {
   title: string | null;
   status: string;
   pathManifest: string[] | null;
+  /** Why this holder may not run soon; absent when nothing known stops it. */
+  stall?: HolderStall | null;
+}
+
+/** A pending holder that cannot run soon, in the words explain uses. */
+export type HolderStall =
+  | { kind: 'deferred'; until: string }
+  | { kind: 'credential_hold'; label: string | null }
+  | { kind: 'pr_closed_unmerged' };
+
+export function holderStallWords(stall: HolderStall | null | undefined): string | null {
+  if (!stall) return null;
+  if (stall.kind === 'deferred') return `deferred until ${stall.until}`;
+  if (stall.kind === 'credential_hold') return `held for credentials${stall.label ? ` (${stall.label})` : ''}`;
+  return 'its PR closed unmerged';
+}
+
+/** Deferred beyond this, an inferred edge's holder is not "next in line". */
+export const HOLDER_DEFERRED_STALL_MS = 4 * 3_600_000;
+
+export function classifyHolderStall(input: {
+  startAt?: Date | string | null;
+  context?: unknown;
+  prClosedUnmerged?: boolean;
+  now?: number;
+}): HolderStall | null {
+  const ctx = input.context as { credentialHold?: { releasedAt?: string; label?: string } } | null | undefined;
+  const hold = ctx?.credentialHold;
+  if (hold && typeof hold === 'object' && !hold.releasedAt) return { kind: 'credential_hold', label: typeof hold.label === 'string' ? hold.label : null };
+  const at = input.startAt ? new Date(input.startAt).getTime() : NaN;
+  if (Number.isFinite(at) && at - (input.now ?? Date.now()) > HOLDER_DEFERRED_STALL_MS) return { kind: 'deferred', until: new Date(at).toISOString() };
+  if (input.prClosedUnmerged) return { kind: 'pr_closed_unmerged' };
+  return null;
 }
 
 export interface CoordinationGateDetail {
@@ -105,6 +140,7 @@ export function buildCoordinationHolds(input: {
       paths: overlap?.paths ?? [],
       verdict: null,
       overlapKind: overlap && overlap.kind !== 'none' ? overlap.kind : null,
+      ...(inferred.has(id) && h?.stall ? { holderStall: h.stall } : {}),
     });
   }
 
@@ -178,6 +214,8 @@ export function coordinationLink(
     : h.edge === 'inferred_dependency' && h.overlapKind
       ? ` (${h.overlapKind} overlap; waits until it completes and merges)`
       : '';
+  const stall = holderStallWords(h.holderStall);
+  const stallNote = stall ? ` That task cannot run soon (${stall}), so this wait is not "next in line"; it only yields on its next claim check.` : '';
   const more = holds.length > 1 ? ` ${holds.length - 1} more hold(s) listed under coordination.` : '';
   const refs: ExplainRefs = {
     ...(h.holderTaskId ? { taskId: h.holderTaskId } : subject.taskId ? { taskId: subject.taskId } : {}),
@@ -190,7 +228,7 @@ export function coordinationLink(
     : h.edge === 'soft_overlap'
       ? 'tasks.pathDeclaration.softOverlaps + gate_events'
       : 'gate_events.detail';
-  return { claim: `Waiting on ${EDGE_WORDS[h.edge]} ${who}${on}${why}.${more}`, derivedFrom, refs };
+  return { claim: `Waiting on ${EDGE_WORDS[h.edge]} ${who}${on}${why}.${stallNote}${more}`, derivedFrom, refs };
 }
 
 /** The words explain and top's Queue both use for a START past an overlap. */
