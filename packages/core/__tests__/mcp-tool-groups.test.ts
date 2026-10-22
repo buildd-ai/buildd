@@ -153,7 +153,7 @@ describe('typed params', () => {
 
   it('missions: the fields a mission question needs, typed', () => {
     const p = props('missions', actionsOfGroup('missions'));
-    for (const n of ['action', 'missionId', 'missionTitle', 'title', 'query', 'workspaceId', 'status', 'priority', 'awaitingOnly', 'goalCriteria']) {
+    for (const n of ['action', 'missionId', 'missionTitle', 'title', 'query', 'workspaceId', 'status', 'priority', 'awaitingOnly', 'outcomeSpec']) {
       expect(p[n], n).toBeDefined();
     }
     expect(p.autoSurfaceAudit?.type).toBe('boolean');
@@ -162,9 +162,10 @@ describe('typed params', () => {
     expect(p.awaitingOnly?.type).toBe('boolean');
     expect(p.priority?.type).toBe('number');
     expect(p.startMode?.enum).toEqual(['armed', 'held']);
-    expect(p.goalCriteria?.type).toBe('array');
-    expect(p.goalCriteria?.items?.type).toBe('object');
-    expect(JSON.stringify(p.goalCriteria?.items)).toContain('all_prs_merged');
+    // Living Specs D-44: a mission selects a spec; hand-written criteria are not offered.
+    expect(p.goalCriteria).toBeUndefined();
+    expect(p.outcomeSpec?.type).toBe('object');
+    expect(p.outcomeSpec!.description).toContain('specId');
     for (const sub of ['list', 'get', 'update', 'create', 'arm', 'evaluate']) expect(p.action.description).toContain(sub);
     // Q2: get_visual_review with only a workspace lists what waits on you.
     expect(p.workspaceId.description).toMatch(/get_visual_review/);

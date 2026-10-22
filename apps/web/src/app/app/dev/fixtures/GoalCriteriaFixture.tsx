@@ -31,16 +31,12 @@ const STALE_STATE: GoalCriteriaState = {
 
 const PANELS: Array<{ title: string; props: Parameters<typeof MissionGoalCriteria>[0] }> = [
   {
-    title: 'Only an AI-judged goal, mission has PRs',
-    props: { missionId: 'fixture-1', criteria: [PROSE], criteriaState: null, autoVerify: true, missionPrCount: 4 },
-  },
-  {
-    title: 'Only an AI-judged goal, nothing to infer from',
-    props: { missionId: 'fixture-2', criteria: [PROSE], criteriaState: null, autoVerify: true, missionPrCount: 0 },
+    title: 'Only an AI-judged goal',
+    props: { missionId: 'fixture-2', criteria: [PROSE], criteriaState: null, autoVerify: true },
   },
   {
     title: 'Automatic checks and an AI-judged goal',
-    props: { missionId: 'fixture-3', criteria: [RELABELLED, { type: 'no_open_tasks' }, PROSE], criteriaState: STALE_STATE, autoVerify: true, missionPrCount: 4 },
+    props: { missionId: 'fixture-3', criteria: [RELABELLED, { type: 'no_open_tasks' }, PROSE], criteriaState: STALE_STATE, autoVerify: true },
   },
 ];
 

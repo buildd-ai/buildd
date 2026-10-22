@@ -216,12 +216,6 @@ const MISSION_DRAFT = {
   workspaceId: WS.id,
   title: 'Multi-currency invoices',
   description: 'Let customers see, pay, and get receipts for invoices in their own currency.\n\nConstraints:\n- Invoices API changes are additive (v2-safe). FX rate is snapshotted at issue.',
-  goalCriteria: [
-    { type: 'all_prs_merged', label: 'every task PR merged' },
-    { type: 'no_open_tasks', label: 'no open tasks' },
-    { type: 'command', command: 'pnpm test --filter @harborline/money --filter web -- currency', label: 'currency suite green' },
-    { type: 'artifact_exists', key: 'fx-rounding-decision', label: 'rounding policy recorded' },
-  ],
 };
 
 function explore(): ChatMessage[] {

@@ -21,7 +21,7 @@ import {
   reportMissionBranchUnresolved,
 } from '@/lib/mission-integration-branch';
 import { resolveFeedActor, postMissionFeedEvent } from '@/lib/mission-feed';
-import { computeMissionProgress, validateGoalCriteria } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, handWrittenCriteriaRefusal, validateGoalCriteria } from '@buildd/core/mission-helpers';
 import { parseMergePolicy, findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError } from '@buildd/shared';
 import {
   DEFAULT_HEARTBEAT_CRON,
@@ -33,7 +33,6 @@ import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { getTeamTimezone } from '@/lib/team-timezone';
 import { GATE_SLUGS, fireGateEventForWorkspaceRef, gateCallerOrigin } from '@/lib/gate-ledger';
 import { buildMissionListWhere, missionListOrderBy, parseMissionListSort } from '@/lib/mission-list-query';
-import { withGoalQualityAdvisory } from '@/lib/goal-criteria-quality-shadow';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 import { settleWorkChanges } from '@/lib/settle-work-changes';
 import { noteWorkChanged } from '@/lib/work-changed';
@@ -293,7 +292,9 @@ export async function POST(req: NextRequest) {
     }
 
     if (goalCriteria !== undefined && goalCriteria !== null) {
-      const criteriaError = validateGoalCriteria(goalCriteria);
+      // Living Specs D-44: a new mission holds no hand-written criteria, so it
+      // may not start any. Its completion bar is the spec it selects.
+      const criteriaError = handWrittenCriteriaRefusal(undefined, goalCriteria) ?? validateGoalCriteria(goalCriteria);
       if (criteriaError) {
         // Includes the notMechanizableReason requirement on prose criteria —
         // the gate most likely to be rewriting how people phrase a mission.
@@ -613,23 +614,10 @@ export async function POST(req: NextRequest) {
       ...(nextRunInfo ? { heartbeatInfo: nextRunInfo } : {}),
     };
 
-    // Advisory goal-criteria verdict (docs/specs/mission-goal-criteria-quality.md).
-    // Only once validation passed and the row exists. In shadow mode it runs
-    // after the response and the body is unchanged; it never blocks or rewrites.
-    const responseBody = Array.isArray(goalCriteria) && goalCriteria.length > 0
-      ? await withGoalQualityAdvisory(created, {
-          missionId: mission.id,
-          teamId,
-          workspaceId: resolvedWorkspaceId,
-          criteria: goalCriteria,
-          accountId: apiAccount?.id ?? null,
-          userId: user?.id ?? null,
-          surface: 'POST /api/missions',
-          callerOrigin: gateCaller,
-        })
-      : created;
-
-    return NextResponse.json(responseBody, { status: 201 });
+    // No create-time goal-quality advisory: a new mission cannot carry
+    // hand-written criteria (Living Specs D-44), so there is nothing to grade.
+    // PATCH still grades edits on missions that already carry them.
+    return NextResponse.json(created, { status: 201 });
   } catch (error) {
     console.error('Create mission error:', error);
     return NextResponse.json({ error: 'Failed to create mission' }, { status: 500 });
