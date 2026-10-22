@@ -18,6 +18,8 @@
  * that reports `err.message.split('\n')[0]` reports the same first line.
  */
 import * as childProcess from 'child_process';
+import * as fs from 'fs';
+import { dirname, join, resolve } from 'path';
 import { killProcessTree, posixShell } from './posix-shell';
 
 export interface GitAsyncOptions {
@@ -53,6 +55,38 @@ const KILL_WAIT_MS = 1_000;
 /** Windows: after a killed child exits, how long its pipes get to drain before we settle. */
 const WIN_KILLED_DRAIN_MS = 250;
 
+/**
+ * The `index.lock` of the repository `cwd` is in: `<cwd>/.git/index.lock`, or
+ * for a linked worktree (whose `.git` is a `gitdir:` file) the lock in that
+ * worktree's own git dir. Undefined when no repository is found.
+ */
+export function indexLockPath(cwd: string): string | undefined {
+  let dir = resolve(cwd);
+  for (;;) {
+    const dotGit = join(dir, '.git');
+    try {
+      const st = fs.statSync(dotGit);
+      if (st.isDirectory()) return join(dotGit, 'index.lock');
+      const m = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotGit, 'utf-8'));
+      return m ? join(resolve(dir, m[1]), 'index.lock') : undefined;
+    } catch { /* not here: look in the parent */ }
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/** Identity of a lock file, to tell the one a killed git left from one that was already there. */
+function lockStamp(path: string | undefined): string | undefined {
+  if (!path) return undefined;
+  try {
+    const st = fs.statSync(path);
+    return `${st.ino}:${st.mtimeMs}:${st.birthtimeMs}`;
+  } catch {
+    return undefined;
+  }
+}
+
 /** How a child ended, before it is mapped to a resolve or a reject. */
 interface RawRun {
   status: number | null;
@@ -74,10 +108,17 @@ interface RawRun {
  * `config.lock` on TERM, so the caller's next git finds them gone. A child
  * still there after KILL_GRACE_MS gets SIGKILL, and the call settles after
  * at most KILL_WAIT_MS more even if something still holds the pipes.
+ *
+ * Windows has no TERM: the tree is force-killed and git never drops its
+ * `index.lock`, so the caller's next git (the merge abort) failed on it. There
+ * a killed call removes the lock before settling, unless it is the same file
+ * that was already there when the child started (another git's).
  */
 function spawnSettled(file: string, args: string[], opts: GitAsyncOptions): Promise<RawRun> {
   return new Promise<RawRun>((resolvePromise) => {
     const maxBuffer = opts.maxBuffer ?? DEFAULT_MAX_BUFFER;
+    const lockPath = process.platform === 'win32' ? indexLockPath(opts.cwd) : undefined;
+    const lockBefore = lockStamp(lockPath);
     let child: childProcess.ChildProcess;
     try {
       child = childProcess.spawn(file, args, {
@@ -113,6 +154,12 @@ function spawnSettled(file: string, args: string[], opts: GitAsyncOptions): Prom
       if (settled) return;
       settled = true;
       for (const t of timers) clearTimeout(t);
+      if (killing && lockPath) {
+        const now = lockStamp(lockPath);
+        if (now !== undefined && now !== lockBefore) {
+          try { fs.rmSync(lockPath, { force: true }); } catch { /* the next git reports it */ }
+        }
+      }
       resolvePromise({ status, signal, stdout: text(out), stderr: text(errChunks), timedOut, overflow, maxBuffer, ...(error ? { error } : {}) });
     };
     const signalGroup = (sig: NodeJS.Signals) => {

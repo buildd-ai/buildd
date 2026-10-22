@@ -41,6 +41,7 @@ import {
   builddMcpActsAs,
   builddMcpAuthKind,
   ACT_AS_PERSON_SCOPE,
+  claudeProjectKey,
   type InstallContext,
 } from '../../src/agent-plugin-install';
 import { refreshBuilddMcpEntries } from '../../src/claude-json-mcp';
@@ -959,7 +960,7 @@ describe('installer', () => {
     writeFileSync(join(home, '.claude.json'), JSON.stringify({
       theme: 'dark',
       mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: {} }, other: { command: 'x' } },
-      projects: { [ws]: { allowedTools: ['Bash'] }, [wt]: {}, [other]: { mcpServers: { mine: { command: 'y' } } }, [join(home, 'gone')]: {} },
+      projects: { [claudeProjectKey(ws)]: { allowedTools: ['Bash'] }, [claudeProjectKey(wt)]: {}, [claudeProjectKey(other)]: { mcpServers: { mine: { command: 'y' } } }, [join(home, 'gone')]: {} },
     }));
     const l = login(['acme/widget']);
     const r = await runCli(['--global'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
@@ -967,9 +968,9 @@ describe('installer', () => {
 
     const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
     const entry = { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_test' } };
-    expect(cfg.projects[ws]).toEqual({ allowedTools: ['Bash'], mcpServers: { buildd: entry } });
-    expect(cfg.projects[wt].mcpServers.buildd).toEqual(entry);
-    expect(cfg.projects[other].mcpServers).toEqual({ mine: { command: 'y' } });
+    expect(cfg.projects[claudeProjectKey(ws)]).toEqual({ allowedTools: ['Bash'], mcpServers: { buildd: entry } });
+    expect(cfg.projects[claudeProjectKey(wt)].mcpServers.buildd).toEqual(entry);
+    expect(cfg.projects[claudeProjectKey(other)].mcpServers).toEqual({ mine: { command: 'y' } });
     // The old every-session entry is gone; anything else the user had stays.
     expect(cfg.mcpServers).toEqual({ other: { command: 'x' } });
     expect(cfg.theme).toBe('dark');
@@ -991,11 +992,11 @@ describe('installer', () => {
     const own = join(home, 'code', 'self-configured');
     checkout(own, 'other-team/repo');
     writeFileSync(join(own, '.mcp.json'), JSON.stringify({ mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer ${BUILDD_API_KEY}' } } } }));
-    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [own]: {} } }));
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [claudeProjectKey(own)]: {} } }));
     const l = login(['acme/widget']);
     const r = await runCli(['--global', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
     expect(r.lines.join('\n')).toContain('(its own .mcp.json)');
-    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[own]).toEqual({});
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[claudeProjectKey(own)]).toEqual({});
   });
 
   it('--here registers this folder even when it is not a workspace yet; --everywhere keeps the user-wide entry', async () => {
@@ -1005,7 +1006,7 @@ describe('installer', () => {
     const here = await runCli(['--here'], { home, cwd: fresh, ...l });
     expect(here.code).toBe(0);
     expect(here.lines.join('\n')).toContain('registered for this folder, ~/new-idea');
-    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[fresh].mcpServers.buildd.url).toBe('https://b.test/api/mcp');
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[claudeProjectKey(fresh)].mcpServers.buildd.url).toBe('https://b.test/api/mcp');
     expect(existsSync(join(fresh, '.claude'))).toBe(false); // --here touches the MCP entry only
 
     const all = await runCli(['--global', '--everywhere'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
@@ -1024,7 +1025,7 @@ describe('installer', () => {
     // A key entry an earlier install wrote, and a user-wide one: both go.
     writeFileSync(join(home, '.claude.json'), JSON.stringify({
       mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_old' } } },
-      projects: { [ws]: { mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_old' } } } }, [api]: {}, [own]: {} },
+      projects: { [claudeProjectKey(ws)]: { mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_old' } } } }, [claudeProjectKey(api)]: {}, [claudeProjectKey(own)]: {} },
     }));
     const l = login(['acme/widget', 'acme/api', 'acme/own']);
     const r = await runCli(['--global', '--oauth', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
@@ -1035,9 +1036,9 @@ describe('installer', () => {
     expect(raw).not.toContain('Authorization');
     const cfg = JSON.parse(raw);
     // The workspace id comes from the list, matched by repo.
-    expect(cfg.projects[ws].mcpServers.buildd).toEqual({ type: 'http', url: 'https://b.test/api/mcp-oauth/ws-1-acme-widget' });
-    expect(cfg.projects[api].mcpServers.buildd).toEqual({ type: 'http', url: 'https://b.test/api/mcp-oauth/ws-2-acme-api' });
-    expect(cfg.projects[own]).toEqual({});
+    expect(cfg.projects[claudeProjectKey(ws)].mcpServers.buildd).toEqual({ type: 'http', url: 'https://b.test/api/mcp-oauth/ws-1-acme-widget' });
+    expect(cfg.projects[claudeProjectKey(api)].mcpServers.buildd).toEqual({ type: 'http', url: 'https://b.test/api/mcp-oauth/ws-2-acme-api' });
+    expect(cfg.projects[claudeProjectKey(own)]).toEqual({});
     expect(cfg.mcpServers.buildd).toBeUndefined();
 
     const out = r.lines.join('\n');
@@ -1059,8 +1060,8 @@ describe('installer', () => {
     expect(b.code).toBe(0);
     expect(b.lines.join('\n')).toContain('not a workspace yet');
     const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
-    expect(cfg.projects[ws].mcpServers.buildd.url).toBe('https://b.test/api/mcp-oauth/ws-1-acme-widget');
-    expect(cfg.projects[fresh].mcpServers.buildd.headers.Authorization).toBe('Bearer bld_test');
+    expect(cfg.projects[claudeProjectKey(ws)].mcpServers.buildd.url).toBe('https://b.test/api/mcp-oauth/ws-1-acme-widget');
+    expect(cfg.projects[claudeProjectKey(fresh)].mcpServers.buildd.headers.Authorization).toBe('Bearer bld_test');
     expect('error' in parseCliArgs(['--global', '--everywhere', '--oauth'])).toBe(true);
     expect('error' in parseCliArgs(['--oauth'])).toBe(true);
   });
@@ -1071,9 +1072,9 @@ describe('installer', () => {
     writeFileSync(join(home, '.claude.json'), JSON.stringify({
       mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_x' } } },
       projects: {
-        [ws]: { mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp-oauth/ws-1' } } },
-        [api]: { mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_x' } } } },
-        [join(home, 'other')]: { mcpServers: { mine: { command: 'y' } } },
+        [claudeProjectKey(ws)]: { mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp-oauth/ws-1' } } },
+        [claudeProjectKey(api)]: { mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_x' } } } },
+        [claudeProjectKey(join(home, 'other'))]: { mcpServers: { mine: { command: 'y' } } },
       },
     }));
     const offline = (async () => { throw new Error('status must not call the network'); }) as any;
@@ -1115,15 +1116,15 @@ describe('installer', () => {
     const api = join(home, 'code', 'api');
     checkout(ws, 'acme/widget');
     checkout(api, 'acme/api');
-    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [ws]: { mcpServers: { buildd: keyEntry } }, [api]: {} } }));
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [claudeProjectKey(ws)]: { mcpServers: { buildd: keyEntry } }, [claudeProjectKey(api)]: {} } }));
     const l = withCanonical(login(['acme/widget', 'acme/api']));
     const r = await runCli(['--global', '--oauth', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
     expect(r.code).toBe(0);
     const raw = readFileSync(join(home, '.claude.json'), 'utf8');
     expect(raw).not.toContain('bld_');
     const cfg = JSON.parse(raw);
-    expect(cfg.projects[ws].mcpServers.buildd).toEqual(asYou);
-    expect(cfg.projects[api].mcpServers.buildd).toEqual(asYou);
+    expect(cfg.projects[claudeProjectKey(ws)].mcpServers.buildd).toEqual(asYou);
+    expect(cfg.projects[claudeProjectKey(api)].mcpServers.buildd).toEqual(asYou);
     const out = r.lines.join('\n');
     expect(out).toMatch(/~\/code\/widget\s+acme\/widget\s+as you/);
     expect(out).toContain('acts as you');
@@ -1133,12 +1134,12 @@ describe('installer', () => {
   it('--as-agent writes the same connection without the person scope, so it acts as your agent', async () => {
     const ws = join(home, 'code', 'widget');
     checkout(ws, 'acme/widget');
-    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [ws]: {} } }));
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [claudeProjectKey(ws)]: {} } }));
     const l = withCanonical(login(['acme/widget']));
     const r = await runCli(['--global', '--as-agent', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
     expect(r.code).toBe(0);
     const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
-    expect(cfg.projects[ws].mcpServers.buildd).toEqual(asAgent);
+    expect(cfg.projects[claudeProjectKey(ws)].mcpServers.buildd).toEqual(asAgent);
     expect(JSON.stringify(cfg)).not.toContain(ACT_AS_PERSON_SCOPE);
     expect(r.lines.join('\n')).toMatch(/~\/code\/widget\s+acme\/widget\s+as your agent/);
     // --as-agent is an --oauth install, with the same limits.
@@ -1154,7 +1155,7 @@ describe('installer', () => {
     const l = withCanonical(login([]));
     const r = await runCli(['--here', '--oauth'], { home, cwd: fresh, ...l });
     expect(r.code).toBe(0);
-    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[fresh].mcpServers.buildd).toEqual(asYou);
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[claudeProjectKey(fresh)].mcpServers.buildd).toEqual(asYou);
     const out = r.lines.join('\n');
     expect(out).toContain('signing in as you');
     expect(out).not.toContain('not a workspace yet');
@@ -1163,22 +1164,22 @@ describe('installer', () => {
   it('an older server without the one connection keeps the per-workspace OAuth entry, and says who it acts as is decided at sign-in', async () => {
     const ws = join(home, 'code', 'widget');
     checkout(ws, 'acme/widget');
-    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [ws]: {} } }));
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [claudeProjectKey(ws)]: {} } }));
     // `login` answers /api/mcp with 200: no OAuth challenge, so no canonical connection.
     const l = login(['acme/widget']);
     const r = await runCli(['--global', '--oauth', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
     expect(r.code).toBe(0);
-    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[ws].mcpServers.buildd).toEqual({ type: 'http', url: 'https://b.test/api/mcp-oauth/ws-1-acme-widget' });
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[claudeProjectKey(ws)].mcpServers.buildd).toEqual({ type: 'http', url: 'https://b.test/api/mcp-oauth/ws-1-acme-widget' });
     expect(r.lines.join('\n')).toContain("doesn't offer one connection across workspaces yet");
   });
 
   it('a challenge whose metadata names another resource is not the one connection', async () => {
     const ws = join(home, 'code', 'widget');
     checkout(ws, 'acme/widget');
-    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [ws]: {} } }));
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [claudeProjectKey(ws)]: {} } }));
     const l = withCanonical(login(['acme/widget']), { resource: 'https://elsewhere.test/api/mcp' });
     await runCli(['--global', '--oauth', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
-    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[ws].mcpServers.buildd.url).toBe('https://b.test/api/mcp-oauth/ws-1-acme-widget');
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[claudeProjectKey(ws)].mcpServers.buildd.url).toBe('https://b.test/api/mcp-oauth/ws-1-acme-widget');
   });
 
   it('who each entry acts as, read from the entry alone', () => {
@@ -1198,10 +1199,10 @@ describe('installer', () => {
     const legacy = join(home, 'code', 'legacy');
     const keyed = join(home, 'code', 'api');
     writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: {
-      [you]: { mcpServers: { buildd: asYou } },
-      [agent]: { mcpServers: { buildd: asAgent } },
-      [legacy]: { mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp-oauth/ws-1' } } },
-      [keyed]: { mcpServers: { buildd: keyEntry } },
+      [claudeProjectKey(you)]: { mcpServers: { buildd: asYou } },
+      [claudeProjectKey(agent)]: { mcpServers: { buildd: asAgent } },
+      [claudeProjectKey(legacy)]: { mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp-oauth/ws-1' } } },
+      [claudeProjectKey(keyed)]: { mcpServers: { buildd: keyEntry } },
     } }));
     const offline = (async () => { throw new Error('status must not call the network'); }) as any;
     const r = await runCli(['--status', '--global', '--client=claude'], { home, cwd: home, fetchImpl: offline, env: { BUILDD_HOME: join(home, '.buildd') } });
@@ -1249,14 +1250,14 @@ describe('installer', () => {
     const b = join(home, 'code', 'api');
     checkout(a, 'acme/widget');
     checkout(b, 'beta/api');
-    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [a]: {}, [b]: {} } }));
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [claudeProjectKey(a)]: {}, [claudeProjectKey(b)]: {} } }));
     const l = loginTwoTeams(['acme/widget'], [['acme/widget', 'team-a'], ['beta/api', 'team-b']]);
     const r = await runCli(['--global', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
     expect(r.code).toBe(0);
     const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
-    expect(cfg.projects[a].mcpServers.buildd).toEqual(keyEntry);
-    expect(cfg.projects[b].mcpServers.buildd).toEqual(oauthTo('beta/api'));
-    expect(JSON.stringify(cfg.projects[b])).not.toContain('bld_');
+    expect(cfg.projects[claudeProjectKey(a)].mcpServers.buildd).toEqual(keyEntry);
+    expect(cfg.projects[claudeProjectKey(b)].mcpServers.buildd).toEqual(oauthTo('beta/api'));
+    expect(JSON.stringify(cfg.projects[claudeProjectKey(b)])).not.toContain('bld_');
     const out = r.lines.join('\n');
     expect(out).toContain('registered for your workspace folders only (2)');
     expect(out).toMatch(/~\/code\/api\s+beta\/api\s+OAuth: your login key's team can't reach it/);
@@ -1277,19 +1278,19 @@ describe('installer', () => {
     writeFileSync(join(c, '.mcp.json'), own);
     writeFileSync(join(d, '.mcp.json'), own);
     writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: {
-      [b]: { mcpServers: { buildd: keyEntry } },
-      [c]: { allowedTools: ['Bash'], mcpServers: { buildd: keyEntry, mine: { command: 'y' } } },
-      [d]: {},
+      [claudeProjectKey(b)]: { mcpServers: { buildd: keyEntry } },
+      [claudeProjectKey(c)]: { allowedTools: ['Bash'], mcpServers: { buildd: keyEntry, mine: { command: 'y' } } },
+      [claudeProjectKey(d)]: {},
     } }));
     const l = loginTwoTeams(['acme/widget'], [['acme/widget', 'team-a'], ['beta/api', 'team-b'], ['beta/web', 'team-b'], ['beta/docs', 'team-b']]);
     const r = await runCli(['--global', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
     expect(r.code).toBe(0);
     const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
-    expect(cfg.projects[b].mcpServers.buildd).toEqual(oauthTo('beta/api'));
+    expect(cfg.projects[claudeProjectKey(b)].mcpServers.buildd).toEqual(oauthTo('beta/api'));
     // The shadowing local entry is replaced; the folder's other servers and settings stay.
-    expect(cfg.projects[c]).toEqual({ allowedTools: ['Bash'], mcpServers: { buildd: oauthTo('beta/web'), mine: { command: 'y' } } });
+    expect(cfg.projects[claudeProjectKey(c)]).toEqual({ allowedTools: ['Bash'], mcpServers: { buildd: oauthTo('beta/web'), mine: { command: 'y' } } });
     // A folder that relies on its own .mcp.json, with nothing shadowing it, is left alone.
-    expect(cfg.projects[d]).toEqual({});
+    expect(cfg.projects[claudeProjectKey(d)]).toEqual({});
     const out = r.lines.join('\n');
     expect(out).toContain("Switched 2 folders from a key whose team can't reach their workspace to OAuth: ~/code/api, ~/code/web");
     expect(out).toMatch(/~\/code\/docs\s+beta\/docs\s+\(its own \.mcp\.json\)/);
@@ -1301,7 +1302,7 @@ describe('installer', () => {
     const l = loginTwoTeams(['acme/widget'], [['acme/widget', 'team-a'], ['beta/api', 'team-b']]);
     const r = await runCli(['--here'], { home, cwd: b, ...l });
     expect(r.code).toBe(0);
-    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[b].mcpServers.buildd).toEqual(oauthTo('beta/api'));
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[claudeProjectKey(b)].mcpServers.buildd).toEqual(oauthTo('beta/api'));
     expect(r.lines.join('\n')).toContain("signing in with OAuth: your login key's team can't reach this workspace");
   });
 
@@ -1315,7 +1316,7 @@ describe('installer', () => {
     const env = { BUILDD_HOME: join(home, '.buildd') };
     writeWorkspaceCache(env, 'bld_test', ['acme/widget']);
     writeWorkspaceCache(env, PT, ['acme/widget', 'beta/api']);
-    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [a]: { mcpServers: { buildd: keyEntry } }, [b]: { mcpServers: { buildd: keyEntry } } } }));
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [claudeProjectKey(a)]: { mcpServers: { buildd: keyEntry } }, [claudeProjectKey(b)]: { mcpServers: { buildd: keyEntry } } } }));
     const offline = (async () => { throw new Error('status must not call the network'); }) as any;
     const r = await runCli(['--status', '--global', '--client=claude'], { home, cwd: home, fetchImpl: offline, env });
     const out = r.lines.join('\n');
@@ -1327,7 +1328,7 @@ describe('installer', () => {
   it("without a presence token only the login key's team is covered, and install says how to include the rest", async () => {
     const a = join(home, 'code', 'widget');
     checkout(a, 'acme/widget');
-    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [a]: {} } }));
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [claudeProjectKey(a)]: {} } }));
     const l = login(['acme/widget']);
     const r = await runCli(['--global', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
     expect(r.code).toBe(0);
