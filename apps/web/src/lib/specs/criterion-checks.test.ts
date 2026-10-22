@@ -74,3 +74,41 @@ describe('runner checks on the merged mission result', () => {
     expect(missionWrites).toHaveLength(0);
   });
 });
+
+describe('registered verify: bindings on the task path (R-6)', () => {
+  const VERIFY = '  verify: verifier=ui.action-state@1 profile=buildd-ui@1 mode=required evidence=ui.text,ui.actions,ui.state';
+  const pinned = (pin: Record<string, unknown> = {}) => ({ workspaceId: 'ws', missionId: null, creationSource: 'user', context: { specSource: { specId: 'spec', specRevisionId: 'revision', contentHash: 'hash', ...pin } } });
+  const params = (b: any) => (b[1].queryChunks as unknown[]).filter((c): c is string => typeof c === 'string');
+  beforeEach(() => { body = ['AC-1 The card offers one action.', VERIFY, '', 'AC-2 Also works.', '  check: bun run other', ''].join('\n'); });
+
+  it('files a command run and a registered run in one dispatch, the registered one keyed by its binding and asking the verify action', async () => {
+    reads = [[pinned()], [], []];
+    const woke: Array<{ title: string }> = [];
+    expect(await dispatchCriterionChecks({ taskId: SUBJECT, headSha: SHA, headBranch: 'buildd/x' }, { wake: async (t) => { woke.push(t); } })).toEqual({ dispatched: 2 });
+    expect(woke.map((t) => t.title)).toEqual([`Check spec criterion AC-2 at ${SHA.slice(0, 7)}`, `Check spec criterion AC-1 (ui.action-state@1) at ${SHA.slice(0, 7)}`]);
+    const ctx = JSON.parse(params(batches[1]).find((c) => c.includes('specRegisteredCheck'))!);
+    expect(ctx.specRegisteredCheck).toMatchObject({ subjectTaskId: SUBJECT, specRevisionId: 'revision', criterionId: 'AC-1', headSha: SHA, binding: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    // Not a command check: nothing grades its own exit code, and the runner runs no command for it.
+    expect(ctx.specCriterionCheck).toBeUndefined();
+    expect(ctx.verificationCommand).toBeUndefined();
+    expect(params(batches[1]).some((c) => c.includes('"action": "verify"') && c.includes(SUBJECT))).toBe(true);
+  });
+
+  it('a waived or out-of-scope binding is not dispatched', async () => {
+    reads = [[pinned({ waived: [{ criterionId: 'AC-1', reason: 'person waived' }] })], []];
+    expect((await dispatchCriterionChecks({ taskId: SUBJECT, headSha: SHA, headBranch: null }, { wake: async () => {} })).dispatched).toBe(1);
+    expect(params(batches[0]).some((c) => c.includes('specRegisteredCheck'))).toBe(false);
+    batches = [];
+    reads = [[pinned({ criteria: ['AC-2'] })], []];
+    expect((await dispatchCriterionChecks({ taskId: SUBJECT, headSha: SHA, headBranch: null }, { wake: async () => {} })).dispatched).toBe(1);
+    expect(params(batches[0]).some((c) => c.includes('specRegisteredCheck'))).toBe(false);
+  });
+
+  it('a mission final verification files no registered run: it runs those through the coordinator itself', async () => {
+    metadata = {};
+    selected.criteria = ['AC-1'];
+    reads = [[subject()]];
+    expect(await dispatchCriterionChecks({ taskId: SUBJECT, headSha: SHA, headBranch: 'mission/x' }, { wake: async () => {} })).toEqual({ dispatched: 0, reason: 'no criterion this task answers for names a check' });
+    expect(batches).toHaveLength(0);
+  });
+});

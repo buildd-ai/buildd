@@ -16,17 +16,10 @@ mock.module('@/lib/specs/criterion-checks', () => ({
   registerMissionVerdictRecorder: () => {},
 }));
 
-const registered: unknown[] = [];
-mock.module('@/lib/specs/registered-verification-store', () => ({
-  runRegisteredVerificationOnEvent: async (taskId: string, headSha: string | null, source: string) => { registered.push([taskId, headSha, source]); return null; },
-}));
-const nextServer = await import('next/server');
-mock.module('next/server', () => ({ ...nextServer, after: () => { throw new Error('no request scope'); } }));
-
 const { specCheckSubscribers } = await import('./spec-check-subscribers');
 const { emit } = await import('./core-emit');
 
-beforeEach(() => { dispatched.length = 0; handled.length = 0; registered.length = 0; contextRow = { context: { specCriterionCheck: { subjectTaskId: 's' } } }; });
+beforeEach(() => { dispatched.length = 0; handled.length = 0; contextRow = { context: { specCriterionCheck: { subjectTaskId: 's' } } }; });
 
 const worker = { id: 'w1', workspaceId: 'ws1', taskId: 't1' };
 
@@ -57,23 +50,7 @@ describe('specCheckSubscribers', () => {
     expect(handled).toEqual([['v1', { outcome: 'ok' }]]);
   });
 
-  it('R-6: a PR ready or a push also runs the registered checks at that head, through the one coordinator entry', async () => {
-    await emit({ type: 'pr.review_ready', installationId: 1, repoFullName: 'o/r', pr: { number: 2, headRef: 'buildd/x', headSha: SHA, additions: 1, deletions: 0 }, worker }, { subscribers: specCheckSubscribers });
-    await emit({ type: 'pr.review_ready', installationId: 1, repoFullName: 'o/r', pr: { number: 2, headRef: 'buildd/x', additions: 1, deletions: 0 }, worker }, { subscribers: specCheckSubscribers });
-    const pr = { number: 2, headSha: 'c'.repeat(40), htmlUrl: 'u', baseRef: 'dev', body: null, draft: false };
-    const w = { id: 'w1', workspaceId: 'ws1', taskId: 't1' as string | null, branch: 'buildd/x' };
-    await emit({ type: 'pr.synchronized', installationId: 1, repoFullName: 'o/r', pr, worker: w }, { subscribers: specCheckSubscribers });
-    await emit({ type: 'pr.synchronized', installationId: 1, repoFullName: 'o/r', pr: { ...pr, draft: true }, worker: w }, { subscribers: specCheckSubscribers });
-    await emit({ type: 'pr.synchronized', installationId: 1, repoFullName: 'o/r', pr, worker: { ...w, taskId: null } }, { subscribers: specCheckSubscribers });
-    expect(registered).toEqual([
-      ['t1', SHA, 'PR #2 ready'],
-      // No head in the event: the store resolves the task's current head itself.
-      ['t1', null, 'PR #2 ready'],
-      ['t1', 'c'.repeat(40), 'PR #2 push'],
-    ]);
-  });
-
-  it('registered checks are their own steps beside the command checks, so one failing never stops the other', () => {
-    expect(specCheckSubscribers.map(s => s.label)).toEqual(['spec-checks-on-open', 'registered-checks-on-open', 'spec-checks-on-push', 'registered-checks-on-push', 'late-runner-evidence', 'spec-check-outcome']);
+  it('R-6: registered checks have no PR subscriber of their own; the criterion-check dispatch is the one PR ready/push entry', () => {
+    expect(specCheckSubscribers.map(s => s.label)).toEqual(['spec-checks-on-open', 'spec-checks-on-push', 'late-runner-evidence', 'spec-check-outcome']);
   });
 });
