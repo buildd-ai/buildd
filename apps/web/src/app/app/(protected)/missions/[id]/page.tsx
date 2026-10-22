@@ -1039,8 +1039,6 @@ async function MissionDetailBody({
             </p>
             <MissionDecisionSheet
               missionId={id}
-              goalCriteria={goalCriteria}
-              failingCriterionIndex={failingCriterionIndex}
               fileWorkHref={fileWorkHref}
               criteriaUnmet={criteriaUnmet}
               surfaceAudit={surfaceAuditBlocked
@@ -1283,7 +1281,6 @@ async function MissionDetailBody({
       autoVerify={autoVerifyFlag}
       readonly={isTerminal}
       failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
-      missionPrCount={prCount}
       overall={missionCriteriaOverall as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null}
     />
   );
@@ -1296,8 +1293,6 @@ async function MissionDetailBody({
   const completionFailingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
   const completionFailingIndex = completionFailingState ? completionFailingState.index : null;
   const completionDecision = isTerminal ? null : {
-    goalCriteria,
-    failingCriterionIndex: completionFailingIndex,
     fileWorkHref: buildFileWorkHref({
       missionId: id,
       missionTitle: mission.title,
