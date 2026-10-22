@@ -2989,6 +2989,27 @@ describe('POST /api/github/webhook', () => {
       expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
     });
 
+    it('a kernel-owned close carries the webhook sender to the kernel as who closed it', async () => {
+      mockObservePrState.mockImplementationOnce(async () => true);
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w1', workspaceId: 'ws1', taskId: 't1',
+        task: { id: 't1', status: 'pending', workspaceId: 'ws1', title: 'Fix bug', missionId: null },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', releaseConfig: null, gitConfig: { defaultBranch: 'dev' } });
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+
+      const res = await POST(createWebhookRequest('pull_request', {
+        action: 'closed',
+        pull_request: { number: 7, merged: false, draft: false, head: { ref: 'buildd/t1-fix', sha: 'sha-7' }, html_url: 'https://github.com/test-org/test-repo/pull/7' },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+        sender: { login: 'some-human', type: 'User' },
+      }));
+
+      expect(res.status).toBe(200);
+      expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({ source: 'webhook:closed', closedBy: { login: 'some-human', type: 'User' } }), expect.anything());
+    });
+
     it('workflow_dispatch + trigger=every_merge: dispatches configured workflow file', async () => {
       const payload = {
         action: 'closed',

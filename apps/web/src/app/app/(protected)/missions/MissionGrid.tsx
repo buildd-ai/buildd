@@ -4,7 +4,7 @@
  * The Missions portfolio: compact rows read from the shared delivery
  * projection (lib/delivery-projection.ts), several per phone screen.
  * Filtering and counting live in lib/mission-portfolio.ts, the sections
- * (Needs you / In motion / Waiting / Landed, checks pending) and their
+ * (Needs you / In progress / Not started / Landed, checks pending) and their
  * orderings in lib/mission-sections.ts; this file only renders. Each row is
  * the shared MissionRow: title, small task strip, one state line, Next. L1
  * rows on hairlines, no boxes; one column on phones, two from md. Workspace
@@ -233,7 +233,6 @@ function SectionView({ sec, now, showWorkspace }: { sec: MissionSection; now: nu
       <h2 id={`mission-section-${sec.key}`} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <span className={`text-title font-semibold ${sec.key === 'needs' ? 'text-accent-text' : 'text-text-primary'}`}>{sec.label}</span>
         <span data-testid="mission-section-count" className="font-mono text-meta text-text-secondary">{sec.rows.length}</span>
-        <span data-testid="mission-section-order" className="text-meta text-text-muted">{sec.order}</span>
       </h2>
       <div className="mt-1 grid grid-cols-1 gap-x-8 md:grid-cols-2">
         {sec.rows.map(r => <PortfolioRowView key={r.delivery.id} row={r} now={now} showWorkspace={showWorkspace} />)}

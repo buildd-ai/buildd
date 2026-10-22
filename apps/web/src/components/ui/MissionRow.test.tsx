@@ -11,7 +11,8 @@ describe('MissionRow', () => {
     expect(html).toContain('href="/app/missions/x"');
     expect(html).toContain('data-size="sm"');
     expect(html).toContain('In review · 2 of 5 merged · ~4:55 PM');
-    expect(html).toContain('Next');
+    expect(html).toContain('03 lands when CI passes');
+    expect(html).not.toContain('>Next<');
   });
 
   it('a waiting decision leads, and a slip shows only when given', () => {

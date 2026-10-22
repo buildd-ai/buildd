@@ -234,7 +234,7 @@ the platform waits on; every non-terminal state has exactly one.
 | `LANDING` | A merge or branch-refresh attempt for the current head is claimed | landing effect | `LandingRequested` |
 | `ESCALATED` | A person must act; attribute `reason` ∈ `review_escalated`, `review_exhausted`, `review_unavailable` (no valid verdict after the bounded contract retry, or the round's `dispatch_review` went `dead`), `ci_exhausted`, `conflict_exhausted`, `push_undeliverable`, `landing_needs_human`, `effect_dead` (a critical effect went `dead` and no more specific reason fits, §10.3), `policy_human`, `unsafe_to_merge` | human | explicit transitions only |
 | `MERGED` | GitHub confirmed the PR merged (terminal) | none | `PrMerged` |
-| `CLOSED_UNMERGED` | GitHub confirmed the PR closed without merging; attribute `close_cause` (`manual`, `base_deleted`, `superseded_by_policy`, `unknown`) | platform (supersession scan), then human | `PrClosedUnmerged` |
+| `CLOSED_UNMERGED` | GitHub confirmed the PR closed without merging; attribute `close_cause` (`manual`: a person on GitHub; `buildd_close`: a buildd door, from its `pr.close` capability decision; `base_deleted`, `superseded_by_policy`, `unknown`), with the closer (webhook sender, the door's worker/task and reason) on the transition | platform (supersession scan), then human | `PrClosedUnmerged` |
 | `SUPERSEDED` | Closed unmerged, and a verified merged PR carries the work (terminal) | none | `SupersessionRecorded` |
 | `ABANDONED` | Closed unmerged and a human declared the work dropped (terminal) | none | `Abandon` |
 | `FAILED` | The owner task ended terminally failed or cancelled with no PR to carry (terminal for the delivery; a new owner task opens a new delivery or reopens by `DeliveryOpened`); attribute `reason` | none | `AttemptEnded` with no retries left |
@@ -1161,6 +1161,14 @@ Contract:
    (today `onlyIfPresent` leaves interactive-session PRs without any comment).
 7. **One writer of "merged".** The merge routes, the webhook, sweeps and the landing
    path all reach `PrMerged` (T17); the render is the single path from that to text.
+8. **Keep GitHub activity concise.** The activity comment shows current state and a
+   bounded timeline with links to Buildd. It MUST NOT append review-round summaries,
+   finding lists or explanations of GitHub's self-review restrictions. Actionable
+   findings belong in the review submission; detailed rounds, finding dispositions
+   and provenance remain available in Buildd. A required human decision may still
+   show the question and necessary action. The authoritative commit status and
+   merge gates are unchanged. Check:
+   `bun run scripts/run-unit-tests.ts apps/web/src/lib/workflow/pr-activity-render.test.ts`.
 
 **Canonical kinds.** The projection's vocabulary is derived from transitions and
 facts, one per row of `workflow_transitions` plus attributes. It MUST cover, in

@@ -937,7 +937,7 @@ async function MissionDetailBody({
     // records it is the current delivery; a shipped one is named beside it.
     ? <MissionPrLine pr={missionIntegrationPr} />
     : null;
-  const acceptanceTests = testsFromContext(decisionTasks.find(t => Array.isArray((t.context as Record<string, unknown> | null)?.acceptanceTests))?.context as Record<string, unknown> | null);
+  const acceptanceTests = testsFromContext(decisionTasks.find(t => (t.context as Record<string, unknown> | null)?.acceptanceTests != null)?.context as Record<string, unknown> | null);
   const acceptanceBlock = acceptanceTests.length > 0 ? <MissionAcceptanceTests tests={acceptanceTests} /> : null;
   const scopeUpdatesBlock = scopeUpdates.length > 0 ? <MissionScopeUpdates lines={scopeUpdates} /> : null;
 

@@ -8,7 +8,7 @@
  * transport is exercised against a real HTTP server in a child process at the
  * bottom (spawnSync blocks this thread, so the server cannot live in it).
  */
-import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe as bunDescribe, expect, test } from 'bun:test';
 import { execFileSync, spawn, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync } from 'fs';
 import { randomBytes } from 'crypto';
@@ -42,6 +42,10 @@ import { ensureIsolatedClone } from '../../src/workspace';
 import { CLOUD_CLONE_DEPTH, ensureRemoteBranch } from '../../src/git-clone';
 import { makeDeepOrigin, remoteBranches } from '../fixtures/deep-origin';
 import { templateDir } from '../fixtures/template-dir';
+
+// Warm repo runs only in Linux cloud containers: it pipes tar | zstd and takes
+// POSIX clone paths, neither of which a Windows host has.
+const describe = bunDescribe.skipIf(process.platform === 'win32');
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
@@ -1379,7 +1383,8 @@ describe('snapshots never contain credentials', () => {
       createCacheTarball(cacheDir, out);
       const tar = readFileSync(out);
       expect(tar.includes(SECRET)).toBe(false);
-      const list = execFileSync('tar', ['-tf', out], { encoding: 'utf-8' }).split('\n').filter(Boolean);
+      // A bare file name: GNU tar on Windows reads `C:\...` as `host:path`.
+      const list = execFileSync('tar', ['-tf', 'cache.tar'], { cwd: dir, encoding: 'utf-8' }).split('\n').filter(Boolean);
       expect(list.some(l => l.endsWith('is-number@7.0.0/index.js'))).toBe(true);
       expect(list.some(l => /(^|\/)\.(npmrc|env|netrc)/.test(l))).toBe(false);
     } finally {

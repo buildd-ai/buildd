@@ -19,7 +19,7 @@ function fake(init: { tests: AcceptanceTest[]; objected?: boolean; acceptanceSta
     load: async () => state,
     patchContext: async (id, patch) => {
       calls.push(`patch:${id}:${Object.keys(patch).join(',')}`);
-      if ('acceptanceTests' in patch) state.tests = patch.acceptanceTests as AcceptanceTest[];
+      if ('acceptanceTestResults' in patch) state.tests = patch.acceptanceTestResults as AcceptanceTest[];
       if ('acceptanceObjection' in patch) state.objected = patch.acceptanceObjection as boolean;
     },
     completeAcceptanceTask: async (id) => { calls.push(`complete:${id}`); },
@@ -53,7 +53,7 @@ describe('applyBuildingGate', () => {
   test('sendBack: a passing test goes back to the tests task and building does not start', async () => {
     const { store, calls } = fake({ tests: [t('a', 'fail'), t('b', 'pass', 'ok')], acceptanceStatus: 'completed' });
     expect((await applyBuildingGate(store, 'm'))?.decision).toBe('wait');
-    expect(calls).toEqual(['patch:acc:acceptanceSentBack', 'reopen:acc']);
+    expect(calls).toEqual(['hold:b1:acc', 'hold:b2:x|acc', 'patch:acc:acceptanceSentBack', 'reopen:acc']);
   });
 
   test('no acceptance-tests task: nothing to do', async () => {
@@ -66,7 +66,7 @@ describe('recording', () => {
     const { store, calls } = fake({ tests: [t('a', 'fail'), t('b', null)] });
     const out = await recordAcceptanceResults(store, 'm', [t('b', 'fail')]);
     expect(out?.decision).toBe('start');
-    expect(calls).toEqual(['patch:acc:acceptanceTests', 'complete:acc']);
+    expect(calls).toEqual(['patch:acc:acceptanceTestResults', 'complete:acc']);
   });
 
   test('a recorded objection is stored and holds building', async () => {

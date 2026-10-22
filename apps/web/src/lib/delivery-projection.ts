@@ -563,7 +563,7 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
   const repairRounds = deliveries.reduce((n, d) => n + d.repairRounds, 0);
   const inAudit = tasks.filter(t => ['audit', 'repair', 'landing', 'unavailable'].includes(t.delivery.kind)).length;
   const described = kind === 'notlanded' && focus && refreshIds.has(focus.id)
-    ? { evidence: 'The integration branch has not been refreshed from trunk yet.', next: 'The platform retries the refresh' }
+    ? { evidence: 'The integration branch has not been refreshed from trunk yet.', next: 'The branch refreshes from trunk again' }
     : describe(kind, focus, m, repairRounds);
   const evidence = described.evidence;
   const criteriaPending = Math.max(0, input.criteriaPending ?? 0);
@@ -637,7 +637,7 @@ function describe(kind: DeliveryKind, focus: MissionDelivery['tasks'][number] | 
       return { evidence: `An agent is building ${t}.`, next: `${t} opens a PR` };
     case 'needs':
       if (d?.confirmPrNumber != null) return { evidence: `The PR for ${t} closed; #${d.confirmPrNumber} may carry it.`, next: `Confirm #${d.confirmPrNumber} carries it` };
-      return { evidence: `${t} is waiting on a decision.`, next: 'Your answer' };
+      return { evidence: `${t} is waiting on a decision.`, next: 'Waiting for your answer' };
     case 'unavailable':
       return { evidence: `The audit for ${t} could not run.`, next: 'The audit retries on its own' };
     case 'notlanded':
@@ -653,14 +653,14 @@ function describe(kind: DeliveryKind, focus: MissionDelivery['tasks'][number] | 
       return { evidence: `${t} has not started.`, next: d?.waitingOn === 'dependency' ? `After its dependencies land` : 'Next in line for a runner' };
     case 'held':
       return startState(m) === 'paused'
-        ? { evidence: 'Paused.', next: 'You resume it' }
-        : { evidence: 'Not started.', next: 'You start it' };
+        ? { evidence: 'Paused.', next: 'Waiting for you to resume it' }
+        : { evidence: 'Not started.', next: 'Waiting for you to start it' };
     case 'planning':
-      return { evidence: 'No tasks planned yet.', next: 'A plan' };
+      return { evidence: 'No tasks planned yet.', next: 'Waiting for a plan' };
     case 'landed':
-      if (m.status === 'completed') return { evidence: 'Mission complete.', next: 'Release' };
+      if (m.status === 'completed') return { evidence: 'Mission complete.', next: 'Waiting on the release' };
       return m.integrationBranch
-        ? { evidence: 'The mission PR merged to trunk.', next: m.released === false ? 'Release' : 'Mission completes' }
+        ? { evidence: 'The mission PR merged to trunk.', next: m.released === false ? 'Waiting on the release' : 'Mission completes' }
         : { evidence: 'Every task landed.', next: 'Mission completes' };
   }
 }

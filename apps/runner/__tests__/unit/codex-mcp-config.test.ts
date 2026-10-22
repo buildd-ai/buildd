@@ -214,7 +214,8 @@ describe('worktree git metadata is writable', () => {
       bearerTokenEnvVar: 'T', writableRoots: roots,
     });
     const content = fs.readFileSync(join(base, 'config.toml'), 'utf-8');
-    expect(content).toContain(`writable_roots = ["${gitDir}", "${join(base, 'repo', '.git')}"]`);
+    // TOML basic strings escape like JSON (Windows backslashes are doubled).
+    expect(content).toContain(`writable_roots = [${JSON.stringify(gitDir)}, ${JSON.stringify(join(base, 'repo', '.git'))}]`);
     expect(content.indexOf('writable_roots')).toBeGreaterThan(content.indexOf('[sandbox_workspace_write]'));
   });
 

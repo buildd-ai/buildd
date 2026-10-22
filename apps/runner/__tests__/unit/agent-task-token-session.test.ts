@@ -16,6 +16,7 @@ import type { LocalUIConfig } from '../../src/types';
 import * as realBackends from '../../src/backends/index.js';
 import * as realSessionLogger from '../../src/session-logger';
 import * as realEvidenceWriter from '../../src/evidence-writer';
+import * as realSecureFile from '../../src/secure-file';
 import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 
 const RUNNER_KEY = 'bld_runnerkey_session_abcdefghijklmnop';
@@ -111,6 +112,18 @@ mock.module('fs', () => ({
   statSync: () => ({ size: 0, mtimeMs: 0 }),
   copyFileSync: () => {},
   rmSync: () => {},
+}));
+
+// fs above writes nothing, so on Windows icacls would run on files that don't
+// exist. Make the owner-only ACL step the no-op it already is on POSIX.
+mock.module('../../src/secure-file', () => ({
+  ...realSecureFile,
+  restrictToOwnerAcl: () => false,
+  restrictDirToOwnerOnce: () => false,
+  tryRestrictToOwnerAcl: () => false,
+  writeSecretJsonFile: (filePath: string, data: unknown) => {
+    require('fs').writeFileSync(filePath, JSON.stringify(data, null, 2));
+  },
 }));
 
 /** Every per-worker session log entry (the file write itself is home-gated in tests). */

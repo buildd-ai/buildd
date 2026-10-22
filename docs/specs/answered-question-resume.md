@@ -978,6 +978,58 @@ is already watching and no seat is contended.
 
 ---
 
+## Proposed: admission of an answered session when every slot is busy
+
+**Status: proposal, not approved. Nothing below is implemented or binding until
+a person approves it. Behaviour today is described first, from the code.**
+
+### What happens today
+
+- A parked worker holds no slot (`holdsRunnerSlot` in `apps/runner/src/pause.ts`;
+  `busySlotCount` in `apps/runner/src/workers.ts`). That stays true.
+- On a host runner, an answer reaches `sendMessage`, which restarts a
+  `waiting` worker with no live session and calls `resumeSession` directly. It
+  does **not** consult `maxConcurrent` or `busySlotCount`. So when unrelated
+  tasks have filled every slot, the answered session does not wait: it starts
+  anyway and the runner runs over its configured concurrency until something
+  finishes. The race is therefore oversubscription, not starvation.
+- Only the claim loop (`claimPendingTasks`) checks slots, and there a
+  slot-paused agent (`slotPauses`, `continueSlotPaused`) is continued before any
+  new claim, oldest first. A parked *question* has no such queue.
+- On a cloud runner, a parked worker has no container. `/respond` dispatches
+  `task.resume`; if the container cannot start for capacity, the supervisor
+  records `start_deferred` and self-schedules a retry. The answer stays queued
+  and `cleanupUnresumedAnswers` is the bound. Whether the retry favours the
+  resume over new claims is not stated anywhere and was not verified.
+
+### Proposed requirements
+
+- **P1 (bounded priority).** An answered parked worker MUST be admitted to the
+  next free compatible slot before any new claim on that runner. Order among
+  answered workers is oldest answer first.
+- **P2 (no preemption).** Live executions are never stopped to admit it, and a
+  waiting agent is never counted busy or given a reserved slot.
+- **P3 (bounded grace).** A runner MAY hold the resume for a short, configured
+  grace period when full. When the grace ends it falls through to today's
+  behaviour (resume now, over capacity) rather than waiting indefinitely, so a
+  long-running neighbour cannot strand an answer.
+- **P4 (no duplication).** Waiting or falling back never creates a second
+  worker row, a `Continue:` task or a cold attempt; the existing
+  cold-fallback gates alone decide that.
+- **P5 (visible).** While held, the worker's current action says it is waiting
+  for a slot; the grace expiry and the choice made are recorded on the answer
+  delivery record.
+- **P6 (cloud).** A `start_deferred` retry for a `task.resume` MUST be
+  scheduled ahead of new claims, with the same bound.
+
+### Proposed acceptance criteria
+
+Deterministic runner tests (fake clock, no network): one slot, parked
+question, other task takes the slot, answer arrives, slot frees, the same
+session resumes with no new worker or task; several slots with several
+answered workers admitted oldest first; new claims not started while an
+answered worker is queued; grace expiry resumes over capacity exactly once.
+
 ## Out of scope
 
 - **Post-failure retry resume.** Judged by two prior audits and DROPped on

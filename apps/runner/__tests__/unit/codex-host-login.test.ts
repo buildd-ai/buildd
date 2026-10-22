@@ -26,7 +26,7 @@ function machineHome(): { home: string; authPath: string } {
 
 describe('the machine Codex home', () => {
   test('defaults to ~/.codex with no CODEX_HOME', () => {
-    expect(resolveLocalCodexHome({}, '/home/u')).toBe('/home/u/.codex');
+    expect(resolveLocalCodexHome({}, '/home/u')).toBe(join('/home/u', '.codex'));
   });
   test('respects CODEX_HOME when set', () => {
     expect(resolveLocalCodexHome({ CODEX_HOME: '/srv/codex' }, '/home/u')).toBe('/srv/codex');

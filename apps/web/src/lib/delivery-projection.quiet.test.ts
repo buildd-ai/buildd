@@ -15,7 +15,7 @@ describe('quietMissionCauses', () => {
       m({ id: 'a' }),
       m({ id: 'b' }),
       m({ id: 'c', next: 'Visual review unable to run: it needs a runner with a browser', visualOpen: { text: 'Visual review unable to run', hold: 'it needs a runner with a browser' } }),
-      m({ id: 'd', kind: 'planning', next: 'A plan' }),
+      m({ id: 'd', kind: 'planning', next: 'Waiting for a plan' }),
     ]);
     expect(causes).toEqual([
       { cause: 'next in line for a runner', count: 2 },
@@ -44,7 +44,7 @@ describe('quietMissionCauses', () => {
     const causes = quietMissionCauses([
       m({ id: 'a', next: 'After its dependencies land' }),
       m({ id: 'b', next: 'Waiting for your session (none for 33h)' }),
-      m({ id: 'c', kind: 'held', next: 'You start it' }),
+      m({ id: 'c', kind: 'held', next: 'Waiting for you to start it' }),
     ]).map(c => c.cause);
     expect(causes).toEqual(['waiting on earlier work', 'waiting for your session', 'not started']);
   });

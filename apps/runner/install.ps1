@@ -1,10 +1,14 @@
 # buildd runner installer for Windows
-# Usage: irm buildd.dev/install.ps1 | iex
-# With the background service: &([ScriptBlock]::Create((irm buildd.dev/install.ps1))) -Service
+# Usage, from any shell (PowerShell, cmd, Git Bash, Run dialog):
+#   powershell -ExecutionPolicy ByPass -c "irm https://buildd.dev/install.ps1 | iex"
+# Scripted, with the background service and no prompt: set BUILDD_SERVICE=1 in
+# your shell first (PowerShell: $env:BUILDD_SERVICE=1), then run the line above.
+# BUILDD_SERVICE=0 skips the service, also without a prompt.
 
 param(
     # Register the background Scheduled Task non-interactively (for scripted
-    # installs). Without it, an interactive session is asked at the end.
+    # installs; BUILDD_SERVICE=1 does the same where `| iex` cannot pass it).
+    # Without either, an interactive session is asked at the end.
     [switch]$Service
 )
 
@@ -25,6 +29,12 @@ if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
 $InstallDir = "$env:USERPROFILE\.buildd"
 $BinDir = "$env:USERPROFILE\.local\bin"
 
+# What to install. Defaults to dev of the public repo; BUILDD_REF takes a branch
+# or a commit SHA (CI's Windows installer smoke installs the exact commit under
+# test), as install.sh's BUILDD_REF / BUILDD_REPO do.
+$Ref = if ($env:BUILDD_REF) { $env:BUILDD_REF } else { "dev" }
+$Repo = if ($env:BUILDD_REPO) { $env:BUILDD_REPO } else { "buildd-ai/buildd" }
+
 # Clone or update
 if (Test-Path "$InstallDir\.git") {
     Write-Host "Updating existing installation..."
@@ -40,12 +50,13 @@ packages/dispatch-contract/
 packages/spec-contract/
 scripts/stub-server-only.ts
 bunfig.toml
-package.json
+/package.json
+/bun.lock
 "@ | Set-Content ".git\info\sparse-checkout"
 
-    git fetch origin dev
+    git fetch origin $Ref
     git read-tree -mu HEAD
-    git reset --hard origin/dev
+    git reset --hard FETCH_HEAD
     Pop-Location
 } else {
     Write-Host "Cloning buildd (runner only)..."
@@ -55,7 +66,7 @@ package.json
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     Push-Location $InstallDir
     git init
-    git remote add origin https://github.com/buildd-ai/buildd.git
+    git remote add origin "https://github.com/$Repo.git"
     git config core.sparseCheckout true
 
     @"
@@ -67,35 +78,26 @@ packages/dispatch-contract/
 packages/spec-contract/
 scripts/stub-server-only.ts
 bunfig.toml
-package.json
+/package.json
+/bun.lock
 "@ | Set-Content ".git\info\sparse-checkout"
 
-    git fetch --depth 1 origin dev
-    git checkout dev
+    # A branch gets a local branch tracking it, a SHA is detached.
+    git fetch --depth 1 origin $Ref
+    git rev-parse -q --verify "refs/remotes/origin/$Ref" | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        git checkout -B $Ref "origin/$Ref"
+    } else {
+        git checkout --detach FETCH_HEAD
+    }
     Pop-Location
 }
 
-# Point the root package.json at only the sparse-checkout workspaces, as
-# install.sh does: the repo's "apps/*" and "packages/*" name workspaces that
-# are not checked out, so bun install cannot resolve them.
-@'
-{
-  "name": "buildd",
-  "private": true,
-  "workspaces": [
-    "apps/runner",
-    "packages/shared",
-    "packages/core",
-    "packages/ai-kit",
-    "packages/dispatch-contract",
-    "packages/spec-contract"
-  ]
-}
-'@ | Set-Content "$InstallDir\package.json"
-
-# Install dependencies
+# Install dependencies, exactly as the repo's bun.lock pins them, as install.sh
+# does. The root package.json stays the repo's own: a rewritten one drops its
+# "overrides", and bun then refuses the lockfile as changed.
 Push-Location "$InstallDir\apps\runner"
-bun install
+bun install --frozen-lockfile
 Pop-Location
 
 # Create bin directory and launcher
@@ -134,19 +136,34 @@ goto collect
 REM `buildd login` connects this machine to an account, as in the bash launcher.
 if /i "%SUBCMD%"=="login" (
     bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\login.ts" !REST!
-    exit /b
+    exit /b !ERRORLEVEL!
+)
+
+REM `buildd status`, `buildd logout` and `buildd init <workspace-id>` run the same
+REM launcher-commands.ts the bash launcher does; the runner rejects them.
+if /i "%SUBCMD%"=="status" (
+    bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\launcher-commands.ts" status !REST!
+    exit /b !ERRORLEVEL!
+)
+if /i "%SUBCMD%"=="logout" (
+    bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\launcher-commands.ts" logout !REST!
+    exit /b !ERRORLEVEL!
+)
+if /i "%SUBCMD%"=="init" (
+    bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\launcher-commands.ts" init !REST!
+    exit /b !ERRORLEVEL!
 )
 
 REM `buildd install` puts the agent plugin hooks into Claude Code, Codex and Cursor.
 if /i "%SUBCMD%"=="install" (
     bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\agent-plugin-install.ts" !REST!
-    exit /b
+    exit /b !ERRORLEVEL!
 )
 
 REM `buildd service install|uninstall|status|logs` manages the background Scheduled Task.
 if /i "%SUBCMD%"=="service" (
     bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\service.ts" !REST!
-    exit /b
+    exit /b !ERRORLEVEL!
 )
 
 REM Restart loop (exit code 75 = update applied, restart) - mirrors install.sh's
@@ -178,8 +195,11 @@ Write-Host ""
 # non-interactively; otherwise ask when there's an interactive session.
 # `buildd service install` (apps/runner/src/service.ts) owns the task itself.
 $InstallService = $false
-if ($Service) {
+if ($Service -or $env:BUILDD_SERVICE -eq '1') {
     $InstallService = $true
+} elseif ($env:BUILDD_SERVICE -eq '0') {
+    # Scripted install that declines the service: never prompt.
+    $InstallService = $false
 } elseif ([Environment]::UserInteractive) {
     $Answer = Read-Host "Run buildd in the background so it survives closing this terminal and reboots? [Y/n]"
     $InstallService = -not ($Answer -match '^[nN]')
@@ -194,7 +214,7 @@ if ($InstallService) {
         Write-Host "Could not install the background service - run 'buildd service install' to retry, or 'buildd' to run it in the foreground." -ForegroundColor Yellow
     }
 } else {
-    Write-Host "Tip: re-run this installer with -Service to run it in the background." -ForegroundColor Yellow
+    Write-Host "Tip: run 'buildd service install' later to run it in the background." -ForegroundColor Yellow
 }
 
 # The runner is headless unless started with --debug: nothing listens on

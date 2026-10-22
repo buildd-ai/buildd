@@ -5,7 +5,8 @@ name: Installer Smoke
 # empty HOME — then checks `buildd --version` and that a started runner answers
 # /health. Every unit test of install.sh greps its text; none of them ever ran
 # it, which is how a sparse checkout missing a workspace package shipped and
-# broke every new user's install.
+# broke every new user's install. fresh-install-windows does the same for
+# install.ps1 (`irm … | iex`) on windows-latest.
 #
 # Path filter: anything the sparse install tree contains or resolves at runtime.
 
@@ -21,6 +22,8 @@ on:
       - 'packages/spec-contract/**'
       - 'scripts/stub-server-only.ts'
       - 'bunfig.toml'
+      - 'bun.lock'
+      - 'package.json'
       - '.github/workflows/installer-smoke.yml'
   pull_request:
     branches: [dev, main]
@@ -33,6 +36,8 @@ on:
       - 'packages/spec-contract/**'
       - 'scripts/stub-server-only.ts'
       - 'bunfig.toml'
+      - 'bun.lock'
+      - 'package.json'
       - '.github/workflows/installer-smoke.yml'
   workflow_dispatch:
 
@@ -109,3 +114,21 @@ jobs:
           cp apps/runner/scripts/installer-smoke-client.sh /tmp/installer-smoke-client.sh
           chmod 755 /tmp/installer-smoke-client.sh
           su stranger -s /bin/bash -c "BUILDD_REF='$BUILDD_REF' BUILDD_REPO='$BUILDD_REPO' bash /tmp/installer-smoke-client.sh"
+
+  fresh-install-windows:
+    name: Fresh install (windows, install.ps1)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      # The same `irm .../install.ps1 | iex` the docs give, from the commit under
+      # test, then --version, help, status and init through the generated
+      # buildd.cmd: the launcher once rejected status/logout/init as unknown
+      # arguments and only a real Windows machine noticed.
+      - name: Install from this commit and drive buildd.cmd
+        shell: powershell
+        env:
+          BUILDD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+          BUILDD_REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+        run: powershell -NoProfile -ExecutionPolicy ByPass -File apps/runner/scripts/installer-smoke.ps1

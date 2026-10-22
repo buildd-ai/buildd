@@ -145,7 +145,7 @@ async function fileViolation(
     `**Evidence**: ${violation.detail}`,
     `**Breached for**: ~${Math.round(violation.ageMs / 3_600_000)}h`,
     '',
-    `**Remedy**: ${result.remedy}`,
+    `**Remedy**: ${violation.remedy ?? result.remedy}`,
     '',
     'Detected by `POST /api/cron/mission-invariants` — the invariant definition lives in',
     '`apps/web/src/lib/mission-invariants.ts`. If this is a false positive, fix the predicate',

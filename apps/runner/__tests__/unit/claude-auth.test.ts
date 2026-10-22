@@ -70,3 +70,43 @@ describe('buildClaudeCredentialsFile', () => {
     expect(round.claudeAiOauth.expiresAt).toBe(expiry.getTime());
   });
 });
+
+// On Windows mode bits do nothing; the config dir gets an inheritable
+// owner-only DACL and .credentials.json its own, so a credential under an
+// isolation root outside the profile is not readable by other local accounts.
+describe.skipIf(process.platform !== 'win32')('materializeClaudeConfigDir on Windows', () => {
+  test('under an isolation root every user may write, the dir and .credentials.json grant only the owner', async () => {
+    const { mkdtempSync, rmSync, writeFileSync, renameSync } = await import('fs');
+    const { tmpdir } = await import('os');
+    const { join } = await import('path');
+    const { materializeClaudeConfigDir } = await import('../../src/claude-auth');
+    const { expectOwnerOnly, openToAllUsers } = await import('../windows-acl');
+    const root = mkdtempSync(join(tmpdir(), 'claude-auth-acl-'));
+    try {
+      openToAllUsers(root);
+      const { claudeConfigDir } = materializeClaudeConfigDir('w-acl', 'sk-ant-oat01-example', null, { isolationRoot: root, workspaceId: 'ws' });
+      expectOwnerOnly(claudeConfigDir);
+      expectOwnerOnly(join(claudeConfigDir, '.credentials.json'));
+      // The CLI rewriting its credential (temp + rename in the dir) stays owner-only.
+      writeFileSync(join(claudeConfigDir, '.credentials.json.tmp'), '{}');
+      renameSync(join(claudeConfigDir, '.credentials.json.tmp'), join(claudeConfigDir, '.credentials.json'));
+      expectOwnerOnly(join(claudeConfigDir, '.credentials.json'), { inherited: true });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('the temp-dir form: .credentials.json grants only the owner', async () => {
+    const { rmSync } = await import('fs');
+    const { join } = await import('path');
+    const { materializeClaudeConfigDir } = await import('../../src/claude-auth');
+    const { expectOwnerOnly } = await import('../windows-acl');
+    const { claudeConfigDir } = materializeClaudeConfigDir('w-acl-tmp', 'sk-ant-oat01-example', null);
+    try {
+      expectOwnerOnly(claudeConfigDir);
+      expectOwnerOnly(join(claudeConfigDir, '.credentials.json'));
+    } finally {
+      rmSync(claudeConfigDir, { recursive: true, force: true });
+    }
+  });
+});

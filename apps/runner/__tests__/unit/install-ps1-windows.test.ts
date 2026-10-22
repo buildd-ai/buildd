@@ -54,11 +54,19 @@ describe('install.ps1 checks out what install.sh does', () => {
     for (const list of ps1Sparse) expect(list).toEqual(shSparse);
   });
 
-  test('rewrites the root package.json to the same workspaces as install.sh', () => {
-    const shPkg = JSON.parse(installSh.match(/<< 'PKGJSON'\n([\s\S]*?)\nPKGJSON/)?.[1] ?? '{}');
-    const ps1Pkg = JSON.parse(ps1.match(/@'\n(\{[\s\S]*?\})\n'@ \| Set-Content "\$InstallDir\\package\.json"/)?.[1] ?? '{}');
-    expect(shPkg.workspaces?.length).toBeGreaterThan(0);
-    expect(ps1Pkg.workspaces).toEqual(shPkg.workspaces);
+  // CI's Windows installer smoke installs the exact commit under test, as the
+  // Linux one does through install.sh's BUILDD_REF / BUILDD_REPO.
+  test('takes BUILDD_REF and BUILDD_REPO, defaulting to dev of the public repo', () => {
+    expect(ps1).toContain('$Ref = if ($env:BUILDD_REF) { $env:BUILDD_REF } else { "dev" }');
+    expect(ps1).toContain('$Repo = if ($env:BUILDD_REPO) { $env:BUILDD_REPO } else { "buildd-ai/buildd" }');
+    expect(ps1).toContain('git remote add origin "https://github.com/$Repo.git"');
+    expect(ps1).not.toMatch(/git (fetch|reset|checkout)[^\n]*\bdev\b/);
+  });
+
+  test('fetches the ref and checks out what it fetched, so a commit SHA works', () => {
+    expect(ps1.match(/git fetch[^\n]*origin \$Ref/g)?.length).toBe(2);
+    expect(ps1).toContain('git reset --hard FETCH_HEAD');
+    expect(ps1).toContain('git checkout --detach FETCH_HEAD');
   });
 });
 
@@ -86,6 +94,31 @@ describe('install.ps1 launcher', () => {
     expect(branch).toContain('apps\\runner\\src\\service.ts" !REST!');
     expect(branch).toContain('exit /b');
     expect(launcher.indexOf('=="service"')).toBeLessThan(launcher.indexOf(':runloop'));
+  });
+
+  // The runner rejects these with "Unknown argument", so a launcher that lets
+  // them fall through to index.ts breaks commands its own help lists.
+  for (const cmd of ['status', 'logout', 'init']) {
+    test(`sends \`buildd ${cmd}\` to launcher-commands.ts, not the runner`, () => {
+      const branch = launcher.match(new RegExp(`if /i "%SUBCMD%"=="${cmd}" \\(([\\s\\S]*?)\\n\\)`))?.[1] ?? '';
+      expect(branch).toContain(`apps\\runner\\src\\launcher-commands.ts" ${cmd} !REST!`);
+      expect(branch).toContain('exit /b');
+      expect(launcher.indexOf(`=="${cmd}"`)).toBeLessThan(launcher.indexOf(':runloop'));
+    });
+
+    test(`install.sh runs the same launcher-commands.ts for \`buildd ${cmd}\``, () => {
+      const branch = installSh.match(new RegExp(`\\n  ${cmd}\\)\\n([\\s\\S]*?)\\n    ;;`))?.[1] ?? '';
+      expect(branch).toContain(`apps/runner/src/launcher-commands.ts" ${cmd} "$@"`);
+    });
+  }
+
+  // A bare `exit /b` inside an if (...) block exits 0, whatever bun returned
+  // (`buildd init` with no id "succeeded"); %ERRORLEVEL% there is expanded
+  // before bun runs. The bash launcher's exec passes the code through.
+  test("every subcommand branch exits with bun's exit code", () => {
+    const branchExits = launcher.slice(0, launcher.indexOf(':runloop')).match(/^\s*exit \/b.*$/gm) ?? [];
+    expect(branchExits.length).toBeGreaterThan(0);
+    for (const e of branchExits) expect(e.trim()).toBe('exit /b !ERRORLEVEL!');
   });
 
   // `set "PROJECTS_ROOT=!ROOTS!"` without delayed expansion set the literal text !ROOTS!.

@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { AgentBackend, RunStreamedOpts, BackendEvent } from './types.js';
-import { isolationReasonText, isolationRemediation, type BackendConfinement } from '@buildd/shared';
+import { isolationReasonText, isolationRemediation, type BackendConfinement, type RunnerHostPlatform } from '@buildd/shared';
+import { CODEX_WINDOWS_SANDBOX_CONFIG } from '../codex-windows-sandbox.js';
 import { mapCodexEventToSdkMessages } from './codex-events.js';
 import { catalogPriceFor } from '@buildd/core/model-prices';
 import { SESSION_BUDGET_CAP_ERROR } from '../claim-budget-signals.js';
@@ -74,6 +75,12 @@ export class CodexBackend implements AgentBackend {
       : opts.env;
     const codex = new Codex({
       ...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
+      // On Windows, Codex without `windows.sandbox` runs workspace-write as
+      // read-only; the runner probed this mode (./codex-windows-sandbox) and
+      // names it so the sandbox the record reports is the one that runs.
+      ...(opts.sandboxConfinement?.mechanism === 'windows_restricted_token' && sandbox !== 'danger-full-access'
+        ? { config: CODEX_WINDOWS_SANDBOX_CONFIG }
+        : {}),
       workingDirectory: opts.cwd,
       ...(opts.env?.OPENAI_BASE_URL ? { baseUrl: opts.env.OPENAI_BASE_URL } : {}),
       ...(codexPathOverride ? { codexPathOverride } : {}),
@@ -362,7 +369,8 @@ export class CodexBackend implements AgentBackend {
 
   private mapSandboxMode(mode?: 'read-only' | 'workspace-write', confinement?: BackendConfinement, allowReduced = false): string {
     // Both 'read-only' and 'workspace-write' rely on the host mechanism
-    // (Seatbelt on macOS, bwrap on Linux) to enforce the restriction —
+    // (Seatbelt on macOS, bwrap on Linux, Codex's own sandbox on Windows) to
+    // enforce the restriction —
     // 'read-only' is not a no-op passed straight to the CLI. On a host with no
     // confinement for Codex, staying on either mode fails every exec_command
     // before it runs, so the only way to run is 'danger-full-access', which
@@ -371,7 +379,7 @@ export class CodexBackend implements AgentBackend {
     // "Runner isolation", R-5, AC-5); anything else refuses to start. The
     // bwrap probe alone never decides this: on macOS Seatbelt works.
     if (confinement && confinement.mechanism === 'none') {
-      const platform = process.platform === 'darwin' ? 'darwin' : 'linux';
+      const platform: RunnerHostPlatform = process.platform === 'darwin' ? 'darwin' : process.platform === 'win32' ? 'windows' : 'linux';
       const reason = confinement.reason ?? 'backend_probe_failed';
       const fix = isolationRemediation(reason, platform);
       const cause = `no sandbox available for ${mode || 'workspace-write'}: ${isolationReasonText(reason, platform)}.`;

@@ -21,8 +21,8 @@
  * Synchronous, like warm-repo.ts: git and tar via spawnSync.
  */
 import { spawnSync } from 'child_process';
-import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
-import { basename, dirname, join, resolve, sep } from 'path';
+import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { WARM_BASE_REF, gitFailureText } from './warm-repo';
 import { branchOfRemoteRef, ensureRemoteBranch, gitRetryDelayMs, parseRetryAfter, probeRetryAfter, sleepSync } from './git-clone';
 
@@ -32,6 +32,29 @@ export const MAX_PARKS = 3;
 const MANIFEST_VERSION = 1;
 const GIT_TIMEOUT_MS = 10 * 60 * 1000;
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+/**
+ * Where absolute path `abs` lives under the bundle's `files/`. POSIX drops the
+ * leading `/` (the layout every existing bundle uses). Windows keeps the drive
+ * letter as the first segment (`C:\Users\x` → `C/Users/x`) and puts a UNC
+ * share under `UNC/<server>/<share>`, so no member name carries a colon and two
+ * drives never collide. Restore maps the manifest's absolute path the same way.
+ */
+export function parkMemberPath(abs: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== 'win32') {
+    if (!abs.startsWith('/')) throw new Error(`not an absolute path: ${abs}`);
+    return abs.slice(1);
+  }
+  const drive = /^([A-Za-z]):[\\/](.*)$/.exec(abs);
+  const unc = drive ? null : /^[\\/]{2}([^\\/]+)[\\/]([^\\/]+)(?:[\\/](.*))?$/.exec(abs);
+  const segments = drive ? [drive[1]!, ...drive[2]!.split(/[\\/]/)]
+    : unc ? ['UNC', unc[1]!, unc[2]!, ...(unc[3] ?? '').split(/[\\/]/)]
+    : null;
+  if (!segments) throw new Error(`not an absolute path: ${abs}`);
+  const kept = segments.filter(s => s !== '' && s !== '.');
+  if (kept.includes('..')) throw new Error(`not a normalized path: ${abs}`);
+  return kept.join('/');
+}
 
 /** `<BUILDD_HOME>/parks/<workerId>.json`: how many times this worker has parked. Travels in the bundle. */
 export function parkCountPath(builddHome: string, workerId: string): string {
@@ -118,7 +141,14 @@ export function clonePathOf(worktreePath: string): string {
   const parent = dirname(worktreePath);
   if (basename(parent) === '.buildd-worktrees') return dirname(parent);
   const common = git(worktreePath, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
-  return dirname(common);
+  const clone = resolve(dirname(common));
+  // git spells the path its own way (on Windows `C:/` and long names), and
+  // restore compares the clone path exactly: keep the caller's spelling when
+  // it names the same directory.
+  try {
+    if (realpathSync.native(clone) === realpathSync.native(worktreePath)) return worktreePath;
+  } catch { /* fall through */ }
+  return clone;
 }
 
 /** The session's transcript: `<config>/projects/<cwd key>/<sessionId>.jsonl` and `<sessionId>/**`. */
@@ -176,7 +206,7 @@ function shallowBoundary(clonePath: string): string[] {
   if (tryGit(clonePath, ['rev-parse', '--is-shallow-repository']) !== 'true') return [];
   const rel = tryGit(clonePath, ['rev-parse', '--git-path', 'shallow']);
   if (!rel) return [];
-  const file = rel.startsWith('/') ? rel : join(clonePath, rel);
+  const file = isAbsolute(rel) ? rel : join(clonePath, rel);
   if (!existsSync(file)) return [];
   return readFileSync(file, 'utf-8').split('\n').map(l => l.trim()).filter(l => /^([0-9a-f]{40}|[0-9a-f]{64})$/.test(l));
 }
@@ -236,15 +266,15 @@ export function buildParkBundle(opts: {
   const files: string[] = [];
   const add = (abs: string) => {
     if (!existsSync(abs)) return;
-    cpSync(abs, join(stage, 'files', abs.slice(1)), { recursive: false });
+    cpSync(abs, join(stage, 'files', parkMemberPath(abs)), { recursive: false });
     files.push(abs);
   };
   add(join(paths.builddHome, 'workers', `${worker.id}.json`));
   add(join(paths.builddHome, `outbox-once-${worker.taskId}.json`));
-  mkdirSync(join(stage, 'files', dirname(parkCountPath(paths.builddHome, worker.id)).slice(1)), { recursive: true });
+  mkdirSync(join(stage, 'files', parkMemberPath(dirname(parkCountPath(paths.builddHome, worker.id)))), { recursive: true });
   add(parkCountPath(paths.builddHome, worker.id));
   if (worker.sessionId) for (const f of findTranscriptFiles(paths.claudeConfigDirs, worker.sessionId)) {
-    mkdirSync(dirname(join(stage, 'files', f.slice(1))), { recursive: true });
+    mkdirSync(dirname(join(stage, 'files', parkMemberPath(f))), { recursive: true });
     add(f);
   }
 
@@ -270,7 +300,9 @@ export function buildParkBundle(opts: {
   };
   writeFileSync(join(stage, 'manifest.json'), JSON.stringify(manifest, null, 2));
   const tarPath = join(paths.tmpDir, `park-${worker.id}.tar`);
-  const r = spawnSync('tar', ['-cf', tarPath, '-C', stage, '.'], { stdio: ['ignore', 'ignore', 'pipe'], timeout: GIT_TIMEOUT_MS });
+  // tar runs in the archive's directory and gets a bare file name: GNU tar
+  // (Git for Windows ships it) reads `C:\...` as a remote `host:path`.
+  const r = spawnSync('tar', ['-cf', basename(tarPath), '-C', stage, '.'], { cwd: dirname(tarPath), stdio: ['ignore', 'ignore', 'pipe'], timeout: GIT_TIMEOUT_MS });
   rmSync(stage, { recursive: true, force: true });
   if (r.status !== 0) throw new Error('park tarball could not be written');
   return { tarPath, manifest, bytes: statSync(tarPath).size };
@@ -350,15 +382,17 @@ export async function parkWorkerNow(
 }
 
 export function readParkBundle(tarPath: string, stageDir: string): OpenedPark {
-  const list = spawnSync('tar', ['-tf', tarPath], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const list = spawnSync('tar', ['-tf', basename(tarPath)], { cwd: dirname(tarPath), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
   if (list.status !== 0) throw new ParkRestoreError('park bundle is not a tarball');
-  for (const raw of (list.stdout ?? '').split('\n').filter(Boolean)) {
+  // Windows' own tar lists members with CRLF.
+  for (const raw of (list.stdout ?? '').split(/\r?\n/).filter(Boolean)) {
     const name = raw.replace(/^\.\//, '');
     if (name.startsWith('/') || name.split('/').includes('..')) throw new ParkRestoreError(`park bundle has an unsafe member: ${raw}`);
   }
   rmSync(stageDir, { recursive: true, force: true });
   mkdirSync(stageDir, { recursive: true });
-  const x = spawnSync('tar', ['-xf', tarPath, '-C', stageDir, '--no-same-owner'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  // -C relative to the cwd: Git for Windows' GNU tar reads `C:\...` as a remote host.
+  const x = spawnSync('tar', ['-xf', basename(tarPath), '-C', relative(dirname(tarPath), stageDir) || '.', '--no-same-owner'], { cwd: dirname(tarPath), stdio: ['ignore', 'ignore', 'pipe'] });
   if (x.status !== 0 || !existsSync(join(stageDir, 'manifest.json'))) throw new ParkRestoreError('park bundle could not be extracted');
   return { manifest: parseManifest(readFileSync(join(stageDir, 'manifest.json'), 'utf-8')), stageDir };
 }
@@ -383,11 +417,11 @@ export function restoreParkFiles(opened: OpenedPark, paths: ParkPaths): void {
   const m = opened.manifest;
   for (const f of m.files) {
     if (typeof f !== 'string' || !allowedRestorePath(f, m, paths)) throw new ParkRestoreError(`park bundle names a file it may not restore: ${f}`);
-    if (!existsSync(join(opened.stageDir, 'files', f.slice(1)))) throw new ParkRestoreError(`park bundle is missing ${f}`);
+    if (!existsSync(join(opened.stageDir, 'files', parkMemberPath(f)))) throw new ParkRestoreError(`park bundle is missing ${f}`);
   }
   for (const f of m.files) {
     mkdirSync(dirname(f), { recursive: true });
-    cpSync(join(opened.stageDir, 'files', f.slice(1)), f);
+    cpSync(join(opened.stageDir, 'files', parkMemberPath(f)), f);
   }
 }
 

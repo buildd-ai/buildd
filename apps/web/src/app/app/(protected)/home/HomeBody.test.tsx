@@ -42,7 +42,7 @@ describe('Home inbox', () => {
   });
   // The shared mission row (ui/MissionRow), the same one Missions draws:
   // title, the small strip, one state line, Next. No box, no tone edge.
-  it('delivery rows are the shared mission row: title, small strip, one state line, Next', () => {
+  it('delivery rows are the shared mission row: title, small strip, one state line, what happens next', () => {
     const html = render();
     const rows = html.split('data-testid="home-delivery-row"').slice(1).map(r => r.slice(0, r.indexOf('</a>')));
     expect(rows).toHaveLength(3);
@@ -53,7 +53,7 @@ describe('Home inbox', () => {
       // The shared row clamps a long title at three lines, never two.
       expect(r).not.toContain('line-clamp-2');
       expect(r).not.toContain('Stage:');
-      expect(r).toContain('>Next<');
+      expect(r).not.toContain('>Next<');
     }
     // An exception replaces the evidence it would repeat.
     const trunk = rows.find(r => r.includes('First-run checklist'))!;
@@ -273,5 +273,21 @@ describe('quietMissionsLine agrees in number', () => {
   it('a held mission reads in the singular and plural alike', () => {
     expect(quietMissionsLine(1, [{ cause: 'on hold', count: 1 }])).toBe('1 more mission is on hold.');
     expect(quietMissionsLine(2, [{ cause: 'on hold', count: 2 }])).toBe('2 more missions are on hold.');
+  });
+});
+
+describe('headline spacing on phones', () => {
+  it('headline has top padding on mobile when something needs the owner', () => {
+    const items = deriveHomeAttention({ queue: [{ subjectKey: 'd', chip: 'DECIDE', missionId: 'mission-a', escalationReason: 'Keep the old route?' }], questions: [], held: [], missions: [] });
+    const html = renderToStaticMarkup(<HomeBody items={items} ask={null} counts={counts} milestones={[]} quietMissions={0} />);
+    // The h1 headline should have pt-4 on phones (md:hidden is not present, so pt-4 applies mobile-first)
+    const headline = html.match(/<h1[^>]*data-testid="home-headline"[^>]*>/)?.[0] ?? '';
+    expect(headline).toContain('pt-4');
+  });
+
+  it('all-clear message has bottom padding on mobile', () => {
+    const html = renderToStaticMarkup(<HomeBody items={[]} ask={null} counts={counts} milestones={[]} quietMissions={0} />);
+    const allClear = html.match(/<p[^>]*data-testid="home-all-clear"[^>]*>/)?.[0] ?? '';
+    expect(allClear).toContain('py-3');
   });
 });

@@ -9,6 +9,7 @@ import { VERIFICATION_VERDICTS, boundEvidenceRefs, verdictSourceOfEvidence, type
 import type { LivingSpecGoalCriterion } from '@buildd/shared';
 import type { RequirementRef } from '@buildd/spec-contract/requirements';
 import { githubApi } from '@/lib/github';
+import { unacceptedPathsOf } from '@/lib/acceptance-edit-sync';
 import { encodeRef, isAncestor } from '@/lib/integration-refresh';
 import { integrationTarget } from './mission-integration-target';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
@@ -20,6 +21,7 @@ import { foldMissionSpec, verdictIsCurrent, type MissionSpecFold, type MissionTa
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 import { settleVerdictSource } from './verdict-source';
 import { revisionCriterionHashes } from './criteria';
+import { checkTaskIdOf, holdUnacceptedTestRows } from './acceptance-hold';
 
 /**
  * Mission-level verdicts on the mission's selected outcome spec (Living Specs
@@ -44,6 +46,29 @@ const SHA = /^[0-9a-f]{7,40}$/i;
 const MAX_READS = 20;
 
 export type MissionRow = { id: string; workspaceId: string | null; workingBranch: string | null; integrationBranchEnabled: boolean | null; goalCriteria: unknown };
+
+/**
+ * Filter mission verdict rows to exclude test results from tasks with
+ * unaccepted acceptance edits (R-80, AC-126).
+ */
+export async function filterMissionRowsByAcceptanceEdit(
+  rows: MissionVerdictRow[],
+  originalRows: Array<{ id: string; evidence: unknown }>,
+): Promise<MissionVerdictRow[]> {
+  const evidenceById = new Map(originalRows.map((r) => [r.id, r.evidence]));
+  const taskIds = new Set<string>();
+  for (const r of rows) {
+    if (r.source !== 'test') continue;
+    const taskId = checkTaskIdOf(evidenceById.get(r.id));
+    if (taskId) taskIds.add(taskId);
+  }
+  if (taskIds.size === 0) return rows;
+  const taskRows = await db.select({ id: tasks.id, context: tasks.context })
+    .from(tasks)
+    .where(inArray(tasks.id, [...taskIds]));
+  const contexts = new Map<string, unknown>(taskRows.map((t) => [t.id, t.context]));
+  return holdUnacceptedTestRows(rows, evidenceById, contexts);
+}
 
 async function loadMission(missionId: string): Promise<MissionRow | null> {
   const m = await db.query.missions.findFirst({
@@ -113,7 +138,14 @@ async function missionRows(missionId: string, specRevisionId: string, hashes: Re
     .where(and(eq(specOutcomeVerdicts.missionId, missionId), eq(specOutcomeVerdicts.specRevisionId, specRevisionId)))
     .orderBy(asc(specOutcomeVerdicts.createdAt));
   // A verdict on another wording does not count for this one (R-13); one recorded before wordings were kept does.
-  return rows.filter((r) => !r.textHash || r.textHash === hashes.get(r.criterionId)).map(({ textHash: _t, evidence, ...r }) => ({ ...r, source: verdictSourceOfEvidence(evidence) })) as MissionVerdictRow[];
+  const filtered = rows.filter((r) => !r.textHash || r.textHash === hashes.get(r.criterionId));
+  const mapped = filtered.map(({ textHash: _t, evidence, ...r }) => ({ ...r, source: verdictSourceOfEvidence(evidence), evidence })) as MissionVerdictRow[];
+  return filterMissionRowsByAcceptanceEdit(mapped, filtered);
+}
+
+export async function unacceptedAcceptanceTestPaths(missionId: string): Promise<string[]> {
+  const rows = await db.select({ roleSlug: tasks.roleSlug, context: tasks.context }).from(tasks).where(eq(tasks.missionId, missionId));
+  return unacceptedPathsOf(rows);
 }
 
 export type MissionSpecStanding = MissionSpecFold & { target: MissionTarget; scope: RequirementRef[]; title: string };
@@ -126,7 +158,8 @@ export async function readMissionSpecStanding(mission: MissionRow, c: LivingSpec
   }
   const rows = await missionRows(mission.id, c.specRevisionId, await revisionCriterionHashes(c.specId, c.revision));
   const target = await resolveMissionTarget(mission, rows.map((r) => r.headSha).filter((h): h is string => !!h), api);
-  const folded = foldMissionSpec({ scope: scope.criteria.map((r) => r.id), waived: (c.waived ?? []).map((w) => w.criterionId), rows, target });
+  const unaccepted = await unacceptedAcceptanceTestPaths(mission.id);
+  const folded = foldMissionSpec({ scope: scope.criteria.map((r) => r.id), waived: (c.waived ?? []).map((w) => w.criterionId), rows, target, unacceptedTestPaths: unaccepted });
   return { ...folded, target, scope: scope.criteria, title: scope.title };
 }
 

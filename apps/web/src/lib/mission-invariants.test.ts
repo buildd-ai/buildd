@@ -1326,6 +1326,28 @@ describe('open_pr_outpaced_by_base', () => {
     expect(Math.round(v.ageMs / HOUR)).toBe(20);
   });
 
+  it('tells the sweep to rebase-and-land or close an ordinary PR', () => {
+    const s = snapshot({ workers: [openPr(20 * HOUR)], baseMerges: merges(PR_OUTPACED_DRIFT) });
+    const r = evaluateInvariants(s, NOW).find(x => x.key === key)!;
+    expect(r.violations[0].remedy).toBeUndefined();
+    expect(r.remedy).toContain('or close it');
+  });
+
+  it('never tells the sweep to close an ESCALATED PR: it asks the owner instead', () => {
+    const s = snapshot({
+      workers: [openPr(20 * HOUR)],
+      baseMerges: merges(PR_OUTPACED_DRIFT),
+      personGatedPrs: new Map([['ws-1 4242', 'ESCALATED']]),
+    });
+    const [v] = evaluateInvariants(s, NOW).find(x => x.key === key)!.violations;
+    expect(v.remedy).toBeDefined();
+    expect(v.remedy).not.toContain('or close it');
+    expect(v.remedy).toContain('do not close it');
+    expect(v.remedy).toContain('ask_human');
+    expect(v.remedy).toContain('post_note');
+    expect(v.detail).toContain('ESCALATED');
+  });
+
   it('keys the violation on the PR, not the worker row, so a worker-id change does not dodge dedupe', () => {
     // Filed as friction: the sweep dispatched two remediation tasks for the
     // same PR because the two breaches carried different worker ids and the

@@ -10,8 +10,9 @@
  * live in the env the runner hands the agent, because that is the one input
  * every checkout's code honours.
  */
+import { expectOwnerOnlyPath } from '../windows-acl';
 import { describe, test, expect, afterAll } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve, sep } from 'path';
 import {
@@ -66,7 +67,7 @@ describe('isolateAgentRunnerHome', () => {
   test('creates the directory owner-only', () => {
     const dir = isolateAgentRunnerHome({}, 'w-mode', { tmp: scratch });
     expect(existsSync(dir)).toBe(true);
-    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    expectOwnerOnlyPath(dir, 0o700);
   });
 
   test('the current guard accepts it, so a raw `bun test` inside the agent still works', () => {

@@ -13,7 +13,7 @@
 
 import { describe, test, expect } from 'bun:test';
 import { homedir, tmpdir } from 'os';
-import { normalize, join } from 'path';
+import { normalize, join, resolve } from 'path';
 import {
   buildReadJailDeniedPrefixes,
   isPathDeniedByReadJail,
@@ -156,7 +156,7 @@ describe('resolveToolPath', () => {
   });
 
   test('relative path is resolved against worktree', () => {
-    expect(resolveToolPath('src/index.ts', WORKTREE)).toBe(join(WORKTREE, 'src/index.ts'));
+    expect(resolveToolPath('src/index.ts', WORKTREE)).toBe(resolve(WORKTREE, 'src/index.ts'));
   });
 
   test('path traversal resolved against worktree', () => {

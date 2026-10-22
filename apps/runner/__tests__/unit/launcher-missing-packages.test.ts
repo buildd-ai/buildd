@@ -40,7 +40,8 @@ const run = (...args: string[]) => Bun.spawnSync(['/bin/bash', join(HOME, 'build
 });
 const bunCalls = () => (nodeFs.existsSync(LOG) ? nodeFs.readFileSync(LOG, 'utf-8') : '');
 
-describe('launcher with missing packages', () => {
+// install.sh's bash launcher is Unix-only; Windows uses install.ps1.
+describe.skipIf(process.platform === 'win32')('launcher with missing packages', () => {
   beforeEach(() => nodeFs.rmSync(LOG, { force: true }));
 
   test('the launcher heredoc was found', () => expect(launcher.length).toBeGreaterThan(0));

@@ -87,6 +87,15 @@ describe('transitions → timeline', () => {
     ]);
   });
 
+  test('a close without a merge carries who closed it, on the row and in the header', () => {
+    const closedBy = { login: 'example-app[bot]', type: 'Bot', door: { workerId: 'wk1', taskId: '0123abcd-0000-4000-8000-000000000000', accountId: null, principalVia: 'task_token', reason: 'superseded by #8' } };
+    const ts = [T('PrClosedUnmerged', 'AWAITING_REVIEW', 'CLOSED_UNMERGED', { live: { ...live('H2'), state: 'closed' }, closeCause: 'buildd_close', closedBy }, 1)];
+    expect(transitionsToActivityEntries(ts, [], []).map((e) => [e.kind, e.detail ?? null])).toEqual([['closed_unmerged', 'closed through buildd by task `0123abcd` · superseded by #8']]);
+    const body = renderDeliveryActivity({ view: { delivery: D({ state: 'CLOSED_UNMERGED', stateReason: 'buildd_close' }), rounds: [], attempts: [] }, transitions: ts, timezone: 'UTC' });
+    expect(header(body)).toContain('closed through buildd by task `0123abcd`');
+    expect(body).not.toContain('· unknown');
+  });
+
   test('fix lines carry the 1-based ledger attempt', () => {
     const e = transitionsToActivityEntries(log, rounds, attempts).find((x) => x.kind === 'fix_started')!;
     expect({ iteration: e.iteration, maxIterations: e.maxIterations }).toEqual({ iteration: 1, maxIterations: 3 });
@@ -120,6 +129,23 @@ describe('295486ba: fix numbering after a skipped attempt', () => {
 
 describe('renderDeliveryActivity (S26)', () => {
   const view = (d: Partial<DeliverySnapshot>): KernelView => ({ delivery: D(d), rounds, attempts });
+
+  test('GitHub activity does not repeat review diagnostics or the findings already published in the review', () => {
+    const body = renderDeliveryActivity({
+      view: {
+        ...view({ state: 'CHANGES_REQUESTED', currentRound: 1 }),
+        rounds: [{ ...rounds[0], reviewerTaskId: 'review-task' }],
+        findings: [{ id: 'f1', title: 'Remove unrelated installer changes', path: 'install.sh',
+          status: 'open', required: true, originRound: 1 } as NonNullable<KernelView['findings']>[number]],
+      },
+      transitions: log.slice(0, 3),
+    });
+    expect(header(body)).toContain('Changes requested');
+    expect(body).toContain('Open in Buildd');
+    expect(body).not.toContain('Remove unrelated installer changes');
+    expect(body).not.toMatch(/Review:|Rounds:|Findings:|Commented|GitHub lists|recorded these verdicts/);
+    expect(parseRenderVersion(body)).toBe(5);
+  });
 
   test('is a pure function of state and log: two renders are identical', () => {
     const a = renderDeliveryActivity({ view: view({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H2'] }), transitions: log });
