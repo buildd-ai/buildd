@@ -8,8 +8,9 @@
  * (`open_delivery`, the same op `create_pr` and the PR webhook use) with the
  * door's task as the owner, so the door then lands it through the kernel's
  * gate like any other kernel PR. The adopted delivery starts where a late open
- * starts: the owner's end is forwarded and a review of the live head is owed,
- * so a legacy reviewer's approval never carries it past T15.
+ * starts: the owner's end is forwarded and a review of the live head is owed.
+ * A legacy reviewer's verdict counts only as the open adopts it (968aebfd: a
+ * settled verdict read at exactly the live head and base), never on its own row.
  *
  * Three answers:
  *  - `kernel`: the PR has a kernel delivery now (it already had one, or this
