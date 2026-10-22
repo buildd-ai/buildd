@@ -150,8 +150,9 @@ describe('one writer per clone', () => {
 });
 
 describe('a timed-out git has exited, locks dropped, before the call returns', () => {
-  // Windows has no SIGTERM: the tree is force-killed, so git never gets to drop index.lock.
-  test.skipIf(IS_WIN)('a merge killed at its timeout leaves no index.lock', async () => {
+  // Windows has no SIGTERM: the tree is force-killed, git never drops index.lock,
+  // and the runner removes the lock the killed git left instead.
+  test('a merge killed at its timeout leaves no index.lock', async () => {
     const repo = join(tmp, 'lock-merge');
     mkdirSync(repo);
     realGit(repo, 'init', '-q', '-b', 'main');

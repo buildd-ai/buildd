@@ -22,6 +22,7 @@ import {
   observeHead,
   observePrState,
   openKernelDelivery,
+  reconcileKernelDeliveries,
   recordReviewVerdict,
   requestReview,
   type SeamDeps,
@@ -524,6 +525,122 @@ describe('S5: the review loop never stalls (workflow-kernel-library.md §5)', ()
     const seen = await observeCiFailure({ ...at, headSha: 'H1', signature: 'ci_failed', maxAttempts: 3 }, deps);
     expect(seen).toMatchObject({ handled: true, result: { result: 'rejected', reason: 'ci_not_red' } });
     expect(await d()).toMatchObject({ state: 'AWAITING_REVIEW', ci: 'green', ciHeadSha: 'H1' });
+  });
+});
+
+describe('968aebfd: a legacy review from before the delivery opened (workflow-kernel-library.md §5)', () => {
+  /** A reviewer filed outside the kernel's rounds, as createReviewerTask and the worker PATCH leave it. */
+  async function legacyReviewer(prNumber: number, o: {
+    status?: string; head?: string; evidenceSha?: string | null; settled?: string | null; baseRef?: string | null;
+    verdict?: string; findings?: Array<{ path: string; title: string }>;
+  } = {}) {
+    const id = await seedTask(workspaceId, { status: o.status ?? 'completed', title: 'legacy review' });
+    const head = o.head ?? 'H1';
+    const context = { prNumber, repoFullName: REPO, headSha: head, ...(o.baseRef !== null ? { baseRef: o.baseRef ?? 'dev' } : {}) };
+    const result = (o.status ?? 'completed') === 'completed' ? {
+      structuredOutput: { verdict: o.verdict ?? 'approve', confidence: 0.9, summary: 's', ...(o.findings ? { findings: o.findings } : {}) },
+      evidenceSha: o.evidenceSha === undefined ? head : o.evidenceSha,
+      ...(o.settled !== null ? { settledVerdict: o.settled ?? o.verdict ?? 'approve' } : {}),
+    } : null;
+    await q(sql`UPDATE tasks SET category = 'review', context = ${JSON.stringify(context)}::jsonb, result = ${result ? JSON.stringify(result) : null}::jsonb WHERE id = ${id}::uuid`);
+    return id;
+  }
+  /** The owner ended before the PR's delivery opened (the late open of #5398). */
+  async function endedOwner() {
+    const ownerTaskId = await seedTask(workspaceId, { status: 'completed' });
+    const prNumber = prSeq++;
+    await seedWorker(ownerTaskId, { status: 'completed', lastCommitSha: 'H1', prNumber });
+    return { ownerTaskId, prNumber };
+  }
+  const open = (ownerTaskId: string, prNumber: number) =>
+    openKernelDelivery({ workspaceId, ownerTaskId, repoFullName: REPO, prNumber, installationId: 1, source: 'merge_pr:adopt' }, deps);
+  const reviewsDispatched = () => dispatched.filter((x) => x.kind === 'review').map((x) => x.head);
+
+  test('a settled approval at the live head is adopted at the open: no second review, approved at that head', async () => {
+    const { ownerTaskId, prNumber } = await endedOwner();
+    const reviewer = await legacyReviewer(prNumber);
+    const opened = await open(ownerTaskId, prNumber);
+    expect((await loadView({ deliveryId: opened.deliveryId! })).delivery).toMatchObject({ state: 'APPROVED', approvedHeads: ['H1'] });
+    expect(reviewsDispatched()).toEqual([]);
+    expect(posted).toEqual([]);
+    const [r] = await q<{ round: number; status: string; reviewer_task_id: string }>(sql`SELECT round, status, reviewer_task_id FROM workflow_review_rounds WHERE delivery_id = ${opened.deliveryId!}::uuid`);
+    expect(r).toMatchObject({ round: 1, status: 'decided', reviewer_task_id: reviewer });
+  });
+
+  test('a settled request for changes keeps its findings and owes the fix, not another review', async () => {
+    const { ownerTaskId, prNumber } = await endedOwner();
+    await legacyReviewer(prNumber, { verdict: 'request-changes', findings: [{ path: 'a.ts', title: 'fix a' }] });
+    const opened = await open(ownerTaskId, prNumber);
+    const v = await loadView({ deliveryId: opened.deliveryId! });
+    expect(v.delivery!.state).toBe('CHANGES_REQUESTED');
+    expect((v.findings ?? []).map((f) => [f.path, f.title, f.status])).toEqual([['a.ts', 'fix a', 'open']]);
+    expect(reviewsDispatched()).toEqual([]);
+    expect(dispatched.map((x) => x.kind)).toEqual(['fix']);
+  });
+
+  test('the gates\' verdict is the one adopted, not the model\'s', async () => {
+    const { ownerTaskId, prNumber } = await endedOwner();
+    await legacyReviewer(prNumber, { verdict: 'approve', settled: 'escalate' });
+    const opened = await open(ownerTaskId, prNumber);
+    expect((await loadView({ deliveryId: opened.deliveryId! })).delivery!.state).toBe('ESCALATED');
+    expect(reviewsDispatched()).toEqual([]);
+  });
+
+  test('stale or invalid evidence is reviewed again: another head, read at another commit, another base, gates unsettled', async () => {
+    const cases: Array<Parameters<typeof legacyReviewer>[1]> = [
+      { head: 'H0' }, { evidenceSha: 'H0' }, { evidenceSha: null }, { baseRef: 'main' }, { baseRef: null }, { settled: null },
+    ];
+    for (const c of cases) {
+      dispatched = [];
+      const { ownerTaskId, prNumber } = await endedOwner();
+      // A row from before the settled marker: older than the settling window, never adopted.
+      const id = await legacyReviewer(prNumber, c);
+      await q(sql`UPDATE tasks SET updated_at = now() - interval '1 hour' WHERE id = ${id}::uuid`);
+      const opened = await open(ownerTaskId, prNumber);
+      expect({ c, state: (await loadView({ deliveryId: opened.deliveryId! })).delivery!.state }).toEqual({ c, state: 'AWAITING_REVIEW' });
+      expect(reviewsDispatched()).toEqual(['H1']);
+    }
+  });
+
+  test('a legacy reviewer still judging the head holds the hand-off; its verdict is adopted and the hand-off applies it', async () => {
+    const { ownerTaskId, prNumber } = await endedOwner();
+    const reviewer = await legacyReviewer(prNumber, { status: 'in_progress' });
+    const opened = await open(ownerTaskId, prNumber);
+    const deliveryId = opened.deliveryId!;
+    expect((await loadView({ deliveryId })).delivery!.state).toBe('WORKING');
+    // The floor does not hand on past it either.
+    await reconcileKernelDeliveries(deps, { only: [deliveryId], minQuietMs: 0 });
+    expect((await loadView({ deliveryId })).delivery!.state).toBe('WORKING');
+    expect(reviewsDispatched()).toEqual([]);
+    // It completes: the worker PATCH adopts its verdict (00d288fd), and the held hand-off runs.
+    await q(sql`UPDATE tasks SET status = 'completed' WHERE id = ${reviewer}::uuid`);
+    const kept = await adoptReviewVerdict({ workspaceId, deliveryId, reviewerTaskId: reviewer, verdict: 'approve', effectiveVerdict: 'approve', headSha: 'H1', confidence: 0.9, evidenceSha: 'H1' }, deps);
+    expect(kept).toMatchObject({ result: 'applied' });
+    expect((await loadView({ deliveryId })).delivery).toMatchObject({ state: 'APPROVED', approvedHeads: ['H1'] });
+    expect(reviewsDispatched()).toEqual([]);
+  });
+
+  test('a held hand-off is released when the legacy reviewer ends without a verdict: the floor hands on and the kernel reviews', async () => {
+    const { ownerTaskId, prNumber } = await endedOwner();
+    const reviewer = await legacyReviewer(prNumber, { status: 'in_progress' });
+    const opened = await open(ownerTaskId, prNumber);
+    await q(sql`UPDATE tasks SET status = 'failed' WHERE id = ${reviewer}::uuid`);
+    await reconcileKernelDeliveries(deps, { only: [opened.deliveryId!], minQuietMs: 0 });
+    expect((await loadView({ deliveryId: opened.deliveryId! })).delivery!.state).toBe('AWAITING_REVIEW');
+    expect(reviewsDispatched()).toEqual(['H1']);
+  });
+
+  test('a person forcing a review of an adopted head gets one', async () => {
+    const { ownerTaskId, prNumber } = await endedOwner();
+    await legacyReviewer(prNumber);
+    const opened = await open(ownerTaskId, prNumber);
+    expect(reviewsDispatched()).toEqual([]);
+    expect(await requestReview({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, forced: false, actor: 'agent:test' }, deps))
+      .toMatchObject({ handled: true, result: { result: 'rejected', reason: 'head_already_reviewed' } });
+    const r = await requestReview({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, forced: true, actor: 'human:test' }, deps);
+    expect(r).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'AWAITING_REVIEW' } } });
+    expect(reviewsDispatched()).toEqual(['H1']);
+    expect((await rounds(opened.deliveryId!)).map((x) => [x.round, x.head_sha, x.status])).toEqual([[1, 'H1', 'decided'], [2, 'H1', 'queued']]);
   });
 });
 
