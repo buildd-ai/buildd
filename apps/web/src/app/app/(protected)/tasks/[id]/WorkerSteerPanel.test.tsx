@@ -27,17 +27,11 @@ describe('WorkerSteerPanel — message delivery states (B-12)', () => {
     { type: 'response' as const, message: 'ok', timestamp: 6 },
   ];
 
-  test('every human message shows its state as text, not colour alone', () => {
+  test('does not add a separate Communication section to the live controls', () => {
     const html = render({ instructionHistory: history });
-    expect(html).toContain('data-state="queued"');
-    expect(html).toContain('data-state="delivered"');
-    expect(html).toContain('data-state="acknowledged"');
-    expect(html).toContain('Queued');
-    expect(html).toContain('Delivered');
-    expect(html).toContain('Read by the agent');
-    // The agent's own reply carries no delivery chip.
-    expect((html.match(/data-testid="message-delivery-state"/g) ?? []).length).toBe(3);
-    expect(html).not.toContain('Pending delivery');
+    expect(html).not.toContain('Communication');
+    expect(html).not.toContain('instruction-history');
+    expect(html).toContain('worker-instruct-form');
   });
 
   test('undelivered messages from the earlier run show Not received and a 44px Resend', () => {

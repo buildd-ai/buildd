@@ -138,7 +138,7 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
         </div>
         {error && <p data-testid="worker-abort-error" className="text-sm text-status-error">{error}</p>}
         {earlier}
-        {!taskTerminal && !hasUnansweredQuestion && <InstructionHistory history={instructionHistory} workerStatus={status} />}
+
       </div>
     );
   }
@@ -206,7 +206,7 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
       )}
       {error && <p data-testid="worker-abort-error" className="text-sm text-status-error">{error}</p>}
       {earlier}
-      {!hasUnansweredQuestion && <InstructionHistory history={instructionHistory} workerStatus={status} />}
+
     </div>
   );
 }
