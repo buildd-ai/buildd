@@ -93,6 +93,7 @@ export const FEATURE_EFFECT: Record<InferenceCapability, DecisionFeatureEffect> 
   heartbeat_triage: 'retired',
   task_category: 'acts',
   surface_audit_advice: 'advises',
+  ui_verification: 'acts',
   task_role_shadow: 'acts',
   task_role_apply: 'acts',
   orchestration_manifest: 'records',

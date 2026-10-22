@@ -72,6 +72,8 @@ export interface CriterionVerdict {
   at: Date | string;
   /** Absent reads as `review`. */
   source?: VerdictSource;
+  /** Approved immutable verifier binding; absent for legacy command/review rows. */
+  bindingFingerprint?: string | null;
 }
 
 /**
@@ -134,6 +136,7 @@ export function foldGovernedOutcome(
   criteria: readonly string[],
   verdicts: readonly CriterionVerdict[],
   currentHeadSha: string | null,
+  requiredBindings?: ReadonlyMap<string, readonly string[]>,
 ): GovernedOutcomeReadout {
   const byCriterion = new Map<string, CriterionVerdict[]>();
   for (const v of verdicts) {
@@ -143,28 +146,48 @@ export function foldGovernedOutcome(
   const newest = new Map<string, CriterionVerdict>();
   const overridden = new Map<string, number>();
   for (const [id, rows] of byCriterion) {
-    const d = determiningVerdict(rows)!;
+    const legacy = rows.filter((r) => !r.bindingFingerprint);
+    const d = determiningVerdict(legacy);
+    if (!d) continue;
     newest.set(id, d);
-    overridden.set(id, d.source === 'test' ? rows.filter((r) => (r.source ?? 'review') === 'review').length : 0);
+    overridden.set(id, d.source === 'test' ? legacy.filter((r) => (r.source ?? 'review') === 'review').length : 0);
   }
+  const requiredFailures = new Set<string>();
   const standings: CriterionStanding[] = criteria.map((id) => {
+    const required = requiredBindings?.get(id) ?? [];
+    if (required.length) {
+      const rows = byCriterion.get(id) ?? [];
+      // Every binding has independent authority. Legacy commands/reviews keep
+      // their own precedence, so a registered pass cannot hide a command fail.
+      const checks = [...new Set(required)].map((fingerprint) => {
+        const matching = rows.filter((r) => r.bindingFingerprint === fingerprint);
+        const current = matching.filter((r) => sameHead(r.headSha, currentHeadSha));
+        return foldGovernedOutcome([id], (current.length ? current : matching).map(({ bindingFingerprint: _b, ...r }) => r), currentHeadSha).criteria[0]!;
+      });
+      const legacy = rows.filter((r) => !r.bindingFingerprint);
+      const base = legacy.length ? foldGovernedOutcome([id], legacy, currentHeadSha).criteria[0]! : null;
+      const failed = base?.verdict === 'fail' ? base : checks.find((s) => s.verdict === 'fail' && !s.stale);
+      if (failed) { requiredFailures.add(id); return failed; }
+      if (base) checks.push(base);
+      return checks.find((s) => !s.holds) ?? checks[0]!;
+    }
     const v = newest.get(id);
     if (!v) return { criterionId: id, verdict: null, source: null, headSha: null, stale: false, holds: false, notes: [], overriddenReviews: 0 };
     const onHead = sameHead(v.headSha, currentHeadSha);
     const notes: CriterionNote[] = v.source === 'test'
       ? (byCriterion.get(id) ?? [])
-        .filter((x) => x.source !== 'test' && sameHead(x.headSha, v.headSha))
+        .filter((x) => !x.bindingFingerprint && x.source !== 'test' && sameHead(x.headSha, v.headSha))
         .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
         .map((x) => ({ verdict: x.verdict, source: x.source ?? 'review', headSha: x.headSha, at: x.at }))
       : [];
     return { criterionId: id, verdict: v.verdict, source: v.source ?? 'review', headSha: v.headSha, stale: !onHead, holds: v.verdict === 'pass' && onHead, notes, overriddenReviews: overridden.get(id) ?? 0 };
   });
-  const failed = standings.filter((s) => s.verdict === 'fail').map((s) => s.criterionId);
+  const failed = standings.filter((s) => requiredBindings?.get(s.criterionId)?.length ? requiredFailures.has(s.criterionId) : s.verdict === 'fail').map((s) => s.criterionId);
   if (failed.length > 0) return { outcome: 'fail', currentHeadSha, criteria: standings, reason: `${failed.join(', ')} failed` };
   if (criteria.length === 0) return { outcome: 'unverified', currentHeadSha, criteria: standings, reason: 'no criteria to verify' };
   if (!currentHeadSha) return { outcome: 'unverified', currentHeadSha, criteria: standings, reason: 'no PR head to verify against' };
   const open = standings.filter((s) => !s.holds);
   if (open.length === 0) return { outcome: 'verified', currentHeadSha, criteria: standings, reason: `all ${criteria.length} criteria pass on the current head` };
-  const describe = (s: CriterionStanding) => (s.verdict === null ? `${s.criterionId} has no verdict` : s.verdict === 'pass' ? `${s.criterionId} passed on an older head` : `${s.criterionId} is ${s.verdict}`);
+  const describe = (s: CriterionStanding) => (s.verdict === null ? `${s.criterionId} has no verdict` : s.stale && s.verdict === 'fail' ? `${s.criterionId} failed on an older head` : s.verdict === 'pass' ? `${s.criterionId} passed on an older head` : `${s.criterionId} is ${s.verdict}`);
   return { outcome: 'unverified', currentHeadSha, criteria: standings, reason: open.map(describe).join('; ') };
 }
