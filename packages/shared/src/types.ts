@@ -1630,6 +1630,14 @@ export interface ClaimTasksInput {
   maxTasks?: number;
   runner: string;
   environment?: WorkerEnvironment;
+  /**
+   * An interactive session's own git state at claim: the branch it is on and
+   * how many commits that branch has ahead of the task's base. When it already
+   * carries work, the claim response recommends the assigned branch
+   * (`branchHint`); the session's branch is never changed.
+   */
+  sessionBranch?: string;
+  sessionCommitsAhead?: number;
   // Skill slugs this runner can execute. Omitted/empty = may claim any
   // role-routed task EXCEPT the opt-in EXPLICIT_ROLE_SLUGS, which always need
   // an explicit match.
@@ -1876,6 +1884,8 @@ export interface ClaimDiagnostics {
      * retry family is already open (one open retry per subject).
      */
     sibling_retry_open?: number;
+    /** Fix attempt held: it ended on a question to a person, unanswered. */
+    awaiting_owner_answer?: number;
     /**
      * Workflow-kernel review fix skipped at claim: its target was resolved
      * while it queued (approved, merged, head moved, round superseded), or the
@@ -2059,6 +2069,8 @@ export interface ClaimTasksResponse {
     id: string;
     taskId: string;
     branch: string;
+    /** Interactive claims only: the session's branch already has commits of its own; start from `branch`. */
+    branchHint?: string;
     task: Task;
     skillBundles?: SkillBundle[];
     childResults?: Array<{ id: string; title: string; status: string; result: TaskResult | null }>;
