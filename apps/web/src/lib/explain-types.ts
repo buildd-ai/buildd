@@ -81,6 +81,8 @@ export type CausalLinkSource =
   | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber'
   | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan'
   | 'tasks.roleSlug + workerHeartbeats.environment + workspaces.gitConfig.executor'
+  /** lib/runner-offline.ts: a live-status worker whose own runner has gone quiet. */
+  | 'workers.runner + workerHeartbeats.lastHeartbeatAt'
   | 'task_dispatch_outbox.status'
   | 'tasks.context.entitlementBlock'
   /** failure-incident-recovery §18.3/§18.5: a credential hold, a recorded cancel reason. */
