@@ -89,6 +89,19 @@ describe('surface evidence from a capture', () => {
     ]));
   });
 
+  it('R-13: a block declared consequence, permission, prerequisite or recovery is captured under that role; an unknown role is still partial', () => {
+    const material = ['consequence', 'permission', 'prerequisite', 'recovery'].map((role) => ({ id: role, role, text: `${role} line`, collapsed: false, nested: false }));
+    const r = ok(composeSurfaceEvidence(raw({ blocks: material }), ctx()));
+    expect(r.evidence.visible.blocks.map((b) => b.role)).toEqual(['consequence', 'permission', 'prerequisite', 'recovery']);
+    expect(r.evidence.coverage.renderedText).toBe('complete');
+    expect(r.notes).toEqual([]);
+
+    const unknown = ok(composeSurfaceEvidence(raw({ blocks: [...material, { id: 'w', role: 'warning', text: 'Unknown role', collapsed: false, nested: false }] }), ctx()));
+    expect(unknown.evidence.visible.blocks).toHaveLength(4);
+    expect(unknown.evidence.coverage.renderedText).toBe('partial');
+    expect(unknown.notes).toEqual([expect.stringContaining('"warning" is not one of')]);
+  });
+
   it('no capture without a commit, a rendered surface, exactly one of it, or evidence that passes screening', () => {
     expect(composeSurfaceEvidence(raw(), ctx({ commitSha: undefined }))).toMatchObject({ ok: false, reason: expect.stringContaining('capture_sha_unset') });
     expect(composeSurfaceEvidence(raw(), ctx({ commitSha: 'abc' }))).toMatchObject({ ok: false });
