@@ -38,4 +38,10 @@ describe('verification declarations on write', () => {
     const r = createSpecDraft(user, { workspaceId: WS, title: 'Card', body: '- AC-1: Plain.\n  check: bun test' });
     await expect(r).rejects.toThrow(/db\.\w+ touched/);
   });
+
+  it('canonical key=value declarations pass write and revision validation before database authorization', async () => {
+    const body = '- AC-1: Card.\n  verify: verifier=ui.action-state@1 profile=buildd-ui@1 mode=required evidence=ui.text,ui.actions,ui.state\n  scenarios: closed-pr@mobile';
+    await expect(createSpecDraft(user, { workspaceId: WS, title: 'Card', body })).rejects.toThrow(/db\.\w+ touched/);
+    await expect(reviseSpecDraft(user, SPEC, { expectedVersion: 1, body })).rejects.toThrow(/db\.\w+ touched/);
+  });
 });
