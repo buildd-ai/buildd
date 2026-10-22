@@ -60,6 +60,28 @@ export function attemptsNotInPrHistory<T extends { id: string }>(attempts: reado
   return attempts.filter(a => !inPrHistory.has(a.id));
 }
 
+const ATTEMPT_KEY = /^\s*\[[^\]·]*·\s*(after CI|after review|after conflict|migration collision|semantic overlap|split migrations)\s*#(\d+)\]/i;
+const ATTEMPT_TRIGGER: Record<string, string> = {
+  'after ci': 'After CI failure', 'after review': 'After review', 'after conflict': 'After merge conflict',
+  'migration collision': 'After a migration clash', 'semantic overlap': 'After overlapping work', 'split migrations': 'To split migrations',
+};
+const ATTEMPT_ENDING: Record<string, string> = {
+  completed: 'done', cancelled: 'cancelled', failed: 'failed', pending: 'queued', assigned: 'running', in_progress: 'running',
+};
+
+/**
+ * An attempt row under Related tasks: what started it and how it ended
+ * ("After CI failure · done"). Its title is the parent's behind a machine key,
+ * so the title alone makes every row read alike.
+ */
+export function attemptRowLabel(a: { title?: string | null; status: string }): string {
+  const t = a.title ?? '';
+  const key = ATTEMPT_KEY.exec(t);
+  const n = key ? Number(key[2]) : 1;
+  const trigger = key ? `${ATTEMPT_TRIGGER[key[1].toLowerCase()]}${n > 1 ? ` ${n}` : ''}` : /^\s*\[reviewer\b/i.test(t) ? 'Review' : 'Retry';
+  return `${trigger} · ${ATTEMPT_ENDING[a.status] ?? a.status.replace(/_/g, ' ')}`;
+}
+
 const norm = (s: string) =>
   s.replace(/\r\n/g, '\n').replace(/^#+\s*summary\s*$/gim, '').replace(/\s+/g, ' ').trim().toLowerCase();
 

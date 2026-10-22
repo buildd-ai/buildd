@@ -52,8 +52,11 @@ describe('deriveTaskChecks', () => {
     expect(row(deriveTaskChecks(V({ state: 'APPROVED', approvedCurrentHead: true })), 'merge')?.result).toBe('Awaiting merge');
   });
 
-  test('copy catalog: a superseded PR reads Merged in another PR, never Landed', () => {
-    expect(row(deriveTaskChecks(V({ state: 'SUPERSEDED', prState: 'closed' })), 'merge')).toMatchObject({ state: 'closed', result: 'Merged in another PR' });
+  test('a superseded PR passes Merge: Merged in #N from the supersession record, never a closed ✕', () => {
+    const superseded = V({ state: 'SUPERSEDED', prState: 'closed', supersededBy: { prNumber: 5408, url: 'https://github.com/o/r/pull/5408', reason: 'r' } });
+    expect(row(deriveTaskChecks(superseded), 'merge')).toMatchObject({ state: 'passed', result: 'Merged in #5408' });
+    // Copy catalog: without the merging PR's number it is still a merge elsewhere, never Landed.
+    expect(row(deriveTaskChecks(V({ state: 'SUPERSEDED', prState: 'closed' })), 'merge')).toMatchObject({ state: 'passed', result: 'Merged in another PR' });
   });
 
   test('AC-5: round 2 approved is current; round 1 and its fix are history', () => {

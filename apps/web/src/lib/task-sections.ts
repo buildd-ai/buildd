@@ -91,7 +91,7 @@ export function taskDeliverySections(
   const prUrl = prWorker?.prUrl
     ?? (v.repoFullName && v.prNumber != null ? `https://github.com/${v.repoFullName}/pull/${v.prNumber}` : null);
   return {
-    delivery: { headline: v.headline, owner: v.owner, needsYou: v.needsYou, stage: v.stage, detail: v.detail, prState: v.prState, state: v.state, escalationTitle: v.escalation?.title ?? null },
+    delivery: { headline: v.headline, owner: v.owner, needsYou: v.needsYou, stage: v.stage, detail: v.detail, prState: v.prState, state: v.state, escalationTitle: v.escalation?.title ?? null, supersededByPr: v.supersededBy?.prNumber ?? null },
     checks: {
       checks: deriveTaskChecks(v),
       prNumber: v.prNumber,

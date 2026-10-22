@@ -96,7 +96,7 @@ import { AskAboutLink } from '@/components/chat/ChatEntry';
 import { missionContextBarFor, missionContextDeliveryTaskIds, type MissionContextBarData } from './mission-context-bar';
 import { missionContextReads, missionContextRowOf } from './mission-context-load';
 import { truncateExcerpt } from './error-excerpt';
-import { attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, isMeaningfulPlan, partitionChildTasks, selectExecutionPlan } from './execution-plan';
+import { attemptRowLabel, attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, isMeaningfulPlan, partitionChildTasks, selectExecutionPlan } from './execution-plan';
 import type { MissionCardRow } from '@/lib/mission-card-view';
 import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
 import WorkerSteerPanel from './WorkerSteerPanel';
@@ -979,6 +979,7 @@ async function TaskDetailPage({
     inRelease: !!shippedRelease,
     // §17.5: a kernel-owned PR's state is the delivery's, not the columns'.
     deliveryPrState: deliveryView?.prState ?? null,
+    deliverySupersededBy: deliveryView?.supersededBy ?? null,
   }), review: reviewOutcome,
     waitingOnFailed: failureWaitingOn,
     escalation: escalationCopy && deliveryView?.escalation
@@ -1879,10 +1880,12 @@ async function TaskDetailPage({
                         <Link
                           href={taskPageHref({ taskId: sub.id, missionId: task.missionId })}
                           className="min-w-0 text-sm text-primary-400 hover:underline [overflow-wrap:anywhere]"
+                          title={sub.title}
                         >
-                          {displayTaskTitle(sub.title)}
+                          {/* An attempt's title is this task's again: it reads by what started it and how it ended. */}
+                          {label === 'Attempts' ? attemptRowLabel(sub) : displayTaskTitle(sub.title)}
                         </Link>
-                        <StatusPill status={deriveDisplayStatus(sub.status)} />
+                        {label !== 'Attempts' && <StatusPill status={deriveDisplayStatus(sub.status)} />}
                       </div>
                     ))}
                   </div>
