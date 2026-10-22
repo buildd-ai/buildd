@@ -391,7 +391,7 @@ Recipient terminal → returns { delivered: false, reason: "recipient_terminal" 
 Rate limit: 5 messages per sender per minute per recipient task (retryAfter in error).
 Body size limit: 2 KB. Hop cap: 5 (prevents ping-pong loops — messages with hopCount >= 5 are dropped).
 
-Requires a worker context: ?worker=<workerId> in the MCP URL, or pass workerId (it must be reachable by your token).`,
+Requires a worker context (?worker=<workerId> in the MCP URL).`,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
