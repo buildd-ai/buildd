@@ -74,6 +74,8 @@ describe('cloud clone: bases and resume branches come in on demand', () => {
     expect(r).not.toBeNull();
     expect(r!.base).toBe('origin/mission/x');
     expect(r!.fallback).toBeUndefined();
+    // A fresh claim cut from a base, however far ahead of trunk: not a resumed checkpoint.
+    expect(r!.resumed).toBeUndefined();
     expect(git(r!.path, 'rev-parse', 'HEAD')).toBe(git(origin, 'rev-parse', 'mission/x'));
     expect(fetches().some(c => c.includes('refs/heads/mission/x') && c.includes(`'--depth' '${CLOUD_BRANCH_FETCH_DEPTH}'`))).toBe(true);
     // Still shallow; only the one branch came in.
@@ -114,6 +116,7 @@ describe('cloud clone: bases and resume branches come in on demand', () => {
     expect(r!.base).toBe('origin/buildd/resume-1');
     expect(r!.branch).toBe('buildd/resume-1');
     expect(r!.fallback).toBeUndefined();
+    expect(r!.resumed).toEqual({ from: 'buildd/resume-1' });
     expect(git(r!.path, 'rev-parse', 'HEAD')).toBe(git(origin, 'rev-parse', 'buildd/resume-1'));
   });
 
@@ -135,6 +138,25 @@ describe('cloud clone: bases and resume branches come in on demand', () => {
     const r = await setupWorktree(repo, 'buildd/task-3', 'dev', WORKER, { resumeBranch: 'buildd/never-pushed', baseBranch: 'mission/x' });
     expect(r!.base).toBe('origin/mission/x');
     expect(r!.fallback).toEqual({ candidate: 'buildd/never-pushed', reason: 'missing' });
+    // The resume fell back to a fresh base: the tree is not the prior attempt's.
+    expect(r!.resumed).toBeUndefined();
+  });
+
+  test('a usage-limit checkpoint on the task branch, with no resumeBranch in the brief, is reported as resumed', async () => {
+    // The prior attempt hit a usage limit and pushed its unfinished work as a
+    // WIP checkpoint. The retry's brief names no resumeBranch; setupWorktree
+    // resumes from origin/<branch> because it carries commits beyond trunk.
+    const seed = join(dir, 'seed');
+    cp.execFileSync('git', ['clone', '-q', '--branch', 'dev', origin, seed], { stdio: 'pipe' });
+    git(seed, 'checkout', '-q', '-b', 'buildd/checkpointed');
+    commitIn(seed, 'wip.txt');
+    git(seed, 'push', '-q', 'origin', 'buildd/checkpointed');
+
+    const repo = cloudClone();
+    const r = await setupWorktree(repo, 'buildd/checkpointed', 'dev', WORKER, {});
+    expect(r!.base).toBe('origin/buildd/checkpointed');
+    expect(r!.resumed).toEqual({ from: 'buildd/checkpointed' });
+    expect(git(r!.path, 'rev-parse', 'HEAD')).toBe(git(origin, 'rev-parse', 'buildd/checkpointed'));
   });
 
   test('a stale local copy of the task branch whose commits are on origin is checked against origin/<branch>, fetched on demand', async () => {
@@ -161,6 +183,7 @@ describe('host clone: unchanged', () => {
     const repo = hostClone();
     const r = await setupWorktree(repo, 'buildd/task-1', 'main', WORKER, { baseBranch: 'mission/x' });
     expect(r!.base).toBe('origin/mission/x');
+    expect(r!.resumed).toBeUndefined();
     expect(fetches()).toEqual(['git fetch origin']);
   });
 
