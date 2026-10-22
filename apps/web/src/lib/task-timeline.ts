@@ -24,7 +24,7 @@ export interface TaskTimelineInput {
   kind: DeliveryKind;
   delivery?: DeliveryView | null;
   lineage?: readonly LineageStep[];
-  ciAttemptTasks?: readonly { id: string; status: string }[];
+  ciAttemptTasks?: readonly { id: string; status: string; workers?: readonly unknown[] }[];
 }
 const stateOf = (status: string): TimelineEvent['state'] => status === 'completed' ? 'passed' : status === 'failed' ? 'failed' : ['running', 'in_progress', 'assigned', 'starting'].includes(status) ? 'running' : 'muted';
 const event = (id: string, label: string, state: TimelineEvent['state'], detail: string | null = null, taskId?: string | null): TimelineEvent => ({ id, label, detail, state, taskId, children: [] });
@@ -75,10 +75,14 @@ export function buildTaskTimeline(input: TaskTimelineInput): TimelineGroup[] {
   } else {
     let cause: TimelineEvent | null = null;
     let retryIndex = 0;
+    const retries = input.ciAttemptTasks ?? [];
+    const ranRetries = retries.filter(t => !t.workers || t.workers.length > 0);
+    const shown = new Set<string>();
     for (const [i, step] of (input.lineage ?? []).entries()) {
       if (step.kind === 'attempt') {
         if ((step.n ?? 1) > 1 && cause) {
-          const task = input.ciAttemptTasks?.[retryIndex++];
+          const task = ranRetries[retryIndex++];
+          if (task) shown.add(task.id);
           cause.children.push(event(`legacy:fix:${i}`, `Fix ${retryIndex}`, task ? stateOf(task.status) : 'muted', step.sub || null, task?.id));
         }
         continue;
@@ -87,6 +91,13 @@ export function buildTaskTimeline(input: TaskTimelineInput): TimelineGroup[] {
       const row = event(`legacy:${i}`, step.title, step.kind === 'ci_failed' ? 'failed' : step.kind === 'ci_running' ? 'running' : 'passed', step.sub || null);
       (step.kind === 'merged' ? deliver : verify).push(row);
       if (step.kind === 'ci_failed') cause = row;
+    }
+    // A dispatched legacy fix is still an attempt before a worker claims it.
+    // It must not shift the links assigned to fixes that actually ran.
+    for (const task of retries.filter(t => !shown.has(t.id))) {
+      const failure = event(`legacy:cause:${task.id}`, 'CI fix requested', 'failed');
+      failure.children.push(event(`legacy:fix:${task.id}`, 'Fix queued', task.status === 'pending' ? 'pending' : stateOf(task.status), null, task.id));
+      verify.push(failure);
     }
   }
   // Future stages have only their name in the track; no empty card.

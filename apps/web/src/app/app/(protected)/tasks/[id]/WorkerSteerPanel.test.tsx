@@ -27,11 +27,17 @@ describe('WorkerSteerPanel — message delivery states (B-12)', () => {
     { type: 'response' as const, message: 'ok', timestamp: 6 },
   ];
 
-  test('does not add a separate Communication section to the live controls', () => {
+  test('every human message shows its state as text, not colour alone', () => {
     const html = render({ instructionHistory: history });
-    expect(html).not.toContain('Communication');
-    expect(html).not.toContain('instruction-history');
-    expect(html).toContain('worker-instruct-form');
+    expect(html).toContain('data-state="queued"');
+    expect(html).toContain('data-state="delivered"');
+    expect(html).toContain('data-state="acknowledged"');
+    expect(html).toContain('Queued');
+    expect(html).toContain('Delivered');
+    expect(html).toContain('Read by the agent');
+    // The agent's own reply carries no delivery chip.
+    expect((html.match(/data-testid="message-delivery-state"/g) ?? []).length).toBe(3);
+    expect(html).not.toContain('Pending delivery');
   });
 
   test('undelivered messages from the earlier run show Not received and a 44px Resend', () => {
@@ -118,4 +124,11 @@ describe('WorkerSteerPanel', () => {
   test('an idle local session still holds a slot, so it still gets Release slot', () => {
     expect(render({ runner: 'mcp', status: 'idle' })).toContain('worker-release-slot-btn');
   });
+});
+
+test('the task page can hide the separate Communication section while keeping steering', () => {
+  const html = render({ showHistory: false, instructionHistory: [{ id: 'sent', type: 'instruction', message: 'a sent message', timestamp: 1 }] });
+  expect(html).not.toContain('Communication');
+  expect(html).not.toContain('a sent message');
+  expect(html).toContain('worker-instruct-form');
 });

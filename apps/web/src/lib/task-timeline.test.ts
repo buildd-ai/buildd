@@ -38,3 +38,8 @@ describe('task timeline', () => {
     expect(build({ workers: [], kind: 'waiting' })).toEqual([]);
   });
 });
+it('keeps a legacy fix that has no worker yet, without using it for a later completed fix', () => {
+  const groups = build({ lineage: [{ kind: 'ci_failed', title: 'CI failed', sub: '', at: null }, { kind: 'attempt', n: 2, title: 'CI fix 1', sub: '', at: null }], ciAttemptTasks: [{ id: 'queued', status: 'pending', workers: [] }, { id: 'ran', status: 'completed', workers: [{}] }] });
+  expect(groups[1].events[0].children[0].taskId).toBe('ran');
+  expect(groups[1].events.flatMap(e => e.children).some(e => e.taskId === 'queued')).toBe(true);
+});

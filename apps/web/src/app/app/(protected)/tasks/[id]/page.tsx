@@ -1517,7 +1517,7 @@ async function TaskDetailPage({
                 roleName,
               })}
               focusAnswer={focusAnswer}
-              controls={<WorkerSteerPanel {...workerSteerProps(activeWorker, taskWorkers, isTerminal)} />}
+              controls={<WorkerSteerPanel {...workerSteerProps(activeWorker, taskWorkers, isTerminal)} showHistory={false} />}
             />
           </div>
         )}

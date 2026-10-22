@@ -14,6 +14,8 @@ interface Props {
   /** An open question is answered in the hero; /instruct is the wrong path for it. */
   hasUnansweredQuestion: boolean;
   instructionHistory: InstructionHistoryEntry[];
+  /** Task pages keep messages out of the default flow; other consumers retain receipts. */
+  showHistory?: boolean;
   /**
    * The previous run of this task, when there is one: its messages the run
    * ended before reading are shown here, each with Resend (to this run).
@@ -34,7 +36,7 @@ interface Props {
  * can stop it. It gets "Release slot" instead: buildd stops counting it and
  * frees its seat; the session itself keeps running.
  */
-export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuestion, instructionHistory, runner, taskTerminal = false, earlierRun = null }: Props) {
+export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuestion, instructionHistory, runner, taskTerminal = false, earlierRun = null, showHistory = true }: Props) {
   const router = useRouter();
   const [confirm, setConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -138,6 +140,7 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
         </div>
         {error && <p data-testid="worker-abort-error" className="text-sm text-status-error">{error}</p>}
         {earlier}
+        {showHistory && !taskTerminal && !hasUnansweredQuestion && <InstructionHistory history={instructionHistory} workerStatus={status} />}
 
       </div>
     );
@@ -206,6 +209,7 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
       )}
       {error && <p data-testid="worker-abort-error" className="text-sm text-status-error">{error}</p>}
       {earlier}
+      {showHistory && !hasUnansweredQuestion && <InstructionHistory history={instructionHistory} workerStatus={status} />}
 
     </div>
   );
