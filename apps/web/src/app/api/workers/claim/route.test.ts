@@ -331,6 +331,8 @@ mock.module('@/lib/gate-ledger', () => ({
 // One open retry per retry family (rules and store tested in
 // lib/supersession*.test.ts). Here only the wiring: a claim asks the guard about
 // each attempt, and an attempt it cancels is skipped, never claimed.
+const mockOpenOwnerQuestion = mock((_taskId: string) => Promise.resolve<string | null>(null));
+mock.module('@/lib/owner-blocked-fix', () => ({ openOwnerQuestion: mockOpenOwnerQuestion }));
 const mockGuardClaimedRetry = mock((_task: any) => Promise.resolve(false));
 mock.module('@/lib/supersession', () => ({
   guardClaimedRetry: mockGuardClaimedRetry,
@@ -9964,6 +9966,18 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(mockCancelSkippedTask).toHaveBeenCalledWith('task-1', 'fix_not_needed');
     expect(data.diagnostics.deferrals.fix_not_needed).toBe(1);
     expect(data.diagnostics.taskExclusion.code).toBe('fix_not_needed');
+  });
+
+  it('a fix attempt that ended on an unanswered owner question is held, not claimed or revalidated', async () => {
+    mockClaimKernelFix.mockReset();
+    mockOpenOwnerQuestion.mockResolvedValueOnce('The branch carries commits that are not this task\'s. Split it?');
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'attempt', deliveryId: 'delivery-1', deliveryRole: 'ci_fix', context: {} })]);
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(mockClaimKernelFix).not.toHaveBeenCalled();
+    expect(data.diagnostics.deferrals.awaiting_owner_answer).toBe(1);
+    expect(data.diagnostics.taskExclusion.code).toBe('awaiting_owner_answer');
   });
 
   it('T9: a kernel fix that cannot be revalidated (GitHub unreadable) is rolled back to pending, not cancelled', async () => {

@@ -906,6 +906,15 @@ same `L` gets its own tries and its own T22, never the first visit's spent keys 
 
 ---
 
+### 9.x PR scope, owner-blocked fixes, and review findings across attempts
+
+Four rules keep a PR from stalling silently when its work is not the task's alone.
+
+1. **Scope guard at PR time.** When `create_pr` registers (or adopts) a head an interactive session chose itself (`interactive_head`), the commits on that head since its merge-base with the PR base are compared with the task's claim. A non-merge commit authored before the task's worker was claimed is foreign; the call is refused (`scope_foreign_commits`, 400) naming the commits and the two fixes (a fresh branch from the base, or move those commits off the head). A session may pass `scopeOverride` with a reason; it is recorded as a `bypassed` PR-ownership gate event and an `allowed` capability decision (`scope_override`). The check fails open on anything it cannot read. Code: `apps/web/src/lib/pr-scope.ts`, wired in `apps/web/src/app/api/github/pr/route.ts`.
+2. **Claim-time hint.** An interactive claim that reports `sessionBranch` and `sessionCommitsAhead > 0` for a branch other than the assigned one gets `branchHint` on the claimed worker, recommending the assigned branch. The session's branch is never changed. Code: `apps/web/src/lib/claim-branch-hint.ts`.
+3. **Owner-blocked fixes are needs-you.** A fix attempt that ended on an open blocking question (a question, or a `post_note` question with no default) makes `deriveDeliveryView` report `owner: human`, `stage: needs_you` and the question as `detail`, in any non-terminal state, instead of `fix queued`. `landing-blocker` reads it as `human_decision`. The claim holds that attempt (`awaiting_owner_answer`) until the note is answered, so it is not requeued into the same question. Code: `apps/web/src/lib/owner-blocked-fix.ts`, `packages/workflow-kernel/src/projections.ts`.
+4. **No silent cancel.** A review fix cancelled because another attempt holds the PR (`open_retry_supersedes_duplicate`) hands its description, the review findings, to the holding attempts: appended to their task once (marker `review-findings-carried:<id8>`) and queued to any live worker. Code: `carryFindings` in `apps/web/src/lib/supersession-store.ts`.
+
 ## 10. Transactional outbox and effects
 
 ### 10.1 Contract

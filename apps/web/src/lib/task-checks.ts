@@ -71,7 +71,7 @@ export interface TaskChecks {
 }
 
 export type ChecksInput = Pick<DeliveryView, 'state' | 'stateReason' | 'prNumber' | 'headSha' | 'prState' | 'rounds' | 'ledger' | 'approvedCurrentHead' | 'approvalBasis'>
-  & Partial<Pick<DeliveryView, 'findings'>>;
+  & Partial<Pick<DeliveryView, 'findings' | 'supersededBy'>>;
 
 function repairOf(a: AttemptSnapshot, v: ChecksInput): CheckRepair {
   return { label: repairLabelOf(a, v.ledger), status: repairPhaseOf(a, v), taskId: a.taskId };
@@ -152,7 +152,11 @@ function mergeRow(v: ChecksInput): CheckRow | null {
     case 'APPROVED': return { ...base, state: 'pending', result: 'Awaiting merge' };
     case 'CLOSED_UNMERGED':
     case 'ABANDONED': return { ...base, state: 'closed', result: 'Closed without merging' };
-    case 'SUPERSEDED': return { ...base, state: 'closed', result: 'Merged in another PR' };
+    // The change merged, in the PR the supersession record names: a pass, never a closed ✕.
+    case 'SUPERSEDED': {
+      const n = v.supersededBy?.prNumber;
+      return { ...base, state: 'passed', result: n != null ? `Merged in #${n}` : 'Merged in another PR' };
+    }
     case 'REPAIRING': {
       if (v.stateReason === 'behind') return { ...base, state: 'running', result: 'Updating branch' };
       if (v.stateReason === 'conflict' || v.stateReason === 'migration') {
