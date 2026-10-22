@@ -94,6 +94,10 @@ export const PAGE_MERGES = [
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   typescript: { ignoreBuildErrors: buildSkipsTypecheck(process.env) },
+  // Production source maps substantially increase Turbopack's native output
+  // memory and cache size. Keep maps in next dev; production stack traces
+  // refer to generated chunks instead. Next sets NODE_ENV for build/dev.
+  experimental: { turbopackSourceMaps: process.env.NODE_ENV !== 'production' },
   // @aws-sdk/client-s3 is on Next's default server-external list. Left
   // external, Turbopack loads it in `bun --bun next dev` through a hashed alias
   // (`@aws-sdk/client-s3-<hash>`) that Bun's resolver can't find, so every page

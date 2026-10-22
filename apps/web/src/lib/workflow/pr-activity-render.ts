@@ -16,8 +16,7 @@
  *    render older than the marker already on GitHub is skipped by the handler.
  */
 import { renderPrActivityComment, taskActivityUrl, type PrActivityEntry, type PrActivityKind, type ActivityHeader } from '@/lib/pr-activity-comment';
-import { closeCauseCopy, deriveDeliveryView, reviewSummaryLine, reviewSummaryOf } from './projections';
-import { reviewRoundsOf } from './delivery-rounds';
+import { closeCauseCopy, deriveDeliveryView } from './projections';
 import { decisionCopy, DECISION_LABELS } from './escalation-copy';
 import { signatureChecks } from './trunk-signature';
 import type { AttemptSnapshot, DeliveryState, KernelView, RoundSnapshot } from './types';
@@ -264,15 +263,10 @@ export function renderDeliveryActivity(p: {
     status: dv?.detail && dv.detail.length <= 80 ? dv.detail : undefined,
   };
   const body = renderPrActivityComment(entries, p.timezone, { header, stateBlock: false });
-  // §7 / AC-24: the same review line get_pr and the task page print.
-  const review = reviewSummaryOf(p.view);
-  const read = reviewRoundsOf(p.view.rounds);
-  const reviewLine = review
-    ? `Review: ${reviewSummaryLine(review)}${read ? `\nRounds: ${read.line}${read.githubNote ? `\n${read.githubNote}` : ''}` : ''}`
-    : '';
-  const findings = renderFindingsSummary(p.view);
+  // GitHub already carries actionable review findings. Keep review history,
+  // provenance and finding dispositions on the linked Buildd task.
   const decision = dv?.escalation ? renderEscalationDecision(dv) : '';
-  return `${body}\n${decision ? `\n${decision}\n` : ''}${reviewLine ? `\n${reviewLine}\n` : ''}${findings ? `${findings}\n` : ''}${renderVersionMarker(d.version)}`;
+  return `${body}\n${decision ? `\n${decision}\n` : ''}${renderVersionMarker(d.version)}`;
 }
 
 /**
