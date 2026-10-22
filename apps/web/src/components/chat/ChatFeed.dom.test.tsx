@@ -303,10 +303,12 @@ describe('approval card', () => {
     expect(details.dataset.open).toBeUndefined();
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(toggle.textContent).toContain('Show details');
-    expect(toggle.textContent).toContain('4 criteria · constraints · plan');
+    expect(toggle.textContent).toContain('constraints · plan');
+    // Living Specs D-44: a new mission's draft proposes no hand-written criteria.
+    expect(toggle.textContent).not.toContain('criteri');
     const title = q('[data-testid="approval-card"] .kit-card-title')!;
     expect(details.contains(title)).toBe(false);
-    expect(details.contains(q('[data-testid="approval-draft-criteria"]'))).toBe(true);
+    expect(q('[data-testid="approval-draft-criteria"]')).toBeNull();
     await act(async () => { toggle.click(); });
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(toggle.textContent).toContain('Hide details');

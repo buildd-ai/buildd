@@ -69,8 +69,9 @@ describe('composition root', () => {
     expect(byEvent('worker.finished')).toEqual(['knowledge:memory-use-labels']);
     expect(byEvent('spec.approved')).toEqual(['knowledge:living-spec-index']);
     expect(byEvent('task.needs_input')).toEqual(['notifications:ledger-task-needs-input']);
-    // A trunk merge refreshes no mission branch; a mission task starting does.
-    expect(byEvent('tasks.claimed')).toEqual(['missions:refresh-mission-branches-before-start']);
+    // A trunk merge refreshes no mission branch; a mission task starting does,
+    // and a mission's first build claim snapshots its standards (D-43).
+    expect(byEvent('tasks.claimed')).toEqual(['missions:refresh-mission-branches-before-start', 'missions:snapshot-standards-at-build-start']);
     expect(byEvent('pr.merged')).toEqual([
       'releases:release-record-prod-merge', 'releases:release-candidate-amend-on-fix', 'notifications:ledger-pr-merged',
     ]);

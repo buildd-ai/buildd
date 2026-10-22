@@ -126,7 +126,7 @@ export async function seedLargeTeam(scale: SeedScale = seedScale()): Promise<See
       st.s,
       (ARRAY['builder','builder','researcher','organizer'])[1 + g % 4],
       now() - (g % 180) * interval '1 day' - (g % 24) * interval '1 hour',
-      now() - (g % 180) * interval '1 day'
+      now() - (g % 180) * interval '1 day' - (g % 86400) * interval '1 second'
     FROM generate_series(1, ${scale.tasks}) g, m,
       LATERAL (SELECT CASE
         WHEN g % 200 = 0 THEN 'in_progress' WHEN g % 200 = 1 THEN 'pending' WHEN g % 200 = 2 THEN 'review'

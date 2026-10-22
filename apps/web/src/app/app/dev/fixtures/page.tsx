@@ -44,7 +44,6 @@ import RunnerSizeFixture from './RunnerSizeFixture';
 import RunnerIsolationFixture from './RunnerIsolationFixture';
 import WorkspacesListFixture from './WorkspacesListFixture';
 import HostedRunnerFixture from './HostedRunnerFixture';
-import TaskSheetFixture from './TaskSheetFixture';
 import InteractiveSessionsFixture from './InteractiveSessionsFixture';
 import RunActivityFixture from './RunActivityFixture';
 import { RUN_ACTIVITY_FIXTURE_STATE } from './run-activity-fixtures';
@@ -108,7 +107,6 @@ import {
     MISSION_DETAIL_COMPACT_FIXTURE_STATE,
     BRANCH_PANEL_FIXTURE_STATE,
     HOME_CARDS_FIXTURE_STATE,
-    TASK_SHEET_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
     visualReviewFixtureLinks,
@@ -275,9 +273,6 @@ export default function DevFixturesPage() {
     }
     if (state === HOSTED_RUNNER_FIXTURE_STATE) {
         return <HostedRunnerFixture />;
-    }
-    if (state === TASK_SHEET_FIXTURE_STATE) {
-        return <TaskSheetFixture />;
     }
     if (state === SERVICE_STATUS_FIXTURE_STATE) {
         return <ServiceStatusFixture />;

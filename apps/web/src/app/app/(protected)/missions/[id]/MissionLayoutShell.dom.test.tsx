@@ -66,6 +66,33 @@ function tab(layout: string): HTMLButtonElement {
   return host!.querySelector(`[role="tab"][data-layout="${layout}"]`) as HTMLButtonElement;
 }
 
+describe('a Flow link below md lands on the mission page (spec d25d923d R-2)', () => {
+  it('at 390px, ?layout=flow switches to Overview and asks for it; at desktop width it stays Flow', async () => {
+    const realMatch = window.matchMedia;
+    const run = async (phone: boolean) => {
+      window.matchMedia = ((q: string) => ({ matches: phone && q === '(max-width: 767.98px)', media: q, addEventListener() {}, removeEventListener() {} })) as never;
+      nativeReplaceState({ __NA: true }, '', '/app/missions/m1?layout=flow');
+      routerUrl = '/app/missions/m1?layout=flow';
+      host = document.createElement('div');
+      document.body.appendChild(host);
+      const root = createRoot(host);
+      await act(async () => root.render(createElement(MissionLayoutShell, { initial: 'flow', board: null, flow: slot('flow'), feed: null })));
+      const out = { layout: host.querySelector('[data-testid="mission-layout"]')?.getAttribute('data-layout'), search: window.location.search, calls: [...routerCalls] };
+      await act(async () => root.unmount());
+      host.remove();
+      host = null;
+      routerCalls.length = 0;
+      return out;
+    };
+    try {
+      expect(await run(true)).toEqual({ layout: 'board', search: '', calls: ['refresh /app/missions/m1'] });
+      expect(await run(false)).toEqual({ layout: 'flow', search: '?layout=flow', calls: [] });
+    } finally {
+      window.matchMedia = realMatch;
+    }
+  });
+});
+
 describe('MissionLayoutShell builds one layout at a time (R-18)', () => {
   it('a tab the server never built asks for it once; a layout already shown switches back without asking', async () => {
     host = document.createElement('div');

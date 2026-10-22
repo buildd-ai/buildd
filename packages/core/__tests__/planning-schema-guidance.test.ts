@@ -57,16 +57,13 @@ describe('planningOutputSchema — agent-facing guidance', () => {
 });
 
 /**
- * PlanStep.pathManifest and PlanningStructuredOutput.goalCriteria restore
- * fields an approved plan's child tasks currently skip: pathManifest is the
- * conflict-serialization metadata create_task normally attaches, and
- * goalCriteria lets the planning agent propose the mission-level completion
- * gates validateGoalCriteria (packages/core/mission-helpers.ts) checks. Both
- * are optional — a plan step without pathManifest and a structured output
- * without goalCriteria must stay valid, so existing plans keep working
- * unchanged.
+ * PlanStep.pathManifest restores the conflict-serialization metadata
+ * create_task normally attaches; it is optional so existing plans keep
+ * working. A plan proposes no mission goal criteria: hand-written criteria
+ * are retired (Living Specs D-44), and a mission's "done" is the spec it
+ * delivers.
  */
-describe('planningOutputSchema — pathManifest and goalCriteria', () => {
+describe('planningOutputSchema — pathManifest, and no goal criteria', () => {
   const stepProps = (planningOutputSchema as any).properties.plan.items.properties;
   const topProps = (planningOutputSchema as any).properties;
 
@@ -79,52 +76,18 @@ describe('planningOutputSchema — pathManifest and goalCriteria', () => {
     expect((planningOutputSchema as any).properties.plan.items.required).not.toContain('pathManifest');
   });
 
-  it('declares goalCriteria at the mission level, not per-step', () => {
-    expect(topProps.goalCriteria).toBeDefined();
+  it('offers no goalCriteria, at the mission level or per step (D-44)', () => {
+    expect(topProps.goalCriteria).toBeUndefined();
     expect(stepProps.goalCriteria).toBeUndefined();
-    expect(topProps.goalCriteria.type).toBe('array');
-    expect(topProps.goalCriteria.items.type).toBe('object');
+    expect(JSON.stringify(planningOutputSchema)).not.toContain('notMechanizableReason');
   });
 
-  it('does not require goalCriteria on the structured output', () => {
-    expect((planningOutputSchema as any).required).not.toContain('goalCriteria');
-  });
-
-  it('requires type on each goalCriteria item, reusing the GoalCriterion vocabulary', () => {
-    expect(topProps.goalCriteria.items.required).toEqual(['type']);
-    expect(topProps.goalCriteria.items.properties.type.enum).toEqual([
-      'all_prs_merged',
-      'command',
-      'no_open_tasks',
-      'artifact_exists',
-      'metric',
-      'description',
-    ]);
-  });
-
-  it('accepts a plan step without pathManifest and an output without goalCriteria', () => {
-    // Type-level round-trip: this must compile unchanged for existing plans.
-    const step: PlanStep = { ref: 'a', title: 'A', description: 'do a' };
-    const output: PlanningStructuredOutput = { plan: [step], summary: 's', missionComplete: false };
+  it('accepts a plan step with or without pathManifest', () => {
+    const bare: PlanStep = { ref: 'a', title: 'A', description: 'do a' };
+    const step: PlanStep = { ...bare, pathManifest: ['apps/web/src/lib/foo.ts'] };
+    const output: PlanningStructuredOutput = { plan: [bare, step], summary: 's', missionComplete: false };
     expect(output.plan[0]?.pathManifest).toBeUndefined();
-    expect(output.goalCriteria).toBeUndefined();
-  });
-
-  it('accepts a plan step with pathManifest and an output with goalCriteria', () => {
-    const step: PlanStep = {
-      ref: 'a',
-      title: 'A',
-      description: 'do a',
-      pathManifest: ['apps/web/src/lib/foo.ts'],
-    };
-    const output: PlanningStructuredOutput = {
-      plan: [step],
-      summary: 's',
-      missionComplete: false,
-      goalCriteria: [{ type: 'command', command: 'bun run test' }],
-    };
-    expect(output.plan[0]?.pathManifest).toEqual(['apps/web/src/lib/foo.ts']);
-    expect(output.goalCriteria?.[0]?.type).toBe('command');
+    expect(output.plan[1]?.pathManifest).toEqual(['apps/web/src/lib/foo.ts']);
   });
 });
 

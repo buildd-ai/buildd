@@ -99,7 +99,7 @@ export function VisualReviewSheetBody({ missionId, onClose }: { missionId: strin
   const taskId = visualReviewOnMission(outcome) ? outcome.taskId : preview?.existing?.taskId ?? review?.model.audit?.id ?? null;
   const details = taskId ? (
     <a
-      href={missionTaskHref({ missionId, taskId, mode: 'sheet' })}
+      href={missionTaskHref({ missionId, taskId })}
       data-task-id={taskId}
       onClick={onClose}
       className="font-mono text-eyebrow text-text-muted underline hover:text-text-secondary"

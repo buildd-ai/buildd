@@ -100,12 +100,12 @@ describe('terms catalog: landing reads GitHub’s words (§2.2)', () => {
 
 describe('terms catalog: waiting, blocked, ready (§2.3)', () => {
   it.each([
-    ['task.status', 'pending', 'Ready'],
-    ['worker.status', 'idle', 'Ready'],
-    ['strip', 'ready', 'Ready'],
-    ['strip', 'queued', 'Blocked'],
-    ['strip', 'blocked', 'Blocked'],
-    ['waiting', 'dep_declared', 'Blocked'],
+    ['task.status', 'pending', 'Queued'],
+    ['worker.status', 'idle', 'Queued'],
+    ['strip', 'ready', 'Queued'],
+    ['strip', 'queued', 'Waiting on a task'],
+    ['strip', 'blocked', 'Waiting on a task'],
+    ['waiting', 'dep_declared', 'Waiting on a task'],
     ['worker.status', 'waiting_input', 'Has a question'],
     ['strip', 'waiting', 'Has a question'],
     ['strip', 'needs_you', 'Waiting on you'],
@@ -125,12 +125,12 @@ describe('terms catalog: waiting, blocked, ready (§2.3)', () => {
 
 describe('terms catalog: building, verifying, working (§2.4)', () => {
   it.each([
-    ['task.status', 'assigned', 'Working'],
-    ['task.status', 'in_progress', 'Working'],
-    ['worker.status', 'starting', 'Working'],
-    ['worker.status', 'running', 'Working'],
-    ['strip', 'running', 'Working'],
-    ['kernel', 'WORKING', 'Working'],
+    ['task.status', 'assigned', 'Running'],
+    ['task.status', 'in_progress', 'Running'],
+    ['worker.status', 'starting', 'Running'],
+    ['worker.status', 'running', 'Running'],
+    ['strip', 'running', 'Running'],
+    ['kernel', 'WORKING', 'Running'],
     ['strip', 'review', 'In review'],
     ['kernel', 'AWAITING_REVIEW', 'In review'],
     ['strip', 'fixing', 'Fixing'],
@@ -154,13 +154,13 @@ describe('terms catalog: building, verifying, working (§2.4)', () => {
 
 describe('BANNED_WORDS (slice 2)', () => {
   it.each([
-    'Auditing', 'In audit', 'Repairing', 'Pending', 'Queued', 'Never started', 'Assigned', 'Starting', 'Running now',
+    'Auditing', 'In audit', 'Repairing', 'Pending', 'Never started', 'Assigned', 'Starting', 'Running now',
     'waiting for a worker', '3 of 6 busy', 'every slot is busy',
   ])('bans "%s"', (s) => {
     expect(bannedWordsIn(s).length).toBeGreaterThan(0);
   });
 
-  it.each(['Working', 'Ready', 'Blocked', 'Checking', 'Fixing', '2 of 3 slots in use', 'Waiting for an agent', 'a fix is queued behind CI'])(
+  it.each(['Queued', 'Running', 'Waiting on a task', 'Checking', 'Fixing', '2 of 3 slots in use', 'Waiting for an agent', 'a fix is queued behind CI'])(
     'allows "%s"', (s) => { expect(bannedWordsIn(s)).toEqual([]); });
 });
 
@@ -265,5 +265,11 @@ describe('terms catalog: runner, slot, agent (§2.7)', () => {
     expect(bannedWordsIn('Use the worker ID to report progress.').length).toBeGreaterThan(0);
     expect(bannedWordsIn('[LOCAL]', { reader: 'agent' }).length).toBeGreaterThan(0);
     expect(bannedWordsIn('on a subscription seat', { reader: 'agent' }).length).toBeGreaterThan(0);
+  });
+});
+
+describe('Navigation R-14 words', () => {
+  it('a policy gate a person must clear reads Approval required', () => {
+    expect(TERMS['decision.approval_required'].word).toBe('Approval required');
   });
 });

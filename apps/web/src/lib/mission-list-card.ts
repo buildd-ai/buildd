@@ -232,7 +232,7 @@ export function buildMissionListCard(
   const now = opts.now ?? Date.now();
   const tasks = row.tasks ?? [];
   const byId = new Map(tasks.map(t => [t.id, t]));
-  const link = (taskId: string) => missionTaskHref({ missionId: row.id, taskId, from: 'missions', mode: 'sheet' });
+  const link = (taskId: string) => missionTaskHref({ missionId: row.id, taskId, from: 'missions' });
   const schedule = row.schedule ?? null;
   // A heartbeat is the orchestrator's check-in on a goal mission, not a
   // cadence the owner asked for: every such mission would read "every 30m".

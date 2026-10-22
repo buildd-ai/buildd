@@ -9,6 +9,7 @@
  *
  * Display only: the actions post to the live routes, so do not press them here.
  */
+import { selectStripCell } from './strip-select';
 import { useEffect, useState } from 'react';
 import type { GoalCriterion } from '@buildd/shared';
 import MissionsBottomNav from '@/components/MissionsBottomNav';
@@ -44,7 +45,7 @@ export default function MissionDetailCompactFixture() {
   // `&select=`: open on that strip position, the way a tap would (the strip owns its selection).
   useEffect(() => {
     if (fixture?.selectIndex == null) return;
-    document.querySelectorAll<HTMLButtonElement>('[data-testid="task-strip"] button[data-id]')[fixture.selectIndex]?.click();
+    selectStripCell([...document.querySelectorAll<HTMLButtonElement>('[data-testid="task-strip"] button[data-id]')], fixture.selectIndex);
   }, [fixture]);
   if (!fixture) return <div className="min-h-screen bg-surface-1" />;
 
@@ -107,9 +108,6 @@ export default function MissionDetailCompactFixture() {
             <MissionOverview
               model={model}
               completionText={complete ? 'Shipped readable export schedules and limits, checked on a phone and a desk.' : null}
-              workspaceId={WORKSPACE_ID}
-              executor="runner"
-              deliveries={deliveries}
               {...link}
             />,
           )}

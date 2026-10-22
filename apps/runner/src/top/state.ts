@@ -1388,6 +1388,7 @@ export const DEFERRAL_WORDS: Record<string, string> = {
   oauth_parallelism: 'the plan allows only a few sessions at once',
   duplicate_worker: 'an agent already has it',
   sibling_retry_open: 'a retry of it is already open',
+  awaiting_owner_answer: 'it is waiting on your answer',
   fix_not_needed: 'its fix is no longer needed',
   kernel_unavailable: 'the workflow control plane did not answer',
   kernel_refused: 'the workflow control plane refused its fix claim',

@@ -44,8 +44,10 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
    and cited repo files. A body over 20,000 characters is not inlined: read it
    with `get_artifact` views (`outline`, then `section` or `grep`).
 2. **Draft:** `buildd action=manage_specs params={ action: "create_draft", title, body, scope, parentSpecId, changeSummary, repoRefs, design }`.
-   Only `title` and `body` are required. `scope` is `product`, `domain`,
-   `feature` (default) or `mission`. Write each criterion as a line starting
+   Only `title` and `body` are required. `scope` is `product`, `domain` or
+   `feature` (default); `mission` is retired, because a mission selects an
+   existing spec (`manage_missions update outcomeSpec`) and never has one
+   written for it. Write each criterion as a line starting
    `R-n` or `AC-n`. A criterion may carry a line `check: <command>` (buildd
    runs it at each PR head and records the exit code) or
    `screen: <id>, <id>` (screens of the design it covers).

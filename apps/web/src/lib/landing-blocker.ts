@@ -148,6 +148,10 @@ export function deriveLandingBlocker(p: {
       const head = d.headSha ? ` at ${d.headSha.slice(0, 7)}` : '';
       return { ...base, cause: 'review_pending', owner: 'platform', label: `${pr} is waiting for its review${head}`, nextAction: 'Nothing to do yet: it is merged once the review of its current head approves and checks are green.', derivedFrom: 'workflow_deliveries' };
     }
+    // A fix attempt ended asking a person (the delivery view says so): not "being fixed".
+    if (d.owner === 'human' && (d.state === 'CHANGES_REQUESTED' || d.state === 'FIXING' || d.state === 'REPAIRING')) {
+      return { ...base, cause: 'human_decision', owner: 'person', label: `${pr}: ${d.headline}`, nextAction: d.detail ?? 'A fix attempt is waiting on your answer; it is not retried until you reply.', derivedFrom: 'workflow_deliveries' };
+    }
     if (d.state === 'CHANGES_REQUESTED' || d.state === 'FIXING') {
       return { ...base, cause: 'fix_pending', owner: 'platform', label: `${pr} has review changes being fixed`, nextAction: 'Nothing to do yet: the fix is re-reviewed when it pushes.', derivedFrom: 'workflow_deliveries' };
     }

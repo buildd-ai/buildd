@@ -9,13 +9,11 @@ import {
   isAutomaticCheck,
   joinCriteriaState,
   plainCriteriaError,
-  validateCriterionInContext,
   verificationReadiness,
   type PlainError,
 } from '@/lib/goal-criteria-panel';
 import Switch from '@/components/ui/Switch';
 import OutcomeSpecCriterion from './OutcomeSpecCriterion';
-import { Select } from '@/components/ui/Select';
 
 interface Props {
   missionId: string;
@@ -25,8 +23,6 @@ interface Props {
   readonly?: boolean;
   /** PR numbers whose CI is currently failing — shown inline on all_prs_merged criterion. */
   failingCiPrNumbers?: number[];
-  /** Distinct PRs the mission has opened — lets the sheet offer the PR check in one tap. */
-  missionPrCount?: number;
   /** Why the mission is not verified now (the header pill's `verifiedHold`), shown first. */
   hold?: string | null;
   /**
@@ -74,8 +70,6 @@ function formatRelativeTime(isoString: string): string {
   return `${days}d ago`;
 }
 
-/* ── Add / Edit Criterion Form ── */
-
 /** A refusal in product words, with the validator's raw text behind a disclosure. */
 function PlainErrorMessage({ error, testId }: { error: PlainError; testId?: string }) {
   return (
@@ -91,249 +85,18 @@ function PlainErrorMessage({ error, testId }: { error: PlainError; testId?: stri
   );
 }
 
-export function AddCriterionForm({ initial, siblings = [], submitLabel = 'Add criterion', onAdd, onCancel }: {
-  /** Pre-fills the form for editing an existing criterion in place. */
-  initial?: GoalCriterion;
-  /**
-   * The other criteria saved alongside this one. The list-level rule (at least
-   * one automatic check) is judged against them — validating the new row alone
-   * refused a written goal even on a mission that already had an automatic check.
-   */
-  siblings?: GoalCriterion[];
-  submitLabel?: string;
-  onAdd: (c: GoalCriterion) => void;
-  onCancel: () => void;
-}) {
-  const [type, setType] = useState<GoalCriterionType>(initial?.type ?? 'command');
-  const [label, setLabel] = useState(initial?.label ?? '');
-  const [command, setCommand] = useState(initial?.type === 'command' ? initial.command : '');
-  const [artifactKey, setArtifactKey] = useState(initial?.type === 'artifact_exists' ? initial.key ?? '' : '');
-  const [artifactType, setArtifactType] = useState(initial?.type === 'artifact_exists' ? initial.artifactType ?? '' : '');
-  const [metricQuery, setMetricQuery] = useState(initial?.type === 'metric' ? initial.query : '');
-  const [metricOp, setMetricOp] = useState<'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq'>(initial?.type === 'metric' ? initial.operator : 'gte');
-  const [metricThreshold, setMetricThreshold] = useState(initial?.type === 'metric' ? String(initial.threshold) : '');
-  const [metricUnit, setMetricUnit] = useState(initial?.type === 'metric' ? initial.unit ?? '' : '');
-  const [description, setDescription] = useState(initial?.type === 'description' ? initial.description : '');
-  const [notMechanizableReason, setNotMechanizableReason] = useState(initial?.type === 'description' ? initial.notMechanizableReason ?? '' : '');
-  const [error, setError] = useState<PlainError | null>(null);
-
-  // Build the shape the API would receive; do NOT re-decide whether it is valid.
-  // The rules live in the write-boundary validator that POST/PATCH
-  // /api/missions already call, so this must not hold a second copy — it
-  // previously did, including a hand-written 10-character minimum.
-  function buildCriterion(): GoalCriterion {
-    const base = label ? { label } : {};
-    if (type === 'all_prs_merged') {
-      return { type, ...base };
-    }
-    if (type === 'no_open_tasks') return { type, ...base };
-    if (type === 'artifact_exists') return { type, ...base, key: artifactKey || undefined, artifactType: artifactType || undefined };
-    if (type === 'command') {
-      return { type, command: command.trim(), ...base } as GoalCriterion;
-    }
-    if (type === 'metric') {
-      return {
-        type,
-        query: metricQuery.trim(),
-        operator: metricOp,
-        threshold: parseFloat(metricThreshold),
-        unit: metricUnit || undefined,
-        ...base,
-      } as GoalCriterion;
-    }
-    return {
-      type,
-      description: description.trim(),
-      notMechanizableReason: notMechanizableReason.trim(),
-      ...base,
-    } as GoalCriterion;
-  }
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const candidate = buildCriterion();
-    // This used to `return null` from buildCriterion on any incomplete input
-    // and then `if (c) onAdd(c)` — so an empty command, an unparseable metric
-    // threshold, or a too-short reason produced a button that did nothing at
-    // all, with no message anywhere. Surface the validator's own words, which
-    // are the words the API's 400 would have used, said in product terms.
-    const message = validateCriterionInContext(candidate, siblings);
-    if (message) {
-      setError(message);
-      return;
-    }
-    setError(null);
-    onAdd(candidate);
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="border border-border-default rounded-sm p-3 space-y-3 bg-surface-2">
-      <div className="flex items-center gap-2">
-        <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Type</label>
-        <Select
-          aria-label="Criterion type"
-          value={type}
-          onChange={v => setType(v as GoalCriterionType)}
-          size="sm"
-          className="flex-1"
-          options={[
-            { value: 'command', label: 'Command passes', description: 'A script exits 0' },
-            { value: 'all_prs_merged', label: 'All PRs merged' },
-            { value: 'no_open_tasks', label: 'No open tasks' },
-            { value: 'artifact_exists', label: 'Artifact exists' },
-            { value: 'description', label: 'Written goal', description: 'Judged by AI, last resort' },
-          ]}
-        />
-      </div>
-
-      {type === 'description' && (
-        <>
-          <div className="flex items-start gap-2">
-            <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0 pt-1">Criteria</label>
-            <textarea
-              value={description}
-              onChange={e => setDescription(e.target.value)}
-              placeholder="e.g. Scorecard artifact produced covering all retrieval layers"
-              rows={2}
-              className="flex-1 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border resize-none"
-              required
-            />
-          </div>
-          <div className="flex items-start gap-2">
-            <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0 pt-1">Why not a script?</label>
-            <textarea
-              value={notMechanizableReason}
-              onChange={e => setNotMechanizableReason(e.target.value)}
-              placeholder="A prose verdict needs a live model. Say why no command / PR / artifact / task check can express this."
-              rows={2}
-              className="flex-1 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border resize-none"
-              required
-              minLength={10}
-            />
-          </div>
-        </>
-      )}
-
-      {type === 'command' && (
-        <div className="flex items-start gap-2">
-          <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0 pt-1">Command</label>
-          <input
-            value={command}
-            onChange={e => setCommand(e.target.value)}
-            placeholder="e.g. bun test"
-            className="flex-1 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
-            required
-          />
-        </div>
-      )}
-
-      {type === 'artifact_exists' && (
-        <>
-          <div className="flex items-center gap-2">
-            <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Key</label>
-            <input
-              value={artifactKey}
-              onChange={e => setArtifactKey(e.target.value)}
-              placeholder="e.g. deploy-url (optional)"
-              className="flex-1 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Type</label>
-            <input
-              value={artifactType}
-              onChange={e => setArtifactType(e.target.value)}
-              placeholder="e.g. summary (optional)"
-              className="flex-1 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
-            />
-          </div>
-        </>
-      )}
-
-      {type === 'metric' && (
-        <>
-          <div className="flex items-center gap-2">
-            <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Query</label>
-            <input
-              value={metricQuery}
-              onChange={e => setMetricQuery(e.target.value)}
-              placeholder="e.g. test_coverage"
-              className="flex-1 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
-              required
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Op</label>
-            <Select
-              aria-label="Comparison"
-              value={metricOp}
-              onChange={v => setMetricOp(v as typeof metricOp)}
-              size="sm"
-              className="w-20 shrink-0"
-              menuMinWidth={176}
-              options={[
-                { value: 'gte', label: '≥', description: 'at least' },
-                { value: 'gt', label: '>', description: 'more than' },
-                { value: 'lte', label: '≤', description: 'at most' },
-                { value: 'lt', label: '<', description: 'less than' },
-                { value: 'eq', label: '=', description: 'equal to' },
-                { value: 'neq', label: '≠', description: 'not equal to' },
-              ]}
-            />
-            <input
-              value={metricThreshold}
-              onChange={e => setMetricThreshold(e.target.value)}
-              placeholder="threshold"
-              type="number"
-              className="w-24 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
-              required
-            />
-            <input
-              value={metricUnit}
-              onChange={e => setMetricUnit(e.target.value)}
-              placeholder="unit (opt)"
-              className="flex-1 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
-            />
-          </div>
-        </>
-      )}
-
-      <div className="flex items-center gap-2">
-        <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Label</label>
-        <input
-          value={label}
-          onChange={e => setLabel(e.target.value)}
-          placeholder="Custom label (optional)"
-          className="flex-1 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border"
-        />
-      </div>
-
-      <div className="flex items-center gap-2 pt-1">
-        <button type="submit" className="px-3 py-1 text-meta font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors">
-          {submitLabel}
-        </button>
-        <button type="button" onClick={onCancel} className="px-3 py-1 text-meta text-text-muted hover:text-text-secondary transition-colors">
-          Cancel
-        </button>
-      </div>
-
-      {/* The refusal, in product words. Without this the button simply did nothing. */}
-      {error && <PlainErrorMessage error={error} testId="criterion-error" />}
-    </form>
-  );
-}
-
 /* ── Main Component ── */
-export default function MissionGoalCriteria({ missionId, criteria: initialCriteria, criteriaState: initialState, autoVerify: initialAutoVerify, readonly, failingCiPrNumbers, missionPrCount = 0, hold = null, liveStates = null }: Props) {
+export default function MissionGoalCriteria({ missionId, criteria: initialCriteria, criteriaState: initialState, autoVerify: initialAutoVerify, readonly, failingCiPrNumbers, hold = null, liveStates = null }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
-  const [criteria, setCriteria] = useState<GoalCriterion[]>(initialCriteria);
+  // Read-only list: hand-written criteria are retired (Living Specs D-44), so
+  // this legacy panel no longer adds, edits or removes them. A mission that
+  // carries them keeps them until it completes.
+  const criteria = initialCriteria;
   const [criteriaState, setCriteriaState] = useState<GoalCriteriaState | null>(initialState);
   const [autoVerify, setAutoVerify] = useState<boolean>(initialAutoVerify ?? true);
   const [runError, setRunError] = useState<PlainError | null>(null);
   const [isRunning, setIsRunning] = useState(false);
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [savingCriteria, setSavingCriteria] = useState(false);
   const [savingAutoVerify, setSavingAutoVerify] = useState(false);
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
 
@@ -373,47 +136,6 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
     }
   }
 
-  // Save criteria to API
-  async function saveCriteria(next: GoalCriterion[]) {
-    setSavingCriteria(true);
-    setRunError(null);
-    try {
-      const res = await fetch(`/api/missions/${missionId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ goalCriteria: next }),
-      });
-      if (!res.ok) {
-        // Silently swallowing this made the edit appear to undo itself: local
-        // state had already been updated optimistically and router.refresh()
-        // reverted it, with no clue that the write was rejected.
-        const body = await res.json().catch(() => ({}));
-        setRunError(plainCriteriaError(body.error ?? 'Couldn’t save the criteria. Try again.'));
-        setCriteria(criteria);
-        return;
-      }
-      startTransition(() => router.refresh());
-    } catch {
-      setRunError({ text: 'Could not reach buildd to save criteria.', detail: null });
-      setCriteria(criteria);
-    } finally {
-      setSavingCriteria(false);
-    }
-  }
-
-  async function handleAddCriterion(c: GoalCriterion) {
-    const next = [...criteria, c];
-    setCriteria(next);
-    setShowAddForm(false);
-    await saveCriteria(next);
-  }
-
-  async function handleRemoveCriterion(index: number) {
-    const next = criteria.filter((_, i) => i !== index);
-    setCriteria(next);
-    await saveCriteria(next);
-  }
-
   // Toggle autoVerify
   async function handleAutoVerifyToggle(value: boolean) {
     setAutoVerify(value);
@@ -440,15 +162,9 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
   const joinedState = joinCriteriaState(criteria, criteriaState);
 
   // Preflight: with no automatic check the run cannot reach a verdict, so the
-  // sheet offers the fix in its place rather than running and reporting why not.
-  const readiness = verificationReadiness({ criteria, missionPrCount });
+  // sheet says why in its place rather than running and reporting why not.
+  const readiness = verificationReadiness({ criteria });
   const blocked = readiness.kind === 'needs_check' ? readiness : null;
-
-  function handleFixAction() {
-    if (!blocked) return;
-    if (blocked.suggestion) void handleAddCriterion(blocked.suggestion);
-    else setShowAddForm(true);
-  }
 
   const automatic = criteria.map((c, i) => ({ c, i })).filter(({ c }) => isAutomaticCheck(c));
   const judged = criteria.map((c, i) => ({ c, i })).filter(({ c }) => !isAutomaticCheck(c));
@@ -544,20 +260,8 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
             </div>
           )}
         </div>
-        {/* Expand chevron + remove button */}
+        {/* Expand chevron */}
         <div className="shrink-0 flex items-center gap-2 mt-0.5">
-          {/* An outcome spec is removed with a reason, from its own detail. */}
-          {!readonly && c.type !== 'living_spec' && (
-            <button
-              onClick={(e) => { e.stopPropagation(); handleRemoveCriterion(i); }}
-              disabled={savingCriteria}
-              className="text-meta text-text-muted hover:text-status-error transition-colors disabled:opacity-40"
-              title="Remove criterion"
-              aria-label="Remove criterion"
-            >
-              <span aria-hidden="true">✕</span>
-            </button>
-          )}
           <svg
             className={`w-3.5 h-3.5 text-text-muted transition-transform duration-150${isExpanded ? ' rotate-180' : ''}`}
             viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
@@ -615,23 +319,12 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
         )}
       </div>
 
-      {/* Not verifiable: status, one reason, one action — in place of a run
+      {/* Not verifiable: status and one reason, in place of a run
           that could only fail. */}
       {blocked && (
         <div className="mb-3 border-l-2 border-status-warning pl-3 py-1" data-testid="criteria-needs-check">
           <p className="text-body font-medium text-text-primary leading-snug">{blocked.headline}</p>
           <p className="text-meta text-text-muted leading-snug mt-0.5">{blocked.reason}</p>
-          {!readonly && !showAddForm && (
-            <button
-              type="button"
-              onClick={handleFixAction}
-              disabled={savingCriteria || isPending}
-              data-testid="criteria-fix-action"
-              className={`${ctaClass} mt-2`}
-            >
-              {blocked.actionLabel}
-            </button>
-          )}
         </div>
       )}
 
@@ -651,7 +344,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
       {/* Criteria list: automatic checks first, AI-judged ones set apart — only
           the former give the mission a verdict that needs no model. */}
       {criteria.length === 0 ? (
-        <p className="text-body text-text-muted mb-3">No criteria. Add one to gate completion on a measurable outcome.</p>
+        <p className="text-body text-text-muted mb-3">No criteria. The spec this mission delivers decides when it is done.</p>
       ) : (
         <div className="space-y-2 mb-3">
           {showGroupHeadings && <p className="text-meta text-text-muted uppercase tracking-wide">Checked automatically</p>}
@@ -659,27 +352,6 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
           {showGroupHeadings && <p className="text-meta text-text-muted uppercase tracking-wide pt-2">Judged by AI</p>}
           {judged.map(renderRow)}
         </div>
-      )}
-
-      {/* Add form */}
-      {showAddForm && (
-        <div className="mb-3">
-          <AddCriterionForm
-            siblings={criteria}
-            onAdd={handleAddCriterion}
-            onCancel={() => setShowAddForm(false)}
-          />
-        </div>
-      )}
-
-      {/* Add criterion button */}
-      {!readonly && !showAddForm && (
-        <button
-          onClick={() => setShowAddForm(true)}
-          className="text-meta text-text-muted hover:text-text-secondary transition-colors font-mono"
-        >
-          + Add criterion
-        </button>
       )}
 
       {/* autoVerify toggle */}

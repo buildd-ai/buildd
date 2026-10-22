@@ -552,6 +552,29 @@ describe('one open retry per retry family (siblings bound to sibling PRs)', () =
     expect(m.ledger).toEqual([{ taskId: 'fix2-a', rule: 'open_retry_supersedes_duplicate', event: 'subject_check' }]);
   });
 
+  it('claim: the cancelled review fix hands its findings to the attempt that holds the PR', async () => {
+    const queuedOlder = reviewFix({ id: 'fix2-a', reviewerRetryPrNumber: PR_A, createdAt: at(1) });
+    const runningNewer = ciFix({ id: 'fix2-b', ciRetryPrNumber: PR_B, status: 'in_progress', createdAt: at(2) });
+    const m = familyStore([queuedOlder, runningNewer]);
+    const carried: Array<{ from: string; holders: string[] }> = [];
+    const store: SupersessionStore = {
+      ...m.store,
+      carryFindings: async (t, holders) => { carried.push({ from: t.id, holders }); },
+    };
+    expect(await guardClaimedRetry(queuedOlder, { store })).toBe(true);
+    expect(carried).toEqual([{ from: 'fix2-a', holders: ['fix2-b'] }]);
+  });
+
+  it('a cancelled non-fix retry carries nothing', async () => {
+    const queued = ciFix({ id: 'ci-a', ciRetryPrNumber: PR_A, createdAt: at(1) });
+    const running = ciFix({ id: 'ci-b', ciRetryPrNumber: PR_B, status: 'in_progress', createdAt: at(2) });
+    const m = familyStore([queued, running]);
+    const carried: string[] = [];
+    const store: SupersessionStore = { ...m.store, carryFindings: async t => { carried.push(t.id); } };
+    expect(await guardClaimedRetry(queued, { store })).toBe(true);
+    expect(carried).toEqual([]);
+  });
+
   it('claim: the only open fix in its family is claimed normally', async () => {
     const only = reviewFix({ id: 'fix2-a', reviewerRetryPrNumber: PR_A, createdAt: at(1) });
     const m = familyStore([only]);

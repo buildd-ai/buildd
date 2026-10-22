@@ -1,17 +1,11 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { GoalCriterion } from '@buildd/shared';
 
 mock.module('next/navigation', () => ({
   useRouter: () => ({ push: () => {}, replace: () => {}, refresh: () => {} }),
 }));
 
 const { default: MissionDecisionSheet } = await import('./MissionDecisionSheet');
-
-const CRITERIA: GoalCriterion[] = [
-  { type: 'description', description: 'The scorecard is comprehensive', notMechanizableReason: 'needs a model to judge' },
-  { type: 'command', command: 'bun test' },
-];
 
 const LONG_PATHS = [
   'apps/web/src/app/app/(protected)/missions/[id]/MissionDecisionSheetWithAVeryLongComponentNameThatCannotWrapOnItsOwn.tsx',
@@ -24,8 +18,6 @@ function render(props: Partial<React.ComponentProps<typeof MissionDecisionSheet>
   return renderToStaticMarkup(
     <MissionDecisionSheet
       missionId="mission-1"
-      goalCriteria={CRITERIA}
-      failingCriterionIndex={0}
       fileWorkHref={HREF}
       criteriaUnmet={false}
       surfaceAudit={null}
@@ -37,23 +29,24 @@ function render(props: Partial<React.ComponentProps<typeof MissionDecisionSheet>
 const AUDIT = { paths: LONG_PATHS, executorLocal: false };
 
 describe('MissionDecisionSheet: criteria branch', () => {
-  it('renders all three exits when criteria are unmet and one is failing', () => {
+  it('renders the two exits when criteria are unmet', () => {
     const html = render({ criteriaUnmet: true });
     expect(html).toContain('File the work');
-    expect(html).toContain('Fix the criterion');
     expect(html).toContain('Waive and complete');
     expect(html).not.toContain('Run visual audit');
     expect(html).not.toContain('Waive with reason');
   });
 
-  it('omits "Fix the criterion" when there is no failing criterion to edit', () => {
-    expect(render({ criteriaUnmet: true, failingCriterionIndex: null })).not.toContain('Fix the criterion');
+  it('never offers to edit a criterion: hand-written criteria are retired (Living Specs D-44)', () => {
+    const html = render({ criteriaUnmet: true });
+    expect(html).not.toContain('Fix the criterion');
+    expect(html).not.toContain('Edit the criterion');
+    expect(html).not.toContain('criterion-error');
   });
 
   it('gives every exit a one-line subtitle, "File the work" included', () => {
     const html = render({ criteriaUnmet: true });
     expect(html).toContain('Create a task for what is missing');
-    expect(html).toContain('Edit the criterion that is not passing');
     expect(html).toContain('Completes the mission with its goal criteria unmet');
   });
 
@@ -123,7 +116,6 @@ describe('MissionDecisionSheet: both blockers', () => {
     expect(html).toContain('Run visual audit');
     expect(html).toContain('Waive with reason');
     expect(html).toContain('File the work');
-    expect(html).toContain('Fix the criterion');
     expect(html).toContain('Waive and complete');
     expect(html).toContain('Visual audit</p>');
     expect(html).toContain('Goal criteria</p>');

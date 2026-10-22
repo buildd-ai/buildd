@@ -15,7 +15,7 @@ import {
 } from '@/lib/task-token-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
-import { computeMissionProgress, outcomeSpecWriteRefusal, validateGoalCriteria } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, handWrittenCriteriaRefusal, outcomeSpecWriteRefusal, validateGoalCriteria } from '@buildd/core/mission-helpers';
 import { computeAndStoreFlightStripCache } from '@buildd/core/flight-strip-store';
 import { isMissionBlocked, wouldCreateCycle } from '@/lib/mission-dependency';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
@@ -714,7 +714,10 @@ export async function PATCH(
         // Grandfather unchanged entries: the dashboard saves the whole array, so
         // a mission holding a pre-gate prose criterion would otherwise 400 on
         // every edit — including the edit that would fix it.
-        const criteriaError = validateGoalCriteria(goalCriteria, { stored: existing.goalCriteria });
+        // Living Specs D-44: only a mission that already carries hand-written
+        // criteria keeps them; one that holds none may not start any.
+        const criteriaError = handWrittenCriteriaRefusal(existing.goalCriteria, goalCriteria)
+          ?? validateGoalCriteria(goalCriteria, { stored: existing.goalCriteria });
         if (criteriaError) {
           fireGateEvent({
             gate: GATE_SLUGS.GOAL_CRITERIA,

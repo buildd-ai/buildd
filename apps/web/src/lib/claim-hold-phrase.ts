@@ -27,6 +27,7 @@ export const CLAIM_HOLD_PHRASES: Readonly<Record<ClaimHoldReason, string>> = {
   routing_paused: 'routing is paused',
   duplicate_worker: 'an agent is already working on it',
   sibling_retry_open: 'a retry of the same work is already open',
+  awaiting_owner_answer: 'a person has to answer the question it stopped on',
   fix_not_needed: 'the fix it was filed for is no longer needed',
   kernel_unavailable: 'the workflow control plane did not answer in time',
   kernel_refused: 'the workflow control plane refused to check its fix',

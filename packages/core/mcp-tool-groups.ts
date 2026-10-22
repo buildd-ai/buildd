@@ -64,6 +64,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   resolve_capability: 'workers',
   request_capability: 'workers',
   list_runners: 'workers',
+  probe_budget_wall: 'workers',
   read_evidence: 'workers',
   // PRs, reviews, releases
   get_pr: 'prs',
@@ -158,6 +159,7 @@ const MCP_GROUP_OVERRIDES: Partial<Record<BuilddAction, McpToolGroup>> = {
   get_budget_forecast: 'analytics',
   get_usage_stats: 'analytics',
   list_runners: 'analytics',
+  probe_budget_wall: 'analytics',
   get_manifest_coverage: 'analytics',
   get_path_claim_stats: 'analytics',
   get_decision_stats: 'analytics',
@@ -235,6 +237,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   spec_compare: 'listed', // spec-sync skill; spec-validator role
   manage_workspaces: 'listed', // workspace-onboarding skill; organizer prompts
   list_runners: 'listed', // default role prompts
+  probe_budget_wall: 'more', // runner budget-wall recovery
   get_usage_stats: 'listed', // default role prompts
   get_budget_forecast: 'listed', // default role prompts
   get_manifest_coverage: 'listed', // default role prompts
@@ -363,7 +366,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'stuck work', actions: ['explain'] },
       { text: 'errors, run logs', actions: ['get_error_traces', 'get_failure_analytics', 'read_evidence'] },
       { text: 'budget, usage', actions: ['get_budget_forecast', 'get_usage_stats'] },
-      { text: 'runners', actions: ['list_runners'] },
+      { text: 'runners', actions: ['list_runners', 'probe_budget_wall'] },
       { text: 'dispatch', actions: ['dispatch_health'] },
     ],
   },
@@ -446,6 +449,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   resolve_capability: 'who serves a need',
   request_capability: 'ask for access',
   list_runners: 'slots, branch, build, heartbeat',
+  probe_budget_wall: 'recheck a limit',
   read_evidence: 'stored run logs',
   get_pr: 'PR state, CI, reviews',
   list_prs: 'open PRs (conflicts/red CI first) or merged',
@@ -522,7 +526,7 @@ const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   request_capability: '{provider, access, …}',
   register_skill: '{name, content, slug?, personal?, workspaceId?, description?, isRole?, model?, allowedTools?, …}',
   update_skill: '{slug, personal?, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, …}',
-  manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
+  manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, outcomeSpec?, description?, limit?, taskId?, …}',
   manage_evidence_backends: '{action, backendId?, …}',
   read_evidence: '{taskId?|prNumber?, grep?, …}',
   get_artifact: '{artifactId, view?, section?, grep?, full?, …}',
@@ -671,12 +675,9 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('status', str, [{ text: 'list: open (default) or all; update: set it', actions: MISSION_WRITES }]),
     param('priority', num, [{ text: 'create/update', actions: MISSION_WRITES }]),
     param('autoSurfaceAudit', bool, [{ text: 'Automatic visual audit when UI files change (default true)', actions: MISSION_WRITES }]),
-    param('autoVerify', bool, [{ text: 'Auto-evaluate goalCriteria (default true)', actions: MISSION_WRITES }]),
+    param('autoVerify', bool, [{ text: 'Auto-evaluate completion criteria (default true)', actions: MISSION_WRITES }]),
     param('startMode', { type: 'string', enum: ['armed', 'held'] }, [{ text: 'held: no task is claimed until armed', actions: MISSION_WRITES }]),
-    param('goalCriteria', {
-      type: 'array',
-      items: { type: 'object', properties: { type: { type: 'string', enum: ['command', 'all_prs_merged', 'no_open_tasks', 'artifact_exists', 'description'] } } },
-    }, [{ text: 'Completion gates, null clears; prefer {type:"command",command}', actions: MISSION_WRITES }]),
+    param('outcomeSpec', { type: 'object' }, [{ text: 'update: {specId, criteria?}, the spec it delivers; goalCriteria retired', actions: MISSION_WRITES }]),
     param('awaitingOnly', bool, [{ text: 'get_visual_review: only screens awaiting you', actions: ['get_visual_review'] }]),
     param('feature', str, [{ text: 'Feature or term to check', actions: ['spec_compare'] }]),
     param('discrepancyId', str, [{ text: 'Discrepancy UUID', actions: ['get_discrepancy', 'adjudicate_discrepancy', 'promote_discrepancy'] }]),

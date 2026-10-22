@@ -1019,6 +1019,17 @@ export interface Worker {
   artifacts?: Artifact[];
 }
 
+/**
+ * `POST /api/workers/[id]/replacement` (body `{ prNumber }`): a person named
+ * the PR that replaces this worker's closed-unmerged PR. Display only, stored
+ * as `workers.namedReplacementPrNumber` / `namedReplacementPrUrl`.
+ */
+export interface LinkWorkerReplacementResponse {
+  ok: true;
+  prNumber: number;
+  url: string;
+}
+
 export interface WaitingForOption {
   label: string;
   description?: string;
@@ -1619,6 +1630,14 @@ export interface ClaimTasksInput {
   maxTasks?: number;
   runner: string;
   environment?: WorkerEnvironment;
+  /**
+   * An interactive session's own git state at claim: the branch it is on and
+   * how many commits that branch has ahead of the task's base. When it already
+   * carries work, the claim response recommends the assigned branch
+   * (`branchHint`); the session's branch is never changed.
+   */
+  sessionBranch?: string;
+  sessionCommitsAhead?: number;
   // Skill slugs this runner can execute. Omitted/empty = may claim any
   // role-routed task EXCEPT the opt-in EXPLICIT_ROLE_SLUGS, which always need
   // an explicit match.
@@ -1865,6 +1884,8 @@ export interface ClaimDiagnostics {
      * retry family is already open (one open retry per subject).
      */
     sibling_retry_open?: number;
+    /** Fix attempt held: it ended on a question to a person, unanswered. */
+    awaiting_owner_answer?: number;
     /**
      * Workflow-kernel review fix skipped at claim: its target was resolved
      * while it queued (approved, merged, head moved, round superseded), or the
@@ -2048,6 +2069,8 @@ export interface ClaimTasksResponse {
     id: string;
     taskId: string;
     branch: string;
+    /** Interactive claims only: the session's branch already has commits of its own; start from `branch`. */
+    branchHint?: string;
     task: Task;
     skillBundles?: SkillBundle[];
     childResults?: Array<{ id: string; title: string; status: string; result: TaskResult | null }>;
@@ -3169,6 +3192,75 @@ export type GoalCriterionType =
   | 'living_spec';
 
 /**
+ * Refuse a `goalCriteria` write that drops or changes a stored `living_spec`
+ * criterion (the mission's outcome spec, Living Specs Slice 12). Removing or
+ * changing it goes through `outcomeSpec` only, where removal and waivers are a
+ * person's acts with a reason. An unchanged entry in a full-list save passes,
+ * in any position. `incoming` null clears every criterion, so it counts as a drop.
+ */
+export function outcomeSpecWriteRefusal(stored: unknown, incoming: unknown): string | null {
+  const kept = (Array.isArray(stored) ? stored : []).filter(
+    (c): c is GoalCriterion => !!c && typeof c === 'object' && (c as { type?: unknown }).type === 'living_spec',
+  );
+  if (kept.length === 0) return null;
+  const next = new Set((Array.isArray(incoming) ? incoming : []).map(c => JSON.stringify(c)));
+  const lost = kept.filter(c => !next.has(JSON.stringify(c)));
+  if (lost.length === 0) return null;
+  return (
+    'goalCriteria would drop or change the mission\'s outcome spec. Keep that entry unchanged here; ' +
+    'change it with outcomeSpec { specId, revision?, criteria?, narrowedReason?, waive?, unwaive? }, ' +
+    'or remove it with outcomeSpec { remove: true, reason } (a person, 10+ characters)'
+  );
+}
+
+/**
+ * Goal-criterion types a person or agent writes by hand. Living Specs D-44
+ * retires them: product intent is a criterion in the mission's outcome spec, a
+ * command is that criterion's check line, merged and no-open-tasks are what
+ * delivery already means, and an unchecked metric is dropped. Only
+ * `living_spec` (written by selecting a spec) is not in this list.
+ */
+export const HAND_WRITTEN_CRITERION_TYPES = [
+  'command',
+  'all_prs_merged',
+  'no_open_tasks',
+  'artifact_exists',
+  'metric',
+  'description',
+] as const;
+
+/** True when `criteria` holds at least one hand-written (retired) criterion. */
+export function hasHandWrittenCriteria(criteria: unknown): boolean {
+  return (Array.isArray(criteria) ? criteria : []).some(
+    c => !!c && typeof c === 'object'
+      && (HAND_WRITTEN_CRITERION_TYPES as readonly string[]).includes((c as { type?: unknown }).type as string),
+  );
+}
+
+/**
+ * Refuse a `goalCriteria` write that starts hand-written criteria on a mission
+ * that holds none (Living Specs D-44). A mission that already carries them is
+ * grandfathered as a whole: it keeps, edits or removes them under
+ * `validateGoalCriteria` until it completes. Nothing is migrated.
+ *
+ * Shape faults are left to `validateGoalCriteria`; this only answers "may this
+ * mission have hand-written criteria at all". Shared by POST and PATCH
+ * /api/missions.
+ */
+export function handWrittenCriteriaRefusal(stored: unknown, incoming: unknown): string | null {
+  if (!Array.isArray(incoming) || hasHandWrittenCriteria(stored)) return null;
+  const i = incoming.findIndex(c => hasHandWrittenCriteria([c]));
+  if (i < 0) return null;
+  const type = (incoming[i] as { type: string }).type;
+  return (
+    `goalCriteria[${i}]: hand-written ${type} criteria are retired. Select the spec this mission ` +
+    `delivers instead (outcomeSpec: { specId, revision?, criteria?, narrowedReason? }): put product ` +
+    `intent in that spec as a criterion, and a command as the criterion's check line. Merged PRs ` +
+    `and no open tasks are what delivery already means. A mission with no product intent selects no spec.`
+  );
+}
+
+/**
  * A criterion's verdict.
  *
  * Only `pass` may gate a mission to `completed`. Everything else — including
@@ -3276,6 +3368,15 @@ export interface LivingSpecGoalCriterion {
   narrowedReason?: string;
   /** Criteria a person waived, with why. Shown as waived, never as passed. */
   waived?: Array<{ criterionId: string; reason: string; by: string; at: string }>;
+  /**
+   * `standard`: a workspace standard (Living Specs D-43), snapshotted when the
+   * mission's build started (`snapshotMissionStandards`), not selected. Its
+   * criteria are checked like an outcome spec's, but it never counts toward
+   * `MAX_GOAL_CRITERIA` or the goal criteria's overall verdict: the completion
+   * gate reads it separately (shadow unless STANDARDS_GATE=enforce).
+   * Absent: the mission's selected outcome spec.
+   */
+  role?: 'standard';
   label?: string;
 }
 
@@ -3612,6 +3713,12 @@ export interface GoalCriteriaState {
       /** Whether the mission's build work was done when this was evaluated. Absent on older states. */
       buildDone?: boolean;
     };
+    /**
+     * A workspace standard's entry (`LivingSpecGoalCriterion.role`): left out
+     * of `overall`, which is the goal criteria's verdict. The completion gate
+     * reads standards on their own.
+     */
+    standard?: true;
   }>;
 }
 

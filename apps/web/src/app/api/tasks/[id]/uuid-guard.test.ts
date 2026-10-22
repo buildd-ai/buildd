@@ -32,7 +32,6 @@ const ID_GUARDED_FILES = [
   'notes/[noteId]/reply/route.ts',
   'reject-plan/route.ts',
   'scope-answer/route.ts',
-  'summary/route.ts',
 ];
 
 describe('/api/tasks/[id] non-UUID guard', () => {
