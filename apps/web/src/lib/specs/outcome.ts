@@ -15,6 +15,7 @@ import { settleVerdictSource } from './verdict-source';
 import { criterionHashes } from './criteria';
 import { acceptanceEditOf, dropUnacceptedTestResults } from '@buildd/spec-contract/acceptance-edit';
 import { criterionVerifications } from '@buildd/spec-contract/verification-bindings';
+import { registeredAuthor, type RegisteredMethod } from './registered-author';
 
 /**
  * Governed outcomes (Living Specs V1, decision D-5): whether a task's outcome
@@ -288,6 +289,49 @@ export async function recordCheckVerdict(taskId: string, input: {
     verdict: input.verdict,
     headSha: input.headSha.toLowerCase(),
     evidence: { ...input.evidence, verificationTaskId: input.verificationTaskId, recordedBy: `check:${input.verificationTaskId}` },
+  }).returning({ id: specOutcomeVerdicts.id });
+  await settleVerdictSource(row.id);
+  return { ok: true, verdictId: row.id };
+}
+
+/**
+ * Record a verdict a registered `verify:` check produced
+ * (./registered-verification.ts): server-side, no caller. Refused unless the
+ * task is still pinned to `specRevisionId`, the criterion is in scope, the
+ * evidence names a binding the pinned immutable body declares for it, the
+ * author is the one that binding and the run's actual method imply, and
+ * `headSha` is the task's PR head now.
+ */
+export async function recordRegisteredVerdict(taskId: string, input: {
+  specRevisionId: string; criterionId: string; verdict: VerificationVerdict; headSha: string; recordedBy?: string; evidence: Record<string, unknown>;
+}, prHead: (taskId: string) => Promise<string | null> = currentPrHeadSha): Promise<{ ok: true; verdictId: string } | SpecError> {
+  const l = await loadGoverned(null, taskId, 'record');
+  if ('ok' in l) return l;
+  if (l.specRevisionId !== input.specRevisionId) return fail(409, 'The task is no longer pinned to the revision this check ran against');
+  if (!l.criteria.some((c) => c.id === input.criterionId)) return fail(400, `${input.criterionId} is not a criterion this task answers for in pinned revision ${l.revision}`);
+  const read = await readPinnedSpecRevision(l.pin);
+  if (!read.ok) return fail(409, `The pinned spec revision is unavailable: ${read.reason}`);
+  const matched = criterionVerifications(read.body).find((b) => b.criterionId === input.criterionId && b.fingerprint === input.evidence.bindingFingerprint);
+  if (!matched) return fail(409, 'Registered evidence must name the matching approved verifier binding');
+  const method = input.evidence.method;
+  const recordedBy = input.recordedBy ?? input.evidence.recordedBy;
+  if (!['deterministic', 'model', 'fallback'].includes(method as string) || (method === 'deterministic' && matched.binding.id !== 'ui.actions_match_state')
+    || (method === 'model' && matched.binding.id !== 'ui.card_clarity')
+    || recordedBy !== registeredAuthor(matched.binding.id, method as RegisteredMethod)) {
+    return fail(409, 'Registered evidence author must match its verifier and evaluation method');
+  }
+  if (!SHA.test(input.headSha)) return fail(400, 'headSha must be a commit SHA');
+  const head = await prHead(l.task.id);
+  if (!head || head.toLowerCase() !== input.headSha.toLowerCase()) return fail(409, 'The commit is not the task\'s current PR head');
+  const [row] = await db.insert(specOutcomeVerdicts).values({
+    workspaceId: l.task.workspaceId,
+    taskId: l.task.id,
+    specRevisionId: l.specRevisionId,
+    criterionId: input.criterionId,
+    criterionTextHash: l.hashes.get(input.criterionId) ?? null,
+    verdict: input.verdict,
+    headSha: input.headSha.toLowerCase(),
+    evidence: { ...input.evidence, recordedBy },
   }).returning({ id: specOutcomeVerdicts.id });
   await settleVerdictSource(row.id);
   return { ok: true, verdictId: row.id };
