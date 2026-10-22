@@ -14,11 +14,12 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull, desc } from 'drizzle-orm';
-import { LIVE_WORKER_STATUSES } from '@buildd/shared';
+import { LIVE_WORKER_STATUSES, OPEN_TASK_STATUSES, isOpenTaskStatus } from '@buildd/shared';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { requeueBranchContext } from '@/lib/integration-refresh';
 import { withoutForceClaim } from '@/lib/force-claim';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { notDeliveryOwnedTaskSql } from '@/lib/workflow/pr-fact-scope';
 
 /** The task context key the exit records: who waits on what, and why. */
 export const WAIT_EXIT_CONTEXT_KEY = 'waitExit';
@@ -106,7 +107,7 @@ export function decideWaitExit(i: {
   if (!i.enabled) {
     return refuse(409, 'wait_exit_disabled', 'Waiting on another task is not turned on for this workspace. Finish with complete_task { error } naming the task you are blocked by, or ask a person.');
   }
-  if (!['pending', 'assigned', 'in_progress'].includes(i.task.status)) {
+  if (!isOpenTaskStatus(i.task.status)) {
     return refuse(409, 'not_open', `This task is ${i.task.status}; only an open task can wait on another.`);
   }
   if (i.task.deliveryId) {
@@ -222,7 +223,7 @@ export async function applyWaitExit(i: {
       },
       updatedAt: new Date(),
     })
-    .where(and(eq(tasks.id, i.task.id), inArray(tasks.status, ['pending', 'assigned', 'in_progress'])))
+    .where(and(eq(tasks.id, i.task.id), inArray(tasks.status, [...OPEN_TASK_STATUSES]), notDeliveryOwnedTaskSql()))
     .returning({ id: tasks.id });
   if (!moved) return { ok: false, status: 409, code: 'not_open', error: 'The task finished or was cancelled while the wait was being recorded.' };
 

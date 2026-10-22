@@ -446,6 +446,7 @@ const TASK_STATUS_WRITERS: Record<string, string> = {
   'apps/web/src/lib/held-pr-tasks.ts': NON_DELIVERY('settles a release task held on its release PR (context.releasePrPending); release PRs never open a delivery'),
   'apps/web/src/lib/mission-surface-audit.ts': NON_DELIVERY('cancels a pending, unclaimed surface audit left with no dependencies'),
   'apps/web/src/lib/quality-scout-actions.ts': NON_DELIVERY('retires a pending, unclaimed scout follow-up'),
+  'apps/web/src/lib/task-wait-exit.ts': NON_DELIVERY('the wait exit moves an open task back to pending to wait on its blocker; it refuses a task with a deliveryId and its WHERE skips a delivery-owned task (notDeliveryOwnedTaskSql)'),
   'apps/web/src/lib/supersession-store.ts': NON_DELIVERY('supersession rules bind away from a task with its own live PR (boundFor own_live_pr), and the not-started rules exclude owners'),
   'apps/web/src/lib/task-evidence-store.ts': 'NOT_LIFECYCLE: merges run evidence and mismatch flags into result',
   'apps/web/src/lib/task-shipped-store.ts': 'NOT_LIFECYCLE: merges the "what shipped" display record into result',
