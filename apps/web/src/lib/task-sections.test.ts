@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { taskPrFacts, taskHeaderMerged, isFallbackSummary, taskDeliverySections } from './task-sections';
+import { deliveryPillLabel } from '@/app/app/(protected)/tasks/[id]/TaskSidePanel';
 
 const pr = {
   prUrl: 'https://github.com/org/repo/pull/7',
@@ -72,7 +73,17 @@ describe('taskDeliverySections: the header reading and checks both surfaces rend
 
   it("reads the header pill from the delivery's own words", () => {
     const { delivery } = taskDeliverySections({ view, findings, findingsUnavailable: false }, null);
-    expect(delivery).toEqual({ headline: 'Waiting for review', owner: 'reviewer', needsYou: false, stage: 'review', detail: null, prState: 'awaiting_ci', state: 'AWAITING_REVIEW', escalationTitle: null });
+    expect(delivery).toEqual({ headline: 'Waiting for review', owner: 'reviewer', needsYou: false, stage: 'review', detail: null, prState: 'awaiting_ci', state: 'AWAITING_REVIEW', escalationTitle: null, supersededByPr: null });
+  });
+
+  it('a superseded PR: the pill and the Merge check both read Merged in #N, the check a pass', () => {
+    const superseded = {
+      ...(view as object), state: 'SUPERSEDED', stage: 'superseded', owner: 'none', prState: 'closed', headline: 'Merged in #5408', rounds: [],
+      supersededBy: { prNumber: 5408, url: 'https://github.com/org/repo/pull/5408', reason: 'carried over' },
+    } as never;
+    const { delivery, checks } = taskDeliverySections({ view: superseded, findings: new Map(), findingsUnavailable: false }, null);
+    expect(deliveryPillLabel(delivery)).toBe('Merged in #5408');
+    expect(checks?.checks.current.find(r => r.key === 'merge')).toMatchObject({ state: 'passed', result: 'Merged in #5408' });
   });
 
   it('carries the checks with JSON-safe findings and the PR link', () => {

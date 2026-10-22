@@ -30,6 +30,8 @@ export interface DeliveryDisplay {
   cta: DeliveryCta | null;
   /** A review escalation's cause label ("Automated fixes exhausted · 2 of 2 used"); null for any other state. */
   escalationTitle?: string | null;
+  /** SUPERSEDED: the PR the work merged in, from the supersession record; null when unknown. */
+  supersededByPr?: number | null;
 }
 
 export function toDeliveryDisplay(v: DeliveryView): DeliveryDisplay {
@@ -46,6 +48,7 @@ export function toDeliveryDisplay(v: DeliveryView): DeliveryDisplay {
     attemptLine: attemptLine(v.attempts),
     cta: v.cta,
     escalationTitle: v.escalation?.title ?? null,
+    supersededByPr: v.supersededBy?.prNumber ?? null,
   };
 }
 
@@ -118,7 +121,7 @@ export interface DeliveryReading {
   action: { label: string; taskId: string } | null;
 }
 
-export type DeliveryReadingInput = Pick<DeliveryDisplay, 'stage' | 'state' | 'headline' | 'owner'> & { cta?: DeliveryCta | null; escalationTitle?: string | null; prState?: DeliveryDisplay['prState'] };
+export type DeliveryReadingInput = Pick<DeliveryDisplay, 'stage' | 'state' | 'headline' | 'owner'> & { cta?: DeliveryCta | null; escalationTitle?: string | null; prState?: DeliveryDisplay['prState']; supersededByPr?: number | null };
 
 const reading = (label: string, tone: DeliveryTone, action: DeliveryReading['action'] = null): DeliveryReading =>
   ({ label, tone, needsYou: tone === 'needs', failed: tone === 'failed', action });
@@ -173,9 +176,9 @@ export function deliveryReading(d: DeliveryReadingInput): DeliveryReading | null
     // A review escalation names its cause; only an escalation with no brief keeps the generic words.
     case 'needs_you': return reading(d.escalationTitle ?? 'Waiting on you', 'needs');
     case 'merged': return reading('Merged', 'landed');
-    // Not "Merged in #N": the task header pill's input does not carry the
-    // successor PR, and every surface must read the same label (S17).
-    case 'superseded': return reading('Merged in another PR', 'landed');
+    // The display carries the supersession record's PR, so every surface reads
+    // the same "Merged in #N" (S17); the catalog's words only when it is unknown.
+    case 'superseded': return reading(d.supersededByPr != null ? `Merged in #${d.supersededByPr}` : 'Merged in another PR', 'landed');
     case 'closed':
     case 'abandoned': return reading('Closed without merging', 'closed');
     case 'failed': return reading('Failed', 'failed');

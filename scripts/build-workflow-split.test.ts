@@ -8,13 +8,15 @@ import { readFileSync } from 'fs';
  */
 const wf: any = Bun.YAML.parse(readFileSync('.github/workflows/build.yml', 'utf8'));
 const PARTS = ['build-checks', 'build-unit-tests', 'build-next'] as const;
+// Windows runner tests: required through `build`, but only run on a runner change.
+const WINDOWS = ['runner-changes', 'runner-unit-tests-windows'] as const;
 const stepNames = (id: string): string[] => wf.jobs[id].steps.map((s: any) => s.name ?? s.uses ?? s.run);
 
 describe('build job split', () => {
   test('`build` is an aggregator over the three parts with no name override', () => {
     const agg = wf.jobs.build;
     expect(agg.name).toBeUndefined();
-    expect([...agg.needs].sort()).toEqual([...PARTS].sort());
+    expect([...agg.needs].sort()).toEqual([...PARTS, ...WINDOWS].sort());
     // always(): a failed or cancelled part must turn `build` red, never Skipped.
     expect(agg.if).toContain('always()');
     const run = agg.steps.map((s: any) => s.run ?? '').join('\n');
@@ -35,6 +37,25 @@ describe('build job split', () => {
     const run = wf.jobs.build.steps.map((s: any) => s.run ?? '').join('\n');
     expect(run).toContain('needs.build-unit-tests.result');
     expect(run).toMatch(/\[ "\$\{r#\*=\}" = "success" \] \|\| failed=1/);
+  });
+
+  test('Windows runner tests run only on a runner change, and `build` accepts their skip only then', () => {
+    const gate = wf.jobs['runner-changes'];
+    // The gate itself never skips, or a broken gate would read as "nothing changed".
+    expect(gate.if).toBeUndefined();
+    expect(gate.outputs.runner).toContain('steps.filter.outputs.runner');
+    const filter = gate.steps.find((s: any) => s.id === 'filter').run;
+    expect(filter).toContain('apps/runner/');
+    expect(filter).toContain('runner=true'); // pushes always run it
+
+    const win = wf.jobs['runner-unit-tests-windows'];
+    expect(win['runs-on']).toBe('windows-latest');
+    expect(win.needs).toBe('runner-changes');
+    expect(win.if).toBe("needs.runner-changes.outputs.runner == 'true'");
+
+    const run = wf.jobs.build.steps.map((s: any) => s.run ?? '').join('\n');
+    expect(run).toContain('"runner-changes=${{ needs.runner-changes.result }}"');
+    expect(run).toMatch(/if \[ "\$\{\{ needs\.runner-changes\.outputs\.runner \}\}" = "true" \]; then\s*\n\s*\[ "\$win" = "success" \] \|\| failed=1/);
   });
 
   test('every shard uploads its .test-report.log, pass or fail', () => {

@@ -919,6 +919,8 @@ export async function createReviewerTask(
         workerBranch: worker.branch,
         repoFullName,
         installationId,
+        // The base the diff was read against: a delivery opened later adopts this verdict only for that base.
+        ...(params.baseRef ? { baseRef: params.baseRef } : {}),
         // iteration tracking for request-changes retry cap (stored in context, not a column)
         iteration: originalTask.iteration ?? 0,
         maxIterations: originalTask.maxIterations ?? 3,
