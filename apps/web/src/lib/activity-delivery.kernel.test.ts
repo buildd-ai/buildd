@@ -145,4 +145,14 @@ describe('a kernel-owned delivery: one current verdict, from the kernel', () => 
     expect(revisions(ev)[0]).toMatchObject({ current: true, round: 11 });
     expect(details.root.stages.audit).toContain('Code review awaiting review');
   });
+
+  it('a superseded PR: the drawer\'s Deliver stage reads Merged in #N, never closed without merging', () => {
+    const k = kernel({ state: 'SUPERSEDED', prState: 'closed', supersededBy: { prNumber: 5408, url: 'https://github.com/example/project/pull/5408', reason: 'r' } });
+    const tasks = rows(k).map((t) => (t.id === 'root'
+      ? { ...t, missionId: 'm', missionTitle: 'M', workers: [{ ...t.workers[0], prLifecycleStatus: 'closed', supersededByPrNumber: 5408 }] }
+      : { ...t, missionId: 'm', missionTitle: 'M' }));
+    const mission = projectMissionDelivery({ id: 'm', title: 'M', status: 'active', href: '/app/missions/m', tasks }, rules);
+    const details = buildTaskDeliveryDetails({ tasks, mission, rules });
+    expect(details.root.stages.land).toBe('Merged in #5408');
+  });
 });

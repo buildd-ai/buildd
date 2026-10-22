@@ -10,7 +10,7 @@ import type { CheckSource, TaskVerdict, VerdictCheck, VerdictInput, VerdictOpenA
 import type { PriorAttemptFact, TraceOutcomeContext, TraceSettledAs } from './trace-consequence';
 import { latestChecks } from './task-verdict';
 import { parseTaskShippedRecord } from './task-shipped';
-import { prListStatus, type PrDisplayState } from './pr-presentation';
+import { prListStatus, prRecord, type PrDisplayState, type PrSupersededBy } from './pr-presentation';
 
 export interface VerdictWorkerRow {
   id: string;
@@ -20,6 +20,9 @@ export interface VerdictWorkerRow {
   prNumber?: number | null;
   prLifecycleStatus?: string | null;
   mergedAt?: Date | string | null;
+  /** The supersession record on a legacy PR (lib/pr-supersession.ts). */
+  supersededByPrNumber?: number | null;
+  supersededByPrUrl?: string | null;
   error?: string | null;
   createdAt?: Date | string | null;
 }
@@ -47,6 +50,8 @@ export interface VerdictFactsInput {
    * worker's fact-cache columns.
    */
   deliveryPrState?: PrDisplayState | null;
+  /** The delivery's supersession record (`DeliveryView.supersededBy`); read only with `deliveryPrState`. */
+  deliverySupersededBy?: PrSupersededBy | null;
 }
 
 const ms = (v: Date | string | null | undefined): number => {
@@ -134,6 +139,11 @@ export function buildVerdictInput(input: VerdictFactsInput): VerdictInput {
     }),
   ];
   const evidence = evidenceOf(input.task.result);
+  // One record of where the change merged: the delivery's when the kernel owns the PR, else the columns.
+  const supersededBy = prWorker ? prRecord({
+    delivery: input.deliveryPrState ? { state: '', mergedAt: null, supersededBy: input.deliverySupersededBy ?? null } : null,
+    supersededByPrNumber: prWorker.supersededByPrNumber, supersededByPrUrl: prWorker.supersededByPrUrl,
+  }).supersededBy : null;
   return {
     taskStatus: input.task.status,
     taskMode: input.task.mode ?? null,
@@ -141,8 +151,8 @@ export function buildVerdictInput(input: VerdictFactsInput): VerdictInput {
     openQuestion: input.openQuestion,
     pr: prWorker?.prUrl && prWorker.prNumber
       ? input.deliveryPrState
-        ? { url: prWorker.prUrl, number: prWorker.prNumber, lifecycle: prListStatus(input.deliveryPrState), merged: input.deliveryPrState === 'merged' }
-        : { url: prWorker.prUrl, number: prWorker.prNumber, lifecycle: prWorker.prLifecycleStatus ?? null, merged: !!prWorker.mergedAt }
+        ? { url: prWorker.prUrl, number: prWorker.prNumber, lifecycle: prListStatus(input.deliveryPrState), merged: input.deliveryPrState === 'merged', supersededBy }
+        : { url: prWorker.prUrl, number: prWorker.prNumber, lifecycle: prWorker.prLifecycleStatus ?? null, merged: !!prWorker.mergedAt, supersededBy }
       : null,
     checks: latestChecks(checkSourcesOf(input)),
     openAttempt: input.openAttempt,

@@ -9,6 +9,7 @@ import {
   descriptionDuplicatesSummary,
   isAttemptTask,
   attemptsNotInPrHistory,
+  attemptRowLabel,
   partitionChildTasks,
   selectExecutionPlan,
   isMeaningfulPlan,
@@ -126,5 +127,32 @@ describe('isMeaningfulPlan', () => {
   });
   it('two or more phases are', () => {
     expect(isMeaningfulPlan([{ id: 'parent' }, { id: 'this' }])).toBe(true);
+  });
+});
+
+describe('attemptRowLabel: an attempt reads by what started it and how it ended, never the parent title again', () => {
+  const title = 'feat: add registered verifier contracts, UI checks and outcome rules';
+  it('names the trigger and the ending', () => {
+    expect(attemptRowLabel({ title: `[builder · after CI #1] ${title}`, status: 'completed' })).toBe('After CI failure · done');
+    expect(attemptRowLabel({ title: `[builder · after review #1] ${title}`, status: 'cancelled' })).toBe('After review · cancelled');
+    expect(attemptRowLabel({ title: `[builder · after conflict #1] ${title}`, status: 'failed' })).toBe('After merge conflict · failed');
+    expect(attemptRowLabel({ title: `[reviewer] PR #5398: ${title}`, status: 'completed' })).toBe('Review · done');
+    expect(attemptRowLabel({ title: `[builder · after CI #1] ${title}`, status: 'in_progress' })).toBe('After CI failure · running');
+    expect(attemptRowLabel({ title: `[builder · after CI #1] ${title}`, status: 'pending' })).toBe('After CI failure · queued');
+  });
+
+  it('a second attempt of the same kind carries its number, so four rows never read alike', () => {
+    const rows = [
+      { title: `[builder · after CI #1] ${title}`, status: 'completed' },
+      { title: `[builder · after CI #2] ${title}`, status: 'completed' },
+      { title: `[builder · after conflict #1] ${title}`, status: 'completed' },
+      { title: `[builder · after review #1] ${title}`, status: 'cancelled' },
+    ].map(attemptRowLabel);
+    expect(rows).toEqual(['After CI failure · done', 'After CI failure 2 · done', 'After merge conflict · done', 'After review · cancelled']);
+    for (const r of rows) expect(r).not.toContain('verifier');
+  });
+
+  it('an attempt with no machine key is a retry, said with its ending', () => {
+    expect(attemptRowLabel({ title, status: 'completed' })).toBe('Retry · done');
   });
 });

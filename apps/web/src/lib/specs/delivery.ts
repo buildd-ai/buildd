@@ -260,7 +260,7 @@ async function personNames(ids: string[]): Promise<Map<string, string>> {
 /** A mission standing as a mark. A stale verdict keeps what it was: a stale inconclusive is not a stale pass. */
 function missionMark(s: LivingSpecCriterionStanding | undefined, verdict: string | undefined): CriterionMark {
   if (!s || s.standing === 'missing') return 'none';
-  if (s.standing === 'stale') return verdict && verdict !== 'pass' ? (verdict as CriterionMark) : 'stale';
+  if (s.standing === 'stale') return verdict === 'fail' ? 'stale-fail' : verdict && verdict !== 'pass' ? (verdict as CriterionMark) : 'stale';
   return s.standing;
 }
 
