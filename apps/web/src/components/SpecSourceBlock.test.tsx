@@ -56,8 +56,34 @@ describe('SpecSourceBlock', () => {
     expect(html).toContain('Bug Intake and Quality');
     expect(html).toContain('Not verified');
     expect(html).toContain('answers for R-1, AC-3, AC-26');
+    expect(html).toContain('1 of 3 verified');
     expect(html.indexOf('AC-26')).toBeLessThan(html.indexOf('>R-1<'));
-    for (const label of ['Fails', 'No verdict', 'Passes']) expect(html).toContain(label);
+    for (const label of ['Fails', 'Not verified', 'Passes']) expect(html).toContain(label);
+    expect(html).not.toContain('No verdict');
+  });
+
+  it('no recorded verdict reads Not verified on every criterion, and the summary counts by state, never "all N"', () => {
+    const criteria = Array.from({ length: 26 }, (_, i) => ({ criterionId: `R-${i + 1}`, text: `Requirement ${i + 1}.`, verdict: null, stale: false }));
+    const html = renderToStaticMarkup(
+      <SpecSourceBlock specSource={{ specId: 's-1', revision: 1 }} living={living({ scoped: false, outcome: { outcome: 'unverified', reason: '', criteria } })} />
+    );
+    expect(html).toContain('0 of 26 verified');
+    expect(html).not.toMatch(/Fails|Failed|all 26 criteria/);
+    expect(html.match(/>Not verified</g)?.length).toBe(1 + 8);
+  });
+
+  it('Fails only for a fail on the current head; a fail on an older commit says so', () => {
+    const html = renderToStaticMarkup(
+      <SpecSourceBlock specSource={{ specId: 's-1', revision: 1 }} living={living({ scoped: false, outcome: {
+        outcome: 'fail', reason: 'R-1 failed', criteria: [
+          { criterionId: 'R-1', text: 'x', verdict: 'fail', stale: true },
+          { criterionId: 'R-2', text: 'y', verdict: 'fail', stale: false },
+        ],
+      } })} />
+    );
+    expect(html).toContain('Failed on an older commit');
+    expect(html.match(/>Fails</g)?.length).toBe(1);
+    expect(html).toContain('0 of 2 verified · 2 failed');
   });
 
   it('says when a newer revision is approved, and a pass on an older commit is not a pass', () => {
@@ -67,7 +93,7 @@ describe('SpecSourceBlock', () => {
       } })} />
     );
     expect(html).toContain('Revision 2 is approved now');
-    expect(html).toContain('its one criterion');
+    expect(html).toContain('0 of 1 verified');
     expect(html).toContain('Passed on an older commit');
   });
 

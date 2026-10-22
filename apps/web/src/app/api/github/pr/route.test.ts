@@ -1255,6 +1255,64 @@ describe('POST /api/github/pr', () => {
         expect(payloads.some(p => p.branch === CUSTOM)).toBe(true);
       });
 
+      describe('scope guard: commits that predate the claim', () => {
+        const compareWith = (commits: unknown[]) => mockGithubApi.mockImplementation((_i: number, path: string) => {
+          if (path.includes('/compare/')) return Promise.resolve({ commits });
+          if (path.includes('/pulls?head=')) return Promise.resolve([]);
+          return Promise.resolve(created);
+        });
+        const commit = (sha: string, date: string, parents = 1) => ({ sha, parents: Array.from({ length: parents }, () => ({})), commit: { message: `work ${sha}`, author: { date } } });
+        const claimed = { createdAt: new Date('2026-10-20T12:00:00Z') };
+
+        it('refuses a head carrying commits authored before the claim, naming them and the two fixes', async () => {
+          mockWorkersFindFirst.mockResolvedValue(interactiveWorker(claimed));
+          mockWorkersFindMany.mockReturnValue([]);
+          compareWith([commit('aaaaaaa1', '2026-10-01T00:00:00Z'), commit('bbbbbbb2', '2026-10-20T13:00:00Z')]);
+
+          const res = await post({ head: CUSTOM });
+
+          expect(res.status).toBe(400);
+          const data = await res.json();
+          expect(data.code).toBe('scope_foreign_commits');
+          expect(data.error).toContain('aaaaaaa');
+          expect(data.error).not.toContain('bbbbbbb');
+          expect(data.error).toContain('fresh branch');
+          expect(opened()).toBe(false);
+        });
+
+        it('a recorded scopeOverride with a reason opens it anyway', async () => {
+          mockWorkersFindFirst.mockResolvedValue(interactiveWorker(claimed));
+          mockWorkersFindMany.mockReturnValue([]);
+          compareWith([commit('aaaaaaa1', '2026-10-01T00:00:00Z')]);
+
+          const res = await post({ head: CUSTOM, scopeOverride: 'the owner asked for the earlier commits to ship together' });
+
+          expect(res.status).toBe(200);
+          expect(opened()).toBe(true);
+        });
+
+        it('only the task’s own commits and merges of the base pass', async () => {
+          mockWorkersFindFirst.mockResolvedValue(interactiveWorker(claimed));
+          mockWorkersFindMany.mockReturnValue([]);
+          compareWith([commit('own00001', '2026-10-20T12:30:00Z'), commit('merge001', '2026-10-01T00:00:00Z', 2)]);
+
+          const res = await post({ head: CUSTOM });
+
+          expect(res.status).toBe(200);
+          expect(opened()).toBe(true);
+        });
+
+        it('does not apply to the task’s own assigned branch', async () => {
+          mockWorkersFindFirst.mockResolvedValue(interactiveWorker(claimed));
+          mockWorkersFindMany.mockReturnValue([]);
+          compareWith([commit('aaaaaaa1', '2026-10-01T00:00:00Z')]);
+
+          const res = await post({ head: OWN });
+
+          expect(res.status).toBe(200);
+        });
+      });
+
       it('refuses a custom head a live worker on another task already holds, and says whose', async () => {
         mockWorkersFindFirst.mockResolvedValue(interactiveWorker());
         mockWorkersFindMany.mockReturnValue([{ id: 'w-2', taskId: 'other-task-id', status: 'running', prUrl: null }]);

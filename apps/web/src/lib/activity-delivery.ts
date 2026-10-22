@@ -641,7 +641,7 @@ const gateLine = (gates: readonly Gate[]) => gates.filter(ran).map(g => `${g.nam
 const informative = (evidence: readonly EvidenceEntry[]) =>
   evidence.some(e => e.type === 'repair' || e.type === 'earlier' || e.gates.some(g => g.void || ran(g)));
 
-function stageNotes(delivery: TaskDelivery, prNumber: number | null, evidence: readonly EvidenceEntry[], kernel = false): StageNotes {
+function stageNotes(delivery: TaskDelivery, prNumber: number | null, evidence: readonly EvidenceEntry[], kernel = false, mergedIn: number | null = null): StageNotes {
   const at = deliveryStageIndex(delivery.kind);
   const cur = evidence.find((e): e is Extract<EvidenceEntry, { type: 'revision' }> => e.type === 'revision' && e.current);
   const onHead = cur?.sha ? ` on ${cur.sha}` : '';
@@ -658,6 +658,7 @@ function stageNotes(delivery: TaskDelivery, prNumber: number | null, evidence: r
   const land = at < 2 ? 'After Verify'
     : delivery.kind === 'landing' ? 'Merging'
     : delivery.kind === 'notlanded' ? (prNumber ? 'Closed without merging' : 'Stopped without a change to merge')
+    : mergedIn != null ? `Merged in #${mergedIn}`
     : prNumber ? 'Merged' : 'Nothing to merge';
   return { build, audit, land };
 }
@@ -679,14 +680,17 @@ export function buildTaskDeliveryDetails(input: {
   for (const d of foldDeliveries(input.tasks, input.rules)) {
     const delivery = byId.get(d.root.id);
     if (!delivery) continue;
-    const prNumber = prOf(d).owner?.prNumber ?? null;
+    const { owner } = prOf(d);
+    const prNumber = owner?.prNumber ?? null;
+    // The supersession record: the kernel's when it owns the PR, else the PR row's.
+    const mergedIn = d.root.kernel?.supersededBy?.prNumber ?? (owner?.mergedAt ? null : owner?.supersededByPrNumber ?? null);
     const built = buildEvidence(d);
     const evidence = informative(built) ? built : [];
     out[d.root.id] = {
       kind: delivery.kind,
       repairRounds: delivery.repairRounds,
       prNumber,
-      stages: stageNotes(delivery, prNumber, built, !!d.root.kernel),
+      stages: stageNotes(delivery, prNumber, built, !!d.root.kernel, mergedIn),
       evidence,
       revisions: evidence.filter(e => e.type === 'revision').length,
       repairs: evidence.filter(e => e.type === 'repair').length,
