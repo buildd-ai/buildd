@@ -5,6 +5,9 @@ import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { classifyTaskFailure, failedDependencyOf, type TaskFailureKind } from './task-failure-kind';
 import { sqlExtras, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
+/** The page's trouble line, read through this module so the task page has one way into failure kinds. */
+export { taskPageTrouble } from './task-failure-kind';
+
 export interface TaskFailure {
   kind: TaskFailureKind | null;
   /**

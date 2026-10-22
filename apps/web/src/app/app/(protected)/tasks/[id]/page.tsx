@@ -84,7 +84,7 @@ import { listTaskEvidenceObjects, toEvidenceObjectSummary } from '@/lib/evidence
 import { evidenceViewOf } from '@/lib/task-evidence';
 import { TaskTitle as TaskTitleText } from '@/components/tasks/TaskTitle';
 import TaskPageActionZone from './TaskPageActionZone';
-import { auditTaskIdFor, loadTaskFailure } from '@/lib/task-failure-kind-load';
+import { auditTaskIdFor, loadTaskFailure, taskPageTrouble } from '@/lib/task-failure-kind-load';
 import RunnerReachBanner from './RunnerReachBanner';
 import { loadServiceStatus } from '@/lib/service-status-loader';
 import { ServiceStatusList } from '@/components/service-status/ServiceStatusList';
@@ -254,7 +254,7 @@ async function TaskDetailPage({
         columns: { id: true, title: true, status: true, result: true },
         with: {
           workers: {
-            columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
+            columns: { status: true, prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
             // Every worker, newest first — NOT limit 1. The gate asks whether
             // ANY worker holds an open PR, the same read the list and the
             // claim route make; the newest alone hid an older open PR.
@@ -732,6 +732,20 @@ async function TaskDetailPage({
   const failureKind = phase === 'failed' ? failureRaw?.kind ?? null : null;
   // Never ran: a task it depends on failed. Its action zone names that task instead of offering a retry (spec 072de598 I-14).
   const failureWaitingOn = failureKind === 'dependency' ? failureRaw?.waitingOn ?? null : null;
+  // Who acts next (R-20): waiting on a task, buildd retrying (with its resume
+  // time), or a person. A pending task reads its own dependsOn rows, so a
+  // blocker that was cancelled or failed surfaces as needing a person.
+  const trouble = phase === 'failed' || task.status === 'pending'
+    ? taskPageTrouble(
+        {
+          id: task.id, title: task.title, status: task.status, result: task.result,
+          startAt: task.startAt, context: task.context as Record<string, unknown> | null,
+          dependsOn: depTaskIds, loopState: task.loopState, taskClass: task.taskClass,
+        },
+        depTasks,
+        phase === 'failed' ? failureRaw ?? null : null,
+      )
+    : null;
   // Triage metadata (priority / runner / backend) only earns top-level space in
   // the pending family; everywhere else it demotes into the Details disclosure.
   const isPendingFamily = phase === 'pending' || phase === 'blocked' || phase === 'budget_paused' || phase === 'assigned' || phase === 'subject_dead' || phase === 'mission_budget_exhausted';
@@ -1573,6 +1587,7 @@ async function TaskDetailPage({
               deliveryReading={deliveryPillLabel(deliveryPill)}
               failureKind={failureKind}
               waitingOn={failureWaitingOn}
+              trouble={trouble}
               auditTaskId={auditTaskIdFor(task, failureKind)}
               lastError={failedExcerpt ? { excerpt: failedExcerpt, raw: taskWorkers[0]?.error ?? null } : null}
               worker={null}

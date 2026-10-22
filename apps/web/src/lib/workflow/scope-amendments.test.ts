@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { planScope, planScopeResolution } from '@buildd/workflow-kernel/scope-amendments';
-import { recordScopeSql, resolveScopeSql, scopeAmendmentsSql } from './scope-amendments';
+import { admissibleProposal, recordScopeSql, resolveScopeSql, scopeAmendmentsSql } from './scope-amendments';
 
 const dialect = new PgDialect();
 const mission = { description: 'd', goalCriteria: [{ type: 'all_prs_merged' }], scopeVersion: 4 };
@@ -60,5 +60,31 @@ describe('scope amendment SQL', () => {
     expect(sql).toContain("AND status = 'held' AND EXISTS (SELECT 1 FROM m)");
     expect(params).toContain(4);
     expect(params).toContain(5);
+  });
+});
+
+// Living Specs D-44: an amendment writes the mission row directly, so it is
+// held to the PATCH write boundary.
+describe('admissibleProposal', () => {
+  const spec = { type: 'living_spec', specId: 's', specRevisionId: 'r', revision: 1, contentHash: 'h' } as const;
+
+  it('ignores proposed hand-written criteria on a mission that holds none, keeping the description', () => {
+    const p = admissibleProposal({ description: 'new', goalCriteria: [{ type: 'command', command: 'x' }], reason: null }, [spec]);
+    expect(p).toEqual({ description: 'new', goalCriteria: undefined, reason: null });
+    expect(admissibleProposal({ description: null, goalCriteria: [{ type: 'no_open_tasks' }], reason: null }, null)?.goalCriteria).toBeUndefined();
+  });
+
+  it('ignores a proposal that would drop the outcome spec', () => {
+    expect(admissibleProposal({ description: null, goalCriteria: [], reason: null }, [spec])?.goalCriteria).toBeUndefined();
+  });
+
+  it('a mission that already carries hand-written criteria keeps amending them', () => {
+    const next = [{ type: 'all_prs_merged' }, { type: 'command', command: 'x' }];
+    expect(admissibleProposal({ description: null, goalCriteria: next, reason: null }, [{ type: 'all_prs_merged' }])?.goalCriteria).toEqual(next);
+  });
+
+  it('passes a proposal with no criteria, and no proposal, through', () => {
+    expect(admissibleProposal({ description: 'd', goalCriteria: undefined, reason: 'r' }, null)).toEqual({ description: 'd', goalCriteria: undefined, reason: 'r' });
+    expect(admissibleProposal(null, null)).toBeNull();
   });
 });

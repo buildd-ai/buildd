@@ -172,7 +172,7 @@ export function liveRootsWhere(scope: ActivityScope, recentIds: SQLWrapper, tab:
   const where = activityScopeWhere(scope);
   const open = db.select({ id: tasksTable.id }).from(tasksTable)
     .where(and(where, isNull(tasksTable.parentTaskId), notInArray(tasksTable.status, [...TERMINAL_TASK_STATUSES])))
-    .orderBy(desc(tasksTable.updatedAt))
+    .orderBy(desc(tasksTable.updatedAt), desc(tasksTable.id))
     .limit(ACTIVITY_LIVE_ROOT_LIMIT);
   const held = db.select({ id: sql`coalesce(${tasksTable.parentTaskId}, ${tasksTable.id})` }).from(workers)
     .innerJoin(tasksTable, eq(workers.taskId, tasksTable.id))
@@ -296,10 +296,10 @@ export async function loadActivityRows(scope: ActivityScope, tab: ActivityTab, n
   const recentWhere = and(where, gte(tasksTable.updatedAt, windowStart), isNull(tasksTable.parentTaskId),
     tab === 'now' ? or(notInArray(tasksTable.status, [...TERMINAL_TASK_STATUSES]), mayBeInMotionSql()) : undefined);
   const recentQuery = db.select(ACTIVITY_TASK_COLUMNS).from(tasksTable).where(recentWhere)
-    .orderBy(desc(tasksTable.updatedAt)).limit(ACTIVITY_ROOT_LIMIT);
+    .orderBy(desc(tasksTable.updatedAt), desc(tasksTable.id)).limit(ACTIVITY_ROOT_LIMIT);
 
   const recentIds = db.select({ id: tasksTable.id }).from(tasksTable).where(recentWhere)
-    .orderBy(desc(tasksTable.updatedAt)).limit(ACTIVITY_ROOT_LIMIT);
+    .orderBy(desc(tasksTable.updatedAt), desc(tasksTable.id)).limit(ACTIVITY_ROOT_LIMIT);
   const [recent, live] = await db.batch([
     recentQuery,
     db.select(ACTIVITY_TASK_COLUMNS).from(tasksTable).where(liveRootsWhere(scope, recentIds, tab)),
@@ -316,7 +316,7 @@ export async function loadActivityRows(scope: ActivityScope, tab: ActivityTab, n
   const depIds = uniq(roots.filter(t => t.missionId).flatMap(t => t.dependsOn ?? [])).filter(id => !loaded.has(id));
   const childWhere = and(where, inArray(tasksTable.parentTaskId, rootIds));
   const childIds = db.select({ id: tasksTable.id }).from(tasksTable).where(childWhere)
-    .orderBy(desc(tasksTable.createdAt)).limit(ACTIVITY_CHILD_LIMIT);
+    .orderBy(desc(tasksTable.createdAt), desc(tasksTable.id)).limit(ACTIVITY_CHILD_LIMIT);
   const depWhere = depIds.length > 0
     ? and(inArray(tasksTable.workspaceId, [...scope.workspaceIds]), or(inArray(tasksTable.id, depIds), inArray(tasksTable.parentTaskId, depIds)))
     : undefined;
@@ -326,7 +326,7 @@ export async function loadActivityRows(scope: ActivityScope, tab: ActivityTab, n
     depWhere ? inArray(workers.taskId, db.select({ id: tasksTable.id }).from(tasksTable).where(depWhere)) : undefined,
   );
   const childQuery = db.select(ACTIVITY_TASK_COLUMNS).from(tasksTable).where(childWhere)
-    .orderBy(desc(tasksTable.createdAt)).limit(ACTIVITY_CHILD_LIMIT);
+    .orderBy(desc(tasksTable.createdAt), desc(tasksTable.id)).limit(ACTIVITY_CHILD_LIMIT);
   const [children, workerRows, dependencies] = (depWhere
     ? await db.batch([childQuery, workersQuery(workerTasks), db.select(ACTIVITY_TASK_COLUMNS).from(tasksTable).where(depWhere)])
     : [...await db.batch([childQuery, workersQuery(workerTasks)]), []]) as [ActivityTaskRow[], Array<Record<string, unknown>>, ActivityTaskRow[]];

@@ -73,7 +73,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
 - [Mission State and Completion](./mission-completion.md) · @max — verified 2026-10-17
   Missions MUST derive health from live work and refuse completion without passing goal criteria and required reviews.
-- [Mission Goal Criteria Quality (Advisory Verdict)](./mission-goal-criteria-quality.md) · @max — verified 2026-10-03
+- [Mission Goal Criteria Quality (Advisory Verdict)](./mission-goal-criteria-quality.md) · @max — verified 2026-10-22
   A mission's goal criteria MUST be graded advisorily on write (noticeable outcome, checkable proof) without ever blocking, rewriting or changing the stored goal; fails open; surfaces an advisory by default.
 - [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-10-15
   A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
@@ -155,7 +155,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-10-15
   Home, Missions and Initiatives MUST each answer one question (what needs me, what state is each mission in, what do an initiative's missions need) and MUST place release state per §8-10.
 - [Task Page](./task-page.md) · @max — verified 2026-10-22
-  The task page leads with the live run and steering while running, then one Build/Verify/Deliver timeline when stopped; Run holds execution material and Details holds spec, dependencies, attempts and time.
+  The task page MUST lead with the deliverable, its track and one outcome, list checks by round from delivery facts, frame attempts by their parent, fit a phone's first screen, and open Code review only to substance.
 - [Team Namespace Scoping](./team-namespace-scoping.md) · @max — verified 2026-10-15
   Home, the missions view and the workspaces view MUST all show only the single active team resolved server-side from the buildd-team cookie, via the same resolver the app shell uses.
 - [Team Service Status](./team-service-status.md) · @max — verified 2026-10-12

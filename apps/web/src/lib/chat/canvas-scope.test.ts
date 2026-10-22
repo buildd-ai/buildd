@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import { canvasPresentation, canvasScopeFromPath, isCanvasToggle, showsAskButton } from './canvas-scope';
+import { CANVAS_DOCK_MIN_WIDTH, canvasPresentation, canvasScopeFromPath, isCanvasToggle, showsAskButton } from './canvas-scope';
+import { ASK_DOCK_COOKIE, askDockCookie, askDockOpenFromCookie } from '@/lib/ask-dock';
 
 const M = '11111111-1111-4111-8111-111111111111';
 const T = '22222222-2222-4222-8222-222222222222';
@@ -41,7 +42,29 @@ describe('canvasPresentation', () => {
     expect(canvasPresentation(390)).toBe('takeover');
     expect(canvasPresentation(767)).toBe('takeover');
     expect(canvasPresentation(768)).toBe('peek');
-    expect(canvasPresentation(1440)).toBe('peek');
+    expect(canvasPresentation(1280)).toBe('peek');
+    expect(canvasPresentation(1439)).toBe('peek');
+  });
+
+  it('from 1440px wide it docks as a column beside the page (Navigation R-21)', () => {
+    expect(CANVAS_DOCK_MIN_WIDTH).toBe(1440);
+    expect(canvasPresentation(1440)).toBe('docked');
+    expect(canvasPresentation(1600)).toBe('docked');
+    expect(canvasPresentation(1920)).toBe('docked');
+  });
+});
+
+describe('the dock cookie', () => {
+  it('reads open unless the person collapsed it', () => {
+    expect(askDockOpenFromCookie(undefined)).toBe(true);
+    expect(askDockOpenFromCookie('open')).toBe(true);
+    expect(askDockOpenFromCookie('collapsed')).toBe(false);
+    expect(askDockOpenFromCookie('garbage')).toBe(true);
+  });
+
+  it('writes a site-wide, year-long, lax cookie the server layout can read', () => {
+    expect(askDockCookie(false)).toBe(`${ASK_DOCK_COOKIE}=collapsed; Path=/; Max-Age=31536000; SameSite=Lax`);
+    expect(askDockCookie(true)).toBe(`${ASK_DOCK_COOKIE}=open; Path=/; Max-Age=31536000; SameSite=Lax`);
   });
 });
 
