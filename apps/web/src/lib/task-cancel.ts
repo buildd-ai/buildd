@@ -196,3 +196,49 @@ export async function applyTaskDeleteSideEffects(taskId: string): Promise<void> 
     if (r.status === 'rejected') console.error(`[task-delete] ${labels[i]} failed for ${taskId}:`, r.reason);
   });
 }
+
+export const REQUEUED_WORKER_ERROR = 'Runner offline, requeued by owner';
+
+/**
+ * An owner puts a task back in the queue (`status: pending`) while it still has
+ * live workers, typically because their runner went offline. Without this the
+ * task read pending but its dead workers stayed `running`, so the task kept
+ * showing as running and no runner claimed it until the stale-worker reap.
+ *
+ *  1. End every live worker (compare-and-swap out of the live set) as failed,
+ *     `exitCause: reassigned` (infrastructure, not a chargeable attempt), with
+ *     the reason recorded and any question closed.
+ *  2. Push an abort to each, in case its runner is in fact still up.
+ *  3. Release the task's path claims, which a dead worker never will.
+ *
+ * Returns the ids of the workers it ended. Notification failures are logged,
+ * never thrown; the compare-and-swap write is the only step that can throw.
+ */
+export async function endLiveWorkersForRequeue(taskId: string): Promise<string[]> {
+  const now = new Date();
+  const ended = await db
+    .update(workers)
+    .set({
+      status: 'failed',
+      exitCause: 'reassigned',
+      error: REQUEUED_WORKER_ERROR,
+      waitingFor: null,
+      completedAt: now,
+      updatedAt: now,
+    })
+    .where(and(eq(workers.taskId, taskId), inArray(workers.status, [...LIVE_WORKER_STATUSES])))
+    .returning({ id: workers.id, taskId: workers.taskId, accountId: workers.accountId });
+  if (ended.length === 0) return [];
+
+  const results = await Promise.allSettled([
+    ...ended.flatMap(w => [
+      triggerEvent(channels.worker(w.id), events.WORKER_COMMAND, { action: 'abort', reason: 'task_requeued', timestamp: Date.now() }),
+      triggerEvent(channels.worker(w.id), events.WORKER_FAILED, { workerId: w.id, taskId: w.taskId, status: 'failed', error: REQUEUED_WORKER_ERROR }),
+    ]),
+    releaseAndNotify(taskId, 'abandoned'),
+  ]);
+  results.forEach(r => {
+    if (r.status === 'rejected') console.error(`[task-requeue] side effect failed for ${taskId}:`, r.reason);
+  });
+  return ended.map(w => w.id);
+}
