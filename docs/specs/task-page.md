@@ -143,8 +143,9 @@ Legacy PRs use `buildLineage` and `ciAttemptTasks`. Build attempts use
 Stage positions use `deliveryStageIndex`; an unstarted stage has no empty card.
 Round timestamps and CI results not present in the record are never invented.
 Times are ages (`12m ago`) from stored facts only: a build run's end (else start),
-the PR's merge time, a legacy lineage step's time, a queued fix's creation. A
-kernel round or attempt has no stored time and shows none. Durations stay in the
+the PR's merge time, a queued fix's creation. A kernel round or attempt, and a
+legacy lineage step (whose `at` is an offset label such as `+3m`), has no stored
+time and shows none. Durations stay in the
 event's subline.
 
 `runStall` (`apps/web/src/lib/run-stall.ts`) reads a stall from the newest reported

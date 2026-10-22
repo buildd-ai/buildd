@@ -31,7 +31,11 @@ export interface TaskTimelineInput {
   mergedAt?: Date | string | null;
 }
 const stateOf = (status: string): TimelineEvent['state'] => status === 'completed' ? 'passed' : status === 'failed' ? 'failed' : ['running', 'in_progress', 'assigned', 'starting'].includes(status) ? 'running' : 'muted';
-const iso = (v: Date | string | null | undefined): string | null => v == null ? null : new Date(v).toISOString();
+// A value that is not a date (a lineage offset like `+3m`) is no time, never a crash.
+const iso = (v: Date | string | null | undefined): string | null => {
+  const t = v == null ? NaN : new Date(v).getTime();
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+};
 const event = (id: string, label: string, state: TimelineEvent['state'], detail: string | null = null, taskId?: string | null, at?: Date | string | null): TimelineEvent => ({ id, label, detail, at: iso(at), state, taskId, children: [] });
 
 export function buildTaskTimeline(input: TaskTimelineInput): TimelineGroup[] {
@@ -88,12 +92,12 @@ export function buildTaskTimeline(input: TaskTimelineInput): TimelineGroup[] {
         if ((step.n ?? 1) > 1 && cause) {
           const task = ranRetries[retryIndex++];
           if (task) shown.add(task.id);
-          cause.children.push(event(`legacy:fix:${i}`, `Fix ${retryIndex}`, task ? stateOf(task.status) : 'muted', step.sub || null, task?.id, step.at));
+          cause.children.push(event(`legacy:fix:${i}`, `Fix ${retryIndex}`, task ? stateOf(task.status) : 'muted', step.sub || null, task?.id));
         }
         continue;
       }
       if (step.kind === 'retry') continue;
-      const row = event(`legacy:${i}`, step.title, step.kind === 'ci_failed' ? 'failed' : step.kind === 'ci_running' ? 'running' : 'passed', step.sub || null, null, step.at);
+      const row = event(`legacy:${i}`, step.title, step.kind === 'ci_failed' ? 'failed' : step.kind === 'ci_running' ? 'running' : 'passed', step.sub || null);
       (step.kind === 'merged' ? deliver : verify).push(row);
       if (step.kind === 'ci_failed') cause = row;
     }

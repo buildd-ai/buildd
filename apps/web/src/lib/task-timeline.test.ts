@@ -43,3 +43,9 @@ it('keeps a legacy fix that has no worker yet, without using it for a later comp
   expect(groups[1].events[0].children[0].taskId).toBe('ran');
   expect(groups[1].events.flatMap(e => e.children).some(e => e.taskId === 'queued')).toBe(true);
 });
+it('reads a legacy step offset ("+3m") as no time instead of throwing', () => {
+  const groups = build({ lineage: [{ kind: 'ci_failed', title: 'CI failed', sub: '', at: '4m after push' }, { kind: 'attempt', n: 2, title: 'CI fix 1', sub: '', at: '+3m' }, { kind: 'merged', title: 'Merged', sub: '', at: '+1m' }], ciAttemptTasks: [{ id: 'ran', status: 'completed', workers: [{}] }] });
+  const legacy = groups.flatMap(g => g.events).filter(e => e.id.startsWith('legacy:'));
+  expect(legacy.length).toBeGreaterThan(0);
+  expect(legacy.every(e => e.at === null && e.children.every(c => c.at === null))).toBe(true);
+});
