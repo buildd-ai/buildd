@@ -78,6 +78,13 @@ mock.module('@/lib/chat/mission-events', () => ({ postTaskCompletedEvent: mockPo
 // in packages/core/__tests__/pr-reverts.test.ts and lib/pr-reverts.test.ts.
 const mockRecordPrReverts = mock((_a: any) => Promise.resolve(0));
 mock.module('@/lib/pr-reverts', () => ({ recordPrReverts: mockRecordPrReverts }));
+// Named replacements: the writer is stood in (lib/pr-named-replacement-store.test.ts);
+// the parsers stay real, so a test reads which text named what.
+const mockRecordNamedReplacement = mock((_a: any) => Promise.resolve(1));
+mock.module('@/lib/pr-named-replacement-store', () => ({
+  recordNamedReplacement: mockRecordNamedReplacement,
+  linkNamedReplacement: mock(async () => ({ updated: true, url: '' })),
+}));
 const invalidatedApprovals: Array<[string, number]> = [];
 mock.module('@/lib/github-approval', () => ({
   readGithubApproval: async () => ({ reviewDecision: null, humanApproved: false }),
@@ -8035,5 +8042,67 @@ describe('webhook → reviewer flows (characterization)', () => {
     const payload = makeCheckSuitePayload({ check_suite: { conclusion: 'success' } });
     await POST(createWebhookRequest('check_suite', payload));
     expect(mockRetryCiFailureForPr).not.toHaveBeenCalled();
+  });
+});
+
+describe('named replacements: a PR body or a close comment that names a successor', () => {
+  beforeEach(() => { mockRecordNamedReplacement.mockClear(); });
+
+  const prEvent = (action: string, body: string | null) => ({
+    action,
+    pull_request: {
+      number: 140, merged: false, draft: false, title: 'feat: redo', body,
+      head: { ref: 'buildd/redo', sha: 'sha-140' }, base: { ref: 'dev' },
+      html_url: 'https://github.com/test-org/test-repo/pull/140',
+    },
+    repository: { full_name: 'test-org/test-repo' },
+  });
+
+  for (const action of ['opened', 'edited', 'reopened']) {
+    it(`a PR ${action} with "replaces #N" names itself the replacement of each N`, async () => {
+      const res = await POST(createWebhookRequest('pull_request', prEvent(action, 'Replaces #120. Also supersedes #121')));
+      expect(res.status).toBe(200);
+      expect(mockRecordNamedReplacement.mock.calls.map(c => c[0])).toEqual([
+        { repoFullName: 'test-org/test-repo', closedPrNumber: 120, replacementPrNumber: 140 },
+        { repoFullName: 'test-org/test-repo', closedPrNumber: 121, replacementPrNumber: 140 },
+      ]);
+    });
+  }
+
+  it('a synchronize, or a body naming nothing, records nothing', async () => {
+    await POST(createWebhookRequest('pull_request', prEvent('synchronize', 'Replaces #120')));
+    await POST(createWebhookRequest('pull_request', prEvent('opened', 'feat: new things')));
+    expect(mockRecordNamedReplacement).not.toHaveBeenCalled();
+  });
+
+  const commentEvent = (over: { action?: string; body?: string; pull_request?: any; state?: string } = {}) => ({
+    action: over.action ?? 'created',
+    issue: {
+      number: 120,
+      state: over.state ?? 'closed',
+      ...('pull_request' in over ? (over.pull_request ? { pull_request: over.pull_request } : {}) : { pull_request: { url: 'x' } }),
+    },
+    comment: { body: over.body ?? 'Replaced by #140' },
+    repository: { full_name: 'test-org/test-repo' },
+  });
+
+  it('a "Replaced by #N" comment on a PR names N the replacement of that PR', async () => {
+    const res = await POST(createWebhookRequest('issue_comment', commentEvent()));
+    expect(res.status).toBe(200);
+    expect(mockRecordNamedReplacement.mock.calls.map(c => c[0])).toEqual([
+      { repoFullName: 'test-org/test-repo', closedPrNumber: 120, replacementPrNumber: 140 },
+    ]);
+  });
+
+  it('counts a comment that lands while the PR still reads open (close with comment)', async () => {
+    await POST(createWebhookRequest('issue_comment', commentEvent({ state: 'open' })));
+    expect(mockRecordNamedReplacement).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores an edited comment, a comment on a plain issue, and one naming nothing', async () => {
+    await POST(createWebhookRequest('issue_comment', commentEvent({ action: 'edited' })));
+    await POST(createWebhookRequest('issue_comment', commentEvent({ pull_request: null })));
+    await POST(createWebhookRequest('issue_comment', commentEvent({ body: 'lgtm' })));
+    expect(mockRecordNamedReplacement).not.toHaveBeenCalled();
   });
 });

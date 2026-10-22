@@ -22,9 +22,10 @@
 import { db } from '@buildd/core/db';
 import { recordPrFact } from '@buildd/core/pr-facts';
 import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
-import { tasks, workers, workspaceSkills } from '@buildd/core/db/schema';
+import { missions, tasks, workers, workspaceSkills } from '@buildd/core/db/schema';
 import { personalRoleVisibleSql } from '@buildd/core/role-visibility';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import type { MissionStatusValue } from '@buildd/shared';
 import { fetchSplitPrStats } from './supersession-check';
 import { conformanceManifest } from './path-declaration';
 import { scheduleFailurePatternSentinel } from './failure-pattern-sentinel-trigger';
@@ -246,6 +247,34 @@ export async function insertPrOwnerWorker(params: {
   return { id: row.id };
 }
 
+/** Mission statuses an adopted PR may join: anything not completed or archived. */
+const OPEN_MISSION_STATUSES = ['active', 'paused', 'budget_exhausted'] as const satisfies readonly MissionStatusValue[];
+
+/**
+ * The one open mission in this workspace whose integration branch is `baseRef`,
+ * or null: none, more than one (ambiguous, so join none), or a failed read.
+ * A PR opened onto a mission's integration branch is that mission's work even
+ * when buildd did not open it, so its adopted task belongs on the mission.
+ */
+async function integrationMissionForBase(workspaceId: string, baseRef: string): Promise<string | null> {
+  try {
+    const rows = await db.query.missions.findMany({
+      where: sqlWhere(and(
+        eq(missions.workspaceId, workspaceId),
+        eq(missions.integrationBranchEnabled, true),
+        eq(missions.workingBranch, baseRef),
+        inArray(missions.status, [...OPEN_MISSION_STATUSES]),
+      )),
+      columns: { id: true },
+      limit: 2,
+    });
+    return rows.length === 1 ? rows[0]!.id : null;
+  } catch (err) {
+    console.warn(`[pr-adopt] mission lookup for base '${baseRef}' failed; adopting with no mission:`, err);
+    return null;
+  }
+}
+
 /**
  * Resolve the worker that owns a PR, adopting it as a task + worker first when
  * buildd has none.
@@ -299,10 +328,15 @@ export async function resolveOrAdoptPrOwner(params: {
     };
   }
 
+  const missionId = typeof pr.base?.ref === 'string' && pr.base.ref
+    ? await integrationMissionForBase(workspaceId, pr.base.ref)
+    : null;
+
   const [adoptedTask] = await db
     .insert(tasks)
     .values({
       workspaceId,
+      ...(missionId ? { missionId } : {}),
       title: `PR #${prNumber}: ${pr.title ?? 'untitled'}`,
       description: typeof pr.body === 'string' ? pr.body.slice(0, 8000) : null,
       status: 'completed',
@@ -363,7 +397,7 @@ export async function resolveOrAdoptPrOwner(params: {
       title: pr.title ?? `PR #${prNumber}`,
       description: typeof pr.body === 'string' ? pr.body.slice(0, 8000) : null,
       backend: 'claude',
-      missionId: null,
+      missionId,
       pathManifest: null,
       iteration: 0,
       maxIterations: 3,

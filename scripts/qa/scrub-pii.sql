@@ -567,6 +567,7 @@ UPDATE workers w SET
   pr_unresolvable_reason = pg_temp.qa_text(w.pr_unresolvable_reason),
   pr_base_ref = pg_temp.qa_branch(w.pr_base_ref),
   superseded_by_pr_url = pg_temp.qa_pr_url(w.superseded_by_pr_url),
+  named_replacement_pr_url = pg_temp.qa_pr_url(w.named_replacement_pr_url),
   superseded_reason = pg_temp.qa_text(w.superseded_reason),
   superseded_recorded_by = pg_temp.qa_str(w.superseded_recorded_by),
   abandoned_reason = pg_temp.qa_text(w.abandoned_reason),
