@@ -12,11 +12,11 @@ import { describe, expect, it } from 'bun:test';
 import { Glob } from 'bun';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { missionTaskHref, taskPageHref } from './mission-task-href';
-import { parseMissionLayout } from './mission-layout';
-import { taskRowsProgress } from './mission-strip-order';
+import { missionTaskHref, taskPageHref } from '../../src/lib/mission-task-href';
+import { parseMissionLayout } from '../../src/lib/mission-layout';
+import { taskRowsProgress } from '../../src/lib/mission-strip-order';
 
-const SRC = join(import.meta.dir, '..');
+const SRC = join(import.meta.dir, '..', '..', 'src');
 const MISSION_DIR = join(SRC, 'app/app/(protected)/missions/[id]');
 const TASK_DIR = join(SRC, 'app/app/(protected)/tasks/[id]');
 
