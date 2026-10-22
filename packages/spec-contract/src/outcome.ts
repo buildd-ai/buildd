@@ -44,9 +44,15 @@ export type VerdictSource = (typeof VERDICT_SOURCES)[number];
 export const verdictSourceOf = (recordedBy: unknown): VerdictSource =>
   typeof recordedBy === 'string' && recordedBy.startsWith('check:') ? 'test' : 'review';
 
-/** The source of a stored verdict row from its evidence blob. */
-export const verdictSourceOfEvidence = (evidence: unknown): VerdictSource =>
-  verdictSourceOf(evidence && typeof evidence === 'object' ? (evidence as Record<string, unknown>).recordedBy : null);
+/**
+ * The source of a stored verdict row from its evidence blob. A registered
+ * `verify:` result is a review whatever its method (kept in `evidence.method`),
+ * including rows recorded before that rule under a `check:registered:` author.
+ */
+export const verdictSourceOfEvidence = (evidence: unknown): VerdictSource => {
+  const e = evidence && typeof evidence === 'object' ? (evidence as Record<string, unknown>) : null;
+  return e?.kind === 'registered' ? 'review' : verdictSourceOf(e?.recordedBy ?? null);
+};
 
 /**
  * What verified a criterion, as kept on a verdict_criteria link. `test` and
@@ -62,8 +68,10 @@ export const verifiedByOf = (recordedBy: unknown): VerifiedBy =>
   typeof recordedBy === 'string' && recordedBy.startsWith('baseline:') ? 'baseline' : verdictSourceOf(recordedBy);
 
 /** The verified_by of a stored verdict row from its evidence blob. */
-export const verifiedByOfEvidence = (evidence: unknown): VerifiedBy =>
-  verifiedByOf(evidence && typeof evidence === 'object' ? (evidence as Record<string, unknown>).recordedBy : null);
+export const verifiedByOfEvidence = (evidence: unknown): VerifiedBy => {
+  const e = evidence && typeof evidence === 'object' ? (evidence as Record<string, unknown>) : null;
+  return e?.kind === 'registered' ? 'review' : verifiedByOf(e?.recordedBy ?? null);
+};
 
 export interface CriterionVerdict {
   criterionId: string;

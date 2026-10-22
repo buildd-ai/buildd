@@ -145,7 +145,7 @@ export function foldMissionSpec(input: {
       (r?.method && s.standing !== 'missing' ? { ...s, method: r.method } : s);
     const checks = required.length
       ? [...new Set(required)].map((fingerprint) =>
-        standingOf(criterionId, currentOrLatest(rows.filter((r) => r.bindingFingerprint === fingerprint)), true))
+        ((r) => withMethod(standingOf(criterionId, r, true), r))(currentOrLatest(rows.filter((r) => r.bindingFingerprint === fingerprint))))
       : [((r) => withMethod(standingOf(criterionId, r, true), r))(currentOrLatest(rows.filter((r) => r.method && !r.bindingFingerprint)))];
     const tests = rows.filter((r) => r.source === 'test' && !r.bindingFingerprint);
     if (tests.length) checks.push(standingOf(criterionId, currentOrLatest(tests)));

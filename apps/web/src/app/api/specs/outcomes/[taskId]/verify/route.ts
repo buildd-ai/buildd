@@ -3,7 +3,7 @@ import { specCaller } from '@/lib/specs/caller';
 import { governedTaskWorkspace } from '@/lib/specs/outcome';
 import { reach } from '@/lib/specs/store';
 import { isUuid } from '@/lib/uuid';
-import { dispatchRegisteredVerification } from '@/lib/specs/registered-verification';
+import { dispatchRegisteredVerification, resolveVerificationRequest } from '@/lib/specs/registered-verification';
 import { REGISTERED_VERIFICATION } from '@/modules';
 
 type Ctx = { params: Promise<{ taskId: string }> };
@@ -42,6 +42,14 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const evidenceRef = (body as Record<string, unknown>).evidenceRef;
   if (evidenceRef !== undefined && !isUuid(evidenceRef)) {
     return NextResponse.json({ error: 'evidenceRef must be an artifact UUID' }, { status: 400 });
+  }
+  // The shared request contract (also what the harness plans for): a governed subject, no prompt, no self-grading.
+  const request = resolveVerificationRequest({
+    params: { taskId, ...(body as Record<string, unknown>) },
+    caller: taskScope ? { kind: 'builder', taskId: taskScope.taskId } : { kind: 'person' },
+  });
+  if (!request.ok) {
+    return NextResponse.json({ error: `You may not request this verification: ${request.reason}` }, { status: request.reason === 'self_grading' ? 403 : 400 });
   }
   const headSha = await REGISTERED_VERIFICATION.head(taskId);
   if (!headSha) return NextResponse.json({ error: 'The current verification head is unavailable' }, { status: 409 });

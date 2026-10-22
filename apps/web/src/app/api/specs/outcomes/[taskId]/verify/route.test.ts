@@ -24,7 +24,9 @@ mock.module('@/modules', () => ({ REGISTERED_VERIFICATION: {
   head: async (taskId: string) => { calls.push(['head', taskId]); return head; },
   requesterRefusal: async (requester: string, subject: string) => { calls.push(['requester', requester, subject]); return requesterRefusal; },
 } }));
-mock.module('@/lib/specs/registered-verification', () => ({ dispatchRegisteredVerification: dispatch }));
+// The real request contract: only the coordinator is stubbed.
+const { resolveVerificationRequest } = await import('@/lib/specs/registered-verification');
+mock.module('@/lib/specs/registered-verification', () => ({ dispatchRegisteredVerification: dispatch, resolveVerificationRequest }));
 const { POST } = await import('./route');
 const post = (body: unknown, taskId = TASK) => POST(new NextRequest(`http://l/api/specs/outcomes/${taskId}/verify`, {
   method: 'POST', body: JSON.stringify(body),
@@ -58,6 +60,15 @@ describe('POST /api/specs/outcomes/[taskId]/verify', () => {
     expect((await own.json()).error).toContain('own outcome');
     expect(dispatch).not.toHaveBeenCalled();
     expect(calls.some((c) => Array.isArray(c) && c[0] === 'head')).toBe(false);
+  });
+
+  it('R-18: the shared request contract refuses self-grading even if the lineage lookup allowed it', async () => {
+    requesterRefusal = null;
+    caller = { kind: 'account', account: { id: 'a1', taskScope: { taskId: TASK, workspaceId: 'ws-a' } } };
+    const own = await post({});
+    expect(own.status).toBe(403);
+    expect((await own.json()).error).toContain('self_grading');
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it('confines a task token to its own workspace before any verification or head lookup', async () => {

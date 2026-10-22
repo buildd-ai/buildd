@@ -75,8 +75,16 @@ describe('registered verification coordinator', () => {
     const r = await run(h.deps);
     expect(h.calls).toHaveLength(3);
     expect(r.results).toEqual([{ criterionId: 'R-1', bindingId: 'ui.actions_match_state', verdict: 'fail', method: 'deterministic', cached: false, recorded: true }]);
-    expect(h.writes[0]).toMatchObject({ recordedBy: 'check:registered:ui.actions_match_state', evidenceRefs: ['art-1:hash', 'art-2:hash', 'art-3:hash'] });
+    // A registered result is a review whatever its method; the method is kept beside it.
+    expect(h.writes[0]).toMatchObject({ recordedBy: 'registered:ui.actions_match_state', method: 'deterministic', evidenceRefs: ['art-1:hash', 'art-2:hash', 'art-3:hash'] });
     expect(h.released).toEqual([h.writes[0]!.runKey]);
+  });
+
+  it('a model binding with no model answer records nothing and keeps the standing result', async () => {
+    const h = harness({ s: subject(`R-1: Clear.\n verify: ${binding('ui.card_clarity')}`), verdicts: [exec('inconclusive', 'fallback')] });
+    const r = await run(h.deps);
+    expect(r.results[0]).toMatchObject({ verdict: 'inconclusive', method: 'fallback', recorded: false, reason: expect.stringContaining('no result') });
+    expect(h.writes).toEqual([]);
   });
 
   it('a surface its verifier could not judge makes the whole run a fallback, authored as a review', async () => {
@@ -153,13 +161,23 @@ describe('registered verification coordinator', () => {
   });
 
   it('a deterministic hit replays without executing, and re-records only when a newer row superseded it; a model is never served from cache', async () => {
-    const stored = { verdict: 'pass', method: 'deterministic' } as RegisteredRun;
+    const first = harness(); await run(first.deps);
+    const stored = first.writes[0]!;
+    expect(stored.plan).toMatchObject({ verifier: { id: 'ui.action-state', version: 1 }, profile: { id: 'buildd-ui', version: 1 }, subject: { kind: 'task', taskId: 'subject' } });
     const current = harness(); current.deps.cached = async () => ({ verdictId: 'old', run: stored, current: true });
     expect((await run(current.deps)).results[0]).toMatchObject({ verdict: 'pass', cached: true, recorded: true });
     expect(current.calls).toEqual([]); expect(current.writes).toEqual([]);
     const superseded = harness(); superseded.deps.cached = async () => ({ verdictId: 'old', run: stored, current: false });
     await run(superseded.deps);
     expect(superseded.calls).toEqual([]); expect(superseded.writes[0]).toMatchObject({ replayOf: 'old', verdict: 'pass' });
+
+    // reusablePass decides a pass replay: a run recorded for another planned run, on other evidence, or before
+    // runs carried their plan, is executed again rather than replayed.
+    for (const other of [{ ...stored, plan: { ...stored.plan!, key: 'another-run' } }, { ...stored, inputFingerprint: 'other-evidence' }, { ...stored, plan: undefined }]) {
+      const h = harness(); h.deps.cached = async () => ({ verdictId: 'old', run: other, current: true });
+      expect((await run(h.deps)).results[0]).toMatchObject({ verdict: 'pass', cached: false, recorded: true });
+      expect(h.calls).toHaveLength(1);
+    }
 
     const model = harness({ s: subject(`R-1: Clear.\n verify: ${binding('ui.card_clarity')}`) });
     let looked = 0; model.deps.cached = async () => { looked++; return { verdictId: 'old', run: { ...stored, method: 'model' }, current: true }; };

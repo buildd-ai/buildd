@@ -40,7 +40,9 @@ describe('surface evidence from a capture', () => {
   it('R-12: an operation is the declared one, never the label: an undeclared button is other, and the check says unsupported', () => {
     const declared = ok(composeSurfaceEvidence(raw({ actions: [{ id: 'c', operation: 'confirm_replacement', prominence: 'primary', inMenu: false, label: 'Merge replacement', enabled: true, collapsed: false }] }), ctx()));
     expect(declared.evidence.visible.actions[0]!.operation).toBe('confirm_replacement');
-    expect(runUiActionStateCheck(declared.evidence).verdict).not.toBe('fail');
+    // Judged as what it does, not as a merge. (With no replacement pending, offering to confirm one is its own contradiction.)
+    expect(runUiActionStateCheck(declared.evidence).observed).not.toBe('terminal_pr_offers_merge');
+    expect(runUiActionStateCheck(declared.evidence).observed).toBe('no_replacement_offers_confirmation');
 
     const undeclared = ok(composeSurfaceEvidence(raw({ actions: [{ id: 'm', operation: null, prominence: 'primary', inMenu: false, label: 'Merge', enabled: true, collapsed: false }] }), ctx()));
     expect(undeclared.evidence.visible.actions[0]!.operation).toBe('other');

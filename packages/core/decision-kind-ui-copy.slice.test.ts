@@ -31,4 +31,19 @@ describe('UI card clarity decision contract', () => {
     expect(UI_COPY_CONFIG.interpret({ repetition: answer('clear', 0.99), action_clarity: answer('uncertain', 0.4), workflow_narration: answer('clear', 0.98) }))
       .toMatchObject({ decision: 'insufficient_evidence', confidence: 0.4 });
   });
+  it('the model state carries the capture\'s runtime facts and the criterion, under a new policy and feature identity', () => {
+    const features = {
+      profile: { id: 'buildd-ui', version: 1 },
+      segments: [{ id: 'status', text: 'Pull request closed', role: 'status' as const }],
+      actions: [{ id: 'confirm', label: 'Confirm replacement', operation: 'confirm_replacement' as const }],
+      state: { factVersion: '1', facts: { prState: 'closed' as const, replacementState: 'candidate' as const } },
+      criterion: { id: 'AC-2', text: 'The card says each thing once.' },
+    };
+    expect(UI_COPY_CONFIG.state(features)).toMatchObject({ state: features.state, criterion: features.criterion, segments: features.segments });
+    const { state: _s, criterion: _c, ...bare } = features;
+    expect(UI_COPY_CONFIG.state(bare)).not.toHaveProperty('state');
+    expect(UI_COPY_CONFIG.state(bare)).not.toHaveProperty('criterion');
+    expect(uiCopyKind.policyVersion).toBe('ui-copy-v4');
+    expect(UI_COPY_CONFIG.featureSchemaVersion).toBe('ui-copy-features-v2');
+  });
 });
