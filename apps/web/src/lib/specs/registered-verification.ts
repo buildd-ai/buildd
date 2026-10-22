@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
-  criterionVerifications, criterionVerificationCoverage, criterionVerificationScenarios,
+  criterionVerificationCoverage, criterionVerificationScenarios, toRegisteredBinding, REGISTERED_VERIFIER_REGISTRY,
   type CriterionVerification, type RegisteredBinding, type VerificationScenario,
 } from '@buildd/spec-contract/verification-bindings';
 import type { VerificationResult, VerificationVerdict } from '@buildd/core/verification-check';
@@ -212,16 +212,21 @@ export async function dispatchRegisteredVerification(
   if (s.headSha.toLowerCase() !== opts.headSha.toLowerCase()) return empty('the verification target is no longer current');
 
   let coverage: RegisteredVerification['coverage'];
-  let bindings: CriterionVerification[];
+  let plans: PlannedRegisteredCheck[];
   let declared: Map<string, VerificationScenario[]>;
   try {
     const inScope = new Set(s.criterionIds);
     coverage = criterionVerificationCoverage(s.body).filter((c) => inScope.has(c.criterionId));
-    bindings = criterionVerifications(s.body).filter((c) => inScope.has(c.criterionId));
+    plans = planRegisteredChecks({
+      subject: s.kind === 'mission' ? { kind: 'mission', missionId: s.subjectId } : { kind: 'task', taskId: s.subjectId },
+      workspaceId: s.workspaceId, specRevisionId: s.specRevisionId, body: s.body,
+      target: { headSha: s.headSha }, registry: REGISTERED_VERIFIER_REGISTRY, criteria: s.criterionIds,
+    });
     declared = criterionVerificationScenarios(s.body);
   } catch {
     return empty('the revision contains an invalid verifier binding');
   }
+  const bindings: CriterionVerification[] = plans.map((p) => ({ criterionId: p.criterionId, binding: toRegisteredBinding(p.binding)!, fingerprint: bindingFingerprint(p.binding) }));
   if (!bindings.length) return { results, coverage, refused };
 
   const collection = await deps.collect(s, opts.evidenceRef);
@@ -250,6 +255,13 @@ export async function dispatchRegisteredVerification(
 
   const scope: BuilddDecisionScope = { teamId: s.teamId, workspaceId: s.workspaceId, taskId: s.taskId, missionId: s.missionId ?? null };
   for (const c of bindings) {
+    const planned = plans.find((p) => p.criterionId === c.criterionId && bindingFingerprint(p.binding) === c.fingerprint)!;
+    const verifier = REGISTERED_VERIFIER_REGISTRY.verifiers.find((v) => v.id === planned.binding.verifier.id && v.version === planned.binding.verifier.version)!;
+    const uninspected = planned.binding.evidence.filter((capability) => !verifier.evidence.includes(capability));
+    if (uninspected.length) {
+      note(c, 'unsupported', `the selected verifier does not inspect declared evidence: ${uninspected.join(', ')}`);
+      continue;
+    }
     const wanted = declared.get(c.criterionId) ?? [];
     const { judged, missing } = bindingCoverage(wanted, surfaces);
     // Undeclared (an older revision): every admitted capture is judged, but none can certify a pass.
@@ -330,13 +342,7 @@ export async function dispatchRegisteredVerification(
  * the `buildd.ui_copy` decision kind. Profile `buildd-ui@1` is Buildd's own.
  */
 
-export const REGISTERED_VERIFIER_REGISTRY: VerifierRegistry = {
-  verifiers: [
-    { ...UI_ACTION_STATE_VERIFIER, evidence: [...UI_ACTION_STATE_VERIFIER.evidence] },
-    { id: 'ui.copy', version: 1, method: 'model', evidence: ['ui.text', 'ui.actions'] },
-  ],
-  profiles: [{ id: 'buildd-ui', version: 1 }],
-};
+export { REGISTERED_VERIFIER_REGISTRY };
 
 export type PlannedSubject = { kind: 'task'; taskId: string } | { kind: 'mission'; missionId: string };
 

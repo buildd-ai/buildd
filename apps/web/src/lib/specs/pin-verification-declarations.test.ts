@@ -41,7 +41,7 @@ describe('pinning a revision with verification declarations', () => {
   });
 
   it('a declared revision, and a revision with no verify at all, pin as before', async () => {
-    for (const b of [`- AC-1: Card.\n  verify: ${STATE}\n  scenarios: closed-pr@mobile`, '- AC-1: Card.\n  check: bun test']) {
+    for (const b of [`- AC-1: Card.\n  verify: ${STATE}\n  scenarios: closed-pr@mobile`, '- AC-1: Card.\n  verify: verifier=ui.action-state@1 profile=buildd-ui@1 mode=required evidence=ui.text,ui.actions,ui.state\n  scenarios: closed-pr@mobile', '- AC-1: Card.\n  check: bun test']) {
       const r = await pin(b);
       expect(r).toMatchObject({ ok: true, context: { specSource: { specId: SPEC, specRevisionId: REV, revision: 3, contentHash: HASH } } });
     }

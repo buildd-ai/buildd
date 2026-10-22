@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
+import { bindingFingerprint } from '@buildd/spec-contract/verification-bindings';
 import {
-  MAX_REGISTERED_SURFACES, dispatchRegisteredVerification, registeredAuthor,
+  MAX_REGISTERED_SURFACES, dispatchRegisteredVerification, registeredAuthor, planRegisteredChecks, REGISTERED_VERIFIER_REGISTRY,
   type CollectedSurface, type Collection, type Execution, type RegisteredRun, type RegisteredSubject, type RegisteredVerificationDeps,
 } from './registered-verification';
 
@@ -48,6 +49,27 @@ const run = (deps: RegisteredVerificationDeps, evidenceRef?: string, trigger?: '
   dispatchRegisteredVerification({ taskId: 'subject', headSha: HEAD, ...(evidenceRef ? { evidenceRef } : {}), ...(trigger ? { trigger } : {}) }, deps);
 
 describe('registered verification coordinator', () => {
+  it('uses the canonical planner identity for key=value and legacy JSON through the production coordinator', async () => {
+    const body = 'R-1: Actions agree with state.\n verify: verifier=ui.action-state@1 profile=buildd-ui@1 mode=required evidence=ui.text,ui.actions,ui.state\n scenarios: card@mobile';
+    const canonical = harness({ s: subject(body) });
+    const legacy = harness();
+    await run(canonical.deps); await run(legacy.deps);
+    const [planned] = planRegisteredChecks({ subject: { kind: 'task', taskId: 'subject' }, workspaceId: 'workspace', specRevisionId: 'revision', body, target: { headSha: HEAD }, registry: REGISTERED_VERIFIER_REGISTRY });
+    expect(canonical.writes[0]!.bindingFingerprint).toBe(bindingFingerprint(planned!.binding));
+    expect(canonical.writes[0]!.runKey).toBe(legacy.writes[0]!.runKey);
+    expect(canonical.writes[0]!.verdict).toBe('pass');
+  });
+
+  it('never certifies additional evidence the selected verifier does not inspect', async () => {
+    const body = 'R-1: The image is correct.\n verify: verifier=ui.copy@1 profile=buildd-ui@1 mode=required evidence=ui.text,ui.actions,ui.pixels\n scenarios: card@mobile';
+    const h = harness({ s: subject(body) });
+    const r = await run(h.deps);
+    expect(r.results[0]).toMatchObject({ verdict: 'unsupported', recorded: false });
+    expect(r.results[0]!.reason).toContain('ui.pixels');
+    expect(h.calls).toEqual([]);
+    expect(h.writes).toEqual([]);
+  });
+
   it('judges every admitted capture: one failing surface fails the binding', async () => {
     const h = harness({ collection: { admitted: [shot(1), shot(2), shot(3)], refused: [] }, verdicts: [exec('pass', 'deterministic'), exec('fail', 'deterministic'), exec('pass', 'deterministic')] });
     const r = await run(h.deps);
