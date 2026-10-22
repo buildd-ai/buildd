@@ -11,7 +11,7 @@
  * mission, the release when one is configured. There is no fixed checklist.
  */
 import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
-import { criterionFingerprint } from '@buildd/core/mission-helpers';
+import { criterionFingerprint, isStandardCriterion } from '@buildd/core/mission-helpers';
 import { earlierCommitDetail, presentVisualReview } from './workflow/visual-review-presentation';
 import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import type { MissionIntegrationPrView } from './mission-integration-pr';
@@ -185,8 +185,10 @@ export function criteriaChecks(criteria: readonly GoalCriterion[], state: GoalCr
   const where = ctx.target ? `on ${ctx.target}` : 'on the target branch';
   return criteria.map((c, i) => {
     const e = byIndex.get(i) ?? null;
+    // A standard (D-43) holds the finish only once its gate is enforced; until then it is advisory.
+    const standard = isStandardCriterion(c);
     const base = {
-      key: `criterion-${i}`, kind: 'criterion' as const, label: criterionName(c), chip: 'goal', blocks: true,
+      key: `criterion-${i}`, kind: 'criterion' as const, label: criterionName(c), chip: standard ? 'standard' : 'goal', blocks: !standard,
       target: ctx.target, commit: null, actor: 'system' as CheckActor, problem: null, findings: null, repairs: [], evidence: [],
     };
     const row = (status: CheckStatus, text: string, detail: string | null, extra: Partial<CheckRow> = {}): CheckRow => ({ ...base, status, state: text, detail, ...extra });
@@ -400,7 +402,8 @@ export interface OutcomeSpecLine { specId: string; title: string; revision: stri
 export function outcomeSpecLines(criteria: readonly GoalCriterion[], rows: readonly CheckRow[], titles: Readonly<Record<string, string>>): OutcomeSpecLine[] {
   const out: OutcomeSpecLine[] = [];
   criteria.forEach((c, i) => {
-    if (c.type !== 'living_spec') return;
+    // A standard is not the mission's outcome: it is listed with Standards, not here.
+    if (c.type !== 'living_spec' || isStandardCriterion(c)) return;
     const row = rows.find(r => r.key === `criterion-${i}`);
     out.push({
       specId: c.specId,

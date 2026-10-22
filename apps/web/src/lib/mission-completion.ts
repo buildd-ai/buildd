@@ -4,7 +4,8 @@ import { missions, tasks, taskSchedules, missionNotes, workers } from '@buildd/c
 import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
 import { evaluateMissionWorkState, findMissionPrOwner } from '@/lib/mission-pr';
 import { eq, and, gte, desc } from 'drizzle-orm';
-import { isDeliverableTask } from '@buildd/core/mission-helpers';
+import { countedGoalCriteria, isDeliverableTask } from '@buildd/core/mission-helpers';
+import { standardsHoldOf, type StandardsHold } from '@/lib/specs/standards-gate';
 import { deriveLineageSupersession, isPrUnshipped, prShipState, withDeliveryShip, type SupersessionScan, type SupersessionSuggestion } from '@buildd/core/pr-shipped';
 import { deliveryShipsForPrs, epochCompletionHold, missionEpochsOf, shipKey } from '@/lib/workflow/delivery-ship';
 import { claimMissionCompletion, readMissionEpochFingerprint } from '@/lib/workflow/mission-completion-write';
@@ -171,6 +172,13 @@ export interface MissionCompletionDecision {
    * where the refusal code is `visual_review_open`.
    */
   visualReviewHold?: VisualReviewHold | null;
+  /**
+   * The mission's standards (Living Specs D-43) that do not pass, set whenever
+   * the goal criteria passed and a standard did not, in shadow too.
+   * `enforced` is true only under STANDARDS_GATE=enforce, where the refusal
+   * code is `standards_unmet`.
+   */
+  standardsHold?: StandardsHold | null;
   /** The rendered UI files behind `surface_audit_missing`, so a surface can say how many without parsing `reason`. */
   surfaceAuditPaths?: string[];
   /**
@@ -451,6 +459,7 @@ export async function canCompleteMission(
     supersededDetails: [] as MissionCompletionDecision['supersededDetails'],
     abandonedDetails: [] as MissionCompletionDecision['abandonedDetails'],
     visualReviewHold: null as VisualReviewHold | null,
+    standardsHold: null as StandardsHold | null,
     surfaceAuditAssessment: null as VisualImpactAssessment | null,
   };
 
@@ -897,7 +906,24 @@ export async function canCompleteMission(
   base.criteriaEvaluatedAt = state?.evaluatedAt ?? null;
 
   if (state?.overall === 'pass') {
-    return { ...base, ok: true, code: 'ok', reason: `All ${criteria.length} goal criteria pass` };
+    // Standards (D-43) are read on their own: `overall` leaves them out. Shadow
+    // unless STANDARDS_GATE=enforce, so a standard never holds a mission until
+    // the shadow log says what it would have held.
+    const standards = standardsHoldOf(criteria, state);
+    if (standards) {
+      base.standardsHold = standards;
+      const names = standards.unmet.map(u => `${u.label} (${u.verdict})`).join('; ');
+      if (!standards.enforced) {
+        console.log(`[standards-shadow] ${mission.id.slice(0, 8)} would hold: ${names}`);
+      } else {
+        return { ...base, ok: false, code: 'standards_unmet', reason: `Standards not met: ${names}` };
+      }
+    }
+    const counted = countedGoalCriteria(criteria);
+    return {
+      ...base, ok: true, code: 'ok',
+      reason: counted > 0 ? `All ${counted} goal criteria pass` : 'All deliverables terminal; mission states no goal criteria',
+    };
   }
 
   const nonPass = (state?.criteria ?? []).filter(c => c.verdict !== 'pass');

@@ -2914,6 +2914,12 @@ export interface SpecMetadataBlock {
    */
   criteria_unread?: { unreadable: Array<{ id: string; line: number }>; duplicates: Array<{ id: string; lines: number[] }> };
   /**
+   * Living Specs D-43: a person (owner or admin, own session) marked this spec
+   * a standard of its workspace. Its approved criteria apply to every mission
+   * whose build starts after (apps/web/src/lib/specs/standards.ts).
+   */
+  standard?: true;
+  /**
    * Set by a copy from another workspace (apps/web/src/lib/specs/copy.ts): the
    * source revision this spec's head is byte for byte, by hash. Server-written
    * only (not a metadata field a change can set). It never carries approval.

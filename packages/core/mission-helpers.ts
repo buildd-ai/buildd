@@ -79,8 +79,21 @@ export const MECHANICAL_CRITERION_TYPES = [
   'living_spec',
 ] as const;
 
-/** Ceiling on criteria per mission (shared by POST and PATCH /api/missions). */
+/** Ceiling on criteria per mission (shared by POST and PATCH /api/missions). Standards do not count. */
 export const MAX_GOAL_CRITERIA = 20;
+
+/**
+ * A workspace standard snapshotted onto the mission (Living Specs D-43), as
+ * opposed to its selected outcome spec. Both are `living_spec` entries.
+ */
+export function isStandardCriterion(c: unknown): boolean {
+  return !!c && typeof c === 'object' && (c as { type?: unknown }).type === 'living_spec' && (c as { role?: unknown }).role === 'standard';
+}
+
+/** The criteria `MAX_GOAL_CRITERIA` counts: every entry but the standards. */
+export function countedGoalCriteria(criteria: readonly unknown[]): number {
+  return criteria.filter(c => !isStandardCriterion(c)).length;
+}
 
 /**
  * Identity of a criterion, independent of its position in the array.
@@ -107,6 +120,8 @@ export function criterionFingerprint(criterion: GoalCriterion): string {
       [...(criterion.criteria ?? [])].sort().join(','),
       (criterion.waived ?? []).map(w => w.criterionId).sort().join(','),
     );
+    // Only when set, so an outcome spec's fingerprint is what it always was.
+    if (criterion.role) parts.push(criterion.role);
   }
   if (criterion.label) parts.push(criterion.label);
 
@@ -124,7 +139,9 @@ export function criterionFingerprint(criterion: GoalCriterion): string {
  * is not "this is satisfied". An empty criteria list passes: a mission with no
  * stated goal criteria is not gated by them.
  */
-export function recalculateOverall(criteria: GoalCriteriaState['criteria']): CriterionVerdict {
+export function recalculateOverall(all: GoalCriteriaState['criteria']): CriterionVerdict {
+  // Standards (D-43) are gated on their own (`canCompleteMission`), never here.
+  const criteria = all.filter(r => !r.standard);
   if (criteria.length === 0) return 'pass';
   if (criteria.some(r => r.verdict === 'fail')) return 'fail';
   if (criteria.every(r => r.verdict === 'pass')) return 'pass';
@@ -170,7 +187,7 @@ export function validateGoalCriteria(
   } = {},
 ): string | null {
   if (!Array.isArray(criteria)) return 'goalCriteria must be an array';
-  if (criteria.length > MAX_GOAL_CRITERIA) {
+  if (countedGoalCriteria(criteria) > MAX_GOAL_CRITERIA) {
     return `goalCriteria must have at most ${MAX_GOAL_CRITERIA} criteria`;
   }
 
@@ -580,6 +597,7 @@ export function evaluateGoalCriteria(
       ...(evidence ? { evidence } : {}),
       ...(workerTaskId ? { workerTaskId } : {}),
       fingerprint: criterionFingerprint(criterion),
+      ...(isStandardCriterion(criterion) ? { standard: true as const } : {}),
     });
   }
 

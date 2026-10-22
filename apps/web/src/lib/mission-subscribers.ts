@@ -2,6 +2,10 @@
  * Missions module: what a worker's report, and a task filed against a
  * mission, mean for that mission.
  *
+ * `tasks.claimed`: the integration branch is refreshed before the work
+ * starts, and a mission's first build claim snapshots its workspace's
+ * standards (lib/specs/standards.ts).
+ *
  * `task.created`: a task filed against a mission (dashboard, API, an external
  * MCP caller) is attributed in the mission feed, reopens a completed mission,
  * and resolves a criteria escalation ("file the work" is one of its two
@@ -35,6 +39,7 @@ import { recordMissionVerdictServer } from '@/lib/specs/mission-outcome';
 registerMissionVerdictRecorder((missionId, input) => recordMissionVerdictServer(missionId, input as Parameters<typeof recordMissionVerdictServer>[1]));
 import { after } from 'next/server';
 import { refreshMissionBranchesBeforeStart } from '@/lib/mission-branch-refresh';
+import { scheduleStandardsSnapshots } from '@/lib/specs/standards';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
 import { evaluateAndAdvanceLoopOnMerge, evaluateAndAdvanceLoopOnCiGreen } from '@/lib/loop-webhook';
 import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';
@@ -67,6 +72,11 @@ export const missionSubscribers: readonly AnySubscriber[] = [
     await refreshMissionBranchesBeforeStart(e.tasks, {
       keepAlive: pending => after(() => pending.then(() => {})),
     });
+  }),
+  // Living Specs D-43: a mission's first build claim snapshots the workspace's
+  // standards onto it. After the response, and never fails the claim.
+  subscriber('missions', 'tasks.claimed', 'snapshot-standards-at-build-start', e => {
+    scheduleStandardsSnapshots(e.tasks.map(t => ({ taskId: t.id, missionId: t.missionId })));
   }),
   // §6: deliverable work filed into a mission gets its scope decision (in
   // scope, a recorded amendment, or a hold for a person), and, when the
