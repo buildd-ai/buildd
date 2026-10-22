@@ -12,7 +12,7 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/host-memory-excludes.test.ts
  */
 import { describe, test, expect } from 'bun:test';
-import { hostUserMemoryExcludes } from '../../src/host-memory-excludes';
+import { hostUserMemoryExcludes, primaryCloneMemoryExcludes } from '../../src/host-memory-excludes';
 
 describe('hostUserMemoryExcludes', () => {
   test('excludes the host user CLAUDE.md and user rules', () => {
@@ -42,6 +42,27 @@ describe('hostUserMemoryExcludes', () => {
   test('normalizes separators to forward slashes', () => {
     const ex = hostUserMemoryExcludes('C:\\Users\\op', undefined);
     expect(ex).toContain('C:/Users/op/.claude/CLAUDE.md');
+  });
+});
+
+// The CLI matches each candidate memory file as an absolute path with `\`
+// turned into `/` (`C:/repo/CLAUDE.md`), so a pattern with a backslash, or a
+// `/C:/...` form, never matches it and the file loads anyway.
+describe('primaryCloneMemoryExcludes on Windows paths', () => {
+  test('emits drive-letter paths with forward slashes only', () => {
+    const ex = primaryCloneMemoryExcludes('C:\\code\\repo\\.buildd-worktrees\\wt', 'C:\\code\\repo');
+    expect(ex).toContain('C:/code/repo/CLAUDE.md');
+    expect(ex).toContain('C:/code/repo/.buildd-worktrees/CLAUDE.md');
+    expect(ex).toContain('C:/code/repo/.claude/rules/**');
+    for (const p of ex) {
+      expect(p).not.toContain('\\');
+      expect(p.startsWith('C:/code/repo/')).toBe(true);
+    }
+  });
+
+  test('a mixed-separator primary still matches its worktree', () => {
+    const ex = primaryCloneMemoryExcludes('C:\\code\\repo\\.buildd-worktrees\\wt', 'C:/code/repo/');
+    expect(ex).toContain('C:/code/repo/CLAUDE.md');
   });
 });
 
