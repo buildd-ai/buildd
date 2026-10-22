@@ -112,6 +112,24 @@ describe('selectTestFiles', () => {
     // or uncollected directory would otherwise report green over zero tests.
     expect(() => selectTestFiles(['apps/nope/'], discovered)).toThrow(/apps\/nope/);
   });
+
+  it('fails loudly when every named test file is dropped', () => {
+    // A spec `check:` line naming only acceptance-only (or non-unit) files used
+    // to print "No unit test files selected." and exit 0: a pass over nothing.
+    expect(() => selectTestFiles(['tests/e2e/dashboard.test.ts'], discovered)).toThrow(/tests\/e2e\/dashboard\.test\.ts/);
+    expect(() => selectTestFiles(['tests/e2e/a.test.ts', 'apps/web/tests/integration/x.test.ts'], discovered)).toThrow(/selected none/);
+    // Dropping some of them is still fine: CI's affected list is already filtered.
+    expect(selectTestFiles(['apps/web/src/lib/a.test.ts', 'tests/e2e/dashboard.test.ts'], discovered))
+      .toEqual(['apps/web/src/lib/a.test.ts']);
+  });
+});
+
+describe('run-unit-tests exit code', () => {
+  it('exits non-zero when named test files select nothing', () => {
+    const run = Bun.spawnSync(['bun', 'scripts/run-unit-tests.ts', 'tests/e2e/not-a-unit.test.ts'], { stdout: 'pipe', stderr: 'pipe' });
+    expect(run.exitCode).not.toBe(0);
+    expect(run.stderr.toString()).toContain('tests/e2e/not-a-unit.test.ts');
+  }, 60_000);
 });
 
 describe('getTestConcurrency', () => {

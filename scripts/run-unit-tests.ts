@@ -80,9 +80,11 @@ export function selectTestFiles(named: readonly string[], discovered: readonly s
   const explicit = named.filter(arg => arg !== ALL_SENTINEL);
   if (explicit.length === 0) return [...discovered];
   const selected = new Set<string>();
+  const dropped: string[] = [];
   for (const arg of explicit) {
     if (isTestFileName(arg)) {
       if (isUnitTestFile(arg)) selected.add(arg);
+      else dropped.push(arg);
       continue;
     }
     // Anything else is a directory: every discovered file under it. A package's
@@ -94,6 +96,12 @@ export function selectTestFiles(named: readonly string[], discovered: readonly s
       throw new Error(`no unit test files under '${arg}' (is it under UNIT_TEST_ROOTS in scripts/run-unit-tests.ts?)`);
     }
     for (const file of under) selected.add(file);
+  }
+  // Every named file dropped (non-unit, or ACCEPTANCE_ONLY_TESTS): exiting 0
+  // here would let a spec `check:` line pass without running a test. CI's
+  // affected list is already filtered by isUnitTestFile, so it never trips this.
+  if (selected.size === 0 && dropped.length > 0) {
+    throw new Error(`named test files selected none: ${dropped.join(', ')} (not unit tests, or listed in ACCEPTANCE_ONLY_TESTS; run those with scripts/run-acceptance-tests.ts)`);
   }
   return [...selected].sort();
 }
