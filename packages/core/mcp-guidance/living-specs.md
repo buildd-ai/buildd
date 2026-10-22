@@ -54,7 +54,8 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
 3. **Revise:** `buildd action=manage_specs params={ action: "revise", specId, expectedVersion, body, changeSummary }`.
    `expectedVersion` is the version `get` showed. To replace one section,
    add `section` (an outline id) or `heading` (a heading used once) and send
-   only that section's text, heading line included. Omitted `repoRefs` or
+   only that section's text, heading line included. To change one phrase,
+   send `find` (exact text, once in the body) and `replace` instead of `body`. Omitted `repoRefs` or
    `design` carry forward; `[]` or `null` clears.
 4. **Submit and approve: a person's act.** `buildd action=manage_specs params={ action: "submit", specId, expectedVersion }`
    and `buildd action=manage_specs params={ action: "approve", specId, revision, expectedVersion }`
