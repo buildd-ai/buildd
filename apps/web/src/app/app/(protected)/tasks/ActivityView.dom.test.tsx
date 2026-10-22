@@ -129,3 +129,54 @@ it('History-only outcomes do not hide live rows when switching to Now', () => {
     expect([...container.querySelectorAll('button')].find(b => b.textContent === 'Merged')?.getAttribute('aria-pressed')).toBe('true');
   } finally { act(() => root.unmount()); }
 });
+
+it('AC-1: a new mission that started at once shows once, marked New, created apart from its last activity', async () => {
+  const { activityContextFixture, ACTIVITY_FIXTURE_NOW, NEW_MISSION } = await import('@/app/app/dev/fixtures/activity-delivery-fixtures');
+  const f = activityContextFixture();
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  try {
+    act(() => root.render(<ActivityView mode="now" now={f.now} history={f.history} nowMs={ACTIVITY_FIXTURE_NOW} hrefs={{ now: '/app/tasks', history: '/app/tasks?view=history' }} />));
+    const groups = container.querySelectorAll(`[data-mission="${NEW_MISSION.id}"]`);
+    expect(groups).toHaveLength(1);
+    // One New marker for the mission; its tasks do not repeat it.
+    expect(groups[0].querySelectorAll('[data-testid="activity-new"]')).toHaveLength(1);
+    expect(groups[0].querySelectorAll('[data-testid="activity-now-row"] [data-testid="activity-new"]')).toHaveLength(0);
+    // A new standalone task carries its own marker, on its row.
+    expect(container.querySelector('[data-row="fx-solo"] [data-testid="activity-new"]')).not.toBeNull();
+    expect(groups[0].querySelector('[data-testid="activity-created"]')?.textContent).toBe('created 8m ago');
+    const current = groups[0].querySelector('[data-testid="activity-current"]')!;
+    expect(current.querySelector('a')?.getAttribute('href')).toBe('/app/tasks/fx-new-1');
+    const row = [...groups[0].querySelectorAll('[data-testid="activity-now-row"]')].find(r => r.querySelector('[data-testid="activity-transition"]')?.textContent?.includes('Build started'))!;
+    expect(row.querySelector('[data-testid="activity-transition"]')?.textContent).toBe('Build started · 6m ago');
+    expect(row.querySelector('[data-testid="activity-created"]')?.textContent).toBe('created 7m ago');
+    act(() => root.render(<ActivityView mode="history" now={f.now} history={f.history} nowMs={ACTIVITY_FIXTURE_NOW} hrefs={{ now: '/app/tasks', history: '/app/tasks?view=history' }} />));
+    const created = [...container.querySelectorAll('[data-testid="activity-created-event"]')].filter(e => e.textContent?.includes(NEW_MISSION.title));
+    expect(created).toHaveLength(1);
+    expect(created[0].querySelector('a')?.getAttribute('href')).toBe(`/app/missions/${NEW_MISSION.id}`);
+  } finally { act(() => root.unmount()); }
+});
+
+it('AC-2: a five-generation chain is one row whose derived tasks expand, each linking to its task and its real parent', async () => {
+  const { activityContextFixture, ACTIVITY_FIXTURE_NOW, CHAIN_ROOT } = await import('@/app/app/dev/fixtures/activity-delivery-fixtures');
+  const f = activityContextFixture();
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  try {
+    act(() => root.render(<ActivityView mode="now" now={f.now} history={[]} nowMs={ACTIVITY_FIXTURE_NOW} hrefs={{ now: '/app/tasks', history: '/app/tasks?view=history' }} />));
+    const rows = [...container.querySelectorAll('[data-testid="activity-now-row"]')].filter(r => r.getAttribute('data-row') === CHAIN_ROOT);
+    expect(rows).toHaveLength(1);
+    const derived = rows[0].querySelector('[data-testid="activity-derived"]')!;
+    const toggle = derived.querySelector('button')!;
+    expect(toggle.textContent).toContain('5 derived tasks');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(derived.querySelectorAll('[data-testid="activity-derived-child"]')).toHaveLength(0);
+    act(() => toggle.click());
+    const kids = [...derived.querySelectorAll('[data-testid="activity-derived-child"]')];
+    expect(kids.map(k => k.querySelector('[data-testid="activity-derived-task"]')?.getAttribute('href')))
+      .toEqual(['g1', 'g2', 'g3', 'g4', 'g5'].map(g => `/app/tasks/fx-chain-${g}`));
+    expect(kids.map(k => k.querySelector('[data-testid="activity-derived-parent"]')?.getAttribute('href')))
+      .toEqual([CHAIN_ROOT, 'fx-chain-g1', 'fx-chain-g2', 'fx-chain-g3', 'fx-chain-g4'].map(id => `/app/tasks/${id}`));
+    expect(kids.every(k => k.querySelector('[data-testid="activity-derived-mission"]')?.getAttribute('href') === '/app/missions/fx-flaky')).toBe(true);
+  } finally { act(() => root.unmount()); }
+});

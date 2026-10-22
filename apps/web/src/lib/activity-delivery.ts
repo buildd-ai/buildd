@@ -75,7 +75,10 @@ export function kernelOwnedBy<V extends { ownerTaskId: string }>(views: Readonly
  * and its tasks' deliveries. A `MissionDelivery` is one; the page builds it
  * from the stored summary and the projection over the rows in view.
  */
-export type ActivityMission = Pick<MissionDelivery, 'id' | 'title' | 'kind' | 'landed' | 'total' | 'next' | 'tasks'>;
+export type ActivityMission = Pick<MissionDelivery, 'id' | 'title' | 'kind' | 'landed' | 'total' | 'next' | 'tasks'> & {
+  /** When the mission was created (ISO), when loaded: what marks it new in Now. */
+  createdAt?: string | null;
+};
 
 // ── Shared shapes ───────────────────────────────────────────────────────────
 
@@ -105,6 +108,32 @@ export type EvidenceEntry =
   /** A kernel delivery's older review rounds, folded into one line ("Rounds 1–10: 7 approved · 3 changes requested"). */
   | { type: 'earlier'; rounds: number; line: string };
 
+/** The last meaningful thing that happened to a delivery: History's newest step for it, never a worker heartbeat. */
+export interface Transition { at: number; text: string; tone: DeliveryTone }
+
+/**
+ * A review or repair derived from a delivery, at any depth of its chain: folded
+ * beneath the work it came from, linking to its own task, the task it was
+ * spawned from and the mission.
+ */
+export interface DerivedChild {
+  id: string;
+  title: string;
+  href: string;
+  role: 'review' | 'repair';
+  status: string;
+  /** 1 for an attempt spawned from the deliverable, 2 for one spawned from that attempt, and so on. */
+  generation: number;
+  /** The task it was spawned from: the deliverable, or the attempt before it. */
+  parent: { id: string; title: string; href: string };
+  missionHref: string | null;
+  /** An agent is working it now. */
+  live: boolean;
+}
+
+/** Work created this recently is marked new where it already appears; there is no list of new work. */
+export const NEW_WINDOW_MS = 2 * 60 * 60_000;
+
 export interface NowRow {
   id: string;
   title: string;
@@ -122,6 +151,14 @@ export interface NowRow {
   updatedAt: number;
   /** Revision cards and repairs, newest first. Empty when there is nothing to expand. */
   evidence: EvidenceEntry[];
+  /** Epoch ms the task was created: shown apart from its last activity. */
+  createdAt: number;
+  /** Created within `NEW_WINDOW_MS`. */
+  isNew: boolean;
+  /** Its last meaningful transition, from the same steps History tells. */
+  transition: Transition | null;
+  /** Reviews and repairs derived from it, every generation, oldest first. */
+  children: DerivedChild[];
 }
 
 export interface NowGroup {
@@ -139,6 +176,12 @@ export interface NowGroup {
   moreWaiting: number;
   /** Hidden waiting rows (past the cap) for expansion. */
   hiddenWaitingRows: NowRow[];
+  /** Epoch ms the mission was created, when loaded; null for standalone work. */
+  createdAt: number | null;
+  /** The mission was created within `NEW_WINDOW_MS`. */
+  isNew: boolean;
+  /** The task that moved last: where the outcome stands now. */
+  current: { id: string; title: string; href: string; transition: Transition | null } | null;
 }
 
 export interface ActivityNow {
@@ -169,6 +212,8 @@ export interface Episode {
   at: number;
   /** Chronological, in the order they happened. Never re-sorted by kind. */
   steps: EpisodeStep[];
+  /** Set on a creation event: a mission's creation, beside the deliveries, not one of them. */
+  event?: 'created';
 }
 
 const record = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {});
@@ -231,36 +276,61 @@ const REPAIR_FOR: Record<RepairReason, string> = { ci: 'CI failed', conflict: 'c
 
 interface Delivery {
   root: ActivityTaskInput;
+  /** Every generation of its reviews and repairs, oldest first. */
   reviews: ActivityTaskInput[];
   repairs: ActivityTaskInput[];
   /** Root and every attempt's workers. */
   workers: ActivityWorker[];
+  /** Each attempt's generation and the task it was spawned from. */
+  lineage: Map<string, { generation: number; parent: ActivityTaskInput }>;
 }
 
+const isReviewOf = (rules: MissionTaskRules) => (t: ActivityTaskInput) => {
+  const type = rules.deriveTaskType(t);
+  return type === 'review' || type === 'review-retry';
+};
+
 /**
- * Fold attempts into the deliverable they belong to. An attempt whose parent
- * is not loaded stands as its own delivery rather than vanishing.
+ * Fold attempts into the deliverable they belong to, every generation: a
+ * repair spawned from a review spawned from a repair still belongs to the
+ * task the chain started from. An attempt whose parent is not loaded stands
+ * as its own delivery rather than vanishing; so does one caught in a cycle.
  */
 function foldDeliveries(tasks: readonly ActivityTaskInput[], rules: MissionTaskRules): Delivery[] {
   const byId = new Map(tasks.map(t => [t.id, t]));
+  const folds = (t: ActivityTaskInput) => rules.isAttempt(t) && !!t.parentTaskId && byId.has(t.parentTaskId);
+  const rootOf = (t: ActivityTaskInput): { root: ActivityTaskInput; generation: number } => {
+    const seen = new Set([t.id]);
+    let cur = t;
+    let generation = 0;
+    while (folds(cur)) {
+      const parent = byId.get(cur.parentTaskId!)!;
+      if (seen.has(parent.id)) return { root: t, generation: 0 };
+      seen.add(parent.id);
+      cur = parent;
+      generation += 1;
+    }
+    return { root: cur, generation };
+  };
   const kids = new Map<string, ActivityTaskInput[]>();
+  const lineage = new Map<string, { generation: number; parent: ActivityTaskInput }>();
   const roots: ActivityTaskInput[] = [];
   for (const t of tasks) {
-    if (rules.isAttempt(t) && t.parentTaskId && byId.has(t.parentTaskId)) kids.set(t.parentTaskId, [...(kids.get(t.parentTaskId) ?? []), t]);
-    else roots.push(t);
+    const { root, generation } = rootOf(t);
+    if (generation === 0) { roots.push(t); continue; }
+    kids.set(root.id, [...(kids.get(root.id) ?? []), t]);
+    lineage.set(t.id, { generation, parent: byId.get(t.parentTaskId!)! });
   }
   const byCreated = (a: ActivityTaskInput, b: ActivityTaskInput) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id);
+  const isReview = isReviewOf(rules);
   return roots.map(root => {
     const attempts = [...(kids.get(root.id) ?? [])].sort(byCreated);
-    const isReview = (t: ActivityTaskInput) => {
-      const type = rules.deriveTaskType(t);
-      return type === 'review' || type === 'review-retry';
-    };
     return {
       root,
       reviews: attempts.filter(isReview),
       repairs: attempts.filter(t => !isReview(t)),
       workers: [...root.workers, ...attempts.flatMap(a => a.workers)],
+      lineage: new Map(attempts.map(a => [a.id, lineage.get(a.id)!])),
     };
   });
 }
@@ -275,7 +345,8 @@ function projectStandalone(d: Delivery, rules: MissionTaskRules): TaskDelivery |
   // The mission projection drops cancelled roots, so a cancelled one is projected as
   // failed; History names it "not landed" and adds a Cancelled step.
   const root = { ...d.root, parentTaskId: null, taskClass: 'work', status: d.root.status === 'cancelled' ? 'failed' : d.root.status };
-  const rows = [root, ...d.reviews, ...d.repairs].map(t => ({ ...t, dependsOn: undefined, missionId: undefined }));
+  // Every generation counts against the deliverable, as it folds here: a repair of a repair is still its repair.
+  const rows = [root, ...[...d.reviews, ...d.repairs].map(t => ({ ...t, parentTaskId: root.id }))].map(t => ({ ...t, dependsOn: undefined, missionId: undefined }));
   const m = projectMissionDelivery({ id: d.root.id, title: d.root.title, status: 'active', href: '', tasks: rows }, rules);
   // null: the projection hides this task on purpose (a surface audit observes and
   // opens no PR; a superseded refresh chore is noise). Missions and Home hide it
@@ -529,6 +600,35 @@ function lineFor(d: Delivery, delivery: TaskDelivery, prNumber: number | null, r
   }
 }
 
+const missionHref = (id: string | null | undefined) => (id ? `/app/missions/${id}` : null);
+
+/** The derived reviews and repairs of a delivery, oldest first, each with the task it was spawned from. */
+function childrenOf(d: Delivery): DerivedChild[] {
+  const reviews = new Set(d.reviews.map(r => r.id));
+  return [...d.reviews, ...d.repairs]
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+    .map(t => {
+      const { generation, parent } = d.lineage.get(t.id)!;
+      return {
+        id: t.id,
+        title: t.title,
+        href: taskHref(t.id),
+        role: reviews.has(t.id) ? 'review' as const : 'repair' as const,
+        status: t.status,
+        generation,
+        parent: { id: parent.id, title: parent.title, href: taskHref(parent.id) },
+        missionHref: missionHref(t.missionId ?? d.root.missionId),
+        live: t.workers.some(agentLive),
+      };
+    });
+}
+
+/** The newest of the steps History tells for this delivery. */
+function transitionOf(d: Delivery, delivery: TaskDelivery): Transition | null {
+  const last = stepsFor(d, delivery).at(-1);
+  return last ? { at: last.at, text: last.text, tone: last.tone } : null;
+}
+
 function toRow(d: Delivery, delivery: TaskDelivery, now: number): NowRow {
   const { owner } = prOf(d);
   const liveWorker = d.workers.find(agentLive) ?? null;
@@ -549,8 +649,14 @@ function toRow(d: Delivery, delivery: TaskDelivery, now: number): NowRow {
     line: lineFor(d, delivery, prNumber, runnerName, evidence, quietHold, now),
     updatedAt: latestAt(d),
     evidence,
+    createdAt: ms(d.root.createdAt) ?? 0,
+    isNew: isNewAt(ms(d.root.createdAt), now),
+    transition: transitionOf(d, delivery),
+    children: childrenOf(d),
   };
 }
+
+const isNewAt = (createdMs: number | null, now: number) => createdMs != null && now - createdMs >= 0 && now - createdMs < NEW_WINDOW_MS;
 
 export function buildActivityNow(input: {
   tasks: readonly ActivityTaskInput[];
@@ -588,6 +694,10 @@ export function buildActivityNow(input: {
     const sorted = g.rows.sort(byAttention);
     const moving = sorted.filter(r => r.delivery.kind !== 'waiting');
     const waiting = sorted.filter(r => r.delivery.kind === 'waiting');
+    const createdAt = missionId ? ms(m?.createdAt) : null;
+    // The row that moved last, preferring one in motion over one waiting its turn.
+    const latest = (rows: NowRow[]) => [...rows].sort((a, b) => (b.transition?.at ?? 0) - (a.transition?.at ?? 0) || a.id.localeCompare(b.id))[0];
+    const cur = latest(moving) ?? latest(waiting) ?? null;
     return {
       missionId,
       title: missionId ? (m?.title ?? g.title ?? 'Untitled mission') : 'Standalone',
@@ -599,6 +709,9 @@ export function buildActivityNow(input: {
       rows: [...moving, ...waiting.slice(0, WAITING_ROWS_PER_GROUP)],
       moreWaiting: Math.max(0, waiting.length - WAITING_ROWS_PER_GROUP),
       hiddenWaitingRows: waiting.slice(WAITING_ROWS_PER_GROUP),
+      createdAt,
+      isNew: isNewAt(createdAt, input.now),
+      current: cur ? { id: cur.id, title: cur.title, href: cur.href, transition: cur.transition } : null,
     };
   });
   // Missions by their chip's attention, then id: an order that only changes when a state does.
@@ -778,12 +891,41 @@ export function buildActivityEpisodes(input: {
     .sort((a, b) => b.at - a.at || a.id.localeCompare(b.id));
 }
 
+/** A mission whose creation History tells as its own event. */
+export interface MissionCreation { id: string; title: string; createdAt?: string | null }
+
+/**
+ * Finished deliveries, newest first, and each given mission's creation as an
+ * event of its own (spec 9430a28f R-3): new work is in Now, its creation can
+ * be here too, and neither is a second list of the other.
+ */
 export function buildActivityHistory(input: {
   tasks: readonly ActivityTaskInput[];
   missions: readonly ActivityMission[];
   rules: MissionTaskRules;
+  creations?: readonly MissionCreation[];
 }): Episode[] {
-  return buildActivityEpisodes(input, { finishedOnly: true });
+  const missionById = new Map(input.missions.map(m => [m.id, m]));
+  const created: Episode[] = (input.creations ?? []).flatMap(c => {
+    const at = ms(c.createdAt);
+    if (at == null) return [];
+    return [{
+      id: `created:${c.id}`,
+      title: c.title,
+      href: missionHref(c.id)!,
+      missionId: c.id,
+      missionTitle: c.title,
+      // A creation is not a delivery; it carries the mission's chip where one is loaded.
+      kind: missionById.get(c.id)?.kind ?? 'planning',
+      repairRounds: 0,
+      prNumber: null,
+      at,
+      steps: [{ at, text: 'Mission created', tone: 'ink' as const, void: false }],
+      event: 'created' as const,
+    }];
+  });
+  if (created.length === 0) return buildActivityEpisodes(input, { finishedOnly: true });
+  return [...buildActivityEpisodes(input, { finishedOnly: true }), ...created].sort((a, b) => b.at - a.at || a.id.localeCompare(b.id));
 }
 
 export interface LatestTask { id: string; title: string; href: string; at: number }
@@ -825,10 +967,12 @@ export function filterEpisodes(episodes: readonly Episode[], f: { scope: Activit
     inScope(e.missionId, f.scope)
     && (!f.missionId || e.missionId === f.missionId)
     && (f.outcome === 'any'
-      || (f.outcome === 'landed' && e.kind === 'landed')
-      || (f.outcome === 'retries' && e.repairRounds > 0)
-      || (f.outcome === 'exceptions' && EXCEPTION.has(e.kind))
-      || (f.outcome === 'you' && e.kind === 'needs')));
+      // A creation event is no outcome: only All shows it.
+      || (!e.event && (
+        (f.outcome === 'landed' && e.kind === 'landed')
+        || (f.outcome === 'retries' && e.repairRounds > 0)
+        || (f.outcome === 'exceptions' && EXCEPTION.has(e.kind))
+        || (f.outcome === 'you' && e.kind === 'needs')))));
 }
 
 // ── Paging (client) ─────────────────────────────────────────────────────────

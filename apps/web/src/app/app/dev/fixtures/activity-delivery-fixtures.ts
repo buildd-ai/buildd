@@ -130,6 +130,64 @@ export function activityFixture(step: number) {
 }
 
 /**
+ * A five-generation review/repair chain (`&data=context`, spec 9430a28f AC-2):
+ * each attempt is spawned from the one before it, as review-effects and the CI
+ * retry spawner chain them (`parentTaskId` is the previous attempt, not the root).
+ * The fifth generation, a repair, is running now.
+ */
+export const CHAIN_ROOT = 'fx-chain';
+export function fiveGenerationChain(m: { id: string; title: string } | null = FLAKY): ActivityTaskInput[] {
+  const title = 'fix: retry budget survives a runner restart';
+  const root = row(CHAIN_ROOT, title, m, {
+    status: 'completed', createdAt: at('09:00'), updatedAt: at('09:40'),
+    workers: [done({ startedAt: at('09:00'), completedAt: at('09:40'), updatedAt: at('09:40'), prUrl: `${PR}64`, prNumber: 64, prLifecycleStatus: 'ci_failed', lastCommitSha: 'aa00000001' })],
+  });
+  const gens: Array<[string, string, string, Partial<ActivityTaskInput>]> = [
+    ['fx-chain-g1', `[reviewer #1] ${title}`, '09:45', { status: 'completed', review: { verdict: 'request-changes', headSha: 'aa00000001' }, workers: [done({ startedAt: at('09:45'), completedAt: at('09:52') })] }],
+    ['fx-chain-g2', `[builder · after review #1] ${title}`, '09:55', { status: 'completed', workers: [done({ startedAt: at('09:55'), completedAt: at('10:15'), updatedAt: at('10:15'), lastCommitSha: 'bb00000002' })] }],
+    ['fx-chain-g3', `[reviewer #2] ${title}`, '10:20', { status: 'completed', review: { verdict: 'request-changes', headSha: 'bb00000002' }, workers: [done({ startedAt: at('10:20'), completedAt: at('10:28') })] }],
+    ['fx-chain-g4', `[builder · after CI #1] ${title}`, '10:30', { status: 'completed', workers: [done({ startedAt: at('10:30'), completedAt: at('10:50'), updatedAt: at('10:50'), lastCommitSha: 'cc00000003' })] }],
+    ['fx-chain-g5', `[builder · after review #2] ${title}`, '10:55', { status: 'in_progress', updatedAt: at('11:05'), workers: [live('runner-k', '10:55')] }],
+  ];
+  let parent = CHAIN_ROOT;
+  const out = [root];
+  for (const [id, t, created, over] of gens) {
+    out.push(row(id, t, m, { taskClass: 'attempt', parentTaskId: parent, createdAt: at(created), updatedAt: at(created), ...over }));
+    parent = id;
+  }
+  return out;
+}
+
+/** A mission created minutes ago whose first task an agent picked up at once (spec 9430a28f AC-1). */
+export const NEW_MISSION = { id: 'fx-new', title: 'Self-serve workspace export', createdAt: at('11:02') };
+export function newMissionTasks(): ActivityTaskInput[] {
+  return [
+    row('fx-new-1', 'feat: export job and download link', NEW_MISSION, { status: 'in_progress', createdAt: at('11:03'), updatedAt: at('11:04'), workers: [live('runner-n', '11:04')] }),
+    row('fx-new-2', 'feat: export settings page', NEW_MISSION, { status: 'pending', createdAt: at('11:03'), updatedAt: at('11:03') }),
+  ];
+}
+
+/**
+ * Live work with its context (`&data=context`): a mission created minutes ago and
+ * already building, a five-generation chain that reads as one outcome, and a
+ * standalone task, beside the default portfolio's missions.
+ */
+export function activityContextFixture() {
+  const tasks = [...fiveGenerationChain(), ...newMissionTasks(), row('fx-solo', 'chore: rotate the preview deploy token', null, { status: 'in_progress', createdAt: at('10:58'), updatedAt: at('11:06'), workers: [live('runner-s', '10:59')] })];
+  const missions = [
+    { ...projectMissionDelivery({ id: FLAKY.id, title: FLAKY.title, status: 'active', href: `/app/missions/${FLAKY.id}`, tasks: tasks.filter(t => t.missionId === FLAKY.id) }, rules), createdAt: '2026-10-01T06:00:00.000Z' },
+    { ...projectMissionDelivery({ id: NEW_MISSION.id, title: NEW_MISSION.title, status: 'active', href: `/app/missions/${NEW_MISSION.id}`, tasks: tasks.filter(t => t.missionId === NEW_MISSION.id) }, rules), createdAt: NEW_MISSION.createdAt },
+  ];
+  const args = { tasks, missions, rules };
+  return {
+    tasks,
+    missions,
+    now: buildActivityNow({ ...args, now: ACTIVITY_FIXTURE_NOW }),
+    history: buildActivityHistory({ ...args, creations: missions }),
+  };
+}
+
+/**
  * A busy workspace's 30 days, shaped like real data (`&data=scale`): more
  * roots than the loader's recent window, mostly fresh completed work, retries
  * that landed and retries that failed, cancelled work (standalone and in a

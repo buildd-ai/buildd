@@ -73,7 +73,7 @@ describe('task reads', () => {
     expect(all).toContain('limit $');
     expect(statements.some(s => norm(s).includes('"tasks"."updated_at" >='))).toBe(true);
     // Both live-root subqueries carry their cap.
-    const live = statements.find(s => norm(s).includes('coalesce("tasks"."parent_task_id", "tasks"."id")'))!;
+    const live = statements.find(s => norm(s).includes('"tasks"."parent_task_id", "tasks"."id")'))!;
     expect(live).toBeDefined();
     expect((norm(live).match(/limit \$/g) ?? []).length).toBeGreaterThanOrEqual(3);
     expect(ACTIVITY_LIVE_ROOT_LIMIT).toBeGreaterThan(0);
@@ -189,7 +189,7 @@ describe('the scope and live-root predicates, rendered', () => {
     const now = render(liveRootsWhere({ workspaceIds: WS }, recent, 'now')!);
     expect(now).toContain('"tasks"."parent_task_id" is null');
     expect(now).toContain('"tasks"."status" not in');
-    expect(now).toContain('coalesce("tasks"."parent_task_id", "tasks"."id")');
+    expect(now).toContain('"tasks"."parent_task_id", "tasks"."id")');
     expect(now).toContain('inner join "tasks" on "workers"."task_id" = "tasks"."id"');
     expect(now).toContain('"workers"."status" in');
     expect(now.match(/ limit \$/g)?.length).toBe(3);
@@ -199,5 +199,57 @@ describe('the scope and live-root predicates, rendered', () => {
     expect(now).not.toContain(finished);
     expect(render(liveRootsWhere({ workspaceIds: WS }, recent, 'history')!)).toContain(finished);
     expect(ACTIVITY_LIVE_ROOT_LIMIT).toBeGreaterThan(0);
+  });
+});
+
+describe('live work with context (spec 9430a28f R-2, R-3)', () => {
+  it('reads every generation of a root\'s attempts, walking parent_task_id through attempts, bounded', async () => {
+    answer = (s) => (isRecentRead(s) ? [taskRow('r1')] : []);
+    await load('now');
+    const child = statements.find(s => isTaskRead(s) && norm(s).includes('with recursive'));
+    expect(child).toBeDefined();
+    const q = norm(child!);
+    expect(q).toContain('join chain on t.parent_task_id = chain.id');
+    expect(q).toContain(`chain.task_class = 'attempt'`);
+    expect(q).toContain('chain.depth < $');
+    expect(q).toContain('limit $');
+  });
+
+  it('a live agent deep in a chain holds the chain\'s root, by its lineage stamp', () => {
+    const { tasks: tasksTable } = require('@buildd/core/db/schema');
+    const recent = offline.select({ id: tasksTable.id }).from(tasksTable).limit(5);
+    const q = norm(new (require('drizzle-orm/pg-core').PgDialect)().sqlToQuery(liveRootsWhere({ workspaceIds: WS }, recent, 'now')!).sql);
+    expect(q).toContain(`"tasks"."context"->>'roottaskid'`);
+  });
+
+  it('a 3-generation chain loads as one delivery with its attempts folded', async () => {
+    answer = (s) => {
+      if (isRecentRead(s)) return [taskRow('r1', { status: 'pending' })];
+      if (isTaskRead(s) && norm(s).includes('with recursive')) return [
+        taskRow('a1', { taskClass: 'attempt', parentTaskId: 'r1', title: '[builder · after CI #1] Task r1', status: 'completed' }),
+        taskRow('a2', { taskClass: 'attempt', parentTaskId: 'a1', title: '[builder · after CI #2] Task r1', status: 'completed' }),
+        taskRow('a3', { taskClass: 'attempt', parentTaskId: 'a2', title: '[builder · after CI #3] Task r1', status: 'pending' }),
+      ];
+      return [];
+    };
+    const out = await load('now');
+    const rows = out.now.groups.flatMap(g => g.rows);
+    expect(rows.map(r => r.id)).toEqual(['r1']);
+    expect(rows[0].children.map(c => [c.id, c.generation, c.parent.id])).toEqual([['a1', 1, 'r1'], ['a2', 2, 'a1'], ['a3', 3, 'a2']]);
+  });
+
+  it('missions are read with their created time; History adds a creation event for one created in its window', async () => {
+    const missionRow = (id: string, createdAt: number) => [id, `Mission ${id}`, 'active', createdAt, null];
+    answer = (s) => {
+      if (isRecentRead(s)) return [taskRow('r1', { missionId: 'm-new', status: 'pending' })];
+      if (norm(s).startsWith('select "missions"."id"') || norm(s).includes(' from "missions" left join')) return [missionRow('m-new', NOW - 600_000)];
+      return [];
+    };
+    const out = await load('history');
+    const m = statements.find(s => norm(s).includes(' from "missions" left join'))!;
+    expect(norm(m)).toContain('"missions"."created_at"');
+    expect(out.history.filter(e => e.event === 'created').map(e => e.id)).toEqual(['created:m-new']);
+    const now = await load('now');
+    expect(now.now.groups.find(g => g.missionId === 'm-new')?.isNew).toBe(true);
   });
 });
