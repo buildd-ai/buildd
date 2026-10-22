@@ -55,7 +55,7 @@ describe('WSL setup preflight', () => {
     expect(inspectWsl('win32', undefined, () => ok('')).lines.join('\n')).toContain('wsl --install');
     expect(inspectWsl('win32', 'Unknown', () => ok(listing)).lines.join('\n')).toContain('not found');
   });
-  test('probe finds tools in standard user bin dirs with a minimal PATH', () => {
+  test.skipIf(process.platform === 'win32')('probe finds tools in standard user bin dirs with a minimal PATH', () => {
     const home = mkdtempSync(join(tmpdir(), 'wsl-probe-'));
     try {
       for (const [dir, tools] of [['.bun/bin', ['bun']], ['.local/bin', ['claude']], ['sysbin', ['git', 'curl', 'bwrap', 'socat']]] as const) {
