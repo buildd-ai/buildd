@@ -63,5 +63,13 @@ describe('AC-3 semantic actions match captured state', () => {
     const e = surface(); e.visible.actions[0].operation = 'other';
     expect(runUiActionStateCheck(e)).toMatchObject({ verdict: 'unsupported', observed: 'unmapped_action_operation' });
   });
+  it('declared non-mutating operations are mapped, and dismissing a replacement still needs its state', () => {
+    for (const operation of ['view_detail', 'answer_question', 'cancel', 'turn_off_visual_review', 'dismiss_replacement'] as const) {
+      const e = surface(); e.visible.actions[0].operation = operation;
+      expect(runUiActionStateCheck(e).verdict).toBe('pass');
+    }
+    const e = surface(); e.visible.actions[0].operation = 'dismiss_replacement'; e.facts = { prState: 'closed' };
+    expect(runUiActionStateCheck(e)).toMatchObject({ verdict: 'inconclusive', observed: 'runtime_state_unknown' });
+  });
 });
 
