@@ -804,16 +804,17 @@ describe('approvePlan — a plan step\'s role reaches the row only if the worksp
     expect(insertedValues[0].roleSlug).toBe('my-reviewer');
   });
 
-  it("files every child for the planning task's requester", async () => {
-    requesterAnswer = 'user-owner';
-    await approvePlan(PLANNING_TASK_ID, PLAN as any);
-    expect(insertedValues.map(v => v.createdByUserId)).toEqual(['user-owner', 'user-owner']);
-  });
-
-  it('files children with no creator when the planning task has no requester', async () => {
-    requesterAnswer = null;
-    await approvePlan(PLANNING_TASK_ID, PLAN as any);
-    expect(insertedValues.map(v => v.createdByUserId)).toEqual([null, null]);
+  // The children are for the plan's requester, but the trigger derives that
+  // from parentTaskId (requester_source 'parent'); naming the person here would
+  // record a derived person as a direct request (spec 7702c32a R-2).
+  it("leaves the children's requester to the insert trigger, whoever the plan is for", async () => {
+    for (const answer of ['user-owner', null]) {
+      requesterAnswer = answer;
+      insertedValues.length = 0;
+      await approvePlan(PLANNING_TASK_ID, PLAN as any);
+      expect(insertedValues.map(v => 'createdByUserId' in v)).toEqual([false, false]);
+      expect(insertedValues.map(v => v.parentTaskId)).toEqual([PLANNING_TASK_ID, PLANNING_TASK_ID]);
+    }
   });
 
   it('files an unknown step roleSlug role-less and records the rejected slug', async () => {

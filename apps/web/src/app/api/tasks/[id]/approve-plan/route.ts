@@ -7,6 +7,7 @@ import { authenticateTaskScopedCaller, taskScopeAllowsMissionTask } from '@/lib/
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { approvePlan, type PlanStep } from '@/lib/approve-plan';
 import { isUuid } from '@/lib/uuid';
+import { requestingPerson } from '@/lib/request-person';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // POST /api/tasks/[id]/approve-plan - Approve a planning task's plan and create child execution tasks
@@ -47,9 +48,12 @@ export async function POST(
     )) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
-    // A plan marked for a person's review stays a person's call.
-    if (apiAccount?.taskScope && (task.context as Record<string, unknown> | null)?.requiresPlanApproval === true) {
-      return NextResponse.json({ error: 'This plan requires approval by a person; an agent run cannot approve it' }, { status: 403 });
+    // A plan marked for a person's review stays a person's call: a dashboard
+    // session or the person's own OAuth session, never an API key, a per-task
+    // token or an 'agent' grant (spec 7702c32a AC-3).
+    const person = requestingPerson(user, apiAccount);
+    if (!person && (task.context as Record<string, unknown> | null)?.requiresPlanApproval === true) {
+      return NextResponse.json({ error: 'This plan requires approval by a person; an agent or API key cannot approve it' }, { status: 403 });
     }
 
     // Verify access
@@ -90,7 +94,7 @@ export async function POST(
       return NextResponse.json({ error: 'No plan found in task result' }, { status: 400 });
     }
 
-    const { taskIds } = await approvePlan(id, plan);
+    const { taskIds } = await approvePlan(id, plan, { approvedBy: planApprover(person, apiAccount) });
 
     return NextResponse.json({ tasks: taskIds });
   } catch (error: any) {
@@ -103,4 +107,15 @@ export async function POST(
     console.error('Approve plan error:', error);
     return NextResponse.json({ error: 'Failed to approve plan' }, { status: 500 });
   }
+}
+
+/**
+ * Who approved, as a kernel-style actor: `human:<userId>` for a person,
+ * `agent:task:<taskId>` for an orchestration run, `agent:account:<id>` for a
+ * plain key. Recorded on each child, apart from who the work is for.
+ */
+function planApprover(person: string | null, apiAccount: { id: string; taskScope?: { taskId: string } } | null): string {
+  if (person) return `human:${person}`;
+  if (apiAccount?.taskScope) return `agent:task:${apiAccount.taskScope.taskId}`;
+  return `agent:account:${apiAccount?.id ?? 'unknown'}`;
 }

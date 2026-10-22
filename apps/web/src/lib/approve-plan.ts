@@ -170,7 +170,15 @@ function stepScope(step: PlanStep, planningTaskId: string, docFixScope: string[]
 export async function approvePlan(
   planningTaskId: string,
   plan: PlanStep[],
-  options?: { autoApproved?: boolean }
+  options?: {
+    autoApproved?: boolean;
+    /**
+     * Who approved (`human:<userId>` | `agent:task:<id>` | `agent:account:<id>`),
+     * stored on each child as context.planApprovedBy. The approver is not who
+     * the children are for: that is derived from the plan at insert.
+     */
+    approvedBy?: string;
+  }
 ): Promise<ApprovePlanResult> {
   // Fetch the planning task for workspace/mission context
   const task = await db.query.tasks.findFirst({
@@ -336,8 +344,10 @@ export async function approvePlan(
   // role-less, and the rejected slug is recorded on the child's context. The
   // planning task's own role (the Organizer) is never inherited.
   // The children are for whoever the plan is for: a step may name that
-  // person's private role (never another member's), and each child records
-  // them as its creator so later lookups need no walk.
+  // person's private role (never another member's). Each child records that
+  // person through the tasks_resolve_requester trigger (derived from the plan,
+  // requester_source 'parent'), not by naming them here, which would record a
+  // derived person as a direct ('explicit') request.
   const requesterUserId = await resolveTaskRequesterUserId(task).catch(() => null);
   const knownRoles = survivingPlan.some(step => step.roleSlug) && task.workspaceId
     ? await resolveEffectiveRoleSlugs(task.workspaceId, requesterUserId)
@@ -376,7 +386,6 @@ export async function approvePlan(
         description: step.description || null,
         parentTaskId: planningTaskId,
         missionId: task.missionId,
-        createdByUserId: requesterUserId,
         mode: 'execution',
         taskClass: 'work',
         creationSource: options?.autoApproved ? 'orchestrator' : 'api',
@@ -423,6 +432,7 @@ export async function approvePlan(
           ...(step.model ? { model: step.model } : {}),
           ...(step.skillSlugs?.length ? { skillSlugs: step.skillSlugs } : {}),
           ...(options?.autoApproved ? { autoApproved: true } : {}),
+          ...(options?.approvedBy ? { planApprovedBy: options.approvedBy } : {}),
           ...(rejectedRole ? { planRoleSlugRejected: rejectedRole } : {}),
           // The link back to the ledger: this child exists to settle these rows,
           // and the spec text it updates is the one they name.

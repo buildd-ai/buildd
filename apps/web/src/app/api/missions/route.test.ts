@@ -103,6 +103,16 @@ mock.module('@/lib/team-access', () => ({
   resolveAccountTeamIds: mockResolveAccountTeamIds,
 }));
 
+// Who filed the mission and who it is for (spec 7702c32a); the resolver itself
+// is covered in lib/task-service.test.ts and tests/db/work-lineage-identity.test.ts.
+let missionCreatorAnswer: any = null;
+const mockResolveMissionCreator = mock(async (p: any) => missionCreatorAnswer ?? (p.user
+  ? { createdByUserId: p.user.id, requesterSource: 'explicit', createdByAccountId: null, createdByWorkerId: null, createdByTaskId: null }
+  : { createdByUserId: null, requesterSource: 'none', createdByAccountId: p.apiAccount?.id ?? null, createdByWorkerId: null, createdByTaskId: null }));
+mock.module('@/lib/task-service', () => ({
+  resolveMissionCreator: mockResolveMissionCreator,
+}));
+
 mock.module('@/lib/schedule-helpers', () => ({
   computeNextRunAt: () => new Date('2026-01-01'),
 }));
@@ -1377,5 +1387,34 @@ describe('POST /api/missions — workspace reach (shared rule)', () => {
     expect(res.status).toBe(404);
     expect((await res.json()).error).toContain('No workspace found');
     expect(insertedMissionValues).toBeNull();
+  });
+});
+
+describe('POST /api/missions — who filed it (spec 7702c32a AC-1)', () => {
+  beforeEach(() => {
+    missionCreatorAnswer = null;
+    mockResolveMissionCreator.mockClear();
+    insertedMissionValues = null;
+    insertedScheduleValues = null;
+    mockGetCurrentUser.mockResolvedValue(null);
+  });
+
+  it("records an agent's mission with its worker and task as the actor and the person as derived", async () => {
+    missionCreatorAnswer = {
+      createdByUserId: 'user-requester', requesterSource: 'parent',
+      createdByAccountId: 'acct-runner', createdByWorkerId: 'worker-1', createdByTaskId: 'task-agent',
+    };
+    mockAuthenticateApiKey.mockReturnValue({ id: 'acct-runner', level: 'admin', teamId: 'team-1' } as any);
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      headers: { authorization: 'Bearer bld_test' },
+      body: JSON.stringify({ title: 'Agent mission', createdByWorkerId: 'worker-1' }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(mockResolveMissionCreator.mock.calls[0][0]).toMatchObject({ createdByWorkerId: 'worker-1' });
+    expect(insertedMissionValues).toMatchObject(missionCreatorAnswer);
+    // A schedule names only a person who filed the mission themselves.
+    expect(insertedScheduleValues?.createdByUserId ?? null).toBeNull();
   });
 });
