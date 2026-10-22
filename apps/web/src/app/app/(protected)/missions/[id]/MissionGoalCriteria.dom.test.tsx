@@ -17,7 +17,7 @@ mock.module('next/navigation', () => ({
 
 const { act, createElement } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { default: MissionGoalCriteria, AddCriterionForm } = await import('./MissionGoalCriteria');
+const { default: MissionGoalCriteria } = await import('./MissionGoalCriteria');
 
 const PROSE: GoalCriterion = {
   type: 'description',
@@ -61,36 +61,38 @@ function render(props: Partial<Parameters<typeof MissionGoalCriteria>[0]> & { cr
 const q = (id: string) => container.querySelector(`[data-testid="${id}"]`) as HTMLElement | null;
 
 describe('MissionGoalCriteria — no automatic check bound', () => {
-  it('replaces "Run verification" with the corrective action, in plain words', () => {
-    render({ criteria: [PROSE], missionPrCount: 0 });
+  it('replaces "Run verification" with the reason, pointing at selecting a spec, in plain words', () => {
+    render({ criteria: [PROSE] });
     expect(q('run-verification')).toBeNull();
     const banner = q('criteria-needs-check');
     expect(banner?.textContent).toContain('Can’t verify automatically yet.');
-    expect(q('criteria-fix-action')?.textContent).toBe('Add check');
+    expect(banner?.textContent).toContain('Select the spec this mission delivers');
   });
 
   it('shows no raw criterion type names anywhere in the default view', () => {
-    render({ criteria: [PROSE], missionPrCount: 2 });
+    render({ criteria: [PROSE] });
     const text = container.textContent ?? '';
     for (const raw of MECHANICAL_CRITERION_TYPES) expect(text).not.toContain(raw);
     expect(text).not.toContain('goalCriteria');
   });
+});
 
-  it('adds the PR check in one tap when the mission already has PRs, and never calls evaluate', async () => {
-    render({ criteria: [PROSE], missionPrCount: 2 });
-    const action = q('criteria-fix-action')!;
-    expect(action.textContent).toBe('Check that every PR merged');
-    await act(async () => { action.click(); });
-    expect(calls.some(c => c.url.endsWith('/evaluate'))).toBe(false);
-    const patch = calls.find(c => c.method === 'PATCH');
-    expect(patch?.body).toEqual({ goalCriteria: [PROSE, { type: 'all_prs_merged' }] });
+// Living Specs D-44: hand-written criteria are retired. The legacy panel shows
+// a mission's stored criteria but offers no way to add, edit or remove one.
+describe('MissionGoalCriteria — no hand-written criteria offered', () => {
+  it('renders no add, remove or fix control, and writes nothing', async () => {
+    render({ criteria: [PROSE, { type: 'all_prs_merged' }] });
+    expect(container.querySelector('[aria-label="Remove criterion"]')).toBeNull();
+    expect(container.querySelector('[data-testid="criteria-fix-action"]')).toBeNull();
+    expect(container.querySelector('form')).toBeNull();
+    expect(container.textContent).not.toContain('Add criterion');
+    expect(calls.some(c => c.method === 'PATCH')).toBe(false);
   });
 
-  it('opens the add form when there is nothing to infer from', async () => {
-    render({ criteria: [PROSE], missionPrCount: 0 });
-    await act(async () => { q('criteria-fix-action')!.click(); });
-    expect(container.querySelector('form')).not.toBeNull();
-    expect(calls.length).toBe(0);
+  it('says what decides done when the mission has no criteria', () => {
+    render({ criteria: [] });
+    expect(container.textContent).toContain('The spec this mission delivers decides when it is done.');
+    expect(container.textContent).not.toContain('Add one');
   });
 });
 
@@ -125,33 +127,6 @@ describe('MissionGoalCriteria — automatic check bound', () => {
     expect(container.textContent).toContain('PR #101 merged');
     expect(container.textContent).not.toContain('No PRs found');
     expect(q('criterion-not-checked')).not.toBeNull();
-  });
-
-  it('accepts a written goal added beside an existing automatic check', async () => {
-    // Regression: the form validated the new row alone, so a written goal was
-    // always refused for lacking an automatic check — even beside one.
-    const added: GoalCriterion[] = [];
-    act(() => {
-      root.render(createElement(AddCriterionForm, {
-        initial: PROSE, siblings: [{ type: 'all_prs_merged' }], onAdd: c => added.push(c), onCancel: () => {},
-      }));
-    });
-    await act(async () => { container.querySelector('form')!.requestSubmit(); });
-    expect(q('criterion-error')).toBeNull();
-    expect(added).toEqual([PROSE]);
-  });
-
-  it('refuses a written goal with nothing automatic beside it, in plain words with details folded away', async () => {
-    const added: GoalCriterion[] = [];
-    act(() => {
-      root.render(createElement(AddCriterionForm, { initial: PROSE, siblings: [], onAdd: c => added.push(c), onCancel: () => {} }));
-    });
-    await act(async () => { container.querySelector('form')!.requestSubmit(); });
-    expect(added).toEqual([]);
-    const err = q('criterion-error')!;
-    const visible = err.querySelector('p')!.textContent ?? '';
-    for (const raw of MECHANICAL_CRITERION_TYPES) expect(visible).not.toContain(raw);
-    expect(err.querySelector('details')).not.toBeNull();
   });
 });
 

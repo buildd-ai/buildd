@@ -10,8 +10,8 @@
  * Every card is the kit's (`ApprovalCard` from @buildd/ai-kit/chat/react),
  * themed in globals.css ("Chat on the kit"): a change to an existing object
  * (the server's before → after preview, an admin write's typed confirmation),
- * any other write, and a new mission, whose draft (goal, done-when criteria,
- * constraints, plan) buildd renders into the kit card's body and details. On
+ * any other write, and a new mission, whose draft (goal, constraints, plan)
+ * buildd renders into the kit card's body and details. On
  * a phone the details fold behind "Show details".
  *
  * An approval is a fleet object in the v3 language (knowledge-base: buildd/design/chat-canvas.md,
@@ -27,40 +27,21 @@ import { useChatActions } from './ChatActions';
 import { approvalDraft, approvalLabel, type ApprovalDraft, type MissionDraft } from './approval-draft';
 import { toolRowView } from './feed-model';
 
-/** "4 criteria · constraints · plan": what the folded details hold. */
+/** "constraints · plan": what the folded details hold. */
 export function detailsSummary(draft: MissionDraft): string {
   const bits: string[] = [];
-  if (draft.criteria.length) bits.push(`${draft.criteria.length} criteri${draft.criteria.length === 1 ? 'on' : 'a'}`);
   if (draft.constraints) bits.push('constraints');
   if (draft.plan) bits.push('plan');
   return bits.join(' · ');
 }
 
 function hasDetails(draft: MissionDraft): boolean {
-  return draft.criteria.length > 0 || !!draft.constraints || !!draft.plan;
+  return !!draft.constraints || !!draft.plan;
 }
 
 function MissionDetails({ draft }: { draft: MissionDraft }) {
   return (
     <dl className="md:mt-1.5 grid grid-cols-1 md:grid-cols-[130px_1fr] gap-x-4 gap-y-2.5 font-mono text-[12.5px]">
-      {draft.criteria.length > 0 && (
-        <>
-          <dt className="uppercase tracking-[1.5px] text-[11px] text-text-muted md:pt-0.5">Done when</dt>
-          <dd>
-            <ul data-testid="approval-draft-criteria" className="grid gap-1.5">
-              {draft.criteria.map((c, i) => (
-                <li key={i} className="min-w-0">
-                  <span className="flex items-center gap-2.5 text-text-primary">
-                    <span aria-hidden="true" className="h-3.5 w-3.5 shrink-0 border-[1.5px] border-border-strong" />
-                    <span className="min-w-0 [overflow-wrap:anywhere]">{c.label}</span>
-                  </span>
-                  {c.hint && <span className="mt-0.5 block pl-6 text-[11.5px] text-text-muted [overflow-wrap:anywhere]">{c.hint}</span>}
-                </li>
-              ))}
-            </ul>
-          </dd>
-        </>
-      )}
       {draft.constraints && (
         <>
           <dt className="uppercase tracking-[1.5px] text-[11px] text-text-muted">Constraints</dt>

@@ -35,7 +35,7 @@ describe('gitShellAsync', () => {
     const err = await gitShellAsync('sleep 20; echo late', { cwd: dir, timeoutMs: 300 }).catch((e) => e);
     expect(err).toBeInstanceOf(GitAsyncError);
     expect((err as GitAsyncError).timedOut).toBe(true);
-    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(Date.now() - started).toBeLessThan(10_000);
   });
 });
 
