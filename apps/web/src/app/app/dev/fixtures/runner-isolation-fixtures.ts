@@ -54,6 +54,16 @@ function row(n: number, name: string, inProblems: boolean, over: Partial<RunnerH
 }
 
 export const RUNNER_ISOLATION_ROWS: IsolationFixtureRow[] = [
+  row(13, 'Windows personal runner', true, {
+    shared: false, mine: true, sandboxEnabled: false, maxConcurrentWorkers: 3,
+    isolation: record('windows', none('unsupported_platform'), {
+      codex: {
+        'read-only': { mechanism: 'windows_restricted_token', scope: ['write'] },
+        'workspace-write': { mechanism: 'windows_restricted_token', scope: ['write'] },
+      },
+    }),
+    isolationBlocked: { protected: 0, trustedLocal: 7 },
+  }),
   row(1, 'macOS laptop', false, { isolation: record('darwin', seatbelt) }),
   row(2, 'macOS, Seatbelt failed', true, { sandboxEnabled: false, isolation: record('darwin', none('backend_probe_failed')) }),
   row(3, 'Linux, allowlist on', false, { mountAllowlistEnforced: true, isolation: record('linux', bwrap) }),

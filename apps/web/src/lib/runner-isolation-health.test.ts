@@ -202,6 +202,21 @@ describe('isSharedRunner', () => {
 describe('runnerIsolationDetail: state, eligibility and blocked work', () => {
   const optOut = { ...record('linux', none('opt_out')), reducedOptIn: true };
 
+  it('does not describe trusted-local-only work as protected', () => {
+    const d = runnerIsolationDetail(runner({ shared: false, mine: true,
+      isolation: record('windows', none('unsupported_platform')),
+      isolationBlocked: { protected: 0, trustedLocal: 7 } }));
+    expect(d.blocked).toBe('7 trusted tasks need permission to run on this computer.');
+    expect(d.blocked).not.toContain('protected');
+  });
+
+  it('keeps protected and trusted-local blockers distinct in a mixed queue', () => {
+    const d = runnerIsolationDetail(runner({ shared: false,
+      isolation: record('windows', none('unsupported_platform')),
+      isolationBlocked: { protected: 2, trustedLocal: 3 } }));
+    expect(d.blocked).toBe('3 trusted tasks need local permission. 2 protected tasks need another runner.');
+  });
+
   it('names a deliberate opt-out on your own runner "Sandbox disabled by you", with no warning', () => {
     const d = runnerIsolationDetail(runner({ shared: false, mine: true, isolation: optOut }));
     expect(d.state).toBe('opted_out');

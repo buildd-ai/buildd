@@ -183,6 +183,9 @@ function blockedLine(hb: IsolationRunner, state: RunnerIsolationState): string |
   const tasks = n === 1 ? '1 waiting task' : `${n} waiting tasks`;
   // Its eligibility line already says it takes nothing; the row's summary carries the count.
   if (state === 'unknown' || state === 'stale') return null;
+  if (b.protected === 0) {
+    return `${n} trusted ${n === 1 ? 'task needs' : 'tasks need'} permission to run on this computer.`;
+  }
   if (b.trustedLocal === 0) {
     const need = n === 1 ? 'needs' : 'need';
     const change = state === 'opted_out'
@@ -190,7 +193,7 @@ function blockedLine(hb: IsolationRunner, state: RunnerIsolationState): string |
       : 'To run them here, fix its sandbox; otherwise they wait for a sandboxed runner.';
     return `${tasks} ${need} a sandbox, so they can't run here. ${change}`;
   }
-  return `${tasks} can't run here: protected tasks need a sandbox, and trusted local ones need its operator's opt-in to run without one.`;
+  return `${b.trustedLocal} trusted ${b.trustedLocal === 1 ? 'task needs' : 'tasks need'} local permission. ${b.protected} protected ${b.protected === 1 ? 'task needs' : 'tasks need'} another runner.`;
 }
 
 /** Runner detail for isolation (R-10): state, platform, each backend and mode, eligibility, cause, probe age, fixer and steps. */
@@ -291,7 +294,10 @@ export function runnerIsolationDetail(hb: IsolationRunner): RunnerIsolationDetai
     ? 'Sandbox on'
     : state === 'opted_out'
       ? hb.mine ? 'Sandbox disabled by you' : 'Sandbox disabled by its operator'
-      : 'No sandbox';
+      : rec.platform === 'windows' && rec.claude.mechanism === 'none'
+          && [rec.codex['read-only'], rec.codex['workspace-write']].some(c => c && c.mechanism !== 'none')
+        ? 'Claude needs setup'
+        : 'No sandbox';
   return {
     state,
     headline,
