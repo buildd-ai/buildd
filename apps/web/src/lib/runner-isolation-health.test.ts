@@ -217,6 +217,19 @@ describe('runnerIsolationDetail: state, eligibility and blocked work', () => {
     expect(d.blocked).toBe('3 trusted tasks need local permission. 2 protected tasks need another runner.');
   });
 
+  it('does not ask for Claude setup after the personal runner opted in', () => {
+    const d = runnerIsolationDetail(runner({ shared: false, mine: true,
+      isolation: record('windows', none('unsupported_platform'), {
+        reducedOptIn: true,
+        codex: {
+          'read-only': { mechanism: 'windows_restricted_token', scope: ['write'] },
+          'workspace-write': { mechanism: 'windows_restricted_token', scope: ['write'] },
+        },
+      }) }));
+    expect(d.headline).toBe('Trusted tasks enabled');
+    expect(d.attention).toBe(false);
+  });
+
   it('names a deliberate opt-out on your own runner "Sandbox disabled by you", with no warning', () => {
     const d = runnerIsolationDetail(runner({ shared: false, mine: true, isolation: optOut }));
     expect(d.state).toBe('opted_out');

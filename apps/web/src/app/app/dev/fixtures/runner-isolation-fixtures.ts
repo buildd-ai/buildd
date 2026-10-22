@@ -64,6 +64,10 @@ export const RUNNER_ISOLATION_ROWS: IsolationFixtureRow[] = [
     }),
     isolationBlocked: { protected: 0, trustedLocal: 7 },
   }),
+  row(14, 'Windows personal runner, enabled', false, {
+    shared: false, mine: true, sandboxEnabled: false,
+    isolation: record('windows', none('unsupported_platform'), { reducedOptIn: true }),
+  }),
   row(1, 'macOS laptop', false, { isolation: record('darwin', seatbelt) }),
   row(2, 'macOS, Seatbelt failed', true, { sandboxEnabled: false, isolation: record('darwin', none('backend_probe_failed')) }),
   row(3, 'Linux, allowlist on', false, { mountAllowlistEnforced: true, isolation: record('linux', bwrap) }),

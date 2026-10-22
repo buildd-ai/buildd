@@ -300,6 +300,7 @@ export function runnerIsolationDetail(hb: IsolationRunner): RunnerIsolationDetai
     ? 'Sandbox on'
     : state === 'opted_out'
       ? hb.mine ? 'Sandbox disabled by you' : 'Sandbox disabled by its operator'
+      : rec.reducedOptIn && !hb.shared ? 'Trusted tasks enabled'
       : rec.platform === 'windows' && rec.claude.mechanism === 'none'
           && [rec.codex['read-only'], rec.codex['workspace-write']].some(c => c && c.mechanism !== 'none')
         ? 'Claude needs setup'
