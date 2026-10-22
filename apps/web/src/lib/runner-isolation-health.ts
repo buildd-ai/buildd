@@ -84,6 +84,12 @@ export function isolationProblem(
     const reason = rec.claude.reason ?? 'backend_probe_failed';
     // The operator chose reduced confinement on a runner only they use.
     if (!hb.shared && (reason === 'opt_out' || rec.reducedOptIn === true)) return null;
+    if (!hb.shared && rec.platform === 'windows' && reason === 'unsupported_platform') {
+      return {
+        title: `${name}: Claude needs setup`,
+        detail: 'Allow Claude to run trusted tasks on this computer.',
+      };
+    }
     if (reason === 'opt_out') {
       return {
         title: `${name}: sandbox turned off`,
@@ -92,13 +98,13 @@ export function isolationProblem(
     }
     return {
       title: `${name}: not sandboxed`,
-      detail: `${sentence(plainCause(reason, rec.platform))}, so tasks that need a sandbox wait for another runner. ${FIXER}`,
+      detail: `${sentence(plainCause(reason, rec.platform))}. See runner details for setup.`,
     };
   }
   if (hb.sandboxEnabled === false) {
     return {
       title: `${name}: not sandboxed`,
-      detail: `The sandbox check failed, and this runner is too old to say why; it takes no tasks until it is updated. ${FIXER}`,
+      detail: 'Update this runner to check its sandbox.',
     };
   }
   return null;

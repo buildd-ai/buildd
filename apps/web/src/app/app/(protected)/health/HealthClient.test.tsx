@@ -291,6 +291,7 @@ describe('HealthClient — Problems', () => {
     expect(html).not.toContain('You fix this');
     expect(html).not.toContain('Codex, read-only');
     expect(html).not.toContain('BUILDD_ALLOW_REDUCED_ISOLATION');
+    expect(html).not.toContain('never changes host security settings');
   });
 
   it('drops the redundant working / idle label from an online runner row', () => {
