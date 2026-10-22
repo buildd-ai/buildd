@@ -24,15 +24,19 @@ const questions = {
   workflow_narration: choice(`${instructions} Does the card avoid narrating the agent's workflow, conversational preambles and unnecessary paragraphs?`, labels),
 };
 export const UI_COPY_CONFIG: DecisionKindConfig<typeof UI_COPY_KIND, UiCopyFeatures, UiCopyDecision, typeof questions> = {
-  kind: UI_COPY_KIND, policyVersion: 'ui-copy-v2', featureSchemaVersion: 'ui-copy-features-v1',
+  kind: UI_COPY_KIND, policyVersion: 'ui-copy-v3', featureSchemaVersion: 'ui-copy-features-v1',
   decisions: UI_COPY_DECISIONS, parseFeatures: parseUiCopyFeatures,
   questions,
   state: (f) => ({ profile: f.profile, segments: f.segments, actions: f.actions.map((a) => ({ id: a.id, label: a.label, operation: a.operation })) }),
   interpret: (answers) => {
     const axes = Object.values(answers);
+    const violations = axes.filter((a) => a.choice === 'revise');
     const failed = Object.entries(answers).filter(([, a]) => a.choice === 'revise').map(([axis]) => axis);
     const decision: UiCopyDecision = failed.length ? 'needs_edit' : axes.some((a) => a.choice === 'uncertain') ? 'insufficient_evidence' : 'concise';
-    return { decision, confidence: Math.min(...axes.map((a) => a.confidence)), reasonCode: failed.length ? `revise_${failed.join('_')}` : decision === 'concise' ? 'all_axes_clear' : 'context_uncertain' };
+    // Any certain defect establishes failure; passing requires every axis.
+    // An uncertain answer on an unrelated axis cannot erase that defect.
+    const confidence = violations.length ? Math.max(...violations.map((a) => a.confidence)) : Math.min(...axes.map((a) => a.confidence));
+    return { decision, confidence, reasonCode: failed.length ? `revise_${failed.join('_')}` : decision === 'concise' ? 'all_axes_clear' : 'context_uncertain' };
   },
   // Until a measured kind/model threshold supersedes this, uncertain judgments never satisfy a requirement.
   minConfidence: 0.85,
