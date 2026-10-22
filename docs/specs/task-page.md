@@ -236,7 +236,7 @@ never described as released.
   the PR card drops its "#N · repo · merged" header line and Claim → merge
   figure. The card draws only recorded figures (diff counters, more than one
   attempt, the diff bar), and no card at all when there are none; PR history
-  stays. The status row's link is the way to the PR at every width.
+  stays. The link after the summary is the way to the PR at every width.
 - The task page is the single task view at every width. Mission task links,
   strip cells, Flow's Open task link and History rows open it, carrying the
   mission's `?from=` back context. The back link returns to the mission; sibling navigation is not rendered.
@@ -355,7 +355,7 @@ branch update" for a carried approval), binding what follows to that round.
 - AC-9: GIVEN a reviewer task titled "[reviewer] PR #N: …" with role name "Reviewer" WHEN `taskHeading` runs THEN the eyebrow contains "Reviewer" exactly once.
 - AC-10: GIVEN no kernel-owned delivery, or a delivery with no PR, WHEN the page renders THEN no checks list is drawn (no invented rows).
 - AC-11: GIVEN a `pr_checks_green` loop satisfied on its 2nd evaluation (`loopIteration` 2, `maxLoops` 3, two history rows) WHEN the chip and Loop history render THEN the chip reads "LOOP SATISFIED · 2/3", the list shows two iterations, and no full UUID or `pr_checks_green` appears.
-- AC-12: GIVEN a completed task whose PR merged with no recorded diff counters and one attempt WHEN the page renders THEN the status row reads "Shipped · PR #N merged" with the claim-to-merge time and a "View PR #N" link, the side panel has no PR row, no element repeats "#N · repo · merged", no Claim → merge figure is drawn, and PR history is still shown.
+- AC-12: GIVEN a completed task whose PR merged with no recorded diff counters and one attempt WHEN the page renders THEN the status row reads "Shipped · PR #N merged" with the claim-to-merge time and a PR link follows the timeline and summary, the side panel has no PR row, no element repeats "#N · repo · merged", no Claim → merge figure is drawn, and PR history is still shown.
 - AC-13: GIVEN the reviewer run's own page, round 1 `queued` on the current head and the reviewer task `pending` WHEN the checks render THEN Code review is a disclosure opening to "Round 1 · head <sha7>" and "Review queued · no findings yet", with no "This review run" and no link to the page itself; with the reviewer task `in_progress` (or the round `reviewing`) it reads "Review in progress · no findings yet" and states no start time.
 - AC-14: GIVEN the reviewer's own page and a `decided` round whose reviewer left a summary WHEN the row opens THEN the summary renders as prose and no "Open review run" link is drawn; GIVEN another page THEN the same detail is followed by a 44px "Open review run ›".
 - AC-15: GIVEN a `decided` round whose reviewer left no summary WHEN the row opens THEN it reads "The review finished without written findings" and the detail contains no "approv…"; GIVEN the reviewer rows could not be read THEN it reads "Couldn’t load the review’s findings" with a 44px "Try again".

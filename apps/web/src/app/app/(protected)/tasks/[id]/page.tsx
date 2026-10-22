@@ -1062,6 +1062,7 @@ async function TaskDetailPage({
   const stoppedSummary = shippedView?.lede ?? readableTaskResult(ownResult?.summary, ownResult?.structuredOutput).prose;
   const hostedRunnerUsage = await hostedRunnerUsagePromise;
   const runDetails: RunDetail[] = [];
+  let runElapsed: string | null = null;
   {
     const runWorkers = workerHistory.map(h => h.worker);
     const runners = [...new Set(runWorkers.map(w => runnerLabel(w)).filter((n): n is string => !!n))];
@@ -1074,7 +1075,8 @@ async function TaskDetailPage({
     const starts = runWorkers.map(w => w.startedAt?.getTime()).filter((t): t is number => t != null);
     const ends = runWorkers.map(w => w.completedAt?.getTime()).filter((t): t is number => t != null);
     if (starts.length > 0 && ends.length > 0) {
-      runDetails.push({ label: 'Took', value: formatElapsed(Math.max(...ends) - Math.min(...starts)) });
+      runElapsed = formatElapsed(Math.max(...ends) - Math.min(...starts));
+      runDetails.push({ label: 'Took', value: runElapsed });
     }
     const cost = runWorkers.reduce((n, w) => n + parseFloat(w.costUsd?.toString() || '0'), 0);
     const tokens = runWorkers.reduce((n, w) => n + (w.inputTokens || 0) + (w.outputTokens || 0), 0);
@@ -1913,7 +1915,7 @@ async function TaskDetailPage({
             {specSource.specId ? <Link href={`/app/specs/${specSource.specId}`} className="text-accent-text hover:underline">{livingSpec?.title ?? 'Specification'} · revision {specSource.revision}</Link> : <p>{specSource.specPath}</p>}
             {livingSpec?.outcome?.criteria.map(c => <p key={c.criterionId} className="mt-2 [overflow-wrap:anywhere]">{c.criterionId} · {c.text} <span className="text-text-muted">{c.stale ? 'Needs recheck' : c.verdict === 'pass' ? 'Met' : c.verdict === 'fail' ? 'Not met' : 'Not verified'}</span></p>)}
           </section>}
-          <p className="text-body text-text-secondary py-3">{workerHistory.filter(h => !isBookkeepingAttempt(h.worker)).length} attempts{lineageClaimToMergeMs != null ? ` · ${formatElapsed(lineageClaimToMergeMs)}` : ''}</p>
+          <p className="text-body text-text-secondary py-3">{workerHistory.filter(h => !isBookkeepingAttempt(h.worker)).length} attempts{lineageClaimToMergeMs != null ? ` · ${formatElapsed(lineageClaimToMergeMs)}` : runElapsed ? ` · ${runElapsed}` : ''}</p>
 
           {dependentTasks.length > 0 && (
             <section data-testid="task-unblocked">

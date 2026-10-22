@@ -16,7 +16,7 @@ export interface TimelineEvent {
   children: TimelineEvent[];
 }
 export interface TimelineGroup { label: typeof DELIVERY_STAGES[number]; events: TimelineEvent[] }
-interface BuildWorker { id: string; status: string; exitCause?: string | null; error?: string | null; startedAt?: Date | string | null; completedAt?: Date | string | null; turns?: number; filesChanged?: number; linesAdded?: number; linesRemoved?: number }
+interface BuildWorker { id: string; status: string; exitCause?: string | null; error?: string | null; startedAt?: Date | string | null; completedAt?: Date | string | null; turns?: number | null; filesChanged?: number | null; linesAdded?: number | null; linesRemoved?: number | null }
 export interface TaskTimelineInput {
   task: { status: string; startAt?: Date | string | null };
   /** Newest first, just this task's workers; child repairs are separate events. */

@@ -70,7 +70,7 @@ export function TaskShippedBody({
           aria-label="What changed"
           className="card flex flex-col gap-3 px-4 py-4 md:px-5"
         >
-          {view.lede && <Lede className="font-medium line-clamp-2">{view.lede}</Lede>}
+          {view.lede && <Lede className="font-medium">{view.lede}</Lede>}
           {view.changeTypeLabel && (
             <p className="text-meta text-text-muted" data-testid="task-shipped-change-type">{view.changeTypeLabel}</p>
           )}
