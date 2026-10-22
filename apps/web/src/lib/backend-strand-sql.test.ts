@@ -13,7 +13,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 mock.module('@buildd/core/db', () => ({ db: { query: {} } }));
 
 import { strandedPendingWhere } from './backend-strand';
-import { notHeldOrLocal } from '@/app/api/workers/claim/held-gate';
+import { notHeldOrLocal, missionNotHeld, missionNotLocal, taskNotHeld } from '@/app/api/workers/claim/held-gate';
 
 const dialect = new PgDialect();
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) =>
@@ -36,4 +36,13 @@ describe('strandedPendingWhere', () => {
     expect(q.sql).toContain('"tasks"."backend" in (');
     expect(q.params).toContain('codex');
   });
+});
+
+it('includes reservations only for diagnostic summaries, retaining the other claim gates', () => {
+  const diagnostic = render(strandedPendingWhere(['ws-a'], undefined, true));
+  expect(diagnostic).not.toContain('reservedBy');
+  expect(diagnostic).toContain(render(missionNotHeld()));
+  expect(diagnostic).toContain(render(missionNotLocal()));
+  expect(diagnostic).toContain(render(taskNotHeld()));
+  expect(render(strandedPendingWhere(['ws-a']))).toContain('reservedBy');
 });
