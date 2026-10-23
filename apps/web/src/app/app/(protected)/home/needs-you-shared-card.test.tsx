@@ -73,12 +73,13 @@ describe('a waiting task from the needs-input feed', () => {
 describe('a QUESTION chip from the action queue', () => {
   const [item] = derive([{ subjectKey: 'q', chip: 'QUESTION', taskId: 'task-a', taskTitle: 'Improve navigation', workerId: 'worker-a', question: 'Keep the old URL as a redirect?' } as ActionQueueItem]);
 
-  it('is the shared card answering the same worker, with the inline answer box', () => {
+  it('is the shared card answering the same worker, with a free-text answer and no Answer link', () => {
     expect(item.question).toMatchObject({ workerId: 'worker-a', taskId: 'task-a', label: 'Improve navigation' });
     const markup = html(item);
     expectSharedShape(markup);
     expect(markup).toContain('Keep the old URL as a redirect?');
-    expect(markup).toContain('data-testid="decision-answer-form"');
+    // No options: the card offers a written answer (the box, or Answer differently opening it).
+    expect(markup).toMatch(/data-testid="decision-answer-(?:form|differently)"/);
     expect(markup).not.toContain('>Answer<');
   });
 });
