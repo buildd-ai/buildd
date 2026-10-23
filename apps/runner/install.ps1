@@ -168,10 +168,13 @@ if /i "%SUBCMD%"=="service" (
 
 REM Restart loop (exit code 75 = update applied, restart) - mirrors install.sh's
 REM bash launcher so the self-updater behaves the same on every platform.
+REM BUILDD_LAUNCHER tells the runner something restarts it after an update.
+set "BUILDD_LAUNCHER=buildd.cmd"
 :runloop
 bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\index.ts" %*
 if %ERRORLEVEL% EQU 75 (
     echo Restarting after update...
+    set "BUILDD_RESTART=update"
     timeout /t 1 /nobreak >nul
     goto runloop
 )
