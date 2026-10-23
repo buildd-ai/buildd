@@ -626,6 +626,7 @@ export default function SpecPage({ view }: { view: Ok }) {
       </header>
 
       {view.retirement ? <SpecRetire specId={spec.id} retirement={view.retirement} canRetire={!!view.canRetire} /> : null}
+      {view.restoredRepoNote ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-restored-repo-file">{view.restoredRepoNote}</p> : null}
 
       {view.source?.copy ? (
         view.source.behind

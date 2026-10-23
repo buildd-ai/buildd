@@ -406,6 +406,27 @@ describe('manage_specs', () => {
     expect(r).toContain('Tasks and missions (by domain, classifier unavailable: this team has no decision-model key)');
   });
 
+  it('import lists files removed or marked superseded under Retire, for a person to confirm; confirm_import says what it retired', async () => {
+    const NEXT = '44444444-4444-4444-8444-444444444444';
+    api.mockResolvedValueOnce({
+      dryRun: true, repo: 'acme/app', commitSha: 'a'.repeat(40), counts: { create: 0, reimport: 0, skip: 0, retire: 2 }, byArea: [],
+      files: [
+        { path: 'docs/specs/gone.md', action: 'retire', specId: SPEC, area: null, message: 'file removed in 1234567', retire: { why: 'removed', status: 'retired', supersededBy: null, removedIn: '1234567'.padEnd(40, '0') } },
+        { path: 'docs/specs/old-flow.md', action: 'retire', specId: 'x3', area: null, message: 'marked superseded by New Flow', retire: { why: 'marked_superseded', status: 'superseded', supersededBy: { specId: NEXT, title: 'New Flow' } } },
+      ],
+    });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'import' }, ctx()));
+    expect(r).toContain('2 to retire');
+    expect(r).toContain(`retire: docs/specs/gone.md (${SPEC}): file removed in 1234567`);
+    expect(r).toContain(`retire: docs/specs/old-flow.md (x3): marked superseded by New Flow, as superseded by ${NEXT}`);
+    expect(r).toContain('Nothing is retired until a person confirms');
+
+    api.mockResolvedValueOnce({ confirmed: [], retired: [{ specId: SPEC, title: 'Gone', path: 'docs/specs/gone.md', status: 'retired', reason: 'file removed in 1234567', supersededBy: null }], skipped: [] });
+    const c = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'confirm_import', specIds: [SPEC] }, ctx()));
+    expect(c).toContain('Confirmed 0 import(s), retired 1');
+    expect(c).toContain(`retired: Gone (${SPEC}) from docs/specs/gone.md: file removed in 1234567`);
+  });
+
   it('confirm_import POSTs the batch and passes an agent run\'s 403 through; an OAuth session is told where to confirm', async () => {
     api.mockResolvedValueOnce({ confirmed: [{ specId: SPEC, title: 'Invoices', path: 'docs/specs/invoices.md', commitSha: 'b'.repeat(40) }], skipped: [{ specId: 'x2', path: 'docs/specs/moved.md', reason: 'stale', message: 'changed since bbbbbbb' }] });
     const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'confirm_import', specIds: [SPEC, 'x2'] }, ctx()));

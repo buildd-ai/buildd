@@ -22,7 +22,7 @@ import { filingFacts, proposalAreas, type AreaProposal, type SpecIndexInput, typ
 import type { RepoRef } from './repo-refs';
 import { nativeSourceOn, repoCopyLine, repoCopyPreflight, type RepoCopyPreflight } from './repo-copy';
 import { readSpecDelivery, type SpecDelivery } from './delivery';
-import { specRetirement, type RetirementView } from './retire';
+import { specRestoredRepoFile, specRetirement, type RetirementView } from './retire';
 import { revisionReview, type RevisionReview } from './revision-changes';
 import { readCriterionHistory, type CriterionHistory } from './criteria';
 import { importConfirmPath } from './import';
@@ -346,6 +346,8 @@ export type SpecPageView =
     delivery?: SpecDelivery | null;
     /** Why and by what the spec is retired (§22), when it is. */
     retirement?: RetirementView | null;
+    /** A live spec a person restored after its retirement reached the repo file (R-80): that the file still reads superseded. */
+    restoredRepoNote?: string | null;
     /** The reader may retire or restore it (a person with approval rights, §22 R-51), and the live specs that could replace it. */
     canRetire?: boolean;
     retireTargets?: Array<{ id: string; title: string }>;
@@ -561,6 +563,8 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     : Promise.resolve(null);
 
   const retirementP = open ? Promise.resolve(null) : specRetirement(spec.id).catch(() => null);
+  // Only a spec that came from or was copied to a repo file can have one.
+  const restoredNoteP = open && (spec.repoSource || spec.repoCopy?.path) ? specRestoredRepoFile(spec.id, spec.status).catch(() => null) : Promise.resolve(null);
   // The replacements a person may pick (§22): live specs of the workspace, by title.
   const retireTargetsP = roundP.then((r) => r.retireTargets ?? []);
   // The repo checks (R-34) are not read here: they ask GitHub, so the panel fetches them on its own (/api/specs/[id]/preflight).
@@ -576,8 +580,8 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     return null;
   });
 
-  const [read, [ws], revRows, names, [parent], siblings, children, repoRefs, design, views, comments, nearby, filing, compare, approverId, retirement, retireTargets, review, delivery, criterionHistory] = await Promise.all([
-    readP, wsP, revRowsP, namesP, parentP, siblingsP, childrenP, repoRefsP, designP, viewsP, commentsP, nearbyP, filingP, compareP, approverP, retirementP, retireTargetsP, reviewP, deliveryP, historyP,
+  const [read, [ws], revRows, names, [parent], siblings, children, repoRefs, design, views, comments, nearby, filing, compare, approverId, retirement, retireTargets, review, delivery, criterionHistory, restoredRepoNote] = await Promise.all([
+    readP, wsP, revRowsP, namesP, parentP, siblingsP, childrenP, repoRefsP, designP, viewsP, commentsP, nearbyP, filingP, compareP, approverP, retirementP, retireTargetsP, reviewP, deliveryP, historyP, restoredNoteP,
   ]);
   if (!read) return { state: 'not_found' };
 
@@ -631,7 +635,7 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     // For a person, write reach is the same team-membership check as read reach (workspace-access.ts).
     canComment: true,
     compare, canApprove: pending && open && approver, review,
-    retirement, canRetire: approver, retireTargets,
+    retirement, canRetire: approver, retireTargets, restoredRepoNote,
     criterionHistory,
     importConfirmation,
   };

@@ -354,8 +354,16 @@ the person do it on the spec page or from their own session.
   characters) is recorded with who did it in the metadata change log.
 - A retired spec leaves the index counts and the import confirm list, and is
   no longer revised, approved or attached to.
+- When a repo file stands for the spec, buildd opens one PR on it: an
+  imported file gets `status: superseded` and `superseded_by` (body
+  untouched), which a person merges; a generated copy is removed. The spec
+  page names the PR until it merges.
+- An import run lists an imported file that was deleted, or marked
+  `status: superseded`, under Retire. Only `confirm_import`, a person's act,
+  retires those specs.
 - Restore: `buildd action=manage_specs params={ action: "restore", specId }`
-  puts back the status it had.
+  puts back the status it had. It opens no PR: the repo file still reads
+  superseded.
 
 ## Another workspace's spec
 

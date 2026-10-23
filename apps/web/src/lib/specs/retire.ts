@@ -3,7 +3,9 @@ import { specMetadataChanges, specs } from '@buildd/core/db/schema';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { fail, reach, type SpecCaller, type SpecError, type SpecRow } from './store';
-import { specApprover } from './approval';
+import { specApprovalDeps, specApprover } from './approval';
+import { repoFileOf, restoredRepoNote, retiredRepoLine, retirementRow, type RetirementRepoFile } from './retire-repo-file';
+import type { RepoCopyDeps } from './repo-copy';
 
 /**
  * Retiring a Living Spec (docs/specs/living-specs.md §22): a person takes a
@@ -23,7 +25,16 @@ import { specApprover } from './approval';
  * writes one `spec_metadata_changes` row with field `status`, the previous and
  * new status, the replacement, who and why. Restore reads the newest such row
  * to put the previous status back.
+ *
+ * Repo file (R-78 to R-80, ./retire-repo-file.ts): after a retirement commits,
+ * the one PR on the file that stands for the spec is opened and recorded on that
+ * change row. Restore opens nothing; the page says the file still reads superseded.
  */
+
+/** After-response work and the GitHub a retirement's repo PR is written through; overridable for tests. */
+export const retireDeps: { afterResponse: (task: () => Promise<unknown>) => void; repoFile?: RepoCopyDeps } = {
+  afterResponse: (task) => specApprovalDeps.afterResponse(task),
+};
 
 export const RETIRED_STATUSES = ['retired', 'superseded'] as const;
 const isRetired = (s: string) => (RETIRED_STATUSES as readonly string[]).includes(s);
@@ -37,6 +48,9 @@ export interface RetirementView {
   /** `user:<id>` of the person who retired it. */
   by: string;
   at: string;
+  /** The repo file it reached (R-78), and the page's line while its PR is open. */
+  repoFile: RetirementRepoFile | null;
+  repoLine: { text: string; href: string | null } | null;
 }
 
 const rowsOf = (r: unknown) => ((r as { rows?: unknown[] }).rows ?? []);
@@ -52,7 +66,7 @@ async function loadForPerson(caller: SpecCaller, specId: string): Promise<{ spec
   return { spec, personId };
 }
 
-async function writeStatus(spec: SpecRow, personId: string, next: string, reason: string, newValue: Record<string, unknown>): Promise<{ ok: true; spec: SpecRow } | SpecError> {
+async function writeStatus(spec: SpecRow, personId: string, next: string, reason: string, newValue: Record<string, unknown>): Promise<{ ok: true; spec: SpecRow; changeId: string } | SpecError> {
   const res = await db.execute(sql`
     WITH up AS (
       UPDATE specs SET status = ${next}, version = version + 1, updated_at = now()
@@ -63,13 +77,18 @@ async function writeStatus(spec: SpecRow, personId: string, next: string, reason
     SELECT up.workspace_id, up.id, 'status', ${JSON.stringify({ status: spec.status })}::jsonb, ${JSON.stringify(newValue)}::jsonb, ${reason}, 'user', ${`user:${personId}`}
     FROM up
     RETURNING id`);
-  if (rowsOf(res).length === 0) return fail(409, 'The spec changed while you were deciding. Re-read it and try again.');
+  const [written] = rowsOf(res) as Array<{ id: string }>;
+  if (!written) return fail(409, 'The spec changed while you were deciding. Re-read it and try again.');
   const [after] = await db.select().from(specs).where(eq(specs.id, spec.id)).limit(1);
-  return { ok: true, spec: after };
+  return { ok: true, spec: after, changeId: written.id };
 }
 
-/** Retire a spec, or mark it superseded by `supersededBy`. */
-export async function retireSpec(caller: SpecCaller, specId: string, input: { reason: unknown; supersededBy?: unknown }): Promise<{ ok: true; spec: SpecRow } | SpecError> {
+/**
+ * Retire a spec, or mark it superseded by `supersededBy`. `repoFile`: the repo
+ * already says so (an import run's retirement, R-79), recorded as is and no PR
+ * opened; without it the file that stands for the spec gets its one PR (R-78).
+ */
+export async function retireSpec(caller: SpecCaller, specId: string, input: { reason: unknown; supersededBy?: unknown }, opts: { repoFile?: RetirementRepoFile } = {}): Promise<{ ok: true; spec: SpecRow } | SpecError> {
   if (typeof input.reason !== 'string' || input.reason.trim().length < 10 || input.reason.length > 500) {
     return fail(400, 'reason (why this spec is retired, 10-500 characters) is required');
   }
@@ -88,7 +107,16 @@ export async function retireSpec(caller: SpecCaller, specId: string, input: { re
     replacement = { id: r.id };
   }
   const next = replacement ? 'superseded' : 'retired';
-  return writeStatus(spec, personId, next, input.reason.trim(), replacement ? { status: next, supersededBy: replacement.id } : { status: next });
+  const r = await writeStatus(spec, personId, next, input.reason.trim(), {
+    status: next, ...(replacement ? { supersededBy: replacement.id } : {}), ...(opts.repoFile ? { repoFile: opts.repoFile } : {}),
+  });
+  if (r.ok && !opts.repoFile && (spec.repoSource || spec.repoCopy?.path)) {
+    retireDeps.afterResponse(async () => {
+      const { openRetirementPr } = await import('./retire-repo-file');
+      await openRetirementPr(spec.id, retireDeps.repoFile);
+    });
+  }
+  return r;
 }
 
 /** The newest status change that retired the spec, when it is retired now. */
@@ -122,10 +150,27 @@ export async function specRetirement(specId: string): Promise<RetirementView | n
   const last = await lastRetirement(spec);
   if (!last) return null;
   const nv = (last.newValue ?? {}) as { supersededBy?: unknown };
+  const repoFile = repoFileOf(last.newValue);
   let supersededBy: RetirementView['supersededBy'] = null;
   if (typeof nv.supersededBy === 'string' && isUuid(nv.supersededBy)) {
     const [r] = await db.select({ id: specs.id, title: specs.title }).from(specs).where(eq(specs.id, nv.supersededBy)).limit(1);
     supersededBy = r ?? null;
   }
-  return { status: spec.status as RetirementView['status'], reason: last.reason, supersededBy, by: last.changedBy, at: last.createdAt.toISOString() };
+  return {
+    status: spec.status as RetirementView['status'], reason: last.reason, supersededBy, by: last.changedBy, at: last.createdAt.toISOString(),
+    repoFile, repoLine: retiredRepoLine(repoFile),
+  };
+}
+
+/**
+ * For a live spec whose last retirement reached its repo file: the page's note
+ * that restoring left the file as it is (R-80). `status`: the spec's, when the
+ * caller has read it already.
+ */
+export async function specRestoredRepoFile(specId: string, status?: string): Promise<string | null> {
+  if (!isUuid(specId)) return null;
+  const now = status ?? (await db.select({ status: specs.status }).from(specs).where(eq(specs.id, specId)).limit(1))[0]?.status;
+  if (!now || isRetired(now)) return null;
+  const row = await retirementRow(specId);
+  return row ? restoredRepoNote(repoFileOf(row.newValue)) : null;
 }

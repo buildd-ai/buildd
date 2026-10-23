@@ -190,7 +190,7 @@ export const WORKSPACE_SPEC_OPS = ['create_draft', 'list', 'organize', 'import']
 
 type AreaBy = 'classifier' | 'domain' | 'existing';
 type ImportRow = {
-  path: string; action: 'create' | 'reimport' | 'exists' | 'skip'; reason?: string; message?: string; specId?: string; revision?: number; spec?: { title: string };
+  path: string; action: 'create' | 'reimport' | 'exists' | 'skip' | 'retire'; reason?: string; message?: string; specId?: string; revision?: number; spec?: { title: string };
   area: { specId: string | null; title: string; proposed: boolean; by?: AreaBy; p?: number } | null;
   placement?: { by: AreaBy; reason?: string; p?: number };
   suggestion?: { specId: string | null; title: string; answer: string; p: number };
@@ -198,8 +198,9 @@ type ImportRow = {
   provenance?: { commitSha: string; prNumber: number | null }; duplicates?: Array<{ specId: string; title: string; relation: string; p: number; blocks?: boolean }>;
   existing?: { specId: string; title: string; url: string; matchedBy: string }; provenanceAttached?: boolean;
   criteria?: CriterionIdProblems;
+  retire?: { why: string; status: 'retired' | 'superseded'; supersededBy: { specId: string; title: string } | null };
 };
-type ImportReply = { dryRun?: boolean; repo?: string; commitSha?: string; files?: ImportRow[]; counts?: { create: number; reimport: number; exists?: number; skip: number }; byArea?: Array<{ area: string; areaSpecId: string | null; proposed: boolean; count: number; by?: AreaBy | null }>; limit?: number; remaining?: number; nextCursor?: string | null };
+type ImportReply = { dryRun?: boolean; repo?: string; commitSha?: string; files?: ImportRow[]; counts?: { create: number; reimport: number; exists?: number; skip: number; retire?: number }; byArea?: Array<{ area: string; areaSpecId: string | null; proposed: boolean; count: number; by?: AreaBy | null }>; limit?: number; remaining?: number; nextCursor?: string | null };
 
 /** The import params a continuation call repeats, as the caller passed them (cursor is added last). */
 const IMPORT_PARAMS = ['dryRun', 'ref', 'paths', 'allowDuplicates', 'limit', 'attach_provenance', 'attach_to'] as const;
@@ -227,7 +228,7 @@ export function importText(r: ImportReply, call: Record<string, unknown> = {}): 
   const files = r.files ?? [];
   const c = r.counts ?? { create: 0, reimport: 0, skip: 0 };
   const at = r.commitSha ? `${r.repo ?? 'the repo'}@${r.commitSha.slice(0, 7)}` : (r.repo ?? 'the repo');
-  const head = `${r.dryRun === false ? 'Imported' : 'Dry run (nothing written)'} from ${at}: ${c.create} to create, ${c.reimport} to re-import as a new revision, ${c.exists ? `${c.exists} already in buildd, ` : ''}${c.skip} skipped.`;
+  const head = `${r.dryRun === false ? 'Imported' : 'Dry run (nothing written)'} from ${at}: ${c.create} to create, ${c.reimport} to re-import as a new revision, ${c.exists ? `${c.exists} already in buildd, ` : ''}${c.retire ? `${c.retire} to retire, ` : ''}${c.skip} skipped.`;
   // Each file once: only creates and re-imports are listed by area; exists and skips have their own lists.
   const listed = files.filter((f) => f.action === 'create' || f.action === 'reimport');
   const groups = (r.byArea ?? []).map((a) => {
@@ -243,6 +244,13 @@ export function importText(r: ImportReply, call: Record<string, unknown> = {}): 
     ...exists.map((f) => `  exists: ${f.path} is "${f.existing!.title}" (${f.existing!.url}, matched by ${MATCHED_BY[f.existing!.matchedBy] ?? f.existing!.matchedBy})${f.provenanceAttached ? ', provenance recorded' : ''}`),
     ...(exists.some((f) => !f.provenanceAttached) ? ['  To record the repo path and commit on those specs instead: pass attach_provenance: true on a real run (dryRun: false).'] : []),
   ] : [];
+  // R-79: a removed or superseded file's spec, retired only when a person confirms the batch.
+  const retire = files.filter((f) => f.action === 'retire');
+  const retireLines = retire.length ? [
+    'Retire (the repo file was removed or marked superseded):',
+    ...retire.map((f) => `  retire: ${f.path} (${f.specId}): ${f.message}${f.retire?.supersededBy ? `, as superseded by ${f.retire.supersededBy.specId}` : ''}`),
+    '  Nothing is retired until a person confirms: confirm_import { specIds } with these specs retires them.',
+  ] : [];
   const skipped = files.filter((f) => f.action === 'skip');
   const skipLines = skipped.length ? [`Skipped:`, ...skipped.map((f) => `  ${f.path}: ${f.reason}${f.message ? `, ${f.message}` : ''}`)] : [];
   const next = r.dryRun === false
@@ -255,17 +263,19 @@ export function importText(r: ImportReply, call: Record<string, unknown> = {}): 
     args.push(`cursor: ${JSON.stringify(r.nextCursor)}`);
     more.push(`This page covered ${files.length} file(s); ${r.remaining} file(s) remain at the same commit. Continue with: manage_specs { ${args.join(', ')} }`);
   }
-  return [head, ...groups, ...existsLines, ...skipLines, ...more, next].join('\n');
+  return [head, ...groups, ...existsLines, ...retireLines, ...skipLines, ...more, next].join('\n');
 }
 
-type ConfirmReply = { confirmed?: Array<{ specId: string; title: string; path: string; commitSha: string }>; skipped?: Array<{ specId: string; path?: string; reason: string; message: string }>; pending?: { confirmUrl: string; specIds: string[] } };
+type ConfirmReply = { confirmed?: Array<{ specId: string; title: string; path: string; commitSha: string }>; retired?: Array<{ specId: string; title: string; path: string; status: string; reason: string }>; skipped?: Array<{ specId: string; path?: string; reason: string; message: string }>; pending?: { confirmUrl: string; specIds: string[] } };
 
 export function confirmImportText(r: ConfirmReply): string {
   if (r.pending) return `Nothing was confirmed: confirming an import is a person's act on buildd.dev. Open ${r.pending.confirmUrl} to confirm ${r.pending.specIds.length} spec(s).`;
   const ok = r.confirmed ?? [];
   const no = r.skipped ?? [];
-  return [`Confirmed ${ok.length} import(s)${no.length ? `, ${no.length} not confirmed` : ''}.`,
+  const gone = r.retired ?? [];
+  return [`Confirmed ${ok.length} import(s)${gone.length ? `, retired ${gone.length}` : ''}${no.length ? `, ${no.length} not confirmed` : ''}.`,
     ...ok.map((x) => `  confirmed: ${x.title} (${x.specId}) from ${x.path}@${x.commitSha.slice(0, 7)}`),
+    ...gone.map((x) => `  ${x.status}: ${x.title} (${x.specId}) from ${x.path}: ${x.reason}`),
     ...no.map((x) => `  not confirmed: ${x.path ?? x.specId}: ${x.reason}, ${x.message}`)].join('\n');
 }
 

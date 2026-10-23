@@ -133,7 +133,7 @@ export async function buildSpecRepoCopy(spec: SpecRow, opts: { revision?: number
 
 // ── The repo as it stands on the base branch ────────────────────────────────
 
-interface RepoState {
+export interface RepoState {
   fullName: string;
   installationId: number;
   base: string;
@@ -144,7 +144,8 @@ interface RepoState {
   checkSpecsSource: string | null;
 }
 
-async function readRepoState(workspaceId: string, deps: RepoCopyDeps): Promise<RepoState | { error: string }> {
+/** The base branch, its tree and docs/specs as text: what the copy, removal and retirement (./retire-repo-file.ts) PRs are written on. */
+export async function readRepoState(workspaceId: string, deps: RepoCopyDeps): Promise<RepoState | { error: string }> {
   const repo = await deps.repo(workspaceId);
   if (!repo) return { error: 'this workspace has no GitHub repo linked through the GitHub App' };
   const [ws] = await db.select({ gitConfig: workspaces.gitConfig }).from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);

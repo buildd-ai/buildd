@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/mission-outcome.ts, apps/web/src/lib/specs/mission-selection.ts, apps/web/src/lib/specs/provisional.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/lib/specs/copy.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, spec_taxonomy, cold-start taxonomy, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index, provisional pin, build ahead of approval, attach_provisional, re-grade, confirm_import, import confirmation, repo_source, spec attachment, attachment:, binding attachment, reference attachment, changed since approval, Files, retire, retired, superseded, restore, copy spec, copied_from, cross-workspace handoff, publication policy, spec_publication, publish anyway, removal PR, outcome spec, outcomeSpec, final verification, integrated target, mission-level verdict, spec repair]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/src/lib/spec-taxonomy-decision.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/lib/specs/hub.test.ts, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-import.test.ts, packages/spec-contract/src/repo-import.test.ts, apps/web/src/app/api/specs/import/route.test.ts, apps/web/src/lib/specs/index-view-imported.test.ts, apps/web/tests/db/spec-attachments.test.ts, apps/web/src/components/MarkdownContent.attachments.dom.test.tsx, packages/core/__tests__/mcp-specs-attachments.test.ts, apps/web/src/app/api/specs/[specId]/attachments/[name]/route.test.ts, apps/web/src/components/SpecAttachments.dom.test.tsx, apps/web/tests/db/spec-retire.test.ts, apps/web/src/app/api/specs/[specId]/retire/route.test.ts, packages/core/__tests__/mcp-specs-retire.test.ts, apps/web/src/components/SpecRetire.dom.test.tsx, apps/web/src/lib/spec-publication-decision.test.ts, apps/web/src/lib/specs/mission-outcome-fold.test.ts, apps/web/src/lib/specs/mission-selection.test.ts, apps/web/src/lib/specs/mission-verdict-authority.test.ts, packages/core/__tests__/goal-criteria-living-spec.test.ts, apps/web/tests/db/spec-copy.test.ts, packages/core/__tests__/mcp-specs-copy.test.ts]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/src/lib/spec-taxonomy-decision.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/lib/specs/hub.test.ts, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-import.test.ts, packages/spec-contract/src/repo-import.test.ts, apps/web/src/app/api/specs/import/route.test.ts, apps/web/src/lib/specs/index-view-imported.test.ts, apps/web/tests/db/spec-attachments.test.ts, apps/web/src/components/MarkdownContent.attachments.dom.test.tsx, packages/core/__tests__/mcp-specs-attachments.test.ts, apps/web/src/app/api/specs/[specId]/attachments/[name]/route.test.ts, apps/web/src/components/SpecAttachments.dom.test.tsx, apps/web/tests/db/spec-retire.test.ts, apps/web/src/app/api/specs/[specId]/retire/route.test.ts, packages/core/__tests__/mcp-specs-retire.test.ts, apps/web/src/components/SpecRetire.dom.test.tsx, apps/web/tests/db/spec-retire-repo-file.test.ts, packages/spec-contract/src/repo-spec-superseded.test.ts, apps/web/src/lib/spec-publication-decision.test.ts, apps/web/src/lib/specs/mission-outcome-fold.test.ts, apps/web/src/lib/specs/mission-selection.test.ts, apps/web/src/lib/specs/mission-verdict-authority.test.ts, packages/core/__tests__/goal-criteria-living-spec.test.ts, apps/web/tests/db/spec-copy.test.ts, packages/core/__tests__/mcp-specs-copy.test.ts]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -1812,6 +1812,26 @@ an agent MUST NOT.
   "Replaced by <spec>", with Restore for a person who may; for a live spec
   that person gets Retire among the page's secondary actions, never in the
   Approve corner, with a reason and an optional replacement.
+- R-78: When a spec is retired or superseded and a repo file stands for it
+  (an imported spec's source file, or its generated copy from §18), buildd
+  opens one PR: an imported source file gets `status: superseded` and
+  `superseded_by` in its frontmatter with its body left as is; a generated
+  copy is removed and the index updated. A generated-copy PR lands under the
+  exception of R-35, only at the head buildd wrote; a source-file PR is an
+  ordinary PR a person merges. `superseded_by` is the replacement's slug when
+  it has a file in the repo, `buildd:<short id>` when it lives only in buildd,
+  `none` when nothing replaces it. A file that already reads superseded, or is
+  gone, gets no PR. The outcome is `repoFile` on the retirement's change row,
+  and the spec page names the PR until it merges.
+- R-79: An import run (§18) lists a previously imported file that is now
+  deleted, or whose frontmatter says `status: superseded`, as `retire` with
+  the reason ("file removed in <commit>", "marked superseded by <title>").
+  Confirming the batch retires those specs, as superseded when the file names
+  a replacement buildd can match, else retired. Nothing is retired without
+  that confirmation, a dry run writes nothing, and a spec already retired or
+  superseded is skipped, not listed again.
+- R-80: Restoring a spec retired by R-78 or R-79 does not recreate or edit a
+  repo file; the page says the repo file still reads superseded.
 
 **Acceptance criteria**:
 - AC-109: GIVEN an agent token, an API key or a plain member WHEN it retires
@@ -1828,14 +1848,26 @@ an agent MUST NOT.
   (`apps/web/tests/db/spec-retire.test.ts`,
   `packages/core/__tests__/mcp-specs-retire.test.ts`,
   `apps/web/src/components/SpecRetire.dom.test.tsx`).
+- AC-124: GIVEN imported spec A from `docs/specs/a.md` WHEN A is superseded
+  THEN one PR sets `status: superseded` and `superseded_by` in that file's
+  frontmatter, and the next import reports the file as superseded and skips
+  it (`apps/web/tests/db/spec-retire-repo-file.test.ts`,
+  `packages/spec-contract/src/repo-spec-superseded.test.ts`).
+- AC-125: GIVEN a previously imported file deleted from the repo WHEN import
+  runs dry THEN it lists the spec under Retire with the commit and writes
+  nothing; WHEN the person confirms THEN the spec is retired
+  (`apps/web/tests/db/spec-retire-repo-file.test.ts`).
+- AC-126: GIVEN a spec retired by AC-124 WHEN a person restores it THEN no PR
+  is opened and the page says the repo file still reads superseded
+  (`apps/web/tests/db/spec-retire-repo-file.test.ts`).
 
 **Code surface**:
 - `apps/web/src/lib/specs/retire.ts` — `retireSpec`, `restoreSpec`, `specRetirement`
 - `apps/web/src/app/api/specs/[specId]/retire/route.ts` — `POST`, `DELETE`
 - `apps/web/src/components/SpecRetire.tsx` — `SpecRetire`
-
-**Not yet**:
-- Retiring does not close the generated repo copy (§18) of a native spec.
+- `apps/web/src/lib/specs/retire-repo-file.ts` — `openRetirementPr`, `landRetirementPr`, `settleRetirementPr`
+- `apps/web/src/lib/specs/import.ts` — `replacementFor`, `confirmImportedSpecs`
+- `packages/spec-contract/src/repo-spec.ts` — `markSpecSuperseded`, `SUPERSEDED_BY_ELSEWHERE`
 
 ## 23. Which specs leave buildd: the publication policy
 
