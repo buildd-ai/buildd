@@ -52,6 +52,7 @@ import {
 import { routeForAppFile } from '@buildd/core/visual-qa-routes';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { loadVisualReview, toHumanShotReview } from '@/lib/visual-review-load';
+import { isFixCheck } from '@/lib/visual-review-model';
 import { isUuid } from '@/lib/uuid';
 import { missionVisualShotsWhere } from '@/lib/visual-review-query';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
@@ -182,9 +183,11 @@ export function planDecision(model: VisualReviewModel, request: VisualReviewDeci
       if (!stale.includes(cell)) stale.push(cell);
       continue;
     }
-    // A fix check: the merged fix is what the new screenshot tests, so Still
-    // broken files a new fix rather than reading the merged one as done.
-    const fix = cell.fixCheck?.state === 'check' && cell.current.fixTask?.id === cell.fixCheck.fix.id ? null : cell.current.fixTask;
+    // A fix check: the merged fix is what the new screenshot tests (or, with
+    // none coming, what a person judges), so Still broken files a new fix
+    // rather than reading the merged one as done.
+    const checking = isFixCheck(cell);
+    const fix = checking && cell.current.fixTask?.id === cell.fixCheck!.fix.id ? null : cell.current.fixTask;
     const linkedFix = fix ? { id: fix.id, status: openFix.get(fix.id)?.status ?? fix.status } : null;
     const effect = planShotReviewEffect(cell.current.agentVerdict, request.decision, { linkedFix, hasNote: !!oneLine(request.note) });
     shots.push({ artifactId, cell, ...effect, priorReview: cell.current.review, linkedOpen: !!linkedFix && !TERMINAL.has(linkedFix.status) });
@@ -665,7 +668,7 @@ export async function applyDecision(input: {
       annotated,
       outcome: decisionOutcome({
         decision: request.decision,
-        shots: plan.shots.map(s => ({ agentVerdict: s.cell.current.agentVerdict, check: s.cell.fixCheck?.state === 'check', linkedOpen: s.linkedOpen })),
+        shots: plan.shots.map(s => ({ agentVerdict: s.cell.current.agentVerdict, check: isFixCheck(s.cell), linkedOpen: s.linkedOpen })),
         filed: plan.fixGroups.some(g => !g.reuseFixId),
         reused: plan.fixGroups.some(g => !!g.reuseFixId),
         cancelled: cancelledFixTaskIds.length > 0,

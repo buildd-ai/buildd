@@ -19,6 +19,7 @@ import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { randomBytes } from 'crypto';
 import { getLatestVersion } from '@/lib/version-cache';
 import { parseClaimHandoff, releaseUnacknowledgedClaims } from '@/lib/lost-claim';
+import { failWorkersUnvouchedByRunner } from '@/lib/stale-workers';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { dbLeaseUntil, liveness } from '@/lib/liveness';
 import { redisRunnerBeatStateStore, runnerBeatId, RUNNER_BEAT_TTL_MS } from '@/lib/runner-beats';
@@ -386,6 +387,25 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // A runner that reports the handoff names every worker it runs or holds
+    // paused, so a live worker of this runner it no longer names, whose lease
+    // lapsed long ago, is one it forgot (lib/stale-workers.ts). Rides the
+    // interval write: the lease it reads is renewed no more often than that.
+    let workersUnvouched = 0;
+    if (handoff && !account.taskScope && writeDb) {
+      try {
+        workersUnvouched = await failWorkersUnvouchedByRunner({
+          accountId: account.id,
+          runner: String(localUiUrl),
+          vouched: [...heldIds, ...handoff.pendingStartIds],
+          now,
+        });
+      } catch (err) {
+        // Non-fatal: the next interval write asks again.
+        console.error('[heartbeat] unvouched-worker check failed:', err);
+      }
+    }
+
     // Include latest commit SHA for auto-update checks (best-effort).
     //
     // Resolved against the runner's OWN tracked branch. Answering with another
@@ -413,7 +433,7 @@ export async function POST(req: NextRequest) {
       // Best effort: a missed nudge is picked up by the runner's own interval.
     }
 
-    return NextResponse.json({ ok: true, viewerToken, pendingTaskCount: 0, latestCommit, leasesRenewed, claimsReleased, budgetProbeRequestedAt, desiredSlots });
+    return NextResponse.json({ ok: true, viewerToken, pendingTaskCount: 0, latestCommit, leasesRenewed, claimsReleased, workersUnvouched, budgetProbeRequestedAt, desiredSlots });
   } catch (error) {
     console.error('Heartbeat error:', error);
     return NextResponse.json({ error: 'Failed to process heartbeat' }, { status: 500 });

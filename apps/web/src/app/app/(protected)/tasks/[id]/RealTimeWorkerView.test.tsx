@@ -354,3 +354,9 @@ describe('RealTimeWorkerView — kernel DeliveryView owner of the next move', ()
     expect(renderWith(null)).toContain('worker-needs-input-banner');
   });
 });
+
+test('steering controls follow Now, ahead of counters and the activity history', () => {
+  const html = renderToStaticMarkup(<RealTimeWorkerView initialWorker={baseWorker({ status: 'running' }) as never} taskId="task-1" controls={<button>Steer Pause Stop</button>} />);
+  expect(html).toContain('Steer Pause Stop');
+  expect(html.indexOf('Steer Pause Stop')).toBeLessThan(html.indexOf('Turns'));
+});

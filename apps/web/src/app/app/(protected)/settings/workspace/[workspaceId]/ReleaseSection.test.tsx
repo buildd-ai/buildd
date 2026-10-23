@@ -74,4 +74,17 @@ describe('ReleaseSection — AC-47 (no Release now trigger on workspace config)'
     expect(read).toContain('release/v*');
     expect(read).toContain('Cut from dev, opened by github-actions[bot]');
   });
+
+  it('shows the declared amend mapping, and "re-cut" when none is declared', () => {
+    const policy = { branches: ['release/v*'], sourceBranch: 'dev', authors: ['github-actions[bot]'] };
+    const mapped: WorkspaceReleaseConfig = { ...enabledConfig, prodBranch: 'main', candidate: { ...policy, amend: { mode: 'inputs', versionInput: 'amend', confirmInput: 'amend_confirm' } } };
+    const edit = renderToStaticMarkup(<ReleaseSection workspaceId="ws-1" teamId="team-1" initialReleaseConfig={mapped} hasRepo={true} canEdit />);
+    expect(edit).toContain('When a fix merges');
+    expect(edit).toContain('value="amend"');
+    expect(edit).toContain('value="amend_confirm"');
+    const read = renderToStaticMarkup(<ReleaseSection workspaceId="ws-1" teamId="team-1" initialReleaseConfig={mapped} hasRepo={true} canEdit={false} />);
+    expect(read).toContain('runs the workflow with amend and amend_confirm');
+    const none = renderToStaticMarkup(<ReleaseSection workspaceId="ws-1" teamId="team-1" initialReleaseConfig={{ ...mapped, candidate: policy }} hasRepo={true} canEdit={false} />);
+    expect(none).toContain('tells you to re-cut it');
+  });
 });

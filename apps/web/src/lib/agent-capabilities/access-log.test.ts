@@ -101,4 +101,32 @@ describe('summarizeAccess source', () => {
     const approve = r('capability.approve', { resource: 'grant:g1', occurredAt: new Date(T0 + 60_000) });
     expect(summarizeAccess([req, approve])[0].pending).toBe(false);
   });
+
+  describe('a request is waiting only while it is open on a live run', () => {
+    const req = r('capability.request', { decision: 'refused', resource: 'grant:g1', reasonCode: 'pending_approval:needs_person' });
+    const run = (taskStatus: string | null, status: string, workerStatus: string | null) =>
+      ({ taskStatus, requests: new Map([['g1', { status, workerStatus }]]) });
+
+    it('pending on a live task and run: waiting', () => {
+      const [i] = summarizeAccess([req], new Map(), run('in_progress', 'pending', 'running'));
+      expect(i).toMatchObject({ pending: true, closed: null });
+    });
+    it('closed because the task ended: not waiting, says why', () => {
+      const [i] = summarizeAccess([req], new Map(), run('completed', 'expired', 'completed'));
+      expect(i).toMatchObject({ pending: false, closed: 'the task ended' });
+    });
+    it('row still pending but the task is terminal: closed (fails closed)', () => {
+      const [i] = summarizeAccess([req], new Map(), run('failed', 'pending', 'running'));
+      expect(i).toMatchObject({ pending: false, closed: 'the task ended' });
+    });
+    it('row still pending but its agent run stopped: closed', () => {
+      const [i] = summarizeAccess([req], new Map(), run('in_progress', 'pending', 'failed'));
+      expect(i).toMatchObject({ pending: false, closed: 'the agent run stopped' });
+    });
+    it('no grant row found: closed, never waiting', () => {
+      const [i] = summarizeAccess([req], new Map(), { taskStatus: 'in_progress', requests: new Map() });
+      expect(i.pending).toBe(false);
+      expect(i.closed).not.toBeNull();
+    });
+  });
 });

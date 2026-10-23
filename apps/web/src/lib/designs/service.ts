@@ -4,7 +4,7 @@ import { artifactRevisions, artifacts, specRevisions, specs, workspaces, type Ar
 import { ArtifactType } from '@buildd/shared';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
-import { deleteObject, isStorageConfigured, uploadBuffer } from '@/lib/storage';
+import { deleteObject, isStorageConfigured, readObject, uploadBuffer } from '@/lib/storage';
 import { buildArtifactKey } from '@/lib/storage-keys';
 import { resolveWorkspaceAccess } from '@/lib/workspace-access';
 import {
@@ -12,7 +12,8 @@ import {
   type LinkCaller, type LinkRow,
 } from '@/lib/artifact-links';
 import { extractScreens, parseScreens, type DesignScreen } from './screens';
-import { DESIGN_ATTACH_KINDS, planStore, type DesignAttachKind } from './store';
+import { isAdoptableFile, planAdoption } from './adopt';
+import { DESIGN_ATTACH_KINDS, planStore, specPinnedArtifact, type DesignAttachKind } from './store';
 import { DESIGN_STORED_CONTENT_TYPE, validateDesignHtml } from './upload';
 
 /**
@@ -72,6 +73,37 @@ async function loadDesign(caller: LinkCaller, designId: string) {
   // Missing, not a design and unreachable read the same.
   if (!a || !a.workspaceId || !(await canAccessWorkspace(caller, a.workspaceId))) return null;
   return a;
+}
+
+/** An adopted file is read whole to find its screens; a larger one is not a design export. */
+const ADOPT_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
+ * A design to attach: a design artifact, or an HTML file already in buildd that
+ * declares its screens, which is marked a design here (its bytes and revisions
+ * are untouched). An artifact the caller cannot reach, or that is neither,
+ * reads as not found.
+ */
+async function loadDesignOrAdopt(caller: LinkCaller, designId: string): Promise<Awaited<ReturnType<typeof loadDesign>> | DesignError> {
+  const design = await loadDesign(caller, designId);
+  if (design || !isUuid(designId)) return design;
+  const [a] = await db.select({
+    id: artifacts.id, title: artifacts.title, workspaceId: artifacts.workspaceId, currentRevision: artifacts.currentRevision,
+    metadata: artifacts.metadata, storageKey: artifacts.storageKey, uploadState: artifacts.uploadState,
+  }).from(artifacts).where(eq(artifacts.id, designId)).limit(1);
+  const metadata = (a?.metadata ?? null) as Record<string, unknown> | null;
+  if (!a || !a.workspaceId || !(await canAccessWorkspace(caller, a.workspaceId))) return null;
+  if (!isAdoptableFile({ storageKey: a.storageKey, metadata }) || (a.uploadState && a.uploadState !== 'ready')) return null;
+  if (!isStorageConfigured()) return fail(503, 'Storage not configured');
+  const bytes = await readObject(a.storageKey!, ADOPT_MAX_BYTES);
+  if (!bytes) return fail(413, 'This file could not be read as a design (missing, or over 8 MB)');
+  const plan = planAdoption(bytes.toString('utf8'));
+  if (!plan.ok) return fail(400, plan.message, plan.field);
+  const patch = { kind: DESIGN_KIND, screens: plan.screens };
+  await db.update(artifacts)
+    .set({ metadata: sql`coalesce(${artifacts.metadata}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb` })
+    .where(eq(artifacts.id, a.id));
+  return { ...a, metadata: { ...(metadata ?? {}), ...patch } };
 }
 
 export interface StoreInput {
@@ -185,7 +217,8 @@ export async function storeDesign(caller: LinkCaller, input: StoreInput): Promis
 }
 
 export async function attachDesign(caller: LinkCaller, designId: string, input: { attachTo: AttachInput; pin?: number }): Promise<{ ok: true; link: LinkRow } | DesignError> {
-  const design = await loadDesign(caller, designId);
+  const design = await loadDesignOrAdopt(caller, designId);
+  if (isErr(design)) return design;
   if (!design) return fail(404, 'design not found');
   const target = await resolveTarget(input.attachTo);
   if (isErr(target)) return target;
@@ -205,7 +238,11 @@ export async function detachDesign(caller: LinkCaller, designId: string, linkId:
   return r.ok ? r : fail(r.status, r.error);
 }
 
-export interface DesignListEntry extends DesignView { linkId?: string; pinnedRevision?: number | null }
+export interface DesignListEntry extends DesignView {
+  linkId?: string; pinnedRevision?: number | null;
+  /** The design the spec revision itself pins (not an attachment); there is no link to remove. */
+  specPin?: true;
+}
 
 export async function listDesigns(
   caller: LinkCaller, scope: { attachTo: AttachInput } | { workspaceId: string },
@@ -215,14 +252,25 @@ export async function listDesigns(
     if (isErr(target)) return target;
     const linked = await artifactsLinkedTo(target.subjectKind, target.subjectId, { caller, relations: [DESIGN_RELATION] });
     if (!Array.isArray(linked)) return fail(linked.status, linked.error);
-    if (linked.length === 0) return { ok: true, designs: [] };
+    // A spec revision pins a design on the revision itself, with no link: list it, labelled as a pin.
+    let pin: { artifactId: string; revision: number } | null = null;
+    if (target.subjectKind === 'spec_revision') {
+      const [rev] = await db.select({ design: specRevisions.design }).from(specRevisions).where(eq(specRevisions.id, target.subjectId)).limit(1);
+      pin = specPinnedArtifact(rev?.design);
+    }
+    if (linked.length === 0 && !pin) return { ok: true, designs: [] };
+    const wanted = [...linked.map(l => l.artifactId), ...(pin ? [pin.artifactId] : [])];
     const rows = await db.select({ id: artifacts.id, title: artifacts.title, workspaceId: artifacts.workspaceId, currentRevision: artifacts.currentRevision, metadata: artifacts.metadata })
-      .from(artifacts).where(and(inArray(artifacts.id, linked.map(l => l.artifactId)), sql`${artifacts.metadata}->>'kind' = ${DESIGN_KIND}`));
+      .from(artifacts).where(and(inArray(artifacts.id, wanted), sql`${artifacts.metadata}->>'kind' = ${DESIGN_KIND}`));
     const byId = new Map(rows.map(r => [r.id, r]));
-    const designs = linked.flatMap(l => {
+    const designs: DesignListEntry[] = linked.flatMap(l => {
       const r = byId.get(l.artifactId);
       return r ? [{ ...view(r), linkId: l.linkId, pinnedRevision: l.pinnedRevision }] : [];
     });
+    const pinned = pin && !linked.some(l => l.artifactId === pin!.artifactId) ? byId.get(pin.artifactId) : undefined;
+    if (pin && pinned && (await canAccessWorkspace(caller, pinned.workspaceId ?? ''))) {
+      designs.push({ ...view(pinned), pinnedRevision: pin.revision, specPin: true });
+    }
     return { ok: true, designs };
   }
   const ref = await resolveWorkspaceAccess(scope.workspaceId, 'userId' in caller ? { userId: caller.userId } : { account: caller.account });

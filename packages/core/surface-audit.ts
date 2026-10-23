@@ -207,6 +207,20 @@ export const MAX_SURFACE_AUDIT_ROUNDS = 2;
 export const SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE =
   `Visual review: issues remain after ${MAX_SURFACE_AUDIT_ROUNDS} audit rounds`;
 
+/**
+ * The screens a merged fix waits on, for the auditor (spec 072de598 I-15):
+ * each exact route, state and viewport, from the visual review model rather
+ * than the auditor's own reading. Null with none.
+ */
+export function renderRecaptureScreens(screens: readonly string[]): string | null {
+  if (screens.length === 0) return null;
+  return [
+    '## Screens to re-shoot (fixes merged)',
+    'A fix merged for each of these and no screenshot of it has been taken since. Capture each one exactly: the same route, the same viewport, and the same QA_PLAN state (open the dialog, panel or menu it names; record that state as `metadata.qa.state`). A shot of the same route in another state does not count.',
+    ...screens.map(s => `- ${s}`),
+  ].join('\n');
+}
+
 /** Title prefix of the fix task the auditor files per issue. */
 export const SURFACE_FIX_TITLE_PREFIX = '[surface fix] ';
 

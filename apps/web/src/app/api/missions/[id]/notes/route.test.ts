@@ -93,6 +93,7 @@ mock.module('@buildd/core/db/schema', () => ({
   },
   workspaces: { id: 'id', accessMode: 'accessMode' },
   accounts: { id: 'id' },
+  tasks: { id: 'id' },
 }));
 
 import { GET, POST } from './route';
@@ -321,6 +322,92 @@ describe('POST /api/missions/[id]/notes', () => {
     expect(insertedNoteValues.defaultChoice).toBe('Redis');
     expect(insertedNoteValues.status).toBe('open');
     expect(insertedNoteValues.authorType).toBe('user');
+  });
+
+  describe('decision fields (Navigation R-16)', () => {
+    const SUBJECT = '22222222-2222-4222-8222-222222222222';
+    beforeEach(() => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockMissionsFindFirst.mockResolvedValue({ id: MISSION_ID, teamId: 'team-1', workspaceId: null });
+      mockTasksFindFirst.mockReset();
+    });
+
+    it('stores the subject task when it is in the same mission', async () => {
+      mockTasksFindFirst.mockResolvedValue({ id: SUBJECT, missionId: MISSION_ID, workspaceId: 'ws-1' });
+      const res = await POST(createRequest({ method: 'POST', body: { type: 'question', title: 'How should Docker Hub credentials be set up?', subjectTaskId: SUBJECT } }), { params: mockParams });
+      expect(res.status).toBe(201);
+      expect(insertedNoteValues.subjectTaskId).toBe(SUBJECT);
+    });
+
+    it('refuses a subject task from another mission, and a non-UUID', async () => {
+      mockTasksFindFirst.mockResolvedValue({ id: SUBJECT, missionId: 'other', workspaceId: 'ws-1' });
+      const res = await POST(createRequest({ method: 'POST', body: { type: 'question', title: 'Q?', subjectTaskId: SUBJECT } }), { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('same mission');
+      const bad = await POST(createRequest({ method: 'POST', body: { type: 'question', title: 'Q?', subjectTaskId: 'abc' } }), { params: mockParams });
+      expect(bad.status).toBe(400);
+      expect(insertedNoteValues).toBeNull();
+    });
+
+    it('without a subject the note stores none (the card falls back to the mission)', async () => {
+      const res = await POST(createRequest({ method: 'POST', body: { type: 'question', title: 'Q?' } }), { params: mockParams });
+      expect(res.status).toBe(201);
+      expect(insertedNoteValues.subjectTaskId).toBeNull();
+      expect(insertedNoteValues.options).toBeNull();
+      expect(mockTasksFindFirst).not.toHaveBeenCalled();
+    });
+
+    it('stores structured options and takes the recommended one as the default', async () => {
+      const res = await POST(createRequest({
+        method: 'POST',
+        body: {
+          type: 'question', title: 'How should Docker Hub credentials be set up?',
+          options: [
+            { label: 'Team secret', consequence: 'One token for every workspace. The deploy task unblocks now.', recommended: true },
+            { label: 'Per workspace', consequence: 'Each workspace adds its own token; deploy waits for the first.' },
+          ],
+        },
+      }), { params: mockParams });
+      expect(res.status).toBe(201);
+      expect(insertedNoteValues.options).toHaveLength(2);
+      expect(insertedNoteValues.options[0]).toMatchObject({ label: 'Team secret', recommended: true, effect: 'One token for every workspace' });
+      expect(insertedNoteValues.defaultChoice).toBe('Team secret');
+    });
+
+    it('still accepts string options', async () => {
+      const res = await POST(createRequest({ method: 'POST', body: { type: 'question', title: 'Q?', options: ['Redis', 'Memcached'], defaultChoice: 'Redis' } }), { params: mockParams });
+      expect(res.status).toBe(201);
+      expect(insertedNoteValues.options).toEqual([{ label: 'Redis' }, { label: 'Memcached' }]);
+      expect(insertedNoteValues.defaultChoice).toBe('Redis');
+    });
+
+    it('refuses four options with a message to cut to two (AC-16)', async () => {
+      const res = await POST(createRequest({ method: 'POST', body: { type: 'question', title: 'Q?', options: ['A', 'B', 'C', 'D'] } }), { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('Cut to two');
+      expect(insertedNoteValues).toBeNull();
+    });
+
+    it('refuses "Not now" as an option', async () => {
+      const res = await POST(createRequest({ method: 'POST', body: { type: 'question', title: 'Q?', options: ['Ship it', 'Not now'] } }), { params: mockParams });
+      expect(res.status).toBe(400);
+    });
+
+    it('stores option labels only for an agent note in a sensitive workspace', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'admin' });
+      mockMissionsFindFirst.mockResolvedValue({ id: MISSION_ID, teamId: 'team-1', workspaceId: 'ws-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'sensitive' });
+      const res = await POST(createRequest({
+        method: 'POST',
+        headers: { authorization: 'Bearer bld_test' },
+        body: { type: 'question', title: 'Q?', options: [{ label: 'A', consequence: 'secret detail', recommended: true }, 'B'] },
+      }), { params: mockParams });
+      mockWorkspacesFindFirst.mockReset();
+      expect(res.status).toBe(201);
+      expect(insertedNoteValues.body).toBeNull();
+      expect(insertedNoteValues.options).toEqual([{ label: 'A', recommended: true }, { label: 'B' }]);
+    });
   });
 
   it('creates a guidance note', async () => {

@@ -980,6 +980,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   // Dynamic orchestrator hints (static instructions are in the Organizer role content)
   descParts.push('\n## Situational Guidance');
   descParts.push(resolvePrompt(MISSION_PROMPT_IDS.priorWorkGate, MISSION_PROMPT_DEFAULTS.priorWorkGate));
+  descParts.push(resolvePrompt(MISSION_PROMPT_IDS.decisionQuestions, MISSION_PROMPT_DEFAULTS.decisionQuestions));
 
   if (isRecurringPattern) {
     descParts.push(resolvePrompt(MISSION_PROMPT_IDS.efficiencyMode, MISSION_PROMPT_DEFAULTS.efficiencyMode));

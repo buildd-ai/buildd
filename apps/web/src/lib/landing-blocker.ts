@@ -38,7 +38,9 @@ export type LandingBlockCause =
   | 'ci_pending'
   | 'review_pending'
   | 'fix_pending'
-  | 'push_pending';
+  | 'push_pending'
+  /** The mission PR's visual review is owed or open (spec 072de598 I-12, AC-10). */
+  | 'visual_review';
 
 export interface LandingBlocker {
   taskId: string;
