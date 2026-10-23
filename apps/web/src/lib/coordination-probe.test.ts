@@ -1,5 +1,5 @@
 /**
- * The start probe's dependency, soft-overlap and local-mission reasons
+ * The start probe's dependency and local-mission reasons
  * (lib/coordination-probe.ts). The claim-loop half is covered through
  * `evaluateCoordinationGates` (claim/coordination-gates.test.ts); here the
  * reads are stubbed and the classification is what is pinned:
@@ -8,7 +8,7 @@
  *    explain hold's paths and overlap kind; a declared edge is `dep_declared`;
  *  - a satisfied edge (the claim's own predicate says so) is not a reason;
  *  - a local mission is `mission_local` unless already handed over;
- *  - a deterministic soft overlap (migration) is `serialized_surface`.
+ *  - a stored soft overlap holds nothing (spec: Overlap scheduling, R-2).
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
@@ -40,19 +40,16 @@ mock.module('@/app/api/workers/claim/coordination-snapshot', () => ({
 mock.module('@buildd/core/path-claim', () => ({ getActiveClaimsByWorkspace: async () => new Map() }));
 let local = false;
 mock.module('@/app/api/workers/claim/held-gate', () => ({ checkMissionLocal: async () => local }));
-let softHolders = new Map<string, any>();
-mock.module('@/app/api/workers/claim/soft-overlap-store', () => ({ loadSoftOverlapHolders: async () => softHolders }));
-mock.module('@/app/api/workers/claim/hold-start-shadow', () => ({ touchesHardOverlapSurface: () => false }));
 
 const { probeCoordination } = await import('./coordination-probe');
 
 const base = { id: 'task-1', workspaceId: 'ws', missionId: null as string | null, pathManifest: ['packages/core/db/schema.ts'], context: {}, status: 'pending' };
 
 beforeEach(() => {
-  depRow = {}; holds = []; local = false; softHolders = new Map(); softGateRows = [];
+  depRow = {}; holds = []; local = false; softGateRows = [];
 });
 
-describe('probeCoordination: dependencies, soft overlaps, local missions', () => {
+describe('probeCoordination: dependencies, local missions', () => {
   it('splits inferred overlap edges from declared ones; a satisfied edge is no reason', async () => {
     const task = { ...base, dependsOn: ['h1', 'h2', 'd1', 'done'], pathDeclaration: { inferredDependsOn: ['h1', 'h2'] } };
     depRow = { d0: false, d1: false, d2: false, d3: true };
@@ -83,14 +80,9 @@ describe('probeCoordination: dependencies, soft overlaps, local missions', () =>
     expect(await probeCoordination({ ...task, context: { bypassHeldGate: true } } as any)).toEqual([]);
   });
 
-  it('a migration soft overlap with an in-flight holder is a serialized surface, forceable for claim order', async () => {
-    softHolders = new Map([['h9', { id: 'h9', status: 'in_progress', pathManifest: ['packages/core/drizzle/'], title: 'H', workerStatus: 'running' }]]);
+  it('a stored soft overlap, even on a migration path, is no reason: only lanes hold at claim', async () => {
     const task = { ...base, pathManifest: ['packages/core/drizzle/0002_y.sql'], dependsOn: [], pathDeclaration: { softOverlaps: [{ taskId: 'h9', paths: ['packages/core/drizzle/'] }] } };
-    const reasons = (await probeCoordination(task as any))!;
-    const soft = reasons.find(r => r.blocker?.id === 'h9');
-    expect(soft?.kind).toBe('serialized_surface');
-    expect(soft?.overlap?.overlapKind).toBe('migration');
-    expect(soft?.action.force?.lifts).toBe('serialized_surface');
+    expect(await probeCoordination(task as any)).toEqual([]);
   });
 
   it('no dependencies, no overlaps, not local: nothing holds it', async () => {

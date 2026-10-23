@@ -2,20 +2,20 @@
 title: Claim Overlap Scheduling
 status: draft
 owner: max
-last_verified: 2026-10-18
+last_verified: 2026-10-23
 summary: Overlapping work MUST start by default, undeclared scope included; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, hard surfaces) and only while its holder is live.
 domain: tasks
-surfaces: [apps/web/src/app/api/workers/claim/overlap-policy.ts, packages/core/unmergeable-surfaces.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.ts, apps/web/src/app/api/workers/claim/deps-gate.ts]
+surfaces: [apps/web/src/app/api/workers/claim/overlap-policy.ts, packages/core/unmergeable-surfaces.ts, apps/web/src/app/api/workers/claim/start-lease.ts, apps/web/src/app/api/workers/claim/deps-gate.ts]
 related: [path-claim-ownership, orchestration-decisions-shadow, force-start, task-dispatch-authority, claim-ordering, runner-liveness]
 keywords: [unmergeable surface, overlap start, undeclared scope, scope_undeclared_mutex, advisory_manifest, no_scope_mutex, soft_overlap_start, path_overlap, soft_overlap, inferredDependsOn, softOverlaps, legacy_inferred, unstarted holder, schema lane, migration lane, starvation, claim_loop_deferral, update drain, claims halted, dependency.satisfied]
-verified_by: [packages/core/__tests__/unmergeable-surfaces.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/tests/db/undeclared-scope-starts.test.ts, packages/core/__tests__/claim-planner.test.ts, apps/web/src/app/api/workers/claim/claim-plan-input.test.ts, apps/web/src/app/api/workers/claim/coordination-gates.test.ts, apps/web/src/app/api/workers/claim/deps-gate.test.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts, apps/web/src/app/api/workers/claim/open-pr-target-base.test.ts, apps/web/src/lib/explain-coordination.test.ts, packages/core/__tests__/orchestration-soft-start-readout.test.ts, apps/web/src/lib/orchestration-decision-stats-query.test.ts, apps/web/src/lib/claim-order-queue.test.ts, apps/runner/__tests__/unit/top-queue.test.ts, packages/core/__tests__/dispatch-dependents.test.ts, apps/web/src/lib/conflict-retry.test.ts]
+verified_by: [packages/core/__tests__/unmergeable-surfaces.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/tests/db/undeclared-scope-starts.test.ts, packages/core/__tests__/claim-planner.test.ts, apps/web/src/app/api/workers/claim/claim-plan-input.test.ts, apps/web/src/app/api/workers/claim/coordination-gates.test.ts, apps/web/src/app/api/workers/claim/deps-gate.test.ts, apps/web/src/app/api/workers/claim/start-lease.test.ts, apps/web/src/app/api/workers/claim/open-pr-target-base.test.ts, apps/web/src/lib/explain-coordination.test.ts, packages/core/__tests__/orchestration-soft-start-readout.test.ts, apps/web/src/lib/orchestration-decision-stats-query.test.ts, apps/web/src/lib/claim-order-queue.test.ts, apps/runner/__tests__/unit/top-queue.test.ts, packages/core/__tests__/dispatch-dependents.test.ts, apps/web/src/lib/conflict-retry.test.ts]
 assertions:
-  - id: soft-overlap-evaluation
+  - id: open-pr-overlap-policy
     skip_until: "2026-12-15"
     skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
     type: symbol
-    name: evaluateSoftOverlaps
-    path: apps/web/src/app/api/workers/claim/soft-overlap-gate.ts
+    name: findHoldingOpenPr
+    path: apps/web/src/app/api/workers/claim/overlap-policy.ts
   - id: claim-route
     skip_until: "2026-12-15"
     skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
@@ -34,17 +34,22 @@ conflict resolver). An overlap holds a claim only when the shared paths are an
 only while the holder is live work. A task that has not started is editing
 nothing and holds no one, and a task that declares no files is not held for
 that: scope makes the policy more precise, it is never a condition to start. Every overlap hold says what it is waiting on, every
-overlap start is recorded with its paths, and the model's HOLD/START answer is
-recorded but does not decide.
+overlap start is recorded with its paths, and no model is asked.
+
+Being replaced by the living spec *Overlap scheduling: serial lanes and file
+locks*. Already in effect from it (R-1 to R-3): nothing is guessed at creation
+(no inferred edge, no soft overlap), a stored soft overlap holds nothing, a
+live lease holds at claim only on an unmergeable path whatever the
+workspace's lease enforcement, and the HOLD/START model is not asked.
 
 ## Terms
 
 - **Inferred edge**: an id in `tasks.dependsOn` that is also listed in
-  `pathDeclaration.inferredDependsOn` (written by `partitionOverlapEdges` at
-  creation or by a conflict retry). Every other id in `dependsOn` is a
+  `pathDeclaration.inferredDependsOn`, on older rows only: task creation and
+  conflict retry no longer write them. Every other id in `dependsOn` is a
   **declared edge**.
-- **Soft overlap**: an entry in `pathDeclaration.softOverlaps`, never a
-  dependsOn edge.
+- **Soft overlap**: an entry in `pathDeclaration.softOverlaps` on older rows,
+  never a dependsOn edge, and it holds nothing at claim.
 - **Live holder**: a task that, right now, has a worker in
   `LIVE_WORKER_STATUSES`, an active `path_claims` lease, or a worker whose PR is
   open and unmerged on the candidate's landing base.
@@ -64,7 +69,7 @@ recorded but does not decide.
 
 ## Claim route: overlap gates (`POST /api/workers/claim`)
 
-**Statement.** Each overlap gate (open PR, live lease, soft overlap) asks the
+**Statement.** Each overlap gate (open PR, live lease) asks the
 one overlap policy (`claim/overlap-policy.ts`). A mergeable overlap STARTs. An
 overlap on an unmergeable surface holds while its holder is live.
 
@@ -72,15 +77,14 @@ overlap on an unmergeable surface holds while its holder is live.
 
 - I-1 A declared edge is never lifted, converted or skipped by any rule in
   this spec.
-- I-2 An inferred edge or soft overlap onto an unstarted holder does not hold
-  the candidate at claim (deps gate, soft-overlap gate, explain, and the
-  dashboard Start probe answer the same).
-- I-3 An inferred edge or soft overlap onto a live holder holds the candidate
-  only when the shared paths touch an unmergeable surface: a deterministic
-  hold, the model never asked. A mergeable overlap STARTs (I-28).
-- I-4 A claim whose manifest contains a hard-class path, and which proceeds
-  past any overlap, acquires those paths (and only those) through
-  `acquireGatedStartPaths` before the atomic claim UPDATE, all-or-nothing. If
+- I-2 An inferred edge onto an unstarted holder does not hold the candidate at
+  claim (deps gate, explain, and the dashboard Start probe answer the same).
+- I-3 A soft overlap holds nothing at claim, on any surface; the Start probe
+  reports none.
+- I-4 A claim whose manifest contains a hard-class path, and which starts
+  alongside an open PR on mergeable files, acquires those paths (and only
+  those) through `acquireStartPaths` before the atomic claim UPDATE,
+  all-or-nothing. If
   the acquire fails the candidate defers as `path_overlap` and registers a
   waiter on the lease holder. If the UPDATE loses the race the lease is given
   back.
@@ -88,10 +92,9 @@ overlap on an unmergeable surface holds while its holder is live.
   branch refresh never blocks a candidate landing on trunk at layer 1, migration
   paths included. Every other cross-base migration carve-out in
   `partitionOpenPrsByLandingBase` is unchanged.
-- I-6 At creation, `partitionOverlapEdges` (task route and conflict retry)
-  records an overlap with an unstarted holder as a soft overlap, never an
-  inferred edge, so that the stored row and the claim rule agree. Overlap with a
-  live holder still produces the hard edge it does today.
+- I-6 At creation (task route, conflict retry and the migration-collision
+  retry) nothing is inferred from overlapping manifests: `dependsOn` holds only
+  the caller's ids, and no `softOverlaps` or `inferredDependsOn` is written.
 - I-27 The unmergeable list is one list in code, `UNMERGEABLE_SURFACES`, with a
   reason per entry: `packages/core/drizzle/**`, `packages/core/db/schema.ts`,
   the lockfiles `bun.lock`, `bun.lockb`, `package-lock.json`, `yarn.lock`,
@@ -99,32 +102,27 @@ overlap on an unmergeable surface holds while its holder is live.
   any depth, `docs/specs/INDEX.md`, `*.snap` at any depth, and `next-env.d.ts`
   at any depth. A pattern ending `/**` covers the directory and everything
   under it; a pattern with no `/` matches the basename at any depth.
-- I-28 Layer 1 (open PR on the same landing base), layer 2 (live lease) and the
-  soft-overlap gate START on a mergeable overlap. Layer 1 holds only when some
+- I-28 Layer 1 (open PR on the same landing base) and layer 2 (live lease)
+  START on a mergeable overlap. Layer 1 holds only when some
   overlapping open PR (not just the first) shares an unmergeable path, and the
   deferral names that PR.
-- I-29 In a workspace with `gitConfig.pathClaimEnforcement: 'enforce'` every
-  live lease overlap still holds at layer 2, mergeable or not: an edit on a
-  leased file is denied there, so starting would only park the task mid-run.
-- I-30 The model's HOLD/START verdict is still asked for every overlap the
-  hold/start collector notes, and recorded in the decision ledger, but it does
-  not decide: an applied model START never lifts an unmergeable hold, and a
-  model HOLD never holds a mergeable overlap. The applied-START ledger is not
-  read for either gate.
+- I-29 `gitConfig.pathClaimEnforcement: 'enforce'` changes nothing at claim:
+  a live lease on a mergeable file does not hold there either. It denies the
+  second edit at edit time (409 + waiter), which is where the lock applies.
+- I-30 No model is asked about an overlap at claim, and no applied-START
+  ledger is read. Earlier `orchestration_claim` decision rows stay readable.
 - I-31 A holder that cannot start itself (`holderCannotStart`: pending with a
   future `startAt`, in a held mission, or held by a person) never holds
-  through any overlap kind, on any surface: the soft-overlap gate skips it,
-  and the open-PR and lease checks skip the task ids `loadIdleHolderIds`
-  returns. A failed read of that state leaves every hold standing.
+  through any overlap kind, on any surface: the open-PR and lease checks skip
+  the task ids `loadIdleHolderIds` returns. A failed read of that state leaves every hold standing.
 - I-32 Fix attempts of one PR (conflict, CI, review) resume on that PR's
   branch: they never wait on their own PR, a PR stacked on it, or their own
   lineage's leases. The PR itself is what serializes them.
 - I-33 Every overlap START is recorded once the claim wins, as one accepted
   `soft_overlap_start` row on the `claim_loop_deferral` gate per holder, with
-  `gate` (`soft_overlap`, `open_pr_overlap` or `lease_overlap`), the holder
-  task, the PR number for an open PR, the shared paths (bounded), the overlap
-  kind, the risk tier, `areaClass`, `decidedBy: 'rule'`, and for a soft overlap
-  the route the model would have taken.
+  `gate` (`open_pr_overlap` or `lease_overlap`), the holder task, the PR number
+  for an open PR, the shared paths (bounded), the overlap kind, `areaClass` and
+  `decidedBy: 'rule'`. Older rows also carry `soft_overlap`.
 
 **Acceptance criteria**
 
@@ -148,20 +146,18 @@ overlap on an unmergeable surface holds while its holder is live.
 - AC-7: GIVEN a lease acquire that fails for a race, WHEN the claim runs, THEN
   the task stays pending, the deferral reason is `path_overlap`, and no lease
   row is left behind for it.
-- AC-8 (regressions): the #4076 inverse open-PR exclusion inside
-  `evaluateSoftOverlaps`, the #4340 collision-repair skip, and the migration
-  deterministic hold all keep their existing tests green.
+- AC-8 (regressions): the own-PR, subject-PR and stacked-PR exemptions and the
+  migration hold on an open PR or a live lease keep their tests green.
 - AC-26: GIVEN two pending tasks A and B that both declare
   `apps/web/src/lib/x.ts`, B carrying a soft overlap onto A, WHEN a runner with
   two free slots polls, THEN both are claimed in that poll and neither is
   ordered behind the other.
-- AC-27: GIVEN a live holder whose manifest names
-  `packages/core/drizzle/meta/_journal.json`, WHEN a candidate declaring
-  `packages/core/drizzle/` polls, THEN it defers as `soft_overlap` with
-  verdict `deterministic_hold`, kind `migration`, and the model is not asked.
-- AC-28: GIVEN a holder on `packages/core/db/schema.ts` that is pending with a
-  future `startAt`, or in a held mission, WHEN a candidate on the same file
-  polls, THEN it is claimed and no `soft_overlap` deferral is written.
+- AC-27: GIVEN an open PR on `packages/core/drizzle/0300_x.sql`, WHEN a
+  candidate on the same file polls, THEN it defers as `path_overlap` and
+  nothing is leased for it.
+- AC-28: GIVEN a candidate carrying a stored soft overlap onto a running holder
+  on the same migration file, WHEN it polls, THEN it is claimed and no
+  `soft_overlap` deferral is written.
 - AC-28b: GIVEN an open PR or a live lease on an unmergeable file whose task is
   pending with a future `startAt`, WHEN a candidate on that file polls, THEN it
   is claimed; and GIVEN that holder state cannot be read, THEN it defers as
@@ -173,32 +169,31 @@ overlap on an unmergeable surface holds while its holder is live.
 - AC-30: GIVEN a candidate overlapping one open PR on a mergeable file and a
   second on `packages/core/db/schema.ts`, WHEN it polls, THEN it defers as
   `path_overlap` naming the second PR.
-- AC-31: GIVEN a same-file soft overlap on a mergeable file and a model that
-  answers HOLD, WHEN the candidate polls, THEN it is claimed, the applied-START
-  ledger is not read, and the model's decision row is still recorded.
+- AC-31: GIVEN two pending tasks sharing `apps/web/src/lib/x.ts`, WHEN a task
+  for each is created, THEN neither carries a `dependsOn` or `softOverlaps`
+  entry for the other.
 - AC-32: GIVEN a live lease on `apps/web/src/lib/widget.ts`, WHEN a candidate on
   that file polls, THEN it is claimed and a `lease_overlap` start is recorded;
   and GIVEN a live lease on `apps/web/bun.lock`, THEN a candidate on it defers
   as `path_overlap`; and GIVEN `pathClaimEnforcement: 'enforce'`, THEN the
-  mergeable lease holds too.
+  mergeable lease still does not hold.
 - AC-33: GIVEN a START whose manifest is `apps/web/src/lib/` and `bun.lock`,
   WHEN it claims, THEN only `bun.lock` is acquired up front, and a refused
   acquire holds the task.
-- AC-34: GIVEN an applied model START on the ledger for an open-PR overlap on an
-  unmergeable file, WHEN the candidate polls, THEN it still defers.
+- AC-34: GIVEN an open-PR overlap on an unmergeable file, WHEN the candidate
+  polls, THEN it defers and no decision is scheduled.
 
 **Code surface.** Route: `/api/workers/claim`. Data model: `tasks.dependsOn`,
 `tasks.pathDeclaration` (`inferredDependsOn`, `softOverlaps`), `path_claims`,
 `gate_events`. Helpers: `UNMERGEABLE_SURFACES`, `unmergeableSurfaceOf`,
 `overlapHolds`, `findHoldingOpenPr`, `findHoldingLease`, `exclusiveStartPaths`,
 `holderCannotStart`, `loadIdleHolderIds`,
-`depsGate`, `evaluateSoftOverlaps`, `partitionOpenPrsByLandingBase`,
-`acquireGatedStartPaths`, `partitionOverlapEdges`, `buildCoordinationHolds`.
+`depsGate`, `partitionOpenPrsByLandingBase`, `acquireStartPaths`,
+`buildCoordinationHolds`.
 
 **Out of scope.** Edit-time lease enforcement on the runner
 (`path-claim-ownership`). Changing Jev thresholds. Any change to declared
-dependencies. Making the model's verdict decide; that waits until its answers
-are graded.
+dependencies. Asking a model about overlap at claim (removed).
 
 ## Claim planner (`planClaimBatch`, `buildClaimPlanInput`)
 
@@ -211,8 +206,8 @@ share mergeable files with.
   concrete overlap (candidate, in-batch peer, open PR or live lease) is a hard
   edge only when it answers true for the shared paths of both sides; absent,
   every concrete overlap is a hard edge.
-- I-35 For a live lease, `overlapHolds` answers true for every overlap in a
-  workspace that enforces path claims (I-29).
+- I-35 For a live lease, `overlapHolds` answers as for any other overlap,
+  whatever the workspace's lease enforcement (I-29).
 
 **Acceptance criteria**
 
@@ -284,7 +279,7 @@ claim loop, the planner or the Start probe.
   `byAppliedAnswer.START`.
 
 **Code surface.** Route: `/api/workers/claim`. Helpers: `planClaimBatch`,
-`buildClaimPlanInput`, `evaluateCoordinationGates`, `ClaimHoldCollector`,
+`buildClaimPlanInput`, `evaluateCoordinationGates`,
 `summarizeOrchestrationDecisions`.
 
 **Out of scope.** The task-page wording for waits. Scope inference and
@@ -325,10 +320,9 @@ non-live holder, are reported with the reason.
 
 **Invariants**
 
-- I-37 The coordination probe (`evaluateCoordinationGates`,
-  `softOverlapReasons`) uses the claim's overlap policy: a mergeable overlap
-  with an open PR, a live lease or a soft-overlap holder is not a waiting
-  reason.
+- I-37 The coordination probe (`evaluateCoordinationGates`) uses the claim's
+  overlap policy: a mergeable overlap with an open PR or a live lease is not a
+  waiting reason, and a stored soft overlap never is.
 - I-38 When a task started past an overlap, explain and the runner's top Queue
   say "starts alongside #n (same files, merges at the end)", naming the PR or
   holder. Explain reads it from the task's newest claim's `soft_overlap_start`
@@ -373,7 +367,7 @@ non-live holder, are reported with the reason.
   merges at the end)".
 
 **Code surface.** Route: `/api/explain`. Helpers: `explainTask`,
-`evaluateCoordinationGates`, `softOverlapReasons`, `buildCoordinationHolds`,
+`evaluateCoordinationGates`, `buildCoordinationHolds`,
 `overlapStartLink`, `queueAlongside`,
 `detectFailurePatterns`, `checkStarvation`.
 

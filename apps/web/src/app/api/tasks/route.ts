@@ -34,9 +34,9 @@ import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label'
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
 import { autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
 import { listReachableWorkspaceIds, resolveWorkspaceAccess } from '@/lib/workspace-access';
-import { isAdvisoryManifest, hasConcretePathManifest, partitionOverlapEdges, type SoftOverlapEdge } from '@buildd/core/path-overlap';
+import { hasConcretePathManifest } from '@buildd/core/path-overlap';
 import { inferFrictionManifest } from '@buildd/core/friction-manifest';
-import { overlapTouchesSerializedSurface, resolveAnchorInjections } from '@/lib/change-intent';
+import { resolveAnchorInjections } from '@/lib/change-intent';
 import { recordPathDeclaration, manifestShape } from '@/lib/path-declaration-ledger';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { parseLoopConfig } from '@buildd/core/loop-config';
@@ -935,8 +935,8 @@ export async function POST(req: NextRequest) {
     // Infer pathManifest for friction tasks that don't supply one.
     // On the dedup-miss path (new friction task), extract repo-relative paths
     // from the error excerpt or fall back to the static component table.
-    // The inferred manifest then flows into the auto-dependsOn block below
-    // unchanged — no friction-specific handling downstream.
+    // The inferred manifest is then treated like any declared one — no
+    // friction-specific handling downstream.
     if (title.startsWith('[friction] ') && frictionSignature && !pathManifest) {
       const excerpt = typeof incomingContext?.frictionExcerpt === 'string'
         ? incomingContext.frictionExcerpt
@@ -950,13 +950,9 @@ export async function POST(req: NextRequest) {
     // Conservative default for mission tasks without an explicit pathManifest:
     // record the repo-wide sentinel ['**'] to mark "scope undeclared".
     //
-    // The sentinel is ADVISORY ONLY. It does NOT drive dependsOn serialization —
-    // the auto-dependsOn pass below uses partitionOverlapEdges(), which
-    // refuses to mint an edge when either side carries '**' (matching the
-    // claim-time gates: findBlockingPr() and the path_claims layer-2 backstop
-    // both skip the sentinel). Treating it as a hard dependency turned
-    // creation-order FIFO into a permanent BLOCKED graph: manifest-less mission
-    // tasks inherited an edge to every task alive in the workspace at creation.
+    // The sentinel is ADVISORY ONLY: it never mints a dependency (none is
+    // guessed from manifests) and never holds a claim (the claim-time checks
+    // skip it).
     //
     // What the sentinel still buys: it is inherited by conflict-retry tasks, it
     // records that the filer never declared scope (visible to the organizer and
@@ -965,9 +961,6 @@ export async function POST(req: NextRequest) {
     // paths. Two scope-undeclared tasks start side by side; a same-file
     // overlap between them is settled at merge (and caught by CI), not by a
     // stored edge or a claim-time hold.
-    //
-    // Callers that know exactly which files they'll touch should always pass
-    // pathManifest explicitly — concrete manifests still auto-serialize.
     if (missionId && !pathManifest) {
       pathManifest = ['**'];
     }
@@ -998,8 +991,8 @@ export async function POST(req: NextRequest) {
 
     // Sequence-namespace anchor injection (see docs/design/change-intent.md §3).
     // If this task's pathManifest touches a sequenceNamespace directory (e.g. the
-    // Drizzle migrations dir), auto-append the anchorFile so the overlap check
-    // below can serialise on _journal.json — not on the individual migration filename,
+    // Drizzle migrations dir), auto-append the anchorFile so the claim-time
+    // lane check and the edit-time lease can serialise on _journal.json — not on the individual migration filename,
     // which would be invisible because distinct filenames share the integer index.
     let anchorInjectedCount = 0;
     if (pathManifest && pathManifest.length > 0) {
@@ -1010,51 +1003,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Path-overlap serialization against in-flight tasks (regression: PRs
-    // #1126/#1129), split into HARD and SOFT by `partitionOverlapEdges`:
-    //  - hard (a stored dependsOn edge): a migration/schema path, a workspace
-    //    serialized surface, or the same file when it is generated or an
-    //    explicit hotspot (lib/hard-overlap-surfaces.ts);
-    //  - soft (scheduling evidence on pathDeclaration.softOverlaps, never an
-    //    edge): any other same-file or directory-prefix overlap. The claim route holds on it
-    //    while the other task is in flight unless HOLD/START says START, and
-    //    live path leases still stop simultaneous edits.
-    // Turning every prefix overlap into an edge queued honest broad scope
-    // (`scripts/`) behind every task under it, until each one merged.
-    //
-    // A repo-wide sentinel on either side produces nothing (advisory). Caller-
-    // supplied dependsOn is copied in first and never modified.
-    let resolvedDependsOn: string[] = Array.isArray(dependsOn) ? [...dependsOn] : [];
-    // Recorded on pathDeclaration so a later narrowing can tell these apart
-    // from caller-supplied edges, which must never be removed.
-    const inferredDependsOn: string[] = [];
-    let softOverlaps: SoftOverlapEdge[] = [];
-    if (pathManifest && pathManifest.length > 0 && !isAdvisoryManifest(pathManifest)) {
-      const existingDepsSet = new Set(resolvedDependsOn);
-      const inFlightTasks = await db.query.tasks.findMany({
-        where: sqlWhere(and(
-          eq(tasks.workspaceId, workspaceId),
-          inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-          isNotNull(tasks.pathManifest),
-        )),
-        columns: { id: true, pathManifest: true },
-      });
-      const overlapGitConfig = targetWorkspace.gitConfig ?? null;
-      const split = partitionOverlapEdges(
-        pathManifest,
-        inFlightTasks.map(t => ({ id: t.id, pathManifest: t.pathManifest as string[] | null })),
-        {
-          skip: (id) => existingDepsSet.has(id),
-          isSerialized: (paths, kind) => overlapTouchesSerializedSurface(paths, overlapGitConfig, kind),
-        },
-      );
-      for (const id of split.hard) {
-        resolvedDependsOn.push(id);
-        inferredDependsOn.push(id);
-        existingDepsSet.add(id);
-      }
-      softOverlaps = split.soft;
-    }
+    // No dependency is guessed from overlapping manifests (spec: Overlap
+    // scheduling, R-1). Serial lanes hold schema, migration and hard-surface
+    // work at claim; the edit-time lease stops two agents editing one file;
+    // a merge conflict is repaired by the conflict repair. Caller-supplied
+    // dependsOn is copied in and never modified.
+    const resolvedDependsOn: string[] = Array.isArray(dependsOn) ? [...dependsOn] : [];
 
     // Every building task in a mission with an outcome spec waits for its
     // acceptance-tests task (spec 1dc6cc39 R-76).
@@ -1491,10 +1445,10 @@ export async function POST(req: NextRequest) {
 
     // Manifest gate: a mission task whose deliverable is EXPLICITLY declared
     // as a PR ('pr_required') must declare a concrete pathManifest.
-    // shouldSerializeByManifest/computeOverlapEdges can only serialize
-    // concrete manifests (see isAdvisoryManifest); an undeclared scope makes
-    // a sibling task race instead of wait, which is the exact failure mode
-    // #1759/#1763 hit. 'artifact_required' and 'none' mission tasks, and any
+    // The claim-time lane check reads concrete manifests only (an undeclared
+    // scope never holds or is held), so an undeclared scope makes a sibling
+    // task race instead of wait, which is the exact failure mode #1759/#1763
+    // hit. 'artifact_required' and 'none' mission tasks, and any
     // non-mission task, are exempt — they carry no PR-overlap risk.
     //
     // Deliberately does NOT fire on 'auto' (the default): auto has no
@@ -1826,9 +1780,7 @@ export async function POST(req: NextRequest) {
             declared: pathManifest,
             source: 'creation' as const,
             snapshotAt: new Date().toISOString(),
-            ...(inferredDependsOn.length > 0 ? { inferredDependsOn } : {}),
             overlapPolicy: 'v2' as const,
-            ...(softOverlaps.length > 0 ? { softOverlaps } : {}),
           },
         } : {}),
         ...(TIERS.includes(rawTier as Tier) ? { tier: rawTier as Tier } : {}),
@@ -1901,7 +1853,7 @@ export async function POST(req: NextRequest) {
         taskId: created.id,
         callerOrigin: gateCaller,
         pathCount: pathManifest?.length ?? 0,
-        detail: { shape: manifestShape(pathManifest), anchorInjected: anchorInjectedCount, inferredDependsOn: inferredDependsOn.length },
+        detail: { shape: manifestShape(pathManifest), anchorInjected: anchorInjectedCount },
       });
       return created;
     };

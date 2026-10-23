@@ -6,12 +6,13 @@
  * refuse with the real blocker instead of accepting a start no runner will
  * take.
  *
- * Dependency and soft-overlap holds are fed from what `explain` already
- * reports (`loadTaskCoordinationHolds`, lib/coordination-holds.ts): an
- * inferred (creation-time overlap) edge is a coordination hold a person may
- * force past, a declared edge is a dependency no force lifts. Whether an edge
- * still holds is the claim's own SQL predicate (`dependencySatisfied`), and a
- * soft overlap is the claim's own `evaluateSoftOverlaps`.
+ * Dependency holds are fed from what `explain` already reports
+ * (`loadTaskCoordinationHolds`, lib/coordination-holds.ts): an inferred
+ * (creation-time overlap, older rows only) edge is a coordination hold a
+ * person may force past, a declared edge is a dependency no force lifts.
+ * Whether an edge still holds is the claim's own SQL predicate
+ * (`dependencySatisfied`). A stored soft overlap holds nothing at claim any
+ * more (spec: Overlap scheduling, R-2), so it is not a reason here either.
  *
  * Never throws: a probe failure returns `null` (unknown) and the caller falls
  * back to today's behaviour rather than blocking a start on a read error.
@@ -24,9 +25,6 @@ import { makeWaitingReason, orderWaitingReasons, overlapAreas, type WaitingReaso
 import { loadTaskCoordinationHolds } from '@/lib/coordination-holds';
 import type { CoordinationHold } from '@/lib/explain-coordination';
 import { dependencySatisfied } from '@/app/api/workers/claim/deps-gate';
-import { evaluateSoftOverlaps, readSoftOverlaps } from '@/app/api/workers/claim/soft-overlap-gate';
-import { loadSoftOverlapHolders } from '@/app/api/workers/claim/soft-overlap-store';
-import { overlapHolds, workspaceHardSurface } from '@/app/api/workers/claim/overlap-policy';
 import { checkMissionLocal } from '@/app/api/workers/claim/held-gate';
 import { BYPASS_DEPS_GATE_KEY, BYPASS_HELD_GATE_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import { evaluateCoordinationGates } from '@/app/api/workers/claim/coordination-gates';
@@ -108,15 +106,13 @@ export async function probeCoordination(task: ProbeTask, now: Date = new Date(),
       liveTaskIds: new Set(liveRows.map(r => r.taskId).filter((id): id is string => !!id)),
       now,
     });
-    const [depReasons, softReasons, localReason] = await Promise.all([
+    const [depReasons, localReason] = await Promise.all([
       dependencyReasons(task),
-      softOverlapReasons(task),
       opts.skipMissionLocal ? Promise.resolve(null) : missionLocalReason(task),
     ]);
     return await withTaskLabels(orderWaitingReasons([
       ...(localReason ? [localReason] : []),
       ...depReasons,
-      ...softReasons,
       ...reasons,
     ]));
   } catch (err) {
@@ -209,37 +205,6 @@ async function unsatisfiedDeps(taskId: string, deps: string[]): Promise<Set<stri
   const row = (rows[0] ?? {}) as Record<string, unknown>;
   return new Set(deps.filter((_, i) => row[`d${i}`] !== true && row[`d${i}`] !== 't'));
 }
-
-/**
- * Soft overlaps (pathDeclaration.softOverlaps) the claim would hold on: the
- * claim's own `evaluateSoftOverlaps` under the claim's overlap policy
- * (claim/overlap-policy). Only a deterministic hold (migration, unmergeable
- * or workspace hard surface) holds, as `serialized_surface`; an overlap on
- * mergeable files starts at claim and is not a waiting reason.
- */
-async function softOverlapReasons(task: ProbeTask): Promise<WaitingReason[]> {
-  const entries = readSoftOverlaps(task.pathDeclaration);
-  if (entries.length === 0) return [];
-  const holders = await loadSoftOverlapHolders([...new Set(entries.map(e => e.taskId))]).catch(() => null);
-  const gitConfig = (task as { workspace?: { gitConfig?: unknown } }).workspace?.gitConfig ?? null;
-  const verdicts = evaluateSoftOverlaps(task as any, holders, {
-    isHardSurface: (paths, kind) => overlapHolds(paths, kind, workspaceHardSurface(gitConfig as any)),
-  });
-  return verdicts.flatMap(v => {
-    if (v.kind !== 'deterministic') return [];
-    const blocker = { type: 'task' as const, id: v.holderTaskId, label: `task ${v.holderTaskId.slice(0, 8)}`, href: `/app/tasks/${v.holderTaskId}`, live: true };
-    const areas = overlapAreas(v.paths).slice(0, 2).map(a => a.area).join(', ');
-    const because = v.overlapKind === 'migration'
-      ? `both change migrations in ${areas}`
-      : `both edit ${v.paths.length} file${v.paths.length === 1 ? '' : 's'} in ${areas}`;
-    return [makeWaitingReason('serialized_surface', {
-      because, blocker,
-      overlap: holdOverlap(v.paths, v.overlapKind),
-      provenance: { source: 'probe', derivedFrom: 'tasks.pathDeclaration.softOverlaps (claim soft_overlap, deterministic)' },
-    })];
-  });
-}
-
 
 /** A local mission's task: runners never claim it unless a person hands it over. */
 async function missionLocalReason(task: ProbeTask): Promise<WaitingReason | null> {
