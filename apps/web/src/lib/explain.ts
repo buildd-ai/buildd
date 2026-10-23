@@ -37,6 +37,7 @@ import { deriveCriteriaGatePresentation, attachAttempts, isDeliverableTask } fro
 import { deriveTaskHealthSignal, foreignDependencyIds, unmetDependencyIds, unmetDependencyPrs, type DependencyRow } from '@/lib/mission-helpers';
 import { continueOnRunnerBlockedReason, deriveLocalStrand } from '@/lib/local-strand';
 import { loadDependencyRows } from '@/lib/dependency-rows';
+import { resolveDependencyHolders, type DependencyHolder, type DependencyViewer } from '@/lib/task-dependency-reach';
 import { resolvePrDisplayState } from '@/lib/pr-presentation';
 import { deliverySettled } from '@/lib/workflow/delivery-display';
 import type { DeliveryView } from '@/lib/workflow/projections';
@@ -61,7 +62,7 @@ import { isBuildComplete } from '@/lib/mission-checks';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
-import { coordinationGateDetail, coordinationLink, latestOverlapStarts, overlapStartLink, type CoordinationHold } from '@/lib/explain-coordination';
+import { coordinationGateDetail, coordinationLink, hiddenHold, latestOverlapStarts, overlapStartLink, type CoordinationHold } from '@/lib/explain-coordination';
 import { loadCoordinationHolds, type HoldTask } from '@/lib/coordination-holds';
 import { latestDispatchForTask } from '@buildd/core/dispatch-outbox';
 import { loadBrowserRunnerHeartbeats, loadRunnerOnlineByWorkspace } from './runner-heartbeats';
@@ -174,9 +175,24 @@ async function loadHolders(ids: readonly string[], known: ReadonlyMap<string, Ho
 function holderSourceRows(rows: Iterable<[string, DependencyRow | LoadedTask]>): Map<string, HolderSourceRow> {
   const out = new Map<string, HolderSourceRow>();
   for (const [id, r] of rows) {
-    out.set(id, { id, title: r.title ?? null, status: r.status, startAt: (r as LoadedTask).startAt ?? null, workers: r.workers ?? [] });
+    const reach = r as DependencyRow;
+    out.set(id, {
+      id, title: r.title ?? null, status: r.status, startAt: (r as LoadedTask).startAt ?? null, workers: r.workers ?? [],
+      ...(reach.hidden ? { hidden: true } : {}),
+      ...(reach.workspaceName ? { workspaceName: reach.workspaceName } : {}),
+    });
   }
   return out;
+}
+
+/**
+ * A holder as the caller may be told about it: one it cannot see keeps only
+ * its id (never rendered) and the mark, so no note, state or title reaches
+ * the answer (spec e28018c2 R-6, R-7).
+ */
+function holderForViewer(f: PendingHolderFacts, reach: { hidden?: boolean; workspaceName?: string | null } | DependencyHolder | undefined): PendingHolderFacts {
+  if (reach?.hidden) return { id: f.id, title: null, hidden: true };
+  return reach?.workspaceName ? { ...f, workspaceName: reach.workspaceName } : f;
 }
 
 /**
@@ -615,7 +631,7 @@ export interface MissionExplainInputs {
   visualModel?: import('@buildd/shared').VisualReviewModel;
 }
 
-async function viewForMission(missionId: string, inputs?: MissionExplainInputs): Promise<{
+async function viewForMission(missionId: string, inputs?: MissionExplainInputs, viewer?: DependencyViewer): Promise<{
   view: MissionStateView;
   mission: Record<string, unknown>;
   loaded: LoadedTask[];
@@ -658,7 +674,11 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
 
   // Dependencies outside this mission are judged from their own rows, never
   // guessed (unknown is not unmet): one query by id list.
-  const foreignDeps = inputs?.foreignDeps ?? await loadDependencyRows(foreignDependencyIds(loaded));
+  // With a caller, each is resolved for it (spec e28018c2 R-6).
+  const foreignDeps = inputs?.foreignDeps ?? await loadDependencyRows(
+    foreignDependencyIds(loaded),
+    viewer ? { viewer, teamId: (m.teamId as string | null | undefined) ?? null, dependentWorkspaceId: (m.workspaceId as string | null) ?? null } : undefined,
+  );
   const deliverables = loaded.filter(isDeliverableTask);
   const failedDeliverables = deliverables.filter(t => t.status === 'failed');
   const supersededMap = inputs?.supersededMap ?? await computeSupersededFailedTasks(
@@ -962,9 +982,9 @@ function answerFrom(
  */
 export async function explainMission(
   missionId: string,
-  opts: { inputs?: MissionExplainInputs; history?: boolean } = {},
+  opts: { inputs?: MissionExplainInputs; history?: boolean; viewer?: DependencyViewer } = {},
 ): Promise<ExplainResult | null> {
-  const loadedMission = await viewForMission(missionId, opts.inputs);
+  const loadedMission = await viewForMission(missionId, opts.inputs, opts.viewer);
   if (!loadedMission) return null;
   const { view, mission, loaded, answerExtras, disagreements, deliveries } = loadedMission;
 
@@ -1127,7 +1147,7 @@ async function loadLandingBlocker(
   return blocker ? [blocker] : [];
 }
 
-async function viewForTask(taskId: string): Promise<{
+async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
   view: MissionStateView;
   /** Every DeliveryView the chain's tasks belong to, keyed by task id. */
   deliveries: Map<string, DeliveryView>;
@@ -1142,13 +1162,14 @@ async function viewForTask(taskId: string): Promise<{
   missionId: string | null;
   /** A pending task's one wait, from the claim route's own query and gates; null when not pending or unread. */
   queueWait: QueueWait | null;
+  teamId: string | null;
 } | null> {
   const task = (await db.query.tasks.findFirst({
     where: sqlWhere(eq(tasks.id, taskId)),
     columns: { ...TASK_COLUMNS, workspaceId: true, missionId: true, dependsOn: true, backend: true, pathDeclaration: true },
-    with: { workers: WORKER_WITH },
+    with: { workers: WORKER_WITH, workspace: { columns: { teamId: true } } },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  })) as any as (LoadedTask & { workspaceId: string | null; missionId: string | null; dependsOn: string[] | null; backend?: string | null; pathDeclaration?: unknown }) | undefined;
+  })) as any as (LoadedTask & { workspaceId: string | null; missionId: string | null; dependsOn: string[] | null; backend?: string | null; pathDeclaration?: unknown; workspace?: { teamId?: string | null } | null }) | undefined;
   if (!task) return null;
 
   const attempts = (await db.query.tasks.findMany({
@@ -1238,19 +1259,24 @@ async function viewForTask(taskId: string): Promise<{
   // from their own rows, never guessed), the blocker its newest refusal named,
   // its schedule. Nothing is read for a task that is not pending.
   const pending = task.status === 'pending';
+  // Every holder is resolved for the caller (spec e28018c2 R-7): one in a
+  // workspace it cannot see is named, refs and all, as a task it cannot see.
+  const reachScope = { viewer, teamId: task.workspace?.teamId ?? null, dependentWorkspaceId: task.workspaceId ?? null };
   const [claimHolds, depRows, queueWaits] = await Promise.all([
     pending ? loadClaimHolds([taskId]) : Promise.resolve(new Map<string, ClaimHoldFacts>()),
-    pending && (task.dependsOn?.length ?? 0) > 0 ? loadDependencyRows(task.dependsOn!) : Promise.resolve(new Map<string, DependencyRow>()),
+    pending && (task.dependsOn?.length ?? 0) > 0 ? loadDependencyRows(task.dependsOn!, reachScope) : Promise.resolve(new Map<string, DependencyRow>()),
     // The one reason the claim route's own query and gates give now (spec: Overlap scheduling, AC-10).
     pending ? loadWaits([taskId]) : Promise.resolve(new Map<string, QueueWait>()),
   ]);
   const unmetDeps = pending ? unmetDependencyIds(task, depRows) : [];
   const blockerId = pending ? deferralBlockerId(claimHolds.get(taskId)) : null;
   const waitBlocker = pending ? waitBlockerId(queueWaits.get(taskId)) : null;
-  const holders = await loadHolders(
-    [...new Set([...unmetDeps, ...[blockerId, waitBlocker].filter((id): id is string => !!id && id !== taskId)])],
-    holderSourceRows([...depRows].filter(([id]) => id !== taskId)),
-  );
+  const holderIds = [...new Set([...unmetDeps, ...[blockerId, waitBlocker].filter((id): id is string => !!id && id !== taskId)])];
+  const [loadedHolders, holderReach] = await Promise.all([
+    loadHolders(holderIds, holderSourceRows([...depRows].filter(([id]) => id !== taskId))),
+    resolveDependencyHolders(reachScope, holderIds.filter(id => !depRows.has(id))).catch(() => new Map()),
+  ]);
+  const holders = new Map([...loadedHolders].map(([id, f]) => [id, holderForViewer(f, depRows.get(id) ?? holderReach.get(id))]));
   const rowFacts = pendingRowFacts(task as LoadedTask, claimHolds, unmetDeps, holders, queueWaits);
   const openTasks = OPEN_TASK_STATUSES.has(task.status)
     ? [{
@@ -1330,7 +1356,11 @@ async function viewForTask(taskId: string): Promise<{
         missingBrowser: missingBrowser && family.some(f => f.id === t.id && f.roleSlug === VISUAL_AUDITOR_ROLE_SLUG),
         ...(t.id === taskId && pending
           ? {
-              waitingOn: unmetDeps.map(id => ({ id, title: depRows.get(id)?.title ?? null })),
+              waitingOn: unmetDeps.map(id => {
+                const d = depRows.get(id);
+                if (d?.hidden) return { id, title: null, hidden: true };
+                return { id, title: d?.title ?? null, ...(d?.workspaceName ? { workspaceName: d.workspaceName } : {}) };
+              }),
               pendingHold: pendingHoldSummary({
                 ...rowFacts, holders, trunkRed: null,
                 runnerOnline: executor === 'local' ? null : runnerOnline ?? null,
@@ -1346,7 +1376,19 @@ async function viewForTask(taskId: string): Promise<{
       })),
       unmergedPrs: unmergedPr,
     },
+    teamId: reachScope.teamId,
   };
+}
+
+/** Coordination holds as the caller may read them: a holder it cannot see is said to be one, and nothing more (spec e28018c2 R-7). */
+async function holdsForViewer(
+  holds: CoordinationHold[],
+  scope: { viewer: DependencyViewer; teamId: string | null; dependentWorkspaceId: string | null },
+): Promise<CoordinationHold[]> {
+  const ids = holds.map(h => h.holderTaskId).filter((id): id is string => !!id);
+  if (ids.length === 0) return holds;
+  const reach = await resolveDependencyHolders(scope, ids).catch(() => null);
+  return holds.map(h => (h.holderTaskId && (!reach || reach.get(h.holderTaskId)?.hidden) ? hiddenHold(h) : h));
 }
 
 /**
@@ -1372,8 +1414,8 @@ async function loadTaskVerdictForExplain(taskId: string): Promise<ExplainAnswer[
   return { state: v.state, headline: v.headline, cause: v.cause, actions: v.actions, wordedBy: v.wordedBy };
 }
 
-export async function explainTask(taskId: string, actor: EvidenceActor): Promise<ExplainResult | null> {
-  const loaded = await viewForTask(taskId);
+export async function explainTask(taskId: string, actor: EvidenceActor, viewer: DependencyViewer = { kind: 'member' }): Promise<ExplainResult | null> {
+  const loaded = await viewForTask(taskId, viewer);
   if (!loaded) return null;
   const { view, task, lineage, answerExtras, workspaceId, missionId, deliveries, queueWait } = loaded;
 
@@ -1399,7 +1441,10 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
   const hold = task.status === 'pending' ? entitlementHoldLink(task.context, { taskId, workspaceId }) : null;
   const gateRows = await loadGateRows(taskId);
   const gateHistory = gateRows.map(r => r.entry);
-  const holds = await loadCoordination(task as any, gateRows).catch(() => [] as CoordinationHold[]);
+  const holds = await holdsForViewer(
+    await loadCoordination(task as any, gateRows).catch(() => [] as CoordinationHold[]),
+    { viewer, teamId: loaded.teamId, dependentWorkspaceId: workspaceId },
+  );
   const coordLink = coordinationLink(holds, { taskId, workspaceId });
   // A task that started past an overlap on mergeable files says so (I-38).
   const alongside = task.status !== 'pending'
@@ -1538,11 +1583,11 @@ export async function explainPr(worker: {
   mergedAt: Date | string | null;
   observedTouches: string[] | null;
   createdAt: Date | string | null;
-}, actor: EvidenceActor): Promise<ExplainResult | null> {
+}, actor: EvidenceActor, viewer: DependencyViewer = { kind: 'member' }): Promise<ExplainResult | null> {
   if (!worker.taskId || worker.prNumber == null) return null;
 
   const taskId = await prOwnerTaskId(worker.taskId, worker.prNumber);
-  const loaded = await viewForTask(taskId);
+  const loaded = await viewForTask(taskId, viewer);
   if (!loaded) return null;
   const { view, task, lineage, answerExtras, workspaceId, missionId, deliveries, prDelivery } = loaded;
 
@@ -1616,7 +1661,7 @@ export async function explainPr(worker: {
  * a mission is already represented by its mission's chain, and listing both
  * would put the same blocker on screen twice.
  */
-export async function explainWorkspace(workspaceId: string, actor: EvidenceActor): Promise<ExplainResult> {
+export async function explainWorkspace(workspaceId: string, actor: EvidenceActor, viewer: DependencyViewer = { kind: 'member' }): Promise<ExplainResult> {
   const activeMissions = await db.query.missions.findMany({
     where: sqlWhere(and(eq(missions.workspaceId, workspaceId), eq(missions.status, 'active'))),
     columns: { id: true },
@@ -1647,7 +1692,7 @@ export async function explainWorkspace(workspaceId: string, actor: EvidenceActor
     ...missionLessIds.map(id => ({ kind: 'task' as const, id })),
   ];
   const results = await mapWithConcurrency(fanoutItems, WORKSPACE_FANOUT_CONCURRENCY, item =>
-    item.kind === 'mission' ? explainMission(item.id) : explainTask(item.id, actor),
+    item.kind === 'mission' ? explainMission(item.id, { viewer }) : explainTask(item.id, actor, viewer),
   );
   const answers: ExplainAnswer[] = results.flatMap(r => (r?.subjects[0] ? [r.subjects[0]] : []));
 

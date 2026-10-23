@@ -76,6 +76,8 @@ const ON_TINT: Array<[string, string]> = [
   ['q', 'q-tint'],
   ['text-muted', 'q-tint'],
 ];
+/** What a bar cell draws in (`.state-cell[data-look]`): merged, running, person, failed. */
+const BAR_CELL_INKS = ['ok-cell', 'act-hatch', 'status-warning', 'status-error'];
 const AA = 4.5;
 const GRAPHICS = 3;
 
@@ -120,6 +122,16 @@ describe('globals.css contrast', () => {
         it(`--faint (graphics only) on --${bg} >= ${GRAPHICS}:1`, () => {
           expect(contrast(colour('faint'), colour(bg))).toBeGreaterThanOrEqual(GRAPHICS);
         });
+      }
+
+      // The mission bar and Home's strips (Navigation R-4, R-21, AC-13): merged
+      // fill, running hatch, and the amber and red outlines are graphics.
+      for (const cell of BAR_CELL_INKS) {
+        for (const bg of ['surface-1', 'card']) {
+          it(`bar cell --${cell} on --${bg} >= ${GRAPHICS}:1`, () => {
+            expect(contrast(colour(cell), colour(bg))).toBeGreaterThanOrEqual(GRAPHICS);
+          });
+        }
       }
 
       it('no text token is lighter than --text-muted (the text floor)', () => {

@@ -16,6 +16,7 @@ import { termWord } from '@buildd/shared';
 import { BOARD_LANDED, formatAge, type BoardTask, type MissionBoardModel } from './mission-board';
 import { formatCountdown, isClosedUnshipped, overviewCellState, overviewStatus, overviewWaitCause } from './mission-overview';
 import { stripOrder } from './mission-task-strip';
+import { whenLabel } from './mission-task-hold';
 
 type Model = Pick<MissionBoardModel, 'phases' | 'tasks'>;
 
@@ -154,7 +155,9 @@ export function buildRowLine(model: Model, id: string, state: BuildRowState, now
       const age = formatAge(now - (t.waitStartedAt ?? t.createdAt));
       const wait = overviewWaitCause(model, id);
       // The hold's cause, when the claim gate recorded one that is not another task (R-14).
-      const hold = wait === 'hold' && s.cause ? lower(s.cause) : null;
+      // A start time names when it starts, not that it is scheduled.
+      const startsAt = t.waitingKind === 'start_deferred' && t.startAt != null && t.startAt > now ? t.startAt : null;
+      const hold = startsAt != null ? `starts ${whenLabel(startsAt, now)}` : wait === 'hold' && s.cause ? lower(s.cause) : null;
       return { line: `Queued ${age}${hold ? ` · ${hold}` : ''}`, detail: null, age: null };
     }
     default:
