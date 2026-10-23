@@ -5,6 +5,7 @@ import { useHomeAttentionCount } from '@/lib/home-attention-store';
 import { usePathname } from 'next/navigation';
 import { isNavActive } from '@/lib/nav-active';
 import { NAV_ITEMS } from '@/lib/nav-config';
+import { useNavSection } from '@/lib/nav-section-store';
 
 /**
  * The phone tab bar: five sentence-case labels, no icons, one style on every
@@ -14,13 +15,14 @@ import { NAV_ITEMS } from '@/lib/nav-config';
  */
 export default function MissionsBottomNav() {
   const pathname = usePathname();
+  const claimed = useNavSection();
   const homeCount = useHomeAttentionCount() ?? 0;
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-20 bg-[var(--chrome-bg)] border-t border-border-default backdrop-blur-[12px] pb-[env(safe-area-inset-bottom)] md:hidden">
       <div className="flex items-stretch justify-around h-14">
         {NAV_ITEMS.map((tab) => {
-          const active = isNavActive(pathname, tab.href);
+          const active = isNavActive(pathname, tab.href, claimed);
           const badge = tab.href === '/app/home' && homeCount > 0 ? homeCount : null;
 
           return (

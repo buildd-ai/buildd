@@ -171,6 +171,37 @@ describe('buildStateBecause', () => {
       expect(depLink!.refs.taskId).toBe('task-first');
     });
 
+    // Spec e28018c2 R-7 / AC-7, AC-8: an upstream in another workspace.
+    it('AC-7: a hidden upstream is worded without its title, and refs no task of it', () => {
+      const view = deriveMissionStateView({
+        ...base,
+        health: 'STALLED',
+        openTasks: [{ id: 'task-b', status: 'pending', title: 'Write the docs', waitingOnTaskIds: ['task-a'] }],
+      });
+      const chain = buildStateBecause(view, { taskId: 'task-b' }, {
+        openTasks: [{ id: 'task-b', title: 'Write the docs', status: 'pending', live: false, waitingOn: [{ id: 'task-a', title: null, hidden: true }] }],
+      });
+      const depLink = chain.find(l => l.claim.includes('Write the docs'))!;
+      expect(depLink.claim).toBe(`"Write the docs" is waiting on a task in a workspace you can't see.`);
+      expect(depLink.derivedFrom).toBe('tasks.dependsOn');
+      expect(depLink.refs.taskId).not.toBe('task-a');
+      expect(JSON.stringify(chain)).not.toContain('task-a');
+    });
+
+    it('AC-8: a visible upstream in another workspace is named with its workspace and keeps its ref', () => {
+      const view = deriveMissionStateView({
+        ...base,
+        health: 'STALLED',
+        openTasks: [{ id: 'task-b', status: 'pending', title: 'Write the docs', waitingOnTaskIds: ['task-a'] }],
+      });
+      const chain = buildStateBecause(view, { taskId: 'task-b' }, {
+        openTasks: [{ id: 'task-b', title: 'Write the docs', status: 'pending', live: false, waitingOn: [{ id: 'task-a', title: 'Ship the API', workspaceName: 'App' }] }],
+      });
+      const depLink = chain.find(l => l.claim.includes('Write the docs'))!;
+      expect(depLink.claim).toBe('"Write the docs" is waiting on "Ship the API" in App.');
+      expect(depLink.refs.taskId).toBe('task-a');
+    });
+
     it('treats unknown liveness on a stalled mission as orphaned', () => {
       const view = deriveMissionStateView({
         ...base,
