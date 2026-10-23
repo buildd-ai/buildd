@@ -16,6 +16,10 @@
  *   4. Stale artifact uploads (lib/artifact-upload.ts): finalize an upload its
  *      uploader never finalized, and remove one that never arrived or failed,
  *      after a day. Storage must be configured; otherwise it is skipped.
+ *   5. Guessed overlap edges (./guessed-edges.ts): strip the dependency edges
+ *      the platform guessed from overlapping paths off pending tasks, and wake
+ *      them. Declared edges stay. Code, not a migration, so it never takes the
+ *      schema lane.
  *
  * They live here so a deployment that schedules only the `core` cron profile
  * keeps them (cron-manifest.json, `cron:sync --profile core,ops`). On
@@ -30,6 +34,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { runStaleWorkerCleanup } from './stale-workers';
 import { sweepAbandonedPathClaims } from './path-claims';
+import { sweepGuessedEdges } from './guessed-edges';
 import { detachInteractiveWorkersOfEndedTasks } from '@/lib/interactive-detach';
 import { sweepStaleUploads } from '@/lib/artifact-upload';
 import { removeOrphanChatAttachments } from '@/lib/artifact-attachment-cleanup';
@@ -45,6 +50,7 @@ async function runCronJob(report: CronReport): Promise<NextResponse> {
   const heartbeatOrphans = await runStaleWorkerCleanup(now);
   const abandonedClaimsReleased = await sweepAbandonedPathClaims();
   const interactiveDetached = await detachInteractiveWorkersOfEndedTasks({ now });
+  const guessedEdgesStripped = await sweepGuessedEdges();
   const uploads = isStorageConfigured()
     ? await sweepStaleUploads(now).catch((err) => {
       console.error('[maintenance] stale upload sweep failed', err instanceof Error ? err.message : err);
@@ -65,9 +71,9 @@ async function runCronJob(report: CronReport): Promise<NextResponse> {
     console.error('[maintenance] unused OAuth client sweep failed', err instanceof Error ? err.message : err);
     return 0;
   });
-  const result = { heartbeatOrphans, abandonedClaimsReleased, interactiveDetached, uploads, chatAttachments, teamFiles, oauthClientsPruned };
+  const result = { heartbeatOrphans, abandonedClaimsReleased, interactiveDetached, guessedEdgesStripped, uploads, chatAttachments, teamFiles, oauthClientsPruned };
   // Nothing to repair is the healthy state, so changed=0 with errors=0 is fine.
   // Every sweep logs and swallows its own failures, so errors stays 0 here.
-  report({ changed: heartbeatOrphans + abandonedClaimsReleased + interactiveDetached + uploads.finalized + uploads.removed + chatAttachments.removed + teamFiles.removed + oauthClientsPruned, errors: 0, result });
+  report({ changed: heartbeatOrphans + abandonedClaimsReleased + interactiveDetached + guessedEdgesStripped + uploads.finalized + uploads.removed + chatAttachments.removed + teamFiles.removed + oauthClientsPruned, errors: 0, result });
   return NextResponse.json(result);
 }

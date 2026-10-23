@@ -42,6 +42,8 @@ const mockStaleWorkers = mock(async (_now: Date) => { calls.push('stale-workers'
 const mockPathClaims = mock(async () => { calls.push('path-claims'); return 0; });
 mock.module('./stale-workers', () => ({ runStaleWorkerCleanup: mockStaleWorkers }));
 mock.module('./path-claims', () => ({ sweepAbandonedPathClaims: mockPathClaims }));
+const mockGuessedEdges = mock(async () => { calls.push('guessed-edges'); return 0; });
+mock.module('./guessed-edges', () => ({ sweepGuessedEdges: mockGuessedEdges }));
 const mockDetach = mock(async (_opts: unknown) => { calls.push('interactive-detach'); return 0; });
 mock.module('@/lib/interactive-detach', () => ({ detachInteractiveWorkersOfEndedTasks: mockDetach }));
 const mockUploads = mock(async () => ({ finalized: 2, removed: 1, waiting: 0 }));
@@ -85,10 +87,10 @@ describe('maintenance cron — auth', () => {
 });
 
 describe('maintenance cron — the core sweeps', () => {
-  it('runs stale-worker cleanup, abandoned path-claim release, then the ended-task interactive detach', async () => {
+  it('runs stale-worker cleanup, abandoned path-claim release, the ended-task interactive detach, then the guessed-edge strip', async () => {
     const res = await GET(makeRequest());
     expect(res.status).toBe(200);
-    expect(calls).toEqual(['stale-workers', 'path-claims', 'interactive-detach']);
+    expect(calls).toEqual(['stale-workers', 'path-claims', 'interactive-detach', 'guessed-edges']);
     expect(mockStaleWorkers.mock.calls[0]![0]).toBeInstanceOf(Date);
   });
 
@@ -96,13 +98,14 @@ describe('maintenance cron — the core sweeps', () => {
     mockStaleWorkers.mockResolvedValueOnce(2);
     mockPathClaims.mockResolvedValueOnce(3);
     mockDetach.mockResolvedValueOnce(1);
+    mockGuessedEdges.mockResolvedValueOnce(4);
     const res = await GET(makeRequest());
     const uploads = { finalized: 2, removed: 1, waiting: 0 };
     const chatAttachments = { removed: 4, objectsRemoved: 2 };
     const teamFiles = { removed: 5, objectsRemoved: 5 };
-    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2 });
+    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, guessedEdgesStripped: 4, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2 });
     const row = cronRunRows.find(r => r.job === 'maintenance');
-    expect(row).toMatchObject({ ok: true, changed: 20, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2 } });
+    expect(row).toMatchObject({ ok: true, changed: 24, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, guessedEdgesStripped: 4, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2 } });
   });
 
   it('a failing chat attachment sweep is logged and reads as nothing removed', async () => {
