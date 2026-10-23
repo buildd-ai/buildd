@@ -13,8 +13,12 @@ import type { SpecPageView } from '@/lib/specs/page-view';
  *   not a diff against nothing.
  * - `amended`: a confirmed baseline with a proposed change under review: the
  *   change list against it, the line diff behind a toggle.
+ * - `approved`: an approved spec with nothing waiting, whose text is titled
+ *   differently, with work against it and its repo file: the desktop rail.
+ *
+ * `#history` (or `#related`) opens that tab.
  */
-export const SPEC_IMPORT_REVIEW_VARIANTS = ['imported', 'first', 'amended'] as const;
+export const SPEC_IMPORT_REVIEW_VARIANTS = ['imported', 'first', 'amended', 'approved'] as const;
 type Variant = (typeof SPEC_IMPORT_REVIEW_VARIANTS)[number];
 
 const SECTIONS = Array.from({ length: 12 }, (_, i) => [
@@ -70,6 +74,20 @@ const AMENDED_REVIEW = {
 };
 
 function viewOf(v: Variant): Extract<SpecPageView, { state: 'ok' }> {
+  if (v === 'approved') {
+    return {
+      ...BASE, spec: { ...BASE.spec, status: 'approved', approvedRevision: 2 }, standing: 'approved at revision 2', reading: { revision: 2, approved: true, isHead: true },
+      body: BODY.replace('# Mission Flow Timeline', '# Mission Flow Timeline (Flow tab, rows and the shared axis)'),
+      importConfirmation: null, canRetire: true, retireTargets: [],
+      source: { source: null, path: 'docs/specs/mission-flow-timeline.md', href: 'https://github.com/acme/shop/blob/main/docs/specs/mission-flow-timeline.md', copy: null, behind: false },
+      revisions: [{ ...BASE.revisions[0]!, approvedBy: 'Sam Rivera', approvedAt: at, approvedAgo: '1d ago' }, BASE.revisions[1]!],
+      delivery: { next: null, entries: [{
+        kind: 'task', id: 'fixture-task', title: 'Draw every deliverable on one axis', href: '/app/dev/fixtures?state=task-page', builtTo: 2, provisional: false, delivered: true,
+        deliveredText: 'Built to revision 2. Merged.', standing: { tone: 'success', text: 'Verified against revision 2.' },
+        criteria: [{ criterionId: 'R-1', text: 'Part 1 holds.', mark: 'pass', evidence: [] }], links: [], at,
+      }] },
+    };
+  }
   if (v === 'first') {
     return {
       ...BASE, spec: { ...BASE.spec, headRevision: 1, version: 1 }, standing: 'draft, never approved', reading: { revision: 1, approved: false, isHead: true },

@@ -2,15 +2,15 @@
 
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { useOptimisticApprove } from '@/components/useOptimisticApprove';
 import Card from '@/components/ui/Card';
-import Lede from '@/components/ui/Lede';
+import Chip, { type ChipTone } from '@/components/ui/Chip';
 import Notice from '@/components/ui/Notice';
 import PrimaryAction, { primaryActionClass } from '@/components/ui/PrimaryAction';
+import Sheet from '@/components/ui/Sheet';
+import SideSheet from '@/components/SideSheet';
 import Spinner from '@/components/Spinner';
-import Section from '@/components/ui/Section';
-import { Select } from '@/components/ui/Select';
 import MarkdownContent from '@/components/MarkdownContent';
 import SpecDiffView from '@/components/SpecDiffView';
 import SpecReviewChanges from '@/components/SpecReviewChanges';
@@ -33,19 +33,31 @@ import type { CriterionMark } from '@/lib/specs/delivery-words';
 type Ok = Extract<SpecPageView, { state: 'ok' }>;
 
 /**
- * The one sentence that says which revision this is and what waits, or null
- * when the header already says it all (reading the approved revision with
- * nothing waiting: "approved at revision N" is right above).
+ * The page's one status line ("Spec page layout", R-92, R-97, R-100): a badge
+ * and a few words. It says nothing about which revision is read when that is
+ * the approved one and nothing waits (R-91): the badge already says Approved.
  */
-export function readingLine(v: Pick<Ok, 'reading' | 'waiting' | 'spec'> & { canApprove?: boolean }): string | null {
+export function statusLine(v: Pick<Ok, 'spec' | 'reading' | 'waiting' | 'canApprove' | 'importConfirmation' | 'retirement'>): { badge: string; tone: ChipTone; words: string | null } {
+  if (v.retirement || v.spec.status === 'retired' || v.spec.status === 'superseded') {
+    const r = v.retirement;
+    // "Replaced by <spec>" carries a link, so the page writes it, not this string.
+    return { badge: 'Retired', tone: 'muted', words: r ? (r.supersededBy ? null : `Retired: ${r.reason}`) : null };
+  }
+  const imp = v.importConfirmation;
+  if (imp) {
+    return { badge: 'Imported', tone: 'info', words: imp.canConfirm ? 'Repo file is the source until you confirm' : 'Repo file is the source until an approver confirms it' };
+  }
   const n = v.reading.revision;
   const approved = v.spec.approvedRevision;
-  const other = v.waiting && v.waiting !== n ? v.waiting : null;
-  const waits = other ? `Revision ${other} waits for ${v.canApprove ? 'your ' : ''}approval.` : '';
-  if (v.reading.approved) return waits || null;
-  // "draft, never approved" is right above; saying it again adds nothing.
-  if (approved == null) return waits || null;
-  return `You're reading revision ${n}. Revision ${approved} is approved.${waits ? ` ${waits}` : ''}`;
+  const yours = v.waiting && v.canApprove ? ' Waits for your approval.' : '';
+  const words = approved == null
+    ? `${v.reading.isHead ? '' : `You're reading revision ${n}. `}Never approved.${yours}`
+    : v.reading.approved
+      ? (v.waiting ? `Approved at revision ${approved}.${yours}` : null)
+      : `You're reading revision ${n}. Revision ${approved} is approved.${yours}`;
+  if (v.waiting) return { badge: `Revision ${v.waiting} waiting`, tone: 'warning', words };
+  if (approved != null) return { badge: 'Approved', tone: 'success', words };
+  return { badge: 'Draft', tone: 'muted', words };
 }
 
 /**
@@ -60,29 +72,58 @@ export function criterionMarks(v: Pick<Ok, 'delivery' | 'reading'>): Array<{ cri
     .map((c) => ({ criterionId: c.criterionId, mark: c.mark, title: e.title, href: e.href })));
 }
 
-/** The body without a first heading that only repeats the page title. */
-export function withoutRepeatedTitle(body: string, title: string): string {
+const plain = (t: string) => t.replace(/[*_`]/g, '').trim();
+
+/**
+ * The body's own leading level-one heading and the body without it (R-94):
+ * the page shows one title, so that heading is never rendered again.
+ */
+export function splitLeadingTitle(body: string): { heading: string | null; rest: string } {
   const m = /^\s*#\s+(.+?)\s*#*\s*(?:\r?\n|$)/.exec(body);
-  if (!m) return body;
-  const norm = (t: string) => t.replace(/[*_`]/g, '').trim().toLowerCase();
-  return norm(m[1]) === norm(title) ? body.slice(m[0].length).replace(/^\s*\n/, '') : body;
+  if (!m) return { heading: null, rest: body };
+  return { heading: plain(m[1]), rest: body.slice(m[0].length).replace(/^\s*\n/, '') };
+}
+
+/** The text's own title when it is not the spec's, for "Titled in the text: …" (R-94). */
+export function textTitle(body: string, title: string): string | null {
+  const { heading } = splitLeadingTitle(body);
+  return heading && heading.toLowerCase() !== plain(title).toLowerCase() ? heading : null;
 }
 
 /**
- * Where the page's one decision sits. On a phone a bar stuck to the bottom of
- * the screen: it renders last in its block, so it stays in view while the
- * reader scrolls the text above it. The layout's <main> already pads for the
- * bottom nav, so `bottom` adds only the home-indicator inset (MobileSaveBar).
- * On desktop the bottom-right corner the Ask button otherwise holds, which
- * hides while this is on screen. The decision is the thing to find; Ask is ⌘K away.
+ * The body's sections (level-two headings, outside code fences) and the
+ * criteria in each (R-95). The page lists them in Contents when there are at
+ * least three; the n-th entry is the n-th `h2` of the rendered body.
  */
-function ActionDock({ label, children }: { label: string; children: ReactNode }) {
+export function specContents(body: string): Array<{ title: string; criteria: number }> {
+  const out: Array<{ title: string; criteria: number }> = [];
+  let fence = false;
+  for (const line of body.split(/\r?\n/)) {
+    if (/^\s*(```|~~~)/.test(line)) { fence = !fence; continue; }
+    if (fence) continue;
+    const h = /^##\s+(.+?)\s*#*\s*$/.exec(line);
+    if (h) { out.push({ title: plain(h[1]), criteria: 0 }); continue; }
+    if (out.length && /^\s*[-*+]\s+(?:\*\*)?(?:R|AC)-\d+\b/.test(line)) out[out.length - 1].criteria++;
+  }
+  return out;
+}
+
+/**
+ * Where the page's one primary action sits (R-96, R-99). Below lg a bar stuck
+ * to the bottom of the scroll area: it is last in the page's flow, so at the
+ * end of the text it sits under the last line instead of over it, and the
+ * layout's <main> already pads for the bottom nav (sticky insets are measured
+ * inside that padding), so `bottom` adds only the home-indicator inset
+ * (MobileSaveBar). From lg it is the top of the rail. Ask hides while it shows:
+ * on a phone it would sit on the bar; it is ⌘K away.
+ */
+function ActionDock({ children }: { children: ReactNode }) {
   useHideAskButton(true);
   return (
     <div
       role="region"
-      aria-label={label}
-      className="sticky bottom-[env(safe-area-inset-bottom,0px)] z-10 -mx-4 border-t border-border-default bg-surface-1/95 px-4 py-3 backdrop-blur md:fixed md:bottom-6 md:left-auto md:right-6 md:z-30 md:mx-0 md:max-w-sm md:border-0 md:bg-transparent md:p-0 md:backdrop-blur-none"
+      aria-label="Decision"
+      className="sticky bottom-[env(safe-area-inset-bottom,0px)] z-10 -mx-4 border-t border-border-default bg-surface-1/95 px-4 py-3 backdrop-blur md:-mx-8 md:px-8 lg:static lg:col-start-2 lg:row-start-1 lg:mx-0 lg:mb-6 lg:border-0 lg:bg-transparent lg:p-0 lg:backdrop-blur-none"
       data-testid="spec-page-action-dock"
     >
       {children}
@@ -128,49 +169,11 @@ function ConfirmImport({ specId, workspaceId, revision }: { specId: string; work
     <div className="flex flex-col gap-2">
       {result ? <Notice tone={result.tone} data-testid="spec-page-confirm-import-result">{result.text}</Notice> : null}
       {result?.tone === 'ok' ? null : (
-        <div>
-          <PrimaryAction onClick={confirm} pending={busy} fullWidthOnMobile data-testid="spec-page-confirm-import">
-            Confirm import
-          </PrimaryAction>
-        </div>
+        <PrimaryAction onClick={confirm} pending={busy} fullWidthOnMobile data-testid="spec-page-confirm-import">
+          Confirm import
+        </PrimaryAction>
       )}
     </div>
-  );
-}
-
-/**
- * An import waiting for confirmation (§18, R-19): what revision N is, that it
- * is a baseline and not a proposed change, and who confirms it. Approve and
- * Review are not offered: the server refuses both until it is confirmed.
- */
-function ImportPanel({ specId, c }: { specId: string; c: NonNullable<Ok['importConfirmation']> }) {
-  return (
-    <section className="flex flex-col gap-1.5" data-testid="spec-page-import" aria-labelledby="spec-import-heading">
-      <h2 id="spec-import-heading" className="text-title font-semibold text-text-primary">
-        {c.canConfirm ? 'Confirm the import' : 'Imported, waiting for confirmation'}
-      </h2>
-      <p className="text-body text-text-secondary [overflow-wrap:anywhere]">
-        Revision {c.revision} is{' '}
-        {c.href ? <a href={c.href} className="font-mono text-meta underline" rel="noreferrer" target="_blank">{c.path}</a> : <span className="font-mono text-meta">{c.path}</span>}{' '}
-        at {c.commit}, as the repo has it. Until it is confirmed the repo file is its source: nothing here can be revised or approved.
-        {c.canConfirm ? ' Confirming approves it as the baseline.' : ' A person who approves specs here confirms it.'}
-      </p>
-      <p className="text-body text-text-secondary" data-testid="spec-page-import-no-changes">
-        No proposed changes. A change is a new revision after confirming, reviewed against this one.
-      </p>
-      <p className="flex flex-wrap gap-x-4 text-meta">
-        {c.previous ? (
-          <Link href={`/app/specs/${specId}?from=${c.previous}&to=${c.revision}`} className="inline-flex min-h-11 items-center text-text-secondary underline hover:text-text-primary md:min-h-0" data-testid="spec-page-import-repo-change">
-            What the repo file changed since revision {c.previous}
-          </Link>
-        ) : null}
-        {c.canConfirm ? (
-          <Link href={c.batchHref} className="inline-flex min-h-11 items-center text-text-secondary underline hover:text-text-primary md:min-h-0" data-testid="spec-page-import-batch">
-            Confirm with the other imports
-          </Link>
-        ) : null}
-      </p>
-    </section>
   );
 }
 
@@ -191,12 +194,32 @@ function Approve({ specId, revision, expectedVersion }: { specId: string; revisi
     <div className="flex flex-col gap-2">
       {shown ? <Notice tone={shown.tone} data-testid="spec-page-approve-result">{shown.text}</Notice> : null}
       {!shown || retry ? (
-        <div>
-          <PrimaryAction onClick={approve} fullWidthOnMobile data-testid="spec-page-approve">
-            Approve revision {revision}
-          </PrimaryAction>
-        </div>
+        <PrimaryAction onClick={approve} fullWidthOnMobile data-testid="spec-page-approve">
+          Approve revision {revision}
+        </PrimaryAction>
       ) : null}
+    </div>
+  );
+}
+
+/** A retired spec's one action for a person who may (§22, R-54): put it back in force. */
+function Restore({ specId }: { specId: string }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const restore = async () => {
+    setBusy(true);
+    setError(null);
+    const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/retire`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => null);
+    const body = (await res?.json().catch(() => ({}))) as { error?: string } | undefined;
+    setBusy(false);
+    if (res?.ok) router.refresh();
+    else setError(body?.error ?? 'That did not work. Try again.');
+  };
+  return (
+    <div className="flex flex-col gap-2">
+      {error ? <Notice tone="err">{error}</Notice> : null}
+      <PrimaryAction onClick={restore} pending={busy} fullWidthOnMobile data-testid="spec-restore">Restore</PrimaryAction>
     </div>
   );
 }
@@ -218,11 +241,9 @@ function PublishAnyway({ specId }: { specId: string }) {
     <div className="flex flex-col gap-2">
       {result ? <Notice tone={result.tone} data-testid="spec-page-publish-result">{result.text}</Notice> : null}
       {result?.tone === 'ok' ? null : (
-        <div>
-          <button type="button" className="btn btn-quiet btn-sm h-11 md:h-8" onClick={publish} disabled={busy} data-testid="spec-page-publish-anyway">
-            Add to repo
-          </button>
-        </div>
+        <button type="button" className={MORE_ROW} onClick={publish} disabled={busy} data-testid="spec-page-publish-anyway">
+          Add to repo
+        </button>
       )}
     </div>
   );
@@ -249,31 +270,9 @@ function StandardMark({ specId, standard }: { specId: string; standard: boolean 
   return (
     <div className="flex flex-col gap-2">
       {error ? <Notice tone="err" data-testid="spec-page-standard-error">{error}</Notice> : null}
-      <div>
-        <button type="button" className="btn btn-quiet btn-sm h-11 md:h-8" onClick={toggle} disabled={busy} data-testid="spec-page-standard-toggle">
-          {standard ? 'Stop applying to every change' : 'Apply to every change'}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function Compare({ specId, revisions, from, to }: { specId: string; revisions: number[]; from: number; to: number }) {
-  const [a, setA] = useState(String(from));
-  const [b, setB] = useState(String(to));
-  const options = revisions.map((n) => ({ value: String(n), label: `Revision ${n}` }));
-  return (
-    <div className="flex flex-wrap items-center gap-2" data-testid="spec-page-compare">
-      <Select value={a} onChange={setA} options={options} aria-label="Compare from" size="sm" />
-      <span className="text-meta text-text-muted">to</span>
-      <Select value={b} onChange={setB} options={options} aria-label="Compare to" size="sm" />
-      <Link
-        href={`/app/specs/${specId}?from=${a}&to=${b}`}
-        className="btn btn-sm h-11 md:h-8"
-        data-testid="spec-page-compare-go"
-      >
-        Show changes
-      </Link>
+      <button type="button" className={MORE_ROW} onClick={toggle} disabled={busy} data-testid="spec-page-standard-toggle">
+        {standard ? 'Stop applying to every change' : 'Apply to every change'}
+      </button>
     </div>
   );
 }
@@ -285,6 +284,7 @@ const REVIEW_UNREAD = 'The changes could not be read. Reload to try again.';
  * What approving the waiting revision puts in force (R-1 to R-8): from the
  * server when the page was loaded with ?review=1, else fetched on the press,
  * with the heading and a loading line shown at once (focus moves to it).
+ * Once read, the panes go up to the page, whose action slot holds Approve.
  *
  * A change to an approved revision leads with the change summary and the
  * per-criterion change list; the line diff is behind "Show line diff", never
@@ -292,13 +292,14 @@ const REVIEW_UNREAD = 'The changes could not be read. Reload to try again.';
  * so it shows the spec itself, rendered (a diff against nothing is every line
  * added), led by what this revision changed from the one before, if any.
  */
-function ReviewPanel({ spec, waiting, initial, repoChecks }: { spec: Ok['spec']; waiting: number; initial: SpecPanes | null; repoChecks: boolean }) {
+function ReviewPanel({ spec, waiting, initial, repoChecks, onRead }: { spec: Ok['spec']; waiting: number; initial: SpecPanes | null; repoChecks: boolean; onRead: (p: ReviewPanes | null) => void }) {
   const [panes, setPanes] = useState<ReviewPanes | null>(initial);
   const [error, setError] = useState<string | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   // Opened by the Review press, not a page load: take the reader to it.
   const pressed = useRef(!initial);
   useEffect(() => { if (pressed.current) heading.current?.focus(); }, []);
+  useEffect(() => { onRead(panes); return () => onRead(null); }, [panes, onRead]);
   useEffect(() => {
     if (initial) return;
     let live = true;
@@ -323,39 +324,33 @@ function ReviewPanel({ spec, waiting, initial, repoChecks }: { spec: Ok['spec'];
       {error ? (
         <Notice tone="warn" data-testid="spec-page-review-error">{error}</Notice>
       ) : panes ? (
-        <>
-          {panes.replaces ? (
-            <>
-              {panes.changes ? <SpecReviewChanges {...panes.changes} /> : null}
-              {repoChecks ? <SpecRepoChecksFetch specId={spec.id} /> : null}
-              <Disclosure
-                summary={<span data-testid="spec-page-full-diff">Show line diff <span className="font-mono text-meta"><span className="text-status-success">+{panes.linesAdded}</span> <span className="text-status-error">−{panes.linesRemoved}</span></span></span>}
-                defaultOpen={!panes.changes}
-              >
-                <div className="mt-2"><SpecDiffView hunks={panes.hunks} omittedLines={panes.omittedLines} /></div>
-              </Disclosure>
-            </>
-          ) : (
-            <>
-              <p className="text-body text-text-secondary" data-testid="spec-page-review-first">First approval. Approving puts the whole spec in force.</p>
-              {panes.since ? (
-                <section className="flex flex-col gap-2" aria-labelledby="spec-review-since-heading" data-testid="spec-page-review-since">
-                  <h3 id="spec-review-since-heading" className="text-body font-semibold text-text-primary">Changed since revision {panes.since.revision}</h3>
-                  <SpecReviewChanges {...panes.since.changes} />
-                </section>
-              ) : summary ? <p className="whitespace-pre-line text-lede text-text-primary [overflow-wrap:anywhere]" data-testid="spec-review-summary">{summary}</p> : null}
-              {repoChecks ? <SpecRepoChecksFetch specId={spec.id} /> : null}
-              {panes.since ? <h3 className="text-body font-semibold text-text-primary">The whole spec</h3> : null}
-              <Card as="article" className="md:p-8" data-testid="spec-page-review-body" aria-label={`Revision ${panes.revision} of the spec`}>
-                <MarkdownContent content={withoutRepeatedTitle(panes.body, spec.title)} images="link" surface="spec" attachments={panes.attachmentSources ?? {}} criterionSpecId={spec.id} />
-              </Card>
-            </>
-          )}
-          {/* Last in the panel, so on a phone it stays in view while the reader scrolls it; in the Ask corner on desktop. */}
-          <ActionDock label="Decision">
-            <Approve specId={spec.id} revision={panes.revision} expectedVersion={panes.version ?? spec.version} />
-          </ActionDock>
-        </>
+        panes.replaces ? (
+          <>
+            {panes.changes ? <SpecReviewChanges {...panes.changes} /> : null}
+            {repoChecks ? <SpecRepoChecksFetch specId={spec.id} /> : null}
+            <Disclosure
+              summary={<span data-testid="spec-page-full-diff">Show line diff <span className="font-mono text-meta"><span className="text-status-success">+{panes.linesAdded}</span> <span className="text-status-error">−{panes.linesRemoved}</span></span></span>}
+              defaultOpen={!panes.changes}
+            >
+              <div className="mt-2"><SpecDiffView hunks={panes.hunks} omittedLines={panes.omittedLines} /></div>
+            </Disclosure>
+          </>
+        ) : (
+          <>
+            <p className="text-body text-text-secondary" data-testid="spec-page-review-first">First approval. Approving puts the whole spec in force.</p>
+            {panes.since ? (
+              <section className="flex flex-col gap-2" aria-labelledby="spec-review-since-heading" data-testid="spec-page-review-since">
+                <h3 id="spec-review-since-heading" className="text-body font-semibold text-text-primary">Changed since revision {panes.since.revision}</h3>
+                <SpecReviewChanges {...panes.since.changes} />
+              </section>
+            ) : summary ? <p className="whitespace-pre-line text-lede text-text-primary [overflow-wrap:anywhere]" data-testid="spec-review-summary">{summary}</p> : null}
+            {repoChecks ? <SpecRepoChecksFetch specId={spec.id} /> : null}
+            {panes.since ? <h3 className="text-body font-semibold text-text-primary">The whole spec</h3> : null}
+            <Card as="article" className="md:p-8" data-testid="spec-page-review-body" aria-label={`Revision ${panes.revision} of the spec`}>
+              <MarkdownContent content={splitLeadingTitle(panes.body).rest} images="link" surface="spec" attachments={panes.attachmentSources ?? {}} criterionSpecId={spec.id} />
+            </Card>
+          </>
+        )
       ) : (
         <>
           {repoChecks ? <SpecRepoChecksFetch specId={spec.id} /> : null}
@@ -373,72 +368,267 @@ function Sub({ children }: { children: ReactNode }) {
   return <h3 className="text-meta font-semibold text-text-secondary">{children}</h3>;
 }
 
+const MORE_ROW = 'flex min-h-11 w-full items-center border-t border-border-default text-left text-body text-text-primary hover:bg-card-hover disabled:opacity-50';
+
+type Tab = 'spec' | 'history' | 'related' | 'comments' | 'files';
+const TAB_LABEL: Record<Tab, string> = { spec: 'Spec', history: 'History', related: 'Related', comments: 'Comments', files: 'Files' };
+const tabId = (t: Tab) => `spec-tab-${t}`;
+const panelId = (t: Tab) => `spec-panel-${t}`;
+
 /**
- * One spec (living-specs.md §9): the revision in force rendered, its history,
- * the changes between any two revisions and, for a person who may approve,
- * the waiting revision with one Approve action (§6's route; nothing new).
- *
- * Desktop reads as a document with a rail: the text, Related and Comments in
- * the main column; Revisions and Files beside it. A phone stacks them, the
- * text first, with jump links to the rest.
+ * Spec · History · Related, and Comments and Files when they have something
+ * (R-93). Underlined tabs on a hairline, as on the mission page: one tab stop,
+ * ← → / Home / End move between them.
+ */
+function Tabs({ tabs, counts, active, onPick }: { tabs: Tab[]; counts: Partial<Record<Tab, number>>; active: Tab; onPick: (t: Tab) => void }) {
+  function onKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    const at = tabs.indexOf(active);
+    const to = e.key === 'ArrowRight' ? (at + 1) % tabs.length
+      : e.key === 'ArrowLeft' ? (at - 1 + tabs.length) % tabs.length
+      : e.key === 'Home' ? 0
+      : e.key === 'End' ? tabs.length - 1
+      : null;
+    if (to == null) return;
+    e.preventDefault();
+    onPick(tabs[to]);
+    e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[to]?.focus();
+  }
+  return (
+    <div role="tablist" aria-label="Spec page" onKeyDown={onKeyDown} data-testid="spec-page-tabs" className="flex min-w-0 gap-5 overflow-x-auto border-b border-border-default">
+      {tabs.map((t) => {
+        const on = t === active;
+        return (
+          <button
+            key={t}
+            id={tabId(t)}
+            type="button"
+            role="tab"
+            aria-selected={on}
+            aria-controls={panelId(t)}
+            tabIndex={on ? 0 : -1}
+            data-tab={t}
+            onClick={() => onPick(t)}
+            className={`-mb-px inline-flex min-h-11 shrink-0 items-center gap-1.5 border-b-2 text-body md:min-h-10 ${on ? 'border-text-primary font-semibold text-text-primary' : 'border-transparent font-medium text-text-muted hover:text-text-primary'}`}
+          >
+            {TAB_LABEL[t]}
+            {counts[t] ? <span className="font-mono text-meta tabular-nums text-text-muted">{counts[t]}</span> : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** One revision's mark on History (R-98). */
+function revisionBadge(r: { revision: number }, view: Ok): { label: string; tone: ChipTone } | null {
+  if (r.revision === view.spec.approvedRevision) return { label: 'Approved', tone: 'success' };
+  if (view.importConfirmation && r.revision === view.importConfirmation.revision) return { label: 'Imported', tone: 'info' };
+  if (r.revision === view.waiting) return { label: 'Waiting', tone: 'warning' };
+  return null;
+}
+
+/**
+ * History (R-98): every revision newest first, one row each. Picking two
+ * enables "Compare N → M", which opens their diff (`?from=N&to=M`, read with
+ * `diffSpecRevisions`); a third pick lets go of the oldest one.
+ */
+function History({ view, base, reviewing }: { view: Ok; base: string; reviewing: boolean }) {
+  const initial = view.compare && !('error' in view.compare) ? [view.compare.from, view.compare.to] : [];
+  const [picked, setPicked] = useState<number[]>(initial);
+  const toggle = (n: number) => setPicked((p) => (p.includes(n) ? p.filter((x) => x !== n) : [...p, n].slice(-2)));
+  const [from, to] = [...picked].sort((a, b) => a - b);
+  const ready = picked.length === 2;
+  return (
+    <div className="flex flex-col gap-3">
+      {view.compare ? (
+        <section className="flex flex-col gap-3" data-testid="spec-page-compare-panel">
+          {'error' in view.compare ? (
+            <Notice tone="warn">{view.compare.error}</Notice>
+          ) : (
+            <>
+              <h2 className="text-title font-semibold text-text-primary">
+                Changes from revision {view.compare.from} to revision {view.compare.to}
+              </h2>
+              <SpecDiffView hunks={view.compare.hunks} omittedLines={view.compare.omittedLines} />
+            </>
+          )}
+        </section>
+      ) : null}
+      {view.revisions.length > 1 ? (
+        <div className="flex flex-wrap items-center gap-3" data-testid="spec-page-compare">
+          {ready ? (
+            <Link href={`${base}?from=${from}&to=${to}`} className="btn btn-sm h-11 md:h-8" data-testid="spec-page-compare-go">
+              Compare {from} → {to}
+            </Link>
+          ) : (
+            <button type="button" disabled className="btn btn-sm h-11 opacity-50 md:h-8" data-testid="spec-page-compare-go">
+              Compare
+            </button>
+          )}
+          <span className="text-meta text-text-muted">{ready ? null : picked.length ? 'Pick one more revision.' : 'Pick two revisions to compare.'}</span>
+        </div>
+      ) : null}
+      <ol className="flex flex-col divide-y divide-[var(--line-soft)]" data-testid="spec-page-revisions">
+        {view.revisions.map((r) => {
+          const here = r.revision === view.reading.revision && !reviewing && !view.compare;
+          const badge = revisionBadge(r, view);
+          const on = picked.includes(r.revision);
+          return (
+            <li key={r.revision} className="flex items-start gap-2 py-2" data-testid="spec-page-revision" data-revision={r.revision}>
+              <label className="flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center md:min-h-8 md:min-w-8">
+                <input type="checkbox" checked={on} onChange={() => toggle(r.revision)} aria-label={`Pick revision ${r.revision} to compare`} data-testid="spec-page-revision-pick" className="h-4 w-4 accent-[var(--color-accent,currentColor)]" />
+              </label>
+              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="flex flex-wrap items-center gap-x-2 text-body text-text-primary">
+                  <Link
+                    href={`${base}?revision=${r.revision}`}
+                    aria-current={here ? 'page' : undefined}
+                    className={`inline-flex min-h-11 items-center underline md:min-h-0 ${here ? 'font-semibold' : 'font-medium'}`}
+                  >
+                    Revision {r.revision}
+                  </Link>
+                  {badge ? <Chip tone={badge.tone} variant="soft" dot={false}>{badge.label}</Chip> : null}
+                  <span className="text-meta text-text-muted">
+                    by {r.author === 'person' ? 'a person' : 'an agent'}, {r.createdAgo}
+                  </span>
+                </span>
+                {r.changeSummary ? <span className="truncate text-meta text-text-secondary" title={r.changeSummary}>{r.changeSummary}</span> : null}
+                {r.approvedAt ? (
+                  <span className="text-meta text-text-muted" data-testid="spec-page-approved-by">
+                    Approved by {r.approvedBy} {r.approvedAgo}
+                  </span>
+                ) : null}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
+/** Contents (R-95): the sections and the criteria in each; picking one scrolls to it. */
+function ContentsList({ sections, onPick }: { sections: Array<{ title: string; criteria: number }>; onPick: (i: number) => void }) {
+  return (
+    <ol className="flex flex-col" data-testid="spec-page-contents-list">
+      {sections.map((s, i) => (
+        <li key={`${i}:${s.title}`}>
+          <button type="button" onClick={() => onPick(i)} className="flex min-h-11 w-full items-center gap-2 text-left text-body text-text-primary hover:underline md:min-h-9" data-testid="spec-page-contents-item">
+            <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{s.title}</span>
+            {s.criteria ? <span className="shrink-0 font-mono text-meta tabular-nums text-text-muted">{s.criteria}</span> : null}
+          </button>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/**
+ * One spec (living-specs.md §9, "Spec page layout" R-92 to R-100): back, one
+ * title, one status line, the tabs, then the text. Related specs, History,
+ * Comments and Files are tabs, never sections under the text. The page has at
+ * most one primary action, in the rail on desktop and in a bottom bar on a
+ * phone; everything else is in More.
  */
 export default function SpecPage({ view }: { view: Ok }) {
   const { spec } = view;
   const base = `/app/specs/${spec.id}`;
-  const numbers = view.revisions.map((r) => r.revision);
-  const defaultFrom = spec.approvedRevision && spec.approvedRevision !== spec.headRevision ? spec.approvedRevision : Math.max(1, spec.headRevision - 1);
 
   const graph = neighbourGraph({ spec, parent: view.parent, siblings: view.siblings ?? [], nearby: view.nearby });
   const hasGraph = !!(graph.parent || graph.siblings.length || graph.neighbours.length);
   const [relatedView, setRelatedView] = useState<'list' | 'graph'>('list');
-  // Related renders only when something sits under it: no empty heading.
+  // Related is a tab only when something sits under it: no empty tab.
   const hasRelated = hasGraph || !!view.filing || view.children.length > 0 || !!view.design || view.repoRefs.length > 0;
+  const relatedCount = (view.parent ? 1 : 0) + (view.siblings ?? []).length + view.children.length + view.nearby.length;
   const importing = view.importConfirmation ?? null;
-  // An unconfirmed import has its own panel; the reading line would only repeat it.
-  const line = importing ? null : readingLine(view);
+  const status = statusLine(view);
+  const { rest: body } = splitLeadingTitle(view.body);
+  const titledInText = textTitle(view.body, spec.title);
+
   // Review is the address (?review=1), but pressing it is not a navigation: the
   // URL changes in place (no server render, R-7) and the panel fetches itself.
   const params = useSearchParams();
   const reviewing = !!view.canApprove && !!view.waiting && (!!view.review || params.get('review') === '1');
   const reviewLink = view.canApprove && view.waiting && !reviewing;
+  const [reviewPanes, setReviewPanes] = useState<ReviewPanes | null>(null);
   const openReview = (e: MouseEvent<HTMLAnchorElement>) => {
     // A new tab or window still opens the link.
     if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     e.preventDefault();
+    setTab('spec');
     window.history.pushState(nativeHistoryData(window.history.state), '', `${base}?review=1`);
   };
 
-  const main = (
-    reviewing && view.waiting ? (
-      <ReviewPanel spec={spec} waiting={view.waiting} initial={view.review} repoChecks={!!view.repoChecks} />
-    ) : view.compare ? (
-      <section className="flex flex-col gap-3" data-testid="spec-page-compare-panel">
-        {'error' in view.compare ? (
-          <Notice tone="warn">{view.compare.error}</Notice>
-        ) : (
-          <>
-            <h2 className="text-title font-semibold text-text-primary">
-              Changes from revision {view.compare.from} to revision {view.compare.to}
-            </h2>
-            <SpecDiffView hunks={view.compare.hunks} omittedLines={view.compare.omittedLines} />
-          </>
-        )}
-      </section>
-    ) : (
-      <>
-        {view.criterionHistory ? (
-          <SpecCriterionHistory specId={spec.id} criterionId={view.criterionHistory.criterionId} history={view.criterionHistory.history} />
-        ) : null}
+  // Comments and Files are tabs only with something in them, or once asked for from More.
+  const [asked, setAsked] = useState<{ comments: boolean; files: boolean }>({ comments: false, files: false });
+  const showComments = view.comments.length > 0 || asked.comments;
+  const showFiles = (view.attachments ?? []).length > 0 || asked.files;
+  const tabs: Tab[] = ['spec', 'history', ...(hasRelated ? ['related' as const] : []), ...(showComments ? ['comments' as const] : []), ...(showFiles ? ['files' as const] : [])];
+  const [tab, setTab] = useState<Tab>(view.compare ? 'history' : 'spec');
+  // An old jump link (#comments, #revisions) still lands on its tab.
+  useEffect(() => {
+    const h = window.location.hash.slice(1);
+    const t = h === 'revisions' ? 'history' : h;
+    if (t === 'history' || t === 'related' || t === 'comments' || t === 'files') {
+      if (t === 'comments') setAsked((a) => ({ ...a, comments: true }));
+      if (t === 'files') setAsked((a) => ({ ...a, files: true }));
+      setTab(t);
+    }
+  }, []);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [contentsOpen, setContentsOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const openFromMore = (t: 'comments' | 'files') => {
+    setAsked((a) => ({ ...a, [t]: true }));
+    setTab(t);
+    setMoreOpen(false);
+  };
+  const copyLink = () => {
+    void navigator.clipboard?.writeText(`${window.location.origin}${base}`).then(() => setCopied(true), () => setCopied(false));
+  };
+
+  const showsBody = !(reviewing && view.waiting);
+  const sections = showsBody ? specContents(body) : [];
+  const article = useRef<HTMLDivElement>(null);
+  // After the sheet has closed and handed focus back to its trigger (which
+  // scrolls to it), and after the Spec tab shows: then scroll to the section.
+  const pickSection = (i: number) => {
+    setContentsOpen(false);
+    setTab('spec');
+    setTimeout(() => article.current?.querySelectorAll('h2')[i]?.scrollIntoView({ block: 'start' }), 0);
+  };
+  const marks = criterionMarks(view);
+  const marksKey = JSON.stringify(marks);
+  // The same element across the page's own state (tab, sheets, Related view),
+  // so the rendered text and any criterion history opened in it stay put.
+  const rendered = useMemo(
+    () => <MarkdownContent content={body} images="link" surface="spec" attachments={view.attachmentSources ?? {}} criterionVerdicts={marks} criterionSpecId={spec.id} />,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [body, view.attachmentSources, marksKey, spec.id],
+  );
+
+  const specPanel = reviewing && view.waiting ? (
+    <ReviewPanel spec={spec} waiting={view.waiting} initial={view.review} repoChecks={!!view.repoChecks} onRead={setReviewPanes} />
+  ) : (
+    <>
+      {sections.length >= 3 ? (
+        <button type="button" onClick={() => setContentsOpen(true)} aria-haspopup="dialog" className="inline-flex min-h-11 items-center gap-2 self-start text-meta text-text-secondary underline hover:text-text-primary lg:hidden" data-testid="spec-page-contents">
+          Contents · {sections.length} sections
+        </button>
+      ) : null}
+      {view.criterionHistory ? (
+        <SpecCriterionHistory specId={spec.id} criterionId={view.criterionHistory.criterionId} history={view.criterionHistory.history} />
+      ) : null}
+      <div ref={article} className="[&_h2]:scroll-mt-20 md:[&_h2]:scroll-mt-6">
         <Card as="article" className="md:p-8" data-testid="spec-page-body" aria-label={`Revision ${view.reading.revision} of the spec`}>
-          <MarkdownContent content={withoutRepeatedTitle(view.body, spec.title)} images="link" surface="spec" attachments={view.attachmentSources ?? {}}
-            criterionVerdicts={criterionMarks(view)} criterionSpecId={spec.id} />
+          {rendered}
         </Card>
-      </>
-    )
+      </div>
+    </>
   );
 
   const related = hasRelated ? (
-    <Section title="Related" id="related">
+    <>
       {hasGraph ? (
         <div className="hidden md:block">
           <Segmented
@@ -533,145 +723,150 @@ export default function SpecPage({ view }: { view: Ok }) {
           </ul>
         </div>
       ) : null}
-    </Section>
+    </>
   ) : null;
 
-  const comments = (
-    <Section title="Comments" id="comments">
-      <SpecComments
-        specId={spec.id}
-        revision={view.reading.revision}
-        comments={view.comments}
-        anchors={view.commentAnchors}
-        canComment={view.canComment}
-        canResolve={view.canComment}
-      />
-    </Section>
-  );
+  const panels: Record<Tab, ReactNode> = {
+    spec: specPanel,
+    history: <History view={view} base={base} reviewing={reviewing} />,
+    related,
+    comments: (
+      <SpecComments specId={spec.id} revision={view.reading.revision} comments={view.comments} anchors={view.commentAnchors} canComment={view.canComment} canResolve={view.canComment} />
+    ),
+    files: (
+      <SpecAttachments specId={spec.id} revision={view.reading.revision} attachments={view.attachments ?? []} canAttach={view.canComment} isHead={view.reading.isHead} />
+    ),
+  };
 
-  const revisions = (
-    <Section title="Revisions" id="revisions">
-      {numbers.length > 1 ? <Compare specId={spec.id} revisions={numbers} from={defaultFrom} to={spec.headRevision} /> : null}
-      <ol className="mt-2 flex flex-col divide-y divide-[var(--line-soft)]" data-testid="spec-page-revisions">
-        {view.revisions.map((r) => {
-          const here = r.revision === view.reading.revision && !reviewing && !view.compare;
-          return (
-            <li key={r.revision} className="flex flex-col gap-0.5 py-2" data-testid="spec-page-revision" data-revision={r.revision}>
-              <span className="flex flex-wrap items-baseline gap-x-2 text-body text-text-primary">
-                <Link
-                  href={`${base}?revision=${r.revision}`}
-                  aria-current={here ? 'page' : undefined}
-                  className={`inline-flex min-h-11 items-center underline md:min-h-0 ${here ? 'font-semibold' : 'font-medium'}`}
-                >
-                  Revision {r.revision}
-                </Link>
-                {r.revision === spec.approvedRevision ? <span className="text-meta font-medium text-status-success">approved</span> : null}
-                {r.revision === view.waiting ? <span className="text-meta font-medium text-status-warning">waiting</span> : null}
-                {importing && r.revision === importing.revision ? <span className="text-meta font-medium text-status-info">imported</span> : null}
-                <span className="text-meta text-text-muted">
-                  by {r.author === 'person' ? 'a person' : 'an agent'}, {r.createdAgo}
-                </span>
-              </span>
-              {r.changeSummary ? <span className="text-meta text-text-secondary [overflow-wrap:anywhere]">{r.changeSummary}</span> : null}
-              {r.approvedAt ? (
-                <span className="text-meta text-text-muted" data-testid="spec-page-approved-by">
-                  Approved by {r.approvedBy} {r.approvedAgo}
-                </span>
-              ) : null}
-            </li>
-          );
-        })}
-      </ol>
-    </Section>
-  );
-
-  const files = (
-    <Section title="Files" id="files">
-      <SpecAttachments
-        specId={spec.id}
-        revision={view.reading.revision}
-        attachments={view.attachments ?? []}
-        canAttach={view.canComment}
-        isHead={view.reading.isHead}
-      />
-    </Section>
-  );
-
-  const hasDelivery = !!view.delivery?.entries.length;
-  const jumps = [
-    hasDelivery ? { href: '#delivery', label: 'Delivery' } : null,
-    hasRelated ? { href: '#related', label: 'Related' } : null,
-    { href: '#comments', label: 'Comments' },
-    { href: '#revisions', label: 'Revisions' },
-    { href: '#files', label: 'Files' },
-  ].filter((j): j is { href: string; label: string } => !!j);
-
-  return (
-    <div className="flex flex-col gap-4 md:pb-24">
-      <header className="flex flex-col gap-1">
-        <Link href={`/app/workspaces/${spec.workspaceId}/specs`} className="inline-flex min-h-11 items-center self-start text-meta text-text-muted hover:text-text-primary md:min-h-0">
-          {spec.workspaceName ? `Specs in ${spec.workspaceName}` : 'Specs'}
+  // The one primary action (R-96), in this order; null when none is the reader's.
+  const action: ReactNode = importing?.canConfirm ? (
+    <div className="flex items-center gap-3 lg:flex-col lg:items-stretch">
+      {importing.previous ? (
+        <Link href={`${base}?from=${importing.previous}&to=${importing.revision}`} className="inline-flex min-h-11 shrink-0 items-center text-meta text-text-secondary underline hover:text-text-primary lg:order-last lg:min-h-0" data-testid="spec-page-import-repo-change">
+          Changed since revision {importing.previous}
         </Link>
-        <h1 className="font-voice text-2xl text-text-primary [overflow-wrap:anywhere] md:text-3xl" data-testid="spec-page-title">{spec.title}</h1>
-        <p className="text-meta text-text-muted">
-          {spec.scope} · {view.standing}
-          {view.standard ? <> · <span className="font-medium text-text-secondary" data-testid="spec-page-standard">standard, applies to every change</span></> : null}
+      ) : null}
+      <div className="min-w-0 flex-1">
+        <ConfirmImport specId={spec.id} workspaceId={spec.workspaceId} revision={importing.revision} />
+      </div>
+    </div>
+  ) : reviewing ? (
+    reviewPanes ? <Approve key={reviewPanes.revision} specId={spec.id} revision={reviewPanes.revision} expectedVersion={reviewPanes.version ?? spec.version} /> : null
+  ) : reviewLink ? (
+    <a href={`${base}?review=1`} onClick={openReview} className={primaryActionClass({ fullWidthOnMobile: true })} data-testid="spec-page-review">
+      Review revision {view.waiting}
+    </a>
+  ) : view.retirement && view.canRetire ? (
+    <Restore specId={spec.id} />
+  ) : null;
+
+  const repoState = (
+    <>
+      {view.source?.path ? (
+        <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-source">
+          {view.source.href ? <a href={view.source.href} className="font-mono underline">{view.source.path}</a> : <span className="font-mono">{view.source.path}</span>}
         </p>
-        {/* An unconfirmed import names its file and commit in its own panel, below. */}
-        {importing ? null : view.source?.path ? (
-          <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-source">
-            {view.source.href ? <a href={view.source.href} className="font-mono underline">{view.source.path}</a> : <span className="font-mono">{view.source.path}</span>}
-          </p>
-        ) : view.source?.source ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-source">{view.source.source}</p> : null}
-      </header>
-
-      {view.retirement ? <SpecRetire specId={spec.id} retirement={view.retirement} canRetire={!!view.canRetire} /> : null}
-
+      ) : view.source?.source ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-source">{view.source.source}</p> : null}
       {view.source?.copy ? (
         view.source.behind
           ? <Notice tone="warn" data-testid="spec-page-repo-copy">{view.source.copy}</Notice>
           : <p className="text-meta text-text-muted" data-testid="spec-page-repo-copy">{view.source.copy}</p>
       ) : null}
-      {view.canPublishAnyway ? <PublishAnyway specId={spec.id} /> : null}
-      {view.canMarkStandard ? <StandardMark specId={spec.id} standard={!!view.standard} /> : null}
       {view.criteriaUnread ? <Notice tone="warn" data-testid="spec-page-criteria-unread">{view.criteriaUnread}</Notice> : null}
+    </>
+  );
+  const hasRepoState = !!(view.source?.path || view.source?.source || view.source?.copy || view.criteriaUnread);
+  // Below lg the rail's parts follow the text, on the Spec tab only.
+  const specOnly = tab === 'spec' ? '' : 'hidden lg:flex';
 
-      {line ? <Lede><span data-testid="spec-page-reading">{line}</span></Lede> : null}
-      {importing ? <ImportPanel specId={spec.id} c={importing} /> : null}
-
-      <nav aria-label="On this page" className="flex flex-wrap gap-x-4 text-meta lg:hidden" data-testid="spec-page-jumps">
-        {jumps.map((j) => (
-          <a key={j.href} href={j.href} className="inline-flex min-h-11 items-center text-text-secondary underline hover:text-text-primary">{j.label}</a>
-        ))}
-      </nav>
-
-      <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start lg:gap-10">
-        <div className="flex min-w-0 flex-col gap-4">
-          {main}
-          <SpecDelivery specId={spec.id} delivery={view.delivery} />
-          {related}
-          {comments}
+  return (
+    <div className="flex flex-col gap-4">
+      <header className="flex flex-col gap-1">
+        <div className="flex items-center justify-between gap-2">
+          <Link href={`/app/workspaces/${spec.workspaceId}/specs`} className="inline-flex min-h-11 items-center text-meta text-text-muted hover:text-text-primary md:min-h-0">
+            {spec.workspaceName ? `Specs in ${spec.workspaceName}` : 'Specs'}
+          </Link>
+          <button
+            type="button"
+            onClick={() => setMoreOpen(true)}
+            aria-label="More"
+            aria-haspopup="dialog"
+            data-testid="spec-page-more"
+            className="-mr-2.5 flex h-11 w-11 shrink-0 items-center justify-center text-text-secondary transition-colors hover:text-text-primary"
+          >
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor" aria-hidden="true">
+              <circle cx="3.5" cy="9" r="1.5" />
+              <circle cx="9" cy="9" r="1.5" />
+              <circle cx="14.5" cy="9" r="1.5" />
+            </svg>
+          </button>
         </div>
-        <aside aria-label="Revisions and files" className="flex min-w-0 flex-col lg:border-l lg:border-[var(--line-soft)] lg:pl-6">
-          {revisions}
-          {files}
-          {/* Secondary, never the Approve corner (§22 R-54). */}
-          {!view.retirement && view.canRetire ? <SpecRetire specId={spec.id} retirement={null} canRetire targets={view.retireTargets ?? []} /> : null}
-        </aside>
+        <h1 className="font-voice text-2xl text-text-primary [overflow-wrap:anywhere] md:text-3xl" data-testid="spec-page-title">{spec.title}</h1>
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-status">
+          <Chip tone={status.tone} variant="soft" dot={false} data-testid="spec-page-status-badge">{status.badge}</Chip>
+          {view.retirement?.supersededBy ? (
+            <span data-testid="spec-retired-line">
+              Replaced by <Link href={`/app/specs/${view.retirement.supersededBy.id}`} className="text-text-secondary underline">{view.retirement.supersededBy.title}</Link>
+            </span>
+          ) : status.words ? (
+            <span data-testid={view.retirement ? 'spec-retired-line' : 'spec-page-reading'}>{status.words}</span>
+          ) : null}
+          {view.standard ? <span className="font-medium text-text-secondary" data-testid="spec-page-standard">Standard, applies to every change</span> : null}
+          {titledInText ? <span data-testid="spec-page-text-title">Titled in the text: {titledInText}</span> : null}
+        </p>
+      </header>
+
+      <Tabs tabs={tabs} counts={{ history: view.revisions.length, related: relatedCount, comments: view.comments.length, files: (view.attachments ?? []).length }} active={tab} onPick={setTab} />
+
+      <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[minmax(0,45rem)_20rem] lg:grid-rows-[auto_auto_auto_1fr] lg:items-start lg:gap-x-10 lg:gap-y-0">
+        <div className="flex min-w-0 flex-col lg:col-start-1 lg:row-span-4 lg:row-start-1">
+          {tabs.map((t) => (
+            <div key={t} role="tabpanel" id={panelId(t)} aria-labelledby={tabId(t)} hidden={t !== tab} className="flex flex-col gap-4" data-testid={`spec-page-panel-${t}`}>
+              {panels[t]}
+            </div>
+          ))}
+        </div>
+
+        {sections.length >= 3 ? (
+          <nav aria-label="Contents" className="hidden flex-col gap-1 lg:col-start-2 lg:row-start-2 lg:mb-6 lg:flex" data-testid="spec-page-rail-contents">
+            <h2 className="text-meta font-semibold text-text-secondary">Contents</h2>
+            <ContentsList sections={sections} onPick={pickSection} />
+          </nav>
+        ) : null}
+        <div className={`min-w-0 flex-col lg:col-start-2 lg:row-start-3 ${specOnly || 'flex'}`} data-testid="spec-page-rail-work">
+          <SpecDelivery specId={spec.id} delivery={view.delivery} />
+        </div>
+        {hasRepoState ? (
+          <aside aria-label="Repo" className={`min-w-0 flex-col gap-2 lg:col-start-2 lg:row-start-4 lg:mb-6 ${specOnly || 'flex'}`} data-testid="spec-page-repo-state">
+            {repoState}
+          </aside>
+        ) : null}
+
+        {/* Last in the flow, so on a phone it stays in view and never ends over the text. */}
+        {action ? <ActionDock>{action}</ActionDock> : null}
       </div>
 
-      {/* Last on the page, so on a phone it stays in view the whole way down. */}
-      {importing?.canConfirm ? (
-        <ActionDock label="Decision">
-          <ConfirmImport specId={spec.id} workspaceId={spec.workspaceId} revision={importing.revision} />
-        </ActionDock>
-      ) : reviewLink ? (
-        <ActionDock label="Decision">
-          <a href={`${base}?review=1`} onClick={openReview} className={primaryActionClass({ fullWidthOnMobile: true })} data-testid="spec-page-review">
-            Review revision {view.waiting}
-          </a>
-        </ActionDock>
-      ) : null}
+      <Sheet open={contentsOpen} onClose={() => setContentsOpen(false)} title="Contents" testId="spec-page-contents-sheet">
+        <ContentsList sections={sections} onPick={pickSection} />
+      </Sheet>
+
+      <SideSheet open={moreOpen} onClose={() => setMoreOpen(false)} title="More" testId="spec-page-more-sheet">
+        <div className="flex flex-col">
+          {importing?.canConfirm ? (
+            <Link href={importing.batchHref} className={MORE_ROW} data-testid="spec-page-import-batch">Confirm with the other imports</Link>
+          ) : null}
+          {view.canComment ? (
+            <button type="button" className={MORE_ROW} onClick={() => openFromMore('comments')} data-testid="spec-page-more-comment">Add a comment</button>
+          ) : null}
+          {view.canComment && view.reading.isHead ? (
+            <button type="button" className={MORE_ROW} onClick={() => openFromMore('files')} data-testid="spec-page-more-attach">Attach a file</button>
+          ) : null}
+          <button type="button" className={MORE_ROW} onClick={copyLink} data-testid="spec-page-more-copy-link">{copied ? 'Link copied' : 'Copy link'}</button>
+          {view.canPublishAnyway ? <PublishAnyway specId={spec.id} /> : null}
+          {view.canMarkStandard ? <StandardMark specId={spec.id} standard={!!view.standard} /> : null}
+          {!view.retirement && view.canRetire ? <SpecRetire specId={spec.id} retirement={null} canRetire targets={view.retireTargets ?? []} /> : null}
+        </div>
+      </SideSheet>
     </div>
   );
 }
