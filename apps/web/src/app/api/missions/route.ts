@@ -23,7 +23,7 @@ import {
 } from '@/lib/mission-integration-branch';
 import { resolveFeedActor, postMissionFeedEvent } from '@/lib/mission-feed';
 import { computeMissionProgress, handWrittenCriteriaRefusal, validateGoalCriteria } from '@buildd/core/mission-helpers';
-import { parseMergePolicy, findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError } from '@buildd/shared';
+import { parseMergePolicy, findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError, type LivingSpecGoalCriterion } from '@buildd/shared';
 import {
   DEFAULT_HEARTBEAT_CRON,
   organizerChecklist,
@@ -37,6 +37,7 @@ import { buildMissionListWhere, missionListOrderBy, parseMissionListSort } from 
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 import { settleWorkChanges } from '@/lib/settle-work-changes';
 import { noteWorkChanged } from '@/lib/work-changed';
+import { parseCreateSelections, resolveCreateSelections, startCreateSelections } from '@/lib/specs/mission-selection';
 
 // GET /api/missions — list missions for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -190,7 +191,7 @@ export async function POST(req: NextRequest) {
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
       status: requestedStatus, dependsOnMission, gateCondition, mergePolicy, orchestrationMode, costBudgetUsd,
       pacingMode, pacingMaxPerHour, goalCriteria, autoVerify, branchStrategy, autoSurfaceAudit,
-      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode, executor, decomposition, createdByWorkerId } = body;
+      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode, executor, decomposition, createdByWorkerId, outcomeSpec } = body;
 
     if (autoSurfaceAudit !== undefined && typeof autoSurfaceAudit !== 'boolean') {
       return NextResponse.json({ error: 'autoSurfaceAudit must be a boolean' }, { status: 400 });
@@ -314,6 +315,20 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Living Specs D-41: the mission selects the specs it makes true, each
+    // scoped (by default to what the selected revision adds or changes).
+    // Parsed here, resolved once the workspace is known, stored with the row.
+    const createSelections = outcomeSpec === undefined || outcomeSpec === null ? null : parseCreateSelections(outcomeSpec);
+    if (createSelections && !createSelections.ok) {
+      return NextResponse.json({ error: createSelections.error }, { status: 400 });
+    }
+    if (createSelections && goalCriteria !== undefined && goalCriteria !== null) {
+      return NextResponse.json({ error: 'Send outcomeSpec or goalCriteria, not both: the outcome spec writes its own criterion' }, { status: 400 });
+    }
+    if (createSelections && !workspaceId) {
+      return NextResponse.json({ error: 'outcomeSpec needs workspaceId: a mission selects specs of the workspace it builds in' }, { status: 400 });
+    }
+
     if (activeHoursStart !== undefined && activeHoursStart !== null && (activeHoursStart < 0 || activeHoursStart > 23)) {
       return NextResponse.json({ error: 'activeHoursStart must be between 0 and 23' }, { status: 400 });
     }
@@ -403,6 +418,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: contextArtifacts.error }, { status: 400 });
     }
 
+    let selections: Array<{ criterion: LivingSpecGoalCriterion; inScope: string[] }> = [];
+    if (createSelections && resolvedWorkspaceId) {
+      const resolved = await resolveCreateSelections(resolvedWorkspaceId, createSelections.entries);
+      if (!resolved.ok) return NextResponse.json({ error: resolved.error }, { status: resolved.status });
+      selections = resolved.selections;
+    }
+
     // Who filed it and who it is for, kept apart (spec 7702c32a R-1/R-2).
     const creator = await resolveMissionCreator({
       user,
@@ -436,7 +458,7 @@ export async function POST(req: NextRequest) {
         ...(mergePolicy != null ? { mergePolicy } : {}),
         ...(costBudgetUsd != null ? { costBudgetUsd: String(costBudgetUsd) } : {}),
         ...(pacingMode === 'paced' ? { pacingMode: 'paced', ...(pacingMaxPerHour != null ? { pacingMaxPerHour } : {}) } : {}),
-        ...(goalCriteria !== undefined ? { goalCriteria: goalCriteria ?? null } : {}),
+        ...(selections.length ? { goalCriteria: selections.map((x) => x.criterion) } : goalCriteria !== undefined ? { goalCriteria: goalCriteria ?? null } : {}),
         ...(autoVerify !== undefined ? { autoVerify: autoVerify === true ? true : autoVerify === false ? false : null } : {}),
         ...(autoSurfaceAudit !== undefined ? { autoSurfaceAudit } : {}),
         ...(deferredStart.startAt ? {
@@ -538,6 +560,10 @@ export async function POST(req: NextRequest) {
       } catch (err) {
         console.warn('[missions/post] context links not written:', err);
       }
+    }
+
+    if (selections.length) {
+      await startCreateSelections(apiAccount ? { kind: 'account', account: apiAccount } : { kind: 'user', userId: user!.id }, mission.id, selections);
     }
 
     // A mission-branch mission must never exist in the enabled-but-inert state: generate the
