@@ -29,6 +29,12 @@ describe('findRunnerKill', () => {
     "ps aux | grep bun | awk '{print $2}' | xargs kill -9",
     'Get-Process | Stop-Process -Force',
     'cd C:/x; Get-Process bun* | Stop-Process',
+    'git status && pkill -9 bun',
+    'sudo killall -9 node',
+    '/usr/bin/pkill git',
+    'taskkill /F /FI "IMAGENAME eq bun.exe"',
+    '(Get-Process bun).Kill()',
+    'Get-Process -Name node | kill',
   ]) {
     test(`refuses: ${command}`, () => {
       expect(findRunnerKill(command, RUNNER_PIDS)).not.toBeNull();
@@ -39,6 +45,8 @@ describe('findRunnerKill', () => {
     'Stop-Process -Id 4321 -Force',
     'taskkill /PID 1200 /F',
     'kill -9 4321',
+    'Get-Process -Id 4321 | Stop-Process',
+    'Stop-Process -Id 98765,1200',
   ]) {
     test(`refuses a kill of the runner's own pid: ${command}`, () => {
       expect(findRunnerKill(command, RUNNER_PIDS)?.reason).toContain('runner');
@@ -55,6 +63,17 @@ describe('findRunnerKill', () => {
     'git status',
     'rm -rf node_modules/.cache',
     'echo skill',
+    // Not kills at all: the kill word is an argument, not the command.
+    'git commit -m "fix: kill stale lock"',
+    'bun test -t "terminate"',
+    'node scripts/x.js --kill',
+    'git log --grep=kill',
+    'grep -r kill src',
+    "git commit -m 'stop bun from leaking: taskkill /IM bun.exe'",
+    'bun run scripts/kill-stale.ts',
+    'echo "pkill bun" > notes.txt',
+    'bun run build 2>&1 | tail -n 5',
+    'ps aux | grep bun',
   ]) {
     test(`allows: ${command}`, () => {
       expect(findRunnerKill(command, RUNNER_PIDS)).toBeNull();
@@ -91,6 +110,11 @@ describe('permission hook', () => {
   test('denies the same kill through Bash', async () => {
     const out = await run('Bash', 'taskkill /IM bun.exe /F');
     expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+
+  test('allows a commit message that mentions kill', async () => {
+    const out = await run('Bash', 'git commit -m "fix: kill stale lock"');
+    expect(out.hookSpecificOutput.permissionDecision).toBe('allow');
   });
 
   test('allows a kill by a pid the agent started', async () => {
