@@ -1,6 +1,7 @@
 import { formatTaskEstimate, type TaskEstimatePayload } from '@buildd/shared';
 import { hasTokenScope, requiredScopeForAction } from './token-scopes';
 import { detectProviderAccessAsk, providerAccessRefusal } from './provider-access-ask';
+import { detectInteractiveSessionAsk, interactiveSessionRefusal } from './interactive-session-ask';
 import { DECISION_OPTIONS_GUIDANCE, DECISION_TITLE_GUIDANCE, normalizeDecisionOptions } from './question-brief';
 import { decisionTitleAdvisory } from './human-attention';
 import { SUB_ACTIONS, subActionQuoted as quotedSubs } from './mcp-sub-actions';
@@ -3134,6 +3135,9 @@ export async function handleBuilddAction(
       // a wider worker key): hand back the canonical ask before anything parks.
       const providerAsk = detectProviderAccessAsk(question, typeof params.context === 'string' ? params.context : undefined, ...decisionOptions.options.map(o => o.label));
       if (providerAsk) return { isError: true, content: [{ type: 'text', text: JSON.stringify(providerAccessRefusal(providerAsk), null, 2) }] };
+      if (detectInteractiveSessionAsk(question, typeof params.context === 'string' ? params.context : undefined, ...decisionOptions.options.map(o => o.label))) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify(interactiveSessionRefusal(), null, 2) }] };
+      }
       const workerId = resolveWorkerId(params.workerId, ctx);
       const worker = await api(`/api/workers/${workerId}`);
       // A runner-managed agent already asks with AskUserQuestion; its runner
