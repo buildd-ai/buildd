@@ -6,7 +6,7 @@ import type { AccessItem } from '@/lib/agent-capabilities/access-log';
 const item = (o: Partial<AccessItem>): AccessItem => ({
   at: '2026-10-05T12:03:00.000Z', lastAt: '2026-10-05T12:03:00.000Z', count: 1,
   capability: 'github.repo_grant', label: 'GitHub repo access', decision: 'allowed',
-  reason: null, target: 'acme/widget', expiresAt: null, workerId: 'w-1', source: 'run', grantId: null, pending: false, ...o,
+  reason: null, target: 'acme/widget', expiresAt: null, workerId: 'w-1', source: 'run', grantId: null, pending: false, closed: null, ...o,
 });
 const render = (items: AccessItem[]) => renderToStaticMarkup(<TaskAccessSection items={items} />);
 const text = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/&#x27;/g, "'").replace(/&amp;/g, '&').replace(/\s+/g, ' ');
@@ -54,5 +54,18 @@ describe('TaskAccessSection', () => {
     expect(text(html)).toContain('1 waiting on a person');
     expect(html).not.toContain('task-access-refused');
     expect(html).toContain('data-decision="pending"');
+  });
+
+  it('a request closed because its task ended reads as closed: no Review link, not waiting, not refused', () => {
+    const closed = item({ source: 'grant', capability: 'capability.request', label: 'Capability request', decision: 'refused', target: null, grantId: 'g-9', pending: false, closed: 'the task ended' });
+    // On its own it is past history: the section stays folded.
+    expect(render([closed])).toContain('aria-expanded="false"');
+    const html = render([closed, item({ source: 'grant', capability: 'pr.merge', label: 'Merge PR', decision: 'refused', target: 'PR #7' })]);
+    expect(text(html)).toContain('1 refused');
+    expect(html).not.toContain('task-access-review');
+    expect(html).not.toContain('/app/settings/apps?request=');
+    expect(html).not.toContain('task-access-waiting');
+    expect(html).toContain('data-decision="closed"');
+    expect(text(html)).toContain('closed · the task ended');
   });
 });

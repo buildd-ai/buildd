@@ -10,15 +10,17 @@
  * only narrow the requested TTL and is refused past a forbidding policy, a
  * catalog block, a workspace disable, an ended task or worker, or a role change.
  * Revoking takes effect on the agent's next call: every use re-reads the grant.
+ * A refusal carries `closed: true` when nobody can decide the request any more
+ * (run ended, role changed, already decided, gone), so a card drops its buttons.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { decideCapabilityRequest, loadGrant, type Decision } from '@/lib/capability-grants-store';
 import { MANAGE_FORBIDDEN, resolveCapabilityAdminCaller } from '@/lib/capability-grants-auth';
-import { MAX_GRANT_TTL_SECONDS, MIN_GRANT_TTL_SECONDS } from '@/lib/capability-grants';
+import { MAX_GRANT_TTL_SECONDS, MIN_GRANT_TTL_SECONDS, decisionClosesRequest } from '@/lib/capability-grants';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DECISIONS: readonly Decision[] = ['approve', 'deny', 'revoke'];
-const NOT_FOUND = () => NextResponse.json({ error: 'Request not found' }, { status: 404 });
+const NOT_FOUND = () => NextResponse.json({ error: 'Request not found', closed: true }, { status: 404 });
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -49,6 +51,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!caller.canManage) return MANAGE_FORBIDDEN();
 
   const out = await decideCapabilityRequest(row, decision, { userId: caller.userId }, { ttlSeconds, reason });
-  if (!out.ok) return NextResponse.json({ error: out.error, code: out.code, ...(out.grant ? { grant: out.grant } : {}) }, { status: out.status });
+  if (!out.ok) return NextResponse.json({ error: out.error, code: out.code, closed: decisionClosesRequest(out.code, out.grant?.status), ...(out.grant ? { grant: out.grant } : {}) }, { status: out.status });
   return NextResponse.json({ grant: out.grant, alreadyDecided: out.alreadyDecided });
 }

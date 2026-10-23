@@ -6,12 +6,13 @@ import { describe, expect, it } from 'bun:test';
 import { accessEscalationRule, accessNeedsYouItems, accessPushPayload, accessRequestHref } from './capability-grants-needs-you';
 import { buildActionQueue } from './action-queue';
 import { deriveHomeAttention } from './home-attention';
-import type { AccessRequestView } from './capability-grants-view';
+import type { AccessRequestOnRun } from './capability-grants-needs-you';
 
-const req = (id: string, over: Partial<AccessRequestView> = {}): AccessRequestView => ({
+const req = (id: string, over: Partial<AccessRequestOnRun> = {}): AccessRequestOnRun => ({
   id, status: 'pending', capability: 'observability:query', provider: 'axiom', risk: 'query', tool: null, resource: null,
   environment: null, workspaceId: 'ws-1', taskId: 't-1', roleSlug: 'builder', decidedBy: null, ttlSeconds: 3600,
-  expiresAt: null, revokedAt: null, reason: 'trace a slow endpoint', taskTitle: 'Fix checkout latency', workspaceName: 'web', ...over,
+  expiresAt: null, revokedAt: null, reason: 'trace a slow endpoint', taskTitle: 'Fix checkout latency', workspaceName: 'web',
+  taskStatus: 'in_progress', workerStatus: 'running', ...over,
 });
 
 describe('accessEscalationRule', () => {
@@ -36,6 +37,31 @@ describe('accessNeedsYouItems', () => {
       fixHref: accessRequestHref('r1'),
     });
     expect(items[1].accessAsk).toBe('Write to Axiom');
+  });
+
+  it('a pending request on a live task and run is a card', () => {
+    expect(accessNeedsYouItems([req('r1')]).map(i => i.accessRequestId)).toEqual(['r1']);
+  });
+
+  it('a request closed because its task ended is no card and adds nothing to Home\'s count', () => {
+    // The observed shape: the row was closed when an approval was tried after the task ended.
+    const closed = req('r1', { status: 'expired', decidedBy: 'system', decisionReason: 'task_terminal', taskStatus: 'completed', workerStatus: 'completed' });
+    expect(accessNeedsYouItems([closed])).toEqual([]);
+    const queue = buildActionQueue(accessNeedsYouItems([closed, req('r2')]), []);
+    const home = deriveHomeAttention({ queue, missions: [], questions: [], held: [], isActionable: () => true });
+    expect(home.map(h => h.queue?.accessRequestId)).toEqual(['r2']);
+  });
+
+  it('a still-pending row whose task is terminal is closed: fails closed, never a card', () => {
+    for (const taskStatus of ['completed', 'failed', 'cancelled']) {
+      expect(accessNeedsYouItems([req('r1', { taskStatus })])).toEqual([]);
+    }
+  });
+
+  it('a still-pending row whose agent run stopped, or whose run cannot be read, is no card', () => {
+    expect(accessNeedsYouItems([req('r1', { workerStatus: 'failed' })])).toEqual([]);
+    expect(accessNeedsYouItems([req('r1', { workerStatus: null })])).toEqual([]);
+    expect(accessNeedsYouItems([req('r1', { taskStatus: null })])).toEqual([]);
   });
 
   it('becomes one ACCESS card on Home with the ask as its title', () => {
