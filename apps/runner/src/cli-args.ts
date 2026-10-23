@@ -51,6 +51,8 @@ export const RUNNER_USAGE = [
   '                             newest extras instead, --abort ends them (asks first)',
   '  buildd budget reset        Probe a held provider limit now; clears it if capacity is back',
   '  buildd web                 Open the runner on this machine in your browser',
+  '  buildd wsl install [--distro <name>]   Windows: set up a runner inside WSL2 (asks before',
+  '                             installing WSL and Ubuntu, then runs the Linux installer in it)',
   '  buildd help                Show this help',
   '',
   'Options:',
@@ -125,6 +127,8 @@ export type CliDecision =
   | { kind: 'budget-reset' }
   /** `buildd web`: open the running runner's local web UI (runner-web.ts). */
   | { kind: 'web' }
+  /** `buildd wsl install [--distro <name>]` (wsl-setup.ts installWsl). */
+  | { kind: 'wsl-install'; distro: string | null }
   | { kind: 'run' }
   | { kind: 'top'; missionId: string | null; workspace: string | null; team: string | null; frame?: { view: 'missions' | 'queue'; cols: number; rows: number } }
   /** `buildd top --dev` / `buildd top-dev`: top from the dev checkout (top-dev.ts); `args` are top's, minus --dev. */
@@ -240,6 +244,14 @@ export function classifyCliArgs(argv: string[]): CliDecision {
   }
   if (args[0] === 'web') {
     return args.length > 1 ? { kind: 'unknown', arg: args[1] } : { kind: 'web' };
+  }
+  if (args[0] === 'wsl') {
+    if (args[1] !== 'install') return { kind: 'unknown', arg: args[1] ?? 'wsl' };
+    const rest = args.slice(2);
+    if (rest.length === 0) return { kind: 'wsl-install', distro: null };
+    if (rest.length === 1 && rest[0].startsWith('--distro=') && rest[0].length > '--distro='.length) return { kind: 'wsl-install', distro: rest[0].slice('--distro='.length) };
+    if (rest.length === 2 && rest[0] === '--distro' && !rest[1].startsWith('-')) return { kind: 'wsl-install', distro: rest[1] };
+    return { kind: 'unknown', arg: rest[0] };
   }
 
   let i = 0;
