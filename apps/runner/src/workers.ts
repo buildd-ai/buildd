@@ -2404,6 +2404,21 @@ export class WorkerManager {
         // started_at NULL until the reaper killed them ~12 min later and booked
         // them as infra failures (2026-08-28: 3 rows minted in 53ms, 1 started).
         try {
+          // The broad poll is provider-blind, so the server may hand back a row for
+          // a provider this runner's login holds. Do not start it: give it back.
+          const rowProvider = providerOfBackend(claimedWorker.task?.backend ?? claimedWorker.backend);
+          const heldUntil = this.providerLimits.heldUntil(rowProvider);
+          if (heldUntil !== null) {
+            const until = new Date(heldUntil).toISOString();
+            console.log(`[WorkerManager] ${rowProvider} login at its limit until ${until} — releasing claimed worker ${claimedWorker.id}`);
+            this.buildd.updateWorker(claimedWorker.id, {
+              status: 'failed',
+              error: `Runner holds new ${rowProvider} work until ${until}`,
+            }).catch(() => {});
+            if (claimedWorker.taskId) this.noteClaimOutcome(claimedWorker.taskId, { at: Date.now(), reason: 'budget_exhausted', until, walls: [{ kind: 'runner_seat', backend: rowProvider, resetsAt: until }] });
+            this.scheduleResumeAt(heldUntil, 'provider limit reset');
+            continue;
+          }
           const worker = await this.startClaimedWorker(claimedWorker);
           if (worker) started.push(worker);
         } catch (err: any) {
@@ -2663,7 +2678,12 @@ export class WorkerManager {
     }
     this.noteProviderLimitOutcome();
     this.scheduleResumeAt(untilMs, 'provider limit reset');
-    this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: untilMs, reason: `${limit.provider} login at its limit (${limit.kind})` });
+    // `circuit_breaker` paused:true reads as every claim paused; only say so when both providers are held.
+    if (this.providerLimits.allHeld()) {
+      this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: untilMs, reason: `${limit.provider} login at its limit (${limit.kind})` });
+    } else {
+      this.emit({ type: 'provider_limit', provider: limit.provider, pausedUntil: untilMs, kind: limit.kind });
+    }
   }
 
   /** `buildd top` reads the runner's own holds as login walls on the last broad claim. */

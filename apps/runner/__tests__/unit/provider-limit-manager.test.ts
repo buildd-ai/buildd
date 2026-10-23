@@ -231,6 +231,36 @@ describe('provider limit warning', () => {
     expect(claimTaskMock).toHaveBeenCalledTimes(1);
   });
 
+  test('a poll that returns a Claude and a Codex worker starts only the Codex one and releases the Claude one', async () => {
+    const worker = setup();
+    await send(worker, { status: 'allowed_warning', rateLimitType: 'five_hour', resetsAt: Math.floor((Date.now() + 3_600_000) / 1000) });
+    claimTaskMock.mockResolvedValueOnce({ workers: [
+      { id: 'cw-claude', taskId: 't1', task: { id: 't1', backend: 'claude' } },
+      { id: 'cw-codex', taskId: 't2', task: { id: 't2', backend: 'codex' } },
+    ] } as any);
+    const startMock = mock(async (cw: any) => ({ id: cw.id }) as any);
+    (manager as any).startClaimedWorker = startMock;
+    const updateMock = mock(async () => ({}));
+    (manager as any).buildd.updateWorker = updateMock;
+
+    const started = await manager.claimPendingTasks();
+    expect(startMock).toHaveBeenCalledTimes(1);
+    expect((startMock.mock.calls[0] as any[])[0].id).toBe('cw-codex');
+    expect(started.map((w: any) => w.id)).toEqual(['cw-codex']);
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    expect((updateMock.mock.calls[0] as any[])[0]).toBe('cw-claude');
+    expect((updateMock.mock.calls[0] as any[])[1].status).toBe('failed');
+  });
+
+  test('a single-provider hold does not emit circuit_breaker paused', async () => {
+    const worker = setup();
+    const events: any[] = [];
+    (manager as any).emit = (e: any) => events.push(e);
+    await send(worker, { status: 'allowed_warning', resetsAt: Math.floor((Date.now() + 3_600_000) / 1000) });
+    expect(events.some(e => e.type === 'circuit_breaker' && e.paused)).toBe(false);
+    expect(events.some(e => e.type === 'provider_limit' && e.provider === 'claude')).toBe(true);
+  });
+
   test('a Codex warning does not stop Claude work', async () => {
     const worker = setup('codex');
     await send(worker, { status: 'allowed_warning', resetsAt: Math.floor((Date.now() + 3_600_000) / 1000) });
