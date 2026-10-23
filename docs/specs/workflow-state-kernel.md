@@ -643,7 +643,10 @@ normalised name is shared by unrelated failures. Two failures of one job match o
 on the same test, and a job whose tests could not be read never matches. The base
 explains a PR only when every failing entry of the PR also fails on the base. The
 recovery sweep reads the least recently rechecked incidents first, sends every one it
-leaves unresolved to the back, and pages past incidents it cannot read. The kernel
+leaves unresolved to the back, and pages past incidents it cannot read. That sweep is
+the hourly backstop: an incident is also rechecked on its own within minutes of its
+base's check suite completing, or at a short fallback, by the control plane's
+per-minute tick (`workflow-kernel-library.md` §3, trunk recovery). The kernel
 opens a trunk incident (T25) when the same signature (a) is failing on the base
 branch's own head, or (b) is failing on at least a configured number of distinct
 deliveries inside a configured window. While an incident is open: no per-PR `ci`

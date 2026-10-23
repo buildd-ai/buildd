@@ -100,6 +100,17 @@ describe('create_task — parentTaskId support', () => {
     expect(body.context?.headBranch).toBeUndefined();
   });
 
+  // Spec e28018c2 R-20: dependsOn may cross workspaces of the team; the delegation rule is unchanged.
+  it('documents cross-workspace dependsOn on create_task and update_task, keeping the delegation sentence', () => {
+    const create = buildParamsDescription(['create_task']);
+    expect(create).toContain('dependsOn may name tasks in other workspaces of the same team that you can see');
+    expect(create).toContain("Under a delegation a task filed in the granted workspace may set missionId/dependsOn only to that workspace's own missions and tasks.");
+    const update = buildParamsDescription(['update_task']);
+    expect(update).toContain('dependsOn?');
+    expect(update).toContain('dependsOn may name tasks in other workspaces of the same team that you can see');
+    expect(update).toContain('would close a cycle');
+  });
+
   it('documents headBranch in the create_task params description, naming the head_not_owned failure it prevents', async () => {
     const description = buildParamsDescription(['create_task']);
     expect(description).toContain('headBranch?');

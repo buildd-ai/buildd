@@ -134,6 +134,8 @@ export const REVIEW_STATUS_TERMS = {
   changesRequested: 'Changes requested',
   finding: 'Unresolved review finding',
   ready: 'Ready to merge',
+  /** Approved, and a rail that clears by itself (a visual review, CI still running) refused the merge for now. */
+  waiting: 'Approved, waiting to merge',
   blocked: 'Merge blocked',
   repairing: 'Repair in progress',
   repairingBehind: 'Branch update in progress',
@@ -182,7 +184,8 @@ function plainCode(code: string | null | undefined, fallback: string): string {
  *
  * Each description leads with one of `REVIEW_STATUS_TERMS` (R-43): "Review in
  * progress", "Changes requested", "Unresolved review finding: <finding>"
- * (AC-13), "Ready to merge" or "Merge blocked: <reason>".
+ * (AC-13), "Ready to merge", "Approved, waiting to merge: <rail>" or
+ * "Merge blocked: <reason>".
  */
 export function landingStatusOf(view: KernelView, o: { detail?: string | null } = {}): LandingStatus | null {
   const d = view.delivery;
@@ -197,6 +200,9 @@ export function landingStatusOf(view: KernelView, o: { detail?: string | null } 
     const over = g.coverage === 'human'
       ? (view.findings ?? []).filter((f) => f.required && (f.status === 'open' || f.status === 'addressed')).length : 0;
     const overText = over ? ` over ${over} open ${over === 1 ? 'finding' : 'findings'}` : '';
+    // A waiting rail refused the merge of this approved head (the detail the refusal named):
+    // say what it waits on, the same words get_pr and explain give (spec 072de598 I-12, AC-24).
+    if (o.detail && d.state === 'APPROVED') return status('pending', T.waiting, `${at} approved by ${by}${overText}; ${o.detail}`);
     return status('success', T.ready, `${at} approved by ${by}${overText}`);
   }
   const gateFailure = (r: ReviewGate): LandingStatus | null => {

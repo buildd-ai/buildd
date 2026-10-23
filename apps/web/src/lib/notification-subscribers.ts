@@ -16,7 +16,7 @@
  * emitting request gains no latency.
  */
 import { subscriber, type AnySubscriber, type SlotFailure } from '@/lib/core-events';
-import { notifyTeam, notifyTeamOf } from '@/lib/notify';
+import { notifyTeam } from '@/lib/notify';
 import { isCredentialExpiredError } from '@/lib/notify-rules';
 import {
   recordEvent, taskCompletedEvent, taskFailedEvent, taskNeedsInputEvent, prMergedEvent, prCiFailedEvent,
@@ -35,15 +35,11 @@ function failureLine(failure: SlotFailure | null | undefined, sensitive: boolean
 }
 
 export const notificationSubscribers: readonly AnySubscriber[] = [
-  // A spec approval was asked for over MCP or chat: bring the confirm page to the person.
+  // A spec approval was asked for over MCP or chat: bring the confirm page to
+  // the people who may approve it, each on their own key, never the team channel (spec b7fc9316 R-10).
   subscriber('notifications', 'spec.approval_requested', 'push-spec-approval-requested', async e => {
-    await notifyTeamOf({ workspaceId: e.workspaceId }, 'needsAttention', {
-      title: `Approve "${e.title}"?`,
-      message: `Revision ${e.revision} is waiting for your approval.${e.warnings ? ` ${e.warnings} ${e.warnings === 1 ? 'thing' : 'things'} to look at.` : ''}`,
-      url: e.confirmUrl,
-      urlTitle: 'Review and approve',
-      priority: 0,
-    });
+    const { notifySpecApprovers } = await import('@/lib/spec-approval-notify');
+    await notifySpecApprovers({ workspaceId: e.workspaceId, title: e.title, revision: e.revision, confirmUrl: e.confirmUrl, warnings: e.warnings });
   }),
   // ── Subscriptions ledger ───────────────────────────────────────────────────
   subscriber('notifications', 'task.completed', 'ledger-task-completed', async e => {

@@ -84,8 +84,16 @@ describe('landingStatusOf: the buildd/landing status (§4)', () => {
   test('a lasting rail\'s refusal is named while a person decides it', () => {
     expect(landingStatusOf(V(D({ state: 'ESCALATED', stateReason: 'landing_needs_human' })), { detail: 'touches protected path (infra/x)' })!.description)
       .toBe('Merge blocked: touches protected path (infra/x)');
-    // Only while escalated: a detail never turns into a reason for a delivery that moved on.
-    expect(landingStatusOf(V(D(), [R(1, 'approve')]), { detail: 'touches protected path (infra/x)' })!.state).toBe('success');
+  });
+  // Spec 072de598 I-12 / AC-24: a waiting rail (a visual review, CI still running) refused the merge
+  // of an approved head. GitHub names that rail, the same words get_pr and explain give, never "Ready to merge".
+  test('an approved head a waiting rail held reads pending and names the rail, not Ready to merge', () => {
+    const held = landingStatusOf(V(D({ state: 'APPROVED' }), [R(1, 'approve')]), { detail: 'Visual review: 2 screens to review' })!;
+    expect(held).toEqual({ state: 'pending', sha: 'abcdef1234', description: 'Approved, waiting to merge: abcdef1 approved by review; Visual review: 2 screens to review' });
+    // No detail (the hold lifted, or a later version): ready again.
+    expect(landingStatusOf(V(D({ state: 'APPROVED' }), [R(1, 'approve')]))!.description).toBe('Ready to merge: abcdef1 approved by review');
+    // Merging already started: the hold passed.
+    expect(landingStatusOf(V(D({ state: 'LANDING' }), [R(1, 'approve')]), { detail: 'x' })!.state).toBe('success');
   });
   test('nothing to publish without a PR head, or once the delivery is over', () => {
     expect(landingStatusOf(V(D({ currentHeadSha: null })))).toBeNull();
@@ -108,7 +116,7 @@ describe('landingStatusOf: the buildd/landing status (§4)', () => {
     'the head is behind its base, but the base delta is small, disjoint from this PR and risk-free (S15); the merge door merges it without another refresh',
   ];
   test('R-43: every description leads with a plain review term and never says "land"', () => {
-    const terms = ['Repair in progress', 'Branch update in progress', 'CI fix in progress', 'Conflict fix in progress', 'Migration fix in progress', 'Review in progress', 'Changes requested', 'Unresolved review finding', 'Ready to merge', 'Merge blocked'];
+    const terms = ['Repair in progress', 'Branch update in progress', 'CI fix in progress', 'Conflict fix in progress', 'Migration fix in progress', 'Review in progress', 'Changes requested', 'Unresolved review finding', 'Ready to merge', 'Approved, waiting to merge', 'Merge blocked'];
     const F = { id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'abcdef1234', ordinal: 0, path: 'src/a.ts', line: 4, title: 'rename the flag', required: true, status: 'open' as const, lastRound: 1, addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null };
     const states: DeliverySnapshot['state'][] = ['WORKING', 'AWAITING_PUSH', 'AWAITING_REVIEW', 'CHANGES_REQUESTED', 'FIXING', 'APPROVED', 'LANDING', 'REPAIRING', 'BLOCKED_ON_TRUNK', 'ESCALATED'];
     const out: string[] = [landingStatusUnknown('abcdef1234').description];

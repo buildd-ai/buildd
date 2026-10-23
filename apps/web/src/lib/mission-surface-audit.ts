@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { tasks, missions, missionNotes, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, inArray, isNull, like, notLike } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, like, notLike, sql } from 'drizzle-orm';
 import {
   MAX_SURFACE_AUDIT_ROUNDS,
   SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE,
@@ -23,7 +23,7 @@ import { VISUAL_AUDITOR_ROLE_SLUG, visualReviewPolicyOf } from '@buildd/shared';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import { resolveVisualQaConfig } from '@buildd/core/visual-qa-page-source';
-import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, type SurfaceAuditGateTask } from '@/lib/mission-surface-audit-gate';
+import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, surfaceAuditWaived, type SurfaceAuditGateTask } from '@/lib/mission-surface-audit-gate';
 import { readAuditedSha } from '@/lib/workflow/visual-review-state';
 import { missionMemberIds } from '@/lib/mission-surface-audit-membership';
 import { readIncidentRecoveryRef } from '@/lib/incident-recovery-refs';
@@ -117,6 +117,15 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
     columns: { id: true, title: true, status: true, dependsOn: true, context: true },
     orderBy: sqlOrderBy([desc(tasks.createdAt)]),
   });
+
+  // Under a person's standing Skip, a finding the auditor files is information,
+  // not a repair (spec 072de598 I-18): its fix task is cancelled with the Skip
+  // as its reason and opens no round. A fix a person chose (`human`) still runs.
+  if (origin === 'auto' && isSurfaceFixTask(createdTask.title)
+    && await surfaceAuditWaived({ id: missionId, autoSurfaceAudit: mission.autoSurfaceAudit, workspaceId })) {
+    await cancelFixUnderSkip({ id: createdTask.id, workspaceId, missionId });
+    return;
+  }
 
   if (existingAudit && isSurfaceFixTask(createdTask.title)) {
     // A `[surface fix]` task is the auditor's (or a human's) answer to an
@@ -440,6 +449,22 @@ export { SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE };
  * A round skips the touchesUiSurface check: a fix task's manifest often names
  * no UI path, and the route in its title is what needs re-checking.
  */
+/** Cancel an auditor's fix filed under a standing Skip, while nobody has claimed it. */
+async function cancelFixUnderSkip(task: { id: string; workspaceId: string; missionId: string }): Promise<void> {
+  const cancellation = { reason: 'Visual review was skipped by a person, so this finding is kept as information, not repaired.', actor: 'system:visual-review-skip', at: new Date().toISOString() };
+  const cancelled = await db.update(tasks)
+    .set({
+      status: 'cancelled',
+      context: sql`coalesce(${tasks.context}, '{}'::jsonb) || jsonb_build_object('cancellation', ${JSON.stringify(cancellation)}::jsonb)`,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending'), isNull(tasks.claimedBy)))
+    .returning({ id: tasks.id });
+  if (cancelled.length === 0) return;
+  const { applyTaskCancelSideEffects } = await import('@/lib/task-cancel');
+  await applyTaskCancelSideEffects(task);
+}
+
 async function followUpSurfaceFix(opts: {
   missionId: string;
   workspaceId: string;

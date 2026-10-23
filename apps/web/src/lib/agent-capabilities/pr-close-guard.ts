@@ -33,7 +33,7 @@ export type ForeignCloseVerdict =
   | { ok: true; reason: string; supersedingPrNumber: number }
   | { ok: false; status: number; reasonCode: ForeignCloseRefusal; error: string; hint: string };
 
-const ASK_OWNER = 'Ask the owner instead (ask_human, or post_note type=question on the owning task).';
+const ASK_OWNER = 'Ask the owner instead: comment on the PR (a sweep worker\'s task token cannot post to the PR\'s mission, and a runner-managed worker cannot ask_human), or ask_human / post_note type=question where open to you.';
 
 /**
  * Is this close by an agent run on a PR its own worker did not open? A retry

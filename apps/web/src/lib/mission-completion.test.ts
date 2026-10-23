@@ -238,6 +238,7 @@ const PASSING_STATE = {
 };
 
 function reset() {
+  auditWaived = false;
   missionRow = null;
   missionEpochs = [];
   missionWorkState = { complete: true, reason: 'complete', unfinishedTaskCount: 0, unmergedPrCount: 0, landedOnIntegrationCount: 0 };
@@ -1740,6 +1741,19 @@ describe('canCompleteMission — visual review hold', () => {
     const d = await canCompleteMission('m1');
     expect(d.code).toBe('visual_review_open');
     expect(d.visualReviewHold).toEqual({ cells: 0, roundCapOpen: true, enforced: true });
+  });
+
+  // Spec 072de598 r15 I-18 / AC-24: a standing Skip holds, so later findings never refuse on visual review.
+  it('a person\'s standing Skip: later unsure screens and the round-cap question do not hold, even when enforced', async () => {
+    process.env.VISUAL_REVIEW_GATE = 'enforce';
+    activeMission();
+    taskRows = [work('completed'), auditRow()];
+    visualModel = heldModel(2, true);
+    auditWaived = true;
+    const d = await canCompleteMission('m1');
+    expect(d.code).not.toBe('visual_review_open');
+    expect(d.ok).toBe(true);
+    expect(d.visualReviewHold ?? null).toBeNull();
   });
 
   it('nothing awaiting a human: no hold, even when enforced', async () => {

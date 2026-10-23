@@ -51,6 +51,8 @@ const gate = mock((..._a: any[]) => Promise.resolve({ required: false, why: 'no_
 mock.module('@/lib/mission-surface-audit-gate', () => ({
   loadSurfaceAuditGateTasks: gateTasks,
   evaluateSurfaceAuditGate: gate,
+  // Read by ensureMissionSurfaceAudit under spec 072de598 I-18: no standing Skip in these tests.
+  surfaceAuditWaived: mock(() => Promise.resolve(false)),
 }));
 
 const { requestMissionSurfaceAudit } = await import('./mission-surface-audit');

@@ -50,6 +50,8 @@ interface FakePr {
   baseRef?: string; baseExists?: boolean | null;
   /** §6.10: failing check names per commit (absent = check runs unreadable), the base branch's head, and commits whose runs are still going. */
   checks?: Record<string, string[]>; baseHead?: string | null; running?: string[];
+  /** The checks still going per commit, when the host lists them (absent = only `complete: false` is known). */
+  pending?: Record<string, string[]>;
   /** §6.10 at test level: the failing entries a test-level read answers per commit (absent = the host reads no tests). */
   tests?: Record<string, string[]>;
   /** §8.3: `[from, to]` head pairs whose PR diff the compare API reports unchanged. */
@@ -68,7 +70,7 @@ const reader: GithubFactReader = {
   contains: async (_repo, ancestor, head) => ancestor === head || (gh.ancestors[head] ?? []).includes(ancestor),
   ciGreen: async () => gh.ciGreen ?? null,
   checkRuns: async (_repo, sha, o) => (gh.checks && sha in gh.checks
-    ? { complete: !(gh.running ?? []).includes(sha), failing: gh.checks[sha], ...(o?.tests && gh.tests?.[sha] ? { tests: gh.tests[sha] } : {}) }
+    ? { complete: !(gh.running ?? []).includes(sha), failing: gh.checks[sha], ...(o?.tests && gh.tests?.[sha] ? { tests: gh.tests[sha] } : {}), ...(gh.pending?.[sha] ? { pending: gh.pending[sha] } : {}) }
     : null),
   branchHead: async () => gh.baseHead ?? null,
   failingChecks: async () => gh.failing ?? null,
@@ -2005,6 +2007,74 @@ describe('S24–S27', () => {
     // A PR whose own failure is not the base's still gets its own attempt.
     gh.checks.H1 = ['Unit tests', 'Typecheck'];
     expect(await ciFail(a)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'REPAIRING' } } });
+  });
+
+  // ── S24 (prompt recovery): the recheck queue's step, between hourly floors (workflow-kernel-library.md §3) ──
+  test('S24 (prompt): a recheck of the incident alone resumes its blocked PR; unknown, a relevant check running, or a newer red head hold it; unrelated checks running do not', async () => {
+    gh.baseHead = 'P1'; gh.checks = { P1: ['Unit tests'], H1: ['Unit tests'] };
+    const o = await openAndHandOn();
+    expect(await ciFail(o)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } });
+    const [inc] = await incidentsOf('ci:unit tests');
+    // The webhook's read: a completed suite on the base finds this incident; another branch finds none.
+    const { requestTrunkRecheckForBranch } = await import('../../src/lib/workflow/trunk-recheck');
+    expect(await requestTrunkRecheckForBranch({ repoFullName: REPO, branch: 'dev' })).toBeGreaterThanOrEqual(1);
+    expect(await requestTrunkRecheckForBranch({ repoFullName: REPO, branch: 'feat/nothing-red' })).toBe(0);
+    const held = async () => {
+      expect((await incidentsOf('ci:unit tests'))[0].status).not.toBe('resolved');
+      expect(await delivery(o.deliveryId)).toMatchObject({ state: 'BLOCKED_ON_TRUNK', trunkIncidentId: inc.id });
+    };
+
+    // Unknown: the base head cannot be read.
+    gh.baseHead = null;
+    expect(await seam.recheckTrunkIncidents([inc.id], deps)).toMatchObject({ checked: 1, resolved: 0, unresolved: [inc.id] });
+    await held();
+    // The incident's own check still running on the new base head.
+    gh.baseHead = 'P2'; gh.checks.P2 = []; gh.running = ['P2']; gh.pending = { P2: ['Unit tests'] };
+    expect(await seam.recheckTrunkIncidents([inc.id], deps)).toMatchObject({ resolved: 0, unresolved: [inc.id] });
+    await held();
+    // P2 finishes green, but the base moves on to P3, which fails the incident's check again before any
+    // recheck: the green P2 never stands in for the red head.
+    gh.running = []; gh.baseHead = 'P3'; gh.checks.P3 = ['Unit tests'];
+    expect(await seam.recheckTrunkIncidents([inc.id], deps)).toMatchObject({ resolved: 0, stillRed: 1, unresolved: [inc.id] });
+    await held();
+
+    // P4: the incident's check passed; only an unrelated check is still going. Recovered, on this recheck.
+    gh.baseHead = 'P4'; gh.checks.P4 = []; gh.running = ['P4']; gh.pending = { P4: ['Deploy preview'] };
+    const refreshed: string[] = [];
+    override.refresh_branch = async (e) => { refreshed.push(e.deliveryId); return { outcome: 'ok' }; };
+    expect(await seam.recheckTrunkIncidents([inc.id], deps)).toMatchObject({ resolved: 1, recovered: 1, unresolved: [] });
+    expect((await incidentsOf('ci:unit tests'))[0].status).toBe('resolved');
+    // T26's own resume rules: no approval covered H1, so it is owed its review, never landed.
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', trunkIncidentId: null, resumeState: null });
+    expect(refreshed.filter((id) => id === o.deliveryId)).toHaveLength(1);
+    expect(attemptView(await ciAttempts(o.deliveryId), 'ci')).toEqual({ n: 0, m: 3 });
+    gh.running = []; gh.pending = undefined;
+  });
+
+  test('S24 (prompt): an event, the per-minute recheck and the floor racing on one recovered base apply one recovery and one refresh; replays change nothing', async () => {
+    gh.baseHead = 'Q1'; gh.checks = { Q1: ['Lint'], H1: ['Lint'] };
+    const a = await openAndHandOn();
+    const b = await openAndHandOn();
+    for (const o of [a, b]) expect(await ciFail(o)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } });
+    const [inc] = await incidentsOf('ci:lint');
+    const refreshed: string[] = [];
+    override.refresh_branch = async (e) => { refreshed.push(e.deliveryId); return { outcome: 'ok' }; };
+    gh.baseHead = 'Q2'; gh.checks.Q2 = [];
+    await Promise.all([seam.recheckTrunkIncidents([inc.id], deps), seam.recheckTrunkIncidents([inc.id], deps), seam.reconcileTrunkIncidents(deps)]);
+    expect((await incidentsOf('ci:lint'))[0].status).toBe('resolved');
+    for (const o of [a, b]) {
+      // One review round for the head, however many triggers raced.
+      expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', trunkIncidentId: null, currentRound: 1 });
+      expect((await transitions(o.deliveryId)).filter((t) => t.command === 'TrunkRecovered')).toHaveLength(1);
+      const [{ n }] = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM workflow_effects WHERE delivery_id = ${o.deliveryId}::uuid AND kind = 'refresh_branch'`);
+      expect(n).toBe(1);
+      expect(refreshed.filter((id) => id === o.deliveryId)).toHaveLength(1);
+    }
+    const before = [(await transitions(a.deliveryId)).length, (await transitions(b.deliveryId)).length];
+    // A replayed event's recheck of a resolved incident reads nothing and moves nothing.
+    expect(await seam.recheckTrunkIncidents([inc.id], deps)).toMatchObject({ checked: 0, recovered: 0, unresolved: [] });
+    await seam.reconcileTrunkIncidents(deps);
+    expect([(await transitions(a.deliveryId)).length, (await transitions(b.deliveryId)).length]).toEqual(before);
   });
 
   test('S24: a PR failing its own test in the job the base fails another test in is the PR\'s; the base going green resolves an incident behind a page of stale ones', async () => {

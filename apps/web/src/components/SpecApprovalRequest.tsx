@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useOptimisticApprove } from '@/components/useOptimisticApprove';
 import Lede from '@/components/ui/Lede';
 import Notice from '@/components/ui/Notice';
@@ -30,23 +31,40 @@ const CLOSED: Record<Exclude<ApprovalRequestView['state'], 'ready'>, { tone: 'in
  * POST /api/specs/[specId]/approve/confirm from this signed-in session.
  * A first approval opens on the spec, since its diff is every line added;
  * a later one opens on the changes.
+ *
+ * Without a token it is one row of the Awaiting your approval inbox (Living
+ * Spec b7fc9316 R-2 to R-5): the same view, and an Approve pinned to the
+ * revision, version and content hash it was rendered with, sent to
+ * POST /api/specs/[specId]/approve/inbox. When the spec moved since, the page
+ * reloads so the row shows the new head.
  */
-export default function SpecApprovalRequest({ specId, token, view }: { specId: string; token: string; view: ApprovalRequestView }) {
+export default function SpecApprovalRequest({ specId, token, view, showTitle = true }: { specId: string; token?: string; view: ApprovalRequestView; showTitle?: boolean }) {
+  const router = useRouter();
+  const inbox = token === undefined;
   const approvedText = `Approved revision ${view.state === 'ready' ? view.revision : ''}.`;
   const [reason, setReason] = useState('');
   const refused = view.state === 'ready' && !view.gate.passed;
   const { shown: result, retry, approve } = useOptimisticApprove(async () => {
-    const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/approve/confirm`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ request: token, ...(refused ? { overrideReason: reason.trim() } : {}) }),
-    });
+    const override = refused ? { overrideReason: reason.trim() } : {};
+    const res = inbox && view.state === 'ready'
+      ? await fetch(`/api/specs/${encodeURIComponent(specId)}/approve/inbox`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...view.pin, ...override }),
+      })
+      : await fetch(`/api/specs/${encodeURIComponent(specId)}/approve/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ request: token, ...override }),
+      });
     const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
     if (res.ok) return { tone: 'ok', text: approvedText };
-    return { tone: body.code === 'request_stale' || body.code === 'request_expired' ? 'warn' : 'err', text: body.error ?? 'Approval failed. Try again.' };
-  }, approvedText);
+    // An inbox row that moved under the person: show the new head.
+    if (inbox && body.code === 'stale') router.refresh();
+    return { tone: body.code === 'request_stale' || body.code === 'request_expired' || body.code === 'stale' ? 'warn' : 'err', text: body.error ?? 'Approval failed. Try again.' };
+  }, approvedText, inbox ? () => router.refresh() : undefined);
 
-  const heading = 'title' in view ? (
+  const heading = showTitle && 'title' in view ? (
     <h1 className="font-voice text-2xl text-text-primary" data-testid="spec-approval-title">{view.title}</h1>
   ) : null;
 
