@@ -62,6 +62,17 @@ Details, including `discardEdits` and `alreadyShippedIn`: topic
 
 - Soft question you can proceed on: `buildd action=post_note` with
   `type: "question"` and `defaultChoice`. Work continues.
+- Any decision you ask for: the question names the decision, never "How
+  should I proceed?". Two `options` by default (recommended plus one
+  alternative, each with a `consequence`), three only for a genuinely
+  different choice, never "Not now" or "Skip". About another task? Pass
+  `subjectTaskId`. Details in topic `task-lifecycle`.
+- Blocked by another task (it must merge first, or it is fixing the same
+  root cause): wait on it, do not fail.
+  `buildd action=complete_task params={ blockedOnTaskId, summary }` puts this
+  task back in the queue and it starts again by itself when that task merges.
+  If the server refuses (that task merged, was cancelled, or already waits on
+  this one), fail with `error` or ask a person.
 - Hard block in a runner session: `AskUserQuestion`. The task waits; it is not
   a failure and is not retried into the same wall.
 - Hard block in your own interactive session (you called `claim_task`):
@@ -128,6 +139,20 @@ sub-actions (`create_draft`, `revise`, `read_ref`, ...) are in the topic.
   It then completes only when every in-scope criterion passes on the
   integrated result, recorded by its `[final verification]` task or a person,
   never by builder, fix or review work, and never from PR reviews alone.
+- A mission's "done" is the spec it selects, never hand-written
+  `goalCriteria`: those are retired, and a mission holding none is refused
+  400 when it adds one. Put product intent in the spec as a criterion, with a
+  `check:` line for a command. Select an existing spec; never write one for a
+  mission (the `mission` scope is refused). A chore selects none.
+- A design from a claude.ai Design canvas: read its files with the Artifact
+  tool (`list scope=files`, then `read path=project/canvas.json` and each
+  `project/<Board>.dc.html`) into a temp dir. That needs an owner session or
+  a worker given `claudeAiArtifacts: 'read'`; without the tool, ask a person
+  to copy the files in. Never fetch claude.ai with curl or a browser. Export
+  them to one design with buildd's `scripts/design/export-canvas.ts`, store it
+  with `upload_artifact`, and pin the spec's `design` to that artifact's
+  revision, with the canvas URL in its `metadata.source`. Steps: topic
+  `living-specs`, "From a Claude Design canvas".
 - Call `help {topic:"living-specs"}` before any spec work.
 
 Not the same as a repo-docs skill such as `spec-sync` (buildd's own repo has

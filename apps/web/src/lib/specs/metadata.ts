@@ -8,6 +8,8 @@ import { isUuid } from '@/lib/uuid';
 import { author, fail, reach, type SpecCaller, type SpecError, type SpecRow } from './store';
 import { specApprovalDeps } from './approval';
 import { AREA_GONE_STATUSES } from './areas';
+import { holdsInWorkspace } from '@/lib/team-access';
+import { standardMarkRefusal } from './standard-mark';
 
 /**
  * A spec's metadata block (docs/specs/living-specs.md §18, R-14, R-31): the
@@ -20,6 +22,10 @@ import { AREA_GONE_STATUSES } from './areas';
  * private, public, or absent to follow the policy. Only a person marks one
  * public or lifts a private mark.
  *
+ * `standard` (Living Specs D-43, ./mission-standards.ts) makes the spec a standard of
+ * its workspace: its criteria apply to every mission that starts building
+ * after. Only an owner or admin sets or clears it, from their own session.
+ *
  * Anyone with write access to the workspace's specs changes it, an agent or CI
  * included, with a reason. One statement writes the block (only while it is
  * still what the writer read) and one change row per field with who, why and
@@ -28,7 +34,7 @@ import { AREA_GONE_STATUSES } from './areas';
  * in a workspace that opted in gets its generated PR updated (R-15).
  */
 
-export const METADATA_KEYS = ['owner', 'summary', 'last_verified', 'surfaces', 'verified_by', 'assertions', 'domains', 'repo_provenance', 'publication', 'criteria_unread'] as const;
+export const METADATA_KEYS = ['owner', 'summary', 'last_verified', 'surfaces', 'verified_by', 'assertions', 'domains', 'repo_provenance', 'publication', 'criteria_unread', 'standard'] as const;
 type Key = (typeof METADATA_KEYS)[number];
 /**
  * The fields a repo spec file states, and so the ones an import writes and
@@ -85,6 +91,10 @@ function parseField(key: Key, raw: unknown): { value: SpecMetadataBlock[Key] | n
       // R-66: "policy" (follow the workspace's publication policy) is the default, stored as no mark.
       if (raw === 'policy') return { value: null };
       return raw === 'private' || raw === 'public' ? { value: raw } : { error: 'publication is private, public or policy (follow the publication policy)' };
+    case 'standard':
+      // Cleared is stored as no mark, like publication's default.
+      if (raw === false) return { value: null };
+      return raw === true ? { value: true } : { error: 'standard is true (a standard of this workspace) or false' };
     case 'repo_provenance': {
       const p = raw as Record<string, unknown>;
       const ok = !!p && typeof p === 'object' && !Array.isArray(p) && typeof p.path === 'string' && /^docs\/specs\/[^/]+\.md$/.test(p.path)
@@ -138,6 +148,11 @@ export async function updateSpecMetadata(caller: SpecCaller | SystemCaller, spec
   // past the policy (public), or lifting a private mark, is a person's mark.
   if ('publication' in parsed && caller.kind !== 'user' && parsed.publication !== 'private') {
     return fail(403, 'Only a person marks a spec public or lifts its private mark; an agent may mark it private.');
+  }
+  if ('standard' in parsed) {
+    const ownerOrAdmin = caller.kind === 'user' && await holdsInWorkspace(caller.userId, spec.workspaceId, 'approve_specs');
+    const refusal = standardMarkRefusal({ callerKind: caller.kind, ownerOrAdmin });
+    if (refusal) return fail(403, refusal);
   }
   if (parsed.domains) {
     // Only an area covers domains, and each value names one area: placement and the repo copy must not have to choose.

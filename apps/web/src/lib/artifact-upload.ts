@@ -2,7 +2,7 @@ import { db } from '@buildd/core/db';
 import { artifactLinks, artifactRevisions, artifacts, specs } from '@buildd/core/db/schema';
 import { and, eq, isNull, lt, sql } from 'drizzle-orm';
 import { copyObject, deleteObject, headObject, sha256Object } from '@/lib/storage';
-import { uploadStagingKey } from '@/lib/storage-keys';
+import { buildArtifactRevisionKey, uploadStagingKey } from '@/lib/storage-keys';
 
 /**
  * An uploaded file is ready only once its bytes are verified. The presigned
@@ -48,7 +48,7 @@ export async function removeUploadObjects(storage: UploadStorage, storageKey: st
 }
 
 export type FinalizeResult =
-  | { state: 'ready'; sha256: string | null; sizeBytes: number | null }
+  | { state: 'ready'; sha256: string | null; sizeBytes: number | null; revision?: number }
   | { state: 'pending'; reason: 'not_uploaded' | 'finalizing' }
   | { state: 'failed'; reason: string }
   | { state: 'missing' };
@@ -80,11 +80,14 @@ export async function finalizeArtifactUpload(
 ): Promise<FinalizeResult> {
   const storage = opts.storage ?? defaultUploadStorage;
   const [row] = await db
-    .select({ id: artifacts.id, storageKey: artifacts.storageKey, uploadState: artifacts.uploadState, currentRevision: artifacts.currentRevision, metadata: artifacts.metadata })
+    .select({ id: artifacts.id, workspaceId: artifacts.workspaceId, storageKey: artifacts.storageKey, uploadState: artifacts.uploadState, currentRevision: artifacts.currentRevision, metadata: artifacts.metadata })
     .from(artifacts)
     .where(eq(artifacts.id, artifactId))
     .limit(1);
   if (!row) return { state: 'missing' };
+  if (row.uploadState !== 'pending' && row.uploadState !== 'failed' && pendingRevisionOf(row.metadata)) {
+    return finalizeFileRevision(row, opts.expectedSha256 ?? null, storage);
+  }
 
   const revisionHash = async () => {
     const [rev] = await db
@@ -95,7 +98,10 @@ export async function finalizeArtifactUpload(
     return { sha256: rev?.contentHash ?? null, sizeBytes: rev?.sizeBytes ?? null };
   };
   if (row.uploadState === 'failed') return { state: 'failed', reason: String((row.metadata as { uploadError?: unknown } | null)?.uploadError ?? 'failed') };
-  if (row.uploadState !== 'pending' || !row.storageKey) return { state: 'ready', ...(await revisionHash()) };
+  if (row.uploadState !== 'pending' || !row.storageKey) {
+    if (hasPendingLinks(row.metadata)) await writePendingLinks(row.id);
+    return { state: 'ready', ...(await revisionHash()) };
+  }
 
   const staged = uploadStagingKey(row.storageKey);
   const stagedHead = await storage.head(staged);
@@ -149,7 +155,162 @@ export async function finalizeArtifactUpload(
     .set({ uploadState: 'ready', metadata: sql`coalesce(${artifacts.metadata}, '{}'::jsonb) - 'finalizingAt'` })
     .where(and(eq(artifacts.id, row.id), eq(artifacts.uploadState, 'pending')));
   if (stagedHead) await storage.remove(staged).catch(() => {});
+  if (hasPendingLinks(row.metadata)) await writePendingLinks(row.id);
   return { state: 'ready', sha256, sizeBytes };
+}
+
+const hasPendingLinks = (metadata: unknown) => Array.isArray((metadata as Record<string, unknown> | null)?.pendingLinks);
+/** upload_artifact `attach`: written once the bytes are verified (lib/artifact-links.ts, which imports this module). */
+async function writePendingLinks(artifactId: string): Promise<void> {
+  const { applyPendingLinks } = await import('@/lib/artifact-links');
+  await applyPendingLinks(artifactId);
+}
+
+/**
+ * A new body for a file artifact (upload_artifact { artifactId, filename,
+ * mimeType, sizeBytes }). The current body stays what every reader gets until
+ * the new bytes are verified; then one UPDATE moves `storageKey` to them, and
+ * the artifacts_record_revision trigger records revision N+1 in that same
+ * statement, so every earlier revision keeps its own object and stays
+ * readable (get_artifact { revision }, /download?revision=N).
+ *
+ * The request waits in metadata under PENDING_REVISION_KEY. Nothing in it is
+ * trusted as a grant: the object key is derived here from the artifact's own
+ * id and the revision it will become, never read back from metadata, and the
+ * move is a compare-and-swap on the revision the upload started from.
+ */
+export const PENDING_REVISION_KEY = 'pendingRevision';
+export interface PendingRevision {
+  filename: string; mimeType: string; sizeBytes: number;
+  /** The revision the upload replaces; the new body becomes baseRevision + 1. */
+  baseRevision: number;
+  /** "account:<id>" / "user:<id>": recorded on the revision, and the only caller who may finalize. */
+  author: string;
+  startedAt: string;
+  title?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export function pendingRevisionOf(metadata: unknown): PendingRevision | null {
+  const p = (metadata as Record<string, unknown> | null)?.[PENDING_REVISION_KEY] as Partial<PendingRevision> | undefined;
+  if (!p || typeof p !== 'object') return null;
+  if (typeof p.filename !== 'string' || typeof p.mimeType !== 'string' || !Number.isSafeInteger(p.sizeBytes) || !Number.isSafeInteger(p.baseRevision)
+    || typeof p.author !== 'string' || typeof p.startedAt !== 'string') return null;
+  return p as PendingRevision;
+}
+
+/** One object per revision, under the artifact's own id (lib/storage-keys.ts). */
+export const revisionStorageKey = buildArtifactRevisionKey;
+
+export type StartRevisionResult =
+  | { ok: true; artifactId: string; revision: number; storageKey: string; uploadUrl: string }
+  | { ok: false; status: 400 | 404 | 409; error: string };
+
+/** Record the request for a new body and sign the PUT for it. The caller has already checked write access. */
+export async function startFileRevision(
+  artifactId: string,
+  input: { filename: string; mimeType: string; sizeBytes: number; author: string; title?: string | null; metadata?: Record<string, unknown> | null },
+  sign: (stagingKey: string, mimeType: string, sizeBytes: number) => Promise<string>,
+): Promise<StartRevisionResult> {
+  const [row] = await db
+    .select({ id: artifacts.id, workspaceId: artifacts.workspaceId, storageKey: artifacts.storageKey, content: artifacts.content, uploadState: artifacts.uploadState, currentRevision: artifacts.currentRevision })
+    .from(artifacts).where(eq(artifacts.id, artifactId)).limit(1);
+  if (!row || !row.workspaceId) return { ok: false, status: 404, error: 'Artifact not found' };
+  if (!row.storageKey || row.content !== null) {
+    return { ok: false, status: 400, error: 'Only a file artifact takes a new uploaded body; write a text artifact with update_artifact' };
+  }
+  if (row.uploadState === 'pending') return { ok: false, status: 409, error: 'This artifact\'s first upload is not verified yet: finalize it (upload_artifact { artifactId }) before uploading a new revision' };
+  if (row.uploadState === 'failed') return { ok: false, status: 409, error: 'This artifact\'s upload failed verification; upload the file as a new artifact' };
+  const revision = Math.max(row.currentRevision, 1) + 1;
+  let storageKey: string;
+  try {
+    storageKey = revisionStorageKey(row.workspaceId, row.id, revision, input.filename);
+  } catch {
+    return { ok: false, status: 400, error: 'filename cannot be stored; use a plain file name' };
+  }
+  const pending: PendingRevision = {
+    filename: input.filename, mimeType: input.mimeType, sizeBytes: input.sizeBytes, baseRevision: row.currentRevision,
+    author: input.author, startedAt: new Date().toISOString(),
+    ...(input.title ? { title: input.title } : {}), ...(input.metadata ? { metadata: input.metadata } : {}),
+  };
+  const [held] = await db.update(artifacts)
+    .set({ metadata: sql`(coalesce(${artifacts.metadata}, '{}'::jsonb) - 'finalizingAt' - 'revisionUploadError') || ${JSON.stringify({ [PENDING_REVISION_KEY]: pending })}::jsonb` })
+    .where(and(eq(artifacts.id, row.id), eq(artifacts.currentRevision, row.currentRevision)))
+    .returning({ id: artifacts.id });
+  if (!held) return { ok: false, status: 409, error: 'The artifact changed while the upload was being prepared; try again' };
+  const uploadUrl = await sign(uploadStagingKey(storageKey), input.mimeType, input.sizeBytes);
+  return { ok: true, artifactId: row.id, revision, storageKey, uploadUrl };
+}
+
+async function finalizeFileRevision(
+  row: { id: string; workspaceId: string | null; currentRevision: number; metadata: unknown },
+  expectedSha256: string | null,
+  storage: UploadStorage,
+): Promise<FinalizeResult> {
+  const p = pendingRevisionOf(row.metadata)!;
+  const sameRequest = sql`${artifacts.metadata} #>> '{pendingRevision,startedAt}' = ${p.startedAt}`;
+  const drop = async (reason: string): Promise<FinalizeResult> => {
+    await db.update(artifacts)
+      .set({ metadata: sql`(coalesce(${artifacts.metadata}, '{}'::jsonb) - ${PENDING_REVISION_KEY}::text - 'finalizingAt') || ${JSON.stringify({ revisionUploadError: reason })}::jsonb` })
+      .where(and(eq(artifacts.id, row.id), sameRequest));
+    return { state: 'failed', reason };
+  };
+  if (!row.workspaceId) return drop('no_workspace: the artifact has no workspace to store a revision under');
+  if (row.currentRevision !== p.baseRevision) {
+    return drop(`revision_conflict: the upload replaced revision ${p.baseRevision}, but the artifact is at revision ${row.currentRevision} now`);
+  }
+  const revision = Math.max(p.baseRevision, 1) + 1;
+  const key = revisionStorageKey(row.workspaceId, row.id, revision, p.filename);
+  const staged = uploadStagingKey(key);
+  const stagedHead = await storage.head(staged);
+  if (!stagedHead && !(await storage.head(key))) return { state: 'pending', reason: 'not_uploaded' };
+
+  if (stagedHead) {
+    const leased = await db.update(artifacts)
+      .set({ metadata: sql`coalesce(${artifacts.metadata}, '{}'::jsonb) || ${JSON.stringify({ finalizingAt: new Date().toISOString() })}::jsonb` })
+      .where(and(
+        eq(artifacts.id, row.id), sameRequest,
+        sql`(${artifacts.metadata} ->> 'finalizingAt' IS NULL OR (${artifacts.metadata} ->> 'finalizingAt')::timestamptz < ${new Date(Date.now() - FINALIZE_LEASE_MS).toISOString()}::timestamptz)`,
+      ))
+      .returning({ id: artifacts.id });
+    if (leased.length === 0) return { state: 'pending', reason: 'finalizing' };
+    await storage.copy(staged, key);
+  }
+
+  const failRevision = async (reason: string) => {
+    await removeUploadObjects(storage, key).catch(() => {});
+    return drop(reason);
+  };
+  const head = await storage.head(key);
+  if (!head) return { state: 'pending', reason: 'not_uploaded' };
+  if (head.sizeBytes !== p.sizeBytes) return failRevision(`size_mismatch: signed for ${p.sizeBytes} bytes, stored ${head.sizeBytes}`);
+  const signedType = mediaType(p.mimeType);
+  const storedType = mediaType(head.contentType);
+  if (signedType && storedType && signedType !== storedType) return failRevision(`content_type_mismatch: signed for ${signedType}, stored ${storedType}`);
+  const { sha256, sizeBytes } = await storage.sha256(key);
+  if (sizeBytes !== p.sizeBytes) return failRevision(`size_mismatch: signed for ${p.sizeBytes} bytes, stored ${sizeBytes}`);
+  if (expectedSha256 && expectedSha256.toLowerCase() !== sha256) {
+    return failRevision('sha256_mismatch: the stored bytes do not match the hash the uploader sent');
+  }
+
+  // One statement: the body moves and the trigger records revision N+1 by its author.
+  const facts = { ...(p.metadata ?? {}), filename: p.filename, mimeType: p.mimeType, sizeBytes: p.sizeBytes };
+  const [moved] = await db.update(artifacts)
+    .set({
+      storageKey: key,
+      contentAuthor: p.author,
+      ...(p.title ? { title: p.title } : {}),
+      updatedAt: new Date(),
+      metadata: sql`(coalesce(${artifacts.metadata}, '{}'::jsonb) - ${PENDING_REVISION_KEY}::text - 'finalizingAt' - 'revisionUploadError') || ${JSON.stringify(facts)}::jsonb`,
+    })
+    .where(and(eq(artifacts.id, row.id), eq(artifacts.currentRevision, p.baseRevision), sameRequest))
+    .returning({ currentRevision: artifacts.currentRevision });
+  if (!moved) return failRevision('revision_conflict: the artifact changed while the new revision was being verified');
+  await db.update(artifactRevisions)
+    .set({ contentHash: sha256, sizeBytes })
+    .where(and(eq(artifactRevisions.artifactId, row.id), eq(artifactRevisions.revision, moved.currentRevision), isNull(artifactRevisions.contentHash)));
+  if (stagedHead) await storage.remove(staged).catch(() => {});
+  return { state: 'ready', sha256, sizeBytes, revision: moved.currentRevision };
 }
 
 /**

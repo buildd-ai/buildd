@@ -6,17 +6,14 @@ import Link from 'next/link';
 import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
 import { Select } from '@/components/ui/Select';
 import PrimaryAction from '@/components/ui/PrimaryAction';
-import {
-  CRITERION_TYPE_OPTIONS,
-  NO_CRITERIA_NOTE,
-  newCriterionDraft,
-  validateCriteriaDrafts,
-  type CriterionDraft,
-  type SelectableCriterionType,
-} from '@/lib/goal-criteria-form';
 import { initialWorkspaceId } from '@/lib/onboarding-view';
+import NewMissionSpecPicker, { chosenProblem, outcomeSpecPayload, type ChosenSpec } from './NewMissionSpecPicker';
 
 const LAST_WORKSPACE_KEY = 'buildd:lastWorkspaceId';
+
+/** What decides "done" now that hand-written criteria are retired (Living Specs D-41, D-44). */
+export const DONE_WHEN_NOTE =
+  'The spec requirements this mission makes true decide when it is done. A chore with no product intent selects none.';
 
 interface WorkspaceOption {
   id: string;
@@ -124,139 +121,6 @@ function BackendStatusRow({ status, backend }: { status: BackendStatusState; bac
   );
 }
 
-// ── "Done when…" step (U5) ───────────────────────────────────────────────────
-//
-// Every rule enforced here comes from `validateCriteriaDrafts`, which calls the
-// same `validateGoalCriteria` that POST /api/missions enforces. This component
-// renders messages; it never decides them.
-
-// min-w-0 + w-full: a flex child's min-width is its content, so without them
-// the fields refuse to shrink and push the ✕ off a 320px screen. 16px below md
-// so iOS does not zoom the page on focus.
-const FIELD_CLS =
-  'min-w-0 w-full flex-1 bg-surface-1 border border-border-default text-base md:text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-primary';
-const FIELD_LABEL_CLS =
-  'text-[11px] md:text-[10px] text-text-muted font-mono uppercase tracking-wide w-24 shrink-0 pt-1';
-
-export function CriterionRow({
-  draft,
-  error,
-  onChange,
-  onRemove,
-}: {
-  draft: CriterionDraft;
-  error: string | null;
-  onChange: (next: CriterionDraft) => void;
-  onRemove: () => void;
-}) {
-  const set = (patch: Partial<CriterionDraft>) => onChange({ ...draft, ...patch });
-  const option = CRITERION_TYPE_OPTIONS.find(o => o.type === draft.type);
-
-  return (
-    <div
-      className="border border-border-default rounded-sm p-3 space-y-2 bg-surface-1"
-      data-testid="criterion-row"
-    >
-      <div className="flex items-start gap-2">
-        <Select
-          aria-label="Criterion type"
-          value={draft.type}
-          onChange={v => set({ type: v as SelectableCriterionType })}
-          options={CRITERION_TYPE_OPTIONS.map(o => ({ value: o.type, label: o.label }))}
-          size="sm"
-          className="flex-1 w-full"
-        />
-        <button
-          type="button"
-          onClick={onRemove}
-          className="shrink-0 inline-flex items-center justify-center min-h-11 min-w-11 md:min-h-0 md:min-w-0 text-[11px] text-text-muted hover:text-status-error px-1 py-1"
-          aria-label="Remove criterion"
-        >
-          ✕
-        </button>
-      </div>
-
-      {option && <p className="text-[11px] md:text-[10px] text-text-muted/80">{option.hint}</p>}
-
-      {draft.type === 'command' && (
-        <div className="flex items-start gap-2">
-          <label className={FIELD_LABEL_CLS}>Command</label>
-          <input
-            value={draft.command}
-            onChange={e => set({ command: e.target.value })}
-            placeholder="e.g. bun run test"
-            className={`${FIELD_CLS} font-mono`}
-          />
-        </div>
-      )}
-
-      {draft.type === 'artifact_exists' && (
-        <>
-          <div className="flex items-start gap-2">
-            <label className={FIELD_LABEL_CLS}>Key</label>
-            <input
-              value={draft.artifactKey}
-              onChange={e => set({ artifactKey: e.target.value })}
-              placeholder="e.g. deploy-url (optional)"
-              className={`${FIELD_CLS} font-mono`}
-            />
-          </div>
-          <div className="flex items-start gap-2">
-            <label className={FIELD_LABEL_CLS}>Artifact type</label>
-            <input
-              value={draft.artifactType}
-              onChange={e => set({ artifactType: e.target.value })}
-              placeholder="e.g. summary (optional)"
-              className={`${FIELD_CLS} font-mono`}
-            />
-          </div>
-        </>
-      )}
-
-      {draft.type === 'description' && (
-        <>
-          <div className="flex items-start gap-2">
-            <label className={FIELD_LABEL_CLS}>Criterion</label>
-            <textarea
-              value={draft.description}
-              onChange={e => set({ description: e.target.value })}
-              placeholder="e.g. Scorecard artifact covers every retrieval layer"
-              rows={2}
-              className={`${FIELD_CLS} resize-none`}
-            />
-          </div>
-          <div className="flex items-start gap-2">
-            <label className={FIELD_LABEL_CLS}>Why not a script?</label>
-            <textarea
-              value={draft.notMechanizableReason}
-              onChange={e => set({ notMechanizableReason: e.target.value })}
-              placeholder="Say why no command / PR / artifact / task check can express this."
-              rows={2}
-              className={`${FIELD_CLS} resize-none`}
-            />
-          </div>
-        </>
-      )}
-
-      <div className="flex items-start gap-2">
-        <label className={FIELD_LABEL_CLS}>Label</label>
-        <input
-          value={draft.label}
-          onChange={e => set({ label: e.target.value })}
-          placeholder="Shown on the mission page (optional)"
-          className={FIELD_CLS}
-        />
-      </div>
-
-      {error && (
-        <p className="text-[11px] text-status-error leading-relaxed" data-testid="criterion-error">
-          {error}
-        </p>
-      )}
-    </div>
-  );
-}
-
 // ── Main form ─────────────────────────────────────────────────────────────────
 
 export default function NewMissionForm({
@@ -295,8 +159,12 @@ export default function NewMissionForm({
     if (picked) setWorkspaceId(picked);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Specs belong to a workspace: a new workspace starts the choice again.
+  const [chosenSpecs, setChosenSpecs] = useState<ChosenSpec[]>([]);
+
   function handleWorkspaceChange(id: string) {
     setWorkspaceId(id);
+    setChosenSpecs([]);
     if (id) localStorage.setItem(LAST_WORKSPACE_KEY, id);
   }
 
@@ -312,30 +180,6 @@ export default function NewMissionForm({
 
   // Budget state
   const [costBudgetUsd, setCostBudgetUsd] = useState('');
-
-  // "Done when…" state (U5). Rows carry a stable key so a delete does not
-  // transplant one row's error message onto whatever shifts into its index.
-  const [criteriaRows, setCriteriaRows] = useState<Array<{ key: string; draft: CriterionDraft }>>([]);
-  const [criteriaTouched, setCriteriaTouched] = useState<Record<string, boolean>>({});
-  const [criteriaSubmitAttempted, setCriteriaSubmitAttempted] = useState(false);
-
-  const criteriaValidation = validateCriteriaDrafts(criteriaRows.map(r => r.draft));
-
-  function addCriterion() {
-    setCriteriaRows(rows => [
-      ...rows,
-      { key: `c${Date.now()}-${rows.length}`, draft: newCriterionDraft() },
-    ]);
-  }
-
-  function updateCriterion(key: string, draft: CriterionDraft) {
-    setCriteriaRows(rows => rows.map(r => (r.key === key ? { ...r, draft } : r)));
-    setCriteriaTouched(t => ({ ...t, [key]: true }));
-  }
-
-  function removeCriterion(key: string) {
-    setCriteriaRows(rows => rows.filter(r => r.key !== key));
-  }
 
   // Credential status — fetched on mount using first available workspace as fallback
   const fallbackWorkspaceId = workspaces[0]?.id ?? '';
@@ -369,7 +213,8 @@ export default function NewMissionForm({
   }, [cronExpression, validateCron]);
 
   function canSubmit(): boolean {
-    return name.trim().length > 0;
+    const specsReady = chosenSpecs.every(c => c.requirements !== null && !chosenProblem(c));
+    return name.trim().length > 0 && specsReady;
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -380,15 +225,7 @@ export default function NewMissionForm({
   }
 
   async function handleSubmit() {
-    if (!name.trim()) return;
-
-    // The criteria step is optional, but a criterion the API would reject must
-    // be shown as such here rather than surfacing as a 400 after the round trip.
-    if (criteriaRows.length > 0 && !criteriaValidation.ok) {
-      setCriteriaSubmitAttempted(true);
-      setError(criteriaValidation.formError ?? 'Fix the highlighted criterion before creating the mission.');
-      return;
-    }
+    if (!canSubmit()) return;
 
     setSubmitting(true);
     setError('');
@@ -424,9 +261,8 @@ export default function NewMissionForm({
         payload.initiativeId = initiativeId;
       }
 
-      if (criteriaValidation.criteria.length > 0) {
-        payload.goalCriteria = criteriaValidation.criteria;
-      }
+      const outcomeSpec = workspaceId ? outcomeSpecPayload(chosenSpecs) : undefined;
+      if (outcomeSpec) payload.outcomeSpec = outcomeSpec;
 
       const parsedBudget = costBudgetUsd.trim() ? parseFloat(costBudgetUsd.trim()) : null;
       if (parsedBudget != null && !isNaN(parsedBudget) && parsedBudget > 0) {
@@ -540,44 +376,12 @@ export default function NewMissionForm({
         )}
       </div>
 
-      {/* Done when… — the mission's definition of done, stated up front (U5) */}
+      {/* Done when… Living Specs D-41, D-44: a mission is done when the spec
+          requirements it selects pass. Hand-written criteria are not offered. */}
       <div className="mb-5" data-testid="mission-criteria-section">
-        <label className="block text-xs text-text-muted mb-1.5">
-          Done when… <span className="text-text-muted/60">(optional)</span>
-        </label>
-
-        <div className="space-y-2">
-          {criteriaRows.map(({ key, draft }, i) => (
-            <CriterionRow
-              key={key}
-              draft={draft}
-              error={
-                criteriaTouched[key] || criteriaSubmitAttempted
-                  ? criteriaValidation.errors[i] ?? null
-                  : null
-              }
-              onChange={next => updateCriterion(key, next)}
-              onRemove={() => removeCriterion(key)}
-            />
-          ))}
-        </div>
-
-        {criteriaRows.length === 0 ? (
-          <p className="text-xs text-text-muted/80">{NO_CRITERIA_NOTE}</p>
-        ) : (
-          criteriaValidation.formError && (
-            <p className="text-[11px] text-status-error mt-2">{criteriaValidation.formError}</p>
-          )
-        )}
-
-        <button
-          type="button"
-          onClick={addCriterion}
-          className="mt-2 text-xs text-text-muted hover:text-text-secondary"
-          data-testid="add-criterion-button"
-        >
-          + Add a criterion
-        </button>
+        <label className="block text-xs text-text-muted mb-1.5">Done when…</label>
+        <p className="text-xs text-text-muted/80 mb-2">{DONE_WHEN_NOTE}</p>
+        <NewMissionSpecPicker workspaceId={workspaceId} chosen={chosenSpecs} onChange={setChosenSpecs} />
       </div>
 
       {/* Advanced options toggle */}

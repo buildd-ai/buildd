@@ -8,7 +8,7 @@ domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.tsx, apps/web/src/app/app/(protected)/missions/[id]/MissionBoardParts.tsx, apps/web/src/lib/mission-task-strip.ts, apps/web/src/lib/mission-board.ts]
 related: [timeline-dependency-geometry, timeline-mobile-rail, mission-structure-view, mission-legibility]
 keywords: [landed strip, segment strip, 04 / 14, waiting on 8 dependencies, next open, tick row, topological order, queued behind, stripOrder]
-verified_by: [apps/web/src/lib/mission-task-strip.test.ts, apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.dom.test.tsx, apps/web/src/lib/condensed-timeline.test.ts]
+verified_by: [apps/web/src/lib/mission-task-strip.test.ts, apps/web/src/lib/mission-overview.test.ts, apps/web/src/app/app/(protected)/missions/[id]/OverviewTaskStatus.dom.test.tsx, apps/web/src/components/ui/TaskStrip.test.tsx, apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.dom.test.tsx, apps/web/src/lib/condensed-timeline.test.ts]
 assertions:
   - id: "build-mission-adjacency"
     type: "symbol"
@@ -231,7 +231,8 @@ in greyscale.
 | `review` | `border-status-success` | `fleet-hatch-ok` (vertical) | unchanged |
 | `running` | `border-accent` | `fleet-hatch-accent` (dense diagonal) | unchanged |
 | `waiting` | `border-accent`, 2.5px | `bg-card` (empty) | was shared with running; now `METER_CLASS.waiting` |
-| `ci_failed`, `failed`, `fixing` | `border-status-error` | `fleet-hatch-err` | unchanged |
+| `ci_failed`, `failed` | `border-status-error` | `fleet-hatch-err` | unchanged |
+| `fixing` | per `STATES.fixing` | per `STATES.fixing` | tone is **active**, not error (R-8a): buildd is retrying it |
 | `ready` | `border-border-strong` | `bg-card` (empty, no hatch) | **new**: an open slot, nothing holding it |
 | `blocked` | `border-[var(--fleet-border-mid)]` | `fleet-hatch` (dense diagonal, 2px/6px) | unchanged texture, now `blocked` only |
 | `queued` | `border-[var(--fleet-border-mid)]` | `fleet-hatch-future` (sparse diagonal, 1px/7px) | **new mapping**, existing class |
@@ -240,11 +241,80 @@ in greyscale.
 class strings, and the three fills MUST differ in texture (none / dense /
 sparse), not only in colour.
 
+### 3.2a The true state wins over a backoff
+
+**R-8a**: a re-queued task whose PR has failing checks or a merge conflict,
+or that the loop holds for its PR's checks (`tasks.context.loopWebhookWait`)
+with `tasks.startAt` in the future, MUST have the display state `fixing`,
+never `ready`, `blocked` or `queued`. buildd retries that failure by itself,
+so per Navigation d25d923d R-20 it is work in motion: `fixing` is not in the
+error bucket (`isErrorState` is `ci_failed` and `failed` only) and carries no
+red dot. The PR state comes from the page's one projection
+(`deriveFeedPrState` over the worker and the kernel's delivery display, in
+`deriveBoardStatus`); no new state store. Its words follow R-14
+(`overviewStatus`): `Fixing · CI failed` or `Fixing · Merge conflict`, with
+the backoff as `Retry in 3h 52m` (`retryText`) beside `Retry now`
+(`RETRY_NOW`), never `Queued · Scheduled start`. Because this is the strip
+state, Home and `buildd top` read the same cell.
+
+**R-8a1**: the Overview names the selected task's status on a line under
+the strip (`OverviewTaskStatus`): a dot in the status tone, the word and its
+one cause, then what that state needs. A pending retry shows
+`Retry in 3h 52m` and a `Retry now` button. The button posts
+`POST /api/tasks/[id]/start` with `retryNow: true`, which lifts only the
+deferred start (it clears `tasks.startAt`), and every other start gate still
+applies. A refusal shows its error in place.
+
+**R-8a2**: a task with an executing worker shows its live line beside the
+word: `Running 12m 04s`, ticking each second from the worker's start
+(`formatElapsed`), then `Updated 14s ago` from its last event
+(`lastEventOf`). Once `NO_ACTIVITY_MS` passes with no event (the mission
+stall grace, `STALL_GRACE_MS`, 5 min), the line reads `No activity for 12m`
+in the warning tone, timed from the start when no event has arrived
+(`liveLine`). It shows no spinner.
+
+### 3.2b The mission bar's looks (Navigation d25d923d R-4)
+
+**R-8b**: a grouped strip (the mission bar, `TaskStrip` with `groups`) draws
+five looks over the §3.2 states, in web rendering only (`stripLook`,
+`data-look`; Navigation d25d923d R-4 r5): `landed` is solid green; an agent
+working (`running`, `review`, `landing`, `recovering`, and `fixing` while its
+attempt is live) is an accent hatch; a task that needs a person (`needs_you`,
+`waiting`) is an outlined amber cell on an amber tint; a failure a person must
+fix (`failed`, `ci_failed`) is an outlined red cell; every other state,
+including `fixing` while it waits out a retry, is a dashed outline. Every
+look is a theme token, so Night and Day both keep 3:1 contrast; a phone cell
+is at least 32px tall, and the bar draws no tick numbers: a cell's hover
+label and accessible name are the task's name and state. The cell's state,
+order and grouping are unchanged, so the §3.2 table still holds for every
+other strip and `buildd top` (Runner on your terminal R-29) reads the same
+cells.
+
+**R-8c**: the `running` cell's hatch drifts slowly, one stripe period per
+2.4s, in CSS only (`.state-cell[data-drift]`, `@keyframes cell-hatch-drift`).
+Nothing else on the bar moves. The drift runs under
+`prefers-reduced-motion: reduce` too (Navigation R-4): it is a small, slow
+background shift and the one cue that a task is live, so no reduced-motion
+rule may set its animation to `none`
+(`apps/web/tests/acceptance/navigation-one-place.test.ts`). Before this the
+running cell was static.
+
+**R-8d**: a closed, unmerged PR whose replacement is known reads
+`Closed → #N` (the cell's word, `BoardTask.replacement`), from a close comment
+(`Replaced by #N`), a PR body (`replaces #N`) or a person's link
+(`POST /api/workers/[id]/replacement`), before the replacement merges. With
+none known, the selected task's status line reads `Closed` with a
+`Link replacement` action, which takes a PR number and posts it to that
+route for the PR's worker (`BoardTask.prWorkerId`). It is display only: the formal supersession still records on merge, and no
+completion or merge gate reads it.
+
 ### 3.3 Words
 
-`STATUS_PILL` and `STATUS_WORDS` gain the split: `ready` → "Ready" / "ready"
-(today "Queued" / "open" — the old pill word now belongs to the queued state),
-`blocked` → "Blocked" / "blocked", `queued` → "Queued" / "queued behind".
+The words come from the terms catalog (`packages/shared/src/terms.ts`), which
+follows Navigation d25d923d R-14: `ready` → "Queued", `blocked` and `queued`
+→ "Waiting on a task" (a surface that knows the task names it:
+`Waiting on <task>`), `running` → "Running", `fixing` → "Fixing". The three
+textures of R-8 still tell `ready`, `blocked` and `queued` apart.
 
 ---
 
@@ -705,6 +775,26 @@ Each criterion is checkable against a board model built from fixtures
 - **AC-21**: GIVEN `MissionProgressBar.tsx` after the change, WHEN searched,
   THEN the literal `{ solid: 0, half: 1, ghost: 2, notch: 3, empty: 4 }`
   appears at most once.
+- **AC-23**: GIVEN a pending task whose PR is `ci_failed` or `conflict` and
+  whose `startAt` is 3h 52m ahead, WHEN the board is built, THEN its state is
+  `fixing`, it reads `Fixing · CI failed` (or `· Merge conflict`), the
+  Overview's status line shows `Retry in 3h 52m` and `Retry now`, and it
+  carries no waiting cause (R-8a, R-8a1).
+- **AC-24**: GIVEN a grouped strip with every state, WHEN it renders, THEN
+  each fill's look is merged, running or waiting as R-8b says, only `ci_failed`
+  and `failed` carry a red dot and `needs_you` / `waiting` an amber one, only
+  the running cell carries `data-drift`, every button keeps its `data-state`,
+  and no reduced-motion rule in `globals.css` stops the drift (R-8c).
+- **AC-25**: GIVEN a closed, unshipped PR with a named replacement #812, WHEN
+  the Overview cells are built, THEN its word is `Closed → #812` (R-8d).
+- **AC-26**: GIVEN a closed, unshipped PR with no replacement known, WHEN it
+  is selected, THEN the status line reads `Closed` with `Link replacement`,
+  and submitting `#812` posts `{ prNumber: 812 }` to
+  `/api/workers/<its PR's worker>/replacement` (R-8d).
+- **AC-27**: GIVEN a running task started 12m 04s ago whose last event was
+  14s ago, WHEN it is selected, THEN the status line reads
+  `Running 12m 04s · Updated 14s ago`. With no event for 12m it reads
+  `No activity for 12m` in the warning tone (R-8a2).
 - **AC-22** (rejection): GIVEN any strip rendered with state-compacted order
   (R-5), WHEN inspected, THEN it carries no tick numbers, no ordinal and no
   selectable cell.

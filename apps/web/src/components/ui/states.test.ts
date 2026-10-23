@@ -78,7 +78,7 @@ describe('statusPill', () => {
   });
 
   it('keeps the display words, never the raw enum', () => {
-    expect(statusPill('in_progress')).toEqual({ state: 'running', label: 'Working' });
+    expect(statusPill('in_progress')).toEqual({ state: 'running', label: 'Running' });
     expect(statusPill('waiting_on_you').state).toBe('needs_you');
     expect(statusPill('completed').state).toBe('landed');
     // A finished task says Done (work.done), never Completed.

@@ -253,6 +253,35 @@ BEGIN
 END
 $f$;
 
+-- A file artifact's metadata, scrubbed as above but keeping the two structural
+-- facts the artifact page renders by: the mime type (a bare `type/subtype`,
+-- so an uploaded image still shows inline and an HTML design still gets its
+-- sandboxed preview, components/DesignPreview.tsx) and the design's screen
+-- list, reduced to slug ids and `WxH` viewports (names dropped). A screen id
+-- or mime type that matches the identifier pattern is not kept.
+CREATE OR REPLACE FUNCTION pg_temp.qa_file_meta(j jsonb) RETURNS jsonb
+LANGUAGE sql STABLE AS $f$
+  SELECT CASE WHEN j IS NULL THEN NULL ELSE
+    pg_temp.qa_json(j)
+    || CASE WHEN (j->>'mimeType') ~ '^[a-z]+/[a-z0-9.+-]{1,64}$' AND NOT pg_temp.qa_is_ident(j->>'mimeType')
+         THEN jsonb_build_object('mimeType', j->'mimeType') ELSE '{}'::jsonb END
+    || CASE WHEN jsonb_typeof(j->'screens') = 'array' THEN jsonb_build_object('screens', (
+         SELECT coalesce(jsonb_agg(s.v ORDER BY s.i), '[]'::jsonb)
+         FROM (
+           SELECT a.i, CASE
+             WHEN jsonb_typeof(a.e) = 'string' AND (a.e #>> '{}') ~ '^[a-z0-9][a-z0-9-]{0,63}$' AND NOT pg_temp.qa_is_ident(a.e #>> '{}')
+               THEN a.e
+             WHEN jsonb_typeof(a.e) = 'object' AND (a.e->>'id') ~ '^[a-z0-9][a-z0-9-]{0,63}$' AND NOT pg_temp.qa_is_ident(a.e->>'id')
+               THEN jsonb_strip_nulls(jsonb_build_object(
+                 'id', a.e->'id',
+                 'viewport', CASE WHEN (a.e->>'viewport') ~ '^[0-9]{2,5}x[0-9]{2,5}$' THEN a.e->'viewport' END))
+             ELSE NULL END AS v
+           FROM jsonb_array_elements(j->'screens') WITH ORDINALITY AS a(e, i)
+         ) s WHERE s.v IS NOT NULL))
+       ELSE '{}'::jsonb END
+  END
+$f$;
+
 CREATE OR REPLACE FUNCTION pg_temp.qa_slug_array(j jsonb) RETURNS jsonb
 LANGUAGE sql IMMUTABLE AS $f$
   SELECT CASE WHEN j IS NULL OR jsonb_typeof(j) <> 'array' THEN j
@@ -482,7 +511,8 @@ FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM connectors) s WHERE c
 UPDATE worker_heartbeats SET
   local_ui_url = 'http://qa-' || replace(id::text, '-', '') || '.localhost:8766',
   viewer_token = CASE WHEN viewer_token IS NULL THEN NULL ELSE 'scrubbed-' || md5(id::text) END,
-  environment = pg_temp.qa_json(environment);
+  environment = pg_temp.qa_json(environment),
+  desired_slots_set_by = CASE WHEN desired_slots_set_by IS NULL THEN NULL ELSE 'QA user' END; -- a person's display name
 
 -- ---------------------------------------------------------------------------
 -- Work: missions, initiatives, tasks, workers
@@ -567,6 +597,7 @@ UPDATE workers w SET
   pr_unresolvable_reason = pg_temp.qa_text(w.pr_unresolvable_reason),
   pr_base_ref = pg_temp.qa_branch(w.pr_base_ref),
   superseded_by_pr_url = pg_temp.qa_pr_url(w.superseded_by_pr_url),
+  named_replacement_pr_url = pg_temp.qa_pr_url(w.named_replacement_pr_url),
   superseded_reason = pg_temp.qa_text(w.superseded_reason),
   superseded_recorded_by = pg_temp.qa_str(w.superseded_recorded_by),
   abandoned_reason = pg_temp.qa_text(w.abandoned_reason),
@@ -609,7 +640,8 @@ UPDATE mission_notes n SET
   body = pg_temp.qa_text(n.body),
   actor_label = pg_temp.qa_hash('Actor ', n.actor_label),
   collapse_key = pg_temp.qa_hash('key-', n.collapse_key),
-  default_choice = pg_temp.qa_text(n.default_choice)
+  default_choice = pg_temp.qa_text(n.default_choice),
+  options = pg_temp.qa_json(n.options)
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM mission_notes) s WHERE n.id = s.id;
 
 UPDATE artifacts a SET
@@ -618,7 +650,7 @@ UPDATE artifacts a SET
   content = pg_temp.qa_text(a.content),
   storage_key = CASE WHEN a.storage_key IS NULL THEN NULL ELSE 'artifacts/' || a.id END,
   share_token = CASE WHEN a.share_token IS NULL THEN NULL ELSE 'scrubbed-' || md5(a.id::text) END,
-  metadata = pg_temp.qa_json(a.metadata),
+  metadata = pg_temp.qa_file_meta(a.metadata),
   content_author = NULL
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM artifacts) s WHERE a.id = s.id;
 
@@ -643,9 +675,10 @@ UPDATE spec_metadata_changes SET previous_value = NULL, new_value = NULL, reason
 UPDATE spec_comments SET body = pg_temp.qa_text(body), anchor_label = pg_temp.qa_text(anchor_label), author_id = md5(author_id),
   resolved_by = CASE WHEN resolved_by IS NULL THEN NULL ELSE md5(resolved_by) END;
 -- A design reference carries free-text screen names and may carry a URL, and an
--- import names the repo path it was read from: both wiped.
+-- import names the repo path it was read from, and an approval carries an
+-- override reason (free text): all wiped.
 UPDATE spec_revisions SET author_id = md5(author_id), change_summary = pg_temp.qa_text(change_summary),
-  approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END, design = NULL, imported = NULL;
+  approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END, design = NULL, imported = NULL, approval = NULL;
 -- Spec attachments: a name is chosen by its author and a caption is free text;
 -- who added or removed one is an id. A name maps to the same placeholder in the
 -- approval record (spec_revisions.approved_attachments), so "changed since

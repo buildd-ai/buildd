@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { cpus, homedir, loadavg, tmpdir } from 'os';
-import { join } from 'path';
+import { isAbsolute, join } from 'path';
 
 // Anything matching one of these prefixes and ending in .test.ts(x) is run.
 //
@@ -12,6 +12,7 @@ import { join } from 'path';
 // now fails if a tracked test file is neither matched here nor listed there as a
 // deliberate exclusion, so this cannot rot again.
 const UNIT_TEST_ROOTS = [
+  'tests/acceptance/',
   'apps/web/src/',
   'apps/web/scripts/',
   'apps/runner/__tests__/unit/',
@@ -645,6 +646,22 @@ function sampleHostBusy(): string {
   }
 }
 
+/**
+ * A sandbox that denies child-process creation (EPERM/EACCES from uv_spawn,
+ * seen in restricted native-Windows task sessions) fails every file before any
+ * test runs. That is an environment limit, not test evidence, and isolation is
+ * not negotiable: one process per file stays. Say where to verify instead.
+ */
+export function spawnDeniedHint(error: unknown): string {
+  const text = `${(error as NodeJS.ErrnoException)?.code ?? ''} ${error instanceof Error ? error.message : String(error)}`;
+  if (!/\b(EPERM|EACCES)\b/.test(text)) return '';
+  return (
+    '\n\nThis sandbox denies spawning child processes, so no test ran: inconclusive, not a pass or a fail. ' +
+    'Do not run files in one process to get around it. Verify at the pushed SHA with the Verify Unit Tests ' +
+    'workflow (docs/testing.md, "Read-only verification").\n'
+  );
+}
+
 export async function runTestFile(
   file: string,
   spawn: SpawnTestProcess = (command, options) => Bun.spawn(command, options),
@@ -685,7 +702,7 @@ export async function runTestFile(
   const elapsed = (): number => Math.round(performance.now() - startedAt);
   try {
     const timeoutMs = getTestTimeoutMs(process.env.BUILDD_TEST_TIMEOUT_MS);
-    const child = spawn([process.execPath, 'test', '--preload', storeGuardPath(), '--timeout', String(timeoutMs), ...(testNamePattern ? ['--test-name-pattern', testNamePattern] : []), file], {
+    const child = spawn([process.execPath, 'test', '--preload', storeGuardPath(), '--timeout', String(timeoutMs), ...(testNamePattern ? ['--test-name-pattern', testNamePattern] : []), (isAbsolute(file) ? file : `./${file}`)], {
       stdout: 'pipe',
       stderr: 'pipe',
       // TMPDIR is the throwaway dir and BUILDD_HOME a child of it (the home
@@ -741,7 +758,7 @@ export async function runTestFile(
     return {
       file,
       exitCode: 1,
-      output: `Failed to launch Bun for ${file}:\n${detail}`,
+      output: `Failed to launch Bun for ${file}:\n${detail}${spawnDeniedHint(error)}`,
       durationMs: elapsed(),
     };
   } finally {

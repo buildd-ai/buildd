@@ -56,9 +56,9 @@ describe('get_task', () => {
       ctx(),
     );
 
-    expect(mockApi).toHaveBeenCalledTimes(1);
-    const [endpoint] = mockApi.mock.calls[0];
-    const url = new URL(endpoint, 'http://localhost');
+    const taskCalls = mockApi.mock.calls.filter((c) => !String(c[0]).startsWith('/api/artifacts/designs'));
+    expect(taskCalls).toHaveLength(1);
+    const url = new URL(taskCalls[0][0], 'http://localhost');
     expect(url.pathname).toBe(`/api/tasks/${TASK_ID}`);
     expect(url.searchParams.get('include')).toBe('workers,artifacts,evidence');
   });

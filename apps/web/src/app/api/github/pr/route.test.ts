@@ -99,6 +99,12 @@ mock.module('@/lib/workflow/landing', () => ({
 const mockAdoptBeforeMerge = mock(async (..._a: any[]): Promise<any> => ({ kind: 'legacy', reason: 'kernel_off' }));
 const mockMergeOutsideKernel = mock(async (..._a: any[]): Promise<any> => ({ merged: true, message: 'PR merged' }));
 mock.module('@/lib/pr-landing-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge, mergeOutsideKernel: mockMergeOutsideKernel }));
+// Named replacements: the writer is stood in (lib/pr-named-replacement-store.test.ts); the parser stays real.
+const mockRecordNamedReplacement = mock(async (_a: any) => 1);
+mock.module('@/lib/pr-named-replacement-store', () => ({
+  recordNamedReplacement: mockRecordNamedReplacement,
+  linkNamedReplacement: mock(async () => ({ updated: true, url: '' })),
+}));
 // Slice F: get_pr reads a kernel-owned PR's record from its DeliveryView.
 // Default: no kernel delivery, so every legacy case reads the columns.
 const mockGetDeliveryViewsForTasks = mock(async (..._a: any[]): Promise<Map<string, any>> => new Map());
@@ -3915,6 +3921,36 @@ describe('PATCH /api/github/pr', () => {
     expect(mockRecordCapabilityDecision).toHaveBeenCalledWith(expect.objectContaining({
       capability: 'pr.close', decision: 'allowed', resource: 'pr:42', sideEffect: { reason: 'superseded by #43' },
     }));
+  });
+
+  it('a close whose reason names its replacement records it as a named replacement, after the close', async () => {
+    mockRecordNamedReplacement.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', accountId: 'account-1', prNumber: 42, workspace: WORKSPACE_OK });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    const order: string[] = [];
+    mockGithubApi.mockImplementation(async () => { order.push('github'); return { number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'closed', title: 'x' }; });
+    mockRecordNamedReplacement.mockImplementationOnce(async () => { order.push('named'); return 1; });
+
+    const res = await PATCH(createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, reason: 'Replaced by #43' },
+    }));
+
+    expect(res.status).toBe(200);
+    expect(order).toEqual(['github', 'named']);
+    expect(mockRecordNamedReplacement).toHaveBeenCalledWith({ repoFullName: 'owner/repo', closedPrNumber: 42, replacementPrNumber: 43 });
+  });
+
+  it('a close reason naming no replacement, and a body update, record none', async () => {
+    mockRecordNamedReplacement.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', accountId: 'account-1', prNumber: 42, workspace: WORKSPACE_OK });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValue({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'closed', title: 'x' });
+    await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-1', prNumber: 42, reason: 'not needed' } }));
+    await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-1', prNumber: 42, body: 'Replaced by #43', reason: 'Replaced by #43' } }));
+    expect(mockRecordNamedReplacement).not.toHaveBeenCalled();
   });
 
   it('calls githubApi with PATCH and state: closed', async () => {

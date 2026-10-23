@@ -70,13 +70,14 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   list_workspaces: 'tasks:read',
   list_tasks: 'tasks:read', get_task: 'tasks:read', get_task_messages: 'tasks:read',
   create_task: 'tasks:write', update_task: 'tasks:write', correct_task_result: 'tasks:admin', approve_plan: 'tasks:admin', reject_plan: 'tasks:admin',
-  claim_task: 'workers:write', update_progress: 'workers:write', receive_messages: 'workers:write', ask_human: 'workers:write', await_answer: 'workers:write', complete_task: 'workers:write', get_page_source: 'workers:write', deploy: 'workers:write',
+  claim_task: 'workers:write', update_progress: 'workers:write', receive_messages: 'workers:write', ask_human: 'workers:write', await_answer: 'workers:write', complete_task: 'workers:write', get_page_source: 'workers:write', dispatch_visual_qa: 'workers:write', deploy: 'workers:write',
   create_pr: 'tasks:write', record_pr_supersession: 'workers:write', send_agent_message: 'workers:admin', answer_question: 'workers:admin',
   emit_event: 'tasks:write', query_events: 'tasks:read', post_note: 'tasks:write', suggest_schedule_update: 'workers:write', propose_schedule_move: 'workers:write',
   list_prs: 'tasks:read', get_pr: 'tasks:read', get_pr_review: 'tasks:read',
   merge_pr: 'tasks:write', close_pr: 'tasks:write', update_pr: 'tasks:write', request_pr_review: 'tasks:write', approve_pr_override: 'tasks:write',
   list_artifacts: 'tasks:read', get_artifact: 'tasks:read', list_artifact_templates: 'tasks:read',
   create_artifact: 'tasks:write', upload_artifact: 'tasks:write', update_artifact: 'tasks:write', link_artifact: 'tasks:write', list_artifact_links: 'tasks:read',
+  store_design: 'tasks:write', manage_designs: 'tasks:write',
   manage_specs: 'tasks:write',
   list_schedules: 'tasks:read', trace_schedule: 'tasks:read', create_schedule: 'schedules:write', update_schedule: 'schedules:write', pause_schedules: 'schedules:write', delete_schedule: 'schedules:write',
   explain: 'analytics:read', get_error_traces: 'analytics:read', get_failure_analytics: 'analytics:read', dispatch_health: 'analytics:read', read_evidence: 'analytics:read',
@@ -95,7 +96,7 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
 export function requiredScopeForAction(action: string, params: Record<string, unknown> = {}): TokenScope | null {
   // help (docs and workflow guidance) is a read: any token that reads tasks.
   if (action === 'help') return 'tasks:read';
-  if (['manage_missions', 'manage_initiatives', 'manage_workspaces'].includes(action) && ['list', 'get', 'get_criteria_state'].includes(String(params.action))) return 'tasks:read';
+  if (['manage_missions', 'manage_initiatives', 'manage_workspaces', 'manage_designs'].includes(action) && ['list', 'get', 'get_criteria_state'].includes(String(params.action))) return 'tasks:read';
   // Readiness is a read-only GET of /api/workspaces/[id]/readiness, which the route policy maps to tasks:read.
   if (action === 'manage_workspaces' && params.action === 'readiness') return 'tasks:read';
   if (action === 'manage_specs' && ['list', 'get', 'outcome', 'read_ref', 'diff', 'comments', 'attachments', 'history'].includes(String(params.action))) return 'tasks:read';

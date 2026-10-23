@@ -59,6 +59,7 @@ const mockTeamEnabledBackends = mock(() => Promise.resolve(enabledMask));
 // its SQL is asserted in a PgDialect test, so a marker suffices here.
 mock.module('@/app/api/workers/claim/held-gate', () => ({
   notHeldOrLocal: () => ({ _op: 'notHeldOrLocal' }),
+  TASK_RESERVATION_KEY: 'reservedBy',
 }));
 
 let blockerBackends: ReadonlyMap<string, string> | undefined;
@@ -271,10 +272,22 @@ describe('getBackendStrandSummary — executed route, not the stored preference'
     const summary = await getBackendStrandSummary({ teamId: 'team-1', workspaceIds: ['ws-1'] });
 
     const routes = Object.fromEntries(stat(summary, 'codex').sampleTasks.map((t: any) => [t.id, t.route]));
-    expect(routes['t-1']).toEqual({ requested: 'codex', effective: 'claude' });
-    expect(routes['t-2']).toEqual({ requested: 'codex', effective: 'codex' });
-    expect(routes['t-3']).toEqual({ requested: 'codex', effective: 'codex' });
+    expect(routes['t-1']).toMatchObject({ requested: 'codex', effective: 'claude', pinned: false, executed: 'claude', reservation: null });
+    expect(routes['t-2']).toMatchObject({ requested: 'codex', effective: 'codex', pinned: true, executed: null });
+    expect(routes['t-3']).toMatchObject({ requested: 'codex', effective: 'codex', pinned: false, executed: null });
     expect(blockerBackends?.get('t-1')).toBe('claude');
     expect(blockerBackends?.get('t-3')).toBe('codex');
+  });
+
+  it('projects an expired reservation separately from pins and executed routes', async () => {
+    countRows = [{ workspaceId: 'ws-1', backend: 'codex', count: 1 }];
+    const expiresAt = new Date(Date.now() - 60_000).toISOString();
+    sampleRowsByCall = [[{ id: 'lapsed', title: 'Lapsed', workspaceName: 'alpha', backend: 'codex',
+      context: { reservedBy: { accountId: 'private-account', expiresAt } } }]];
+    const summary = await getBackendStrandSummary({ teamId: 'team-1', workspaceIds: ['ws-1'] });
+    expect(stat(summary, 'codex').sampleTasks[0].route).toMatchObject({
+      pinned: false, executed: null, reservation: { expiresAt },
+    });
+    expect(JSON.stringify(stat(summary, 'codex').sampleTasks)).not.toContain('private-account');
   });
 });

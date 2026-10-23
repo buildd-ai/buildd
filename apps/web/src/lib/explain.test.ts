@@ -100,6 +100,11 @@ mock.module('@/lib/mission-pr', () => ({ evaluateMissionWorkState: mockEvaluateM
 let browserHeartbeats: Row[] | null = [];
 mock.module('@/lib/runner-heartbeats', () => ({ loadBrowserRunnerHeartbeats: mock(async () => browserHeartbeats) }));
 
+// The runner heartbeat rows a live worker's runner is judged by (lib/runner-offline.ts).
+let runnerBeats: Row[] = [];
+const realRunnerOffline = await import('./runner-offline');
+mock.module('@/lib/runner-offline', () => ({ ...realRunnerOffline, loadRunnerBeats: mock(async () => runnerBeats) }));
+
 // Imported AFTER the mocks.
 import { explainMission, explainTask, explainPr, explainWorkspace, historyPrStateOf, kernelUnmergedPr } from './explain';
 import { summarizeMissionForCard, type MissionCardRow } from './mission-card-view';
@@ -427,6 +432,60 @@ describe('explainMission', () => {
       const answer = (await explainMission('mission-1'))!.subjects[0];
       expect(answer.outstanding.some(o => o.kind === 'claim_deferral')).toBe(true);
     });
+
+    // Regression (Navigation d25d923d R-14 / AC-14, the 14f6a2b1 case): a task
+    // the claim loop deferred ten times on path_overlap behind another
+    // mission's task read "Ready: next in line for a runner" / NEXT IN LINE on
+    // the header, the situation line and the because[] chain.
+    it('a task held on path_overlap reads held behind the named task, never next in line', async () => {
+      missionRow = { id: 'mission-1', title: 'Navigation', workspaceId: 'ws-1', status: 'active', schedule: null };
+      taskRows = [
+        task({ id: 'task-1', status: 'pending', title: 'Verify plumbing', createdAt: new Date(Date.now() - 5 * 60 * 60 * 1000) }),
+        // The blocker: a task in another mission, named by the deferral's detail.
+        task({ id: 'holder-1', missionId: 'mission-2', status: 'in_progress', title: 'approve a spec from chat or MCP', workers: [worker({ id: 'w-h', status: 'running', prNumber: 5434, prUrl: 'https://github.com/o/r/pull/5434' })] }),
+      ];
+      gateEventRows = [deferralRow({
+        reason: 'path_overlap',
+        detail: {
+          consecutiveDeferrals: 10,
+          firstDeferredAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+          blockingTaskId: 'holder-1', prNumber: 5434, paths: ['apps/web/src/lib/specs/store.ts', 'packages/core/db/schema.ts'],
+        },
+      })];
+      completionDecision = { ok: false, code: 'pending_deliverables', reason: '1 task(s) still open (1 pending)', pendingDeliverables: 1, pendingByStatus: { pending: 1 }, awaitingMergeDetails: [] };
+
+      const answer = (await explainMission('mission-1'))!.subjects[0];
+      expect(answer.chip.label).not.toBe('NEXT IN LINE');
+      // The streak is long enough to lead as a warning; it names the holder, never a PR number or id.
+      expect(answer.situation.headline).toContain('10 times in a row: held: runs after approve a spec from chat or MCP');
+      expect(answer.situation.headline).not.toContain('next in line');
+      expect(answer.situation.headline).not.toContain('holder-1');
+      expect(answer.situation.headline).not.toContain('#5434');
+      const open = answer.outstanding.find(o => o.kind === 'task');
+      expect(open?.kind === 'task' && open.holdRow).toBe('Queued 2h · held: runs after approve a spec from chat or MCP');
+      expect(open?.kind === 'task' && open.nextInLine).toBeFalsy();
+      const row = answer.because.find(l => l.claim.includes('"Verify plumbing"'));
+      expect(row?.claim).toBe('"Verify plumbing": Queued 2h · held: runs after approve a spec from chat or MCP.');
+      expect(row?.refs.taskId).toBe('holder-1');
+      expect(answer.because.map(l => l.claim).join(' ')).not.toContain('next in line');
+      // The presentation every surface reads says the same.
+      expect(answer.presentation.cause).toBe('coordination');
+      expect(answer.presentation.causeText).toBe('held: runs after approve a spec from chat or MCP');
+    });
+
+    it('a task whose inferred dependency is itself deferred for days says so', async () => {
+      missionRow = { id: 'mission-1', title: 'Navigation', workspaceId: 'ws-1', status: 'active', schedule: null };
+      taskRows = [
+        task({ id: 'task-1', status: 'pending', title: 'Decision data', dependsOn: ['dep-1'] }),
+        task({ id: 'dep-1', missionId: 'mission-2', status: 'pending', title: 'Schema for notes', startAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) }),
+      ];
+      completionDecision = { ok: false, code: 'pending_deliverables', reason: '', pendingDeliverables: 1, pendingByStatus: { pending: 1 }, awaitingMergeDetails: [] };
+
+      const answer = (await explainMission('mission-1'))!.subjects[0];
+      expect(answer.chip.label).not.toBe('NEXT IN LINE');
+      expect(answer.situation.headline).toMatch(/waiting on Schema for notes \(deferred until [A-Z][a-z]{2} \d{1,2}\)/);
+      expect(answer.presentation.cause).toBe('dependency');
+    });
   });
 });
 
@@ -446,6 +505,62 @@ describe('explainTask', () => {
     expect(answer.situation.nextAction ?? '').not.toMatch(/Dispatch a worker/);
     expect(answer.because.map(l => l.claim).join(' ')).toContain('is ready to start. Claim it from your session.');
     expect(answer.because.map(l => l.claim).join(' ')).not.toMatch(/waiting for a runner|nothing is running it/);
+  });
+
+  // Oct 22: a Mac went offline with two workers running; the tasks read
+  // RUNNING in explain for 40 minutes while nothing was running them.
+  describe('a running task whose own runner has gone quiet', () => {
+    const runningOn = (runner: string, accountId: string | null = 'acct-1') =>
+      [task({ id: 'task-1', status: 'in_progress', workers: [worker({ id: 'w-1', status: 'running', runner, localUiUrl: runner, accountId })] })];
+    const beat = (minutesAgo: number) =>
+      [{ accountId: 'acct-1', localUiUrl: 'headless://mac', lastHeartbeatAt: new Date(Date.now() - minutesAgo * 60_000), environment: { labels: { name: 'studio' } } }];
+
+    it('says it is waiting for that runner to be confirmed dead, not RUNNING', async () => {
+      missionRow = { id: 'mission-1', executor: 'runner', isHeld: false };
+      taskRows = runningOn('headless://mac');
+      runnerBeats = beat(12);
+      try {
+        const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+        expect(answer.situation.headline).toBe('Waiting for runner studio (offline 12m) to be confirmed dead.');
+        expect(answer.nextAction).toContain('waiting for runner studio (offline 12m) to be confirmed dead');
+        expect(answer.nextAction).toContain('requeued for another runner');
+        expect(answer.situation.nextAction).toBe(answer.nextAction);
+        expect(answer.derivedFrom.nextAction).toBe('workers.runner + workerHeartbeats.lastHeartbeatAt');
+        const link = answer.because.find(l => l.derivedFrom === 'workers.runner + workerHeartbeats.lastHeartbeatAt');
+        expect(link?.claim).toContain('Waiting for runner studio (offline 12m) to be confirmed dead');
+        expect(link?.refs.taskId).toBe('task-1');
+        // Before the closing conclusion, numbered in order.
+        expect(answer.because[answer.because.length - 1].derivedFrom).not.toBe('workers.runner + workerHeartbeats.lastHeartbeatAt');
+        expect(answer.because.map(l => l.order)).toEqual(answer.because.map((_, i) => i + 1));
+      } finally {
+        runnerBeats = [];
+      }
+    });
+
+    it('a runner that beat inside the "demonstrably up" window is simply running', async () => {
+      missionRow = { id: 'mission-1', executor: 'runner', isHeld: false };
+      taskRows = runningOn('headless://mac');
+      runnerBeats = beat(1);
+      try {
+        const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+        expect(answer.situation.headline).not.toContain('confirmed dead');
+        expect(answer.because.some(l => l.derivedFrom === 'workers.runner + workerHeartbeats.lastHeartbeatAt')).toBe(false);
+      } finally {
+        runnerBeats = [];
+      }
+    });
+
+    it('an interactive (mcp) worker is never judged by a runner heartbeat', async () => {
+      missionRow = { id: 'mission-1', executor: 'runner', isHeld: false };
+      taskRows = runningOn('mcp');
+      runnerBeats = beat(500);
+      try {
+        const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+        expect(answer.situation.headline).not.toContain('confirmed dead');
+      } finally {
+        runnerBeats = [];
+      }
+    });
   });
 
   it('the same pending task in a runner mission still reads as a stall', async () => {
@@ -506,7 +621,11 @@ describe('explainTask', () => {
         edge: 'soft_overlap', holderTaskId: 'holder-1', holderTitle: 'Rewrite the test runner', verdict: 'HOLD',
         paths: ['scripts', 'scripts/run-unit-tests.ts'],
       })]);
-      const link = answer.because.find(l => l.refs.taskId === 'holder-1');
+      // Two links name the holder: the R-14 row (`held: runs after …`) and the
+      // coordination link with the hold/start verdict.
+      const holderLinks = answer.because.filter(l => l.refs.taskId === 'holder-1');
+      expect(holderLinks.some(l => l.claim.includes('held: runs after Rewrite the test runner'))).toBe(true);
+      const link = holderLinks.find(l => l.claim.includes('HOLD'));
       expect(link?.claim).toContain('Rewrite the test runner');
       expect(link?.claim).toContain('HOLD');
       expect(answer.gateHistory[0].holder).toMatchObject({ holderTaskId: 'holder-1', verdict: 'HOLD' });

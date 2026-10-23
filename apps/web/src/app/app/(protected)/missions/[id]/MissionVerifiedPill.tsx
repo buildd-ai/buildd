@@ -55,8 +55,6 @@ interface Props {
   autoVerify: boolean | null;
   readonly?: boolean;
   failingCiPrNumbers?: number[];
-  /** Distinct PRs the mission has opened (passed through to the criteria sheet). */
-  missionPrCount?: number;
   overall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null;
   /**
    * Why it must not read Verified now (`verifiedHold`): a criterion not passing
@@ -90,7 +88,6 @@ function MissionVerifiedPillInner({
   autoVerify,
   readonly,
   failingCiPrNumbers,
-  missionPrCount,
   overall,
   sheetOnly = false,
   hold = null,
@@ -140,7 +137,6 @@ function MissionVerifiedPillInner({
           autoVerify={autoVerify}
           readonly={readonly}
           failingCiPrNumbers={failingCiPrNumbers}
-          missionPrCount={missionPrCount}
           hold={hold}
           liveStates={liveStates}
         />
@@ -167,7 +163,6 @@ function MissionVerifiedPillInner({
             autoVerify={autoVerify}
             readonly={readonly}
             failingCiPrNumbers={failingCiPrNumbers}
-          missionPrCount={missionPrCount}
           hold={hold}
           liveStates={liveStates}
           />
@@ -228,7 +223,6 @@ function MissionVerifiedPillInner({
           autoVerify={autoVerify}
           readonly={readonly}
           failingCiPrNumbers={failingCiPrNumbers}
-          missionPrCount={missionPrCount}
           hold={hold}
           liveStates={liveStates}
         />

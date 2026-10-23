@@ -1,9 +1,15 @@
 import { describe, expect, test } from 'bun:test';
 import {
   BRIEF_CONTEXT_MAX,
+  DECISION_EFFECT_MAX,
+  DECISION_OPTIONS_DEFAULT,
+  DECISION_OPTIONS_GUIDANCE,
+  DECISION_OPTIONS_MAX,
+  DECISION_TITLE_GUIDANCE,
   QUESTION_BRIEF_GUIDANCE,
   deriveQuestionBrief,
   missingBriefParts,
+  normalizeDecisionOptions,
   questionNotificationText,
   questionPushbackText,
   sanitizeQuestionBrief,
@@ -141,4 +147,74 @@ describe('questionNotificationText', () => {
 test('guidance tells the agent the reader has no context', () => {
   expect(QUESTION_BRIEF_GUIDANCE).toContain('self-contained decision brief');
   expect(QUESTION_BRIEF_GUIDANCE).toContain('(Recommended)');
+});
+
+describe('decision options (Navigation R-16, AC-16)', () => {
+  test('four options are refused with a message to cut to two', () => {
+    const r = normalizeDecisionOptions(['A', 'B', 'C', 'D']);
+    expect('error' in r && r.error).toContain('Cut to two');
+    expect('error' in r && r.error).toContain('free text');
+  });
+
+  test('three options are allowed; two is the default the guidance asks for', () => {
+    expect(normalizeDecisionOptions(['A', 'B', 'C'])).toEqual({ options: [{ label: 'A' }, { label: 'B' }, { label: 'C' }] });
+    expect(DECISION_OPTIONS_DEFAULT).toBe(2);
+    expect(DECISION_OPTIONS_MAX).toBe(3);
+  });
+
+  test('"Not now" and "Skip" are never options', () => {
+    for (const label of ['Not now', 'Skip', 'skip for now', 'Decide later']) {
+      const r = normalizeDecisionOptions([{ label: 'Use a team secret', consequence: 'x' }, label]);
+      expect('error' in r && r.error).toContain('Not now');
+    }
+    // A real choice that merely starts with the word stays.
+    expect('options' in normalizeDecisionOptions(['Skip the flaky test', 'Fix the flaky test'])).toBe(true);
+  });
+
+  test('structured options keep the consequence and store a short effect for the button', () => {
+    const r = normalizeDecisionOptions([
+      { label: 'Team secret (Recommended)', consequence: 'Stores the token once for every workspace. The deploy task unblocks right away; nothing else waits.' },
+      { label: 'Per workspace', consequence: 'Each workspace gets its own token.', effect: 'One token per workspace' },
+    ]);
+    if (!('options' in r)) throw new Error(r.error);
+    const [a, b] = r.options;
+    expect(a).toMatchObject({ label: 'Team secret', recommended: true });
+    expect(a.consequence).toContain('deploy task unblocks');
+    expect(a.effect!.length).toBeLessThanOrEqual(DECISION_EFFECT_MAX);
+    expect(a.effect!.startsWith('Stores the token once')).toBe(true);
+    expect(b).toEqual({ label: 'Per workspace', consequence: 'Each workspace gets its own token.', effect: 'One token per workspace' });
+  });
+
+  test('description is read as the consequence; only the first recommendation counts', () => {
+    const r = normalizeDecisionOptions([
+      { label: 'A', description: 'Ships A.', recommended: true },
+      { label: 'B', description: 'Ships B.', recommended: true },
+    ]);
+    if (!('options' in r)) throw new Error(r.error);
+    expect(r.options[0]).toMatchObject({ consequence: 'Ships A.', effect: 'Ships A', recommended: true });
+    expect(r.options[1].recommended).toBeUndefined();
+  });
+
+  test('empty and repeated labels are refused; absent options are none', () => {
+    expect('error' in normalizeDecisionOptions(['A', ' '])).toBe(true);
+    expect('error' in normalizeDecisionOptions(['A', 'a'])).toBe(true);
+    expect('error' in normalizeDecisionOptions('A')).toBe(true);
+    expect(normalizeDecisionOptions(undefined)).toEqual({ options: [] });
+  });
+
+  test('derived briefs carry the effect too, and sanitize keeps a capped effect', () => {
+    const b = deriveQuestionBrief({ question: 'Which? Local or UTC?', options: [{ label: 'UTC', description: 'Everyone is charged on the same calendar, whatever their time zone says today.' }] });
+    expect(b.options[0].effect!.length).toBeLessThanOrEqual(DECISION_EFFECT_MAX);
+    const s = sanitizeQuestionBrief({ options: [{ label: 'A', effect: 'x'.repeat(80) }] });
+    expect(((s.options as Array<{ effect: string }>)[0].effect).length).toBeLessThanOrEqual(DECISION_EFFECT_MAX);
+  });
+
+  test('guidance asks for two options, names the decision and never offers Not now', () => {
+    expect(QUESTION_BRIEF_GUIDANCE).toContain(DECISION_OPTIONS_GUIDANCE);
+    expect(QUESTION_BRIEF_GUIDANCE).toContain(DECISION_TITLE_GUIDANCE);
+    expect(DECISION_OPTIONS_GUIDANCE).toContain('two options by default');
+    expect(DECISION_OPTIONS_GUIDANCE).toContain('Not now');
+    expect(DECISION_TITLE_GUIDANCE).toContain('never "How should I proceed?"');
+    expect(QUESTION_BRIEF_GUIDANCE).not.toMatch(/three options/i);
+  });
 });

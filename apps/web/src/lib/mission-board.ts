@@ -35,6 +35,7 @@ import { deriveWorkKind, LIVE_WORKER_STATUSES, reduceToFrontier } from './task-p
 import { buildMissionAdjacency, type AdjacencyGateRow } from './condensed-timeline';
 import type { DepReleaseArm } from './dep-gate-contract';
 import type { WaitingKind } from '@buildd/core/waiting-reason';
+import type { WorkerWaitingFor } from '@buildd/core/db/schema';
 import { classifyTaskFailure, failedDependencyOf, type TaskFailureKind } from './task-failure-kind';
 import { boardTaskLabel } from './mission-board-label';
 import { resolveRunnerDisplay, runnerKey, type RunnerDisplay, type RunnerHeartbeatLike } from './runner-display';
@@ -71,11 +72,26 @@ export interface BoardWorkerInput {
   supersededByPrNumber?: number | null;
   /** A person settled this closed PR as deliberately not shipping. */
   abandonedAt?: number | null;
+  /** The PR someone named as this closed PR's replacement, before (or without) a recorded supersession. */
+  namedReplacementPrNumber?: number | null;
+  namedReplacementPrUrl?: string | null;
   currentAction: string | null;
-  waitingFor: { prompt: string; options: string[] } | null;
+  waitingFor: BoardWaitingFor | null;
   milestones: BoardMilestone[];
   linesAdded: number | null;
   linesRemoved: number | null;
+}
+
+/**
+ * A parked worker's question as the board carries it: the prompt and option
+ * labels every strip reads, plus `full`, the stored `waitingFor` as written
+ * (brief context, option consequences, the recommendation), so the mission
+ * page's decision card says what Home's says (Navigation R-16).
+ */
+export interface BoardWaitingFor {
+  prompt: string;
+  options: string[];
+  full?: WorkerWaitingFor;
 }
 
 export interface BoardTaskInput extends MissionFeedTaskInput {
@@ -85,6 +101,10 @@ export interface BoardTaskInput extends MissionFeedTaskInput {
   ciRetryPrNumber?: number | null;
   /** `tasks.backend` (null: the default). The Landed drawer's task actions read it. */
   backend?: string | null;
+  /** `tasks.startAt`, epoch ms: a deferred start (a retry's backoff). */
+  startAt?: number | null;
+  /** `tasks.context.loopWebhookWait` is set: the loop holds the task until its PR's checks report. */
+  loopWebhookWait?: boolean;
   /** Newest first, as the mission query orders them. */
   workers: BoardWorkerInput[];
   /** The task's `result` digest (`errorType`, `error`): a dependency failure is read from it. */
@@ -250,8 +270,21 @@ export interface BoardTask {
   executing?: boolean;
   startedAt: number | null;
   endedAt: number | null;
+  /**
+   * A live worker's last event: its newest write or milestone, whichever is
+   * later. Null when nothing is executing. The Overview's `Updated 14s ago`.
+   */
+  lastEventAt?: number | null;
+  /** A pending task's deferred start (a retry's backoff), epoch ms; the reader compares it with now. */
+  startAt?: number | null;
+  /** The worker that owns the task's PR (the Link replacement action writes to it). */
+  prWorkerId?: string | null;
+  /** A closed, unshipped PR's named replacement (`Closed → #N`). Null when none is known. */
+  replacement?: { number: number; url: string | null } | null;
   /** When the current wait began (a waiting task). */
   waitStartedAt: number | null;
+  /** A merged attempt followed by newer work that has not landed (History names it, the Build stage returns). */
+  reopened?: boolean;
   milestones: BoardMilestone[];
   currentAction: string | null;
   pr: { number: number; url: string | null; state: FeedPrState } | null;
@@ -275,7 +308,7 @@ export interface BoardTask {
   lines: { added: number; removed: number } | null;
   /** Attempts beyond the first (↻2 = one retry). */
   attempt: number;
-  waitingFor: { prompt: string; options: string[] } | null;
+  waitingFor: BoardWaitingFor | null;
   /** Why a queued task is not running (`MissionGateFacts.waitingKinds`); absent when unknown. */
   waitingKind?: WaitingKind;
   /**
@@ -509,8 +542,11 @@ export function toBoardWorkerInput(w: Record<string, unknown>): BoardWorkerInput
     prLifecycleStatus: str(w.prLifecycleStatus),
     supersededByPrNumber: num(w.supersededByPrNumber),
     abandonedAt: epoch(w.abandonedAt),
+    namedReplacementPrNumber: num(w.namedReplacementPrNumber),
+    namedReplacementPrUrl: str(w.namedReplacementPrUrl),
     currentAction: str(w.currentAction),
-    waitingFor: wf && typeof wf.prompt === 'string' ? { prompt: wf.prompt, options } : null,
+    // The whole stored question rides along (`full`): the card needs the brief, not just the labels.
+    waitingFor: wf && typeof wf.prompt === 'string' ? { prompt: wf.prompt, options, full: wf as WorkerWaitingFor } : null,
     milestones: selectMilestones(w.milestones),
     linesAdded: num(w.linesAdded),
     linesRemoved: num(w.linesRemoved),
@@ -551,6 +587,8 @@ export function toBoardTaskInput(t: Record<string, unknown> & { id: string; titl
     outputRequirement: str(t.outputRequirement),
     ciRetryPrNumber: num(t.ciRetryPrNumber),
     backend: str(t.backend),
+    startAt: epoch(t.startAt),
+    loopWebhookWait: !!(t.contextDigest as { loopWebhookWait?: unknown } | null | undefined)?.loopWebhookWait,
     // The page's digest under its own key: a caller that loads no result (Home's cards) never touches `result`.
     result: t.resultDigest ?? null,
     delivery: (t.delivery as DeliveryDisplay | null | undefined) ?? null,
@@ -575,6 +613,12 @@ const phaseKeyOf = (t: MissionFeedTaskInput) =>
   t.missionPhaseIndex != null && t.missionPhaseLabel != null ? `p${t.missionPhaseIndex}` : 'none';
 
 const isLiveWorker = (w: BoardWorkerInput | null | undefined) => !!w && LIVE.has(w.status);
+
+/** A worker's newest write or milestone, whichever is later; null when it has neither. */
+export function lastEventOf(w: Pick<BoardWorkerInput, 'updatedAt' | 'milestones'>): number | null {
+  const m = w.milestones.length ? w.milestones[w.milestones.length - 1].ts : null;
+  return w.updatedAt == null ? m : m == null ? w.updatedAt : Math.max(w.updatedAt, m);
+}
 
 /**
  * The Board's state for one deliverable row, refining the feed's
@@ -609,12 +653,12 @@ export function boardDeliveryReading(row: DeliverableRow<BoardTaskInput>): Deliv
   return asked ? null : deliveryReading(task.delivery);
 }
 
-export function deriveBoardStatus(row: DeliverableRow<BoardTaskInput>, depsLanded: boolean): BoardStatus {
+export function deriveBoardStatus(row: DeliverableRow<BoardTaskInput>, depsLanded: boolean, now: number = Date.now()): BoardStatus {
   const { task } = row;
   const kernel = boardDeliveryReading(row);
   if (kernel) return BOARD_STATUS_FOR_DELIVERY_TONE[kernel.tone];
   const feed = deriveFeedTaskState(row);
-  const pr = deriveFeedPrState(task.worker);
+  const pr = deriveFeedPrState(task.worker, task.delivery);
   const openAttempt = [...row.attempts].reverse().find(a => !TERMINAL.has(a.status) && a.taskClass !== 'work');
   const attemptLive = !!openAttempt && (isLiveWorker(openAttempt.workers[0]) || openAttempt.status === 'in_progress' || openAttempt.status === 'assigned');
   const redPr = pr?.state === 'ci_failed' || pr?.state === 'conflict';
@@ -633,6 +677,12 @@ export function deriveBoardStatus(row: DeliverableRow<BoardTaskInput>, depsLande
       return redPr || openAttempt ? 'fixing' : 'failed';
     case 'queued':
       if (openAttempt && pr) return 'fixing';
+      // The true state wins over a backoff (Navigation R-20): buildd retries a
+      // red PR (failing checks, a conflict) by itself, so a re-queued task
+      // whose PR is red, or that the loop holds for its checks until a future
+      // start, reads Fixing with when it resumes, never Ready.
+      if (redPr) return 'fixing';
+      if (task.loopWebhookWait && task.startAt != null && task.startAt > now) return 'fixing';
       return depsLanded ? 'ready' : 'blocked';
     case 'done':
       return pr?.state === 'merged' ? 'merged' : 'done';
@@ -730,8 +780,9 @@ export interface BoardCells {
 const sentence = (s: string) => (/[.!?]$/.test(s.trimEnd()) ? s.trimEnd() : `${s.trimEnd()}.`);
 
 export function buildBoardCells(
-  input: Pick<MissionBoardInput, 'tasks' | 'roles' | 'runnerHeartbeats' | 'externalDeps' | 'gateFacts'>,
+  input: Pick<MissionBoardInput, 'tasks' | 'roles' | 'runnerHeartbeats' | 'externalDeps' | 'gateFacts'> & { now?: number },
 ): BoardCells {
+  const now = input.now ?? Date.now();
   const roles = new Map((input.roles ?? []).map(r => [r.slug, r]));
   const displayOf = (w: BoardWorkerInput) => resolveRunnerDisplay(w, input.runnerHeartbeats);
   const allById = new Map(input.tasks.map(t => [t.id, t]));
@@ -778,7 +829,7 @@ export function buildBoardCells(
       otherMission: !allById.has(id),
     }));
     const frontier = reduceToFrontier([...offStrip.map(b => ({ id: b.id })), ...blockers.map(id => ({ id }))], reach).map(b => b.id);
-    const status = deriveBoardStatus(r, blockers.length === 0 && offStrip.length === 0);
+    const status = deriveBoardStatus(r, blockers.length === 0 && offStrip.length === 0, now);
     const openAttempt = [...r.attempts].reverse().find(a => !TERMINAL.has(a.status));
     const activeWorker = (status === 'fixing' && openAttempt?.workers[0]) || t.workers[0] || null;
     const own = t.workers[0] ?? null;
@@ -806,7 +857,13 @@ export function buildBoardCells(
       executing: isLiveWorker(activeWorker),
       startedAt: activeWorker?.startedAt ?? null,
       endedAt: activeWorker && !isLiveWorker(activeWorker) ? activeWorker.completedAt ?? activeWorker.updatedAt : null,
+      lastEventAt: isLiveWorker(activeWorker) ? lastEventOf(activeWorker!) : null,
+      startAt: t.startAt != null && t.status === 'pending' ? t.startAt : null,
+      prWorkerId: own?.prNumber != null ? own.id : null,
+      replacement: own?.namedReplacementPrNumber != null ? { number: own.namedReplacementPrNumber, url: own.namedReplacementPrUrl ?? null } : null,
       waitStartedAt: status === 'waiting' ? activeWorker?.updatedAt ?? null : null,
+      // A merged attempt followed by work that has not landed: the Build stage returns (Navigation R-15, R-6).
+      reopened: !BOARD_LANDED.has(status) && t.workers.some(w => w.mergedAt != null),
       milestones: activeWorker?.milestones ?? [],
       currentAction: isLiveWorker(activeWorker) ? activeWorker?.currentAction ?? null : null,
       pr: prState ? { number: prState.number, url: own?.prUrl ?? null, state: prState.state } : null,

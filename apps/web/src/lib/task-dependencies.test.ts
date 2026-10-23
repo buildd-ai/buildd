@@ -1377,7 +1377,7 @@ describe('task-dependencies aggregation — role', () => {
     expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ roleSlug: 'organizer' }));
   });
 
-  it("resolves roles as the parent's requester and files the aggregator for them", async () => {
+  it("resolves roles as the parent's requester and leaves the aggregator's requester to the insert trigger", async () => {
     // A parent running the owner's private role: its aggregator may only
     // inherit that role if the lookup is made on the owner's behalf.
     givenPlanningParent('my-reviewer');
@@ -1386,18 +1386,10 @@ describe('task-dependencies aggregation — role', () => {
     await resolveCompletedTask('child-1', 'ws-1');
     expect(requesterLookups.at(-1)).toMatchObject({ missionId: null });
     expect(pickRoleCalls).toEqual([{ workspaceId: 'ws-1', candidates: ['my-reviewer', 'organizer'], requesterUserId: 'user-owner' }]);
-    expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({
-      roleSlug: 'my-reviewer',
-      createdByUserId: 'user-owner',
-    }));
-  });
-
-  it('files the aggregator with no creator when the parent has no requester', async () => {
-    givenPlanningParent(null);
-    requesterAnswer = null;
-    effectiveRoles = new Set(['organizer']);
-    await resolveCompletedTask('child-1', 'ws-1');
-    expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ roleSlug: 'organizer', createdByUserId: null }));
+    // The trigger derives the person from parentTaskId ('parent'); naming them
+    // here would record a derived person as a direct request (spec 7702c32a R-2).
+    expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ roleSlug: 'my-reviewer', parentTaskId: expect.any(String) }));
+    expect(mockInsertValues.mock.calls.some(([v]: any[]) => 'createdByUserId' in v)).toBe(false);
   });
 
   it('files role-less when neither the parent role nor the Organizer resolves', async () => {

@@ -16,9 +16,9 @@ shorten the word, never re-word it.
 | `mission.verifying` | Verifying | `verifying` | The mission’s checks are running on its outcome. |  | `mission.stage:verifying` |
 | `mission.done` | ■ Done | `done` | Every task is finished and the mission’s checks passed. |  | `mission.stage:delivered` |
 | `mission.your_session` | Run from your session | `your session` | Its tasks start from a person’s own Claude Code session, not a runner. | Claim a task from your session | `waiting:mission_local`, `mission.executor:local` |
-| `work.ready` | □ Ready | `ready` | Nothing stops it; it starts when a slot frees. |  | `task.status:pending`, `worker.status:idle`, `strip:ready`, `waiting:eligible_no_runner` |
-| `work.blocked` | ▦ Blocked | `blocked` | It waits on another task and starts by itself when that one finishes. |  | `strip:blocked`, `strip:queued`, `waiting:dep_declared`, `waiting:dep_inferred`, `waiting:ordered_behind` |
-| `work.working` | ▶ Working | `working` | An agent is working on it. |  | `kernel:WORKING`, `task.status:assigned`, `task.status:in_progress`, `worker.status:starting`, `worker.status:running`, `strip:running` |
+| `work.ready` | □ Queued | `queued` | Nothing stops it; it starts when a slot frees. |  | `task.status:pending`, `worker.status:idle`, `strip:ready`, `waiting:eligible_no_runner` |
+| `work.blocked` | ▦ Waiting on a task | `waiting on a task` | It waits on another task and starts by itself when that one finishes. |  | `strip:blocked`, `strip:queued`, `waiting:dep_declared`, `waiting:dep_inferred`, `waiting:ordered_behind` |
+| `work.working` | ▶ Running | `running` | An agent is working on it. |  | `kernel:WORKING`, `task.status:assigned`, `task.status:in_progress`, `worker.status:starting`, `worker.status:running`, `strip:running` |
 | `work.has_question` | ◇ Has a question | `question` | The agent stopped to ask something; it continues when someone answers. | Answer the question | `worker.status:waiting_input`, `strip:waiting` |
 | `work.paused` | ‖ Paused | `paused` | A person paused this task; Resume continues it. | Resume the task | `worker.status:paused`, `waiting:task_held` |
 | `work.done` | ■ Done | `done` | The task finished; it had nothing to merge. |  | `task.status:completed`, `worker.status:completed`, `worker.status:done` |
@@ -39,7 +39,9 @@ shorten the word, never re-word it.
 | `pr.merged` | ■ Merged | `merged` | The PR is merged into its target branch. |  | `kernel:MERGED`, `task.status:completed` (hasMergedPr), `strip:landed` |
 | `pr.merged_elsewhere` | ■ Merged in another PR | `merged in #N` | The change reached the branch through another PR. |  | `kernel:SUPERSEDED` |
 | `pr.closed` | ✕ Closed without merging | `closed` | The PR closed and its change did not merge. |  | `kernel:CLOSED_UNMERGED`, `kernel:ABANDONED`, `strip:not_landed`, `waiting:subject_dead` |
+| `decision.approval_required` | ! Approval required | `approval required` | A policy gate only a person can clear: a migration, a human merge or an escalation. | Approve or decline it |  |
 | `decision.waiting_on_you` | ! Waiting on you | `waiting on you` | A decision only a person can make. | Answer the decision | `kernel:ESCALATED`, `strip:needs_you` |
+| `decision.your_decision` | ! Your decision | `your decision` | An agent asked a question only a person can answer; the work waits for the answer. | Answer the question |  |
 | `wait.scheduled` | Scheduled | `scheduled` | Starts by itself at its start time. | starts at its start time | `waiting:start_deferred` |
 | `wait.usage_limit` | Usage limit | `usage limit` | The provider’s usage limit is reached; it starts when the limit resets. | the limit resets | `waiting:budget_paused`, `waiting:managed_entitlement`, `runner:budget_exhausted` |
 | `wait.budget` | Budget reached | `budget reached` | The mission spent its budget; it starts when someone raises it. | Raise the mission budget | `waiting:mission_budget` |
@@ -73,12 +75,12 @@ One noun each. "Worker" is the internal row behind an agent and "seat" an old bi
 
 | Pattern | Say instead | Why |
 |---|---|---|
-| `\bheld\b\|\bon hold\b\|\bstart mode\b` | Not started, Paused, Scheduled, Usage limit, Waiting for files, or Waiting + the reason | "Held" covers a person’s pause, a schedule, a usage limit and a file lock, each with a different way out. Name the cause. |
+| `\bheld\b(?!: runs after )\|\bon hold\b\|\bstart mode\b` | Not started, Paused, Scheduled, Usage limit, Waiting for files, Queued · held: runs after <task>, or Waiting + the reason | "Held" covers a person’s pause, a schedule, a usage limit and a file lock, each with a different way out. Name the cause. |
 | `\bnot landed\b\|\blanded\b\|\blanding\b` | Merging, Merged, Merged in #N, Closed without merging | GitHub says Merged. "Landed" is the team’s own metaphor and reads differently on every screen. |
 | `\bshipped\b` | Merged, Merged in #N, Done, Released | One merged PR read Shipped, Landed, Merged and Completed depending on the screen. |
 | `\bdeliver(?:ed\|ing)\b` | Done, Merging, Done this week | "Delivery" is the kernel’s internal noun for a PR’s journey. |
 | `\bauditing\b\|\bin audit\b\|\brepairing\b` | In review, Checking, Fixing | Review was Auditing, In audit or In review, and a fix was Repairing on the web and Fixing everywhere else. |
-| `^(?:Pending\|Queued\|Never started\|Assigned\|Starting\|Running(?: now)?)$` | Ready, Blocked, Working, Not started | Pending and Ready named one row; Queued meant two different waits; Assigned, Starting and Running all meant an agent is on it. |
+| `^(?:Pending\|Never started\|Assigned\|Starting\|Running now)$` | Queued, Waiting on <task>, Running, Not started | Pending and Queued named one row; Assigned, Starting and Running now all meant an agent is on it. The task words are Navigation R-14's. |
 | `\bwaiting for a worker\b` | Waiting for an agent | "Worker" is the platform’s internal noun for one agent session. |
 | `\b(?:of\|\/)\s*\S+\s+busy\b\|\bslots? (?:is \|are )?busy\b\|\bevery slot is busy\b` | 2 of 3 slots in use | Capacity read busy, running or working; those are state words. |
 | `^completed$\|\bcompleted this week\b` | Done, Merged | A task marked Completed drew the merged glyph even when it had no PR. |

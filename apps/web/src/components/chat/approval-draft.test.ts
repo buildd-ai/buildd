@@ -8,26 +8,18 @@ const part = (input: Record<string, unknown>, name = 'manage_missions'): ChatToo
 });
 
 describe('approvalDraft', () => {
-  it('reads a mission draft: title, goal, criteria with their mechanical hint, constraints, plan', () => {
+  it('reads a mission draft: title, goal, constraints, plan, and no criteria (Living Specs D-44)', () => {
     const d = approvalDraft(part({
       action: 'create', workspaceId: 'ws', title: 'Multi-currency invoices',
       description: 'Let customers pay in their own currency.\n\nConstraints:\n- API changes are additive.',
-      goalCriteria: [
-        { type: 'all_prs_merged', label: 'every task PR merged' },
-        { type: 'command', command: 'pnpm test -- currency', label: 'currency suite green' },
-        { type: 'artifact_exists', key: 'fx-rounding-decision', label: 'rounding policy recorded' },
-        { nonsense: true },
-      ],
+      // A model that still sends criteria: the draft never shows them.
+      goalCriteria: [{ type: 'all_prs_merged', label: 'every task PR merged' }],
     }));
     expect(d.kind).toBe('mission');
     if (d.kind !== 'mission') return;
     expect(d.title).toBe('Multi-currency invoices');
     expect(d.goal).toBe('Let customers pay in their own currency.');
-    expect(d.criteria).toEqual([
-      { label: 'every task PR merged', hint: null },
-      { label: 'currency suite green', hint: 'pnpm test -- currency' },
-      { label: 'rounding policy recorded', hint: 'artifact · fx-rounding-decision' },
-    ]);
+    expect(d).not.toHaveProperty('criteria');
     expect(d.constraints).toBe('API changes are additive.');
     expect(d.plan).toBe('Plan first · starts now · no schedule');
     expect(d.workspaceId).toBe('ws');
@@ -37,7 +29,6 @@ describe('approvalDraft', () => {
     const d = approvalDraft(part({ action: 'create', startMode: 'held', cronExpression: '0 9 * * *' }));
     expect(d.kind === 'mission' && d.title).toBe('Untitled mission');
     expect(d.kind === 'mission' && d.plan).toBe('Plan first · not started until you start it · schedule 0 9 * * *');
-    expect(d.kind === 'mission' && d.criteria).toEqual([]);
   });
 
   it('any other write renders its fields, without the action or workspace id', () => {

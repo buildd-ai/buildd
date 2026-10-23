@@ -9,7 +9,7 @@ import type { MissionDisplayState } from '@/lib/mission-helpers';
 import Notice from '@/components/ui/Notice';
 import Spinner from '@/components/Spinner';
 import { Select } from '@/components/ui/Select';
-import { humanPickableRoles, type GoalCriterion, type LivingSpecGoalCriterion } from '@buildd/shared';
+import { humanPickableRoles, type LivingSpecGoalCriterion } from '@buildd/shared';
 import MissionDecisionSheet, { type SurfaceAuditDecision } from './MissionDecisionSheet';
 import OutcomeSpecPicker from './OutcomeSpecPicker';
 
@@ -59,8 +59,6 @@ export function quickAddRoleOptions(roles: { slug: string; name: string }[]): { 
  * predict (`surface_audit_missing`) opens the same sheet.
  */
 export interface CompletionDecisionInfo {
-  goalCriteria: GoalCriterion[];
-  failingCriterionIndex: number | null;
   fileWorkHref: string;
   /** The mission states criteria and they have not all passed. */
   criteriaUnmet: boolean;
@@ -399,12 +397,10 @@ export default function MissionSettings({
             <span className="font-semibold text-accent-text">Decision needed. </span>
             {decisionAudit
               ? 'This mission changed screens that have not had a visual audit. Run one, or complete it with a written reason.'
-              : 'This mission\'s goal criteria have not all passed. File the work, fix a criterion, or complete it anyway.'}
+              : 'This mission\'s goal criteria have not all passed. File the work, or complete it anyway.'}
           </p>
           <MissionDecisionSheet
             missionId={missionId}
-            goalCriteria={completionDecision?.goalCriteria ?? []}
-            failingCriterionIndex={completionDecision?.failingCriterionIndex ?? null}
             fileWorkHref={completionDecision?.fileWorkHref ?? `/app/missions/${missionId}`}
             criteriaUnmet={completionDecision?.criteriaUnmet ?? false}
             surfaceAudit={decisionAudit}

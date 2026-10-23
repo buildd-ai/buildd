@@ -109,6 +109,7 @@ export const MISSION_WATCH_TTL_MS = 15 * 60_000;
 export class PusherManager {
   private pusher?: Pusher;
   private pusherChannels = new Map<string, any>();
+  private slotChannel?: any;
   private workspaceChannels = new Map<string, any>();
   private missionChannels = new Map<string, any>();
   private missionWatchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -155,6 +156,9 @@ export class PusherManager {
       }
     });
 
+    // A slot change made on buildd.dev: beat now so the reply carries it (spec 34a48877 R-20).
+    void this.subscribeToSlotNudges();
+
     // Subscribe to workspace channels for task assignments if enabled
     if (this.acceptRemoteTasks) {
       this.subscribeToWorkspaceChannels();
@@ -163,6 +167,24 @@ export class PusherManager {
       // Runs after subscription so we don't miss events for tasks created between claim and subscribe.
       this.pollPendingTasksBestEffort('startup');
     }
+  }
+
+  /**
+   * The account's runner channel carries one nudge, `runner:slots`, with no
+   * data: the new number comes back on the heartbeat reply, never over Pusher.
+   * Best effort; without it the next 30 s beat picks the change up.
+   */
+  private async subscribeToSlotNudges(): Promise<void> {
+    try {
+      if (!this.pusher || this.config.singleTask) return;
+      const account = await this.buildd.getAccountInfo();
+      if (!account?.id) return;
+      const channelName = `${this.channelPrefix}runner-${account.id}`;
+      if (this.slotChannel) return;
+      const channel = this.pusher.subscribe(channelName);
+      channel.bind('runner:slots', () => this.callbacks.sendHeartbeat());
+      this.slotChannel = channel;
+    } catch { /* the next aligned beat carries it */ }
   }
 
   /**

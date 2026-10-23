@@ -30,7 +30,17 @@ export interface SpecFrontmatter {
    */
   verified_by?: string[];
   supersedes?: string[];
+  /** A repo spec slug, or `living-spec:<id or title>` for a native Living Spec. */
   superseded_by?: string;
+}
+
+/** Prefix marking a `superseded_by` that names a native Living Spec, not a repo slug. */
+export const NATIVE_SUCCESSOR_PREFIX = 'living-spec:';
+
+/** The native reference in a `superseded_by`, or null when it is a repo slug. */
+export function nativeSuccessorRef(value: string | undefined): string | null {
+  if (!value || !value.startsWith(NATIVE_SUCCESSOR_PREFIX)) return null;
+  return value.slice(NATIVE_SUCCESSOR_PREFIX.length).trim();
 }
 
 /** One spec file as the index and the cross checks read it. */
@@ -160,6 +170,11 @@ export function lintSpecFile(slug: string, fm: SpecFrontmatter | null, body: str
 
   if (fm.status === 'superseded' && !fm.superseded_by)
     errors.push('status is `superseded` but no `superseded_by` successor named');
+  if (typeof fm.superseded_by === 'string') {
+    const native = nativeSuccessorRef(fm.superseded_by);
+    if (native !== null && !native)
+      errors.push(`\`superseded_by: ${NATIVE_SUCCESSOR_PREFIX}\` names no Living Spec id or title`);
+  }
 
   // ── Ingestion fields ──────────────────────────────────────────────────────
   // A spec that cannot be summarised in one line and filed under one domain is
@@ -237,7 +252,13 @@ export function crossCheckSpecs(specs: readonly IndexedSpec[]): string[] {
   for (const s of specs) {
     for (const ref of s.fm.supersedes ?? [])
       if (!slugs.has(ref)) errors.push(`${s.file}: supersedes unknown spec "${ref}"`);
-    if (s.fm.superseded_by && !slugs.has(s.fm.superseded_by))
+    // A native Living Spec lives in the database, so it cannot be existence-checked
+    // here; only its shape is (see validateSpec).
+    if (
+      s.fm.superseded_by &&
+      nativeSuccessorRef(s.fm.superseded_by) === null &&
+      !slugs.has(s.fm.superseded_by)
+    )
       errors.push(`${s.file}: superseded_by unknown spec "${s.fm.superseded_by}"`);
     for (const ref of s.fm.related ?? []) {
       if (ref === s.slug) errors.push(`${s.file}: related lists itself`);
@@ -291,7 +312,12 @@ export function buildSpecIndex(specs: readonly IndexedSpec[]): string {
     `## Superseded (${superseded.length})`,
     '',
     ...(superseded.length
-      ? superseded.map((s) => `${line(s)} → replaced by \`${s.fm.superseded_by ?? '?'}\``)
+      ? superseded.map((s) => {
+          const native = nativeSuccessorRef(s.fm.superseded_by);
+          return native !== null
+            ? `${line(s)} → replaced by Living Spec \`${native}\``
+            : `${line(s)} → replaced by \`${s.fm.superseded_by ?? '?'}\``;
+        })
       : ['_none_']),
     '',
   ];

@@ -85,6 +85,8 @@ export type TermKey =
   | 'pr.merged_elsewhere'
   | 'pr.closed'
   | 'decision.waiting_on_you'
+  | 'decision.your_decision'
+  | 'decision.approval_required'
   // Why something has not started
   | 'wait.scheduled'
   | 'wait.usage_limit'
@@ -146,13 +148,13 @@ const TERM_LIST: Term[] = [
     from: [...wk('mission_local'), { kind: 'mission.executor', value: 'local' }] },
 
   // ── A task's work ─────────────────────────────────────────────────────────
-  { key: 'work.ready', word: 'Ready', short: 'ready', tone: 'q', glyph: '□',
+  { key: 'work.ready', word: 'Queued', short: 'queued', tone: 'q', glyph: '□',
     means: 'Nothing stops it; it starts when a slot frees.',
     from: [ts('pending'), ws('idle'), sk('ready'), ...wk('eligible_no_runner')] },
-  { key: 'work.blocked', word: 'Blocked', short: 'blocked', tone: 'q', glyph: '▦',
+  { key: 'work.blocked', word: 'Waiting on a task', short: 'waiting on a task', tone: 'q', glyph: '▦',
     means: 'It waits on another task and starts by itself when that one finishes.',
     from: [sk('blocked'), sk('queued'), ...wk('dep_declared', 'dep_inferred', 'ordered_behind')] },
-  { key: 'work.working', word: 'Working', short: 'working', tone: 'act', glyph: '▶',
+  { key: 'work.working', word: 'Running', short: 'running', tone: 'act', glyph: '▶',
     means: 'An agent is working on it.',
     from: [k('WORKING'), ts('assigned'), ts('in_progress'), ws('starting'), ws('running'), sk('running')] },
   { key: 'work.has_question', word: 'Has a question', short: 'question', tone: 'act', glyph: '◇',
@@ -206,8 +208,14 @@ const TERM_LIST: Term[] = [
   { key: 'pr.closed', word: 'Closed without merging', short: 'closed', tone: 'bad', glyph: '✕',
     means: 'The PR closed and its change did not merge.',
     from: [k('CLOSED_UNMERGED'), k('ABANDONED'), sk('not_landed'), ...wk('subject_dead')] },
+  { key: 'decision.approval_required', word: 'Approval required', short: 'approval required', tone: 'dec', glyph: '!',
+    means: 'A policy gate only a person can clear: a migration, a human merge or an escalation.', liftedBy: 'Approve or decline it',
+    from: [] },
   { key: 'decision.waiting_on_you', word: 'Waiting on you', short: 'waiting on you', tone: 'dec', glyph: '!',
     means: 'A decision only a person can make.', liftedBy: 'Answer the decision', from: [k('ESCALATED'), sk('needs_you')] },
+  // The task row's word for the same state (Navigation R-14): the mission's task list and its summary line.
+  { key: 'decision.your_decision', word: 'Your decision', short: 'your decision', tone: 'dec', glyph: '!',
+    means: 'An agent asked a question only a person can answer; the work waits for the answer.', liftedBy: 'Answer the question', from: [] },
 
   // ── Why it has not started ────────────────────────────────────────────────
   { key: 'wait.scheduled', word: 'Scheduled', short: 'scheduled', tone: 'q',
@@ -319,7 +327,8 @@ export type Reader = 'person' | 'agent';
  * `workerId`), so MCP replies are not counted for it.
  */
 export const BANNED_WORDS: ReadonlyArray<{ word: RegExp; use: string; why: string; agentsMay?: true }> = [
-  { word: /\bheld\b|\bon hold\b|\bstart mode\b/i, use: 'Not started, Paused, Scheduled, Usage limit, Waiting for files, or Waiting + the reason',
+  // `held: runs after <task>` is Navigation R-14's own cause for a queued task behind another task's files: it names the cause, so it is not the bare word.
+  { word: /\bheld\b(?!: runs after )|\bon hold\b|\bstart mode\b/i, use: 'Not started, Paused, Scheduled, Usage limit, Waiting for files, Queued · held: runs after <task>, or Waiting + the reason',
     why: '"Held" covers a person’s pause, a schedule, a usage limit and a file lock, each with a different way out. Name the cause.' },
   { word: /\bnot landed\b|\blanded\b|\blanding\b/i, use: 'Merging, Merged, Merged in #N, Closed without merging',
     why: 'GitHub says Merged. "Landed" is the team’s own metaphor and reads differently on every screen.' },
@@ -329,8 +338,8 @@ export const BANNED_WORDS: ReadonlyArray<{ word: RegExp; use: string; why: strin
     why: '"Delivery" is the kernel’s internal noun for a PR’s journey.' },
   { word: /\bauditing\b|\bin audit\b|\brepairing\b/i, use: 'In review, Checking, Fixing',
     why: 'Review was Auditing, In audit or In review, and a fix was Repairing on the web and Fixing everywhere else.' },
-  { word: /^(?:Pending|Queued|Never started|Assigned|Starting|Running(?: now)?)$/, use: 'Ready, Blocked, Working, Not started',
-    why: 'Pending and Ready named one row; Queued meant two different waits; Assigned, Starting and Running all meant an agent is on it.' },
+  { word: /^(?:Pending|Never started|Assigned|Starting|Running now)$/, use: 'Queued, Waiting on <task>, Running, Not started',
+    why: 'Pending and Queued named one row; Assigned, Starting and Running now all meant an agent is on it. The task words are Navigation R-14\'s.' },
   { word: /\bwaiting for a worker\b/i, use: 'Waiting for an agent',
     why: '"Worker" is the platform’s internal noun for one agent session.' },
   { word: /\b(?:of|\/)\s*\S+\s+busy\b|\bslots? (?:is |are )?busy\b|\bevery slot is busy\b/i, use: '2 of 3 slots in use',

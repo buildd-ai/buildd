@@ -1,42 +1,46 @@
 'use client';
 
 /**
- * Mission · Overview: what the mission is doing and what sets its finish.
+ * Mission · Overview: is this outcome getting done? (Navigation d25d923d R-3
+ * to R-6, R-15, R-16.)
  *
  * ```
- * 2 done · 1 in progress · 2 waiting on tasks · 1 next in line
- * [■][■] ┌[▶]┐ [┊][┊][▢]  [◐]   TaskStrip (lg): Done, In progress (outlined),
- *  01 02    03   04 05 06   07    Waiting, then checks (spec f7f67f1a R-1)
- *                                               Goal · 1 of 4 criteria
+ * Spec Cloud runner: deploy from Settings
+ * Build · 11 of 16        Verify        Deliver         the stage line
+ * ● Mirror the runner image · asked 1m ago              a decision card
+ * [■■■■■■■■■■■][▨][▨][!][┊][┊]                           the bar
+ * 11 of 16 merged · 1 running · 1 fixing · 1 your decision · 2 waiting
+ * Mirror the runner image to Docker Hub   Your decision   the task list
+ * 11 merged ›
  * ```
  *
- * Tapping a cell opens that task's page, the only task view (spec d25d923d
- * R-1). The selection (← → move it) only marks what holds a task or what it
- * holds: on arrival the task a hold names, else the first in flight
- * (`overviewDefaultSelection`), never just the first. From 900px the main
- * column stops at 720px and the goal criteria and the agent counts sit in a
- * right rail beside it.
+ * Only the current stage renders. Build: the decision cards, the bar, the
+ * summary line and the task list. Verify: the bar folded to `16 tasks
+ * merged ›` and the checks. Deliver: `Delivered into <branch>` with the
+ * requirements folded. One predicate (`isBuildComplete`) decides which. A
+ * cell or a row opens its task page, the only task view (R-1).
  */
 import { displayTaskTitle } from '@/lib/task-title';
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
-import type { VisualReviewModel } from '@buildd/shared';
-import Criteria, { type Criterion } from '@/components/ui/Criteria';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import Link from 'next/link';
+import { termWord, type VisualReviewModel } from '@buildd/shared';
 import TaskStrip from '@/components/ui/TaskStrip';
+import DecisionCard from '@/components/DecisionCard';
 import { useMissionFocusSnapshot } from '@/components/missions/mission-focus-context';
-import { MissionStripContext, createMissionStripStore, type MissionStripValue } from '@/components/missions/mission-strip-context';
 import { BOARD_LANDED, boardNeedsYouCount, type MissionBoardModel } from '@/lib/mission-board';
-import { buildEstimate, missionChecks, outcomeSpecLines, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
-import { isClosedUnshipped, overviewCells, overviewDefaultSelection, overviewLayout, overviewLegend, overviewSelection, railLines, type OverviewLegendEntry } from '@/lib/mission-overview';
+import { buildEstimate, isBuildComplete, missionChecks, missionStandardsLine, outcomeSpecLines, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
+import { isClosedUnshipped, overviewCells, overviewLayout } from '@/lib/mission-overview';
 import { stripOrder } from '@/lib/mission-task-strip';
-import { STATES, type StateKey } from '@/components/ui/states';
+import type { DecisionView } from '@/lib/needs-you-card';
+import type { HistoryRaised } from '@/lib/mission-decisions';
 import { useRouter } from 'next/navigation';
-import { AskBanner, CompletionRecord, PlanningPlaceholder } from './MissionBoard';
+import { CompletionRecord, PlanningPlaceholder } from './MissionBoard';
 import { boardTaskHref, useLiveBoard, useNow, type BoardLinkContext } from './MissionBoardParts';
-import type { StripFocus } from './MissionTaskStrip';
-import CriteriaCheckNow from './CriteriaCheckNow';
+import { useMissionLayout } from './MissionLayoutShell';
 import { MissionVisualAsk, WithMissionVisualReview, type MissionVisualReviewValue } from './MissionVisualReview';
 import type { PlanTask } from '@/lib/mission-plan';
-import { BuildCompleteBar, CheckRail, ChecksCard, OutcomeSpecLines } from './MissionChecks';
+import { BuildCompleteBar, CheckRail, ChecksCard, OutcomeSpecLines, StandardsLineView } from './MissionChecks';
+import MissionBuildStage from './MissionBuildStage';
 
 /** What the page knows about the checks; the build counts and repairs come from the live board. */
 export type MissionChecksSource = Omit<MissionChecksInput, 'build' | 'repairs'>;
@@ -47,19 +51,21 @@ export interface MissionOverviewProps extends BoardLinkContext {
   /** What the strip cannot say (a decision gate, the integration PR). */
   notice?: ReactNode;
   visual?: VisualReviewModel | null;
-  /** The situation block's task, when its one affordance is a single task: the default selection. */
-  stripFocus?: StripFocus | null;
   /** The checks that apply after the build (spec f7f67f1a R-11 to R-22). Absent: the build view only. */
   checks?: MissionChecksSource | null;
   /** The build tasks as the Plan page schedules them (frozen estimates), for the build-only estimate (R-23). */
   planTasks?: readonly PlanTask[] | null;
   /** A hold or empty budget: no time promise (R-24). */
   held?: boolean;
-  /** Titles of the selected outcome specs, by spec id, for the line under the rail (R-40). */
+  /** Titles of the selected outcome specs and the standards, by spec id, for the spec line (Navigation R-3). */
   outcomeSpecTitles?: Readonly<Record<string, string>> | null;
+  /** The decisions a person must give, one card each (Navigation R-16; `missionDecisions`). */
+  decisions?: readonly DecisionView[];
+  /** What raises History into the page (Navigation R-6; `historyRaised`). */
+  history?: HistoryRaised | null;
 }
 
-/** Checks already at work before the build ends (R-13) are shown under the strip. */
+/** Checks already at work before the build ends (R-13) are shown under the list. */
 const STARTED: ReadonlySet<CheckStatus> = new Set(['running', 'finding', 'owner', 'unable', 'stale']);
 
 export default function MissionOverview(props: MissionOverviewProps) {
@@ -72,8 +78,8 @@ export default function MissionOverview(props: MissionOverviewProps) {
 
 function OverviewView({
   model: serverModel, completionText = null, notice, visual: _visual, review,
-  stripFocus = null,
-  checks: checksSource = null, planTasks = null, held = false, outcomeSpecTitles = null, ...link
+  checks: checksSource = null, planTasks = null, held = false, outcomeSpecTitles = null,
+  decisions = [], history = null, ...link
 }: MissionOverviewProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
   const now = useNow(model.now, 15_000, !model.complete);
@@ -81,19 +87,13 @@ function OverviewView({
   const order = layout.order;
   const cells = useMemo(() => overviewCells(model, order), [model, order]);
   const groups = useMemo(() => layout.groups.map(g => ({ key: g.key, ids: g.ids, outline: g.key === 'active' })), [layout]);
-  const legend = useMemo(() => overviewLegend(model, layout), [model, layout]);
-  const [store] = useState(createMissionStripStore);
-  const stripValue = useMemo<MissionStripValue | null>(() => (order.length > 0 ? { store, taskIds: order } : null), [store, order]);
-  const chosen = useSyncExternalStore(store.subscribe, store.getSelected, () => null);
-  // Arrow keys choose through the store; a `#t-<id>` arrival through the page's
-  // focus store; else the task a hold names, else the first in flight.
+  // ← → move a selection for the keyboard; a tap opens the task page.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const hashed = useMissionFocusSnapshot()?.selectedTaskId ?? null;
-  const selectedId = overviewDefaultSelection(model, order, chosen ?? (hashed && order.includes(hashed) ? hashed : null), stripFocus?.taskId ?? null);
-  const select = useCallback((id: string) => store.select(id), [store]);
   const router = useRouter();
-  const openTask = useCallback((id: string) => router.push(boardTaskHref(link, id)), [router, link]);
+  const hrefFor = useCallback((id: string) => boardTaskHref(link, id), [link]);
+  const openTask = useCallback((id: string) => router.push(hrefFor(id)), [router, hrefFor]);
   const vm = review?.model ?? null;
-  const unevaluated = model.complete && !model.criteriaEvaluated && model.criteria.length > 0;
 
   // Build tasks only (P-2): fixes, audits and refreshes sit in the checks group and never count.
   const buildIds = useMemo(() => layout.groups.filter(g => g.key !== 'checks').flatMap(g => g.ids), [layout]);
@@ -101,108 +101,122 @@ function OverviewView({
   const repairs = useMemo(() => order.filter(id => model.tasks[id].deliverableRole === 'repair').map(id => ({
     id, title: displayTaskTitle(model.tasks[id].title), done: BOARD_LANDED.has(model.tasks[id].status) && !isClosedUnshipped(model, id),
   })), [model, order]);
+  const build = { done: doneCount, total: buildIds.length };
   const handoff = useMemo(
-    () => (checksSource ? missionChecks({ ...checksSource, build: { done: doneCount, total: buildIds.length }, repairs }) : null),
-    [checksSource, doneCount, buildIds.length, repairs],
+    () => (checksSource ? missionChecks({ ...checksSource, build, repairs }) : null),
+    [checksSource, build.done, build.total, repairs], // eslint-disable-line react-hooks/exhaustive-deps
   );
+  const standards = useMemo(
+    () => (checksSource ? missionStandardsLine({ ...checksSource, build }, outcomeSpecTitles ?? {}) : null),
+    [checksSource, build.done, build.total, outcomeSpecTitles], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  // One predicate for every surface (R-15).
+  const buildComplete = handoff ? handoff.buildComplete : isBuildComplete(build);
+  const stage: 'build' | 'verify' | 'deliver' = !buildComplete ? 'build' : handoff?.delivered ? 'deliver' : 'verify';
   // A check the owner must act on (a final merge under the human tier) is a decision too.
   // Max, not sum: the visual review's own ask may already count the same decision.
-  const needs = Math.max(boardNeedsYouCount(model, vm), handoff?.rows.filter(r => r.status === 'owner').length ?? 0);
-  const rail = railLines(model.live, needs);
+  const needs = Math.max(boardNeedsYouCount(model, vm), handoff?.rows.filter(r => r.status === 'owner').length ?? 0, decisions.length);
   const [showBuild, setShowBuild] = useState(false);
-  // A `#t-<id>` arrival shows the build strip it points into, even once the build is done.
+  // A `#t-<id>` arrival shows the bar it points into, even once the build is done.
   useEffect(() => { if (hashed) setShowBuild(true); }, [hashed]);
   const activeCount = layout.groups.find(g => g.key === 'active')?.ids.length ?? 0;
   const waitingCount = layout.groups.find(g => g.key === 'waiting')?.ids.length ?? 0;
   // A decision, a hold or nothing running while work waits (capacity, outside) removes any time promise.
-  const estimate = handoff && !handoff.buildComplete && planTasks
+  const estimate = stage === 'build' && planTasks
     ? buildEstimate(planTasks, now, held || needs > 0 || (activeCount === 0 && waitingCount > 0))?.line ?? null
     : null;
   const where = checksSource?.branch === 'mission-branch' ? 'the mission branch' : checksSource?.target ?? 'the target branch';
+  const specLines = checksSource ? outcomeSpecLines(checksSource.criteria, handoff?.rows ?? [], outcomeSpecTitles ?? {}) : [];
 
-  const strip = selectedId && (
-    <TaskStrip cells={cells} groups={groups} selectedId={selectedId} onSelect={select} onOpen={openTask} marks={overviewSelection(model, order, selectedId).marks} label="Mission tasks, done first" />
+  const bar = order.length > 0 && (
+    <TaskStrip cells={cells} groups={groups} ticks={false} selectedId={selectedId} onSelect={setSelectedId} onOpen={openTask} label="Mission tasks, merged first" />
   );
+  const cards = decisions.map(d => <DecisionCard key={d.key} view={d} now={model.now} />);
 
   return (
-    <MissionStripContext.Provider value={stripValue}>
-      <div data-testid="mission-overview" className="mt-6 grid gap-x-10 gap-y-6 min-[900px]:grid-cols-[minmax(0,720px)_minmax(240px,300px)]">
-        <div className="flex min-w-0 flex-col gap-4">
-          {handoff && <CheckRail steps={handoff.rail} />}
-          {handoff && checksSource && <OutcomeSpecLines lines={outcomeSpecLines(checksSource.criteria, handoff.rows, outcomeSpecTitles ?? {})} />}
-          {/* Build counts only: criteria are the header's Verified pill and the rail's list. */}
-          {!handoff?.buildComplete && <Legend entries={legend} />}
+    <div data-testid="mission-overview" data-stage={stage} className="flex min-w-0 flex-col gap-5">
+      <OutcomeSpecLines lines={specLines} />
+      {handoff && <CheckRail steps={handoff.rail} />}
+      {stage === 'build' && (
+        <>
+          {cards}
+          {history && <HistoryRaisedLine item={history} missionId={link.missionId} />}
           {notice}
-          {model.needsYou.filter(id => !model.tasks[id].delivery).map(id => (
-            <AskBanner key={id} task={model.tasks[id]} now={now} />
-          ))}
           {review && <MissionVisualAsk review={review} board={model} />}
-          {model.complete && <CompletionRecord model={model} text={completionText} visual={vm} />}
           {model.phases.length === 0 && model.planning && <PlanningPlaceholder planning={model.planning} now={now} link={link} />}
-          {handoff?.buildComplete ? (
-            <>
-              <BuildCompleteBar done={buildIds.length} where={where} open={showBuild} onToggle={() => setShowBuild(v => !v)}>
-                {strip}
-              </BuildCompleteBar>
+          {bar}
+          {order.length > 0 && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} />}
+          {handoff && handoff.rows.some(r => STARTED.has(r.status)) && <ChecksCard rows={handoff.rows.filter(r => STARTED.has(r.status))} onOpenTask={openTask} />}
+          {estimate && <p data-testid="overview-estimate" className="font-mono text-meta text-text-muted">{estimate}</p>}
+        </>
+      )}
+      {stage === 'verify' && (
+        <>
+          <BuildCompleteBar done={buildIds.length} where={where} open={showBuild} onToggle={() => setShowBuild(v => !v)}>
+            {bar}
+            {showBuild && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} />}
+          </BuildCompleteBar>
+          {cards}
+          {history && <HistoryRaisedLine item={history} missionId={link.missionId} />}
+          {notice}
+          {review && <MissionVisualAsk review={review} board={model} />}
+          {handoff && <ChecksCard rows={handoff.rows} onOpenTask={openTask} />}
+          {standards && <StandardsLineView line={standards} />}
+          {model.complete && <CompletionRecord model={model} text={completionText} visual={vm} />}
+        </>
+      )}
+      {stage === 'deliver' && handoff && (
+        <>
+          {/* The Deliver stage, done: the catalog's word for it (terms.ts `mission.done`), then the branch it merged into. */}
+          <p data-testid="mission-delivered-line" className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-title font-semibold text-text-primary">
+            <span aria-hidden="true" className="state-cell inline-block h-3.5 w-3.5 shrink-0 self-center rounded-[var(--radius-cell)]" data-tone="ok" data-pattern="solid" />
+            {`${termWord('mission.done')} · merged into ${checksSource?.target ?? where}`}
+          </p>
+          {notice}
+          <details data-testid="mission-requirements-fold" className="group">
+            <summary className="flex min-h-11 cursor-pointer list-none items-baseline gap-x-2 text-body md:min-h-0">
+              <span className="text-text-muted">Requirements</span>
+              <span className="font-mono text-meta text-text-muted">{requirementsCount(handoff.rows)} ›</span>
+            </summary>
+            <div className="mt-2 flex flex-col gap-3">
+              <BuildCompleteBar done={buildIds.length} where={where} open={showBuild} onToggle={() => setShowBuild(v => !v)}>{bar}</BuildCompleteBar>
               <ChecksCard rows={handoff.rows} onOpenTask={openTask} />
-            </>
-          ) : (
-            <>
-              {strip}
-              {handoff && handoff.rows.some(r => STARTED.has(r.status)) && <ChecksCard rows={handoff.rows.filter(r => STARTED.has(r.status))} onOpenTask={openTask} />}
-              {estimate && <p data-testid="overview-estimate" className="font-mono text-meta text-text-muted">{estimate}</p>}
-            </>
-          )}
-        </div>
-        <aside data-testid="overview-rail" aria-label="Goal and agents" className="flex min-w-0 flex-col gap-6">
-          {/* Once the build is done each criterion is a row in the checks; the rail does not repeat them. */}
-          {!handoff?.buildComplete && <div>
-            {model.criteria.length === 0 ? (
-              <p className="text-body text-text-muted">No goal criteria set.</p>
-            ) : (
-              <Criteria
-                items={model.criteria.map<Criterion>(c => ({ ok: c.state === 'pass', unchecked: c.state === 'unchecked', text: c.label, value: unevaluated && c.state === 'pending' ? undefined : c.value }))}
-                action={unevaluated ? <CriteriaCheckNow missionId={link.missionId} /> : undefined}
-                evaluated={unevaluated ? 'Criteria not evaluated' : undefined}
-              />
-            )}
-          </div>}
-          <ul data-testid="overview-counts-rail" className="flex flex-col gap-1.5 border-t border-[var(--line-soft)] pt-3 text-title">
-            <li className="text-text-secondary" data-testid="rail-agents" data-count={model.live}>{rail.agents}</li>
-            <li className={needs ? 'font-semibold text-accent-text' : 'text-text-muted'} data-testid="rail-needs" data-count={needs}>{rail.needs}</li>
-          </ul>
-        </aside>
-      </div>
-    </MissionStripContext.Provider>
+            </div>
+          </details>
+          {standards && <StandardsLineView line={standards} />}
+          {model.complete && <CompletionRecord model={model} text={completionText} visual={vm} />}
+        </>
+      )}
+    </div>
   );
 }
 
-/** Each legend entry's swatch: the same cell fill the strip draws for it. */
-const SWATCH: Record<OverviewLegendEntry['key'], { state: StateKey; wait?: string }> = {
-  done: { state: 'landed' },
-  active: { state: 'running' },
-  tasks: { state: 'blocked', wait: 'tasks' },
-  slot: { state: 'ready', wait: 'slot' },
-  hold: { state: 'ready', wait: 'hold' },
-  unknown: { state: 'ready', wait: 'unknown' },
-  closed: { state: 'not_landed' },
-  checks: { state: 'review' },
-};
+/** `21 of 21 met`: the requirements that count, folded to one line once delivered. */
+function requirementsCount(rows: readonly { kind: string; status: CheckStatus }[]): string {
+  const counted = rows.filter(r => (r.kind === 'criterion' || r.kind === 'visual') && r.status !== 'not_applicable');
+  const met = counted.filter(r => r.status === 'passed').length;
+  return counted.length === 0 ? 'nothing to check' : `${met} of ${counted.length} met`;
+}
 
-function Legend({ entries }: { entries: readonly OverviewLegendEntry[] }) {
-  if (entries.length === 0) return <p data-testid="overview-counts" className="font-mono text-meta text-text-muted">No tasks</p>;
+/**
+ * History raised into the page (R-6): one line above the list naming the
+ * open decision, the failure or the reopened task, opening History.
+ */
+function HistoryRaisedLine({ item, missionId }: { item: HistoryRaised; missionId: string }) {
+  const ctx = useMissionLayout();
+  const body = (
+    <>
+      <span className="shrink-0 text-text-muted">History</span>
+      <span className="min-w-0 truncate text-text-primary">{item.text}</span>
+      <span aria-hidden="true" className="text-text-muted">›</span>
+    </>
+  );
+  const cls = 'flex min-h-11 w-full min-w-0 items-center gap-2 border-t border-[var(--line-soft)] text-left text-body hover:bg-card-hover md:min-h-9';
   return (
-    <p data-testid="overview-counts" className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-meta text-text-muted">
-      {entries.map(e => {
-        const sw = SWATCH[e.key];
-        const s = STATES[sw.state];
-        return (
-          <span key={e.key} data-legend={e.key} className="inline-flex items-center gap-1.5">
-            <span aria-hidden="true" className="state-cell inline-block h-2.5 w-2.5 rounded-sm" data-tone={s.tone} data-pattern={s.pattern} data-frame={s.frame} data-wait={sw.wait} />
-            {e.text}
-          </span>
-        );
-      })}
-    </p>
+    <div data-testid="mission-history-raised" data-kind={item.kind}>
+      {ctx
+        ? <button type="button" onClick={() => ctx.setLayout('feed')} className={cls}>{body}</button>
+        : <Link href={`/app/missions/${encodeURIComponent(missionId)}?layout=feed`} className={cls}>{body}</Link>}
+    </div>
   );
 }

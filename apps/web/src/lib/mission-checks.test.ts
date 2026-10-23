@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
-import { buildEstimate, criteriaChecks, missionChecks, outcomeSpecLines, verifiedHold, waiverActorEmails, waiverActorName, missionPrCheck, releaseCheck, visualCheck, type MissionChecksInput } from './mission-checks';
+import { buildEstimate, criteriaChecks, isBuildComplete, missionChecks, missionStandardsLine, outcomeSpecLines, verifiedHold, waiverActorEmails, waiverActorName, missionPrCheck, releaseCheck, visualCheck, type MissionChecksInput } from './mission-checks';
 import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import { planMissions, type PlanTask } from './mission-plan';
 
@@ -39,6 +39,25 @@ function input(over: Partial<MissionChecksInput> = {}): MissionChecksInput {
     ...over,
   };
 }
+
+describe('isBuildComplete: one predicate for every surface (Navigation R-15)', () => {
+  it('is true only when every build task has landed, and never with no tasks', () => {
+    expect(isBuildComplete({ done: 16, total: 16 })).toBe(true);
+    expect(isBuildComplete({ done: 15, total: 16 })).toBe(false);
+    expect(isBuildComplete({ done: 0, total: 0 })).toBe(false);
+  });
+
+  it('a reopened task lowers done, so the Build stage returns (AC-9)', () => {
+    expect(isBuildComplete({ done: 16, total: 16 })).toBe(true);
+    expect(isBuildComplete({ done: 15, total: 16 })).toBe(false);
+    expect(missionChecks(input({ build: { done: 15, total: 16 } })).buildComplete).toBe(false);
+    expect(missionChecks(input({ build: { done: 16, total: 16 } })).buildComplete).toBe(true);
+  });
+
+  it('is what missionChecks and the standards line read', () => {
+    expect(missionChecks(input({ build: { done: 199, total: 200 } })).buildComplete).toBe(false);
+  });
+});
 
 describe('missionChecks: only checks that apply (R-15)', () => {
   it('a mission-branch mission shows visual review, the mission PR and each criterion, and no release row when none is configured', () => {
@@ -439,5 +458,50 @@ describe('verifiedHold: Verified needs current verdicts and clear blocking check
     expect(verifiedHold({ criteria: ok, visual: blocked })).toBe(`Visual review: ${blocked.state}`);
     const advisory = visualCheck(visual({ status: 'running', blocksMerge: false, blocksCompletion: false }), { mergeTier: 'agent-review' });
     expect(verifiedHold({ criteria: ok, visual: advisory })).toBeNull();
+  });
+});
+
+describe('standards in Verify (Living Specs D-43, Navigation R-17)', () => {
+  const standard: GoalCriterion = { type: 'living_spec', specId: 'voice', specRevisionId: 'r', revision: 2, contentHash: 'h', role: 'standard', label: 'Standard "Product voice" revision 2' };
+  const ctx = { branch: 'direct' as const, prMerged: false, target: 'dev', buildComplete: true };
+
+  it('a standard row is advisory in shadow and holds the finish once the gate is enforced', () => {
+    expect(criteriaChecks([standard], null, { ...ctx, standardsEnforced: false })[0]).toMatchObject({ chip: 'standard', blocks: false });
+    expect(criteriaChecks([standard], null, { ...ctx, standardsEnforced: true })[0]).toMatchObject({ chip: 'standard', blocks: true });
+    // A goal criterion blocks either way.
+    expect(criteriaChecks([unitTests], null, { ...ctx, standardsEnforced: false })[0].blocks).toBe(true);
+  });
+
+  it('reads STANDARDS_GATE when the caller does not say', () => {
+    process.env.STANDARDS_GATE = 'enforce';
+    try {
+      expect(criteriaChecks([standard], null, ctx)[0].blocks).toBe(true);
+    } finally {
+      delete process.env.STANDARDS_GATE;
+    }
+    expect(criteriaChecks([standard], null, ctx)[0].blocks).toBe(false);
+  });
+
+  it('an enforced standard not yet passing holds Verify', () => {
+    const m = missionChecks(input({ visual: null, criteria: [standard], branch: 'direct', integrationPr: null, standardsEnforced: true }));
+    expect(m.rail[1].state).not.toBe('done');
+    const shadow = missionChecks(input({ visual: null, criteria: [standard], branch: 'direct', integrationPr: null, standardsEnforced: false }));
+    expect(shadow.rail[1]).toMatchObject({ state: 'done', text: 'nothing to check' });
+  });
+
+  it('lists the standards beside CI and code review, from the mission PR', () => {
+    const l = missionStandardsLine(input({ criteria: [unitTests, standard] }), { voice: 'Product voice' });
+    expect(l?.items.map(i => [i.label, i.status])).toEqual([['CI', 'checking'], ['Code review', 'checking'], ['Product voice', 'not_checked']]);
+    const merged = missionStandardsLine(input({ criteria: [standard], integrationPr: { branch: 'mission/x', state: 'merged', prNumber: 128, prUrl: null, taskId: null } }), {});
+    expect(merged?.items.slice(0, 2).map(i => i.status)).toEqual(['met', 'met']);
+  });
+
+  it('leaves code review out when the merge policy has none, and CI waiting until a direct build lands', () => {
+    const l = missionStandardsLine(input({ criteria: [standard], branch: 'direct', integrationPr: null, mergeTier: 'auto-threshold', build: { done: 3, total: 5 } }), {});
+    expect(l?.items.map(i => [i.key, i.status])).toEqual([['ci', 'checking'], ['standard-voice', 'not_checked']]);
+  });
+
+  it('no line for a mission with no standards', () => {
+    expect(missionStandardsLine(input({ criteria: [unitTests] }), {})).toBeNull();
   });
 });

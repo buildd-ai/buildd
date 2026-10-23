@@ -53,10 +53,28 @@ waiting. Each message comes back once.
 
 ## Blocked or just unsure
 
+- **Blocked by another task** (it has to merge first, or it is already fixing
+  the same root cause): wait on it, do not fail.
+  `buildd action=complete_task params={ blockedOnTaskId, summary }` with that
+  task's full id and what you need from it. This task goes back to the queue
+  and starts again by itself when that task merges; nobody has to retry it.
+  The server refuses a task that already merged (pull it and carry on), was
+  cancelled, or already waits on this one, and a workspace without the wait
+  exit turned on: then fail with `error` naming the blocker, or ask a person.
+
 - **Soft question, you can proceed on a default:**
-  `buildd action=post_note params={ type: "question", title, body, defaultChoice }`.
-  Write the body for someone who has not seen the task: what is being decided,
-  one line per option, why you chose the default. Work continues.
+  `buildd action=post_note params={ type: "question", title, body, defaultChoice, options, subjectTaskId? }`.
+  Write the body for someone who has not seen the task: what is being decided
+  and why you chose the default. Work continues.
+- **Every decision you ask for** (`post_note`, `ask_human`, `AskUserQuestion`):
+  the question names the decision ("How should Docker Hub credentials be set
+  up?"), never "How should I proceed?". Offer two options, the recommended
+  one and one alternative, as `[{ label, consequence, recommended }]`; each
+  consequence says what happens next and what stays blocked, in one to three
+  sentences. A third only for a genuinely different choice; more than three is
+  refused. Never offer "Not now" or "Skip": the person always has those and a
+  free-text answer. Asking about another task (an organizer about a build
+  task)? Pass its id as `subjectTaskId` (same mission).
 - **Hard block in a runner session** (a required tool or credential is
   missing, or the instruction is impossible as written): `AskUserQuestion`.
   The task waits for an answer, is not counted as a failure and is not retried

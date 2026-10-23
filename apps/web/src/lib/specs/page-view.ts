@@ -16,6 +16,7 @@ import { specApprover } from './approval';
 import { diffSpecRowRevisions, type DiffHunk } from './diff';
 import { linkedRepoFullName } from './repo-source';
 import { approvedDesignDrift } from './design';
+import { designPreviewHref } from '@/lib/design-preview';
 import { attachmentSources, attachmentViews, sourcesOf, type AttachmentSource, type AttachmentView } from './attachments';
 import { readSpecNeighbours, suggestParent, type NearbySpec } from './neighbours';
 import { filingFacts, proposalAreas, type AreaProposal, type SpecIndexInput, type SpecSuggestion } from './index-view';
@@ -26,6 +27,7 @@ import { specRetirement, type RetirementView } from './retire';
 import { revisionReview, type RevisionReview } from './revision-changes';
 import { readCriterionHistory, type CriterionHistory } from './criteria';
 import { importConfirmPath } from './import';
+import { holdsInWorkspace } from '@/lib/team-access';
 
 /**
  * What the dashboard's spec pages show (living-specs.md §9): a workspace's
@@ -318,7 +320,14 @@ export type SpecPageView =
     commentAnchors: Array<{ kind: 'criterion' | 'section'; id: string; label: string }>;
     /** The reader may comment (write access) and resolve (a person with write access). */
     canComment: boolean;
-    design: { label: string; href: string | null; version: string; screens: string[]; changedSince: { pinned: string; current: string } | null } | null;
+    design: {
+      label: string;
+      href: string | null;
+      version: string;
+      /** Each screen by name; for an artifact design, a deep link opening that screen at the pinned revision. */
+      screens: Array<{ name: string; href: string | null }>;
+      changedSince: { pinned: string; current: string } | null;
+    } | null;
     /** The Files section (§21): the attachments that apply to the revision read, each binding one against the approval record. */
     attachments: Array<AttachmentView & { addedAgo: string }>;
     /** What `attachment:<name>` resolves to on the revision read. */
@@ -333,6 +342,10 @@ export type SpecPageView =
     source?: { source: string | null; path?: string; href?: string; copy: string | null; behind: boolean; publishAnyway?: boolean } | null;
     /** Slice 14, R-68: the reader may publish a kept-private revision anyway (a person who may approve here). */
     canPublishAnyway?: boolean;
+    /** A standard of its workspace (Living Specs D-43): its criteria apply to every mission that starts building. */
+    standard?: boolean;
+    /** The reader may set or clear the standard mark: an owner or admin, from this session. */
+    canMarkStandard?: boolean;
     /** An imported spec's criteria the parser could not read, in words ("N criteria could not be read; ..."); null when none. */
     criteriaUnread?: string | null;
     /** The review panel shows the repo checks on the would-be copy (R-34): the workspace writes repo copies and the reader may approve. Fetched by the panel, never read here (they ask GitHub). */
@@ -462,6 +475,8 @@ export async function specPageView(userId: string, specId: string, opts: { revis
   const wsRowP = personReach(userId, spec.workspaceId);
   const reached = wsRowP.then((w) => !!w);
   const approverP = specApprover(caller, spec.workspaceId, reached);
+  // The standard mark (D-43) is an owner's or admin's: the same cached role read specApprover makes first.
+  const ownerOrAdminP = holdsInWorkspace(userId, spec.workspaceId, 'approve_specs').catch(() => false);
   if (!(await reached)) {
     await approverP.catch(() => null);
     return { state: 'not_found' };
@@ -529,11 +544,16 @@ export async function specPageView(userId: string, specId: string, opts: { revis
         : Promise.resolve([]),
       spec.approvedRevision === read.revision.revision ? approvedDesignDrift(d0) : Promise.resolve(null),
     ]);
+    const artifactHref = d0.kind === 'artifact' && art ? `/app/artifacts/${d0.ref}` : null;
     return {
       label: art?.title ?? d0.ref,
-      href: d0.kind === 'artifact' ? (art ? `/app/artifacts/${d0.ref}` : null) : d0.ref.startsWith('https://') ? d0.ref : null,
+      href: artifactHref ?? (d0.kind !== 'artifact' && d0.ref.startsWith('https://') ? d0.ref : null),
       version: d0.version,
-      screens: (d0.screens ?? []).map((x) => x.name),
+      // A screen opens in the design preview at the revision this spec pinned (components/DesignPreview.tsx).
+      screens: (d0.screens ?? []).map((x) => ({
+        name: x.name,
+        href: artifactHref ? designPreviewHref(d0.ref, { screen: x.id, revision: d0.version }) : null,
+      })),
       changedSince,
     };
   });
@@ -590,6 +610,7 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     ...outlineOf(read.body).map((s) => ({ kind: 'section' as const, id: s.id, label: s.title })),
   ];
   const approver = !!approverId;
+  const ownerOrAdmin = await ownerOrAdminP;
   const native = nativeSourceOn(ws?.gitConfig);
   const source: (ReturnType<typeof repoCopyLine> & { href?: string }) | null = repoCopyLine(native, spec.repoCopy, spec.approvedRevision != null, spec.repoSource);
   const fullName = source?.path || imported ? await linkedRepoFullName(spec.workspaceId) : null;
@@ -607,6 +628,8 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     // Slice 14, R-68: a person who may approve here.
     canPublishAnyway: !!source?.publishAnyway && approver,
     criteriaUnread: criteriaUnreadText(spec.metadata?.criteria_unread) || null,
+    standard: spec.metadata?.standard === true,
+    canMarkStandard: ownerOrAdmin && open,
     repoChecks: native && pending && open && approver,
     delivery,
     spec: { id: spec.id, title: spec.title, scope: spec.scope, status: spec.status, workspaceId: spec.workspaceId, workspaceName: ws?.name ?? '', version: spec.version, headRevision: spec.headRevision, approvedRevision: spec.approvedRevision },

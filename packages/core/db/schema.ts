@@ -28,8 +28,8 @@ export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'st
 import { sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation, TaskDelegation } from '../token-delegation';
-import type { TaskRequesterSource } from '../task-requester-source';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, RootCauseClassification, RootCauseCapabilityKind, FailureIncidentRecovery } from '@buildd/shared';
+import type { MissionRequesterSource, TaskRequesterSource } from '../task-requester-source';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, RootCauseClassification, RootCauseCapabilityKind, FailureIncidentRecovery, StoredUpdateDrain } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -609,6 +609,10 @@ export interface WorkspaceGitConfig {
   // Register mergiraf (structural merge) as a driver in runner clones for the
   // languages it parses. Off by default; skipped quietly if the binary is absent.
   mergiraf?: boolean;
+  // The wait exit (apps/web/src/lib/task-wait-exit.ts): an agent blocked by
+  // another task may end its run waiting on it (complete_task blockedOnTaskId)
+  // instead of failing. Off by default.
+  waitOnTask?: boolean;
   // Explicit overlap hotspots: paths or `dir/**` patterns where a same-file
   // overlap with an in-flight task is a deterministic hold, never a claim-time
   // HOLD/START decision (apps/web/src/lib/hard-overlap-surfaces.ts). Absent:
@@ -1481,7 +1485,20 @@ export const missions = pgTable('missions', {
   // mission a fresh run of N attempts before it can trip again, with no
   // separate clear step to keep in sync.
   heartbeatBreakerTrippedAt: timestamp('heartbeat_breaker_tripped_at', { withTimezone: true }),
+  // The person this mission is for; its tasks inherit them through
+  // tasks_derive_requester. How it was decided is missionRequesterSource below.
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  // Who actually filed the mission, kept apart from the person it is for (spec
+  // 7702c32a R-1): the authenticated account, the worker whose agent filed it,
+  // and that worker's task (its lineage parent). NULL on rows written before
+  // these columns: unknown, never back-filled.
+  createdByAccountId: uuid('created_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  createdByWorkerId: uuid('created_by_worker_id'),
+  createdByTaskId: uuid('created_by_task_id'),
+  // How createdByUserId was decided: 'explicit' (a person filed it themselves),
+  // 'parent' (an agent filed it; the person is its task's requester), 'none'.
+  // NULL: written before this column; unknown.
+  requesterSource: text('requester_source').$type<MissionRequesterSource>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -1614,8 +1631,11 @@ export const tasks = pgTable('tasks', {
   // How createdByUserId was decided (TaskRequesterSource in core/task-requester-source.ts):
   // 'explicit' (the writer named the person), 'parent' | 'mission' | 'schedule'
   // (derived at insert), 'none' (no person: service or API-key work), and the
-  // same with a 'backfill_' prefix for rows filled in after the fact. NULL: not
-  // yet decided — nothing writes this column until the insert trigger lands.
+  // same with a 'backfill_' prefix for rows filled in after the fact
+  // ('backfill_none' / 'backfill_not_member': unknown, left NULL, never guessed).
+  // Written only by the tasks_resolve_requester trigger (migration
+  // *_task_requester_trigger). NULL: a row written before the trigger that
+  // already named a person; how it was decided was not recorded.
   requesterSource: text('requester_source').$type<TaskRequesterSource>(),
   creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook' | 'orchestrator' | 'conflict'>(),
   // Direct link to the task_schedule that spawned this task (when creationSource = 'schedule' or 'orchestrator').
@@ -2226,6 +2246,14 @@ export const workers = pgTable('workers', {
   // the account being deleted.
   supersededRecordedBy: text('superseded_recorded_by'),
   supersededAt: timestamp('superseded_at', { withTimezone: true }),
+  // A closed-unmerged PR whose replacement someone NAMED: a close comment
+  // `Replaced by #N`, a later PR body `replaces #N`, or a person's "Link
+  // replacement" (lib/pr-named-replacement-store.ts). Not verified merged, so it
+  // is display only: never read by a completion or merge gate. The formal
+  // supersession (`supersededByPrNumber`) still records when the replacement
+  // merges.
+  namedReplacementPrNumber: integer('named_replacement_pr_number'),
+  namedReplacementPrUrl: text('named_replacement_pr_url'),
   // A closed-unmerged PR a person declared abandoned: the work is deliberately
   // not shipping, and the reason says why. Not a supersession (nothing landed)
   // and not a fake one — `prShipState` reads it as its own `abandoned` state,
@@ -2821,8 +2849,8 @@ export const artifactReads = pgTable('artifact_reads', {
 
 /**
  * Typed links from an artifact to the things it informs: a chat message or
- * conversation, a task, a mission, a plan, and later a spec revision or a
- * verification. One payload row, many links; nothing is copied.
+ * conversation, a task, a mission, a plan, a spec (e.g. its design), and later
+ * a spec revision or a verification. One payload row, many links; nothing is copied.
  * Owned by Living Specs (docs/specs/execution-control-plane.md): only
  * apps/web/src/lib/artifact-links.ts writes it; the kernel reads it by id.
  *
@@ -2831,7 +2859,7 @@ export const artifactReads = pgTable('artifact_reads', {
  * only with a pinned `artifact_revision`, and no relation approves anything.
  * `artifact_revision` NULL = floating (follows the current body).
  */
-export const ARTIFACT_LINK_SUBJECTS = ['conversation', 'message', 'task', 'mission', 'plan', 'spec_revision', 'verification'] as const;
+export const ARTIFACT_LINK_SUBJECTS = ['conversation', 'message', 'task', 'mission', 'plan', 'spec', 'spec_revision', 'verification'] as const;
 export const ARTIFACT_LINK_RELATIONS = ['context', 'requirement', 'normative_reference', 'design_reference', 'evidence', 'output'] as const;
 export type ArtifactLinkSubject = (typeof ARTIFACT_LINK_SUBJECTS)[number];
 export type ArtifactLinkRelation = (typeof ARTIFACT_LINK_RELATIONS)[number];
@@ -2901,6 +2929,12 @@ export interface SpecMetadataBlock {
    * Cleared by a re-import that finds none.
    */
   criteria_unread?: { unreadable: Array<{ id: string; line: number }>; duplicates: Array<{ id: string; lines: number[] }> };
+  /**
+   * Living Specs D-43: a person (owner or admin, own session) marked this spec
+   * a standard of its workspace. Its approved criteria apply to every mission
+   * whose build starts after (apps/web/src/lib/specs/mission-standards.ts).
+   */
+  standard?: true;
   /**
    * Set by a copy from another workspace (apps/web/src/lib/specs/copy.ts): the
    * source revision this spec's head is byte for byte, by hash. Server-written
@@ -3025,6 +3059,17 @@ export const specs = pgTable('specs', {
   repoSourcePathIdx: index('specs_repo_source_path_idx').on(t.workspaceId, sql`(${t.repoSource}->>'path')`),
 }));
 
+/** One finding of the approval quality gate (apps/web/src/lib/specs/approval-gate.ts). */
+export interface SpecGateFinding { code: string; message: string; ids?: string[] }
+/** What the approval gate said about a revision: refusals block, warnings do not. */
+export interface SpecGateResult { passed: boolean; refusals: SpecGateFinding[]; warnings: SpecGateFinding[] }
+/** How a revision was approved. `gate` is null where the gate did not run (a person approving in the dashboard). */
+export interface SpecApprovalRecord {
+  via: 'mcp' | 'chat' | 'dashboard';
+  gate: SpecGateResult | null;
+  overrideReason?: string;
+}
+
 export const specRevisions = pgTable('spec_revisions', {
   id: uuid('id').primaryKey().defaultRandom(),
   specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
@@ -3057,6 +3102,10 @@ export const specRevisions = pgTable('spec_revisions', {
   // Set once by a person's approval (G2); never for an agent.
   approvedBy: text('approved_by'),
   approvedAt: timestamp('approved_at', { withTimezone: true }),
+  // How it was approved, written with approved_at: the surface, the quality
+  // gate's result and the reason a person overrode a refusal. NULL: approved
+  // before this was recorded.
+  approval: jsonb('approval').$type<SpecApprovalRecord>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   specRevisionIdx: uniqueIndex('spec_revisions_spec_revision_idx').on(t.specId, t.revision),
@@ -3640,6 +3689,15 @@ export const missionNotes = pgTable('mission_notes', {
   collapseCount: integer('collapse_count').default(1).notNull(),
   replyTo: uuid('reply_to'),
   defaultChoice: text('default_choice'),
+  // The task a question is about, when that is not the task that asked it
+  // (an organizer's decision about a build task). NULL: the card falls back
+  // to the mission. Validated on write: same mission, or same workspace for a
+  // task-scoped note. No FK, like task_id: notes outlive deleted tasks.
+  subjectTaskId: uuid('subject_task_id'),
+  // A question's structured options (question-brief.ts `DecisionOption`):
+  // label, consequence (the hover tip), effect (the button line, under 40
+  // characters), recommended. NULL on notes whose options live only in the body.
+  options: jsonb('options').$type<Array<{ label: string; consequence?: string; effect?: string; recommended?: boolean }>>(),
   status: text('status').notNull().default('open').$type<'open' | 'answered' | 'dismissed' | 'superseded'>(),
   // Human-attention disposition of an agent/outside-caller question note
   // (packages/core/needs-you.ts): only 'ask' reaches Needs You;
@@ -3676,6 +3734,14 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   viewerToken: text('viewer_token'),
   workspaceIds: jsonb('workspace_ids').default([]).$type<string[]>().notNull(),
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
+  // The slots this runner should have, with who set them and when, separate
+  // from the value it reports above (maxConcurrentWorkers). The later change
+  // wins, whichever side made it (packages/shared runner-desired-slots.ts).
+  // Null until a runner reports slots or an owner sets them.
+  desiredSlots: integer('desired_slots'),
+  desiredSlotsOrigin: text('desired_slots_origin').$type<'dashboard' | 'machine'>(),
+  desiredSlotsSetBy: text('desired_slots_set_by'),
+  desiredSlotsSetAt: timestamp('desired_slots_set_at', { withTimezone: true }),
   activeWorkerCount: integer('active_worker_count').default(0).notNull(),
   environment: jsonb('environment').$type<WorkerEnvironment>(),
   sandboxEnabled: boolean('sandbox_enabled'),
@@ -3701,11 +3767,12 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   // stops being true — so "how long has it been behind" is measured from this
   // column instead of inferred from boot age or heartbeat cadence.
   updateAvailableSince: timestamp('update_available_since', { withTimezone: true }),
-  // Present while the runner has halted claims to drain busy workers before a
-  // self-update (update-drain.ts): ISO `since`, ISO `endsAt` (window expiry),
-  // and `busy` workers still running. Null/absent = claiming normally. Lets
-  // list_runners explain free slots + no claims without SSH.
-  updateDrain: jsonb('update_drain').$type<{ since: string; endsAt: string; busy: number } | null>(),
+  // Present while the runner is applying a self-update (update-drain.ts): ISO
+  // `since`, ISO `endsAt` (window expiry, or when the update applied), `busy`
+  // workers still running, and on newer runners `phase`, `targetVersion` and
+  // the agents `paused` for it (spec 47c97f48; shape and readers in
+  // @buildd/shared runner-update.ts). Null/absent = claiming normally.
+  updateDrain: jsonb('update_drain').$type<StoredUpdateDrain | null>(),
   // The branch this install tracks (BUILDD_BRANCH) — already sent on every
   // heartbeat to resolve latestCommit (see the heartbeat route), but not
   // persisted until now, so GET /api/workers/active can show it per runner.

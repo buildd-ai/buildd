@@ -210,3 +210,135 @@ All crisis patterns from Oct 10–18 remain fully contained:
 - **Continuous observation**: Oct 14–21 (7d window), Oct 21 (4 observations: 12:30, 17:01, 22:00, 23:00 UTC)
 - **Verdict**: STABLE throughout, no escalations
 - **Handoff**: Ready for native Failure Pattern Sentinel mission
+
+---
+
+# ESCALATION: Oct 22–23 2026 Budget-Driven Failure Spike
+
+**Observation Date**: 2026-10-23 04:00 UTC  
+**Window**: 24h (Oct 22 04:00 → Oct 23 04:00 UTC)  
+**Status**: ESCALATED FAILURE RATE, SUSTAINED, BUDGET-DRIVEN  
+**Failure Rate (24h)**: 15.4% (88 of 571 terminal workers) — UP from 2–3% baseline  
+
+---
+
+## Summary
+
+The platform experienced a sustained failure-rate spike from Oct 22 morning through Oct 23 morning, driven primarily by budget exhaustion. The spike is **not a platform bug** but a resource management signal: workspaces are hitting usage-limit caps at higher rates than prior baseline.
+
+**Failure trajectory**:
+- Oct 21 23:00 UTC: 3% (baseline)
+- Oct 22 00:30 UTC: 2% (baseline continued)
+- Oct 22 08:00 UTC: 6% (NEW pattern: provision-readiness route mismatch, 3 failures)
+- Oct 22 12:55 UTC: 12% (escalating, budget 50% of failures)
+- Oct 22 23:57 UTC: 15% (continuing escalation, budget 67% of failures)
+- Oct 23 04:00 UTC: 15.4% (88 failures, budget 64% of failures)
+
+---
+
+## Primary Pattern: Budget Exhaustion (Dominant)
+
+**Signature Distribution**:
+- **35×** "You've hit your usage limit. Upgrade to Pro" (daily cap) — last seen 2026-10-23 03:06 UTC
+- **18×** "You've hit your weekly limit" — last seen 2026-10-22 12:29 UTC
+- **3×** Session/work-phase limits — distributed
+- **Subtotal**: 56 budget-related failures out of 88 = **64% of all failures**
+
+**Assessment**:
+- Budget limits are **functioning as designed** — not a platform defect
+- Budget is the **only exit cause showing sustained growth** (50% → 67% → 64% across observations)
+- Indicates one or more workspaces in **sustained high-consumption state**
+- This may be:
+  1. Expected mission/agent load (e.g., Navigation mission, Sentinel itself consuming tokens)
+  2. Cost tracking misalignment with actual limits
+  3. A workspace workflow that was previously under budget is now above it
+
+**Recommendation**: Investigate which workspace(s) are hitting budget caps and whether consumption is expected mission work or indicates a cost anomaly.
+
+---
+
+## Secondary Pattern: Provision-Readiness Route Mismatch (Cooling)
+
+**Signature**:
+```
+Provision failed [readiness]: exit 1: ✖ agent-question-protocol.md: claims route 
+`/api/tasks/[id]/summary`, which no route.ts in apps/web/src/app
+```
+
+**Count and Timeline**:
+- **First seen**: Oct 21 21:32 UTC (in prior observation window)
+- **Oct 22 08:00 UTC**: 3 failures identified
+- **Oct 22 12:55 UTC**: Confirmed as 4 failures
+- **Oct 23 04:00 UTC**: 3 visible in current window (same signature)
+- **Status**: COOLING — no escalation beyond initial 3–4 count
+
+**Impact**:
+- Primarily affects **Navigation mission** tasks
+- Not cascading to other workspaces or missions
+- Single mission stranding, not platform-wide
+
+**Root Cause Hypothesis**:
+- agent-question-protocol.md spec references `/api/tasks/[id]/summary` endpoint
+- Route handler either missing, not deployed, or route registration mismatched
+- Provision readiness validation enforcing spec-route alignment (correct behavior)
+- Likely triggered by:
+  - Code on a task branch referencing route not yet deployed to Vercel
+  - PR #5494 ("test(designs): acceptance checks") or related spec changes Oct 21–22
+  - Role config download failures (2× 403 errors at 12:28 UTC, 27 min before spike detection)
+
+**Severity**: **LOW for platform** (isolated to one mission), **CRITICAL for Navigation mission** (blocks tasks)
+
+**Monitor Threshold**: If count exceeds 10 failures/24h, escalate to platform provisions team. Current 3–4/24h is within acceptable variance.
+
+---
+
+## Gate & Dispatch Health (Still Operational)
+
+**Path Coordination Gates (24h)**:
+- path_declaration: 1008 events (expected coordination, healthy)
+- pr_landing: 348 events (CI checks, branch refresh — normal)
+- claim_loop: 152 events (path_overlap/isolation — normal)
+- **Status**: HEALTHY — gates functioning, no coordination pathology
+
+**Dispatch Health**:
+- Wakes: 649 delivered, p95 latency 6.8s
+- Stuck messages: 0
+- Status: HEALTHY
+
+**Assessment**: Gates and dispatch are not the bottleneck. Failures are due to budget caps and a single mission's route registration, not coordination or delivery infrastructure.
+
+---
+
+## Exit Cause Breakdown (Oct 23 04:00 UTC, 24h)
+
+| Exit Cause | Count | % | Notes |
+|---|---|---|---|
+| budget_limited | 56 | 64% | Primary driver — usage limits hit |
+| code_failure | 26 | 30% | Provision failures (3×), model capacity (2×), axiom timeout (2×), silent completion (2×), hard timeout (2×), + 15 other single-count |
+| infra_failure | 2 | 2% | Unavailable routes, exec_command issues |
+| output_unmet | 2 | 2% | Silent completion refusals |
+| silent_start / died_early | 3 | 3% | Worker initialization failures |
+
+---
+
+## Artifact Actions
+
+**No PR or incident creation** (read-only shadow mode).
+**No escalation paging** (native Failure Pattern Sentinel will handle durable incident lifecycle).
+**Observation recorded** in this artifact for handoff context.
+
+**Recommendation for native Sentinel**:
+1. Durable incident: `budget_exhaustion_sustained_oct22` — track workspace-level consumption over next 48h
+2. Durable incident: `provision_readiness_agent_question_protocol` — monitor if failures exceed 10/24h; if so, escalate to provisioning team
+3. Continue gate/dispatch health monitoring (currently healthy)
+
+---
+
+## Status Update
+
+- **Artifact Updated**: 2026-10-23 04:00 UTC
+- **Observation Window**: Continuous Oct 14–23 (9d rolling)
+- **Current Severity**: **MEDIUM** (sustained 15% failure rate above 10% escalation threshold)
+- **Root Cause Attribution**: Budget exhaustion (64%, operational), provision-readiness route (3–4 failures, isolated, cooling)
+- **Platform Stability**: OPERATIONAL (gates, dispatch, PR landing healthy; budget/provision failures are isolated, not cascading)
+- **Next Action**: Await native Failure Pattern Sentinel mission landing to assume durable incident tracking and workspace-level budget analysis

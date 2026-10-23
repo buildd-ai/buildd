@@ -87,7 +87,7 @@ const toolStream = (toolCallId: string, toolName: string, input: unknown, cost?:
 
 const MISSION_INPUT = {
   action: 'create', title: 'Bill in local currency',
-  description: 'Charge customers in their own currency.', goalCriteria: [{ type: 'all_prs_merged' }],
+  description: 'Charge customers in their own currency.',
 };
 
 const conversation = {

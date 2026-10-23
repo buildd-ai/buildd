@@ -64,3 +64,21 @@ describe('criterionScreens', () => {
     ]);
   });
 });
+
+describe('parseDesignRef: all problems at once', () => {
+  it('reports every bad screen and accepts bare ids', () => {
+    const r = parseDesignRef({ kind: 'artifact', ref: 'a1', screens: [{ id: 'bad id' }, { name: 'x' }] });
+    expect(r).toMatchObject({ ok: false, error: expect.stringMatching(/screens\[0\].*screens\[1\]/) });
+    expect(parseDesignRef({ kind: 'artifact', ref: 'a1', screens: ['home'] })).toMatchObject({ ok: true, design: { screens: [{ id: 'home', name: 'home' }] } });
+  });
+
+  it('still requires a version for a non-artifact kind when it is null or absent', () => {
+    expect(parseDesignRef({ kind: 'url', ref: 'https://x', version: null })).toMatchObject({ ok: false, error: expect.stringMatching(/design\.version is required for kind url/) });
+    expect(parseDesignRef({ kind: 'url', ref: 'https://x' })).toMatchObject({ ok: false, error: expect.stringMatching(/design\.version is required/) });
+  });
+
+  it('reports a bad kind, ref and screen id together', () => {
+    const r = parseDesignRef({ kind: 'nope', ref: '', screens: [{ id: 'bad id' }] });
+    expect(r).toMatchObject({ ok: false, error: expect.stringMatching(/design\.kind.*design\.ref.*screens\[0\]/) });
+  });
+});

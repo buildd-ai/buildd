@@ -51,6 +51,23 @@ describe('upload_artifact — request body', () => {
   });
 });
 
+describe('upload_artifact — no worker in context', () => {
+  it('sends missionId and no workerId from a session without a worker', async () => {
+    const api = mock(() => Promise.resolve({ artifactId: 'a1', uploadUrl: 'u', downloadUrl: 'd', shareUrl: null }));
+    const c = { ...ctx(), workerId: undefined } as ActionContext;
+    await handleBuilddAction(api as unknown as ApiFn, 'upload_artifact', { filename: 'd.html', mimeType: 'text/html', sizeBytes: 10, missionId: MISSION_ID }, c);
+    const body = bodyOf(api);
+    expect('workerId' in body).toBe(false);
+    expect(body.missionId).toBe(MISSION_ID);
+  });
+
+  it('still requires a worker when nothing scopes the upload', async () => {
+    const api = mock(() => Promise.resolve({}));
+    const c = { ...ctx(), workerId: undefined } as ActionContext;
+    await expect(handleBuilddAction(api as unknown as ApiFn, 'upload_artifact', { filename: 'd.html', mimeType: 'text/html', sizeBytes: 10 }, c)).rejects.toThrow(/workerId is required/);
+  });
+});
+
 describe('upload_artifact { artifactId } — finalize after the PUT', () => {
   it('posts to finalize with the sha256 and reports the verified state', async () => {
     const sha = 'a'.repeat(64);
@@ -68,5 +85,36 @@ describe('upload_artifact { artifactId } — finalize after the PUT', () => {
     await handleBuilddAction(api as unknown as ApiFn, 'upload_artifact', { artifactId: 'a1' }, ctx());
     const [, init] = api.mock.calls[0] as [string, { body: string }];
     expect(JSON.parse(init.body)).toEqual({});
+  });
+});
+
+describe('upload_artifact — a design in one call', () => {
+  const SPEC_ID = '00000000-0000-0000-0000-000000000077';
+  const ARTIFACT_ID = '00000000-0000-0000-0000-000000000088';
+
+  it('stores a design from a session with no worker, scoped to a spec, attached in the same call', async () => {
+    const api = mock(() => Promise.resolve({ artifactId: 'a1', uploadUrl: 'u', downloadUrl: 'd', shareUrl: null }));
+    const c = { ...ctx(), workerId: undefined } as ActionContext;
+    const screens = [{ id: 'home', name: 'Home', viewport: '1440x900' }];
+    const attach = [{ subjectKind: 'mission', subjectId: MISSION_ID, relation: 'design_reference' }];
+    await handleBuilddAction(api as unknown as ApiFn, 'upload_artifact', {
+      filename: 'nav.html', mimeType: 'text/html', sizeBytes: 130_000, specId: SPEC_ID,
+      metadata: { kind: 'design', screens }, attach,
+    }, c);
+    const body = bodyOf(api);
+    expect('workerId' in body).toBe(false);
+    expect(body.specId).toBe(SPEC_ID);
+    expect(body.metadata).toEqual({ kind: 'design', screens });
+    expect(body.attach).toEqual(attach);
+  });
+
+  it('artifactId with a file starts the next revision instead of finalizing, and needs no worker', async () => {
+    const api = mock(() => Promise.resolve({ artifactId: ARTIFACT_ID, revision: 3, uploadUrl: 'https://r2.example/put', downloadUrl: 'd', revisionDownloadUrl: 'd?revision=3', shareUrl: null }));
+    const c = { ...ctx(), workerId: undefined } as ActionContext;
+    const r = await handleBuilddAction(api as unknown as ApiFn, 'upload_artifact', { artifactId: ARTIFACT_ID, filename: 'nav.html', mimeType: 'text/html', sizeBytes: 10 }, c);
+    const body = bodyOf(api);
+    expect(body).toEqual({ artifactId: ARTIFACT_ID, filename: 'nav.html', mimeType: 'text/html', sizeBytes: 10 });
+    expect(r.content[0].text).toContain('revision 3');
+    expect(r.content[0].text).toContain(`upload_artifact { artifactId: "${ARTIFACT_ID}" }`);
   });
 });

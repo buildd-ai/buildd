@@ -29,6 +29,7 @@ import { cancellationLine } from './task-cancellation';
 import { claimHoldPhrase } from './claim-hold-phrase';
 import type { DeliveryDisagreement } from './delivery-overlay';
 import { roundTriggerSentence, type DeliveryRound } from '@buildd/workflow-kernel/projections';
+import { offlineRunnerWaitLine, type RunnerLiveness } from './runner-offline';
 
 const repoOf = (url: string | null | undefined) => url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/)?.[1] ?? null;
 
@@ -71,6 +72,12 @@ export interface StateBecauseExtras {
     missingBrowser?: boolean;
     /** The claim loop's newest refusal reason for this pending row (spec f7f67f1a R-33). */
     holdReason?: string | null;
+    /**
+     * The R-14 hold the view read for this pending row (`derivePendingTaskHold`):
+     * the row text and the task it waits behind. The chain prints the same
+     * words the list row shows, and refs the holder.
+     */
+    pendingHold?: { row: string; kind: string; holder: { id: string; title: string | null; note: string | null } | null } | null;
     /**
      * Unmet dependencies of a pending row. Such a row cannot be claimed, so it
      * is described as waiting on them (and ref'd to the first), never as
@@ -241,6 +248,14 @@ function openTaskLinks(
         'tasks.roleSlug + workerHeartbeats.environment + workspaces.gitConfig.executor',
         { ...base, taskId: t.id },
       );
+    }
+    // Navigation R-14: the row's own words, the holder named, never an id.
+    if (t.status === 'pending' && t.pendingHold && orphaned(t)) {
+      const h = t.pendingHold;
+      const derivedFrom = h.kind === 'dependency' ? 'tasks.dependsOn'
+        : h.kind === 'next_in_line' || h.kind === 'scheduled' ? 'tasks.status + workers.status'
+        : 'gate_events.detail';
+      return link(`${name(t)}: ${h.row}.`, derivedFrom, { ...base, taskId: h.holder?.id ?? t.id });
     }
     const hold = t.status === 'pending' ? claimHoldPhrase(t.holdReason) : null;
     if (hold && orphaned(t)) {
@@ -793,6 +808,21 @@ export function taskRecoveryLink(status: string, context: unknown, subject: Beca
     return line ? link(line, 'tasks.context.credentialHold', refs) : null;
   }
   return null;
+}
+
+/**
+ * A live-status worker whose own runner has gone quiet (lib/runner-offline.ts):
+ * the task is not RUNNING, it is waiting for that runner to be confirmed dead,
+ * after which the offline-runner reaper requeues it for another runner.
+ */
+export function offlineRunnerLink(liveness: RunnerLiveness, subject: BecauseSubjectRefs, workerId: string | null): Link {
+  const refs: ExplainRefs = {
+    ...(subject.taskId ? { taskId: subject.taskId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+    ...(workerId ? { workerId } : {}),
+  };
+  const line = offlineRunnerWaitLine(liveness);
+  return link(`${line.charAt(0).toUpperCase()}${line.slice(1)}.`, 'workers.runner + workerHeartbeats.lastHeartbeatAt', refs);
 }
 
 /** Insert the wake link before the chain's closing conclusion, renumbered. */

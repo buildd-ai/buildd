@@ -117,6 +117,36 @@ mock.module('@buildd/core/pr-facts', () => ({
   },
 }));
 
+// The content verifier (lib/pr-supersession-detect.ts verifyPrCarriedBy): the
+// one thing that may turn a nominated loser into a closed one. Defaults to
+// "verified" so the pre-filter tests below exercise their own guard; the
+// verification tests set a verdict explicitly.
+type Verdict =
+  | { outcome: 'verified'; method: 'patch-id' | 'content'; confidence: number }
+  | { outcome: 'unverified'; confidence: number }
+  | { outcome: 'unavailable'; reason: string };
+const VERIFIED: Verdict = { outcome: 'verified', method: 'content', confidence: 1 };
+const verifyCalls: any[] = [];
+const mockVerifyPrCarriedBy = mock((_opts: any): Promise<Verdict> => Promise.resolve(VERIFIED));
+mock.module('@/lib/pr-supersession-detect', () => ({
+  SWEEP_LIMITS: { budgetMs: 20_000, requestTimeoutMs: 5_000 },
+  verifyPrCarriedBy: (opts: any) => { verifyCalls.push(opts); return mockVerifyPrCarriedBy(opts); },
+}));
+
+// The supersession edge (lib/pr-supersession.ts recordPrSupersession): the
+// same write record_pr_supersession and the close-time scan take.
+const recordCalls: any[] = [];
+let recordResult: any = { ok: true };
+mock.module('@/lib/pr-supersession', () => ({
+  recordPrSupersession: (p: any) => { recordCalls.push(p); return Promise.resolve(recordResult); },
+}));
+
+const gateEvents: any[] = [];
+mock.module('@/lib/gate-ledger', () => ({
+  GATE_SLUGS: { AUTO_PR_SUPERSESSION: 'auto_pr_supersession' },
+  fireGateEvent: (e: any) => { gateEvents.push(e); return 'sig'; },
+}));
+
 // ── Import after mocks ────────────────────────────────────────────────────────
 
 import { shutdownDeadBuilddPrs } from './dead-pr-shutdown';
@@ -190,6 +220,30 @@ function resetMocks() {
   mockGithubApi.mockReset();
   mockGithubApi.mockImplementation(() => Promise.resolve({ id: 1 }));
   recordedFacts.length = 0;
+  mockVerifyPrCarriedBy.mockReset();
+  mockVerifyPrCarriedBy.mockImplementation(() => Promise.resolve(VERIFIED));
+  verifyCalls.length = 0;
+  recordCalls.length = 0;
+  recordResult = { ok: true };
+  gateEvents.length = 0;
+}
+
+/** Winner merged; loser from a sibling task, same base, idle past the active-work window. */
+function arrangeSiblingLoser(loser: Partial<Parameters<typeof makeLoserWorker>[0]> = {}) {
+  const idle = new Date(Date.now() - 2 * 60 * 60 * 1000); // 2 hours — well past 30 minutes
+  mockWorkspacesFindFirst.mockImplementation(() => makeWorkspace());
+  mockWorkersFindFirst.mockImplementation(() => makeEventWorker({ prBaseRef: 'dev' }));
+  mockTasksFindFirst.mockImplementation(() => makeEventTask());
+  mockTasksFindMany.mockImplementation(() => [makeLoserTask()]);
+  mockWorkersFindMany.mockImplementation(() => [makeLoserWorker({ updatedAt: idle, prBaseRef: 'dev', ...loser })]);
+  mockMissionNotesFindFirst.mockImplementation(() => null);
+}
+
+function closeCallFor(prNumber: number) {
+  return mockGithubApi.mock.calls.find(([, path]) => path.includes(`/pulls/${prNumber}`));
+}
+function commentCallFor(prNumber: number) {
+  return mockGithubApi.mock.calls.find(([, path]) => path.includes(`/issues/${prNumber}/comments`));
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -265,6 +319,137 @@ describe('shutdownDeadBuilddPrs', () => {
 
     // Worker stamped closed through the fact funnel
     expect(recordedFacts).toEqual([{ target: { workerId: 'w-loser' }, fact: { kind: 'closed' }, opts: FUNNEL_OPTS }]);
+  });
+
+  // ── Content verification: the close waits on the proof the edge needs ──────
+
+  it('regression (#5461/#5463): does NOT close a sibling task\'s PR the winner does not carry, with no comment and no edge', async () => {
+    // Two tasks in one mission anchored to the same subject, both to dev, the
+    // loser idle for hours, the winner merged — every pre-filter passes. The
+    // winner's diff shares nothing with the loser's, so nothing may close.
+    arrangeSiblingLoser();
+    mockVerifyPrCarriedBy.mockImplementation(() => Promise.resolve({ outcome: 'unverified', confidence: 0 }));
+
+    const result = await shutdownDeadBuilddPrs(WS_ID, WINNER_PR, true, INSTALLATION_ID, REPO);
+
+    expect(result.closedPrNumbers).toHaveLength(0);
+    expect(result.unverifiedPrNumbers).toEqual([LOSER_PR]);
+    expect(result.skippedPrNumbers).toContain(LOSER_PR);
+    expect(result.supersededPrNumbers).toHaveLength(0);
+    expect(commentCallFor(LOSER_PR)).toBeUndefined();
+    expect(closeCallFor(LOSER_PR)).toBeUndefined();
+    expect(recordedFacts).toHaveLength(0);
+    expect(recordCalls).toHaveLength(0);
+    // The verifier compared the loser against the winner, in the event repo.
+    expect(verifyCalls).toHaveLength(1);
+    expect(verifyCalls[0]).toMatchObject({ installationId: INSTALLATION_ID, repo: REPO, prNumber: LOSER_PR, candidatePrNumber: WINNER_PR });
+    // The refusal is a visible gate event, not a silent skip.
+    expect(gateEvents).toHaveLength(1);
+    expect(gateEvents[0]).toMatchObject({
+      gate: 'auto_pr_supersession', outcome: 'rejected', surface: 'dead-pr-shutdown',
+      taskId: 't-loser', workerId: 'w-loser',
+      detail: expect.objectContaining({ prNumber: LOSER_PR, winnerPrNumber: WINNER_PR, verdict: 'unverified' }),
+    });
+  });
+
+  it('closes a verified duplicate and records the supersession edge with the method in its reason', async () => {
+    arrangeSiblingLoser();
+    mockVerifyPrCarriedBy.mockImplementation(() => Promise.resolve({ outcome: 'verified', method: 'content', confidence: 0.96 }));
+
+    const result = await shutdownDeadBuilddPrs(WS_ID, WINNER_PR, true, INSTALLATION_ID, REPO);
+
+    expect(result.closedPrNumbers).toEqual([LOSER_PR]);
+    expect(result.supersededPrNumbers).toEqual([LOSER_PR]);
+    expect(result.unverifiedPrNumbers).toHaveLength(0);
+    expect(commentCallFor(LOSER_PR)).toBeDefined();
+    expect(closeCallFor(LOSER_PR)).toBeDefined();
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w-loser' }, fact: { kind: 'closed' }, opts: FUNNEL_OPTS }]);
+    expect(recordCalls).toHaveLength(1);
+    expect(recordCalls[0]).toMatchObject({ workerId: 'w-loser', supersedingPrNumber: WINNER_PR, caller: 'system' });
+    expect(recordCalls[0].recordedBy).toMatch(/^system:/);
+    expect(recordCalls[0].reason).toContain('method: content');
+    expect(recordCalls[0].reason).toContain(`#${WINNER_PR}`);
+    // The edge is recorded after GitHub confirmed the close, never before.
+    const closeIdx = mockGithubApi.mock.calls.findIndex(([, path]) => path.includes(`/pulls/${LOSER_PR}`));
+    expect(closeIdx).toBeGreaterThanOrEqual(0);
+    expect(gateEvents).toHaveLength(1);
+    expect(gateEvents[0]).toMatchObject({
+      gate: 'auto_pr_supersession', outcome: 'accepted', surface: 'dead-pr-shutdown',
+      detail: expect.objectContaining({ prNumber: LOSER_PR, supersedingPrNumber: WINNER_PR, method: 'content', confidence: 0.96 }),
+    });
+  });
+
+  it('a patch-id proof closes too, and the reason names that method', async () => {
+    arrangeSiblingLoser();
+    mockVerifyPrCarriedBy.mockImplementation(() => Promise.resolve({ outcome: 'verified', method: 'patch-id', confidence: 1 }));
+
+    const result = await shutdownDeadBuilddPrs(WS_ID, WINNER_PR, true, INSTALLATION_ID, REPO);
+
+    expect(result.closedPrNumbers).toEqual([LOSER_PR]);
+    expect(recordCalls[0].reason).toContain('method: patch-id');
+  });
+
+  it('closes nothing when the verifier is unavailable (GitHub unreachable)', async () => {
+    arrangeSiblingLoser();
+    mockVerifyPrCarriedBy.mockImplementation(() => Promise.resolve({ outcome: 'unavailable', reason: 'could not read #10' }));
+
+    const result = await shutdownDeadBuilddPrs(WS_ID, WINNER_PR, true, INSTALLATION_ID, REPO);
+
+    expect(result.closedPrNumbers).toHaveLength(0);
+    expect(result.unverifiedPrNumbers).toEqual([LOSER_PR]);
+    expect(mockGithubApi).not.toHaveBeenCalled();
+    expect(recordedFacts).toHaveLength(0);
+    expect(recordCalls).toHaveLength(0);
+    expect(gateEvents[0]).toMatchObject({ outcome: 'rejected', detail: expect.objectContaining({ verdict: 'unavailable' }) });
+  });
+
+  it('closes nothing when the verifier throws', async () => {
+    arrangeSiblingLoser();
+    mockVerifyPrCarriedBy.mockImplementation(() => Promise.reject(new Error('GitHub API error: 502')));
+
+    const result = await shutdownDeadBuilddPrs(WS_ID, WINNER_PR, true, INSTALLATION_ID, REPO);
+
+    expect(result.closedPrNumbers).toHaveLength(0);
+    expect(result.skippedPrNumbers).toContain(LOSER_PR);
+    expect(mockGithubApi).not.toHaveBeenCalled();
+    expect(recordedFacts).toHaveLength(0);
+    expect(recordCalls).toHaveLength(0);
+  });
+
+  it('Tier 2: an unverified conflict-dead loser is escalated (Tier 3), not closed', async () => {
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    arrangeSiblingLoser({ prLifecycleStatus: 'conflict', conflictDetectedAt: eightDaysAgo });
+    mockVerifyPrCarriedBy.mockImplementation(() => Promise.resolve({ outcome: 'unverified', confidence: 0.2 }));
+
+    const result = await shutdownDeadBuilddPrs(WS_ID, WINNER_PR, true, INSTALLATION_ID, REPO);
+
+    expect(result.closedPrNumbers).toHaveLength(0);
+    expect(result.escalatedPrNumbers).toEqual([LOSER_PR]);
+    expect(result.unverifiedPrNumbers).toEqual([LOSER_PR]);
+    expect(closeCallFor(LOSER_PR)).toBeUndefined();
+    expect(recordCalls).toHaveLength(0);
+  });
+
+  it('the pre-filters run before the verifier: a recently active loser is never read from GitHub', async () => {
+    arrangeSiblingLoser({ updatedAt: new Date(Date.now() - 5 * 60 * 1000) });
+
+    const result = await shutdownDeadBuilddPrs(WS_ID, WINNER_PR, true, INSTALLATION_ID, REPO);
+
+    expect(result.closedPrNumbers).toHaveLength(0);
+    expect(verifyCalls).toHaveLength(0);
+  });
+
+  it('a verified close whose edge write is refused still closes, and reports the PR as not superseded', async () => {
+    arrangeSiblingLoser();
+    recordResult = { ok: false, error: 'refused by the workflow kernel: not_closed_unmerged', status: 409 };
+
+    const result = await shutdownDeadBuilddPrs(WS_ID, WINNER_PR, true, INSTALLATION_ID, REPO);
+
+    expect(result.closedPrNumbers).toEqual([LOSER_PR]);
+    expect(result.supersededPrNumbers).toHaveLength(0);
+    expect(recordCalls).toHaveLength(1);
+    expect(gateEvents).toHaveLength(1);
+    expect(gateEvents[0]).toMatchObject({ outcome: 'warned', detail: expect.objectContaining({ prNumber: LOSER_PR, error: expect.stringContaining('not_closed_unmerged') }) });
   });
 
   // ── Tier 2: conflict-dead + green successor ─────────────────────────────────
@@ -513,8 +698,9 @@ describe('shutdownDeadBuilddPrs', () => {
     // PR NOT in closed list (failure → skipped)
     expect(result.closedPrNumbers).toHaveLength(0);
     expect(result.skippedPrNumbers).toContain(LOSER_PR);
-    // No closed fact handed to the funnel
+    // No closed fact handed to the funnel, and no edge for a PR that is still open
     expect(recordedFacts).toHaveLength(0);
+    expect(recordCalls).toHaveLength(0);
   });
 
   // ── Idempotency ─────────────────────────────────────────────────────────────

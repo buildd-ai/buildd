@@ -13,7 +13,7 @@ import { getDeployIdentity } from '@/lib/deploy-identity';
 import { browserRunnerOnline } from '@/lib/visual-audit-runner';
 import { isRunnerOnline, RUNNER_ONLINE_WINDOW_MS } from '@/lib/runner-heartbeats-shared';
 import { withLiveRunnerBeats } from '@/lib/runner-beats';
-import { CAPABILITY_BROWSER, RUNNER_STALE_CUTOFF_MS, isOnceRunnerUrl, runnerFleetIdentity } from '@buildd/shared';
+import { CAPABILITY_BROWSER, RUNNER_STALE_CUTOFF_MS, isOnceRunnerUrl, runnerFleetIdentity, runnerUpdateState } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // "Not dead" window (2.5× the poll cycle): a runner listed here may be quiet,
@@ -260,6 +260,8 @@ export async function GET(req: NextRequest) {
           // instead of something inferred from boot age.
           updateAvailableSince: hb.updateAvailableSince ?? null,
           updateDrain: hb.updateDrain ?? null,
+          // Updating / update stuck, judged the one way list_runners, Health and Home share (R-5..R-7).
+          update: runnerUpdateState({ updateDrain: hb.updateDrain, lastHeartbeatAt: hb.lastHeartbeatAt }),
           trackedBranch: hb.trackedBranch || null,
           // Which model login the runner reported (a label, never a credential).
           modelAuthSource: hb.modelAuthSource ?? null,

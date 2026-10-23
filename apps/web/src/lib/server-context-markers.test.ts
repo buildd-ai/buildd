@@ -24,10 +24,31 @@ describe('outcome-spec markers are the server\'s to write', () => {
     expect(withoutMissionVerificationMarkers(null)).toBeNull();
   });
 
-  it('stamps specRepair only for a filing by the same mission\'s final verification task', () => {
-    const fv = { missionId: 'm', context: { finalVerification: { missionId: 'm' } } };
+  it('stamps specRepair only for a filing by the same mission\'s final verification task, with its spec and criterion', () => {
+    const fv = { missionId: 'm', context: { finalVerification: { missionId: 'm', specId: 's-1' } } };
     expect(specRepairStamp({ requested: { criterionId: 'R-3' }, missionId: 'm', filerTaskId: 't-fv', filerTask: fv }))
-      .toEqual({ missionId: 'm', criterionId: 'R-3', filedBy: 't-fv' });
+      .toEqual({ ok: true, marker: { missionId: 'm', specId: 's-1', criterionId: 'R-3', filedBy: 't-fv' } });
+    expect(specRepairStamp({ requested: { specId: 's-1', criterionId: 'AC-2' }, missionId: 'm', filerTaskId: 't-fv', filerTask: fv }))
+      .toEqual({ ok: true, marker: { missionId: 'm', specId: 's-1', criterionId: 'AC-2', filedBy: 't-fv' } });
+  });
+
+  it('refuses a repair from the final verification that names no criterion, or another spec', () => {
+    const fv = { missionId: 'm', context: { finalVerification: { missionId: 'm', specId: 's-1' } } };
+    for (const requested of [undefined, {}, { criterionId: 'D-4' }, { criterionId: 3 }]) {
+      const r = specRepairStamp({ requested, missionId: 'm', filerTaskId: 't-fv', filerTask: fv });
+      expect(r?.ok).toBe(false);
+      if (r && !r.ok) expect(r.reason).toContain('criterionId');
+    }
+    const other = specRepairStamp({ requested: { specId: 's-2', criterionId: 'R-1' }, missionId: 'm', filerTaskId: 't-fv', filerTask: fv });
+    expect(other).toEqual({ ok: false, reason: expect.stringContaining('s-1') });
+  });
+
+  it('takes the requested spec id when the verification predates recording one', () => {
+    const old = { missionId: 'm', context: { finalVerification: { missionId: 'm' } } };
+    expect(specRepairStamp({ requested: { criterionId: 'R-3' }, missionId: 'm', filerTaskId: 't-fv', filerTask: old }))
+      .toEqual({ ok: true, marker: { missionId: 'm', criterionId: 'R-3', filedBy: 't-fv' } });
+    expect(specRepairStamp({ requested: { specId: 's-9', criterionId: 'R-3' }, missionId: 'm', filerTaskId: 't-fv', filerTask: old }))
+      .toEqual({ ok: true, marker: { missionId: 'm', specId: 's-9', criterionId: 'R-3', filedBy: 't-fv' } });
   });
 
   it('refuses a builder, a person, another mission\'s verifier, and a forged marker on the filer', () => {

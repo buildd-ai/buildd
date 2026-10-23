@@ -89,7 +89,9 @@ describe('mission header — Part 2 regression: a live worker must not suppress 
     });
 
     expect(html).toContain('13 times in a row');
-    expect(html).toContain('workspace_cap');
+    // The reason in the gate's own words (Navigation R-14), never its slug.
+    expect(html).toContain('every agent slot in the workspace is in use');
+    expect(html).not.toContain('workspace_cap');
   });
 });
 
@@ -191,7 +193,7 @@ describe('F2: a failing criterion is said once, and names what holds it', () => 
     expect(html).toContain('+1 more');
     expect(html).toContain('data-task-id="t-a"');
     expect(html).toContain('href="/app/tasks/t-a?from=mission&amp;missionId=m-1"');
-    expect(html).toContain('· ready');
+    expect(html).toContain('· queued');
   });
 });
 

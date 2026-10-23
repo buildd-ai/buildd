@@ -2,6 +2,7 @@ import { describe, it, expect, mock } from 'bun:test';
 
 let prior: any[] = [];
 let runs: unknown[] = [];
+let inserted: any[] = [];
 mock.module('./mission-acceptance-checks', () => ({ runFinalAcceptanceChecks: async (...args: unknown[]) => { runs.push(args); } }));
 mock.module('@buildd/core/db', () => ({ db: {
   query: {
@@ -9,7 +10,7 @@ mock.module('@buildd/core/db', () => ({ db: {
     missions: { findFirst: async () => ({ id: 'm', title: 'Mission', workspaceId: 'ws', integrationBranchEnabled: true, workingBranch: 'mission/x' }) },
     workspaces: { findFirst: async () => ({ id: 'ws' }) },
   },
-  insert: () => ({ values: () => ({ returning: async () => [{ id: 'new-final' }] }) }),
+  insert: () => ({ values: (v: any) => { inserted.push(v); return { returning: async () => [{ id: 'new-final' }] }; } }),
 } }));
 mock.module('@/lib/dispatch-authority', () => ({ announceTaskCreated: async () => {}, wakeTask: async () => {} }));
 mock.module('@/lib/effective-roles', () => ({ pickEffectiveRole: async () => null }));
@@ -57,4 +58,22 @@ it('launches mechanical checks for both newly filed and reused final verificatio
   runs = [];
   expect((await ensureFinalVerification('m', criterion, standing)).kind).toBe('open');
   expect(runs).toEqual([['old-final', 'm']]);
+});
+
+it('a standard\'s verification says so and names its spec in the verdict call (D-43)', async () => {
+  const standard = { type: 'living_spec', specId: 'voice-spec', specRevisionId: 'rv', revision: 2, contentHash: 'h', role: 'standard' } as any;
+  const standing = { target: { kind: 'integration', headSha: A, branch: 'mission/x' }, scope: [], standings: [], title: 'Product voice' } as any;
+  prior = []; runs = []; inserted = [];
+  expect((await ensureFinalVerification('m', standard, standing)).kind).toBe('dispatched');
+  expect(inserted[0].title).toBe('[final verification] standard Product voice revision 2');
+  expect(inserted[0].description).toContain('specId: "voice-spec"');
+  expect(inserted[0].description).toContain('standard of the workspace');
+});
+
+it('tells the verification to file a repair naming the spec and the criterion', async () => {
+  const criterion = { type: 'living_spec', specId: 'nav-spec', specRevisionId: 'rv', revision: 3, contentHash: 'h' } as any;
+  const standing = { target: { kind: 'integration', headSha: A, branch: 'mission/x' }, scope: [], standings: [], title: 'Navigation' } as any;
+  prior = []; runs = []; inserted = [];
+  await ensureFinalVerification('m', criterion, standing);
+  expect(inserted[0].description).toContain('context.specRepair: { missionId: "m", specId: "nav-spec", criterionId }');
 });

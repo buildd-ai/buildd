@@ -179,11 +179,29 @@ describe('runTestFile', () => {
       storeGuardPath(),
       '--timeout',
       String(getTestTimeoutMs(process.env.BUILDD_TEST_TIMEOUT_MS)),
-      'example.test.ts',
+      './example.test.ts',
     ]);
     expect(result.exitCode).toBe(1);
     expect(result.output).toContain("Failed to launch Bun");
     expect(result.output).toContain("ENOENT: posix_spawn 'bun'");
+  });
+});
+
+describe('runTestFile spawn denied', () => {
+  it('names the sandbox and the remote workflow on EPERM', async () => {
+    const result = await runTestFile('example.test.ts', () => {
+      throw new Error('EPERM: operation not permitted, uv_spawn bun.exe');
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain('inconclusive');
+    expect(result.output).toContain('Verify Unit Tests');
+  });
+
+  it('adds no hint for other launch failures', async () => {
+    const result = await runTestFile('example.test.ts', () => {
+      throw new Error("ENOENT: posix_spawn 'bun'");
+    });
+    expect(result.output).not.toContain('inconclusive');
   });
 });
 

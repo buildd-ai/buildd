@@ -3,6 +3,8 @@ import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-c
 import { NextRequest, NextResponse } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
 import { isUuid } from '@/lib/uuid';
+import { decisionTitleAdvisory } from '@buildd/core/human-attention';
+import { checkSubjectTask } from '@/lib/question-subject';
 import { db } from '@buildd/core/db';
 import { withLoaderLabel } from '@buildd/core/db/query-label';
 import { deferredReplyWork } from '@/lib/deferred-reply-work';
@@ -630,7 +632,7 @@ async function recordPostSupersessionError(
 // GET /api/workers/[id] - Get worker details
 /** The `waitingFor` fields a sensitive workspace keeps: no prose, only what Needs You admission and hold resurfacing read. */
 // `since`: when a pause began (a timestamp, not prose), for "Paused for 40m" (R-38).
-const SENSITIVE_PARK_FIELDS: ReadonlySet<string> = new Set(['disposition', 'dispositionBy', 'gateOutcome', 'rail', 'repairTaskId', 'since']);
+const SENSITIVE_PARK_FIELDS: ReadonlySet<string> = new Set(['disposition', 'dispositionBy', 'gateOutcome', 'rail', 'repairTaskId', 'since', 'subjectTaskId', 'genericTitle']);
 
 /** The task fields a requeue reads: its delivery, if it has one, decides who moves it. */
 interface RequeueTask { id: string; workspaceId: string; deliveryId: string | null; deliveryRole: string | null; context: unknown }
@@ -1048,7 +1050,7 @@ async function patchWorker(
     appendErrorTraces,
     appendActionEvents,
     appendPromptCompositionEvents,
-    waitingFor,
+    waitingFor: reportedWaitingFor,
     // Worker self-classification of the work it is actually doing. Written to
     // tasks.kind only when that column is still NULL — see the guarded stamp
     // below and docs/specs/mission-legibility.md §2.6.
@@ -1125,6 +1127,8 @@ async function patchWorker(
     siblingProbeResults,
     siblingProbe: supportsSiblingProbe,
   } = body;
+  // `let`: a question's subjectTaskId is replaced by its validated form below.
+  let waitingFor = reportedWaitingFor;
 
   // Stamped by the server with how it arrived (lib/verification-provenance.ts):
   // a task token is the agent's credential, not the runner's, on host and cloud alike.
@@ -1437,6 +1441,22 @@ async function patchWorker(
     // a boolean, not prose, so it survives sensitive-workspace redaction.
     const isContentlessQuestion = waitingFor?.type === 'question'
       && (!waitingFor.prompt || !waitingFor.prompt.trim() || waitingFor.prompt.trim() === 'Awaiting input');
+    // The task the decision is about (Navigation R-16), when it is not this
+    // worker's own: refused, not dropped, when it names a task outside the
+    // mission (or workspace), so the asking agent learns what to fix.
+    if (waitingFor?.type === 'question' && waitingFor.subjectTaskId !== undefined) {
+      const subject = await checkSubjectTask(waitingFor.subjectTaskId, { missionId: openingTask?.missionId ?? null, workspaceId: worker.workspaceId });
+      if (!subject.ok) return NextResponse.json({ error: subject.error }, { status: 400 });
+      const { subjectTaskId: _s, ...rest } = waitingFor;
+      waitingFor = subject.subjectTaskId ? { ...rest, subjectTaskId: subject.subjectTaskId } : rest;
+    }
+    // Advisory, never a refusal: the question names no decision ("How should
+    // I proceed?"). A boolean, so it survives sensitive redaction like
+    // contractViolation.
+    const flags = {
+      ...(isContentlessQuestion ? { contractViolation: true } : {}),
+      ...(waitingFor?.type === 'question' && !isContentlessQuestion && decisionTitleAdvisory(waitingFor.prompt) ? { genericTitle: true } : {}),
+    };
     // Question brief (packages/core/question-brief.ts): optional, validated
     // and capped here so a malformed field is dropped, never a refused park.
     const briefed = waitingFor !== null && waitingFor?.type === 'question'
@@ -1505,8 +1525,8 @@ async function patchWorker(
       ? Object.fromEntries(Object.entries(stored).filter(([k]) => SENSITIVE_PARK_FIELDS.has(k)))
       : null;
     updates.waitingFor = (isSensitive && waitingFor !== null)
-      ? { ...sensitiveStored, type: waitingFor.type, ...(isContentlessQuestion ? { contractViolation: true } : {}) }
-      : (stored !== null && isContentlessQuestion ? { ...stored, contractViolation: true } : stored);
+      ? { ...sensitiveStored, type: waitingFor.type, ...flags }
+      : (stored !== null && Object.keys(flags).length ? { ...stored, ...flags } : stored);
   }
   // Notification when agent needs input — sensitive: generic message only.
   // Team Pushover channel + the originating chat conversation. Only an

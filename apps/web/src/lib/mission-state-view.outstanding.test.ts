@@ -164,7 +164,9 @@ describe('Part 2 — repeated claim-loop deferrals', () => {
     expect(fact.reason).toBe('workspace_cap');
     expect(fact.consecutiveDeferrals).toBe(13);
     expect(fact.taskIds).toEqual(['task-stuck']);
-    expect(view.situation.headline).toContain('workspace_cap');
+    // The reason in the gate's own words (Navigation R-14), never its slug.
+    expect(view.situation.headline).toContain('every agent slot in the workspace is in use');
+    expect(view.situation.headline).not.toContain('workspace_cap');
     expect(view.situation.headline).toContain('13 times in a row');
     expect(view.situation.derivedFrom).toBe('gateEvents.claimLoopDeferral');
   });
@@ -186,7 +188,20 @@ describe('Part 2 — repeated claim-loop deferrals', () => {
     if (fact.kind !== 'claim_deferral') throw new Error('unreachable');
     expect(fact.reason).toBe('path_overlap');
     expect(fact.blockedByPr).toBe(1126);
-    expect(view.situation.headline).toContain('blocked by PR #1126');
+    // R-14: held behind the PR when no holder row was loaded; behind the task by name when one was.
+    expect(view.situation.headline).toContain('held: runs after #1126');
+    const named = deriveMissionStateView({
+      ...base,
+      activeAgents: 1,
+      holders: new Map([['holder-1', { id: 'holder-1', title: 'Spec store', status: 'in_progress' }]]),
+      deferrals: [{
+        taskId: 'task-stuck', reason: 'path_overlap', consecutiveDeferrals: 13,
+        firstDeferredAt: new Date(Date.now() - SURFACE_DEFERRAL_MS * 2).toISOString(),
+        blockedByPr: 1126, blockedByTaskId: 'holder-1',
+      }],
+    });
+    expect(named.situation.headline).toContain('held: runs after Spec store');
+    expect(named.situation.headline).not.toContain('#1126');
   });
 
   it('stays quiet below the surfacing threshold — transient contention is not news', () => {
