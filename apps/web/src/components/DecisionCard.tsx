@@ -41,10 +41,9 @@ export interface DecisionCardProps {
   testId?: string;
 }
 
-// `.btn` is one line at a fixed height; an option's label and effect wrap inside the card instead (no sideways scroll at 320).
-const OPTION = 'btn h-auto min-h-11 w-full flex-col items-start justify-center gap-0.5 whitespace-normal px-3.5 py-2 text-left leading-snug [overflow-wrap:anywhere]';
-const PRIMARY = `${OPTION} btn-ink`;
-const SECONDARY = OPTION;
+// `.btn` is one nowrap line; an option carries its effect too, so it wraps inside the card on a phone.
+const PRIMARY = 'btn btn-ink h-auto min-h-11 min-w-0 max-w-full whitespace-normal flex-col items-start gap-0.5 px-3.5 py-2 text-left';
+const SECONDARY = 'btn h-auto min-h-11 min-w-0 max-w-full whitespace-normal flex-col items-start gap-0.5 px-3.5 py-2 text-left';
 const TEXT_BUTTON = 'inline-flex min-h-11 items-center text-body text-text-secondary underline-offset-4 hover:text-text-primary hover:underline md:min-h-0';
 
 function useNow(serverNow: number): number {
@@ -69,10 +68,11 @@ function OptionButton({ option, primary, shortcut, href, onPick, disabled, pendi
         {primary && shortcut && <Kbd tone="accent">⌘⏎</Kbd>}
       </span>
       {/* The effect inherits the button's own ink (on-ink on the primary), so both themes keep it readable. */}
-      {option.effect && <span data-testid="decision-option-effect" className={`text-meta font-normal ${primary ? 'opacity-80' : 'text-text-muted'}`}>{option.effect}</span>}
+      {option.effect && <span data-testid="decision-option-effect" className={`text-meta font-normal [overflow-wrap:anywhere] ${primary ? 'opacity-80' : 'text-text-muted'}`}>{option.effect}</span>}
     </>
   );
-  const cls = primary ? PRIMARY : SECONDARY;
+  // Fills its share of the row: two options side by side when they fit, stacked at 320.
+  const cls = `${primary ? PRIMARY : SECONDARY} w-full [overflow-wrap:anywhere]`;
   return (
     <span className="group relative flex min-w-0 max-w-full flex-[1_1_10rem]">
       {href
