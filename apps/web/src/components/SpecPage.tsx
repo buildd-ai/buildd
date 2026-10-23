@@ -214,7 +214,7 @@ function Restore({ specId }: { specId: string }) {
     const body = (await res?.json().catch(() => ({}))) as { error?: string } | undefined;
     setBusy(false);
     if (res?.ok) router.refresh();
-    else setError(body?.error ?? 'That did not work. Try again.');
+    else setError(body?.error ?? 'Could not restore the spec. Try again.');
   };
   return (
     <div className="flex flex-col gap-2">
@@ -428,13 +428,29 @@ function revisionBadge(r: { revision: number }, view: Ok): { label: string; tone
 }
 
 /**
+ * What the address asks the page to show: a comparison (`?from=&to=`) or one
+ * revision's text (`?revision=`). Next.js keeps SpecPage mounted when only the
+ * search params change, so state set from the address resets when this does.
+ */
+function addressKey(view: Pick<Ok, 'compare' | 'reading'>, asked: string | null): string {
+  if (!view.compare) return `revision:${view.reading.revision}:${asked ?? ''}`;
+  return 'error' in view.compare ? `compare:error:${view.compare.error}` : `compare:${view.compare.from}:${view.compare.to}`;
+}
+
+/**
  * History (R-98): every revision newest first, one row each. Picking two
  * enables "Compare N → M", which opens their diff (`?from=N&to=M`, read with
  * `diffSpecRevisions`); a third pick lets go of the oldest one.
  */
-function History({ view, base, reviewing }: { view: Ok; base: string; reviewing: boolean }) {
+function History({ view, base, reviewing, at }: { view: Ok; base: string; reviewing: boolean; at: string }) {
   const initial = view.compare && !('error' in view.compare) ? [view.compare.from, view.compare.to] : [];
   const [picked, setPicked] = useState<number[]>(initial);
+  // The page stays mounted across ?from=&to= and ?revision= links: the picks follow the address.
+  const [pickedAt, setPickedAt] = useState(at);
+  if (pickedAt !== at) {
+    setPickedAt(at);
+    setPicked(initial);
+  }
   const toggle = (n: number) => setPicked((p) => (p.includes(n) ? p.filter((x) => x !== n) : [...p, n].slice(-2)));
   const [from, to] = [...picked].sort((a, b) => a - b);
   const ready = picked.length === 2;
@@ -565,6 +581,15 @@ export default function SpecPage({ view }: { view: Ok }) {
   const showFiles = (view.attachments ?? []).length > 0 || asked.files;
   const tabs: Tab[] = ['spec', 'history', ...(hasRelated ? ['related' as const] : []), ...(showComments ? ['comments' as const] : []), ...(showFiles ? ['files' as const] : [])];
   const [tab, setTab] = useState<Tab>(view.compare ? 'history' : 'spec');
+  // Following "Changed since revision N" or "Revision N" re-renders this same
+  // page: a comparison opens History, a revision opens Spec. A tab picked by
+  // hand stays put until the address asks for something else.
+  const at = addressKey(view, params.get('revision'));
+  const [tabAt, setTabAt] = useState(at);
+  if (tabAt !== at) {
+    setTabAt(at);
+    setTab(view.compare ? 'history' : 'spec');
+  }
   // An old jump link (#comments, #revisions) still lands on its tab.
   useEffect(() => {
     const h = window.location.hash.slice(1);
@@ -728,7 +753,7 @@ export default function SpecPage({ view }: { view: Ok }) {
 
   const panels: Record<Tab, ReactNode> = {
     spec: specPanel,
-    history: <History view={view} base={base} reviewing={reviewing} />,
+    history: <History view={view} base={base} reviewing={reviewing} at={at} />,
     related,
     comments: (
       <SpecComments specId={spec.id} revision={view.reading.revision} comments={view.comments} anchors={view.commentAnchors} canComment={view.canComment} canResolve={view.canComment} />

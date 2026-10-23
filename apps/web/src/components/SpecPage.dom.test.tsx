@@ -937,6 +937,66 @@ describe('Spec page layout (fc80b5a4 R-92 to R-100)', () => {
     expect(([...container.querySelectorAll('[data-testid="spec-page-revision-pick"]')] as HTMLInputElement[]).map((i) => i.checked)).toEqual([true, true]);
   });
 
+  // Next.js keeps the mounted page across a search-param change: the same root re-renders with the new view.
+  const threeRevisions = [
+    { revision: 3, author: 'agent' as const, changeSummary: null, approvedBy: null, approvedAt: null, createdAt: iso, createdAgo: '1h ago', approvedAgo: null },
+    ...base.revisions,
+  ];
+  const diff = (from: number, to: number) => ({ from, to, replaces: from, revision: to, omittedLines: 0, sectionCount: 1, linesAdded: 1, linesRemoved: 0, body: '', hunks: [{ kind: 'changed' as const, path: 'Checkout', linesAdded: 1, linesRemoved: 0, rows: [{ op: '+' as const, oldLine: null, newLine: 3, text: 'new' }] }] });
+  const checked = () => ([...container.querySelectorAll('[data-testid="spec-page-revision-pick"]')] as HTMLInputElement[]).map((i) => i.checked);
+
+  it('same page, Spec → ?from=&to= (Changed since revision N): History shows with the comparison picked', () => {
+    const view = { ...base, revisions: threeRevisions, canApprove: false };
+    act(() => root.render(<SpecPage view={view} />));
+    expect(q('spec-page-panel-spec')!.hidden).toBe(false);
+    act(() => root.render(<SpecPage view={{ ...view, compare: diff(1, 2) }} />));
+    expect(tab('History').getAttribute('aria-selected')).toBe('true');
+    expect(q('spec-page-panel-history')!.hidden).toBe(false);
+    expect(q('spec-page-panel-spec')!.hidden).toBe(true);
+    expect(q('spec-page-compare-panel')).not.toBeNull();
+    expect(checked()).toEqual([false, true, true]);
+
+    // Another comparison on the same page moves the picks with it.
+    act(() => root.render(<SpecPage view={{ ...view, compare: diff(2, 3) }} />));
+    expect(q('spec-page-panel-history')!.hidden).toBe(false);
+    expect(checked()).toEqual([true, true, false]);
+  });
+
+  it('same page, History → ?revision=N: Spec shows that revision\'s text and the picks clear', () => {
+    const view = { ...base, revisions: threeRevisions, canApprove: false };
+    act(() => root.render(<SpecPage view={{ ...view, compare: diff(1, 2) }} />));
+    expect(q('spec-page-panel-history')!.hidden).toBe(false);
+    act(() => root.render(<SpecPage view={{ ...view, reading: { revision: 2, approved: false, isHead: false }, body: '# Checkout\n\nRevision two text.\n' }} />));
+    expect(tab('Spec').getAttribute('aria-selected')).toBe('true');
+    expect(q('spec-page-panel-spec')!.hidden).toBe(false);
+    expect(q('spec-page-panel-history')!.hidden).toBe(true);
+    expect(q('spec-page-body')!.textContent).toContain('Revision two text.');
+    expect(checked()).toEqual([false, false, false]);
+
+    // Revision N from History while already reading without a comparison: Spec again.
+    act(() => tab('History').click());
+    act(() => root.render(<SpecPage view={{ ...view, reading: { revision: 3, approved: false, isHead: true }, body: '# Checkout\n\nRevision three text.\n' }} />));
+    expect(q('spec-page-panel-spec')!.hidden).toBe(false);
+    expect(q('spec-page-body')!.textContent).toContain('Revision three text.');
+  });
+
+  it('same page, History → ?revision=N for the revision already read: Spec shows', () => {
+    const view = { ...base, canApprove: false };
+    act(() => root.render(<SpecPage view={view} />));
+    act(() => tab('History').click());
+    act(() => { window.history.pushState(null, '', `/app/specs/${SPEC}?revision=1`); root.render(<SpecPage view={{ ...view }} />); });
+    expect(q('spec-page-panel-spec')!.hidden).toBe(false);
+    expect(q('spec-page-panel-history')!.hidden).toBe(true);
+  });
+
+  it('a manual tab pick survives a re-render that navigates nowhere', () => {
+    const view = { ...base, canApprove: false };
+    act(() => root.render(<SpecPage view={view} />));
+    act(() => tab('History').click());
+    act(() => root.render(<SpecPage view={{ ...view }} />));
+    expect(q('spec-page-panel-history')!.hidden).toBe(false);
+  });
+
   it('AC-136: an approved spec reads in a column no wider than 720px, with Contents, work against it and repo state in the rail', () => {
     const entry = { kind: 'task' as const, id: 't1', title: 'Build totals', href: '/app/tasks/t1', builtTo: 1, provisional: false, delivered: true, deliveredText: 'Built to revision 1.', standing: { tone: 'muted' as const, text: '' }, criteria: [], links: [], at: iso };
     act(() => root.render(<SpecPage view={{ ...approved, body: `# Checkout\n\n${sixSections}`, delivery: { entries: [entry], next: null }, source: { source: null, path: 'docs/specs/checkout.md', href: undefined, copy: null, behind: false } }} />));
@@ -977,6 +1037,15 @@ describe('Spec page layout (fc80b5a4 R-92 to R-100)', () => {
     expect(q('spec-retired-line')!.textContent).toBe('Replaced by Payments');
     expect(q('spec-retired-line')!.querySelector('a')!.getAttribute('href')).toBe('/app/specs/pay');
     expect(q('spec-page-action-dock')).toBeNull();
+  });
+
+  it('a failed Restore says what failed, then what to do', async () => {
+    globalThis.fetch = (async () => new Response('not json', { status: 500 })) as unknown as typeof fetch;
+    const retirement = { status: 'retired' as const, reason: 'Folded into Payments', supersededBy: null, by: 'user:u', at: iso };
+    act(() => root.render(<SpecPage view={{ ...approved, spec: { ...approved.spec, status: 'retired' }, retirement, canRetire: true }} />));
+    await act(async () => { q('spec-restore')!.click(); });
+    expect(q('spec-page-action-dock')!.textContent).toContain('Could not restore the spec. Try again.');
+    expect(refreshes).toBe(0);
   });
 
   it('a waiting revision: Review revision M is the one action', () => {
