@@ -6229,8 +6229,7 @@ async function handleReviewerOutcomeIfNeeded(
   // after the gates above, so an escalation to a person is kept; before the
   // evidence gate, which still wins.
   if (effectiveVerdict === 'approve') {
-    const { loadDesignRequirement } = await import('@/lib/reviewer');
-    const { applyDesignGate, parseDesignChecks } = await import('@/lib/reviewer-design');
+    const { loadDesignRequirement, applyDesignGate, parseDesignChecks } = await import('@/lib/reviewer');
     const requirement = await loadDesignRequirement(originalTaskId);
     const designGate = applyDesignGate({
       verdict: effectiveVerdict,

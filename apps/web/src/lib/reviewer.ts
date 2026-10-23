@@ -34,6 +34,8 @@ import {
 import { inheritPhaseFromParent } from './mission-phase';
 import { DEFAULT_REVIEW_CONFIDENCE_THRESHOLD } from './reviewer-output';
 import { renderDesignGuidance, screenNamedCriteria, type DesignScreenCriterion, type PinnedDesignRef } from './reviewer-design';
+// Re-exported so the worker route reaches the design gate through this module, which it already imports.
+export { applyDesignGate, parseDesignChecks } from './reviewer-design';
 import { wrapUntrustedText, sanitizeUntrustedText } from './untrusted-text';
 import { extractLede } from '@buildd/core/pr-lede';
 import { resolvePrompt, resolvePromptTemplate } from '@buildd/core/prompts';
