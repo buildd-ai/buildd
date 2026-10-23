@@ -28,12 +28,27 @@ const LEGACY_ERROR_RE = /^Blocked: dependency "([\s\S]*)" \(([0-9a-f-]{36})\) fa
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** The `result` the cascade writes for a task whose dependency `dep` failed. */
-export function dependencyFailedResult(dep: { id: string; title: string | null }): {
+/** The error a cross-workspace dependency's failure leaves: names no task (spec e28018c2 R-13). */
+export const CROSS_WORKSPACE_DEPENDENCY_FAILED_ERROR = 'Blocked: a task this one depends on, in another workspace, failed';
+
+/**
+ * The `result` the cascade writes for a task whose dependency `dep` failed.
+ * A dependency in another workspace is stored by id only: the dependent's
+ * readers may not see that workspace, so its title is resolved per viewer
+ * when a surface renders it, never copied here.
+ */
+export function dependencyFailedResult(dep: { id: string; title: string | null }, opts: { crossWorkspace?: boolean } = {}): {
   error: string;
   errorType: typeof DEPENDENCY_FAILED_ERROR_TYPE;
   blockedBy: DependencyFailure;
 } {
+  if (opts.crossWorkspace) {
+    return {
+      error: CROSS_WORKSPACE_DEPENDENCY_FAILED_ERROR,
+      errorType: DEPENDENCY_FAILED_ERROR_TYPE,
+      blockedBy: { taskId: dep.id, title: null },
+    };
+  }
   return {
     error: `Blocked: dependency "${dep.title || dep.id}" (${dep.id}) failed`,
     errorType: DEPENDENCY_FAILED_ERROR_TYPE,

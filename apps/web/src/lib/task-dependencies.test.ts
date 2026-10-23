@@ -896,6 +896,33 @@ describe('dependency failure cascade', () => {
 describe('dependency failure: what the cascade records, and the check it reopens', () => {
   beforeEach(resetMocks);
 
+  it('a cross-workspace edge stores no upstream title and the event omits it (spec e28018c2 AC-9)', async () => {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: null, status: 'failed' };
+    selectWhereResults = [[{ id: 'dependent-b', title: 'Docs', workspaceId: 'ws-2', status: 'pending', dependsOn: ['upstream-a'] }]];
+    findFirstResults[2] = { title: 'Private upstream', workspaceId: 'ws-1' };
+    findFirstResults[3] = { parentTaskId: null };
+    findFirstResults[4] = { mode: 'execution', missionId: null, status: 'failed' };
+    selectWhereResults[1] = [];
+
+    await resolveCompletedTask('upstream-a', 'ws-1');
+
+    expect(mockUpdateSet).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed',
+      result: {
+        error: 'Blocked: a task this one depends on, in another workspace, failed',
+        errorType: 'dependency_failed',
+        blockedBy: { taskId: 'upstream-a', title: null },
+      },
+    }));
+    expect(mockTriggerEvent).toHaveBeenCalledWith('workspace-ws-2', 'task:dependency_failed', {
+      taskId: 'dependent-b',
+      failedDependency: 'upstream-a',
+    });
+    expect(JSON.stringify(mockTriggerEvent.mock.calls)).not.toContain('Private upstream');
+    expect(JSON.stringify(mockUpdateSet.mock.calls)).not.toContain('Private upstream');
+  });
+
   it('records that the dependent never ran: errorType and the task it waits on', async () => {
     findFirstResults[0] = { parentTaskId: null };
     findFirstResults[1] = { mode: 'execution', missionId: null, status: 'failed' };

@@ -769,7 +769,7 @@ export async function cascadeDependencyFailure(
   // Fetch the failed task's title for a meaningful error message
   const failedTask = await db.query.tasks.findFirst({
     where: sqlWhere(eq(tasks.id, failedTaskId)),
-    columns: { title: true },
+    columns: { title: true, workspaceId: true },
   });
   const failedTitle = failedTask?.title || failedTaskId;
 
@@ -811,11 +811,14 @@ export async function cascadeDependencyFailure(
 
     // Auto-fail the dependent task. `errorType` and `blockedBy` say it never
     // ran: no surface offers it a retry of its own (dependency-failure.ts).
+    // A dependency in another workspace is recorded by id only, and its title
+    // stays off the dependent's workspace channel (spec e28018c2 R-13).
+    const crossWorkspace = !!failedTask?.workspaceId && failedTask.workspaceId !== task.workspaceId;
     await db
       .update(tasks)
       .set({
         status: 'failed',
-        result: dependencyFailedResult({ id: failedTaskId, title: failedTask?.title ?? null }) as any,
+        result: dependencyFailedResult({ id: failedTaskId, title: failedTask?.title ?? null }, { crossWorkspace }) as any,
         updatedAt: new Date(),
       })
       .where(eq(tasks.id, task.id));
@@ -827,7 +830,7 @@ export async function cascadeDependencyFailure(
       {
         taskId: task.id,
         failedDependency: failedTaskId,
-        failedDependencyTitle: failedTitle,
+        ...(crossWorkspace ? {} : { failedDependencyTitle: failedTitle }),
       }
     );
 
