@@ -42,6 +42,7 @@ import RealTimeWorkerView from './RealTimeWorkerView';
 import { liveWorkerViewProps, workerSteerProps } from '@/lib/task-live-view';
 import PlanReviewPanel from './PlanReviewPanel';
 import TaskTimeline from './TaskTimeline';
+import { TaskWaitingLine, TaskDetailsCard, attemptsSummary } from './TaskStatusLine';
 import { buildTaskTimeline } from '@/lib/task-timeline';
 import { projectKernelState } from '@/lib/delivery-projection';
 
@@ -54,8 +55,7 @@ import TaskQuestionFeed from './TaskQuestionFeed';
 import CollapsibleDescription from './CollapsibleDescription';
 import { StatusPill } from '@/components/ui/StatePill';
 import { displayBranchName } from '@/lib/branch-display';
-import { LoopHistory, LoopStatusChip } from '@/components/LoopStatus';
-import type { LoopHistoryEntry } from '@buildd/shared';
+import { LoopHistory, LoopStatusChip, loopHistoryOf } from '@/components/LoopStatus';
 import TaskArtifactsSection from './TaskArtifactsSection';
 import TaskAccessSection from './TaskAccessSection';
 import { loadTaskAccess } from '@/lib/agent-capabilities/access-log';
@@ -772,6 +772,7 @@ async function TaskDetailPage({
   const headerTrack = headerLifecycle(deliveryView);
   const heading = taskHeading({ title: task.title, label: (task as { label?: string | null }).label ?? null }, roleName);
   const questionNote = taskView.questionNote;
+  const loopHistory = loopHistoryOf(task);
 
 
   let prOutcome: PrOutcome | null = null;
@@ -845,6 +846,12 @@ async function TaskDetailPage({
   const escalationCopy = deliveryView?.escalation
     ? decisionCopy(deliveryView.escalation, { rounds: deliveryView.rounds, ledger: deliveryView.ledger ?? [] })
     : null;
+  // A PR the kernel does not own still had its agent review; the timeline and the status row name it (R-11).
+  const legacyReview = !deliveryView && evidenceReview && evidenceReview.state !== 'not_requested' && evidenceReview.state !== 'review_failed' && evidenceReview.reviewTaskId
+    ? { taskId: evidenceReview.reviewTaskId, verdict: evidenceReview.verdict, round: evidenceReview.iteration }
+    : null;
+  // What this task waits on before it can start (R-20): the status line, the timeline and Details name it.
+  const waitingOn = trouble?.kind === 'waiting' ? trouble.on : null;
   const storedVerdictDecision = parseStoredVerdictDecision((task as { verdictDecision?: unknown }).verdictDecision);
   const rulesVerdict = deriveTaskVerdict({ ...buildVerdictInput({
     task: { status: task.status, mode: task.mode, result: task.result },
@@ -871,8 +878,12 @@ async function TaskDetailPage({
     deliveryActivity: deliveryView && ((deliveryView.state === 'REPAIRING' && deliveryView.stateReason === 'behind') || deliveryView.state === 'LANDING') ? deliveryView.headline : null,
     awaitingCi: deliveryView?.prState === 'awaiting_ci',
     deliveryOwner: deliveryView?.owner ?? null,
-    // A merged PR is stated once, on the status row, and the time goes with it.
-    claimToMerge: lineageClaimToMergeMs != null ? formatElapsed(lineageClaimToMergeMs) : null });
+    // A merged PR is stated once, on the status row, with how it got there.
+    mergedRun: {
+      took: lineageClaimToMergeMs != null ? formatElapsed(lineageClaimToMergeMs) : null,
+      fixes: deliveryView ? deliveryView.ledger.filter(a => a.mode === 'agent').length : ciAttemptTasks.filter(t => t.workers.length > 0).length,
+      reviewRounds: deliveryView ? deliveryView.rounds.filter(r => r.status !== 'superseded').length : legacyReview ? legacyReview.round ?? 1 : 0,
+    } });
   const verdict = rulesVerdict ? applyVerdictDecision(rulesVerdict, storedVerdictDecision) : null;
   // The status row names and links the PR: the side panel and the PR card do not say it again.
   const prStatedAbove = verdictLinksPr(verdict, prWorker?.prUrl);
@@ -895,7 +906,19 @@ async function TaskDetailPage({
   });
   const terminalSucceeded = verdict?.state === 'shipped' || verdict?.state === 'done';
 
-  const timeline = buildTaskTimeline({ task, workers: taskWorkers, kind: deliveryView ? projectKernelState(deliveryView.state) : prLife.mergedAt ? 'landed' : 'build', delivery: deliveryView, lineage: prOutcome?.lineage, ciAttemptTasks, mergedAt: prLife.mergedAt as Date | string | null });
+  // The runs the timeline links to (reviews, fixes), by when each last did something (R-8).
+  // Read alongside the hosted-runner usage below, not as a wait of its own.
+  const eventTimes = new Map<string, Date | null>(ciAttemptTasks.map(t => [t.id, t.workers[0]?.completedAt ?? t.workers[0]?.startedAt ?? null]));
+  const linkedRunIds = [...new Set([
+    ...(deliveryView ? [...deliveryView.rounds.map(r => r.reviewerTaskId), ...deliveryView.ledger.map(a => a.taskId)] : [legacyReview?.taskId]),
+  ].filter((t): t is string => !!t && !eventTimes.has(t)))];
+  const linkedRunTimesPromise = linkedRunIds.length === 0 ? Promise.resolve([]) : db
+    .select({ taskId: workers.taskId, completedAt: workers.completedAt, startedAt: workers.startedAt })
+    .from(workers).where(inArray(workers.taskId, linkedRunIds)).orderBy(desc(workers.createdAt))
+    .catch((err: unknown) => {
+      console.warn('[task-page] timeline times unavailable:', err instanceof Error ? err.message : err);
+      return [];
+    });
 
   // --- Helpers ---
 
@@ -934,6 +957,8 @@ async function TaskDetailPage({
   const ciAttemptWorkers = ciAttemptTasks.flatMap(t => t.workers.slice(0, 1));
   // Every worker on this task's PR, the CI-fix attempts' included.
   const workerHistory = lineageWorkerHistory(taskWorkers, ciAttemptTasks);
+  // A claim no session ran is bookkeeping, not an attempt.
+  const ranAttemptCount = workerHistory.filter(h => !isBookkeepingAttempt(h.worker)).length;
   // Only with a frozen estimate, i.e. the team switch is on; off, the page is unchanged.
   const timeRow = !taskEstimate ? null : buildTimeRow({
     sessions: taskWorkers,
@@ -1076,8 +1101,20 @@ async function TaskDetailPage({
     shipped: deliveryView ? deliveryView.state === 'MERGED' : !(prWorker && !(prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')),
     heroShots: pickHeroShots(undefined, buildHeroPool(toVisualShots(taskArtifacts))),
   });
+  // The header's status chip: only when neither the verdict block nor the waiting line says it.
+  const pillShown = !shippedView && !verdict && !waitingOn;
   const stoppedSummary = shippedView?.lede ?? readableTaskResult(ownResult?.summary, ownResult?.structuredOutput).prose;
-  const hostedRunnerUsage = await hostedRunnerUsagePromise;
+  const [hostedRunnerUsage, linkedRunTimes] = await Promise.all([hostedRunnerUsagePromise, linkedRunTimesPromise]);
+  for (const r of linkedRunTimes) if (r.taskId && !eventTimes.has(r.taskId)) eventTimes.set(r.taskId, r.completedAt ?? r.startedAt ?? null);
+  const timeline = buildTaskTimeline({
+    task, workers: taskWorkers,
+    kind: deliveryView ? projectKernelState(deliveryView.state) : prLife.mergedAt ? 'landed' : 'build',
+    delivery: deliveryView, lineage: prOutcome?.lineage, ciAttemptTasks, mergedAt: prLife.mergedAt as Date | string | null,
+    review: legacyReview, eventTimes,
+    waitingOn: waitingOn ? { taskId: waitingOn.taskId, title: waitingOn.title ? displayTaskTitle(waitingOn.title) : 'the task it depends on' } : null,
+    deliverInto: taskWorkers.find(w => w.prBaseRef)?.prBaseRef ?? task.workspace?.gitConfig?.defaultBranch ?? null,
+  });
+
   const runDetails: RunDetail[] = [];
   let runElapsed: string | null = null;
   {
@@ -1412,7 +1449,7 @@ async function TaskDetailPage({
               (Ask, ⋯) on one row. Phone: the title takes the full width and the
               pill and actions share the compact row under it, so no reserved
               column narrows a long title (task-page spec §Mobile header). */}
-          <div className={`grid items-start gap-x-3 gap-y-2 md:gap-x-4 ${!shippedView && !verdict ? 'grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_auto_auto]' : 'grid-cols-[minmax(0,1fr)_auto]'}`}>
+          <div className={`grid items-start gap-x-3 gap-y-2 md:gap-x-4 ${pillShown ? 'grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_auto_auto]' : 'grid-cols-[minmax(0,1fr)_auto]'}`}>
             {shippedView ? (
               <div className="min-w-0 col-span-2 row-start-1 md:col-span-1 md:col-start-1">
                 <TaskShippedTitle view={shippedView} title={heading.heading} />
@@ -1422,8 +1459,9 @@ async function TaskDetailPage({
               <TaskTitle title={heading.heading} />
             </div>
             )}
-            {/* With a verdict, the verdict block carries the state (and this hook). */}
-            {!shippedView && !verdict && (
+            {/* With a verdict, the verdict block carries the state (and this hook);
+                a waiting task, the status line under the title. */}
+            {pillShown && (
               <span data-testid="task-header-status" data-status={displayStatus} className="col-start-1 row-start-2 self-center md:col-start-2 md:row-start-1 md:self-start md:mt-0.5">
                 <HeaderStatusPill
                   status={displayStatus}
@@ -1432,7 +1470,7 @@ async function TaskDetailPage({
                 />
               </span>
             )}
-            <div data-testid="task-header-actions" className={`flex items-center justify-end gap-2 col-start-2 row-start-2 md:row-start-1 md:mt-0.5 ${!shippedView && !verdict ? 'md:col-start-3' : ''}`}>
+            <div data-testid="task-header-actions" className={`flex items-center justify-end gap-2 col-start-2 row-start-2 md:row-start-1 md:mt-0.5 ${pillShown ? 'md:col-start-3' : ''}`}>
               <AskAboutLink kind="task" id={task.id} teamId={(task.workspace as { teamId?: string } | null)?.teamId ?? null} workspaceId={task.workspaceId} />
               <TaskOverflowMenu>
                 <EditTaskButton
@@ -1473,12 +1511,13 @@ async function TaskDetailPage({
               state, the PR. Created, category, project and the error count live
               in Details and the evidence below, not here. On a phone with no
               status pill it shares the actions' row instead of leaving them alone. */}
-          <div data-testid="task-subline" className={`${!shippedView && !verdict ? 'col-span-2 row-start-3' : 'col-start-1 row-start-2 self-center'} md:col-span-full md:col-start-1 md:row-start-2 min-w-0 flex items-center gap-x-2 gap-y-1.5 flex-wrap text-[12px] text-text-muted font-mono`}>
+          <div data-testid="task-subline" className={`${pillShown ? 'col-span-2 row-start-3' : 'col-start-1 row-start-2 self-center'} md:col-span-full md:col-start-1 md:row-start-2 min-w-0 flex items-center gap-x-2 gap-y-1.5 flex-wrap text-[12px] text-text-muted font-mono`}>
             <span>
               {heading.eyebrow.length > 0 && <span data-testid="task-eyebrow">{heading.eyebrow.join(' · ')} · </span>}
               {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'}
             </span>
-            {task.loopConfig && (
+            {/* R-9: no chip for a loop with no history (a queued or cancelled task that never ran). */}
+            {task.loopConfig && loopHistory.length > 0 && (
               <LoopStatusChip
                 loopIteration={task.loopIteration}
                 maxLoops={task.loopConfig.maxLoops ?? 5}
@@ -1501,6 +1540,7 @@ async function TaskDetailPage({
             )}
           </div>
           </div>
+          {waitingOn && !shippedView && <TaskWaitingLine on={waitingOn} hasRun={ranAttemptCount > 0} />}
           {/* An attempt says what it is an attempt of, and links the deliverable. */}
           {deliverableLink && subject.kind !== 'deliverable' && (
             <TaskSubjectLink
@@ -1776,13 +1816,9 @@ async function TaskDetailPage({
         )}
 
         {/* Loop history */}
-        {task.loopConfig && (((task.result as Record<string, unknown> | null)?.loopHistory as unknown[] | undefined)?.length || ((task.context as Record<string, unknown> | null)?.loopHistory as unknown[] | undefined)?.length) ? (
+        {task.loopConfig && loopHistory.length > 0 ? (
           <LoopHistory
-            entries={Array.isArray((task.result as Record<string, unknown> | null)?.loopHistory)
-              ? (task.result as Record<string, unknown>).loopHistory as LoopHistoryEntry[]
-              : Array.isArray((task.context as Record<string, unknown> | null)?.loopHistory)
-                ? (task.context as Record<string, unknown>).loopHistory as LoopHistoryEntry[]
-                : []}
+            entries={loopHistory}
             loopState={task.loopState}
             maxLoops={task.loopConfig.maxLoops ?? 5}
           />
@@ -1884,7 +1920,7 @@ async function TaskDetailPage({
 
 
         {/* Empty state */}
-        {taskWorkers.length === 0 && task.status === 'pending' && (
+        {taskWorkers.length === 0 && task.status === 'pending' && !waitingOn && (
           <div className="border border-dashed border-border-default p-8 text-center">
             {isBlocked ? (
               <>
@@ -1909,6 +1945,11 @@ async function TaskDetailPage({
             the description, and the rest of the fleet. On mobile it follows the
             main column; the question or the Now strip stays the first screen. */}
         <aside data-testid="task-side-panel" className="mt-6 space-y-6">
+          <TaskDetailsCard
+            fixes={specSource?.specId ? { label: livingSpec?.title ?? 'Specification', href: `/app/specs/${specSource.specId}` } : specSource?.specPath ? { label: specSource.specPath, href: null } : null}
+            waitingOn={waitingOn}
+            attempts={attemptsSummary(ranAttemptCount, lineageClaimToMergeMs != null ? formatElapsed(lineageClaimToMergeMs) : runElapsed)}
+          />
           <details data-testid="task-details" className="group border-y border-border-default">
             <summary className="min-h-11 flex items-center cursor-pointer text-body font-medium">Details</summary>
           <TaskAccessSection items={accessItems} />
@@ -1926,7 +1967,6 @@ async function TaskDetailPage({
             {specSource.specId ? <Link href={`/app/specs/${specSource.specId}`} className="text-accent-text hover:underline">{livingSpec?.title ?? 'Specification'} · revision {specSource.revision}</Link> : <p>{specSource.specPath}</p>}
             {livingSpec?.outcome?.criteria.map(c => <p key={c.criterionId} className="mt-2 [overflow-wrap:anywhere]">{c.criterionId} · {c.text} <span className="text-text-muted">{c.stale ? 'Needs recheck' : c.verdict === 'pass' ? 'Met' : c.verdict === 'fail' ? 'Not met' : 'Not verified'}</span></p>)}
           </section>}
-          <p className="text-body text-text-secondary py-3">{workerHistory.filter(h => !isBookkeepingAttempt(h.worker)).length} attempts{lineageClaimToMergeMs != null ? ` · ${formatElapsed(lineageClaimToMergeMs)}` : runElapsed ? ` · ${runElapsed}` : ''}</p>
 
           {dependentTasks.length > 0 && (
             <section data-testid="task-unblocked">

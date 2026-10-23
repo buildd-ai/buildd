@@ -339,3 +339,25 @@ describe('reading width (Navigation R-21)', () => {
     expect(pageSource).not.toContain('max-w-[900px]');
   });
 });
+
+// Surface audit ff33de4d against phone-task-merged and desktop-task-waiting (R-9, R-11, R-20).
+describe('merged and waiting tasks — tasks/[id]/page.tsx', () => {
+  it('a waiting task reads its status line under the title, not a Queued chip', () => {
+    expect(pageSource).toContain('const pillShown = !shippedView && !verdict && !waitingOn;');
+    expect(pageSource).toContain('{pillShown && (');
+    expect(pageSource).toContain('<TaskWaitingLine on={waitingOn}');
+  });
+  it('the timeline gets the legacy review, the linked runs\' times and what the task waits on', () => {
+    const from = pageSource.indexOf('const timeline = buildTaskTimeline(');
+    const call = pageSource.slice(from, pageSource.indexOf('});', from));
+    for (const arg of ['review: legacyReview', 'eventTimes', 'waitingOn:', 'deliverInto:']) expect(call).toContain(arg);
+  });
+  it('no loop chip and no Loop history without loop history', () => {
+    expect(pageSource).toContain('{task.loopConfig && loopHistory.length > 0 && (');
+    expect(pageSource).toContain('{task.loopConfig && loopHistory.length > 0 ? (');
+  });
+  it('the Details card is shown, outside the collapsed disclosure', () => {
+    const aside = pageSource.slice(pageSource.indexOf('<aside data-testid="task-side-panel"'));
+    expect(aside.indexOf('<TaskDetailsCard')).toBeLessThan(aside.indexOf('<details data-testid="task-details"'));
+  });
+});

@@ -49,3 +49,38 @@ it('reads a legacy step offset ("+3m") as no time instead of throwing', () => {
   expect(legacy.length).toBeGreaterThan(0);
   expect(legacy.every(e => e.at === null && e.children.every(c => c.at === null))).toBe(true);
 });
+// Surface audit ff33de4d (phone-task-merged, desktop-task-waiting; R-8, R-11).
+describe('task timeline — review, ages and a task that has not run', () => {
+  const legacyMerged = (extra = {}) => build({ lineage: [{ kind: 'attempt', n: 1, title: 'First run', sub: '', at: null }, { kind: 'ci_green', title: 'CI green', sub: 'checks passed', at: null }, { kind: 'merged', title: 'Merged', sub: '', at: '+1m' }], mergedAt: new Date(600000), ...extra });
+  it('names a legacy PR\'s agent review in Verify, linked to its run (R-11)', () => {
+    const groups = legacyMerged({ review: { taskId: 'rev', verdict: 'approve', round: 1 } });
+    const review = groups[1].events.find(e => e.label === 'Code review · Approved · round 1');
+    expect(review?.taskId).toBe('rev');
+    expect(review?.state).toBe('passed');
+  });
+  it('a review that asked for changes reads so', () => {
+    const groups = legacyMerged({ review: { taskId: 'rev', verdict: 'request-changes', round: 2 } });
+    expect(groups[1].events.some(e => e.label === 'Code review · Changes requested · round 2' && e.state === 'failed')).toBe(true);
+  });
+  it('gives a linked run its stored time, and Merged the merge time (R-8)', () => {
+    const groups = legacyMerged({ review: { taskId: 'rev', verdict: 'approve', round: 1 }, eventTimes: new Map([['rev', new Date(300000)]]) });
+    expect(groups[1].events.find(e => e.taskId === 'rev')?.at).toBe(new Date(300000).toISOString());
+    expect(groups[2].events.find(e => e.label === 'Merged')?.at).toBe(new Date(600000).toISOString());
+  });
+  it('a legacy CI failure carries the time its fix was dispatched', () => {
+    const groups = build({ lineage: [{ kind: 'ci_failed', title: 'CI failed', sub: '', at: null }, { kind: 'attempt', n: 2, title: 'CI fix 1', sub: '', at: null }], ciAttemptTasks: [{ id: 'ran', status: 'completed', createdAt: new Date(120000), workers: [{}] }] });
+    expect(groups[1].events[0].at).toBe(new Date(120000).toISOString());
+  });
+  it('a task waiting on another shows all three stages: what it waits on, then where it merges', () => {
+    const groups = buildTaskTimeline({ task: { status: 'pending', createdAt: new Date(0) }, workers: [], kind: 'waiting', waitingOn: { taskId: 'dep', title: 'Mirror the runner image' }, deliverInto: 'dev' } as never);
+    expect(groups.map(g => g.label)).toEqual(['Build', 'Verify', 'Deliver']);
+    expect(groups[0].events[0]).toMatchObject({ label: 'Filed', at: new Date(0).toISOString() });
+    expect(groups[1].events[0]).toMatchObject({ label: 'Runs after Mirror the runner image merges', taskId: 'dep', state: 'pending' });
+    expect(groups[2].events[0]).toMatchObject({ label: 'Merge into dev', state: 'pending' });
+  });
+  it('a waiting task keeps its stopped attempts in Build, numbered', () => {
+    const groups = buildTaskTimeline({ task: { status: 'pending' }, workers: [worker('a2', { status: 'failed' }), worker('a1', { status: 'failed' })], kind: 'waiting', waitingOn: { taskId: 'dep', title: 'Dep' }, deliverInto: null } as never);
+    expect(groups[0].events.map(e => e.label)).toEqual(['Filed', 'Attempt 1 stopped', 'Attempt 2 stopped']);
+    expect(groups[2].events[0].label).toBe('Merge');
+  });
+});
