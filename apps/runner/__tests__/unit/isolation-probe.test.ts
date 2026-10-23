@@ -202,6 +202,16 @@ describe('buildIsolationRecord (R-2, R-6)', () => {
     expect(rec.codex['workspace-write']).toEqual({ mechanism: 'none', scope: [], reason: 'backend_probe_failed' });
   });
 
+  it('Windows per-mode results stay partial and missing modes stay blocked', () => {
+    const rec = buildIsolationRecord(inputs({ host: { platform: 'windows', evidence: [] },
+      codexWindowsModes: { 'workspace-write': 'mxc', 'read-only': null }, codexWindowsBinary: 'codex.exe' }));
+    expect(rec.codex['workspace-write']).toMatchObject({ mechanism: 'windows_mxc', scope: ['write'], windowsSandbox: { implementation: 'mxc', binary: 'codex.exe' } });
+    for (const codexMode of ['read-only', 'workspace-write'] as const) {
+      expect(decideTaskIsolation({ requirement: 'protected', record: rec, backend: 'codex', codexMode }).ok).toBe(false);
+    }
+    expect(rec.codex['read-only'].mechanism).toBe('none');
+  });
+
   it('Windows: the opt-out still wins', () => {
     const rec = buildIsolationRecord(inputs({ host: { platform: 'windows', evidence: [] }, optOut: true, codexWindows: true }));
     expect(rec.codex['workspace-write'].reason).toBe('opt_out');

@@ -25,6 +25,7 @@ const mockInsertValues = mock((vals: any) => ({
 }));
 const mockTasksFindFirst = mock(() => null as any);
 const mockMissionsFindFirst = mock(() => null as any);
+const mockInitiativesFindFirst = mock(() => null as any);
 const mockGenerateSizedUploadUrl = mock(() => Promise.resolve('https://r2.example/signed'));
 
 mock.module('@/lib/api-auth', () => ({
@@ -50,6 +51,7 @@ mock.module('@buildd/core/db', () => ({
       workspaces: { findFirst: mockWorkspacesFindFirst },
       tasks: { findFirst: mockTasksFindFirst },
       missions: { findFirst: mockMissionsFindFirst },
+      initiatives: { findFirst: mockInitiativesFindFirst },
     },
     insert: () => ({ values: mockInsertValues }),
   },
@@ -68,6 +70,7 @@ mock.module('@buildd/core/db/schema', () => ({
   // Column stubs (not bare strings) so the lookups' predicates are observable.
   tasks: { id: 'tasks.id' },
   missions: { id: 'missions.id' },
+  initiatives: { id: 'initiatives.id' },
   // lib/task-token-auth's account lookup.
   accounts: { id: 'accounts.id' },
 }));
@@ -116,6 +119,8 @@ describe('POST /api/artifacts/upload-url', () => {
     mockTasksFindFirst.mockResolvedValue(null);
     mockMissionsFindFirst.mockReset();
     mockMissionsFindFirst.mockResolvedValue(null);
+    mockInitiativesFindFirst.mockReset();
+    mockInitiativesFindFirst.mockResolvedValue(null);
 
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' } as any);
     mockWorkersFindFirst.mockResolvedValue({
@@ -287,6 +292,58 @@ describe('POST /api/artifacts/upload-url', () => {
     expect(res.status).toBe(400);
     expect(mockGenerateSizedUploadUrl).not.toHaveBeenCalled();
   });
+  describe('without a worker', () => {
+    const MISSION = '11111111-1111-4111-8111-111111111111';
+    const INIT = '22222222-2222-4222-8222-222222222222';
+    beforeEach(() => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1' } as any);
+    });
+    const noWorker = (o: Record<string, unknown>) => { const b: any = validBody(o); delete b.workerId; return b; };
+
+    it('stores a file against a mission of the caller team, authored by the account', async () => {
+      mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', workspaceId: 'ws-1' });
+      const res = await POST(req(noWorker({ missionId: MISSION })));
+      expect(res.status).toBe(200);
+      const row = mockInsertValues.mock.calls[0][0];
+      expect(row.workerId).toBeNull();
+      expect(row.missionId).toBe(MISSION);
+      expect(row.workspaceId).toBe('ws-1');
+      expect(row.contentAuthor).toBe('account:account-1');
+    });
+
+    it('stores a file against an initiative', async () => {
+      mockInitiativesFindFirst.mockResolvedValue({ teamId: 'team-1', workspaceId: 'ws-1' });
+      const res = await POST(req(noWorker({ initiativeId: INIT })));
+      expect(res.status).toBe(200);
+      expect(mockInsertValues.mock.calls[0][0].initiativeId).toBe(INIT);
+    });
+
+    it('requires a worker or a mission/initiative', async () => {
+      const res = await POST(req(noWorker({})));
+      expect(res.status).toBe(400);
+    });
+
+    it("404s a mission of another team and inserts nothing", async () => {
+      mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-2', workspaceId: 'ws-9' });
+      const res = await POST(req(noWorker({ missionId: MISSION })));
+      expect(res.status).toBe(404);
+      expect(mockInsertValues).not.toHaveBeenCalled();
+    });
+
+    it('refuses a team-level mission with no workspace', async () => {
+      mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', workspaceId: null });
+      const res = await POST(req(noWorker({ missionId: MISSION })));
+      expect(res.status).toBe(400);
+    });
+
+    it('refuses sensitive workspaces', async () => {
+      mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', workspaceId: 'ws-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'sensitive' });
+      const res = await POST(req(noWorker({ missionId: MISSION })));
+      expect(res.status).toBe(403);
+    });
+  });
+
   describe('missionId', () => {
     const MISSION = '11111111-2222-4333-8444-555555555555';
     const OTHER_MISSION = '99999999-2222-4333-8444-555555555555';

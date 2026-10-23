@@ -36,7 +36,7 @@ import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { applyWaitExit, parseWaitOn } from '@/lib/task-wait-exit';
-import { applyTaskCancelSideEffects, applyTaskDeleteSideEffects, emitTaskUpdated } from '@/lib/task-cancel';
+import { applyTaskCancelSideEffects, applyTaskDeleteSideEffects, emitTaskUpdated, endLiveWorkersForRequeue } from '@/lib/task-cancel';
 import { resolveDeferredStart } from '@/lib/deferred-start';
 import { wakeTask } from '@/lib/dispatch-authority';
 import { parseLoopConfig } from '@buildd/core/loop-config';
@@ -801,6 +801,10 @@ export async function PATCH(
 
       // When resetting to pending, clear claim fields so the task is claimable again
       if (status === 'pending') {
+        // The owner's requeue also ends the task's live workers (their runner
+        // may be gone); otherwise they stay running and the task never leaves
+        // RUNNING until the stale-worker reap.
+        await endLiveWorkersForRequeue(id);
         updateData.claimedBy = null;
         updateData.claimedAt = null;
         updateData.expiresAt = null;

@@ -5,10 +5,10 @@ owner: builder
 last_verified: 2026-10-22
 summary: A mission's phases and each task's work-kind MUST be stored facts written once at their source, read by every surface through one derivation helper, and never inferred from a task's title.
 domain: surfaces
-surfaces: [apps/web/src/lib/task-presentation.ts, apps/web/src/lib/approve-plan.ts, apps/web/src/lib/mission-feed-groups.ts, "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.tsx"]
+surfaces: [apps/web/src/lib/task-presentation.ts, apps/web/src/lib/approve-plan.ts, apps/web/src/lib/mission-feed-groups.ts, apps/web/src/components/TaskCard.tsx]
 related: [mission-feed, mission-structure-view, timeline-dependency-geometry, mission-task-lifecycle]
 keywords: [phase, work kind, role slug, glyph, reviewer role, unassigned, swimlane, phase header, approve_plan, usage stats]
-verified_by: [apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/task-presentation.test.ts, apps/web/src/components/TaskCard.test.tsx, "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.test.tsx", "apps/web/src/components/missions/MissionTaskRow.test.tsx"]
+verified_by: [apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/task-presentation.test.ts, apps/web/src/components/TaskCard.test.tsx]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 # 2026-09-23: §4's mobile surface moved from the retired rail to the mission
@@ -18,6 +18,9 @@ supersedes: []
 # follows them; §1–§3 are unchanged.
 # 2026-10-09: the Structure canvas was removed (mission-flow-timeline.md
 # replaced it), so §4.7 and AC-19 are retired and its assertions dropped.
+# 2026-10-22 (Navigation d25d923d): the orphaned `MissionFeedList` and
+# `MissionTaskRow` assertions are retired; the mission page's list is the
+# Build stage (Mission Overview I-5), named rows that open the task page.
 assertions:
   - id: "work-kind-derivation"
     type: "symbol"
@@ -27,15 +30,6 @@ assertions:
     type: "symbol_reachable"
     symbol: "deriveWorkKind"
     entry: "apps/web/src/components/TaskCard.tsx"
-  - id: "feed-phase-render-tests"
-    type: "test_file"
-    path: "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.test.tsx"
-  # This verifies the retained row component; it does not claim the current
-  # Overview renders the old grouped feed. Task navigation uses the task page.
-  - id: "feed-row-glyph-reads-work-kind"
-    type: "symbol_reachable"
-    symbol: "deriveWorkKind"
-    entry: "apps/web/src/components/missions/MissionTaskRow.tsx"
 ---
 
 # Mission Legibility

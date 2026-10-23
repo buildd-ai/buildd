@@ -35,6 +35,7 @@ import { deriveWorkKind, LIVE_WORKER_STATUSES, reduceToFrontier } from './task-p
 import { buildMissionAdjacency, type AdjacencyGateRow } from './condensed-timeline';
 import type { DepReleaseArm } from './dep-gate-contract';
 import type { WaitingKind } from '@buildd/core/waiting-reason';
+import type { WorkerWaitingFor } from '@buildd/core/db/schema';
 import { classifyTaskFailure, failedDependencyOf, type TaskFailureKind } from './task-failure-kind';
 import { boardTaskLabel } from './mission-board-label';
 import { resolveRunnerDisplay, runnerKey, type RunnerDisplay, type RunnerHeartbeatLike } from './runner-display';
@@ -75,10 +76,22 @@ export interface BoardWorkerInput {
   namedReplacementPrNumber?: number | null;
   namedReplacementPrUrl?: string | null;
   currentAction: string | null;
-  waitingFor: { prompt: string; options: string[] } | null;
+  waitingFor: BoardWaitingFor | null;
   milestones: BoardMilestone[];
   linesAdded: number | null;
   linesRemoved: number | null;
+}
+
+/**
+ * A parked worker's question as the board carries it: the prompt and option
+ * labels every strip reads, plus `full`, the stored `waitingFor` as written
+ * (brief context, option consequences, the recommendation), so the mission
+ * page's decision card says what Home's says (Navigation R-16).
+ */
+export interface BoardWaitingFor {
+  prompt: string;
+  options: string[];
+  full?: WorkerWaitingFor;
 }
 
 export interface BoardTaskInput extends MissionFeedTaskInput {
@@ -270,6 +283,8 @@ export interface BoardTask {
   replacement?: { number: number; url: string | null } | null;
   /** When the current wait began (a waiting task). */
   waitStartedAt: number | null;
+  /** A merged attempt followed by newer work that has not landed (History names it, the Build stage returns). */
+  reopened?: boolean;
   milestones: BoardMilestone[];
   currentAction: string | null;
   pr: { number: number; url: string | null; state: FeedPrState } | null;
@@ -293,7 +308,7 @@ export interface BoardTask {
   lines: { added: number; removed: number } | null;
   /** Attempts beyond the first (↻2 = one retry). */
   attempt: number;
-  waitingFor: { prompt: string; options: string[] } | null;
+  waitingFor: BoardWaitingFor | null;
   /** Why a queued task is not running (`MissionGateFacts.waitingKinds`); absent when unknown. */
   waitingKind?: WaitingKind;
   /**
@@ -530,7 +545,8 @@ export function toBoardWorkerInput(w: Record<string, unknown>): BoardWorkerInput
     namedReplacementPrNumber: num(w.namedReplacementPrNumber),
     namedReplacementPrUrl: str(w.namedReplacementPrUrl),
     currentAction: str(w.currentAction),
-    waitingFor: wf && typeof wf.prompt === 'string' ? { prompt: wf.prompt, options } : null,
+    // The whole stored question rides along (`full`): the card needs the brief, not just the labels.
+    waitingFor: wf && typeof wf.prompt === 'string' ? { prompt: wf.prompt, options, full: wf as WorkerWaitingFor } : null,
     milestones: selectMilestones(w.milestones),
     linesAdded: num(w.linesAdded),
     linesRemoved: num(w.linesRemoved),
@@ -846,6 +862,8 @@ export function buildBoardCells(
       prWorkerId: own?.prNumber != null ? own.id : null,
       replacement: own?.namedReplacementPrNumber != null ? { number: own.namedReplacementPrNumber, url: own.namedReplacementPrUrl ?? null } : null,
       waitStartedAt: status === 'waiting' ? activeWorker?.updatedAt ?? null : null,
+      // A merged attempt followed by work that has not landed: the Build stage returns (Navigation R-15, R-6).
+      reopened: !BOARD_LANDED.has(status) && t.workers.some(w => w.mergedAt != null),
       milestones: activeWorker?.milestones ?? [],
       currentAction: isLiveWorker(activeWorker) ? activeWorker?.currentAction ?? null : null,
       pr: prState ? { number: prState.number, url: own?.prUrl ?? null, state: prState.state } : null,

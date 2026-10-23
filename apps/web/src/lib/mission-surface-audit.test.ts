@@ -161,6 +161,57 @@ describe('ensureMissionSurfaceAudit', () => {
     expect(tasksUpdateSet.mock.calls[0][0].dependsOn).toEqual(['builder-1', 'builder-2']);
   });
 
+  describe.each(['coordination', 'analysis'])('bookkeeping kind %s', kind => {
+    it('is not added to an existing audit', async () => {
+      tasksFindFirst.mockResolvedValue({ id: 'audit-1', dependsOn: ['builder-1'] });
+      await ensureMissionSurfaceAudit({
+        missionId: MISSION_ID, workspaceId: WORKSPACE_ID,
+        createdTask: uiTask('organizer-1', { kind }), targetWorkspace,
+      });
+      expect(tasksInsertValues).not.toHaveBeenCalled();
+      expect(tasksUpdateSet).not.toHaveBeenCalled();
+    });
+
+    it('does not trigger a new audit', async () => {
+      await ensureMissionSurfaceAudit({
+        missionId: MISSION_ID, workspaceId: WORKSPACE_ID,
+        createdTask: uiTask('organizer-1', { kind }), targetWorkspace,
+      });
+      expect(tasksInsertValues).not.toHaveBeenCalled();
+    });
+
+    it('is left out of the first audit\'s dependsOn', async () => {
+      const builder = uiTask('builder-1', { kind: 'engineering' });
+      tasksFindMany.mockResolvedValue([builder, uiTask('organizer-1', { kind })]);
+      await ensureMissionSurfaceAudit({
+        missionId: MISSION_ID, workspaceId: WORKSPACE_ID, createdTask: builder, targetWorkspace,
+      });
+      expect(tasksInsertValues.mock.calls[0][0].dependsOn).toEqual(['builder-1']);
+    });
+
+    it('is dropped from a stored dependsOn when the audit is next extended', async () => {
+      tasksFindFirst.mockResolvedValue({ id: 'audit-1', dependsOn: ['builder-1', 'organizer-1'] });
+      tasksFindMany.mockResolvedValue([{ id: 'builder-1', kind: 'engineering' }, { id: 'organizer-1', kind }]);
+      await ensureMissionSurfaceAudit({
+        missionId: MISSION_ID, workspaceId: WORKSPACE_ID,
+        createdTask: uiTask('builder-2', { kind: 'engineering' }), targetWorkspace,
+      });
+      expect(tasksUpdateSet.mock.calls[0][0].dependsOn).toEqual(['builder-1', 'builder-2']);
+    });
+  });
+
+  it('engineering and legacy (no kind) tasks still extend the audit', async () => {
+    for (const extra of [{ kind: 'engineering' }, {}]) {
+      tasksUpdateSet.mockClear();
+      tasksFindFirst.mockResolvedValue({ id: 'audit-1', dependsOn: ['builder-1'] });
+      await ensureMissionSurfaceAudit({
+        missionId: MISSION_ID, workspaceId: WORKSPACE_ID,
+        createdTask: uiTask('builder-2', extra), targetWorkspace,
+      });
+      expect(tasksUpdateSet.mock.calls[0][0].dependsOn).toEqual(['builder-1', 'builder-2']);
+    }
+  });
+
   it('extending drops a dependency that has since left the mission', async () => {
     nonMembers = new Set(['unlinked-1']);
     try {

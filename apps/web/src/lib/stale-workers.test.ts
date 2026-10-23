@@ -34,7 +34,17 @@ const mockAccountsUpdate = mock(() => ({
 }));
 // Exposed so tests can override section-2 (heartbeat-expiry) behaviour.
 // Default: returns a fresh heartbeat → section 2 does NOT fire in most tests.
+// The rule now reads every heartbeat row on the account (findMany) and judges
+// each worker by its own runner; here a "fresh" answer is one live runner row
+// (no worker in this file names a runner, so none is under it and the rule
+// skips the account), and a null answer is no row at all (every candidate is
+// an orphan, as before). One findFirst consumption per sweep keeps the
+// per-test `mockReturnValueOnce(null)` overrides meaning what they did.
 const mockWorkerHeartbeatsFindFirst = mock(() => ({ id: 'hb-1' }));
+const mockWorkerHeartbeatsFindMany = mock(async () => {
+  const fresh = await mockWorkerHeartbeatsFindFirst();
+  return fresh ? [{ accountId: 'account-1', localUiUrl: 'http://live-runner.local:8766', lastHeartbeatAt: new Date(), environment: null }] : [];
+});
 let capturedInsertValues: any = null;
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -42,7 +52,7 @@ mock.module('@buildd/core/db', () => ({
       workers: { findMany: mockWorkersFindMany },
       tasks: { findFirst: mockTasksFindFirst, findMany: mockTasksFindMany },
       missions: { findFirst: mock(() => null) },
-      workerHeartbeats: { findFirst: mockWorkerHeartbeatsFindFirst },
+      workerHeartbeats: { findFirst: mockWorkerHeartbeatsFindFirst, findMany: mockWorkerHeartbeatsFindMany },
     },
     update: (table: any) => {
       if (table === 'workers') return mockWorkersUpdate();
@@ -90,7 +100,7 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers',
   tasks: 'tasks',
-  workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
+  workerHeartbeats: { accountId: 'accountId', localUiUrl: 'localUiUrl', lastHeartbeatAt: 'lastHeartbeatAt' },
   missionNotes: 'missionNotes',
   accounts: 'accounts',
 }));
