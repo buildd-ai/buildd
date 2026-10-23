@@ -68,6 +68,8 @@ export interface QuestionNoteLike {
   title: string;
   body?: string | null;
   defaultChoice?: string | null;
+  /** The note's structured options (question-brief.ts `DecisionOption`). */
+  options?: Array<{ label: string; consequence?: string; effect?: string; recommended?: boolean }> | null;
 }
 
 const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
@@ -93,6 +95,15 @@ export function normalizeOptions(options: WaitingForOption[] | null | undefined,
     for (const o of out) if (same(o.label, defaultChoice)) o.recommended = true;
   }
   return out;
+}
+
+/** A note's own options as buttons, the recommended one first. */
+function noteOptions(note: QuestionNoteLike): QuestionOption[] {
+  const out = normalizeOptions(
+    Array.isArray(note.options) ? note.options.map(o => ({ label: o.label, consequence: o.effect || o.consequence, recommended: o.recommended })) : [],
+    note.defaultChoice,
+  );
+  return [...out.filter(o => o.recommended), ...out.filter(o => !o.recommended)];
 }
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -156,7 +167,10 @@ export function unifyWorkerQuestion(
   note: QuestionNoteLike | null,
   facts: WorkerQuestionFacts = {},
 ): UnifiedQuestion {
-  const options = withRecommendation(normalizeOptions(waitingFor.options ?? [], note?.defaultChoice), waitingFor.recommended);
+  // A pause's only option is Resume, which is the pause's action, not an answer
+  // to anything: it is never offered as a choice, and the note's own options win.
+  const own = waitingFor.type === 'pause' ? [] : normalizeOptions(waitingFor.options ?? [], note?.defaultChoice);
+  const options = withRecommendation(own.length === 0 && note ? noteOptions(note) : own, waitingFor.recommended);
   const brief = briefOf(waitingFor);
   if (!brief.context && !note?.body?.trim()) {
     const context = fallbackQuestionContext({ prompt: waitingFor.prompt, workerError: facts.workerError, taskTitle: facts.taskTitle });
@@ -172,7 +186,8 @@ export function unifyWorkerQuestion(
 }
 
 export function unifyNoteQuestion(note: QuestionNoteLike): UnifiedQuestion {
-  const withC = withConsequences(note.defaultChoice ? [{ label: note.defaultChoice, recommended: true }] : [], note.body);
+  const fromNote = noteOptions(note);
+  const withC = withConsequences(fromNote.length ? fromNote : note.defaultChoice ? [{ label: note.defaultChoice, recommended: true }] : [], note.body);
   return { headline: note.title, body: withC.body, options: withC.options, noteId: note.id };
 }
 
