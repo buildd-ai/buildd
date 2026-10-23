@@ -7,7 +7,7 @@ import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
-import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
+import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimDeferralCounters, ClaimTaskExclusion } from '@buildd/shared';
 import { TASK_ISOLATION_CONTEXT_KEY, type TaskIsolationStamp, parseRunnerLoginUse, pickLoginBackend } from '@buildd/shared';
 import { claudeDefaultTaskIds } from './login-mode-gate';
 import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials, NEEDS_INPUT_ERROR_PREFIX, workerHoldsRunnerSlot, RUNNER_LIVE_WINDOW_MS } from '@buildd/shared';
@@ -1250,7 +1250,7 @@ export async function POST(req: NextRequest) {
     // Every counter must be a declared diagnostics key (and vice versa): the
     // response casts to ClaimDiagnostics['deferrals'], so without this check a
     // new reason ships untyped to every client.
-  } satisfies Required<NonNullable<ClaimDiagnostics['deferrals']>>;
+  } satisfies ClaimDeferralCounters;
 
   // Each candidate's model-credential decision under the team's credential
   // policy (./personal-credential-injection), keyed by task id. Teams with no

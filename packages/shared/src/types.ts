@@ -1827,6 +1827,12 @@ export interface ClaimTaskExclusion {
   holderTaskId?: string;
 }
 
+/**
+ * The deferral counters a claim response fills in: every declared key except
+ * the retired undeclared-scope one, which nothing counts any more.
+ */
+export type ClaimDeferralCounters = Required<Omit<NonNullable<ClaimDiagnostics['deferrals']>, 'advisory_manifest'>>;
+
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
   /**
