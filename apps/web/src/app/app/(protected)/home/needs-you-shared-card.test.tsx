@@ -96,6 +96,12 @@ describe('a review a person must give', () => {
     expect(view?.summary).toBe('Protected migration paths changed. CI passed.');
   });
 
+  it('names the task with the subject link Home already resolved, never a hand-built one', () => {
+    expect(reviewApprovalView(item)?.task.href).toBe(item.details?.href);
+    const [inMission] = derive([{ ...review, missionId: 'mission-r' }]);
+    expect(reviewApprovalView(inMission)?.task.href).toBe('/app/missions/mission-r');
+  });
+
   it('renders exactly as the mission page renders the same approval', () => {
     const view = reviewApprovalView(item)!;
     const mission = approvalView({

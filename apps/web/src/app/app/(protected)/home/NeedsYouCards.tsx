@@ -72,7 +72,8 @@ export function reviewApprovalView(item: HomeAttentionItem): DecisionView | null
   const review = q.humanReview;
   const why = review ? [sentence(review.decision ?? review.reason), sentence(q.machineStatus)].filter(Boolean).join(' ') : item.sentence;
   const title = displayTaskTitle(item.title);
-  const href = q.taskId ? `/app/tasks/${q.taskId}` : item.details?.href ?? pr;
+  // The subject link Home already resolved (the mission, or the task page), never a hand-built task path.
+  const href = item.details?.href ?? pr;
   return approvalView({
     key: `approval:${q.taskId ?? item.key}`,
     task: { id: q.taskId ?? item.key, title, href },
