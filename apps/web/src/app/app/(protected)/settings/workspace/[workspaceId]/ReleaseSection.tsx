@@ -133,6 +133,12 @@ function ReleaseStatus({ status }: { status: string | null | undefined }) {
   return <StatusPill status={status} />;
 }
 
+const AMEND_OPTIONS = [
+  { value: 'none', label: 'Tell us to re-cut it', description: 'buildd runs nothing' },
+  { value: 'inputs', label: 'Run the workflow with these inputs', description: 'Your workflow amends the open candidate' },
+  { value: 'redispatch', label: 'Run the workflow again', description: 'Your workflow re-cuts the candidate itself' },
+] as const satisfies ReadonlyArray<{ value: 'none' | 'inputs' | 'redispatch'; label: string; description: string }>;
+
 export default function ReleaseSection({ workspaceId, teamId, initialReleaseConfig, effectiveTrigger, hasRepo, canEdit }: Props) {
   const cfg = initialReleaseConfig;
 
@@ -152,6 +158,10 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
   const [candidateBranches, setCandidateBranches] = useState((cfg?.candidate?.branches ?? []).join(', '));
   const [candidateSource, setCandidateSource] = useState(cfg?.candidate?.sourceBranch ?? '');
   const [candidateAuthors, setCandidateAuthors] = useState((cfg?.candidate?.authors ?? []).join(', '));
+  const loadedAmend = cfg?.candidate?.amend;
+  const [candidateAmendMode, setCandidateAmendMode] = useState<'none' | 'inputs' | 'redispatch'>(loadedAmend?.mode ?? 'none');
+  const [candidateAmendVersionInput, setCandidateAmendVersionInput] = useState(loadedAmend?.mode === 'inputs' ? loadedAmend.versionInput : '');
+  const [candidateAmendConfirmInput, setCandidateAmendConfirmInput] = useState(loadedAmend?.mode === 'inputs' ? (loadedAmend.confirmInput ?? '') : '');
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -214,6 +224,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
   const form = {
     strategy, prodBranch, ref, workflowFile, trigger,
     candidateEnabled, candidateBranches, candidateSource, candidateAuthors,
+    candidateAmendMode, candidateAmendVersionInput, candidateAmendConfirmInput,
   };
   const { dirty, snapshot, markSaved } = useDirtyState(form);
   useWarnOnUnload(canEdit && dirty);
@@ -399,6 +410,47 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                       <p className="sm:col-span-3 text-xs text-text-muted">
                         A PR from any other account, or one pushed to after it was cut, is reviewed like any other PR.
                       </p>
+                      {strategy === 'workflow_dispatch' && (
+                        <div className="sm:col-span-3" data-testid="release-candidate-amend">
+                          <span className="block text-sm text-text-primary mb-1">When a fix merges</span>
+                          <Select
+                            value={candidateAmendMode}
+                            onChange={(v) => setCandidateAmendMode(v)}
+                            options={AMEND_OPTIONS}
+                            aria-label="When a fix merges"
+                            className="w-full sm:w-80"
+                            testId="release-candidate-amend-mode"
+                          />
+                          {candidateAmendMode === 'inputs' && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3">
+                              <div>
+                                <label className="block text-sm text-text-primary mb-1">Version input</label>
+                                <input
+                                  type="text"
+                                  value={candidateAmendVersionInput}
+                                  onChange={(e) => setCandidateAmendVersionInput(e.target.value)}
+                                  placeholder="amend"
+                                  className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-sm text-text-primary mb-1">Confirm input (optional)</label>
+                                <input
+                                  type="text"
+                                  value={candidateAmendConfirmInput}
+                                  onChange={(e) => setCandidateAmendConfirmInput(e.target.value)}
+                                  placeholder="amend_confirm"
+                                  className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
+                                />
+                              </div>
+                            </div>
+                          )}
+                          <p className="text-xs text-text-muted mt-2">
+                            When the fix for a failing candidate merges, buildd runs {workflowFile || 'your workflow'} only as set here, and only if the workflow
+                            on {ref || 'its branch'} takes those inputs. Otherwise it tells you the candidate needs a re-cut.
+                          </p>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -465,7 +517,13 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                   ? [{
                       label: 'Release candidates',
                       value: <span className="font-mono">{cfg.candidate.branches.join(', ')}</span>,
-                      note: `Cut from ${cfg.candidate.sourceBranch}, opened by ${cfg.candidate.authors.join(', ')}`,
+                      note: `Cut from ${cfg.candidate.sourceBranch}, opened by ${cfg.candidate.authors.join(', ')}. ${
+                        cfg.candidate.amend?.mode === 'inputs'
+                          ? `When a fix merges: runs the workflow with ${cfg.candidate.amend.versionInput}${cfg.candidate.amend.confirmInput ? ` and ${cfg.candidate.amend.confirmInput}` : ''}.`
+                          : cfg.candidate.amend?.mode === 'redispatch'
+                            ? 'When a fix merges: runs the workflow again.'
+                            : 'When a fix merges: tells you to re-cut it.'
+                      }`,
                     }]
                   : []),
                 ...(isReleaseEnabled
