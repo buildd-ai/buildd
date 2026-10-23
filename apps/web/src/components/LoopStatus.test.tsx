@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { LoopHistory, LoopStatusChip } from './LoopStatus';
+import { LoopHistory, LoopStatusChip, loopHistoryOf } from './LoopStatus';
 import type { LoopHistoryEntry } from '@buildd/shared';
 
 const entry = (iteration: number, satisfied = false): LoopHistoryEntry => ({
@@ -135,5 +135,17 @@ describe('Loop chip and history agree (surface fix 415f718a)', () => {
     expect(list).toContain('until CI passes');
     expect(list).toContain('CI passed');
     expect(list).toContain('CI not passing');
+  });
+});
+
+// Surface audit ff33de4d: a queued task that never ran read "LOOPING · ATTEMPT 1/3" (R-9).
+describe('loopHistoryOf — the task page shows a loop chip only with loop history', () => {
+  it('is empty for a looped task that has not been evaluated', () => {
+    expect(loopHistoryOf({ result: null, context: {} })).toEqual([]);
+    expect(loopHistoryOf({ result: { loopHistory: [] }, context: null })).toEqual([]);
+  });
+  it('reads the result first, then the context', () => {
+    expect(loopHistoryOf({ result: { loopHistory: [entry(0)] }, context: { loopHistory: [entry(0), entry(1)] } })).toHaveLength(1);
+    expect(loopHistoryOf({ result: {}, context: { loopHistory: [entry(0), entry(1)] } })).toHaveLength(2);
   });
 });
