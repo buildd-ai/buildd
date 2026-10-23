@@ -110,8 +110,9 @@ export const RUNNER_RECENTLY_SEEN_MS = 10 * LIVENESS_PING_INTERVAL_MS;
 // Runner is "online" when its last beat arrived within 1.5× the poll interval.
 // Between 1.5× and 2.5× it shows as "stale" (beat is overdue but runner may recover).
 // Beyond 2.5× the interval the runner is presumed dead: the record is excluded
-// from queries, its heartbeat row may be deleted, and — only if NO runner on the
-// account is inside this window — its workers are failed.
+// from queries, the workers it claimed are failed (each worker is judged by its
+// OWN runner, whatever the account's other runners do), and its heartbeat row
+// may be deleted once no live worker names it.
 export const RUNNER_ONLINE_THRESHOLD_MS = 1.5 * RUNNER_HEARTBEAT_INTERVAL_MS;
 export const RUNNER_STALE_CUTOFF_MS = 2.5 * RUNNER_HEARTBEAT_INTERVAL_MS;
 
