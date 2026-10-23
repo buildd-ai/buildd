@@ -41,8 +41,10 @@ export interface DecisionCardProps {
   testId?: string;
 }
 
-const PRIMARY = 'btn btn-ink min-h-11 flex-col items-start gap-0.5 px-3.5 py-2 text-left';
-const SECONDARY = 'btn min-h-11 flex-col items-start gap-0.5 px-3.5 py-2 text-left';
+// `.btn` is one line at a fixed height; an option's label and effect wrap inside the card instead (no sideways scroll at 320).
+const OPTION = 'btn h-auto min-h-11 w-full flex-col items-start justify-center gap-0.5 whitespace-normal px-3.5 py-2 text-left leading-snug [overflow-wrap:anywhere]';
+const PRIMARY = `${OPTION} btn-ink`;
+const SECONDARY = OPTION;
 const TEXT_BUTTON = 'inline-flex min-h-11 items-center text-body text-text-secondary underline-offset-4 hover:text-text-primary hover:underline md:min-h-0';
 
 function useNow(serverNow: number): number {
@@ -72,7 +74,7 @@ function OptionButton({ option, primary, shortcut, href, onPick, disabled, pendi
   );
   const cls = primary ? PRIMARY : SECONDARY;
   return (
-    <span className="group relative inline-flex max-w-full">
+    <span className="group relative flex min-w-0 max-w-full flex-[1_1_10rem]">
       {href
         ? <a href={href} data-testid="decision-option" data-primary={primary || undefined} aria-describedby={option.tip ? tipId : undefined} className={cls}>{body}</a>
         : (
@@ -224,7 +226,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
       )}
       <h3 data-testid="decision-question" className="text-title font-semibold text-text-primary [overflow-wrap:anywhere]">{view.question}</h3>
       {view.options.length > 0 && (
-        <div className="flex flex-wrap gap-2.5">
+        <div data-testid="decision-options" className="flex flex-wrap gap-2.5">
           {view.options.map((o, i) => (
             <OptionButton
               key={o.label}
@@ -239,7 +241,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
           ))}
         </div>
       )}
-      {differently || view.options.length === 0 ? (
+      {differently ? (
         <form
           data-testid="decision-answer-form"
           className="flex flex-wrap gap-2"
@@ -260,7 +262,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
       <div className="flex flex-wrap items-center justify-between gap-x-4">
         {view.answer.kind === 'link'
           ? <span />
-          : view.options.length > 0 && !differently
+          : !differently
             ? <button type="button" data-testid="decision-answer-differently" onClick={() => setDifferently(true)} className={TEXT_BUTTON}>Answer differently</button>
             : <span />}
         <button type="button" data-testid="decision-not-now" onClick={() => (onNotNow ? onNotNow() : setLater(true))} className={TEXT_BUTTON}>Not now</button>
