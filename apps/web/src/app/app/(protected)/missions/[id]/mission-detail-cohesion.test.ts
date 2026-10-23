@@ -110,3 +110,9 @@ describe('each fact once across the tabs (spec f7f67f1a R-37, AC-19)', () => {
     expect(FOOTER).toMatch(/branchPanelHasAction\(visualPresentation, isTerminal\) && \(\s*<MissionBranchPanel/);
   });
 });
+
+describe('the questions banner does not repeat the decision cards', () => {
+  it('the mission page hides the shell banner: its decisions are cards on the page', () => {
+    expect(PAGE).toMatch(/<ShellPageMarks[^>]*hideQuestionsBanner/);
+  });
+});

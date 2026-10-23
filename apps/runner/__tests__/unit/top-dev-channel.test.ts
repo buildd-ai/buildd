@@ -129,6 +129,19 @@ const configFile = () => join(PROD, 'config.json');
 const run = (topArgs: string[] = [], env: Record<string, string | undefined> = OPTED_IN) =>
   runTopDev({ prodDir: PROD, devDir: DEV, topArgs, configFile: configFile(), env, deps: deps() });
 const devHead = () => sh(['rev-parse', 'HEAD'], DEV);
+// Windows can hold a just-used repo briefly (EBUSY); retry the rename.
+function takeUpstreamOffline() {
+  for (let i = 0; ; i++) {
+    try {
+      nodeFs.renameSync(UPSTREAM, UPSTREAM + '.offline');
+      return;
+    } catch (e: any) {
+      if (i >= 40 || !['EBUSY', 'EPERM', 'EACCES'].includes(e?.code)) throw e;
+      Bun.sleepSync(100);
+    }
+  }
+}
+
 const upstreamDev = () => sh(['rev-parse', 'dev'], UPSTREAM);
 
 beforeEach(() => {
@@ -177,7 +190,7 @@ describe('first run', () => {
   test('with no network it fails with a clear message and leaves nothing behind', async () => {
     setupUpstream();
     installProdLikeInstallSh();
-    nodeFs.renameSync(UPSTREAM, UPSTREAM + '.offline');
+    takeUpstreamOffline();
     const before = prodSnapshot();
 
     expect(await run()).toBe(1);
@@ -233,7 +246,7 @@ describe('later runs', () => {
     await run();
     const last = devHead();
     commit('dev', { 'apps/runner/src/index.ts': '// unreachable\n' }, 'dev 2');
-    nodeFs.renameSync(UPSTREAM, UPSTREAM + '.offline');
+    takeUpstreamOffline();
     const before = prodSnapshot();
 
     calls = { installs: [], tops: [], logs: [] };

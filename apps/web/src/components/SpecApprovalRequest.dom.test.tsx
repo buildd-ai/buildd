@@ -11,6 +11,13 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+let refreshes = 0;
+mock.module('next/navigation', () => ({
+  useRouter: () => ({ push: () => {}, replace: () => {}, refresh: () => { refreshes++; } }),
+  usePathname: () => '/app/specs/approvals',
+  useSearchParams: () => new URLSearchParams(),
+}));
+
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: SpecApprovalRequest } = await import('./SpecApprovalRequest');
@@ -35,6 +42,7 @@ afterEach(() => {
 const LONG = `R-1: ${'a very long requirement line that has to wrap rather than run off the edge '.repeat(4)}`;
 const ready = {
   state: 'ready' as const, title: 'Checkout', revision: 3, replaces: 2 as number | null,
+  pin: { revision: 3, expectedVersion: 7, contentHash: 'c'.repeat(64) },
   sections: [{ kind: 'changed' as const, path: 'Checkout > Totals', level: 2, linesAdded: 1, linesRemoved: 1 }],
   hunks: [{
     kind: 'changed' as const, path: 'Checkout > Totals', linesAdded: 1, linesRemoved: 1,
@@ -218,5 +226,45 @@ describe('SpecApprovalRequest', () => {
       expect(approveButton()).toBeNull();
       expect(container.querySelector('[data-testid="spec-approval-state"]')).not.toBeNull();
     }
+  });
+
+  describe('as an inbox row (no token)', () => {
+    it('Approve posts the pin it was rendered with to the inbox route, from this session', async () => {
+      const calls: Array<[string, RequestInit]> = [];
+      globalThis.fetch = mock(async (url: string, init: RequestInit) => {
+        calls.push([url, init]);
+        return new Response(JSON.stringify({ already: false }), { status: 200 });
+      }) as unknown as typeof fetch;
+      act(() => root.render(<SpecApprovalRequest specId={SPEC} view={ready} showTitle={false} />));
+      expect(q('spec-approval-title')).toBeNull();
+      await act(async () => { approveButton()!.click(); });
+      expect(calls[0][0]).toBe(`/api/specs/${SPEC}/approve/inbox`);
+      expect(JSON.parse(calls[0][1].body as string)).toEqual({ revision: 3, expectedVersion: 7, contentHash: 'c'.repeat(64) });
+      expect(q('spec-approval-result')!.textContent).toBe('Approved revision 3.');
+    });
+
+    it('a gate refusal sends the reason with the pin', async () => {
+      const bodies: unknown[] = [];
+      globalThis.fetch = mock(async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(init.body as string)); return new Response('{}', { status: 200 }); }) as unknown as typeof fetch;
+      const view = { ...ready, gate: { passed: false, refusals: [{ code: 'acceptance_unjudgeable', message: 'AC-1 cannot be graded.' }], warnings: [] } };
+      act(() => root.render(<SpecApprovalRequest specId={SPEC} view={view} />));
+      const box = q('spec-approval-override-reason') as unknown as HTMLTextAreaElement;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(box, 'Shipping it as is for now.');
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await act(async () => { approveButton()!.click(); });
+      expect(bodies).toEqual([{ revision: 3, expectedVersion: 7, contentHash: 'c'.repeat(64), overrideReason: 'Shipping it as is for now.' }]);
+    });
+
+    it('a stale answer says so and reloads the page so the row shows the new head', async () => {
+      refreshes = 0;
+      globalThis.fetch = mock(async () => new Response(JSON.stringify({ error: 'The spec changed since this page loaded.', code: 'stale' }), { status: 409 })) as unknown as typeof fetch;
+      act(() => root.render(<SpecApprovalRequest specId={SPEC} view={ready} />));
+      await act(async () => { approveButton()!.click(); });
+      expect(container.textContent).toContain('The spec changed since this page loaded.');
+      expect(refreshes).toBe(1);
+      expect(approveButton()).toBeNull();
+    });
   });
 });

@@ -334,6 +334,21 @@ describe('navigation task hierarchy (R-7 to R-10)', () => {
   });
 });
 
+// Spec e28018c2 R-6, R-9, AC-16: dependencies and dependents cross workspaces,
+// and both lists go through the one per-viewer resolver.
+describe('cross-workspace dependencies on the task page', () => {
+  it('reads dependents from every workspace, not just this task\'s', () => {
+    const q = pageSource.slice(pageSource.indexOf('const dependentsQuery'), pageSource.indexOf('const dependentsQuery') + 400);
+    expect(q).not.toContain('eq(tasks.workspaceId');
+  });
+  it('resolves both lists for the viewer and renders the hidden count', () => {
+    expect(pageSource).toContain('resolveDependencyHolders(reachScope, depTaskIds)');
+    expect(pageSource).toContain('resolveDependencyHolders(reachScope, dependentRows.map(d => d.id))');
+    expect(pageSource).toContain('blocksList(dependentRows, dependentReach)');
+    expect(pageSource).toContain('data-testid="task-unblocked-hidden"');
+  });
+});
+
 describe('reading width (Navigation R-21)', () => {
   it('keeps the content column at most 840px', () => {
     expect(pageSource).toMatch(/className="max-w-\[840px\] w-full" data-testid="task-content-column"/);
@@ -366,5 +381,35 @@ describe('running task — status line, one live block, Details open', () => {
     expect(card).toBeGreaterThan(0);
     expect(card).toBeLessThan(run);
     expect(pageSource).not.toContain('<summary className="min-h-11 flex items-center cursor-pointer text-body font-medium">Details</summary>');
+  });
+});
+
+describe('the shell marks — tasks/[id]/page.tsx (design 6356e80d, desktop-task-running)', () => {
+  it('hides the questions banner: a waiting task asks its question on its own page', () => {
+    expect(pageSource).toMatch(/<ShellPageMarks[^>]*hideQuestionsBanner/);
+  });
+
+  it("a mission's task claims Missions in the nav; a loose task claims nothing", () => {
+    expect(pageSource).toMatch(/<ShellPageMarks[^>]*navSection=\{task\.missionId \? '\/app\/missions' : null\}/);
+  });
+});
+
+// Surface audit ff33de4d against phone-task-merged and desktop-task-waiting (R-9, R-11, R-20).
+describe('merged and waiting tasks — tasks/[id]/page.tsx', () => {
+  it('a waiting task reads its status line under the title, not a Queued chip', () => {
+    expect(pageSource).toContain('{!shippedView && !verdict && !waitingOn && !statusLine && (');
+    expect(pageSource).toContain('<TaskWaitingLine on={waitingOn}');
+  });
+  it('the timeline gets the legacy review, the linked runs\' times and what the task waits on', () => {
+    const from = pageSource.indexOf('const timeline = buildTaskTimeline(');
+    const call = pageSource.slice(from, pageSource.indexOf('});', from));
+    for (const arg of ['review: legacyReview', 'eventTimes', 'waitingOn:', 'deliverInto:']) expect(call).toContain(arg);
+  });
+  it('a legacy review counts as at least one round, even with no stored iteration', () => {
+    expect(pageSource).toContain('legacyReview ? Math.max(1, legacyReview.round ?? 0) : 0');
+  });
+  it('no loop chip and no Loop history without loop history', () => {
+    expect(pageSource).toContain('{task.loopConfig && loopHistory.length > 0 && (');
+    expect(pageSource).toContain('{task.loopConfig && loopHistory.length > 0 ? (');
   });
 });

@@ -64,36 +64,40 @@ function mount(rows: CheckRow[], ctx: { readonly?: boolean; waiver?: { reason: s
     : card));
 }
 
-describe('Skip on a check (R-34, AC-17)', () => {
-  it('opens one reason field in place and records the waiver through PATCH surfaceAuditWaiver', async () => {
+// Spec 072de598 r15 I-7 / AC-26: Skip is two buttons, an optional note, no minimum length, one tap.
+describe('Skip on a check (I-7, AC-26)', () => {
+  it('opens two buttons with an optional note; tapping one skips immediately with no minimum length', async () => {
     mount([row()]);
     expect(q('[data-testid="mission-check-skip-form"]')).toBeNull();
     await act(async () => { q('[data-testid="mission-check-skip"]')!.click(); });
-    const input = q('[data-testid="mission-check-skip-reason"]') as HTMLInputElement;
-    expect(input).not.toBeNull();
-    await act(async () => {
-      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-      set.call(input, 'Copy-only change, nothing to see');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await act(async () => { (q('[data-testid="mission-check-skip-form"]') as HTMLFormElement).requestSubmit(); });
+    expect(q('[data-testid="mission-check-skip-wrong"]')).not.toBeNull();
+    expect(q('[data-testid="mission-check-skip-ship"]')).not.toBeNull();
+    await act(async () => { q('[data-testid="mission-check-skip-ship"]')!.click(); });
     await flush();
-    expect(calls).toEqual([{ url: '/api/missions/m1', method: 'PATCH', body: { surfaceAuditWaiver: 'Copy-only change, nothing to see' } }]);
+    expect(calls).toEqual([{ url: '/api/missions/m1', method: 'PATCH', body: { surfaceAuditWaiver: { reason: 'ship_anyway' } } }]);
     expect(refreshed).toBe(1);
     expect(q('[data-testid="mission-check-skip-form"]')).toBeNull();
   });
 
-  it('a short reason is refused before any request', async () => {
+  it('a typed note rides along with the button pressed', async () => {
     mount([row()]);
     await act(async () => { q('[data-testid="mission-check-skip"]')!.click(); });
-    const input = q('[data-testid="mission-check-skip-reason"]') as HTMLInputElement;
+    const note = q('[data-testid="mission-check-skip-note"]') as HTMLTextAreaElement;
     await act(async () => {
-      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-      set.call(input, 'short');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
+      const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+      set.call(note, 'shots of the wrong page');
+      note.dispatchEvent(new Event('input', { bubbles: true }));
     });
-    await act(async () => { (q('[data-testid="mission-check-skip-form"]') as HTMLFormElement).requestSubmit(); });
+    await act(async () => { q('[data-testid="mission-check-skip-wrong"]')!.click(); });
     await flush();
+    expect(calls).toEqual([{ url: '/api/missions/m1', method: 'PATCH', body: { surfaceAuditWaiver: { reason: 'wrong_or_stuck', note: 'shots of the wrong page' } } }]);
+  });
+
+  it('cancel closes the form without a request', async () => {
+    mount([row()]);
+    await act(async () => { q('[data-testid="mission-check-skip"]')!.click(); });
+    await act(async () => { q('[data-testid="mission-check-skip-cancel"]')!.click(); });
+    expect(q('[data-testid="mission-check-skip-form"]')).toBeNull();
     expect(calls).toHaveLength(0);
   });
 
@@ -110,38 +114,20 @@ describe('Skip on a check (R-34, AC-17)', () => {
   });
 });
 
-describe('the stage rail (R-35, AC-18)', () => {
-  it('the active stage is the running hue and thicker; none is ink', () => {
-    act(() => root.render(<CheckRail steps={[
-      { key: 'build', label: 'Build', state: 'done', text: '5 of 5' },
-      { key: 'verify', label: 'Verify', state: 'now', text: 'queued' },
-      { key: 'deliver', label: 'Deliver', state: 'todo', text: 'into dev' },
-    ]} />));
-    const bars = Array.from(document.querySelectorAll('[data-testid="mission-check-rail-bar"]')).map(b => b.className);
-    expect(bars[1]).toContain('bg-status-running');
-    expect(bars[1]).toContain('h-[6px]');
-    expect(bars[0]).toContain('h-[3px]');
-    expect(bars.join(' ')).not.toContain('bg-text-primary');
-  });
-
-  it('held is dashed, so it differs from the active stage by shape, not only hue', () => {
-    act(() => root.render(<CheckRail steps={[
-      { key: 'build', label: 'Build', state: 'done', text: '5 of 5' },
-      { key: 'verify', label: 'Verify', state: 'held', text: 'unable to run' },
-      { key: 'deliver', label: 'Deliver', state: 'now', text: 'merging' },
-    ]} />));
-    const [, held, now] = Array.from(document.querySelectorAll('[data-testid="mission-check-rail-bar"]')).map(b => b.className);
-    expect(held).toContain('repeating-linear-gradient');
-    expect(now).not.toContain('repeating-linear-gradient');
-  });
-});
-
 describe('the spec line (Navigation R-3)', () => {
   it('reads Spec <name> linking to the spec, with no revision, status or count', () => {
     act(() => root.render(<OutcomeSpecLines lines={[{ specId: 's1', title: 'Cloud runner: deploy from Settings', revision: 'rev 8', status: 'not checked', href: '/app/specs/s1' }]} />));
     const line = q('[data-testid="mission-outcome-spec"]')!;
     expect(line.textContent).toBe('SpecCloud runner: deploy from Settings');
     expect(line.querySelector('a')!.getAttribute('href')).toBe('/app/specs/s1');
+  });
+
+  it('the name reads as a link (link hue, underlined), not as plain text beside `Spec`', () => {
+    act(() => root.render(<OutcomeSpecLines lines={[{ specId: 's1', title: 'Cloud runner', revision: 'rev 8', status: 'not checked', href: '/app/specs/s1' }]} />));
+    const cls = q('[data-testid="mission-outcome-spec"] a')!.className.split(' ');
+    expect(cls).toContain('text-accent-text');
+    expect(cls).toContain('underline');
+    expect(cls).not.toContain('text-text-primary');
   });
 
   it('several selected specs read Specs <a>, <b>', () => {
@@ -153,14 +139,50 @@ describe('the spec line (Navigation R-3)', () => {
   });
 });
 
-describe('the stage line (Navigation R-15)', () => {
-  it('a stage not started is one word; the current and finished stages carry their text', () => {
+describe('the stage line (Navigation R-3, R-15)', () => {
+  const steps = () => Array.from(document.querySelectorAll('[data-step]'));
+  const text = () => steps().map(s => s.textContent);
+  const bold = () => steps().map(s => s.querySelector('[data-testid="mission-stage-label"]')!.className.includes('font-semibold'));
+
+  it('is one line of text, no progress segments: `Build · 11 of 16   Verify   Deliver`, the current stage bold', () => {
     act(() => root.render(<CheckRail steps={[
       { key: 'build', label: 'Build', state: 'now', text: '11 of 16 done' },
       { key: 'verify', label: 'Verify', state: 'todo', text: 'after build' },
       { key: 'deliver', label: 'Deliver', state: 'todo', text: 'into dev' },
     ]} />));
-    const steps = Array.from(document.querySelectorAll('[data-step]')).map(s => s.textContent);
-    expect(steps).toEqual(['Build· 11 of 16 done', 'Verify', 'Deliver']);
+    expect(text()).toEqual(['Build · 11 of 16', 'Verify', 'Deliver']);
+    expect(bold()).toEqual([true, false, false]);
+    expect(document.querySelector('[data-testid="mission-check-rail-bar"]')).toBeNull();
+    expect(steps()[0].getAttribute('aria-current')).toBe('step');
+  });
+
+  it('a finished stage is its word and a tick; a stage not started is one word', () => {
+    act(() => root.render(<CheckRail steps={[
+      { key: 'build', label: 'Build', state: 'done', text: '10 of 10' },
+      { key: 'verify', label: 'Verify', state: 'now', text: 'capturing 6 of 8' },
+      { key: 'deliver', label: 'Deliver', state: 'todo', text: 'into dev' },
+    ]} />));
+    expect(text()).toEqual(['Build ✓', 'Verify', 'Deliver']);
+    expect(bold()).toEqual([false, true, false]);
+  });
+
+  it('delivered: every stage ticked, Deliver bold', () => {
+    act(() => root.render(<CheckRail steps={[
+      { key: 'build', label: 'Build', state: 'done', text: '10 of 10' },
+      { key: 'verify', label: 'Verify', state: 'done', text: '3 of 3 passed' },
+      { key: 'deliver', label: 'Deliver', state: 'done', text: 'merged into dev' },
+    ]} />));
+    expect(text()).toEqual(['Build ✓', 'Verify ✓', 'Deliver ✓']);
+    expect(bold()).toEqual([false, false, true]);
+  });
+
+  it('a held stage says why, in the error hue, so it never reads as plain progress', () => {
+    act(() => root.render(<CheckRail steps={[
+      { key: 'build', label: 'Build', state: 'done', text: '5 of 5' },
+      { key: 'verify', label: 'Verify', state: 'held', text: 'unable to run' },
+      { key: 'deliver', label: 'Deliver', state: 'todo', text: 'into dev' },
+    ]} />));
+    expect(text()).toEqual(['Build ✓', 'Verify · unable to run', 'Deliver']);
+    expect(steps()[1].className).toContain('text-status-error');
   });
 });

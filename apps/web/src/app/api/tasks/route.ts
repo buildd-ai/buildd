@@ -54,6 +54,7 @@ import { detectProseGate } from '@buildd/core/prose-gate';
 import { findIntakeWarnings } from '@buildd/core/spec-discrepancy-intake';
 import { isUuid } from '@/lib/uuid';
 import { resolveTaskDelegationWrite } from '@/lib/task-delegation-checks';
+import { checkDependencyReach, dependencyViewerOf, UNREACHABLE_DEPENDENCY_ERROR } from '@/lib/task-dependency-reach';
 import { FILING_TARGETS_CONTEXT_KEY, parseFilingTargets, type TaskDelegation } from '@buildd/core/token-delegation';
 import {
   GATE_SLUGS,
@@ -758,11 +759,11 @@ export async function POST(req: NextRequest) {
     }
     // A delegated filing stays inside the delegated workspace: a mission link
     // and dependencies only when the mission and every dependency are that
-    // workspace's own (dependsOn is confined to it by the check further down),
-    // so it cannot steer work anywhere the grant does not name. Its parent is
-    // the filing task itself (derived from the worker), the audit link back to
-    // the run that filed it.
+    // workspace's own, so it cannot steer work anywhere the grant does not
+    // name (spec e28018c2 R-5). Its parent is the filing task itself (derived
+    // from the worker), the audit link back to the run that filed it.
     let delegatedMissionChecked = false;
+    let delegatedDependsOnChecked = false;
     if (apiAccount?.taskScope && isDelegatedReach(apiAccount, workspaceId)) {
       // MCP create_task fills in the filing task's own mission by default;
       // that link stays home rather than refusing the follow-up.
@@ -778,6 +779,24 @@ export async function POST(req: NextRequest) {
       }
       if (parentTaskId && parentTaskId !== apiAccount.taskScope.taskId) {
         return NextResponse.json({ error: 'A delegated task can only name its filing task as parent' }, { status: 400 });
+      }
+      // The general rule below lets an edge cross workspaces; a delegation
+      // names one workspace, so its filing never waits on work elsewhere.
+      const depIds = Array.isArray(dependsOn) ? dependsOn.filter((d: unknown): d is string => isUuid(d)) : [];
+      if (depIds.length > 0) {
+        const depRows = await db.query.tasks.findMany({
+          where: sqlWhere(inArray(tasks.id, depIds)),
+          columns: { id: true, workspaceId: true },
+        });
+        if (depRows.some(d => d.workspaceId !== workspaceId)) {
+          return NextResponse.json({ error: 'A delegated task may depend only on tasks in the workspace its delegation names' }, { status: 403 });
+        }
+        const found = new Set(depRows.map(d => d.id));
+        const missing = depIds.filter(d => !found.has(d));
+        if (missing.length > 0) {
+          return NextResponse.json({ error: `${UNREACHABLE_DEPENDENCY_ERROR}: ${missing.join(', ')}` }, { status: 400 });
+        }
+        delegatedDependsOnChecked = true;
       }
     }
     // A task's own delegation is a person's grant (lib/task-delegation.ts):
@@ -982,17 +1001,15 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const depTasks = await db.query.tasks.findMany({
-        where: sqlWhere(and(inArray(tasks.id, dependsOn), eq(tasks.workspaceId, workspaceId))),
-        columns: { id: true },
-      });
-      const foundIds = new Set(depTasks.map(t => t.id));
-      const missing = dependsOn.filter((id: string) => !foundIds.has(id));
-      if (missing.length > 0) {
-        return NextResponse.json(
-          { error: `dependsOn references unknown tasks in this workspace: ${missing.join(', ')}` },
-          { status: 400 }
-        );
+      // A dependency may be in any workspace of this team the caller sees
+      // (spec e28018c2 R-1 to R-3). A delegated filing was confined above.
+      if (!delegatedDependsOnChecked) {
+        const reach = await checkDependencyReach({
+          viewer: dependencyViewerOf(user, apiAccount),
+          teamId: targetWorkspace.teamId,
+          ids: dependsOn,
+        });
+        if (!reach.ok) return NextResponse.json({ error: reach.error }, { status: 400 });
       }
     }
 

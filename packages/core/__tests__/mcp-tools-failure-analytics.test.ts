@@ -256,6 +256,15 @@ describe('get_failure_analytics overview mode', () => {
     expect(out).toMatch(/12×/);
   });
 
+  // Spec 072de598 r15 AC-27: visual review reliability is readable over MCP.
+  it('ends with visual review reliability when the route reports it', async () => {
+    const text = 'Visual review reliability\n- 2 of 3 missions finished visual review without a wrong-or-stuck Skip in the last 7 days.\n    1 × the app did not boot for the audit (cause app_boot_failed)';
+    mockApi.mockResolvedValueOnce({ analytics: analytics(), visualReviewReliability: { windows: [], text } });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, {}, ctx())).content[0].text;
+    expect(out).toContain('2 of 3 missions finished visual review without a wrong-or-stuck Skip');
+    expect(out).toContain('the app did not boot for the audit');
+  });
+
   it('says so plainly when the window has no failures', async () => {
     mockApi.mockResolvedValueOnce({
       analytics: analytics({

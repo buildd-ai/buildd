@@ -18,6 +18,10 @@
  * `sweep.pr_hourly` also dispatches every PR's newest Buildd-owned escalation
  * gate verdict whose step nothing started (lib/pr-landing-verdict-dispatch.ts,
  * task c06dedf5): one dispatch per verdict record, so a rerun files nothing twice.
+ *
+ * `pr.red_check_unclassified`: a red PR head no rule could call is judged
+ * environment or code (lib/red-check-decision.ts). The emitter already runs
+ * after the response, so this runs inline.
  */
 import { after } from 'next/server';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
@@ -69,5 +73,9 @@ export const decisionSubscribers: readonly AnySubscriber[] = [
     const { sweepUndispatchedEscalations } = await import('@/lib/pr-landing-verdict-dispatch');
     const r = await sweepUndispatchedEscalations();
     console.log(`[EscalationDispatch] candidates=${r.candidates} dispatched=${r.dispatched} queued=${r.queued} skipped=${r.skipped} deferred=${r.deferred} errors=${r.errors}`);
+  }),
+  subscriber('jev-decisions', 'pr.red_check_unclassified', 'red-check-cause-judgement', async e => {
+    const { judgeRedCheck } = await import('@/lib/red-check-decision');
+    await judgeRedCheck(e);
   }),
 ];

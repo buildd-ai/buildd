@@ -396,3 +396,17 @@ describe('checkQuestion: replayable inputs', () => {
     expect(railed.records.at(-1).replay ?? null).toBeNull();
   });
 });
+
+describe('checkQuestion: an option the platform cannot carry out', () => {
+  it('pushes back "request an interactive session" without a model call, even on a rail', async () => {
+    const { d, records, stage1 } = deps({ runGate: (async () => { throw new Error('model must not run'); }) as any });
+    const req: QuestionGateRequest = { priorPushbacks: 0, question: {
+      prompt: 'Audit from visual inspection only, or wait?',
+      options: ['Visual inspection only', 'Pause and request an interactive session where OAuth can be completed'],
+    } };
+    const out = await checkQuestion({ ...SCOPE, sensitive: true }, req, d);
+    expect(out.verdict).toBe('pushback');
+    expect(out.reason).toContain('get_artifact');
+    expect(records.length + stage1.length).toBe(0);
+  });
+});
