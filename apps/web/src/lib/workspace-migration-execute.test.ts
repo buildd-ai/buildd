@@ -53,6 +53,9 @@ mock.module('drizzle-orm', () => ({
   inArray: (a: any, b: any) => ({ a, b, op: 'inArray' }),
 }));
 
+const mockRemoveDependencyEdges = mock(async (_e: any, _r: any) => ['t-b'] as string[]);
+mock.module('@/lib/task-dependencies', () => ({ removeDependencyEdges: mockRemoveDependencyEdges }));
+
 import { executeMigrationPhases, MigrationPhaseError, type DryRunReport } from './workspace-migration';
 
 function report(): DryRunReport {
@@ -66,7 +69,7 @@ function report(): DryRunReport {
       { entity: 'Connectors', disposition: 'NEEDS_RE_AUTH', count: 1, items: [{ key: 'connector:c1', label: 'Linear (oauth)', disposition: 'NEEDS_RE_AUTH' }] },
       { entity: 'Secrets (workspace-scoped)', disposition: 'NEEDS_RE_ENTRY', count: 1, items: [{ key: 'secret:custom:X', label: 'custom "X"', disposition: 'NEEDS_RE_ENTRY' }] },
     ],
-    requiredAcks: ['account:a1', 'connector:c1', 'secret:custom:X', 'mission-dep:m1'],
+    requiredAcks: ['account:a1', 'connector:c1', 'secret:custom:X', 'mission-dep:m1', 'task-dep:t-b:t-a'],
   };
 }
 
@@ -115,6 +118,14 @@ describe('executeMigrationPhases', () => {
     await executeMigrationPhases(opts());
     // One of the missions updates sets dependsOnMissionId: null (the mission-dep:m1 ack).
     expect(updateCalls.some((c) => c.table === T.missions && 'dependsOnMissionId' in (c.set ?? {}))).toBe(true);
+  });
+
+  // Spec e28018c2 R-15 / AC-15.
+  it('removes cross-workspace task dependencies, recording workspace_left_team on the dependent', async () => {
+    mockRemoveDependencyEdges.mockClear();
+    const { outcomes } = await executeMigrationPhases(opts());
+    expect(mockRemoveDependencyEdges).toHaveBeenCalledWith([{ dependentId: 't-b', upstreamId: 't-a' }], 'workspace_left_team');
+    expect(outcomes.find(o => o.phase === 'missions_team')!.detail.removedTaskDeps).toEqual(['task-dep:t-b:t-a']);
   });
 
   it('records deleted secret labels + account names in the ledger detail', async () => {
