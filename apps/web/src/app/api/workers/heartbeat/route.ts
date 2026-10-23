@@ -9,6 +9,8 @@ import {
   withNormalizedRunnerHold,
   isRunnerModelAuthSource,
   isRunnerCodexAuthSource,
+  parseUpdateDrain,
+  nextUpdateCheckAt,
 } from '@buildd/shared';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { randomBytes } from 'crypto';
@@ -181,13 +183,9 @@ export async function POST(req: NextRequest) {
       ? (existing?.updateAvailable === true ? existing.updateAvailableSince ?? now : now)
       : null;
 
-    // Runner sends epoch ms; stored as ISO strings. Malformed input -> null.
-    const drainIn = updateDrain as { since?: unknown; endsAt?: unknown; busy?: unknown } | null | undefined;
-    const sinceD = typeof drainIn?.since === 'number' ? new Date(drainIn.since) : null;
-    const endsD = typeof drainIn?.endsAt === 'number' ? new Date(drainIn.endsAt) : null;
-    const storedUpdateDrain = sinceD && endsD && !isNaN(sinceD.getTime()) && !isNaN(endsD.getTime())
-      ? { since: sinceD.toISOString(), endsAt: endsD.toISOString(), busy: typeof drainIn?.busy === 'number' ? drainIn.busy : 0 }
-      : null;
+    // Runner sends epoch ms; stored as ISO strings, with the phase, target and
+    // paused agents of a newer runner (spec 47c97f48 R-5). Malformed input -> null.
+    const storedUpdateDrain = parseUpdateDrain(updateDrain);
 
     // What this beat would write, bar the timestamps. Equal to the last write's
     // and naming no new worker: the beat is Redis only.
@@ -306,6 +304,16 @@ export async function POST(req: NextRequest) {
     } else {
       // Every worker named was renewed, by this account, by a write inside the interval.
       leasesRenewed = heldIds.length;
+    }
+
+    // An update in progress: the watch (lib/runner-update-watch.ts) looks at
+    // this runner when it would turn stuck if it went quiet now (R-6, R-7).
+    if (storedUpdateDrain && !account.taskScope) {
+      const dueAt = nextUpdateCheckAt({ updateDrain: storedUpdateDrain, lastHeartbeatAt: now }, now.getTime());
+      if (dueAt !== null) {
+        const { markRunnerUpdateDue } = await import('@/lib/runner-update-watch');
+        await markRunnerUpdateDue(account.id, String(localUiUrl), dueAt).catch(() => {});
+      }
     }
 
     // Release workers minted for this runner that it says it never received

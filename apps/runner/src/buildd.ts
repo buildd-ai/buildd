@@ -254,6 +254,20 @@ export class BuilddClient {
     return Array.isArray(data?.missions) ? data.missions : [];
   }
 
+  /**
+   * Each named worker's task estimate in minutes (the p50 the Queue shows), or
+   * null without one, from GET /api/workers/estimates. Only this account's
+   * workers are answered. Used when an update opens its window (spec 47c97f48 R-2).
+   */
+  async getWorkerEstimates(workerIds: string[]): Promise<Record<string, number | null>> {
+    if (workerIds.length === 0) return {};
+    const data = await this.fetch(`/api/workers/estimates?ids=${workerIds.map(encodeURIComponent).join(',')}`);
+    const out: Record<string, number | null> = {};
+    const est = data?.estimates && typeof data.estimates === 'object' ? data.estimates as Record<string, unknown> : {};
+    for (const id of workerIds) out[id] = typeof est[id] === 'number' ? est[id] as number : null;
+    return out;
+  }
+
   /** Per team, the order this runner's claims take waiting work (R-26), from GET /api/workers/queue. */
   async listQueue(q: { runner?: string; skills?: string[] }): Promise<RunnerQueueResponse> {
     const p = new URLSearchParams({ executor: process.env.BUILDD_EXECUTOR || 'host' });

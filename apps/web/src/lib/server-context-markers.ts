@@ -37,22 +37,44 @@ export function withoutMissionVerificationMarkers<T>(context: T): T {
   return rest as T;
 }
 
+/** What a spec repair carries: the spec and criterion it repairs, and the verification that filed it. */
+export interface SpecRepairMarker {
+  missionId: string;
+  /** Absent only on repairs filed before it was recorded, or by a verification that predates `finalVerification.specId`. */
+  specId?: string;
+  criterionId: string;
+  filedBy: string;
+}
+
 /**
- * The `specRepair` marker a new task gets, or null. Only when the filer is
- * the final verification task of the same mission the new task is filed in;
- * the criterion id is taken from the request when it names one.
+ * The `specRepair` marker a new task gets. null when the filer is not the
+ * final verification task of the same mission the new task is filed in (the
+ * task is not a repair). A repair names the criterion it repairs
+ * (`context.specRepair.criterionId`) or is refused; the spec is the one the
+ * filing verification checks (its own marker), so a caller cannot point a
+ * repair at another spec. Repairs stamped before either was recorded keep
+ * their marker as written: readers treat both as optional.
  */
 export function specRepairStamp(input: {
   requested: unknown;
   missionId: string | null | undefined;
   filerTaskId: string | null | undefined;
   filerTask: { missionId: string | null; context: unknown } | null | undefined;
-}): { missionId: string; criterionId?: string; filedBy: string } | null {
+}): { ok: true; marker: SpecRepairMarker } | { ok: false; reason: string } | null {
   const { missionId, filerTask, filerTaskId } = input;
   if (!missionId || !filerTask || !filerTaskId || filerTask.missionId !== missionId) return null;
-  const marker = (filerTask.context as Record<string, unknown> | null)?.finalVerification as { missionId?: unknown } | undefined;
-  if (!marker || marker.missionId !== missionId) return null;
+  const fv = (filerTask.context as Record<string, unknown> | null)?.finalVerification as { missionId?: unknown; specId?: unknown } | undefined;
+  if (!fv || fv.missionId !== missionId) return null;
   const req = input.requested && typeof input.requested === 'object' ? (input.requested as Record<string, unknown>) : null;
-  const criterionId = typeof req?.criterionId === 'string' && /^(R|AC)-\d+$/.test(req.criterionId) ? req.criterionId : undefined;
-  return { missionId, ...(criterionId ? { criterionId } : {}), filedBy: filerTaskId };
+  const criterionId = typeof req?.criterionId === 'string' && /^(R|AC)-\d+$/.test(req.criterionId) ? req.criterionId : null;
+  if (!criterionId) {
+    return { ok: false, reason: 'A task filed by the mission\'s final verification is a spec repair: pass context.specRepair: { missionId, specId, criterionId } naming the criterion it repairs (R-n or AC-n)' };
+  }
+  const own = typeof fv.specId === 'string' ? fv.specId : null;
+  const named = typeof req?.specId === 'string' ? req.specId : null;
+  if (own && named && named !== own) {
+    return { ok: false, reason: `context.specRepair.specId must be the spec this verification checks (${own})` };
+  }
+  const specId = own ?? named;
+  return { ok: true, marker: { missionId, ...(specId ? { specId } : {}), criterionId, filedBy: filerTaskId } };
 }

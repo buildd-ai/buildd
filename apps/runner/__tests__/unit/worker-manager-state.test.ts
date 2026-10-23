@@ -1233,6 +1233,130 @@ describe('WorkerManager — state transitions', () => {
       expect(worker.status).toBe('waiting');
     });
 
+    // ── Spec 47c97f48 (r1): an update pauses, applies, continues ──
+
+    test('R-2 / AC-1: an agent paused for an update parks as paused for update, is never failed, and frees its slot', async () => {
+      liveSession('w-upd');
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => manager.getWorker('w-upd')?.sessionId === 'sess-w-upd');
+
+      expect(await manager.pauseForUpdate(['w-upd'])).toEqual({ 'w-upd': 'apply' });
+      await waitFor(() => !manager.hasLiveSession('w-upd') && manager.getWorker('w-upd')?.status === 'waiting');
+
+      const worker = manager.getWorker('w-upd')!;
+      expect(worker.status).toBe('waiting');
+      expect(worker.resumeOnStart).toBe('update');
+      expect(worker.waitingFor?.context).toMatch(/^Paused for update/);
+      expect(worker.sessionId).toBe('sess-w-upd');
+      expect(mockSavedRecords.get('w-upd')).toMatchObject({ status: 'waiting', resumeOnStart: 'update' });
+      expect(mockUpdateWorker.mock.calls.some((c: any[]) => c[0] === 'w-upd' && c[1]?.status === 'failed')).toBe(false);
+      // Reported for the heartbeat (R-5).
+      expect(manager.pausedForUpdate()).toEqual([{ workerId: 'w-upd', taskId: 'task-1', title: 'Test task', since: expect.any(Number) }]);
+    });
+
+    test('R-2: mid-tool, the update pause waits for the tool; a person asking meanwhile makes it theirs', async () => {
+      liveSession('w-upd-tool');
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => manager.getWorker('w-upd-tool')?.sessionId === 'sess-w-upd-tool');
+      const worker = manager.getWorker('w-upd-tool')!;
+      worker.toolInFlight = true;
+
+      expect(await manager.pauseForUpdate(['w-upd-tool'])).toEqual({ 'w-upd-tool': 'defer' });
+      expect(worker.pauseRequestedFor).toBe('update');
+      expect(manager.hasLiveSession('w-upd-tool')).toBe(true);
+      expect(await manager.pauseWorker('w-upd-tool')).toBe('defer');
+      expect(worker.pauseRequestedFor).toBeUndefined();
+
+      worker.toolInFlight = false;
+      await waitFor(() => !manager.hasLiveSession('w-upd-tool') && worker.status === 'waiting');
+      expect(worker.resumeOnStart).toBeUndefined();
+      expect(worker.waitingFor?.context).toMatch(/^You paused this run/);
+    });
+
+    test('R-3 / AC-3: at the window end a still-running agent is paused for the update, never killed, and claims are not shut', async () => {
+      liveSession('w-upd-late');
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => manager.getWorker('w-upd-late')?.sessionId === 'sess-w-upd-late');
+      manager.getWorker('w-upd-late')!.toolInFlight = true; // a hung tool
+
+      const report = await manager.prepareForUpdate({ safePointMs: 300, checkpointMs: 200, pollMs: 25, pushMs: 500 });
+
+      const worker = manager.getWorker('w-upd-late')!;
+      expect(report.paused).toEqual(['w-upd-late']);
+      expect(worker.status).toBe('waiting');
+      expect(worker.resumeOnStart).toBe('update');
+      expect(worker.error).toMatch(/^paused: paused for a runner update/);
+      // Its worktree is not on this (mocked) disk: said, not hidden.
+      expect(report.notPushed['w-upd-late']).toBe('its worktree is gone');
+      const calls = mockUpdateWorker.mock.calls.filter((c: any[]) => c[0] === 'w-upd-late');
+      expect(calls.some((c: any[]) => c[1]?.status === 'failed')).toBe(false);
+      expect(calls.some((c: any[]) => /Process restarted/.test(String(c[1]?.error ?? '')))).toBe(false);
+      // A failed apply continues them here, so the update pause does not stop the manager.
+      expect(manager.isShuttingDown()).toBe(false);
+    });
+
+    test('R-5 / AC-1: after the start, an agent paused for the update continues in its own session with the update message', async () => {
+      const worker = await restoredPaused('w-upd-cont');
+      worker.resumeOnStart = 'update';
+      const before = mockQueryResumes.length;
+      const sends = mockQueryPrompts.length;
+
+      const out = await manager.continueRestoredAgents({ updateProbeMs: 50 });
+
+      expect(out.continued).toEqual(['w-upd-cont']);
+      await waitFor(() => mockQueryResumes.length > before);
+      expect(mockQueryResumes[before]).toBe('sess-w-upd-cont');
+      expect(mockQueryCwds[before]).toBe(worker.worktreePath);
+      await waitFor(() => mockQueryPrompts.slice(sends).some(p => String(p).includes('apply an update')));
+      expect(mockQueryPrompts.slice(sends).some(p => String(p).includes('apply an update'))).toBe(true);
+      expect(manager.pausedForUpdate()).toEqual([]);
+    });
+
+    test('R-8 / AC-6: when no agent paused for the update can continue, they stay paused for it and the canary rolls back', async () => {
+      const { initUpdateCanary, emptyCanaryState } = await import('../../src/update-canary');
+      const canary = initUpdateCanary({ file: '/tmp/buildd-test-canary.json', config: { enabled: true, tripCount: 3, windowMs: 3_600_000 }, initialState: { ...emptyCanaryState(), lastBootCommit: 'a'.repeat(40) } });
+      canary.boot('b'.repeat(40));
+      const trips: any[] = [];
+      canary.setTripHandler((t) => trips.push(t));
+      try {
+        const worker = await restoredPaused('w-upd-fail');
+        worker.resumeOnStart = 'update';
+        // The new version cannot resume it.
+        (manager as any).sendMessage = async () => false;
+
+        await manager.continueRestoredAgents({ updateProbeMs: 50 });
+        await waitFor(() => trips.length > 0);
+
+        expect(trips).toHaveLength(1);
+        expect(trips[0]).toMatchObject({ rollbackTo: 'a'.repeat(40), badCommit: 'b'.repeat(40), rollback: true, failures: 1 });
+        expect(worker.status).toBe('waiting');
+        expect(worker.resumeOnStart).toBe('update');
+        expect(mockSavedRecords.get('w-upd-fail')).toMatchObject({ status: 'waiting', resumeOnStart: 'update' });
+      } finally {
+        initUpdateCanary({ file: '/tmp/buildd-test-canary-off.json', config: { enabled: false, tripCount: 3, windowMs: 1 } });
+      }
+    });
+
+    test('R-8: one agent that continues means the new version runs them: no rollback', async () => {
+      const { initUpdateCanary, emptyCanaryState } = await import('../../src/update-canary');
+      const canary = initUpdateCanary({ file: '/tmp/buildd-test-canary.json', config: { enabled: true, tripCount: 3, windowMs: 3_600_000 }, initialState: { ...emptyCanaryState(), lastBootCommit: 'a'.repeat(40) } });
+      canary.boot('b'.repeat(40));
+      const trips: any[] = [];
+      canary.setTripHandler((t) => trips.push(t));
+      try {
+        const worker = await restoredPaused('w-upd-ok');
+        worker.resumeOnStart = 'update';
+        await manager.continueRestoredAgents({ updateProbeMs: 50 });
+        await new Promise(r => setTimeout(r, 300));
+        expect(trips).toEqual([]);
+      } finally {
+        initUpdateCanary({ file: '/tmp/buildd-test-canary-off.json', config: { enabled: false, tripCount: 3, windowMs: 1 } });
+      }
+    });
+
     test('a --once run without resumable runs refuses and keeps running', async () => {
       liveSession('w-pause-none');
       manager = new WorkerManager(makeConfig({ pauseMode: 'none' }));

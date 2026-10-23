@@ -733,3 +733,39 @@ describe('fleetSlotCounts', () => {
     expect(s.capacity).toBe(5);
   });
 });
+
+// Spec 47c97f48 (r1) R-5..R-7, AC-4, AC-7: an updating runner reads as
+// updating on Health and Home, never as free slots, and a quiet one as stuck.
+describe('a runner applying an update', () => {
+  const drain = (over: Record<string, unknown> = {}) => ({
+    since: new Date(NOW - 3 * 60_000).toISOString(),
+    endsAt: new Date(NOW - 2 * 60_000).toISOString(),
+    busy: 0,
+    phase: 'updating',
+    targetVersion: 'v0.377.0',
+    paused: [{ workerId: 'w-1', taskId: 't-1', title: 'Long task', since: new Date(NOW - 3 * 60_000).toISOString() }],
+    ...over,
+  });
+  const hb = (lastBeatAgoMs: number, updateDrain: unknown): FleetHeartbeatRow => ({
+    id: 'hb-desk', accountId: 'acct', localUiUrl: 'http://desktop:1', maxConcurrentWorkers: 12,
+    environment: { labels: { hostname: 'DESKTOP-1' } }, lastHeartbeatAt: new Date(NOW - lastBeatAgoMs), updateDrain,
+  });
+
+  it('AC-7: no free slots, and the line names the version and the paused agents', () => {
+    expect(fleetSlotCounts([hb(10_000, drain())], { now: NOW, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS })).toMatchObject({ online: 12, schedulable: 0 });
+    const runner = buildFleetSnapshot([hb(10_000, drain())], [], { now: NOW }).runners[0];
+    expect(runner.update?.phase).toBe('updating');
+    expect(runnerBusyLine(runner)).toBe('Updating to v0.377.0 · Paused for update: "Long task"');
+  });
+
+  it('AC-4: silent 15 minutes past the window reads "Update stuck on <runner> since <time>", not "Offline"', () => {
+    const lastBeat = 20 * 60_000;
+    const runner = buildFleetSnapshot([hb(lastBeat, drain({ endsAt: new Date(NOW - lastBeat).toISOString() }))], [], { now: NOW }).runners[0];
+    expect(runner.online).toBe(false);
+    expect(runnerBusyLine(runner)).toBe(`Update stuck on DESKTOP-1 since ${new Date(NOW - lastBeat).toISOString().slice(11, 16)} UTC (1 paused agent waiting)`);
+  });
+
+  it('no update: the count as before', () => {
+    expect(runnerBusyLine(buildFleetSnapshot([hb(10_000, null)], [], { now: NOW }).runners[0])).toBe('0 of 12 busy');
+  });
+});
