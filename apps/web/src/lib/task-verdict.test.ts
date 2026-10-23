@@ -317,4 +317,18 @@ describe('completed task with an open PR: who is the next actor', () => {
     const person = deriveTaskVerdict({ ...base, deliveryOwner: 'human' })!;
     expect(person.headline).toBe('PR #9 open · no checks reported yet');
   });
+
+  it('green with the reviewer as owner waits for review and never claims a merge', () => {
+    const v = deriveTaskVerdict({ ...base, pr: { ...pr, lifecycle: 'ci_green' }, deliveryOwner: 'reviewer' })!;
+    expect(v.state).toBe('in_progress');
+    expect(v.headline).toBe('Waiting for review · PR #9');
+    expect(`${v.headline} ${v.cause}`).not.toMatch(/merg/i);
+  });
+
+  it.each(['trunk', 'worker', 'none', null])('green with owner %s is not claimed as merging', (owner) => {
+    const v = deriveTaskVerdict({ ...base, pr: { ...pr, lifecycle: 'ci_green' }, deliveryOwner: owner })!;
+    expect(v.headline).not.toMatch(/^Merging/);
+    expect(v.cause ?? '').not.toContain('without you');
+    expect(v.state).toBe('needs_you');
+  });
 });

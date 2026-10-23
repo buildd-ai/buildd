@@ -382,8 +382,18 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
       };
     }
     const green = pr.lifecycle === 'ci_green' || (checks.length > 0 && checks.every(c => c.state === 'passed'));
-    // The merge policy merges on its own: nothing waits on a person, an unmerged PR is still not done.
-    if (input.deliveryOwner && input.deliveryOwner !== 'human') {
+    // Only the landing owner is the merge policy merging on its own; an unmerged PR is still not done.
+    if (input.deliveryOwner === 'reviewer') {
+      return {
+        ...base,
+        state: 'in_progress',
+        headline: `Waiting for review · PR #${pr.number}`,
+        cause: 'A reviewer has the PR; nothing is waiting on you.',
+        actions: [link(`View PR #${pr.number}`, pr.url)],
+        causeKey: 'in_progress:review',
+      };
+    }
+    if (input.deliveryOwner === 'landing') {
       return {
         ...base,
         state: 'in_progress',
