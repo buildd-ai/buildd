@@ -80,16 +80,31 @@ function apiError(err: unknown): { status: number; body: Record<string, unknown>
   }
 }
 
+type DuplicateWarning = { specId: string; title: string; relation: string; p: number; pairs?: Array<{ here: string; there: string }>; draft?: boolean };
 type DuplicateCheckView =
-  | { ran: true; warnings: Array<{ specId: string; title: string; relation: string; p: number }> }
+  | { ran: true; warnings: DuplicateWarning[] }
   | { ran: false; reason: string };
+
+/** One overlapping spec, with the criteria matched side by side (R-104). */
+const warningLine = (w: DuplicateWarning): string => {
+  const pairs = (w.pairs ?? []).slice(0, 3).map((x) => `${x.here} here matches ${x.there} there`);
+  return `  ${w.title} (${w.specId})${w.draft ? ', a draft' : ''}: ${w.relation}, p ${w.p.toFixed(2)}${pairs.length ? `; ${pairs.join(', ')}` : ''}`;
+};
 
 /** What the duplicate check found, for the create reply. Empty when it found nothing. */
 const duplicateText = (d: DuplicateCheckView | null): string => {
   if (!d) return '';
   if (!d.ran) return `\nDuplicate check did not run: ${d.reason}.`;
   if (!d.warnings.length) return '';
-  return `\nOverlaps with approved specs (check the shared criteria; consider a common parent):\n${d.warnings.map((w) => `  ${w.title} (${w.specId}): ${w.relation}, p ${w.p.toFixed(2)}`).join('\n')}`;
+  return `\nOverlaps with other specs (check the shared criteria; consider a common parent):\n${d.warnings.map(warningLine).join('\n')}`;
+};
+
+/** R-105: what the check found in the criteria a revise added or changed. Warnings only: the revision is written. */
+const reviseDuplicateText = (d: DuplicateCheckView | null | undefined): string => {
+  if (!d) return '';
+  if (!d.ran) return `\nDuplicate check did not run: ${d.reason}.`;
+  if (!d.warnings.length) return '';
+  return `\nThe criteria you added or changed overlap other specs (the revision is written; check the shared criteria):\n${d.warnings.map(warningLine).join('\n')}`;
 };
 
 type AttachmentRow = {
@@ -440,7 +455,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         const r = await api(`/api/specs/${encodeURIComponent(specId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
         if (r.unchanged) return text(`Unchanged: the body and repo references match revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);
         const what = patch ? ' (find/replace applied, the rest kept)' : target ? ` (${'section' in target ? `section ${String(target.section)}` : `section "${String(target.heading)}"`} replaced, the rest kept)` : '';
-        return text(`Revised${what}: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).\nSpec URL: ${specUrl(specId)}${tipText(r.formatHints)}`);
+        return text(`Revised${what}: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).\nSpec URL: ${specUrl(specId)}${reviseDuplicateText(r.duplicateCheck)}${tipText(r.formatHints)}`);
       } catch (err) {
         const e = apiError(err);
         if (e?.status === 400 || e?.status === 502) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
