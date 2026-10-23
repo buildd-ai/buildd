@@ -33,7 +33,7 @@ supersedes: []                         # slugs this spec replaces
 | Field | Required | Rules |
 |---|---|---|
 | `title` | yes | Unique across active specs (duplicate = error). |
-| `status` | yes | `active` \| `draft` \| `superseded`. `superseded` requires `superseded_by`. |
+| `status` | yes | `active` \| `draft` \| `superseded`. `superseded` requires `superseded_by`: a repo spec slug (existence-checked), or `living-spec:<id or title>` when an approved native Living Spec replaced it (shape-checked only, non-empty; the native spec is not looked up, so do not copy its contract into a repo successor). |
 | `owner` | yes | GitHub handle, no `@`. |
 | `last_verified` | warn | ISO date. Missing or >90d old warns; an unparseable date is an error. Bump it in the same PR that changes behaviour. |
 | `summary` | **yes** | ONE sentence, present tense, states what MUST hold. This is what a reader sees in the index and what a retrieval agent matches on — write the capability, not the topic. Missing is an error; over 220 chars warns. Must not begin with `[` — that parses as a list and is rejected. |
