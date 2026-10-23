@@ -14,8 +14,8 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { HEALTH_NAV } from './nav-config';
-import { buildQueueView, loadQueue, queueReason, type QueueInput } from './health-queue';
+import { HEALTH_NAV } from '../../src/lib/nav-config';
+import { buildQueueView, loadQueue, queueReason, type QueueInput } from '../../src/lib/health-queue';
 
 const NOW = new Date('2026-10-22T12:00:00Z');
 const HOUR = 3_600_000;
@@ -184,7 +184,7 @@ describe('R-11: Declared row sheet', () => {
 
 describe('R-12: every action also exists on the task page', () => {
   it('the task page offers the same actions through the shared module', () => {
-    const src = readFileSync(join(__dirname, '../app/app/(protected)/tasks/[id]/page.tsx'), 'utf8');
+    const src = readFileSync(join(__dirname, '../../src/app/app/(protected)/tasks/[id]/page.tsx'), 'utf8');
     expect(src).toContain('health-queue');
   });
 });
@@ -211,7 +211,7 @@ describe('R-14: one bounded read, 50 rows a page', () => {
 
 describe('R-15: ships after Overlap scheduling lane order and claim-order presentation', () => {
   it('lane order is read from the stored lane order the overlap spec introduces', () => {
-    const src = readFileSync(join(__dirname, 'health-queue.ts'), 'utf8');
+    const src = readFileSync(join(__dirname, '../../src/lib/health-queue.ts'), 'utf8');
     expect(src).toMatch(/claim-order|laneOrder|lane-order/);
   });
 });
@@ -302,7 +302,7 @@ describe('AC-9: one pending task gives one reason everywhere', () => {
   it('Queue row, task page, explain and the terminal Queue all read queueReason', () => {
     const t = task('x', 'waiting', { wait: { kind: 'lane', lane: 'schema', position: 2 } });
     expect(view({ tasks: [t] }).waitingTable.rows[0].blockedBy).toBe(queueReason(t).blockedBy);
-    const base = join(__dirname, '..');
+    const base = join(__dirname, '../../src');
     for (const f of ['app/api/explain/route.ts', 'lib/claim-order-queue.ts', 'app/app/(protected)/tasks/[id]/page.tsx']) {
       expect(readFileSync(join(base, f), 'utf8')).toContain('health-queue');
     }
