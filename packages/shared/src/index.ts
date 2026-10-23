@@ -12,6 +12,7 @@ export * from './onboarding-interview';
 export * from './runner-fleet';
 export * from './runner-name';
 export * from './runner-hold';
+export * from './runner-desired-slots';
 export * from './runner-isolation';
 export * from './isolation-policy';
 export * from './claude-ai-artifacts';

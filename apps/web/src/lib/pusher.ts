@@ -164,6 +164,8 @@ export const channels = {
   task: (id: string) => `${CHANNEL_PREFIX}task-${id}`,
   worker: (id: string) => `${CHANNEL_PREFIX}worker-${id}`,
   mission: (id: string) => `${CHANNEL_PREFIX}mission-${id}`,
+  // One runner account's runners: a nudge to beat now (slots set on the dashboard). No data rides on it.
+  runner: (accountId: string) => `${CHANNEL_PREFIX}runner-${accountId}`,
   // Agent chat: pings only, never message text (see @buildd/shared chat.ts).
   conversation: (id: string) => `${CHANNEL_PREFIX}${conversationChannelName(id)}`,
 } as const;
@@ -208,4 +210,6 @@ export const events = {
   WORKER_CONNECTOR_PERMISSION_INSUFFICIENT: 'worker:connector-permission-insufficient',
   // Release row state changed (dispatched → deploying → healthy / failed)
   RELEASE_UPDATED: 'release:updated',
+  // A runner's slots were set on the dashboard: heartbeat now to pick the value up.
+  RUNNER_SLOTS: 'runner:slots',
 } as const;
