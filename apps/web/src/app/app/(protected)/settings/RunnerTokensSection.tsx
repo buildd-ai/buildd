@@ -18,6 +18,7 @@ import type { RunnerModelAuthSource, RunnerCodexAuthSource } from '@buildd/share
 import { shortAgo } from '@/lib/mission-list-card';
 import HostRunnerToggle from './HostRunnerToggle';
 import MaxConcurrentWorkersEditor from './MaxConcurrentWorkersEditor';
+import RunnerSlotsControl from '@/components/RunnerSlotsControl';
 
 interface Account {
   id: string;
@@ -46,6 +47,11 @@ interface Account {
   modelAuthSource?: RunnerModelAuthSource | null;
   /** Codex login the same heartbeat reported; null = not reported. */
   codexAuthSource?: RunnerCodexAuthSource | null;
+  /** The token's live runners and their slots, for the per-runner control (spec 34a48877 R-5). */
+  runners?: Array<{
+    id: string; name: string; online: boolean; active: number; reported: number;
+    desired: number | null; origin: 'dashboard' | 'machine' | null; setBy: string | null; setAt: string | null;
+  }>;
   /** Trusted as a long-lived host runner (team credential access). */
   hostRunner?: boolean;
   /**
@@ -262,6 +268,28 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                                     <><span>·</span><span className="text-status-error">Budget exhausted{account.budgetResetsAt && ` · Resets ${new Date(account.budgetResetsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}</span></>
                                   )}
                                 </div>
+
+                                {(account.runners ?? []).length > 0 && (
+                                  <div data-testid="token-runners" className="text-xs space-y-2">
+                                    <p className="section-label">Runners</p>
+                                    <ul className="space-y-3">
+                                      {(account.runners ?? []).map((r) => (
+                                        <li key={r.id} data-testid="token-runner" className="space-y-1">
+                                          <p className="text-sm text-text-primary">{r.name}{!r.online && <span className="ml-2 text-meta text-text-muted">offline</span>}</p>
+                                          <RunnerSlotsControl
+                                            runnerId={r.id}
+                                            active={r.active}
+                                            reported={r.reported}
+                                            online={r.online}
+                                            info={{ desired: r.desired, origin: r.origin, setBy: r.setBy, setAt: r.setAt }}
+                                            canEdit={canAdmin}
+                                          />
+                                        </li>
+                                      ))}
+                                    </ul>
+                                    <p className="text-text-muted">Slots are per runner. The token&apos;s own number below is only the fallback for a runner that reports none.</p>
+                                  </div>
+                                )}
 
                                 <div className="text-xs space-y-2">
                                   <p className="section-label">Capabilities</p>

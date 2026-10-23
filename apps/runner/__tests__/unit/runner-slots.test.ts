@@ -10,11 +10,12 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
-  SlotPauseQueue, applySlots, classifySlotsArgs, slotResumes, parseSlots, pickExtras, readSlotsFromConfig, runSlotsCommand, saveSlotsToConfig,
+  readSlotsMeta, serverSlotsToApply, slotsOriginLine, SlotPauseQueue, applySlots, classifySlotsArgs, slotResumes, parseSlots, pickExtras, readSlotsFromConfig, runSlotsCommand, saveSlotsToConfig,
   slotsChangeLine, slotsSource, slotsStatusLine, type SlotAgent,
 } from '../../src/runner-slots';
 import { classifyCliArgs } from '../../src/cli-args';
 import { BuilddClient } from '../../src/buildd';
+import { WorkerManager } from '../../src/workers';
 import type { LocalUIConfig } from '../../src/types';
 
 const home = () => mkdtempSync(join(tmpdir(), 'buildd-slots-'));
@@ -79,7 +80,8 @@ describe('config.json (R-43, AC-28)', () => {
     const file = join(dir, 'config.json');
     writeFileSync(file, JSON.stringify({ apiKey: 'bld_fake', runnerName: 'atlas' }));
     saveSlotsToConfig(file, 2);
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ apiKey: 'bld_fake', runnerName: 'atlas', maxConcurrent: 2 });
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ apiKey: 'bld_fake', runnerName: 'atlas', maxConcurrent: 2, slotsOrigin: 'machine', slotsSetBy: null });
+    expect(readSlotsMeta(file)).toMatchObject({ origin: 'machine', setBy: null });
     expect(readSlotsFromConfig(file)).toBe(2);
     expectOwnerOnlyPath(file, 0o600);
   });
@@ -258,5 +260,123 @@ describe('/api/slots on the runner (R-44..R-46, AC-28, AC-29)', () => {
     expect(q.list()).toEqual(['w-b', 'w-c']);
     expect(slotResumes(q, id => paused.has(id), 0)).toEqual([]);
     expect(slotResumes(q, id => paused.has(id), 5)).toEqual(['w-b', 'w-c']);
+  });
+});
+
+describe('slots set on buildd.dev (spec 34a48877 R-20..R-22, AC-15, AC-17)', () => {
+  const NOW = new Date(2026, 9, 22, 15, 0).getTime();
+  const at = (h: number, m: number) => new Date(2026, 9, 22, h, m).getTime();
+
+  test('a dashboard value newer than the runner\'s own change is taken; an equal number is not', () => {
+    expect(serverSlotsToApply({ slots: 12, setBy: 'Max', setAt: 2000 }, { slots: 5, changedAt: 1000 })).toEqual({ slots: 12, setBy: 'Max', setAt: 2000 });
+    expect(serverSlotsToApply({ slots: 12, setBy: 'Max', setAt: 2000 }, { slots: 5, changedAt: null })).toMatchObject({ slots: 12 });
+    expect(serverSlotsToApply({ slots: 5, setBy: 'Max', setAt: 2000 }, { slots: 5, changedAt: 1000 })).toBeNull();
+  });
+
+  test('a local change made after the dashboard one wins and is not overwritten', () => {
+    expect(serverSlotsToApply({ slots: 12, setBy: 'Max', setAt: 2000 }, { slots: 6, changedAt: 3000 })).toBeNull();
+  });
+
+  test('junk in the reply is ignored', () => {
+    for (const bad of [null, undefined, {}, { slots: 0, setAt: 1 }, { slots: 51, setAt: 1 }, { slots: 'x', setAt: 1 }, { slots: 8 }, { slots: 8, setAt: 'now' }]) {
+      expect(serverSlotsToApply(bad, { slots: 5, changedAt: 0 })).toBeNull();
+    }
+  });
+
+  test('a dashboard value is saved with who and when, survives a read, and says where it came from', () => {
+    const file = join(home(), 'config.json');
+    writeFileSync(file, JSON.stringify({ apiKey: 'bld_fake' }));
+    saveSlotsToConfig(file, 12, { changedAt: at(14, 2), origin: 'dashboard', setBy: 'Max' });
+    expect(readSlotsFromConfig(file)).toBe(12);
+    const meta = readSlotsMeta(file);
+    expect(meta).toEqual({ changedAt: at(14, 2), origin: 'dashboard', setBy: 'Max' });
+    expect(slotsOriginLine(meta, NOW)).toBe('set on buildd.dev by Max, 14:02');
+    expect(JSON.parse(readFileSync(file, 'utf8')).apiKey).toBe('bld_fake');
+  });
+
+  test('a later local change replaces the dashboard record', () => {
+    const file = join(home(), 'config.json');
+    saveSlotsToConfig(file, 12, { changedAt: at(14, 2), origin: 'dashboard', setBy: 'Max' });
+    saveSlotsToConfig(file, 6);
+    expect(readSlotsFromConfig(file)).toBe(6);
+    expect(readSlotsMeta(file)?.origin).toBe('machine');
+    expect(slotsOriginLine(readSlotsMeta(file), Date.now())).toMatch(/^set on this machine, \d\d:\d\d$/);
+  });
+
+  test('an older day reads as a date, and a number never recorded reads as nothing', () => {
+    expect(slotsOriginLine({ changedAt: new Date(2026, 9, 17, 9, 0).getTime(), origin: 'machine', setBy: null }, NOW)).toBe('set on this machine, Oct 17');
+    expect(slotsOriginLine(null)).toBeNull();
+    const file = join(home(), 'config.json');
+    writeFileSync(file, JSON.stringify({ maxConcurrent: 4 }));
+    expect(readSlotsMeta(file)).toBeNull();
+  });
+
+  test('buildd slots says where N came from', async () => {
+    const dir = home();
+    const shown = await runSlotsCommand({ kind: 'show' }, {
+      configFile: join(dir, 'config.json'), socketPath: join(dir, 's'), probe: live,
+      get: async () => ({ status: 200, body: { slots: 12, running: 3, source: 'config', origin: 'set on buildd.dev by Max, 14:02' } }),
+    });
+    expect(shown.stdout).toBe('12 slots (set on buildd.dev by Max, 14:02): 3 running, 9 free.');
+  });
+
+  test('the heartbeat carries the time of the runner\'s own change', async () => {
+    const client = new BuilddClient({ builddServer: 'http://x', apiKey: 'k' } as LocalUIConfig);
+    const bodies: any[] = [];
+    (client as any).fetch = async (_p: string, init: any) => { bodies.push(JSON.parse(init.body)); return { viewerToken: 't', desiredSlots: { slots: 12, setBy: 'Max', setAt: 2000 } }; };
+    const reply = await client.sendHeartbeat('http://localhost:8766', 1, undefined, undefined, null, null, [], null, null, null, undefined, undefined, 5, 1000);
+    expect(bodies[0]).toMatchObject({ maxConcurrent: 5, slotsChangedAt: 1000 });
+    expect(reply.desiredSlots).toEqual({ slots: 12, setBy: 'Max', setAt: 2000 });
+  });
+});
+
+describe('the runner applies a dashboard value (R-20, R-21, AC-15, AC-17)', () => {
+  const fake = (file: string, slots: number, changedAt?: number) => {
+    const m = Object.create(WorkerManager.prototype) as any;
+    m.config = { maxConcurrent: slots, slotsChangedAt: changedAt, slotsConfigFile: file };
+    m.beats = 0;
+    m.claims = 0;
+    m.emit = () => {};
+    m.sendHeartbeat = async () => { m.beats++; };
+    m.claimPendingTasks = async () => { m.claims++; };
+    m._refusalBackoff = { reset() {} };
+    return m;
+  };
+
+  test('a raise is applied, saved in a temp config, reported, and starts claiming at once', () => {
+    const file = join(home(), 'config.json');
+    writeFileSync(file, JSON.stringify({ apiKey: 'bld_fake', maxConcurrent: 5 }));
+    const m = fake(file, 5, 1000);
+    expect(m.applyServerSlots({ slots: 12, setBy: 'Max', setAt: 2000 })).toBe(true);
+    expect(m.config).toMatchObject({ maxConcurrent: 12, slotsChangedAt: 2000, slotsOrigin: 'dashboard', slotsSetBy: 'Max' });
+    expect(readSlotsFromConfig(file)).toBe(12);
+    expect(readSlotsMeta(file)).toEqual({ changedAt: 2000, origin: 'dashboard', setBy: 'Max' });
+    expect(JSON.parse(readFileSync(file, 'utf8')).apiKey).toBe('bld_fake');
+    expect(m.beats).toBe(1);
+    expect(m.claims).toBe(1);
+  });
+
+  test('a lower is applied and starts no claim, so running agents finish', () => {
+    const m = fake(join(home(), 'config.json'), 12, 1000);
+    expect(m.applyServerSlots({ slots: 6, setBy: 'Max', setAt: 2000 })).toBe(true);
+    expect(m.config.maxConcurrent).toBe(6);
+    expect(m.claims).toBe(0);
+  });
+
+  test('a local change made after the dashboard one is not overwritten', () => {
+    const file = join(home(), 'config.json');
+    const m = fake(file, 6, 3000);
+    expect(m.applyServerSlots({ slots: 12, setBy: 'Max', setAt: 2000 })).toBe(false);
+    expect(m.config.maxConcurrent).toBe(6);
+    expect(readSlotsMeta(file)).toBeNull();
+  });
+
+  test('an unreadable config.json is left alone and the number holds for this run', () => {
+    const file = join(home(), 'config.json');
+    writeFileSync(file, '{not json');
+    const m = fake(file, 5);
+    expect(m.applyServerSlots({ slots: 12, setBy: null, setAt: 2000 })).toBe(true);
+    expect(m.config.maxConcurrent).toBe(12);
+    expect(readFileSync(file, 'utf8')).toBe('{not json');
   });
 });
