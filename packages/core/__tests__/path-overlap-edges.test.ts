@@ -1,6 +1,6 @@
 /**
- * Which manifest overlaps may become a stored (hard) dependsOn edge, and which
- * are only scheduling evidence (soft) for the claim-time HOLD/START decision.
+ * How two declared manifests overlap (migration, same file, prefix). Nothing
+ * is minted from it at creation any more; the claim's lane check reads it.
  *
  * Run: bun run scripts/run-unit-tests.ts packages/core/__tests__/path-overlap-edges.test.ts
  */
@@ -10,7 +10,6 @@ import {
   isFileShapedPath,
   isHardOverlapKind,
   isMigrationPath,
-  partitionOverlapEdges,
   readSoftOverlaps,
 } from '../path-overlap';
 
@@ -77,67 +76,6 @@ describe('isMigrationPath (shared with the claim-hold rails)', () => {
   });
 });
 
-describe('partitionOverlapEdges', () => {
-  const others = [
-    { id: 'dir-owner', pathManifest: ['scripts/'] },
-    { id: 'same-file', pathManifest: ['scripts/run-unit-tests.ts'] },
-    { id: 'migration', pathManifest: ['packages/core/drizzle/'] },
-    { id: 'unrelated', pathManifest: ['docs/x.md'] },
-    { id: 'undeclared', pathManifest: ['**'] },
-    { id: 'none', pathManifest: null },
-  ];
-
-  it('a broad-prefix manifest mints no hard edge: only soft evidence', () => {
-    const r = partitionOverlapEdges(['scripts/'], others.filter(o => o.id !== 'dir-owner'));
-    expect(r.hard).toEqual([]);
-    expect(r.soft).toEqual([{ taskId: 'same-file', paths: ['scripts', 'scripts/run-unit-tests.ts'], kind: 'prefix' }]);
-  });
-
-  it('an exact-file overlap is soft same_file evidence; a migration path stays a hard edge', () => {
-    const r = partitionOverlapEdges(['scripts/run-unit-tests.ts', 'packages/core/drizzle/0400_y.sql'], others);
-    expect(r.hard).toEqual(['migration']);
-    // Same-file evidence is ordered first: it takes the soft budget before prefix pairs.
-    expect(r.soft).toEqual([
-      { taskId: 'same-file', paths: ['scripts/run-unit-tests.ts'], kind: 'same_file' },
-      { taskId: 'dir-owner', paths: ['scripts/run-unit-tests.ts', 'scripts'], kind: 'prefix' },
-    ]);
-  });
-
-  it('a same-file overlap on a hard surface (hotspot, generated, serialized) stays a hard edge', () => {
-    const r = partitionOverlapEdges(['scripts/run-unit-tests.ts'], [{ id: 'same-file', pathManifest: ['scripts/run-unit-tests.ts'] }], {
-      isSerialized: (paths) => paths.includes('scripts/run-unit-tests.ts'),
-    });
-    expect(r.hard).toEqual(['same-file']);
-    expect(r.soft).toEqual([]);
-  });
-
-  it('a workspace-serialized surface is hard even when the overlap is prefix-only', () => {
-    const r = partitionOverlapEdges(['scripts/'], [{ id: 'dir-owner', pathManifest: ['scripts/gen.ts'] }], {
-      isSerialized: (paths) => paths.some(p => p.startsWith('scripts')),
-    });
-    expect(r.hard).toEqual(['dir-owner']);
-    expect(r.soft).toEqual([]);
-  });
-
-  it('skip() excludes candidates (already declared, or a deadlock veto)', () => {
-    const r = partitionOverlapEdges(['scripts/run-unit-tests.ts'], others, { skip: (id) => id === 'same-file' || id === 'migration' });
-    expect(r.hard).toEqual([]);
-    expect(r.soft.map(s => s.taskId)).toEqual(['dir-owner']);
-  });
-
-  it('an advisory or empty manifest produces nothing', () => {
-    expect(partitionOverlapEdges(['**'], others)).toEqual({ hard: [], soft: [] });
-    expect(partitionOverlapEdges([], others)).toEqual({ hard: [], soft: [] });
-  });
-
-  it('soft evidence is bounded; the overflow is hard, not dropped', () => {
-    const many = Array.from({ length: 40 }, (_, i) => ({ id: `t${i}`, pathManifest: [`lib/f${i}.ts`] }));
-    const r = partitionOverlapEdges(['lib/'], many, { maxSoft: 5 });
-    expect(r.soft).toHaveLength(5);
-    expect(r.hard).toHaveLength(35);
-  });
-});
-
 describe('readSoftOverlaps', () => {
   it('keeps the same_file kind; anything unknown reads as prefix', () => {
     const decl = { softOverlaps: [
@@ -149,31 +87,11 @@ describe('readSoftOverlaps', () => {
   });
 });
 
-describe('review findings: the hard/soft split sees the whole overlap', () => {
-  it('a pair sharing a file still sees its prefix overlap: a serialized directory keeps the edge hard', () => {
+describe('review findings: the classification sees the whole overlap', () => {
+  it('a pair sharing a file still reports its prefix overlap, so a serialized directory is seen', () => {
     // A declares `seq-dir/` + `src/a.ts`; B declares `seq-dir/0042.ts` + `src/a.ts`.
     const o = classifyManifestOverlap(['seq-dir/', 'src/a.ts'], ['seq-dir/0042.ts', 'src/a.ts']);
     expect(o.kind).toBe('exact_file');
     expect(o.paths).toEqual(expect.arrayContaining(['src/a.ts', 'seq-dir', 'seq-dir/0042.ts']));
-    const r = partitionOverlapEdges(['seq-dir/', 'src/a.ts'], [{ id: 'b', pathManifest: ['seq-dir/0042.ts', 'src/a.ts'] }], {
-      isSerialized: (paths) => paths.some(p => p === 'seq-dir' || p.startsWith('seq-dir/')),
-    });
-    expect(r.hard).toEqual(['b']);
-    expect(r.soft).toEqual([]);
-  });
-
-  it('same-file pairs take the soft budget before prefix pairs', () => {
-    const prefixOnly = Array.from({ length: 6 }, (_, i) => ({ id: `p${i}`, pathManifest: [`lib/sub${i}/x.ts`] }));
-    const sameFile = { id: 'same', pathManifest: ['lib/shared.ts'] };
-    const r = partitionOverlapEdges(['lib/', 'lib/shared.ts'], [...prefixOnly, sameFile], { maxSoft: 3 });
-    expect(r.soft[0]).toMatchObject({ taskId: 'same', kind: 'same_file' });
-    expect(r.soft).toHaveLength(3);
-  });
-
-  it('an overlap beyond the soft budget is hard (fail closed), never silently dropped', () => {
-    const sameFiles = Array.from({ length: 5 }, (_, i) => ({ id: `s${i}`, pathManifest: ['lib/shared.ts'] }));
-    const r = partitionOverlapEdges(['lib/shared.ts'], sameFiles, { maxSoft: 2 });
-    expect(r.soft.map(s => s.taskId)).toEqual(['s0', 's1']);
-    expect(r.hard).toEqual(['s2', 's3', 's4']);
   });
 });
