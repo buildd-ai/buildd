@@ -524,7 +524,10 @@ function lineFor(d: Delivery, delivery: TaskDelivery, prNumber: number | null, r
     case 'unavailable': return 'The audit could not run. It retries on its own.';
     case 'needs': return d.root.waitingPrompt?.trim() || 'Waiting on a decision.';
     case 'notlanded': return prNumber ? `Finished, but ${pr} closed without merging.` : 'Stopped without a change to merge.';
-    case 'waiting': return delivery.waitingOn === 'dependency' ? 'Starts when the work it depends on finishes.' : 'Next in line for a runner.';
+    case 'waiting':
+      // R-14: the hold the state view read, when the caller had it.
+      if (delivery.holdText) return `${delivery.holdText}.`;
+      return delivery.waitingOn === 'dependency' ? 'Starts when the work it depends on finishes.' : 'Next in line for a runner.';
     default: return DELIVERY_KIND[delivery.kind].label;
   }
 }

@@ -27,6 +27,8 @@ import { loadMissionsReleasedEdges } from './mission-board-waiting';
 import { MISSION_CARD_SCHEDULE_EXTRAS, MISSION_CARD_TASK_EXTRAS } from './mission-card-views';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { summaryReadsVisualReview } from './mission-card-visual-reviews';
+import { loadClaimHolds, type ClaimHoldFacts } from './mission-claim-deferrals';
+import type { HolderSourceRow, PendingHolderFacts } from './mission-task-hold';
 import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import type { MissionSummaryInput } from './mission-summary';
 
@@ -84,7 +86,8 @@ export async function loadMissionSummaryInputs(
   const visualIds = opts.visualReview === false ? [] : missionRows
     .filter(m => summaryReadsVisualReview({ ...m, tasks: taskRows.filter(t => t.missionId === m.id) }))
     .map(m => m.id);
-  const [workerRows, deliveries, deliveryViews, foreignDeps, releasedEdges, liveRows, visualReviews, verdicts] = await Promise.all([
+  const pendingIds = taskRows.filter(t => t.status === 'pending').map(t => t.id);
+  const [workerRows, deliveries, deliveryViews, foreignDeps, releasedEdges, liveRows, visualReviews, verdicts, claimHolds] = await Promise.all([
     taskIds.length > 0
       ? db.select({
           id: workers.id, taskId: workers.taskId, status: workers.status,
@@ -111,7 +114,30 @@ export async function loadMissionSummaryInputs(
       : [],
     loadVisualReviews(visualIds),
     loadVerdicts(missionRows),
+    // Navigation R-14: each pending task's newest claim refusal, with the blocker it named.
+    loadClaimHolds(pendingIds).catch(() => new Map<string, ClaimHoldFacts>()),
   ]);
+
+  // The rows the pending tasks wait behind (an overlap deferral's blocker, a
+  // dependency), named: the loaded rows cost nothing, the rest one read.
+  const holderIds = new Set<string>();
+  for (const t of taskRows) {
+    if (t.status !== 'pending') continue;
+    const d = claimHolds.get(t.id)?.detail;
+    const blocker = [d?.blockingTaskId, d?.holderTaskId].find((v): v is string => typeof v === 'string' && v.length > 0);
+    if (blocker && blocker !== t.id) holderIds.add(blocker);
+    for (const id of Array.isArray(t.dependsOn) ? t.dependsOn : []) holderIds.add(id);
+  }
+  const known = new Map<string, HolderSourceRow>();
+  for (const t of taskRows) {
+    known.set(t.id, { id: t.id, title: t.title, status: t.status, startAt: t.startAt ?? null, workers: (workerRows as Array<{ taskId: string | null; mergedAt?: Date | null }>).filter(w => w.taskId === t.id) });
+  }
+  for (const [id, r] of foreignDeps as ReadonlyMap<string, HolderSourceRow>) if (!known.has(id)) known.set(id, { ...r, id });
+  // Loaded at call time: a static edge into the db-backed holder loader
+  // reshaped the server chunk graph into a Turbopack output-path collision.
+  const holders: Map<string, PendingHolderFacts> = holderIds.size > 0
+    ? await import('./mission-task-hold-load').then(m => m.loadPendingHolderFacts([...holderIds], known)).catch(() => new Map<string, PendingHolderFacts>())
+    : new Map<string, PendingHolderFacts>();
 
   const live = new Map<string, number>();
   for (const r of liveRows as Array<{ missionId: string | null; n: number }>) if (r.missionId) live.set(r.missionId, Number(r.n) || 0);
@@ -130,6 +156,8 @@ export async function loadMissionSummaryInputs(
       foreignDeps: foreignDeps as ReadonlyMap<string, unknown>,
       releasedEdges: new Map((releasedEdges as ReadonlyMap<string, unknown[]>).has(m.id) ? [[m.id, (releasedEdges as ReadonlyMap<string, unknown[]>).get(m.id)!]] : []),
       liveWorkers: live.get(m.id) ?? 0,
+      claimHolds: pick(claimHolds),
+      holders,
       ...(visualReviews.has(m.id) ? { visualReview: visualReviews.get(m.id) ?? null } : {}),
       escalationGateVerdict: verdicts.get(m.id) ?? null,
     });
