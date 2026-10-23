@@ -137,7 +137,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Mission Feed](./mission-feed.md) · @builder — verified 2026-10-22
   The mission detail page MUST answer "is this done" before listing tasks, and below md MUST render every deliverable exactly once in one grouped list under a sticky masthead.
 - [Mission Flow Timeline](./mission-flow-timeline.md) · @builder — verified 2026-10-22
-  The mission Flow tab MUST draw one row per task in dependency order on one time axis, every gate as an edge lit by the strip's relation rule, and one sentence naming what sets the finish.
+  Flow, a desktop view from the mission ⋯ menu, MUST draw one named row per task in dependency order on a clock-time axis, declared gates as lit edges, and, given estimates, who sets the finish.
 - [Mission Goal Criteria Display](./mission-goal-criteria-display.md) · @max — verified 2026-10-11
   A goal criterion's glyph and its live value MUST come from one evaluation, and a complete count nothing has evaluated reads "not checked", never unmet.
 - [Mission Legibility](./mission-legibility.md) · @builder — verified 2026-10-22

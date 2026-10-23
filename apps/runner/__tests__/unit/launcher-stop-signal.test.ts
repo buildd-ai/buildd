@@ -92,3 +92,60 @@ describe.skipIf(process.platform === 'win32')('the launcher under a service mana
     expect(await proc.exited).toBe(7);
   }, 20_000);
 });
+
+// Spec 47c97f48 (r1): an update restart (exit 75) relies on the launcher to
+// start the runner again; the launcher tells the runner it is there.
+describe.skipIf(process.platform === 'win32')('the POSIX launcher restarts the runner after an update', () => {
+  test('exit 75 starts it again with BUILDD_LAUNCHER and BUILDD_RESTART=update; any other code ends the loop', async () => {
+    const ENVLOG = join(HOME, 'env.log');
+    nodeFs.rmSync(ENVLOG, { force: true });
+    nodeFs.rmSync(COUNT, { force: true });
+    nodeFs.mkdirSync(join(HOME, '.bun', 'bin'), { recursive: true });
+    nodeFs.mkdirSync(join(HOME, '.buildd', 'scripts'), { recursive: true });
+    nodeFs.writeFileSync(join(HOME, '.bun', 'bin', 'bun'), `#!/bin/bash
+case "$*" in *index.ts*) ;; *) exit 0 ;; esac
+n=$(( $(cat "${COUNT}" 2>/dev/null || echo 0) + 1 )); echo $n > "${COUNT}"
+echo "run $n launcher=$BUILDD_LAUNCHER restart=$BUILDD_RESTART" >> "${ENVLOG}"
+[ $n -eq 1 ] && exit 75
+exit 3
+`, { mode: 0o755 });
+    nodeFs.writeFileSync(join(HOME, 'buildd'), launcher, { mode: 0o755 });
+    const proc = start();
+    const code = await proc.exited;
+    expect(code).toBe(3);
+    expect(nodeFs.readFileSync(ENVLOG, 'utf-8').trim().split('\n')).toEqual([
+      'run 1 launcher=buildd restart=',
+      'run 2 launcher=buildd restart=update',
+    ]);
+  });
+});
+
+describe('the Windows launcher (install.ps1 buildd.cmd)', () => {
+  const ps1 = nodeFs.readFileSync(join(import.meta.dir, '../../install.ps1'), 'utf-8');
+  const cmd = ps1.slice(ps1.indexOf('REM Restart loop'), ps1.indexOf("'@ | Set-Content \"$BinDir\\buildd.cmd\""));
+
+  test('sets BUILDD_LAUNCHER before the loop and loops on 75 with BUILDD_RESTART=update', () => {
+    expect(cmd.indexOf('set "BUILDD_LAUNCHER=buildd.cmd"')).toBeGreaterThan(-1);
+    expect(cmd.indexOf('set "BUILDD_LAUNCHER=buildd.cmd"')).toBeLessThan(cmd.indexOf(':runloop'));
+    expect(cmd).toMatch(/if %ERRORLEVEL% EQU 75 \([\s\S]*set "BUILDD_RESTART=update"[\s\S]*goto runloop/);
+    expect(cmd).toContain('exit /b %ERRORLEVEL%');
+  });
+
+  // The Scheduled Task runs this launcher, so an update restart is restarted on Windows too.
+  test('the service task runs buildd.cmd, not bun directly', async () => {
+    const { generateWindowsTaskXml } = await import('../../src/service');
+    const xml = generateWindowsTaskXml({ builddBin: 'C:\\Users\\u\\.local\\bin\\buildd.cmd', stdoutLog: 'o.log', stderrLog: 'e.log', windowsUser: 'u', home: 'C:\\Users\\u' } as any);
+    expect(xml).toContain('buildd.cmd');
+    expect(xml).not.toMatch(/bun(\.exe)?&quot; run/);
+  });
+});
+
+describe('restartLauncherKnown', () => {
+  test('set by a launcher: known; a bare run: not, with a warning that says what to do', async () => {
+    const { restartLauncherKnown, NO_LAUNCHER_WARNING } = await import('../../src/restart-resume');
+    expect(restartLauncherKnown({ BUILDD_LAUNCHER: 'buildd' })).toBe(true);
+    expect(restartLauncherKnown({})).toBe(false);
+    expect(restartLauncherKnown({ BUILDD_LAUNCHER: ' ' })).toBe(false);
+    expect(NO_LAUNCHER_WARNING).toContain('buildd service install');
+  });
+});

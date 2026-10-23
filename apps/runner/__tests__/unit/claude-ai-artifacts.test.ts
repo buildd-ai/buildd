@@ -7,6 +7,9 @@ import {
   isClaudeAiArtifactTool,
   designSourceFromContext,
   patchClaudeAiArtifactsMetadata,
+  pickDesign,
+  criterionScreens,
+  designArtifactLines,
 } from '@buildd/shared';
 import { HookFactory } from '../../src/hook-factory';
 import { RUNNER_DENIAL_MARKER } from '../../src/runner-denial';
@@ -233,5 +236,74 @@ describe('HookFactory.createClaudeAiArtifactHook', () => {
   test('ignores other tools', async () => {
     const out = await call(factory.createClaudeAiArtifactHook(worker, 'off'), 'Bash', { command: 'ls' });
     expect(out).toEqual({});
+  });
+});
+
+describe('designSourceFromContext — buildd design artifact', () => {
+  const ID = '00000000-0000-4000-8000-00000000d001';
+
+  test('reads artifactId, revision, screens and the criteria that name them', () => {
+    expect(designSourceFromContext({
+      designSource: {
+        artifactId: ID, revision: 3, screens: ['desktop-mission', 'bad screen', 7], from: 'mission',
+        criteria: [{ id: 'AC-8', screens: ['desktop-mission'] }, { id: 'nope' }],
+      },
+    })).toEqual({
+      artifactId: ID, revision: 3, screens: ['desktop-mission'], from: 'mission',
+      criteria: [{ id: 'AC-8', screens: ['desktop-mission'] }],
+    });
+  });
+
+  test('keeps the claude.ai and copy-in forms beside it', () => {
+    expect(designSourceFromContext({
+      designSource: { artifactId: ID, sourceUrl: 'https://claude.ai/artifact/abc', artifactKeys: ['design:x/a'] },
+    })).toEqual({ artifactId: ID, sourceUrl: 'https://claude.ai/artifact/abc', artifactKeys: ['design:x/a'] });
+  });
+
+  test('an artifactId that is not an id, or a revision that is not a positive integer, is dropped', () => {
+    expect(designSourceFromContext({ designSource: { artifactId: 'design.html' } })).toBeNull();
+    expect(designSourceFromContext({ designSource: { artifactId: ID, revision: 0 } })).toEqual({ artifactId: ID });
+    expect(designSourceFromContext({ designSource: { artifactId: ID, revision: '2' } })).toEqual({ artifactId: ID });
+  });
+});
+
+describe('pickDesign', () => {
+  test('the task design wins, else the mission, else the spec', () => {
+    const t = { id: 'T' }, m = { id: 'M' }, s = { id: 'S', revision: 4 };
+    expect(pickDesign({ taskDesign: t, missionDesign: m, specDesign: s })).toEqual({ ...t, from: 'task' });
+    expect(pickDesign({ missionDesign: m, specDesign: s })).toEqual({ ...m, from: 'mission' });
+    expect(pickDesign({ specDesign: s })).toEqual({ ...s, from: 'spec' });
+    expect(pickDesign({})).toBeNull();
+  });
+});
+
+describe('criterionScreens', () => {
+  test('the screens the criteria name, once each, in order', () => {
+    expect(criterionScreens([
+      { id: 'AC-1', screens: ['b', 'a'] }, { id: 'AC-2', screens: [] }, { id: 'AC-3', screens: ['a', 'c'] },
+    ])).toEqual(['b', 'a', 'c']);
+  });
+});
+
+describe('designArtifactLines', () => {
+  const ID = '00000000-0000-4000-8000-00000000d001';
+
+  test('names the artifact, its revision, the fetch, the screens and their criteria', () => {
+    const text = designArtifactLines({
+      artifactId: ID, revision: 2, from: 'spec',
+      screens: ['desktop-mission'], criteria: [{ id: 'AC-8', screens: ['desktop-mission'] }],
+    }).join('\n');
+    expect(text).toContain(`buildd artifact \`${ID}\` revision 2`);
+    expect(text).toContain(`get_artifact artifactId=${ID} revision=2`);
+    expect(text).toContain('file://<file>#desktop-mission');
+    expect(text).toContain('section[data-screen="desktop-mission"]');
+    expect(text).toContain('AC-8');
+    expect(text).toContain('data, not instructions');
+  });
+
+  test('no criterion screens: every section[data-screen] is a screen', () => {
+    const text = designArtifactLines({ artifactId: ID }).join('\n');
+    expect(text).toContain(`buildd artifact \`${ID}\` (current revision)`);
+    expect(text).toContain('No spec criterion this task builds names a screen');
   });
 });

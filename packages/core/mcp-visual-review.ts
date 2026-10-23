@@ -9,7 +9,7 @@
  */
 import type { ApiFn, ToolResult } from './mcp-tools';
 import { formatVisualReview, missionArtifacts } from './visual-review-text';
-import { activeRunnerHold, executorDisplayName, fleetGroupKey, runnerFleetIdentity, type RunnerFleetIdentity, type VisualReviewModel, type ActiveRunnerWorkspaces } from '@buildd/shared';
+import { activeRunnerHold, executorDisplayName, fleetGroupKey, runnerFleetIdentity, runnerUpdateLine, runnerUpdateState, type RunnerFleetIdentity, type VisualReviewModel, type ActiveRunnerWorkspaces } from '@buildd/shared';
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
 const errorResult = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }], isError: true });
@@ -230,7 +230,14 @@ export async function runListRunners(
   });
 
   const lines = hosts.map((r) => {
-    const header = `${r.accountName ?? 'Unknown'} — ${r.localUiUrl} — ${r.activeWorkers ?? '?'} busy of ${r.maxConcurrent ?? '?'} slots — browser: ${browserWord(r, windowMs, wsName)} — branch ${r.trackedBranch ?? 'unknown'}`;
+    // An update in progress (spec 47c97f48 R-5..R-7), judged from the stored
+    // drain and the last heartbeat by the same rule the server uses.
+    const updateView = runnerUpdateState({ updateDrain: r.updateDrain, lastHeartbeatAt: String(r.lastUpdated ?? '') });
+    const newShape = !!(r.updateDrain && typeof r.updateDrain === 'object' && 'phase' in r.updateDrain);
+    const slots = updateView && (newShape || updateView.stuck)
+      ? `${r.activeWorkers ?? '?'} busy, no free slots (updating)`
+      : `${r.activeWorkers ?? '?'} busy of ${r.maxConcurrent ?? '?'} slots`;
+    const header = `${r.accountName ?? 'Unknown'} — ${r.localUiUrl} — ${slots} — browser: ${browserWord(r, windowMs, wsName)} — branch ${r.trackedBranch ?? 'unknown'}`;
     const update = [
       `currentCommit=${r.currentCommit ?? 'null'}`,
       `diskCommit=${r.diskCommit ?? 'null'}`,
@@ -241,9 +248,14 @@ export async function runListRunners(
     if (r.updateAvailable) update.push(`updateAvailableSince=${r.updateAvailableSince ?? 'unknown'}`);
     if (r.trackedBranch === 'main') update.push(`upToDateWithDeployed=${r.upToDateWithDeployed ?? 'null'}`);
     const drain = r.updateDrain;
-    const drainLine = drain && typeof drain === 'object' && 'since' in drain
-      ? `\n  claims halted: draining for update since ${String(drain.since)}, applies by ${String((drain as { endsAt?: unknown }).endsAt)} or when ${String((drain as { busy?: unknown }).busy)} busy worker(s) finish — free slots are expected, not a claim-gate bug`
-      : '';
+    const labels = (r.environment as { labels?: unknown } | null)?.labels;
+    const hostname = labels && typeof labels === 'object' ? (labels as { hostname?: unknown }).hostname : undefined;
+    const runnerName = typeof hostname === 'string' && hostname ? hostname : String(r.localUiUrl ?? 'runner');
+    const drainLine = updateView && (newShape || updateView.stuck)
+      ? `\n  ${runnerUpdateLine(updateView, runnerName)}`
+      : drain && typeof drain === 'object' && 'since' in drain
+        ? `\n  claims halted: draining for update since ${String(drain.since)}, applies by ${String((drain as { endsAt?: unknown }).endsAt)} or when ${String((drain as { busy?: unknown }).busy)} busy worker(s) finish — free slots are expected, not a claim-gate bug`
+        : '';
     // A person's hold (`buildd hold`, spec c7410e76 R-35), from the heartbeat environment.
     const hold = activeRunnerHold(r.environment);
     const holdLine = hold

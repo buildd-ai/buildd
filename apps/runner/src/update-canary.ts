@@ -224,6 +224,9 @@ export function classifyWorkerOutcome(w: { status: string; error?: string | null
   return { kind: 'failure', signature: error ? errorSignature(error) : '<no error text>', excerpt };
 }
 
+/** The "role" a trip names when agents paused for an update could not continue (R-8). */
+export const UPDATE_CONTINUE_ROLE = '(continue after update)';
+
 /** Role key a task is tallied under. Tasks with no role share one bucket. */
 export function canaryRoleOf(roleSlug: string | null | undefined): string {
   return roleSlug && roleSlug.trim() ? roleSlug.trim() : '(no-role)';
@@ -435,6 +438,49 @@ export class UpdateCanary {
       }
     }
     return r;
+  }
+
+  /**
+   * The new version could not continue a single agent paused for the update
+   * (spec 47c97f48, R-8). On probation that trips at once, with the rollback,
+   * so the agents continue on the old version; the role tallies are not
+   * waited for. Not on probation (no update just applied, or the canary is
+   * off), or already tripped: nothing. One rollback per SHA, as for any trip.
+   */
+  tripOnUpdateContinueFailure(f: { agents: number; excerpt: string; workspaceId: string | null }): CanaryTrip | null {
+    const p = this.state.probation;
+    if (!this.config.enabled || !p || p.tripped) return null;
+    const alreadyRolledBack = this.state.lastTrip?.badCommit === p.toCommit
+      && ['started', 'succeeded', 'not_attempted'].includes(this.state.lastTrip.rollbackStatus);
+    const trip: CanaryTrip = {
+      badCommit: p.toCommit,
+      rollbackTo: p.fromCommit,
+      role: UPDATE_CONTINUE_ROLE,
+      signature: 'update-continue-failed',
+      excerpt: f.excerpt,
+      failures: f.agents,
+      workspaceId: f.workspaceId,
+      rollback: !alreadyRolledBack,
+    };
+    this.state = {
+      ...this.state,
+      probation: { ...p, tripped: true },
+      lastTrip: {
+        at: this.now(), badCommit: trip.badCommit, rollbackTo: trip.rollbackTo, role: trip.role, signature: trip.signature,
+        excerpt: trip.excerpt, failures: trip.failures, workspaceId: trip.workspaceId,
+        rollbackStatus: trip.rollback ? 'pending' : 'not_attempted',
+      },
+    };
+    this.save();
+    this.halted = true;
+    console.error(
+      `[update-canary] TRIPPED: none of the ${f.agents} agent(s) paused for the update could continue on ${p.toCommit.slice(0, 7)} — "${f.excerpt}". ` +
+      (trip.rollback ? `Rolling back to ${p.fromCommit.slice(0, 7)} so they continue there.` : 'Already rolled back once: claims halted.'),
+    );
+    try { this.tripHandler?.(trip); } catch (err) {
+      console.error('[update-canary] trip handler threw:', err);
+    }
+    return trip;
   }
 
   /** Persist the skip latch BEFORE the reset, so a crash mid-rollback cannot re-apply the bad SHA. */

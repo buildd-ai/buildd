@@ -1460,8 +1460,21 @@ export interface RunnerUpdateSnapshot {
   commitDrift: boolean;
   updating: boolean;
   updateAvailable: boolean;
-  /** Set while claims are halted to drain busy workers before a self-update (epoch ms); null otherwise. */
-  updateDrain?: { since: number; endsAt: number; busy: number } | null;
+  /**
+   * Set while a self-update is in progress (epoch ms); null otherwise. `phase`
+   * `draining`: claims halted, agents finishing or being paused; `updating`:
+   * the update applied (`endsAt` = when), or the new version has not yet
+   * continued the agents paused for it (spec 47c97f48, R-5). Older runners
+   * send only since/endsAt/busy.
+   */
+  updateDrain?: {
+    since: number;
+    endsAt: number;
+    busy: number;
+    phase?: 'draining' | 'updating';
+    targetVersion?: string | null;
+    paused?: Array<{ workerId: string; taskId: string | null; title: string | null; since: number | null }>;
+  } | null;
   /** The branch this install tracks (its `BUILDD_BRANCH`). */
   trackedBranch: string;
 }
@@ -4401,6 +4414,8 @@ export interface FleetRunner {
   name: string;
   /** Set while a person holds this runner (`buildd hold`): it starts nothing new. */
   hold?: RunnerHold | null;
+  /** Set while it applies a self-update (spec 47c97f48): updating, with the agents paused for it, or stuck. No free slots. */
+  update?: import('./runner-update').RunnerUpdateView | null;
   /** Readable machine description ("Mac Studio", "macOS · arm64"), or null. */
   machine: string | null;
   maxSlots: number;
