@@ -680,7 +680,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('autoSurfaceAudit', bool, [{ text: 'Automatic visual audit when UI files change (default true)', actions: MISSION_WRITES }]),
     param('autoVerify', bool, [{ text: 'Auto-evaluate completion criteria (default true)', actions: MISSION_WRITES }]),
     param('startMode', { type: 'string', enum: ['armed', 'held'] }, [{ text: 'held: no task is claimed until armed', actions: MISSION_WRITES }]),
-    param('outcomeSpec', { type: 'object' }, [{ text: 'update: {specId, criteria?}, the spec it delivers; goalCriteria retired', actions: MISSION_WRITES }]),
+    param('outcomeSpec', { type: 'object' }, [{ text: 'create/update: {specId, criteria?}, the spec it delivers', actions: MISSION_WRITES }]),
     param('awaitingOnly', bool, [{ text: 'get_visual_review: only screens awaiting you', actions: ['get_visual_review'] }]),
     param('feature', str, [{ text: 'Feature or term to check', actions: ['spec_compare'] }]),
     param('discrepancyId', str, [{ text: 'Discrepancy UUID', actions: ['get_discrepancy', 'adjudicate_discrepancy', 'promote_discrepancy'] }]),
