@@ -749,7 +749,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('html', str, [{ text: 'HTML', actions: ['store_design'] }]),
     // Nearly every manage_specs call names a spec, and every write carries the version read.
     param('specId', str, [{ text: 'Spec UUID', actions: ['manage_specs'], forMore: true }]),
-    param('expectedVersion', num, [{ text: 'Writes: the version you read', actions: ['manage_specs'], forMore: true }]),
+    param('expectedVersion', num, [{ text: 'Writes: version read', actions: ['manage_specs'], forMore: true }]),
   ],
   schedules: [
     param('scheduleId', str, [{ text: 'Schedule UUID', actions: ['update_schedule', 'delete_schedule'] }]),
