@@ -155,3 +155,75 @@ describe('a request is for exactly what was asked', () => {
     expect(r.ok && !('pending' in r) && r.spec.approvedRevision).toBe(1);
   });
 });
+
+describe('the quality gate and how an approval is recorded', () => {
+  async function approval(specId: string, revision: number) {
+    const [row] = await q<{ approval: { via: string; gate: { passed: boolean; warnings: Array<{ code: string }> } | null; overrideReason?: string } | null }>(sql`
+      SELECT approval FROM spec_revisions WHERE spec_id = ${specId}::uuid AND revision = ${revision}`);
+    return row.approval;
+  }
+  async function hashOf(specId: string, revision: number) {
+    const [row] = await q<{ content_hash: string }>(sql`SELECT content_hash FROM spec_revisions WHERE spec_id = ${specId}::uuid AND revision = ${revision}`);
+    return row.content_hash;
+  }
+  const NO_CHECK = BODY + 'AC-1: The cart works well.\n';
+
+  test('a person approving in the dashboard is recorded as dashboard, with no gate result', async () => {
+    const spec = await draft();
+    await approveSpecRevision(user(admin), spec.id, { revision: 1, expectedVersion: 1 });
+    expect(await approval(spec.id, 1)).toEqual({ via: 'dashboard', gate: null });
+  });
+
+  test('a clean request is recorded on confirm as mcp, with the gate that passed', async () => {
+    const spec = await draft();
+    const token = new URL((await requestOverMcp(spec.id)).confirmUrl).searchParams.get('request')!;
+    await confirmSpecApproval(user(admin), spec.id, token);
+    expect(await approval(spec.id, 1)).toMatchObject({ via: 'mcp', gate: { passed: true } });
+  });
+
+  test('a request for an acceptance criterion nobody can judge is refused: no link, nothing written', async () => {
+    const r0 = await createSpecDraft(user(member), { workspaceId: wsA, title: `Cart ${rand()}`, body: NO_CHECK });
+    if (!r0.ok) throw new Error(r0.error);
+    const r = await approveSpecRevision(adminOAuth(), r0.spec.id, { revision: 1, expectedVersion: 1 });
+    expect(r).toMatchObject({ ok: false, status: 409, code: 'gate_refused', gate: { passed: false, refusals: [{ code: 'acceptance_unjudgeable', ids: ['AC-1'] }] } });
+    expect(await state(r0.spec.id)).toMatchObject({ approved_revision: null });
+  });
+
+  test('an id whose words now mean something else is refused on the next revision', async () => {
+    const spec = await draft();
+    expect((await approveSpecRevision(user(admin), spec.id, { revision: 1, expectedVersion: 1 })).ok).toBe(true);
+    const r2 = await reviseSpecDraft(user(member), spec.id, { expectedVersion: 2, body: '# Navigation\nR-1: The sidebar collapses below tablet width.\n', changeSummary: 'Navigation.' });
+    if (!r2.ok) throw new Error(r2.error);
+    const r = await approveSpecRevision(adminOAuth(), spec.id, { revision: 2, expectedVersion: r2.spec.version });
+    expect(r).toMatchObject({ ok: false, code: 'gate_refused', gate: { refusals: [{ code: 'id_meaning_changed', ids: ['R-1'] }] } });
+  });
+
+  test('a missing change summary warns without refusing', async () => {
+    const spec = await draft();
+    expect((await approveSpecRevision(user(admin), spec.id, { revision: 1, expectedVersion: 1 })).ok).toBe(true);
+    const r2 = await reviseSpecDraft(user(member), spec.id, { expectedVersion: 2, body: BODY + 'R-2: Rates are cached.\n' });
+    if (!r2.ok) throw new Error(r2.error);
+    const r = await approveSpecRevision(adminOAuth(), spec.id, { revision: 2, expectedVersion: r2.spec.version });
+    expect(r).toMatchObject({ ok: true, pending: { gate: { passed: true, warnings: [{ code: 'no_change_summary' }] } } });
+  });
+
+  test('a refusal at confirm stands without a reason, and is overridden with one, recorded on the approval', async () => {
+    const r0 = await createSpecDraft(user(member), { workspaceId: wsA, title: `Cart ${rand()}`, body: NO_CHECK });
+    if (!r0.ok) throw new Error(r0.error);
+    const id = r0.spec.id;
+    const token = signSpecApprovalRequest({ specId: id, workspaceId: wsA, revision: 1, expectedVersion: 1, contentHash: await hashOf(id, 1), requestedBy: admin, via: 'chat' })!;
+    expect(await confirmSpecApproval(user(admin), id, token)).toMatchObject({ ok: false, status: 409, code: 'gate_refused' });
+    expect(await confirmSpecApproval(user(admin), id, token, { overrideReason: 'too short' })).toMatchObject({ ok: false, code: 'gate_refused' });
+    expect(await state(id)).toMatchObject({ approved_revision: null });
+    const done = await confirmSpecApproval(user(admin), id, token, { overrideReason: 'Checked by hand with the product owner.' });
+    expect(done).toMatchObject({ ok: true, already: false });
+    expect(await approval(id, 1)).toMatchObject({ via: 'chat', gate: { passed: false }, overrideReason: 'Checked by hand with the product owner.' });
+  });
+
+  test('a bearer session still cannot approve, with or without a reason', async () => {
+    const spec = await draft();
+    const token = new URL((await requestOverMcp(spec.id)).confirmUrl).searchParams.get('request')!;
+    expect(await confirmSpecApproval(adminOAuth(), spec.id, token, { overrideReason: 'An agent talking itself past the gate.' })).toMatchObject({ ok: false, status: 403 });
+    expect(await state(spec.id)).toMatchObject({ approved_revision: null });
+  });
+});

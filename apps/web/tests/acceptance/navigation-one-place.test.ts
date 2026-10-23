@@ -207,6 +207,109 @@ describe('helper runs are not tasks and not bar cells', () => {
   });
 });
 
+describe('the mission page, r5: the header, the bar, the Build stage, the stages and the decision card', () => {
+  const overview = () => code(read(join(MISSION_DIR, 'MissionOverview.tsx')));
+  const menu = () => code(read(join(MISSION_DIR, 'MissionOverflowMenu.tsx')));
+  const page = () => code(read(join(MISSION_DIR, 'page.tsx')));
+
+  it('R-3: one ⋯ menu with History, Flow, Re-check and Pause; no header Ask link, legend or right rail', () => {
+    const m = menu();
+    for (const id of ['mission-menu-history', 'mission-menu-flow', 'mission-menu-recheck', 'mission-menu-pause']) matches(m, id);
+    expect(page()).not.toMatch(/AskAboutLink/);
+    const o = overview();
+    expect(o).not.toMatch(/overview-rail|overview-counts|<Legend\b/);
+    // One spec line, `Spec <name>`, from the shared line component.
+    matches(o, /<OutcomeSpecLines\b/);
+  });
+
+  it('R-3: the goal is one sentence, with an Owner goal: line read as the goal', async () => {
+    const { missionSummaryLine } = await import('../../src/lib/mission-summary-line');
+    expect(missionSummaryLine('Owner goal: a person deploys the cloud runner with one button. Then more.')).toBe('A person deploys the cloud runner with one button.');
+  });
+
+  it('R-4: the bar names each cell by task and state with no tick numbers, and draws the person and failed looks', async () => {
+    matches(overview(), /ticks=\{false\}/);
+    const { stripLook } = await import('../../src/components/ui/TaskStrip');
+    expect(stripLook('needs_you')).toBe('person');
+    expect(stripLook('failed')).toBe('failed');
+    expect(stripLook('fixing', false)).toBe('waiting');
+    const css = read(join(SRC, 'app/globals.css'));
+    matches(css, /\.state-cell\[data-look="person"\]/);
+    matches(css, /\.state-cell\[data-look="failed"\]/);
+  });
+
+  it('AC-4: the building mission reads 11 of 16 merged with the decision first and no task number', async () => {
+    const { missionDetailCompactFixture } = await import('../../src/app/app/dev/fixtures/mission-detail-compact-fixtures');
+    const { buildStage } = await import('../../src/lib/mission-build-stage');
+    const f = missionDetailCompactFixture('building', null, Date.UTC(2026, 9, 22, 12));
+    const stage = buildStage(f.model, f.model.now, { hrefFor: id => `/app/tasks/${id}` });
+    expect(stage.summary).toBe('11 of 16 merged · 1 running · 1 fixing · 1 your decision · 2 waiting');
+    expect(stage.rows.map(r => r.state)).toEqual(['decision', 'running', 'fixing', 'waiting', 'queued']);
+    for (const r of stage.rows) expect(r.title).not.toMatch(/^\d/);
+    expect(f.decisions).toHaveLength(1);
+    expect(f.decisions[0].task?.title).toBe('Mirror the runner image to Docker Hub');
+    // The page draws these through one component that renders only the current stage.
+    matches(overview(), /data-stage=\{stage\}/);
+    matches(overview(), /<MissionBuildStage\b/);
+  });
+
+  it('AC-8: an open owner decision raises History above the list, named', async () => {
+    const { historyRaised } = await import('../../src/lib/mission-decisions');
+    const { missionDetailCompactFixture } = await import('../../src/app/app/dev/fixtures/mission-detail-compact-fixtures');
+    const f = missionDetailCompactFixture('eleven', null);
+    expect(historyRaised(f.model, [{ type: 'question', status: 'open', title: 'Keep the legacy export?' }])).toEqual({ kind: 'decision', text: 'Decision open: Keep the legacy export?', taskId: null });
+    matches(overview(), /mission-history-raised/);
+  });
+
+  it('AC-9: one build-complete predicate for the Overview, explain and the card; the fold reads N tasks merged; Deliver names the branch it merged into', async () => {
+    const { isBuildComplete } = await import('../../src/lib/mission-checks');
+    const { buildFoldLine } = await import('../../src/lib/mission-build-stage');
+    expect(isBuildComplete({ done: 16, total: 16 })).toBe(true);
+    expect(isBuildComplete({ done: 15, total: 16 })).toBe(false);
+    expect(buildFoldLine(16)).toBe('16 tasks merged ›');
+    for (const rel of ['lib/explain.ts', 'lib/mission-card-view.ts', 'app/app/(protected)/missions/[id]/MissionOverview.tsx']) {
+      matches(code(read(join(SRC, rel))), /\bisBuildComplete\(/);
+    }
+    // The catalog retires "delivered" as a state word (terms.ts BANNED_WORDS), so the line is the catalog's Done plus the branch.
+    matches(overview(), /mission-delivered-line/);
+    matches(overview(), /termWord\('mission\.done'\)/);
+    matches(overview(), /merged into \$\{/);
+    for (const [, text] of sources(SRC)) expect(code(text)).not.toMatch(/progress\s*>=\s*100,?\s*\n?\s*\}\)/);
+  });
+
+  it('AC-10: the mission page and Home render the one decision card, with what waits on it, each option\u2019s effect, Answer differently and Not now', async () => {
+    const shared = /from ['"]@\/components\/DecisionCard['"]/;
+    matches(overview(), shared);
+    matches(code(read(join(SRC, 'app/app/(protected)/home/NeedsYouCards.tsx'))), shared);
+    const card = code(read(join(SRC, 'components/DecisionCard.tsx')));
+    matches(card, 'Answer differently');
+    matches(card, 'Not now');
+    const { decisionFromQuestion } = await import('../../src/lib/needs-you-card');
+    const v = decisionFromQuestion({
+      key: 'k', question: { headline: 'How should Docker Hub credentials be set up?', body: null, noteId: null, options: [{ label: 'Provide a token', description: 'Stored as a team secret', recommended: true }, { label: "I'll set them myself", description: 'Resumes when CI sees them', recommended: false }] },
+      task: { id: 't', title: 'Mirror the runner image', href: '/app/tasks/t' }, askedAt: null, dependents: ['The release publishes an image digest'],
+      answer: { kind: 'worker', workerId: 'w', taskId: 't', noteId: null },
+    });
+    expect(v.summary).toBe('The release publishes an image digest waits on this.');
+    expect(v.options.map(o => o.effect)).toEqual(['Stored as a team secret', 'Resumes when CI sees them']);
+  });
+
+  it('AC-14: a held task reads Queued with its age, never Running or Next in line; a retry waiting on a schedule reads Fixing · resumes', async () => {
+    const { missionDetailCompactFixture } = await import('../../src/app/app/dev/fixtures/mission-detail-compact-fixtures');
+    const { buildStage } = await import('../../src/lib/mission-build-stage');
+    const f = missionDetailCompactFixture('building', null, Date.UTC(2026, 9, 22, 12));
+    const rows = buildStage(f.model, f.model.now, { hrefFor: id => id, clock: ts => new Date(ts).toISOString().slice(11, 16) }).rows;
+    const queued = rows.find(r => r.state === 'queued')!;
+    expect(queued.line).toMatch(/^Queued \d+[mhd]/);
+    expect(queued.line).not.toMatch(/Running|Next in line/);
+    expect(rows.find(r => r.state === 'fixing')!.line).toMatch(/^Fixing · CI failed · resumes \d\d:\d\d$/);
+  });
+
+  it('R-21: the mission column keeps the reading width through the design token', () => {
+    matches(code(read(join(MISSION_DIR, 'MissionLayoutShell.tsx'))), /max-w-\[var\(--content-measure\)\]/);
+  });
+});
+
 describe('Home and the Agents list', () => {
   it('R-13: Home rows open the task page directly (no mission sheet mode)', () => {
     const offenders: string[] = [];

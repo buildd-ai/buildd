@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
-import { buildEstimate, criteriaChecks, missionChecks, missionStandardsLine, outcomeSpecLines, verifiedHold, waiverActorEmails, waiverActorName, missionPrCheck, releaseCheck, visualCheck, type MissionChecksInput } from './mission-checks';
+import { buildEstimate, criteriaChecks, isBuildComplete, missionChecks, missionStandardsLine, outcomeSpecLines, verifiedHold, waiverActorEmails, waiverActorName, missionPrCheck, releaseCheck, visualCheck, type MissionChecksInput } from './mission-checks';
 import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import { planMissions, type PlanTask } from './mission-plan';
 
@@ -39,6 +39,25 @@ function input(over: Partial<MissionChecksInput> = {}): MissionChecksInput {
     ...over,
   };
 }
+
+describe('isBuildComplete: one predicate for every surface (Navigation R-15)', () => {
+  it('is true only when every build task has landed, and never with no tasks', () => {
+    expect(isBuildComplete({ done: 16, total: 16 })).toBe(true);
+    expect(isBuildComplete({ done: 15, total: 16 })).toBe(false);
+    expect(isBuildComplete({ done: 0, total: 0 })).toBe(false);
+  });
+
+  it('a reopened task lowers done, so the Build stage returns (AC-9)', () => {
+    expect(isBuildComplete({ done: 16, total: 16 })).toBe(true);
+    expect(isBuildComplete({ done: 15, total: 16 })).toBe(false);
+    expect(missionChecks(input({ build: { done: 15, total: 16 } })).buildComplete).toBe(false);
+    expect(missionChecks(input({ build: { done: 16, total: 16 } })).buildComplete).toBe(true);
+  });
+
+  it('is what missionChecks and the standards line read', () => {
+    expect(missionChecks(input({ build: { done: 199, total: 200 } })).buildComplete).toBe(false);
+  });
+});
 
 describe('missionChecks: only checks that apply (R-15)', () => {
   it('a mission-branch mission shows visual review, the mission PR and each criterion, and no release row when none is configured', () => {

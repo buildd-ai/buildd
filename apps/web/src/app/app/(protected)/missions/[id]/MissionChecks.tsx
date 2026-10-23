@@ -26,6 +26,7 @@ import Card from '@/components/ui/Card';
 import { SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH } from '@buildd/core/surface-audit';
 import { saveSurfaceAuditWaiver, useSurfaceAuditWaiver } from './MissionSurfaceAuditWaiver';
 import type { CheckRow, CheckStatus, OutcomeSpecLine, RailStep } from '@/lib/mission-checks';
+import { buildFoldLine } from '@/lib/mission-build-stage';
 import type { StandardItemStatus, StandardsLine } from '@/lib/specs/mission-standards-gate';
 
 // The active stage is live work, so it takes the running hue, never ink beside
@@ -40,35 +41,46 @@ const RAIL_BAR: Record<RailStep['state'], string> = {
   todo: 'bg-border-strong',
 };
 
-/** Which checkpoint the mission waits on (R-13). Equal thirds: widths are not time (R-24). */
+/**
+ * The stage line, `Build · 11 of 16 · Verify · Deliver` (Navigation R-3, R-15):
+ * which checkpoint the mission waits on (R-13). A stage that has not started
+ * is one word, never a card; the current and finished stages carry their
+ * text. Equal thirds: widths are not time (R-24).
+ */
 export function CheckRail({ steps }: { steps: readonly RailStep[] }) {
   return (
-    <ol data-testid="mission-check-rail" aria-label="Mission checkpoints" className="grid grid-cols-3 gap-2.5">
+    <ol data-testid="mission-check-rail" aria-label="Build, Verify, Deliver" className="grid grid-cols-3 gap-2.5 border-b border-border-default pb-3">
       {steps.map(s => (
         <li key={s.key} data-step={s.key} data-state={s.state} aria-current={s.state === 'now' || s.state === 'held' ? 'step' : undefined} className="min-w-0">
           <span aria-hidden="true" data-testid="mission-check-rail-bar" className={`mb-2 block rounded-full ${s.state === 'now' || s.state === 'held' ? 'h-[6px]' : 'mt-[3px] h-[3px]'} ${RAIL_BAR[s.state]}`} />
-          <span className={`block text-title font-medium ${s.state === 'todo' ? 'text-text-muted' : 'text-text-primary'}`}>{s.label}</span>
-          <span className="block font-mono text-meta leading-snug text-text-muted [overflow-wrap:anywhere]">{s.text}</span>
+          <span className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+            <span className={`text-title ${s.state === 'todo' ? 'font-medium text-text-muted' : s.state === 'now' || s.state === 'held' ? 'font-semibold text-text-primary' : 'font-medium text-text-primary'}`}>{s.label}</span>
+            {s.state !== 'todo' && <span data-testid="mission-check-rail-text" className="font-mono text-meta leading-snug text-text-muted [overflow-wrap:anywhere]">· {s.text}</span>}
+          </span>
         </li>
       ))}
     </ol>
   );
 }
 
-/** The selected outcome spec, one line under the rail (R-40): title, revision, status, link. */
+/**
+ * The one spec line under the goal (Navigation R-3): `Spec <name>` linking to
+ * the spec, no count; several selected specs read `Specs <a>, <b>`.
+ */
 export function OutcomeSpecLines({ lines }: { lines: readonly OutcomeSpecLine[] }) {
   if (lines.length === 0) return null;
   return (
-    <ul data-testid="mission-outcome-spec" aria-label="Outcome spec" className="flex flex-col gap-1">
-      {lines.map(l => (
-        // One line at every width: the title truncates, the revision and status never wrap.
-        <li key={l.specId} data-testid="mission-outcome-spec-line" className="flex min-w-0 items-baseline gap-x-2 whitespace-nowrap text-body">
-          <span className="shrink-0 text-text-muted">Spec</span>
-          <a href={l.href} title={l.title} className="min-w-0 truncate font-medium text-text-primary underline-offset-4 hover:underline">{l.title}</a>
-          <span className="shrink-0 font-mono text-meta text-text-muted">{l.revision} · {l.status}</span>
-        </li>
-      ))}
-    </ul>
+    <p data-testid="mission-outcome-spec" className="flex min-w-0 items-baseline gap-x-2 text-body">
+      <span className="shrink-0 text-text-muted">{lines.length === 1 ? 'Spec' : 'Specs'}</span>
+      <span className="min-w-0 [overflow-wrap:anywhere]">
+        {lines.map((l, i) => (
+          <span key={l.specId} data-testid="mission-outcome-spec-line">
+            {i > 0 && <span className="text-text-muted">, </span>}
+            <a href={l.href} title={l.title} className="font-medium text-text-primary underline-offset-4 hover:underline">{l.title}</a>
+          </span>
+        ))}
+      </span>
+    </p>
   );
 }
 
@@ -99,22 +111,17 @@ export function StandardsLineView({ line }: { line: StandardsLine }) {
   );
 }
 
-/** The folded strip once every build task is done (R-11). Never says delivered (R-12). */
+/**
+ * The folded Build stage once every build task landed (Navigation R-15):
+ * one line, `16 tasks merged ›`, that opens the bar. Never says delivered (R-12).
+ */
 export function BuildCompleteBar({ done, where, open, onToggle, children }: { done: number; where: string; open: boolean; onToggle: () => void; children?: ReactNode }) {
   return (
     <div className="flex flex-col gap-3">
       <Card data-testid="build-complete-bar" padding="sm" className="flex flex-wrap items-center gap-x-4 gap-y-2 md:px-4">
-        <span aria-hidden="true" className="flex gap-[3px]">
-          {Array.from({ length: Math.min(done, 12) }, (_, i) => (
-            <span key={i} className="state-cell inline-block h-3.5 w-2 rounded-[var(--radius-cell)]" data-tone="ok" data-pattern="solid" />
-          ))}
-        </span>
-        <span className="flex min-w-0 flex-1 flex-col">
-          <span className="text-title font-medium text-text-primary">Build complete</span>
-          <span className="font-mono text-meta text-text-muted [overflow-wrap:anywhere]">{done} of {done} in {where}</span>
-        </span>
-        <button type="button" aria-expanded={open} data-testid="build-complete-toggle" onClick={onToggle} className="min-h-11 font-mono text-meta text-text-secondary underline-offset-4 hover:text-text-primary hover:underline md:min-h-0">
-          {open ? 'Hide tasks' : 'Show tasks'}
+        <span aria-hidden="true" className="state-cell inline-block h-3.5 w-3.5 shrink-0 rounded-[var(--radius-cell)]" data-tone="ok" data-pattern="solid" />
+        <button type="button" aria-expanded={open} data-testid="build-complete-toggle" onClick={onToggle} title={`${done} of ${done} in ${where}`} className="flex min-h-11 min-w-0 flex-1 items-center gap-2 text-left text-title font-medium text-text-primary md:min-h-0">
+          {buildFoldLine(done)}
         </button>
       </Card>
       {open && children}

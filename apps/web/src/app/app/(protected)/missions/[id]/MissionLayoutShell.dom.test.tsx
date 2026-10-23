@@ -1,6 +1,6 @@
 /**
  * MissionLayoutShell, mounted (happy-dom): the server builds only the layout
- * on screen (spec 3ef37387 R-18), so a tab whose layout was never sent asks
+ * on screen (spec 3ef37387 R-18), so a switch to a layout never sent asks
  * the server for it (one `router.refresh`, the URL already names it), and a
  * layout the shell has shown before switches back with no request.
  *
@@ -42,7 +42,14 @@ mock.module('next/navigation', () => ({
 
 const { act, createElement } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { default: MissionLayoutShell, MissionLayoutTabs } = await import('./MissionLayoutShell');
+const { default: MissionLayoutShell, useMissionLayout } = await import('./MissionLayoutShell');
+
+/** What the ⋯ menu's History and Flow rows do: switch the layout through the shell. */
+function Switch() {
+  const ctx = useMissionLayout();
+  if (!ctx) return null;
+  return createElement('div', null, ...(['board', 'flow', 'feed'] as const).map(l => createElement('button', { key: l, type: 'button', 'data-switch': l, onClick: () => ctx.setLayout(l) }, l)));
+}
 
 let host: HTMLDivElement | null = null;
 beforeEach(() => {
@@ -59,11 +66,11 @@ afterEach(() => {
 });
 
 function slot(name: string) {
-  return createElement('div', { 'data-testid': `slot-${name}` }, createElement(MissionLayoutTabs));
+  return createElement('div', { 'data-testid': `slot-${name}` }, createElement(Switch));
 }
 
 function tab(layout: string): HTMLButtonElement {
-  return host!.querySelector(`[role="tab"][data-layout="${layout}"]`) as HTMLButtonElement;
+  return host!.querySelector(`button[data-switch="${layout}"]`) as HTMLButtonElement;
 }
 
 describe('a Flow link below md lands on the mission page (spec d25d923d R-2)', () => {
@@ -94,7 +101,7 @@ describe('a Flow link below md lands on the mission page (spec d25d923d R-2)', (
 });
 
 describe('MissionLayoutShell builds one layout at a time (R-18)', () => {
-  it('a tab the server never built asks for it once; a layout already shown switches back without asking', async () => {
+  it('a layout the server never built asks for it once; a layout already shown switches back without asking', async () => {
     host = document.createElement('div');
     document.body.appendChild(host);
     const root = createRoot(host);

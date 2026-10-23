@@ -46,6 +46,12 @@ const ready = {
     ],
   }],
   omittedLines: 0,
+  gate: { passed: true, refusals: [], warnings: [] } as { passed: boolean; refusals: Array<{ code: string; message: string }>; warnings: Array<{ code: string; message: string }> },
+  changes: {
+    summary: 'Totals now round to cents.',
+    lines: [{ kind: 'changed' as const, id: 'R-1', text: 'Totals round to cents.', oldText: 'Totals are exact.', words: [{ op: '=' as const, text: 'Totals ' }, { op: '-' as const, text: 'are exact' }, { op: '+' as const, text: 'round to cents' }, { op: '=' as const, text: '.' }], section: 'Checkout > Totals' }],
+    otherText: [], mismatch: null,
+  } as { summary: string | null; lines: never[]; otherText: never[]; mismatch: string | null },
   body: '# Checkout\n\n## Totals\n\n- R-1: **Totals** are in the shopper currency.\n',
 };
 const first = { ...ready, replaces: null, sections: [{ kind: 'added' as const, path: 'Checkout', level: 1, linesAdded: 5, linesRemoved: 0 }] };
@@ -60,6 +66,40 @@ describe('SpecApprovalRequest', () => {
     expect(container.textContent).toContain('Checkout > Totals');
     expect(container.querySelectorAll('[data-testid="spec-approval-approve"]').length).toBe(1);
     expect(approveButton()!.textContent).toContain('Approve revision 3');
+  });
+
+  it('leads with what changed since the approved revision, words marked, and that the gate passed', () => {
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={ready} />));
+    expect(q('spec-review-summary')!.textContent).toBe('Totals now round to cents.');
+    expect(q('spec-review-criteria')!.textContent).toContain('R-1');
+    expect(q('spec-approval-gate')!.textContent).toContain('Quality gate passed.');
+    expect(q('spec-approval-override-reason')).toBeNull();
+  });
+
+  it('warnings are shown and do not stop Approve', () => {
+    const view = { ...ready, gate: { passed: true, refusals: [], warnings: [{ code: 'no_change_summary', message: 'The revision has no change summary.' }] } };
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={view} />));
+    expect(q('spec-approval-warnings')!.textContent).toContain('The revision has no change summary.');
+    expect(approveButton()!.disabled).toBe(false);
+    expect(approveButton()!.textContent).toBe('Approve revision 3');
+  });
+
+  it('a refusal lists its reasons and needs a reason to approve anyway, which is sent with the request', async () => {
+    const calls: unknown[] = [];
+    globalThis.fetch = mock(async (_u: string, init: RequestInit) => { calls.push(JSON.parse(init.body as string)); return new Response('{}', { status: 200 }); }) as unknown as typeof fetch;
+    const view = { ...ready, gate: { passed: false, refusals: [{ code: 'duplicate_id', message: 'R-2 is defined more than once.' }], warnings: [] } };
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={view} />));
+    expect(q('spec-approval-refusals')!.textContent).toContain('R-2 is defined more than once.');
+    expect(approveButton()!.textContent).toBe('Override and approve revision 3');
+    expect(approveButton()!.disabled).toBe(true);
+    const box = q('spec-approval-override-reason') as unknown as HTMLTextAreaElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(box, 'Checked with the owner.');
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(approveButton()!.disabled).toBe(false);
+    await act(async () => { approveButton()!.click(); });
+    expect(calls).toEqual([{ request: 'tok', overrideReason: 'Checked with the owner.' }]);
   });
 
   it('Approve posts the request token to the confirm route and reports the result', async () => {
