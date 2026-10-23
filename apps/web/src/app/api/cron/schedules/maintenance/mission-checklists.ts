@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { missions } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
-import { repairChecklist } from '@/lib/mission-checklist-repair';
+import { repairChecklist } from '@/lib/checklist-text';
 
 /** One-time replacement per stored copy. Counts live in the private cron report. */
 export async function repairMissionChecklists() {

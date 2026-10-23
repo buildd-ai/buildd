@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import { LEGACY_MANIFEST_ITEM, MANIFEST_ITEM } from '@/lib/mission-checklist-repair';
+import { LEGACY_MANIFEST_ITEM, MANIFEST_ITEM } from '@/lib/checklist-text';
 
 let rows: Array<{ id: string; heartbeatChecklist: string | null }> = [];
 let predicates: unknown[] = [];

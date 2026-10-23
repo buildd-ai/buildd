@@ -25,7 +25,6 @@
  * Each sweep swallows its own failures (logged), so one cannot stop the other.
  * Auth: Bearer CRON_SECRET, via withCronRun.
  */
-import { repairMissionChecklists } from './mission-checklists';
 import { pruneUnusedClients } from '@/lib/oauth/prune-clients';
 import { NextRequest, NextResponse } from 'next/server';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
@@ -66,13 +65,9 @@ async function runCronJob(report: CronReport): Promise<NextResponse> {
     console.error('[maintenance] unused OAuth client sweep failed', err instanceof Error ? err.message : err);
     return 0;
   });
-  const missionChecklists = await repairMissionChecklists().catch((err) => {
-    console.error('[maintenance] mission checklist repair failed', err instanceof Error ? err.message : err);
-    return { updated: 0, customized: 0, current: 0, raced: 0, error: true };
-  });
-  const result = { missionChecklists, heartbeatOrphans, abandonedClaimsReleased, interactiveDetached, uploads, chatAttachments, teamFiles, oauthClientsPruned };
+  const result = { heartbeatOrphans, abandonedClaimsReleased, interactiveDetached, uploads, chatAttachments, teamFiles, oauthClientsPruned };
   // Nothing to repair is the healthy state, so changed=0 with errors=0 is fine.
-  // The checklist repair reports failures so an incomplete repair is visible.
-  report({ changed: missionChecklists.updated + heartbeatOrphans + abandonedClaimsReleased + interactiveDetached + uploads.finalized + uploads.removed + chatAttachments.removed + teamFiles.removed + oauthClientsPruned, errors: 'error' in missionChecklists ? 1 : 0, result });
+  // Every sweep logs and swallows its own failures, so errors stays 0 here.
+  report({ changed: heartbeatOrphans + abandonedClaimsReleased + interactiveDetached + uploads.finalized + uploads.removed + chatAttachments.removed + teamFiles.removed + oauthClientsPruned, errors: 0, result });
   return NextResponse.json(result);
 }

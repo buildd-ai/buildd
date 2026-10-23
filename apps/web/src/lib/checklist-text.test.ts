@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { LEGACY_MANIFEST_ITEM, MANIFEST_ITEM, repairChecklist } from './mission-checklist-repair';
+import { LEGACY_MANIFEST_ITEM, MANIFEST_ITEM, repairChecklist } from './checklist-text';
 
 describe('stored organizer checklist repair', () => {
   it('replaces only the verbatim item and keeps surrounding instructions', () => {

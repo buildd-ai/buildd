@@ -56,6 +56,9 @@ const CRON_RUNS_TABLE = { id: 'id', job: 'job', startedAt: 'startedAt', alertedA
 let cronRunRows: any[] = [];
 const mockRunHealthWatcher = mock(() => Promise.resolve({ checked: 0, fired: 0, errors: 0, skipped: 0 }) as Promise<any>);
 mock.module('@/lib/health-watcher', () => ({ runHealthWatcher: mockRunHealthWatcher }));
+const checklistCounts = { updated: 1, customized: 2, current: 3, raced: 0 };
+const mockChecklists = mock(async () => checklistCounts);
+mock.module('./maintenance/mission-checklists', () => ({ repairMissionChecklists: mockChecklists }));
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -1767,6 +1770,16 @@ describe('GET /api/cron/schedules — run history carries the maintenance sub-re
     mockTaskSchedulesFindMany.mockResolvedValue([]);
     mockRunHealthWatcher.mockReset();
     mockRunHealthWatcher.mockResolvedValue({ checked: 0, fired: 0, errors: 0, skipped: 0 });
+  });
+
+  it('records checklist repair counts and leaves maintenance running on error', async () => {
+    const res = await GET(makeRequest());
+    expect((await res.json()).missionChecklists).toEqual(checklistCounts);
+    expect(cronRunRows.at(-1).result.missionChecklists).toEqual(checklistCounts);
+    mockChecklists.mockRejectedValueOnce(new Error('repair failed'));
+    expect((await GET(makeRequest())).status).toBe(200);
+    expect(cronRunRows.at(-1).errors).toBe(1);
+    expect(cronRunRows.at(-1).result.missionChecklists.error).toBe(true);
   });
 
   it('records the health watcher result and overdue-heartbeat alerts in the run row', async () => {

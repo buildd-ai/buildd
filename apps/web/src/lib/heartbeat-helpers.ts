@@ -2,7 +2,7 @@
  * Pure helper functions for heartbeat mission UI.
  */
 
-import { MANIFEST_ITEM } from './mission-checklist-repair';
+import { MANIFEST_ITEM } from './checklist-text';
 
 import { resolvePrompt, resolvePromptValue } from '@buildd/core/prompts';
 import { registerTextPrompt, registerValuePrompt } from '@buildd/core/prompts';
