@@ -171,7 +171,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### tasks (18)
 
-- [Agent Question Protocol](./agent-question-protocol.md) · @max — verified 2026-10-22
+- [Agent Question Protocol](./agent-question-protocol.md) · @max — verified 2026-10-23
   An agent question MUST include an actionable brief, pass the question gate and park only when human input is required.
 - [Artifacts and Sharing](./artifacts-and-sharing.md) · @max — verified 2026-10-12
   Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.

@@ -35,7 +35,7 @@ function Group({ runner, now, missions, heading, others }: { runner: FleetRunner
     <section data-testid="running-now-group" className="py-3 first:pt-0">
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="text-body font-semibold text-text-primary">{heading ?? runner.name}</h3>
-        <span className="text-meta text-text-muted">{runner.online ? busy : 'Offline'}</span>
+        <span className="text-meta text-text-muted">{runner.online || runner.update?.stuck ? busy : 'Offline'}</span>
       </div>
       {runner.interactive && running.length > 0 && (
         <p data-testid="running-now-sessions-note" className="mt-0.5 text-meta text-text-muted">

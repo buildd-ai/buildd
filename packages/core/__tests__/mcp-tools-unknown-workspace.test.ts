@@ -87,6 +87,8 @@ const EXEMPT: Record<string, string> = {
   request_pr_review: 'server-resolved (404s)',
   get_pr_review: 'server-resolved (404s)',
   record_pr_supersession: 'server-resolved',
+  store_design: 'server-resolved (the designs route rejects a workspace the caller cannot reach)',
+  manage_designs: 'server-resolved (list passes workspaceId to the route)',
   spec_compare: 'no workspaceId param (prose mention)',
   query_knowledge: 'no workspaceId param (prose mention)',
   update_task: 'no workspaceId param (prose mention: the delegation grant shape)',

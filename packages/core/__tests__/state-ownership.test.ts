@@ -33,6 +33,7 @@ const OWNER = [
   /^apps\/web\/src\/lib\/artifact-[\w-]+\.ts$/,
   /^packages\/core\/artifact-[\w-]+\.ts$/,
   /^apps\/web\/src\/lib\/specs\//,
+  /^apps\/web\/src\/lib\/designs\//,
   /^apps\/web\/src\/app\/api\/specs\//,
 ];
 

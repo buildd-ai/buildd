@@ -1,5 +1,6 @@
 import { describe, expect, it, mock } from 'bun:test';
 import { handleBuilddAction, type ActionContext, type ApiFn } from '../mcp-tools';
+import { DECISION_OPTIONS_GUIDANCE, DECISION_TITLE_GUIDANCE } from '../question-brief';
 
 function context(): ActionContext {
   return {
@@ -152,4 +153,54 @@ describe('post_note', () => {
       { ...context(), workerId: undefined },
     )).rejects.toThrow('workerId is required');
   });
+
+  describe('decision options and subject (Navigation R-16, AC-16)', () => {
+    const api = () => mock(async (endpoint: string, _init?: any) => {
+      if (endpoint === '/api/workers/worker-1') return { taskId: 'task-1', task: { id: 'task-1', missionId: 'mission-1' } };
+      return { id: 'note-1' };
+    });
+
+    it('refuses four options before any call', async () => {
+      const a = api();
+      await expect(handleBuilddAction(a as unknown as ApiFn, 'post_note', { type: 'question', title: 'Q?', options: ['a', 'b', 'c', 'd'] }, context())).rejects.toThrow('Cut to two');
+      await expect(handleBuilddAction(a as unknown as ApiFn, 'post_note', { type: 'update', title: 'U', options: ['a'] }, context())).rejects.toThrow('question');
+      expect(a).not.toHaveBeenCalled();
+    });
+
+    it('sends structured options and the subject task, and reports the recommended default', async () => {
+      const a = api();
+      const SUBJECT = '33333333-3333-4333-8333-333333333333';
+      const result = await handleBuilddAction(a as unknown as ApiFn, 'post_note', {
+        type: 'question', title: 'How should Docker Hub credentials be set up?', subjectTaskId: SUBJECT,
+        options: [{ label: 'Team secret', consequence: 'One token for all.', recommended: true }, { label: 'Per workspace', consequence: 'Each adds its own.' }],
+      }, context());
+      const [endpoint, init] = a.mock.calls[1];
+      expect(endpoint).toBe('/api/missions/mission-1/notes');
+      const body = JSON.parse(init.body);
+      expect(body.subjectTaskId).toBe(SUBJECT);
+      expect(body.options).toHaveLength(2);
+      expect(body.options[0]).toMatchObject({ label: 'Team secret', effect: 'One token for all', recommended: true });
+      expect(result.content[0].text).toContain('Default choice: Team secret');
+      expect(result.content[0].text).not.toContain('Advisory');
+    });
+
+    it('a generic question title gets an advisory, not a refusal', async () => {
+      const result = await handleBuilddAction(api() as unknown as ApiFn, 'post_note', { type: 'question', title: 'How should I proceed?', defaultChoice: 'A' }, context());
+      expect(result.content[0].text).toContain('Note posted');
+      expect(result.content[0].text).toContain('Advisory:');
+    });
+  });
+
+  it('ask_human and post_note docs carry the decision rules (Navigation R-16)', async () => {
+    for (const action of ['ask_human', 'post_note']) {
+      const result = await handleBuilddAction(mock(async () => ({})) as unknown as ApiFn, 'help', { action }, context());
+      const doc = result.content[0].text;
+      expect(doc).toContain('subjectTaskId');
+      expect(doc).toContain('consequence');
+      expect(doc).toContain(DECISION_TITLE_GUIDANCE);
+      expect(doc).toContain(DECISION_OPTIONS_GUIDANCE);
+      expect(doc).not.toMatch(/three options by default/i);
+    }
+  });
 });
+

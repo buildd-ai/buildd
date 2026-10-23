@@ -8,7 +8,7 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { classifyStaleExit, consumesRetryAttempt, CLAIM_RESPONSE_LOST_ERROR, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
-import { WORKER_STALE_REAP_MS, INTERACTIVE_WORKER_IDLE_TTL_MS, WORKER_LEASE_TTL_MS, RUNNER_STALE_CUTOFF_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, OPEN_TASK_STATUSES, isTerminalTaskStatus, type LoopConfig } from '@buildd/shared';
+import { UPDATE_STOPPED_REASON, WORKER_STALE_REAP_MS, INTERACTIVE_WORKER_IDLE_TTL_MS, WORKER_LEASE_TTL_MS, RUNNER_STALE_CUTOFF_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, OPEN_TASK_STATUSES, isTerminalTaskStatus, type LoopConfig } from '@buildd/shared';
 import { interactiveAbandonedScope, runnerWorkerOnly } from '@/lib/interactive-worker-liveness';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { detachInteractiveWorkersOfEndedTasks, releaseConcurrencySeats } from '@/lib/interactive-detach';
@@ -32,7 +32,7 @@ import type { WaitingFor } from '@buildd/shared';
 import { waitingForOptionLabels } from '@/lib/waiting-for-options';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { noteWorkChanged } from '@/lib/work-changed';
-import { loadRunnerBeats, runnerLiveness } from '@/lib/runner-offline';
+import { heldForRunnerUpdate, loadRunnerBeats, runnerLiveness } from '@/lib/runner-offline';
 
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
@@ -106,6 +106,8 @@ async function resolveStaleTask(
   workspaceId: string,
   staleWorker: { id: string; prUrl: string | null; prNumber: number | null; commitCount: number | null; branch: string | null; error: string | null; runner?: string | null } | undefined,
   exitCause?: WorkerExitCause,
+  /** `noAutoComplete`: never complete the task from the worker's commits (a paused agent's checkpoint is not a delivery). */
+  opts: { noAutoComplete?: boolean } = {},
 ) {
   // Whatever this settles the task to, its mission's summary changed (lib/work-changed.ts).
   noteWorkChanged({ taskIds: [taskId] });
@@ -321,7 +323,7 @@ async function resolveStaleTask(
   }
   // Reaper completion is evidence-backed: PR/artifact or positive commits.
   // Run the same predicate so future deliverable changes cannot bypass it.
-  const hasDeliverables = !!deliverables?.hasAny && !isMissionVisualAudit && !kernelDeliveryId && !isSilentCompletion({
+  const hasDeliverables = !!deliverables?.hasAny && !opts.noAutoComplete && !isMissionVisualAudit && !kernelDeliveryId && !isSilentCompletion({
     status: 'completed', outputRequirement: currentTask?.outputRequirement,
     kind: currentTask?.kind, pathManifest: currentTask?.pathManifest,
     taskClass: currentTask?.taskClass,
@@ -1074,11 +1076,14 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
       startedAt: true, turns: true, costUsd: true, inputTokens: true, outputTokens: true,
       // The runner each candidate is judged against.
       runner: true, localUiUrl: true, accountId: true, leaseExpiresAt: true,
+      // A pause for an update stays with its runner (heldForRunnerUpdate).
+      status: true, waitingFor: true,
     },
   });
   // Judged one by one against the candidate's OWN runner. A worker that names
   // no runner any row can match keeps the old account-wide reading.
   const ownRunnerDead = orphanCandidates.filter(w => {
+    if (heldForRunnerUpdate(w as any, beats, now)) return false;
     const verdict = runnerLiveness(w, beats, now, HEARTBEAT_STALE_MS).verdict;
     return verdict === 'dead' || (verdict === 'unknown' && liveRunners === 0);
   });
@@ -1152,6 +1157,43 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
   }
 
   return orphanedByHeartbeat.length;
+}
+
+/**
+ * A runner silent for an hour while it updated (spec 47c97f48, R-6): each
+ * agent it paused for the update is failed with UPDATE_STOPPED_REASON and its
+ * task starts again as a new attempt from the pushed checkpoint (the task
+ * resumes from the worker's branch; requeueBranchContext). The checkpoint is
+ * never read as a delivery, so the task is not completed from it.
+ *
+ * Joined to the runner the way heartbeatRowHasNoLiveWorkers is. Returns the
+ * number of workers released.
+ */
+export async function releasePausedWorkersOfStoppedUpdate(accountId: string, localUiUrl: string, now: Date = new Date()): Promise<number> {
+  const released = await db
+    .update(workers)
+    .set({ status: 'failed', exitCause: 'infra_failure', error: UPDATE_STOPPED_REASON, completedAt: now, updatedAt: now })
+    .where(and(
+      eq(workers.accountId, accountId),
+      sql`COALESCE(${workers.localUiUrl}, ${workers.runner}) = ${localUiUrl}`,
+      eq(workers.status, 'waiting_input'),
+      sql`${workers.waitingFor} ->> 'type' = 'pause'`,
+    ))
+    .returning({
+      id: workers.id, taskId: workers.taskId, prUrl: workers.prUrl, prNumber: workers.prNumber,
+      commitCount: workers.commitCount, branch: workers.branch, error: workers.error, accountId: workers.accountId,
+    });
+  if (released.length === 0) return 0;
+  noteWorkChanged({ workerIds: released.map(w => w.id) });
+  await releaseConcurrencySeats(released.map(w => w.accountId));
+  for (const w of released) {
+    if (!w.taskId) continue;
+    const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, w.taskId)), columns: { id: true, workspaceId: true } });
+    if (!task) continue;
+    await resolveStaleTask(task.id, task.workspaceId, w, 'infra_failure', { noAutoComplete: true });
+  }
+  console.warn(`[stale-workers] released ${released.length} task(s) paused by ${localUiUrl}: ${UPDATE_STOPPED_REASON}`);
+  return released.length;
 }
 
 /**

@@ -511,7 +511,8 @@ FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM connectors) s WHERE c
 UPDATE worker_heartbeats SET
   local_ui_url = 'http://qa-' || replace(id::text, '-', '') || '.localhost:8766',
   viewer_token = CASE WHEN viewer_token IS NULL THEN NULL ELSE 'scrubbed-' || md5(id::text) END,
-  environment = pg_temp.qa_json(environment);
+  environment = pg_temp.qa_json(environment),
+  desired_slots_set_by = CASE WHEN desired_slots_set_by IS NULL THEN NULL ELSE 'QA user' END; -- a person's display name
 
 -- ---------------------------------------------------------------------------
 -- Work: missions, initiatives, tasks, workers
@@ -639,7 +640,8 @@ UPDATE mission_notes n SET
   body = pg_temp.qa_text(n.body),
   actor_label = pg_temp.qa_hash('Actor ', n.actor_label),
   collapse_key = pg_temp.qa_hash('key-', n.collapse_key),
-  default_choice = pg_temp.qa_text(n.default_choice)
+  default_choice = pg_temp.qa_text(n.default_choice),
+  options = pg_temp.qa_json(n.options)
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM mission_notes) s WHERE n.id = s.id;
 
 UPDATE artifacts a SET

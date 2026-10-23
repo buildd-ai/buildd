@@ -57,6 +57,8 @@ const PERSISTED_FIELDS = [
   'resumeOnStart',
   // A pause a person asked for while a tool ran: after a kill it stays theirs.
   'pauseRequestedAt',
+  // ...unless the runner asked for it to apply an update (update-drain.ts).
+  'pauseRequestedFor',
   // So a resume after a runner restart keeps the model the session ran on.
   'sessionModel',
   // So a resume after a runner restart is decided under the claim's isolation stamp.
@@ -311,7 +313,8 @@ export function loadAllWorkers(): LocalWorker[] {
         codexThreadId: data.codexThreadId as string | undefined,
         waitingFor: data.waitingFor as LocalWorker['waitingFor'],
         ...(typeof data.pauseRequestedAt === 'number' ? { pauseRequestedAt: data.pauseRequestedAt } : {}),
-        ...(data.resumeOnStart === 'shutdown' || data.resumeOnStart === 'crash' ? { resumeOnStart: data.resumeOnStart } : {}),
+        ...(data.pauseRequestedFor === 'update' ? { pauseRequestedFor: 'update' as const } : {}),
+        ...(data.resumeOnStart === 'shutdown' || data.resumeOnStart === 'crash' || data.resumeOnStart === 'update' ? { resumeOnStart: data.resumeOnStart } : {}),
         messages: (data.messages as LocalWorker['messages']) || [],
         milestones: (data.milestones as LocalWorker['milestones']) || [],
         toolCalls: (data.toolCalls as LocalWorker['toolCalls']) || [],

@@ -154,6 +154,38 @@ export function fallbackQuestionContext(input: {
   return title ? `Asked while working on "${title}".` : undefined;
 }
 
+/**
+ * Questions that name no decision: the whole question is a request for
+ * direction ("How should I proceed?", "What next?", "Thoughts?"). A question
+ * that goes on to name its subject ("How should I proceed with the Docker
+ * Hub credentials?") is not generic.
+ */
+const GENERIC_TITLES: RegExp[] = [
+  /^(?:so |ok(?:ay)? )?(?:how|what) (?:should|shall|do|would you like|would you want|do you want) (?:i|we|me|us)(?: to)? (?:proceed|continue|go ahead|go forward|move forward|do(?: next| now)?|handle (?:this|it)|approach (?:this|it))$/,
+  /^(?:should|shall|can|may) (?:i|we) (?:proceed|continue|go ahead|go on)$/,
+  /^how (?:to|do we) (?:proceed|continue|move forward)$/,
+  /^(?:what(?:'s| is)? (?:the )?(?:next|next steps?|your (?:call|preference|decision|choice))|next steps?|how to proceed|any (?:thoughts|preferences?|guidance|input|ideas)|thoughts|please advise|advice|guidance (?:needed|please)|(?:decision|input|guidance) (?:needed|required)|need (?:your )?(?:input|decision|guidance)|question|decision|which (?:option|one|approach|way)(?: (?:do|would|should) (?:you|i|we) (?:prefer|want|choose|pick|take))?|what do you (?:think|prefer|want(?: me to do)?|suggest)|which do you prefer|please choose|please decide|your call|options)$/,
+];
+const GENERIC_FILLER = /\s+(?:here|now|next|from here|with this|on this|then|please)$/;
+
+/** True when the question is a generic request for direction that names no decision. */
+export function isGenericDecisionTitle(text: string | null | undefined): boolean {
+  let t = (text ?? '').replace(/\s+/g, ' ').replace(/[“”"]/g, '').replace(/’/g, "'").trim().toLowerCase().replace(/[?.!…:]+$/, '').trim();
+  if (!t) return false;
+  for (let i = 0; i < 2; i++) t = t.replace(GENERIC_FILLER, '');
+  return GENERIC_TITLES.some(re => re.test(t));
+}
+
+export const GENERIC_DECISION_TITLE_ADVISORY =
+  'The question names no decision. Ask the decision itself ("How should Docker Hub credentials be set up?"), never "How should I proceed?".';
+
+/** The advisory for a question whose title names no decision, else undefined. Advisory only: never refuses. */
+export function decisionTitleAdvisory(prompt: string | null | undefined): string | undefined {
+  if (!prompt?.trim()) return undefined;
+  const question = splitQuestionText(prompt).prompt;
+  return isGenericDecisionTitle(question) ? GENERIC_DECISION_TITLE_ADVISORY : undefined;
+}
+
 /** True when a person would see only the question: no context, no default, no option says what it leads to. */
 export function isContextFree(q: {
   prompt: string;
