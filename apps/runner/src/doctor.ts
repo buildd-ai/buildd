@@ -611,7 +611,7 @@ export function tailLines(path: string, n: number): string {
   return lines.slice(-n).join('\n') + '\n';
 }
 
-function checkRunnerLog(): CheckResult {
+function checkRunnerLog(opts: { hasService?: boolean } = {}): CheckResult {
   const logPath = process.env.BUILDD_RUNNER_LOG_PATH || RUNNER_LOG_PATH;
   try {
     if (!existsSync(logPath)) {
@@ -619,12 +619,15 @@ function checkRunnerLog(): CheckResult {
         return { name: 'runner-log', status: 'ok', message: 'Runner not started yet. Start it with `buildd`.' };
       }
       // Check if runner runs as service: buildd service status reports one
-      let hasService = false;
-      try {
-        const serviceStatus = execSync('buildd service status 2>&1', { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
-        hasService = serviceStatus.includes('active') || serviceStatus.includes('enabled');
-      } catch {
-        // buildd service status failed, assume no service
+      let hasService = opts.hasService;
+      if (hasService === undefined) {
+        try {
+          const serviceStatus = execSync('buildd service status 2>&1', { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
+          hasService = serviceStatus.includes('active') || serviceStatus.includes('enabled');
+        } catch {
+          // buildd service status failed, assume no service
+          hasService = false;
+        }
       }
       if (hasService) {
         return { name: 'runner-log', status: 'warn', message: `Runner log not found at ${logPath}. Service logs available at: buildd service logs` };
@@ -943,6 +946,8 @@ export function runDiagnostics(opts: {
   runnerProcess?: CheckResult;
   /** Per-backend overrides for tests. */
   backends?: { claude?: BackendCheckOpts; codex?: BackendCheckOpts };
+  /** Injected service status for tests. */
+  hasService?: boolean;
 } = {}): DoctorReport {
   const record = opts.isolation ?? probeThisHost();
   const checks = [
@@ -956,7 +961,7 @@ export function runDiagnostics(opts: {
     checkClaudeBackend({ isolation: record, ...opts.backends?.claude }),
     checkCodexBackend({ isolation: record, ...opts.backends?.codex }),
     checkScreenSession(),
-    checkRunnerLog(),
+    checkRunnerLog({ hasService: opts.hasService }),
     checkDiskUsage(),
     checkStaleWorktrees(),
     checkHistoryDb(),

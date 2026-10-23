@@ -557,11 +557,11 @@ export function runnerProcessFromProbe(
     };
   }
   // Socket probe failed: either no socket file exists, or it exists but doesn't answer
-  // Apply never-started rule: if nothing has run before, show info message
-  if (isNeverStarted) {
+  // Apply never-started rule only when socket file is absent AND nothing has run before
+  if (probe.state === 'absent' && isNeverStarted) {
     return { name: 'runner-process', status: 'ok', message: 'Runner not started yet. Start it with `buildd`.' };
   }
-  // Socket file exists but doesn't answer: a real error
+  // Socket file exists but doesn't answer (stale), or absent but runner ran before: a real error
   return { name: 'runner-process', status: 'error', message: `No runner answers on ${socketPath}` };
 }
 
