@@ -48,6 +48,12 @@ export interface RecordAndDispatchParams {
   triggeredBy: 'user' | 'agent' | 'auto';
   /** Re-dispatch a commit that already has a row in any state. */
   force?: boolean;
+  /**
+   * This dispatch moves the open candidate through the workspace's declared
+   * amend contract, whatever its input names are (candidate-amend.ts). Never
+   * deduped, like an `amend` / `exclude` dispatch.
+   */
+  amendment?: boolean;
 }
 
 export type RecordAndDispatchResult =
@@ -143,7 +149,7 @@ export async function recordAndDispatchRelease(
   // recorded the row: a plain dispatch leaves an open frozen candidate as it
   // is, and the amendment is the only way to move it. It is never deduped; the
   // upsert below re-arms the commit's row for it.
-  if (!params.force && !isAmendmentDispatch(params.inputs)) {
+  if (!params.force && !params.amendment && !isAmendmentDispatch(params.inputs)) {
     const existing = await db.query.releases.findFirst({
       where: sqlWhere(and(
         eq(releases.workspaceId, workspaceId),

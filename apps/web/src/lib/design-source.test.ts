@@ -109,4 +109,27 @@ describe('resolveDesignSourceAtClaim', () => {
     await resolveDesignSourceAtClaim(task({}, null), d);
     expect(d.calls).toEqual(['links:task']);
   });
+
+  it('names the screens: the files own list (name, size), narrowed to the ones that matter when criteria name some', async () => {
+    const all = [
+      { id: 'desktop-mission', name: 'Mission (desktop)', viewport: '1440x900' },
+      { id: 'phone-mission', name: 'Mission (phone)', viewport: '390x844' },
+      { id: 'coverage', name: 'Coverage', viewport: '1440x900' },
+    ];
+    const d = { ...deps({ taskLinks: [{ artifactId: TASK_D, pinnedRevision: 2, currentRevision: 2 }] }), designScreens: async () => all };
+    expect(await resolveDesignSourceAtClaim(task(), d)).toEqual({ artifactId: TASK_D, revision: 2, from: 'task', screenInfo: all });
+
+    const scoped = { ...deps({
+      taskLinks: [{ artifactId: TASK_D, pinnedRevision: null, currentRevision: 1 }],
+      missionSpec: { specRevisionId: MISSION_REV },
+      revisions: { [MISSION_REV]: { design: { kind: 'artifact', ref: SPEC_D, version: '1' }, criteria: CRITERIA } },
+    }), designScreens: async () => all };
+    const out = await resolveDesignSourceAtClaim(task(), scoped);
+    expect(out?.screenInfo?.map((s) => s.id)).toEqual(['desktop-mission', 'phone-mission']);
+  });
+
+  it('a design whose screens cannot be read still resolves, without names', async () => {
+    const d = { ...deps({ taskLinks: [{ artifactId: TASK_D, pinnedRevision: 1, currentRevision: 1 }] }), designScreens: async () => { throw new Error('db'); } };
+    expect(await resolveDesignSourceAtClaim(task(), d)).toEqual({ artifactId: TASK_D, revision: 1, from: 'task' });
+  });
 });

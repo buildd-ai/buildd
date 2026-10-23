@@ -75,6 +75,13 @@ export interface VerdictInput {
    * updates the branch or merges): nothing waits on a person until it finishes.
    */
   deliveryActivity?: string | null;
+  /** The delivery has no verdict on the PR's current head yet: CI is pending, whatever an older snapshot says. */
+  awaitingCi?: boolean;
+  /**
+   * Who the delivery's next move belongs to (kernel `owner`). Only `human` is a person;
+   * `landing` is the merge policy merging on green. Absent: unknown, read as a person.
+   */
+  deliveryOwner?: string | null;
   /**
    * The delivery is parked on a review escalation (kernel `deriveEscalationBrief`): the
    * cause label, what is left and what a person may choose. The verdict names it instead
@@ -340,13 +347,16 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
         causeKey: 'blocked:conflict',
       };
     }
-    const pending = pr.lifecycle === 'ci_running' || pr.lifecycle === 'awaiting_ci' || (pr.lifecycle !== 'ci_green' && checks.some(c => c.state === 'pending'));
+    const pending = pr.lifecycle === 'ci_running' || pr.lifecycle === 'awaiting_ci' || input.awaitingCi === true || (pr.lifecycle !== 'ci_green' && checks.some(c => c.state === 'pending'));
     if (pending) {
+      const passed = checks.filter(c => c.state === 'passed').length;
+      const progress = checks.length > 0 ? ` · ${passed} of ${checks.length} passed` : '';
+      const willMerge = input.deliveryOwner === 'landing' ? ' It merges by itself once they pass.' : '';
       return {
         ...base,
         state: 'in_progress',
-        headline: `Checks running · PR #${pr.number}`,
-        cause: input.openAttempt ? `${attemptName(input.openAttempt)} pushed; its checks are running.` : null,
+        headline: `Checks running${progress} · PR #${pr.number}`,
+        cause: input.openAttempt ? `${attemptName(input.openAttempt)} pushed; its checks are running.${willMerge}` : willMerge.trim() || null,
         actions: [link('View checks', prChecksUrl(pr.url))],
         causeKey: 'in_progress:checks',
       };
@@ -372,10 +382,31 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
       };
     }
     const green = pr.lifecycle === 'ci_green' || (checks.length > 0 && checks.every(c => c.state === 'passed'));
+    // Only the landing owner is the merge policy merging on its own; an unmerged PR is still not done.
+    if (input.deliveryOwner === 'reviewer') {
+      return {
+        ...base,
+        state: 'in_progress',
+        headline: `Waiting for review · PR #${pr.number}`,
+        cause: 'A reviewer has the PR; nothing is waiting on you.',
+        actions: [link(`View PR #${pr.number}`, pr.url)],
+        causeKey: 'in_progress:review',
+      };
+    }
+    if (input.deliveryOwner === 'landing') {
+      return {
+        ...base,
+        state: 'in_progress',
+        headline: green ? `Merging · PR #${pr.number}` : `PR #${pr.number} open · waiting on checks`,
+        cause: green ? 'Checks are green; the merge policy merges it without you.' : 'No checks have reported yet; it merges by itself once they pass.',
+        actions: [link(`View PR #${pr.number}`, pr.url)],
+        causeKey: green ? 'in_progress:merging' : 'in_progress:no_checks',
+      };
+    }
     return {
       ...base,
       state: 'needs_you',
-      headline: green ? `Ready to merge · PR #${pr.number}` : `PR #${pr.number} open · checks not reported`,
+      headline: green ? `Ready to merge · PR #${pr.number}` : `PR #${pr.number} open · no checks reported yet`,
       cause: green ? 'Checks are green; it is waiting for a merge.' : null,
       actions: [link('Review & merge', pr.url, 'primary')],
       causeKey: green ? 'needs_you:merge' : 'needs_you:pr_open',

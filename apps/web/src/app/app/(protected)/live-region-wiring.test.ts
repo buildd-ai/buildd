@@ -29,6 +29,14 @@ describe('live regions', () => {
     expect(page).not.toContain('TaskDetailBody');
   });
 
+  it('Activity wraps its body in a LiveRegion and subscribes through the region refresher', async () => {
+    const [page, auto] = await Promise.all([read('./tasks/page.tsx'), read('./tasks/ActivityAutoRefresh.tsx')]);
+    expect(page).toMatch(/async function loadRegion\(\)\s*\{\s*'use server';/);
+    expect(page).toContain('<LiveRegion load={loadRegion}>');
+    expect(page).toContain('<ActivityAutoRefresh workspaceIds={liveWorkspaceIds} />');
+    expect(auto).toContain('useRegionRefresher(useRouter())');
+  });
+
   it('the mission and task subscribers refresh the region, not the router', async () => {
     const files = await Promise.all([read('./missions/[id]/MissionAutoRefresh.tsx'), read('./tasks/[id]/TaskAutoRefresh.tsx'), read('./tasks/[id]/RealTimeWorkerView.tsx')]);
     for (const src of files) expect(src).toContain('useRegionRefresher(useRouter())');

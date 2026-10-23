@@ -11,6 +11,7 @@ import { exchangeAssertionConnector, isAuthError } from './assertion-exchange.js
 import { isBuilddActionTool } from '@buildd/shared';
 import { asksAQuestion, EMPTY_QUESTION_DENY_REASON } from './ask-user-question.js';
 import { runnerDenial } from './runner-denial.js';
+import { findRunnerKill, KILL_GUARDED_TOOLS, runnerProcessIds } from './kill-guard.js';
 import { questionFromToolInput, runQuestionGate } from './question-gate.js';
 import type { QuestionGateReply } from '@buildd/core/question-gate';
 import type { PathClaimResponse } from './buildd';
@@ -592,6 +593,15 @@ export class HookFactory {
             permissionDecisionReason: 'AskUserQuestion is presented directly to the user; no separate permission needed',
           },
         };
+      }
+
+      // A kill by process name reaches the runner itself (kill-guard.ts).
+      if (KILL_GUARDED_TOOLS.has(toolName)) {
+        const kill = findRunnerKill((toolInput.command as string) || '', runnerProcessIds());
+        if (kill) {
+          console.log(`[Worker ${worker.id}] Blocked kill outside the agent's own processes: ${String(toolInput.command).slice(0, 80)}`);
+          return denyPreToolUse(runnerDenial(kill.reason, kill.hint));
+        }
       }
 
       // Block dangerous bash commands (destructive ops + credential file reads)

@@ -55,15 +55,15 @@ describe('TaskShippedBody', () => {
 describe('TaskShippedDetails', () => {
   it('technical summary and run details sit behind their own collapsed disclosures', () => {
     const html = renderToStaticMarkup(<TaskShippedDetails view={view()} runDetails={[{ label: 'Turns', value: '42' }]} />);
-    expect(html).toContain('Technical summary');
+    expect(html).not.toContain('Technical summary');
     expect(html).not.toContain('Raw handoff');
-    expect(html).toContain('Run details');
+    expect(html).toContain('Run');
     expect(html).not.toContain('42');
   });
 
   it('extra run material (workers, scope, plan) goes inside Run details', () => {
     const html = renderToStaticMarkup(<TaskShippedDetails view={view({ summary: null })}><p>worker list</p></TaskShippedDetails>);
-    expect(html).toContain('Run details');
+    expect(html).toContain('Run');
     expect(html).not.toContain('Technical summary');
   });
 });
@@ -73,3 +73,10 @@ it('draws the change surface as quiet metadata rather than a chip', () => {
   expect(html).toContain('On screen and behind the scenes');
   expect(html).toMatch(/<p class="text-meta text-text-muted" data-testid="task-shipped-change-type"/);
 });
+
+ it('opens Run for an artifact deep link, mounting the viewer while other run details stay collapsed', () => {
+  const html = renderToStaticMarkup(<TaskShippedDetails view={view()} openRun><p>artifact viewer mounted</p></TaskShippedDetails>);
+  expect(html).toContain('artifact viewer mounted');
+  expect(html).toContain('Technical summary');
+  expect(html).toContain('aria-expanded="true"');
+ });

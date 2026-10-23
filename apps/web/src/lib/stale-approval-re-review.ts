@@ -48,6 +48,16 @@ export interface StaleApprovalReReviewInput {
    * lost or never-sent request). Labels the PR activity entry only.
    */
   firstReview?: boolean;
+  /**
+   * A frozen release candidate's delta (release-flow.md AC-26): the commits no
+   * earlier review covered. The reviewer reviews only these, and its verdict is
+   * judged on their paths alone; every other change was approved on its own PR.
+   */
+  candidateDelta?: {
+    commits: Array<{ sha: string; reason: string; paths: string[] }>;
+    paths: string[];
+    files: Array<{ filename: string; status: string; additions: number; deletions: number; patch?: string }>;
+  };
 }
 
 export type StaleApprovalReReviewResult =
@@ -137,7 +147,12 @@ async function run(input: StaleApprovalReReviewInput, deps: StaleApprovalReRevie
     repoFullName: input.repoFullName,
     policyConfig: ctx.workspace.gitConfig?.policyConfig as CreateReviewerTaskParams['policyConfig'],
     baseRef: input.baseRef,
-    ...(plan.kind === 'delta' ? { priorVerdict: plan.priorVerdict } : {}),
+    ...(input.candidateDelta
+      ? {
+        compositionScope: { novelDeltaPaths: input.candidateDelta.paths, novelCommits: input.candidateDelta.commits },
+        prFiles: input.candidateDelta.files as CreateReviewerTaskParams['prFiles'],
+      }
+      : plan.kind === 'delta' ? { priorVerdict: plan.priorVerdict } : {}),
   });
   if (!created?.id) return { outcome: 'skipped', reason: 'could not create the reviewer task' };
   if (created.deduplicated) return { outcome: 'already_reviewing', reviewTaskId: created.id };
@@ -163,7 +178,9 @@ async function run(input: StaleApprovalReReviewInput, deps: StaleApprovalReRevie
       prNumber,
       entry: {
         kind: 'review_queued',
-        detail: input.firstReview
+        detail: input.candidateDelta
+          ? `review requested · only the ${input.candidateDelta.commits.length} commit${input.candidateDelta.commits.length === 1 ? '' : 's'} no earlier review covered`
+          : input.firstReview
           ? 'review requested · the PR was ready and no review was on file'
           : input.staleReason
             ? `verdict went stale · ${input.staleReason}`

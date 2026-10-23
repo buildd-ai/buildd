@@ -29,6 +29,8 @@ export interface BriefOption {
   label: string;
   description?: string;
   consequence?: string;
+  /** The consequence cut to the button line (`DECISION_EFFECT_MAX`). */
+  effect?: string;
   recommended?: boolean;
 }
 
@@ -62,6 +64,28 @@ export const BRIEF_WHERE_MAX = 200;
 export const BRIEF_CONTEXT_MAX_SENTENCES = 2;
 
 /**
+ * Decision options (Navigation spec R-16, AC-16). The card shows the
+ * recommended option and one alternative; a third only when the agent has a
+ * genuinely different choice. More than three is refused where the agent asks
+ * (`ask_human`, `post_note`). "Not now" / "skip" is never an option: the card
+ * has its own Not now, and free text is always available.
+ */
+export const DECISION_OPTIONS_DEFAULT = 2;
+export const DECISION_OPTIONS_MAX = 3;
+/** The short form shown on the button line. */
+export const DECISION_EFFECT_MAX = 40;
+/** The full consequence, shown as the hover tip on desktop: one to three sentences. */
+export const DECISION_CONSEQUENCE_MAX = 400;
+
+export const DECISION_TITLE_GUIDANCE =
+  'The question names the decision ("How should Docker Hub credentials be set up?"), never "How should I proceed?".';
+
+export const DECISION_OPTIONS_GUIDANCE =
+  'Offer two options by default: the recommended action and one alternative. ' +
+  'Add a third only when there is a genuinely different choice; more than three is refused. ' +
+  'Never offer "Not now" or "Skip": the person always has Not now and a free-text answer.';
+
+/**
  * Steering for the agent, injected into the session's Communication section
  * wherever AskUserQuestion is allowed. The person answering has not seen the
  * task, the code or this conversation.
@@ -69,7 +93,9 @@ export const BRIEF_CONTEXT_MAX_SENTENCES = 2;
 export const QUESTION_BRIEF_GUIDANCE =
   'Every AskUserQuestion must be a self-contained decision brief: the person answering has not seen this task, the code or this conversation, and should be able to decide in seconds. ' +
   'In the question text, start with one or two plain sentences saying which task this is and exactly what is being decided and why it matters, then ask the question. ' +
-  'Give every option a description saying what choosing it leads to, in one line. ' +
+  `${DECISION_TITLE_GUIDANCE} ` +
+  `${DECISION_OPTIONS_GUIDANCE} ` +
+  'Give every option a description saying what choosing it leads to: what happens next and what stays blocked, in one to three sentences. ' +
   'Put your recommended option first and end its label with "(Recommended)"; its description says why. ' +
   'Bad: "Should isWeekend use local time or UTC?" with bare options. ' +
   'Good: "Adding isWeekend() to the billing date helpers; it decides whether weekend surcharges apply. Should it use the customer\'s local time or UTC?" with options that each say who is charged differently.';
@@ -91,6 +117,76 @@ function sentences(text: string): string[] {
     .split(/(?<=[.!?])\s+(?=[A-Z0-9"'`(\[])/)
     .map(s => s.trim())
     .filter(Boolean);
+}
+
+export interface DecisionOption {
+  label: string;
+  /** What happens next and what stays blocked, one to three sentences (the hover tip). */
+  consequence?: string;
+  /** Under `DECISION_EFFECT_MAX` characters: the one-line effect on the button. */
+  effect?: string;
+  recommended?: boolean;
+}
+
+/** An option a person never needs offered: the card's own Not now covers it. */
+const DEFERRAL_LABEL = /^(?:not now|skip(?: (?:it|this|for now))?|later|maybe later|decide later|ask (?:me )?later|defer|postpone|no decision)$/i;
+
+/** The button line: the agent's own `effect`, else the consequence's first sentence, cut to fit. */
+export function decisionEffect(consequence: string | undefined, effect?: unknown): string | undefined {
+  const own = clean(effect, 10_000);
+  const source = own ?? (consequence ? sentences(consequence)[0]?.replace(/[.!]$/, '') : undefined);
+  return clean(source, DECISION_EFFECT_MAX);
+}
+
+/**
+ * Validate the options an agent offers on a decision (`ask_human`,
+ * `post_note`). Strings stay accepted (a label alone); objects carry
+ * `{label, consequence?, effect?, recommended?}` (`description` is read as
+ * the consequence). A label ending "(Recommended)" is the recommended one.
+ * Returns an error in the words the agent gets back when the set breaks a
+ * rule: more than `DECISION_OPTIONS_MAX`, a deferral offered as an option, an
+ * empty or repeated label.
+ */
+export function normalizeDecisionOptions(raw: unknown): { options: DecisionOption[] } | { error: string } {
+  if (raw === undefined || raw === null) return { options: [] };
+  if (!Array.isArray(raw)) return { error: 'options must be an array: strings, or { label, consequence, recommended? } objects.' };
+  if (raw.length > DECISION_OPTIONS_MAX) {
+    return {
+      error: `Not sent: ${raw.length} options. A decision offers two, the recommended action and one alternative (a third only for a genuinely different choice). Cut to two, or ask in free text with no options.`,
+    };
+  }
+  const options: DecisionOption[] = [];
+  const seen = new Set<string>();
+  for (const o of raw) {
+    const obj = o && typeof o === 'object' && !Array.isArray(o) ? (o as Record<string, unknown>) : null;
+    const rawLabel = typeof o === 'string' ? o : typeof obj?.label === 'string' ? obj.label : '';
+    if (!rawLabel.trim()) return { error: 'options: every option needs a non-empty label.' };
+    const suffixed = RECOMMENDED_SUFFIX.test(rawLabel);
+    const label = clean(rawLabel.replace(RECOMMENDED_SUFFIX, ''), BRIEF_LINE_MAX) ?? clean(rawLabel, BRIEF_LINE_MAX)!;
+    if (DEFERRAL_LABEL.test(label.replace(/[.!]$/, ''))) {
+      return { error: `"${label}" is not an option: every decision already has Not now and a free-text answer. Offer only real choices.` };
+    }
+    const key = label.toLowerCase();
+    if (seen.has(key)) return { error: `Option "${label}" is offered twice.` };
+    seen.add(key);
+    const consequence = clean(obj?.consequence ?? obj?.description, DECISION_CONSEQUENCE_MAX);
+    const effect = decisionEffect(consequence, obj?.effect);
+    const recommended = suffixed || obj?.recommended === true;
+    options.push({
+      label,
+      ...(consequence ? { consequence } : {}),
+      ...(effect ? { effect } : {}),
+      ...(recommended ? { recommended: true } : {}),
+    });
+  }
+  // One recommendation: the first flagged one wins.
+  let flagged = false;
+  for (const o of options) {
+    if (!o.recommended) continue;
+    if (flagged) delete o.recommended;
+    flagged = true;
+  }
+  return { options };
 }
 
 /** At most `BRIEF_CONTEXT_MAX_SENTENCES` sentences, capped in length. */
@@ -134,11 +230,13 @@ export function deriveQuestionBrief(
     if (!o || typeof o.label !== 'string' || !o.label.trim()) continue;
     const isRecommended = RECOMMENDED_SUFFIX.test(o.label);
     const label = o.label.replace(RECOMMENDED_SUFFIX, '').trim() || o.label.trim();
-    const consequence = clean(o.description, BRIEF_LINE_MAX);
+    const consequence = clean(o.description, DECISION_CONSEQUENCE_MAX);
+    const effect = decisionEffect(consequence);
     const opt: BriefOption = {
       label,
       ...(o.description ? { description: o.description } : {}),
       ...(consequence ? { consequence } : {}),
+      ...(effect ? { effect } : {}),
       ...(isRecommended ? { recommended: true } : {}),
     };
     if (isRecommended && !recommended) recommended = { label, ...(consequence ? { reason: consequence } : {}) };
@@ -196,9 +294,10 @@ export function sanitizeQuestionBrief(raw: unknown): QuestionBriefFields & { opt
   if (Array.isArray(r.options)) {
     out.options = r.options.map(o => {
       if (!o || typeof o !== 'object' || Array.isArray(o)) return o;
-      const { consequence, ...rest } = o as Record<string, unknown>;
-      const c = clean(consequence, BRIEF_LINE_MAX);
-      return c ? { ...rest, consequence: c } : rest;
+      const { consequence, effect, ...rest } = o as Record<string, unknown>;
+      const c = clean(consequence, DECISION_CONSEQUENCE_MAX);
+      const e = clean(effect, DECISION_EFFECT_MAX);
+      return { ...rest, ...(c ? { consequence: c } : {}), ...(e ? { effect: e } : {}) };
     });
   }
   return out;

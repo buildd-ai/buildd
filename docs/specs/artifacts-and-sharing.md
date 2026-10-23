@@ -649,6 +649,10 @@ the linker cannot reach.
   manifest (at most 20 lines, plus `task.context.artifactManifest`), after the
   discrepancy block and before the task-area hint. Best-effort: a failure
   attaches nothing.
+- A `design_reference` link is also resolved at claim into `task.context.designSource` (task link, else mission link, else the spec pin),
+  carrying the name and size of the screens that matter (`screenInfo`) beside their ids. An HTML file already in buildd that declares
+  `data-screen` sections is attached as a design directly: attaching marks it a design and records its screens, leaving its bytes and
+  revisions as they were.
 - Owned by Living Specs: only `apps/web/src/lib/artifact-links.ts` writes the table.
 
 **Acceptance criteria**:

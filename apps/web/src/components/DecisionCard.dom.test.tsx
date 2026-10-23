@@ -75,7 +75,7 @@ const flush = async () => { await act(async () => { await new Promise(r => setTi
 describe('DecisionCard', () => {
   it('reads top to bottom: the task and its age, the why and who waits, the question, two options with effects, then the text buttons', () => {
     act(() => root.render(<DecisionCard view={decision()} now={T0} />));
-    const subject = q('[data-testid="decision-subject"]')!;
+    const subject = q('[data-testid="question-subject"]')!;
     expect(subject.textContent).toBe('●Mirror the runner image to Docker Hub· asked 4m ago');
     expect(subject.querySelector('a')!.getAttribute('href')).toBe('/app/tasks/t1');
     expect(q('[data-testid="decision-summary"]')!.textContent).toContain('The release publishes an image digest and A runner bundle on every release wait on this.');
@@ -87,7 +87,7 @@ describe('DecisionCard', () => {
     // The order on screen: subject, summary, question, options, then Answer differently and Not now.
     const html = container.innerHTML;
     const at = (s: string) => html.indexOf(s);
-    expect(at('decision-subject')).toBeLessThan(at('decision-summary'));
+    expect(at('question-subject')).toBeLessThan(at('decision-summary'));
     expect(at('decision-summary')).toBeLessThan(at('decision-question'));
     expect(at('decision-question')).toBeLessThan(at('decision-option'));
     expect(at('decision-option')).toBeLessThan(at('decision-answer-differently'));
@@ -170,7 +170,7 @@ describe('DecisionCard', () => {
       answer: { kind: 'note', missionId: 'm1', noteId: 'n1' },
     });
     act(() => root.render(<DecisionCard view={view} now={T0} />));
-    expect(q('[data-testid="decision-subject"]')!.textContent).toContain('Billing exports');
+    expect(q('[data-testid="question-subject"]')!.textContent).toContain('Billing exports');
     await act(async () => { qa('[data-testid="decision-option"]')[0].click(); });
     await flush();
     expect(calls[0].url).toBe('/api/missions/m1/notes/n1/reply');

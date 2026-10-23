@@ -8,7 +8,8 @@
  */
 
 import { githubApi, githubApiText } from '@/lib/github';
-import { extractFailureDigest } from '@/lib/ci-failure-digest';
+import { extractFailureDigest, DIGEST_MAX_CHARS } from '@/lib/ci-failure-digest';
+import { failingLines } from '@/lib/red-check-cause';
 import type { ReleasePrFacts } from '@buildd/core/release-candidate';
 
 export interface CIFailureInfo {
@@ -158,7 +159,9 @@ export async function fetchCIFailureLogs(
           installationId,
           `/repos/${repoFullName}/actions/jobs/${firstFailedJobId}/logs`,
         );
-        digest = extractFailureDigest(log);
+        // No digest or annotation (a killed or timed-out run): the failing
+        // lines, never the cleanup tail (surface-ia §11 R-2).
+        digest = extractFailureDigest(log) ?? failingLines(log)?.slice(0, DIGEST_MAX_CHARS) ?? null;
       } catch (err) {
         // Soft: the job/step summary below is still worth shipping, and a retry
         // task with a thinner description beats no retry task.

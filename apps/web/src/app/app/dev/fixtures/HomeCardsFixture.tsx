@@ -4,7 +4,10 @@
  * `?state=home-cards`: Home with a busy fleet, the same tree at every width:
  * eight decisions, Agents, Moving toward delivery and Landed.
  * `&data=one` is one decision; `&data=empty` is a team with a runner, nothing
- * moving, nothing shipped and nothing to decide. The CI clone has no live
+ * moving, nothing shipped and nothing to decide. `&data=red-checks` is the
+ * card for a PR whose checks fail (surface-ia §11): a likely flake that leads
+ * with Re-run, an approved PR with a real test failure, and a flake that
+ * failed again after its re-run. The CI clone has no live
  * runner or queue, so this is where both are seen populated. Invented data.
  */
 import { useEffect, useState } from 'react';
@@ -14,6 +17,7 @@ import { HomeBody } from '../../(protected)/home/HomeBody';
 import { deriveHomeAttention } from '@/lib/home-attention';
 import { describeCriteriaBlocker } from '@/lib/completion-check-summary';
 import { CRITERIA_ESCALATION_NOTE_TITLE } from '@/lib/escalation-note-title';
+import { redCheckView, type RedCheckRecord } from '@/lib/red-check-cause';
 import type { GoalCriteriaState } from '@buildd/shared';
 import type { ActionQueueItem } from '@/lib/action-queue';
 import { toDeliveryRow, type DeliveryCounts, type MissionDelivery } from '@/lib/delivery-projection';
@@ -101,11 +105,25 @@ const CHECKS = deriveHomeAttention({
   held: [{ id: 'example-held', title: 'Activity improvements', href: '#', ready: 0, total: 2, done: 0, roles: [], heldFor: null }],
 });
 
+// `&data=red-checks`: the two cards Home showed on 2026-10-23 as "Tests are failing.", as they read now.
+const RED = (n: number, title: string, record: Omit<RedCheckRecord, 'headSha' | 'runId' | 'runAttempt' | 'at' | 'signature'>, history: { pushedNothing: number; noChange: number }, reviewApproved = false): ActionQueueItem => ({
+  subjectKey: `red${n}`, chip: 'BLOCKED', prNumber: n, workspaceId: 'ws', taskTitle: title, prUrl: PR(n),
+  ciGate: { kind: 'blocked', reason: 'CI failing', recommendation: null, red: redCheckView({ headSha: 'h', runId: 1, runAttempt: 1, at: '', signature: 's', ...record }, history), ...(reviewApproved ? { reviewApproved } : {}) },
+} as ActionQueueItem);
+const RED_CHECKS = deriveHomeAttention({
+  queue: [
+    RED(51, 'fix(missions): honest visual review states', { cause: 'flake', jobs: [{ name: 'DB architecture (real Postgres)', step: 'Run DB architecture tests', lines: null, rule: 'db_connection_lost' }] }, { pushedNothing: 0, noChange: 2 }),
+    RED(52, 'feat(runner): status on Windows', { cause: 'failure', jobs: [{ name: 'Runner unit tests (windows)', step: 'Run runner unit tests', lines: '(fail) launcher > dispatches status on Windows', rule: 'test' }] }, { pushedNothing: 1, noChange: 0 }, true),
+    RED(53, 'chore(db): index task events', { cause: 'flake', failedAfterRerun: true, jobs: [{ name: 'DB architecture (real Postgres)', step: 'Run DB architecture tests', lines: null, rule: 'db_connection_lost' }] }, { pushedNothing: 0, noChange: 0 }),
+  ],
+  missions: [], questions: [], held: [], isActionable: () => true,
+});
+
 export default function HomeCardsFixture() {
   const [data, setData] = useState<string | null>(null);
   useEffect(() => { setData(new URLSearchParams(window.location.search).get('data')); }, []);
   const empty = data === 'empty';
-  const items = empty ? [] : data === 'checks' ? CHECKS : data === 'one' ? ONE : DECISIONS;
+  const items = empty ? [] : data === 'checks' ? CHECKS : data === 'red-checks' ? RED_CHECKS : data === 'one' ? ONE : DECISIONS;
   const agents = <AgentsPanel model={empty ? AGENTS_IDLE : AGENTS} occupancy={empty ? QUIET_DAY : BUSY_DAY} idle={empty ? [] : IDLE} />;
   const milestones = empty ? [] : MILESTONES.map(toDeliveryRow);
   const counts = empty ? COUNTS_EMPTY : COUNTS;
