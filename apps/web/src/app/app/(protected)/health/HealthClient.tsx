@@ -45,6 +45,7 @@ import {
 import { resolveClaudeRoute } from '@/lib/claude-route-eligibility';
 import { strandHeadline } from '@/lib/strand-headline';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
+import RunnerSlotsControl from '@/components/RunnerSlotsControl';
 import { describeRunnerRoute } from '@/lib/runner-route';
 import { countOf } from '@/lib/plural';
 import { OccupancyChart } from '@/components/fleet/OccupancyChart';
@@ -947,8 +948,8 @@ export function HealthClient({
                       <div className="px-4 pb-4 space-y-3 border-t border-border-default bg-surface-1/50">
                         <RunnerSlotDetail
                           fleetRow={fleetRow}
+                          runner={hb}
                           online={online}
-                          busyLine={busyLine}
                           lastHeartbeatAt={hb.lastHeartbeatAt}
                           now={now}
                           seesTeamWork={seesTeamWork}
@@ -1120,10 +1121,10 @@ export function HealthClient({
  * same fleet row the collapsed line uses, so the counts cannot disagree. A
  * working claim that holds no slot is not shown here as a slot.
  */
-function RunnerSlotDetail({ fleetRow, online, busyLine, lastHeartbeatAt, now, seesTeamWork, ownerLabel, route }: {
+function RunnerSlotDetail({ fleetRow, runner, online, lastHeartbeatAt, now, seesTeamWork, ownerLabel, route }: {
   fleetRow: FleetSnapshot['runners'][number] | null;
+  runner: RunnerHeartbeat;
   online: boolean;
-  busyLine: string;
   lastHeartbeatAt: string | null;
   now: number;
   seesTeamWork: boolean;
@@ -1148,10 +1149,16 @@ function RunnerSlotDetail({ fleetRow, online, busyLine, lastHeartbeatAt, now, se
         <dt className="text-text-muted">Route</dt>
         <dd data-testid="health-runner-route" className="text-text-primary">Claude: {route.claude} · Codex: {route.codex}</dd>
       </dl>
-      <p className="text-meta font-medium text-text-secondary">
-        Slots
-        <span className="ml-2 font-normal normal-case text-text-muted">{busyLine}</span>
-      </p>
+      <p className="text-meta font-medium text-text-secondary">Slots</p>
+      {/* The busy count, where the number came from and, for an owner or admin, the stepper (spec 34a48877 R-5, R-22, R-23). */}
+      <RunnerSlotsControl
+        runnerId={runner.id}
+        active={fleetRow ? fleetRow.slots.filter(s => s.worker).length : runner.activeWorkerCount}
+        reported={fleetRow?.maxSlots ?? runner.maxConcurrentWorkers}
+        online={online}
+        info={runner.slots ? { desired: runner.slots.desired, origin: runner.slots.origin, setBy: runner.slots.setBy, setAt: runner.slots.setAt } : null}
+        canEdit={runner.slots?.canEdit ?? false}
+      />
       {slots.length === 0 ? (
         <p className="text-xs text-text-muted">No slot detail reported for this runner.</p>
       ) : (

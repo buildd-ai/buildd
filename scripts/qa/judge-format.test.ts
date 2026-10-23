@@ -107,3 +107,92 @@ describe('renderReport', () => {
     expect(md).toContain('**m-list** — `MATCHES-SPEC`');
   });
 });
+
+describe('design vs built', () => {
+  const design = {
+    design: { artifactId: '6356e80d-d2c5-4d52-878e-3025d23cf169', revision: 1, sha256: 'a'.repeat(64), source: 'url' as const },
+    criteria: [
+      { id: 'AC-4', text: 'The decision card, bar, summary line and the decision row are visible.', screens: ['phone-mission'] },
+      { id: 'AC-1', text: 'Every task link goes to the task page.', screens: [] },
+    ],
+    shots: [{ screen: 'phone-mission', file: 'designs/phone-mission.png', viewport: { width: 390, height: 844 }, theme: 'light', href: '/app/artifacts/6356e80d-d2c5-4d52-878e-3025d23cf169?screen=phone-mission&revision=1' }],
+    pairs: [{
+      captureId: 'fx', route: '/app/dev/fixtures?state=mission-detail-compact', screen: 'phone-mission', criteria: ['AC-4'],
+      designViewport: { width: 390, height: 844 }, builtViewport: { width: 390, height: 844 }, theme: 'light' as const, builtTheme: 'light' as const, themeMismatch: false,
+      designImage: 'designs/phone-mission.png', builtImage: 'screenshots/fx.png', sideBySide: 'side-by-side/fx--phone-mission.png',
+    }],
+    unmatchedScreens: ['desktop-mission'],
+  };
+  const caps = [cap({ id: 'fx', path: '/app/dev/fixtures?state=mission-detail-compact', screenshotFile: 'fx.png' }), cap({ id: 'home', path: '/app/home', screenshotFile: 'home.png' })];
+
+  test('a route paired with a screen carries both images, the criterion words and the ask', () => {
+    const input = buildJudgeInput(manifest, caps, design);
+    const fx = input.routes.find(r => r.id === 'fx')!;
+    expect(fx.designChecks).toEqual([{
+      id: 'design:phone-mission',
+      screen: 'phone-mission',
+      judge: true,
+      design: 'designs/phone-mission.png',
+      built: 'screenshots/fx.png',
+      sideBySide: 'side-by-side/fx--phone-mission.png',
+      designViewport: { width: 390, height: 844 },
+      builtViewport: { width: 390, height: 844 },
+      theme: 'light',
+      criteria: [{ id: 'AC-4', text: 'The decision card, bar, summary line and the decision row are visible.' }],
+      designHref: '/app/artifacts/6356e80d-d2c5-4d52-878e-3025d23cf169?screen=phone-mission&revision=1',
+    }]);
+    // The generic checks still run: a criterion with no screen is judged as today.
+    expect(fx.expectations.length).toBeGreaterThan(0);
+    expect(input.routes.find(r => r.id === 'home')!.designChecks).toBeUndefined();
+    expect(input.instructions).toMatch(/layout, content order, words and states/);
+    expect(input.instructions).toMatch(/not pixels/);
+    expect(input.instructions).toMatch(/screen id/);
+    expect(input.unmatchedScreens).toEqual(['desktop-mission']);
+  });
+
+  test('without a design the input is unchanged', () => {
+    const input = buildJudgeInput(manifest, caps);
+    expect(input.instructions).toBeUndefined();
+    expect(input.routes.every(r => r.designChecks === undefined)).toBe(true);
+  });
+
+  test('a page shot in the other theme is not compared: Night/Day parity is its own check', () => {
+    const input = buildJudgeInput(manifest, caps, { ...design, pairs: [{ ...design.pairs[0], builtTheme: 'dark' as const, themeMismatch: true }] });
+    expect(input.routes.find(r => r.id === 'fx')!.designChecks![0]).toMatchObject({ judge: false, skipReason: expect.stringMatching(/theme/) });
+  });
+
+  test('the verdict cites the screen, keeps both images, and a difference fails the route', () => {
+    const input = buildJudgeInput(manifest, caps, design);
+    const verdicts = assembleVerdicts(input, {
+      fx: {
+        summary: 's',
+        expectations: [{ id: 'renders', verdict: 'pass' }, { id: 'first-screen', verdict: 'pass' }, { id: 'no-overflow', verdict: 'pass' }, { id: 'tap-targets', verdict: 'pass' }],
+        designChecks: [{ screen: 'phone-mission', verdict: 'fail', reason: 'The decision card sits below the bar.', differences: [{ kind: 'order', detail: 'decision card after the bar, design has it first' }] }],
+      },
+    }, caps);
+    const fx = verdicts.find(v => v.id === 'fx')!;
+    expect(fx.overallVerdict).toBe('FAIL');
+    expect(fx.design).toEqual([{
+      screen: 'phone-mission', verdict: 'CONTRADICTED', evidence: 'The decision card sits below the bar.',
+      differences: [{ kind: 'order', detail: 'decision card after the bar, design has it first' }],
+      criteria: ['AC-4'], designImage: 'designs/phone-mission.png', builtImage: 'screenshots/fx.png',
+      sideBySide: 'side-by-side/fx--phone-mission.png', designHref: '/app/artifacts/6356e80d-d2c5-4d52-878e-3025d23cf169?screen=phone-mission&revision=1',
+    }]);
+    const report = renderReport(verdicts);
+    expect(report).toContain('Design vs built');
+    expect(report).toContain('**phone-mission** (AC-4)');
+    expect(report).toContain('![Design · phone-mission](designs/phone-mission.png)');
+    expect(report).toContain('![Built · fx](screenshots/fx.png)');
+    expect(report).toContain('order: decision card after the bar');
+  });
+
+  test('a design check the judge skipped is unsure, never a pass', () => {
+    const input = buildJudgeInput(manifest, caps, design);
+    const verdicts = assembleVerdicts(input, {
+      fx: { summary: 's', expectations: [{ id: 'renders', verdict: 'pass' }, { id: 'first-screen', verdict: 'pass' }, { id: 'no-overflow', verdict: 'pass' }, { id: 'tap-targets', verdict: 'pass' }] },
+    }, caps);
+    const fx = verdicts.find(v => v.id === 'fx')!;
+    expect(fx.design![0]).toMatchObject({ screen: 'phone-mission', verdict: 'UNSURE' });
+    expect(fx.overallVerdict).toBe('PARTIAL');
+  });
+});
