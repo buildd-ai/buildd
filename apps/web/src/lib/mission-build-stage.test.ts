@@ -1,10 +1,12 @@
 /**
  * The Build stage as data (Navigation d25d923d R-5, R-14, AC-4, AC-14): the
  * summary line, the list order, the words per state, the merged fold and the
- * waiting groups. Illustrative rows through the real `buildMissionBoard`.
+ * waiting groups, and what sets the finish (R-22, AC-18). Illustrative rows
+ * through the real `buildMissionBoard`.
  */
 import { describe, expect, it } from 'bun:test';
 import { buildMissionBoard, type BoardTaskInput, type BoardWorkerInput, type MissionBoardInput } from './mission-board';
+import { missionFinishClause } from './flow-timeline';
 import { buildFoldLine, buildRowState, buildStage, buildSummaryLine, mergedFoldLine, WAITING_GROUP_FROM } from './mission-build-stage';
 
 const T0 = Date.UTC(2026, 9, 22, 12, 0, 0);
@@ -181,5 +183,30 @@ describe('lines', () => {
     expect(buildRowState(m, id(DECISION))).toBe('decision');
     expect(buildRowState(m, id(15))).toBe('waiting');
     expect(buildRowState(m, id(16))).toBe('queued');
+  });
+});
+
+describe('the summary names what sets the finish (R-22, AC-18)', () => {
+  const model = board(sixteen());
+  const unmerged = [DECISION, 13, 14, 15, 16].map(id);
+  const estimates = Object.fromEntries(unmerged.map(t => [t, 30]));
+
+  it('every task on the path estimated: the summary ends with the path by name', () => {
+    const finish = missionFinishClause(model, NOW, estimates);
+    const stage = buildStage(model, NOW, { hrefFor, clock, finish });
+    expect(stage.summary).toBe('11 of 16 merged · 1 running · 1 fixing · 1 your decision · 2 waiting · finish depends on Mirror the runner image to Docker Hub, then The release publishes an image digest');
+  });
+
+  it('one task on the path without an estimate: the clause is left out', () => {
+    const { [id(15)]: _gone, ...missing } = estimates;
+    const finish = missionFinishClause(model, NOW, missing);
+    expect(finish).toBeNull();
+    expect(buildStage(model, NOW, { hrefFor, clock, finish }).summary).toBe('11 of 16 merged · 1 running · 1 fixing · 1 your decision · 2 waiting');
+  });
+
+  it('every build task merged: no clause, whatever is passed', () => {
+    const done = board(Array.from({ length: 3 }, (_, i) => merged(i + 1, `feat: step ${i + 1}`)));
+    expect(missionFinishClause(done, NOW, Object.fromEntries([1, 2, 3].map(n => [id(n), 30])))).toBeNull();
+    expect(buildStage(done, NOW, { hrefFor, clock, finish: 'finish depends on X' }).summary).toBe('3 of 3 merged');
   });
 });

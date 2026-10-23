@@ -98,8 +98,8 @@ a blocked task, sparse otherwise). Every row is the same height.
 **R-5**: A task's gates MUST be its on-mission stored dependencies
 plus every same-files wait Buildd added for it (the `softOverlaps` on its path
 declaration, `readSoftOverlaps` via `sameFilesFromRows`). A same-files wait
-gates the start exactly like a dependency (R-2) and counts for the critical
-path (R-15).
+gates the start exactly like a dependency (R-2) but does not count for the
+critical path (R-15).
 
 **R-6**: A gate to a task that is not on this mission, to the task
 itself, or that repeats a stored dependency MUST be ignored. A dependency cycle
@@ -145,17 +145,21 @@ An edge between two folded tasks is not drawn.
 
 ## 5. Critical path
 
-**R-15**: The critical path MUST be the longest path through the gates:
-start from the task that finishes last, step back through whichever of its
-gates finishes last, and stop at a task with no gates (`criticalPath`). Ties go
-to the later row.
+**R-15**: The critical path MUST be the longest path through the declared
+dependencies (and lanes once overlap scheduling ships), scheduled without the
+same-files waits: start from the task that finishes last, step back through
+whichever of its gates finishes last, and stop at a task with no gates
+(`criticalPath`). Ties go to the later row. It is the one computation behind
+this sentence and the Build summary's `finish depends on` clause (Navigation
+d25d923d R-22, `finishDependsOn`), so both name the same task.
 
 **R-16**: Above the timeline, one sentence MUST name the first unlanded
-task on the critical path by its tick and its display state's word in lower
-case, then the rest of the path by tick (`criticalPathLine`):
-`Finish is set by 04 (building), then 06 → 07.` When the path has one unlanded
-task the `, then …` clause is omitted; when all of it has landed there is no
-sentence.
+task on the critical path by its display name (`displayTaskTitle`) and its
+display state's word in lower case, then the rest of the path by name, at most
+three names in all and then `+N` (`criticalPathLine`, `FINISH_NAMES_MAX`):
+`Finish is set by Missions portfolio list (building), then Mission detail →
+Final audit.` When the path has one unlanded task the `, then …` clause is
+omitted; when all of it has landed there is no sentence.
 
 **R-17**: Every unlanded bar on the critical path MUST carry an ink
 outline; no other bar does.
@@ -190,7 +194,7 @@ start, plus `now` while the mission runs.
 ## Acceptance criteria
 
 - AC-1: GIVEN a mission with seven tasks, WHEN the Flow tab renders, THEN it shows seven rows numbered `01`…`07` in the strip's order.
-- AC-2: GIVEN 02 → {03, 04}, {03, 04} → 06, 03 → 05, {05, 06} → 07, with 04 building and finishing after 03, WHEN the tab renders, THEN the sentence reads `Finish is set by 04 (building), then 06 → 07.`
+- AC-2: GIVEN 02 → {03, 04}, {03, 04} → 06, 03 → 05, {05, 06} → 07, with 04 building and finishing after 03, WHEN the tab renders, THEN the sentence reads `Finish is set by <04's name> (building), then <06's name> → <07's name>.`
 - AC-3: GIVEN A (10m) → C and B (60m) → C, WHEN the critical path is computed, THEN it is B → C.
 - AC-4: GIVEN task 10 has a same-files wait on 05 and a dependency on landed 06, WHEN the schedule is built, THEN 10 starts at 05's finish plus the audit wait, and a dotted edge 05 → 10 is drawn.
 - AC-5: GIVEN the same mission without the same-files wait, WHEN the schedule is built, THEN 10 starts now and no 05 → 10 edge exists.
@@ -206,7 +210,8 @@ start, plus `now` while the mission runs.
 ## Code surface
 
 - `apps/web/src/lib/flow-timeline.ts`: `buildFlowTimeline`, `flowGates`,
-  `criticalPath`, `finishSetBy`, `criticalPathLine`, `defaultFlowSelection`,
+  `criticalPath`, `finishSetBy`, `criticalPathLine`, `finishDependsOn`,
+  `missionFinishClause`, `flowTaskName`, `FINISH_NAMES_MAX`, `defaultFlowSelection`,
   `flowLit`, `flowEdges`, `shouldFoldMerged`, `layoutFlowTimeline`,
   `flowEdgePaths`, `flowAxisTicks`, `sameFilesFromRows`,
   `expectedMinutesFromPredictions`, `FLOW_AUDIT_WAIT_MS`,
