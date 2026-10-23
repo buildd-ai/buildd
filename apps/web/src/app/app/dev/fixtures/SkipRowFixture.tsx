@@ -25,7 +25,7 @@ const HEAD = 'abc1234def5678';
 const openPr = { number: 9, state: 'open' as const, ready: true, blocked: false };
 
 /** Dated well before the fixture's audit, so a held Skip reads waived through its later round (AC-24). */
-const EARLY_WAIVER = { reason: 'Ship it anyway: the loading state is intentional', actorLabel: 'Sam', at: '2026-01-01T00:00:00Z' };
+const EARLY_WAIVER = { reason: 'Ship it anyway: The loading state is intentional', actorLabel: 'Sam', at: '2026-01-01T00:00:00Z' };
 
 export default function SkipRowFixture() {
   // Read the URL after mount, like VisualReviewFixture, so server and client render alike.
