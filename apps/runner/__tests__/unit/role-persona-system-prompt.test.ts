@@ -47,11 +47,15 @@ describe('buildRoleSystemPromptSection', () => {
 // ─── Behavioural: the assembled prompt ──────────────────────────────────────
 
 let lastQueryOpts: any = null;
+// Every query() call, in order. A session from an earlier test can still reach
+// query() after the next test has started, so runTask picks its own call out
+// of this list by worker id rather than trusting whichever call came last.
+const queryCalls: any[] = [];
 let mockMessages: any[] = [];
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (opts: any) => {
-    lastQueryOpts = opts;
+    queryCalls.push(opts);
     const msgs = [...mockMessages];
     let idx = 0;
     return {
@@ -225,8 +229,19 @@ async function runTask(
     ...claimExtra,
   }] }));
   await manager.claimAndStart(task as any);
-  await new Promise(r => setTimeout(r, 250));
-  return (lastQueryOpts?.options?.systemPrompt?.append ?? '') as string;
+  // Wait for this worker's session to reach query() rather than sleeping a
+  // fixed time: a cold first session on the Windows runner took longer than
+  // 250ms, so the append read back as '' and the first test failed.
+  const mine = (opts: any) => {
+    const url = opts?.options?.mcpServers?.buildd?.url;
+    return typeof url === 'string' && new URL(url).searchParams.get('worker') === workerId;
+  };
+  const deadline = Date.now() + 10_000;
+  while (!(lastQueryOpts = queryCalls.find(mine) ?? null) && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 10));
+  }
+  if (!lastQueryOpts) throw new Error(`session for ${workerId} never reached query()`);
+  return (lastQueryOpts.options?.systemPrompt?.append ?? '') as string;
 }
 
 function countOccurrences(haystack: string, needle: string): number {

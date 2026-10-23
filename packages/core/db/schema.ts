@@ -852,6 +852,17 @@ export type ReleaseTrigger =
 // Stored as jsonb, so this is a free-form shape (no migration on change). All
 // step-specific fields are optional; `resolveReleaseStrategy` validates them
 // per the chosen strategy.
+/**
+ * The release workflow's declared way to move an open frozen candidate.
+ *  - `inputs`: dispatch the workflow with `versionInput` (and `confirmInput`,
+ *    when the workflow asks for the version twice) set to the candidate version.
+ *  - `redispatch`: dispatch the workflow with its ordinary inputs; the team's
+ *    pipeline re-cuts the candidate itself.
+ */
+export type ReleaseCandidateAmendContract =
+  | { mode: 'inputs'; versionInput: string; confirmInput?: string }
+  | { mode: 'redispatch' };
+
 export interface WorkspaceReleaseConfig {
   // Whether this workspace is configured for releases. Projects without this never release.
   enabled: boolean;
@@ -896,6 +907,12 @@ export interface WorkspaceReleaseConfig {
     // GitHub logins allowed to open candidate PRs: the release workflow's
     // identity (e.g. 'github-actions[bot]'). A PR by anyone else is ordinary.
     authors: string[];
+    // How buildd may move an open candidate once the dev-side fix for its red
+    // CI merges (lib/release/candidate-amend.ts). No default: absent ⇒ buildd
+    // dispatches nothing and says a re-cut is needed. Checked against the
+    // workflow file's workflow_dispatch inputs at `ref` on save and before
+    // every dispatch (packages/core/release-config-shape.ts).
+    amend?: ReleaseCandidateAmendContract;
   };
 
   // Deploy target for verifying the production deploy completed
@@ -3693,6 +3710,15 @@ export const missionNotes = pgTable('mission_notes', {
   collapseCount: integer('collapse_count').default(1).notNull(),
   replyTo: uuid('reply_to'),
   defaultChoice: text('default_choice'),
+  // The task a question is about, when that is not the task that asked it
+  // (an organizer's decision about a build task). NULL: the card falls back
+  // to the mission. Validated on write: same mission, or same workspace for a
+  // task-scoped note. No FK, like task_id: notes outlive deleted tasks.
+  subjectTaskId: uuid('subject_task_id'),
+  // A question's structured options (question-brief.ts `DecisionOption`):
+  // label, consequence (the hover tip), effect (the button line, under 40
+  // characters), recommended. NULL on notes whose options live only in the body.
+  options: jsonb('options').$type<Array<{ label: string; consequence?: string; effect?: string; recommended?: boolean }>>(),
   status: text('status').notNull().default('open').$type<'open' | 'answered' | 'dismissed' | 'superseded'>(),
   // Human-attention disposition of an agent/outside-caller question note
   // (packages/core/needs-you.ts): only 'ask' reaches Needs You;

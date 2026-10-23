@@ -640,7 +640,8 @@ UPDATE mission_notes n SET
   body = pg_temp.qa_text(n.body),
   actor_label = pg_temp.qa_hash('Actor ', n.actor_label),
   collapse_key = pg_temp.qa_hash('key-', n.collapse_key),
-  default_choice = pg_temp.qa_text(n.default_choice)
+  default_choice = pg_temp.qa_text(n.default_choice),
+  options = pg_temp.qa_json(n.options)
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM mission_notes) s WHERE n.id = s.id;
 
 UPDATE artifacts a SET

@@ -2,8 +2,10 @@
 
 import { resolvePrDisplayState, type PrDisplayState } from '@/lib/pr-presentation';
 import { isOpenAsk, recoveredRepairTaskId } from '@/lib/open-ask';
+import { runStall } from '@/lib/run-stall';
+import { RunStallContext } from './run-stall-context';
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import WorkerActivityTimeline, { collapseWorkspacePath, ageLabel } from './WorkerActivityTimeline';
@@ -96,6 +98,8 @@ export interface LiveWorker {
 
 interface Props {
   initialWorker: LiveWorker;
+  /** Live controls stay near Now rather than below an unbounded history. */
+  controls?: ReactNode;
   outputRequirement?: string | null;
   deliverableArtifactCount?: number;
   usesReviewer?: boolean;
@@ -148,7 +152,7 @@ interface Props {
 // trees can be reconstructed; see @/lib/agent-tree.
 type TaskProgressEntry = AgentProgressEntry;
 
-export default function RealTimeWorkerView({ initialWorker: renderedWorker, outputRequirement, deliverableArtifactCount, usesReviewer, reviewState, taskId, taskStatus: renderedStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp, delivery = null, focusAnswer = false, refresh }: Props) {
+export default function RealTimeWorkerView({ initialWorker: renderedWorker, outputRequirement, deliverableArtifactCount, usesReviewer, reviewState, taskId, taskStatus: renderedStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp, delivery = null, focusAnswer = false, refresh, controls }: Props) {
   // On the task page a live event re-reads the worker and the task's status
   // (LiveData); a read of this worker wins over what the page rendered.
   const region = useRegionValue<TaskLiveRegion>();
@@ -275,6 +279,8 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
     nowMs,
   });
   const elapsed = startMs != null ? elapsedLabel(nowMs - startMs) : null;
+  // No reported progress for 30 minutes: flagged, and the controls offer Restart (R-7).
+  const stall = worker.waitingFor ? null : runStall({ status: worker.status, startMs, progressMs: now.updatedTs, nowMs });
   const tokens = (worker.inputTokens || 0) + (worker.outputTokens || 0);
   // 0 tokens after real turns is a reporting gap, not a measurement: hide it.
   const tokensShown = showTokenCount(tokens, worker.turns);
@@ -318,6 +324,7 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
           <p className="mt-1 text-sm font-semibold text-text-primary">{delivery.headline}</p>
           {delivery.detail && <p className="mt-1 text-sm text-text-secondary">{delivery.detail}</p>}
         </div>
+        {controls}
       </div>
     );
   }
@@ -335,6 +342,7 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
           </p>
           <p className="mt-1 text-sm text-text-secondary">A platform problem stopped this task. It resumes when the repair completes.</p>
         </div>
+        {controls}
       </div>
     );
   }
@@ -363,6 +371,7 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
           />
         </div>
 
+        {controls}
         <PausedBar evidence={now.evidence} elapsed={elapsed} turns={worker.turns} tokens={tokensShown ? formatTokens(tokens) : null} nowMs={nowMs} />
 
         <div data-testid="worker-paused-context" className="border-t border-border-default">
@@ -386,15 +395,18 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
   }
 
   return (
-    <div data-testid="worker-view" data-state="running">
+    <RunStallContext.Provider value={stall}>
+    <div data-testid="worker-view" data-state={stall ? 'stalled' : 'running'}>
       {staleBanner}
       {isActive ? (
-        <NowStrip now={now} nowMs={nowMs} />
+        <NowStrip now={now} nowMs={nowMs} stall={stall} />
       ) : (
         worker.currentAction && (
           <p data-testid="worker-current-action" className="text-sm text-text-secondary truncate">{collapseWorkspacePath(worker.currentAction)}</p>
         )
       )}
+
+      {controls && <div className="my-4" data-testid="worker-live-controls">{controls}</div>}
 
       {/* Results: what the run has produced so far, before the log. */}
       <StatRow
@@ -458,6 +470,7 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
         </div>
       )}
     </div>
+    </RunStallContext.Provider>
   );
 }
 

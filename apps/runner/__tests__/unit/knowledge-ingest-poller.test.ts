@@ -237,7 +237,10 @@ describe('backfill does not starve the event loop', () => {
       // Sync git per file made this seconds; async keeps single stalls small.
       expect(maxLag).toBeLessThan(250);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      // Windows can hold git's files briefly (EBUSY); cleanup must not fail the test.
+      try {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      } catch {}
     }
   }, 60_000);
 });

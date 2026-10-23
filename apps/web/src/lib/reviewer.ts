@@ -502,6 +502,23 @@ export function enforceServerSideEscalation(params: {
   return { verdict: 'approve', overrideReason: null };
 }
 
+/**
+ * The files a composition delta review's verdict is judged on (release-flow.md
+ * AC-25 to AC-27): the novel paths buildd computed when it dispatched the
+ * review (`context.compositionDelta`, written only by `createReviewerTask`),
+ * never the whole PR, whose other changes were each approved on their own PR.
+ * The PR's own entry is kept where it was read (status, patch); a delta path
+ * past GitHub's file-list cap still counts, by name. Any other review keeps the
+ * PR's file list as read, null (unreadable) included.
+ */
+export function scopeToCompositionDelta<T extends { filename: string }>(prFiles: T[] | null, reviewerContext: unknown): Array<T | { filename: string }> | null {
+  const delta = (reviewerContext as { compositionDelta?: { novelDeltaPaths?: unknown } } | null)?.compositionDelta;
+  const paths = Array.isArray(delta?.novelDeltaPaths) ? delta.novelDeltaPaths.filter((p): p is string => typeof p === 'string') : null;
+  if (!paths) return prFiles;
+  const read = new Map((prFiles ?? []).map((f) => [f.filename, f]));
+  return paths.map((p) => read.get(p) ?? { filename: p });
+}
+
 // ── Reviewer task creation ────────────────────────────────────────────────────
 
 export interface CreateReviewerTaskParams {
@@ -585,7 +602,7 @@ export interface CreateReviewerTaskParams {
    * change in it was already reviewed at its own head and mechanically
    * attested, so this review covers ONLY these novel paths.
    */
-  compositionScope?: { novelDeltaPaths: string[] };
+  compositionScope?: CompositionScope;
   /**
    * Set by the kernel: the delivery's findings still open (§5), and, for a
    * verification round, the ones this round exists to verify.
@@ -638,19 +655,34 @@ export function findingsSection(brief: FindingsBrief | null | undefined): string
   return lines.join('\n');
 }
 
+export interface CompositionScope {
+  novelDeltaPaths: string[];
+  /** A release candidate's delta (release-flow.md AC-26): the commits no earlier review covered. */
+  novelCommits?: Array<{ sha: string; reason: string; paths: string[] }>;
+}
+
 /** The prompt section that scopes a composition delta review to its novel paths. */
-export function compositionScopeSection(scope: { novelDeltaPaths: string[] }): string {
+export function compositionScopeSection(scope: CompositionScope): string {
+  const commits = scope.novelCommits ?? [];
   return [
     '',
     '## Composition verified: review only the novel delta',
     '',
     'This PR is composed of changes that were each already reviewed and approved at their own head;',
     'buildd checked that mechanically (composition attestation). Those changes are NOT yours to re-review,',
-    'and the release-PR escalation rule does not apply to them. Review ONLY these paths, which no prior',
+    'and the release-PR escalation rule does not apply to them. Neither does the size of the whole PR, nor a',
+    'workspace path class that only those reviewed changes touch. Review ONLY these paths, which no prior',
     'review covers, under the normal policy (escalate or request changes on them exactly as you would on any PR):',
     '',
     ...scope.novelDeltaPaths.map((p) => `- \`${p}\``),
     '',
+    ...(commits.length ? [
+      'They come from these commits, each with no reviewed PR behind it. Read each one on its own',
+      '(`git show <sha>`), not the whole PR diff:',
+      '',
+      ...commits.map((c) => `- \`${c.sha}\` (${c.reason.replace(/_/g, ' ')}): ${c.paths.map((p) => `\`${p}\``).join(', ')}`),
+      '',
+    ] : []),
     'If this PR merges its base branch in (a mission branch refresh), these are the paths the merge decided:',
     'check that each one keeps both sides\' changes, and that nothing either side added was dropped.',
     '',
@@ -964,7 +996,12 @@ export async function createReviewerTask(
         // that index.
         ...(missionCriteria.length > 0 ? { [REVIEWER_CRITERIA_CONTEXT_KEY]: missionCriteria } : {}),
         ...(params.workflowRound ? { workflowRoundId: params.workflowRound.roundId } : {}),
-        ...(params.compositionScope ? { compositionDelta: { novelDeltaPaths: params.compositionScope.novelDeltaPaths } } : {}),
+        ...(params.compositionScope ? {
+          compositionDelta: {
+            novelDeltaPaths: params.compositionScope.novelDeltaPaths,
+            ...(params.compositionScope.novelCommits ? { commits: params.compositionScope.novelCommits.map((c) => c.sha) } : {}),
+          },
+        } : {}),
         ...(policySuggestions.length > 0 ? { policySuggestions } : {}),
       },
       ...(params.workflowRound ? { deliveryId: params.workflowRound.deliveryId, deliveryRole: 'review' as const } : {}),

@@ -62,4 +62,17 @@ describe('design actions', () => {
     for (const a of ['store_design', 'manage_designs']) expect(requiredScopeForAction(a)).toBe('tasks:write');
     expect(requiredScopeForAction('manage_designs', { action: 'list' })).toBe('tasks:read');
   });
+
+  it('get_task lists attached designs with their screen names and sizes', async () => {
+    const T = '33333333-3333-4333-8333-333333333333';
+    const api: ApiFn = async (path) => {
+      if (path.startsWith('/api/artifacts/designs')) {
+        return { designs: [{ id: D, title: 'Nav', revision: 2, pinnedRevision: 2, linkId: 'L1', screens: [{ id: 'nav-home', name: 'Home', viewport: '390x844' }] }] };
+      }
+      return { id: T, title: 'Navigation', status: 'pending', priority: 0, workers: [], artifacts: [] };
+    };
+    const out = await run(api, 'get_task', { taskId: T });
+    expect(out).toContain('## Designs (1)');
+    expect(out).toContain('screen nav-home: Home (390x844)');
+  });
 });

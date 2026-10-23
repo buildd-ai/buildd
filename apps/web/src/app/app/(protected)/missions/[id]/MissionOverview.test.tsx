@@ -99,6 +99,13 @@ describe('MissionOverview over AC-4\u2019s mission (16 tasks)', () => {
     expect(list).not.toContain('Next in line');
     expect(list).toMatch(/Fixing · CI failed · resumes \d\d:\d\d/);
   });
+
+  it('without estimates the summary names no finish; with them it ends finish depends on <task> (R-22, AC-18)', () => {
+    expect(out).not.toContain('finish depends on');
+    const withEstimates = renderToStaticMarkup(<MissionOverview model={f.model} missionId="mission-1" checks={f.checks} decisions={f.decisions} expectedMinutes={f.expectedMinutes!} />);
+    const summary = withEstimates.match(/data-testid="mission-build-summary"[^>]*>([^<]*)</)?.[1];
+    expect(summary).toBe('11 of 16 merged · 1 running · 1 fixing · 1 your decision · 2 waiting · finish depends on Mirror the runner image to Docker Hub, then The release publishes an image digest');
+  });
 });
 
 describe('MissionOverview, 11 tasks with delivery', () => {
