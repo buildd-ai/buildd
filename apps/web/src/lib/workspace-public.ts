@@ -51,7 +51,6 @@ export const PUBLIC_WORKSPACE_FIELDS = [
   'githubInstallationId',
   'accessMode',
   'dataClass',
-  'maxConcurrentTasks',
   'gitConfig',
   'configStatus',
   'releaseConfig',

@@ -76,9 +76,6 @@ export type MissionClaimData = {
   id: string;
   status: string;
   maxConcurrentTasks: number | null;
-  pacingMode: 'eager' | 'paced';
-  pacingMaxPerHour: number | null;
-  lastTaskStartedAt: Date | null;
   workingBranch: string | null;
   integrationBranchEnabled: boolean | null;
 };
@@ -104,8 +101,7 @@ export async function loadMissionCoordination(missionIds: string[]): Promise<Mis
   const missionRows = await db.query.missions.findMany({
     where: sqlWhere(inArray(missions.id, missionIds)),
     columns: {
-      id: true, status: true, maxConcurrentTasks: true, pacingMode: true,
-      pacingMaxPerHour: true, lastTaskStartedAt: true,
+      id: true, status: true, maxConcurrentTasks: true,
       workingBranch: true, integrationBranchEnabled: true,
     },
   });

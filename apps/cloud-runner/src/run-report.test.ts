@@ -426,8 +426,8 @@ describe('assembleRunReport', () => {
 
   test('deferredRetry: present only when an outcome actually deferred, sanitized and null-backoff past the cap', () => {
     expect(assembleRunReport(FULL).deferredRetry).toBeNull();
-    expect(assembleRunReport({ ...FULL, outcome: 'deferred', deferredRetry: { retryNumber: 1, backoffMs: 30_000, reason: 'workspace_cap' } }).deferredRetry)
-      .toEqual({ retryNumber: 1, backoffMs: 30_000, reason: 'workspace_cap' });
+    expect(assembleRunReport({ ...FULL, outcome: 'deferred', deferredRetry: { retryNumber: 1, backoffMs: 30_000, reason: 'mission_concurrent' } }).deferredRetry)
+      .toEqual({ retryNumber: 1, backoffMs: 30_000, reason: 'mission_concurrent' });
     expect(assembleRunReport({ ...FULL, outcome: 'start_deferred', deferredRetry: { retryNumber: 6, backoffMs: null, reason: 'container_capacity' } }).deferredRetry)
       .toEqual({ retryNumber: 6, backoffMs: null, reason: 'container_capacity' });
     // A reason that is not a short identifier (stray prose, a credential-shaped string) is dropped, not passed through.

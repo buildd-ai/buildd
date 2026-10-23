@@ -9,14 +9,13 @@ import { tasks } from '@buildd/core/db/schema';
 import { depsGate } from '@/app/api/workers/claim/deps-gate';
 import { missionNotHeld, missionNotLocal, taskNotHeld, taskNotReserved } from '@/app/api/workers/claim/held-gate';
 import { subjectLivenessCondition } from '@/app/api/workers/claim/subject-gate';
-import { workspaceCapGate } from '@/app/api/workers/claim/workspace-cap-gate';
 import { workspaceExecutorGate } from '@/app/api/workers/claim/workspace-executor-gate';
 import { appliesWorkspacePausedGate, workspaceNotPausedGate } from '@/app/api/workers/claim/workspace-paused-gate';
 import { CLAIM_COOLDOWN_MS, activeWorkerGate, roleSlugGate, runnerCooldownGate, runnerPreferenceGate } from '@/lib/claim-order';
 
 export type ClaimGateName =
   | 'claimFree' | 'activeWorker' | 'runnerPreference' | 'missionLocal' | 'taskReserved' | 'role' | 'workspaceExecutor' | 'subject'
-  | 'startAt' | 'taskHeld' | 'missionHeld' | 'deps' | 'workspacePaused' | 'workspaceCap' | 'runnerCooldown';
+  | 'startAt' | 'taskHeld' | 'missionHeld' | 'deps' | 'workspacePaused' | 'runnerCooldown';
 
 export interface ClaimCandidateInput {
   workspaceIds: string[];
@@ -55,7 +54,6 @@ export function claimCandidateWhere(input: ClaimCandidateInput): { conditions: S
   gates.taskReserved = taskNotReserved(explicitInteractive ? input.accountId : undefined);
   if (!forceClaim) gates.subject = subjectLivenessCondition();
   if (!forceClaim) gates.deps = depsGate();
-  if (!forceClaim) gates.workspaceCap = workspaceCapGate();
   if (!forceClaim) gates.workspaceExecutor = workspaceExecutorGate(executor);
   if (appliesWorkspacePausedGate({ interactive, force: forceClaim })) gates.workspacePaused = workspaceNotPausedGate(now);
   if (!explicitInteractive && runner) {

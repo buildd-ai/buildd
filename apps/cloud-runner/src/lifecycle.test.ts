@@ -91,7 +91,7 @@ describe('outcomeForExitCode', () => {
 
 describe('parseClaimDeferredLine', () => {
   test('parses a well-formed reason, rejects garbage and other prefixes', () => {
-    expect(parseClaimDeferredLine(`${CLAIM_DEFERRED_LINE_PREFIX}workspace_cap`)).toBe('workspace_cap');
+    expect(parseClaimDeferredLine(`${CLAIM_DEFERRED_LINE_PREFIX}mission_concurrent`)).toBe('mission_concurrent');
     expect(parseClaimDeferredLine(`  ${CLAIM_DEFERRED_LINE_PREFIX}no_slots  `)).toBe('no_slots');
     expect(parseClaimDeferredLine('BUILDD_WORKER_ID=w-1')).toBeNull();
     expect(parseClaimDeferredLine(`${CLAIM_DEFERRED_LINE_PREFIX}`)).toBeNull();
@@ -117,7 +117,7 @@ describe('deferredRetryBackoffMs for runner_capability', () => {
     const n = RUNNER_CAPABILITY_RETRY_BACKOFF_S.length;
     expect(deferredRetryBackoffMs(n, 'runner_capability')).toBeGreaterThan(deferredRetryBackoffMs(1, 'runner_capability')!);
     expect(deferredRetryBackoffMs(n + 1, 'runner_capability')).toBeNull();
-    expect(deferredRetryBackoffMs(1, 'workspace_cap')).toBe(30_000);
+    expect(deferredRetryBackoffMs(1, 'mission_concurrent')).toBe(30_000);
   });
 });
 

@@ -31,12 +31,12 @@ export function createReviewerStallFactsLoader(now: Date) {
   }
 
   return {
-    async load(workspace: { id: string; teamId: string | null; maxConcurrentTasks: number }, task: {
+    async load(workspace: { id: string; teamId: string | null }, task: {
       context?: Record<string, unknown> | null;
       mission?: { status: string } | null;
     }): Promise<ReviewerStallFacts> {
       if (!seats.has(workspace.id)) {
-        // Match the workspace capacity gate's active worker statuses.
+        // Live workers in the workspace (running, starting, idle).
         seats.set(workspace.id, db.select({ count: sql<number>`count(*)::int` }).from(workers)
           .where(and(eq(workers.workspaceId, workspace.id), inArray(workers.status, ['running', 'starting', 'idle'])))
           .then(rows => rows[0]?.count ?? null).catch(() => null));
@@ -82,7 +82,7 @@ export function createReviewerStallFactsLoader(now: Date) {
         if (task.mission?.status === 'budget_exhausted') budgetPauses.push('mission budget exhausted');
       }
       return {
-        seats: inProgress === null ? null : { inProgress, maxConcurrentTasks: workspace.maxConcurrentTasks },
+        seats: inProgress === null ? null : { inProgress },
         budgetPauses: budgetPauses === null ? null : [...new Set(budgetPauses)],
       };
     },

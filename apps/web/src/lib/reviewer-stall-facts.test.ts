@@ -11,7 +11,7 @@ mock.module('@buildd/core/db', () => ({ db: {
 import { createReviewerStallFactsLoader } from './reviewer-stall-facts';
 import { resolveReviewerGate } from './reviewer-gate';
 const now = new Date('2026-09-01T12:00:00Z');
-const workspace = { id: 'workspace-test', teamId: 'team-test', maxConcurrentTasks: 4 };
+const workspace = { id: 'workspace-test', teamId: 'team-test' };
 beforeEach(() => {
   count.mockReset(); count.mockResolvedValue([{ count: 0 }]);
   accounts.mockReset(); accounts.mockResolvedValue([]);
@@ -27,7 +27,7 @@ describe('render-time reviewer stall facts', () => {
         context: { lastClaimAttemptReason: 'no_pending_tasks' },
       },
     });
-    expect(gate.reason).toContain('seats 0/4');
+    expect(gate.reason).toContain('0 running in workspace');
     expect(gate.reason).toContain('no recorded budget pause');
     expect(gate.reason).toContain('no_pending_tasks');
     expect(gate.reason).not.toMatch(/contention|backoff/i);

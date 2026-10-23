@@ -148,11 +148,11 @@ describe('a held task names its hold (R-14)', () => {
   it('a recorded hold the order does not rank keeps the gate wording, with the age', () => {
     const view = deriveMissionStateView({
       ...base,
-      openTasks: [{ id: 't1', status: 'pending', createdAt: new Date(NOW - 40 * 60_000), holdReason: 'workspace_cap' }],
+      openTasks: [{ id: 't1', status: 'pending', createdAt: new Date(NOW - 40 * 60_000), holdReason: 'mission_concurrent' }],
     });
     const w = gated(view);
-    expect(w.hold).toBe('every agent slot in the workspace is in use');
-    expect(view.situation.headline).toBe('The open task is queued 40m · every agent slot in the workspace is in use.');
+    expect(w.hold).toBe('the mission is already running as many tasks as it allows');
+    expect(view.situation.headline).toBe('The open task is queued 40m · the mission is already running as many tasks as it allows.');
     expect(presentMissionState(view).cause).toBe('capacity');
   });
 
@@ -168,7 +168,7 @@ describe('a held task names its hold (R-14)', () => {
     const view = deriveMissionStateView({
       ...base,
       openTasks: [
-        { id: 't1', status: 'pending', holdReason: 'workspace_cap' },
+        { id: 't1', status: 'pending', holdReason: 'mission_concurrent' },
         { id: 't2', status: 'pending', deferral: { reason: 'path_overlap', detail: { prNumber: 9 } } },
       ],
     });

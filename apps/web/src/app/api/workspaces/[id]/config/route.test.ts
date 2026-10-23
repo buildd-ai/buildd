@@ -192,23 +192,17 @@ describe('GET /api/workspaces/[id]/config', () => {
     expect(data.configStatus).toBe('admin_confirmed');
   });
 
-  it('returns maxConcurrentTasks=3 with source=default when not explicitly set', async () => {
+  it('returns no workspace cap', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockWorkspacesFindFirst.mockResolvedValue({
-      id: 'ws-1',
-      gitConfig: null,
-      configStatus: null,
-      releaseConfig: null,
-      maxConcurrentTasks: null,
-    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', gitConfig: null, configStatus: null, releaseConfig: null });
 
     const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config');
     const res = await GET(req, { params: mockParams });
 
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.maxConcurrentTasks).toBe(3);
-    expect(data.maxConcurrentTasksSource).toBe('default');
+    expect(data).not.toHaveProperty('maxConcurrentTasks');
+    expect(data).not.toHaveProperty('maxConcurrentTasksSource');
   });
 
   it('reading a workspace with no branchStrategy resolves to mission-branch (opt-out default)', async () => {
@@ -226,25 +220,6 @@ describe('GET /api/workspaces/[id]/config', () => {
     const data = await res.json();
     expect(data.gitConfig.branchStrategy).toBeUndefined();
     expect(resolveBranchStrategy(data.gitConfig)).toBe('mission-branch');
-  });
-
-  it('returns explicit maxConcurrentTasks with source=explicit when set', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockWorkspacesFindFirst.mockResolvedValue({
-      id: 'ws-1',
-      gitConfig: null,
-      configStatus: null,
-      releaseConfig: null,
-      maxConcurrentTasks: 5,
-    });
-
-    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config');
-    const res = await GET(req, { params: mockParams });
-
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.maxConcurrentTasks).toBe(5);
-    expect(data.maxConcurrentTasksSource).toBe('explicit');
   });
 });
 

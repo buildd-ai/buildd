@@ -416,7 +416,7 @@ export type WaitingOnDescriptor =
       label: string;
       /** How many tasks are sitting behind a gate this way. */
       count: number;
-      /** The normalized gate reason of the worst offender, e.g. `workspace_cap`. */
+      /** The normalized gate reason of the worst offender, e.g. `mission_concurrent`. */
       reason: string;
       /** Consecutive deferrals on the worst offender. */
       consecutiveDeferrals: number;
