@@ -89,6 +89,7 @@
     "./report-ops": "./report-ops.ts",
     "./describe-error": "./describe-error.ts",
     "./runner-health": "./runner-health.ts",
+    "./interactive-session-ask": "./interactive-session-ask.ts",
     "./question-brief": "./question-brief.ts",
     "./human-attention": "./human-attention.ts",
     "./needs-you": "./needs-you.ts",
