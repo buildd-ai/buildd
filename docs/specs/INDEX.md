@@ -152,7 +152,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Settings index descriptions MUST be one short fragment stating what the page manages, with no team-policy conditions, trailing filler or em dashes; the voice authority stays design-system section 5 and copy-rules.
 - [Settings Models Page](./settings-models.md) · @max — verified 2026-10-13
   Settings › Team › Models MUST show one provider list, use a lone provider for every surface it serves, offer per-surface choice only at two or more, and put a person's own key before the team's.
-- [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-10-15
+- [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-10-23
   Home, Missions and Initiatives MUST each answer one question (what needs me, what state is each mission in, what do an initiative's missions need) and MUST place release state per §8-10.
 - [Task Page](./task-page.md) · @max — verified 2026-10-22
   The task page leads with the live run and steering while running, then one Build/Verify/Deliver timeline when stopped; Run holds execution material and Details holds spec, dependencies, attempts and time.

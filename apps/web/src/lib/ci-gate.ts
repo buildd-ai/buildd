@@ -10,6 +10,8 @@
  * last agent's own recommendation rather than a Merge button.
  */
 
+import type { RedCheckView } from './red-check-cause';
+
 export type PrLifecycle =
   | 'pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'conflict' | 'merged' | 'closed'
   // Terminal: the reconcile sweep could not resolve this PR against GitHub and
@@ -45,12 +47,20 @@ export interface CiGateInput {
   liveFixClaimed?: boolean | null;
   /** `tasks.title` of the live fix task — the actual thing a reader can follow, not just an iteration count. */
   liveFixTaskTitle?: string | null;
+  /**
+   * The stored reading of the red head (red-check-record.ts), when it is for
+   * the PR's current head: which checks failed, why, and whether Re-run or
+   * Start fix leads (surface-ia §11).
+   */
+  red?: RedCheckView | null;
+  /** The review approved the current head: the card reads "Approved · checks failing" (072de598 I-12). */
+  reviewApproved?: boolean;
 }
 
 export type CiGate =
   | { kind: 'fixing'; label: string; taskId: string | null; taskTitle: string | null; fixKind: 'ci' | 'review' }
   | { kind: 'running'; label: string }
-  | { kind: 'blocked'; reason: string; recommendation: string | null };
+  | { kind: 'blocked'; reason: string; recommendation: string | null; red?: RedCheckView | null; reviewApproved?: boolean };
 
 export function resolveCiGate(input: CiGateInput): CiGate | null {
   const status = input.prLifecycleStatus;
@@ -83,16 +93,18 @@ export function resolveCiGate(input: CiGateInput): CiGate | null {
   const recommendation = input.recommendation ?? null;
   const max = input.maxCiRetries ?? null;
   const consumed = input.attemptsConsumed ?? 0;
+  // Only what is known: a gate without a reading stays the shape it always was.
+  const facts = { recommendation, ...(input.red ? { red: input.red } : {}), ...(input.reviewApproved ? { reviewApproved: true } : {}) };
 
   if (max === 0) {
-    return { kind: 'blocked', reason: 'CI failing — automatic fix retries are disabled', recommendation };
+    return { kind: 'blocked', reason: 'CI failing — automatic fix retries are disabled', ...facts };
   }
   if (max != null && consumed >= max) {
     return {
       kind: 'blocked',
       reason: `CI failing — ${consumed} fix attempt${consumed === 1 ? '' : 's'} exhausted`,
-      recommendation,
+      ...facts,
     };
   }
-  return { kind: 'blocked', reason: 'CI failing — no fix in flight', recommendation };
+  return { kind: 'blocked', reason: 'CI failing — no fix in flight', ...facts };
 }

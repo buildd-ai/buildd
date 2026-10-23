@@ -189,9 +189,20 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
       return make({ label: 'spec mismatch', tone: 'warning', title: text(i.specPath) ?? subject, sentence: dir, actionType: 'resolve', primary: { label: 'Resolve…', href: text(i.fixHref) ?? subjectHref ?? '' } });
     }
     case 'BLOCKED': {
-      const ci = i.ciGate?.kind === 'blocked' && !i.mergeConflict && !i.deadZoneExhausted;
-      const reason = ci ? 'Tests are failing. No fix is running.' : i.mergeConflict ? text(i.conflictReason) ?? 'The branch conflicts with its base and needs resolving.' : text(i.escalationReason) ?? text(i.failureMessage);
-      return make({ label: ci ? 'tests failing' : 'blocked', tone: 'error', title: subject, sentence: reason, actionType: ci ? 'fix' : 'resolve', primary: { label: ci ? 'Start fix' : 'Resolve…', href: pr ?? subjectHref ?? '' }, details: pr && ci ? { label: 'Logs', href: `${pr}/checks` } : null });
+      const ci = i.ciGate?.kind === 'blocked' && !i.mergeConflict && !i.deadZoneExhausted ? i.ciGate : null;
+      if (ci) {
+        // surface-ia §11: name the failing check and its cause; a likely flake leads with Re-run.
+        // Approval is not a merge (Mission checks 072de598 I-12): an approved PR still reads its checks.
+        const red = ci.red ?? null;
+        return make({
+          label: ci.reviewApproved ? 'Approved · checks failing' : 'checks failing', tone: 'error', title: subject,
+          sentence: red?.sentence ?? 'A required check is failing and no fix is running.',
+          actionType: 'fix', primary: { label: red?.primary === 'rerun' ? 'Re-run' : 'Start fix', href: pr ?? subjectHref ?? '' },
+          details: pr ? { label: 'Logs', href: `${pr}/checks` } : null,
+        });
+      }
+      const reason = i.mergeConflict ? text(i.conflictReason) ?? 'The branch conflicts with its base and needs resolving.' : text(i.escalationReason) ?? text(i.failureMessage);
+      return make({ label: 'blocked', tone: 'error', title: subject, sentence: reason, actionType: 'resolve', primary: { label: 'Resolve…', href: pr ?? subjectHref ?? '' } });
     }
     case 'STALE':
       return make({ label: 'check needed', tone: 'warning', title: subject, sentence: pr ? 'The last known tests and review are out of date. Check the PR before deciding.' : null, actionType: 'check', primary: { label: 'Check PR', href: pr ?? '' } });
