@@ -577,12 +577,11 @@ async function MissionDetailBody({
     openQuestions: missionOpenQuestions(mission.tasks || []),
   });
   const displayState = missionAnswer?.displayState ?? fallbackView!.displayState;
-  const stateChip = missionAnswer?.chip ?? fallbackView!.chip;
 
-  // The Verified pill is the page's only `#mission-criteria` target. It is
-  // hidden on a terminal mission whose criteria do not pass, and renders
-  // nothing on a terminal mission with no criteria; the situation must not
-  // link to it then. Same predicate as `showVerifiedPill` below.
+  // The goal criteria sheet is the page's only `#mission-criteria` target.
+  // The situation does not link to it on a terminal mission whose criteria
+  // do not pass, and the sheet renders nothing on a terminal mission with no
+  // criteria.
   const missionIsTerminal = ['completed', 'archived'].includes(mission.status);
   const criteriaReachable = (!missionIsTerminal || missionCriteriaOverall === 'pass')
     && !(missionIsTerminal && (((mission as any).goalCriteria as unknown[] | null) ?? []).length === 0);
@@ -1006,10 +1005,6 @@ async function MissionDetailBody({
       })
     : null;
 
-  // D2: beside a terminal mission's chip the pill only ever says Verified —
-  // never "Needs verification" next to COMPLETE.
-  const showVerifiedPill = !isTerminal || missionCriteriaOverall === 'pass';
-
   const artifactItems = allArtifacts.map((a) => ({
     id: a.id,
     type: a.type,
@@ -1290,7 +1285,7 @@ async function MissionDetailBody({
     <MissionVerifiedPill
       hold={verifiedHoldReason}
       liveStates={boardModel.criteria.map(c => c.state)}
-      sheetOnly={!showVerifiedPill}
+      sheetOnly
       missionId={id}
       criteria={goalCriteria}
       criteriaState={goalCriteriaStateFull}
@@ -1377,15 +1372,10 @@ async function MissionDetailBody({
     <MissionBoardHeader
       back={back}
       title={mission.title}
-      chip={stateChip}
       verified={verifiedPill}
       actions={overflowMenu}
       goal={goalLine}
       description={mission.description || !isTerminal ? <MissionDescription missionId={id} initialDescription={mission.description} readonly={isTerminal} defaultExpanded /> : undefined}
-      serverNow={renderedAt}
-      startedAt={boardModel.startedAt}
-      endedAt={boardModel.endedAt}
-      activeMs={boardModel.activeMs}
     >
       {shippedView && <MissionShippedHeader missionId={id} view={shippedView} />}
       {isTerminal && visualPresentation?.record && <MissionVisualRecord record={visualPresentation.record} />}
