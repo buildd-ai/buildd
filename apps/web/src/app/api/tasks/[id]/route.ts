@@ -37,6 +37,7 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { applyWaitExit, parseWaitOn } from '@/lib/task-wait-exit';
 import { applyTaskCancelSideEffects, applyTaskDeleteSideEffects, emitTaskUpdated, endLiveWorkersForRequeue } from '@/lib/task-cancel';
+import { checkDependencyCycle, checkDependencyReach, dependencyViewerOf } from '@/lib/task-dependency-reach';
 import { resolveDeferredStart } from '@/lib/deferred-start';
 import { wakeTask } from '@/lib/dispatch-authority';
 import { parseLoopConfig } from '@buildd/core/loop-config';
@@ -554,25 +555,23 @@ export async function PATCH(
       if (!Array.isArray(dependsOn) || !dependsOn.every((id: unknown) => typeof id === 'string')) {
         return NextResponse.json({ error: 'dependsOn must be an array of task IDs' }, { status: 400 });
       }
-      // Same rule as POST /api/tasks: every dependency is a task in THIS task's
-      // workspace, and never the task itself. An edge into another workspace
-      // would gate the claim on a row the caller may not be able to see.
+      // Same rule as POST /api/tasks (spec e28018c2): a dependency is a task
+      // of this task's team the caller sees, and never the task itself. Only
+      // the ids being added are checked (R-4): one already on the task is kept
+      // as is, so a caller who cannot see it can still edit or remove it.
       if (dependsOn.includes(task.id)) {
         return NextResponse.json({ error: 'A task cannot depend on itself' }, { status: 400 });
       }
-      if (dependsOn.length > 0) {
-        const found = await db.query.tasks.findMany({
-          where: sqlWhere(and(inArray(tasks.id, dependsOn), eq(tasks.workspaceId, task.workspaceId))),
-          columns: { id: true },
-        });
-        const foundIds = new Set(found.map(t => t.id));
-        const missing = dependsOn.filter((id: string) => !foundIds.has(id));
-        if (missing.length > 0) {
-          return NextResponse.json(
-            { error: `dependsOn references unknown tasks in this workspace: ${missing.join(', ')}` },
-            { status: 400 },
-          );
-        }
+      const existingDeps = new Set((task.dependsOn as string[] | null) ?? []);
+      const added = [...new Set(dependsOn as string[])].filter(d => !existingDeps.has(d));
+      if (added.length > 0) {
+        const teamId = task.workspace?.teamId ?? null;
+        const viewer = dependencyViewerOf(user, apiAccount);
+        const reach = await checkDependencyReach({ viewer, teamId, ids: added });
+        if (!reach.ok) return NextResponse.json({ error: reach.error }, { status: 400 });
+        // R-16: only a new edge can close a cycle; the walk follows the team's edges.
+        const cycle = await checkDependencyCycle({ viewer, teamId, taskId: task.id, dependsOn: added });
+        if (!cycle.ok) return NextResponse.json({ error: cycle.error }, { status: 400 });
       }
       updateData.dependsOn = dependsOn;
     }

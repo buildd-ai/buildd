@@ -56,10 +56,13 @@ describe('deriveTaskVerdict', () => {
 
   // Surface audit (task 3c538a39): a merged PR was stated three times. The
   // status row is the one place that names it, so it also carries the time.
-  it('merged → the status row carries the claim-to-merge time, in words', () => {
-    const v = deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'merged', merged: true }, claimToMerge: '2h 14m' }))!;
+  // Surface audit ff33de4d (phone-task-merged): the run, its fixes and its review rounds.
+  it('merged → the status row says how long it ran, its fixes and its review rounds', () => {
+    const v = deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'merged', merged: true }, mergedRun: { took: '1h 03m', fixes: 2, reviewRounds: 2 } }))!;
     expect(v.headline).toBe('Merged · PR #12');
-    expect(v.cause).toBe('2h 14m from claim to merge.');
+    expect(v.cause).toBe('Ran 1h 03m · 2 fixes · 2 review rounds');
+    expect(deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'merged', merged: true }, mergedRun: { took: '9m', fixes: 1, reviewRounds: 1 } }))!.cause).toBe('Ran 9m · 1 fix · 1 review round');
+    expect(deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'merged', merged: true }, mergedRun: { took: null, fixes: 0, reviewRounds: 0 } }))!.cause).toBeNull();
     expect(verdictLinksPr(v, PR.url)).toBe(true);
     expect(verdictLinksPr(v, 'https://github.com/acme/app/pull/13')).toBe(false);
     expect(verdictLinksPr(null, PR.url)).toBe(false);

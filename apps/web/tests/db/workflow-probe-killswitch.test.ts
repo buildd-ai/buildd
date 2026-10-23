@@ -95,6 +95,28 @@ describe('kill switch: sweeps that read deliveries without resolving authority',
         .toEqual({ pr: p.prNumber, state: 'BLOCKED_ON_TRUNK', updateBranch: 0, authority: expect.any(String) });
     }
   });
+
+  test('the per-minute trunk recheck with the kill switch off → the same: no TrunkRecovered, no branch refresh', async () => {
+    w = await world();
+    const a = await w.openPr({ branch: 'feat/ks-rc-a', files: { 'src/a.ts': 'export const a = 3;\n' } });
+    await w.handOn(a);
+    const devHead = w.gh.branchHead(w.repo, 'dev')!;
+    w.gh.setCheck(w.repo, devHead, 'lint', { conclusion: 'failure' });
+    w.gh.setCheck(w.repo, a.head, 'lint', { conclusion: 'failure' });
+    await w.deliver();
+    expect((await w.delivery(a)).state).toBe('BLOCKED_ON_TRUNK');
+    const incidents = await q<{ id: string }>(sql`SELECT id FROM trunk_incidents WHERE workspace_id = ${w.workspaceId}::uuid AND status <> 'resolved'`);
+    expect(incidents.length).toBeGreaterThan(0);
+
+    await switchOff(w.workspaceId);
+    const fixed = w.gh.advanceBase(w.repo, 'dev', { 'src/fix.ts': 'export const fixed = 3;\n' });
+    w.gh.greenCi(w.repo, fixed, ['lint']);
+    // The recheck queue's step, as the control plane's minute tick runs it.
+    await seam.recheckTrunkIncidents(incidents.map((i) => i.id));
+
+    expect({ state: (await w.delivery(a)).state, updateBranch: updateBranchCalls(w, a.prNumber).length })
+      .toEqual({ state: 'BLOCKED_ON_TRUNK', updateBranch: 0 });
+  });
 });
 
 describe('kill switch: value forms', () => {

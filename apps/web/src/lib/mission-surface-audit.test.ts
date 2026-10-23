@@ -11,6 +11,8 @@ const tasksUpdateWhere = mock((_w?: any) => Object.assign(Promise.resolve(), { r
 const tasksUpdateSet = mock((_values: any) => ({ where: tasksUpdateWhere }));
 const notesFindFirst = mock(() => Promise.resolve(null as any));
 const notesInsertValues = mock((_values: any) => Promise.resolve());
+// Waiver notes (`surfaceAuditWaived` reads them): none unless a test records a Skip.
+const notesFindMany = mock(() => Promise.resolve([] as any[]));
 
 // The real schema, so the insert mock can tell a mission note from a task.
 const { missionNotes } = await import('@buildd/core/db/schema');
@@ -25,7 +27,8 @@ mock.module('@buildd/core/db', () => ({
     query: {
       missions: { findFirst: missionsFindFirst },
       tasks: { findFirst: tasksFindFirst, findMany: tasksFindMany },
-      missionNotes: { findFirst: notesFindFirst },
+      missionNotes: { findFirst: notesFindFirst, findMany: notesFindMany },
+      workspaces: { findFirst: async () => ({ gitConfig: null }) },
     },
     insert: (table: unknown) => (table === missionNotes ? { values: notesInsertValues } : { values: tasksInsertValues }),
     update: () => ({ set: tasksUpdateSet }),
@@ -97,6 +100,7 @@ beforeEach(() => {
   mockWakeTask.mockReset();
   notesFindFirst.mockReset(); notesFindFirst.mockResolvedValue(null);
   notesInsertValues.mockClear();
+  notesFindMany.mockReset(); notesFindMany.mockResolvedValue([]);
   mockPostVisualReviewEvent.mockClear();
 });
 
@@ -552,6 +556,38 @@ describe('ensureMissionSurfaceAudit — re-check rounds', () => {
     const q = render((tasksFindFirst.mock.calls[0] as any)[0].where);
     expect(q.sql).toContain('"tasks"."mission_id" = $');
     expect(q.params).toContain(MISSION_ID);
+  });
+});
+
+// Spec 072de598 r15 I-18: under a person's Skip, new findings are information, never repairs.
+describe('ensureMissionSurfaceAudit — a standing Skip', () => {
+  const fix = { id: 'fix-1', title: '[surface fix] /app/tasks/:id: header overflows at 390px', taskClass: 'work', pathManifest: null };
+  const skip = [{ authorType: 'user', body: 'Ship it anyway' }];
+
+  it('an auditor\'s fix filed under a Skip is cancelled with the Skip as its reason, and opens no round or question', async () => {
+    notesFindMany.mockResolvedValue(skip);
+    tasksFindFirst.mockResolvedValue({ id: 'audit-2', title: '[surface audit] round 2: Mobile nav redesign', status: 'completed', dependsOn: [], context: { surfaceAuditRound: 2 } });
+    await ensureMissionSurfaceAudit({ missionId: MISSION_ID, workspaceId: WORKSPACE_ID, createdTask: fix, targetWorkspace });
+    expect(tasksInsertValues).not.toHaveBeenCalled();
+    expect(notesInsertValues).not.toHaveBeenCalled();
+    expect(tasksUpdateSet).toHaveBeenCalledTimes(1);
+    expect(tasksUpdateSet.mock.calls[0][0].status).toBe('cancelled');
+    expect(mockCancelSideEffects).toHaveBeenCalledWith({ id: 'fix-1', workspaceId: WORKSPACE_ID, missionId: MISSION_ID });
+  });
+
+  it('a fix a person files from a review decision still runs: they chose it', async () => {
+    notesFindMany.mockResolvedValue(skip);
+    tasksFindFirst.mockResolvedValue({ id: 'audit-1', title: '[surface audit] Mobile nav redesign', status: 'completed', dependsOn: [], context: {} });
+    await ensureMissionSurfaceAudit({ missionId: MISSION_ID, workspaceId: WORKSPACE_ID, createdTask: fix, targetWorkspace, origin: 'human' });
+    expect(tasksInsertValues).toHaveBeenCalledTimes(1);
+    expect(mockCancelSideEffects).not.toHaveBeenCalled();
+  });
+
+  it('with no Skip the auditor\'s fix opens the next round as before', async () => {
+    tasksFindFirst.mockResolvedValue({ id: 'audit-1', title: '[surface audit] Mobile nav redesign', status: 'completed', dependsOn: [], context: {} });
+    await ensureMissionSurfaceAudit({ missionId: MISSION_ID, workspaceId: WORKSPACE_ID, createdTask: fix, targetWorkspace });
+    expect(tasksInsertValues).toHaveBeenCalledTimes(1);
+    expect(mockCancelSideEffects).not.toHaveBeenCalled();
   });
 });
 

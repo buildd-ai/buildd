@@ -43,6 +43,19 @@ export function loopAttemptShown(
   return Math.min(attempt, maxLoops);
 }
 
+/**
+ * The loop's evaluations as stored: `result.loopHistory` once the task ends,
+ * `context.loopHistory` while it runs. Empty means the loop has no history, and
+ * then nothing names the loop at all: no chip, no Loop history section (R-9).
+ */
+export function loopHistoryOf(task: { result: unknown; context: unknown }): LoopHistoryEntry[] {
+  const read = (v: unknown) => (v && typeof v === 'object' ? (v as { loopHistory?: unknown }).loopHistory : undefined);
+  const fromResult = read(task.result);
+  if (Array.isArray(fromResult) && fromResult.length > 0) return fromResult as LoopHistoryEntry[];
+  const fromContext = read(task.context);
+  return Array.isArray(fromContext) ? fromContext as LoopHistoryEntry[] : [];
+}
+
 function formatDuration(evidence?: Record<string, unknown>): string | null {
   const durationMs = evidence?.durationMs;
   if (typeof durationMs !== 'number' || !Number.isFinite(durationMs)) return null;

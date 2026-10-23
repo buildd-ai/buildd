@@ -1330,7 +1330,11 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         // A rail that clears on its own (pending CI, a hold) waits with the approval standing;
         // a lasting one (protected path, migration, size) is a person's, named in the notice.
         if (gate.half === 'rails' && !gate.lasting && headCoverage(dd, cmd.headSha) !== 'none') {
-          return c.apply(key, 'APPROVED', { guardHead: true, patch: { stateReason: null }, evidence: { ...evidence, gate } });
+          // The status names the rail it waits on (a visual review, CI), never "Ready to merge" (spec 072de598 I-12).
+          return c.apply(key, 'APPROVED', {
+            guardHead: true, patch: { stateReason: null }, evidence: { ...evidence, gate },
+            ...(gate.reasons.length ? { statusDetail: gate.reasons.join('; ') } : {}),
+          });
         }
         return c.apply(key, 'ESCALATED', {
           guardHead: true, patch: { stateReason: 'landing_needs_human' },

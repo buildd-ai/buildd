@@ -27,6 +27,8 @@
 // Namespace import: many runner tests mock.module('fs') with a partial stub.
 import * as fs from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
+import { spawnSync } from 'child_process';
 import { restrictDirToOwnerOnce } from './secure-file';
 
 /** GitHub tokens a runner's env might carry; none reach a scoped agent. */
@@ -238,4 +240,34 @@ export async function startScopedGitHubSession(opts: {
   return started.ok
     ? { ok: true, stop: () => refresher.stop() }
     : { ok: false, reason: started.reason, stop: () => refresher.stop() };
+}
+
+/**
+ * True when the host already gives git a way to reach github.com: a token in
+ * the env, a configured credential helper, or an SSH key. Used only when the
+ * claim carries no `githubCredentials` marker (rollout off), to decide whether
+ * a bare host, such as a fresh WSL install, should get the task-scoped token
+ * anyway instead of failing every push with "could not read Username".
+ */
+export function hostHasGitHubCredentials(
+  env: Record<string, string | undefined> = process.env,
+  probes: {
+    gitHelpers?: () => string;
+    sshKeys?: () => boolean;
+  } = {},
+): boolean {
+  if (INHERITED_GITHUB_TOKEN_ENV.some((k) => !!env[k]?.trim())) return true;
+  if (env.GIT_ASKPASS?.trim() || env.SSH_AUTH_SOCK?.trim()) return true;
+  const helpers = (probes.gitHelpers ?? (() => {
+    try {
+      return spawnSync('git', ['config', '--get-all', 'credential.helper'], { encoding: 'utf8', timeout: 5000 }).stdout ?? '';
+    } catch { return ''; }
+  }))();
+  if (helpers.trim()) return true;
+  return (probes.sshKeys ?? (() => {
+    try {
+      const dir = join(homedir(), '.ssh');
+      return fs.readdirSync(dir).some((f) => /^id_[a-z0-9]+$/i.test(f));
+    } catch { return false; }
+  }))();
 }
