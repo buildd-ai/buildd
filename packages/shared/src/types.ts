@@ -748,6 +748,10 @@ export interface MissionNote {
   collapseCount: number;
   replyTo: string | null;
   defaultChoice: string | null;
+  /** The task a question is about when it is not `taskId` (an organizer's decision about a build task). */
+  subjectTaskId?: string | null;
+  /** A question's structured options; null when they live only in the body. */
+  options?: WaitingForOption[] | null;
   status: MissionNoteStatus;
   createdAt: Date;
 }
@@ -1045,6 +1049,8 @@ export interface WaitingForOption {
    * on older questions; renderers fall back to `description`.
    */
   consequence?: string;
+  /** The consequence cut to the button line, under 40 characters (Navigation R-16). */
+  effect?: string;
 }
 
 /**
@@ -1081,6 +1087,17 @@ export interface WaitingFor {
    * rather than accepted silently.
    */
   contractViolation?: boolean;
+  /**
+   * Advisory, set server-side: the question names no decision ("How should I
+   * proceed?"; packages/core/human-attention.ts `isGenericDecisionTitle`). The
+   * question is still parked.
+   */
+  genericTitle?: boolean;
+  /**
+   * The task the decision is about, when it is not the asking worker's own
+   * task. Validated on park: same mission, or same workspace.
+   */
+  subjectTaskId?: string;
   /**
    * Question brief (module header: packages/core/question-brief.ts): at most two
    * sentences saying which task this is and exactly what is being decided.

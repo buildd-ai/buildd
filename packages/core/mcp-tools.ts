@@ -1,6 +1,8 @@
 import { formatTaskEstimate, type TaskEstimatePayload } from '@buildd/shared';
 import { hasTokenScope, requiredScopeForAction } from './token-scopes';
 import { detectProviderAccessAsk, providerAccessRefusal } from './provider-access-ask';
+import { DECISION_OPTIONS_GUIDANCE, DECISION_TITLE_GUIDANCE, normalizeDecisionOptions } from './question-brief';
+import { decisionTitleAdvisory } from './human-attention';
 import { SUB_ACTIONS, subActionQuoted as quotedSubs } from './mcp-sub-actions';
 import { guidanceTopicReply, guidanceTopicsText } from './guidance-topics';
 /**
@@ -1147,11 +1149,11 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
     propose_schedule_move: '{ workspace (required: the workspace id, name or owner/repo of the team), reason (required), scheduleId? } — propose that the schedule which spawned this task starts its FUTURE runs in another workspace of the team. Only a task a schedule spawned can call it (anything else is refused). It records one open proposal per schedule (a newer one replaces it) and changes nothing else: a person with delegate_schedule_access answers it on Home or the schedule (Accept, Keep, or Accept with a read grant on the old home). The schedule keeps running where it is until then; if accepted, the next tick files in the new workspace, and this run and tasks already filed stay put. Use it when reads or filings for the workspace the work belongs to keep coming back FORBIDDEN or delegation_required, and say so in reason.',
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
-    post_note: `{ type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply, and write it as a self-contained decision brief: the reader has not seen the task or the code, so the body says which task this is and what is being decided (one or two sentences), then one line per option of the form "<option>: what it leads to", and why you chose the default. User replies are delivered at your next turn boundary (or call receive_messages). missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.`,
+    post_note: `{ type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice?, options?, subjectTaskId?, workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply, and write it as a self-contained decision brief: the reader has not seen the task or the code, so the body says which task this is and what is being decided (one or two sentences), and why you chose the default. ${DECISION_TITLE_GUIDANCE} options: [{ label, consequence, recommended? }] (strings still accepted); each consequence says what happens next and what stays blocked, in one to three sentences. ${DECISION_OPTIONS_GUIDANCE} subjectTaskId: the task the decision is about when it is not yours (an organizer asking about a build task); same mission, else the card falls back to the mission. missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.`,
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
     await_answer: '{ workerId?, waitSeconds? (0-45, default 40) } — read the answer to your ask_human question: after waitCommand exits 0, call with waitSeconds: 0. Otherwise it long-polls until answered. Answered: { answered: true, answer, question }, marked read so it comes back once (receive_messages would return it, also once). Timeout: { timedOut: true, stillWaiting: true }; call again straight away. Each call tells buildd your session is still there; one that stops for a few minutes has its answer sent to a new attempt of the same task. { answered: false, stillWaiting: false } means nothing is waiting any more (reasonCode says why). Interactive sessions only; a runner-managed worker is resumed by its runner. workerId auto-resolved from context if omitted.',
     answer_question: '{ taskId (required), message (required) } — answer the question a waiting_input agent is parked on (the task page\'s Answer link). Takes the same resume path as the dashboard: the parked session continues with your answer, or a new attempt of the same task starts with it if the session is gone. send_agent_message cannot do this — a parked agent takes no turn, so a queued message is never read. Refused unless the task\'s worker is waiting on a question. [admin]',
-    ask_human: '{ workerId?, question (required), options? (string[] — quick replies shown as buttons), context? (one or two sentences: which task this is and what is being decided) } — park your own interactive worker (claimed with claim_task from this session) on a question for a person. It takes the same path as a runner agent\'s AskUserQuestion: the worker goes to waiting_input, the question shows in Needs you on the dashboard and the team gets the push. Returns { waiting: true, workerId, askedAt, waitCommand }. To wait, run waitCommand as a Bash command with run_in_background: it exits 0 once answered (non-zero with a reason otherwise) and costs no turns while waiting; then call await_answer { waitSeconds: 0 }. Without background commands, loop on await_answer. Unanswered, it expires like any question (24 h, 4 h in a mission). A question that asks for provider access (Axiom, Sentry, PostHog…) is refused with the request_capability call to make instead. Refused for a runner-managed worker, which asks with AskUserQuestion instead. workerId auto-resolved from context if omitted.',
+    ask_human: `{ workerId?, question (required), options?, context? (one or two sentences: which task this is and what is being decided) } — park your own interactive worker (claimed with claim_task from this session) on a question for a person. options: [{ label, consequence, recommended? }] or strings. Optional subjectTaskId: the task it is about, when not yours (same mission). ${DECISION_TITLE_GUIDANCE} ${DECISION_OPTIONS_GUIDANCE} Each consequence says what happens next and what stays blocked, in one to three sentences. It takes the same path as a runner agent's AskUserQuestion: the worker goes to waiting_input, the question shows in Needs you on the dashboard and the team gets the push. Returns { waiting: true, workerId, askedAt, waitCommand }. To wait, run waitCommand as a Bash command with run_in_background: it exits 0 once answered (non-zero with a reason otherwise) and costs no turns while waiting; then call await_answer { waitSeconds: 0 }. Without background commands, loop on await_answer. Unanswered, it expires like any question (24 h, 4 h in a mission). A question that asks for provider access (Axiom, Sentry, PostHog…) is refused with the request_capability call to make instead. Refused for a runner-managed worker, which asks with AskUserQuestion instead. workerId auto-resolved from context if omitted.`,
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs DOC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:docs) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
     correct_task_result: '{ taskId (required), summary?, prUrl?, prNumber? (at least one of summary / prUrl / prNumber) } — amend a completed or failed task\'s stored result after the fact. summary: replace result.summary (e.g. a stray assistant aside got captured, or a bug garbled it); the prior summary is preserved as result.previousSummary and the correction is stamped with result.summaryCorrectedAt so the durable record shows it was amended, not silently rewritten. prUrl/prNumber: attach the PR that delivered a task closed without a worker (e.g. by update_task status=completed) — the PR is verified in the workspace\'s GitHub repo via the GitHub App, mapped to the task with an external placeholder worker (as request_pr_review adoption does) and written to result.prUrl/prNumber, so the mission page lists it and mission completion sees it. Refused if another task owns the PR, unless that owner is an auto-adopted placeholder (a webhook-created bookkeeping task that only noticed the PR first, never did the work) — then the mapping moves onto this task instead of refusing. Also refused if the task already records a different PR; re-attaching the same PR is a no-op. Commit stats are never touched. Fails on a task that has not yet completed or failed — there is nothing to correct yet. [admin]',
@@ -2860,6 +2862,23 @@ export async function handleBuilddAction(
         }
       }
 
+      // Attached designs, with the screens a builder is asked to match. The
+      // artifact list above shows a design as one file; this names its screens.
+      if (includes.includes('artifacts')) {
+        let attached: any = null;
+        try { attached = await api(`/api/artifacts/designs?taskId=${encodeURIComponent(task.id)}`); } catch { /* designs are optional detail */ }
+        const designs = Array.isArray(attached?.designs) ? attached.designs as Array<Record<string, any>> : [];
+        if (designs.length > 0) {
+          lines.push('', `## Designs (${designs.length})`);
+          for (const d of designs) {
+            const screens = (Array.isArray(d.screens) ? d.screens : []) as Array<{ id: string; name?: string; viewport?: string }>;
+            const rev = d.pinnedRevision ? `revision ${d.pinnedRevision} pinned` : `revision ${d.revision}`;
+            lines.push(`- **${d.title || '(untitled)'}** (${rev}) id: ${d.id}${d.linkId ? `, link: ${d.linkId}` : ''}`);
+            for (const s of screens) lines.push(`  - screen ${s.id}${s.name ? `: ${s.name}` : ''}${s.viewport ? ` (${s.viewport})` : ''}`);
+          }
+        }
+      }
+
       if (includes.includes('dispatch')) lines.push('', ...formatDispatchTrail(task.dispatch));
 
       if (workers.length === 0 && !hasResult) {
@@ -3094,15 +3113,18 @@ export async function handleBuilddAction(
     case 'ask_human': {
       const question = typeof params.question === 'string' ? params.question.trim() : '';
       if (!question) throw new Error('question is required: the one thing you need a person to decide.');
-      if (params.options !== undefined && !(Array.isArray(params.options) && params.options.every((o: unknown) => typeof o === 'string' && o.trim()))) {
-        throw new Error('options must be an array of non-empty strings (quick replies).');
-      }
+      // Two options by default, at most three, never "Not now" (Navigation R-16, AC-16).
+      const decisionOptions = normalizeDecisionOptions(params.options);
+      if ('error' in decisionOptions) throw new Error(decisionOptions.error);
       if (params.context !== undefined && typeof params.context !== 'string') {
         throw new Error('context must be a string.');
       }
+      if (params.subjectTaskId !== undefined && typeof params.subjectTaskId !== 'string') {
+        throw new Error('subjectTaskId must be the UUID of the task the decision is about.');
+      }
       // Provider access is a capability request, never a question (and never
       // a wider worker key): hand back the canonical ask before anything parks.
-      const providerAsk = detectProviderAccessAsk(question, typeof params.context === 'string' ? params.context : undefined, ...(Array.isArray(params.options) ? (params.options as string[]) : []));
+      const providerAsk = detectProviderAccessAsk(question, typeof params.context === 'string' ? params.context : undefined, ...decisionOptions.options.map(o => o.label));
       if (providerAsk) return { isError: true, content: [{ type: 'text', text: JSON.stringify(providerAccessRefusal(providerAsk), null, 2) }] };
       const workerId = resolveWorkerId(params.workerId, ctx);
       const worker = await api(`/api/workers/${workerId}`);
@@ -3114,7 +3136,8 @@ export async function handleBuilddAction(
       if (isTerminalWorkerStatus(worker.status)) {
         throw new Error(`Worker ${workerId} has already ended (${worker.status}); there is no session left to answer.`);
       }
-      const options = Array.isArray(params.options) ? (params.options as string[]).map(o => o.trim()) : undefined;
+      // Bare labels stay strings, as before; an option with a consequence goes as an object.
+      const options = decisionOptions.options.map(o => (o.consequence || o.recommended ? o : o.label));
       const contextText = typeof params.context === 'string' && params.context.trim() ? params.context.trim() : undefined;
       // The runner's park, unchanged: PATCH /api/workers/[id] stores the
       // question, fires Pusher, Needs You and the team push.
@@ -3127,9 +3150,11 @@ export async function handleBuilddAction(
             prompt: question,
             ...(options && options.length > 0 ? { options } : {}),
             ...(contextText ? { context: contextText } : {}),
+            ...(typeof params.subjectTaskId === 'string' && params.subjectTaskId.trim() ? { subjectTaskId: params.subjectTaskId.trim() } : {}),
           },
         }),
       });
+      const titleAdvisory = decisionTitleAdvisory(question);
       // The zero-cost wait: a plain shell command bound to this one question.
       // Best-effort; without it the session waits with await_answer.
       let wait: { waitCommand?: unknown; expiresAt?: unknown } | null = null;
@@ -3147,6 +3172,7 @@ export async function handleBuilddAction(
         hint: waitCommand
           ? 'Your question is with a person. Run waitCommand as a Bash command with run_in_background: true. It exits 0 once they answer (non-zero with a reason otherwise) and costs nothing while it waits. Then call await_answer { waitSeconds: 0 } to read the answer. Without background commands, call await_answer in a loop, or receive_messages. Do not carry on with the decision it covers until then.'
           : 'Your question is with a person. Wait for the answer with await_answer, or call receive_messages until it arrives. Do not carry on with the decision it covers until then.',
+        ...(titleAdvisory ? { advisory: titleAdvisory } : {}),
       }, null, 2));
     }
 
@@ -5165,13 +5191,17 @@ export async function handleBuilddAction(
         if (missing.includes('type')) {
           parts.push(`type must be one of: ${NOTE_TYPES.join(', ')}.`);
         }
-        parts.push(`Full schema: { type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice?, workerId?, missionId? }`);
+        parts.push(`Full schema: { type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice?, options?, subjectTaskId?, workerId?, missionId? }`);
         throw new Error(parts.join(' '));
       }
 
       if (!NOTE_TYPES.includes(params.type as typeof NOTE_TYPES[number])) {
         throw new Error(`Invalid type. Must be one of: ${NOTE_TYPES.join(', ')}`);
       }
+      // Checked here too (the notes route re-checks) so the refusal names the rule before any lookup.
+      const noteOptions = params.options === undefined ? null : normalizeDecisionOptions(params.options);
+      if (noteOptions && 'error' in noteOptions) throw new Error(noteOptions.error);
+      if (noteOptions && params.type !== 'question') throw new Error('options apply only to type=question.');
 
       // A mission-level note needs no worker: an interactive session with an
       // explicit missionId posts straight to the mission feed.
@@ -5199,6 +5229,8 @@ export async function handleBuilddAction(
       };
       if (params.body) noteBody.bodyText = params.body;
       if (params.defaultChoice) noteBody.defaultChoice = params.defaultChoice;
+      if (noteOptions && noteOptions.options.length) noteBody.options = noteOptions.options;
+      if (params.subjectTaskId) noteBody.subjectTaskId = params.subjectTaskId;
 
       const endpoint = missionId
         ? `/api/missions/${missionId}/notes`
@@ -5214,13 +5246,9 @@ export async function handleBuilddAction(
         return text(`Note posted: "${params.title}" (question, not shown to a person)\n${posted.gate.reason ?? 'A repair task owns this blocker.'}`);
       }
 
-      // Needs You admission: a question describing a recoverable platform
-      // blocker is not shown to a person — a repair task owns it instead.
-      if (posted?.gate?.disposition === 'recovered') {
-        return text(`Note posted: "${params.title}" (question, not shown to a person)\n${posted.gate.reason ?? 'A repair task owns this blocker.'}`);
-      }
-
-      return text(`Note posted: "${params.title}" (${params.type})${params.type === 'question' ? `\nDefault choice: ${params.defaultChoice || 'none'}\nUser reply reaches you at your next turn boundary (or call receive_messages).` : ''}`);
+      const defaultChoice = params.defaultChoice || (noteOptions && 'options' in noteOptions ? noteOptions.options.find(o => o.recommended)?.label : undefined);
+      const advisory = params.type === 'question' ? decisionTitleAdvisory(String(params.title)) : undefined;
+      return text(`Note posted: "${params.title}" (${params.type})${params.type === 'question' ? `\nDefault choice: ${defaultChoice || 'none'}\nUser reply reaches you at your next turn boundary (or call receive_messages).` : ''}${advisory ? `\nAdvisory: ${advisory}` : ''}`);
     }
 
     case 'create_artifact': {

@@ -3689,6 +3689,15 @@ export const missionNotes = pgTable('mission_notes', {
   collapseCount: integer('collapse_count').default(1).notNull(),
   replyTo: uuid('reply_to'),
   defaultChoice: text('default_choice'),
+  // The task a question is about, when that is not the task that asked it
+  // (an organizer's decision about a build task). NULL: the card falls back
+  // to the mission. Validated on write: same mission, or same workspace for a
+  // task-scoped note. No FK, like task_id: notes outlive deleted tasks.
+  subjectTaskId: uuid('subject_task_id'),
+  // A question's structured options (question-brief.ts `DecisionOption`):
+  // label, consequence (the hover tip), effect (the button line, under 40
+  // characters), recommended. NULL on notes whose options live only in the body.
+  options: jsonb('options').$type<Array<{ label: string; consequence?: string; effect?: string; recommended?: boolean }>>(),
   status: text('status').notNull().default('open').$type<'open' | 'answered' | 'dismissed' | 'superseded'>(),
   // Human-attention disposition of an agent/outside-caller question note
   // (packages/core/needs-you.ts): only 'ask' reaches Needs You;
