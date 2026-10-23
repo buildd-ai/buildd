@@ -51,6 +51,23 @@ describe('upload_artifact — request body', () => {
   });
 });
 
+describe('upload_artifact — no worker in context', () => {
+  it('sends missionId and no workerId from a session without a worker', async () => {
+    const api = mock(() => Promise.resolve({ artifactId: 'a1', uploadUrl: 'u', downloadUrl: 'd', shareUrl: null }));
+    const c = { ...ctx(), workerId: undefined } as ActionContext;
+    await handleBuilddAction(api as unknown as ApiFn, 'upload_artifact', { filename: 'd.html', mimeType: 'text/html', sizeBytes: 10, missionId: MISSION_ID }, c);
+    const body = bodyOf(api);
+    expect('workerId' in body).toBe(false);
+    expect(body.missionId).toBe(MISSION_ID);
+  });
+
+  it('still requires a worker when nothing scopes the upload', async () => {
+    const api = mock(() => Promise.resolve({}));
+    const c = { ...ctx(), workerId: undefined } as ActionContext;
+    await expect(handleBuilddAction(api as unknown as ApiFn, 'upload_artifact', { filename: 'd.html', mimeType: 'text/html', sizeBytes: 10 }, c)).rejects.toThrow(/workerId is required/);
+  });
+});
+
 describe('upload_artifact { artifactId } — finalize after the PUT', () => {
   it('posts to finalize with the sha256 and reports the verified state', async () => {
     const sha = 'a'.repeat(64);

@@ -24,8 +24,6 @@ const ALLOWED: Record<string, string> = {
   'apps/web/src/app/app/(protected)/health/ExperimentsSection.tsx': 'experiment status, operator-only page',
   // A memory backfill job's state (queued/running/done/error), not a task.
   'apps/web/src/app/app/(protected)/workspaces/[id]/memory/KnowledgeHealthSection.tsx': 'knowledge job status',
-  // An outcome spec's conformance word, already a display word.
-  'apps/web/src/app/app/(protected)/missions/[id]/MissionChecks.tsx': 'spec conformance word',
 };
 
 /** A property with one of these names, or a variable named for a task or worker status. */

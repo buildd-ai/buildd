@@ -5,10 +5,10 @@ owner: builder
 last_verified: 2026-10-22
 summary: The mission detail page MUST answer "is this done" before listing tasks, and below md MUST render every deliverable exactly once in one grouped list under a sticky masthead.
 domain: surfaces
-surfaces: ["apps/web/src/app/app/(protected)/missions/[id]/MissionDetailView.tsx", "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.tsx", apps/web/src/lib/mission-feed-groups.ts, apps/web/src/lib/mission-delivery.ts]
+surfaces: ["apps/web/src/app/app/(protected)/missions/[id]/page.tsx", "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedLayout.tsx", apps/web/src/lib/mission-feed-groups.ts, apps/web/src/lib/mission-delivery.ts]
 related: [mission-legibility, mission-structure-view, timeline-dependency-geometry, mission-task-lifecycle]
 keywords: [mission detail, mobile, feed, needs you, moving now, slot marker, pulse, masthead, sticky, delivery stepper, records sheet, notes sheet, rail]
-verified_by: ["apps/web/src/app/app/(protected)/missions/[id]/MissionDetailView.test.tsx", "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.test.tsx", "apps/web/src/app/app/(protected)/missions/[id]/MissionRecordsSheet.test.tsx", apps/web/src/lib/mission-delivery.test.ts, apps/web/src/lib/mission-feed-groups.test.ts, "apps/web/src/app/app/(protected)/missions/[id]/mission-detail-retirements.test.ts"]
+verified_by: ["apps/web/src/app/app/(protected)/missions/[id]/MissionFeedLayout.test.tsx", "apps/web/src/app/app/(protected)/missions/[id]/mission-feed-view.test.ts", "apps/web/src/app/app/(protected)/missions/[id]/MissionRecordsSheet.test.tsx", apps/web/src/lib/mission-delivery.test.ts, apps/web/src/lib/mission-feed-groups.test.ts, "apps/web/src/app/app/(protected)/missions/[id]/mission-detail-retirements.test.ts"]
 supersedes: [timeline-mobile-rail]
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -16,16 +16,9 @@ assertions:
     type: "symbol"
     name: "buildMissionFeedGroups"
     path: "apps/web/src/lib/mission-feed-groups.ts"
-  - id: "feed-list-reads-feed-model"
-    type: "symbol_reachable"
-    symbol: "buildMissionFeedGroups"
-    entry: "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.tsx"
-  - id: "detail-view-renders-feed-list"
-    type: "symbol_reachable"
-    symbol: "MissionFeedList"
-    entry: "apps/web/src/app/app/(protected)/missions/[id]/MissionDetailView.tsx"
-  # The current page mounts History directly; the old detail/list assertions
-  # above cover the retained components, not page reachability.
+  # 2026-10-22 (Navigation d25d923d): the `MissionDetailView` and
+  # `MissionFeedList` assertions are retired; the page mounts Overview and
+  # History directly and task rows lead to the task page.
   - id: "page-renders-history"
     type: "symbol_reachable"
     symbol: "MissionFeedLayout"
@@ -34,20 +27,19 @@ assertions:
     type: "symbol"
     name: "buildDeliverySteps"
     path: "apps/web/src/lib/mission-delivery.ts"
-  - id: "detail-order-tests"
+  - id: "history-layout-tests"
     type: "test_file"
-    path: "apps/web/src/app/app/(protected)/missions/[id]/MissionDetailView.test.tsx"
-  - id: "feed-list-tests"
-    type: "test_file"
-    path: "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.test.tsx"
+    path: "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedLayout.test.tsx"
 ---
 
 # Mission Feed
 
-Navigation amendment (2026-10-22): Overview, Flow and History are the current
-mission layouts. The original grouped-list contract below documents retained
-components; it does not assert that the page mounts `MissionDetailView`. All
-task entries lead to the task page with mission back context.
+Navigation amendment (2026-10-22, d25d923d): Overview is the mission page;
+Flow and History open from its ⋯ menu. The Overview's list is the Build stage
+(`MissionBuildStage`, Mission Overview I-5); the grouped-list contract below
+documents History's retained components (`MissionFeedLayout`). The orphaned
+`MissionDetailView` and `MissionFeedList` assertions are retired. All task
+entries lead to the task page with mission back context.
 
 **Capability statement**: The mission detail page MUST state whether the
 mission is done, what it is waiting on and what is left — the masthead, the

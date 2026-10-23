@@ -21,6 +21,7 @@
  * - chip: `deriveMissionStateView(...).chip`, the detail header's accessor.
  */
 import { openCriteriaChecks, type MissionVisualReviewSummary } from './mission-open-checks';
+import { isBuildComplete } from './mission-checks';
 import { isMissionAuditTask } from '@buildd/core/surface-audit';
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import {
@@ -372,7 +373,7 @@ export function summarizeMissionForCard(
   // The card's state — chip, situation, and whether the next step is yours —
   // is derived once, here, so the group the header counts and the chip the
   // card shows cannot come from two derivations (F1, D2).
-  const state = deriveCardState(row, { liveWorkers, progress, healthState, hasPendingDeliverableWork: pending, now, replaced, escalationGateVerdict: row.escalationGateVerdict, visualReview: opts.visualReview ?? null, runnerOnline: row.workspaceId ? opts.runnerOnlineByWorkspace?.get(row.workspaceId) : undefined });
+  const state = deriveCardState(row, { liveWorkers, progress, build: { done: completedTasks, total: totalTasks }, healthState, hasPendingDeliverableWork: pending, now, replaced, escalationGateVerdict: row.escalationGateVerdict, visualReview: opts.visualReview ?? null, runnerOnline: row.workspaceId ? opts.runnerOnlineByWorkspace?.get(row.workspaceId) : undefined });
   const health = deriveMissionHealth({
     status: row.status,
     activeAgents: liveWorkers,
@@ -499,7 +500,7 @@ function toWaitClassifiable(t: MissionCardTaskRow): WaitClassifiableTask {
  */
 function deriveCardState(
   row: MissionCardRow,
-  s: { liveWorkers: number; progress: number; healthState: Health; hasPendingDeliverableWork: boolean; now: number; replaced: ReadonlySet<string>; escalationGateVerdict?: { owner: 'person' | 'machine'; reason?: string | null } | null; visualReview?: MissionVisualReviewSummary | null; runnerOnline?: boolean },
+  s: { liveWorkers: number; progress: number; build: { done: number; total: number }; healthState: Health; hasPendingDeliverableWork: boolean; now: number; replaced: ReadonlySet<string>; escalationGateVerdict?: { owner: 'person' | 'machine'; reason?: string | null } | null; visualReview?: MissionVisualReviewSummary | null; runnerOnline?: boolean },
 ): MissionStateView {
   const tasks = row.tasks ?? [];
   const deliverables = tasks.filter(t => isDeliverableTask(t as any));
@@ -549,7 +550,8 @@ function deriveCardState(
     openChecks: openCriteriaChecks(row.goalCriteria, row.goalCriteriaState, {
       branch: row.integrationBranchEnabled ? 'mission-branch' : 'direct',
       prMerged: integrationPr?.state === 'merged',
-      buildComplete: s.progress >= 100,
+      // The one build-complete predicate every surface reads (Navigation R-15).
+      buildComplete: isBuildComplete(s.build),
     }),
     // Same reading as `explain`: a merged mission PR with only the visual review open is a check, not a stall.
     missionPrMerged: integrationPr?.state === 'merged',

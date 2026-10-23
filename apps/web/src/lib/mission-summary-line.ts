@@ -10,7 +10,8 @@
  * one. The full description stays one tap away.
  */
 
-const GOAL_LABEL = /^(?:goal|objective|outcome|aim)\s*[:—-]\s*(.+)$/i;
+/** `Goal:`, `Owner goal:`, `Objective:`, … introduce the sentence the page leads with. */
+const GOAL_LABEL = /^(?:(?:owner|product|mission|the)\s+)?(?:goal|objective|outcome|aim)\s*[:—-]\s*(.+)$/i;
 
 function clean(line: string): string {
   return line

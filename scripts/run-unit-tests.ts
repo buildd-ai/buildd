@@ -645,6 +645,22 @@ function sampleHostBusy(): string {
   }
 }
 
+/**
+ * A sandbox that denies child-process creation (EPERM/EACCES from uv_spawn,
+ * seen in restricted native-Windows task sessions) fails every file before any
+ * test runs. That is an environment limit, not test evidence, and isolation is
+ * not negotiable: one process per file stays. Say where to verify instead.
+ */
+export function spawnDeniedHint(error: unknown): string {
+  const text = `${(error as NodeJS.ErrnoException)?.code ?? ''} ${error instanceof Error ? error.message : String(error)}`;
+  if (!/\b(EPERM|EACCES)\b/.test(text)) return '';
+  return (
+    '\n\nThis sandbox denies spawning child processes, so no test ran: inconclusive, not a pass or a fail. ' +
+    'Do not run files in one process to get around it. Verify at the pushed SHA with the Verify Unit Tests ' +
+    'workflow (docs/testing.md, "Read-only verification").\n'
+  );
+}
+
 export async function runTestFile(
   file: string,
   spawn: SpawnTestProcess = (command, options) => Bun.spawn(command, options),
@@ -741,7 +757,7 @@ export async function runTestFile(
     return {
       file,
       exitCode: 1,
-      output: `Failed to launch Bun for ${file}:\n${detail}`,
+      output: `Failed to launch Bun for ${file}:\n${detail}${spawnDeniedHint(error)}`,
       durationMs: elapsed(),
     };
   } finally {
