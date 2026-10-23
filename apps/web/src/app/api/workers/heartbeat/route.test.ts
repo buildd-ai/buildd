@@ -106,6 +106,12 @@ mock.module('@/lib/lost-claim', () => ({
   releaseUnacknowledgedClaims: mockReleaseUnacknowledgedClaims,
 }));
 
+// The rule is unit-tested in lib/stale-workers-unvouched.test.ts; here only the wiring.
+const mockFailWorkersUnvouchedByRunner = mock(async (_input: any) => 0);
+mock.module('@/lib/stale-workers', () => ({
+  failWorkersUnvouchedByRunner: mockFailWorkersUnvouchedByRunner,
+}));
+
 import { POST } from './route';
 
 function createMockRequest(options: {
@@ -1202,6 +1208,48 @@ describe('POST /api/workers/heartbeat — claim handoff acknowledgement', () => 
     }));
     expect(res.status).toBe(200);
     expect((await res.json()).claimsReleased).toBe(0);
+  });
+
+  it('asks which workers the runner no longer reports, vouching for its active and pending ids', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(HOST);
+    mockFailWorkersUnvouchedByRunner.mockReset();
+    mockFailWorkersUnvouchedByRunner.mockResolvedValue(1);
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        localUiUrl: 'http://host-runner:8766',
+        activeWorkerIds: ['w-live', 'w-paused'],
+        claimHandoff: { pendingStartIds: ['w-starting'], claimInFlight: false },
+      },
+    }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).workersUnvouched).toBe(1);
+    const input = mockFailWorkersUnvouchedByRunner.mock.calls[0][0];
+    expect(input.accountId).toBe('account-1');
+    expect(input.runner).toBe('http://host-runner:8766');
+    expect(input.vouched).toEqual(['w-live', 'w-paused', 'w-starting']);
+  });
+
+  it('a runner that sends no handoff report vouches for nothing, so nothing is failed on its word', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(HOST);
+    mockFailWorkersUnvouchedByRunner.mockReset();
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://host-runner:8766', activeWorkerIds: [] },
+    }));
+    expect(mockFailWorkersUnvouchedByRunner).not.toHaveBeenCalled();
+  });
+
+  it('a failing unvouched check never fails the heartbeat', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(HOST);
+    mockFailWorkersUnvouchedByRunner.mockReset();
+    mockFailWorkersUnvouchedByRunner.mockRejectedValue(new Error('db down'));
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://host-runner:8766', claimHandoff: { pendingStartIds: [], claimInFlight: false } },
+    }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).workersUnvouched).toBe(0);
   });
 });
 

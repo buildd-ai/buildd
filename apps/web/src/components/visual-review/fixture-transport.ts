@@ -17,7 +17,7 @@ import {
   type VisualReviewUndoResponse,
 } from '@buildd/shared';
 import { surfaceFixTitle } from '@buildd/core/surface-audit';
-import { buildVisualReviewModel, type VisualReviewTaskInput } from '@/lib/visual-review-model';
+import { buildVisualReviewModel, isFixCheck, type VisualReviewTaskInput } from '@/lib/visual-review-model';
 import { decisionOutcome, planShotReviewEffect } from '@/lib/visual-review-outcome';
 import {
   VISUAL_REVIEW_FIXTURE_NOW,
@@ -90,7 +90,7 @@ export function createFixtureVisualReviewTransport(
       const TERMINAL = ['completed', 'failed', 'cancelled'];
       const effects = cells.map((c) => {
         if (!c) return null;
-        const check = c.fixCheck?.state === 'check';
+        const check = isFixCheck(c);
         const fix = check && c.current.fixTask?.id === c.fixCheck!.fix.id ? null : c.current.fixTask;
         const linkedFix = fix ? { id: fix.id, status: taskStatus(before, fix.id) ?? fix.status } : null;
         const effect = planShotReviewEffect(c.current.agentVerdict, req.decision, { linkedFix, hasNote: !!req.note?.trim() });

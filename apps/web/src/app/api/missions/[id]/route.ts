@@ -3,7 +3,7 @@ import { readMissionSummaries } from '@/lib/mission-summary-store';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { settleSpecWaive } from '@/lib/mission-spec-waive-settle';
 import { cancelWaivedSurfaceAudits } from '@/lib/surface-audit-waiver-cancel';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { missions, tasks, taskSchedules, initiatives, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -904,6 +904,18 @@ export async function PATCH(
       .returning();
     // Status, hold, schedule or criteria: the summary reads them (lib/work-changed.ts).
     if (updated) noteWorkChanged({ missionIds: [id] });
+
+    // A recorded Skip lifts the visual review's hold on the mission PR. Nothing
+    // else re-drives a PR whose CI was already green, so re-drive it through
+    // its usual merge door once the response is sent; it still checks every rail.
+    if (surfaceWaiverReason && existing.primaryPrNumber && existing.workspaceId) {
+      const wsId = existing.workspaceId;
+      const prNumber = existing.primaryPrNumber;
+      const redrive = () => import('@/lib/surface-ordering-wake')
+        .then(m => m.redriveSurfaceWaiter(wsId, prNumber))
+        .catch(err => console.error('[missions PATCH] re-driving the mission PR after a skip failed', err));
+      try { after(redrive); } catch { /* outside a request scope (tests): nothing to re-drive */ }
+    }
 
     // A mission change that lifts a claim gate leaves its tasks `pending`, so
     // the outbox trigger sees nothing; wake them here or they wait for a poll.

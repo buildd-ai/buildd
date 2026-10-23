@@ -39,3 +39,13 @@ export function resolveRevision(input: { currentRevision: number; pinned?: numbe
   if (input.follows) return input.currentRevision;
   return input.pinned ?? input.currentRevision;
 }
+
+/**
+ * The artifact a spec revision's `design` pins, as a design to list. A URL or
+ * design-tool pin has no stored file, so it is not a design here. Pure.
+ */
+export function specPinnedArtifact(design: { kind: string; ref: string; version: string } | null | undefined): { artifactId: string; revision: number } | null {
+  if (!design || design.kind !== 'artifact') return null;
+  const revision = Number(design.version);
+  return Number.isInteger(revision) && revision >= 1 ? { artifactId: design.ref, revision } : null;
+}

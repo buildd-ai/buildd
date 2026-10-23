@@ -81,6 +81,10 @@ const KERNEL_ENTRY_POINTS = new Set(['kernel-client', 'command-api', 'command-ke
   // S4a review: the fast heal's due-queue (kernel-heal.ts). Its tick calls the floor pass for named
   // deliveries (seam functions only), like kernel-floor; it never imports the reducer.
   'kernel-heal',
+  // workflow-kernel-library.md §3 trunk recovery: the trunk incidents' recheck queue (trunk-recheck.ts). The
+  // webhook marks a branch's unresolved incidents due (one SELECT, a Redis write); the recheck itself is the
+  // seam's, run by the control plane's tick. It issues no command and writes no kernel table.
+  'trunk-recheck',
   // S4b: the one automated mission-completion write, compare-and-set on the mission's delivery records
   // (a fingerprint read and one UPDATE of missions; it reads the epochs and writes no kernel table).
   'mission-completion-write',
@@ -517,6 +521,7 @@ const ATTEMPT_SITES: Record<string, AttemptSite[]> = {
     { at: /\.set\(\{ releaseResult, result: resultWithRelease, updatedAt/, kind: 'NO_STATUS', why: 'the release record' },
     { at: /\.set\(\{ status: 'failed', updatedAt: new Date\(\) \}\)[\s\S]*not\(eq\(tasks\.status, 'cancelled'\)\)/, kind: 'NOT_OWNER', predicate: true, why: 'a sandbox mount gap whose cost exhausts its mission fails the requeued task; an owner is refused by AttemptWithdrawn(failed, no claim) (AC-1 slice 9)' },
     { at: /'effectiveVerdictReason', \$\{copyGate\.reason/, kind: 'NO_STATUS', why: 'the copy review\'s verdict on the reviewer task\'s result' },
+    { at: /'effectiveVerdictReason', \$\{designGate\.reason\}/, kind: 'NO_STATUS', why: 'the design gate\'s verdict on the reviewer task\'s result' },
     { at: /'effectiveVerdictReason', \$\{serverOverrideReason\}/, kind: 'NO_STATUS', why: 'the server\'s escalation on the reviewer task\'s result' },
     { at: /'evidenceSha', \$\{evidenceSha\}/, kind: 'NO_STATUS', why: 'the commit the reviewer read its verdict at, on the reviewer task\'s result' },
     { at: /'settledVerdict', \$\{effectiveVerdict\}/, kind: 'NO_STATUS', why: 'the verdict once every gate ran, on the reviewer task\'s result (a later delivery open adopts it)' },

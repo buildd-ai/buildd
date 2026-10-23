@@ -54,7 +54,7 @@ import { hostUserMemoryExcludes, primaryCloneMemoryExcludes } from './host-memor
 import { sweepTerminalWorktrees } from './terminal-worktree-sweep';
 import { resolveBuilddHome } from './buildd-home';
 import { isolateAgentRunnerHome, cleanupAgentRunnerHome } from './agent-runner-home';
-import { startScopedGitHubSession, type ScopedGitHubSession } from './agent-github-credentials';
+import { startScopedGitHubSession, hostHasGitHubCredentials, type ScopedGitHubSession } from './agent-github-credentials';
 import { PusherManager } from './pusher-manager';
 import {
   authContextOf,
@@ -4470,7 +4470,11 @@ export class WorkerManager {
       // installation token minted for its task's repo — the operator's
       // GITHUB_TOKEN/GH_TOKEN and host git/gh credentials are withheld. See
       // agent-github-credentials.ts. Absent or `runner`: unchanged.
-      if (worker.githubCredentials?.mode === 'scoped') {
+      // A claim with no marker (rollout off) on a host that holds no GitHub
+      // credential at all (fresh WSL, no helper, no gh, no key) would fail
+      // every push, so it gets the scoped token too: nothing is withheld.
+      const bareHost = !worker.githubCredentials?.mode && !hostHasGitHubCredentials();
+      if (worker.githubCredentials?.mode === 'scoped' || bareHost) {
         githubTokenRefresher = await this.startScopedGitHubCredentials(worker, cleanEnv, agentRunnerHome);
         if (!githubTokenRefresher.ok) {
           promptText += '\n\n' + [
@@ -5183,6 +5187,12 @@ export class WorkerManager {
       // becomes the task summary instead of actual results. Agents should not use
       // run_in_background; they should poll synchronously or wait for results.
       systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Tool Parameter Policy\nDo NOT use `run_in_background: true` in Bash tool calls. This parameter expects to re-invoke you after the task completes, but that mechanism does not exist in this execution environment. Instead: poll the task status synchronously in a loop, or wait for the tool result directly. If a long-running task would exceed your tool timeout, that is a blocker you should report to the user rather than work around with background execution.';
+
+      // Process kill policy: the runner is a bun process, so a kill by name
+      // (`Get-Process bun | Stop-Process`, `taskkill /IM bun.exe`) ends it and
+      // every agent on the machine. The permission hook refuses those
+      // (kill-guard.ts); this tells the agent how to stop its own work instead.
+      systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Process Kill Policy\nNever kill processes by name (`Stop-Process -Name`, `Get-Process bun | Stop-Process`, `taskkill /IM`, `pkill`, `killall`). The buildd runner and other agents run as bun, node and git on this machine, so a kill by name ends them and your own session. Record the PID of anything you start (`Start-Process -PassThru`, `$!`) and stop it with `Stop-Process -Id <pid>` or `kill <pid>`.';
 
       // Narration policy: a text block right before a tool call becomes an
       // Activity milestone, so "Now let me check X…" filler stacked up as rows.

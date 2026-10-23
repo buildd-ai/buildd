@@ -2,7 +2,7 @@
 title: Surface IA — Home, Missions, Initiatives
 status: active
 owner: max
-last_verified: 2026-10-15
+last_verified: 2026-10-23
 summary: Home, Missions and Initiatives MUST each answer one question (what needs me, what state is each mission in, what do an initiative's missions need) and MUST place release state per §8-10.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/home/page.tsx, apps/web/src/app/app/(protected)/missions/page.tsx, apps/web/src/lib/initiative-view.ts]
@@ -19,6 +19,17 @@ assertions:
   - id: "initiative-view-tests"
     type: "test_file"
     path: "apps/web/src/lib/initiative-view.test.ts"
+  - id: "red-check-not-this-pr"
+    type: "symbol"
+    name: "applyNotThisPr"
+    path: "apps/web/src/lib/red-check-cause.ts"
+  - id: "red-check-cause-kind"
+    type: "symbol"
+    name: "redCheckCauseKind"
+    path: "packages/core/decision-kind-red-check-cause.ts"
+  - id: "red-check-judgement-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/red-check-decision.test.ts"
 ---
 
 # Surface IA — Home, Missions, Initiatives
@@ -36,6 +47,7 @@ are containers with a human-set status; their list and page are specified in
 [`initiatives.md`](initiatives.md). §2 and §4-§7 below are replaced by pointers.
 §0 is kept as history. §3 and §8-§10 are unchanged, except §8.5, rewritten on
 2026-10-15 for `MissionReleaseSection`, and the drift notes in §3.1 and §8.2.
+§11 (Home's card for a PR whose checks fail) was added on 2026-10-23.
 
 **Invariants**
 
@@ -373,6 +385,112 @@ detail get the same component, not two implementations to keep in sync.
   `deriveChainPosition` (or the mission-progress equivalent) and contains no
   release/ship segment — the fifth-segment path was evaluated and rejected,
   not merely unbuilt.
+
+---
+
+## 11. Home — a PR whose checks are failing
+
+### 11.0 Why this section exists
+
+On 2026-10-23 Home showed two cards that each said only "Tests are failing."
+with Start fix as the primary action. Neither was a code defect. In one, only
+the real-Postgres job failed, because the database dropped its connections. Two
+automatic fixes had already been pushed without changing the result. In the
+other, `build` was red only because it reports the Windows runner job's result.
+The saved log ended at checkout cleanup, so the failing test showed nowhere in
+buildd, and the one automatic fix pushed nothing. Start fix sends an agent to
+fix a flake, and "Tests are failing" does not say what failed.
+
+This section covers the card for a PR whose required checks fail with no fix in
+flight. A PR with a fix in flight keeps its agent-handled card, unchanged.
+
+### 11.1 Requirements
+
+- **R-1 Name the check.** The card names the job or jobs that failed. A summary
+  gate, a job whose only work is to report other jobs' results (buildd's `build`,
+  step "All build parts passed"), is folded into the jobs it reports on and is
+  never the named failure while one of those jobs failed. When it is the only
+  failed job, it is named.
+- **R-2 Show the failing lines.** The CI digest, wherever it is read (`get_pr`
+  with `includeCiFailures`, the card's sentence, the retry agent's brief), is
+  taken from the failing test or error lines of the job's log, never from its
+  last lines alone. Log text after the job's own steps (post-job cleanup) is not
+  a failure. For a job that uploads a unit-test report artifact
+  (`unit-test-report-*`), the failing tests are read from that report when
+  the log does not name them.
+- **R-3 Say when it looks like a flake.** Rules decide first: a database
+  connection the server terminated, a lost runner or an image the runner
+  could not pull, and a timeout with no failing assertion each read as a likely
+  flake. A real failing test or compile error reads as a real failure. Two
+  rules say a job is not this PR's code whatever its lines show: the same job
+  is red on the base branch at the same time (the newest completed run of the
+  same workflow there that started before this run ended), or the job is
+  scoped to paths the PR's diff does not touch (the Windows runner job when no
+  runner path changed). Where no rule decides, Jev judges from the failing
+  lines whether the environment or the code failed (`buildd.red_check_cause`,
+  an opt-in capability). The judgement is a recorded decision with its model
+  and threshold, stored on the PR's red-check record, and made after the
+  failure is read, never while Home renders. An unsure, failed or missing
+  answer reads as a real failure, which is also what the card says when the
+  team has it off. The card also says when earlier automatic fixes pushed
+  nothing, or pushed and did not change the result. A lost database
+  connection is re-run automatically like the infrastructure signatures,
+  bounded by the run's attempts.
+- **R-4 Actions follow the cause.** A likely flake: **Re-run** is the primary
+  action and Start fix the secondary. A real failure: **Start fix** is primary.
+  Re-run re-runs the failed jobs of the head's failed workflow run only, through
+  the GitHub App. It records who re-ran what and when, and the card names the re-run.
+  When the re-run fails again with the same signature, Start fix becomes primary
+  and the card says it failed twice.
+- **R-5 Plain, specific words.** The sentence names the check and the cause:
+  "Postgres tests lost their database connection.", "Windows runner tests
+  failed: <test name>." It never reads "Tests are failing." alone, and no
+  stock phrasing (Product voice d4613613).
+- **R-6 The same words as Mission checks.** The card's label follows Mission
+  checks (072de598) I-12: a PR whose review approved it reads "Approved ·
+  checks failing", and the stage stays Verify. Other PRs read "Checks failing".
+
+### 11.2 Acceptance criteria
+
+- **AC-51**: GIVEN a PR whose only failed job is the real-Postgres job with
+  "terminating connection due to administrator command" in its log and two
+  earlier automatic fixes, WHEN Home renders its card, THEN the sentence names
+  the job and says the Postgres tests lost their database connection, says the
+  two fixes did not change the result, and Re-run is the primary action with
+  Start fix beside it.
+- **AC-52**: GIVEN a PR whose failed jobs are `build` (step "All build parts
+  passed") and "Runner unit tests (windows)", WHEN Home renders its card, THEN
+  the card names "Runner unit tests (windows)" and never `build`; GIVEN `build`
+  is the only failed job, THEN it is named.
+- **AC-53**: GIVEN a job log whose failing test lines sit mid-log and whose last
+  lines are post-job cleanup, WHEN the digest is read, THEN it holds the failing
+  lines and none of the cleanup.
+- **AC-54**: GIVEN a likely-flake card, WHEN a person clicks Re-run, THEN only
+  the failed jobs of the head's failed run are re-run and the re-run is
+  recorded with who and when; GIVEN that re-run fails with the same signature
+  on the same head, WHEN Home renders, THEN Start fix is primary and the
+  sentence says it failed twice.
+- **AC-55**: GIVEN an approved PR whose required checks fail, WHEN Home renders
+  its card, THEN the label reads "Approved · checks failing", the same words
+  072de598 AC-10 gives the header, board and chat.
+- **AC-56**: GIVEN a Windows runner job that failed a test the log does not
+  name and an uploaded `unit-test-report-windows` artifact naming it, WHEN the
+  failure is recorded, THEN the card names that test.
+- **AC-57**: GIVEN a failed job with a failing test that is also red on the
+  PR's base branch at the same time, WHEN the failure is recorded, THEN the card
+  says it is failing on the base branch too and is not this PR's code, and
+  Re-run leads; GIVEN the same job is green there, THEN it stays a real failure.
+- **AC-58**: GIVEN "Runner unit tests (windows)" failed on a PR whose diff
+  touches no runner path, WHEN the failure is recorded, THEN the card says the
+  PR changes nothing it tests; GIVEN the diff cannot be read in full, THEN the
+  rule does not decide.
+- **AC-59**: GIVEN a red head no rule can call, WHEN the failure is recorded,
+  THEN Jev is asked once for that failure off the render path and its answer
+  is stored on the record; an `environment` answer above the threshold makes
+  Re-run lead, and any other answer leaves Start fix primary.
+- **AC-60**: GIVEN a job whose database connection was terminated, WHEN its
+  CI failure is handled, THEN the failed jobs are re-run automatically until
+  the run has used its attempts.
 
 ---
 
