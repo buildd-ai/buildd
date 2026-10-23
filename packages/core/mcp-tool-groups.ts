@@ -230,7 +230,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   list_prs: 'listed',
   request_pr_review: 'listed',
   get_page_source: 'listed',
-  dispatch_visual_qa: 'listed',
+  dispatch_visual_qa: 'more',
   update_pr: 'listed',
   dispatch_health: 'listed',
   update_task: 'listed',
