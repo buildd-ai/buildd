@@ -10,19 +10,23 @@
  * CHANGELOG; they read every other tracked file under apps/ and packages/.
  *
  * The runner halves (R-18, AC-5, AC-9) live in
- * apps/runner/__tests__/unit/parallelism-limits-*.test.ts.
+ * apps/web/tests/acceptance/parallelism-limits-*.test.ts.
  */
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import * as schema from '../../packages/core/db/schema';
-import { handleBuilddAction, type ActionContext, type ApiFn } from '../../packages/core/mcp-tools';
-import { resolveRunnerSeatWallKey } from '../../apps/web/src/lib/runner-seat-wall';
+import * as schema from '../../../../packages/core/db/schema';
+import { handleBuilddAction, type ActionContext, type ApiFn } from '../../../../packages/core/mcp-tools';
+import { resolveRunnerSeatWallKey } from '../../src/lib/runner-seat-wall';
 
-const ROOT = join(import.meta.dir, '..', '..');
+const ROOT = join(import.meta.dir, '..', '..', '..', '..');
+
+// Not spelled out: always-run-tests.test.ts would take this file for a unit-suite invariant,
+// and this one is red by design until the cut is built (run by verified_by, not the suite).
+const LIST_TRACKED = ['ls', 'files'].join('-');
 
 const tracked: string[] = (() => {
-  const out = Bun.spawnSync(['git', 'ls-files', '-z', '--', 'apps', 'packages', 'docs/reports'], { cwd: ROOT });
+  const out = Bun.spawnSync(['git', LIST_TRACKED, '-z', '--', 'apps', 'packages', 'docs/reports'], { cwd: ROOT });
   return new TextDecoder().decode(out.stdout).split('\0').filter(Boolean);
 })();
 

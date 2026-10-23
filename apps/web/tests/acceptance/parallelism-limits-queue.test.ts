@@ -5,10 +5,10 @@
  * R-11's copy says it in the login's words.
  */
 import { describe, expect, test } from 'bun:test';
-import { createPalette, stripAnsi } from '../../src/terminal-palette';
-import { renderFrame } from '../../src/top/render';
-import { NOW } from './top-fixture';
-import { queueState } from './top-queue-fixture';
+import { createPalette, stripAnsi } from '../../../runner/src/terminal-palette';
+import { renderFrame } from '../../../runner/src/top/render';
+import { NOW } from '../../../runner/__tests__/unit/top-fixture';
+import { queueState } from '../../../runner/__tests__/unit/top-queue-fixture';
 
 const plain = createPalette('night', 'none');
 const lines = () => renderFrame(queueState(), { cols: 140, rows: 40, now: NOW, palette: plain }).map(l => stripAnsi(l));

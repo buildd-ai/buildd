@@ -10,7 +10,7 @@
  */
 import { describe, test, expect, mock, setDefaultTimeout, afterAll, beforeEach } from 'bun:test';
 import { tmpdir } from 'os';
-import { cleanupTestWorkspace } from '../test-workspace';
+import { cleanupTestWorkspace } from '../../../runner/__tests__/test-workspace';
 
 setDefaultTimeout(30_000);
 
@@ -27,7 +27,7 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
 let claimResult: any = { workers: [] };
 const mockClaimTask = mock(async () => claimResult);
 
-mock.module('../../src/buildd', () => ({
+mock.module('../../../runner/src/buildd', () => ({
   BuilddClient: class {
     claimTask = mockClaimTask;
     updateWorker = mock(async () => ({}));
@@ -44,7 +44,7 @@ mock.module('../../src/buildd', () => ({
   },
 }));
 
-mock.module('../../src/workspace', () => ({
+mock.module('../../../runner/src/workspace', () => ({
   createWorkspaceResolver: () => ({
     resolve: () => null,
     debugResolve: () => ({}),
@@ -78,7 +78,7 @@ mock.module('fs', () => ({
   statSync: () => ({ size: 0, mtimeMs: 0 }),
 }));
 
-mock.module('../../src/worker-store', () => ({
+mock.module('../../../runner/src/worker-store', () => ({
   saveWorker: () => {},
   loadAllWorkers: () => [],
   loadTerminalWorkersCached: () => [],
@@ -87,16 +87,16 @@ mock.module('../../src/worker-store', () => ({
   deleteWorker: () => {},
 }));
 
-mock.module('../../src/skills.js', () => ({ syncSkillToLocal: async () => {} }));
+mock.module('../../../runner/src/skills.js', () => ({ syncSkillToLocal: async () => {} }));
 
-mock.module('../../src/env-scan', () => ({
+mock.module('../../../runner/src/env-scan', () => ({
   scanEnvironment: () => ({ tools: [], envKeys: [], mcp: [], mcpServers: [] }),
   checkMcpPreFlight: () => ({ missing: [], warnings: [] }),
   checkBwrapSupport: () => true,
   checkBwrapMountIsolationSupport: () => true,
 }));
 
-const { WorkerManager } = await import('../../src/workers');
+const { WorkerManager } = await import('../../../runner/src/workers');
 
 const config: any = {
   projectsRoot: '/tmp',
