@@ -897,7 +897,7 @@ async function TaskDetailPage({
     mergedRun: {
       took: lineageClaimToMergeMs != null ? formatElapsed(lineageClaimToMergeMs) : null,
       fixes: deliveryView ? deliveryView.ledger.filter(a => a.mode === 'agent').length : ciAttemptTasks.filter(t => t.workers.length > 0).length,
-      reviewRounds: deliveryView ? deliveryView.rounds.filter(r => r.status !== 'superseded').length : legacyReview ? legacyReview.round ?? 1 : 0,
+      reviewRounds: deliveryView ? deliveryView.rounds.filter(r => r.status !== 'superseded').length : legacyReview ? Math.max(1, legacyReview.round ?? 0) : 0,
     } });
   const verdict = rulesVerdict ? applyVerdictDecision(rulesVerdict, storedVerdictDecision) : null;
   // The status row names and links the PR: the side panel and the PR card do not say it again.

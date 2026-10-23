@@ -351,6 +351,9 @@ describe('merged and waiting tasks — tasks/[id]/page.tsx', () => {
     const call = pageSource.slice(from, pageSource.indexOf('});', from));
     for (const arg of ['review: legacyReview', 'eventTimes', 'waitingOn:', 'deliverInto:']) expect(call).toContain(arg);
   });
+  it('a legacy review counts as at least one round, even with no stored iteration', () => {
+    expect(pageSource).toContain('legacyReview ? Math.max(1, legacyReview.round ?? 0) : 0');
+  });
   it('no loop chip and no Loop history without loop history', () => {
     expect(pageSource).toContain('{task.loopConfig && loopHistory.length > 0 && (');
     expect(pageSource).toContain('{task.loopConfig && loopHistory.length > 0 ? (');
