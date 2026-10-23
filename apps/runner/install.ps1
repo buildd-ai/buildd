@@ -166,6 +166,12 @@ if /i "%SUBCMD%"=="service" (
     exit /b !ERRORLEVEL!
 )
 
+REM `buildd wsl migrate` hands over to the runner inside WSL2 (apps/runner/WSL2.md).
+if /i "%SUBCMD%"=="wsl" (
+    bun --no-env-file run --preload "%BUILDD_PRELOAD%" "%USERPROFILE%\.buildd\apps\runner\src\wsl.ts" !REST!
+    exit /b !ERRORLEVEL!
+)
+
 REM Restart loop (exit code 75 = update applied, restart) - mirrors install.sh's
 REM bash launcher so the self-updater behaves the same on every platform.
 REM BUILDD_LAUNCHER tells the runner something restarts it after an update.
