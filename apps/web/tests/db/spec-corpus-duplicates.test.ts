@@ -62,7 +62,7 @@ const judging = (decision: string, confidence: number) => ({
   judge: async () => ({ response: { decision, confidence, source: 'model', fallbackCause: null } as any, recordId: null }),
 });
 
-describe('R-105, AC-142: a revise is checked too', () => {
+describe('R-105: a revise is checked too', () => {
   test('AC-142: a revise that adds a criterion another spec already has warns naming both criteria, and the revision is written', async () => {
     const mem = memoryStore();
     knowledge.specKnowledgeDeps.store = async () => mem.store as never;
@@ -97,7 +97,7 @@ describe('R-105, AC-142: a revise is checked too', () => {
   });
 });
 
-describe('R-106, AC-143: drafts are indexed in the spec corpus, marked draft', () => {
+describe('R-106: drafts are indexed in the spec corpus, marked draft', () => {
   test('AC-143: a second draft of the same idea warns naming the first, and every draft chunk is marked draft so recall without drafts skips it', async () => {
     const mem = memoryStore();
     knowledge.specKnowledgeDeps.store = async () => mem.store as never;

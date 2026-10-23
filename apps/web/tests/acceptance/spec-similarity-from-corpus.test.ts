@@ -58,7 +58,7 @@ afterAll(() => {
 });
 const corpusStore = (s: unknown) => { knowledge.specKnowledgeDeps.store = async () => s as never; };
 
-describe('R-101, AC-138: similarity has one source, the spec corpus', () => {
+describe('R-101: similarity has one source, the spec corpus', () => {
   it('AC-138: `similar` ranks a spec from the spec corpus chunks and makes no embedding request of its own', async () => {
     fetches = [];
     const { store, queries } = fakeStore(() => [{ specId: OTHER, revision: 1, score: 0.8 }]);
@@ -81,7 +81,7 @@ describe('R-101, AC-138: similarity has one source, the spec corpus', () => {
   });
 });
 
-describe('R-102, AC-139: criteria are indexed one per chunk, and the reason names them', () => {
+describe('R-102: criteria are indexed one per chunk, and the reason names them', () => {
   const body = [
     '# Basket', '', '## Totals', '', '- R-7: Totals are shown in the shopper currency.', '- AC-3: A zero total reads as free.', '',
     '## Empty state', '', '- AC-4: An empty basket shows a friendly message.', '',
@@ -119,7 +119,7 @@ describe('R-102, AC-139: criteria are indexed one per chunk, and the reason name
   });
 });
 
-describe('R-103, AC-140: nothing the reader sees mentions embeddings, keys or providers', () => {
+describe('R-103: nothing the reader sees mentions embeddings, keys or providers', () => {
   const FORBIDDEN = /embed|\bkeys?\b|provider|voyage|vector/i;
 
   it('AC-140: a neighbour\'s reason is in words, for every kind', () => {
@@ -144,7 +144,7 @@ describe('R-103, AC-140: nothing the reader sees mentions embeddings, keys or pr
   });
 });
 
-describe('R-104, AC-141: the duplicate shortlist reads the corpus by criterion', () => {
+describe('R-104: the duplicate shortlist reads the corpus by criterion', () => {
   const OLD = '# Basket\n\n- AC-4: An empty basket shows a friendly message.\n- AC-5: Quantities cannot go below one.\n';
   const NEW = '# Cart\n\n- R-1: Quantities cannot be lowered past a single unit.\n- R-2: No items: display the zero-state notice.\n';
   const pool = [{ specId: OTHER, title: 'Basket', card: decision.specCard('Basket', OLD) }];

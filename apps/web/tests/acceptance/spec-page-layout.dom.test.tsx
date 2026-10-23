@@ -101,7 +101,7 @@ const control = (re: RegExp) => all('button,a,[role="button"],[role="menuitem"],
 const PRIMARY = /^(Confirm import|Review revision \d+|Approve revision \d+|Restore)\b/;
 const primaryActions = () => all('button,a,[role="button"]').filter((e) => PRIMARY.test(words(e)));
 
-describe('R-92, AC-130: the first screen is title, one status line, tabs, the text', () => {
+describe('R-92: the first screen is title, one status line, tabs, the text', () => {
   it('AC-130: an imported, unconfirmed spec shows title, Imported, tabs, then the text, with Confirm import the only primary action', () => {
     render(imported);
     const title = all('h1').find((h) => words(h) === 'Checkout');
@@ -131,7 +131,7 @@ describe('R-92, AC-130: the first screen is title, one status line, tabs, the te
   });
 });
 
-describe('R-93, AC-131: tabs, and nothing stacked under the text', () => {
+describe('R-93: tabs, and nothing stacked under the text', () => {
   it('AC-131: a spec with no comments and no files has neither tab nor section, and Add a comment and Attach a file are in More', () => {
     render(base);
     expect(tab(/^Spec$/)).toBeTruthy();
@@ -164,7 +164,7 @@ describe('R-93, AC-131: tabs, and nothing stacked under the text', () => {
   });
 });
 
-describe('R-94, AC-132: one title', () => {
+describe('R-94: one title', () => {
   const LONG = 'Orchestration Decisions (Shadow, Promotion Guard and Live Hold/Start)';
   const SHORT = 'Orchestration Decisions (Shadow and Promotion Guard)';
 
@@ -181,7 +181,7 @@ describe('R-94, AC-132: one title', () => {
   });
 });
 
-describe('R-95, AC-133: Contents', () => {
+describe('R-95: Contents', () => {
   const six = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot']
     .map((n, i) => `## ${n}\n\n- R-${i + 1}: ${n} does a thing.\n- AC-${i + 1}: ${n} is checked.\n`).join('\n');
 
@@ -242,7 +242,7 @@ describe('R-100: retired and replacing specs say so in the status line', () => {
   });
 });
 
-describe('R-98, AC-134: History picks two rows to compare', () => {
+describe('R-98: History picks two rows to compare', () => {
   const three = { ...base, spec: { ...base.spec, headRevision: 3, approvedRevision: 3 }, reading: { revision: 3, approved: true, isHead: true }, revisions: [rev(3), rev(2), rev(1)] };
   const rows = () => all('[data-revision], li').filter((r) => /^(Revision )?[123]\b/.test(words(r)) || r.hasAttribute('data-revision'))
     .filter((r, i, a) => !a.some((o) => o !== r && r.contains(o) && /^(Revision )?[123]\b/.test(words(o))));
