@@ -58,6 +58,9 @@ let finalizeResult: any = { state: 'ready', sha256: null, sizeBytes: null };
 const mockFinalize = mock(async (_id: string) => finalizeResult);
 mock.module('@/lib/artifact-upload', () => ({ finalizeArtifactUpload: mockFinalize }));
 
+const mockGetRevision = mock(async (_id: string, _n: number) => null as any);
+mock.module('@/lib/artifact-revisions', () => ({ getArtifactRevision: mockGetRevision }));
+
 const { GET } = await import('./route');
 
 const mockParams = Promise.resolve({ artifactId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
@@ -285,5 +288,37 @@ describe('GET /api/artifacts/[artifactId]/download — an upload is served only 
     mockArtifactsFindFirst.mockResolvedValue(artifact());
     expect((await GET(req({ apiKey: 'bld_x' }), { params: mockParams })).status).toBe(307);
     expect(mockFinalize).not.toHaveBeenCalled();
+  });
+
+  describe('?revision=N', () => {
+    const at = (n: string) => new NextRequest(`http://localhost:3000/api/artifacts/artifact-1/download?revision=${n}`, { headers: new Headers({ authorization: 'Bearer bld_x' }) });
+    beforeEach(() => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-owner' });
+      mockGetRevision.mockReset();
+    });
+
+    it('serves an earlier revision\'s own object after a newer upload', async () => {
+      mockArtifactsFindFirst.mockResolvedValue(artifact({ currentRevision: 2, storageKey: 'artifacts/ws-1/x.r2/report.pdf' }));
+      mockGetRevision.mockResolvedValue({ revision: 1, storageKey: 'artifacts/ws-1/uuid/report.pdf' });
+      const res = await GET(at('1'), { params: mockParams });
+      expect(res.status).toBe(307);
+      expect(mockGetRevision).toHaveBeenCalledWith('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 1);
+      expect(mockGenerateDownloadUrl).toHaveBeenCalledWith('artifacts/ws-1/uuid/report.pdf');
+    });
+
+    it('a revision that does not exist is a 404; a malformed one a 400', async () => {
+      mockArtifactsFindFirst.mockResolvedValue(artifact({ currentRevision: 2 }));
+      expect((await GET(at('7'), { params: mockParams })).status).toBe(404);
+      expect((await GET(at('zero'), { params: mockParams })).status).toBe(400);
+      expect(mockGenerateDownloadUrl).not.toHaveBeenCalled();
+    });
+
+    it('checks access before reading any revision', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-other' });
+      mockArtifactsFindFirst.mockResolvedValue(artifact({ currentRevision: 2 }));
+      mockGetRevision.mockResolvedValue({ revision: 1, storageKey: 'artifacts/ws-1/uuid/report.pdf' });
+      expect((await GET(at('1'), { params: mockParams })).status).toBe(403);
+      expect(mockGenerateDownloadUrl).not.toHaveBeenCalled();
+    });
   });
 });
