@@ -14,9 +14,12 @@ export function buildSkipsTypecheck(env) {
   return env.GITHUB_ACTIONS === 'true' && env.CI_TYPECHECK_DONE === '1';
 }
 
+/** Pages that show an attached design besides /app/artifacts/[id]; each carries artifactPageCsp. */
+export const DESIGN_FRAMING_SOURCES = ['/app/missions/:id', '/app/tasks/:id', '/app/specs/:specId'];
+
 /**
- * The page-scoped CSP for /app/artifacts/[id], the one page that frames an
- * artifact's bytes: a design (components/DesignPreview.tsx) loads from the
+ * The page-scoped CSP for /app/artifacts/[id] and DESIGN_FRAMING_SOURCES, the
+ * pages that frame an artifact's bytes: a design (components/DesignPreview.tsx) loads from the
  * signed storage URL in a sandboxed iframe, so `frame-src` names exactly the
  * storage origin (STORAGE_ENDPOINT, packages/core/config.ts) and nothing else.
  * Without a storage endpoint nothing may be framed. Only this directive is
@@ -171,14 +174,22 @@ const nextConfig = {
         ],
       },
       {
-        // The artifact page frames design files (untrusted agent HTML) from the
-        // storage origin, sandboxed. This is the only CSP the app sets today:
-        // see artifactPageCsp for what a global policy must keep allowing.
+        // The pages that frame design files (untrusted agent HTML) from the
+        // storage origin, sandboxed: the artifact page and the mission, task
+        // and spec pages that show their attached designs. These are the only
+        // CSPs the app sets today: see artifactPageCsp for what a global policy
+        // must keep allowing.
         source: '/app/artifacts/:id',
         headers: [
           { key: 'Content-Security-Policy', value: artifactPageCsp(process.env.STORAGE_ENDPOINT) },
         ],
       },
+      ...DESIGN_FRAMING_SOURCES.map((source) => ({
+        source,
+        headers: [
+          { key: 'Content-Security-Policy', value: artifactPageCsp(process.env.STORAGE_ENDPOINT) },
+        ],
+      })),
     ];
   },
   async redirects() {

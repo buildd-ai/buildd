@@ -26,6 +26,7 @@ import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import LinkedDesigns from '@/components/LinkedDesigns';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { parseCredentialBlock, CREDENTIAL_BLOCK_CONTEXT_KEY } from '@/lib/credential-block-copy';
 import { displayWorkspaceName, isLiveWorkerStatus, isTerminalTaskStatus, ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
@@ -1854,6 +1855,8 @@ async function TaskDetailPage({
             maxLoops={task.loopConfig.maxLoops ?? 5}
           />
         )}
+
+        <LinkedDesigns subjectKind="task" subjectId={task.id} userId={user.id} />
 
         <TaskEvidenceCard status={task.status} result={task.result} workerError={taskWorkers[0]?.error ?? null} backend={taskBackend} failingChecks={verdict?.failingChecks ?? []} />
 
