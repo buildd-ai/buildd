@@ -15,6 +15,7 @@ import {
 } from '@buildd/shared';
 import { settingsPermissions, type SettingsPermissions } from './settings-permissions';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { RUNNER_ONLINE_WINDOW_MS } from '@/lib/runner-heartbeats-shared';
 import { cachedTeamRead } from '@/lib/team-cache';
 import { callerDep } from '@/lib/caller-cache';
 
@@ -235,6 +236,64 @@ export async function loadAccountModelAuth(accountIds: string[]): Promise<Record
       claude: isRunnerModelAuthSource(r.source) ? r.source : null,
       codex: isRunnerCodexAuthSource(r.codex) ? r.codex : null,
     };
+  }
+  return out;
+}
+
+/** One live runner of a token, with the slots it runs and where that number came from. */
+export interface AccountRunnerSlots {
+  id: string;
+  /** The runner's own name (`buildd name`), else the host of its address. */
+  name: string;
+  online: boolean;
+  active: number;
+  reported: number;
+  desired: number | null;
+  origin: 'dashboard' | 'machine' | null;
+  setBy: string | null;
+  setAt: string | null;
+}
+
+/**
+ * The runners (heartbeat rows) of each runner token, newest first, for the
+ * per-runner slot control (spec 34a48877 R-5). Heartbeat rows are swept once
+ * stale, so a token whose runner is gone has none. Degrades to empty on failure.
+ */
+export async function loadAccountRunnerSlots(accountIds: string[], now: number = Date.now()): Promise<Record<string, AccountRunnerSlots[]>> {
+  if (accountIds.length === 0) return {};
+  const rows = await db
+    .select({
+      id: workerHeartbeats.id,
+      accountId: workerHeartbeats.accountId,
+      localUiUrl: workerHeartbeats.localUiUrl,
+      name: sql<string | null>`${workerHeartbeats.environment}->'labels'->>'name'`,
+      lastHeartbeatAt: workerHeartbeats.lastHeartbeatAt,
+      active: workerHeartbeats.activeWorkerCount,
+      reported: workerHeartbeats.maxConcurrentWorkers,
+      desired: workerHeartbeats.desiredSlots,
+      origin: workerHeartbeats.desiredSlotsOrigin,
+      setBy: workerHeartbeats.desiredSlotsSetBy,
+      setAt: workerHeartbeats.desiredSlotsSetAt,
+    })
+    .from(workerHeartbeats)
+    .where(inArray(workerHeartbeats.accountId, accountIds))
+    .orderBy(desc(workerHeartbeats.lastHeartbeatAt))
+    .catch(() => [] as never[]);
+  const out: Record<string, AccountRunnerSlots[]> = {};
+  for (const r of rows) {
+    let host = r.localUiUrl;
+    try { host = new URL(r.localUiUrl).hostname || r.localUiUrl; } catch { /* keep the address as sent */ }
+    (out[r.accountId] ??= []).push({
+      id: r.id,
+      name: r.name || host,
+      online: now - new Date(r.lastHeartbeatAt).getTime() <= RUNNER_ONLINE_WINDOW_MS,
+      active: r.active,
+      reported: r.reported,
+      desired: r.desired ?? null,
+      origin: r.origin ?? null,
+      setBy: r.setBy ?? null,
+      setAt: r.setAt ? new Date(r.setAt).toISOString() : null,
+    });
   }
   return out;
 }

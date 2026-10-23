@@ -2,12 +2,12 @@
 title: Agent Question Protocol
 status: active
 owner: max
-last_verified: 2026-10-22
+last_verified: 2026-10-23
 summary: An agent question MUST include an actionable brief, pass the question gate and park only when human input is required.
 domain: tasks
 surfaces: [apps/web/src/lib/question-gate-check.ts, packages/core/needs-you.ts, apps/web/src/lib/sessionless-worker-settle.ts]
 related: [human-answer-delivery, worker-reclamation]
-verified_by: [apps/web/src/lib/recoverable-blocker-reconcile.test.ts, apps/runner/__tests__/unit/completion-replay.test.ts, apps/web/src/lib/sessionless-worker-settle.test.ts, apps/runner/__tests__/unit/worker-remote-404.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/web/src/app/api/workers/[id]/question-check/route.test.ts, packages/core/__tests__/needs-you.test.ts]
+verified_by: [apps/web/src/lib/question-subject.test.ts, packages/core/__tests__/mcp-tools-post-note.test.ts, apps/web/src/lib/recoverable-blocker-reconcile.test.ts, apps/runner/__tests__/unit/completion-replay.test.ts, apps/web/src/lib/sessionless-worker-settle.test.ts, apps/runner/__tests__/unit/worker-remote-404.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/web/src/app/api/workers/[id]/question-check/route.test.ts, packages/core/__tests__/needs-you.test.ts]
 assertions:
   - id: "question-gate-check"
     type: "route"
@@ -407,7 +407,7 @@ asks with the MCP action `ask_human` and waits with `await_answer`.
 **Invariants**:
 - `ask_human` parks through the same route as a runner: it sends
   `PATCH /api/workers/[id]` with `status: 'waiting_input'` and
-  `waitingFor: { type: 'question', prompt, options?, context? }`. So the
+  `waitingFor: { type: 'question', prompt, options?, context?, subjectTaskId? }`. So the
   question gets the same brief handling, Needs you admission, `needsAttention`
   push and answer link as a runner's question. There is no second park path.
 - `ask_human` is refused for a runner-managed worker (any `runner` other than
@@ -446,6 +446,66 @@ asks with the MCP action `ask_human` and waits with `await_answer`.
 - `apps/web/src/lib/await-answer.ts` (`readInteractiveAnswer`),
   `apps/web/src/lib/answer-wait-capability.ts`
 - `apps/web/src/app/api/workers/[id]/route.ts` (`keepsParkClock`)
+
+## The shape of a decision: title, options, subject
+
+Every surface renders a decision as one card (Navigation: one place per task,
+R-16): the task it belongs to, a summary, the question, a primary option and
+one alternative, each with a one-line effect. This section is the write side:
+what an agent must send for that card to exist.
+
+**Invariants**:
+- The question names the decision ("How should Docker Hub credentials be set
+  up?"), never "How should I proceed?". A question whose whole text is a
+  request for direction (`isGenericDecisionTitle` in
+  `packages/core/human-attention.ts`) still parks, flagged
+  `waitingFor.genericTitle: true`; `ask_human` and `post_note` return an
+  advisory saying so. Advisory only: never a refusal.
+- Options: two by default, the recommended action and one alternative; a third
+  only for a genuinely different choice. `ask_human` and `post_note` refuse
+  more than three, and refuse "Not now" / "Skip" as an option, with a message
+  telling the agent to cut to two or ask in free text
+  (`normalizeDecisionOptions` in `packages/core/question-brief.ts`). The
+  notes routes refuse the same. Strings stay accepted as bare labels.
+- Each option's `consequence` (one to three sentences: what happens next and
+  what stays blocked) is stored with a short `effect` under 40 characters for
+  the button line: the agent's own, else the consequence's first sentence.
+  A runner's `AskUserQuestion` option description gets the same `effect`.
+- `subjectTaskId` names the task a decision is about when it is not the
+  asker's own (an organizer asking about a build task). It is checked on
+  write: same mission, or same workspace for a question with no mission
+  (`apps/web/src/lib/question-subject.ts`); a task outside is refused with
+  400. Stored on `waitingFor.subjectTaskId` and `mission_notes.subject_task_id`;
+  a note's structured options on `mission_notes.options`. Absent, the card
+  falls back to the mission.
+- `QUESTION_BRIEF_GUIDANCE`, the `ask_human` / `post_note` docs, the
+  organizer's planning context and the `task-lifecycle` guidance topic all
+  state these rules and never ask for three options by default.
+
+**Acceptance criteria**:
+- AC-57: GIVEN an agent asks with four options through `ask_human` or
+  `post_note` WHEN the call is made THEN it is refused with a message to cut
+  to two, and nothing is parked or stored.
+- AC-58: GIVEN an option labelled "Not now" or "Skip" WHEN asked THEN it is
+  refused.
+- AC-59: GIVEN an organizer `post_note` question with `subjectTaskId` of a
+  task in its mission and two structured options WHEN posted THEN the note
+  stores the subject, both options with consequence and effect, and the
+  recommended option as `defaultChoice`; GIVEN a task from another mission
+  THEN it is refused with 400.
+- AC-60: GIVEN a question "How should I proceed?" WHEN parked THEN it parks
+  with `genericTitle: true`; GIVEN "How should Docker Hub credentials be set
+  up?" THEN no flag.
+
+**Code surface**:
+- `packages/core/question-brief.ts` (`normalizeDecisionOptions`,
+  `DECISION_OPTIONS_GUIDANCE`, `DECISION_TITLE_GUIDANCE`)
+- `packages/core/human-attention.ts` (`isGenericDecisionTitle`,
+  `decisionTitleAdvisory`)
+- `apps/web/src/lib/question-subject.ts`,
+  `apps/web/src/app/api/missions/[id]/notes/route.ts`,
+  `apps/web/src/app/api/tasks/[id]/notes/route.ts`
+- `apps/web/src/lib/mission-prompts.ts` (`decisionQuestions`)
 
 ---
 

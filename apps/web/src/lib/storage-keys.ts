@@ -116,6 +116,21 @@ export function buildArtifactKey(
 }
 
 /**
+ * `artifacts/<workspaceId>/<artifactId>.r<revision>/<name>`: a later body of a
+ * file artifact (upload_artifact { artifactId, filename, ... }). Its own
+ * object, so every earlier revision stays readable.
+ */
+export function buildArtifactRevisionKey(
+  workspaceId: unknown,
+  artifactId: unknown,
+  revision: number,
+  filename: unknown,
+): string {
+  if (!Number.isSafeInteger(revision) || revision < 2) throw new Error('Invalid storage key segment: revision');
+  return buildTenantKey('artifacts', workspaceId, `${assertSafeKeySegment(artifactId, 'artifactId')}.r${revision}`, filename);
+}
+
+/**
  * Is `key` exactly the artifact key `buildArtifactKey` mints for this
  * workspace and upload id (one trailing name segment, nothing deeper)?
  */

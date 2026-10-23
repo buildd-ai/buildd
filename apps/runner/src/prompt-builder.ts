@@ -5,7 +5,7 @@ import { sessionLog } from './session-logger';
 import { isCloudExecutor } from './git-clone';
 import { shouldDenyPrMutation } from './pr-mutation-enforcement.js';
 import { resolveTaskPrBase } from '@buildd/core/mission-integration';
-import { HEARTBEAT_PROTOCOL_BLOCK, shippedPromptText, taskShippedPromptText, designSourceFromContext, type ClaudeAiArtifactAccess } from '@buildd/shared';
+import { HEARTBEAT_PROTOCOL_BLOCK, shippedPromptText, taskShippedPromptText, designSourceFromContext, designArtifactLines, type ClaudeAiArtifactAccess } from '@buildd/shared';
 import {
   buildMemoryBlock,
   byteLength,
@@ -327,10 +327,12 @@ export function worktreeLocationLine(worktreePath: string): string {
 }
 
 /**
- * Where the task's design lives (`task.context.designSource`). A worker with
- * claude.ai artifact access reads the canvas itself with the Artifact tool;
- * any other worker reads the copy-in buildd artifacts. claude.ai itself is
- * never fetched over HTTP: Cloudflare challenges it.
+ * Where the task's design lives (`task.context.designSource`). A buildd design
+ * artifact comes first: every runner can read it, and the claim resolves one
+ * from the task's, its mission's or its spec's design. A worker with claude.ai
+ * artifact access reads a canvas itself with the Artifact tool (the fallback
+ * when both exist); any other worker reads the copy-in buildd artifacts.
+ * claude.ai itself is never fetched over HTTP: Cloudflare challenges it.
  */
 export function designSourceSection(
   context: Record<string, unknown> | null,
@@ -340,7 +342,17 @@ export function designSourceSection(
   if (!ds) return null;
   const lines = ['## Design source'];
   const keys = ds.artifactKeys?.map(k => `\`${k}\``).join(', ');
-  if (ds.sourceUrl && access !== 'off') {
+  if (ds.artifactId) {
+    lines.push(...designArtifactLines({ ...ds, artifactId: ds.artifactId }));
+    if (ds.sourceUrl && access !== 'off') {
+      lines.push(
+        `If the buildd artifact cannot be read, the same design is the claude.ai artifact ${ds.sourceUrl}: `
+        + `\`Artifact list url=${ds.sourceUrl} scope=files\`, then \`Artifact read\` each board you need.`,
+      );
+    }
+    if (keys) lines.push(`Boards were also copied into buildd artifacts: ${keys} (\`list_artifacts key=<key>\`).`);
+    if (ds.sourceUrl && access === 'off') lines.push('Do not fetch claude.ai with curl, WebFetch or a browser: it is behind a Cloudflare challenge.');
+  } else if (ds.sourceUrl && access !== 'off') {
     lines.push(
       `The design is the claude.ai artifact ${ds.sourceUrl}. Read it with the Artifact tool: `
       + `\`Artifact list url=${ds.sourceUrl} scope=files\`, then \`Artifact read\` with \`path=project/canvas.json\` `

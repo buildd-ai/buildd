@@ -305,6 +305,24 @@ describe('the mission page, r5: the header, the bar, the Build stage, the stages
     expect(rows.find(r => r.state === 'fixing')!.line).toMatch(/^Fixing · CI failed · resumes \d\d:\d\d$/);
   });
 
+  it('AC-18: the summary ends finish depends on <first>, then <second> → <third> when the whole path is estimated, Flow names the same first task, and one missing estimate drops the clause', async () => {
+    const { dagBoard, dagId } = await import('../../src/app/app/dev/fixtures/mission-task-strip-fixtures');
+    const { buildFlowTimeline, criticalPathLine, flowTaskName, missionFinishClause } = await import('../../src/lib/flow-timeline');
+    const { buildStage } = await import('../../src/lib/mission-build-stage');
+    const spec = { tasks: ['A', 'B', 'C'], edges: { B: ['A'], C: ['B'] }, states: { A: 'running' as const } };
+    const model = dagBoard(spec);
+    const [A, B, C] = spec.tasks.map(n => dagId(spec, n));
+    const name = flowTaskName(model);
+    const estimates = { [A]: 40, [B]: 30, [C]: 20 };
+    const finish = missionFinishClause(model, model.now, estimates);
+    expect(buildStage(model, model.now, { hrefFor: id => id, finish }).summary).toEndWith(`· finish depends on ${name(A)}, then ${name(B)} → ${name(C)}`);
+    expect(criticalPathLine(buildFlowTimeline({ model, expectedMinutes: estimates }), s => s, name)).toStartWith(`Finish is set by ${name(A)} (`);
+    const { [B]: _gone, ...missing } = estimates;
+    expect(missionFinishClause(model, model.now, missing)).toBeNull();
+    // The page feeds the summary the same estimates it feeds Flow.
+    matches(page(), /<MissionOverview [^>]*expectedMinutes=\{flowExpectedMinutes\}/);
+  });
+
   it('R-21: the mission column keeps the reading width through the design token', () => {
     matches(code(read(join(MISSION_DIR, 'MissionLayoutShell.tsx'))), /max-w-\[var\(--content-measure\)\]/);
   });

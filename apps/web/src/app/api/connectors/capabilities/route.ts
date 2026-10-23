@@ -7,6 +7,7 @@ import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/ta
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { loadDiscoveryInput } from '@/lib/connector-capabilities-store';
 import { listCapabilities, resolveCapability, resolveProviderAccess } from '@/lib/connector-capabilities';
+import { MODEL_INFERENCE_CAPABILITY, resolveTeamDecisionRoute } from '@/lib/capability-model-inference';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const ROLE_SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -69,6 +70,28 @@ export async function GET(req: NextRequest) {
 
   const capability = params.get('capability');
   if (!capability) return NextResponse.json(listCapabilities(input));
+
+  if (capability.trim().toLowerCase() === MODEL_INFERENCE_CAPABILITY) {
+    // Not a domain:verb search category: a governed model call is requested through request_capability.
+    let route: Awaited<ReturnType<typeof resolveTeamDecisionRoute>> = null;
+    try {
+      route = await resolveTeamDecisionRoute({ teamId: input.teamId, workspaceId, accountId: apiAccount?.id ?? user?.id ?? '' });
+    } catch {
+      route = null;
+    }
+    return NextResponse.json({
+      capability: MODEL_INFERENCE_CAPABILITY,
+      kind: 'governed_call',
+      message: 'model.inference is not a domain:verb category. Request a grant with request_capability, then call the invoke endpoint.',
+      requestWith: {
+        tool: 'request_capability',
+        params: { capability: MODEL_INFERENCE_CAPABILITY, provider: 'openrouter | litellm | cloudflare', models: ['<model>'], budget: '<budget>' },
+      },
+      routeConfigured: !!route?.apiKey,
+      route: route?.apiKey ? { provider: route.provider, model: route.model } : null,
+      invoke: { method: 'POST', path: '/api/agent-capabilities/model-inference', auth: 'Bearer <task token or runner API key>', body: '{ workerId, model, operation?, state, questions }' },
+    });
+  }
 
   const result = resolveCapability(input, capability);
   if ('error' in result) return NextResponse.json({ error: 'unknown_capability', message: result.error }, { status: 400 });

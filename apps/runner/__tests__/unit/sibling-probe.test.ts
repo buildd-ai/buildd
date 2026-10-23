@@ -10,7 +10,12 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 const dirs: string[] = [];
-afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); });
+afterEach(() => {
+  for (const d of dirs.splice(0)) {
+    // Windows can hold a just-exited git's handle on the dir (EBUSY); a leaked temp dir must not fail the test.
+    try { rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {}
+  }
+});
 
 /** `mine` (checked out) and `theirs` both edit m.ts from one base. */
 function repo(base: string, mine: string, theirs: string): string {

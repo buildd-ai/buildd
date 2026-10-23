@@ -330,6 +330,79 @@ async function verifyCandidate(opts: {
 }
 
 /**
+ * Whether one merged PR carries another PR's changes.
+ *
+ *  - `verified`: the candidate's own merged diff holds the PR's added lines (content), or every
+ *    commit has a patch-id twin in it. `method` and `confidence` are what the edge's reason names.
+ *  - `unverified`: both sides were read, and the candidate does not carry the PR.
+ *  - `unavailable`: no verdict. The PR or the candidate could not be read, the candidate is not
+ *    merged, the PR has no diff to compare, or a read was cut short. A caller must not act on it.
+ */
+export type CarriedVerdict =
+  | { outcome: 'verified'; method: SupersessionMethod; confidence: number }
+  | { outcome: 'unverified'; confidence: number }
+  | { outcome: 'unavailable'; reason: string };
+
+/**
+ * The same proof `detectPrSupersession` demands before it records an edge, for a caller that is
+ * about to ACT on a supersession it has only inferred. Dead-PR shutdown (lib/dead-pr-shutdown.ts)
+ * nominates a "loser" from a shared subject anchor, a shared mission, a shared base and idle time;
+ * none of that says the merged "winner" carries the loser's change (#5461 was closed as superseded
+ * by a sibling task's PR that shared none of its work). This reads GitHub only and records nothing:
+ * the caller closes and records the edge in its own flow, or leaves the PR alone.
+ *
+ * Content is checked first (it catches a squash), then patch-id when both sides are small. A
+ * candidate file list GitHub would not give is `unavailable`, not an empty diff that would read
+ * as "carries nothing".
+ */
+export async function verifyPrCarriedBy(opts: {
+  installationId: number;
+  repo: string;
+  /** The PR whose changes must be found. Open or closed; its diff is what is compared. */
+  prNumber: number;
+  /** The merged PR that may carry them. */
+  candidatePrNumber: number;
+  /** Opt-in time limits; absent, GitHub calls wait as long as they take. */
+  limits?: DetectLimits;
+}): Promise<CarriedVerdict> {
+  const { installationId: inst, repo } = opts;
+  const gh = new GhReader(opts.limits);
+  const why = (err: unknown) => (err instanceof Error ? err.message : String(err));
+  try {
+    let pr: GhPr;
+    let files: DiffFile[];
+    try {
+      pr = await gh.call(inst, `/repos/${repo}/pulls/${opts.prNumber}`);
+      files = await listFiles(gh, inst, repo, opts.prNumber);
+    } catch (err) {
+      return { outcome: 'unavailable', reason: `could not read ${repo}#${opts.prNumber}: ${why(err)}` };
+    }
+    if (!pr || typeof pr.number !== 'number') return { outcome: 'unavailable', reason: `${repo}#${opts.prNumber} did not read as a pull request` };
+    if (files.length === 0) return { outcome: 'unavailable', reason: `${repo}#${opts.prNumber} has no files to compare` };
+
+    // The candidate's files are read here, not inside verifyCandidate, whose read swallows a
+    // failure into an empty list: an unreadable winner must not look like one carrying nothing.
+    const filesCache = new Map<string, DiffFile[]>();
+    try {
+      filesCache.set(key(repo, opts.candidatePrNumber), await listFiles(gh, inst, repo, opts.candidatePrNumber));
+    } catch (err) {
+      return { outcome: 'unavailable', reason: `could not read the files of ${repo}#${opts.candidatePrNumber}: ${why(err)}` };
+    }
+
+    const cand: Candidate = { repo, prNumber: opts.candidatePrNumber, signal: 'sibling_task', score: SIGNAL_SCORE.sibling_task, why: 'nominated by the caller' };
+    const v = await verifyCandidate({ gh, closedRepo: repo, closed: pr, closedFiles: files, closedInst: inst, cand, inst, filesCache });
+    if (gh.interrupted) return { outcome: 'unavailable', reason: `a GitHub read was cut short (${gh.interrupted})` };
+    if (!v.merged) return { outcome: 'unavailable', reason: `${repo}#${opts.candidatePrNumber} is not merged, or could not be read` };
+    if (v.verified) return { outcome: 'verified', method: v.method!, confidence: v.confidence };
+    return { outcome: 'unverified', confidence: v.confidence };
+  } catch (err) {
+    return { outcome: 'unavailable', reason: `verification failed: ${why(err)}` };
+  } finally {
+    gh.close();
+  }
+}
+
+/**
  * Look for where a closed-unmerged PR's work landed, and record it only if the
  * content proves it. Never throws for GitHub trouble — a failed read is a
  * `skipped` result and the sweep tries again later.

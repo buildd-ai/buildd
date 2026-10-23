@@ -4,7 +4,8 @@ import { buildReleaseConfigPayload, type ReleaseFormState } from './release-conf
 
 const form = (o: Partial<ReleaseFormState> = {}): ReleaseFormState => ({
   strategy: 'workflow_dispatch', prodBranch: 'main', ref: 'dev', workflowFile: 'release.yml', trigger: 'on_mission_complete',
-  candidateEnabled: false, candidateBranches: '', candidateSource: '', candidateAuthors: '', ...o,
+  candidateEnabled: false, candidateBranches: '', candidateSource: '', candidateAuthors: '',
+  candidateAmendMode: 'none', candidateAmendVersionInput: '', candidateAmendConfirmInput: '', ...o,
 });
 
 const loaded: WorkspaceReleaseConfig = {
@@ -29,6 +30,18 @@ describe('buildReleaseConfigPayload', () => {
     expect(p.candidate).toEqual({ branches: ['release/v*', 'release/next'], sourceBranch: 'dev', authors: ['github-actions[bot]'] });
     // The dispatcher ref is untouched by the candidate source.
     expect(p.ref).toBe('dev');
+  });
+
+  it('saves the amend mapping exactly as typed, and none when none is chosen', () => {
+    const on = { candidateEnabled: true, candidateBranches: 'release/v*', candidateSource: 'dev', candidateAuthors: 'github-actions[bot]' };
+    expect((buildReleaseConfigPayload(loaded, form({ ...on, candidateAmendMode: 'inputs', candidateAmendVersionInput: ' amend ', candidateAmendConfirmInput: 'amend_confirm' })).candidate as any).amend)
+      .toEqual({ mode: 'inputs', versionInput: 'amend', confirmInput: 'amend_confirm' });
+    expect((buildReleaseConfigPayload(loaded, form({ ...on, candidateAmendMode: 'inputs', candidateAmendVersionInput: 'v' })).candidate as any).amend)
+      .toEqual({ mode: 'inputs', versionInput: 'v' });
+    expect((buildReleaseConfigPayload(loaded, form({ ...on, candidateAmendMode: 'redispatch' })).candidate as any).amend).toEqual({ mode: 'redispatch' });
+    expect((buildReleaseConfigPayload(loaded, form({ ...on, candidateAmendMode: 'none', candidateAmendVersionInput: 'amend' })).candidate as any).amend).toBeUndefined();
+    // Only a workflow can be dispatched.
+    expect((buildReleaseConfigPayload(loaded, form({ ...on, strategy: 'branch_merge', candidateAmendMode: 'redispatch' })).candidate as any).amend).toBeUndefined();
   });
 
   it('turning candidates off removes the policy', () => {

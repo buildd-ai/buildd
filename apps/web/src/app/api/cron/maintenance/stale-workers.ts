@@ -52,6 +52,15 @@ export async function runStaleWorkerCleanup(now: Date): Promise<number> {
   } catch (cleanupErr) {
     console.warn('[Cron] Stale worker cleanup failed:', cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
   }
+  // A runner that went quiet while updating: told once, and its paused tasks
+  // released after an hour (lib/runner-update-watch.ts). The floor under the
+  // gated */5 tick of /api/cron/runner-update-watch.
+  try {
+    const { runUpdateWatch, createUpdateWatchDeps } = await import('@/lib/runner-update-watch');
+    await runUpdateWatch(createUpdateWatchDeps(), now);
+  } catch (watchErr) {
+    console.warn('[Cron] Runner update watch failed:', watchErr instanceof Error ? watchErr.message : watchErr);
+  }
   // A visual audit left waiting with no browser runner online: told once to
   // the conversation its mission came from (display only, never a cancel).
   try {
