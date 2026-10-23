@@ -47,12 +47,23 @@ export function spliceSection(body: string, section: OutlineSection, text: strin
   return body.slice(0, section.start) + joined + body.slice(section.end);
 }
 
+/** `find` must occur exactly once in `body`; the patch replaces it with `replace`. */
+export function applyFindReplace(body: string, find: unknown, replace: unknown): string | { error: string } {
+  if (typeof find !== 'string' || !find) return { error: 'find must be the exact text to replace' };
+  if (typeof replace !== 'string') return { error: 'replace must be the new text (an empty string deletes the match)' };
+  const first = body.indexOf(find);
+  if (first < 0) return { error: 'find text not found in the current body; read it with get and copy the exact text' };
+  if (body.indexOf(find, first + 1) >= 0) return { error: 'find text appears more than once; make it longer so it matches exactly once' };
+  return body.slice(0, first) + replace + body.slice(first + find.length);
+}
+
 export async function reviseSpecSection(caller: SpecCaller, specId: string, input: SectionTarget & {
-  expectedVersion: unknown; body: unknown; changeSummary?: unknown; repoRefs?: unknown; design?: unknown;
+  expectedVersion: unknown; body?: unknown; find?: unknown; replace?: unknown; changeSummary?: unknown; repoRefs?: unknown; design?: unknown;
 }): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; unchanged: boolean } | SpecError> {
   if (!isUuid(specId)) return fail(404, 'Spec not found');
   if (!Number.isInteger(input.expectedVersion)) return fail(400, 'expectedVersion (the spec version you read) is required');
-  if (typeof input.body !== 'string' || !input.body.trim()) return fail(400, 'body (the new text of the section, its heading line included) is required');
+  const patch = input.find !== undefined;
+  if (!patch && (typeof input.body !== 'string' || !input.body.trim())) return fail(400, 'body (the new text of the section, its heading line included) is required');
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   if (!spec || !(await reach(caller, spec.workspaceId, true))) return fail(404, 'Spec not found');
   if (spec.version !== input.expectedVersion) {
@@ -60,10 +71,18 @@ export async function reviseSpecSection(caller: SpecCaller, specId: string, inpu
   }
   const [head] = await db.select().from(specRevisions).where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, spec.headRevision))).limit(1);
   const current = (await getArtifactRevision(spec.bodyArtifactId, head.artifactRevision))?.content ?? '';
+  if (patch) {
+    const next = applyFindReplace(current, input.find, input.replace);
+    if (typeof next !== 'string') return fail(400, `${next.error}; nothing was written`);
+    return reviseSpecDraft(caller, specId, {
+      expectedVersion: input.expectedVersion, body: next,
+      changeSummary: input.changeSummary, repoRefs: input.repoRefs, design: input.design,
+    });
+  }
   const section = findSection(current, input);
   if (typeof section === 'string') return fail(400, `${section}; nothing was written`);
   return reviseSpecDraft(caller, specId, {
-    expectedVersion: input.expectedVersion, body: spliceSection(current, section, input.body),
+    expectedVersion: input.expectedVersion, body: spliceSection(current, section, input.body as string),
     changeSummary: input.changeSummary, repoRefs: input.repoRefs, design: input.design,
   });
 }

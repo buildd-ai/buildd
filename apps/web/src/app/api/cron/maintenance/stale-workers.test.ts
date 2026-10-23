@@ -68,6 +68,7 @@ mock.module('@/lib/stale-workers', () => ({
   HEARTBEAT_STALE_MS: 150 * 60 * 1000,
   notifyStalledVisualAudits: mockNotifyStalled,
   failWorkersOfOfflineRunners: mockFailOffline,
+  heartbeatRowHasNoLiveWorkers: () => ({ type: 'no-live-workers-guard' }),
 }));
 
 import { runStaleWorkerCleanup } from './stale-workers';
