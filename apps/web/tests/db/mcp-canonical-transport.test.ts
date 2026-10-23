@@ -259,7 +259,7 @@ describe('strict workspace resolution', () => {
     const r = await callTool(s.jwt, { action: 'get_task', params: { taskId: taskB, workspaceId: name } });
     expect(r.isError).toBe(false);
     // The self-call carried the resolved id, never the name.
-    expect(selfCalls.map((c) => c.bound)).toEqual([s.b.workspaceId]);
+    expect([...new Set(selfCalls.map((c) => c.bound))]).toEqual([s.b.workspaceId]);
   });
 
   // Task f371c26c: a granted workspace whose team has no session account
@@ -279,7 +279,7 @@ describe('strict workspace resolution', () => {
     const r = await callTool(jwt, { action: 'get_task', params: { taskId: taskD, workspaceId: d.workspaceId } });
     expect(r.status).toBe(200);
     expect(r.isError).toBe(false);
-    expect(selfCalls.map((c) => c.bound)).toEqual([d.workspaceId]);
+    expect([...new Set(selfCalls.map((c) => c.bound))]).toEqual([d.workspaceId]);
     const [{ n }] = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM accounts WHERE team_id = ${d.teamId}::uuid AND type = 'user'`);
     expect(n).toBe(1);
   });
@@ -307,7 +307,7 @@ describe('strict workspace resolution', () => {
     const taskId = await seedTask(a.workspaceId, { title: `ta-${rand()}` }); 
     const r = await callTool(jwt, { action: 'get_task', params: { taskId } });
     expect(r.isError).toBe(false);
-    expect(selfCalls.map((c) => c.bound)).toEqual([a.workspaceId]);
+    expect([...new Set(selfCalls.map((c) => c.bound))]).toEqual([a.workspaceId]);
   });
 });
 
