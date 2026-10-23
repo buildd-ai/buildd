@@ -15,6 +15,9 @@ import { memberHasRepoAccess } from '@/lib/member-repo-access';
 import { ARTIFACT_TYPE_LABELS, isArtifactType, type ArtifactTypeValue } from '@buildd/shared';
 import { displayTaskTitle } from '@/lib/task-title';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import DesignPreview from '@/components/DesignPreview';
+import { isDesignArtifact } from '@/lib/design-preview';
+import { designView } from '@/lib/design-view';
 
 export const dynamic = 'force-dynamic';
 
@@ -61,10 +64,10 @@ export default async function ArtifactDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ from?: string; taskId?: string; missionId?: string }>;
+  searchParams: Promise<{ from?: string; taskId?: string; missionId?: string; screen?: string; revision?: string }>;
 }) {
   const { id } = await params;
-  const { from, taskId: fromTaskId, missionId: fromMissionId } = await searchParams;
+  const { from, taskId: fromTaskId, missionId: fromMissionId, screen, revision: revisionParam } = await searchParams;
   const user = await getCurrentUser();
 
   if (!user) {
@@ -105,10 +108,18 @@ export default async function ArtifactDetailPage({
   const fileName = metadata?.filename as string | undefined;
   const fileSizeBytes = metadata?.sizeBytes as number | undefined;
   const isImage = artifact.storageKey && fileMimeType?.startsWith('image/');
-  const isFile = artifact.storageKey && !isImage;
+  // A design (an HTML file with screens) is framed, sandboxed, instead of offered as a download only.
+  const isDesign = isDesignArtifact({ storageKey: artifact.storageKey, metadata });
+  const isFile = artifact.storageKey && !isImage && !isDesign;
   const downloadUrl = artifact.storageKey
     ? `/api/artifacts/${artifact.id}/download`
     : undefined;
+  const design = isDesign ? await designView(artifact, revisionParam) : null;
+  const sizeLabel = fileSizeBytes
+    ? fileSizeBytes < 1024 * 1024
+      ? `${(fileSizeBytes / 1024).toFixed(1)} KB`
+      : `${(fileSizeBytes / (1024 * 1024)).toFixed(1)} MB`
+    : null;
   const taskTitle = artifact.worker?.task?.title;
   const taskId = artifact.worker?.task?.id;
   const style = typeStyle(artifact.type);
@@ -227,16 +238,36 @@ export default async function ArtifactDetailPage({
             </div>
           )}
 
+          {design && (
+            <div>
+              {design.revisionNote && (
+                <p className="text-meta text-status-warning mb-3" data-testid="design-revision-note">{design.revisionNote}</p>
+              )}
+              <DesignPreview
+                artifactId={artifact.id}
+                title={artifact.title || fileName || 'Design'}
+                revision={design.revision}
+                frameUrl={design.frameUrl}
+                screens={design.screens}
+                initialScreenId={screen ?? null}
+                downloadUrl={downloadUrl}
+                fileName={fileName}
+                sizeLabel={sizeLabel}
+              />
+              {artifact.content && (
+                <div className="mt-4">
+                  <MarkdownContent content={artifact.content} />
+                </div>
+              )}
+            </div>
+          )}
+
           {isFile && downloadUrl && (
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium">{fileName || 'File'}</p>
-                {fileSizeBytes && (
-                  <p className="text-xs text-text-muted mt-1">
-                    {fileSizeBytes < 1024 * 1024
-                      ? `${(fileSizeBytes / 1024).toFixed(1)} KB`
-                      : `${(fileSizeBytes / (1024 * 1024)).toFixed(1)} MB`}
-                  </p>
+                {sizeLabel && (
+                  <p className="text-xs text-text-muted mt-1">{sizeLabel}</p>
                 )}
               </div>
               <a

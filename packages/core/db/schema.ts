@@ -29,7 +29,7 @@ import { sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation, TaskDelegation } from '../token-delegation';
 import type { MissionRequesterSource, TaskRequesterSource } from '../task-requester-source';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, RootCauseClassification, RootCauseCapabilityKind, FailureIncidentRecovery } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, RootCauseClassification, RootCauseCapabilityKind, FailureIncidentRecovery, StoredUpdateDrain } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -2849,8 +2849,8 @@ export const artifactReads = pgTable('artifact_reads', {
 
 /**
  * Typed links from an artifact to the things it informs: a chat message or
- * conversation, a task, a mission, a plan, and later a spec revision or a
- * verification. One payload row, many links; nothing is copied.
+ * conversation, a task, a mission, a plan, a spec (e.g. its design), and later
+ * a spec revision or a verification. One payload row, many links; nothing is copied.
  * Owned by Living Specs (docs/specs/execution-control-plane.md): only
  * apps/web/src/lib/artifact-links.ts writes it; the kernel reads it by id.
  *
@@ -2859,7 +2859,7 @@ export const artifactReads = pgTable('artifact_reads', {
  * only with a pinned `artifact_revision`, and no relation approves anything.
  * `artifact_revision` NULL = floating (follows the current body).
  */
-export const ARTIFACT_LINK_SUBJECTS = ['conversation', 'message', 'task', 'mission', 'plan', 'spec_revision', 'verification'] as const;
+export const ARTIFACT_LINK_SUBJECTS = ['conversation', 'message', 'task', 'mission', 'plan', 'spec', 'spec_revision', 'verification'] as const;
 export const ARTIFACT_LINK_RELATIONS = ['context', 'requirement', 'normative_reference', 'design_reference', 'evidence', 'output'] as const;
 export type ArtifactLinkSubject = (typeof ARTIFACT_LINK_SUBJECTS)[number];
 export type ArtifactLinkRelation = (typeof ARTIFACT_LINK_RELATIONS)[number];
@@ -3689,6 +3689,15 @@ export const missionNotes = pgTable('mission_notes', {
   collapseCount: integer('collapse_count').default(1).notNull(),
   replyTo: uuid('reply_to'),
   defaultChoice: text('default_choice'),
+  // The task a question is about, when that is not the task that asked it
+  // (an organizer's decision about a build task). NULL: the card falls back
+  // to the mission. Validated on write: same mission, or same workspace for a
+  // task-scoped note. No FK, like task_id: notes outlive deleted tasks.
+  subjectTaskId: uuid('subject_task_id'),
+  // A question's structured options (question-brief.ts `DecisionOption`):
+  // label, consequence (the hover tip), effect (the button line, under 40
+  // characters), recommended. NULL on notes whose options live only in the body.
+  options: jsonb('options').$type<Array<{ label: string; consequence?: string; effect?: string; recommended?: boolean }>>(),
   status: text('status').notNull().default('open').$type<'open' | 'answered' | 'dismissed' | 'superseded'>(),
   // Human-attention disposition of an agent/outside-caller question note
   // (packages/core/needs-you.ts): only 'ask' reaches Needs You;
@@ -3725,6 +3734,14 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   viewerToken: text('viewer_token'),
   workspaceIds: jsonb('workspace_ids').default([]).$type<string[]>().notNull(),
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
+  // The slots this runner should have, with who set them and when, separate
+  // from the value it reports above (maxConcurrentWorkers). The later change
+  // wins, whichever side made it (packages/shared runner-desired-slots.ts).
+  // Null until a runner reports slots or an owner sets them.
+  desiredSlots: integer('desired_slots'),
+  desiredSlotsOrigin: text('desired_slots_origin').$type<'dashboard' | 'machine'>(),
+  desiredSlotsSetBy: text('desired_slots_set_by'),
+  desiredSlotsSetAt: timestamp('desired_slots_set_at', { withTimezone: true }),
   activeWorkerCount: integer('active_worker_count').default(0).notNull(),
   environment: jsonb('environment').$type<WorkerEnvironment>(),
   sandboxEnabled: boolean('sandbox_enabled'),
@@ -3750,11 +3767,12 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   // stops being true — so "how long has it been behind" is measured from this
   // column instead of inferred from boot age or heartbeat cadence.
   updateAvailableSince: timestamp('update_available_since', { withTimezone: true }),
-  // Present while the runner has halted claims to drain busy workers before a
-  // self-update (update-drain.ts): ISO `since`, ISO `endsAt` (window expiry),
-  // and `busy` workers still running. Null/absent = claiming normally. Lets
-  // list_runners explain free slots + no claims without SSH.
-  updateDrain: jsonb('update_drain').$type<{ since: string; endsAt: string; busy: number } | null>(),
+  // Present while the runner is applying a self-update (update-drain.ts): ISO
+  // `since`, ISO `endsAt` (window expiry, or when the update applied), `busy`
+  // workers still running, and on newer runners `phase`, `targetVersion` and
+  // the agents `paused` for it (spec 47c97f48; shape and readers in
+  // @buildd/shared runner-update.ts). Null/absent = claiming normally.
+  updateDrain: jsonb('update_drain').$type<StoredUpdateDrain | null>(),
   // The branch this install tracks (BUILDD_BRANCH) — already sent on every
   // heartbeat to resolve latestCommit (see the heartbeat route), but not
   // persisted until now, so GET /api/workers/active can show it per runner.

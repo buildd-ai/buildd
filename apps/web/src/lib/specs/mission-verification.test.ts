@@ -69,3 +69,11 @@ it('a standard\'s verification says so and names its spec in the verdict call (D
   expect(inserted[0].description).toContain('specId: "voice-spec"');
   expect(inserted[0].description).toContain('standard of the workspace');
 });
+
+it('tells the verification to file a repair naming the spec and the criterion', async () => {
+  const criterion = { type: 'living_spec', specId: 'nav-spec', specRevisionId: 'rv', revision: 3, contentHash: 'h' } as any;
+  const standing = { target: { kind: 'integration', headSha: A, branch: 'mission/x' }, scope: [], standings: [], title: 'Navigation' } as any;
+  prior = []; runs = []; inserted = [];
+  await ensureFinalVerification('m', criterion, standing);
+  expect(inserted[0].description).toContain('context.specRepair: { missionId: "m", specId: "nav-spec", criterionId }');
+});

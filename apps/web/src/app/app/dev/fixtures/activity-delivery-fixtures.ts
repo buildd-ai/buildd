@@ -7,6 +7,8 @@
 import * as rules from '@buildd/core/mission-helpers';
 import { projectMissionDelivery, type MissionTaskRow } from '@/lib/delivery-projection';
 import { buildActivityHistory, buildActivityNow, latestTask, type ActivityTaskInput, type ActivityWorker } from '@/lib/activity-delivery';
+import { verificationClaim } from '@/lib/activity-verification';
+import { attributionOf } from '@/lib/activity-attribution';
 
 export const ACTIVITY_FIXTURE_NOW = Date.parse('2026-10-08T11:10:00.000Z');
 const at = (hhmm: string) => `2026-10-08T${hhmm}:00.000Z`;
@@ -37,6 +39,21 @@ function row(id: string, title: string, m: { id: string; title: string } | null,
 const live = (name = 'runner-a', since = '10:58'): ActivityWorker => ({ status: 'running', name, startedAt: at(since), updatedAt: at('11:08') });
 const done = (over: Partial<ActivityWorker>): ActivityWorker => ({ status: 'completed', startedAt: at('08:00'), completedAt: at('08:40'), updatedAt: at('08:40'), ...over });
 
+/** The viewer and a teammate, for attribution (spec 9430a28f R-4). Everything else is unattributed. */
+const FX_YOU = 'fx-user-you';
+const FX_NAMES = new Map([['fx-user-ada', 'Ada']]);
+const filedByYou = attributionOf({ createdByUserId: FX_YOU, requesterSource: 'explicit' }, FX_YOU, FX_NAMES);
+const forAda = attributionOf({ createdByUserId: 'fx-user-ada', requesterSource: 'parent', createdByWorkerId: 'fx-w' }, FX_YOU, FX_NAMES);
+
+/** Task 34's recorded spec verification once its renewed review passed on H2 (spec 9430a28f R-6). */
+const verifiedOnH2 = verificationClaim({
+  specId: 'fx-spec', revision: 2, outcome: 'verified', currentHeadSha: H2,
+  criteria: [
+    { criterionId: 'R-1', text: 'A scheduled export emails a download link.', verdict: 'pass', stale: false, headSha: H2 },
+    { criterionId: 'AC-1', text: 'A failed send retries once, then tells the owner.', verdict: 'pass', stale: false, headSha: H2 },
+  ],
+}, { title: 'Billing exports', approvedRevision: 2 }, Date.parse(at('11:03')));
+
 /** The sequenced delivery (task 34 of Billing exports) and its attempts at a given step. */
 function sequenced(step: number): ActivityTaskInput[] {
   const owner: ActivityWorker = step === 0
@@ -44,7 +61,10 @@ function sequenced(step: number): ActivityTaskInput[] {
     : done({ startedAt: at('09:30'), completedAt: at('10:02'), updatedAt: at('10:02'), prUrl: `${PR}34`, prNumber: 34, lastCommitSha: H1, prLifecycleStatus: 'ci_green' });
   if (step >= 4) owner.prLifecycleStatus = step >= 6 ? 'ci_green' : 'ci_running';
   if (step >= 7) Object.assign(owner, { mergedAt: at('11:04'), prLifecycleStatus: 'merged', updatedAt: at('11:04') });
-  const out: ActivityTaskInput[] = [row('fx-t34', 'feat: scheduled export email', BILLING, { status: step === 0 ? 'in_progress' : 'completed', createdAt: at('09:30'), updatedAt: at(step === 0 ? '09:30' : '10:02'), workers: [owner] })];
+  const out: ActivityTaskInput[] = [row('fx-t34', 'feat: scheduled export email', BILLING, {
+    status: step === 0 ? 'in_progress' : 'completed', createdAt: at('09:30'), updatedAt: at(step === 0 ? '09:30' : '10:02'), workers: [owner],
+    attribution: filedByYou, verification: step >= 6 ? verifiedOnH2 : null,
+  })];
   const attempt = (id: string, title: string, created: string, over: Partial<ActivityTaskInput>) =>
     out.push(row(id, title, BILLING, { taskClass: 'attempt', parentTaskId: 'fx-t34', createdAt: at(created), updatedAt: at(created), ...over }));
   if (step >= 2) attempt('fx-rv1', '[reviewer #1] feat: scheduled export email', '10:10', { status: 'completed', updatedAt: at('10:20'), review: { verdict: 'request-changes', headSha: H1 }, workers: [done({ startedAt: at('10:10'), completedAt: at('10:20') })] });
@@ -63,7 +83,7 @@ function portfolio(): ActivityTaskInput[] {
     ...landedBilling,
     row('fx-t35', 'feat: export settings UI', BILLING, { status: 'pending', createdAt: at('09:00'), updatedAt: at('09:00') }),
     row('fx-s06', 'feat: trigram index for task titles', SEARCH, { status: 'completed', updatedAt: at('10:40'), workers: [done({ completedAt: at('10:40'), updatedAt: at('10:40'), prUrl: `${PR}61`, prNumber: 61, prLifecycleStatus: 'ci_running', lastCommitSha: '9f2c1e0aa1' })] }),
-    row('fx-s07', 'feat: fuzzy match scorer with a deliberately long title that has to wrap on a phone', SEARCH, { status: 'in_progress', updatedAt: at('11:05'), workers: [live('runner-c', '10:50')] }),
+    row('fx-s07', 'feat: fuzzy match scorer with a deliberately long title that has to wrap on a phone', SEARCH, { status: 'in_progress', updatedAt: at('11:05'), workers: [live('runner-c', '10:50')], attribution: forAda }),
     row('fx-s05', 'feat: tokenizer', SEARCH, { status: 'completed', updatedAt: at('09:10'), workers: [done({ prUrl: `${PR}55`, prNumber: 55, mergedAt: at('09:10') })] }),
     row('fx-f11', 'fix: quarantine list loader', FLAKY, { status: 'completed', updatedAt: at('10:47'), workers: [done({ completedAt: at('10:30'), prUrl: `${PR}71`, prNumber: 71, prLifecycleStatus: 'ci_failed', lastCommitSha: '77aa01bc99' })] }),
     row('fx-f11r', '[builder · after CI #1] fix: quarantine list loader', FLAKY, { taskClass: 'attempt', parentTaskId: 'fx-f11', status: 'completed', createdAt: at('10:32'), updatedAt: at('10:47'), workers: [done({ startedAt: at('10:32'), completedAt: at('10:47'), lastCommitSha: '88bb02cd00' })] }),
@@ -126,6 +146,99 @@ export function activityFixture(step: number) {
     missions,
     now: buildActivityNow({ ...args, now: ACTIVITY_FIXTURE_NOW }),
     history: buildActivityHistory(args),
+  };
+}
+
+/**
+ * A five-generation review/repair chain (`&data=context`, spec 9430a28f AC-2):
+ * each attempt is spawned from the one before it, as review-effects and the CI
+ * retry spawner chain them (`parentTaskId` is the previous attempt, not the root).
+ * The fifth generation, a repair, is running now.
+ */
+export const CHAIN_ROOT = 'fx-chain';
+export function fiveGenerationChain(m: { id: string; title: string } | null = FLAKY): ActivityTaskInput[] {
+  const title = 'fix: retry budget survives a runner restart';
+  const root = row(CHAIN_ROOT, title, m, {
+    status: 'completed', createdAt: at('09:00'), updatedAt: at('09:40'),
+    workers: [done({ startedAt: at('09:00'), completedAt: at('09:40'), updatedAt: at('09:40'), prUrl: `${PR}64`, prNumber: 64, prLifecycleStatus: 'ci_failed', lastCommitSha: 'aa00000001' })],
+  });
+  const gens: Array<[string, string, string, Partial<ActivityTaskInput>]> = [
+    ['fx-chain-g1', `[reviewer #1] ${title}`, '09:45', { status: 'completed', review: { verdict: 'request-changes', headSha: 'aa00000001' }, workers: [done({ startedAt: at('09:45'), completedAt: at('09:52') })] }],
+    ['fx-chain-g2', `[builder · after review #1] ${title}`, '09:55', { status: 'completed', workers: [done({ startedAt: at('09:55'), completedAt: at('10:15'), updatedAt: at('10:15'), lastCommitSha: 'bb00000002' })] }],
+    ['fx-chain-g3', `[reviewer #2] ${title}`, '10:20', { status: 'completed', review: { verdict: 'request-changes', headSha: 'bb00000002' }, workers: [done({ startedAt: at('10:20'), completedAt: at('10:28') })] }],
+    ['fx-chain-g4', `[builder · after CI #1] ${title}`, '10:30', { status: 'completed', workers: [done({ startedAt: at('10:30'), completedAt: at('10:50'), updatedAt: at('10:50'), lastCommitSha: 'cc00000003' })] }],
+    ['fx-chain-g5', `[builder · after review #2] ${title}`, '10:55', { status: 'in_progress', updatedAt: at('11:05'), workers: [live('runner-k', '10:55')] }],
+  ];
+  let parent = CHAIN_ROOT;
+  const out = [root];
+  for (const [id, t, created, over] of gens) {
+    out.push(row(id, t, m, { taskClass: 'attempt', parentTaskId: parent, createdAt: at(created), updatedAt: at(created), ...over }));
+    parent = id;
+  }
+  return out;
+}
+
+/** A mission created minutes ago whose first task an agent picked up at once (spec 9430a28f AC-1). */
+export const NEW_MISSION = { id: 'fx-new', title: 'Self-serve workspace export', createdAt: at('11:02') };
+export function newMissionTasks(): ActivityTaskInput[] {
+  return [
+    row('fx-new-1', 'feat: export job and download link', NEW_MISSION, { status: 'in_progress', createdAt: at('11:03'), updatedAt: at('11:04'), workers: [live('runner-n', '11:04')] }),
+    row('fx-new-2', 'feat: export settings page', NEW_MISSION, { status: 'pending', createdAt: at('11:03'), updatedAt: at('11:03') }),
+  ];
+}
+
+/**
+ * Live work with its context (`&data=context`): a mission created minutes ago and
+ * already building, a five-generation chain that reads as one outcome, and a
+ * standalone task, beside the default portfolio's missions.
+ */
+export function activityContextFixture() {
+  const tasks = [...fiveGenerationChain(), ...newMissionTasks(), row('fx-solo', 'chore: rotate the preview deploy token', null, { status: 'in_progress', createdAt: at('10:58'), updatedAt: at('11:06'), workers: [live('runner-s', '10:59')] })];
+  const missions = [
+    { ...projectMissionDelivery({ id: FLAKY.id, title: FLAKY.title, status: 'active', href: `/app/missions/${FLAKY.id}`, tasks: tasks.filter(t => t.missionId === FLAKY.id) }, rules), createdAt: '2026-10-01T06:00:00.000Z' },
+    { ...projectMissionDelivery({ id: NEW_MISSION.id, title: NEW_MISSION.title, status: 'active', href: `/app/missions/${NEW_MISSION.id}`, tasks: tasks.filter(t => t.missionId === NEW_MISSION.id) }, rules), createdAt: NEW_MISSION.createdAt },
+  ];
+  const args = { tasks, missions, rules };
+  return {
+    tasks,
+    missions,
+    now: buildActivityNow({ ...args, now: ACTIVITY_FIXTURE_NOW }),
+    history: buildActivityHistory({ ...args, creations: missions }),
+  };
+}
+
+/**
+ * Every state Activity's rows can carry, on one screen (`&data=states`, spec
+ * 9430a28f R-7 visual QA): a new mission with its New marker, the five-generation
+ * chain folded, a recorded verification that passed, one that failed, one gone
+ * stale on a newer approved revision and one never judged, work filed by you,
+ * work for a teammate and unattributed work.
+ */
+export function activityStatesFixture() {
+  const claim = (outcome: 'verified' | 'fail' | 'unverified', revision: number, approved: number, verdict: 'pass' | 'fail' | null, sha: string | null) =>
+    verificationClaim({
+      specId: 'fx-spec', revision, outcome, currentHeadSha: H2,
+      criteria: [
+        { criterionId: 'R-1', text: 'A scheduled export emails a download link.', verdict, stale: false, headSha: sha },
+        { criterionId: 'AC-1', text: 'A failed send retries once, then tells the owner.', verdict: verdict === 'fail' ? 'pass' : verdict, stale: false, headSha: sha },
+      ],
+    }, { title: 'Billing exports', approvedRevision: approved }, verdict ? Date.parse(at('11:03')) : null);
+  const building = (id: string, title: string, over: Partial<ActivityTaskInput>) =>
+    row(id, title, null, { status: 'in_progress', createdAt: at('09:20'), updatedAt: at('11:06'), workers: [live('runner-v', '10:40')], ...over });
+  const tasks = [
+    ...activityContextFixture().tasks,
+    building('fx-ver-pass', 'feat: export retries once on a failed send', { verification: claim('verified', 2, 2, 'pass', H2), attribution: filedByYou }),
+    building('fx-ver-fail', 'feat: export link expires after a day', { verification: claim('fail', 2, 2, 'fail', H2), attribution: forAda }),
+    building('fx-ver-stale', 'feat: export email names the workspace', { verification: claim('verified', 1, 2, 'pass', H1) }),
+    building('fx-ver-none', 'feat: export footer links to settings', { verification: claim('unverified', 2, 2, null, null) }),
+  ];
+  const ctx = activityContextFixture();
+  const args = { tasks, missions: ctx.missions, rules };
+  return {
+    tasks,
+    missions: ctx.missions,
+    now: buildActivityNow({ ...args, now: ACTIVITY_FIXTURE_NOW }),
+    history: buildActivityHistory({ ...args, creations: ctx.missions }),
   };
 }
 

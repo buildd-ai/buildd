@@ -23,7 +23,7 @@ import { db } from '@buildd/core/db';
 import { workerHeartbeats } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import { RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
+import { RUNNER_STALE_CUTOFF_MS, runnerUpdateState } from '@buildd/shared';
 import { withLiveRunnerBeats } from '@/lib/runner-beats';
 import { runnerIdentity, runnerKey, runnerNameFromUrl, type RunnerHeartbeatLike, type RunnerWorkerLike } from '@/lib/runner-display';
 
@@ -32,6 +32,8 @@ export interface RunnerBeat extends RunnerHeartbeatLike {
   localUiUrl: string;
   /** Stored value raised to the Redis beat when that is newer. */
   lastHeartbeatAt: Date;
+  /** The update the runner reported it was applying (shared runner-update.ts), when one. */
+  updateDrain?: unknown;
 }
 
 /** A worker row as the liveness judgment reads it. */
@@ -68,13 +70,14 @@ export interface RunnerLiveness {
 export async function loadRunnerBeats(accountId: string): Promise<RunnerBeat[]> {
   const rows = await db.query.workerHeartbeats.findMany({
     where: sqlWhere(eq(workerHeartbeats.accountId, accountId)),
-    columns: { accountId: true, localUiUrl: true, lastHeartbeatAt: true, environment: true },
+    columns: { accountId: true, localUiUrl: true, lastHeartbeatAt: true, environment: true, updateDrain: true },
   });
   const live = await withLiveRunnerBeats(rows.map(r => ({
     accountId: r.accountId,
     localUiUrl: r.localUiUrl,
     lastHeartbeatAt: r.lastHeartbeatAt,
     environment: { labels: r.environment?.labels ?? null },
+    updateDrain: r.updateDrain ?? null,
   })));
   return live.map(r => ({ ...r, lastHeartbeatAt: r.lastHeartbeatAt instanceof Date ? r.lastHeartbeatAt : new Date(r.lastHeartbeatAt as string) }));
 }
@@ -110,6 +113,25 @@ export function runnerLiveness(
   const lease = toMs(w.leaseExpiresAt);
   const verdict: RunnerVerdict = lease !== null && lease < now.getTime() - cutoffMs ? 'dead' : 'unknown';
   return { key, name: runnerNameFromUrl(key), lastBeatAt: null, silentMs: null, verdict };
+}
+
+/**
+ * R-38 for an update (spec 47c97f48, R-6): a worker paused while its runner
+ * updates stays with that runner, however late its heartbeat, until the
+ * runner has been silent UPDATE_RELEASE_SILENCE_MS. The offline-runner reaper
+ * skips it; the update watch (lib/runner-update-watch.ts) releases it then.
+ */
+export function heldForRunnerUpdate(
+  w: RunnerWorkerEvidence & { status?: string | null; waitingFor?: { type?: string } | null },
+  beats: readonly RunnerBeat[],
+  now: Date,
+): boolean {
+  if (w.status !== 'waiting_input' || w.waitingFor?.type !== 'pause') return false;
+  const key = runnerKey(w);
+  const hb = key ? beats.find(h => h.localUiUrl === key && (!w.accountId || h.accountId === w.accountId)) : undefined;
+  if (!hb?.updateDrain) return false;
+  const view = runnerUpdateState({ updateDrain: hb.updateDrain, lastHeartbeatAt: hb.lastHeartbeatAt }, now.getTime());
+  return !!view && !view.release;
 }
 
 /** "12m", "2h 31m". Under a minute rounds to "0m". */

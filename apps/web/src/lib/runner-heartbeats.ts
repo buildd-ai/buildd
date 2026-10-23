@@ -64,6 +64,15 @@ export async function getRunnerHeartbeats(
       sandboxProbeAt: workerHeartbeats.sandboxProbeAt,
       modelAuthSource: workerHeartbeats.modelAuthSource,
       codexAuthSource: workerHeartbeats.codexAuthSource,
+      desiredSlots: workerHeartbeats.desiredSlots,
+      desiredSlotsOrigin: workerHeartbeats.desiredSlotsOrigin,
+      desiredSlotsSetBy: workerHeartbeats.desiredSlotsSetBy,
+      desiredSlotsSetAt: workerHeartbeats.desiredSlotsSetAt,
+      // Owners and admins of a runner's team may change its slots (R-23); in the
+      // same query so the Health budget does not pay another round trip.
+      viewerCanEditSlots: viewerUserId
+        ? sql<boolean>`exists (select 1 from ${teamMembers} where ${teamMembers.teamId} = ${accounts.teamId} and ${teamMembers.userId} = ${viewerUserId}::uuid and ${teamMembers.role} in ('owner', 'admin'))`
+        : sql<boolean>`false`,
       // isSharedRunner in SQL: more than one person across the runner's own
       // team and the team it serves here.
       shared: sql<boolean>`(select count(distinct ${teamMembers.userId}) from ${teamMembers} where ${teamMembers.teamId} in (${accounts.teamId}, ${teamId}::uuid)) > 1`,
@@ -115,6 +124,13 @@ export async function getRunnerHeartbeats(
       runnerClass: classifyRunnerOwnership(hb.account),
       authType: hb.account?.authType === 'oauth' || hb.account?.authType === 'api' ? hb.account.authType : undefined,
       mine: isViewersPersonalRunner(hb.account, viewerUserId),
+      slots: {
+        desired: hb.desiredSlots ?? null,
+        origin: hb.desiredSlotsOrigin ?? null,
+        setBy: hb.desiredSlotsSetBy ?? null,
+        setAt: hb.desiredSlotsSetAt ? new Date(hb.desiredSlotsSetAt).toISOString() : null,
+        canEdit: !!hb.viewerCanEditSlots,
+      },
     }));
 }
 

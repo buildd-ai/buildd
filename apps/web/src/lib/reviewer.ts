@@ -49,6 +49,13 @@ import {
   renderMissionCriteriaGuidance,
   type ReviewerCriterionRef,
 } from './criteria-reviewer-findings';
+import {
+  REMEDY_CLASSES,
+  REVIEWER_REMEDY_DOCTRINE,
+  REVIEWER_REMEDY_PROMPT_ID,
+  type RemedyClass,
+  type RemedyEvidence,
+} from './reviewer-remedy';
 import type { CriterionReviewerFinding } from '@buildd/shared';
 import { compareAgainstBase, COMPARE_FILE_LIMIT } from './pr-content-equivalence';
 import { registerTemplatePrompt, registerTextPrompt } from '@buildd/core/prompts';
@@ -123,7 +130,7 @@ export interface ReviewerTaskOutput {
    * prompt listed as still open. They survive every push and completion until
    * a later round lists them in `resolvedFindings`.
    */
-  findings?: Array<{ id?: string; path?: string; line?: number; title: string; required?: boolean }>;
+  findings?: Array<{ id?: string; path?: string; line?: number; title: string; required?: boolean; remedyClass?: RemedyClass; remedyEvidence?: RemedyEvidence }>;
   /** The ids of the listed open findings this review verified as fixed at this head. */
   resolvedFindings?: string[];
   /** Listed open findings handed to another task, with why (`taskId` when one exists). */
@@ -200,6 +207,22 @@ export const REVIEWER_TASK_OUTPUT_SCHEMA = {
           line: { type: 'number' },
           title: { type: 'string' },
           required: { type: 'boolean' },
+          remedyClass: {
+            type: 'string',
+            enum: [...REMEDY_CLASSES],
+            description: 'Required on every finding of an escalation. capability_gap and operational_run also need remedyEvidence.',
+          },
+          remedyEvidence: {
+            type: 'object',
+            required: ['resolveCapabilityResult', 'contradictsPinnedCriterion', 'existingCapabilityCovers'],
+            properties: {
+              resolveCapabilityResult: { type: 'string' },
+              contradictsPinnedCriterion: { type: 'boolean' },
+              existingCapabilityCovers: { type: 'boolean' },
+              capability: { type: 'string' },
+            },
+            additionalProperties: false,
+          },
         },
         additionalProperties: false,
       },
@@ -596,6 +619,8 @@ export function findingsSection(brief: FindingsBrief | null | undefined): string
     'issue you can find in this one review, so the fix is one round, not one issue per round; an approval is a claim that',
     'you looked for these and found none. A new issue you find later in code you already approved is still a finding:',
     'say that it is new, and that the earlier approval was wrong about it.',
+    '',
+    resolvePrompt(REVIEWER_REMEDY_PROMPT_ID, REVIEWER_REMEDY_DOCTRINE),
   ];
   const open = brief?.open ?? [];
   if (open.length) {
@@ -2230,5 +2255,6 @@ registerTextPrompt(REVIEWER_MANIFEST_DOCTRINE_PROMPT_IDS.undeclared, UNDECLARED_
 registerTextPrompt(REVIEWER_MANIFEST_DOCTRINE_PROMPT_IDS.concrete, CONCRETE_MANIFEST_DOCTRINE);
 registerTextPrompt(REVIEWER_SECURITY_RULES_PROMPT_ID, SECURITY_ESCALATION_RULES_DEFAULT);
 registerTextPrompt(REVIEWER_SPEC_DOCTRINE_PROMPT_ID, SPEC_DOCTRINE);
+registerTextPrompt(REVIEWER_REMEDY_PROMPT_ID, REVIEWER_REMEDY_DOCTRINE);
 registerTemplatePrompt(REVIEWER_CONTEXT_PROMPT_ID, REVIEWER_CONTEXT_TEMPLATE);
 registerTemplatePrompt(DELTA_REVIEWER_CONTEXT_PROMPT_ID, DELTA_REVIEWER_CONTEXT_TEMPLATE);

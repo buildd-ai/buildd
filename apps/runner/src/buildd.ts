@@ -254,6 +254,20 @@ export class BuilddClient {
     return Array.isArray(data?.missions) ? data.missions : [];
   }
 
+  /**
+   * Each named worker's task estimate in minutes (the p50 the Queue shows), or
+   * null without one, from GET /api/workers/estimates. Only this account's
+   * workers are answered. Used when an update opens its window (spec 47c97f48 R-2).
+   */
+  async getWorkerEstimates(workerIds: string[]): Promise<Record<string, number | null>> {
+    if (workerIds.length === 0) return {};
+    const data = await this.fetch(`/api/workers/estimates?ids=${workerIds.map(encodeURIComponent).join(',')}`);
+    const out: Record<string, number | null> = {};
+    const est = data?.estimates && typeof data.estimates === 'object' ? data.estimates as Record<string, unknown> : {};
+    for (const id of workerIds) out[id] = typeof est[id] === 'number' ? est[id] as number : null;
+    return out;
+  }
+
   /** Per team, the order this runner's claims take waiting work (R-26), from GET /api/workers/queue. */
   async listQueue(q: { runner?: string; skills?: string[] }): Promise<RunnerQueueResponse> {
     const p = new URLSearchParams({ executor: process.env.BUILDD_EXECUTOR || 'host' });
@@ -1261,7 +1275,9 @@ export class BuilddClient {
      * older callers; the server then keeps the account's default.
      */
     maxConcurrent?: number,
-  ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number; claimsReleased?: number; budgetProbeRequestedAt?: string | null }> {
+    /** Epoch ms of the last change of those slots (config.json `slotsSetAt`): the later change wins against buildd.dev (spec 34a48877 R-21). */
+    slotsChangedAt?: number,
+  ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number; claimsReleased?: number; budgetProbeRequestedAt?: string | null; desiredSlots?: { slots: number; setBy: string | null; setAt: number } | null }> {
     const payload: Record<string, unknown> = {
       localUiUrl,
       activeWorkerCount,
@@ -1305,11 +1321,12 @@ export class BuilddClient {
       if (modelAuth.codexSource) payload.codexAuthSource = modelAuth.codexSource;
     }
     if (typeof maxConcurrent === 'number' && Number.isInteger(maxConcurrent) && maxConcurrent > 0) payload.maxConcurrent = maxConcurrent;
+    if (typeof slotsChangedAt === 'number' && Number.isFinite(slotsChangedAt) && slotsChangedAt > 0) payload.slotsChangedAt = slotsChangedAt;
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit, leasesRenewed: data.leasesRenewed, claimsReleased: data.claimsReleased, budgetProbeRequestedAt: data.budgetProbeRequestedAt };
+    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit, leasesRenewed: data.leasesRenewed, claimsReleased: data.claimsReleased, budgetProbeRequestedAt: data.budgetProbeRequestedAt, desiredSlots: data.desiredSlots ?? null };
   }
 
   /** Report a provider-wall probe result (budget-wall-probe.ts); the server clears or keeps the wall. */

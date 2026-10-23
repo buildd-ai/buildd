@@ -12,7 +12,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
 - [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-10-16
   Inbound credentials MUST resolve to an account and apply claim limits according to how the runner pays for model usage.
-- [Capability Requests and Grants](./capability-requests.md) · @max — verified 2026-10-20
+- [Capability Requests and Grants](./capability-requests.md) · @max — verified 2026-10-23
   An agent MUST get access it lacked at start only by asking for a provider and an access (read or write), resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
 - [Credential Isolation & MCP Injection Security Model](./credential-isolation.md) · @builder — verified 2026-10-05
   The runner MUST inject MCP connectors resolved from the task's own workspace, abort worker startup when a required connector is unreachable, and keep runner coordination secrets out of the agent subprocess.
@@ -137,7 +137,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Mission Feed](./mission-feed.md) · @builder — verified 2026-10-22
   The mission detail page MUST answer "is this done" before listing tasks, and below md MUST render every deliverable exactly once in one grouped list under a sticky masthead.
 - [Mission Flow Timeline](./mission-flow-timeline.md) · @builder — verified 2026-10-22
-  The mission Flow tab MUST draw one row per task in dependency order on one time axis, every gate as an edge lit by the strip's relation rule, and one sentence naming what sets the finish.
+  Flow, a desktop view from the mission ⋯ menu, MUST draw one named row per task in dependency order on a clock-time axis, declared gates as lit edges, and, given estimates, who sets the finish.
 - [Mission Goal Criteria Display](./mission-goal-criteria-display.md) · @max — verified 2026-10-11
   A goal criterion's glyph and its live value MUST come from one evaluation, and a complete count nothing has evaluated reads "not checked", never unmet.
 - [Mission Legibility](./mission-legibility.md) · @builder — verified 2026-10-22
@@ -171,7 +171,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### tasks (18)
 
-- [Agent Question Protocol](./agent-question-protocol.md) · @max — verified 2026-10-22
+- [Agent Question Protocol](./agent-question-protocol.md) · @max — verified 2026-10-23
   An agent question MUST include an actionable brief, pass the question gate and park only when human input is required.
 - [Artifacts and Sharing](./artifacts-and-sharing.md) · @max — verified 2026-10-12
   Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.

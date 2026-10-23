@@ -7,6 +7,7 @@ import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import LinkedDesigns from '@/components/LinkedDesigns';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { formatCompletionRecord, situationRepeatsCompletion } from '@/lib/mission-completion-record';
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
@@ -1388,6 +1389,7 @@ async function MissionDetailBody({
       {shippedView && <MissionShippedHeader missionId={id} view={shippedView} />}
       {isTerminal && visualPresentation?.record && <MissionVisualRecord record={visualPresentation.record} />}
       {content}
+      <LinkedDesigns subjectKind="mission" subjectId={id} userId={user.id} />
       <div data-testid="mission-board-footer" className="mt-10">
         {footerRows}
       </div>

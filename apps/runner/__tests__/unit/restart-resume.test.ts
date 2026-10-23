@@ -21,6 +21,7 @@ import {
   fsResumeProbe,
   installRunnerShutdown,
   installShutdownSignals,
+  pushUpdateCheckpoint,
   restartNewAttemptError,
   shutdownExitCode,
   type ResumeProbe,
@@ -250,5 +251,60 @@ describe('installRunnerShutdown: the broker release fits the deadline', () => {
     const t0 = Date.now();
     while (h.exits.length === 0 && Date.now() - t0 < 4_000) await new Promise(r => setTimeout(r, 10));
     expect(h.released()).toBe(true);
+  });
+});
+
+// Spec 47c97f48 (r1) R-4 / AC-3: before an update restart, each paused agent's
+// checkpoint is pushed to its own branch.
+describe('pushUpdateCheckpoint', () => {
+  const git = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, encoding: 'utf-8', stdio: 'pipe' }).trim();
+  function repoWithRemote(): { wt: string; remote: string } {
+    const remote = tmp('rr-remote-');
+    git(remote, 'init', '-q', '--bare', '-b', 'main');
+    const wt = tmp('rr-wt-');
+    git(wt, 'init', '-q', '-b', 'buildd/task-branch');
+    git(wt, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+    git(wt, 'remote', 'add', 'origin', remote);
+    return { wt, remote };
+  }
+
+  test('commits the uncommitted edits and pushes the branch', async () => {
+    const { wt, remote } = repoWithRemote();
+    writeFileSync(join(wt, 'half-done.ts'), 'export const y = 2;\n');
+    const cp = await pushUpdateCheckpoint(wt, 'worker-12345678', 'buildd/task-branch');
+    expect(cp).toMatchObject({ committed: true, pushed: true });
+    expect(git(remote, 'rev-parse', 'refs/heads/buildd/task-branch')).toBe(cp.sha!);
+    expect(git(remote, 'log', '-1', '--format=%s', 'refs/heads/buildd/task-branch')).toMatch(/^wip: checkpoint/);
+  });
+
+  test('a clean worktree still pushes the commits the agent had made', async () => {
+    const { wt, remote } = repoWithRemote();
+    const cp = await pushUpdateCheckpoint(wt, 'worker-12345678', 'buildd/task-branch');
+    expect(cp).toMatchObject({ committed: false, pushed: true });
+    expect(git(remote, 'rev-parse', 'refs/heads/buildd/task-branch')).toBe(git(wt, 'rev-parse', 'HEAD'));
+  });
+
+  test('another branch checked out: nothing committed or pushed, and the reason says why', async () => {
+    const { wt, remote } = repoWithRemote();
+    writeFileSync(join(wt, 'x.ts'), 'x\n');
+    const cp = await pushUpdateCheckpoint(wt, 'worker-12345678', 'buildd/other');
+    expect(cp.pushed).toBe(false);
+    expect(cp.reason).toMatch(/not this worker's branch/);
+    expect(git(remote, 'for-each-ref')).toBe('');
+  });
+
+  test('never forced: a remote that moved on refuses, and the edits stay committed locally', async () => {
+    const { wt, remote } = repoWithRemote();
+    // Someone else pushed to the branch meanwhile.
+    const other = tmp('rr-other-');
+    git(other, 'init', '-q', '-b', 'buildd/task-branch');
+    git(other, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'theirs');
+    git(other, 'push', '-q', remote, 'buildd/task-branch');
+    writeFileSync(join(wt, 'mine.ts'), 'm\n');
+    const cp = await pushUpdateCheckpoint(wt, 'worker-12345678', 'buildd/task-branch');
+    expect(cp.committed).toBe(true);
+    expect(cp.pushed).toBe(false);
+    expect(cp.reason).toMatch(/^push failed/);
+    expect(git(remote, 'log', '-1', '--format=%s', 'refs/heads/buildd/task-branch')).toBe('theirs');
   });
 });

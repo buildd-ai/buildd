@@ -748,6 +748,10 @@ export interface MissionNote {
   collapseCount: number;
   replyTo: string | null;
   defaultChoice: string | null;
+  /** The task a question is about when it is not `taskId` (an organizer's decision about a build task). */
+  subjectTaskId?: string | null;
+  /** A question's structured options; null when they live only in the body. */
+  options?: WaitingForOption[] | null;
   status: MissionNoteStatus;
   createdAt: Date;
 }
@@ -1045,6 +1049,8 @@ export interface WaitingForOption {
    * on older questions; renderers fall back to `description`.
    */
   consequence?: string;
+  /** The consequence cut to the button line, under 40 characters (Navigation R-16). */
+  effect?: string;
 }
 
 /**
@@ -1081,6 +1087,17 @@ export interface WaitingFor {
    * rather than accepted silently.
    */
   contractViolation?: boolean;
+  /**
+   * Advisory, set server-side: the question names no decision ("How should I
+   * proceed?"; packages/core/human-attention.ts `isGenericDecisionTitle`). The
+   * question is still parked.
+   */
+  genericTitle?: boolean;
+  /**
+   * The task the decision is about, when it is not the asking worker's own
+   * task. Validated on park: same mission, or same workspace.
+   */
+  subjectTaskId?: string;
   /**
    * Question brief (module header: packages/core/question-brief.ts): at most two
    * sentences saying which task this is and exactly what is being decided.
@@ -1460,8 +1477,21 @@ export interface RunnerUpdateSnapshot {
   commitDrift: boolean;
   updating: boolean;
   updateAvailable: boolean;
-  /** Set while claims are halted to drain busy workers before a self-update (epoch ms); null otherwise. */
-  updateDrain?: { since: number; endsAt: number; busy: number } | null;
+  /**
+   * Set while a self-update is in progress (epoch ms); null otherwise. `phase`
+   * `draining`: claims halted, agents finishing or being paused; `updating`:
+   * the update applied (`endsAt` = when), or the new version has not yet
+   * continued the agents paused for it (spec 47c97f48, R-5). Older runners
+   * send only since/endsAt/busy.
+   */
+  updateDrain?: {
+    since: number;
+    endsAt: number;
+    busy: number;
+    phase?: 'draining' | 'updating';
+    targetVersion?: string | null;
+    paused?: Array<{ workerId: string; taskId: string | null; title: string | null; since: number | null }>;
+  } | null;
   /** The branch this install tracks (its `BUILDD_BRANCH`). */
   trackedBranch: string;
 }
@@ -4395,6 +4425,8 @@ export interface FleetRunner {
   name: string;
   /** Set while a person holds this runner (`buildd hold`): it starts nothing new. */
   hold?: RunnerHold | null;
+  /** Set while it applies a self-update (spec 47c97f48): updating, with the agents paused for it, or stuck. No free slots. */
+  update?: import('./runner-update').RunnerUpdateView | null;
   /** Readable machine description ("Mac Studio", "macOS · arm64"), or null. */
   machine: string | null;
   maxSlots: number;

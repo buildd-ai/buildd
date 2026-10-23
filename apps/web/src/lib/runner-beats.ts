@@ -93,3 +93,16 @@ export const redisRunnerBeatStateStore: RunnerBeatStateStore = {
     }
   },
 };
+
+/**
+ * Forget what the last write left for a runner, so its next beat reads and
+ * writes the row. A change made on the dashboard (slots) calls this so the
+ * runner's nudged beat picks it up at once instead of at the next interval.
+ */
+export async function forgetRunnerBeatState(id: string): Promise<void> {
+  try {
+    await r.delKey?.(stateKey(id));
+  } catch {
+    // The interval write picks the change up instead.
+  }
+}

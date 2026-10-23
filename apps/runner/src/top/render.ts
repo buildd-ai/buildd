@@ -164,6 +164,8 @@ function header(state: TopState, cols: number, now: number, p: Palette): string 
   const version = state.runner.version ? ` · v${state.runner.version}` : '';
   // Widest first; drop the version, then shorten the slots, then the hostname.
   const variants: Array<{ host: boolean; slots: string; version: string }> = [
+    // R-22: where the number came from, e.g. "3 of 12 slots in use (set on buildd.dev by Max, 14:02)".
+    ...(state.runner.slotsNote ? [{ host: true, slots: `${slotsInUse(busy, state.runner.maxConcurrent)} (${state.runner.slotsNote})`, version: '' }] : []),
     // R-43: "3 of 6 slots in use" (terms catalog: capacity is never "busy").
     { host: true, slots: slotsInUse(busy, state.runner.maxConcurrent), version },
     { host: true, slots: slotsInUse(busy, state.runner.maxConcurrent), version: '' },
