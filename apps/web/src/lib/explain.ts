@@ -1549,11 +1549,11 @@ export async function explainPr(worker: {
   mergedAt: Date | string | null;
   observedTouches: string[] | null;
   createdAt: Date | string | null;
-}, actor: EvidenceActor): Promise<ExplainResult | null> {
+}, actor: EvidenceActor, viewer: DependencyViewer = { kind: 'member' }): Promise<ExplainResult | null> {
   if (!worker.taskId || worker.prNumber == null) return null;
 
   const taskId = await prOwnerTaskId(worker.taskId, worker.prNumber);
-  const loaded = await viewForTask(taskId);
+  const loaded = await viewForTask(taskId, viewer);
   if (!loaded) return null;
   const { view, task, lineage, answerExtras, workspaceId, missionId, deliveries, prDelivery } = loaded;
 

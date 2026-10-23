@@ -169,7 +169,7 @@ export async function GET(req: NextRequest) {
         mergedAt: worker.mergedAt ?? null,
         observedTouches: (worker.observedTouches as string[] | null) ?? null,
         createdAt: worker.createdAt ?? null,
-      }, actor);
+      }, actor, viewer);
       if (!result) {
         return NextResponse.json(
           { error: `PR #${prNumber} has no task attached — nothing to explain.` },
