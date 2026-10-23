@@ -33,14 +33,17 @@ const MAX_ROWS = 3;
 
 export default function ClosedPrResolution({ missionId, items }: { missionId: string; items: ClosedPrItem[] }) {
   if (items.length === 0) return null;
+  // One PR: the headline already names it and says it closed, so the row names
+  // neither. Several: the headline is a count, so each row says which PR it is.
+  const named = items.length > 1;
   return (
     <div data-testid="closed-pr-resolution" className="mt-2.5 space-y-2.5">
-      {items.slice(0, MAX_ROWS).map(item => <ClosedPrRow key={item.taskId} missionId={missionId} item={item} />)}
+      {items.slice(0, MAX_ROWS).map(item => <ClosedPrRow key={item.taskId} missionId={missionId} item={item} named={named} />)}
     </div>
   );
 }
 
-function ClosedPrRow({ missionId, item }: { missionId: string; item: ClosedPrItem }) {
+function ClosedPrRow({ missionId, item, named }: { missionId: string; item: ClosedPrItem; named: boolean }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [busy, setBusy] = useState(false);
@@ -78,17 +81,20 @@ function ClosedPrRow({ missionId, item }: { missionId: string; item: ClosedPrIte
 
   return (
     <div data-testid="closed-pr-row" className="text-[12px] leading-snug">
-      {/* Both lines say where the closed PR's work went: material, never trimmed as wordiness. */}
+      {/* Only what the headline does not say (R-13): the suggested PR's link and
+          what merged it, or what the closure costs. Material, never trimmed. */}
       {s ? (
         <p data-verify-block="consequence" className="text-text-secondary">
-          {prRef} is likely superseded by{' '}
+          {named && <>{prRef}: </>}
           <a href={s.prUrl} target="_blank" rel="noopener noreferrer" data-verify-action="view_detail" data-verify-prominence="secondary" className="font-mono text-accent-text hover:underline">
             {s.repo}#{s.prNumber}
           </a>
-          <span className="text-text-muted"> ({s.why})</span>
+          <span className="text-text-muted"> · {s.why}</span>
         </p>
       ) : (
-        <p data-verify-block="consequence" className="text-text-secondary">{prRef} closed without merging and nothing says where its work went.</p>
+        <p data-verify-block="consequence" className="text-text-secondary">
+          {named ? `${prRef}: nothing says where its work went.` : 'The mission can’t complete until this work is accounted for.'}
+        </p>
       )}
 
       <div className="mt-1.5 flex flex-wrap gap-2">

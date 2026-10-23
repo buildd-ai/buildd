@@ -94,9 +94,13 @@ describe('closed PR awaiting replacement confirmation', () => {
     expect(evidence.visible.blocks.map(b => b.role)).toEqual(['heading', 'consequence']);
     expect(evidence.visible.blocks.every(b => b.disclosure === 'visible')).toBe(true);
     // Where the closed PR's work went sits in a visible consequence line, not behind a disclosure.
-    expect(evidence.visible.blocks[1]!.text).toMatch(/likely superseded by .*#41 \(merged by/);
+    // It carries only what the headline does not (R-13): the link and what merged it.
+    expect(evidence.visible.blocks[1]!.text).toMatch(/#41 · merged by/);
+    expect(evidence.visible.blocks[1]!.text).not.toMatch(/superseded|closed without merging|PR #34/);
     // No action and no block offers a merge: the only primary is the confirm.
-    expect(evidence.visible.actions.filter(a => a.prominence === 'primary').map(a => a.operation).sort()).toEqual(['confirm_replacement', 'view_detail']);
+    // "Review the closed PR" is navigation, a secondary link, not a second filled button.
+    expect(evidence.visible.actions.filter(a => a.prominence === 'primary').map(a => a.operation)).toEqual(['confirm_replacement']);
+    expect(evidence.visible.actions.find(a => /Review the closed PR/.test(a.label))).toMatchObject({ operation: 'view_detail', prominence: 'secondary' });
     expect(evidence.visible.blocks.some(b => /\bmerge (it|the pr|now)\b/i.test(b.text))).toBe(false);
   });
 
@@ -115,7 +119,7 @@ describe('closed PR awaiting replacement confirmation', () => {
     const { evidence } = capture(MISSION_SITUATION_SURFACE, 'closed-pr-awaiting-confirmation');
     const features = uiCopyFeaturesFromSurface(evidence, undefined, { id: 'R-13', text: 'A card keeps its consequences.' });
     const consequence = features.segments.find(s => s.role === 'consequence')!;
-    expect(consequence.text).toMatch(/likely superseded by/);
+    expect(consequence.text).toMatch(/#41 · merged by/);
     expect(features.state).toEqual({ factVersion: facts.factVersion, facts: facts.scenarios['closed-pr-awaiting-confirmation']! });
     expect(features.criterion).toEqual({ id: 'R-13', text: 'A card keeps its consequences.' });
     // A model calling the consequence repetition does not make it dispensable.
