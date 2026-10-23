@@ -15,10 +15,6 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { MISSION_LAYOUT_TABS, MISSION_LAYOUT_LABEL, missionLayoutHref, type MissionLayout } from '@/lib/mission-layout';
-import type { MastheadChip } from '@/components/missions/MissionMasthead';
-import { formatClock } from '@/lib/mission-board';
-import { describeMissionDuration, formatDuration } from '@/lib/mission-duration';
-import { useNow } from './MissionBoardParts';
 import MissionSheetRow from './MissionSheetRow';
 import { nativeHistoryData } from '@/lib/native-history';
 
@@ -131,8 +127,7 @@ function LayoutLoading({ layout }: { layout: MissionLayout }) {
 export interface MissionBoardHeaderProps {
   back: { label: string; href: string };
   title: string;
-  chip: MastheadChip;
-  /** The Verified pill (opens goal criteria). */
+  /** The goal criteria sheet: no chip in the header (R-3); `?criteria=open` and criteria links open it. */
   verified?: ReactNode;
   actions?: ReactNode;
   /** Plain-text goal line under the title: one sentence (`missionSummaryLine`). */
@@ -141,44 +136,7 @@ export interface MissionBoardHeaderProps {
   description?: ReactNode;
   /** The one spec line under the goal, `Spec <name>` (R-3). */
   spec?: ReactNode;
-  serverNow: number;
-  startedAt: number;
-  /** Set once complete: the clock stops. */
-  endedAt?: number | null;
-  /** Wall time agents worked (`MissionBoardModel.activeMs`). Absent: the open span is the work. */
-  activeMs?: number | null;
   children?: ReactNode;
-}
-
-const DAY_MS = 86_400_000;
-
-/**
- * The header clock. Under a day of a live mission: `T+ 11:50`, ticking. Past
- * that, or once complete, work and open time in readable units — `40m of work
- * · open 35d`, or `took 38m` when the two are about the same.
- */
-export function MissionClock({ startedAt, endedAt, activeMs, now }: { startedAt: number; endedAt?: number | null; activeMs?: number | null; now: number }) {
-  const done = endedAt != null;
-  const openMs = (done ? endedAt! : now) - startedAt;
-  if (!done && openMs < DAY_MS) {
-    return (
-      <span data-testid="mission-clock" className="font-mono text-meta text-text-muted">
-        {'T+ '}<b className="font-medium tabular-nums text-text-secondary">{formatClock(openMs)}</b>
-      </span>
-    );
-  }
-  const d = describeMissionDuration({ activeMs: activeMs === undefined ? openMs : activeMs, openMs });
-  return (
-    <span data-testid="mission-clock" title={`Agents worked ${d.work ?? 'no time'}; open ${formatDuration(openMs)}`} className="font-mono text-meta text-text-muted">
-      {d.work == null ? (
-        <>{'open '}<b className="font-medium tabular-nums text-text-secondary">{d.open}</b></>
-      ) : d.showOpen ? (
-        <><b className="font-medium tabular-nums text-text-secondary">{d.work}</b>{' of work · open '}<b className="font-medium tabular-nums text-text-secondary">{d.open}</b></>
-      ) : (
-        <>{'took '}<b className="font-medium tabular-nums text-text-secondary">{d.work}</b></>
-      )}
-    </span>
-  );
 }
 
 /**
@@ -232,19 +190,14 @@ export function MissionTitle({ title }: { title: string }) {
   );
 }
 
-/** The shared state labels are caps constants; the header reads them as a sentence: RUNNING → Running. */
-const sentenceCase = (label: string) => label.charAt(0) + label.slice(1).toLowerCase();
-
 /**
  * The Board/Flow header, top to bottom (Navigation d25d923d R-3): back and
- * the one ⋯ menu on one row; the title; one quiet line of state, Verified
- * and the clock; the goal as one sentence with the rest behind `More`; one
- * spec line. No tab bar, no legend, no page-level Ask link. The column keeps
- * the reading width (`--content-measure`, R-21).
+ * the one ⋯ menu on one row; the title; the goal as one sentence with the
+ * rest behind `More`; one spec line. No state word, criteria chip or clock,
+ * no tab bar, no legend, no page-level Ask link. The column keeps the
+ * reading width (`--content-measure`, R-21).
  */
-export function MissionBoardHeader({ back, title, chip, verified, actions, goal, description, spec, serverNow, startedAt, endedAt, activeMs, children }: MissionBoardHeaderProps) {
-  const now = useNow(serverNow, 1_000, endedAt == null);
-  const done = endedAt != null;
+export function MissionBoardHeader({ back, title, verified, actions, goal, description, spec, children }: MissionBoardHeaderProps) {
   const ctx = useContext(LayoutContext);
   return (
     <div data-testid="mission-detail" className="mx-auto w-full max-w-[var(--content-measure)] px-4 pb-12 pt-1 md:px-8 md:pt-3">
@@ -255,19 +208,12 @@ export function MissionBoardHeader({ back, title, chip, verified, actions, goal,
           <div data-testid="mission-header-actions" className="flex shrink-0 items-center gap-0.5">{actions}</div>
         </div>
         <MissionTitle title={title} />
-        <div data-testid="mission-state-line" className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-          <span data-testid="mission-state-chip" className={`inline-flex shrink-0 items-center gap-1.5 text-meta font-semibold ${chip.cls}`}>
-            {!done && <span aria-hidden="true" className="h-1.5 w-1.5 animate-status-pulse rounded-full bg-current" />}
-            {sentenceCase(chip.label)}
-          </span>
-          {verified}
-          <MissionClock startedAt={startedAt} endedAt={endedAt} activeMs={activeMs} now={now} />
-        </div>
+        {verified}
       </header>
       {(goal || description) && (
         <div className="mt-2 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-          {/* One sentence, clamped on a phone: a full goal pushes the bar several screens down. The rest is behind More. */}
-          {goal && <p data-testid="mission-goal-line" title={goal} className="min-w-0 break-words text-lede text-text-secondary max-md:line-clamp-2">{goal}</p>}
+          {/* One sentence, clamped at every width: a long goal runs to a paragraph and pushes the bar down. The rest is behind More. */}
+          {goal && <p data-testid="mission-goal-line" title={goal} className="min-w-0 break-words text-lede text-text-secondary line-clamp-2">{goal}</p>}
           {description && (
             <MissionSheetRow inline label="More" title="Description" testId="mission-description-open" sheetTestId="mission-description-sheet">
               {description}

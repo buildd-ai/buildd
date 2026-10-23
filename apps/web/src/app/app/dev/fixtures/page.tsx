@@ -50,6 +50,7 @@ import RunActivityFixture from './RunActivityFixture';
 import { RUN_ACTIVITY_FIXTURE_STATE } from './run-activity-fixtures';
 import ActivityDeliveryFixture from './ActivityDeliveryFixture';
 import SurfaceAuditWaiverFixture from './SurfaceAuditWaiverFixture';
+import SkipRowFixture from './SkipRowFixture';
 import TeamMembersFixture from './TeamMembersFixture';
 import RefinedComponentsFixture from './RefinedComponentsFixture';
 import MissionFlowFixture from './MissionFlowFixture';
@@ -104,6 +105,7 @@ import {
     DELIVERY_STATES_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
     SURFACE_AUDIT_WAIVER_FIXTURE_STATE,
+    SKIP_ROW_FIXTURE_STATE,
     TEAM_MEMBERS_FIXTURE_STATE,
     REFINED_COMPONENTS_FIXTURE_STATE,
     MISSION_FLOW_FIXTURE_STATE,
@@ -162,6 +164,10 @@ export default function DevFixturesPage() {
 
     if (state === SURFACE_AUDIT_WAIVER_FIXTURE_STATE) {
         return <SurfaceAuditWaiverFixture />;
+    }
+
+    if (state === SKIP_ROW_FIXTURE_STATE) {
+        return <SkipRowFixture />;
     }
 
     if (state === MISSION_LIST_EXECUTOR_FIXTURE_STATE) {

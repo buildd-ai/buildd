@@ -1429,6 +1429,8 @@ describe('T15 LandingRequested / T16 MergeCallResult (S10)', () => {
     const rails = applied(gate(l, 'rails'));
     expect({ to: rails.toState, reason: rails.patch.stateReason, gate: rails.evidence.gate }).toEqual({ to: 'APPROVED', reason: null, gate: { half: 'rails', reasons: ['CI red'] } });
     expect(effectKinds(rails)).not.toContain('merge_call');
+    // The waiting rail is named on the GitHub status, not "Ready to merge" (spec 072de598 I-12, AC-24).
+    expect(rails.effects.find((e) => e.kind === 'publish_landing_status')!.payload.detail).toBe('CI red');
     // A lasting rail (a protected path, a migration, the size cap) is a person's, with the rail named on the status.
     const lasting = applied(run(l, { type: 'MergeCallResult', actor: 'effect:merge_call', headSha: 'H1', outcome: 'gate_refused', gate: { half: 'rails', reasons: ['touches protected path (infra/x)'], lasting: true }, landingVersion: 6 }));
     expect({ to: lasting.toState, reason: lasting.patch.stateReason }).toEqual({ to: 'ESCALATED', reason: 'landing_needs_human' });
