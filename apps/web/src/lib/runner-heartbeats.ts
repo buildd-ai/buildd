@@ -68,6 +68,11 @@ export async function getRunnerHeartbeats(
       desiredSlotsOrigin: workerHeartbeats.desiredSlotsOrigin,
       desiredSlotsSetBy: workerHeartbeats.desiredSlotsSetBy,
       desiredSlotsSetAt: workerHeartbeats.desiredSlotsSetAt,
+      // Owners and admins of a runner's team may change its slots (R-23); in the
+      // same query so the Health budget does not pay another round trip.
+      viewerCanEditSlots: viewerUserId
+        ? sql<boolean>`exists (select 1 from ${teamMembers} where ${teamMembers.teamId} = ${accounts.teamId} and ${teamMembers.userId} = ${viewerUserId}::uuid and ${teamMembers.role} in ('owner', 'admin'))`
+        : sql<boolean>`false`,
       // isSharedRunner in SQL: more than one person across the runner's own
       // team and the team it serves here.
       shared: sql<boolean>`(select count(distinct ${teamMembers.userId}) from ${teamMembers} where ${teamMembers.teamId} in (${accounts.teamId}, ${teamId}::uuid)) > 1`,
@@ -97,16 +102,6 @@ export async function getRunnerHeartbeats(
   // A stored beat can be one write interval old; the Redis beat is "now" (lib/runner-beats.ts).
   const kept = await withLiveRunnerBeats(rows);
 
-  // Owners and admins of a runner's team may change its slots (R-23).
-  const adminTeams = new Set<string>();
-  if (viewerUserId) {
-    const roles = await db
-      .select({ teamId: teamMembers.teamId, role: teamMembers.role })
-      .from(teamMembers)
-      .where(and(eq(teamMembers.userId, viewerUserId), inArray(teamMembers.role, ['owner', 'admin'])));
-    for (const r of roles) adminTeams.add(r.teamId);
-  }
-
   return kept
     .map((hb: any) => ({
       id: hb.id,
@@ -134,7 +129,7 @@ export async function getRunnerHeartbeats(
         origin: hb.desiredSlotsOrigin ?? null,
         setBy: hb.desiredSlotsSetBy ?? null,
         setAt: hb.desiredSlotsSetAt ? new Date(hb.desiredSlotsSetAt).toISOString() : null,
-        canEdit: !!hb.account?.teamId && adminTeams.has(hb.account.teamId),
+        canEdit: !!hb.viewerCanEditSlots,
       },
     }));
 }
