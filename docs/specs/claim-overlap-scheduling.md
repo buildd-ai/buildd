@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-23
 summary: Overlapping work MUST start by default, undeclared scope included; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, hard surfaces) and only while its holder is live.
 domain: tasks
-surfaces: [apps/web/src/app/api/workers/claim/overlap-policy.ts, packages/core/unmergeable-surfaces.ts, apps/web/src/app/api/workers/claim/start-lease.ts, apps/web/src/app/api/workers/claim/deps-gate.ts]
+surfaces: [apps/web/src/lib/serial-lanes.ts, apps/web/src/lib/serial-lanes-store.ts, apps/web/src/app/api/workers/claim/overlap-policy.ts, packages/core/unmergeable-surfaces.ts, apps/web/src/app/api/workers/claim/start-lease.ts, apps/web/src/app/api/workers/claim/deps-gate.ts]
 related: [path-claim-ownership, orchestration-decisions-shadow, force-start, task-dispatch-authority, claim-ordering, runner-liveness]
 keywords: [unmergeable surface, overlap start, undeclared scope, scope_undeclared_mutex, advisory_manifest, no_scope_mutex, soft_overlap_start, path_overlap, soft_overlap, inferredDependsOn, softOverlaps, legacy_inferred, unstarted holder, schema lane, migration lane, starvation, claim_loop_deferral, update drain, claims halted, dependency.satisfied]
-verified_by: [packages/core/__tests__/unmergeable-surfaces.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/tests/db/undeclared-scope-starts.test.ts, packages/core/__tests__/claim-planner.test.ts, apps/web/src/app/api/workers/claim/claim-plan-input.test.ts, apps/web/src/app/api/workers/claim/coordination-gates.test.ts, apps/web/src/app/api/workers/claim/deps-gate.test.ts, apps/web/src/app/api/workers/claim/start-lease.test.ts, apps/web/src/app/api/workers/claim/open-pr-target-base.test.ts, apps/web/src/lib/explain-coordination.test.ts, packages/core/__tests__/orchestration-soft-start-readout.test.ts, apps/web/src/lib/orchestration-decision-stats-query.test.ts, apps/web/src/lib/claim-order-queue.test.ts, apps/runner/__tests__/unit/top-queue.test.ts, packages/core/__tests__/dispatch-dependents.test.ts, apps/web/src/lib/conflict-retry.test.ts]
+verified_by: [apps/web/src/lib/serial-lanes.test.ts, apps/web/tests/db/serial-lanes.test.ts, packages/core/__tests__/unmergeable-surfaces.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/tests/db/undeclared-scope-starts.test.ts, packages/core/__tests__/claim-planner.test.ts, apps/web/src/app/api/workers/claim/claim-plan-input.test.ts, apps/web/src/app/api/workers/claim/coordination-gates.test.ts, apps/web/src/app/api/workers/claim/deps-gate.test.ts, apps/web/src/app/api/workers/claim/start-lease.test.ts, apps/web/src/app/api/workers/claim/open-pr-target-base.test.ts, apps/web/src/lib/explain-coordination.test.ts, packages/core/__tests__/orchestration-soft-start-readout.test.ts, apps/web/src/lib/orchestration-decision-stats-query.test.ts, apps/web/src/lib/claim-order-queue.test.ts, apps/runner/__tests__/unit/top-queue.test.ts, packages/core/__tests__/dispatch-dependents.test.ts, apps/web/src/lib/conflict-retry.test.ts]
 assertions:
   - id: open-pr-overlap-policy
     skip_until: "2026-12-15"
@@ -41,6 +41,24 @@ locks*. Already in effect from it (R-1 to R-3): nothing is guessed at creation
 (no inferred edge, no soft overlap), a stored soft overlap holds nothing, a
 live lease holds at claim only on an unmergeable path whatever the
 workspace's lease enforcement, and the HOLD/START model is not asked.
+
+Rule 1 of that spec, serial lanes (I-1 to I-7), is in effect too. A task whose
+manifest touches a migration/schema path or a workspace hard surface is in that
+lane (`migration`, or `surface:<label>`), one row in `serial_lane_entries`. One
+task holds a lane, from its claim until its PR merges or closes or it ends
+with no PR; the partial unique index allows no second holder. The order is
+stored: `claimable_since` is stamped the first time the task is seen claimable
+apart from the lane and never moves, then priority, then age
+(`lib/claim-order.ts` `laneOrderBy`). A parked, held or dependency-blocked task
+keeps its place and blocks nobody. `check_path_claim` on a lane path joins the
+lane or 409s naming the holder and the position. Own-PR repairs are in no
+lane. A holder whose PR is quiet for 24h is a stuck lane: the failure-pattern
+sentinel reports it (`stranded_gate`, `gate.lane_stuck`), explain says so, and
+a person may release it (`POST /api/workspaces/[id]/lanes/release`, recorded
+as `serial_lane` bypassed). The claim route, the start probe, explain and the
+terminal Queue read one lane read (`lib/serial-lanes-store.ts`). The open-PR
+and lease checks below still hold lane paths for in-flight work that has no
+lane row yet.
 
 ## Terms
 

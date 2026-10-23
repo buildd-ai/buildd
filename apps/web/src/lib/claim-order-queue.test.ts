@@ -236,6 +236,36 @@ describe('loadRunnerQueue', () => {
     expect(out.teams[0].queue[0]).not.toHaveProperty('pathManifest');
   });
 
+  it('a lane task carries the serial_lane hold with its position, from the claim route\'s lane read', async () => {
+    const m = (taskId: string, o: Record<string, unknown> = {}) => ({
+      taskId, claimableSince: new Date('2026-03-10T00:00:00Z'), priority: 0, createdAt: new Date('2026-03-09T00:00:00Z'), heldAt: null,
+      holding: false, ready: true, status: 'pending', prNumber: null, prUrl: null, lastActivityAt: null, ...o,
+    });
+    const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, {
+      read: async () => [
+        row({ id: 't-b', pathManifest: ['packages/core/db/schema.ts'] }),
+        row({ id: 't-c', pathManifest: ['packages/core/drizzle/x/migration.sql'] }),
+        row({ id: 't-free', pathManifest: ['apps/web/a.ts'] }),
+      ],
+      estimates: async () => null,
+      workspaceConfigs: async () => [{ id: 'ws-a', gitConfig: null }],
+      overlaps: async () => ({ openPrs: new Map(), leases: new Map() }),
+      lanes: async () => ({
+        lanes: new Map([['ws-a', new Map([['migration', { workspaceId: 'ws-a', lane: 'migration', members: [
+          m('t-a', { holding: true, heldAt: new Date('2026-03-10T01:00:00Z'), status: 'in_progress' }),
+          m('t-b', { claimableSince: new Date('2026-03-10T00:01:00Z') }),
+          m('t-c', { claimableSince: new Date('2026-03-10T00:02:00Z') }),
+        ] }]])]]),
+        releasedTaskIds: new Set<string>(),
+      }),
+    });
+    const by = new Map(out.teams[0].queue.map(t => [t.id, t]));
+    expect(by.get('t-b')?.holds).toContain('serial_lane');
+    expect(by.get('t-b')?.lane).toMatchObject({ lane: 'migration', position: 1, holderTaskId: 't-a' });
+    expect(by.get('t-c')?.lane).toMatchObject({ position: 2, holderTaskId: 't-a' });
+    expect(by.get('t-free')?.holds).not.toContain('serial_lane');
+  });
+
   it('reads no overlaps when no queued task declares files, and a failed read only drops alongside', async () => {
     let reads = 0;
     await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, { read: async () => [row()], estimates: async () => null, workspaceConfigs: async () => [], overlaps: async () => { reads++; throw new Error('x'); } });

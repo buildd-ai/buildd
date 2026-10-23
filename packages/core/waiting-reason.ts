@@ -27,6 +27,7 @@ export type WaitingKind =
   | 'pr_overlap_live'
   | 'pr_overlap_ended'
   | 'lease_overlap'
+  | 'lane_wait'
   | 'lease_stale'
   | 'soft_overlap'
   | 'scope_undeclared_mutex'
@@ -97,6 +98,15 @@ export interface WaitingOverlap {
   overlapKind?: string;
 }
 
+export interface WaitingLane {
+  lane: string;
+  holderTaskId: string | null;
+  /** How many go first: the holder plus the members ahead. Null when only the holder is known. */
+  position: number | null;
+  /** When the holder's PR went quiet, if the lane is stuck (24h with no activity). */
+  stuckSince?: string;
+}
+
 export interface WaitingReason {
   kind: WaitingKind;
   class: WaitingClass;
@@ -109,6 +119,8 @@ export interface WaitingReason {
     derivedFrom: string;
     firstSeenAt?: string;
   };
+  /** A serial lane wait: which lane, who holds it, and how many go first (0 = next). */
+  lane?: WaitingLane;
   /** One plain sentence: "both edit packages/core/db/schema.ts". */
   because: string;
   releasesWhen: { event: string; text: string };
@@ -171,6 +183,7 @@ export const WAITING_KIND_SPEC: Record<WaitingKind, KindSpec> = {
   pr_overlap_live: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Open-PR file overlap', releasesWhen: { event: 'path_claim.released', text: 'that PR merges, closes or narrows its files' }, owner: 'agent', force: memberForce(), claimLoopKey: 'path_overlap' },
   pr_overlap_ended: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Open-PR file overlap', releasesWhen: { event: 'pr.closed', text: 'that PR merges or closes' }, owner: 'system', force: memberForce(), claimLoopKey: 'path_overlap' },
   lease_overlap: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Files claimed by a running task', releasesWhen: { event: 'path_claim.released', text: 'that task releases or narrows its files' }, owner: 'agent', force: memberForce(), claimLoopKey: 'path_overlap' },
+  lane_wait: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Serial lane', releasesWhen: { event: 'pr.closed', text: 'the task holding the lane merges or closes its PR, or ends, and the tasks ahead of it in line go first' }, owner: 'system', force: memberForce(), claimLoopKey: 'path_overlap' },
   lease_stale: { class: 'coordination', strength: 'hard', intent: 'incidental', gateName: 'Stale file claim', releasesWhen: { event: 'sweep.hourly', text: 'the hourly sweep releases the stale claim' }, owner: 'system', force: null },
   soft_overlap: { class: 'coordination', strength: 'hard', intent: 'incidental', gateName: 'Scope overlap with an in-flight task', releasesWhen: { event: 'task.finished', text: 'the overlapping task finishes' }, owner: 'system', force: memberForce(), claimLoopKey: 'soft_overlap' },
   scope_undeclared_mutex: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'One scope-undeclared task per mission', releasesWhen: { event: 'task.finished', text: 'the other scope-undeclared task finishes or declares its files' }, owner: 'agent', force: memberForce(), claimLoopKey: 'advisory_manifest' },
@@ -199,6 +212,7 @@ export function makeWaitingReason(kind: WaitingKind, fields: {
   because: string;
   blocker?: WaitingBlocker;
   overlap?: WaitingOverlap;
+  lane?: WaitingLane;
   provenance: WaitingReason['provenance'];
   /** A producer that knows this instance only orders the claim (e.g. an undecided soft overlap). */
   strength?: 'hard' | 'soft';
@@ -211,6 +225,7 @@ export function makeWaitingReason(kind: WaitingKind, fields: {
     intent: spec.intent,
     ...(fields.blocker ? { blocker: fields.blocker } : {}),
     ...(fields.overlap ? { overlap: fields.overlap } : {}),
+    ...(fields.lane ? { lane: fields.lane } : {}),
     provenance: fields.provenance,
     because: fields.because,
     releasesWhen: spec.releasesWhen,
@@ -367,7 +382,7 @@ export function forceDialog(reasons: readonly WaitingReason[]): ForceDialog {
 }
 
 /** Coordination-only kinds: incidental serialization, never an order a person declared. */
-const COORDINATION_ONLY: ReadonlySet<WaitingKind> = new Set<WaitingKind>(['dep_inferred', 'serialized_surface', 'soft_overlap', 'pr_overlap_live', 'pr_overlap_ended', 'lease_overlap']);
+const COORDINATION_ONLY: ReadonlySet<WaitingKind> = new Set<WaitingKind>(['dep_inferred', 'serialized_surface', 'lane_wait', 'soft_overlap', 'pr_overlap_live', 'pr_overlap_ended', 'lease_overlap']);
 
 /**
  * The compact headline over every reason (artifact §2/§3): declared

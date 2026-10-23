@@ -164,6 +164,8 @@ import { effectiveBackendOf, fireClaimPlanRecord, fireOrderedBehind, loadPlanner
 import { acquireStartPaths, releaseStartPaths } from './start-lease';
 import { exclusiveStartPaths, findHoldingLease, findHoldingOpenPr, findOverlappingOpenPr, workspaceHardSurface } from './overlap-policy';
 import { loadIdleHolderIds } from './soft-overlap-store';
+import { giveBackLanes, lanesOf, loadLanes, syncLanes, takeLanes, type LaneRead } from '@/lib/serial-lanes-store';
+import { laneSentence, lanePathsFor, laneVerdict, stuckSince, type LaneView } from '@/lib/serial-lanes';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 import { runnerLiveCandidateCutoff, withLiveRunnerBeats } from '@/lib/runner-beats';
 import { CLAIM_COOLDOWN_MS, claimOrderBy, claimableWorkspaceIds } from '@/lib/claim-order';
@@ -1466,6 +1468,37 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // ── Serial lanes (lib/serial-lanes, spec: Overlap scheduling, Rule 1) ────────
+  // Candidates whose manifest is in a lane (schema/migrations, a workspace hard
+  // surface) join it, stamped the first time they are seen claimable; ended
+  // holders are let go; then each lane is read once, in its stored order. A
+  // failed read leaves `laneRead` null: the open-PR and lease checks below
+  // still hold lane paths, as before lanes existed.
+  let laneRead: LaneRead | null = null;
+  {
+    const laneCandidates = filteredTasks.filter(t => lanesOf(t as any).length > 0);
+    if (laneCandidates.length > 0) {
+      const laneWorkspaceIds = [...new Set(laneCandidates.map(t => t.workspaceId))];
+      try {
+        // A force claim's named task skipped the claimable gates: it is not stamped by this claim.
+        await syncLanes({ workspaceIds: laneWorkspaceIds, claimable: laneCandidates.filter(t => !(forceClaim && t.id === taskId)) as any, now });
+        laneRead = await loadLanes(laneWorkspaceIds, now);
+        // A holder a person released holds nobody, its open PR included (I-7).
+        if (laneRead.releasedTaskIds.size > 0) idleHolderIds = new Set([...idleHolderIds, ...laneRead.releasedTaskIds]);
+      } catch (err) {
+        console.warn('[claim] serial lane read failed (open-PR and lease checks still hold lane paths):', err);
+        laneRead = null;
+      }
+    }
+  }
+  const laneViewOf = (workspaceId: string, lane: string): LaneView => {
+    const byLane = laneRead?.lanes.get(workspaceId) ?? new Map<string, LaneView>();
+    if (laneRead && !laneRead.lanes.has(workspaceId)) laneRead.lanes.set(workspaceId, byLane);
+    let view = byLane.get(lane);
+    if (!view) { view = { workspaceId, lane, members: [] }; byLane.set(lane, view); }
+    return view;
+  };
+
   // ── Mission-level gates (pacing, concurrency, budget) ─────────────────────────
   // Batch-fetch mission rows and active worker counts for all tasks that reference
   // a mission. Used by three claim-loop guards:
@@ -1697,6 +1730,43 @@ export async function POST(req: NextRequest) {
     // based on Step C's branch, so D's diff carries all of C's files; a review
     // fix for C deferred behind D on every round, overlapping only C's own work.
     const taskManifest = (task as any).pathManifest as string[] | null;
+
+    // Serial lane (I-1, I-3, I-4): a task in a lane is claimable only when no
+    // other task holds it and nobody ahead of it in the stored order is ready
+    // to take it. A parked, held or dependency-blocked task ahead keeps its
+    // place and blocks nobody. An own-PR repair is in no lane (I-6). The lane
+    // is taken right before the atomic claim.
+    let lanesToTake: string[] = [];
+    if (laneRead) {
+      const taskLanes = lanesOf(task as any);
+      let laneRefused = false;
+      for (const lane of taskLanes) {
+        const verdict = laneVerdict(laneViewOf(task.workspaceId, lane), task.id);
+        if (verdict.kind !== 'held' && verdict.kind !== 'behind') continue;
+        sawCoordinationBlocker = true;
+        const blocker = verdict.kind === 'held' ? verdict.holder : verdict.ahead;
+        const lanePaths = lanePathsFor(taskManifest, (task as any).workspace?.gitConfig ?? null, lane);
+        console.log(`[claim] lane_wait: task ${task.id} deferred (${lane}, position ${verdict.position}, ${verdict.kind === 'held' ? 'held by' : 'behind'} task ${blocker.taskId})`);
+        if (task.id === taskId && !liftedByForce('path_overlap')) {
+          explicitTaskExclusion = { code: 'path_overlap', detail: `It is ${laneSentence(lane, verdict, now)}.` };
+        }
+        if (bypassOrDefer('path_overlap', {
+          lane, position: verdict.position, laneVerdict: verdict.kind,
+          blockingTaskId: blocker.taskId, prNumber: blocker.prNumber, prUrl: blocker.prUrl,
+          // A holder whose PR has been quiet 24h: the stuck lane explain names (I-7).
+          holderQuietSince: verdict.kind === 'held' ? (stuckSince(verdict.holder, now)?.toISOString() ?? null) : null,
+          paths: boundDeferralPaths(lanePaths),
+        })) {
+          // The holder's release (merge, close, end) wakes this task.
+          if (verdict.kind === 'held') noteDeferralWaiter(task.workspaceId, task.id, blocker.taskId, lanePaths);
+          laneRefused = true;
+          break;
+        }
+      }
+      if (laneRefused) continue;
+      lanesToTake = taskLanes;
+    }
+
     if (taskManifest?.length) {
       const openPrTasks = openPrTasksByWorkspace.get(task.workspaceId) ?? [];
       // Own PRs (its earlier worker's, the PR a fix attempt fixes, its subject
@@ -2663,6 +2733,40 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Take the task's lanes (one holder per lane: the unique index decides a
+    // race). A lane another claim took first holds it as path_overlap; a force
+    // past the lane starts it without the lane. A failed write falls back to
+    // the open-PR and lease checks above, as before lanes existed.
+    let laneTake: { heldAt: Date; taken: string[] } | null = null;
+    if (lanesToTake.length > 0) {
+      try {
+        const took = await takeLanes({ workspaceId: task.workspaceId, taskId: task.id, lanes: lanesToTake, now: new Date() });
+        if (took.ok) {
+          laneTake = took;
+          for (const lane of took.taken) {
+            const view = laneViewOf(task.workspaceId, lane);
+            const member = view.members.find(m => m.taskId === task.id);
+            if (member) { member.holding = true; member.heldAt = took.heldAt; }
+            else view.members.push({ taskId: task.id, claimableSince: now, priority: (task as any).priority ?? 0, createdAt: new Date((task as any).createdAt ?? now), heldAt: took.heldAt, holding: true, ready: false, status: 'assigned', prNumber: null, prUrl: null, lastActivityAt: null });
+          }
+        } else if (!liftedByForce('path_overlap')) {
+          deferTask(task, 'path_overlap', { lane: took.lane, laneTake: 'held' });
+          continue;
+        }
+      } catch (err) {
+        console.warn(`[claim] lane take failed for task ${task.id} (open-PR and lease checks still hold lane paths):`, err);
+      }
+    }
+    const giveBackLaneTake = async () => {
+      if (!laneTake) return;
+      await giveBackLanes({ workspaceId: task.workspaceId, taskId: task.id, lanes: laneTake.taken, heldAt: laneTake.heldAt })
+        .catch((err) => console.warn(`[claim] lane give-back failed for task ${task.id} (next poll's sync clears it):`, err));
+      for (const lane of laneTake.taken) {
+        const member = laneViewOf(task.workspaceId, lane).members.find(m => m.taskId === task.id);
+        if (member) { member.holding = false; member.heldAt = null; }
+      }
+    };
+
     // A task starting alongside an open PR on non-lane files takes its own
     // lane paths through the exclusive primitive, all-or-nothing, before the
     // claim. Any conflict holds it as path_overlap.
@@ -2670,6 +2774,7 @@ export async function POST(req: NextRequest) {
     if (startLeasePaths) {
       const acquired = await acquireStartPaths({ workspaceId: task.workspaceId, taskId: task.id, paths: startLeasePaths });
       if (!acquired.ok) {
+        await giveBackLaneTake();
         deferTask(task, 'path_overlap', { startLease: 'acquire_failed' });
         continue;
       }
@@ -2737,7 +2842,9 @@ export async function POST(req: NextRequest) {
 
     if (updated.length === 0) {
       // Already claimed by another request. Lane paths leased above for this
-      // attempt are given back unless the winning claim owns them.
+      // attempt are given back unless the winning claim owns them, and so is
+      // the lane it took.
+      await giveBackLaneTake();
       if (startLeaseIds.length > 0) {
         await releaseStartPaths({ workspaceId: task.workspaceId, taskId: task.id, insertedIds: startLeaseIds });
       }

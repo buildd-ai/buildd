@@ -98,3 +98,15 @@ describe('the Next line (R-59)', () => {
     expect(queueNextLine(s, NOW)).toBe('Next: #1 and #2 start now');
   });
 });
+
+describe('serial lane rows (spec: Overlap scheduling, I-3)', () => {
+  test('a lane row says how many go first, and a stalled holder says so', () => {
+    const s = stateWith(9, 0, [
+      task({ id: 'l1', holds: ['serial_lane'], lane: { lane: 'migration', position: 1, holderTaskId: 'x' } }),
+      task({ id: 'l2', holds: ['serial_lane'], lane: { lane: 'migration', position: 2, holderTaskId: 'x', stuckSince: iso(NOW - 30 * 60 * MIN) } }),
+    ]);
+    const rows = queueSections(s, NOW)[0].rows;
+    expect(rows.map(r => r.starts)).toEqual(['in line, 1 ahead', 'in line (2 ahead), holder stalled']);
+    expect(rows.every(r => r.wait === 'same_files')).toBe(true);
+  });
+});

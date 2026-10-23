@@ -48,6 +48,21 @@ describe('derivePendingTaskHold', () => {
     expect(h.ageLabel).toBe('2h');
   });
 
+  it('a serial lane wait names the lane and how many go first (spec: Overlap scheduling, I-3, AC-10)', () => {
+    const h = derivePendingTaskHold({
+      now: NOW,
+      deferral: { reason: 'path_overlap', detail: { lane: 'migration', position: 2, laneVerdict: 'held', blockingTaskId: 'holder-1', prNumber: 5434 } },
+      holders: new Map([['holder-1', holder()]]),
+    });
+    expect(h.kind).toBe('overlap');
+    expect(h.cause).toBe('in line for the migration lane, 2 ahead: runs after approve a spec from chat or MCP');
+    expect(h.row).not.toContain('next in line');
+    const unknown = derivePendingTaskHold({ now: NOW, deferral: { reason: 'path_overlap', detail: { lane: 'surface:hotspot:a.ts', position: 1, prNumber: 7 } } });
+    expect(unknown.cause).toBe('in line for the hotspot:a.ts lane, 1 ahead: runs after #7');
+    const stuck = derivePendingTaskHold({ now: NOW, deferral: { reason: 'path_overlap', detail: { lane: 'migration', position: 1, prNumber: 7, holderQuietSince: new Date(NOW - 30 * H).toISOString() } } });
+    expect(stuck.cause).toBe("in line for the migration lane, 1 ahead: runs after #7; the lane is stuck: its holder's PR has been quiet 1d 6h");
+  });
+
   it('an overlap whose holder row is unknown names the PR, never an id', () => {
     const h = derivePendingTaskHold({ now: NOW, deferral: { reason: 'path_overlap', detail: { prNumber: 5434 } } });
     expect(h.kind).toBe('overlap');

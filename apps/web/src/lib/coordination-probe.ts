@@ -17,6 +17,7 @@
  * Never throws: a probe failure returns `null` (unknown) and the caller falls
  * back to today's behaviour rather than blocking a start on a read error.
  */
+import { lanesOf, loadLanes } from '@/lib/serial-lanes-store';
 import { db } from '@buildd/core/db';
 import { gateEvents, tasks, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
@@ -59,7 +60,7 @@ export interface ProbeOptions {
 export async function probeCoordination(task: ProbeTask, now: Date = new Date(), opts: ProbeOptions = {}): Promise<WaitingReason[] | null> {
   try {
     const missionId = (task.missionId as string | null) ?? null;
-    const [openPrByWs, activeClaims, missionData, orderedRow] = await Promise.all([
+    const [openPrByWs, activeClaims, missionData, orderedRow, laneRead] = await Promise.all([
       loadOpenPrTasksByWorkspace([task.workspaceId]),
       getActiveClaimsByWorkspace(task.workspaceId).catch(() => null),
       missionId ? loadMissionCoordination([missionId]) : Promise.resolve(null),
@@ -75,6 +76,8 @@ export async function probeCoordination(task: ProbeTask, now: Date = new Date(),
         .limit(1)
         .then(rows => rows[0] ?? null)
         .catch(() => null),
+      // The claim route's own lane read and order (a failed read: no lane position, the open-PR check still speaks).
+      lanesOf(task as never).length > 0 ? loadLanes([task.workspaceId], now).catch(() => null) : Promise.resolve(null),
     ]);
 
     const orderedDetail = (orderedRow?.detail ?? null) as Record<string, unknown> | null;
@@ -105,6 +108,7 @@ export async function probeCoordination(task: ProbeTask, now: Date = new Date(),
       orderedBehind,
       liveTaskIds: new Set(liveRows.map(r => r.taskId).filter((id): id is string => !!id)),
       now,
+      lanes: laneRead ? { views: laneRead.lanes.get(task.workspaceId) ?? new Map(), releasedTaskIds: laneRead.releasedTaskIds } : null,
     });
     const [depReasons, localReason] = await Promise.all([
       dependencyReasons(task),
