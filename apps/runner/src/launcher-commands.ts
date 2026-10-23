@@ -36,7 +36,7 @@ function readConfig(home: string): Record<string, unknown> | null {
 }
 
 /** `buildd status`: whether this machine is signed in, with the key masked. */
-export async function runStatus(ctx: LauncherContext): Promise<number> {
+export async function runStatus(ctx: LauncherContext, modelLogins?: () => string[]): Promise<number> {
   const config = readConfig(ctx.home);
   const key = typeof config?.apiKey === 'string' ? config.apiKey : '';
   if (key) {
@@ -47,6 +47,8 @@ export async function runStatus(ctx: LauncherContext): Promise<number> {
     ctx.log('Status: not logged in');
     ctx.log('Run "buildd login" to authenticate.');
   }
+  // One line per agent backend, from the runner's detector. Absent in client mode, which has no runner.
+  for (const line of modelLogins?.() ?? []) ctx.log(line);
   return 0;
 }
 
@@ -154,7 +156,15 @@ if (import.meta.main) {
     error: (line) => console.error(line),
   };
   let code: number;
-  if (cmd === 'status') code = await runStatus(ctx);
+  if (cmd === 'status') {
+    // Not a static import: install.sh --client checks out only this file's imports, and a client has no runner.
+    const reportPath = './model-login-report';
+    const modelLogins = await import(reportPath).then(
+      (m: { backendLoginLines: () => { text: string }[] }) => () => m.backendLoginLines().map((l) => l.text),
+      () => undefined,
+    );
+    code = await runStatus(ctx, modelLogins);
+  }
   else if (cmd === 'logout') code = await runLogout(ctx);
   else if (cmd === 'init') code = await runInit(ctx, args[0]);
   else {

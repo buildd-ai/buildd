@@ -2,12 +2,12 @@
 title: Worker Reclamation
 status: active
 owner: max
-last_verified: 2026-10-22
+last_verified: 2026-10-23
 summary: Silent workers MUST be reclaimed with the correct timeout, exit cause and retry treatment.
 domain: runners
 surfaces: [apps/web/src/lib/stale-workers.ts, apps/web/src/lib/runner-offline.ts, apps/web/src/lib/lost-claim.ts, apps/web/src/lib/sessionless-worker-settle.ts]
 related: [runner-heartbeat, runner-failure-alerts]
-verified_by: [apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/stale-workers-dead-runner.test.ts, apps/web/src/lib/runner-offline.test.ts, apps/web/src/lib/sessionless-worker-settle.test.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/lost-claim.test.ts, apps/runner/__tests__/unit/claim-handoff.test.ts]
+verified_by: [apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/stale-workers-dead-runner.test.ts, apps/web/src/lib/stale-workers-unvouched.test.ts, apps/runner/__tests__/unit/restart-terminal-report.test.ts, apps/web/src/lib/runner-offline.test.ts, apps/web/src/lib/sessionless-worker-settle.test.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/lost-claim.test.ts, apps/runner/__tests__/unit/claim-handoff.test.ts]
 assertions:
   - id: extra-guard-1
     type: test_file
@@ -253,6 +253,51 @@ before and after this change.
   deletion guard `heartbeatRowHasNoLiveWorkers()`
 - Judgment: `loadRunnerBeats()`, `runnerLiveness()`, `offlineRunnerWaitLine()`
   in `apps/web/src/lib/runner-offline.ts`
+
+---
+
+
+## Runner Vouching (a live runner forgot its worker)
+
+**Invariants**:
+- A runner that reports `claimHandoff` names, on every heartbeat, every worker
+  it runs or holds paused (`activeWorkerIds`: working, stale, waiting) and
+  every worker it received but has not started (`pendingStartIds`). The lease
+  (`workers.lease_expires_at`) is renewed only by a beat that names the worker.
+- A live-status worker (`running`, `starting`, `waiting_input`) of THAT runner
+  that the beat does not name, and whose lease lapsed more than
+  `UNVOUCHED_GRACE_MS` (10 min) ago, is one the runner forgot: its session died
+  with a runner restart and the restart settled it locally without the server
+  hearing. It is failed with `RUNNER_NO_LONGER_REPORTS_ERROR` (infra failure,
+  or never-started for an unstarted row), seats released, and its task
+  resolved by the reaper's rules (requeued with the infra backoff, completed on
+  deliverables, path claims released). The write is a CAS on the same lease
+  predicate, so a renewal in between wins.
+- R-38 (spec c7410e76) holds: a worker the beat names, paused or running, is
+  never touched, however old its lease. A NULL lease is no evidence; a runner
+  that sends no handoff report is never judged by this rule.
+- Checked on the heartbeat's interval write (`failWorkersUnvouchedByRunner`,
+  called from `POST /api/workers/heartbeat`), not by a separate sweep.
+- `explain` on such a task says `runner <name> no longer reports this worker`
+  (`runnerLiveness` verdict `unvouched`), not RUNNING.
+- The runner side keeps its own half: a crash-reconciled terminal report is
+  stored on the worker (`terminalReport`) and retried with backoff until the
+  server answers, and only the startup restore rewrites on-disk `working`
+  records (`loadAllWorkers({ reconcileRestart: true })`); every other reader of
+  the store leaves live records alone.
+
+**Acceptance criteria**:
+- AC-55: GIVEN a heartbeating runner whose beat omits a server-`running`
+  worker of its own, with that worker's lease lapsed past `UNVOUCHED_GRACE_MS`,
+  WHEN the beat's interval write runs THEN the worker is failed and its task
+  resolved; a worker the beat names, including a paused one, is not touched.
+
+**Code surface**:
+- Rule: `failWorkersUnvouchedByRunner()` in `apps/web/src/lib/stale-workers.ts`
+- Grace and verdict: `UNVOUCHED_GRACE_MS`, `runnerLiveness()` in
+  `apps/web/src/lib/runner-offline.ts`
+- Runner: `apps/runner/src/terminal-report.ts`, `loadAllWorkers()` in
+  `apps/runner/src/worker-store.ts`
 
 ---
 

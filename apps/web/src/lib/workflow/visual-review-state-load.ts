@@ -25,6 +25,7 @@ import {
   integrationPrFromDeliveryState,
   captureConfigErrorFrom,
   readAuditedSha,
+  reviewInputFromModel,
   type MissionVisualReviewState,
   type VisualReviewStateInput,
 } from './visual-review-state';
@@ -177,20 +178,7 @@ export async function getMissionVisualReviewState(
     policy,
     uiChange,
     audit,
-    review: audit
-      ? {
-          phase: model.phase,
-          screens: model.summary.shots,
-          effectiveIssues: model.summary.effectiveIssues,
-          awaitingHuman: model.summary.awaitingHuman,
-          openFixes: model.fixTasks.filter(f => !isTerminalTaskStatus(f.status)).length,
-          roundCapOpen: model.roundCapOpen,
-          needsYouReason: model.needsYou?.reason ?? null,
-          captured: model.progress?.captured ?? 0,
-          expected: model.progress?.expected ?? null,
-          waitingOn: model.waitingOn ?? null,
-        }
-      : null,
+    review: audit ? reviewInputFromModel(model) : null,
     waiver,
     auditedSha: latestAudit ? latestAudit.headSha : null,
     missionClosed: mission.status === 'completed' || mission.status === 'archived',
