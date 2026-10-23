@@ -752,7 +752,17 @@ export default function SpecPage({ view }: { view: Ok }) {
             , version {view.design.version}.
           </p>
           {view.design.screens.length ? (
-            <p className="text-meta text-text-secondary">Screens: {view.design.screens.join(', ')}</p>
+            <p className="text-meta text-text-secondary" data-testid="spec-page-design-screens">
+              Screens:{' '}
+              {view.design.screens.map((s, i) => (
+                <span key={`${s.name}-${i}`}>
+                  {i > 0 ? ', ' : ''}
+                  {s.href
+                    ? <a href={s.href} className="text-text-primary underline">{s.name}</a>
+                    : s.name}
+                </span>
+              ))}
+            </p>
           ) : null}
           {view.design.changedSince ? (
             <p className="text-body text-status-warning" data-testid="spec-page-design-changed">
