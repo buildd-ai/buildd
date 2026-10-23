@@ -29,6 +29,11 @@ const lanes = [{ workspaceId: 'ws-1', lane: 'migration', members: [
 ] }];
 
 describe('QueueBoard', () => {
+  it('a truncated read says so as a label, and only then', () => {
+    expect(render({ truncated: true })).toContain('Partial queue. Counts are minimums.');
+    expect(render({})).not.toContain('data-testid="queue-truncated"');
+  });
+
   it('AC-1: four tiles that link to their rows', () => {
     const html = render({ running: 4, slots: 6, teamBusy: 6, tasks: [t({ kind: 'slot' }), t({ kind: 'slot' }), t({ kind: 'start_time', startAt: new Date(NOW + 3600_000).toISOString() })] });
     expect(html).toContain('4/6');

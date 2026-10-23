@@ -207,7 +207,7 @@ export default function QueueBoard(props: QueueBoardProps) {
         <p className="mt-3 text-body text-text-muted" data-testid="queue-reasons-unavailable">Could not read why tasks wait. Reload to try again.</p>
       )}
       {view.truncated && (
-        <p className="mt-3 text-meta text-text-muted" data-testid="queue-truncated">Showing the first part of the queue; counts are at least these.</p>
+        <p className="mt-3 text-meta text-text-muted" data-testid="queue-truncated">Partial queue. Counts are minimums.</p>
       )}
       <QueueLanes lanes={view.lanes} onOpenLane={props.onOpenLane} />
       <QueueWaiting {...props} />
