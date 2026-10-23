@@ -12,6 +12,7 @@ import { join } from 'path';
 // now fails if a tracked test file is neither matched here nor listed there as a
 // deliberate exclusion, so this cannot rot again.
 const UNIT_TEST_ROOTS = [
+  'tests/acceptance/',
   'apps/web/src/',
   'apps/web/scripts/',
   'apps/runner/__tests__/unit/',
