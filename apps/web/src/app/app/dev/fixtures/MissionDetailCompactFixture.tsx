@@ -113,6 +113,7 @@ export default function MissionDetailCompactFixture() {
               outcomeSpecTitles={fixture.specTitles}
               decisions={fixture.decisions}
               history={fixture.history}
+              expectedMinutes={fixture.expectedMinutes ?? undefined}
               {...link}
             />,
           )}

@@ -247,6 +247,18 @@ describe('recordAndDispatchRelease', () => {
     });
   }
 
+  it("does not dedupe an amendment through a team's own input names (amendment: true)", async () => {
+    const { db } = stubDb({ existingInFlight: { id: 'rel-existing' } });
+    const dispatch = mock(() => okDispatch());
+    const res = await recordAndDispatchRelease(params({ inputs: { recut_version: '1.2.3' }, amendment: true }), {
+      db,
+      preflight: okPreflight as any,
+      dispatch: dispatch as any,
+    });
+    expect(res).toMatchObject({ ok: true, deduped: false });
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
   it('still dedupes when the amend input is present but empty (the workflow default)', async () => {
     const { db } = stubDb({ existingInFlight: { id: 'rel-existing' } });
     const dispatch = mock(() => okDispatch());

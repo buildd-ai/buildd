@@ -11,6 +11,14 @@ export interface ReleaseFormState {
   candidateBranches: string;
   candidateSource: string;
   candidateAuthors: string;
+  /**
+   * What buildd does when a red candidate's fix merges: nothing but a re-cut
+   * notice ('none'), dispatch the workflow with the named version inputs
+   * ('inputs'), or dispatch it plainly ('redispatch'). No default mapping.
+   */
+  candidateAmendMode: 'none' | 'inputs' | 'redispatch';
+  candidateAmendVersionInput: string;
+  candidateAmendConfirmInput: string;
 }
 
 const list = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
@@ -46,6 +54,16 @@ export function buildReleaseConfigPayload(
       branches: list(f.candidateBranches),
       sourceBranch: f.candidateSource.trim(),
       authors: list(f.candidateAuthors),
+      ...(f.strategy === 'workflow_dispatch' && f.candidateAmendMode === 'redispatch' ? { amend: { mode: 'redispatch' } } : {}),
+      ...(f.strategy === 'workflow_dispatch' && f.candidateAmendMode === 'inputs'
+        ? {
+            amend: {
+              mode: 'inputs',
+              versionInput: f.candidateAmendVersionInput.trim(),
+              ...(f.candidateAmendConfirmInput.trim() ? { confirmInput: f.candidateAmendConfirmInput.trim() } : {}),
+            },
+          }
+        : {}),
     };
   }
   return base;

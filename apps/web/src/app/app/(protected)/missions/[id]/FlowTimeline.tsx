@@ -17,7 +17,7 @@ import FocusCard from '@/components/ui/FocusCard';
 import { STATES } from '@/components/ui/states';
 import type { MissionBoardModel } from '@/lib/mission-board';
 import {
-  buildFlowTimeline, criticalPathLine, defaultFlowSelection, flowAxisTicks, flowTickNearNow, flowEdgePaths, flowEdges, flowLit,
+  buildFlowTimeline, criticalPathLine, defaultFlowSelection, flowTaskName, flowAxisTicks, flowTickNearNow, flowEdgePaths, flowEdges, flowLit,
   FLOW_ROW_UNITS, FLOW_X_UNITS, layoutFlowTimeline, type FlowBarLayout, type FlowTimeline as FlowTimelineModel,
 } from '@/lib/flow-timeline';
 import { stripSelectionReason, type StripState } from '@/lib/mission-task-strip';
@@ -65,7 +65,7 @@ export default function FlowTimeline({ model: serverModel, sameFiles, expectedMi
   const lit = useMemo(() => flowLit(model, selected), [model, selected]);
   const paths = useMemo(() => flowEdgePaths(timeline, layout, flowEdges(timeline, lit)), [timeline, layout, lit]);
   const ticks = useMemo(() => flowAxisTicks(timeline).filter(t => Math.abs(t.at - layout.nowAt) > 6), [timeline, layout.nowAt]);
-  const line = criticalPathLine(timeline, word);
+  const line = criticalPathLine(timeline, word, flowTaskName(model));
   const hasP80 = timeline.order.some(id => timeline.tasks[id].p80End != null);
 
   if (timeline.order.length === 0) {
