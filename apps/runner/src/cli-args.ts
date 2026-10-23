@@ -25,6 +25,7 @@ export const RUNNER_USAGE = [
   '  buildd login [--device]    Sign in and save an API key to ~/.buildd/config.json',
   '  buildd login --workspaces  Choose which workspaces this runner serves; the key stays the same',
   '  buildd logout              Remove the saved API key',
+  '  buildd codex login         Log in to Codex with the runner\'s own Codex (no Node needed)',
   '  buildd status              Show whether you are signed in',
   '  buildd service <cmd>       Run in the background: install | status | logs | uninstall',
   '  buildd init <workspace-id> Write .mcp.json for this repo',
