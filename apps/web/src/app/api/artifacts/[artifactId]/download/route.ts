@@ -8,9 +8,10 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
 import { finalizeArtifactUpload } from '@/lib/artifact-upload';
+import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
-// GET /api/artifacts/[artifactId]/download - Redirect to presigned download URL
+// GET /api/artifacts/[artifactId]/download[?revision=N] - Redirect to presigned download URL
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ artifactId: string }> }
@@ -86,9 +87,29 @@ export async function GET(
     }
   }
 
+  // ?revision=N serves that revision's own object: a file artifact given a new
+  // body (upload_artifact { artifactId, ... }) keeps every earlier one.
+  const revisionParam = req.nextUrl.searchParams.get('revision');
+  let storageKey: string = artifact.storageKey;
+  if (revisionParam !== null) {
+    const n = Number(revisionParam);
+    if (!Number.isInteger(n) || n < 1) {
+      return NextResponse.json({ error: 'revision must be a positive integer' }, { status: 400 });
+    }
+    // A body from before revisions existed (current_revision 0) is its own revision 1.
+    if (n !== Math.max(artifact.currentRevision, 1)) {
+      const revision = await getArtifactRevision(artifact.id, n);
+      if (!revision?.storageKey) {
+        return NextResponse.json({ error: `Artifact has no file at revision ${n} (current revision is ${artifact.currentRevision})` }, { status: 404 });
+      }
+      // Only a verified body is ever replaced, so an earlier revision needs no upload check.
+      if (n < artifact.currentRevision) storageKey = revision.storageKey;
+    }
+  }
+
   // An upload is served only once its bytes are verified: a pending one is
   // finalized by this read; a failed one stays failed and reports why.
-  if (artifact.uploadState === 'pending' || artifact.uploadState === 'failed') {
+  if (storageKey === artifact.storageKey && (artifact.uploadState === 'pending' || artifact.uploadState === 'failed')) {
     const upload = await finalizeArtifactUpload(artifact.id);
     if (upload.state !== 'ready') {
       return NextResponse.json(
@@ -98,7 +119,7 @@ export async function GET(
     }
   }
 
-  const downloadUrl = await generateDownloadUrl(artifact.storageKey);
+  const downloadUrl = await generateDownloadUrl(storageKey);
   const metadata = artifact.metadata as Record<string, unknown> | null;
   const filename = (metadata?.filename as string) || 'download';
 

@@ -15,6 +15,36 @@ export function buildSkipsTypecheck(env) {
 }
 
 /**
+ * The page-scoped CSP for /app/artifacts/[id], the one page that frames an
+ * artifact's bytes: a design (components/DesignPreview.tsx) loads from the
+ * signed storage URL in a sandboxed iframe, so `frame-src` names exactly the
+ * storage origin (STORAGE_ENDPOINT, packages/core/config.ts) and nothing else.
+ * Without a storage endpoint nothing may be framed. Only this directive is
+ * set, so scripts, styles and images on the page are not restricted here.
+ *
+ * A future global CSP must keep allowing: `frame-src <storage origin>` on this
+ * page (R2 presigned GETs), Next's inline hydration scripts (a nonce or hash
+ * strategy), Pusher's websocket in `connect-src`, the storage origin in
+ * `img-src` (uploaded screenshots load through /api/artifacts/[id]/download,
+ * which redirects there) and `blob:` for client-side downloads.
+ * Guarded by src/lib/artifact-page-csp.test.ts.
+ *
+ * @param {string | undefined} storageEndpoint
+ */
+export function artifactPageCsp(storageEndpoint) {
+  let origin = null;
+  if (storageEndpoint) {
+    try {
+      const url = new URL(storageEndpoint);
+      if (url.protocol === 'https:' || url.protocol === 'http:') origin = url.origin;
+    } catch {
+      origin = null;
+    }
+  }
+  return `frame-src ${origin ?? "'none'"}`;
+}
+
+/**
  * Pages that moved into Settings (one Settings: Team and Roles inside it, one
  * place each for runners, models, members, roles and workspace settings).
  * Order matters: the first match wins, so `/new` comes before `/:slug`.
@@ -138,6 +168,15 @@ const nextConfig = {
         source: '/fonts/:path*',
         headers: [
           { key: 'Cache-Control', value: 'public, max-age=2592000' },
+        ],
+      },
+      {
+        // The artifact page frames design files (untrusted agent HTML) from the
+        // storage origin, sandboxed. This is the only CSP the app sets today:
+        // see artifactPageCsp for what a global policy must keep allowing.
+        source: '/app/artifacts/:id',
+        headers: [
+          { key: 'Content-Security-Policy', value: artifactPageCsp(process.env.STORAGE_ENDPOINT) },
         ],
       },
     ];
