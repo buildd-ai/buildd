@@ -62,10 +62,19 @@ describe('phone Home and the needs-input banner', () => {
     expect(cardCount()).toBe(2);
     expect(container.textContent).toContain('2 waiting on you.');
     const cards = [...container.querySelectorAll('[data-testid="needs-you-card"]')];
-    expect(cards.map(c => c.getAttribute('data-kind')).sort()).toEqual(['question', 'queue']);
+    expect(cards.map(c => c.getAttribute('data-kind')).sort()).toEqual(['approval', 'question']);
     expect(container.textContent).toContain('Ship to canary first?');
     expect(bannerHiddenSnapshot()).toBe(true);
     expect(container.querySelector('[data-testid="global-needs-input-banner"]')).toBeNull();
+  });
+
+  it('a waiting task that names its worker is the shared decision card, answered in place', () => {
+    mount([{ ...waiting, workerId: 'w-1', askedAt: null }]);
+    const card = [...container.querySelectorAll('[data-testid="needs-you-card"]')].find(c => c.getAttribute('data-kind') === 'decision');
+    expect(card?.querySelector('[data-testid="question-subject"]')?.textContent).toContain('Pick the rollout order');
+    expect(card?.querySelector('[data-testid="decision-question"]')?.textContent).toBe('Ship to canary first?');
+    expect([...(card?.querySelectorAll('[data-testid="decision-option"]') ?? [])].map(b => b.textContent)).toEqual(['Yes', 'No']);
+    expect(card?.querySelector('[data-testid="decision-answer-differently"]')).not.toBeNull();
   });
 
   it('a task already in the inbox from the server is not listed twice', () => {

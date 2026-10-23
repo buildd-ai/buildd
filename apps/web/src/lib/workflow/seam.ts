@@ -25,6 +25,7 @@ import { deferEffectDrain } from './effect-drain-context';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { settleLanes } from './landing-lane';
 import { scheduleEffectDrain } from './effect-timer';
+import { scheduleTrunkRecheck } from './trunk-recheck';
 import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
 import { kernelDeliveryById, kernelDeliveryForPr, kernelDeliveryInWorkspace, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
@@ -42,7 +43,7 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import type { KernelView, PolicyOutcome, Verdict } from './types';
 import {
   UNKNOWN_CI_SIGNATURE, blockedOnResolvedSql, classifyCiFailure, openOrJoinIncidentSql, repairingCiOnBaseSql,
-  resolveIncidentSql, touchIncidentSql, trunkExplains, trunkRecoveredOnRuns, unresolvedIncidentsSql, type TrunkClassification,
+  resolveIncidentSql, touchIncidentSql, trunkExplains, trunkRecoveredOnRuns, unresolvedIncidentsSql, unresolvedIncidentsByIdSql, TRUNK_AFFECTED_CAP, type TrunkClassification,
 } from './trunk';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
@@ -1878,7 +1879,9 @@ export const TRUNK_SWEEP_PAGES = 4;
  * incident resolves and each delivery blocked on it re-enters its resume state
  * (T26), with a mechanical refresh when its head predates the fix. A
  * delivery left blocked on an already-resolved incident (an interrupted pass)
- * is recovered too. Runs on the pr-reconcile floor tick.
+ * is recovered too. Runs on the kernel floor; every incident it leaves
+ * unresolved goes back on the recheck queue (trunk-recheck.ts), which the
+ * per-minute tick drains through `recheckTrunkIncidents`.
  *
  * Least recently rechecked first, and every incident left unresolved goes to
  * the back. An incident whose workspace has no repo costs no GitHub read, so
@@ -1892,34 +1895,76 @@ export async function reconcileTrunkIncidents(deps: SeamDeps = {}, limit = 25): 
   const seen = new Set<string>();
   let read = 0;
   for (let page = 0; page < TRUNK_SWEEP_PAGES && read < limit; page++) {
-    const rows = ((await exec(unresolvedIncidentsSql(limit))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string }>;
+    const rows = ((await exec(unresolvedIncidentsSql(limit))).rows ?? []) as TrunkIncidentRow[];
     const incidents = rows.filter((r) => !seen.has(String(r.id)));
     if (incidents.length === 0) break;
     for (const inc of incidents) {
       seen.add(String(inc.id));
-      s.checked++;
-      try {
-        const repo = await (deps.repoFor ?? workspaceRepo)(String(inc.workspace_id));
-        const reader = repo ? readerFor(deps, repo.installationId) : null;
-        if (reader) read++;
-        const head = reader?.branchHead ? await reader.branchHead(inc.repo_full_name, inc.base_ref) : null;
-        const runs = head && reader?.checkRuns ? await reader.checkRuns(inc.repo_full_name, head, { tests: true }) : null;
-        // Unknown, or the incident's checks still running, is never read as recovered.
-        if (trunkRecoveredOnRuns(inc.signature, runs)) {
-          const won = ((await exec(resolveIncidentSql(String(inc.id)))).rows ?? []).length > 0;
-          if (won) s.resolved++;
-          continue;
-        }
-        s.stillRed++;
-      } catch (err) {
-        s.errors++;
-        console.error(`[workflow] trunk incident ${inc.id} recheck failed:`, err);
-      }
-      // Still unresolved (red, unreadable, no repo, or an error): to the back of the queue.
-      await exec(touchIncidentSql(String(inc.id))).catch(() => undefined);
+      const r = await recheckTrunkIncident(inc, deps, s);
+      if (r.readBase) read++;
+      // Left unresolved: back on the recheck queue, so a lost queue write costs one floor, not every floor.
+      if (!r.resolved) await scheduleTrunkRecheck(String(inc.id));
     }
   }
-  const blocked = ((await exec(blockedOnResolvedSql(limit * 8))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string | null; current_head_sha: string | null; trunk_incident_id: string; base_ref: string }>;
+  await recoverTrunkBlocked(deps, s, limit * 8);
+  return s;
+}
+
+type TrunkIncidentRow = { id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string };
+
+/**
+ * One incident's recheck, the floor's and the recheck queue's alike: read the base head now and resolve
+ * the incident only on §6.10's reading (`trunkRecoveredOnRuns`). Unknown, a red head, or the incident's
+ * checks still running there leave it unresolved and send it to the back of the sweep's order.
+ */
+async function recheckTrunkIncident(inc: TrunkIncidentRow, deps: SeamDeps, s: TrunkSweepSummary): Promise<{ resolved: boolean; readBase: boolean }> {
+  const exec = deps.exec ?? seamExec;
+  s.checked++;
+  let readBase = false;
+  try {
+    const repo = await (deps.repoFor ?? workspaceRepo)(String(inc.workspace_id));
+    const reader = repo ? readerFor(deps, repo.installationId) : null;
+    readBase = !!reader;
+    const head = reader?.branchHead ? await reader.branchHead(inc.repo_full_name, inc.base_ref) : null;
+    const runs = head && reader?.checkRuns ? await reader.checkRuns(inc.repo_full_name, head, { tests: true }) : null;
+    // Unknown, or the incident's checks still running, is never read as recovered.
+    if (trunkRecoveredOnRuns(inc.signature, runs)) {
+      const won = ((await exec(resolveIncidentSql(String(inc.id)))).rows ?? []).length > 0;
+      if (won) s.resolved++;
+      return { resolved: true, readBase };
+    }
+    s.stillRed++;
+  } catch (err) {
+    s.errors++;
+    console.error(`[workflow] trunk incident ${inc.id} recheck failed:`, err);
+  }
+  // Still unresolved (red, unreadable, no repo, or an error): to the back of the queue.
+  await exec(touchIncidentSql(String(inc.id))).catch(() => undefined);
+  return { resolved: false, readBase };
+}
+
+/**
+ * The recheck queue's step (trunk-recheck.ts): recheck only the named incidents, then recover the
+ * deliveries blocked on whichever of them are resolved (now, or by an earlier pass that was cut short).
+ * Runs where the kernel is hosted, from the control plane's per-minute tick.
+ */
+export async function recheckTrunkIncidents(incidentIds: readonly string[], deps: SeamDeps = {}): Promise<TrunkSweepSummary & { unresolved: string[] }> {
+  const exec = deps.exec ?? seamExec;
+  const s: TrunkSweepSummary = { checked: 0, resolved: 0, recovered: 0, stillRed: 0, errors: 0 };
+  const unresolved: string[] = [];
+  if (incidentIds.length === 0) return { ...s, unresolved };
+  const rows = ((await exec(unresolvedIncidentsByIdSql(incidentIds))).rows ?? []) as TrunkIncidentRow[];
+  for (const inc of rows) {
+    if (!(await recheckTrunkIncident(inc, deps, s)).resolved) unresolved.push(String(inc.id));
+  }
+  await recoverTrunkBlocked(deps, s, TRUNK_AFFECTED_CAP, incidentIds);
+  return { ...s, unresolved };
+}
+
+/** T26 for every kernel delivery still blocked on a resolved incident (all, or the named ones'). */
+async function recoverTrunkBlocked(deps: SeamDeps, s: TrunkSweepSummary, limit: number, incidentIds?: readonly string[]): Promise<void> {
+  const exec = deps.exec ?? seamExec;
+  const blocked = ((await exec(blockedOnResolvedSql(limit, incidentIds))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string | null; current_head_sha: string | null; trunk_incident_id: string; base_ref: string }>;
   for (const b of blocked) {
     try {
       // The kill switch: resolving releases a switched-off delivery, and a released one is legacy's.
@@ -1942,7 +1987,6 @@ export async function reconcileTrunkIncidents(deps: SeamDeps = {}, limit = 25): 
       console.error(`[workflow] trunk recovery of delivery ${b.id} failed:`, err);
     }
   }
-  return s;
 }
 
 export interface FloorSummary {

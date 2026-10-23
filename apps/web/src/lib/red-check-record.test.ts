@@ -5,7 +5,7 @@ import { deflateRawSync } from 'zlib';
 mock.module('@buildd/core/db', () => ({ db: {} }));
 mock.module('@/lib/github', () => ({ githubApi: async () => null, githubApiText: async () => '', getInstallationToken: async () => 't' }));
 
-const { readRedChecks, reportArtifactFor, unzipFirstText } = await import('./red-check-record');
+const { readRedChecks, reportArtifactFor, unzipFirstText, needsJudgement, changedPaths } = await import('./red-check-record');
 type Gh = Parameters<typeof readRedChecks>[0];
 
 /** A one-file zip, the shape of an Actions artifact download. */
@@ -94,6 +94,85 @@ describe('readRedChecks (surface-ia §11)', () => {
     const gh = fakeGithub({ jobs: [], logs: {} });
     gh.json = async () => ({ workflow_runs: [] });
     expect(await readRedChecks(gh, 'o/r', 'sha1', null, now)).toBeNull();
+  });
+});
+
+describe('readRedChecks with the PR (R-3 not-this-PR rules)', () => {
+  const WINDOWS_JOB = { id: 2, name: 'Runner unit tests (windows)', conclusion: 'failure', steps: [{ name: 'Run runner unit tests', conclusion: 'failure' }] };
+  const FAILING = '(fail) launcher > dispatches status [5.00ms]\nerror: expect(received).toBe(expected)';
+
+  /** One PR into dev, its files, and dev's runs of the same workflow. */
+  function prGithub(opts: { files: string[]; baseJobs?: unknown[]; baseConclusion?: string; baseCreated?: string }): Gh & { calls: string[] } {
+    const gh = fakeGithub({ jobs: [WINDOWS_JOB], logs: { 2: FAILING } });
+    const json = gh.json.bind(gh);
+    gh.json = async (path: string) => {
+      if (path.includes('/actions/runs?branch=')) {
+        gh.calls.push(path);
+        return { workflow_runs: [
+          { id: 90, workflow_id: 11, created_at: '2026-10-23T10:00:00Z', conclusion: 'failure' }, // after this run: not "at the same time"
+          { id: 80, workflow_id: 12, created_at: '2026-10-23T08:00:00Z', conclusion: 'failure' }, // another workflow
+          { id: 70, workflow_id: 11, created_at: opts.baseCreated ?? '2026-10-23T08:00:00Z', conclusion: opts.baseConclusion ?? 'failure' },
+        ] };
+      }
+      if (path.includes('/actions/runs?')) { gh.calls.push(path); return { workflow_runs: [{ id: 7, run_attempt: 1, workflow_id: 11, created_at: '2026-10-23T08:30:00Z', updated_at: '2026-10-23T08:50:00Z' }] }; }
+      if (path.endsWith('/runs/70/jobs')) { gh.calls.push(path); return { jobs: opts.baseJobs ?? [] }; }
+      if (path.endsWith('/pulls/5')) { gh.calls.push(path); return { base: { ref: 'dev' } }; }
+      if (path.includes('/pulls/5/files')) { gh.calls.push(path); return opts.files.map(filename => ({ filename })); }
+      return json(path);
+    };
+    return gh;
+  }
+
+  it("a job red on the base branch at the same time is not this PR's code", async () => {
+    const gh = prGithub({ files: ['apps/runner/src/a.ts'], baseJobs: [{ name: 'Runner unit tests (windows)', conclusion: 'failure' }] });
+    const record = await readRedChecks(gh, 'o/r', 'sha1', null, now, { number: 5 });
+    if (!record || record === 'unchanged') throw new Error('expected a record');
+    expect(record.jobs[0].rule).toBe('red_on_base');
+    expect(record.cause).toBe('flake');
+    expect(gh.calls).toContain('/repos/o/r/actions/runs?branch=dev&status=completed&per_page=20');
+    expect(gh.calls.some(c => c.endsWith('/runs/90/jobs'))).toBe(false);
+  });
+
+  it('a job green on the base branch keeps its failing test', async () => {
+    const gh = prGithub({ files: ['apps/runner/src/a.ts'], baseConclusion: 'success' });
+    const record = await readRedChecks(gh, 'o/r', 'sha1', null, now, { number: 5 });
+    if (!record || record === 'unchanged') throw new Error('expected a record');
+    expect(record.jobs[0].rule).toBe('test');
+    expect(record.cause).toBe('failure');
+  });
+
+  it('the Windows runner job with no runner path in the diff is unrelated to it', async () => {
+    const gh = prGithub({ files: ['apps/web/src/app/page.tsx'], baseConclusion: 'success' });
+    const record = await readRedChecks(gh, 'o/r', 'sha1', null, now, { number: 5 });
+    if (!record || record === 'unchanged') throw new Error('expected a record');
+    expect(record.jobs[0].rule).toBe('unrelated_to_diff');
+    expect(record.cause).toBe('flake');
+  });
+
+  it('without the PR, or when the logs already call it a flake, the PR is not read', async () => {
+    const gh = prGithub({ files: ['apps/web/src/app/page.tsx'] });
+    await readRedChecks(gh, 'o/r', 'sha1', null, now);
+    expect(gh.calls.some(c => c.includes('/pulls/'))).toBe(false);
+    const flaky = fakeGithub({ jobs: [WINDOWS_JOB], logs: { 2: 'Connection terminated unexpectedly' } });
+    await readRedChecks(flaky, 'o/r', 'sha1', null, now, { number: 5 });
+    expect(flaky.calls.some(c => c.includes('/pulls/'))).toBe(false);
+  });
+
+  it('a full page of files may be truncated, so it is not a diff', async () => {
+    const gh = prGithub({ files: Array.from({ length: 100 }, (_, i) => `docs/${i}.md`) });
+    expect(await changedPaths(gh, 'o/r', 5)).toBeNull();
+  });
+});
+
+describe('needsJudgement', () => {
+  const rec = (over: object) => ({ headSha: 'h', runId: 1, runAttempt: 1, at: 't', jobs: [{ name: 'e2e', step: null, lines: 'Error: boom', rule: 'none' as const }], cause: 'unknown' as const, signature: 's', ...over });
+  it('asks only for an unknown cause with lines and no judgement of this failure', () => {
+    expect(needsJudgement(rec({}))).toBe(true);
+    expect(needsJudgement(rec({ cause: 'failure' }))).toBe(false);
+    expect(needsJudgement(rec({ jobs: [{ name: 'e2e', step: null, lines: null, rule: 'none' }] }))).toBe(false);
+    const judgement = { decision: 'code', confidence: null, source: 'fallback', model: null, reasonCode: 'fallback_low_confidence', policyVersion: 'p', signature: 's', at: 't' };
+    expect(needsJudgement(rec({ judgement }))).toBe(false);
+    expect(needsJudgement(rec({ judgement: { ...judgement, signature: 'old' } }))).toBe(true);
   });
 });
 
