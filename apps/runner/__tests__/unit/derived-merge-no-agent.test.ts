@@ -88,7 +88,7 @@ function task(context: Record<string, unknown> = {}) {
 }
 
 async function until(cond: () => boolean): Promise<void> {
-  const iterations = process.platform === 'win32' ? 400 : 200;
+  const iterations = process.platform === 'win32' ? 1200 : 200;
   for (let i = 0; i < iterations && !cond(); i++) await new Promise(r => setTimeout(r, 25));
   expect(cond()).toBe(true);
 }

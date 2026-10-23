@@ -41,6 +41,7 @@ import MissionShippedHeader from './MissionShippedHeader';
 import { buildShippedHeaderView } from '@/lib/mission-shipped-header';
 import { shippedArtifactKey } from '@/lib/mission-shipped-report';
 import MissionAutoRefresh from './MissionAutoRefresh';
+import ShellPageMarks from '@/components/ShellPageMarks';
 import { LiveRegion } from '@/components/LiveRegion';
 import MissionReconcileOnOpen from './MissionReconcileOnOpen';
 import MissionFocusProvider from './MissionFocusProvider';
@@ -577,12 +578,11 @@ async function MissionDetailBody({
     openQuestions: missionOpenQuestions(mission.tasks || []),
   });
   const displayState = missionAnswer?.displayState ?? fallbackView!.displayState;
-  const stateChip = missionAnswer?.chip ?? fallbackView!.chip;
 
-  // The Verified pill is the page's only `#mission-criteria` target. It is
-  // hidden on a terminal mission whose criteria do not pass, and renders
-  // nothing on a terminal mission with no criteria; the situation must not
-  // link to it then. Same predicate as `showVerifiedPill` below.
+  // The goal criteria sheet is the page's only `#mission-criteria` target.
+  // The situation does not link to it on a terminal mission whose criteria
+  // do not pass, and the sheet renders nothing on a terminal mission with no
+  // criteria.
   const missionIsTerminal = ['completed', 'archived'].includes(mission.status);
   const criteriaReachable = (!missionIsTerminal || missionCriteriaOverall === 'pass')
     && !(missionIsTerminal && (((mission as any).goalCriteria as unknown[] | null) ?? []).length === 0);
@@ -856,10 +856,9 @@ async function MissionDetailBody({
   // "Waive visual audit" (a person's call): offered beside the Visual review
   // control and on the audit task's drawer whenever the mission has an audit,
   // is blocked on a missing one, or already carries a waiver.
-  // A waiver a later review replaced no longer stands: Skip is offered again, and the row names the earlier one.
   const auditWaiverProps = {
     missionId: id,
-    waiver: visualReviewState?.waiver?.supersededBy ? null : surfaceAuditWaiver ?? null,
+    waiver: surfaceAuditWaiver ?? null,
     missionBranch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true,
     readonly: isTerminal,
   };
@@ -1005,10 +1004,6 @@ async function MissionDetailBody({
         completionNote,
       })
     : null;
-
-  // D2: beside a terminal mission's chip the pill only ever says Verified —
-  // never "Needs verification" next to COMPLETE.
-  const showVerifiedPill = !isTerminal || missionCriteriaOverall === 'pass';
 
   const artifactItems = allArtifacts.map((a) => ({
     id: a.id,
@@ -1290,7 +1285,7 @@ async function MissionDetailBody({
     <MissionVerifiedPill
       hold={verifiedHoldReason}
       liveStates={boardModel.criteria.map(c => c.state)}
-      sheetOnly={!showVerifiedPill}
+      sheetOnly
       missionId={id}
       criteria={goalCriteria}
       criteriaState={goalCriteriaStateFull}
@@ -1377,15 +1372,10 @@ async function MissionDetailBody({
     <MissionBoardHeader
       back={back}
       title={mission.title}
-      chip={stateChip}
       verified={verifiedPill}
       actions={overflowMenu}
       goal={goalLine}
       description={mission.description || !isTerminal ? <MissionDescription missionId={id} initialDescription={mission.description} readonly={isTerminal} defaultExpanded /> : undefined}
-      serverNow={renderedAt}
-      startedAt={boardModel.startedAt}
-      endedAt={boardModel.endedAt}
-      activeMs={boardModel.activeMs}
     >
       {shippedView && <MissionShippedHeader missionId={id} view={shippedView} />}
       {isTerminal && visualPresentation?.record && <MissionVisualRecord record={visualPresentation.record} />}
@@ -1402,6 +1392,8 @@ async function MissionDetailBody({
     <SwipeProvider>
     {/* The page's one selection: `#t-<id>` lands on a task's row (spec d25d923d R-2). */}
     <MissionFocusProvider missionId={id}>
+      {/* The mission's decisions are cards on this page; the shell banner would repeat them. */}
+      <ShellPageMarks hideQuestionsBanner />
       {/* Real-time (S7): progress patches the live store the list reads;
           structural events re-render at most once per 3s, scroll-anchored. */}
       <MissionAutoRefresh

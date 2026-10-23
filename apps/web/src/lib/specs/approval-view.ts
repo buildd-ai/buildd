@@ -25,6 +25,8 @@ export type ApprovalRequestView =
     state: 'ready';
     title: string;
     revision: number;
+    /** What an Approve here is pinned to, as read now. */
+    pin: ApprovalPin;
     /** The approved revision this one replaces; null when nothing is approved yet. */
     replaces: number | null;
     sections: SectionChange[];
@@ -52,33 +54,48 @@ export async function approvalRequestView(userId: string, specId: string, token:
   if (!v.ok) return { state: v.reason === 'expired' ? 'expired' : 'invalid' };
   const req = v.payload;
   if (!isUuid(specId) || req.specId !== specId) return { state: 'invalid' };
+  return approvalPinView(userId, specId, req, { workspaceId: req.workspaceId });
+}
+
+/** What an Approve is pinned to: the revision, the spec version and the body's hash, as shown. */
+export interface ApprovalPin { revision: number; expectedVersion: number; contentHash: string }
+
+/**
+ * The confirm view for one pinned revision, with or without a request token
+ * (an inbox row has none, Living Spec b7fc9316 R-2): the person may approve
+ * here, the revision's body still has that hash, and the spec has not moved.
+ * `workspaceId`, when a token named one, must be the spec's.
+ */
+export async function approvalPinView(userId: string, specId: string, pin: ApprovalPin, opts: { workspaceId?: string } = {}): Promise<ApprovalRequestView> {
+  if (!isUuid(specId)) return { state: 'not_found' };
   const caller = { kind: 'user' as const, userId };
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   if (!spec || !(await reach(caller, spec.workspaceId, false))) return { state: 'not_found' };
-  if (spec.workspaceId !== req.workspaceId) return { state: 'invalid' };
-  const base = { title: spec.title, revision: req.revision };
+  if (opts.workspaceId && spec.workspaceId !== opts.workspaceId) return { state: 'invalid' };
+  const base = { title: spec.title, revision: pin.revision };
   if (!(await specApprover(caller, spec.workspaceId))) return { state: 'not_approver', ...base };
   const [rev] = await db.select().from(specRevisions)
-    .where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, req.revision))).limit(1);
-  if (!rev || rev.contentHash !== req.contentHash) return { state: 'stale', ...base };
-  if (spec.approvedRevision === req.revision && rev.approvedAt) return { state: 'approved', ...base };
-  if (spec.version !== req.expectedVersion || spec.headRevision !== req.revision) return { state: 'stale', ...base };
+    .where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, pin.revision))).limit(1);
+  if (!rev || rev.contentHash !== pin.contentHash) return { state: 'stale', ...base };
+  if (spec.approvedRevision === pin.revision && rev.approvedAt) return { state: 'approved', ...base };
+  if (spec.version !== pin.expectedVersion || spec.headRevision !== pin.revision) return { state: 'stale', ...base };
 
   const repoChecks = nativeSourceOn({ livingSpecs: (await personReach(userId, spec.workspaceId))?.livingSpecs });
   const [attachments, { gate, review }] = await Promise.all([
-    attachmentSources(specId, req.revision).catch(() => ({})),
-    runApprovalGate(spec, req.revision),
+    attachmentSources(specId, pin.revision).catch(() => ({})),
+    runApprovalGate(spec, pin.revision),
   ]);
   const changes = review ? { summary: review.summary, lines: review.lines, otherText: review.otherText, mismatch: review.mismatch } : null;
+  const ready = { ...base, pin: { revision: pin.revision, expectedVersion: pin.expectedVersion, contentHash: pin.contentHash }, repoChecks, attachments, gate, changes };
   if (spec.approvedRevision) {
-    const d = await diffSpecRevisions(caller, specId, { from: spec.approvedRevision, to: req.revision, rows: true });
+    const d = await diffSpecRevisions(caller, specId, { from: spec.approvedRevision, to: pin.revision, rows: true });
     if (!d.ok || d.diff.toBody === undefined) return { state: 'stale', ...base };
-    return { state: 'ready', ...base, replaces: spec.approvedRevision, sections: d.diff.sections, hunks: d.diff.hunks ?? [], omittedLines: d.diff.omittedLines, body: d.diff.toBody, repoChecks, attachments, gate, changes };
+    return { state: 'ready', ...ready, replaces: spec.approvedRevision, sections: d.diff.sections, hunks: d.diff.hunks ?? [], omittedLines: d.diff.omittedLines, body: d.diff.toBody };
   }
   // Nothing approved yet: the whole revision is what comes into force.
-  const s = await getSpec(caller, specId, { revision: req.revision });
+  const s = await getSpec(caller, specId, { revision: pin.revision });
   if (!s.ok || typeof s.view.body !== 'string') return { state: 'stale', ...base };
   const d = diffSpecBodies('', s.view.body);
   const h = diffSpecHunks('', s.view.body);
-  return { state: 'ready', ...base, replaces: null, sections: d.sections, hunks: h.hunks, omittedLines: h.omittedLines, body: s.view.body, repoChecks, attachments, gate, changes };
+  return { state: 'ready', ...ready, replaces: null, sections: d.sections, hunks: h.hunks, omittedLines: h.omittedLines, body: s.view.body };
 }

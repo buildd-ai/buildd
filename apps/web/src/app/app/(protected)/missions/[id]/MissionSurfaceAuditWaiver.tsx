@@ -16,7 +16,7 @@
  */
 import { createContext, useContext, useId, useRef, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH } from '@buildd/core/surface-audit';
+import { SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH, type VisualReviewSkipReason } from '@buildd/core/surface-audit';
 import Sheet from '@/components/ui/Sheet';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import { ZonedTime } from '@/components/DisplayTimezone';
@@ -45,23 +45,39 @@ export interface MissionSurfaceAuditWaiverProps {
 
 /**
  * Records a person's waiver through the one existing path, PATCH
- * /api/missions/[id] { surfaceAuditWaiver }. The route enforces the same
- * minimum length and refuses agents; this only checks it first.
+ * /api/missions/[id] { surfaceAuditWaiver }.
+ *
+ * Three shapes (spec 072de598 I-7, I-18), matching what the route accepts:
+ * a free-text reason (this component's own "Waive visual audit" sheet, with
+ * the same minimum length the route also enforces), a button Skip
+ * (the visual review row's two buttons, with an optional note and no minimum
+ * length — one tap), or `null` to withdraw a standing Skip.
  */
-export async function saveSurfaceAuditWaiver(missionId: string, reason: string): Promise<{ ok: true } | { ok: false; error: string }> {
-  const text = reason.trim();
-  if (text.length < SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH) {
-    return { ok: false, error: `Write at least ${SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH} characters.` };
+export async function saveSurfaceAuditWaiver(
+  missionId: string,
+  reason: string | { reason: VisualReviewSkipReason; note?: string | null } | null,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  let body: unknown;
+  if (reason === null) {
+    body = null;
+  } else if (typeof reason === 'string') {
+    const text = reason.trim();
+    if (text.length < SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH) {
+      return { ok: false, error: `Write at least ${SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH} characters.` };
+    }
+    body = text;
+  } else {
+    body = { reason: reason.reason, ...(reason.note ? { note: reason.note } : {}) };
   }
   try {
     const res = await fetch(`/api/missions/${encodeURIComponent(missionId)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ surfaceAuditWaiver: text }),
+      body: JSON.stringify({ surfaceAuditWaiver: body }),
     });
     if (!res.ok) {
-      const body = await res.json().catch(() => null) as { error?: unknown } | null;
-      return { ok: false, error: typeof body?.error === 'string' && body.error ? body.error : 'Could not save the waiver. Try again.' };
+      const resBody = await res.json().catch(() => null) as { error?: unknown } | null;
+      return { ok: false, error: typeof resBody?.error === 'string' && resBody.error ? resBody.error : 'Could not save the waiver. Try again.' };
     }
     return { ok: true };
   } catch {

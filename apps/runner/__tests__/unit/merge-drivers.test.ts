@@ -121,7 +121,7 @@ describe('planMergeDrivers', () => {
 
 describe('registerMergeDrivers + mergeBaseWithDerivedFiles (real git)', () => {
   let dir: string;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
   test('derived-only conflict: merged, regenerated and committed with no agent work left', async () => {
     dir = conflictedRepo();
@@ -219,7 +219,7 @@ describe('registerMergeDrivers + mergeBaseWithDerivedFiles (real git)', () => {
 
 describe('mergiraf (real git)', () => {
   let dir: string;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
   function mergirafPath(): string | null {
     try {
@@ -273,7 +273,7 @@ describe('mergeBaseWithDerivedFiles: structural resolutions and slow merges (rea
   let dir: string;
   let bin: string;
   afterEach(() => {
-    if (dir) rmSync(dir, { recursive: true, force: true });
+    if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     if (bin) rmSync(bin, { recursive: true, force: true });
   });
 
@@ -371,8 +371,8 @@ describe('finishDerivedMerge (real git, bare remote)', () => {
   let dir: string;
   let remote: string;
   afterEach(() => {
-    if (dir) rmSync(dir, { recursive: true, force: true });
-    if (remote) rmSync(remote, { recursive: true, force: true });
+    if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    if (remote) rmSync(remote, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   /** A derived-only conflict merged by the runner, with `feature` tracking a bare origin. */
