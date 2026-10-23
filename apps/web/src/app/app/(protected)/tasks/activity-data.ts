@@ -39,7 +39,7 @@ import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
 import { LINEAGE_MAX_DEPTH } from '@/lib/attempt-lineage';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import type { LocalHold } from '@/lib/local-session-display';
-import { attributionOf, whoFiltersReliable, type Attribution } from '@/lib/activity-attribution';
+import { attributionOf, whoFiltersReliable, DECIDED_REQUESTER_SOURCES, UNATTRIBUTED, type Attribution } from '@/lib/activity-attribution';
 import type { VerificationClaim } from '@/lib/activity-verification';
 import { readVerificationClaims, type PinnedRoot } from '@/lib/activity-verification-read';
 
@@ -103,13 +103,31 @@ export const ACTIVITY_TASK_COLUMNS = {
     when ${isString(sql`${tasksTable.result}->'effectiveVerdict'`)} then ${tasksTable.result}->>'effectiveVerdict'
     when ${isString(sql`${tasksTable.result}->'structuredOutput'->'verdict'`)} then ${tasksTable.result}->'structuredOutput'->>'verdict' end`,
   reviewHeadSha: sql<string | null>`case when ${isString(sql`${tasksTable.context}->'headSha'`)} then ${tasksTable.context}->>'headSha' end`,
-  // Recorded lineage (spec 9430a28f R-4): who it is for, how that was decided, and an agent filer.
-  createdByUserId: tasksTable.createdByUserId,
-  requesterSource: tasksTable.requesterSource,
-  createdByWorkerId: tasksTable.createdByWorkerId,
-  // The Living Spec pin only (R-6): the rest of the context is never read here.
-  specSource: sql<Record<string, unknown> | null>`case when jsonb_typeof(${tasksTable.context}->'specSource') = 'object' then ${tasksTable.context}->'specSource' end`,
 };
+
+const pinnedSpec = sql`jsonb_typeof(${tasksTable.context}->'specSource') = 'object'`;
+
+/**
+ * The roots' recorded lineage (spec 9430a28f R-4) and Living Spec pin (R-6),
+ * with the requester's name: one read over the roots, returning only those with
+ * a decided requester or a pin. Kept off the task rows, which every attempt and
+ * dependency also comes back as, so work with neither costs nothing.
+ */
+function lineageQuery(rootIds: string[]) {
+  return db.select({
+    id: tasksTable.id,
+    createdByUserId: tasksTable.createdByUserId,
+    requesterSource: tasksTable.requesterSource,
+    createdByWorkerId: tasksTable.createdByWorkerId,
+    // The pin only: the rest of the context is never read here.
+    specSource: sql<Record<string, unknown> | null>`case when ${pinnedSpec} then ${tasksTable.context}->'specSource' end`,
+    name: users.name,
+  })
+    .from(tasksTable)
+    .leftJoin(users, eq(users.id, tasksTable.createdByUserId))
+    .where(and(inArray(tasksTable.id, rootIds), or(inArray(tasksTable.requesterSource, [...DECIDED_REQUESTER_SOURCES]), pinnedSpec)));
+}
+type LineageRow = Awaited<ReturnType<typeof lineageQuery>>[number];
 
 export interface ActivityTaskRow {
   id: string;
@@ -125,10 +143,6 @@ export interface ActivityTaskRow {
   dependsOn: string[] | null;
   reviewVerdict: string | null;
   reviewHeadSha: string | null;
-  createdByUserId?: string | null;
-  requesterSource?: string | null;
-  createdByWorkerId?: string | null;
-  specSource?: Record<string, unknown> | null;
 }
 
 export interface ActivityWorkerRow {
@@ -425,24 +439,27 @@ export async function loadActivity(input: {
   const [load, localHolds] = await Promise.all([loadActivityRows(scope, input.tab, input.now), input.localHolds]);
 
   // Roots only: an attempt carries its root's pin and lineage, and is never a row of its own.
-  const rootRows = load.rows.filter(t => !t.parentTaskId || t.taskClass !== 'attempt');
-  const pinned = rootRows.filter(t => t.specSource && typeof t.specSource.specId === 'string').map(t => ({ id: t.id, specSource: t.specSource }));
-  const people = uniq(rootRows.filter(t => t.requesterSource).map(t => t.createdByUserId));
-  // Both best-effort: a claim or a name that cannot be read is not shown, and never fails the page.
-  const [claims, names] = await Promise.all([
-    pinned.length > 0
-      ? (input.readVerifications ?? readVerificationClaims)(pinned, load.views).catch((err) => {
-          console.warn('[activity] verification read failed:', err instanceof Error ? err.message : err);
-          return new Map<string, VerificationClaim>();
-        })
-      : Promise.resolve(new Map<string, VerificationClaim>()),
-    people.length > 0
-      ? db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, people))
-          .then(rows => new Map(rows.filter(r => r.name).map(r => [r.id, r.name as string])))
-          .catch(() => new Map<string, string>())
-      : Promise.resolve(new Map<string, string>()),
-  ]);
-  const attributions = new Map<string, Attribution>(rootRows.map(t => [t.id, attributionOf(t, viewer, names)]));
+  const rootIds = load.rows.filter(t => !t.parentTaskId || t.taskClass !== 'attempt').map(t => t.id);
+  // Best-effort, like the claims below: lineage that cannot be read leaves work unattributed, and never fails the page.
+  const lineage: LineageRow[] = rootIds.length > 0
+    ? await lineageQuery(rootIds).catch((err) => {
+        console.warn('[activity] lineage read failed:', err instanceof Error ? err.message : err);
+        return [];
+      })
+    : [];
+  const pinned = lineage.filter(t => t.specSource && typeof t.specSource.specId === 'string').map(t => ({ id: t.id, specSource: t.specSource }));
+  const claims = pinned.length > 0
+    ? await (input.readVerifications ?? readVerificationClaims)(pinned, load.views).catch((err) => {
+        console.warn('[activity] verification read failed:', err instanceof Error ? err.message : err);
+        return new Map<string, VerificationClaim>();
+      })
+    : new Map<string, VerificationClaim>();
+  const names = new Map(lineage.filter(t => t.createdByUserId && t.name).map(t => [t.createdByUserId!, t.name!]));
+  const lineageById = new Map(lineage.map(t => [t.id, t]));
+  const attributions = new Map<string, Attribution>(rootIds.map(id => {
+    const t = lineageById.get(id);
+    return [id, t ? attributionOf(t, viewer, names) : UNATTRIBUTED];
+  }));
 
   const byTask = new Map<string, ActivityWorkerRow[]>();
   for (const w of load.workers) if (w.taskId) byTask.set(w.taskId, [...(byTask.get(w.taskId) ?? []), w]);

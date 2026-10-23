@@ -30,7 +30,8 @@ export interface Attribution {
 }
 
 /** Sources that decided a person: live trigger paths, and backfills that found one. */
-const DECIDED: ReadonlySet<string> = new Set(['explicit', 'parent', 'mission', 'schedule', 'backfill_parent', 'backfill_mission', 'backfill_schedule']);
+export const DECIDED_REQUESTER_SOURCES = ['explicit', 'parent', 'mission', 'schedule', 'backfill_parent', 'backfill_mission', 'backfill_schedule'] as const;
+const DECIDED: ReadonlySet<string> = new Set(DECIDED_REQUESTER_SOURCES);
 
 export const UNATTRIBUTED: Attribution = { known: false, requester: null, filedBy: null, text: 'Unattributed' };
 
