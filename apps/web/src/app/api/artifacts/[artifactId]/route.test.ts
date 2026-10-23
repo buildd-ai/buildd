@@ -629,6 +629,18 @@ describe('PATCH /api/artifacts/[artifactId]', () => {
       expect(rendered(lastSet!.metadata).sql).toContain(`jsonb_typeof("artifacts"."metadata") = 'object'`);
     });
 
+    it('never writes the server-owned keys of a waiting revision upload', async () => {
+      await PATCH(createMockPatchRequest({ metadata: { note: 'x', pendingRevision: { author: 'account:me' }, pendingLinks: [] } }, 'bld_test'), { params: mockParams });
+      expect(rendered(lastSet!.metadata).params).toEqual([JSON.stringify({ note: 'x' })]);
+    });
+
+    it('refuses design metadata whose screens are malformed, naming the field', async () => {
+      const res = await PATCH(createMockPatchRequest({ metadata: { kind: 'design', screens: [{ id: 'home', name: '', viewport: '390x844' }] } }, 'bld_test'), { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('metadata.screens[0].name');
+      expect(lastSet).toBeNull();
+    });
+
     it('leaves metadata alone when the body sends none', async () => {
       await PATCH(createMockPatchRequest({ title: 'x' }, 'bld_test'), { params: mockParams });
       expect(lastSet).not.toHaveProperty('metadata');

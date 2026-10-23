@@ -18,7 +18,9 @@
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { inArray, sql, type SQL } from 'drizzle-orm';
-import type { WaitingKind } from '@buildd/core/waiting-reason';
+import { waitingKindOfQueueWait, type WaitingKind } from '@buildd/core/waiting-reason';
+import type { QueueWait } from '@buildd/shared';
+import { loadQueueWaitMap } from '@/lib/queue-wait-load';
 import { DEP_EDGE_ARM_SQL, outsideSurfaceAuditMission } from '@/app/api/workers/claim/deps-gate';
 import { taskNotHeld } from '@/app/api/workers/claim/held-gate';
 import { BYPASS_DEPS_GATE_KEY, bypassFlagCondition } from '@/lib/bypass-flags';
@@ -91,9 +93,8 @@ export function edgeReleaseArm(row: EdgeFactsRow): DepReleaseArm | undefined {
 
 /** Claim-loop deferral reasons (`deferrals` keys) and the waiting kind each means. */
 export const DEFERRAL_WAITING_KIND: Readonly<Record<string, WaitingKind>> = {
-  path_overlap: 'pr_overlap_live',
-  advisory_manifest: 'scope_undeclared_mutex',
-  soft_overlap: 'soft_overlap',
+  // At claim only a lane holds on overlap (spec: Overlap scheduling, R-2).
+  path_overlap: 'lane',
   ordered_behind: 'ordered_behind',
   subject_dead: 'subject_dead',
   mission_budget: 'mission_budget',
@@ -131,8 +132,8 @@ export function waitingKindFor(task: WaitingTaskFacts, mission: MissionHoldFacts
   if (task.held) return 'task_held';
   if (mission.held) return 'mission_held';
   if (mission.budgetExhausted) return 'mission_budget';
-  if (task.openDeclared > 0) return 'dep_declared';
-  if (task.openInferred > 0) return 'dep_inferred';
+  // An edge stored as inferred still holds as a dependency until the repair strips it (R-4).
+  if (task.openDeclared > 0 || task.openInferred > 0) return 'dep_declared';
   if (mission.local) return 'mission_local';
   return (task.deferralReason && DEFERRAL_WAITING_KIND[task.deferralReason]) || null;
 }
@@ -143,6 +144,12 @@ export function combineGateFacts(input: {
   pending: ReadonlyArray<{ id: string; deferred: unknown; held: unknown }>;
   deferrals: ReadonlyArray<{ taskId: string; reason: string }>;
   mission: MissionHoldFacts;
+  /**
+   * The one wait each pending task has now, from the claim route's own query
+   * and gates (lib/queue-wait-load.ts). When present for a task it decides
+   * its kind (spec: Overlap scheduling, AC-10); a slot wait has none.
+   */
+  queueWaits?: ReadonlyMap<string, QueueWait>;
 }): MissionGateFacts {
   const releasedEdges: ReleasedEdge[] = [];
   const open = new Map<string, { declared: number; inferred: number }>();
@@ -160,6 +167,12 @@ export function combineGateFacts(input: {
   const deferral = new Map(input.deferrals.map((d) => [d.taskId, d.reason]));
   const waitingKinds: Record<string, WaitingKind> = {};
   for (const p of input.pending) {
+    const live = input.queueWaits?.get(p.id);
+    if (live) {
+      const kind = waitingKindOfQueueWait(live);
+      if (kind) waitingKinds[p.id] = kind;
+      continue;
+    }
     const o = open.get(p.id);
     const kind = waitingKindFor({
       deferred: truthy(p.deferred),
@@ -186,7 +199,8 @@ export async function loadMissionGateFacts(missionId: string, mission: MissionHo
       rows<{ id: string; deferred: unknown; held: unknown }>(pendingHoldsSql(missionId)),
       loadMissionClaimDeferrals(missionId).catch(() => []),
     ]);
-    return combineGateFacts({ edges, pending, deferrals, mission });
+    const queueWaits = await loadQueueWaitMap(pending.map(p => p.id)).catch(() => new Map<string, QueueWait>());
+    return combineGateFacts({ edges, pending, deferrals, mission, queueWaits });
   } catch (err) {
     console.warn(`[mission-board-waiting] mission ${missionId}: gate facts unavailable:`, (err as Error)?.message ?? err);
     return EMPTY_GATE_FACTS;

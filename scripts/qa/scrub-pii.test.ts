@@ -174,6 +174,8 @@ const SAFE: Record<string, string[]> = {
     'model_tier_ceilings', // { admin, self }: tier names by fixed surface, audit of ISO times + user ids (same shape family as teams.model_tier_ceilings)
     'coding_policy'], // { allowedBackends, allowedSources } from fixed sets (packages/core/coding-policy.ts)
   users: ['timezone'],
+  serial_lane_entries: ['joined_via', 'left_reason', // fixed vocabularies (lib/serial-lanes-store.ts)
+    'activity_signature'], // a commit sha and a PR lifecycle word, joined by '|'
   workspaces: ['model_upgrade_policy', // same shape as teams.model_upgrade_policy
     'new_starts_paused_by'], // a users.id (who paused new starts), never free text (lib/workspace-pause.ts)
   // Scopes are a fixed vocabulary; workspace restrictions contain only row references.
@@ -237,6 +239,8 @@ const SAFE: Record<string, string[]> = {
   worker_heartbeats: [
     'workspace_ids', 'runner_commit', 'runner_version', 'current_commit', 'disk_commit',
     'tracked_branch',
+    // desired_slots_origin: dashboard | machine.
+    'desired_slots_origin',
     // update_drain: two timestamps and a busy-worker count, no free text.
     'update_drain',
   ],
@@ -447,6 +451,18 @@ describe('scrub-pii.sql covers the schema', () => {
     expect(qaStr.indexOf('qa_is_ident')).toBeLessThan(qaStr.indexOf('THEN s'));
     expect(sqlSrc).toMatch(/jsonb_object_agg\(pg_temp\.qa_key\(k\)/);
     expect(cov.assigned.get('workspace_skills')?.has('allowed_tools')).toBe(true);
+  });
+
+  test('a file artifact keeps its mime type and screen ids, each checked against the identifiers', () => {
+    // The artifact page renders by metadata.mimeType (inline image, sandboxed
+    // design preview) and metadata.screens; everything else in the block is
+    // scrubbed as before. Screen names are dropped; only slug ids and WxH stay.
+    expect(sqlSrc).toMatch(/metadata = pg_temp\.qa_file_meta\(a\.metadata\)/);
+    const fn = /FUNCTION pg_temp\.qa_file_meta[\s\S]*?\$f\$;/.exec(sqlSrc)![0];
+    expect(fn).toContain('pg_temp.qa_json(j)');
+    expect(fn).toMatch(/'mimeType'\) ~ '\^\[a-z\]\+\/\[a-z0-9\.\+-\]\{1,64\}\$' AND NOT pg_temp\.qa_is_ident/);
+    expect(fn).toMatch(/'id'\) ~ '\^\[a-z0-9\]\[a-z0-9-\]\{0,63\}\$' AND NOT pg_temp\.qa_is_ident/);
+    expect(fn).not.toContain("'name'");
   });
 
   test('the schema parser sees every text-like column the latest Drizzle snapshot has', () => {

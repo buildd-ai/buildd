@@ -248,6 +248,22 @@ export interface SentinelFacts {
   failureRate?: FailureRateFact | null;
   workerInfra?: WorkerInfraFact[];
   captureFailures?: CaptureFailureFact[];
+  stuckLanes?: StuckLaneFact[];
+}
+
+/**
+ * A serial lane whose holder's PR has had no commit, review or CI activity
+ * for 24h (spec: Overlap scheduling, I-7), from lib/serial-lanes-store
+ * `stuckLanesOf`. A person may release it.
+ */
+export interface StuckLaneFact {
+  lane: string;
+  holderTaskId: string;
+  prNumber: number | null;
+  /** ISO: the holder PR's last observed activity. */
+  quietSince: string;
+  /** The task first in line behind it, if any. */
+  nextTaskId: string | null;
 }
 
 // ── Candidates ──────────────────────────────────────────────────────────────
@@ -747,7 +763,35 @@ function ruleOutputUnmetBoundary(facts: SentinelFacts, t: SentinelThresholds): I
   return out;
 }
 
+/**
+ * Stuck lane (I-7): reported through the stranded-gate family, as the gate is
+ * `serial_lane` and the work behind it is stranded. Never auto-repaired: only
+ * a person releases a lane.
+ */
+function ruleStuckLane(facts: SentinelFacts): IncidentCandidate[] {
+  const out: IncidentCandidate[] = [];
+  for (const f of facts.stuckLanes ?? []) {
+    const hours = Math.floor(minutesBetween(f.quietSince, facts.now) / 60);
+    out.push(buildCandidate(facts, {
+      rule: 'stranded_gate',
+      reasonCode: 'gate.lane_stuck',
+      signature: ['stranded_gate', wsPart(facts.workspaceId), 'gate=serial_lane', `lane=${seg(f.lane)}`, `holder=${f.holderTaskId}`].join('|'),
+      severity: f.nextTaskId ? 'medium' : 'low',
+      title: `The ${f.lane} lane is stuck: task ${f.holderTaskId.slice(0, 8)} holds it${f.prNumber != null ? ` with PR #${f.prNumber}` : ''}, quiet for ${hours}h. A person can release it.`,
+      occurrences: [{ kind: 'task' as const, id: f.holderTaskId, at: f.quietSince }],
+      affected: {
+        taskIds: boundedUnique([f.holderTaskId, f.nextTaskId]),
+        workerIds: [],
+        prNumbers: boundedUnique([f.prNumber]),
+      },
+      impact: { quietHours: hours, waiting: f.nextTaskId ? 1 : 0 },
+    }));
+  }
+  return out;
+}
+
 const RULES = [
+  ruleStuckLane,
   ruleRetryFork,
   ruleLineageMultiPr,
   ruleRepeatedFailure,

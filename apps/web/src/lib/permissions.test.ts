@@ -33,6 +33,7 @@ const ANY_KEY: ApiKeyLevel[] = ['trigger', 'worker', 'admin'];
 
 const EXPECTED: Record<Permission, Row> = {
   manage_team_members: { roles: OA, keys: NONE },
+  manage_runner_slots: { roles: OA, keys: NONE },
   assign_team_owner: { roles: O, keys: NONE },
   manage_team_settings: { roles: OA, keys: NONE },
   delete_team: { roles: O, keys: NONE },

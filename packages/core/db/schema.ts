@@ -29,7 +29,7 @@ import { sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation, TaskDelegation } from '../token-delegation';
 import type { MissionRequesterSource, TaskRequesterSource } from '../task-requester-source';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, RootCauseClassification, RootCauseCapabilityKind, FailureIncidentRecovery } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, RootCauseClassification, RootCauseCapabilityKind, FailureIncidentRecovery, StoredUpdateDrain } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -2849,8 +2849,8 @@ export const artifactReads = pgTable('artifact_reads', {
 
 /**
  * Typed links from an artifact to the things it informs: a chat message or
- * conversation, a task, a mission, a plan, and later a spec revision or a
- * verification. One payload row, many links; nothing is copied.
+ * conversation, a task, a mission, a plan, a spec (e.g. its design), and later
+ * a spec revision or a verification. One payload row, many links; nothing is copied.
  * Owned by Living Specs (docs/specs/execution-control-plane.md): only
  * apps/web/src/lib/artifact-links.ts writes it; the kernel reads it by id.
  *
@@ -2859,7 +2859,7 @@ export const artifactReads = pgTable('artifact_reads', {
  * only with a pinned `artifact_revision`, and no relation approves anything.
  * `artifact_revision` NULL = floating (follows the current body).
  */
-export const ARTIFACT_LINK_SUBJECTS = ['conversation', 'message', 'task', 'mission', 'plan', 'spec_revision', 'verification'] as const;
+export const ARTIFACT_LINK_SUBJECTS = ['conversation', 'message', 'task', 'mission', 'plan', 'spec', 'spec_revision', 'verification'] as const;
 export const ARTIFACT_LINK_RELATIONS = ['context', 'requirement', 'normative_reference', 'design_reference', 'evidence', 'output'] as const;
 export type ArtifactLinkSubject = (typeof ARTIFACT_LINK_SUBJECTS)[number];
 export type ArtifactLinkRelation = (typeof ARTIFACT_LINK_RELATIONS)[number];
@@ -3725,6 +3725,14 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   viewerToken: text('viewer_token'),
   workspaceIds: jsonb('workspace_ids').default([]).$type<string[]>().notNull(),
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
+  // The slots this runner should have, with who set them and when, separate
+  // from the value it reports above (maxConcurrentWorkers). The later change
+  // wins, whichever side made it (packages/shared runner-desired-slots.ts).
+  // Null until a runner reports slots or an owner sets them.
+  desiredSlots: integer('desired_slots'),
+  desiredSlotsOrigin: text('desired_slots_origin').$type<'dashboard' | 'machine'>(),
+  desiredSlotsSetBy: text('desired_slots_set_by'),
+  desiredSlotsSetAt: timestamp('desired_slots_set_at', { withTimezone: true }),
   activeWorkerCount: integer('active_worker_count').default(0).notNull(),
   environment: jsonb('environment').$type<WorkerEnvironment>(),
   sandboxEnabled: boolean('sandbox_enabled'),
@@ -3750,11 +3758,12 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   // stops being true — so "how long has it been behind" is measured from this
   // column instead of inferred from boot age or heartbeat cadence.
   updateAvailableSince: timestamp('update_available_since', { withTimezone: true }),
-  // Present while the runner has halted claims to drain busy workers before a
-  // self-update (update-drain.ts): ISO `since`, ISO `endsAt` (window expiry),
-  // and `busy` workers still running. Null/absent = claiming normally. Lets
-  // list_runners explain free slots + no claims without SSH.
-  updateDrain: jsonb('update_drain').$type<{ since: string; endsAt: string; busy: number } | null>(),
+  // Present while the runner is applying a self-update (update-drain.ts): ISO
+  // `since`, ISO `endsAt` (window expiry, or when the update applied), `busy`
+  // workers still running, and on newer runners `phase`, `targetVersion` and
+  // the agents `paused` for it (spec 47c97f48; shape and readers in
+  // @buildd/shared runner-update.ts). Null/absent = claiming normally.
+  updateDrain: jsonb('update_drain').$type<StoredUpdateDrain | null>(),
   // The branch this install tracks (BUILDD_BRANCH) — already sent on every
   // heartbeat to resolve latestCommit (see the heartbeat route), but not
   // persisted until now, so GET /api/workers/active can show it per runner.
@@ -5684,6 +5693,39 @@ export const pathClaimWaiters = pgTable('path_claim_waiters', {
 
 export type PathClaimWaiter = typeof pathClaimWaiters.$inferSelect;
 export type NewPathClaimWaiter = typeof pathClaimWaiters.$inferInsert;
+
+// Serial lanes (Living Spec "Overlap scheduling: serial lanes and file locks",
+// Rule 1). One lane per workspace and lane key: `migration` (schema and
+// migrations) or `surface:<label>` (a workspace hard surface). A row is one
+// task's place in one lane. The order is stored: `claimable_since` is stamped
+// once, when the task is first seen claimable apart from the lane, and never
+// moves while the task waits, is parked or is held (apps/web/src/lib/claim-order.ts
+// `laneOrderBy` reads it). `held_at` marks the one holder; the partial unique
+// index makes a second holder impossible. `left_at` ends the row: the holder's
+// PR merged or closed, the task ended, or a person released a stuck lane
+// (`released_by_user_id`). `activity_signature` / `activity_at` record the
+// holder PR's last observed change (head commit, CI state), for the stuck-lane report.
+export const serialLaneEntries = pgTable('serial_lane_entries', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  lane: text('lane').notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  claimableSince: timestamp('claimable_since', { withTimezone: true }),
+  joinedVia: text('joined_via').$type<'manifest' | 'edit'>().default('manifest').notNull(),
+  heldAt: timestamp('held_at', { withTimezone: true }),
+  activitySignature: text('activity_signature'),
+  activityAt: timestamp('activity_at', { withTimezone: true }),
+  leftAt: timestamp('left_at', { withTimezone: true }),
+  leftReason: text('left_reason').$type<'merged' | 'closed' | 'ended' | 'released'>(),
+  releasedByUserId: uuid('released_by_user_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  uniqueEntry: uniqueIndex('serial_lane_entries_task_idx').on(t.workspaceId, t.lane, t.taskId),
+  oneHolder: uniqueIndex('serial_lane_entries_holder_idx').on(t.workspaceId, t.lane).where(sql`${t.heldAt} IS NOT NULL AND ${t.leftAt} IS NULL`),
+  openIdx: index('serial_lane_entries_open_idx').on(t.workspaceId, t.lane).where(sql`${t.leftAt} IS NULL`),
+}));
+
+export type SerialLaneEntry = typeof serialLaneEntries.$inferSelect;
 
 // Durable dispatch intent: "something changed that may make this task
 // runnable — re-evaluate it". Not a scheduler: the claim route stays the only

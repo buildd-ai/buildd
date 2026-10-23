@@ -18,6 +18,11 @@ mock.module('@/lib/team-access', () => ({
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
 mock.module('@/lib/connector-capabilities-store', () => ({ loadDiscoveryInput: mockLoadDiscoveryInput }));
+const mockResolveTeamDecisionRoute = mock((..._args: any[]) => Promise.resolve(null as any));
+mock.module('@/lib/capability-model-inference', () => ({
+  MODEL_INFERENCE_CAPABILITY: 'model.inference',
+  resolveTeamDecisionRoute: mockResolveTeamDecisionRoute,
+}));
 mock.module('@buildd/core/db', () => ({ db: { query: { tasks: { findFirst: mockTaskFindFirst } } } }));
 
 import { GET } from './route';
@@ -46,7 +51,7 @@ function makeRequest(query: Record<string, string> = { workspaceId: WORKSPACE_ID
 
 describe('GET /api/connectors/capabilities', () => {
   beforeEach(() => {
-    for (const m of [mockGetCurrentUser, mockAuthenticateApiKey, mockVerifyWorkspaceAccess, mockVerifyAccountWorkspaceAccess, mockLoadDiscoveryInput, mockTaskFindFirst]) m.mockReset();
+    for (const m of [mockGetCurrentUser, mockAuthenticateApiKey, mockVerifyWorkspaceAccess, mockVerifyAccountWorkspaceAccess, mockLoadDiscoveryInput, mockTaskFindFirst, mockResolveTeamDecisionRoute]) m.mockReset();
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'worker', teamId: 'team-1' });
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
@@ -90,6 +95,26 @@ describe('GET /api/connectors/capabilities', () => {
     const res = await GET(makeRequest({ workspaceId: WORKSPACE_ID, capability: 'telemetry:read' }));
     expect(res.status).toBe(400);
     expect((await res.json()).message).toMatch(/observability/);
+  });
+
+  it('answers model.inference with the request_capability shape and whether a route is configured', async () => {
+    mockResolveTeamDecisionRoute.mockResolvedValue({ provider: 'openrouter', model: 'm-1', apiKey: 'k' });
+    const res = await GET(makeRequest({ workspaceId: WORKSPACE_ID, capability: 'model.inference' }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.capability).toBe('model.inference');
+    expect(body.requestWith.tool).toBe('request_capability');
+    expect(body.requestWith.params.capability).toBe('model.inference');
+    expect(body.routeConfigured).toBe(true);
+    expect(body.route).toEqual({ provider: 'openrouter', model: 'm-1' });
+    expect(JSON.stringify(body)).not.toContain('"k"');
+    expect(body.invoke.path).toBe('/api/agent-capabilities/model-inference');
+  });
+
+  it('reports routeConfigured false when the team has no decision route', async () => {
+    mockResolveTeamDecisionRoute.mockResolvedValue(null);
+    const body = await (await GET(makeRequest({ workspaceId: WORKSPACE_ID, capability: 'model.inference' }))).json();
+    expect(body.routeConfigured).toBe(false);
   });
 
   it('400s a malformed roleSlug before any read', async () => {

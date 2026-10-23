@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import {
   ARTIFACT_LINK_RELATIONS, ARTIFACT_LINK_SUBJECTS, artifactLinks, artifactRevisions, artifacts, conversationMessages,
-  conversations, missions, tasks, workspaces,
+  conversations, missions, specRevisions, specs, tasks, workspaces,
   type ArtifactLinkRelation, type ArtifactLinkSubject,
 } from '@buildd/core/db/schema';
 import { and, eq, inArray, sql } from 'drizzle-orm';
@@ -22,8 +22,8 @@ import { finalizeArtifactUpload } from '@/lib/artifact-upload';
  * table's CHECK enforces it; an unpinned request pins the current body).
  */
 
-/** The subject kinds that exist today; spec revisions and verifications come later. */
-const LINKABLE: ReadonlySet<ArtifactLinkSubject> = new Set(['conversation', 'message', 'task', 'mission', 'plan']);
+/** The subject kinds that exist today; verifications come later. */
+const LINKABLE: ReadonlySet<ArtifactLinkSubject> = new Set(['conversation', 'message', 'task', 'mission', 'plan', 'spec', 'spec_revision']);
 
 export type LinkCaller =
   | { kind: 'user'; userId: string }
@@ -37,16 +37,16 @@ export type LinkCaller =
 const accessCaller = (c: LinkCaller): WorkspaceAccessCaller => (c.kind === 'user' ? { userId: c.userId } : { account: c.account });
 
 /** Workspace access, confined to its own workspace for a per-task token. */
-async function canAccessWorkspace(caller: LinkCaller, workspaceId: string): Promise<boolean> {
+export async function canAccessWorkspace(caller: LinkCaller, workspaceId: string): Promise<boolean> {
   if (caller.kind === 'account' && caller.taskScope && caller.taskScope.workspaceId !== workspaceId) return false;
   return (await resolveWorkspaceAccess(workspaceId, accessCaller(caller))).ok;
 }
-const actorOf = (c: LinkCaller) => (c.kind === 'user' ? `user:${c.userId}` : `account:${c.account.id}`);
+export const actorOf = (c: LinkCaller) => (c.kind === 'user' ? `user:${c.userId}` : `account:${c.account.id}`);
 
 export type LinkError = { ok: false; status: 400 | 403 | 404 | 409; error: string };
 const fail = (status: LinkError['status'], error: string): LinkError => ({ ok: false, status, error });
 
-interface Subject { teamId: string; workspaceId: string | null; ownerUserId?: string }
+export interface Subject { teamId: string; workspaceId: string | null; ownerUserId?: string }
 
 async function teamOfWorkspace(workspaceId: string | null): Promise<string | null> {
   if (!workspaceId) return null;
@@ -54,13 +54,24 @@ async function teamOfWorkspace(workspaceId: string | null): Promise<string | nul
   return w?.teamId ?? null;
 }
 
-async function loadSubject(kind: ArtifactLinkSubject, id: string): Promise<Subject | null> {
+export async function loadLinkSubject(kind: ArtifactLinkSubject, id: string): Promise<Subject | null> {
   switch (kind) {
+    case 'spec_revision': {
+      const [r] = await db.select({ workspaceId: specs.workspaceId }).from(specRevisions)
+        .innerJoin(specs, eq(specs.id, specRevisions.specId)).where(eq(specRevisions.id, id)).limit(1);
+      const teamId = r ? await teamOfWorkspace(r.workspaceId) : null;
+      return r && teamId ? { teamId, workspaceId: r.workspaceId } : null;
+    }
     case 'task':
     case 'plan': {
       const [t] = await db.select({ workspaceId: tasks.workspaceId }).from(tasks).where(eq(tasks.id, id)).limit(1);
       const teamId = t ? await teamOfWorkspace(t.workspaceId) : null;
       return t && teamId ? { teamId, workspaceId: t.workspaceId } : null;
+    }
+    case 'spec': {
+      const [sp] = await db.select({ workspaceId: specs.workspaceId }).from(specs).where(eq(specs.id, id)).limit(1);
+      const teamId = sp ? await teamOfWorkspace(sp.workspaceId) : null;
+      return sp && teamId ? { teamId, workspaceId: sp.workspaceId } : null;
     }
     case 'mission': {
       const [m] = await db.select({ teamId: missions.teamId, workspaceId: missions.workspaceId }).from(missions).where(eq(missions.id, id)).limit(1);
@@ -73,7 +84,7 @@ async function loadSubject(kind: ArtifactLinkSubject, id: string): Promise<Subje
     }
     case 'message': {
       const [m] = await db.select({ conversationId: conversationMessages.conversationId }).from(conversationMessages).where(eq(conversationMessages.id, id)).limit(1);
-      return m ? loadSubject('conversation', m.conversationId) : null;
+      return m ? loadLinkSubject('conversation', m.conversationId) : null;
     }
     default:
       return null;
@@ -118,18 +129,26 @@ async function revisionExists(a: ArtifactRow, revision: number): Promise<boolean
 export interface LinkInput { subjectKind: unknown; subjectId: unknown; relation: unknown; revision?: unknown }
 export type LinkRow = typeof artifactLinks.$inferSelect;
 
-export async function linkArtifact(caller: LinkCaller, artifactId: string, input: LinkInput): Promise<{ ok: true; link: LinkRow } | LinkError> {
+function checkLinkInput(input: LinkInput): LinkError | null {
   const { subjectKind, subjectId, relation, revision } = input;
   if (!ARTIFACT_LINK_SUBJECTS.includes(subjectKind as ArtifactLinkSubject)) return fail(400, `subjectKind must be one of: ${ARTIFACT_LINK_SUBJECTS.join(', ')}`);
   if (!LINKABLE.has(subjectKind as ArtifactLinkSubject)) return fail(400, `${subjectKind} links are not available yet`);
   if (!ARTIFACT_LINK_RELATIONS.includes(relation as ArtifactLinkRelation)) return fail(400, `relation must be one of: ${ARTIFACT_LINK_RELATIONS.join(', ')}`);
   if (typeof subjectId !== 'string' || !isUuid(subjectId)) return fail(400, 'subjectId must be a UUID');
   if (revision !== undefined && revision !== null && (!Number.isInteger(revision) || (revision as number) < 1)) return fail(400, 'revision must be a positive integer');
+  return null;
+}
+
+export async function linkArtifact(caller: LinkCaller, artifactId: string, input: LinkInput): Promise<{ ok: true; link: LinkRow } | LinkError> {
+  const bad = checkLinkInput(input);
+  if (bad) return bad;
+  const { subjectKind, relation, revision } = input;
+  const subjectId = input.subjectId as string;
 
   const a = await loadArtifact(artifactId);
   // Missing and unreadable read the same: existence outside reach is not confirmed.
   if (!a || !(await canReadArtifact(caller, a))) return fail(404, 'Artifact not found');
-  const subject = await loadSubject(subjectKind as ArtifactLinkSubject, subjectId);
+  const subject = await loadLinkSubject(subjectKind as ArtifactLinkSubject, subjectId);
   if (!subject || !(await canReachSubject(caller, subject))) return fail(404, `${subjectKind} not found`);
   if (subject.teamId !== a.teamId) return fail(403, 'An artifact can be linked only to a subject of its own team');
   // An upload is linkable only once its bytes are verified; a pending one gets
@@ -157,11 +176,70 @@ export async function linkArtifact(caller: LinkCaller, artifactId: string, input
   return { ok: true, link };
 }
 
+/**
+ * A link asked for in the same call as an upload (upload_artifact `attach`).
+ * The bytes have not arrived, and a link needs verified bytes, so the request
+ * is checked now, with the caller's reach, and written once the upload is
+ * ready (applyPendingLinks, from lib/artifact-upload.ts). Kept in the
+ * artifact's metadata under PENDING_LINKS_KEY, which PATCH never writes.
+ *
+ * Only a subject in the artifact's own workspace, or a team-level one, can
+ * wait like this: the deferred write re-checks that rule without a caller.
+ */
+export const PENDING_LINKS_KEY = 'pendingLinks';
+export interface PendingLink { subjectKind: ArtifactLinkSubject; subjectId: string; relation: ArtifactLinkRelation; createdBy: string }
+
+export async function checkPendingLink(
+  caller: LinkCaller, target: { workspaceId: string }, input: LinkInput,
+): Promise<{ ok: true; link: PendingLink } | LinkError> {
+  const bad = checkLinkInput(input);
+  if (bad) return bad;
+  if (input.revision !== undefined && input.revision !== null) return fail(400, 'A new upload has only its first revision: attach without revision');
+  if (!(await canAccessWorkspace(caller, target.workspaceId))) return fail(404, 'Workspace not found');
+  const kind = input.subjectKind as ArtifactLinkSubject;
+  const subject = await loadLinkSubject(kind, input.subjectId as string);
+  if (!subject || !(await canReachSubject(caller, subject))) return fail(404, `${kind} not found`);
+  if (subject.teamId !== (await teamOfWorkspace(target.workspaceId))) return fail(403, 'An artifact can be linked only to a subject of its own team');
+  if (subject.ownerUserId !== undefined) return fail(400, `A ${kind} is linked once the upload is ready, with link_artifact`);
+  if (subject.workspaceId && subject.workspaceId !== target.workspaceId) {
+    return fail(400, `That ${kind} is in another workspace: upload, then link it with link_artifact`);
+  }
+  return { ok: true, link: { subjectKind: kind, subjectId: input.subjectId as string, relation: input.relation as ArtifactLinkRelation, createdBy: actorOf(caller) } };
+}
+
+/** Write the links an upload asked for, now that it is ready; then drop the request. Returns how many were written. */
+export async function applyPendingLinks(artifactId: string): Promise<number> {
+  const [row] = await db.select({ metadata: artifacts.metadata }).from(artifacts).where(eq(artifacts.id, artifactId)).limit(1);
+  const pending = (row?.metadata as Record<string, unknown> | null)?.[PENDING_LINKS_KEY];
+  if (!Array.isArray(pending)) return 0;
+  const a = await loadArtifact(artifactId);
+  let written = 0;
+  if (a?.teamId && a.workspaceId && a.uploadState !== 'pending' && a.uploadState !== 'failed') {
+    for (const p of pending as Partial<PendingLink>[]) {
+      if (!p || checkLinkInput({ subjectKind: p.subjectKind, subjectId: p.subjectId, relation: p.relation })) continue;
+      const subject = await loadLinkSubject(p.subjectKind!, p.subjectId!);
+      // The same rule checkPendingLink applied, again: metadata is data, not a grant.
+      if (!subject || subject.teamId !== a.teamId || (subject.workspaceId && subject.workspaceId !== a.workspaceId) || subject.ownerUserId !== undefined) continue;
+      const pinned = p.relation === 'normative_reference' ? Math.max(a.currentRevision, 1) : null;
+      await db.insert(artifactLinks)
+        .values({ artifactId, artifactRevision: pinned, subjectKind: p.subjectKind!, subjectId: p.subjectId!, relation: p.relation!, teamId: a.teamId, createdBy: typeof p.createdBy === 'string' ? p.createdBy : null })
+        .onConflictDoNothing();
+      written++;
+    }
+  }
+  if (a?.uploadState !== 'pending') {
+    await db.update(artifacts)
+      .set({ metadata: sql`coalesce(${artifacts.metadata}, '{}'::jsonb) - ${PENDING_LINKS_KEY}::text` })
+      .where(eq(artifacts.id, artifactId));
+  }
+  return written;
+}
+
 export async function unlinkArtifact(caller: LinkCaller, artifactId: string, linkId: string): Promise<{ ok: true } | LinkError> {
   if (!isUuid(linkId)) return fail(404, 'Link not found');
   const [link] = await db.select().from(artifactLinks).where(and(eq(artifactLinks.id, linkId), eq(artifactLinks.artifactId, artifactId))).limit(1);
   const a = link ? await loadArtifact(artifactId) : null;
-  const subject = link ? await loadSubject(link.subjectKind, link.subjectId) : null;
+  const subject = link ? await loadLinkSubject(link.subjectKind, link.subjectId) : null;
   if (!link || !a || !(await canReadArtifact(caller, a)) || !subject || !(await canReachSubject(caller, subject))) return fail(404, 'Link not found');
   await db.delete(artifactLinks).where(eq(artifactLinks.id, linkId));
   // A mission's context links mirror the legacy contextArtifactIds column, which
@@ -197,7 +275,7 @@ export async function linksOfArtifact(caller: LinkCaller, artifactId: string): P
   const rows = await db.select().from(artifactLinks).where(and(eq(artifactLinks.artifactId, artifactId), eq(artifactLinks.teamId, a.teamId!)));
   const visible: LinkRow[] = [];
   for (const r of rows) {
-    const s = await loadSubject(r.subjectKind, r.subjectId);
+    const s = await loadLinkSubject(r.subjectKind, r.subjectId);
     if (s && (await canReachSubject(caller, s))) visible.push(r);
   }
   return { ok: true, links: visible };
@@ -219,7 +297,7 @@ export interface LinkedArtifact {
 export async function artifactsLinkedTo(
   subjectKind: ArtifactLinkSubject, subjectId: string, opts: { caller?: LinkCaller; relations?: ArtifactLinkRelation[] } = {},
 ): Promise<LinkedArtifact[] | LinkError> {
-  const subject = await loadSubject(subjectKind, subjectId);
+  const subject = await loadLinkSubject(subjectKind, subjectId);
   if (!subject || (opts.caller && !(await canReachSubject(opts.caller, subject)))) return fail(404, `${subjectKind} not found`);
   const rows = await db
     .select({

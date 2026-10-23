@@ -5,9 +5,12 @@
  * `/start` can never report a task startable that the next claim defers —
  * the "Queued at front · No runner has responded" failure — or the reverse.
  *
- * Covered: path overlap layer 1 (open PR) and layer 2 (live path claim),
- * mission concurrency, mission pacing, and planner order (`ordered_behind`,
- * from the ledger). A task that declares no files is not held for that alone.
+ * Covered: serial lanes (the stored order, and the claim's open-PR and live
+ * lease backstops, which hold only on lane paths: ./overlap-policy), mission
+ * concurrency, mission pacing, and planner order (`ordered_behind`, from the
+ * ledger). Every overlap hold is a `lane` reason: no other file overlap holds
+ * a claim (spec: Overlap scheduling, R-2). A task that declares no files is
+ * not held for that alone.
  */
 import { pathsOverlap, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { makeWaitingReason, overlapAreas, orderWaitingReasons, type WaitingReason } from '@buildd/core/waiting-reason';
@@ -16,6 +19,7 @@ import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { splitOwnOpenPrs } from './claim-plan-input';
 import { checkMissionConcurrencyGate, checkMissionPacingGate } from './pacing-gate';
 import { findHoldingLease, findHoldingOpenPr, workspaceHardSurface } from './overlap-policy';
+import { laneKeysFor, laneSentence, laneVerdict, lanesOf, stuckSince, type LaneView } from '@/lib/serial-lanes';
 
 /**
  * True when the task's declared deliverable is not a code change
@@ -87,6 +91,12 @@ export interface CoordinationSnapshot {
   /** Tasks with a live worker, to mark a lease holder or ordering blocker live. */
   liveTaskIds: ReadonlySet<string>;
   now: Date;
+  /**
+   * The workspace's serial lanes in stored order (lib/serial-lanes-store
+   * `loadLanes`), the claim route's own read. Absent: only the open-PR and
+   * lease checks speak for lane paths, and a lane wait names no position.
+   */
+  lanes?: { views: ReadonlyMap<string, LaneView>; releasedTaskIds: ReadonlySet<string> } | null;
 }
 
 const MAX_DRILLDOWN_PATHS = 50;
@@ -111,20 +121,50 @@ export function evaluateCoordinationGates(task: any, s: CoordinationSnapshot): W
   const out: WaitingReason[] = [];
   const manifest = (task.pathManifest as string[] | null) ?? null;
 
-  if (manifest?.length) {
+  // Serial lanes (spec: Overlap scheduling, I-1, I-3, I-4): held by another
+  // task, or someone ahead in the stored order is ready to take it.
+  const laneReasons: WaitingReason[] = [];
+  if (s.lanes) {
+    for (const lane of lanesOf(task)) {
+      const view = s.lanes.views.get(lane) ?? { workspaceId: task.workspaceId, lane, members: [] };
+      const verdict = laneVerdict(view, task.id);
+      if (verdict.kind !== 'held' && verdict.kind !== 'behind') continue;
+      const who = verdict.kind === 'held' ? verdict.holder : verdict.ahead;
+      const stuck = verdict.kind === 'held' ? stuckSince(verdict.holder, s.now) : null;
+      laneReasons.push(makeWaitingReason('lane', {
+        because: laneSentence(lane, verdict, s.now),
+        blocker: { type: 'task', id: who.taskId, label: `task ${shortId(who.taskId)}`, href: `/app/tasks/${who.taskId}`, live: verdict.kind === 'held' },
+        lane: { lane, holderTaskId: verdict.kind === 'held' ? verdict.holder.taskId : null, position: verdict.position, ...(stuck ? { stuckSince: stuck.toISOString() } : {}) },
+        provenance: { source: 'probe', derivedFrom: 'serial_lane_entries (claim-order laneOrderBy)' },
+      }));
+    }
+  }
+  out.push(...laneReasons);
+  const released = s.lanes?.releasedTaskIds;
+  // The backstops below hold only on lane paths, so each is a lane wait; the
+  // stored order has no row for it yet, so it names the holder, not a position.
+  // A path the unmergeable list holds but no lane covers is the migration lane's
+  // namesake: one task at a time on files that cannot be merged.
+  const laneBehind = (holderTaskId: string | null, paths: string[]): WaitingReason['lane'] => ({
+    lane: laneKeysFor(paths, task.workspace?.gitConfig ?? null)[0] ?? 'surface:unmergeable files',
+    holderTaskId,
+    position: null,
+  });
+
+  if (manifest?.length && laneReasons.length === 0) {
     // Same overlap policy as the claim (./overlap-policy): only an overlap on
     // an unmergeable surface holds; mergeable files start alongside.
     const gitConfig = task.workspace?.gitConfig ?? null;
     // Layer 1: an open PR whose task's manifest overlaps this one.
     const others = splitOwnOpenPrs(task, s.openPrTasks).others;
-    const held = findHoldingOpenPr(manifest, others, workspaceHardSurface(gitConfig));
+    const held = findHoldingOpenPr(manifest, others, workspaceHardSurface(gitConfig), released);
     const pr = held ? { prNumber: held.pr.prNumber ?? null, prUrl: held.pr.prUrl ?? null } : null;
     if (pr) {
       const entry = held!.pr;
       const paths = intersectPaths(manifest, entry?.pathManifest ?? []);
       const live = LIVE_WRITER.has(entry?.workerStatus ?? '');
-      out.push(makeWaitingReason(live ? 'pr_overlap_live' : 'pr_overlap_ended', {
-        because: overlapSentence(paths),
+      out.push(makeWaitingReason('lane', {
+        because: `${overlapSentence(paths)}, and ${pr.prNumber ? `PR #${pr.prNumber}` : 'that open PR'} holds the lane until it merges or closes`,
         blocker: {
           type: 'pr',
           id: String(pr.prNumber ?? pr.prUrl ?? ''),
@@ -133,17 +173,19 @@ export function evaluateCoordinationGates(task: any, s: CoordinationSnapshot): W
           live,
         },
         overlap: overlapOf(paths, 'declared'),
+        lane: laneBehind(entry?.taskId ?? null, paths),
         provenance: { source: 'probe', derivedFrom: 'workers.prUrl ∩ tasks.pathManifest (claim layer 1)' },
       }));
     }
 
     // Layer 2: a live lease another task holds on these files.
-    const lease = findHoldingLease(task.id, manifest, s.activeClaims, undefined, gitConfig);
+    const lease = findHoldingLease(task.id, manifest, s.activeClaims, undefined, gitConfig, released);
     if (lease) {
-      out.push(makeWaitingReason('lease_overlap', {
-        because: overlapSentence(lease.overlapPaths),
+      out.push(makeWaitingReason('lane', {
+        because: `${overlapSentence(lease.overlapPaths)}, and that task holds the lane while it edits them`,
         blocker: { type: 'task', id: lease.holderTaskId, label: `task ${shortId(lease.holderTaskId)}`, href: `/app/tasks/${lease.holderTaskId}`, live: s.liveTaskIds.has(lease.holderTaskId) },
         overlap: overlapOf(lease.overlapPaths, 'lease'),
+        lane: laneBehind(lease.holderTaskId, lease.overlapPaths),
         provenance: { source: 'probe', derivedFrom: 'path_claims (claim layer 2)' },
       }));
     }
@@ -165,6 +207,7 @@ export function evaluateCoordinationGates(task: any, s: CoordinationSnapshot): W
     if (paced) {
       out.push(makeWaitingReason('mission_paced', {
         because: `the mission starts a task at most every ${Math.round(paced.intervalSec / 60)} min; next at ${paced.nextEligibleAt.toISOString()}`,
+        liftsAt: paced.nextEligibleAt.toISOString(),
         blocker: { type: 'mission', id: missionId, label: 'mission pacing', href: `/app/missions/${missionId}` },
         provenance: { source: 'probe', derivedFrom: 'missions.pacingMode' },
       }));

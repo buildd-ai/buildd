@@ -102,12 +102,11 @@ export function overviewLayout(model: Model, order: readonly string[] = stripOrd
 export type OverviewWaitCause = TaskStripWait;
 
 const ON_TASKS: ReadonlySet<WaitingKind> = new Set<WaitingKind>([
-  'dep_declared', 'dep_inferred', 'ordered_behind', 'pr_overlap_live', 'pr_overlap_ended',
-  'lease_overlap', 'lease_stale', 'soft_overlap', 'serialized_surface', 'scope_undeclared_mutex',
+  'dep_declared', 'ordered_behind', 'lane', 'lease_stale', 'serialized_surface',
 ]);
+/** Only a free slot reads "next in line"; a limit is a hold that names itself (spec: Overlap scheduling, AC-10). */
 const FOR_SLOT: ReadonlySet<WaitingKind> = new Set<WaitingKind>([
-  'mission_concurrent', 'mission_paced', 'workspace_cap', 'account_slots', 'oauth_parallelism',
-  'codex_single_flight', 'eligible_no_runner', 'dispatch_undelivered', 'runner_preference',
+  'eligible_no_runner', 'dispatch_undelivered',
 ]);
 
 /**

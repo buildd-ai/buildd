@@ -1460,8 +1460,21 @@ export interface RunnerUpdateSnapshot {
   commitDrift: boolean;
   updating: boolean;
   updateAvailable: boolean;
-  /** Set while claims are halted to drain busy workers before a self-update (epoch ms); null otherwise. */
-  updateDrain?: { since: number; endsAt: number; busy: number } | null;
+  /**
+   * Set while a self-update is in progress (epoch ms); null otherwise. `phase`
+   * `draining`: claims halted, agents finishing or being paused; `updating`:
+   * the update applied (`endsAt` = when), or the new version has not yet
+   * continued the agents paused for it (spec 47c97f48, R-5). Older runners
+   * send only since/endsAt/busy.
+   */
+  updateDrain?: {
+    since: number;
+    endsAt: number;
+    busy: number;
+    phase?: 'draining' | 'updating';
+    targetVersion?: string | null;
+    paused?: Array<{ workerId: string; taskId: string | null; title: string | null; since: number | null }>;
+  } | null;
   /** The branch this install tracks (its `BUILDD_BRANCH`). */
   trackedBranch: string;
 }
@@ -1826,6 +1839,12 @@ export interface ClaimTaskExclusion {
    */
   holderTaskId?: string;
 }
+
+/**
+ * The deferral counters a claim response fills in: every declared key except
+ * the retired undeclared-scope one, which nothing counts any more.
+ */
+export type ClaimDeferralCounters = Required<Omit<NonNullable<ClaimDiagnostics['deferrals']>, 'advisory_manifest'>>;
 
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
@@ -3580,6 +3599,8 @@ export type RunnerQueueHold =
   | 'workspace_paused'
   | 'workspace_cap'
   | 'runner_cooldown'
+  /** It is in a serial lane (schema, migrations, a hard surface) that another task holds, or someone came first: see `lane`. */
+  | 'serial_lane'
   /** Its mission already runs a task that, like it, declares no files: the claim starts one such task per mission at a time. */
   | 'advisory_manifest';
 
@@ -3623,6 +3644,19 @@ export interface RunnerQueueTask {
   alongside?: { prNumber: number | null; holderTaskId: string | null } | null;
   /** With the `advisory_manifest` hold: the task it waits for, running or ahead of it in this queue. */
   holderTaskId?: string | null;
+  /**
+   * With the `serial_lane` hold: which lane, the task holding it (null when the
+   * lane is free and `aheadTaskId` came first), and how many go first. The same
+   * stored order the claim route serves (spec: Overlap scheduling, I-3).
+   */
+  lane?: { lane: string; position: number; holderTaskId: string | null; aheadTaskId?: string | null; stuckSince?: string | null } | null;
+  /**
+   * The one reason it waits, from the claim route's own query and gates
+   * (spec: Overlap scheduling, AC-10): the same reason explain, the task page
+   * and the web Queue give. `slot` = the claim query would return it now.
+   * Absent from an older server, or when the read failed.
+   */
+  wait?: import('./queue-wait').QueueWait | null;
   /**
    * Whose work it is (spec c7410e76 R-58): the task's owner (who filed it, else
    * its mission's, else its schedule's) against the person behind the runner's
@@ -4395,6 +4429,8 @@ export interface FleetRunner {
   name: string;
   /** Set while a person holds this runner (`buildd hold`): it starts nothing new. */
   hold?: RunnerHold | null;
+  /** Set while it applies a self-update (spec 47c97f48): updating, with the agents paused for it, or stuck. No free slots. */
+  update?: import('./runner-update').RunnerUpdateView | null;
   /** Readable machine description ("Mac Studio", "macOS · arm64"), or null. */
   machine: string | null;
   maxSlots: number;

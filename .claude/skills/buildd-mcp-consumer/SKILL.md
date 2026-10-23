@@ -139,6 +139,15 @@ sub-actions (`create_draft`, `revise`, `read_ref`, ...) are in the topic.
   400 when it adds one. Put product intent in the spec as a criterion, with a
   `check:` line for a command. Select an existing spec; never write one for a
   mission (the `mission` scope is refused). A chore selects none.
+- A design from a claude.ai Design canvas: read its files with the Artifact
+  tool (`list scope=files`, then `read path=project/canvas.json` and each
+  `project/<Board>.dc.html`) into a temp dir. That needs an owner session or
+  a worker given `claudeAiArtifacts: 'read'`; without the tool, ask a person
+  to copy the files in. Never fetch claude.ai with curl or a browser. Export
+  them to one design with buildd's `scripts/design/export-canvas.ts`, store it
+  with `upload_artifact`, and pin the spec's `design` to that artifact's
+  revision, with the canvas URL in its `metadata.source`. Steps: topic
+  `living-specs`, "From a Claude Design canvas".
 - Call `help {topic:"living-specs"}` before any spec work.
 
 Not the same as a repo-docs skill such as `spec-sync` (buildd's own repo has

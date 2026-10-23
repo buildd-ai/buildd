@@ -203,13 +203,15 @@ describe('buildClaimPlanInput', () => {
     }))).toEqual(['a']);
   });
 
-  it('a workspace that enforces path claims keeps every live lease an edge', () => {
+  // I-10 (spec: Overlap scheduling): the edit-time lock applies at edit time
+  // only, so an enforcing workspace's lease on a non-lane file orders nobody.
+  it('a workspace that enforces path claims still picks a task sharing a non-lane leased file', () => {
     const plan = planClaimBatch(buildClaimPlanInput(source({
       candidates: [task('a', { pathManifest: ['src/x.ts'], workspace: { id: 'ws-1', gitConfig: { pathClaimEnforcement: 'enforce' } } })],
       activePathClaimsByWorkspace: new Map([['ws-1', new Map([['other', ['src/x.ts']]])]]),
     })).input);
-    expect(plan.picks).toEqual([]);
-    expect(plan.orientation[0]).toMatchObject({ blockedBy: 'lease:other', edge: 'lease_overlap' });
+    expect(plan.picks.map(p => p.id)).toEqual(['a']);
+    expect(plan.orientation).toEqual([]);
   });
 
   it('carries starvation credit, dependents and size from the signals', () => {
