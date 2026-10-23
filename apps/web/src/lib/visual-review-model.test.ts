@@ -363,38 +363,155 @@ describe('buildVisualReviewModel: after a fix merges (fixCheck)', () => {
     expect(cellA(m).fixCheck).toBeNull();
   });
 
-  it('a round-2 recapture that lands in a sibling cell (no title collision, so no matching variant) resolves the stuck round-1 cell instead of leaving it an open issue', () => {
+  // Spec 072de598 AC-15: a title variant is a caption, not a state. Two
+  // colliding round-1 shots and one round-2 recapture cannot be told apart, so
+  // the recapture resolves neither; only a shot of the same known state does.
+  it('a round-2 recapture of the same route with no known state resolves nothing: the cell stays open', () => {
     const row = (id: string, workerId: string, title: string, verdict: 'ok' | 'issue', min: number, extra: Record<string, unknown> = {}) => ({
       id, type: 'screenshot', workerId, createdAt: at(min), title,
       metadata: { qa: { runKey: `run-${workerId}`, route: '/inv', viewport: 'desktop' as const, verdict, finding: `/inv desktop ${verdict}`, ...extra } },
     });
-    // Round 1: two shots collide on /inv desktop, so each gets a title variant.
     const eur = row('s-eur', 'w1', 'inv-eur-desktop.png', 'issue', 1, { fixTaskId: 'fx' });
     const jpy = row('s-jpy', 'w1', 'inv-jpy-desktop.png', 'ok', 2);
-    // Round 2 only recaptures the fixed route; alone in its round, it collides
-    // with nothing, so it gets no title variant and lands in a different cell.
     const after = row('s-after', 'w2', 'inv-desktop.png', 'ok', 120);
     const m = buildVisualReviewModel(input({
       shots: [eur, jpy, after],
       tasks: [audit('t1', 1, 'completed', 'w1'), round2, fix('fx', 'completed', at(90))],
     }));
-    expect(m.cells.map(c => c.key).sort()).toEqual(['/inv|desktop|', '/inv|desktop|jpy']);
-    expect(m.resolvedElsewhere).toEqual([{ key: '/inv|desktop|eur', route: '/inv', viewport: 'desktop', variant: 'eur', resolvedBy: '/inv|desktop|' }]);
-    expect(m.summary).toMatchObject({ shots: 2, ok: 2, issues: 0, unsure: 0, awaitingCapture: 0 });
+    expect(m.cells.map(c => c.key).sort()).toEqual(['/inv|desktop|', '/inv|desktop|eur', '/inv|desktop|jpy']);
+    expect(m.resolvedElsewhere).toEqual([]);
+    expect(m.cells.find(c => c.key === '/inv|desktop|eur')!.fixCheck?.state).toBe('awaiting_capture');
   });
 
-  it('a later round re-shooting the same place supersedes an open issue even with no merged fix and a different title', () => {
+  it('a later round with no known state does not supersede an open issue', () => {
     const row = (id: string, workerId: string, title: string, verdict: 'ok' | 'issue', min: number) => ({
       id, type: 'screenshot', workerId, createdAt: at(min), title,
       metadata: { qa: { runKey: `run-${workerId}`, route: '/inv', viewport: 'desktop' as const, verdict, finding: 'f' } },
     });
     const m = buildVisualReviewModel(input({
-      // Round 1: two shots collide on /inv desktop, so each gets a title variant.
       shots: [row('s1', 'w1', 'inv-eur-desktop.png', 'issue', 1), row('s1b', 'w1', 'inv-jpy-desktop.png', 'ok', 2), row('s2', 'w2', 'inv-desktop.png', 'ok', 120)],
       tasks: [audit('t1', 1, 'completed', 'w1'), round2],
     }));
-    expect(m.resolvedElsewhere).toHaveLength(1);
+    expect(m.resolvedElsewhere).toEqual([]);
+    expect(m.summary).toMatchObject({ issues: 1 });
+  });
+
+  it('a later round re-shooting the same known state supersedes an open issue whatever the title', () => {
+    const row = (id: string, workerId: string, title: string, verdict: 'ok' | 'issue', min: number) => ({
+      id, type: 'screenshot', workerId, createdAt: at(min), title,
+      metadata: { qa: { runKey: `run-${workerId}`, route: '/inv', viewport: 'desktop' as const, verdict, finding: 'f', state: 'pay-dialog' } },
+    });
+    const m = buildVisualReviewModel(input({
+      shots: [row('s1', 'w1', 'inv-eur-desktop.png', 'issue', 1), row('s1b', 'w1', 'inv-jpy-desktop.png', 'ok', 2), row('s2', 'w2', 'inv-desktop.png', 'ok', 120)],
+      tasks: [audit('t1', 1, 'completed', 'w1'), round2],
+    }));
+    expect(m.resolvedElsewhere.map(r => r.key)).toEqual(['/inv|desktop|pay-dialog · eur']);
     expect(m.summary).toMatchObject({ issues: 0 });
+  });
+});
+
+/**
+ * Spec 072de598 I-15, AC-14, AC-15, from a real mission: round 1 flagged a
+ * dialog state (two shots of it) and a tray with no state; both fixes merged;
+ * round 2 shot a sibling state of the same route and found it ok.
+ */
+describe('buildVisualReviewModel: a merged fix waiting for a screenshot (spec 072de598 I-15)', () => {
+  const R = '/app/dev/fixtures';
+  const fix = (id: string, mergedAt: string | null, pr: number): VisualReviewTaskInput => ({
+    id, title: `[surface fix] ${R}: ${id}`, status: mergedAt ? 'completed' : 'in_progress',
+    workers: [{ id: `wf-${id}`, startedAt: at(10), prUrl: `https://example.test/pr/${pr}`, prNumber: pr, mergedAt }],
+  });
+  const row = (id: string, workerId: string, title: string, verdict: 'ok' | 'issue', min: number, extra: Record<string, unknown> = {}) => ({
+    id, type: 'screenshot', workerId, createdAt: at(min), title,
+    metadata: { qa: { runKey: `run-${workerId}`, route: R, viewport: 'mobile' as const, verdict, finding: `${title} ${verdict}`, ...extra } },
+  });
+  const round1 = [
+    row('d1', 'w1', 'fixtures-closed-pr-awaiting-confirmation', 'issue', 1, { state: 'abandon-reason', fixTaskId: 'fxA' }),
+    row('d2', 'w1', 'fixtures-closed-pr-awaiting-confirmation', 'issue', 2, { state: 'abandon-reason', fixTaskId: 'fxA' }),
+    row('b1', 'w1', 'fixtures-visual-review-boot_failed', 'issue', 3, { fixTaskId: 'fxB' }),
+    row('o1', 'w1', 'fixtures-closed-pr', 'ok', 4),
+  ];
+  // Round 2: the closed-PR page with the panel shut. No state, so it says nothing about the dialog or the tray.
+  const sibling = row('r2', 'w2', 'fixtures-closed-pr', 'ok', 120, { variant: 'closed-pr' });
+  const fixes = [fix('fxA', at(90), 11), fix('fxB', at(91), 12)];
+  const t1 = audit('t1', 1, 'completed', 'w1');
+  const t2 = audit('t2', 2, 'completed', 'w2', { createdAt: at(100) });
+  const open = (m: ReturnType<typeof buildVisualReviewModel>) => m.cells.filter(c => c.fixCheck && c.fixCheck.state !== 'check').map(c => c.key).sort();
+
+  it('AC-15: a shot of another state, or of no known state, resolves none of them', () => {
+    const m = buildVisualReviewModel(input({ shots: [...round1, sibling], tasks: [t1, t2, ...fixes] }));
+    expect(m.resolvedElsewhere).toEqual([]);
+    expect(open(m)).toEqual([
+      `${R}|mobile|abandon-reason · closed pr awaiting confirmation`,
+      `${R}|mobile|abandon-reason · closed pr awaiting confirmation shot 2`,
+      `${R}|mobile|visual review boot failed`,
+    ]);
+  });
+
+  it('I-15: the audit finished without them and rounds are left: one recapture is owed, naming each exact screen', () => {
+    const m = buildVisualReviewModel(input({ shots: [...round1, sibling], tasks: [t1, t2, ...fixes] }));
+    expect(m.recapture?.next).toBe('capture');
+    expect(m.recapture?.screens.map(s => [s.route, s.viewport, s.state, s.fixPrNumber])).toEqual([
+      [R, 'mobile', 'abandon-reason', 11],
+      [R, 'mobile', 'abandon-reason', 11],
+      [R, 'mobile', null, 12],
+    ]);
+    // Still waiting, not a decision: the capture is the next step.
+    expect(m.cells.filter(c => c.fixCheck?.state === 'awaiting_capture')).toHaveLength(3);
+    expect(m.queue).toEqual([]);
+  });
+
+  it('I-15: while an audit that has not finished will take them, the recapture reads queued', () => {
+    const t3 = audit('t3', 3, 'pending', 'w3', { createdAt: at(130), workers: [] });
+    const m = buildVisualReviewModel(input({ shots: [...round1, sibling], tasks: [t1, t2, t3, ...fixes] }));
+    expect(m.recapture?.next).toBe('queued');
+  });
+
+  it('I-15: once a recapture audit finished without them, a person decides: Fixed or Still broken, in the queue', () => {
+    const t3 = audit('t3', 3, 'completed', 'w3', { createdAt: at(130), context: { surfaceAuditRound: 3, visualReview: { reason: 'recapture' } } });
+    const m = buildVisualReviewModel(input({ shots: [...round1, sibling], tasks: [t1, t2, t3, ...fixes] }));
+    expect(m.recapture?.next).toBe('decide');
+    const decide = m.cells.filter(c => c.fixCheck?.state === 'decide');
+    expect(decide).toHaveLength(3);
+    expect(decide.every(c => c.standing === 'to_review')).toBe(true);
+    expect(m.queue).toHaveLength(3);
+    expect(m.summary.toReview).toBe(3);
+  });
+
+  it('I-15: with the round-cap question open, a person decides at once', () => {
+    const m = buildVisualReviewModel(input({ shots: [...round1, sibling], tasks: [t1, t2, ...fixes], roundCapOpen: true }));
+    expect(m.recapture?.next).toBe('decide');
+    expect(m.phase).toBe('needs_you');
+  });
+
+  it('I-15: a decision made after the merge settles a decide cell', () => {
+    const t3 = audit('t3', 3, 'completed', 'w3', { createdAt: at(130), context: { surfaceAuditRound: 3, visualReview: { reason: 'recapture' } } });
+    const m = buildVisualReviewModel(input({
+      shots: [...round1, sibling], tasks: [t1, t2, t3, ...fixes],
+      reviews: [review('b1', { agentVerdict: 'issue', decision: 'looks_right', relation: 'dispute', createdAt: at(200) })],
+    }));
+    const tray = m.cells.find(c => c.key === `${R}|mobile|visual review boot failed`)!;
+    expect(tray.fixCheck?.state).toBe('decide');
+    expect(tray.standing).toBe('fine');
+    expect(m.queue).toHaveLength(2);
+  });
+
+  it('AC-15: a later shot of the same route, viewport and state moves the finding to a Fixed / Still broken check', () => {
+    const dialog = row('r3', 'w3', 'fixtures-abandon-reason-open', 'ok', 140, { state: 'abandon-reason' });
+    const t3 = audit('t3', 3, 'completed', 'w3', { createdAt: at(130) });
+    const m = buildVisualReviewModel(input({ shots: [...round1, sibling, dialog], tasks: [t1, t2, t3, ...fixes] }));
+    const first = m.cells.find(c => c.key === `${R}|mobile|abandon-reason · closed pr awaiting confirmation`)!;
+    expect(first.fixCheck).toMatchObject({ state: 'check', beforeShotId: 'd1' });
+    expect(first.current.shot.id).toBe('r3');
+    expect(first.standing).toBe('to_review');
+    // The second shot of the same dialog is the same screen: the check covers it.
+    expect(m.resolvedElsewhere.map(r => [r.key, r.resolvedBy])).toEqual([
+      [`${R}|mobile|abandon-reason · closed pr awaiting confirmation shot 2`, first.key],
+    ]);
+    // The recapture's own cell is folded into the check, never counted twice.
+    expect(m.cells.filter(c => c.current.shot.id === 'r3')).toHaveLength(1);
+    // The tray, with no known state, is still waiting.
+    expect(m.recapture?.screens.map(s => s.key)).toEqual([`${R}|mobile|visual review boot failed`]);
   });
 });
 
@@ -584,7 +701,7 @@ describe('buildVisualReviewModel: phase', () => {
       roundCapOpen: true,
     }));
     expect(cap.needsYou?.reason).toBe('round_cap');
-    expect(describeVisualPhase(cap).detail).toContain('Issues remain after 2 rounds');
+    expect(describeVisualPhase(cap).detail).toBe('Issues remain after the automatic fixes. Decide whether to fix or waive them.');
     // Not needs_you: no reason.
     expect(buildVisualReviewModel(input({ shots: [shot('w1', '/a', 'mobile', 'ok', 1)], tasks })).needsYou).toBeNull();
   });

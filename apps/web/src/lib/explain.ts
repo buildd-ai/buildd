@@ -694,7 +694,8 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
   // An open audit row also needs it: the header follows the visual review state
   // (waived, blocked, running), not the audit task row (spec 8e137fdb I-1, I-5).
   const openAudit = loaded.some(t => OPEN_TASK_STATUSES.has(t.status) && isMissionAuditTask(t));
-  const visualReviewState = !(completion.code === 'surface_audit_missing' || openAudit) ? null
+  // An open mission PR needs it too: "ready to merge" is said only when the review does not hold it (spec 072de598 I-12).
+  const visualReviewState = !(completion.code === 'surface_audit_missing' || completion.code === 'awaiting_mission_pr' || openAudit) ? null
     : inputs ? inputs.visualReviewState
     : await import('@/lib/workflow/visual-review-state-load')
         .then(m => m.getMissionVisualReviewState(missionId))
@@ -849,7 +850,7 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
     // at all. `open` / `closed` / `not_opened` are passed through as-is:
     // `mergeFact` is what turns each into honest text (or none).
     missionPr: integrationPr && integrationPr.state !== 'merged'
-      ? { state: integrationPr.state, prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl }
+      ? { state: integrationPr.state, prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl, ...(integrationPr.ciRed ? { ciRed: true } : {}) }
       : null,
     ciRed: deriveCiRedChains(
       (completion?.awaitingMergeDetails ?? []).filter(d => !d.closedUnsuperseded),
