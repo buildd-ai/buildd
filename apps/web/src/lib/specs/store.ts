@@ -145,8 +145,8 @@ async function afterRevisionWritten(spec: SpecRow, revision: SpecRevisionRow, bo
   }
   // The draft head goes into the spec corpus once the response is out (R-106).
   try {
-    const { scheduleSpecDraftIndex } = await import('./knowledge');
-    scheduleSpecDraftIndex(spec.id);
+    const { SPEC_DRAFT_INDEX } = await import('@/modules');
+    await SPEC_DRAFT_INDEX(spec.id);
   } catch (err) {
     console.error(`[specs] scheduling the draft index of ${spec.id} failed:`, err);
   }
