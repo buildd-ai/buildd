@@ -4,6 +4,13 @@
  * and its budget, and writes the usage ledger; this client holds only the worker's buildd token. There is no
  * database access, no provider key and no fallback: with no server, token or worker configured every call
  * fails, so the run is INCOMPLETE.
+ *
+ * Why this route and not the registered-verification route: `POST /api/specs/outcomes/[taskId]/verify`
+ * grades a governed task's pinned criteria against stored captures; a benchmark corpus is not a governed
+ * task, so it cannot name one. The capability route is the same broker (scoped policy, spend rules, durable
+ * ledger: registered-verification R-17) and docs/specs/model-inference-agent-capability.md names this shape
+ * ("the agent runs its own script and dataset on its own runner"). It needs an approved model.inference
+ * grant; without one the run is INCOMPLETE, never a fallback.
  */
 import type { DecisionQuestions } from '../packages/ai-kit/src/decide';
 import type { decisionCall, DecisionResult } from '../packages/core/decision-client';
