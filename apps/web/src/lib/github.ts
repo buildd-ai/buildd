@@ -518,6 +518,8 @@ export interface GitHubCheckSuiteEvent {
   check_suite: {
     id: number;
     head_sha: string;
+    /** The branch the suite ran on (null for a suite on a fork's or a detached commit). */
+    head_branch?: string | null;
     status: string;
     conclusion: string | null;
     pull_requests: Array<{
