@@ -15,10 +15,10 @@ import type { SpecPageView } from '@/lib/specs/page-view';
  *   change list against it, the line diff behind a toggle.
  * - `approved`: an approved spec with nothing waiting, whose text is titled
  *   differently, with work against it and its repo file: the desktop rail.
- *
- * `#history` (or `#related`) opens that tab.
+ * - `compare`: the same spec opened on History with revisions 2 and 3 picked
+ *   and their diff above the rows.
  */
-export const SPEC_IMPORT_REVIEW_VARIANTS = ['imported', 'first', 'amended', 'approved'] as const;
+export const SPEC_IMPORT_REVIEW_VARIANTS = ['imported', 'first', 'amended', 'approved', 'compare'] as const;
 type Variant = (typeof SPEC_IMPORT_REVIEW_VARIANTS)[number];
 
 const SECTIONS = Array.from({ length: 12 }, (_, i) => [
@@ -74,6 +74,10 @@ const AMENDED_REVIEW = {
 };
 
 function viewOf(v: Variant): Extract<SpecPageView, { state: 'ok' }> {
+  if (v === 'compare') {
+    const amended = viewOf('amended');
+    return { ...amended, review: null, canApprove: false, compare: { ...AMENDED_REVIEW, from: 2, to: 3 } };
+  }
   if (v === 'approved') {
     return {
       ...BASE, spec: { ...BASE.spec, status: 'approved', approvedRevision: 2 }, standing: 'approved at revision 2', reading: { revision: 2, approved: true, isHead: true },
