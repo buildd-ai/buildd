@@ -169,6 +169,19 @@ export const RESTART_CONTINUE_MESSAGE =
   'If a command was running when it stopped, it was interrupted: check its effect before relying on it. ' +
   'If your last commit is a "wip: checkpoint" the runner made, it holds your uncommitted edits from before the stop; keep or reshape it as you see fit.';
 
+/** The first turn a session paused for an update reads (spec 47c97f48, R-5). */
+export const UPDATE_CONTINUE_MESSAGE =
+  'The buildd runner paused you to apply an update and has started again on the new version. Carry on with your task from where you stopped. ' +
+  'If a command was running when it paused you, it was interrupted: check its effect before relying on it. ' +
+  'If your last commit is a "wip: checkpoint" the runner made (and pushed), it holds your uncommitted edits from before the update; keep or reshape it as you see fit.';
+
+/**
+ * How long after continuing the agents paused for an update the runner waits
+ * to see whether any of them runs on the new version, before it hands off to
+ * the post-update canary (R-8).
+ */
+export const UPDATE_CONTINUE_PROBE_MS = 60_000;
+
 // ── the checkpoint ──────────────────────────────────────────────────────────
 
 export interface ShutdownCheckpoint {
@@ -217,6 +230,57 @@ export async function commitShutdownCheckpoint(
     return { committed: false, reason: err instanceof Error ? err.message.split('\n')[0] : String(err) };
   }
 }
+
+/** An update's checkpoint push, per agent: the push can wait on the network, the stop grace cannot. */
+export const UPDATE_PUSH_MS = 30_000;
+
+export interface UpdateCheckpoint extends ShutdownCheckpoint {
+  pushed: boolean;
+}
+
+/**
+ * Before an update restarts the runner (spec 47c97f48, R-4): commit a paused
+ * agent's uncommitted edits to its own branch, as a stop does, then push that
+ * branch so the work is safe off this machine. Never forced: a remote that
+ * moved on refuses it, and the reason says so. Bounded by `budgetMs`.
+ */
+export async function pushUpdateCheckpoint(
+  worktreePath: string,
+  workerId: string,
+  ownBranch: string | undefined,
+  budgetMs: number = UPDATE_PUSH_MS,
+): Promise<UpdateCheckpoint> {
+  const deadline = Date.now() + budgetMs;
+  const cp = await commitShutdownCheckpoint(worktreePath, workerId, ownBranch, Math.min(SHUTDOWN_CHECKPOINT_MS, budgetMs));
+  if (cp.reason || !ownBranch) return { ...cp, pushed: false, reason: cp.reason ?? 'the worker has no branch of its own on record' };
+  try {
+    await gitArgsAsync(['push', '--no-verify', '-q', 'origin', `HEAD:refs/heads/${ownBranch}`], {
+      cwd: worktreePath, timeoutMs: Math.max(1_000, deadline - Date.now()), env: process.env,
+    });
+    return { ...cp, pushed: true };
+  } catch (err) {
+    return { ...cp, pushed: false, reason: `push failed: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}` };
+  }
+}
+
+// ── the launcher ────────────────────────────────────────────────────────────
+
+/**
+ * Whether something restarts this process when it exits 75 after an update.
+ * The launchers buildd ships (install.sh's `buildd`, install.ps1's
+ * `buildd.cmd`) say so with BUILDD_LAUNCHER; a host launcher of its own (the
+ * Coder template's, which restarts on any exit) can set it too. A bare
+ * `bun run src/index.ts` has none: its update restart ends the process and
+ * nothing starts it again, which the server reports as an update stuck on it.
+ */
+export function restartLauncherKnown(env: Record<string, string | undefined> = process.env): boolean {
+  return !!env.BUILDD_LAUNCHER?.trim();
+}
+
+export const NO_LAUNCHER_WARNING =
+  'No launcher is known to restart this runner (BUILDD_LAUNCHER is not set; started as a bare `bun run`?). ' +
+  'After the update restart nothing may start it again: run it through `buildd`, `buildd service install`, ' +
+  'or your own restart loop with BUILDD_LAUNCHER set. Its paused agents continue on the next start.';
 
 // ── the signal ──────────────────────────────────────────────────────────────
 
