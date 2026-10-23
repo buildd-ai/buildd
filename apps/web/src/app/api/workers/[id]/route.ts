@@ -6127,6 +6127,10 @@ async function handleReviewerOutcomeIfNeeded(
         `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=300`,
       );
       if (Array.isArray(fetched)) currentFiles = fetched;
+      // A composition delta review (a release candidate's uncovered commits, a composed PR's
+      // novel paths) is judged on its delta only: the rest was approved on its own PRs.
+      const { scopeToCompositionDelta } = await import('@/lib/reviewer');
+      currentFiles = scopeToCompositionDelta(currentFiles, ctx);
       // An integration-refresh PR is judged on its trunk delta here too, as
       // pre-flight does (reviewer-subscribers.ts): its own diff against the
       // mission branch shows a renumbered mission migration as deleted.

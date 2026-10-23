@@ -33,10 +33,17 @@ mock.module('@/lib/team-access', () => ({
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
 
+const mockGithubReposFindFirst = mock(() => null as any);
+// The workflow file the save-time amend check reads (GitHub contents API), base64 like GitHub serves it.
+let workflowYaml: string | null = null;
+const mockGithubApi = mock(async (_i: number, _path: string) => (workflowYaml === null ? null : { content: Buffer.from(workflowYaml).toString('base64') }));
+mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: { teams: { findFirst: async () => null },
       workspaces: { findFirst: mockWorkspacesFindFirst },
+      githubRepos: { findFirst: mockGithubReposFindFirst },
     },
     update: () => mockWorkspacesUpdate(),
   },
@@ -49,6 +56,7 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' },
   workspaces: { id: 'id', teamId: 'teamId' },
+  githubRepos: { id: 'githubRepos.id' },
 }));
 
 const originalNodeEnv = process.env.NODE_ENV;
@@ -1079,6 +1087,63 @@ describe('PATCH /api/workspaces/[id]/config', () => {
     expect(data.releaseConfig.candidate).toEqual({ branches: ['release/v*'], sourceBranch: 'dev', authors: ['github-actions[bot]'] });
     expect(data.releaseConfig.ref).toBe('dev');
     expect(data.releaseConfig.prodBranch).toBe('main');
+  });
+
+  describe('candidate.amend: the declared amend contract', () => {
+    const BUILDD_AMEND = { mode: 'inputs', versionInput: 'amend', confirmInput: 'amend_confirm' };
+    const policy = (amend: unknown) => candidateRelease({ branches: ['release/v*'], sourceBranch: 'dev', authors: ['github-actions[bot]'], amend });
+    beforeEach(() => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', githubRepoId: 'repo-1', gitConfig: {} });
+      mockGithubReposFindFirst.mockResolvedValue({ id: 'repo-1', fullName: 'o/r', installation: { installationId: 7 } });
+      mockGithubApi.mockClear();
+      workflowYaml = 'on:\n  workflow_dispatch:\n    inputs:\n      force: {}\n      amend: {}\n      amend_confirm: {}\n';
+    });
+
+    it('saves a mapping the workflow file at ref declares, after reading that file at that ref', async () => {
+      const res = await patchRelease(policy(BUILDD_AMEND));
+      expect(res.status).toBe(200);
+      expect((await res.json()).releaseConfig.candidate.amend).toEqual(BUILDD_AMEND);
+      expect(mockGithubApi.mock.calls[0][0]).toBe(7);
+      expect(mockGithubApi.mock.calls[0][1]).toBe('/repos/o/r/contents/.github/workflows/release.yml?ref=dev');
+    });
+
+    it('(b) refuses a mapping whose inputs the workflow does not declare, naming the missing input', async () => {
+      workflowYaml = 'on:\n  workflow_dispatch:\n    inputs:\n      amend: {}\n';
+      const res = await patchRelease(policy(BUILDD_AMEND));
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.field).toBe('candidate.amend');
+      expect(body.error).toContain('`amend_confirm`');
+      expect(mockWorkspacesUpdate).not.toHaveBeenCalled();
+    });
+
+    it('(b) refuses when the workflow file cannot be read, or has no workflow_dispatch', async () => {
+      workflowYaml = null;
+      expect((await patchRelease(policy(BUILDD_AMEND))).status).toBe(422);
+      workflowYaml = 'on: push\n';
+      const res = await patchRelease(policy({ mode: 'redispatch' }));
+      expect(res.status).toBe(422);
+      expect((await res.json()).error).toContain('no workflow_dispatch trigger');
+    });
+
+    it('refuses a malformed contract, and one on a strategy buildd cannot dispatch', async () => {
+      for (const amend of [{ mode: 'magic' }, { mode: 'inputs' }, { mode: 'inputs', versionInput: 'a b' }, { mode: 'inputs', versionInput: 'v', confirmInput: 'v' }]) {
+        expect((await patchRelease(policy(amend))).status).toBe(422);
+      }
+      const branchMerge = { ...policy(BUILDD_AMEND), strategy: 'branch_merge' };
+      const res = await patchRelease(branchMerge);
+      expect(res.status).toBe(422);
+      expect((await res.json()).error).toContain('workflow_dispatch');
+      expect(mockGithubApi).not.toHaveBeenCalled();
+    });
+
+    it('(a) no contract stays no contract: nothing is inferred from the workflow input names', async () => {
+      const res = await patchRelease(candidateRelease({ branches: ['release/v*'], sourceBranch: 'dev', authors: ['github-actions[bot]'] }));
+      expect(res.status).toBe(200);
+      expect((await res.json()).releaseConfig.candidate.amend).toBeUndefined();
+      expect(mockGithubApi).not.toHaveBeenCalled();
+    });
   });
 
   it('keeps releaseBranch on save (it was silently dropped before)', async () => {

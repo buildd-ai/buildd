@@ -261,3 +261,17 @@ describe('Now strip before the first update', () => {
     expect(html).toContain('worker-now-headline');
   });
 });
+
+describe('stalled run (Navigation R-7, AC-15)', () => {
+  it('flags the run in amber with how long it has been quiet, and ages the Now line in amber', () => {
+    const html = renderToStaticMarkup(<NowStrip now={live()} nowMs={20} stall={{ quietMs: 48 * 60_000, label: 'Running 1h 12m · no progress for 48m' }} />);
+    const flag = html.slice(html.indexOf('data-testid="worker-stall"'));
+    expect(flag).toMatch(/^data-testid="worker-stall"[^>]*text-status-warning/);
+    expect(flag).toContain('Running 1h 12m · no progress for 48m');
+    expect(html).toMatch(/text-status-warning"[^>]*>· updated/);
+  });
+
+  it('a run making progress has no flag', () => {
+    expect(renderToStaticMarkup(<NowStrip now={live()} nowMs={20} />)).not.toContain('worker-stall');
+  });
+});

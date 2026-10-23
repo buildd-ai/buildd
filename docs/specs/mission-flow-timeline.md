@@ -155,14 +155,18 @@ An edge between two folded tasks is not drawn.
 
 ## 5. Critical path
 
-**R-15**: The critical path MUST be the longest path through the gates:
-start from the task that finishes last, step back through whichever of its
-gates finishes last, and stop at a task with no gates (`criticalPath`). Ties go
-to the later row.
+**R-15**: The critical path MUST be the longest path through the declared
+dependencies (and lanes once overlap scheduling ships), scheduled without the
+same-files waits: start from the task that finishes last, step back through
+whichever of its gates finishes last, and stop at a task with no gates
+(`criticalPath`). Ties go to the later row. It is the one computation behind
+this sentence and the Build summary's `finish depends on` clause (Navigation
+d25d923d R-22, `finishDependsOn`), so both name the same task.
 
 **R-16**: Above the timeline, one sentence MUST name the first unlanded
 task on the critical path by its display name and its display state's word in
-lower case, then the rest of the path by display name (`criticalPathLine`):
+lower case, then the rest of the path by display name (`criticalPathLine`, the same
+`criticalPath` behind `finishDependsOn`):
 `Finish is set by Add retry budget (running), then Wire the claim gate →
 Ship the readout.` It MUST be the same computation, with the same words, as
 the finish sentence in the mission page's Build summary (Navigation d25d923d
@@ -227,7 +231,8 @@ elapsed time from the window start (`0`, `2h`, `3h`).
 ## Code surface
 
 - `apps/web/src/lib/flow-timeline.ts`: `buildFlowTimeline`, `flowGates`,
-  `criticalPath`, `finishSetBy`, `criticalPathLine`, `defaultFlowSelection`,
+  `criticalPath`, `finishSetBy`, `criticalPathLine`, `finishDependsOn`,
+  `missionFinishClause`, `flowTaskName`, `FINISH_NAMES_MAX`, `defaultFlowSelection`,
   `flowLit`, `flowEdges`, `shouldFoldMerged`, `layoutFlowTimeline`,
   `flowEdgePaths`, `flowAxisTicks`, `expectedMinutesFromPredictions`,
   `FLOW_AUDIT_WAIT_MS`,

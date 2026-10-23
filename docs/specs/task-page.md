@@ -3,12 +3,12 @@ title: Task Page
 status: active
 owner: max
 last_verified: 2026-10-22
-summary: The task page MUST lead with the deliverable, its track and one outcome, list checks by round from delivery facts, frame attempts by their parent, fit a phone's first screen, and open Code review only to substance.
+summary: The task page leads with the live run and steering while running, then one Build/Verify/Deliver timeline when stopped; Run holds execution material and Details holds spec, dependencies, attempts and time.
 domain: surfaces
-surfaces: [apps/web/src/app/app/(protected)/tasks/[id]/page.tsx, apps/web/src/lib/task-checks.ts, apps/web/src/lib/task-result.ts, apps/web/src/lib/workflow/projections.ts]
+surfaces: [apps/web/src/app/app/(protected)/tasks/[id]/page.tsx, apps/web/src/lib/task-timeline.ts, apps/web/src/lib/task-checks.ts, apps/web/src/lib/task-result.ts, apps/web/src/lib/workflow/projections.ts]
 related: [workflow-state-kernel, mission-task-lifecycle, surface-ia-home-missions-initiatives]
 keywords: [task detail, mobile header, show full title, review queued, no findings yet, review of PR, what shipped, why this, verdict block, review approved, updating branch, awaiting merge, repair 1, checks list, review round, attempt, reviewer task, fix attempt, structured output, technical summary, raw output, lifecycle track]
-verified_by: [apps/web/src/app/app/(protected)/tasks/[id]/mission-sibling-nav.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/MissionContextBar.test.tsx, apps/web/src/lib/workflow/escalation-copy.test.ts, apps/web/src/components/EscalationDecision.test.tsx, apps/web/src/lib/workflow/delivery-rounds.test.ts, apps/web/src/lib/projections-agree.test.tsx, packages/workflow-kernel/src/escalation-brief.test.ts, apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx, apps/web/src/lib/task-view.test.ts, apps/web/src/lib/task-sections.test.ts, apps/web/src/lib/task-live-view.test.ts, apps/web/src/lib/mission-board.test.ts]
+verified_by: [apps/web/src/lib/task-timeline.test.ts, apps/web/src/lib/run-stall.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/mission-sibling-nav.test.ts, apps/web/src/lib/workflow/escalation-copy.test.ts, apps/web/src/components/EscalationDecision.test.tsx, apps/web/src/lib/workflow/delivery-rounds.test.ts, apps/web/src/lib/projections-agree.test.tsx, packages/workflow-kernel/src/escalation-brief.test.ts, apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx, apps/web/src/lib/task-view.test.ts, apps/web/src/lib/task-sections.test.ts, apps/web/src/lib/task-live-view.test.ts, apps/web/src/lib/mission-board.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -32,13 +32,13 @@ assertions:
     type: "symbol_reachable"
     symbol: "taskDeliverySections"
     entry: "apps/web/src/app/app/(protected)/tasks/[id]/page.tsx"
-  - id: "mission-sibling-navigation"
+  - id: "task-timeline"
     type: "symbol_reachable"
-    symbol: "buildMissionSiblingNav"
-    entry: "apps/web/src/app/app/(protected)/tasks/[id]/mission-context-bar.ts"
-  - id: "mission-sibling-navigation-tests"
+    symbol: "buildTaskTimeline"
+    entry: "apps/web/src/app/app/(protected)/tasks/[id]/page.tsx"
+  - id: "task-timeline-tests"
     type: "test_file"
-    path: "apps/web/src/app/app/(protected)/tasks/[id]/mission-sibling-nav.test.ts"
+    path: "apps/web/src/lib/task-timeline.test.ts"
   - id: "checks-derived-once"
     type: "symbol_reachable"
     symbol: "deriveTaskChecks"
@@ -69,7 +69,7 @@ The page grew by accretion: a verdict card, a "What shipped" header, a
 lifecycle track, a PR card, related tasks and a worker feed each said where the
 task stood, in their own words. On a reviewer run of PR #4413 (task `47e6ef96`)
 it read, top to bottom: "What shipped" over the reviewer's title, "Reviewer ·
-reviewer · buildd", "Skip release", "Build → Audit · repair 1 → Land", a card
+reviewer · buildd", "Skip release", "Build → Verify · repair 1 → Deliver", a card
 saying "Done" twice with a "Why this?" disclosure, the parent task "Assigned",
 and the review's summary as serialized JSON. The PR's GitHub comment said
 "Repairing". None of it was a lie about a column; all of it misled. Nothing was
@@ -126,36 +126,45 @@ Cases the model handles explicitly:
 
 ## Information hierarchy (wireframe)
 
-Phone (390px), top to bottom; desktop is the same column beside the fact sheet.
+Phone (390px) and desktop use one reading column, at most 840px wide, never stretched to the window.
 
-```
-‹ Mission or Activity                              (compact; see §Mobile header)
-[eyebrow: result heading]                         (Review of PR #N / Fix for PR #N / Result / What shipped)
-<Title, ≤3 lines on a phone>                      h1, full width; "Show full title" when clipped
-[● status pill]                     [↳ Ask] [⋯]    (phone: one compact row under the title;
-                                                    desktop: pill and actions on the title row)
-type · scope · role · workspace · PR #N ↗         (role once, never twice; release badge on a deliverable only)
-Review of PR #N ›                                 (attempts only; links the deliverable; its full title
-                                                    is the link's accessible name and tooltip)
-✓ Build → ◐ Audit · in review → Land              (the one track, phrase per §State mapping)
-[● Review approved]  <one line of cause, if any>  (compact outcome row; a card only when it carries an action)
+| Phase | First content after the header | Following content |
+| --- | --- | --- |
+| Builder running | Live Now line, elapsed time, turns, files, lines, activity strip, milestones; Steer, Pause and Stop in that block | Questions and current checks, Details |
+| Builder stalled (no reported progress for 30 minutes) | The same live block, flagged `Running 1h 12m · no progress for 48m` in amber, the Now line's age in amber; Restart and Stop, Steer kept | As running |
+| Builder stopped | Status, then one timeline grouped Build, Verify, Deliver | Two-line summary, PR link, checks, Run, Details |
 
-CHECKS · PR #4413 · head e49b25b
-  ✓ Code review      Approved · round 2          ›  (expands per §Code review detail)
-  ◐ Tests            Checking                    ›  (expands: link to the PR's checks)
-  ↻ Merge            Updating branch                (no expansion)
-  ▸ Earlier rounds (1)                              (round 1 · changes requested → fix 1 of 3 completed)
+`buildTaskTimeline` is pure and uses stored delivery facts. Kernel review rounds
+come from `deliveryView.rounds`; ledger attempts nest under the round named by
+`triggerReason`. Unmatched CI failures and merge conflicts retain their own cause
+with the fix beneath it. Mechanical branch updates are Deliver events, never fixes.
+Legacy PRs use `buildLineage` and `ciAttemptTasks`. Build attempts use
+`groupAttemptHistory`, keeping consecutive lost claims as one bookkeeping event.
+Stage positions use `deliveryStageIndex`; an unstarted stage has no empty card.
+Round timestamps and CI results not present in the record are never invented.
+Times are ages (`12m ago`) from stored facts only: a build run's end (else start),
+the PR's merge time, a queued fix's creation. A kernel round or attempt, and a
+legacy lineage step (whose `at` is an offset label such as `+3m`), has no stored
+time and shows none. Durations stay in the
+event's subline.
 
-[result: what changed / review summary]            (lede card or readable summary)
+`runStall` (`apps/web/src/lib/run-stall.ts`) reads a stall from the newest reported
+milestone, else the run's start; a heartbeat is not progress. Only a `running`
+worker without an open question can stall. Restart re-queues the task
+(`/api/tasks/[id]/reassign?force=true`).
 
-▸ Technical summary                                 (readable prose only, never JSON)
-▸ Run details                                       (runner, turns, tokens, model, branch, worker history,
-    ▸ Raw output                                     raw structured output incl. confidence, wrapped)
-```
+Run, initially collapsed, holds the archived live view and milestones, session
+records, technical report, raw output, evidence files, artifacts, PR diagnostics,
+runner, branch and model. Details, also collapsed, shows what the task fixes
+(spec and criteria with their standing), dependencies by name, the tasks it blocks,
+attempt count and time, description and other reference facts. Dependents load for
+every task state in the second batch. There is no mission strip, sibling navigation,
+Execution Plan row, related-attempt list or separate Communication section. Empty
+loop histories and error evidence of unknown effect do not render.
 
-Removed from the default flow: the "Why this?" disclosure and its prose,
-the decision-ledger rows (operator-only, served by the platform-owner API), a second "Done" heading,
-the release badge on an attempt, raw JSON anywhere outside Raw output.
+The delivery checks remain available, including `#review-findings`. An answer
+link (`?respond=1`) still focuses the reply or opens the owning chat. `?artifact=`
+still opens the artifact viewer even when the artifact list is inside Run.
 
 ## State mapping
 
@@ -166,19 +175,19 @@ GitHub comment header (`DeliveryView.headline`):
 |---|---|---|---|
 | `WORKING` | Build | Agent working | — |
 | `AWAITING_PUSH` | Build · waiting for push | Waiting for the fix to reach GitHub | — |
-| `AWAITING_REVIEW`, round queued, no reviewer claimed | Audit · awaiting review | Review queued | Code review: Awaiting review |
-| `AWAITING_REVIEW`, round `reviewing` | Audit · in review | Reviewing | Code review: In review |
-| `CHANGES_REQUESTED` | Audit · changes requested | Changes requested · fix queued | Code review: Changes requested |
-| `FIXING` | Audit · fixing | Fixing review feedback | Code review: Changes requested, repair Fixing |
-| `REPAIRING(ci)` | Audit · fixing CI | Fixing CI | Tests: Failed, repair Fix queued / Fixing |
-| `REPAIRING(behind)` | Audit · updating branch | Updating branch | Merge: Updating branch |
-| `REPAIRING(conflict / migration)` | Audit · resolving conflicts (or the stalled/merge-conflict headline) | same | Merge: Conflict |
-| `APPROVED`, CI pending on head | Land · approved · checking | Approved · awaiting merge | Tests: Checking; Merge: Awaiting merge |
-| `APPROVED` | Land · awaiting merge | Approved · awaiting merge | Merge: Awaiting merge |
-| `LANDING` | Land · merging | Merging | Merge: Merging |
-| `MERGED` | ✓ Land | Merged | Merge: Merged |
-| `ESCALATED` | Audit · needs you | the escalation's own headline | the row the escalation names |
-| `CLOSED_UNMERGED` / `ABANDONED` | Land · not landed | Closed without merging / Abandoned | Merge: Closed |
+| `AWAITING_REVIEW`, round queued, no reviewer claimed | Verify · awaiting review | Review queued | Code review: Awaiting review |
+| `AWAITING_REVIEW`, round `reviewing` | Verify · in review | Reviewing | Code review: In review |
+| `CHANGES_REQUESTED` | Verify · changes requested | Changes requested · fix queued | Code review: Changes requested |
+| `FIXING` | Verify · fixing | Fixing review feedback | Code review: Changes requested, repair Fixing |
+| `REPAIRING(ci)` | Verify · fixing CI | Fixing CI | Tests: Failed, repair Fix queued / Fixing |
+| `REPAIRING(behind)` | Verify · updating branch | Updating branch | Merge: Updating branch |
+| `REPAIRING(conflict / migration)` | Verify · resolving conflicts (or the stalled/merge-conflict headline) | same | Merge: Conflict |
+| `APPROVED`, CI pending on head | Deliver · approved · checking | Approved · awaiting merge | Tests: Checking; Merge: Awaiting merge |
+| `APPROVED` | Deliver · awaiting merge | Approved · awaiting merge | Merge: Awaiting merge |
+| `LANDING` | Deliver · merging | Merging | Merge: Merging |
+| `MERGED` | ✓ Deliver | Merged | Merge: Merged |
+| `ESCALATED` | Verify · needs you | the escalation's own headline | the row the escalation names |
+| `CLOSED_UNMERGED` / `ABANDONED` | Deliver · not landed | Closed without merging / Abandoned | Merge: Closed |
 | `FAILED` | Build · failed | Failed | — |
 
 "Repairing" is reserved for an active code repair by an agent. A branch
@@ -188,7 +197,7 @@ The outcome row is the *page subject's* outcome: on a reviewer run it is the
 review's verdict (Review approved / Changes requested / Escalated / Review
 finished), on a deliverable it is the task verdict (lib/task-verdict.ts). The
 parent's delivery stage is the track's job, so the two cannot contradict:
-"Review approved" over "Land · awaiting merge" is two true facts.
+"Review approved" over "Deliver · awaiting merge" is two true facts.
 
 "What shipped" heads the result only when the delivery is merged (or, without
 a delivery, the task completed with no PR). An approved or open PR's result is
@@ -202,7 +211,7 @@ never described as released.
 - The outcome row never repeats its own label as a heading: a headline equal to
   the chip label, or starting with it, is reduced to the remainder or dropped.
 - A review attempt's track and checks come from its parent delivery; its own
-  completion never makes the track read Land or Merged.
+  completion never makes the track read Deliver or Merged.
 - The Lifecycle track reads "repair" only for `FIXING` or an agent-mode
   `REPAIRING`; `REPAIRING(behind)` reads "updating branch".
 - `DeliveryView.headline` for `REPAIRING(behind)` is "Updating branch", or
@@ -238,11 +247,10 @@ never described as released.
   the PR card drops its "#N · repo · merged" header line and Claim → merge
   figure. The card draws only recorded figures (diff counters, more than one
   attempt, the diff bar), and no card at all when there are none; PR history
-  stays. The status row's link is the way to the PR at every width.
+  stays. The link after the summary is the way to the PR at every width.
 - The task page is the single task view at every width. Mission task links,
   strip cells, Flow's Open task link and History rows open it, carrying the
-  mission's `?from=` back context. The mission context bar's sibling links open
-  sibling task pages in feed order (`buildMissionSiblingNav`).
+  mission's `?from=` back context. The back link returns to the mission; sibling navigation is not rendered.
 - `loadTaskView` reads workers and the open question. Workers are ordered by
   `createdAt`, then `id`; the page shows the newest live worker, else the newest,
   and drops its question once the task ends or a failure recovery owns the next step.
@@ -342,8 +350,15 @@ branch update" for a carried approval), binding what follows to that round.
 
 ## Acceptance criteria
 
-- AC-1: GIVEN a completed reviewer task with `structuredOutput {summary, verdict: "approve", confidence: 0.8}` whose parent delivery is `APPROVED` WHEN the page renders THEN the outcome row reads "Review approved", the track reads "Land · awaiting merge", the result is headed "Review of PR #N", and no element contains "What shipped", "Why this?", "repair 1" or the literal `"confidence"` outside Raw output.
-- AC-2: GIVEN a delivery `REPAIRING` with `stateReason` `behind` WHEN `deriveDeliveryView` runs THEN `headline` is "Updating branch", and `headerLifecycle` returns step Audit with phrase "updating branch" and not state `fixing`.
+- AC-22: GIVEN a running builder WHEN its page renders THEN the live block leads and includes steering, pause and stop; GIVEN a merged task THEN the grouped timeline leads and execution details are inside collapsed Run.
+- AC-23: GIVEN two review rounds and repairs whose triggerReason names each round WHEN the timeline renders THEN each repair appears once under its own round; mechanical refreshes read Branch update in Deliver.
+- AC-24: GIVEN a legacy task with CI retries WHEN the timeline renders THEN retries nest beneath their CI failure and are not repeated as build attempts or related tasks.
+- AC-25: GIVEN any task state WHEN Details opens THEN it names the spec and criteria, waits on and blocks by task name, attempts and time; no mission strip, Execution Plan or unknown-effect error renders.
+- AC-26: GIVEN a running builder with no reported progress for 30 minutes WHEN its page renders THEN the live block reads `Running <elapsed> · no progress for <quiet>` in amber and offers Restart and Stop with Steer, and no Pause.
+- AC-27: GIVEN a stopped task WHEN the timeline renders THEN every event with a stored time shows it as an age and its duration only in the subline; an event without a stored time shows no time.
+
+- AC-1: GIVEN a completed reviewer task with `structuredOutput {summary, verdict: "approve", confidence: 0.8}` whose parent delivery is `APPROVED` WHEN the page renders THEN the outcome row reads "Review approved", the track reads "Deliver · awaiting merge", the result is headed "Review of PR #N", and no element contains "What shipped", "Why this?", "repair 1" or the literal `"confidence"` outside Raw output.
+- AC-2: GIVEN a delivery `REPAIRING` with `stateReason` `behind` WHEN `deriveDeliveryView` runs THEN `headline` is "Updating branch", and `headerLifecycle` returns step Verify with phrase "updating branch" and not state `fixing`.
 - AC-3: GIVEN a delivery `REPAIRING` with `stateReason` `ci` and an agent `ci` attempt running WHEN checks are derived THEN the Tests row is Failed with an attached repair reading Fixing and the repair task link.
 - AC-4: GIVEN a delivery `MERGED` WHEN checks are derived THEN the Merge row reads Merged; GIVEN `APPROVED` it reads Awaiting merge and never Merged.
 - AC-5: GIVEN rounds 1 (`request_changes`, head A) and 2 (`approve`, current head B) WHEN checks are derived THEN the current Code review reads Approved · round 2 and round 1 appears only under history with its review_fix repair.
@@ -353,7 +368,7 @@ branch update" for a carried approval), binding what follows to that round.
 - AC-9: GIVEN a reviewer task titled "[reviewer] PR #N: …" with role name "Reviewer" WHEN `taskHeading` runs THEN the eyebrow contains "Reviewer" exactly once.
 - AC-10: GIVEN no kernel-owned delivery, or a delivery with no PR, WHEN the page renders THEN no checks list is drawn (no invented rows).
 - AC-11: GIVEN a `pr_checks_green` loop satisfied on its 2nd evaluation (`loopIteration` 2, `maxLoops` 3, two history rows) WHEN the chip and Loop history render THEN the chip reads "LOOP SATISFIED · 2/3", the list shows two iterations, and no full UUID or `pr_checks_green` appears.
-- AC-12: GIVEN a completed task whose PR merged with no recorded diff counters and one attempt WHEN the page renders THEN the status row reads "Shipped · PR #N merged" with the claim-to-merge time and a "View PR #N" link, the side panel has no PR row, no element repeats "#N · repo · merged", no Claim → merge figure is drawn, and PR history is still shown.
+- AC-12: GIVEN a completed task whose PR merged with no recorded diff counters and one attempt WHEN the page renders THEN the status row reads "Shipped · PR #N merged" with the claim-to-merge time and a PR link follows the timeline and summary, the side panel has no PR row, no element repeats "#N · repo · merged", no Claim → merge figure is drawn, and PR history is still shown.
 - AC-13: GIVEN the reviewer run's own page, round 1 `queued` on the current head and the reviewer task `pending` WHEN the checks render THEN Code review is a disclosure opening to "Round 1 · head <sha7>" and "Review queued · no findings yet", with no "This review run" and no link to the page itself; with the reviewer task `in_progress` (or the round `reviewing`) it reads "Review in progress · no findings yet" and states no start time.
 - AC-14: GIVEN the reviewer's own page and a `decided` round whose reviewer left a summary WHEN the row opens THEN the summary renders as prose and no "Open review run" link is drawn; GIVEN another page THEN the same detail is followed by a 44px "Open review run ›".
 - AC-15: GIVEN a `decided` round whose reviewer left no summary WHEN the row opens THEN it reads "The review finished without written findings" and the detail contains no "approv…"; GIVEN the reviewer rows could not be read THEN it reads "Couldn’t load the review’s findings" with a 44px "Try again".
@@ -386,12 +401,6 @@ branch update" for a carried approval), binding what follows to that round.
 - `apps/web/src/lib/task-live-view.ts` — `liveWorkerViewProps` / `workerSteerProps`: the live run view and steer panel props, for the task page.
 - `apps/web/src/lib/task-view-pick.ts` — `pickTaskView`, database-free, so the mission board picks the same worker.
 - `apps/web/src/components/task/TaskDeliverables.tsx` — the task page's Deliverables block.
-
-- `apps/web/src/app/app/(protected)/tasks/[id]/mission-sibling-nav.ts` —
-  `buildMissionSiblingNav`: sibling page links in feed order with mission back context.
-- `apps/web/src/app/app/(protected)/tasks/[id]/MissionContextBar.tsx` — the
-  mission back link, pulse and sibling controls; stepping replaces the current
-  task page's history entry.
 
 ## Regression cases (visual)
 

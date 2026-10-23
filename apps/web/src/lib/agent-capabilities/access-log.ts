@@ -7,9 +7,10 @@
  * shown as a repo's name or a PR number, never an internal row id.
  */
 import { db } from '@buildd/core/db';
-import { agentCapabilityDecisions, githubRepos, workspaces } from '@buildd/core/db/schema';
+import { agentCapabilityDecisions, capabilityGrants, githubRepos, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, asc, desc, eq, gte, inArray } from 'drizzle-orm';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { isOpenAccessRequest, runClosure } from '../open-ask';
 
 export interface CapabilityRow {
   occurredAt: Date;
@@ -49,7 +50,24 @@ export interface AccessItem {
   grantId: string | null;
   /** A capability request still waiting on a person (decided in Needs You). */
   pending: boolean;
+  /**
+   * A request that was never decided but can no longer be: its task or agent
+   * run ended, or the request closed. Plain words for why; null otherwise.
+   */
+  closed: string | null;
 }
+
+/** Where each request this task made stands now, read from its grant row and run. */
+export interface RequestRunState {
+  taskStatus: string | null;
+  /** By grant id: the row's status and its worker's status. */
+  requests: ReadonlyMap<string, { status: string; workerStatus: string | null }>;
+}
+
+const CLOSED_WHY: Record<string, string> = {
+  task_terminal: 'the task ended',
+  worker_not_live: 'the agent run stopped',
+};
 
 /** Run credentials: issued by buildd to the run itself, never requested or approved. */
 const RUN_CREDENTIALS = new Set(['task_token.mint', 'github.repo_grant', 'model.endpoint', 'model.inference']);
@@ -117,7 +135,7 @@ function targetText(row: CapabilityRow, repoNames: ReadonlyMap<string, string>):
  * token renewed every hour) fold into one item with a count; refusals never
  * fold, each one is something to read.
  */
-export function summarizeAccess(rows: readonly CapabilityRow[], repoNames: ReadonlyMap<string, string> = new Map()): AccessItem[] {
+export function summarizeAccess(rows: readonly CapabilityRow[], repoNames: ReadonlyMap<string, string> = new Map(), run?: RequestRunState): AccessItem[] {
   const out: AccessItem[] = [];
   for (const row of [...rows].sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime())) {
     const decision = row.decision === 'refused' ? 'refused' : 'allowed';
@@ -144,11 +162,24 @@ export function summarizeAccess(rows: readonly CapabilityRow[], repoNames: Reado
       source: RUN_CREDENTIALS.has(row.capability) ? 'run' : 'grant',
       grantId: row.capability.startsWith('capability.') && r0(row).startsWith('grant:') ? r0(row).slice(6) : null,
       pending: row.capability === 'capability.request' && (row.reasonCode ?? '').startsWith('pending_approval:'),
+      closed: null,
     });
   }
   // A request stops waiting once a later row decides the same grant.
   const decided = new Set(out.filter(i => i.grantId && ['capability.approve', 'capability.deny', 'capability.revoke'].includes(i.capability)).map(i => i.grantId));
   for (const i of out) if (i.pending && i.grantId && decided.has(i.grantId)) i.pending = false;
+  // A request is waiting only while it is open (`isOpenAccessRequest`): one
+  // whose row is gone, closed, or on an ended run reads as closed, never as a
+  // Review link. Fails closed when the row cannot be found.
+  if (run) {
+    for (const i of out) {
+      if (!i.pending) continue;
+      const g = i.grantId ? run.requests.get(i.grantId) : undefined;
+      if (g && isOpenAccessRequest(g.status, run.taskStatus, g.workerStatus)) continue;
+      i.pending = false;
+      i.closed = CLOSED_WHY[runClosure(run.taskStatus, g?.workerStatus) ?? ''] ?? 'no longer open';
+    }
+  }
   return out;
 }
 
@@ -172,7 +203,29 @@ export async function loadTaskAccess(taskId: string, limit = 300): Promise<Acces
     limit,
     columns: ROW_COLUMNS,
   }) as CapabilityRow[];
-  return summarizeAccess(rows, await repoNamesFor(rows));
+  // Only a request that still reads as waiting needs its run checked: most
+  // tasks have none, and they pay no extra query.
+  const waiting = rows.some(r => r.capability === 'capability.request' && (r.reasonCode ?? '').startsWith('pending_approval:'));
+  const [repoNames, run] = await Promise.all([repoNamesFor(rows), waiting ? requestRunState(taskId) : undefined]);
+  return summarizeAccess(rows, repoNames, run);
+}
+
+/**
+ * The task's status and, for each of its capability requests, the row's and
+ * its worker's status, in one query. No row found leaves the task status
+ * unknown, which `runClosure` reads as ended: fail closed.
+ */
+async function requestRunState(taskId: string): Promise<RequestRunState> {
+  const grants = await db
+    .select({ id: capabilityGrants.id, status: capabilityGrants.status, workerStatus: workers.status, taskStatus: tasks.status })
+    .from(capabilityGrants)
+    .leftJoin(workers, eq(workers.id, capabilityGrants.workerId))
+    .leftJoin(tasks, eq(tasks.id, capabilityGrants.taskId))
+    .where(eq(capabilityGrants.taskId, taskId));
+  return {
+    taskStatus: grants[0]?.taskStatus ?? null,
+    requests: new Map(grants.map(g => [g.id, { status: g.status as string, workerStatus: (g.workerStatus as string | null) ?? null }])),
+  };
 }
 
 // ─── Health ────────────────────────────────────────────────────────────────

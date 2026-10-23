@@ -852,6 +852,17 @@ export type ReleaseTrigger =
 // Stored as jsonb, so this is a free-form shape (no migration on change). All
 // step-specific fields are optional; `resolveReleaseStrategy` validates them
 // per the chosen strategy.
+/**
+ * The release workflow's declared way to move an open frozen candidate.
+ *  - `inputs`: dispatch the workflow with `versionInput` (and `confirmInput`,
+ *    when the workflow asks for the version twice) set to the candidate version.
+ *  - `redispatch`: dispatch the workflow with its ordinary inputs; the team's
+ *    pipeline re-cuts the candidate itself.
+ */
+export type ReleaseCandidateAmendContract =
+  | { mode: 'inputs'; versionInput: string; confirmInput?: string }
+  | { mode: 'redispatch' };
+
 export interface WorkspaceReleaseConfig {
   // Whether this workspace is configured for releases. Projects without this never release.
   enabled: boolean;
@@ -896,6 +907,12 @@ export interface WorkspaceReleaseConfig {
     // GitHub logins allowed to open candidate PRs: the release workflow's
     // identity (e.g. 'github-actions[bot]'). A PR by anyone else is ordinary.
     authors: string[];
+    // How buildd may move an open candidate once the dev-side fix for its red
+    // CI merges (lib/release/candidate-amend.ts). No default: absent ⇒ buildd
+    // dispatches nothing and says a re-cut is needed. Checked against the
+    // workflow file's workflow_dispatch inputs at `ref` on save and before
+    // every dispatch (packages/core/release-config-shape.ts).
+    amend?: ReleaseCandidateAmendContract;
   };
 
   // Deploy target for verifying the production deploy completed

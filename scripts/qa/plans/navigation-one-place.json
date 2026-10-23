@@ -6,7 +6,7 @@
         "key": "open-task-page",
         "steps": [
           { "action": "click", "selector": "css:[data-testid=\"task-strip-cells\"] button[data-id]:first-of-type" },
-          { "action": "waitFor", "selector": "testid:mission-context-bar", "timeoutMs": 30000 }
+          { "action": "waitFor", "selector": "testid:task-header", "timeoutMs": 30000 }
         ]
       }
     ]
