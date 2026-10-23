@@ -1038,7 +1038,9 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     // A frozen release candidate (release-flow.md AC-14, AC-25 to AC-27) has no delivery, so its
     // composition is attested here, at its exact head, before anyone is asked: every change reviewed
     // on its own PR needs no reviewer, and only commits no review covered get one, over just those.
-    const candidate = act && adoption?.kind === 'gate' && adoption.why === 'release' && status.state === 'not_requested'
+    // `why` lives only on the gate answer; the door routes that answer itself further down.
+    const releaseGate = !!adoption && 'why' in adoption && adoption.why === 'release';
+    const candidate = act && releaseGate && status.state === 'not_requested'
       ? await (deps.candidateReview ?? (await import('@/lib/workflow/candidate-review')).candidateReviewScope)({
         workspaceId, installationId, repoFullName, prNumber, releaseConfig: input.releaseConfig ?? null,
       }).catch((err) => { console.warn(`[pr-landing] candidate composition for ${repoFullName}#${prNumber} failed; full review:`, err); return null; })
