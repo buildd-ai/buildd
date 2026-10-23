@@ -13,6 +13,7 @@ import {
   isMissionAuditTask,
   isSurfaceFixTask,
   isTrunkRefreshTask,
+  isAuditBuildKind,
   isUiSurfacePath,
   isRenderedSurfaceChange,
   surfaceAuditMissingReason,
@@ -476,5 +477,14 @@ describe('isMissionAuditTask', () => {
     expect(isMissionAuditTask({ title: 'Check the screens', roleSlug: 'visual-auditor' })).toBe(true);
     expect(isMissionAuditTask({ title: 'Build thing', roleSlug: 'builder' })).toBe(false);
     expect(isMissionAuditTask({ title: null })).toBe(false);
+  });
+});
+
+describe('isAuditBuildKind', () => {
+  it('keeps build kinds and unset kinds', () => {
+    for (const k of ['engineering', 'design', 'writing', null, undefined]) expect(isAuditBuildKind(k)).toBe(true);
+  });
+  it('drops coordination, observation, analysis and research', () => {
+    for (const k of ['coordination', 'observation', 'analysis', 'research']) expect(isAuditBuildKind(k)).toBe(false);
   });
 });

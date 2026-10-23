@@ -2,9 +2,10 @@
 
 /**
  * `?state=mission-detail-compact`: mission detail as a phone meets it. The
- * real header (back, title, state chip, Verified pill, clock, Overview · Flow
- * · History, the overflow menu (which starts the visual review), goal line) over the real Overview,
- * inside the app's scroll root with the phone tab bar fixed over it. See
+ * real header (back, title, state chip, Verified pill, clock, the ⋯ menu,
+ * goal line, spec line) over the real Overview (the stage line, the decision
+ * cards, the bar, the summary line and the task list), inside the app's
+ * scroll root with the phone tab bar fixed over it. See
  * mission-detail-compact-fixtures.ts for `&variant=` and `&select=`.
  *
  * Display only: the actions post to the live routes, so do not press them here.
@@ -20,7 +21,6 @@ import MissionVerifiedPill from '@/app/app/(protected)/missions/[id]/MissionVeri
 import MissionOverflowMenu from '@/app/app/(protected)/missions/[id]/MissionOverflowMenu';
 import { stripFixtureId } from './mission-task-strip-fixtures';
 import {
-  COMPACT_GOAL,
   missionDetailCompactFixture,
   missionDetailCompactLinks,
   parseMissionDetailCompact,
@@ -49,8 +49,8 @@ export default function MissionDetailCompactFixture() {
   }, [fixture]);
   if (!fixture) return <div className="min-h-screen bg-surface-1" />;
 
-  const { model, title, deliveries, variant } = fixture;
-  const complete = variant === 'all-landed';
+  const { model, title, goal, variant } = fixture;
+  const complete = variant === 'all-landed' || variant === 'delivered';
   const chip = getMissionStateChip(complete ? 'complete' : 'running');
   const link = { missionId: MISSION_ID, from: null, initiativeId: null };
   const header = (content: React.ReactNode) => (
@@ -81,8 +81,8 @@ export default function MissionDetailCompactFixture() {
           visualReview={complete ? null : { initialOpen: false }}
         />
       }
-      goal={COMPACT_GOAL}
-      description={<p className="text-body text-text-secondary">{COMPACT_GOAL}</p>}
+      goal={goal}
+      description={<p className="text-body text-text-secondary">{goal}</p>}
       serverNow={model.now}
       startedAt={model.startedAt}
       endedAt={model.endedAt}
@@ -107,7 +107,12 @@ export default function MissionDetailCompactFixture() {
           board={header(
             <MissionOverview
               model={model}
-              completionText={complete ? 'Shipped readable export schedules and limits, checked on a phone and a desk.' : null}
+              completionText={variant === 'all-landed' ? 'Shipped readable export schedules and limits, checked on a phone and a desk.' : null}
+              checks={fixture.checks}
+              planTasks={fixture.planTasks}
+              outcomeSpecTitles={fixture.specTitles}
+              decisions={fixture.decisions}
+              history={fixture.history}
               {...link}
             />,
           )}
