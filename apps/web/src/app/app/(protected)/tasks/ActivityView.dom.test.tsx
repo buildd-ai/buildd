@@ -168,7 +168,7 @@ it('AC-2: a five-generation chain is one row whose attempts expand, each linking
     expect(rows).toHaveLength(1);
     const derived = rows[0].querySelector('[data-testid="activity-derived"]')!;
     const toggle = derived.querySelector('button')!;
-    expect(toggle.textContent).toContain('5 attempts');
+    expect(toggle.textContent).toContain('2 reviews · repair tasks');
     expect(toggle.textContent).not.toContain('derived');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(derived.querySelectorAll('[data-testid="activity-derived-child"]')).toHaveLength(0);
@@ -181,5 +181,33 @@ it('AC-2: a five-generation chain is one row whose attempts expand, each linking
     expect(kids.map(k => k.querySelector('[data-testid="activity-derived-parent"]')?.getAttribute('href')))
       .toEqual([CHAIN_ROOT, 'fx-chain-g1', 'fx-chain-g2', 'fx-chain-g3', 'fx-chain-g4'].map(id => `/app/tasks/${id}`));
     expect(kids.every(k => k.querySelector('[data-testid="activity-derived-mission"]')?.getAttribute('href') === '/app/missions/fx-flaky')).toBe(true);
+  } finally { act(() => root.unmount()); }
+});
+
+it('a delivery with one failed repair says so once: the repair line, not the meta line or the attempts summary', async () => {
+  const { ACTIVITY_FIXTURE_NOW, CHAIN_ROOT, fiveGenerationChain } = await import('@/app/app/dev/fixtures/activity-delivery-fixtures');
+  const [rootTask, , , , ciRepair] = fiveGenerationChain(null);
+  const failed = { ...ciRepair, parentTaskId: CHAIN_ROOT, status: 'failed', updatedAt: '2026-10-08T10:50:00.000Z',
+    workers: [{ status: 'failed', startedAt: '2026-10-08T10:30:00.000Z', completedAt: '2026-10-08T10:50:00.000Z', updatedAt: '2026-10-08T10:50:00.000Z' }] };
+  const now = buildActivityNow({ tasks: [rootTask, failed], missions: [], rules, now: ACTIVITY_FIXTURE_NOW });
+  const row = now.groups.flatMap(g => g.rows).find(r => r.id === CHAIN_ROOT)!;
+  // The projection still tells it: History and the mission header read the same step.
+  expect(row.transition).toMatchObject({ text: 'Repair 1 failed', repair: true });
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  try {
+    act(() => root.render(<ActivityView mode="now" now={now} history={[]} nowMs={ACTIVITY_FIXTURE_NOW} hrefs={{ now: '/app/tasks', history: '/app/tasks?view=history' }} />));
+    const el = container.querySelector(`[data-row="${CHAIN_ROOT}"]`)!;
+    const repairs = [...el.querySelectorAll('[data-testid="activity-repair"]')];
+    expect(repairs).toHaveLength(1);
+    expect(repairs[0].getAttribute('data-status')).toBe('failed');
+    expect(el.querySelector('[data-testid="activity-transition"]')).toBeNull();
+    const summary = el.querySelector('[data-testid="activity-derived"] button')!.textContent ?? '';
+    expect(summary).not.toMatch(/1 repair|1 attempt/);
+    expect(summary).toContain('Repair tasks');
+    expect(el.textContent).not.toContain('Repair 1 failed');
+    // Its link to the repair task is still one click away.
+    act(() => el.querySelector<HTMLButtonElement>('[data-testid="activity-derived"] button')!.click());
+    expect(el.querySelectorAll('[data-testid="activity-derived-child"]')).toHaveLength(1);
   } finally { act(() => root.unmount()); }
 });
