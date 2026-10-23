@@ -446,8 +446,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                             </div>
                           )}
                           <p className="text-xs text-text-muted mt-2">
-                            When the fix for a failing candidate merges, buildd runs {workflowFile || 'your workflow'} only as set here, and only if the workflow
-                            on {ref || 'its branch'} takes those inputs. Otherwise it tells you the candidate needs a re-cut.
+                            After a fix merges, buildd amends only if {workflowFile || 'your workflow'} takes these inputs. If not, you re-cut.
                           </p>
                         </div>
                       )}
