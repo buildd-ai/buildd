@@ -61,6 +61,7 @@ export const MCP_LOCAL_READS: readonly LocalRead[] = [
  * lib/mcp-local-reads.test.ts fails, with the list it expects, when this drifts.
  */
 export const MCP_LOCAL_READ_SHADOWS: readonly string[] = [
+  '/api/artifacts/designs',
   '/api/artifacts/upload-url',
   '/api/missions/capabilities',
   '/api/missions/recent',
