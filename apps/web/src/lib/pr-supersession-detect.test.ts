@@ -78,7 +78,7 @@ mock.module('@/lib/gate-ledger', () => ({
   fireGateEvent: mock((e: any) => { gateEvents.push(e); return 'id'; }),
 }));
 
-import { detectPrSupersession, prRefsIn, rescanOnMerge, sweepClosedUnsupersededPrs, RESCAN_AFTER_MS, RESCAN_ON_MERGE_CAP } from './pr-supersession-detect';
+import { detectPrSupersession, prRefsIn, rescanOnMerge, sweepClosedUnsupersededPrs, verifyPrCarriedBy, RESCAN_AFTER_MS, RESCAN_ON_MERGE_CAP } from './pr-supersession-detect';
 
 const DOC_LINES = [
   '# Strategy notes',
@@ -575,6 +575,71 @@ describe('rescanOnMerge', () => {
   it('never throws when GitHub or the database fails', async () => {
     sweepRows = null as any;
     expect(await rescanOnMerge({ workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 9, taskId: null })).toEqual({ nominated: 0, results: [] });
+  });
+});
+
+// 2f34284a: dead-pr-shutdown closed a sibling task's PR as "superseded" on subject, mission, base and
+// idle time alone. The close now waits on the same proof the close-time scan needs for an edge.
+describe('verifyPrCarriedBy', () => {
+  const V = { installationId: 1, repo: 'org/kb', prNumber: 6, candidatePrNumber: 9 };
+
+  it('regression (#5461/#5463): a sibling PR with disjoint content is unverified, never a supersession', async () => {
+    gh['org/kb/pulls/6'] = { number: 6, merged: false, state: 'open', commits: 2, head: { sha: 'head6' } };
+    gh['org/kb/pulls/6/files'] = [{ filename: 'apps/runner/src/wsl2-setup.ts', status: 'added', patch: patch('export async function ensureWsl2Distro() {', 'const distro = await detectDistro();', 'return installClaudeInside(distro);') }];
+    mergedPr('org/kb', 9, [{ filename: 'apps/runner/src/codex-sandbox.ts', status: 'added', patch: patch('export function selectNativeWindowsSandbox() {', 'return process.platform === "win32" ? "native" : "none";', 'const sandboxChoice = selectNativeWindowsSandbox();') }], { commits: 1 });
+
+    const v = await verifyPrCarriedBy(V);
+
+    expect(v).toEqual({ outcome: 'unverified', confidence: 0 });
+    expect(recordCalls).toHaveLength(0);
+  });
+
+  it('a squash that carries the PR’s added lines verifies, naming the method', async () => {
+    gh['org/kb/pulls/6'] = { number: 6, merged: false, state: 'open', commits: 2, head: { sha: 'head6' } };
+    mergedPr('org/kb', 9, [{ filename: 'buildd/design/strategy.md', status: 'added', patch: patch(...DOC_LINES, 'Squashed in with a follow-up line.') }]);
+
+    const v = await verifyPrCarriedBy(V);
+
+    expect(v).toMatchObject({ outcome: 'verified', method: 'content', confidence: 1 });
+    // Verification only reads; the caller records the edge in its own flow.
+    expect(recordCalls).toHaveLength(0);
+    expect(scanWrites).toHaveLength(0);
+  });
+
+  it('is unavailable, not unverified, when the PR itself cannot be read', async () => {
+    delete gh['org/kb/pulls/6'];
+    mergedPr('org/kb', 9, [{ filename: 'buildd/design/strategy.md', status: 'added', patch: patch(...DOC_LINES) }]);
+
+    const v = await verifyPrCarriedBy(V);
+
+    expect(v.outcome).toBe('unavailable');
+  });
+
+  it('is unavailable when the candidate is not merged or cannot be read', async () => {
+    gh['org/kb/pulls/9'] = { number: 9, merged: false, state: 'open' };
+    gh['org/kb/pulls/9/files'] = [{ filename: 'buildd/design/strategy.md', status: 'added', patch: patch(...DOC_LINES) }];
+    expect((await verifyPrCarriedBy(V)).outcome).toBe('unavailable');
+
+    delete gh['org/kb/pulls/9'];
+    expect((await verifyPrCarriedBy(V)).outcome).toBe('unavailable');
+  });
+
+  it('is unavailable when the candidate’s files cannot be read: an empty diff is not a verdict', async () => {
+    gh['org/kb/pulls/9'] = { number: 9, merged: true, merged_at: '2026-09-10T00:00:00Z', merge_commit_sha: 'sha9', html_url: 'https://github.com/org/kb/pull/9', commits: 50 };
+    // no files entry → 404
+
+    const v = await verifyPrCarriedBy(V);
+
+    expect(v.outcome).toBe('unavailable');
+  });
+
+  it('is unavailable when a GitHub read stalls past the request timeout', async () => {
+    gh['org/kb/pulls/6/files'] = STALL;
+    mergedPr('org/kb', 9, [{ filename: 'buildd/design/strategy.md', status: 'added', patch: patch(...DOC_LINES) }]);
+
+    const v = await verifyPrCarriedBy({ ...V, limits: { requestTimeoutMs: 20 } });
+
+    expect(v.outcome).toBe('unavailable');
   });
 });
 
