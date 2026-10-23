@@ -516,6 +516,13 @@ function checkScreenSession(): CheckResult {
   }
 }
 
+export function isRunnerNeverStarted(): boolean {
+  const dbPath = join(builddDir(), 'history.db');
+  const walPath = join(builddDir(), 'history.db-wal');
+  const logPath = process.env.BUILDD_RUNNER_LOG_PATH || RUNNER_LOG_PATH;
+  return !existsSync(dbPath) && !existsSync(walPath) && !existsSync(logPath);
+}
+
 function checkRunnerProcess(): CheckResult {
   if (IS_WINDOWS) return notCheckedOnWindows('runner-process');
   try {
@@ -523,9 +530,15 @@ function checkRunnerProcess(): CheckResult {
     if (ps) {
       return { name: 'runner-process', status: 'ok', message: 'Runner process running' };
     }
+    if (isRunnerNeverStarted()) {
+      return { name: 'runner-process', status: 'ok', message: 'Runner not started yet. Start it with `buildd`.' };
+    }
     return { name: 'runner-process', status: 'error', message: 'Runner process not found' };
   } catch {
     // grep exit 1 = no match
+    if (isRunnerNeverStarted()) {
+      return { name: 'runner-process', status: 'ok', message: 'Runner not started yet. Start it with `buildd`.' };
+    }
     return { name: 'runner-process', status: 'error', message: 'Runner process not found', fixable: true };
   }
 }
@@ -598,11 +611,28 @@ export function tailLines(path: string, n: number): string {
   return lines.slice(-n).join('\n') + '\n';
 }
 
-function checkRunnerLog(): CheckResult {
-  const logPath = RUNNER_LOG_PATH;
+function checkRunnerLog(opts: { hasService?: boolean } = {}): CheckResult {
+  const logPath = process.env.BUILDD_RUNNER_LOG_PATH || RUNNER_LOG_PATH;
   try {
     if (!existsSync(logPath)) {
-      return { name: 'runner-log', status: 'warn', message: `No runner log at ${logPath}` };
+      if (isRunnerNeverStarted()) {
+        return { name: 'runner-log', status: 'ok', message: 'Runner not started yet. Start it with `buildd`.' };
+      }
+      // Check if runner runs as service: buildd service status reports one
+      let hasService = opts.hasService;
+      if (hasService === undefined) {
+        try {
+          const serviceStatus = execSync('buildd service status 2>&1', { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
+          hasService = serviceStatus.includes('active') || serviceStatus.includes('enabled');
+        } catch {
+          // buildd service status failed, assume no service
+          hasService = false;
+        }
+      }
+      if (hasService) {
+        return { name: 'runner-log', status: 'warn', message: `Runner log not found at ${logPath}. Service logs available at: buildd service logs` };
+      }
+      return { name: 'runner-log', status: 'warn', message: `Runner log not created yet at ${logPath}` };
     }
 
     // Proactive, size-triggered rotation on every doctor cycle — decoupled
@@ -647,7 +677,7 @@ function checkHistoryDb(): CheckResult {
 
   try {
     if (!existsSync(dbPath)) {
-      return { name: 'history-db', status: 'warn', message: 'No history database' };
+      return { name: 'history-db', status: 'ok', message: 'History database created on first run' };
     }
 
     const dbSize = statSync(dbPath).size;
@@ -916,6 +946,8 @@ export function runDiagnostics(opts: {
   runnerProcess?: CheckResult;
   /** Per-backend overrides for tests. */
   backends?: { claude?: BackendCheckOpts; codex?: BackendCheckOpts };
+  /** Injected service status for tests. */
+  hasService?: boolean;
 } = {}): DoctorReport {
   const record = opts.isolation ?? probeThisHost();
   const checks = [
@@ -929,7 +961,7 @@ export function runDiagnostics(opts: {
     checkClaudeBackend({ isolation: record, ...opts.backends?.claude }),
     checkCodexBackend({ isolation: record, ...opts.backends?.codex }),
     checkScreenSession(),
-    checkRunnerLog(),
+    checkRunnerLog({ hasService: opts.hasService }),
     checkDiskUsage(),
     checkStaleWorktrees(),
     checkHistoryDb(),

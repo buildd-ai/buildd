@@ -98,6 +98,19 @@ describe('isNavActive', () => {
   });
 });
 
+describe('a page that claims its nav destination', () => {
+  // A mission's task sits at /app/tasks/<id> but belongs to Missions (design 6356e80d, desktop-task-running).
+  it("a mission's task page marks Missions, not Activity", () => {
+    expect(isNavActive('/app/tasks/t-1', '/app/missions', '/app/missions')).toBe(true);
+    expect(isNavActive('/app/tasks/t-1', '/app/tasks', '/app/missions')).toBe(false);
+  });
+
+  it('no claim: the path decides', () => {
+    expect(isNavActive('/app/tasks/t-1', '/app/tasks', null)).toBe(true);
+    expect(isNavActive('/app/tasks/t-1', '/app/missions', null)).toBe(false);
+  });
+});
+
 describe('isAccountRoute', () => {
   // Settings (Profile included) is reached from the header avatar, not a tab;
   // the avatar carries the "you are here" state for them.

@@ -257,7 +257,9 @@ describe('GET /api/explain — restricted workspace (API key with no link)', () 
   it('hands the account to the explainer so the inline evidence list is audited to it', async () => {
     mockVerifyAccountWorkspaceAccess.mockImplementation(async () => true);
     await GET(req(`taskId=${TASK}`));
-    expect(mockExplainTask.mock.calls[0] as unknown[]).toEqual([TASK, { accountId: 'acct-1' }]);
+    expect((mockExplainTask.mock.calls[0] as unknown[]).slice(0, 2)).toEqual([TASK, { accountId: 'acct-1' }]);
+    // A waiting task's upstream is named for this caller (spec e28018c2 R-7).
+    expect((mockExplainTask.mock.calls[0] as unknown[])[2]).toMatchObject({ kind: 'account', account: { id: 'acct-1' } });
   });
 });
 
@@ -315,7 +317,7 @@ describe('GET /api/explain — dashboard session', () => {
     expect(mockExplainTask).toHaveBeenCalledTimes(1);
     // A session is decided by team membership, as on GET /api/tasks/[id].
     expect(mockVerifyAccountWorkspaceAccess).not.toHaveBeenCalled();
-    expect(mockExplainTask.mock.calls[0] as unknown[]).toEqual([TASK, { userId: 'user-1' }]);
+    expect(mockExplainTask.mock.calls[0] as unknown[]).toEqual([TASK, { userId: 'user-1' }, { kind: 'person', userId: 'user-1' }]);
   });
 
   it('explains a workspace owned by any of the user teams', async () => {

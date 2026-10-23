@@ -195,7 +195,7 @@ if (process.argv.includes('--doctor')) {
   // Find the runner the way `buildd top` does: through its socket.
   const { probeRunnerSocket: probe, runnerSocketPath: socketPathFor, runnerProcessFromProbe } = await import('./runner-socket');
   const socketPath = socketPathFor(BUILDD_DIR);
-  const report = doctor.runDiagnostics({ runnerProcess: runnerProcessFromProbe(await probe(socketPath), socketPath) });
+  const report = doctor.runDiagnostics({ runnerProcess: runnerProcessFromProbe(await probe(socketPath), socketPath, doctor.isRunnerNeverStarted()) });
 
   const RED = '\x1b[31m';
   const GREEN = '\x1b[32m';

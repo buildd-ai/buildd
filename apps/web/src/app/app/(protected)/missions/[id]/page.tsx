@@ -41,6 +41,7 @@ import MissionShippedHeader from './MissionShippedHeader';
 import { buildShippedHeaderView } from '@/lib/mission-shipped-header';
 import { shippedArtifactKey } from '@/lib/mission-shipped-report';
 import MissionAutoRefresh from './MissionAutoRefresh';
+import ShellPageMarks from '@/components/ShellPageMarks';
 import { LiveRegion } from '@/components/LiveRegion';
 import MissionReconcileOnOpen from './MissionReconcileOnOpen';
 import MissionFocusProvider from './MissionFocusProvider';
@@ -1392,6 +1393,8 @@ async function MissionDetailBody({
     <SwipeProvider>
     {/* The page's one selection: `#t-<id>` lands on a task's row (spec d25d923d R-2). */}
     <MissionFocusProvider missionId={id}>
+      {/* The mission's decisions are cards on this page; the shell banner would repeat them. */}
+      <ShellPageMarks hideQuestionsBanner />
       {/* Real-time (S7): progress patches the live store the list reads;
           structural events re-render at most once per 3s, scroll-anchored. */}
       <MissionAutoRefresh
