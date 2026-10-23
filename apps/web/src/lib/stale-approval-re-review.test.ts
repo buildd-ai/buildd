@@ -95,6 +95,23 @@ describe('dispatchStaleApprovalReReview', () => {
     expect(activity.entry).toEqual({ kind: 'review_queued', detail: 'review requested · the PR was ready and no review was on file' });
   });
 
+  it("a release candidate's delta: one full-scope reviewer over exactly the uncovered commits, never a delta against a prior verdict", async () => {
+    const d = deps();
+    const candidateDelta = {
+      commits: [{ sha: 'c'.repeat(40), reason: 'direct_commit', paths: ['apps/web/x.ts'] }],
+      paths: ['apps/web/x.ts'],
+      files: [{ filename: 'apps/web/x.ts', status: 'modified', additions: 1, deletions: 1, patch: '@@\n-a\n+b' }],
+    };
+    const res = await dispatchStaleApprovalReReview({ ...input, firstReview: true, candidateDelta }, d);
+    expect(res).toMatchObject({ outcome: 'dispatched' });
+    const created = (d.createReviewerTask.mock.calls[0] as any[])[0];
+    expect(created.priorVerdict).toBeUndefined();
+    expect(created.compositionScope).toEqual({ novelDeltaPaths: ['apps/web/x.ts'], novelCommits: candidateDelta.commits });
+    expect(created.prFiles).toEqual(candidateDelta.files);
+    const activity = (d.appendPrActivity.mock.calls[0] as any[])[0];
+    expect(activity.entry.detail).toBe('review requested · only the 1 commit no earlier review covered');
+  });
+
   it('skips with a reason when no task owns the PR', async () => {
     const d = deps();
     const res = await dispatchStaleApprovalReReview({ ...input, taskId: null }, d);

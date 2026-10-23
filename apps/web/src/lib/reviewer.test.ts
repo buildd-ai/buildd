@@ -224,6 +224,8 @@ import {
   createReviewerTask,
   DELTA_APPROVAL_REVIEW_TIER,
   enforceServerSideEscalation,
+  scopeToCompositionDelta,
+  compositionScopeSection,
   preflightEscalationCheck,
   isSchemaTouchingFile,
   renderManifestGuidance,
@@ -1284,6 +1286,41 @@ describe('preflightEscalationCheck — mergePolicy.dataMigrations', () => {
   it('enforceServerSideEscalation keeps an approve on a data migration when the reviewer decides', () => {
     expect(enforceServerSideEscalation({ verdict: 'approve', prFiles: files, policy: on, migrationSafety: data })).toEqual({ verdict: 'approve', overrideReason: null });
     expect(enforceServerSideEscalation({ verdict: 'approve', prFiles: files, policy: agentReviewNoEscalatePaths, migrationSafety: data }).verdict).toBe('escalate');
+  });
+});
+
+describe('a composition delta review is judged on its delta (release-flow.md AC-25 to AC-27)', () => {
+  const PR_FILES = [
+    { filename: 'apps/web/src/lib/foo.ts', status: 'modified' },
+    { filename: 'packages/core/drizzle/0099_add_column.sql', status: 'added' },
+  ];
+  const POLICY: MergePolicy = { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } };
+
+  it('(c) a migration approved on its own PR does not escalate the candidate: only the delta paths are checked', () => {
+    const ctx = { compositionDelta: { novelDeltaPaths: ['apps/web/src/lib/foo.ts'] } };
+    const scoped = scopeToCompositionDelta(PR_FILES, ctx);
+    expect(scoped).toEqual([PR_FILES[0]]);
+    expect(enforceServerSideEscalation({ verdict: 'approve', prFiles: scoped, policy: POLICY }).verdict).toBe('approve');
+    // The whole PR's list, which this review was never about, escalates.
+    expect(enforceServerSideEscalation({ verdict: 'approve', prFiles: PR_FILES, policy: POLICY }).verdict).toBe('escalate');
+  });
+
+  it('a migration in the delta itself still escalates', () => {
+    const scoped = scopeToCompositionDelta(PR_FILES, { compositionDelta: { novelDeltaPaths: [PR_FILES[1].filename] } });
+    expect(enforceServerSideEscalation({ verdict: 'approve', prFiles: scoped, policy: POLICY }).verdict).toBe('escalate');
+  });
+
+  it('a delta path past the PR file list cap counts by name; an ordinary review keeps its list as read', () => {
+    expect(scopeToCompositionDelta([], { compositionDelta: { novelDeltaPaths: ['late.ts'] } })).toEqual([{ filename: 'late.ts' }]);
+    expect(scopeToCompositionDelta(PR_FILES, { reviewerFor: 't' })).toBe(PR_FILES);
+    expect(scopeToCompositionDelta(null, {})).toBeNull();
+  });
+
+  it("the prompt names the delta's commits and how to read each one", () => {
+    const text = compositionScopeSection({ novelDeltaPaths: ['a.ts'], novelCommits: [{ sha: 'abc123', reason: 'direct_commit', paths: ['a.ts'] }] });
+    expect(text).toContain('- `abc123` (direct commit): `a.ts`');
+    expect(text).toContain('git show <sha>');
+    expect(compositionScopeSection({ novelDeltaPaths: ['a.ts'] })).not.toContain('git show');
   });
 });
 

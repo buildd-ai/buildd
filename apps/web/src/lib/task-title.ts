@@ -72,6 +72,8 @@ const SHIP_TITLE = /^((?:\[[^\]]*\]\s*)*)Ship mission:\s+(.+)$/;
 
 /** `type(scope)!:` — a known type with or without scope, or any lowercase word with a scope. */
 const SCOPED_PREFIX = /^[a-z][\w-]*\([^)]*\)!?:\s*/i;
+/** A planner's ordinal (`07 · `, `12. `, `3) `): a row reads by name, never number (Navigation R-14). */
+const ORDINAL_PREFIX = /^\d{1,3}\s*[·.:)–-]\s+(?=\S)/;
 /** Any leading `[tag]` (retry wraps, `[surface audit]`, `[friction]` …). */
 const LEADING_TAG = /^\s*\[[^\]]*\]\s*/;
 
@@ -106,7 +108,7 @@ export function displayTaskTitle(title: string | null | undefined): string {
   const ship = SHIP_TITLE.exec(t);
   if (ship) return `Ship ${ship[2]}`;
   const prefix = CONVENTIONAL_PREFIX_RE.exec(t) ?? SCOPED_PREFIX.exec(t);
-  const bare = (prefix ? t.slice(prefix[0].length) : t).trim();
+  const bare = (prefix ? t.slice(prefix[0].length) : t).trim().replace(ORDINAL_PREFIX, '');
   return bare ? capitalise(bare) : t;
 }
 
