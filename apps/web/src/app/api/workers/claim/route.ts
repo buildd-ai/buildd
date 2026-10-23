@@ -98,6 +98,7 @@ import { guardClaimedRetry } from '@/lib/supersession';
 import { claimBranchHint } from '@/lib/claim-branch-hint';
 import { openOwnerQuestion } from '@/lib/owner-blocked-fix';
 import { repinSpecAtClaim, type ClaimPin } from '@/lib/specs/claim-pin';
+import { resolveDesignSourceAtClaim } from '@/lib/design-source';
 import { cancelSkippedTask, isRepairRole, notOwnerTaskSql, ownerClaimOpenSql, projectAttemptStart } from '@/lib/workflow/seam';
 import { isOwnerTask, withdrawOwner, type OwnerTask } from '@/lib/workflow/owner-attempt';
 // T9 is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
@@ -2846,6 +2847,12 @@ export async function POST(req: NextRequest) {
       (patchedContext as Record<string, unknown>).specSource = claimPin.specSource;
       console.log(`[claim] task ${task.id}: ${claimPin.reason}`);
     }
+
+    // The design the builder works to, from the task's, its mission's or its
+    // spec's design (lib/design-source.ts). A failed read never fails the claim.
+    const designSource = await resolveDesignSourceAtClaim({ id: task.id, missionId: taskMissionId, context: patchedContext })
+      .catch((err) => { console.warn(`[claim] design source read failed for task ${task.id}:`, (err as Error)?.message ?? err); return null; });
+    if (designSource) (patchedContext as Record<string, unknown>).designSource = designSource;
 
     // A task filed under an earlier mission delivery names that delivery's
     // branch as its base. It merged (and is retired once settled), so the task
