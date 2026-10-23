@@ -118,6 +118,19 @@ gh api "repos/buildd-ai/buildd/actions/runs/$RUN/artifacts" -q '.artifacts[].id'
   | xargs -I{} gh api -X DELETE "repos/buildd-ai/buildd/actions/artifacts/{}"
 ```
 
+**No `gh` login on your machine** ("please run: gh auth login", as on some Windows
+runners): call the `dispatch_visual_qa` MCP action instead. buildd dispatches
+`visual-qa.yml` from trunk with `capture_ref` set to your branch, using the
+workspace's GitHub App, and returns `runId` / `runUrl` (or `runsUrl` if the run
+has not surfaced yet). Params: `captureRef?` (default your branch), `routes?`,
+`viewport?` (`mobile` | `desktop` | `WxH`), `theme?`. Judge is always off.
+Open `runUrl` to follow the run; downloading the `qa-screenshots` artifact still
+needs a GitHub login, so if you cannot download it, say so in the completion
+note rather than substituting fixture shots. If the workspace has no GitHub App
+installation or no `visual-qa.yml`, the action returns 409: report that once as
+`[friction]` against buildd itself, and only then fall back to a local
+`next dev` capture of `/app/dev/fixtures?state=<state>`, labelled as local.
+
 **Wait for the run in the same turn — never end your turn saying you'll wait for a
 notification or a background watcher.** A worker agent's session is not resumed by a
 background job finishing: a runner-hosted turn that ends is recorded as complete
