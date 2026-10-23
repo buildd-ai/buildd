@@ -9,8 +9,8 @@
  *   1. Worker A creates exactly one friction task (T1) with the inferred bwrap manifest.
  *   2. Workers B and C are deduplicated — their reports are appended to T1, no new task.
  *   3. T1 carries the inferred pathManifest from the component table (no path in excerpt).
- *   4. A subsequent overlapping fix task (T2) receives an auto-dependsOn edge to T1.
- *   5. While T1's PR is open, findBlockingPr defers T2 at claim time (blocks on T1's PR).
+ *   4. A subsequent overlapping fix task (T2) gets no guessed edge to T1 (spec: Overlap scheduling, R-1).
+ *   5. findBlockingPr still reports T1's open PR as overlapping T2 (the claim holds only on a lane path).
  *   6. A closed T1 PR does NOT block T2 (abandoned-branch regression, PR #1384).
  *
  * Mock approach mirrors route.test.ts — no live DB/server required.
@@ -333,9 +333,9 @@ describe('Incident replay: bwrap_namespace_denied — three workers, one fix PR'
     expect(mockTasksUpdate).toHaveBeenCalledTimes(1);
   });
 
-  // ── Phase 4: Inferred manifest + auto-dependsOn ───────────────────────────
+  // ── Phase 4: Inferred manifest, no guessed edge ───────────────────────────
 
-  it('phase 4 — overlapping fix task T2 records T1 as a same-file soft overlap (decided at claim, not an edge)', async () => {
+  it('phase 4 — overlapping fix task T2 records no edge and no soft overlap to T1', async () => {
     // T1 is pending in the workspace with the bwrap manifest
     mockTasksFindFirst.mockResolvedValue(null); // separate friction task check
     mockTasksFindMany.mockResolvedValue([
@@ -363,17 +363,15 @@ describe('Incident replay: bwrap_namespace_denied — three workers, one fix PR'
     );
     expect(response.status).toBe(200);
 
-    // T2 records T1 (overlapping path: env-scan.ts) as same-file soft evidence:
-    // the claim's HOLD/START decides, and phase 5's open-PR check still holds it.
-    expect(capturedValues.dependsOn ?? []).not.toContain('task-T1');
-    expect(capturedValues.pathDeclaration.softOverlaps).toContainEqual(
-      expect.objectContaining({ taskId: 'task-T1', kind: 'same_file' }),
-    );
+    // env-scan.ts is not a lane path: nothing is guessed from the overlap.
+    // The edit-time lease stops T1 and T2 editing it at once.
+    expect(capturedValues.dependsOn).toBeUndefined();
+    expect(capturedValues.pathDeclaration.softOverlaps).toBeUndefined();
   });
 
-  // ── Phase 5: Claim-time blocking when T1's PR is open ─────────────────────
+  // ── Phase 5: T1's open PR overlaps T2 ─────────────────────────────────────
 
-  it('phase 5 — findBlockingPr defers T2 while T1 has an open PR', () => {
+  it('phase 5 — findBlockingPr reports T1\'s open PR as overlapping T2', () => {
     // Pure function — no mocks needed
     const blocking = findBlockingPr(
       ['apps/runner/src/env-scan.ts'],  // T2's manifest
@@ -383,7 +381,7 @@ describe('Incident replay: bwrap_namespace_denied — three workers, one fix PR'
       ],
     );
 
-    // T2 must be deferred — T1's PR covers env-scan.ts
+    // The overlap is reported; the claim holds only when it is on a lane path.
     expect(blocking).not.toBeNull();
     expect(blocking!.prNumber).toBe(1400);
   });
