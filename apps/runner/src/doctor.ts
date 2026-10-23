@@ -516,7 +516,7 @@ function checkScreenSession(): CheckResult {
   }
 }
 
-function isRunnerNeverStarted(): boolean {
+export function isRunnerNeverStarted(): boolean {
   const dbPath = join(builddDir(), 'history.db');
   const walPath = join(builddDir(), 'history.db-wal');
   const logPath = process.env.BUILDD_RUNNER_LOG_PATH || RUNNER_LOG_PATH;
@@ -618,8 +618,18 @@ function checkRunnerLog(): CheckResult {
       if (isRunnerNeverStarted()) {
         return { name: 'runner-log', status: 'ok', message: 'Runner not started yet. Start it with `buildd`.' };
       }
-      // TODO: detect if runner runs as service and suggest 'buildd service logs'
-      return { name: 'runner-log', status: 'warn', message: `No runner log at ${logPath}` };
+      // Check if runner runs as service: buildd service status reports one
+      let hasService = false;
+      try {
+        const serviceStatus = execSync('buildd service status 2>&1', { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
+        hasService = serviceStatus.includes('active') || serviceStatus.includes('enabled');
+      } catch {
+        // buildd service status failed, assume no service
+      }
+      if (hasService) {
+        return { name: 'runner-log', status: 'warn', message: `Runner log not found at ${logPath}. Service logs available at: buildd service logs` };
+      }
+      return { name: 'runner-log', status: 'warn', message: `Runner log not created yet at ${logPath}` };
     }
 
     // Proactive, size-triggered rotation on every doctor cycle — decoupled
