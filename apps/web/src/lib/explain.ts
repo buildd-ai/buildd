@@ -338,7 +338,7 @@ async function offlineRunnerWaitFor(w: LoadedTask['workers'][number] | undefined
   const beats = await loadRunnerBeats(w.accountId).catch(() => null);
   if (!beats) return null;
   const liveness = runnerLiveness(w, beats, now);
-  if (liveness.verdict === 'dead') return liveness;
+  if (liveness.verdict === 'dead' || liveness.verdict === 'unvouched') return liveness;
   return liveness.verdict === 'live' && liveness.silentMs !== null && liveness.silentMs >= RUNNER_RECENTLY_SEEN_MS ? liveness : null;
 }
 
