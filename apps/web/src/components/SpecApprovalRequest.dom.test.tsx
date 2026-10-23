@@ -72,7 +72,7 @@ describe('SpecApprovalRequest', () => {
     await act(async () => { approveButton()!.click(); });
     expect(calls.length).toBe(1);
     expect(calls[0][0]).toBe(`/api/specs/${SPEC}/approve/confirm`);
-    expect(JSON.parse(calls[0][1].body as string)).toEqual({ request: 'tok' });
+    expect(JSON.parse(calls[0][1].body as string)).toEqual({ request: 'tok', retire: [] });
     expect(container.querySelector('[data-testid="spec-approval-result"]')!.textContent).toContain('Approved revision 3.');
     expect(approveButton()).toBeNull();
   });
@@ -158,7 +158,7 @@ describe('SpecApprovalRequest', () => {
     act(() => radio('Spec').click());
     expect(approveButton()!.textContent).toContain('Approve revision 3');
     await act(async () => { approveButton()!.click(); });
-    expect(bodies).toEqual([{ request: 'tok' }]);
+    expect(bodies).toEqual([{ request: 'tok', retire: [] }]);
   });
 
   it('says how much of a long diff it left out', () => {
@@ -178,5 +178,24 @@ describe('SpecApprovalRequest', () => {
       expect(approveButton()).toBeNull();
       expect(container.querySelector('[data-testid="spec-approval-state"]')).not.toBeNull();
     }
+  });
+
+  it('R-77: lists the replaced specs as the link chose them, and confirms with the person\'s choice', async () => {
+    const A = '22222222-2222-4222-8222-222222222222';
+    const B = '33333333-3333-4333-8333-333333333333';
+    const bodies: unknown[] = [];
+    globalThis.fetch = (async (_u: string, init: RequestInit) => {
+      bodies.push(JSON.parse(init.body as string));
+      return new Response(JSON.stringify({ retirements: [{ specId: A, title: 'Old A', state: 'stale', reason: 'moved' }] }), { status: 200 });
+    }) as typeof fetch;
+    const view = { ...ready, replacing: [{ id: A, title: 'Old A', version: 4, checked: true }, { id: B, title: 'Old B', version: 2, checked: false }] };
+    act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={view} />));
+    const boxes = [...container.querySelectorAll('[data-testid="spec-approve-retire"]')] as HTMLInputElement[];
+    expect(boxes.map((b) => b.checked)).toEqual([true, false]);
+    expect(approveButton()!.textContent).toBe('Approve and retire');
+    await act(async () => { approveButton()!.click(); });
+    expect(bodies).toEqual([{ request: 'tok', retire: [{ specId: A, expectedVersion: 4 }] }]);
+    // A replaced spec that moved since: the approval stands, the page says it was not retired.
+    expect(q('spec-approval-result')!.textContent).toBe('Approved revision 3. Old A was not retired: it changed after you opened this. Retire it from its own page.');
   });
 });

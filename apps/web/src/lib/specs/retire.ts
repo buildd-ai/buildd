@@ -119,6 +119,43 @@ export async function retireSpec(caller: SpecCaller, specId: string, input: { re
   return r;
 }
 
+/** One replaced spec an approval tried to supersede, and how it went. */
+export type ApprovalRetirement =
+  | { specId: string; title: string; state: 'superseded' }
+  | { specId: string; title: string | null; state: 'stale'; reason: string };
+
+/**
+ * R-77: after a person approved `replacement` at `revision`, supersede each
+ * spec they left checked. The caller has approved, so it has checked the
+ * person's rights in this workspace (the same ones retiring needs, R-51).
+ * Each is its own statement and change row naming the approval; one that
+ * moved since it was read (a version other than `expectedVersion`, or no
+ * longer live) is reported stale and left as it is, and the approval stands.
+ */
+export async function supersedeOnApproval(personId: string, replacement: { id: string; title: string; workspaceId: string; revision: number }, choice: ReadonlyArray<{ specId: string; expectedVersion?: number }>): Promise<ApprovalRetirement[]> {
+  const out: ApprovalRetirement[] = [];
+  for (const c of choice) {
+    const [spec] = await db.select().from(specs).where(eq(specs.id, c.specId)).limit(1);
+    if (!spec || spec.workspaceId !== replacement.workspaceId) { out.push({ specId: c.specId, title: null, state: 'stale', reason: 'not a spec in this workspace' }); continue; }
+    const stale = (reason: string) => out.push({ specId: spec.id, title: spec.title, state: 'stale', reason });
+    if (isRetired(spec.status)) { stale(`already ${spec.status}`); continue; }
+    if (c.expectedVersion !== undefined && spec.version !== c.expectedVersion) { stale(`it changed since the approval was read (version ${spec.version}, not ${c.expectedVersion})`); continue; }
+    const reason = `Replaced by "${replacement.title}", approved at revision ${replacement.revision}.`.slice(0, 500);
+    const r = await writeStatus(spec, personId, 'superseded', reason, {
+      status: 'superseded', supersededBy: replacement.id, approval: { specId: replacement.id, revision: replacement.revision },
+    });
+    if (!r.ok) { stale('it changed while the approval was written'); continue; }
+    out.push({ specId: spec.id, title: spec.title, state: 'superseded' });
+    if (spec.repoSource || spec.repoCopy?.path) {
+      retireDeps.afterResponse(async () => {
+        const { openRetirementPr } = await import('./retire-repo-file');
+        await openRetirementPr(spec.id, retireDeps.repoFile);
+      });
+    }
+  }
+  return out;
+}
+
 /** The newest status change that retired the spec, when it is retired now. */
 async function lastRetirement(spec: Pick<SpecRow, 'id' | 'status'>) {
   if (!isRetired(spec.status)) return null;

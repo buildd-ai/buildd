@@ -9,6 +9,7 @@ import { diffSpecBodies, diffSpecHunks, diffSpecRevisions, type DiffHunk, type S
 import { getSpec } from './store';
 import { nativeSourceOn } from './repo-copy';
 import { attachmentSources, type AttachmentSource } from './attachments';
+import { liveReplaced } from './replaces';
 
 /**
  * What the confirm page (/app/specs/[specId]/approve) shows a signed-in person
@@ -38,6 +39,12 @@ export type ApprovalRequestView =
     repoChecks?: boolean;
     /** What `attachment:<name>` resolves to on the revision being approved (§21). */
     attachments?: Record<string, AttachmentSource>;
+    /**
+     * The live specs the revision replaces (R-77), each "Retire it" checked as
+     * the link's choice says (all, for a link made before the choice existed),
+     * at the version the link read, so one that moved since reports stale.
+     */
+    replacing: Array<{ id: string; title: string; version: number; checked: boolean }>;
   };
 
 export async function approvalRequestView(userId: string, specId: string, token: string | null | undefined): Promise<ApprovalRequestView> {
@@ -59,15 +66,19 @@ export async function approvalRequestView(userId: string, specId: string, token:
 
   const repoChecks = nativeSourceOn({ livingSpecs: (await personReach(userId, spec.workspaceId))?.livingSpecs });
   const attachments = await attachmentSources(specId, req.revision).catch(() => ({}));
+  const replacing = (await liveReplaced(spec.workspaceId, rev.replaces)).map((r) => {
+    const chosen = req.retire?.find((c) => c.specId === r.id);
+    return { id: r.id, title: r.title, version: chosen?.expectedVersion ?? r.version, checked: req.retire ? !!chosen : true };
+  });
   if (spec.approvedRevision) {
     const d = await diffSpecRevisions(caller, specId, { from: spec.approvedRevision, to: req.revision, rows: true });
     if (!d.ok || d.diff.toBody === undefined) return { state: 'stale', ...base };
-    return { state: 'ready', ...base, replaces: spec.approvedRevision, sections: d.diff.sections, hunks: d.diff.hunks ?? [], omittedLines: d.diff.omittedLines, body: d.diff.toBody, repoChecks, attachments };
+    return { state: 'ready', ...base, replaces: spec.approvedRevision, sections: d.diff.sections, hunks: d.diff.hunks ?? [], omittedLines: d.diff.omittedLines, body: d.diff.toBody, repoChecks, attachments, replacing };
   }
   // Nothing approved yet: the whole revision is what comes into force.
   const s = await getSpec(caller, specId, { revision: req.revision });
   if (!s.ok || typeof s.view.body !== 'string') return { state: 'stale', ...base };
   const d = diffSpecBodies('', s.view.body);
   const h = diffSpecHunks('', s.view.body);
-  return { state: 'ready', ...base, replaces: null, sections: d.sections, hunks: h.hunks, omittedLines: h.omittedLines, body: s.view.body, repoChecks, attachments };
+  return { state: 'ready', ...base, replaces: null, sections: d.sections, hunks: h.hunks, omittedLines: h.omittedLines, body: s.view.body, repoChecks, attachments, replacing };
 }

@@ -11,12 +11,14 @@ mock.module('@/lib/specs/approval', () => ({
     if (acct?.sessionUserId) return { ok: true, spec: { id: 's1', version: 3 }, pending: { confirmUrl: 'https://buildd.dev/app/specs/s1/approve?request=tok', revision: input.revision, expiresAt: '2026-10-12T00:00:00.000Z' } };
     if ((c as { kind: string }).kind === 'account') return { ok: false, status: 403, error: 'a person decides' };
     if (input.expectedVersion !== 3) return { ok: false, status: 409, error: 'stale', currentVersion: 3 };
-    return { ok: true, spec: { id: 's1', approvedRevision: input.revision }, revision: { revision: input.revision } };
+    const retirements = Array.isArray((input as { retire?: unknown }).retire) ? ((input as { retire: string[] }).retire).map((id) => ({ specId: id, title: 'Old', state: 'superseded' })) : [];
+    return { ok: true, spec: { id: 's1', approvedRevision: input.revision }, revision: { revision: input.revision }, retirements };
   },
-  confirmSpecApproval: async (c: unknown, _id: string, token: unknown) => {
+  confirmSpecApproval: async (c: unknown, _id: string, token: unknown, input?: { retire?: unknown }) => {
+    seen.push(['confirm', input]);
     if ((c as { kind: string }).kind !== 'user') return { ok: false, status: 403, error: 'confirm on buildd.dev' };
     if (token !== 'tok') return { ok: false, status: 400, error: 'not valid', code: 'request_invalid' };
-    return { ok: true, already: false, spec: { id: 's1', approvedRevision: 2 }, revision: { revision: 2 } };
+    return { ok: true, already: false, spec: { id: 's1', approvedRevision: 2 }, revision: { revision: 2 }, retirements: [] };
   },
   submitSpecRevision: async (c: unknown) => ((c as { kind: string }).kind === 'account'
     ? { ok: false, status: 403, error: 'a person decides' }
@@ -33,7 +35,20 @@ describe('POST /api/specs/[specId]/approve and /submit', () => {
     caller = { kind: 'user', userId: 'u1' };
     const res = await approve(req('approve', { revision: 2, expectedVersion: 3 }), { params });
     expect([res.status, (await res.json()).spec.approvedRevision]).toEqual([200, 2]);
-    expect((seen.at(-1) as unknown[])[1]).toEqual({ revision: 2, expectedVersion: 3 });
+    expect((seen.at(-1) as unknown[])[1]).toEqual({ revision: 2, expectedVersion: 3, retire: undefined });
+  });
+  it('R-77: passes the retire choice through and returns what was retired', async () => {
+    caller = { kind: 'user', userId: 'u1' };
+    const res = await approve(req('approve', { revision: 2, expectedVersion: 3, retire: ['old'] }), { params });
+    expect((seen.at(-1) as unknown[])[1]).toEqual({ revision: 2, expectedVersion: 3, retire: ['old'] });
+    expect((await res.json()).retirements).toEqual([{ specId: 'old', title: 'Old', state: 'superseded' }]);
+  });
+  it('R-77: confirm passes the person\'s retire choice through (undefined: the link\'s)', async () => {
+    caller = { kind: 'user', userId: 'u1' };
+    await confirm(req('approve/confirm', { request: 'tok', retire: [] }), { params });
+    expect(seen.at(-1)).toEqual(['confirm', { retire: [] }]);
+    await confirm(req('approve/confirm', { request: 'tok' }), { params });
+    expect(seen.at(-1)).toEqual(['confirm', { retire: undefined }]);
   });
   it('a stale version is a 409 that names the current version', async () => {
     const res = await approve(req('approve', { revision: 2, expectedVersion: 1 }), { params });

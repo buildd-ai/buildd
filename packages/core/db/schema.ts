@@ -3080,6 +3080,10 @@ export const specRevisions = pgTable('spec_revisions', {
   // Set on a revision an import wrote (R-18): the repo file it is, as read. An
   // imported revision is never approved except by a person's confirmation.
   imported: jsonb('imported').$type<SpecRevisionImport>(),
+  // The specs this revision replaces ("Retiring a spec" R-76): ids of live
+  // specs in the same workspace, checked on write, never read from the body.
+  // Approving the revision offers to supersede each (R-77). NULL: none.
+  replaces: jsonb('replaces').$type<string[]>(),
   // The binding attachments this revision was approved with (living-specs.md
   // §21), each at the artifact revision it had then. Written once, by the
   // approving statement, next to approved_at; reference attachments are never

@@ -59,7 +59,7 @@ export function applyFindReplace(body: string, find: unknown, replace: unknown):
 }
 
 export async function reviseSpecSection(caller: SpecCaller, specId: string, input: SectionTarget & {
-  expectedVersion: unknown; body?: unknown; find?: unknown; replace?: unknown; changeSummary?: unknown; repoRefs?: unknown; design?: unknown;
+  expectedVersion: unknown; body?: unknown; find?: unknown; replace?: unknown; changeSummary?: unknown; repoRefs?: unknown; design?: unknown; replaces?: unknown;
 }): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; unchanged: boolean; duplicateCheck?: DuplicateCheck | null } | SpecError> {
   if (!isUuid(specId)) return fail(404, 'Spec not found');
   if (!Number.isInteger(input.expectedVersion)) return fail(400, 'expectedVersion (the spec version you read) is required');
@@ -77,13 +77,13 @@ export async function reviseSpecSection(caller: SpecCaller, specId: string, inpu
     if (typeof next !== 'string') return fail(400, `${next.error}; nothing was written`);
     return reviseSpecDraft(caller, specId, {
       expectedVersion: input.expectedVersion, body: next,
-      changeSummary: input.changeSummary, repoRefs: input.repoRefs, design: input.design,
+      changeSummary: input.changeSummary, repoRefs: input.repoRefs, design: input.design, replaces: input.replaces,
     });
   }
   const section = findSection(current, input);
   if (typeof section === 'string') return fail(400, `${section}; nothing was written`);
   return reviseSpecDraft(caller, specId, {
     expectedVersion: input.expectedVersion, body: spliceSection(current, section, input.body as string),
-    changeSummary: input.changeSummary, repoRefs: input.repoRefs, design: input.design,
+    changeSummary: input.changeSummary, repoRefs: input.repoRefs, design: input.design, replaces: input.replaces,
   });
 }

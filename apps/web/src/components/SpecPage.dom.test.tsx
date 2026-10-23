@@ -305,9 +305,51 @@ describe('SpecPage', () => {
     expect(q('spec-page-review')).toBeNull();
     expect(q('spec-approval-diff')).not.toBeNull();
     await act(async () => { q('spec-page-approve')!.click(); });
-    expect(calls).toEqual([{ url: `/api/specs/${SPEC}/approve`, body: { revision: 2, expectedVersion: 4 } }]);
+    expect(calls).toEqual([{ url: `/api/specs/${SPEC}/approve`, body: { revision: 2, expectedVersion: 4, retire: [] } }]);
     expect(q('spec-page-approve-result')!.textContent).toContain('Approved revision 2.');
     expect(refreshes).toBe(1);
+  });
+
+  it('AC-137: the approval sheet lists each replaced spec with Retire checked, and sends the choice', async () => {
+    const OLD = '22222222-2222-4222-8222-222222222222';
+    const calls: Array<{ url: string; body: unknown }> = [];
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      calls.push({ url, body: JSON.parse(String(init.body)) });
+      return new Response(JSON.stringify({ spec: {}, revision: {}, retirements: [{ specId: OLD, title: 'Old checkout', state: 'superseded' }] }), { status: 200 });
+    }) as typeof fetch;
+    const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [], replacing: [{ id: OLD, title: 'Old checkout', version: 7 }] };
+    act(() => root.render(<SpecPage view={{ ...base, review }} />));
+    const dock = q('spec-page-action-dock')!;
+    const box = dock.querySelector('[data-testid="spec-approve-retire"]') as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    expect(dock.querySelector('[data-testid="spec-approve-replaced-item"]')!.textContent).toBe('Replaces Old checkout. Retire it.');
+    expect(q('spec-page-approve')!.textContent).toBe('Approve and retire');
+    await act(async () => { q('spec-page-approve')!.click(); });
+    expect(calls).toEqual([{ url: `/api/specs/${SPEC}/approve`, body: { revision: 2, expectedVersion: 4, retire: [{ specId: OLD, expectedVersion: 7 }] } }]);
+    expect(q('spec-page-approve-result')!.textContent).toBe('Approved revision 2. Retired Old checkout.');
+  });
+
+  it('AC-137: unchecking Retire approves only', async () => {
+    const OLD = '22222222-2222-4222-8222-222222222222';
+    const calls: Array<{ body: unknown }> = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      calls.push({ body: JSON.parse(String(init.body)) });
+      return new Response(JSON.stringify({ spec: {}, revision: {}, retirements: [] }), { status: 200 });
+    }) as typeof fetch;
+    const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [], replacing: [{ id: OLD, title: 'Old checkout', version: 7 }] };
+    act(() => root.render(<SpecPage view={{ ...base, review }} />));
+    await act(async () => { (q('spec-approve-retire') as HTMLInputElement).click(); });
+    expect(q('spec-page-approve')!.textContent).toBe('Approve revision 2');
+    await act(async () => { q('spec-page-approve')!.click(); });
+    expect(calls).toEqual([{ body: { revision: 2, expectedVersion: 4, retire: [] } }]);
+  });
+
+  it('R-76, R-100: the status line says what this spec replaces, or that a replacement is waiting', () => {
+    act(() => root.render(<SpecPage view={{ ...base, replacesSpecs: [{ id: 'a', title: 'Old checkout' }], replacementWaiting: [{ id: 'b', title: 'New checkout' }] }} />));
+    expect(q('spec-page-replaces')!.textContent).toBe('Replaces Old checkout');
+    expect(q('spec-page-replaces')!.querySelector('a')!.getAttribute('href')).toBe('/app/specs/a');
+    expect(q('spec-page-replacement-waiting')!.textContent).toBe('A replacement is waiting: New checkout');
+    expect(q('spec-page-replacement-waiting')!.querySelector('a')!.getAttribute('href')).toBe('/app/specs/b');
   });
 
   it('reads as approved on the press, before the server answers', async () => {
@@ -445,7 +487,7 @@ describe('SpecPage', () => {
     const posted: unknown[] = [];
     globalThis.fetch = (async (_u: string, init: RequestInit) => { posted.push(JSON.parse(String(init.body))); return new Response('{}', { status: 200 }); }) as typeof fetch;
     await act(async () => { q('spec-page-approve')!.click(); });
-    expect(posted).toEqual([{ revision: 2, expectedVersion: 5 }]);
+    expect(posted).toEqual([{ revision: 2, expectedVersion: 5, retire: [] }]);
   });
 
   it('a review that cannot be read says why, with no Approve', async () => {

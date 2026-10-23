@@ -19,6 +19,7 @@ import { sameDesign } from '@buildd/spec-contract/design';
 import { recordManualPlacement } from './filings';
 import { criterionHashes, retiredIdRefusal, writeCriterionRecords } from './criteria';
 import { acceptanceRoleRefusal } from './verdict-guards';
+import { parseReplaces, replacesRefusal } from './replaces';
 
 /**
  * Living Specs store (G1): create a draft, revise it under a version check,
@@ -162,6 +163,8 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   workspaceId: unknown; title: unknown; scope?: unknown; parentSpecId?: unknown; body: unknown; changeSummary?: unknown; repoRefs?: unknown; design?: unknown;
   /** Override a duplicate refusal (§13): the spec this one replaces, or why it is distinct. */
   supersedes?: unknown; distinctBecause?: unknown;
+  /** R-76: the live specs of this workspace this draft replaces. */
+  replaces?: unknown;
 }, opts: {
   duplicates?: DuplicateCheckDeps | false;
   /** Written by an import (§18, R-18, ./import.ts): revision 1 is this repo file, and the repo stays the source until confirmed. */
@@ -195,9 +198,12 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   if (isError(design)) return design;
   const override = parseDuplicateOverride(input);
   if (override && 'error' in override) return fail(400, override.error);
-  if (override?.supersedes) {
-    const [old] = await db.select({ workspaceId: specs.workspaceId }).from(specs).where(eq(specs.id, override.supersedes)).limit(1);
-    if (!old || old.workspaceId !== workspaceId) return fail(400, 'supersedes names no spec in this workspace');
+  // R-76: the specs this draft replaces; `supersedes` names one more, in the same field.
+  const replaces = parseReplaces(input.replaces, override?.supersedes);
+  if (replaces && 'error' in replaces) return fail(400, replaces.error);
+  if (replaces) {
+    const refused = await replacesRefusal(workspaceId, replaces);
+    if (refused) return fail(400, override?.supersedes && replaces.length === 1 ? refused.replace(/^replaces/, 'supersedes') : refused);
   }
 
   // Duplicates (§13): fail-open, so a check that cannot run never stops a spec.
@@ -233,6 +239,7 @@ export async function createSpecDraft(caller: SpecCaller, input: {
     repoRefs: repoRefs ?? null,
     design: design ?? null,
     imported: opts.imported ? importOf(opts.imported) : null,
+    replaces: replaces ?? null,
   }).returning();
   await afterRevisionWritten(spec, revision, body);
   return { ok: true, spec, revision, duplicateCheck };
@@ -240,6 +247,8 @@ export async function createSpecDraft(caller: SpecCaller, input: {
 
 export async function reviseSpecDraft(caller: SpecCaller, specId: string, input: {
   expectedVersion: unknown; body: unknown; changeSummary?: unknown; repoRefs?: unknown; design?: unknown;
+  /** R-76: the specs this revision replaces; omitted keeps the head's, null or [] clears them. */
+  replaces?: unknown;
 }, opts: {
   /** A re-import of a changed repo file (R-18, ./import.ts): the new revision is that file, still imported. */
   imported?: SpecRevisionImport & { importedAt: string };
@@ -252,6 +261,8 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   if (typeof body !== 'string') return body;
   const refsInput = readRefsInput(input.repoRefs);
   if (isError(refsInput)) return refsInput;
+  const replacesInput = parseReplaces(input.replaces);
+  if (replacesInput && 'error' in replacesInput) return fail(400, replacesInput.error);
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   if (!spec || !(await reach(caller, spec.workspaceId, true))) return fail(404, 'Spec not found');
   const roleRefusal = await acceptanceRoleRefusal(caller);
@@ -274,7 +285,14 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   if (isError(designInput)) return designInput;
   const design = designInput === undefined ? head.design ?? null : designInput;
   const designChanged = !sameDesign(design, head.design);
-  if (hash === head.contentHash && !refsChanged && !designChanged) return { ok: true, spec, revision: head, unchanged: true };
+  // Omitted replaces carry the head's forward; null or [] clears them (R-76).
+  const replaces = replacesInput === undefined ? (head.replaces?.length ? head.replaces : null) : replacesInput;
+  const replacesChanged = JSON.stringify(replaces ?? []) !== JSON.stringify(head.replaces ?? []);
+  if (hash === head.contentHash && !refsChanged && !designChanged && !replacesChanged) return { ok: true, spec, revision: head, unchanged: true };
+  if (replaces && replacesChanged) {
+    const refused = await replacesRefusal(spec.workspaceId, replaces, spec.id);
+    if (refused) return fail(400, refused);
+  }
   if (repoRefs && refsChanged) {
     const bad = await checkRepoRefs(spec.workspaceId, newRepoRefs(repoRefs, head.repoRefs));
     if (bad) return bad;
@@ -287,6 +305,7 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   }
   const refsJson = repoRefs ? JSON.stringify(repoRefs) : null;
   const designJson = design ? JSON.stringify(design) : null;
+  const replacesJson = replaces ? JSON.stringify(replaces) : null;
   const importJson = opts.imported ? JSON.stringify(importOf(opts.imported)) : null;
   // A re-import moves the spec's provenance to the new file in the same statement.
   const sourceJson = opts.imported ? JSON.stringify({ ...importOf(opts.imported), importedAt: opts.imported.importedAt }) : null;
@@ -294,7 +313,7 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   // One statement, so it lands whole or not at all: the body (only while the
   // artifact is still at the revision the head pins AND the spec still at the
   // version read), the version bump, and the spec revision pinning the new body.
-  // Only the references or the design changed: the new revision pins the same body revision.
+  // Only the references, the design or the replaced specs changed: the new revision pins the same body revision.
   const who = author(caller);
   const summary = typeof input.changeSummary === 'string' ? input.changeSummary : null;
   const rows = hash === head.contentHash ? await db.execute(sql`
@@ -304,8 +323,8 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
       WHERE id = ${specId}::uuid AND version = ${spec.version}
       RETURNING id, head_revision
     )
-    INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary, repo_refs, design, imported)
-    SELECT up.id, up.head_revision, ${head.artifactRevision}, ${head.contentHash}, ${who.authorKind}, ${who.authorId}, ${summary}, ${refsJson}::jsonb, ${designJson}::jsonb, ${importJson}::jsonb FROM up
+    INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary, repo_refs, design, imported, replaces)
+    SELECT up.id, up.head_revision, ${head.artifactRevision}, ${head.contentHash}, ${who.authorKind}, ${who.authorId}, ${summary}, ${refsJson}::jsonb, ${designJson}::jsonb, ${importJson}::jsonb, ${replacesJson}::jsonb FROM up
     RETURNING id`) : await db.execute(sql`
     WITH body AS (
       UPDATE artifacts SET content = ${body}, content_author = ${who.label}, updated_at = now()
@@ -318,8 +337,8 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
       WHERE id = ${specId}::uuid AND version = ${spec.version} AND EXISTS (SELECT 1 FROM body)
       RETURNING id, head_revision
     )
-    INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary, repo_refs, design, imported)
-    SELECT up.id, up.head_revision, body.current_revision, ${hash}, ${who.authorKind}, ${who.authorId}, ${summary}, ${refsJson}::jsonb, ${designJson}::jsonb, ${importJson}::jsonb FROM up, body
+    INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary, repo_refs, design, imported, replaces)
+    SELECT up.id, up.head_revision, body.current_revision, ${hash}, ${who.authorKind}, ${who.authorId}, ${summary}, ${refsJson}::jsonb, ${designJson}::jsonb, ${importJson}::jsonb, ${replacesJson}::jsonb FROM up, body
     RETURNING id`);
   const inserted = ((rows as { rows?: Array<Record<string, unknown>> }).rows ?? [])[0] as { id: string } | undefined;
   if (!inserted) {

@@ -76,7 +76,8 @@ let scheduled: Array<() => Promise<unknown>>;
 beforeEach(() => {
   rowsByTable = new Map<unknown, unknown[][]>([
     [specs, [[specRow], [{ ...specRow, version: 4, approvedRevision: 2, status: 'approved' }]]],
-    [specRevisions, [[{ specId: SPEC, revision: 2, approvedAt: new Date() }]]],
+    // The head's hash and the specs it replaces (none), read before the approval; then the stamped revision.
+    [specRevisions, [[{ contentHash: 'h', replaces: null }], [{ specId: SPEC, revision: 2, approvedAt: new Date() }]]],
     [workspaces, [[{ gitConfig: null }]]],
   ]);
   inflight = 0; maxInflightAfterWrite = 0; wrote = false;
