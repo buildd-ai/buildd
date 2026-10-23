@@ -1279,15 +1279,18 @@ export function holdLine(state: TopState, now: number): string | null {
 /** `Claude work waits for the plan limit: resumes Thu 00:00 (in 17h)`. */
 export function providerHoldLine(h: ProviderHold, now: number): string {
   // Whose access waits (spec "A runner", R-12): this machine's own login holds
-  // only this runner, so say the others are free.
+  // only this runner, so say the others are free. Spec 0dc7c6de R-11 words it.
   const own = h.kind === 'runner_seat';
-  const head = own ? `This machine's ${h.provider} login waits for its limit`
-    : h.kind === 'provider_pause' ? `${h.provider} work waits for a limit every runner shares`
-    : `${h.provider} work waits for the ${h.word}`;
-  const tail = own ? ` · other runners can take ${h.provider} work` : '';
   const reset = isoMs(h.resetsAt);
-  if (reset === null || reset <= now) return `${head}.${tail}`;
-  return `${head}: resumes ${localLiftTime(h.resetsAt!, now)} (in ${untilWords(reset - now)})${tail}`;
+  const live = reset !== null && reset > now;
+  if (own) {
+    const until = live ? ` until ${localLiftTime(h.resetsAt!, now)}` : '';
+    return `This runner's ${h.provider} login is at its limit${until}${live ? ` (in ${untilWords(reset! - now)})` : ''} · other runners can take ${h.provider} work`;
+  }
+  const head = h.kind === 'provider_pause' ? `${h.provider} work waits for a limit every runner shares`
+    : `${h.provider} work waits for the ${h.word}`;
+  if (!live) return `${head}.`;
+  return `${head}: resumes ${localLiftTime(h.resetsAt!, now)} (in ${untilWords(reset! - now)})`;
 }
 
 /** Exclusion codes in words; a code missing here reads as the server's first sentence. */
