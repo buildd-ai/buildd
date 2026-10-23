@@ -12,6 +12,7 @@ import {
   isSurfaceFixTask,
   isTrunkRefreshTask,
   planSurfaceFixFollowUp,
+  renderRecaptureScreens,
   surfaceAuditRound,
   surfaceAuditTitle,
   surfaceFixRoute,
@@ -240,8 +241,13 @@ export interface RequestSurfaceAuditOptions {
   /** Round to file at (a re-review on a new head is the next round). Default 1. */
   round?: number;
   /** Why the scheduler filed it, recorded for the task page. */
-  reason?: 'first' | 'new_head' | 'retry' | 'post_merge_recovery';
+  reason?: 'first' | 'new_head' | 'retry' | 'post_merge_recovery' | 'recapture';
   attempt?: number;
+  /**
+   * For `recapture`: the screens a merged fix waits on (`recaptureScreenLabel`)
+   * and their routes. The audit re-shoots exactly these and depends on nothing.
+   */
+  recapture?: { screens: string[]; routes: string[] };
   /**
    * The mission's tasks in the gate's shape and a repo-link memo, when the
    * caller (the scheduler's sweep) already holds them: the plan then reads
@@ -315,7 +321,9 @@ export async function planMissionSurfaceAudit(missionId: string, opts: RequestSu
   });
   // A finished audit is the answer only for the commit it looked at. Asked for a
   // head, a completed audit stamped for another one is history, not a live review.
+  // A recapture follows a completed audit that missed screens: that audit is not the answer.
   const live = audits.find(a => isLiveAudit(a)
+    && !(opts.reason === 'recapture' && a.status === 'completed')
     && !(opts.headSha && a.status === 'completed' && readAuditedSha(a.context) !== opts.headSha.toLowerCase()));
   if (live) return { ok: true, mission, live: { id: live.id, status: live.status } };
 
@@ -362,25 +370,29 @@ export async function requestMissionSurfaceAudit(missionId: string, opts: Reques
   if (live) return { ok: true, created: false, taskId: live.id, status: live.status };
 
   const round = Math.max(1, opts.round ?? 1);
+  const recapture = opts.reason === 'recapture' && opts.recapture && opts.recapture.screens.length > 0 ? opts.recapture : null;
+  const recaptureBlock = recapture ? renderRecaptureScreens(recapture.screens) : null;
   const [auditTask] = await db.insert(tasks).values({
     workspaceId: targetWorkspace.id,
     missionId,
     title: surfaceAuditTitle(mission.title, round),
     description: buildSurfaceAuditDescription({
       missionTitle: mission.title,
-      scopedPaths,
-      requiredRoutes,
+      scopedPaths: recapture ? [] : scopedPaths,
+      requiredRoutes: recapture ? [...new Set(recapture.routes)].sort() : requiredRoutes,
       visualQa: auditVisualQa(targetWorkspace),
-    }) + (opts.headSha
+    }) + (recaptureBlock ? `\n\n${recaptureBlock}` : '') + (opts.headSha
       ? `\n\nThis review is for commit \`${opts.headSha.slice(0, 12)}\` of the integration branch. If the branch has moved past it by the time you capture, say so in your report: a pass only counts for the commit it looked at, and buildd files the next review for the new head itself.`
       : ''),
     taskClass: 'work',
     kind: 'observation',
-    dependsOn: builderIds,
+    // A recapture checks fixes that already merged: nothing to wait on.
+    dependsOn: recapture ? [] : builderIds,
     outputRequirement: 'artifact_required',
     context: {
       surfaceAuditTrigger: 'auto',
       ...(round > 1 ? { surfaceAuditRound: round } : {}),
+      ...(recapture ? { visualQa: { requiredRoutes: [...new Set(recapture.routes)].sort(), recapture: recapture.screens } } : {}),
       ...(opts.headSha ? { visualReview: { headSha: opts.headSha.toLowerCase(), reason: opts.reason ?? null, attempt: opts.attempt ?? 1 } } : {}),
     },
     roleSlug: VISUAL_AUDITOR_ROLE_SLUG,

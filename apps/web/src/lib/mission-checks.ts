@@ -134,7 +134,13 @@ export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: 
   const actor: CheckActor = p.needsYou ? 'owner' : state.nextActor === 'jev' ? 'reviewer' : state.nextActor === 'none' ? 'none' : 'system';
   // Skip (R-34): the policy lets a person waive it and nothing has settled it yet.
   const waivable = state.policy.waiverAllowed && state.policy.mode !== 'off' && !['passed', 'waived', 'not_applicable', 'optional'].includes(state.status);
-  const row = (status: CheckStatus, text: string, detail: string | null, who: CheckActor = actor): CheckRow => ({ ...base, status, state: text, detail, actor: who, waivable: waivable && !SETTLED.has(status) });
+  // I-7: a person's Skip that a later review replaced is still named, never dropped silently.
+  const skippedEarlier = state.status !== 'waived' && state.waiver?.supersededBy
+    ? `${state.waiver.actorLabel ?? 'Someone'} skipped an earlier review; a later one replaced it.`
+    : null;
+  const row = (status: CheckStatus, text: string, detail: string | null, who: CheckActor = actor): CheckRow => ({
+    ...base, status, state: text, detail: skippedEarlier ? sentence(detail, skippedEarlier) : detail, actor: who, waivable: waivable && !SETTLED.has(status),
+  });
 
   // Off or not needed: there are no screens to open, and the state says it once.
   const idle = (text: string, detail: string): CheckRow => ({ ...row('not_applicable', text, detail, 'none'), chip: null, evidence: [], waivable: false });
@@ -165,6 +171,10 @@ export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: 
       ...row('queued', 'waiting on failed work', p.detail, 'none'),
       evidence: [...base.evidence, { label: 'Open the failed task', href: `/app/tasks/${encodeURIComponent(state.waitingOn.taskId)}` }],
     };
+  }
+  // I-15: a merged fix waiting for its screen to be shot again, named.
+  if (state.recapture && state.recapture.next !== 'decide' && state.status !== 'running') {
+    return row('queued', 'waiting for a new screenshot', sentence(p.label, p.detail));
   }
   if (state.staleEvidence) return row('stale', 'out of date', 'The branch changed after the last check. It checks again.');
   if (state.status === 'running') {

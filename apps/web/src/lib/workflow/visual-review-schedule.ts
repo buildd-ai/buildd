@@ -50,7 +50,7 @@ export interface ScheduleAudit {
 }
 
 export interface ScheduleInput {
-  state: Pick<MissionVisualReviewState, 'status' | 'policy' | 'branch' | 'scope'>;
+  state: Pick<MissionVisualReviewState, 'status' | 'policy' | 'branch' | 'scope' | 'recapture'>;
   /** The classifier's verdict for the current head, or null when it was not (or could not be) assessed. */
   impact: { verdict: 'review_required' | 'not_applicable'; headSha: string | null } | null;
   /** Newest first. */
@@ -72,7 +72,7 @@ export type ScheduleAction =
       action: 'enqueue';
       headSha: string;
       round: number;
-      reason: 'first' | 'new_head' | 'retry' | 'post_merge_recovery';
+      reason: 'first' | 'new_head' | 'retry' | 'post_merge_recovery' | 'recapture';
       /** 1-based attempt on this head. */
       attempt: number;
       /** Filed anyway (it will wait in the queue), but a person must know no browser is online. */
@@ -149,7 +149,8 @@ export function planVisualReviewSchedule(input: ScheduleInput): ScheduleAction {
     headSha: head,
     round: Math.max(1, round),
     // Merged without the review: it runs as a post-merge audit and says so; it is never passed off as pre-merge assurance.
-    reason: state.branch.postMergeRecovery ? 'post_merge_recovery' : isRetry ? 'retry' : audits.length === 0 ? 'first' : 'new_head',
+    // A fix merged and the last audit missed its screen: re-shoot exactly that (spec 072de598 I-15).
+    reason: state.branch.postMergeRecovery ? 'post_merge_recovery' : isRetry ? 'retry' : state.recapture?.next === 'capture' ? 'recapture' : audits.length === 0 ? 'first' : 'new_head',
     attempt: failedOnHead.length + 1,
     runnerNote: input.browserRunnerOnline === false ? 'no_browser_runner' : null,
   };
