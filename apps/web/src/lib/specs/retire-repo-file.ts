@@ -5,7 +5,7 @@ import { specShortId, verifyRepoCopy } from '@buildd/spec-contract/repo-copy';
 import { buildSpecIndex, markSpecSuperseded, parseSpecFrontmatter, SPEC_META_FILES, type IndexedSpec } from '@buildd/spec-contract/repo-spec';
 import { checkSuitesAllPassed, type CheckSuiteSummary } from '@/lib/github';
 import { appBaseUrl } from '@/lib/app-url';
-import { defaultRepoCopyDeps, GENERATED_SPEC_COPY_EXCEPTION, readRepoState, type RepoCopyDeps } from './repo-copy';
+import { defaultRepoCopyDeps, GENERATED_SPEC_COPY_EXCEPTION, mergeGeneratedSpecPr, readRepoState, type RepoCopyDeps } from './repo-copy';
 
 /**
  * A retired spec's repo file (docs/specs/living-specs.md §22, R-78 to R-80).
@@ -197,7 +197,7 @@ export async function landRetirementPr(
   const suites = await deps.api(e.installationId, `/repos/${e.repoFullName}/commits/${liveHead}/check-suites`).catch(() => null);
   if (!checkSuitesAllPassed((suites?.check_suites ?? []) as CheckSuiteSummary[])) return { specId, outcome: 'waiting' };
   try {
-    await deps.api(e.installationId, `/repos/${e.repoFullName}/pulls/${e.prNumber}/merge`, { method: 'PUT', body: JSON.stringify({ sha: liveHead, merge_method: 'squash' }) });
+    await mergeGeneratedSpecPr(deps, e, liveHead);
   } catch (err) {
     console.warn(`[spec-retire] ${e.repoFullName}#${e.prNumber}: merge refused: ${errMsg(err)}`);
     return { specId, outcome: 'behind' };

@@ -336,15 +336,24 @@ export async function landSpecRepoCopy(
   const suites = await deps.api(e.installationId, `/repos/${e.repoFullName}/commits/${liveHead}/check-suites`).catch(() => null);
   if (!checkSuitesAllPassed((suites?.check_suites ?? []) as CheckSuiteSummary[])) return { specId: spec.id, outcome: 'waiting' };
   try {
-    await deps.api(e.installationId, `/repos/${e.repoFullName}/pulls/${e.prNumber}/merge`, {
-      method: 'PUT', body: JSON.stringify({ sha: liveHead, merge_method: 'squash' }),
-    });
+    await mergeGeneratedSpecPr(deps, e, liveHead);
   } catch (err) {
     await saveState(spec.id, { ...rc, state: 'behind', failingCheck: `merge refused: ${errMsg(err).slice(0, 120)}`, updatedAt: at });
     return { specId: spec.id, outcome: 'behind' };
   }
   await saveState(spec.id, { ...rc, state: 'merged', failingCheck: undefined, error: undefined, updatedAt: at });
   return { specId: spec.id, outcome: 'merged' };
+}
+
+/**
+ * Door D14's one merge call: a generated spec PR (a copy, or a retired spec's
+ * copy removal, ./retire-repo-file.ts) squashed at the head its caller checked
+ * is the generator's own commit. Throws GitHub's refusal.
+ */
+export async function mergeGeneratedSpecPr(deps: Pick<RepoCopyDeps, 'api'>, e: { repoFullName: string; prNumber: number; installationId: number }, headSha: string): Promise<void> {
+  await deps.api(e.installationId, `/repos/${e.repoFullName}/pulls/${e.prNumber}/merge`, {
+    method: 'PUT', body: JSON.stringify({ sha: headSha, merge_method: 'squash' }),
+  });
 }
 
 // ── Publication (Slice 14) ──────────────────────────────────────────────────
