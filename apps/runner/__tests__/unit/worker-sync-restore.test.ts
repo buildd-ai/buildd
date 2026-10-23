@@ -293,6 +293,20 @@ describe('WorkerSync.restoreWorkersFromDisk — paused, not failed, when the ses
     ...o,
   });
 
+  // Spec 47c97f48 (r1): killed while the runner paused it for an update.
+  test('a crash while an update pause was pending restores it as paused for the update, not as a person\'s pause', () => {
+    diskWorkers = [crashed({ pauseRequestedAt: Date.now() - 5_000, pauseRequestedFor: 'update' })];
+    const { sync, ctx } = syncWith(probe());
+
+    sync.restoreWorkersFromDisk();
+
+    const w = ctx.workers.get('w-crash')!;
+    expect(w.status).toBe('waiting');
+    expect(w.resumeOnStart).toBe('update');
+    expect(w.waitingFor?.context).toMatch(/^Paused for update/);
+    expect(w.pauseRequestedFor).toBeUndefined();
+  });
+
   test('a crash (no grace) with the worktree and the session file still there restores it as paused, to be continued', () => {
     diskWorkers = [crashed()];
     const { sync, ctx } = syncWith(probe());
