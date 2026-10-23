@@ -18,8 +18,8 @@
  * (next.config.mjs, artifactPageCsp) limits `frame-src` to the storage origin.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Select } from '@/components/ui/Select';
 import { fitScale, frameSrc, type DesignScreen } from '@/lib/design-preview';
-import { Select, type SelectOption } from '@/components/ui/Select';
 
 export interface DesignPreviewProps {
   artifactId: string;
@@ -85,14 +85,6 @@ export default function DesignPreview({
   const label = `Design preview · ${title} · revision ${revision}`;
   const src = frameUrl ? frameSrc(frameUrl, screenId) : null;
 
-  const screenOptions = useMemo<SelectOption[]>(
-    () => screens.map((s) => ({
-      value: s.id,
-      label: `${s.name}${s.viewport ? ` · ${s.viewport.width}×${s.viewport.height}` : ''}`,
-    })),
-    [screens],
-  );
-
   const pick = useCallback((id: string) => {
     setScreenId(id);
     syncScreenParam(id);
@@ -113,7 +105,10 @@ export default function DesignPreview({
               aria-label="Screen"
               value={screenId ?? ''}
               onChange={pick}
-              options={screenOptions}
+              options={screens.map((s) => ({
+                value: s.id,
+                label: `${s.name}${s.viewport ? ` · ${s.viewport.width}×${s.viewport.height}` : ''}`,
+              }))}
               className="max-w-[60vw] sm:max-w-xs"
             />
           </div>

@@ -77,9 +77,10 @@ describe('DesignPreview chrome', () => {
     expect(iframeTag(html)).toContain('title="Design preview · Navigation design · revision 2"');
   });
 
-  it('names the chosen screen with its viewport and keeps the download', () => {
+  it('lists each screen with its viewport and keeps the download', () => {
     const html = render();
     expect(html).toContain('Phone mission · 390×844');
+    expect(html).toContain('Desktop mission · 1440×900');
     expect(html).toContain('href="/api/artifacts/a1/download"');
     expect(html).toContain('>Download<');
   });

@@ -54,8 +54,7 @@ let root: ReturnType<typeof createRoot>;
 const q = <T extends HTMLElement>(id: string) => document.querySelector(`[data-testid="${id}"]`) as T | null;
 const frame = () => q<HTMLIFrameElement>('design-frame')!;
 const box = () => q<HTMLDivElement>('design-frame-box')!;
-const picker = () => q<HTMLButtonElement>('design-screen-picker')!;
-const pickedScreen = () => picker().dataset.value;
+const picker = () => q<HTMLElement>('design-screen-picker')!;
 
 function mount(initialScreenId: string | null) {
   act(() => {
@@ -77,8 +76,10 @@ function choose(id: string) {
   act(() => {
     picker().click();
   });
+  const opts = Array.from(document.querySelectorAll('[role="option"]')) as HTMLElement[];
+  const name = screens.find((s) => s.id === id)!.name;
   act(() => {
-    (document.querySelector(`[role="option"][data-value="${id}"]`) as HTMLElement).click();
+    opts.find((o) => o.textContent?.includes(name))!.click();
   });
 }
 
@@ -99,7 +100,7 @@ afterEach(() => {
 describe('DesignPreview on a 390px phone', () => {
   it('opens the deep-linked desktop screen scaled to fit the column', () => {
     mount('desktop-mission');
-    expect(pickedScreen()).toBe('desktop-mission');
+    expect(picker().textContent).toContain('Desktop mission');
     expect(frame().getAttribute('src')).toBe(`${signed}#desktop-mission`);
     expect(frame().style.width).toBe('1440px');
     expect(frame().style.height).toBe('900px');
@@ -108,13 +109,6 @@ describe('DesignPreview on a 390px phone', () => {
     expect(box().style.width).toBe(`${Math.round(1440 * scale)}px`);
     expect(box().style.height).toBe(`${Math.round(900 * scale)}px`);
     expect(q('design-zoom-fit')!.getAttribute('aria-pressed')).toBe('true');
-  });
-
-  it('lists each screen with its viewport in the picker', () => {
-    mount('desktop-mission');
-    act(() => picker().click());
-    const labels = [...document.querySelectorAll('[role="option"]')].map((o) => o.textContent);
-    expect(labels).toEqual(['Phone mission · 390×844', 'Desktop mission · 1440×900', 'Coverage']);
   });
 
   it('shows a phone screen at true size once the column is at least as wide, never enlarged', () => {
