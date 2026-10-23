@@ -64,36 +64,40 @@ function mount(rows: CheckRow[], ctx: { readonly?: boolean; waiver?: { reason: s
     : card));
 }
 
-describe('Skip on a check (R-34, AC-17)', () => {
-  it('opens one reason field in place and records the waiver through PATCH surfaceAuditWaiver', async () => {
+// Spec 072de598 r15 I-7 / AC-26: Skip is two buttons, an optional note, no minimum length, one tap.
+describe('Skip on a check (I-7, AC-26)', () => {
+  it('opens two buttons with an optional note; tapping one skips immediately with no minimum length', async () => {
     mount([row()]);
     expect(q('[data-testid="mission-check-skip-form"]')).toBeNull();
     await act(async () => { q('[data-testid="mission-check-skip"]')!.click(); });
-    const input = q('[data-testid="mission-check-skip-reason"]') as HTMLInputElement;
-    expect(input).not.toBeNull();
-    await act(async () => {
-      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-      set.call(input, 'Copy-only change, nothing to see');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await act(async () => { (q('[data-testid="mission-check-skip-form"]') as HTMLFormElement).requestSubmit(); });
+    expect(q('[data-testid="mission-check-skip-wrong"]')).not.toBeNull();
+    expect(q('[data-testid="mission-check-skip-ship"]')).not.toBeNull();
+    await act(async () => { q('[data-testid="mission-check-skip-ship"]')!.click(); });
     await flush();
-    expect(calls).toEqual([{ url: '/api/missions/m1', method: 'PATCH', body: { surfaceAuditWaiver: 'Copy-only change, nothing to see' } }]);
+    expect(calls).toEqual([{ url: '/api/missions/m1', method: 'PATCH', body: { surfaceAuditWaiver: { reason: 'ship_anyway' } } }]);
     expect(refreshed).toBe(1);
     expect(q('[data-testid="mission-check-skip-form"]')).toBeNull();
   });
 
-  it('a short reason is refused before any request', async () => {
+  it('a typed note rides along with the button pressed', async () => {
     mount([row()]);
     await act(async () => { q('[data-testid="mission-check-skip"]')!.click(); });
-    const input = q('[data-testid="mission-check-skip-reason"]') as HTMLInputElement;
+    const note = q('[data-testid="mission-check-skip-note"]') as HTMLTextAreaElement;
     await act(async () => {
-      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-      set.call(input, 'short');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
+      const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+      set.call(note, 'shots of the wrong page');
+      note.dispatchEvent(new Event('input', { bubbles: true }));
     });
-    await act(async () => { (q('[data-testid="mission-check-skip-form"]') as HTMLFormElement).requestSubmit(); });
+    await act(async () => { q('[data-testid="mission-check-skip-wrong"]')!.click(); });
     await flush();
+    expect(calls).toEqual([{ url: '/api/missions/m1', method: 'PATCH', body: { surfaceAuditWaiver: { reason: 'wrong_or_stuck', note: 'shots of the wrong page' } } }]);
+  });
+
+  it('cancel closes the form without a request', async () => {
+    mount([row()]);
+    await act(async () => { q('[data-testid="mission-check-skip"]')!.click(); });
+    await act(async () => { q('[data-testid="mission-check-skip-cancel"]')!.click(); });
+    expect(q('[data-testid="mission-check-skip-form"]')).toBeNull();
     expect(calls).toHaveLength(0);
   });
 
