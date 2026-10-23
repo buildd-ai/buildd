@@ -407,13 +407,27 @@ async function TaskDetailPage({
   // below reads the same view when this task owns the PR, so it is read once.
   const deliveryContextPromise = loadTaskDeliveryContext(task.id, user.id);
   deliveryContextPromise.catch(() => {});
-  const [evidenceReview, reads2, ship, teamTimezone, roleRow, runnerHeartbeats, auditVisual, evidenceFiles, runnerReachRaw, accessItems, failureRaw, livingSpec, taskServiceStatus] = await Promise.all([
-    prWorker?.prNumber
-      ? RUN_PROGRESS_READERS.review({
-          workspaceId: task.workspaceId, prNumber: prWorker.prNumber,
-          knownDelivery: { taskId: task.id, view: deliveryContextPromise.then((c) => c.view) },
-        }).catch(() => null)
-      : Promise.resolve(null),
+  const evidenceReviewPromise = prWorker?.prNumber
+    ? RUN_PROGRESS_READERS.review({
+        workspaceId: task.workspaceId, prNumber: prWorker.prNumber,
+        knownDelivery: { taskId: task.id, view: deliveryContextPromise.then((c) => c.view) },
+      }).catch(() => null)
+    : Promise.resolve(null);
+  // When each run the timeline links to (reviews, fixes) last did something (R-8),
+  // read as soon as the delivery and the review name them. Never throws.
+  const linkedRunTimesPromise = Promise.all([deliveryContextPromise, evidenceReviewPromise]).then(async ([ctx, review]) => {
+    const ids = [...new Set((ctx.view
+      ? [...ctx.view.rounds.map(r => r.reviewerTaskId), ...ctx.view.ledger.map(a => a.taskId)]
+      : [review?.reviewTaskId]).filter((t): t is string => !!t))];
+    if (ids.length === 0) return [];
+    return db.select({ taskId: workers.taskId, completedAt: workers.completedAt, startedAt: workers.startedAt })
+      .from(workers).where(inArray(workers.taskId, ids)).orderBy(desc(workers.createdAt));
+  }).catch((err: unknown) => {
+    console.warn('[task-page] timeline times unavailable:', err instanceof Error ? err.message : err);
+    return [];
+  });
+  const [evidenceReview, reads2, ship, teamTimezone, roleRow, runnerHeartbeats, auditVisual, evidenceFiles, runnerReachRaw, accessItems, failureRaw, livingSpec, taskServiceStatus, linkedRunTimes] = await Promise.all([
+    evidenceReviewPromise,
     round2,
     (async () => {
       // Ship state (§10.3) — whether this task is attributed to a healthy release.
@@ -463,6 +477,7 @@ async function TaskDetailPage({
     // The Living Spec the task is pinned to, with its outcome. No query unless it names one.
     livingSpecLoad(task.id, task.context),
     serviceStatusPromise,
+    linkedRunTimesPromise,
   ]);
   const taskArtifacts = (reads2(artifactsQuery) ?? []) as Awaited<NonNullable<typeof artifactsQuery>>;
   // The live worker's deliverables, counted from the rows above: no read of its own.
@@ -906,20 +921,17 @@ async function TaskDetailPage({
   });
   const terminalSucceeded = verdict?.state === 'shipped' || verdict?.state === 'done';
 
-  // The runs the timeline links to (reviews, fixes), by when each last did something (R-8).
-  // Read alongside the hosted-runner usage below, not as a wait of its own.
+  // The runs the timeline links to, by when each last did something (R-8).
   const eventTimes = new Map<string, Date | null>(ciAttemptTasks.map(t => [t.id, t.workers[0]?.completedAt ?? t.workers[0]?.startedAt ?? null]));
-  const linkedRunIds = [...new Set([
-    ...(deliveryView ? [...deliveryView.rounds.map(r => r.reviewerTaskId), ...deliveryView.ledger.map(a => a.taskId)] : [legacyReview?.taskId]),
-  ].filter((t): t is string => !!t && !eventTimes.has(t)))];
-  const linkedRunTimesPromise = linkedRunIds.length === 0 ? Promise.resolve([]) : db
-    .select({ taskId: workers.taskId, completedAt: workers.completedAt, startedAt: workers.startedAt })
-    .from(workers).where(inArray(workers.taskId, linkedRunIds)).orderBy(desc(workers.createdAt))
-    .catch((err: unknown) => {
-      console.warn('[task-page] timeline times unavailable:', err instanceof Error ? err.message : err);
-      return [];
-    });
-
+  for (const r of linkedRunTimes) if (r.taskId && !eventTimes.has(r.taskId)) eventTimes.set(r.taskId, r.completedAt ?? r.startedAt ?? null);
+  const timeline = buildTaskTimeline({
+    task, workers: taskWorkers,
+    kind: deliveryView ? projectKernelState(deliveryView.state) : prLife.mergedAt ? 'landed' : 'build',
+    delivery: deliveryView, lineage: prOutcome?.lineage, ciAttemptTasks, mergedAt: prLife.mergedAt as Date | string | null,
+    review: legacyReview, eventTimes,
+    waitingOn: waitingOn ? { taskId: waitingOn.taskId, title: waitingOn.title ? displayTaskTitle(waitingOn.title) : 'the task it depends on' } : null,
+    deliverInto: taskWorkers.find(w => w.prBaseRef)?.prBaseRef ?? task.workspace?.gitConfig?.defaultBranch ?? null,
+  });
   // --- Helpers ---
 
   function timeAgo(date: Date | string): string {
@@ -1102,17 +1114,7 @@ async function TaskDetailPage({
     heroShots: pickHeroShots(undefined, buildHeroPool(toVisualShots(taskArtifacts))),
   });
   const stoppedSummary = shippedView?.lede ?? readableTaskResult(ownResult?.summary, ownResult?.structuredOutput).prose;
-  const [hostedRunnerUsage, linkedRunTimes] = await Promise.all([hostedRunnerUsagePromise, linkedRunTimesPromise]);
-  for (const r of linkedRunTimes) if (r.taskId && !eventTimes.has(r.taskId)) eventTimes.set(r.taskId, r.completedAt ?? r.startedAt ?? null);
-  const timeline = buildTaskTimeline({
-    task, workers: taskWorkers,
-    kind: deliveryView ? projectKernelState(deliveryView.state) : prLife.mergedAt ? 'landed' : 'build',
-    delivery: deliveryView, lineage: prOutcome?.lineage, ciAttemptTasks, mergedAt: prLife.mergedAt as Date | string | null,
-    review: legacyReview, eventTimes,
-    waitingOn: waitingOn ? { taskId: waitingOn.taskId, title: waitingOn.title ? displayTaskTitle(waitingOn.title) : 'the task it depends on' } : null,
-    deliverInto: taskWorkers.find(w => w.prBaseRef)?.prBaseRef ?? task.workspace?.gitConfig?.defaultBranch ?? null,
-  });
-
+  const hostedRunnerUsage = await hostedRunnerUsagePromise;
   const runDetails: RunDetail[] = [];
   let runElapsed: string | null = null;
   {
@@ -1457,8 +1459,7 @@ async function TaskDetailPage({
               <TaskTitle title={heading.heading} />
             </div>
             )}
-            {/* With a verdict, the verdict block carries the state (and this hook);
-                a waiting task, the status line under the title. */}
+            {/* With a verdict, the verdict block carries the state (and this hook). */}
             {!shippedView && !verdict && !waitingOn && (
               <span data-testid="task-header-status" data-status={displayStatus} className="col-start-1 row-start-2 self-center md:col-start-2 md:row-start-1 md:self-start md:mt-0.5">
                 <HeaderStatusPill
