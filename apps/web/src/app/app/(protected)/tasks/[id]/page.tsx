@@ -869,6 +869,8 @@ async function TaskDetailPage({
       : null,
     // The platform updating the branch or merging: in progress, not "ready to merge".
     deliveryActivity: deliveryView && ((deliveryView.state === 'REPAIRING' && deliveryView.stateReason === 'behind') || deliveryView.state === 'LANDING') ? deliveryView.headline : null,
+    awaitingCi: deliveryView?.prState === 'awaiting_ci',
+    deliveryOwner: deliveryView?.owner ?? null,
     // A merged PR is stated once, on the status row, and the time goes with it.
     claimToMerge: lineageClaimToMergeMs != null ? formatElapsed(lineageClaimToMergeMs) : null });
   const verdict = rulesVerdict ? applyVerdictDecision(rulesVerdict, storedVerdictDecision) : null;

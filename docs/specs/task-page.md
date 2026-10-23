@@ -417,6 +417,21 @@ No Why this, no duplicated Done, no "Repairing" for a refresh, no "What
 shipped" before a merge, no "This review run" as detail, no horizontal scroll
 in Raw output or at 320px.
 
+## Who the open PR waits on
+
+A completed task whose PR is not merged is still not done, but it reads "Waiting on
+you" only when a person is the next actor (merge policy `human`, an escalation, a
+person-only gate). The verdict takes the actor from the delivery (`owner`,
+`prState`), the same source the mission state reads:
+
+- GIVEN a completed task whose PR has a running check and an auto-merging policy
+  THEN the row reads `Checks running · n of m passed` and not "Waiting on you".
+- GIVEN green checks and an auto-merging policy THEN it reads `Merging`.
+- GIVEN green checks and a policy that needs a person THEN it reads
+  `Ready to merge` with Review & merge.
+- "No checks reported yet" is said only when none has reported; some running is
+  `Checks running`.
+
 ## Review escalation decision
 
 A delivery parked in `ESCALATED` for a review-family reason (`review_escalated`,
