@@ -822,14 +822,16 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .state-cell[data-frame="decision"] { box-shadow: inset 0 0 0 1.5px var(--dec-frame); }
   .state-cell[data-frame="heavy"] { box-shadow: inset 0 0 0 2.5px var(--accent); }
 
-  /* The mission bar's three looks (spec d25d923d R-4), after every texture so
-     they win: merged solid green, in flight an accent hatch, the rest a dashed
-     outline. A person's move carries an amber dot, a failure a red one. */
+  /* The mission bar's looks (spec d25d923d R-4), after every texture so they
+     win: merged solid green, an agent working an accent hatch, a task that
+     needs a person an outlined amber cell on an amber tint, a failure a person
+     must fix an outlined red cell, and waiting or queued a dashed outline.
+     Every value is a theme token, so Night and Day both keep 3:1 (R-21). */
   .state-cell[data-look="merged"] { background: var(--ok-cell); box-shadow: none; border: 0; }
   .state-cell[data-look="running"] { background: repeating-linear-gradient(135deg, var(--act-hatch) 0 3px, var(--accent-soft) 3px 6px); box-shadow: none; border: 0; }
+  .state-cell[data-look="person"] { background: var(--accent-soft); box-shadow: none; border: 1.5px solid var(--status-warning); }
+  .state-cell[data-look="failed"] { background: var(--bad-tint); box-shadow: none; border: 1.5px solid var(--status-error); }
   .state-cell[data-look="waiting"] { background: transparent; box-shadow: none; border: 1px dashed var(--faint); }
-  [data-dot="amber"] { background: var(--status-warning); }
-  [data-dot="red"] { background: var(--status-error); }
   /* The running cell's hatch drifts: one 135° stripe period (6px × √2 across)
      every 2.4s, so it loops without a jump. */
   .state-cell[data-drift] { animation: cell-hatch-drift 2.4s linear infinite; }

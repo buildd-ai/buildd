@@ -189,7 +189,8 @@ export function overviewCells(model: Model, order: readonly string[] = stripOrde
     const word = replacement ? `Closed → #${replacement.number}`
       : wait ? waitWord(model, id, wait)
       : (status.tone === 'bad' || status.retryAt != null) && status.cause ? overviewStatusText(status) : null;
-    return { id, state: overviewCellState(model, id), tick: stripTick(i), title: model.tasks[id].title, ...(wait ? { wait } : {}), ...(word ? { word } : {}) };
+    // `live`: a fix attempt an agent is on right now hatches; one waiting out its retry is dashed (R-4).
+    return { id, state: overviewCellState(model, id), tick: stripTick(i), title: model.tasks[id].title, live: model.tasks[id].executing === true, ...(wait ? { wait } : {}), ...(word ? { word } : {}) };
   });
 }
 

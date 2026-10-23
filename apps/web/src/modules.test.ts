@@ -68,6 +68,7 @@ describe('composition root', () => {
     expect(byEvent('task.terminal')).toEqual(['knowledge:task-evidence', 'health-quality:failure-pattern-sentinel', 'jev-decisions:verdict-on-terminal']);
     expect(byEvent('worker.finished')).toEqual(['knowledge:memory-use-labels']);
     expect(byEvent('spec.approved')).toEqual(['knowledge:living-spec-index']);
+    expect(byEvent('spec.approval_requested')).toEqual(['notifications:push-spec-approval-requested']);
     expect(byEvent('task.needs_input')).toEqual(['notifications:ledger-task-needs-input']);
     // A trunk merge refreshes no mission branch; a mission task starting does,
     // and a mission's first build claim snapshots its standards (D-43).

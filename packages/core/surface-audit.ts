@@ -144,6 +144,18 @@ export function isMissionAuditTask(t: { title?: string | null; roleSlug?: string
 
 const TRUNK_MERGE_TITLE_RE = /\bmerge\s+`?(?:origin\/)?(?:dev|main|master|trunk)`?\s+into\b/i;
 
+/** Kinds that produce no change for the audit to look at: coordination, research and analysis, or another observation. */
+const NON_BUILD_KINDS: ReadonlySet<string> = new Set(['coordination', 'observation', 'analysis', 'research']);
+
+/**
+ * Whether a task's kind can hold the audit. Coordination, observation, analysis
+ * and research tasks ship nothing the audit captures, so depending on one only
+ * delays it. An unset kind is treated as build work (older rows).
+ */
+export function isAuditBuildKind(kind: string | null | undefined): boolean {
+  return !kind || !NON_BUILD_KINDS.has(kind);
+}
+
 /**
  * A task that merges trunk into a branch: the automated mission-branch refresh
  * (`context.requireMergeCommit` / `context.refreshTrunk`) or a hand-filed one

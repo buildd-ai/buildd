@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { artifacts, specRevisions, specs, type SpecMetadataBlock, type SpecRevisionImport, type SpecScope } from '@buildd/core/db/schema';
+import { artifacts, specRevisions, specs, type SpecGateResult, type SpecMetadataBlock, type SpecRevisionImport, type SpecScope } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
 import { cache } from 'react';
 import { workspaces } from '@buildd/core/db/schema';
@@ -57,7 +57,7 @@ export const author = (c: SpecCaller) => (c.kind === 'user'
   ? { authorKind: 'user' as const, authorId: c.userId, label: `user:${c.userId}` }
   : { authorKind: 'agent' as const, authorId: c.account.id, label: `account:${c.account.id}` });
 
-export type SpecError = { ok: false; status: 400 | 403 | 404 | 409 | 502; error: string; currentVersion?: number; code?: string; duplicates?: DuplicateCandidate[] };
+export type SpecError = { ok: false; status: 400 | 403 | 404 | 409 | 502; error: string; currentVersion?: number; code?: string; duplicates?: DuplicateCandidate[]; gate?: SpecGateResult };
 export const fail = (status: SpecError['status'], error: string, extra: Partial<SpecError> = {}): SpecError => ({ ok: false, status, error, ...extra });
 
 /**
