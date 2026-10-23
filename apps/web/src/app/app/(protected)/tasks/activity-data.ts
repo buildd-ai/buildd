@@ -25,7 +25,7 @@
  * (scripts/module-boundaries.test.ts), as they do for the projection.
  */
 import { db } from '@buildd/core/db';
-import { missionSummaries, missions, tasks as tasksTable, users, workers, workflowDeliveries } from '@buildd/core/db/schema';
+import { missionSummaries, missions, specs, tasks as tasksTable, users, workers, workflowDeliveries } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, isNull, lte, notInArray, or, sql, type AnyColumn, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { LIVE_WORKER_STATUSES, MISSION_SUMMARY_VERSION, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import {
@@ -105,7 +105,11 @@ export const ACTIVITY_TASK_COLUMNS = {
   reviewHeadSha: sql<string | null>`case when ${isString(sql`${tasksTable.context}->'headSha'`)} then ${tasksTable.context}->>'headSha' end`,
 };
 
+const UUID_RE = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 const pinnedSpec = sql`jsonb_typeof(${tasksTable.context}->'specSource') = 'object'`;
+/** A pin naming a spec that exists: one that does not resolve gets no claim (activity-verification-read.ts). */
+const pinResolves = sql`exists (select 1 from ${specs} where ${specs.id} = case
+    when ${tasksTable.context}->'specSource'->>'specId' ~* ${UUID_RE} then (${tasksTable.context}->'specSource'->>'specId')::uuid end)`;
 
 /**
  * The roots' recorded lineage (spec 9430a28f R-4) and Living Spec pin (R-6),
@@ -120,12 +124,12 @@ function lineageQuery(rootIds: string[]) {
     requesterSource: tasksTable.requesterSource,
     createdByWorkerId: tasksTable.createdByWorkerId,
     // The pin only: the rest of the context is never read here.
-    specSource: sql<Record<string, unknown> | null>`case when ${pinnedSpec} then ${tasksTable.context}->'specSource' end`,
+    specSource: sql<Record<string, unknown> | null>`case when ${pinnedSpec} and ${pinResolves} then ${tasksTable.context}->'specSource' end`,
     name: users.name,
   })
     .from(tasksTable)
     .leftJoin(users, eq(users.id, tasksTable.createdByUserId))
-    .where(and(inArray(tasksTable.id, rootIds), or(inArray(tasksTable.requesterSource, [...DECIDED_REQUESTER_SOURCES]), pinnedSpec)));
+    .where(and(inArray(tasksTable.id, rootIds), or(inArray(tasksTable.requesterSource, [...DECIDED_REQUESTER_SOURCES]), and(pinnedSpec, pinResolves))));
 }
 type LineageRow = Awaited<ReturnType<typeof lineageQuery>>[number];
 

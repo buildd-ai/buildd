@@ -288,9 +288,11 @@ describe('attribution and verification (spec 9430a28f R-4, R-6, AC-4)', () => {
     expect(q).toContain(`"context"->'specsource' end`);
     expect(q).toContain('"users"."name"');
     expect(q).toContain('"tasks"."id" in ($, $)');
-    // Only rows with something to show come back: a decided source, or a pin.
+    // Only rows with something to show come back: a decided source, or a pin
+    // naming a spec that exists (one that does not resolve gets no claim anyway).
     expect(q).toContain('"tasks"."requester_source" in (');
     expect(q).toContain(`jsonb_typeof("tasks"."context"->'specsource') = 'object'`);
+    expect(q).toContain('exists (select 1 from "specs" where "specs"."id" =');
     expect(statements.some(s => norm(s).includes(' from "users"') && !isLineageRead(s))).toBe(false);
   });
 
