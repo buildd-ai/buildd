@@ -103,7 +103,7 @@ export default function VisualReviewAsk({ model, onReview, onAnswer, answerOptio
   const target = model.needsYou?.workerId && model.needsYou?.taskId
     ? { workerId: model.needsYou.workerId, taskId: model.needsYou.taskId }
     : null;
-  const heading = reason === 'question' ? 'The visual audit asks' : reason === 'unsure' ? 'Screens to check' : 'Visual issues: decision needed';
+  const heading = reason === 'question' ? 'The visual audit asks' : reason === 'unsure' ? 'Screens to check' : reason === 'fix_check' ? 'Fixed screens to check' : 'Visual issues: decision needed';
 
   return (
     <section

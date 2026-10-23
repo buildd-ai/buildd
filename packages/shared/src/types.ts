@@ -2804,6 +2804,8 @@ export interface VisualQaMeta {
   /** The auditor's own fix link. A human-filed fix is on the review row instead. */
   fixTaskId?: string;
   variant?: string;
+  /** A QA_PLAN state key (`force-start-dialog`): the dialog, panel or menu the shot opened. Absent: the page as it loads. */
+  state?: string;
   /**
    * The branch the shot was captured from, and why that branch
    * (`CaptureRefSource` in @buildd/core/visual-qa-capture-ref). Absent on
@@ -2844,12 +2846,11 @@ export interface VisualReviewCaptureGap {
 }
 
 /**
- * A cell stuck "awaiting a new screenshot" after its fix merged, whose place
- * (route, viewport and state) a different cell — another variant key —
- * captured after the merge: a later round often re-shoots only the routes it
- * fixed with no title collision, so the recapture lands in a sibling cell
- * instead of this one's history. Hidden from `cells`/`queue`/the summary
- * counts; kept here for audit (docs/design/visual-qa-human-review.md).
+ * A cell hidden because another cell covers the same screen: a later round's
+ * shot of the same route, viewport and known state (`qa.state`), or a
+ * duplicate ("shot 2") of a cell whose fix check took that shot. A cell with
+ * no known state is never resolved this way (spec 072de598 I-15, AC-15).
+ * Hidden from `cells`/`queue`/the summary counts; kept here for audit.
  */
 export interface VisualReviewResolvedElsewhere {
   key: string;
@@ -2955,12 +2956,41 @@ export type VisualReviewMarker = 'awaiting' | 'confirmed' | 'disputed' | 'waived
 /**
  * Where a cell stands once a fix for it merged. The question is no longer
  * "is this a bug?" but "did the fix work?".
- * - `awaiting_capture`: no screenshot since the merge. Settled: no buttons,
- *   not in the queue, not counted as to review.
+ * - `awaiting_capture`: no screenshot since the merge, and one is queued or
+ *   owed (`VisualReviewModel.recapture`). No buttons, not in the queue.
  * - `check`: the current screenshot was taken after the merge. Before/after,
  *   with Fixed (looks right) and Still broken (needs fix, files a new fix).
+ * - `decide`: no screenshot since the merge and none will be taken
+ *   automatically (spec 072de598 I-15): a person decides Fixed or Still
+ *   broken from the before shot and the merged fix. In the queue.
  */
-export type VisualReviewFixCheckState = 'awaiting_capture' | 'check';
+export type VisualReviewFixCheckState = 'awaiting_capture' | 'check' | 'decide';
+
+/** One screen a merged fix waits on a new screenshot of. */
+export interface VisualReviewRecaptureScreen {
+  /** The cell key. */
+  key: string;
+  route: string;
+  viewport: VisualQaViewport;
+  /** The QA_PLAN state to open (`qa.state`), null for the page as it loads. */
+  state: string | null;
+  variant: string | null;
+  fixTaskId: string;
+  fixPrNumber: number | null;
+}
+
+/**
+ * Screens whose fix merged with no screenshot since (spec 072de598 I-15).
+ * - `queued`: an audit that has not finished will take them.
+ * - `capture`: the last audit finished without them; the scheduler files one
+ *   recapture audit naming exactly these screens.
+ * - `decide`: no automatic capture is left (the round cap, or a recapture
+ *   audit already missed them): a person decides, and the cells read `decide`.
+ */
+export interface VisualReviewRecapture {
+  next: 'queued' | 'capture' | 'decide';
+  screens: VisualReviewRecaptureScreen[];
+}
 
 /**
  * Where a cell stands for the review deck (`standingOf`). `to_review`: waits
@@ -3024,7 +3054,7 @@ export interface VisualReviewSummary {
   toReview?: number;
   /** Cells whose fix merged with a new screenshot nobody has checked yet (`fixCheck.state` `check`, no review). */
   fixChecks?: number;
-  /** Cells whose fix merged with no screenshot since (`fixCheck.state` `awaiting_capture`): settled, not to review. */
+  /** Cells whose fix merged with no screenshot since (`fixCheck.state` `awaiting_capture`): a capture is queued or owed. */
   awaitingCapture?: number;
   confirmed: number;
   disputed: number;
@@ -3057,9 +3087,10 @@ export interface VisualReviewAuditTask {
 /**
  * Why the audit needs a human. `question`: the auditor's worker waits on a
  * question that is not the boot failure. `unsure`: unsure cells nobody
- * decided. `round_cap`: the round-cap note is open.
+ * decided. `round_cap`: the round-cap note is open. `fix_check`: a merged
+ * fix no screenshot will be taken of automatically (spec 072de598 I-15).
  */
-export type VisualReviewNeedsYouReason = 'question' | 'unsure' | 'round_cap';
+export type VisualReviewNeedsYouReason = 'question' | 'unsure' | 'round_cap' | 'fix_check';
 
 export interface VisualReviewNeedsYou {
   reason: VisualReviewNeedsYouReason;
@@ -3099,6 +3130,8 @@ export interface VisualReviewModel {
   captureGaps?: VisualReviewCaptureGap[];
   /** Cells resolved by a later round's capture of the same place under a different variant. Never in `cells` or `queue`. */
   resolvedElsewhere?: VisualReviewResolvedElsewhere[];
+  /** Screens whose fix merged with no screenshot since, and who takes the next step. Null when there are none. */
+  recapture?: VisualReviewRecapture | null;
   /** Failed audits a later completed audit replaced. Still in `audits`, never the phase. */
   replacedAudits?: VisualReviewReplacedAudit[];
   /** For `waiting_on_failed_work`: the failed build task the audit waits on; its recovery is there. */
