@@ -104,7 +104,8 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
   it('drops "Also running" (Home\'s Agents panel has it) and the bare "Next" link ("Unblocked by this" stays)', () => {
     expect(pageSource).not.toContain('AlsoRunning');
     expect(pageSource).not.toContain('nextChainTask');
-    expect(pageSource).toContain('data-testid="task-unblocked"');
+    // "Blocks" lives in the open Details card (TaskDetailsCard owns the hook).
+    expect(pageSource).toContain('blocks={dependentTasks.map(');
   });
 
   it('the side panel follows the main column: the hero stays the first screen on mobile', () => {
@@ -337,5 +338,33 @@ describe('reading width (Navigation R-21)', () => {
   it('keeps the content column at most 840px', () => {
     expect(pageSource).toMatch(/className="max-w-\[840px\] w-full" data-testid="task-content-column"/);
     expect(pageSource).not.toContain('max-w-[900px]');
+  });
+});
+
+// Surface fix 59a6dec1 (design 6356e80d `phone-task-running`,
+// `desktop-task-running`; Navigation R-7, R-9, R-14; AC-6).
+describe('running task — status line, one live block, Details open', () => {
+  it('the status line sits under the title, before the sub-line', () => {
+    const header = pageSource.slice(pageSource.indexOf('data-testid="task-header"'), pageSource.indexOf('{/* Action first'));
+    const title = header.indexOf('<TaskTitle title={heading.heading} />');
+    const line = header.indexOf('<TaskStatusLine');
+    expect(line).toBeGreaterThan(title);
+    expect(line).toBeLessThan(header.indexOf('data-testid="task-subline"'));
+  });
+
+  it('with the status line up, the in-progress verdict chip is not repeated further down', () => {
+    expect(pageSource).toMatch(/verdict && !\(statusLine && verdict\.state === 'in_progress'\)/);
+  });
+
+  it('Steer, Pause and Stop ride in the live block as one row', () => {
+    expect(pageSource).toMatch(/<WorkerSteerPanel \{\.\.\.workerSteerProps\(activeWorker, taskWorkers, isTerminal\)\} taskId=\{task\.id\} showHistory=\{false\} layout="row" \/>/);
+  });
+
+  it('Details is an open card above Run, not a collapsed disclosure', () => {
+    const card = pageSource.indexOf('<TaskDetailsCard');
+    const run = pageSource.indexOf('cursor-pointer text-body">Run</summary>');
+    expect(card).toBeGreaterThan(0);
+    expect(card).toBeLessThan(run);
+    expect(pageSource).not.toContain('<summary className="min-h-11 flex items-center cursor-pointer text-body font-medium">Details</summary>');
   });
 });

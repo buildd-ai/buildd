@@ -15,6 +15,7 @@ import TaskEvidenceCard from '../../(protected)/tasks/[id]/TaskEvidenceCard';
 import { lineageWorkerHistory } from '../../(protected)/tasks/[id]/lineage-status';
 import { RunEvidenceRail } from '../../(protected)/tasks/[id]/NowStrip';
 import { deriveRunEvidence } from '@buildd/core/run-evidence';
+import { liveRunEvidence } from '@/lib/task-live-view';
 import {
   ATTEMPT_FLIP,
   EVIDENCE_STATES,
@@ -37,15 +38,26 @@ import {
 } from './run-activity-fixtures';
 
 function WorkerView({ worker, taskStatus = 'running' }: { worker: RunActivityWorker; taskStatus?: string }) {
+  const outputRequirement = worker.id === 'research' ? 'artifact_required' : 'pr_required';
+  const live = ['running', 'starting'].includes(worker.status) && !worker.waitingFor;
   return (
-    <RealTimeWorkerView
-      taskId={`fixture-${worker.id}`}
-      initialWorker={worker as never}
-      taskStatus={taskStatus}
-      outputRequirement={worker.id === 'research' ? 'artifact_required' : 'pr_required'}
-      roleName="Builder"
-      nowMs={RUN_ACTIVITY_NOW}
-    />
+    <>
+      <RealTimeWorkerView
+        taskId={`fixture-${worker.id}`}
+        initialWorker={worker as never}
+        taskStatus={taskStatus}
+        outputRequirement={outputRequirement}
+        roleName="Builder"
+        nowMs={RUN_ACTIVITY_NOW}
+      />
+      {/* The page shows a live run's evidence behind Run, under the live block. */}
+      {live && (
+        <RunEvidenceRail
+          evidence={liveRunEvidence({ initialWorker: worker as never, outputRequirement, deliverableArtifactCount: 0, usesReviewer: false, reviewState: undefined }, RUN_ACTIVITY_NOW)}
+          nowMs={RUN_ACTIVITY_NOW}
+        />
+      )}
+    </>
   );
 }
 
