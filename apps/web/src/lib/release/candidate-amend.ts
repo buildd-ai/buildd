@@ -129,6 +129,21 @@ export async function amendCandidateOnFixMerge(
     const releaseRunUrl = recorded.runUrl ?? null;
     const fixPrUrl = `https://github.com/${input.repoFullName}/pull/${input.prNumber}`;
 
+    // Update the ci_fixing entry with the fix PR link now that it's ready
+    await appendPrActivity({
+      installationId,
+      repoFullName: input.repoFullName,
+      prNumber: fix.prNumber,
+      updateKind: 'ci_fixing',
+      entry: {
+        kind: 'ci_fixing',
+        detail: `fix via #${input.prNumber}, amend automatically`,
+        url: fixPrUrl,
+      },
+      onlyIfPresent: true,
+      workspaceId: t.workspaceId,
+    }).catch((err: unknown) => console.error(`[release-amend] activity update (ci_fixing) on PR #${fix.prNumber} failed:`, err));
+
     // Add entry for fix PR opened (retroactively, since we only know about it when it merges)
     await appendPrActivity({
       installationId,

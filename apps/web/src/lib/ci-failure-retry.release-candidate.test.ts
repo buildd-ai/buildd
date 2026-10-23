@@ -204,6 +204,6 @@ describe('retryCiFailureForPr on a red frozen release candidate', () => {
     const entry = activity[0].entry;
     expect(entry.detail).toContain('amend automatically');
     expect(entry.note).toContain('will be amended automatically');
-    expect(entry.note).toContain('Checks and approvals restart');
+    expect(entry.note).toContain('checks will restart on the new head');
   });
 });

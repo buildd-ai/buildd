@@ -74,19 +74,24 @@ describe('amendCandidateOnFixMerge', () => {
     expect(p.inputs.amend).toBe('1.2.3');
     expect(p.inputs.amend_confirm).toBe('1.2.3');
     expect(p.ref).toBe('dev');
-    // Activity comment on candidate PR
-    expect(activities).toHaveLength(2);
-    // First entry: fix PR opened
+    // Activity comment on candidate PR — updated ci_fixing and appended two new entries
+    expect(activities).toHaveLength(3);
+    // First entry: update ci_fixing with fix PR link
     expect(activities[0].prNumber).toBe(90);
-    expect(activities[0].entry.kind).toBe('fix_pr_opened');
-    expect(activities[0].entry.note).toContain('Fix opened in #101');
+    expect(activities[0].entry.kind).toBe('ci_fixing');
+    expect(activities[0].entry.detail).toContain('fix via #101');
     expect(activities[0].entry.url).toBe('https://github.com/o/r/pull/101');
-    // Second entry: amendment dispatched
+    // Second entry: fix PR opened
     expect(activities[1].prNumber).toBe(90);
-    expect(activities[1].entry.kind).toBe('release_amended');
-    expect(activities[1].entry.note).toContain('merged into `dev`');
-    expect(activities[1].entry.note).toContain('Release candidate v1.2.3 was amended automatically');
-    expect(activities[1].entry.url).toBe('https://example.test/run/1');
+    expect(activities[1].entry.kind).toBe('fix_pr_opened');
+    expect(activities[1].entry.note).toContain('Fix opened in #101');
+    expect(activities[1].entry.url).toBe('https://github.com/o/r/pull/101');
+    // Third entry: amendment dispatched
+    expect(activities[2].prNumber).toBe(90);
+    expect(activities[2].entry.kind).toBe('release_amended');
+    expect(activities[2].entry.note).toContain('merged into `dev`');
+    expect(activities[2].entry.note).toContain('Release candidate v1.2.3 was amended automatically');
+    expect(activities[2].entry.url).toBe('https://example.test/run/1');
     // Comment on fix PR (legacy)
     const comment = g.calls.find((c) => c.path === '/repos/o/r/issues/101/comments');
     expect(comment?.opts?.method).toBe('POST');

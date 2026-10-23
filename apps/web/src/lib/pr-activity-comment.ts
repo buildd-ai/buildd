@@ -614,9 +614,10 @@ export async function appendPrActivity(params: {
   prNumber: number;
   entry: PrActivityEntry;
   onlyIfPresent?: boolean;
+  updateKind?: PrActivityKind;
   workspaceId?: string | null;
 }): Promise<AppendResult> {
-  const { installationId, repoFullName, prNumber, entry, onlyIfPresent, workspaceId } = params;
+  const { installationId, repoFullName, prNumber, entry, onlyIfPresent, updateKind, workspaceId } = params;
   const diverted = await divertIfKernelOwned({ repoFullName, prNumber, entry, workspaceId });
   if (diverted) return { action: 'diverted', deliveryId: diverted };
   try {
@@ -631,10 +632,17 @@ export async function appendPrActivity(params: {
       if (last && sameEntry(normalize(last), next)) {
         return { action: 'unchanged', commentId: existing.id };
       }
+      // If updateKind is specified, find and update that entry instead of appending
+      let updated = entries;
+      if (updateKind) {
+        updated = entries.map((e) => (e.kind === updateKind ? { ...e, ...next } : e));
+      } else {
+        updated = [...entries, next];
+      }
       await githubApi(installationId, `/repos/${repoFullName}/issues/comments/${existing.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body: renderPrActivityComment([...entries, next], timezone) }),
+        body: JSON.stringify({ body: renderPrActivityComment(updated, timezone) }),
       });
       return { action: 'updated', commentId: existing.id };
     }
