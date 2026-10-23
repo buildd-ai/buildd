@@ -6,6 +6,7 @@ last_verified: 2026-10-22
 summary: Overlap scheduling MUST follow the approved serial lanes and file locks spec that replaces this contract.
 domain: tasks
 related: [path-claim-ownership, force-start, claim-ordering]
+superseded_by: "living-spec:75217f55"
 ---
 
 # Claim Overlap Scheduling

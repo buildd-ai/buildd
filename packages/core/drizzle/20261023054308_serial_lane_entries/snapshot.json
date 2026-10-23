@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "6a51a03e-315b-4c06-a05b-3dd80e4cc670",
+  "id": "49ba1150-c116-4bbf-be28-946ec96363f0",
   "prevIds": [
-    "0057cf59-1e1c-43c9-9512-e9ccbe997454"
+    "adeed96e-fbea-46d8-861f-c5d41a647eb3"
   ],
   "ddl": [
     {
@@ -12457,32 +12457,6 @@
       "generated": null,
       "identity": null,
       "name": "default_choice",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "mission_notes"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "subject_task_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "mission_notes"
-    },
-    {
-      "type": "jsonb",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "options",
       "entityType": "columns",
       "schema": "public",
       "table": "mission_notes"
@@ -28395,58 +28369,6 @@
       "generated": null,
       "identity": null,
       "name": "max_concurrent_workers",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "worker_heartbeats"
-    },
-    {
-      "type": "integer",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "desired_slots",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "worker_heartbeats"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "desired_slots_origin",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "worker_heartbeats"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "desired_slots_set_by",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "worker_heartbeats"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "desired_slots_set_at",
       "entityType": "columns",
       "schema": "public",
       "table": "worker_heartbeats"
