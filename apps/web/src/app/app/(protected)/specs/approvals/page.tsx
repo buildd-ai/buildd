@@ -49,8 +49,8 @@ function InboxRowCard({ row, open }: { row: InboxRow; open: boolean }) {
   const gate = view?.state === 'ready' ? view.gate : null;
   return (
     <Card className="flex flex-col gap-2" data-testid="spec-approvals-row" data-spec-id={row.specId}>
-      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <Link href={`/app/specs/${encodeURIComponent(row.specId)}`} className="text-title font-semibold text-text-primary underline-offset-2 hover:underline [overflow-wrap:anywhere]">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <Link href={`/app/specs/${encodeURIComponent(row.specId)}`} className="inline-flex min-h-11 items-center text-title font-semibold text-text-primary underline-offset-2 hover:underline [overflow-wrap:anywhere] md:min-h-0">
           {row.title}
         </Link>
         {gate ? (
@@ -70,7 +70,7 @@ function InboxRowCard({ row, open }: { row: InboxRow; open: boolean }) {
           </div>
         </Disclosure>
       ) : (
-        <Link href={`/app/specs/${encodeURIComponent(row.specId)}`} className="text-body text-accent-text underline-offset-2 hover:underline">
+        <Link href={`/app/specs/${encodeURIComponent(row.specId)}`} className="inline-flex min-h-11 items-center text-body text-accent-text underline-offset-2 hover:underline md:min-h-0">
           Open the spec to review it
         </Link>
       )}
