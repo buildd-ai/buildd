@@ -149,6 +149,35 @@ export interface MigrationSnapshot {
    * installation reference — the only real gate is that the installation itself is healthy.
    */
   githubInstallationValid: boolean;
+  /**
+   * Task dependency edges with exactly one end in this workspace (spec
+   * e28018c2 R-15). After the move they would cross teams, which no edge may,
+   * so execute removes them. Omitted reads as none.
+   */
+  crossWorkspaceTaskDeps?: CrossWorkspaceTaskDep[];
+}
+
+export interface CrossWorkspaceTaskDep {
+  dependentId: string;
+  dependentTitle: string;
+  upstreamId: string;
+  upstreamTitle: string;
+}
+
+/** Edges between a task of `workspaceId` and a task of any other workspace, both directions. */
+async function loadCrossWorkspaceTaskDeps(workspaceId: string): Promise<CrossWorkspaceTaskDep[]> {
+  const r = await db.execute(sql`
+    SELECT d.id AS dependent_id, d.title AS dependent_title, u.id AS upstream_id, u.title AS upstream_title
+    FROM tasks d
+    CROSS JOIN LATERAL jsonb_array_elements_text(d.depends_on::jsonb) AS dep(id)
+    JOIN tasks u ON u.id::text = dep.id
+    WHERE (d.workspace_id = ${workspaceId}::uuid) <> (u.workspace_id = ${workspaceId}::uuid)
+      AND (d.workspace_id = ${workspaceId}::uuid OR u.workspace_id = ${workspaceId}::uuid)`);
+  const rows = ((r as unknown as { rows?: Array<Record<string, string>> }).rows ?? []);
+  return rows.map(row => ({
+    dependentId: row.dependent_id, dependentTitle: row.dependent_title,
+    upstreamId: row.upstream_id, upstreamTitle: row.upstream_title,
+  }));
 }
 
 async function count(table: any, where: any): Promise<number> {
@@ -177,7 +206,7 @@ export async function collectMigrationSnapshot(
   const [
     tasksN, workersN, workersInFlightN, artifactsN, watchedN, oauthN, teamMissionsN, teamRolesN,
     scheduleRows, missionRows, roleRows, destRoleRows, secretRows, connectorRows, accountRows,
-    ghInstallation,
+    ghInstallation, crossWorkspaceTaskDeps,
   ] = await Promise.all([
     count(tasks, eq(tasks.workspaceId, workspaceId)),
     count(workers, eq(workers.workspaceId, workspaceId)),
@@ -209,6 +238,7 @@ export async function collectMigrationSnapshot(
           columns: { id: true, suspendedAt: true },
         })
       : Promise.resolve(null),
+    loadCrossWorkspaceTaskDeps(workspaceId),
   ]);
 
   return {
@@ -227,6 +257,7 @@ export async function collectMigrationSnapshot(
     connectors: connectorRows.map((c: any) => ({ id: c.id, name: c.name, authMode: c.authMode })),
     accountAccess: accountRows as any,
     githubInstallationValid: !workspace.githubInstallationId || (!!ghInstallation && !ghInstallation.suspendedAt),
+    crossWorkspaceTaskDeps,
   };
 }
 
@@ -267,6 +298,21 @@ export function classifyMigration(snap: MigrationSnapshot, generatedAt: string):
   groups.push({ entity: 'Missions (workspace-linked)', disposition: 'MOVES_CLEANLY', count: snap.workspaceMissions.length });
   if (brokenDeps.length) {
     groups.push({ entity: 'Mission dependency chains', disposition: 'WILL_BREAK', count: brokenDeps.length, items: brokenDeps });
+  }
+
+  // Task dependencies across workspaces (spec e28018c2 R-15): an edge may not
+  // cross teams, so each one touching this workspace is removed, both directions.
+  const taskDeps = snap.crossWorkspaceTaskDeps ?? [];
+  if (taskDeps.length) {
+    groups.push({
+      entity: 'Cross-workspace task dependencies', disposition: 'WILL_BREAK', count: taskDeps.length,
+      detail: 'the dependent stops waiting and records why',
+      items: taskDeps.map((d) => ({
+        key: `task-dep:${d.dependentId}:${d.upstreamId}`,
+        label: `Task "${d.dependentTitle}" depends on "${d.upstreamTitle}" in another workspace; the dependency is removed`,
+        disposition: 'WILL_BREAK' as const,
+      })),
+    });
   }
 
   // Roles (workspace-scoped) — clean move; audit canDelegateTo against destination registry.
@@ -443,6 +489,17 @@ export interface ExecuteMigrationOpts {
   migratedAt: string;
 }
 
+/** Task dependency edges that would cross teams (from the report), to remove. */
+function brokenTaskDepEdges(report: DryRunReport): Array<{ key: string; dependentId: string; upstreamId: string }> {
+  return report.requiredAcks
+    .filter((k) => k.startsWith('task-dep:'))
+    .map((k) => {
+      const [, dependentId, upstreamId] = k.split(':');
+      return { key: k, dependentId, upstreamId };
+    })
+    .filter((e) => !!e.dependentId && !!e.upstreamId);
+}
+
 /** Mission ids whose dependsOn target stays behind (from the report), to sever the FK. */
 function brokenDepMissionIds(report: DryRunReport): string[] {
   return report.requiredAcks
@@ -506,7 +563,14 @@ async function runPhaseWork(opts: ExecuteMigrationOpts, phase: MigrationPhase): 
       if (brokenIds.length) {
         await db.update(missions).set({ dependsOnMissionId: null }).where(inArray(missions.id, brokenIds));
       }
-      return { severedDeps: brokenIds };
+      // Task edges that would cross teams go too, each recorded on its
+      // dependent, which is woken (spec e28018c2 R-15).
+      const taskEdges = brokenTaskDepEdges(report);
+      if (taskEdges.length) {
+        const { removeDependencyEdges } = await import('@/lib/task-dependencies');
+        await removeDependencyEdges(taskEdges.map(({ dependentId, upstreamId }) => ({ dependentId, upstreamId })), 'workspace_left_team');
+      }
+      return { severedDeps: brokenIds, removedTaskDeps: taskEdges.map((e) => e.key) };
     }
     case 'skills_team': {
       await db.update(workspaceSkills)
