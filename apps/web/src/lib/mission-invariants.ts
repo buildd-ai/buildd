@@ -411,6 +411,13 @@ export interface InvariantViolation {
   ageMs: number;
   /** Replaces the invariant's remedy for THIS row, when the row's state calls for a different one. */
   remedy?: string;
+  /**
+   * The row is reported but never filed: a person already owns the decision, so
+   * a task would only re-ask it (and its remedy would push to the PR).
+   */
+  holdFiling?: boolean;
+  /** A plain-words subject for the task a filing opens, in place of the machine key. */
+  subject?: string;
 }
 
 export interface Invariant {
@@ -1157,7 +1164,8 @@ export const INVARIANTS: Invariant[] = [
             (w.prUrl ? ` (${w.prUrl})` : '') +
             (gated ? `; delivery ${gated}, waiting on a person` : ''),
           ageMs,
-          ...(gated ? { remedy: PERSON_GATED_PR_REMEDY } : {}),
+          subject: `PR #${w.prNumber} is falling behind ${w.prBaseRef}`,
+          ...(gated ? { remedy: PERSON_GATED_PR_REMEDY, holdFiling: true } : {}),
         });
       }
       return out;
@@ -1172,9 +1180,9 @@ export const INVARIANTS: Invariant[] = [
  * (`pr_awaiting_person`, lib/agent-capabilities/pr-close-guard.ts).
  */
 export const PERSON_GATED_PR_REMEDY =
-  'This PR waits on a person (its delivery is ESCALATED), so do not close it. Rebase it if the base ' +
-  'moved under it, then ask the owner to decide with a comment on the PR itself (a sweep worker\'s task token may post only to its own task, ' +
-  'and a runner-managed worker cannot ask_human), or ask_human / post_note type=question where those are open to you.';
+  'This PR waits on a person (its delivery is ESCALATED), so do not close it, and do not merge the base into it or ' +
+  'push to it: a push restarts the landing freshness gate. Its question is already open; the sweep does not file another. ' +
+  'Lead with what actually blocks it (get_pr: an unanswered visual review, a failing check, the freshness gate) and link where to decide it.';
 
 const BY_KEY = new Map<InvariantKey, Invariant>(INVARIANTS.map(i => [i.key, i]));
 
