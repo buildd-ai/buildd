@@ -95,6 +95,14 @@ function queuedHold(state: MissionVisualReviewState): string | null {
   return phrase ? `${phrase[0].toUpperCase()}${phrase.slice(1)}.` : null;
 }
 
+/** The screens a merged fix waits on, named: one, or the first and how many more. */
+function screensPhrase(all: readonly string[]): string {
+  // Two shots of one screen are one screen to name.
+  const screens = [...new Set(all)];
+  if (screens.length === 0) return 'the fixed screens';
+  return screens.length === 1 ? screens[0] : `${screens[0]} and ${plural(screens.length - 1, 'more screen')}`;
+}
+
 /** A closed mission's pass on an earlier commit, naming both commits when known. */
 export function earlierCommitDetail(state: Pick<MissionVisualReviewState, 'evidenceSha' | 'branch'>): string {
   const short = (sha: string | null) => (sha ? sha.slice(0, 7) : null);
@@ -187,6 +195,19 @@ export function presentVisualReview(state: MissionVisualReviewState, opts: Prese
   if (state.status === 'findings' && state.findings) {
     const f = state.findings;
     const findings = { issues: f.issues, fixesOpen: f.fixesOpen };
+    if (f.exhausted && state.recapture?.next === 'decide' && !state.findings.undecided) {
+      // A merged fix no new screenshot will be taken of (spec 072de598 I-15).
+      const n = state.recapture.screens.length;
+      const owner: VisualReviewOwnerDecision = {
+        kind: 'judge',
+        label: `Check ${plural(n, 'fixed screen')}`,
+        detail: `Fixed or Still broken: ${screensPhrase(state.recapture.screens)}.`,
+      };
+      return {
+        ...quiet, ...common, stage: 'judgment', tone: 'warning', label: n === 1 ? 'A fix merged with no new screenshot' : `${n} fixes merged with no new screenshot`,
+        detail: owner.detail, showPanel: true, owner, needsYou: true, canWaive: state.policy.waiverAllowed, problem: 'product', findings,
+      };
+    }
     if (f.exhausted) {
       const owner: VisualReviewOwnerDecision = {
         kind: 'judge',
@@ -204,9 +225,11 @@ export function presentVisualReview(state: MissionVisualReviewState, opts: Prese
         detail: 'It checks again when the fixes land.', showPanel: true, problem: 'product', findings,
       };
     }
+    // An agent decides unsure screens; the detail names what it waits on, never "no action needed" while it blocks.
     return {
       ...quiet, ...common, stage: 'verifying', tone: 'info', label: `Deciding on ${plural(Math.max(f.undecided, f.issues, 1), 'flagged screen')}`,
-      detail: 'No action needed from you.', showPanel: true, problem: 'product', findings,
+      detail: f.undecided > 0 ? `Waiting for a decision on ${plural(f.undecided, 'unsure screen')}.` : `Waiting for a decision on ${plural(Math.max(f.issues, 1), 'flagged screen')}.`,
+      showPanel: true, problem: 'product', findings,
     };
   }
 
@@ -225,6 +248,14 @@ export function presentVisualReview(state: MissionVisualReviewState, opts: Prese
     return {
       ...quiet, ...common, stage: 'verifying', tone: 'warning', label: 'Visual review is waiting for you',
       detail: owner.detail, showPanel: true, owner, needsYou: true,
+    };
+  }
+  // A merged fix waiting for its screen to be shot again: name the screen (spec 072de598 I-15).
+  if (state.recapture && state.recapture.next !== 'decide' && state.status !== 'running') {
+    return {
+      ...quiet, ...common, stage: 'verifying', tone: 'info', showPanel: true,
+      label: `Waiting for a new screenshot of ${screensPhrase(state.recapture.screens)}`,
+      detail: state.recapture.next === 'queued' ? queuedHold(state) ?? 'The capture is queued.' : 'The capture starts shortly.',
     };
   }
   const progress = state.progress;

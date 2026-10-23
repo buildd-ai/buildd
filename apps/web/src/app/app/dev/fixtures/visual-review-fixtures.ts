@@ -9,6 +9,9 @@
  *   &view=deck | deck-phone | compare         the review deck (dialog, inline sheet, compare open)
  *   &view=fix-check                           a merged fix with a new screenshot: Before / After, Fixed / Still broken
  *   &view=fix-merged                          a merged fix with no screenshot since: settled, no buttons
+ *   &view=recapture | recapture-queued | recapture-decide
+ *                                             merged fixes an audit did not re-shoot (spec 072de598 I-15):
+ *                                             a recapture owed, queued, or a person's Fixed / Still broken
  *   &view=reviewed                            the reviewed tray
  *   &expired=1                                one image that fails to load
  *
@@ -142,7 +145,11 @@ export function isFixtureView(value: string | null | undefined): value is string
   return value != null && FIXTURE_VIEWS.includes(value);
 }
 
-export const VISUAL_REVIEW_FIXTURE_VIEWS = ['tray', 'board', 'deck', 'deck-phone', 'compare', 'fix-check', 'fix-merged', 'reviewed'] as const;
+export const VISUAL_REVIEW_FIXTURE_VIEWS = ['tray', 'board', 'deck', 'deck-phone', 'compare', 'fix-check', 'fix-merged', 'reviewed', 'recapture', 'recapture-queued', 'recapture-decide'] as const;
+/** The views that show a merged fix waiting for a screenshot, with the Verify row they produce. */
+export const RECAPTURE_FIXTURE_VIEWS = ['recapture', 'recapture-queued', 'recapture-decide'] as const;
+export type RecaptureFixtureView = (typeof RECAPTURE_FIXTURE_VIEWS)[number];
+export const isRecaptureFixtureView = (v: string): v is RecaptureFixtureView => (RECAPTURE_FIXTURE_VIEWS as readonly string[]).includes(v);
 export type VisualReviewFixtureView = (typeof VISUAL_REVIEW_FIXTURE_VIEWS)[number];
 
 const REASONS: readonly VisualReviewNeedsYouReason[] = ['unsure', 'question', 'round_cap'];
@@ -178,6 +185,11 @@ export function parseVisualReviewFixtureParams(q: URLSearchParams): VisualReview
   if (view === 'reviewed') {
     return { view, phase: 'reviewed', options: { expired }, startKey: null, compare: false };
   }
+  if (isRecaptureFixtureView(view)) {
+    // The scenario decides the model; the phase named here is the one it produces.
+    const phase: VisualReviewPhase = view === 'recapture-queued' ? 'queued' : view === 'recapture-decide' ? 'needs_you' : 'reviewed';
+    return { view, phase, options: { scenario: view, expired }, startKey: null, compare: false };
+  }
   if (deckLike) {
     // The two-round working set with mixed human reviews.
     return {
@@ -210,6 +222,9 @@ export function visualReviewFixtureLinks(): { label: string; href: string }[] {
     { label: 'fix merged, new screenshot', href: `${base}&view=fix-check` },
     { label: 'fix merged, no screenshot yet', href: `${base}&view=fix-merged` },
     { label: 'reviewed', href: `${base}&view=reviewed` },
+    { label: 'fix merged, recapture owed', href: `${base}&view=recapture` },
+    { label: 'fix merged, recapture queued', href: `${base}&view=recapture-queued` },
+    { label: 'fix merged, your call', href: `${base}&view=recapture-decide` },
     { label: 'expired', href: `${base}&view=deck-phone&expired=1` },
   ];
 }

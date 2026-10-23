@@ -201,6 +201,7 @@
     "./decision-kind-operator-recovery": "./decision-kind-operator-recovery.ts",
     "./decision-kind-visual-impact": "./decision-kind-visual-impact.ts",
     "./decision-kind-mission-scope": "./decision-kind-mission-scope.ts",
+    "./decision-kind-red-check-cause": "./decision-kind-red-check-cause.ts",
     "./decision-shadow-harness": "./decision-shadow-harness.ts",
     "./manifest-prediction": "./manifest-prediction.ts",
     "./manifest-prediction-source": "./manifest-prediction-source.ts",
