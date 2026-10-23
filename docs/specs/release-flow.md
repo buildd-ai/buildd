@@ -8,7 +8,7 @@ domain: releases
 surfaces: [apps/web/src/lib/release-executor.ts, packages/core/release-strategy.ts, apps/web/src/app/api/releases/trigger/route.ts, apps/web/src/app/api/releases/status/route.ts]
 related: [db-migration-gates, webhook-dataflow]
 keywords: [trigger_release, release_status, workflow_dispatch, branch_merge, prodbranch, releaseresult, release candidate, release/v]
-verified_by: [apps/web/src/lib/release-candidate-ci.test.ts, apps/web/src/lib/ci-failure-retry.release-candidate.test.ts, apps/web/src/lib/release/record.test.ts, apps/web/src/lib/release/candidate-amend.test.ts, apps/web/src/lib/workflow-dispatch-inputs.test.ts, apps/web/src/app/api/workspaces/[id]/config/route.test.ts, packages/core/__tests__/release-strategy.test.ts, packages/core/__tests__/release-compose.test.ts, apps/web/src/lib/release/compose-actions.test.ts, scripts/release-candidate.test.ts, packages/core/__tests__/release-candidate.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/release-executor.test.ts]
+verified_by: [apps/web/src/lib/release-candidate-ci.test.ts, apps/web/src/lib/ci-failure-retry.release-candidate.test.ts, apps/web/src/lib/release/record.test.ts, apps/web/src/lib/release/candidate-amend.test.ts, apps/web/src/lib/workflow-dispatch-inputs.test.ts, apps/web/src/app/api/workspaces/[id]/config/route.test.ts, packages/core/__tests__/release-strategy.test.ts, packages/core/__tests__/release-compose.test.ts, apps/web/src/lib/release/compose-actions.test.ts, scripts/release-candidate.test.ts, packages/core/__tests__/release-candidate.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/candidate-review.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/release-executor.test.ts]
 assertions:
   - id: trigger-release-route
     type: route
@@ -32,6 +32,10 @@ assertions:
     type: symbol
     name: classifyReleasePr
     path: packages/core/release-candidate.ts
+  - id: candidate-review-scope
+    type: symbol
+    name: candidateReviewScope
+    path: apps/web/src/lib/workflow/candidate-review.ts
   - id: release-compose-route
     type: route
     method: POST
@@ -174,6 +178,28 @@ path escalation or the migration inspector.
   (version bump + CHANGELOG) is a release artifact. Anything else (a
   release-only change, an unapproved PR, a direct commit) is a novel delta
   that gets its own review.
+- A release candidate gets **no aggregate review**. Since it has no kernel
+  delivery, the landing gate attests its composition at its exact head before
+  any reviewer is asked (`candidateReviewScope`). Its review scope is only the
+  landed changes with no approved reviewed patch: direct commits on
+  `sourceBranch`, any release-only change beyond the version + CHANGELOG
+  commit, and patches that differ from their approved head. Empty: no
+  reviewer at all, the attestation is the review. Not empty: one reviewer over
+  exactly those commits, told to read each one, never the full candidate diff.
+  Unreadable: the full review, as before.
+- Also covered: a PR merged with a merge commit (the merge, against its first
+  parent, must equal the approved head's change; the PR's own commits must be
+  on that head), and `prodBranch` merged back into `sourceBranch` after a
+  release when it brings only CHANGELOG and `"version"` lines. An aggregate
+  diff past GitHub's 300-file cap is not a reason to review in full: the
+  complete commit list stands in for it.
+- Size cap and workspace path classes (e.g. destructive schema changes) are
+  judged on the delta only, at dispatch and at the verdict
+  (`scopeToCompositionDelta`): a constituent reviewed on its own PR never
+  escalates the candidate. The migration inspector at merge, CI, `release
+  candidate verified` and branch protection are unchanged.
+- An amendment makes a new candidate SHA whose metadata names it, so the new
+  head is composed afresh; only the amendment's new commits can add delta.
 - A candidate workspace's releases are `gated`: a successful release workflow
   run moves its row to `pending_external` (the PR is open), never to
   `deploying`. Only a merge into `prodBranch` whose head contains the row's sha
@@ -239,10 +265,22 @@ path escalation or the migration inspector.
 - AC-13: GIVEN the same PR opened by another account, from a fork, without
   metadata, or after a push moved its head THEN it is `kind: 'none'` and gets
   the full review and the aggregate size cap.
-- AC-14: GIVEN a candidate whose every commit is an approved dev PR plus the
-  version commit THEN its head is covered by composition and no aggregate
+- AC-14: GIVEN a candidate whose every commit is an approved dev PR (squashed
+  or merged with a merge commit) plus the version commit and any version-only
+  merge of `prodBranch` back into `sourceBranch`, at any diff size, WHEN the
+  landing gate reaches review THEN its head is covered by composition and no
   reviewer is dispatched; a migration still meets the migration inspector at
   merge.
+- AC-25: GIVEN a fully composed candidate WHEN it is amended THEN the new head
+  is composed afresh and, with no new uncovered commit, no reviewer is
+  dispatched for it either.
+- AC-26: GIVEN a candidate with N direct commits on `sourceBranch` (no PR)
+  THEN exactly one reviewer is dispatched, scoped to exactly those N commits
+  and their paths, and the size cap and path classes are judged on that delta
+  alone.
+- AC-27: GIVEN a constituent touching `packages/core/drizzle/` that was
+  approved on its own PR THEN it does not escalate the candidate, while a
+  migration inside the delta still does.
 
 - AC-19: GIVEN a trusted candidate whose CI is red at its recorded head WHEN
   the check-suite webhook or the red-PR sweep reports it THEN one fix task is
@@ -295,7 +333,13 @@ path escalation or the migration inspector.
   `readWorkflowDispatchInputs()`
 - Amendment dedup: `apps/web/src/lib/release/record.ts`: `isAmendmentDispatch()`
 - Composition: `apps/web/src/lib/workflow/review-composition.ts`:
-  `compositionConstituentBase()`; write site `review-effects.ts`
+  `compositionConstituentBase()`, `isReleaseArtifactMerge()`; write site
+  `review-effects.ts` (kernel PRs)
+- Candidate review scope: `apps/web/src/lib/workflow/candidate-review.ts`:
+  `candidateReviewScope()`; asked by the landing gate
+  (`apps/web/src/lib/pr-landing.ts`, agent-review step); delta reviewer through
+  `apps/web/src/lib/stale-approval-re-review.ts`; verdict-time scope
+  `scopeToCompositionDelta()` in `apps/web/src/lib/reviewer.ts`
 - Merge gate: `apps/web/src/lib/auto-merge.ts`
 - Tracking: `packages/core/release-archetype.ts`,
   `apps/web/src/lib/release/gated-merge.ts`,

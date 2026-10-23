@@ -270,6 +270,8 @@ export interface LandPrDeps {
   drainDelivery?: (deliveryId: string) => Promise<unknown>;
   /** The mission-PR / delivery-target hold. Defaults to mission-pr.ts `guardMissionPrMerge`. */
   guardMissionPrMerge?: typeof guardMissionPrMerge;
+  /** What review a frozen release candidate is owed (composition at its head). Defaults to workflow/candidate-review.ts. */
+  candidateReview?: typeof import('@/lib/workflow/candidate-review').candidateReviewScope;
 }
 
 // AC-13: the adoption step every worker merge door runs (pr-landing-adoption.ts), re-exported for doors
@@ -738,12 +740,13 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // reviewer-task dedupe). Already-reviewing names that reviewer as the owner.
   // A stale blocking verdict uses the same dispatcher, labelled with why.
   // A PR nobody ever asked a reviewer about uses it too, as a first review.
-  const reReviewVia = (staleReason?: string, firstReview = false): NonNullable<LandPrDeps['dispatchFix']> => async (fi) => {
+  const reReviewVia = (staleReason?: string, firstReview = false, candidateDelta?: StaleApprovalReReviewInput['candidateDelta']): NonNullable<LandPrDeps['dispatchFix']> => async (fi) => {
     const send = deps.dispatchStaleApprovalReReview
       ?? (await import('@/lib/stale-approval-re-review')).dispatchStaleApprovalReReview;
     const res = await send({
       ...(staleReason ? { staleReason } : {}),
       ...(firstReview ? { firstReview: true } : {}),
+      ...(candidateDelta ? { candidateDelta } : {}),
       workspaceId: fi.workspaceId,
       installationId: fi.installationId,
       repoFullName: fi.repoFullName,
@@ -1032,7 +1035,27 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   if (!kernelView && policy.tier === 'agent-review' && actor.kind !== 'human') {
     const status = await reviewStatus();
     if (!status) return waiting('could not read the stored review verdict');
-    if (!isApprovalSelfMergeable(status, policy.agentReview?.maxConfidenceThreshold)) {
+    // A frozen release candidate (release-flow.md AC-14, AC-25 to AC-27) has no delivery, so its
+    // composition is attested here, at its exact head, before anyone is asked: every change reviewed
+    // on its own PR needs no reviewer, and only commits no review covered get one, over just those.
+    const candidate = act && adoption?.kind === 'gate' && adoption.why === 'release' && status.state === 'not_requested'
+      ? await (deps.candidateReview ?? (await import('@/lib/workflow/candidate-review')).candidateReviewScope)({
+        workspaceId, installationId, repoFullName, prNumber, releaseConfig: input.releaseConfig ?? null,
+      }).catch((err) => { console.warn(`[pr-landing] candidate composition for ${repoFullName}#${prNumber} failed; full review:`, err); return null; })
+      : null;
+    if (candidate?.kind === 'delta' && candidate.headSha === liveHead) {
+      const n = candidate.commits.length;
+      return needsFix(
+        're_review',
+        `the release candidate's ${n} commit${n === 1 ? '' : 's'} no earlier review covered (${candidate.commits.map((c) => c.sha.slice(0, 7)).join(', ')}) are owed a review; every other change was approved on its own PR. Next: the workspace reviewer reviews only those commits; its verdict decides the landing`,
+        deps.dispatchFix ?? reReviewVia(undefined, true, { commits: candidate.commits, paths: candidate.paths, files: candidate.files }),
+        { firstReview: true, candidateReview: 'delta', deltaCommits: candidate.commits.map((c) => c.sha), deltaPaths: candidate.paths.length },
+      );
+    }
+    const composed = candidate?.kind === 'composed' && candidate.headSha === liveHead;
+    if (composed) {
+      console.log(`[pr-landing] ${repoFullName}#${prNumber}: release candidate ${liveHead.slice(0, 7)} is covered by composition (${candidate.constituents} reviewed PRs); no reviewer`);
+    } else if (!isApprovalSelfMergeable(status, policy.agentReview?.maxConfidenceThreshold)) {
       if (status.verdict === 'approve' && !status.merged) {
         return human('low_confidence', `the reviewer approved with confidence ${status.confidence ?? 'unknown'}, below the bar for unattended landing`);
       }
