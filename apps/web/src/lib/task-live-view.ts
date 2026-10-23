@@ -8,6 +8,7 @@ import type { LiveWorker } from '@/app/app/(protected)/tasks/[id]/RealTimeWorker
 import type { QuestionNoteLike } from '@/app/app/(protected)/tasks/[id]/question-hero';
 import type { DeliveryPillState } from '@/app/app/(protected)/tasks/[id]/TaskSidePanel';
 import { compareWorkersChrono, newestWhere, type Chrono } from '@/lib/attempt-order';
+import { deriveNow, type NowState } from '@/app/app/(protected)/tasks/[id]/task-activity';
 
 type Stamp = Date | string | null | undefined;
 const iso = (v: Stamp): string | null => (v == null ? null : typeof v === 'string' ? v : v.toISOString());
@@ -120,6 +121,24 @@ export function liveWorkerViewProps(input: {
     roleName: input.roleName ?? null,
     delivery: input.delivery,
   };
+}
+
+/**
+ * The run's evidence (which lifecycle facts were observed), read from the
+ * same inputs the live view reads. The task page shows it behind `Run`: the
+ * live block leads with the Now line and the status line says where the run is.
+ */
+export function liveRunEvidence(props: Pick<LiveWorkerViewProps, 'initialWorker' | 'outputRequirement' | 'deliverableArtifactCount' | 'usesReviewer' | 'reviewState'>, nowMs: number): NowState['evidence'] {
+  const w = props.initialWorker;
+  return deriveNow(w.milestones ?? [], {
+    ...w,
+    outputRequirement: props.outputRequirement,
+    deliverableArtifactCount: props.deliverableArtifactCount,
+    usesReviewer: props.usesReviewer,
+    reviewState: props.reviewState,
+    startMs: w.startedAt ? new Date(w.startedAt).getTime() : null,
+    nowMs,
+  }).evidence;
 }
 
 /** WorkerSteerPanel's props: steer or stop the live worker, and what it was told. */
