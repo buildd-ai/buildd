@@ -19,6 +19,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fitScale, frameSrc, type DesignScreen } from '@/lib/design-preview';
+import { Select, type SelectOption } from '@/components/ui/Select';
 
 export interface DesignPreviewProps {
   artifactId: string;
@@ -84,6 +85,14 @@ export default function DesignPreview({
   const label = `Design preview · ${title} · revision ${revision}`;
   const src = frameUrl ? frameSrc(frameUrl, screenId) : null;
 
+  const screenOptions = useMemo<SelectOption[]>(
+    () => screens.map((s) => ({
+      value: s.id,
+      label: `${s.name}${s.viewport ? ` · ${s.viewport.width}×${s.viewport.height}` : ''}`,
+    })),
+    [screens],
+  );
+
   const pick = useCallback((id: string) => {
     setScreenId(id);
     syncScreenParam(id);
@@ -97,23 +106,17 @@ export default function DesignPreview({
           {label}
         </p>
         {screens.length > 0 ? (
-          <label className="flex items-center gap-2 text-meta text-text-secondary min-w-0">
-            <span className="sr-only sm:not-sr-only">Screen</span>
-            <select
-              data-testid="design-screen-picker"
+          <div className="flex items-center gap-2 text-meta text-text-secondary min-w-0">
+            <span className="sr-only sm:not-sr-only" aria-hidden="true">Screen</span>
+            <Select
+              testId="design-screen-picker"
               aria-label="Screen"
               value={screenId ?? ''}
-              onChange={(e) => pick(e.target.value)}
-              className="min-h-[44px] sm:min-h-0 max-w-[60vw] sm:max-w-xs bg-surface-3 border border-border-default px-2 py-1.5 text-body text-text-primary"
-            >
-              {screens.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                  {s.viewport ? ` · ${s.viewport.width}×${s.viewport.height}` : ''}
-                </option>
-              ))}
-            </select>
-          </label>
+              onChange={pick}
+              options={screenOptions}
+              className="max-w-[60vw] sm:max-w-xs"
+            />
+          </div>
         ) : null}
         {viewport ? (
           <div className="flex items-center rounded-md border border-border-default overflow-hidden" role="group" aria-label="Zoom">
