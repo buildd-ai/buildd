@@ -26,7 +26,8 @@ mock.module('@/lib/pusher', () => ({
   events: { WORKER_COMMAND: 'worker:command', TASK_UPDATED: 'task:updated' },
 }));
 mock.module('@/lib/path-claim-release', () => ({ releaseAndNotify: mockReleaseAndNotify }));
-mock.module('@/lib/task-dependencies', () => ({ resolveCompletedTask: mockResolveCompletedTask }));
+const mockReleaseCrossWorkspaceDependents = mock(async (_id: string) => [] as string[]);
+mock.module('@/lib/task-dependencies', () => ({ resolveCompletedTask: mockResolveCompletedTask, releaseCrossWorkspaceDependentsOf: mockReleaseCrossWorkspaceDependents }));
 const mockReopenCompletedMission = mock(() => Promise.resolve({ reopened: true }));
 mock.module('@/lib/mission-loop', () => ({ reopenCompletedMission: mockReopenCompletedMission }));
 const mockReconcileSubjectEvent = mock((..._args: any[]) => Promise.resolve({ cancelled: [], lostRace: [], decisions: [] }));
@@ -222,6 +223,15 @@ describe('applyTaskDeleteSideEffects', () => {
     mockTriggerEvent.mockResolvedValue(undefined);
     mockReleaseAndNotify.mockReset();
     mockReleaseAndNotify.mockResolvedValue(undefined);
+  });
+
+  // Spec e28018c2 R-14 / AC-11.
+  it('releases dependents in other workspaces before the row goes, and a failure there does not stop the rest', async () => {
+    mockReleaseCrossWorkspaceDependents.mockReset();
+    mockReleaseCrossWorkspaceDependents.mockRejectedValue(new Error('boom'));
+    await applyTaskDeleteSideEffects('task-1');
+    expect(mockReleaseCrossWorkspaceDependents).toHaveBeenCalledWith('task-1');
+    expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-1', 'abandoned');
   });
 
   it('settles parked workers, aborts live sessions and releases claims before the row goes', async () => {

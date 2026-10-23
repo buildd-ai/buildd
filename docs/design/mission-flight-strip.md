@@ -30,14 +30,10 @@ assertions:
     entry: "apps/web/src/app/app/(protected)/missions/page.tsx"
     as: "read"
   # The completed-mission stats row went with the Delivery stepper (#2888).
-  # The page's duration is now the header's "40m of work · open 35d", read
-  # from the Board model's unioned work spans (lib/mission-duration.ts), the
-  # same figure Home and the missions list print.
-  - id: "detail-header-duration-on-work-spans"
-    type: "symbol_reachable"
-    symbol: "activeMs"
-    entry: "apps/web/src/app/app/(protected)/missions/[id]/page.tsx"
-    as: "read"
+  # The header's "40m of work · open 35d" line went too: the Navigation
+  # spec's R-3 header is the title, the goal sentence and the spec line only.
+  # Home and the missions list still print the work-span duration
+  # (lib/mission-duration.ts).
 ---
 
 # mission-flight-strip

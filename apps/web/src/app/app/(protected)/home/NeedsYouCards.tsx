@@ -9,7 +9,9 @@ import { MISSION_START_COPY, type MissionStartState } from '@/lib/mission-start-
 import Link from 'next/link';
 import { ArmButton } from '@/components/missions/MissionListCards';
 import DecisionCard from '@/components/DecisionCard';
-import { decisionFromQuestion, type DecisionView } from '@/lib/needs-you-card';
+import { approvalView, decisionFromQuestion, type DecisionView } from '@/lib/needs-you-card';
+import type { HomeAttentionItem } from '@/lib/home-needs-you';
+import { displayTaskTitle } from '@/lib/task-title';
 import type { UnifiedQuestion } from '../tasks/[id]/question-hero';
 
 export interface HomeQuestion {
@@ -49,6 +51,38 @@ export function questionDecisionView(q: HomeQuestion): DecisionView {
 /** A parked worker's question on Home: the one decision card. */
 export function QuestionCard({ q, now = Date.now(), onAnswered }: { q: HomeQuestion; now?: number; onAnswered?: (label: string) => void }) {
   return <DecisionCard view={questionDecisionView(q)} now={now} onAnswered={onAnswered} testId="needs-you-card" />;
+}
+
+const sentence = (s: string | null | undefined) => {
+  const t = s?.replace(/\s+/g, ' ').trim();
+  return t ? (/[.!?]$/.test(t) ? t : `${t}.`) : null;
+};
+
+/**
+ * A review a person must give on a PR, as the shared decision card's
+ * approval (Navigation R-16): Approve and Request changes, each with its
+ * effect, the diff linked from the why. The links go where the mission page's
+ * approval goes (the PR, its files), so both surfaces draw the same card.
+ * Null for anything else, and for a review with no PR to decide on.
+ */
+export function reviewApprovalView(item: HomeAttentionItem): DecisionView | null {
+  const q = item.queue;
+  const pr = q?.prUrl?.trim();
+  if (q?.chip !== 'REVIEW' || !pr) return null;
+  const review = q.humanReview;
+  const why = review ? [sentence(review.decision ?? review.reason), sentence(q.machineStatus)].filter(Boolean).join(' ') : item.sentence;
+  const title = displayTaskTitle(item.title);
+  // The subject link Home already resolved (the mission, or the task page), never a hand-built task path.
+  const href = item.details?.href ?? pr;
+  return approvalView({
+    key: `approval:${q.taskId ?? item.key}`,
+    task: { id: q.taskId ?? item.key, title, href },
+    askedAt: null,
+    reason: why || null,
+    diffHref: `${pr}/files`,
+    approveHref: pr,
+    changesHref: `${pr}/files`,
+  });
 }
 
 export interface HomeHeldMission {

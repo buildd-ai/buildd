@@ -96,6 +96,16 @@ export function decisionOptions(options: readonly UnifiedQuestion['options'][num
   return ordered.slice(0, DECISION_OPTIONS_MAX).map(o => ({ label: o.label, ...splitEffect(o.description), recommended: o.recommended }));
 }
 
+/**
+ * A lone option with no effect is a legacy note's `defaultChoice`, not a
+ * choice (R-16 wants a primary and an alternative, each with an effect):
+ * the card asks the question with Answer differently instead of drawing it
+ * as one dark bar holding a sentence.
+ */
+function structuredOptions(options: DecisionOption[]): DecisionOption[] {
+  return options.length === 1 && !options[0].effect ? [] : options;
+}
+
 /** `A and B wait on this.`, `A, B and 2 more wait on this.` Null with none. */
 export function dependentsSentence(names: readonly string[]): string | null {
   const n = names.filter(Boolean);
@@ -135,7 +145,7 @@ export function decisionFromQuestion(input: {
     askedAt: input.askedAt,
     summary,
     question: q.headline.trim(),
-    options: decisionOptions(q.options),
+    options: structuredOptions(decisionOptions(q.options)),
     dependents: [...(input.dependents ?? [])],
     diffHref: null,
     answer: input.answer,

@@ -104,6 +104,14 @@ describe('buildStage over AC-4’s mission', () => {
 });
 
 describe('buildStage words', () => {
+  it('a task held by its start time says when it starts, never `· scheduled` (R-14)', () => {
+    const later = Date.UTC(2026, 9, 30, 9, 0, 0);
+    const soon = min(120 + 95);
+    const rows = [task(1, 'Nightly sweep', { startAt: new Date(later) }), task(2, 'Morning sweep', { startAt: new Date(soon) })];
+    const stage = buildStage(board(rows, { gateFacts: { releasedEdges: [], waitingKinds: { [id(1)]: 'start_deferred', [id(2)]: 'start_deferred' } } }), NOW, { hrefFor, clock });
+    expect(stage.rows.map(r => r.line)).toEqual(['Queued 1h · starts Oct 30', 'Queued 1h · starts in 1h 35m']);
+  });
+
   it('an agent fixing a red PR right now reads Fixing with its attempt and clock, not Queued (R-20)', () => {
     const rows = [
       task(1, 'Settings shows each deploy step', {

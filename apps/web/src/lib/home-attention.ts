@@ -225,6 +225,21 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
   }
 }
 
+/**
+ * A QUESTION chip Home's own question loader missed, as the question the
+ * shared decision card answers: the worker it posts to and the prompt. The
+ * queue carries no options or brief, so the card opens on its answer box.
+ */
+function queueQuestion(i: ActionQueueItem, href: string): { question: HomeQuestion } | null {
+  const prompt = i.question?.trim();
+  if (i.chip !== 'QUESTION' || !i.workerId || !prompt) return null;
+  const label = i.taskTitle?.trim() || i.missionTitle?.trim() || prompt;
+  return { question: {
+    workerId: i.workerId, taskId: i.taskId ?? null, href, label, runnerName: null, askedAt: null,
+    question: unifyWorkerQuestion({ type: 'question', prompt }, null, { taskTitle: i.taskTitle }),
+  } };
+}
+
 /** A listed mission as the inbox reads it: its name and link, and whether it is stranded. */
 export interface HomeListedMission {
   view: { id: string; title: string; href: string };
@@ -274,7 +289,7 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
     const resolved = resolveQueueAttention(displayItem);
     // Unresolvable subject, reason or destination: a data defect, not an owner card.
     if (!resolved) continue;
-    items.set(key, { key, kind: 'queue', ...resolved, queue: displayItem });
+    items.set(key, { key, kind: 'queue', ...resolved, queue: displayItem, ...queueQuestion(displayItem, resolved.href) });
   }
   for (const { view, model } of missions) {
     if (!model.strand) continue;
@@ -318,6 +333,9 @@ export interface WaitingInputTask {
   missionId?: string | null;
   waitingFor: { prompt?: string; context?: string } | null;
   answerSent?: boolean;
+  /** The waiting worker; with it the card answers in place (the shared decision card). */
+  workerId?: string | null;
+  askedAt?: string | null;
 }
 
 /**
@@ -340,11 +358,17 @@ export function admitWaitingTasks(items: readonly HomeAttentionItem[], waiting: 
     covered.add(t.id);
     const href = hrefFor(t);
     const prompt = t.waitingFor?.prompt?.trim();
+    // With its worker known, the full question goes on the item, so it is the one decision card (R-16).
+    const unified = t.workerId ? homeQuestionView({ waitingFor: t.waitingFor, taskTitle: t.title }) : null;
+    const question: HomeQuestion | undefined = unified && t.workerId
+      ? { workerId: t.workerId, taskId: t.id, href, label: t.title, runnerName: null, askedAt: t.askedAt ?? null, question: unified }
+      : undefined;
     out.push({
       key: `question:${t.id}`, kind: 'question', label: 'question', tone: 'warning',
       title: prompt || t.title,
       sentence: t.waitingFor?.context?.trim() || `Asked while working on ${t.title}.`,
       meta: '', href, actionType: 'answer', primary: { label: 'Answer', href }, owner: 'human',
+      ...(question ? { question } : {}),
     });
   }
   return out;

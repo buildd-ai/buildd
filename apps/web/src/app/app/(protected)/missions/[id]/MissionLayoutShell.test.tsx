@@ -6,8 +6,6 @@ import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import MissionLayoutShell, { MissionBoardHeader, useMissionLayout } from './MissionLayoutShell';
 
-const T = Date.UTC(2026, 0, 1);
-
 /** A test switcher: what the ⋯ menu's History and Flow rows do. */
 function Switch() {
   const ctx = useMissionLayout();
@@ -48,42 +46,19 @@ describe('MissionBoardHeader', () => {
   const base = {
     back: { label: 'Missions', href: '/app/missions' },
     title: 'Example mission',
-    chip: { label: 'RUNNING', cls: 'text-status-success' },
-    serverNow: T + 11 * 60_000 + 50_000,
-    startedAt: T,
   };
 
-  it('reads T+ elapsed while running', () => {
-    const html = renderToStaticMarkup(<MissionBoardHeader {...base} goal="Do the example thing." />);
-    expect(html).toContain('T+ ');
-    expect(html).toContain('11:50');
+  it('carries only the title, the goal and the spec line: no state word, criteria chip or clock (R-3)', () => {
+    const html = renderToStaticMarkup(
+      <MissionBoardHeader {...base} goal="Do the example thing." description={<p>Full text</p>} spec={<p>Spec Cloud runner</p>} verified={<span data-testid="criteria-sheet" />} />,
+    );
     expect(html).toContain('Do the example thing.');
-  });
-
-  it('reads took once complete, in readable units', () => {
-    const html = renderToStaticMarkup(<MissionBoardHeader {...base} endedAt={T + 37 * 60_000} activeMs={36 * 60_000} />);
-    expect(html).toContain('took ');
-    expect(html).toContain('36m');
-  });
-
-  it('names work and open time apart when a mission stayed open for weeks', () => {
-    const DAY = 86_400_000;
-    const html = renderToStaticMarkup(<MissionBoardHeader {...base} endedAt={T + 35 * DAY + 3_600_000} activeMs={40 * 60_000} />);
-    const clock = html.split('data-testid="mission-clock"')[1]?.split('</span>')[0] ?? '';
-    expect(clock).toContain('40m');
-    expect(clock).toContain('of work');
-    expect(clock).toContain('open');
-    expect(clock).toContain('35d');
-    expect(html).not.toMatch(/\d{3,}:\d{2}:\d{2}/);
-  });
-
-  it('stops ticking H:MM:SS once a running mission is over a day old', () => {
-    const DAY = 86_400_000;
-    const html = renderToStaticMarkup(<MissionBoardHeader {...base} serverNow={T + 3 * DAY} activeMs={50 * 60_000} />);
-    const clock = html.split('data-testid="mission-clock"')[1]?.split('</span>')[0] ?? '';
-    expect(clock).toContain('50m');
-    expect(clock).toContain('3d');
-    expect(clock).not.toContain('T+');
+    expect(html).not.toContain('data-testid="mission-state-line"');
+    expect(html).not.toContain('data-testid="mission-state-chip"');
+    expect(html).not.toContain('data-testid="mission-clock"');
+    expect(html).not.toMatch(/T\+ |of work|open \d/);
+    // The criteria sheet stays mounted (`?criteria=open` still opens it, R-2), with no chip of its own.
+    expect(html).toContain('data-testid="criteria-sheet"');
   });
 
   it('shows the goal as one sentence with the rest behind More, not a truncated preamble (R-3)', () => {
@@ -93,10 +68,11 @@ describe('MissionBoardHeader', () => {
     expect(html).not.toMatch(/data-testid="mission-description-open"[^>]*>(?:<[^>]+>)*Description/);
   });
 
-  it('clamps a long goal line to two lines below md, so the bar stays on the first screen', () => {
+  it('clamps a long goal line to two lines at every width, so it never runs to a paragraph', () => {
     const html = renderToStaticMarkup(<MissionBoardHeader {...base} goal={'A long goal. '.repeat(80)} description={<p>Full text</p>} />);
     const cls = html.match(/<p data-testid="mission-goal-line"[^>]*? class="([^"]*)"/)?.[1] ?? '';
-    expect(cls.split(' ')).toContain('max-md:line-clamp-2');
+    expect(cls.split(' ')).toContain('line-clamp-2');
+    expect(cls).not.toContain('max-md:');
     expect(html).toContain('data-testid="mission-description-open"');
   });
 
@@ -114,9 +90,6 @@ describe('MissionBoardHeader, compact', () => {
   const base = {
     back: { label: 'Missions', href: '/app/missions' },
     title: 'A mission title long enough to need more than one line on a phone',
-    chip: { label: 'RUNNING', cls: 'text-accent-text' },
-    serverNow: T + 60_000,
-    startedAt: T,
   };
   const board = (extra: Record<string, unknown> = {}) => renderToStaticMarkup(
     <MissionLayoutShell
@@ -127,14 +100,13 @@ describe('MissionBoardHeader, compact', () => {
     />,
   );
 
-  it('back and the one ⋯ menu share the first row; the title, state line and content follow, with no tab bar', () => {
+  it('back and the one ⋯ menu share the first row; the title and content follow, with no tab bar', () => {
     const html = board();
     const at = (s: string) => html.indexOf(s);
     expect(at('‹ Missions')).toBeGreaterThan(-1);
     expect(at('data-testid="mission-header-actions"')).toBeGreaterThan(at('‹ Missions'));
     expect(at('<h1')).toBeGreaterThan(at('data-testid="act"'));
-    expect(at('data-testid="mission-state-line"')).toBeGreaterThan(at('<h1'));
-    expect(at('data-testid="content"')).toBeGreaterThan(at('data-testid="mission-state-line"'));
+    expect(at('data-testid="content"')).toBeGreaterThan(at('<h1'));
     expect(html).not.toContain('data-testid="mission-layout-tabs"');
     expect(html).not.toContain('role="tablist"');
   });
@@ -145,15 +117,6 @@ describe('MissionBoardHeader, compact', () => {
     expect(h1).not.toContain('truncate');
     expect(h1).toContain('line-clamp-3');
     expect(h1).toContain(`title="${base.title}"`);
-  });
-
-  it('the state chip is a quiet line: no frame, no oversized caps', () => {
-    const chip = board().match(/<span data-testid="mission-state-chip"[^>]*>/)?.[0] ?? '';
-    expect(chip).not.toContain('border-[1.5px]');
-    expect(chip).toContain('text-meta');
-    expect(chip).not.toContain('font-mono');
-    expect(chip).not.toMatch(/upper[c]ase/);
-    expect(board()).toMatch(/data-testid="mission-state-chip"[^>]*>(?:<span[^>]*><\/span>)?Running<\/span>/);
   });
 
   it('the panel names the layout it shows', () => {
