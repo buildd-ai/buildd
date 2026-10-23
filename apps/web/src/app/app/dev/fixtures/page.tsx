@@ -9,7 +9,7 @@ import VisualReviewLine from '@/components/visual-review/VisualReviewLine';
 import VisualReviewTray, { type VisualReviewPhaseActions } from '@/components/visual-review/VisualReviewTray';
 import { createFixtureVisualReviewTransport } from '@/components/visual-review/fixture-transport';
 import { useVisualReviewDecisions } from '@/components/visual-review/review-transport';
-import VerifyRowPreview from './visual-review-verify-row';
+import VerifyRowPreview from './VisualReviewVerifyRowFixture';
 import { mockWorkers, type FixtureState } from './fixtures-data';
 import MissionBoardVisualFixture from './MissionBoardVisualFixture';
 import MissionListExecutorFixture from './MissionListExecutorFixture';
