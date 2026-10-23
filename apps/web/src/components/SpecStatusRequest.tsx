@@ -37,7 +37,7 @@ export default function SpecStatusRequest({ specId, token, view }: { specId: str
 
   const verb = view.op === 'retire' ? (view.to === 'superseded' ? 'Mark superseded' : 'Retire') : 'Restore';
   const doneText = view.op === 'retire' ? `Done: the spec is ${view.to}.` : `Done: the spec is ${view.to} again.`;
-  function confirm() {
+  function submit() {
     startTransition(async () => {
       const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/retire/confirm`, {
         method: 'POST',
@@ -70,7 +70,7 @@ export default function SpecStatusRequest({ specId, token, view }: { specId: str
       {result ? <Notice tone={result.tone} data-testid="spec-status-result">{result.text}</Notice> : null}
       {!result || result.tone === 'err' ? (
         <div>
-          <PrimaryAction onClick={confirm} disabled={pending} fullWidthOnMobile data-testid="spec-status-confirm">
+          <PrimaryAction onClick={submit} disabled={pending} fullWidthOnMobile data-testid="spec-status-confirm">
             {verb} spec
           </PrimaryAction>
         </div>

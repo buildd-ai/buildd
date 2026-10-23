@@ -61,7 +61,7 @@ import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import HomeLive, { type HomeRegion } from './HomeLive';
 import { deliveryAtRead, groupQuietCauses, quietCauseOf, selectHomeMilestones, type MissionDeliveryRow, type QuietMissionCause } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
-import { specApprovalsAttention, type HomeListedMission } from '@/lib/home-attention';
+import type { HomeListedMission } from '@/lib/home-attention';
 import { awaitingApprovalCounts, mayApproveIn } from '@/lib/specs/approval-inbox';
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
 import { fleetHeartbeatsQuery, homeQuestionsFrom, homeQuestionWorkersQuery, admittedQuestionRows, loadHomeFleet, loadQueueHistory } from '@/lib/home-fleet';
@@ -315,9 +315,7 @@ async function HomePage({
 /** The data HomeBody renders from, derived from one load: also what a live event re-reads. */
 function homeRegionOf(view: HomeView, initFilter: string | undefined): HomeRegion {
   const queue = initFilter ? view.actionQueue.filter((i) => i.initiativeId === initFilter) : view.actionQueue;
-  const specCard = specApprovalsAttention(view.specApprovals);
-  const status = specCard ? [...view.serviceStatus.needsYou, specCard] : view.serviceStatus.needsYou;
-  const { items, inProgress } = deriveHomeNeedsYou({ queue, missions: view.listed, questions: view.questions, held: view.held, isActionable: isActionableChip, status });
+  const { items, inProgress } = deriveHomeNeedsYou({ queue, missions: view.listed, questions: view.questions, held: view.held, isActionable: isActionableChip, status: view.serviceStatus.needsYou, specApprovals: view.specApprovals });
   return {
     items,
     inProgress,

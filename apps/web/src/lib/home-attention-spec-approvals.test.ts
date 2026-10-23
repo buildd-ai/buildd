@@ -8,10 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import { deriveHomeNeedsYou } from './home-needs-you';
 import { SPEC_APPROVALS_HREF, specApprovalsAttention } from './home-attention';
 
-const needsYou = (count: number) => {
-  const card = specApprovalsAttention(count);
-  return deriveHomeNeedsYou({ queue: [], missions: [], questions: [], held: [], isActionable: () => true, status: card ? [card] : [] });
-};
+const needsYou = (count: number) => deriveHomeNeedsYou({ queue: [], missions: [], questions: [], held: [], isActionable: () => true, specApprovals: count });
 
 describe('specApprovalsAttention (AC-7)', () => {
   it('one or more waiting: one card with the count, linking to the inbox', () => {

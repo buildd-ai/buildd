@@ -232,7 +232,7 @@ export interface HomeListedMission {
 }
 
 /** One owner decision per subject. PR identity includes the workspace because numbers are repository-local. */
-export function deriveHomeAttention({ queue, missions, questions, held, isActionable, status = [] }: {
+export function deriveHomeAttention({ queue, missions, questions, held, isActionable, status = [], specApprovals = 0 }: {
   /** Supplied by Home, where the action queue and core UI are composed. */
   isActionable: (chip: ActionQueueItem['chip']) => boolean;
   queue: readonly ActionQueueItem[];
@@ -241,9 +241,13 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
   held: readonly HomeHeldMission[];
   /** Service-status cards, already only the action holder's (lib/service-status.ts `statusAttentionItems`). */
   status?: readonly HomeAttentionItem[];
+  /** Spec revisions waiting on this person's approval: one card (specApprovalsAttention). */
+  specApprovals?: number;
 }): HomeAttentionItem[] {
   const items = new Map<string, HomeAttentionItem>();
   for (const s of status) items.set(s.key, s);
+  const specCard = specApprovalsAttention(specApprovals);
+  if (specCard) items.set(specCard.key, specCard);
   for (const q of questions) {
     const key = `question:${q.taskId ?? q.workerId}`;
     items.set(key, { key, kind: 'question', label: 'question', tone: 'warning', title: q.question.headline, sentence: questionSentence(q), meta: q.label, href: q.href ?? '/app/activity', actionType: 'answer', owner: 'human', question: q });
