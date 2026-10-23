@@ -54,7 +54,7 @@ import { hostUserMemoryExcludes, primaryCloneMemoryExcludes } from './host-memor
 import { sweepTerminalWorktrees } from './terminal-worktree-sweep';
 import { resolveBuilddHome } from './buildd-home';
 import { isolateAgentRunnerHome, cleanupAgentRunnerHome } from './agent-runner-home';
-import { startScopedGitHubSession, type ScopedGitHubSession } from './agent-github-credentials';
+import { startScopedGitHubSession, hostHasGitHubCredentials, type ScopedGitHubSession } from './agent-github-credentials';
 import { PusherManager } from './pusher-manager';
 import {
   authContextOf,
@@ -4470,7 +4470,11 @@ export class WorkerManager {
       // installation token minted for its task's repo — the operator's
       // GITHUB_TOKEN/GH_TOKEN and host git/gh credentials are withheld. See
       // agent-github-credentials.ts. Absent or `runner`: unchanged.
-      if (worker.githubCredentials?.mode === 'scoped') {
+      // A claim with no marker (rollout off) on a host that holds no GitHub
+      // credential at all (fresh WSL, no helper, no gh, no key) would fail
+      // every push, so it gets the scoped token too: nothing is withheld.
+      const bareHost = !worker.githubCredentials?.mode && !hostHasGitHubCredentials();
+      if (worker.githubCredentials?.mode === 'scoped' || bareHost) {
         githubTokenRefresher = await this.startScopedGitHubCredentials(worker, cleanEnv, agentRunnerHome);
         if (!githubTokenRefresher.ok) {
           promptText += '\n\n' + [
