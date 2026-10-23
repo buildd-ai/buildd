@@ -94,6 +94,18 @@ export interface MissionChecksInput {
   standardsEnforced?: boolean;
 }
 
+/**
+ * THE build-complete predicate (Navigation d25d923d R-15): every build task
+ * has landed, and there is at least one. The Overview's stages, `explain`'s
+ * open checks and the mission card all ask this one function, so a mission
+ * cannot read Verify on one surface and Build on another. A reopened task (a
+ * merged attempt followed by a newer one that has not landed) lowers `done`,
+ * so the Build stage returns by itself.
+ */
+export function isBuildComplete(build: { done: number; total: number }): boolean {
+  return build.total > 0 && build.done >= build.total;
+}
+
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : null);
 const sentence = (...parts: (string | null | undefined)[]) => {
@@ -295,7 +307,7 @@ export function releaseCheck(status: MissionReleaseStatus, label?: string | null
  */
 export function missionChecks(input: MissionChecksInput): MissionChecks {
   const { build, branch, target } = input;
-  const buildComplete = build.total > 0 && build.done >= build.total;
+  const buildComplete = isBuildComplete(build);
   const missionPr = branch === 'mission-branch' ? input.integrationPr : null;
   const prMerged = missionPr?.state === 'merged';
 
@@ -436,7 +448,7 @@ export function outcomeSpecLines(criteria: readonly GoalCriterion[], rows: reado
  */
 export function missionStandardsLine(input: MissionChecksInput, titles: Readonly<Record<string, string>>): StandardsLine | null {
   if (!input.criteria.some(c => c.type === 'living_spec' && isStandardCriterion(c))) return null;
-  const buildComplete = input.build.total > 0 && input.build.done >= input.build.total;
+  const buildComplete = isBuildComplete(input.build);
   const pr = input.branch === 'mission-branch' ? input.integrationPr : null;
   const merged: StandardItemStatus = input.branch === 'mission-branch'
     ? pr?.state === 'merged' ? 'met' : pr?.state === 'open' ? 'checking' : 'not_checked'

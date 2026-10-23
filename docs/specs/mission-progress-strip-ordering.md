@@ -276,14 +276,19 @@ in the warning tone, timed from the start when no event has arrived
 ### 3.2b The mission bar's looks (Navigation d25d923d R-4)
 
 **R-8b**: a grouped strip (the mission bar, `TaskStrip` with `groups`) draws
-three looks over the §3.2 states, in web rendering only (`stripLook`,
-`data-look`): `landed` is solid green; work in flight (`running`, `review`,
-`fixing`, `landing`, `recovering`) is an accent hatch; every other state is a
-dashed outline. A task that needs a person (`needs_you`, `waiting`) carries a
-small amber dot, a failed one (`failed`, `ci_failed`) a small red dot
-(`stripDot`). The cell's state, order and grouping are unchanged, so the
-§3.2 table still holds for every other strip and `buildd top` (Runner on your
-terminal R-29) reads the same cells.
+five looks over the §3.2 states, in web rendering only (`stripLook`,
+`data-look`; Navigation d25d923d R-4 r5): `landed` is solid green; an agent
+working (`running`, `review`, `landing`, `recovering`, and `fixing` while its
+attempt is live) is an accent hatch; a task that needs a person (`needs_you`,
+`waiting`) is an outlined amber cell on an amber tint; a failure a person must
+fix (`failed`, `ci_failed`) is an outlined red cell; every other state,
+including `fixing` while it waits out a retry, is a dashed outline. Every
+look is a theme token, so Night and Day both keep 3:1 contrast; a phone cell
+is at least 32px tall, and the bar draws no tick numbers: a cell's hover
+label and accessible name are the task's name and state. The cell's state,
+order and grouping are unchanged, so the §3.2 table still holds for every
+other strip and `buildd top` (Runner on your terminal R-29) reads the same
+cells.
 
 **R-8c**: the `running` cell's hatch drifts slowly, one stripe period per
 2.4s, in CSS only (`.state-cell[data-drift]`, `@keyframes cell-hatch-drift`).

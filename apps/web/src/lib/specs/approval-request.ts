@@ -27,6 +27,8 @@ export interface SpecApprovalRequest {
   contentHash: string;
   /** The person whose session asked. */
   requestedBy: string;
+  /** The surface the request came from; a token minted before this existed reads as 'mcp'. */
+  via?: 'mcp' | 'chat';
   /** Epoch ms. */
   exp: number;
   nonce: string;
@@ -58,6 +60,7 @@ function isPayload(v: unknown): v is SpecApprovalRequest {
     Number.isSafeInteger(p.expectedVersion) &&
     typeof p.contentHash === 'string' &&
     typeof p.requestedBy === 'string' &&
+    (p.via === undefined || p.via === 'mcp' || p.via === 'chat') &&
     typeof p.exp === 'number' &&
     typeof p.nonce === 'string' &&
     p.nonce.length > 0

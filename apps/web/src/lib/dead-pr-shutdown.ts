@@ -5,11 +5,23 @@
  * other buildd-authored open PRs whose tasks share the same subject anchor.
  * Apply one of three tiers:
  *
- *   1. Closed/superseded: the winner PR merged → immediately close the loser.
+ *   1. Closed/superseded: the winner PR merged → close the loser.
  *   2. Conflict-dead + green winner: loser has been in conflict for
  *      ≥ conflictDeadDays and the winner is green → close the loser.
  *   3. Conflict-dead, no winner: create or update one escalation note; do
  *      not close — a human must decide.
+ *
+ * Nomination is not proof. A shared subject anchor, a shared mission, the same
+ * base branch and idle time say two PRs are RELATED, not that one carries the
+ * other's change (#2614, #3602, #5461 were each closed as "superseded" by a
+ * sibling task's PR that shared none of their work). Tiers 1 and 2 therefore
+ * close only when `verifyPrCarriedBy` (lib/pr-supersession-detect.ts) proves
+ * the loser's change is in the winner — the same patch-id / content / blob
+ * proof the close-time scan demands before it records an edge — and the
+ * supersession edge is recorded in the same flow as the close. An unverified
+ * or unavailable verdict closes nothing: a conflict-dead loser falls through
+ * to Tier 3, any other loser is left open. The lifecycle, time and base checks
+ * stay as cheap pre-filters so GitHub is read only for a real candidate.
  *
  * Ships behind `autoCloseBuilddSupersededPrs: false` (workspace subjectPolicy).
  * Default OFF for all teams — callers must check the flag before calling this.
@@ -19,14 +31,19 @@
  * buildd authorship; no additional GitHub API call is made for ownership.
  *
  * Closure ordering (per spec §5):
- *   1. Verify ownership, successor identity, and tier.
+ *   1. Verify ownership, successor identity, tier — and that the winner's
+ *      merged diff carries the loser's change.
  *   2. Post successor comment (idempotent — marker in comment body).
  *   3. Close via GitHub API.
  *   4. Stamp worker prLifecycleStatus = 'closed' (only after GitHub succeeds).
- *   5. Supersede open escalation notes.
- *   6. Subject sweep (already handled by caller, but called here for losers too).
+ *   5. Record the supersession edge (`recordPrSupersession`, the path
+ *      record_pr_supersession and the close-time scan take), so the loser's
+ *      mission can complete.
+ *   6. Supersede open escalation notes.
+ *   7. Subject sweep (already handled by caller, but called here for losers too).
  *
- * If GitHub closure fails: keep PR open, keep escalation open, do NOT stamp.
+ * If GitHub closure fails: keep PR open, keep escalation open, do NOT stamp,
+ * record no edge.
  */
 
 import { db } from '@buildd/core/db';
@@ -44,6 +61,9 @@ import { recordPrFact } from '@buildd/core/pr-facts';
 import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+
+const GATE_SURFACE = 'dead-pr-shutdown';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -64,7 +84,18 @@ export interface ShutdownResult {
   closedPrNumbers: number[];
   escalatedPrNumbers: number[];
   skippedPrNumbers: number[];
+  /**
+   * Tier 1/2 candidates the winner does not provably carry (or that could not
+   * be checked). Left open; also counted in `skippedPrNumbers` or, when
+   * conflict-dead, in `escalatedPrNumbers`.
+   */
+  unverifiedPrNumbers: number[];
+  /** Closed losers whose supersession edge was recorded in the same flow. */
+  supersededPrNumbers: number[];
 }
+
+/** Actor label on the edge this door records — distinguishes it from a person's and the scan's. */
+export const DEAD_PR_SHUTDOWN_ACTOR = 'system:dead-pr-shutdown';
 
 // ── GitHub API helpers ────────────────────────────────────────────────────────
 
@@ -73,6 +104,20 @@ async function getGithubApi() {
   const { githubApi } = await import('@/lib/github');
   return { githubApi };
 }
+
+// Lazily imported for the same reason: the detect module carries the GitHub
+// reads behind the verifier, and the supersession module the kernel door.
+async function getVerifier() {
+  const { verifyPrCarriedBy, SWEEP_LIMITS } = await import('@/lib/pr-supersession-detect');
+  return { verifyPrCarriedBy, requestTimeoutMs: SWEEP_LIMITS.requestTimeoutMs };
+}
+
+async function getRecorder() {
+  const { recordPrSupersession } = await import('@/lib/pr-supersession');
+  return { recordPrSupersession };
+}
+
+type Proof = { method: 'patch-id' | 'content'; confidence: number };
 
 const SHUTDOWN_COMMENT_MARKER = '<!-- buildd-dead-pr-shutdown -->';
 
@@ -254,6 +299,8 @@ export async function shutdownDeadBuilddPrs(
     closedPrNumbers: [],
     escalatedPrNumbers: [],
     skippedPrNumbers: [],
+    unverifiedPrNumbers: [],
+    supersededPrNumbers: [],
   };
 
   // ── 1. Check feature flag ────────────────────────────────────────────────
@@ -354,15 +401,26 @@ export async function shutdownDeadBuilddPrs(
 
   for (const loser of losers) {
     try {
-      if (eventMerged && isTier1Eligible(loser, loser.updatedAt, eventWorker.prBaseRef)) {
-        // Tier 1: winner merged → immediately close loser
-        await closePrWithComment(loser, eventPrNumber, installationId, repoFullName);
+      const nominated = eventMerged && (
+        isTier1Eligible(loser, loser.updatedAt, eventWorker.prBaseRef)
+        || isTier2Eligible(loser, policy.conflictDeadDays, loser.updatedAt, eventWorker.prBaseRef)
+      );
+      // Tier 1 (winner merged) or Tier 2 (conflict-dead ≥ conflictDeadDays with
+      // a green winner): the pre-filters passed, so the loser is a candidate.
+      // It closes only if the winner's merged diff carries its change.
+      const proof = nominated
+        ? await verifyWinnerCarriesLoser(loser, eventPrNumber, installationId, repoFullName)
+        : null;
+
+      if (proof) {
+        const edge = await closePrWithComment(loser, eventPrNumber, installationId, repoFullName, proof);
         result.closedPrNumbers.push(loser.prNumber);
-      } else if (eventMerged && isTier2Eligible(loser, policy.conflictDeadDays, loser.updatedAt, eventWorker.prBaseRef)) {
-        // Tier 2: conflict-dead ≥ conflictDeadDays with green winner → close
-        await closePrWithComment(loser, eventPrNumber, installationId, repoFullName);
-        result.closedPrNumbers.push(loser.prNumber);
-      } else if (isTier3Eligible(loser)) {
+        if (edge) result.supersededPrNumbers.push(loser.prNumber);
+        continue;
+      }
+      if (nominated) result.unverifiedPrNumbers.push(loser.prNumber);
+
+      if (isTier3Eligible(loser)) {
         // Tier 3: conflict-dead, no green winner → escalate, do not close
         await upsertConflictEscalation(loser);
         result.escalatedPrNumbers.push(loser.prNumber);
@@ -379,15 +437,85 @@ export async function shutdownDeadBuilddPrs(
 }
 
 /**
- * Close a loser PR on GitHub, stamp the worker, and supersede open escalations.
- * If GitHub close fails, nothing is stamped (no optimistic update).
+ * Does the merged winner carry the loser's change? The proof when it does;
+ * null when it does not or when it cannot be told (GitHub unreachable, the
+ * verifier failed, the winner is not merged). Null never closes anything.
+ */
+async function verifyWinnerCarriesLoser(
+  loser: LoserCandidate,
+  winnerPrNumber: number,
+  installationId: number,
+  repoFullName: string,
+): Promise<Proof | null> {
+  try {
+    const { verifyPrCarriedBy, requestTimeoutMs } = await getVerifier();
+    const v = await verifyPrCarriedBy({
+      installationId,
+      repo: repoFullName,
+      prNumber: loser.prNumber,
+      candidatePrNumber: winnerPrNumber,
+      limits: { requestTimeoutMs },
+    });
+    if (v.outcome === 'verified') return { method: v.method, confidence: v.confidence };
+    const why = v.outcome === 'unverified'
+      ? `${Math.round(v.confidence * 100)}% of its added lines found in the winner`
+      : v.reason;
+    console.log(`[dead-pr-shutdown] PR #${loser.prNumber} left open: #${winnerPrNumber} does not provably carry it (${why})`);
+    leftOpen(loser, winnerPrNumber, v.outcome, why);
+    return null;
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    console.warn(`[dead-pr-shutdown] could not verify PR #${loser.prNumber} against #${winnerPrNumber}; left open:`, err);
+    leftOpen(loser, winnerPrNumber, 'unavailable', why);
+    return null;
+  }
+}
+
+/** The gate refused a close the pre-filters would have allowed: a visible signal, not a silent skip. */
+function leftOpen(loser: LoserCandidate, winnerPrNumber: number, verdict: 'unverified' | 'unavailable', why: string): void {
+  fireGateEvent({
+    gate: GATE_SLUGS.AUTO_PR_SUPERSESSION,
+    surface: GATE_SURFACE,
+    outcome: 'rejected',
+    reason: verdict === 'unverified'
+      ? 'subject-anchored PR left open: the merged winner does not carry its content, so it is not superseded'
+      : 'subject-anchored PR left open: its content could not be verified against the merged winner',
+    workspaceId: loser.workspaceId,
+    taskId: loser.taskId,
+    workerId: loser.workerId,
+    detail: { prNumber: loser.prNumber, winnerPrNumber, verdict, why, missionId: loser.missionId },
+    callerOrigin: 'system',
+  });
+}
+
+/** Closed on proof, but the edge did not land: the PR is closed-unsuperseded until the scan or sweep records it. */
+function edgeNotRecorded(loser: LoserCandidate, successorPrNumber: number, proof: Proof, error: string): void {
+  fireGateEvent({
+    gate: GATE_SLUGS.AUTO_PR_SUPERSESSION,
+    surface: GATE_SURFACE,
+    outcome: 'warned',
+    reason: 'subject-anchored PR closed on verified content, but its supersession edge was not recorded; the close-time scan or hourly sweep must record it',
+    workspaceId: loser.workspaceId,
+    taskId: loser.taskId,
+    workerId: loser.workerId,
+    detail: { prNumber: loser.prNumber, supersedingPrNumber: successorPrNumber, method: proof.method, error, missionId: loser.missionId },
+    callerOrigin: 'system',
+  });
+}
+
+/**
+ * Close a loser PR on GitHub, stamp the worker, record the supersession edge,
+ * and supersede open escalations. If GitHub close fails, nothing is stamped
+ * and no edge is recorded (no optimistic update). Returns whether the edge
+ * was recorded.
  */
 async function closePrWithComment(
   loser: LoserCandidate,
   successorPrNumber: number,
   installationId: number,
   repoFullName: string,
-): Promise<void> {
+  proof: Proof,
+): Promise<boolean> {
   // Step 2 of spec §5: post comment (idempotent — marker prevents duplicates)
   try {
     await postSuccessorComment(installationId, repoFullName, loser.prNumber, successorPrNumber);
@@ -403,15 +531,60 @@ async function closePrWithComment(
   // Step 4 of spec §5: stamp worker lifecycle
   await recordPrFact({ workerId: loser.workerId }, { kind: 'closed' }, { scope: factFunnelScope });
 
-  // Step 5 of spec §5: supersede open escalations
+  // Step 5 of spec §5: the supersession edge, through the one sanctioned path.
+  // After the close, never before: an edge on an open PR would read as shipped.
+  // A refused or failed write leaves the PR closed-unsuperseded, where the
+  // close-time scan (our comment names the winner) and the hourly sweep find
+  // the same proof and record it.
+  let edge = false;
+  try {
+    const { recordPrSupersession } = await getRecorder();
+    const r = await recordPrSupersession({
+      workerId: loser.workerId,
+      supersedingPrNumber: successorPrNumber,
+      reason: `auto: content verified in #${successorPrNumber} (method: ${proof.method}) by dead-pr-shutdown`,
+      recordedBy: DEAD_PR_SHUTDOWN_ACTOR,
+      caller: 'system',
+    });
+    if (r.ok) edge = true;
+    else console.warn(`[dead-pr-shutdown] closed PR #${loser.prNumber} but the edge to #${successorPrNumber} was not recorded: ${r.error}`);
+    if (!r.ok) edgeNotRecorded(loser, successorPrNumber, proof, r.error);
+  } catch (err) {
+    console.warn(`[dead-pr-shutdown] closed PR #${loser.prNumber} but recording the edge to #${successorPrNumber} failed:`, err);
+    edgeNotRecorded(loser, successorPrNumber, proof, err instanceof Error ? err.message : String(err));
+  }
+  if (edge) {
+    fireGateEvent({
+      gate: GATE_SLUGS.AUTO_PR_SUPERSESSION,
+      surface: GATE_SURFACE,
+      outcome: 'accepted',
+      reason: `subject-anchored PR closed as superseded: content verified (${proof.method}); edge recorded`,
+      workspaceId: loser.workspaceId,
+      taskId: loser.taskId,
+      workerId: loser.workerId,
+      detail: {
+        prNumber: loser.prNumber,
+        supersedingPrNumber: successorPrNumber,
+        method: proof.method,
+        confidence: Math.round(proof.confidence * 1000) / 1000,
+        recordedBy: DEAD_PR_SHUTDOWN_ACTOR,
+        missionId: loser.missionId,
+      },
+      callerOrigin: 'system',
+    });
+  }
+
+  // Step 6 of spec §5: supersede open escalations
   await supersedePrEscalations(loser.taskId, successorPrNumber);
 
-  // Step 6 of spec §5: subject sweep (best-effort)
+  // Step 7 of spec §5: subject sweep (best-effort)
   sweepSubjectAnchoredTasks(loser.workspaceId, loser.prNumber).catch(e =>
     console.error(`[dead-pr-shutdown] subject sweep failed for PR #${loser.prNumber}:`, e),
   );
 
   console.log(
-    `[dead-pr-shutdown] closed loser PR #${loser.prNumber} (superseded by #${successorPrNumber})`,
+    `[dead-pr-shutdown] closed loser PR #${loser.prNumber} (superseded by #${successorPrNumber}, `
+    + `${proof.method} verified${edge ? ', edge recorded' : ', edge NOT recorded'})`,
   );
+  return edge;
 }

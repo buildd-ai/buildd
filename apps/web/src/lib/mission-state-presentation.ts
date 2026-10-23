@@ -37,6 +37,8 @@ export type MissionPresentationCause =
   | 'executing'
   | 'queue'
   | 'dependency'
+  /** Held behind another task's files or migration (Navigation R-14 `held: runs after <task>`). */
+  | 'coordination'
   | 'capacity'
   | 'budget'
   | 'policy'
@@ -89,9 +91,14 @@ const CAPACITY_KEYS = new Set([
 ]);
 const BUDGET_KEYS = new Set(['mission_budget', 'budget_paused', 'managed_runner_hours', 'hosted_runner_hours']);
 const POLICY_KEYS = new Set(['provider_not_allowed', 'tier_policy', 'routing_paused', 'no_personal_credential', 'oauth_parallelism']);
+/** Navigation R-14: held behind another task's files or migration. */
+const COORDINATION_KEYS = new Set(['path_overlap', 'soft_overlap', 'advisory_manifest']);
 
 function causeOfHold(key: string | undefined): MissionPresentationCause {
   if (!key) return 'unknown';
+  if (key === 'dependency') return 'dependency';
+  if (COORDINATION_KEYS.has(key)) return 'coordination';
+  if (key === 'trunk_red') return 'delivery';
   if (CAPACITY_KEYS.has(key)) return 'capacity';
   if (BUDGET_KEYS.has(key)) return 'budget';
   if (POLICY_KEYS.has(key)) return 'policy';

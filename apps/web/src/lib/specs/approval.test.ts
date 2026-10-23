@@ -12,7 +12,7 @@
  * so nothing below claims anything about a WHERE clause.
  */
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import { specRevisions, specs, workspaces } from '@buildd/core/db/schema';
+import { specRevisions, specs, users, workspaces } from '@buildd/core/db/schema';
 
 const SPEC = '11111111-1111-4111-8111-111111111111';
 const WS = '22222222-2222-4222-8222-222222222222';
@@ -69,8 +69,13 @@ mock.module('@/lib/core-emit', () => ({
   emit: (e: unknown) => { emitted.push(e); return new Promise<void>(() => {}); },
 }));
 
+let gate: { passed: boolean; refusals: Array<{ code: string; message: string }>; warnings: Array<{ code: string; message: string }> } = { passed: true, refusals: [], warnings: [] };
+mock.module('./approval-gate', () => ({ runApprovalGate: async () => ({ gate, review: null }) }));
+process.env.AUTH_SECRET ||= 'approval-unit-test-secret';
+
 const { approveSpecRevision, specApprovalDeps } = await import('./approval');
 
+const notices: Array<{ confirmUrl: string; revision: number; title: string }> = [];
 const user = { kind: 'user' as const, userId: '33333333-3333-4333-8333-333333333333' };
 let scheduled: Array<() => Promise<unknown>>;
 beforeEach(() => {
@@ -78,7 +83,11 @@ beforeEach(() => {
     [specs, [[specRow], [{ ...specRow, version: 4, approvedRevision: 2, status: 'approved' }]]],
     [specRevisions, [[{ specId: SPEC, revision: 2, approvedAt: new Date() }]]],
     [workspaces, [[{ gitConfig: null }]]],
+    [users, [[{ name: 'Sam' }]]],
   ]);
+  gate = { passed: true, refusals: [], warnings: [] };
+  notices.length = 0;
+  specApprovalDeps.notify = async n => { notices.push(n); };
   inflight = 0; maxInflightAfterWrite = 0; wrote = false;
   selectedTables.length = 0; events.length = 0; emitted.length = 0;
   reachGate = null; reachResult = true; holds = true;
@@ -128,5 +137,60 @@ describe('approveSpecRevision response path', () => {
     expect(r).toMatchObject({ ok: false, status: 403 });
     expect(wrote).toBe(false);
     expect(scheduled).toEqual([]);
+  });
+});
+
+describe('an approval asked for over MCP or chat', () => {
+  const bearer = { kind: 'account' as const, account: { id: 'a1', sessionUserId: user.userId } } as never;
+  beforeEach(() => {
+    rowsByTable.set(specs, [[{ ...specRow, title: 'Checkout' }]]);
+    rowsByTable.set(specRevisions, [[{ contentHash: 'h'.repeat(64) }]]);
+  });
+
+  it('never approves: it writes nothing and returns the link, who it went to, and the gate result', async () => {
+    const r = await approveSpecRevision(bearer, SPEC, { revision: 2, expectedVersion: 3 });
+    expect(r).toMatchObject({ ok: true, pending: { revision: 2, sentTo: 'Sam', gate: { passed: true } } });
+    expect(wrote).toBe(false);
+    expect(scheduled).toEqual([]);
+  });
+
+  it('sends the person exactly one notification, carrying the confirm link', async () => {
+    const r = await approveSpecRevision(bearer, SPEC, { revision: 2, expectedVersion: 3 });
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ title: 'Checkout', revision: 2 });
+    expect(notices[0]!.confirmUrl).toBe(r.ok && 'pending' in r ? r.pending.confirmUrl : '');
+    expect(notices[0]!.confirmUrl).toContain(`/app/specs/${SPEC}/approve?request=`);
+  });
+
+  it('a notification that fails does not lose the link', async () => {
+    specApprovalDeps.notify = async () => { throw new Error('pushover down'); };
+    expect(await approveSpecRevision(bearer, SPEC, { revision: 2, expectedVersion: 3 })).toMatchObject({ ok: true, pending: { revision: 2 } });
+  });
+
+  it('a gate refusal creates no request and sends nothing, and says why', async () => {
+    gate = { passed: false, refusals: [{ code: 'id_meaning_changed', message: 'R-1 now means something else.' }], warnings: [] };
+    const r = await approveSpecRevision(bearer, SPEC, { revision: 2, expectedVersion: 3 });
+    expect(r).toMatchObject({ ok: false, status: 409, code: 'gate_refused', gate: { passed: false } });
+    expect(!r.ok && r.error).toContain('R-1 now means something else.');
+    expect(notices).toEqual([]);
+  });
+
+  it('a warning passes the gate and rides along on the request', async () => {
+    gate = { passed: true, refusals: [], warnings: [{ code: 'no_change_summary', message: 'No summary.' }] };
+    const r = await approveSpecRevision(bearer, SPEC, { revision: 2, expectedVersion: 3 });
+    expect(r).toMatchObject({ ok: true, pending: { gate: { warnings: [{ code: 'no_change_summary' }] } } });
+    expect(notices).toHaveLength(1);
+  });
+
+  it('a stale version is refused before the gate or any notification', async () => {
+    const r = await approveSpecRevision(bearer, SPEC, { revision: 2, expectedVersion: 1 });
+    expect(r).toMatchObject({ ok: false, status: 409 });
+    expect(notices).toEqual([]);
+  });
+
+  it('an agent run or API key, with no person behind it, cannot even ask', async () => {
+    const agent = { kind: 'account' as const, account: { id: 'a2', taskScope: { taskId: 't1' } } } as never;
+    expect(await approveSpecRevision(agent, SPEC, { revision: 2, expectedVersion: 3 })).toMatchObject({ ok: false, status: 403 });
+    expect(notices).toEqual([]);
   });
 });

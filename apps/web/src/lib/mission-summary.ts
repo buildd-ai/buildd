@@ -32,7 +32,10 @@ import { MISSION_SUMMARY_VERSION, type MissionSummary, type MissionSummaryDelive
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { assembleMissionStages, type MissionStageRows } from './mission-stage-assemble';
-import { buildMissionCardView, summarizeMissionForCard, type MissionCardRow, type MissionCardSummary } from './mission-card-view';
+import { buildMissionCardView, cardTaskHolds, summarizeMissionForCard, type MissionCardHoldFacts, type MissionCardRow, type MissionCardSummary } from './mission-card-view';
+import type { ClaimHoldFacts } from './mission-claim-deferrals';
+import type { PendingHolderFacts } from './mission-task-hold';
+import type { DependencyRow } from './mission-helpers';
 import { buildMissionListCard, type ListMissionRow, type StrandCta } from './mission-list-card';
 import { projectMissionDelivery, quietCauseOf, toDeliveryRow, type MissionDeliveryRow } from './delivery-projection';
 import { missionDeliveryFacts } from './mission-delivery-facts';
@@ -53,6 +56,9 @@ export interface MissionSummaryInput extends MissionStageRows {
   visualReview?: MissionVisualReviewState | null;
   /** The escalation gate's stored verdict on the mission's own PR, when one exists. */
   escalationGateVerdict?: { owner: 'person' | 'machine'; reason?: string | null } | null;
+  /** Navigation R-14: each pending task's newest claim refusal, and the rows the pending tasks wait behind, when the loader read them. */
+  claimHolds?: ReadonlyMap<string, ClaimHoldFacts> | null;
+  holders?: ReadonlyMap<string, PendingHolderFacts> | null;
 }
 
 /** Home's reading with its precise types (the stored JSON is `MissionSummaryHome`). */
@@ -147,8 +153,14 @@ export function computeMissionSummary(input: MissionSummaryInput, now: number): 
     taskRows.map(t => ({ ...t, workers: newestFirst(workersByTask.get(t.id) ?? []) })) as any[],
     deliveryViews,
   ) as Row[];
+  // R-14: why each pending row is not running, from the claim gate's record and the holder rows.
+  const holdFacts: MissionCardHoldFacts = {
+    claimHolds: input.claimHolds ?? null,
+    holders: input.holders ?? null,
+    dependencies: input.foreignDeps as ReadonlyMap<string, DependencyRow>,
+  };
   const card = summarizeMissionForCard({ ...mission, tasks: cardTasks } as MissionCardRow, {
-    now, liveWorkers: input.liveWorkers, deliveryViews,
+    now, liveWorkers: input.liveWorkers, deliveryViews, holdFacts,
   });
 
   const visualReview = input.visualReview ?? null;
@@ -157,10 +169,10 @@ export function computeMissionSummary(input: MissionSummaryInput, now: number): 
   const verdict = input.escalationGateVerdict ?? null;
   const homeCard = visualRead || verdict
     ? summarizeMissionForCard({ ...mission, escalationGateVerdict: verdict, tasks: cardTasks } as MissionCardRow, {
-        now, liveWorkers: input.liveWorkers, deliveryViews, visualReview: visualRead ? summarizeVisualReview(visualReview) : null,
+        now, liveWorkers: input.liveWorkers, deliveryViews, visualReview: visualRead ? summarizeVisualReview(visualReview) : null, holdFacts,
       })
     : card;
-  const home = homeReading(mission, cardTasks, homeCard, deliveryViews, visualReview, visualRead, now);
+  const home = homeReading(mission, cardTasks, homeCard, deliveryViews, visualReview, visualRead, now, holdFacts);
 
   const taskCounts: Record<string, number> = {};
   for (const t of taskRows) taskCounts[t.status] = (taskCounts[t.status] ?? 0) + 1;
@@ -198,14 +210,20 @@ const LIVE_GROUPS: ReadonlySet<string> = new Set(['running', 'attention', 'revie
  */
 function homeReading(
   mission: Row, cardTasks: Row[], card: MissionCardSummary, deliveryViews: Map<string, any>,
-  visualReview: MissionVisualReviewState | null, visualRead: boolean, now: number,
+  visualReview: MissionVisualReviewState | null, visualRead: boolean, now: number, holdFacts: MissionCardHoldFacts,
 ): MissionHomeReading {
   const row = { ...mission, tasks: cardTasks } as unknown as ListMissionRow;
   const stored = missionDeliveryFacts(row as never, visualRead ? summarizeVisualReview(visualReview) : undefined, now);
+  // R-14: the same hold the card's state read, on the row Home's next step reads.
+  const holds = cardTaskHolds({ tasks: cardTasks as never, executor: mission.executor ?? null }, { now, facts: holdFacts });
+  const projectionTasks = cardTasks.map(t => {
+    const h = holds.get(t.id);
+    return h ? { ...t, hold: { row: h.row, kind: h.kind, dead: !!h.holder?.note } } : t;
+  });
   const delivery = projectMissionDelivery({
     id: mission.id, title: mission.title, status: mission.status, href: `/app/missions/${mission.id}`,
     isHeld: mission.isHeld, armedAt: mission.armedAt, integrationBranch: mission.integrationBranchEnabled === true,
-    tasks: cardTasks as never,
+    tasks: projectionTasks as never,
     // The same facts the missions list reads, so both cards agree.
     ...stored,
     // The stored row carries no elapsed time: the strand reads quiet, `quietSince` rides along, and a read adds the rest (`deliveryAtRead`).

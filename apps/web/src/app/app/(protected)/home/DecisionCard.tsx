@@ -10,6 +10,7 @@ import { MergeAdvice } from '@/components/MergeAdvice';
 import Eyebrow from '@/components/ui/Eyebrow';
 import { displayTaskTitle } from '@/lib/task-title';
 import { decisionLine } from './needs-you-layout';
+import { QuestionCard } from './NeedsYouCards';
 
 const sentenceCase = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -23,11 +24,16 @@ const secondary = 'btn min-h-11';
  * MergeAdvice line when the PR has one, and a charcoal primary action.
  */
 export function DecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone: (key: string, label: string) => void }) {
+  // An agent's question is the one decision card every surface shares (Navigation R-16).
+  if (item.question) return <QuestionCard q={item.question} onAnswered={() => onDone(item.key, 'answered')} />;
+  return <QueueDecisionCard item={item} onDone={onDone} />;
+}
+
+function QueueDecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone: (key: string, label: string) => void }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [reply, setReply] = useState('');
   const [retrySafe, setRetrySafe] = useState(true);
   useEffect(() => { setConfirm(false); setError(null); setRetrySafe(true); }, [item]);
   const q = item.queue;
@@ -106,7 +112,6 @@ export function DecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone
   else if (ci) actions = <><button className={primary} disabled={busy} onClick={() => void act(`/api/prs/${q!.prNumber}/retry-ci`, { workspaceId: q!.workspaceId }, 'fix started')}>{busy ? 'Starting…' : 'Start fix'}</button><Link className={secondary} href={q?.prUrl ? `${q.prUrl}/checks` : item.href}>Logs</Link></>;
   else if (item.strand) actions = <><button className={primary} disabled={busy || !!blocked} onClick={() => { recordStrand('continue-on-runner'); void act(`/api/missions/${encodeURIComponent(item.strand!.missionId)}`, { executor: 'runner' }, 'moved to runner', 'PATCH'); }}>{busy ? 'Moving…' : 'Move to runner'}</button><button className={secondary} disabled={busy} onClick={() => { recordStrand('wait-for-local'); onDone(item.key, 'kept local'); }}>Keep local</button></>;
   else if (item.held) actions = <><button className={primary} disabled={busy} onClick={() => void act(`/api/missions/${encodeURIComponent(item.held!.id)}`, { arm: true }, 'started', 'PATCH')}>{busy ? MISSION_START_COPY[item.held.startState ?? 'not_started'].actionPending : item.held.startState === 'paused' ? 'Resume' : 'Start'}</button><Link href={item.href} className={secondary}>Open</Link></>;
-  else if (item.question) actions = <><form className="flex w-full flex-wrap gap-2" onSubmit={e => { e.preventDefault(); if (reply.trim()) void act(`/api/workers/${encodeURIComponent(item.question!.workerId)}/respond`, { message: reply.trim() }, 'answered'); }}><input aria-label="Your answer" value={reply} onChange={e => setReply(e.target.value)} className="min-h-11 min-w-0 flex-1 border border-border-default bg-transparent px-2 text-body" placeholder="Your answer…" /><button className={primary} disabled={busy || !reply.trim()}>Reply</button></form>{item.question.question.options.slice(0, 4).map(({ label }) => <button key={label} className={secondary} disabled={busy} onClick={() => void act(`/api/workers/${encodeURIComponent(item.question!.workerId)}/respond`, { message: label }, 'answered')}>{label}</button>)}</>;
   else actions = <><Link className={primary} href={item.primary?.href ?? item.href}>{item.primary?.label ?? 'View'}</Link>{item.details && <Link className={secondary} href={item.details.href}>{item.details.label}</Link>}</>;
 
   // The decision line is one sentence; anything longer folds behind Details.

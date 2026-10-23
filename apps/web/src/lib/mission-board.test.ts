@@ -369,7 +369,8 @@ describe('helpers', () => {
       workers: [{ id: 'w', status: 'waiting_input', runner: 'atlas', startedAt: new Date(min(1)), waitingFor: { prompt: 'q?', options: [{ label: 'A' }, 'B'] }, milestones: [{ type: 'status', label: 'go', ts: min(2) }] }],
     });
     expect(t.workers[0].startedAt).toBe(min(1));
-    expect(t.workers[0].waitingFor).toEqual({ prompt: 'q?', options: ['A', 'B'] });
+    // The labels every strip reads, and the stored question whole for the decision card (Navigation R-16).
+    expect(t.workers[0].waitingFor).toEqual({ prompt: 'q?', options: ['A', 'B'], full: { prompt: 'q?', options: [{ label: 'A' }, 'B'] } });
     expect(t.worker?.status).toBe('waiting_input');
   });
 
