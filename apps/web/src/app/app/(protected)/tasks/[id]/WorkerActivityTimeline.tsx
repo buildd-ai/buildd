@@ -37,6 +37,12 @@ interface WorkerActivityTimelineProps {
   nowMs?: number;
   /** Whether the worker is still live (the tape ends at "now", not the last event). */
   live?: boolean;
+  /**
+   * `strip`: inside the task page's live block, the tape and the latest
+   * milestones as plain rows (design 6356e80d `phone-task-running`), with no
+   * section header and no disclosure.
+   */
+  variant?: 'full' | 'strip';
 }
 
 // Collapse workspace-path prefixes to surface the distinguishing command tail.
@@ -223,6 +229,7 @@ export default function WorkerActivityTimeline({
   startedAt,
   nowMs: nowProp,
   live = false,
+  variant = 'full',
 }: WorkerActivityTimelineProps) {
   // How many log rows show: a first page, then one page per tap, so a session
   // of hundreds of turns never lands on a phone as one wall of rows.
@@ -247,6 +254,46 @@ export default function WorkerActivityTimeline({
   const left = entries.length - visibleEntries.length;
 
   const hasTape = milestones.some(m => m.type === 'action' || (m.type === 'status' && !!m.label?.trim()));
+
+  const more = (left > 0 || shown > maxVisible) && (
+    <div className="mt-2 flex flex-wrap items-center gap-x-4">
+      {left > 0 && (
+        <button onClick={() => setShown(shown + LOG_PAGE)} className="text-xs text-accent-text hover:underline min-h-11 md:min-h-0">
+          {`Show ${Math.min(LOG_PAGE, left)} more · ${left} left`}
+        </button>
+      )}
+      {left > LOG_PAGE && (
+        <button onClick={() => setShown(entries.length)} className="text-xs text-text-muted hover:underline min-h-11 md:min-h-0">
+          {`Show all ${entries.length}`}
+        </button>
+      )}
+      {shown > maxVisible && (
+        <button onClick={() => setShown(maxVisible)} className="text-xs text-text-muted hover:underline min-h-11 md:min-h-0">
+          Show less
+        </button>
+      )}
+    </div>
+  );
+
+  if (variant === 'strip') {
+    return (
+      <div data-testid="worker-activity-timeline">
+        <ActivityTape milestones={milestones} startMs={startMs} nowMs={endMs} live={live} />
+        {visibleEntries.length > 0 && (
+          <div data-testid="worker-activity-log" className="mt-3 border-t border-border-default divide-y divide-border-default">
+            {visibleEntries.map((entry, i) => (
+              <LogEntryRow
+                key={`${entry.startMs}-${i}`}
+                entry={entry}
+                currentAction={i === 0 && entry.endMs == null ? currentAction : undefined}
+              />
+            ))}
+          </div>
+        )}
+        {more}
+      </div>
+    );
+  }
 
   return (
     <div className="mt-6" data-testid="worker-activity-timeline">
@@ -282,25 +329,7 @@ export default function WorkerActivityTimeline({
               />
             ))}
           </div>
-          {(left > 0 || shown > maxVisible) && (
-            <div className="mt-2 flex flex-wrap items-center gap-x-4">
-              {left > 0 && (
-                <button onClick={() => setShown(shown + LOG_PAGE)} className="text-xs text-accent-text hover:underline min-h-11 md:min-h-0">
-                  {`Show ${Math.min(LOG_PAGE, left)} more · ${left} left`}
-                </button>
-              )}
-              {left > LOG_PAGE && (
-                <button onClick={() => setShown(entries.length)} className="text-xs text-text-muted hover:underline min-h-11 md:min-h-0">
-                  {`Show all ${entries.length}`}
-                </button>
-              )}
-              {shown > maxVisible && (
-                <button onClick={() => setShown(maxVisible)} className="text-xs text-text-muted hover:underline min-h-11 md:min-h-0">
-                  Show less
-                </button>
-              )}
-            </div>
-          )}
+          {more}
         </details>
       )}
     </div>

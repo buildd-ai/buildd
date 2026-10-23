@@ -2,13 +2,13 @@
 title: Task Page
 status: active
 owner: max
-last_verified: 2026-10-22
+last_verified: 2026-10-23
 summary: The task page leads with the live run and steering while running, then one Build/Verify/Deliver timeline when stopped; Run holds execution material and Details holds spec, dependencies, attempts and time.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/tasks/[id]/page.tsx, apps/web/src/lib/task-timeline.ts, apps/web/src/lib/task-checks.ts, apps/web/src/lib/task-result.ts, apps/web/src/lib/workflow/projections.ts]
 related: [workflow-state-kernel, mission-task-lifecycle, surface-ia-home-missions-initiatives]
 keywords: [task detail, mobile header, show full title, review queued, no findings yet, review of PR, what shipped, why this, verdict block, review approved, updating branch, awaiting merge, repair 1, checks list, review round, attempt, reviewer task, fix attempt, structured output, technical summary, raw output, lifecycle track]
-verified_by: [apps/web/src/lib/task-timeline.test.ts, apps/web/src/lib/run-stall.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/mission-sibling-nav.test.ts, apps/web/src/lib/workflow/escalation-copy.test.ts, apps/web/src/components/EscalationDecision.test.tsx, apps/web/src/lib/workflow/delivery-rounds.test.ts, apps/web/src/lib/projections-agree.test.tsx, packages/workflow-kernel/src/escalation-brief.test.ts, apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx, apps/web/src/lib/task-view.test.ts, apps/web/src/lib/task-sections.test.ts, apps/web/src/lib/task-live-view.test.ts, apps/web/src/lib/mission-board.test.ts]
+verified_by: [apps/web/src/lib/task-timeline.test.ts, apps/web/src/lib/run-stall.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/mission-sibling-nav.test.ts, apps/web/src/lib/workflow/escalation-copy.test.ts, apps/web/src/components/EscalationDecision.test.tsx, apps/web/src/lib/workflow/delivery-rounds.test.ts, apps/web/src/lib/projections-agree.test.tsx, packages/workflow-kernel/src/escalation-brief.test.ts, apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx, apps/web/src/lib/task-view.test.ts, apps/web/src/lib/task-sections.test.ts, apps/web/src/lib/task-live-view.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/status-line.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskDetailsCard.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/RealTimeWorkerView.test.tsx, apps/web/src/lib/mission-board.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -130,8 +130,8 @@ Phone (390px) and desktop use one reading column, at most 840px wide, never stre
 
 | Phase | First content after the header | Following content |
 | --- | --- | --- |
-| Builder running | Live Now line, elapsed time, turns, files, lines, activity strip, milestones; Steer, Pause and Stop in that block | Questions and current checks, Details |
-| Builder stalled (no reported progress for 30 minutes) | The same live block, flagged `Running 1h 12m · no progress for 48m` in amber, the Now line's age in amber; Restart and Stop, Steer kept | As running |
+| Builder running | `Running 12m` under the title, then one live block: the Now line and its age (body text, one line, then the file path), elapsed, turns, files and lines inline, the activity strip, the latest three milestones, and Steer, Pause and Stop in one row | Questions and current checks, Details (open), Run |
+| Builder stalled (no reported progress for 30 minutes) | The status line reads `Running 1h 12m · no progress for 48m` in amber, the Now line's age in amber; the row is Steer, Restart and Stop | As running |
 | Builder stopped | Status, then one timeline grouped Build, Verify, Deliver | Two-line summary, PR link, checks, Run, Details |
 
 `buildTaskTimeline` is pure and uses stored delivery facts. Kernel review rounds
@@ -153,11 +153,18 @@ milestone, else the run's start; a heartbeat is not progress. Only a `running`
 worker without an open question can stall. Restart re-queues the task
 (`/api/tasks/[id]/reassign?force=true`).
 
+While a builder runs, the status line under the title (`runningStatusLine`,
+`TaskStatusLine`) carries the state, so the `In progress` verdict row is not
+repeated below. The live block's Build/Verify/Deliver evidence (`RunEvidenceRail`)
+sits behind Run.
+
 Run, initially collapsed, holds the archived live view and milestones, session
 records, technical report, raw output, evidence files, artifacts, PR diagnostics,
-runner, branch and model. Details, also collapsed, shows what the task fixes
-(spec and criteria with their standing), dependencies by name, the tasks it blocks,
-attempt count and time, description and other reference facts. Dependents load for
+runner, branch and model. Before a task is merged, Details is an open card above
+Run (`TaskDetailsCard`): Fixes (criterion ids and the spec by name), Waits on and
+Blocks by task name, and Attempt (with its time once stopped). The description
+and other reference facts stay one tap away under More. A merged task keeps
+these facts in its collapsed Details, with each criterion's standing. Dependents load for
 every task state in the second batch. There is no mission strip, sibling navigation,
 Execution Plan row, related-attempt list or separate Communication section. Empty
 loop histories and error evidence of unknown effect do not render.
