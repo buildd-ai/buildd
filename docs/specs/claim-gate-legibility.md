@@ -264,7 +264,7 @@ pause: it also blocks the interactive claim, so it was never a fit for that.
 **Code surface**:
 - Per-gate modules: `apps/web/src/app/api/workers/claim/` —
   `connector-gate.ts`, `deferred-gate.ts`, `deps-gate.ts`, `held-gate.ts`,
-  `mission-budget-gate.ts`, `mission-concurrency-gate.ts`, `subject-gate.ts`.
+  `mission-budget-gate.ts`, `concurrency-gate.ts`, `subject-gate.ts`.
   Each holds its SQL predicate and its per-task check
   side by side, so the claim route and `/start` cannot drift (rule CG-4). There
   is deliberately no aggregate `lib/claim-gates.ts` — it was a hand-mirrored

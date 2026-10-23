@@ -14,7 +14,7 @@ import { makeWaitingReason, overlapAreas, orderWaitingReasons, type WaitingReaso
 import { isDispatchedReview } from '@/lib/read-only-task';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { splitOwnOpenPrs } from './claim-plan-input';
-import { checkMissionConcurrencyGate } from './mission-concurrency-gate';
+import { checkMissionConcurrencyGate } from './concurrency-gate';
 import { findHoldingLease, findHoldingOpenPr, workspaceHardSurface } from './overlap-policy';
 
 /**

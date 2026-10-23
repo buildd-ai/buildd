@@ -2,7 +2,7 @@
  * Tests for the mission concurrency gate (missions.maxConcurrentTasks).
  */
 import { describe, it, expect } from 'bun:test';
-import { checkMissionConcurrencyGate } from './mission-concurrency-gate';
+import { checkMissionConcurrencyGate } from './concurrency-gate';
 
 describe('checkMissionConcurrencyGate', () => {
   it('allows when mission has no maxConcurrentTasks', () => {
