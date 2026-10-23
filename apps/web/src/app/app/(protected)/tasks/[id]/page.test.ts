@@ -333,6 +333,21 @@ describe('navigation task hierarchy (R-7 to R-10)', () => {
   });
 });
 
+// Spec e28018c2 R-6, R-9, AC-16: dependencies and dependents cross workspaces,
+// and both lists go through the one per-viewer resolver.
+describe('cross-workspace dependencies on the task page', () => {
+  it('reads dependents from every workspace, not just this task\'s', () => {
+    const q = pageSource.slice(pageSource.indexOf('const dependentsQuery'), pageSource.indexOf('const dependentsQuery') + 400);
+    expect(q).not.toContain('eq(tasks.workspaceId');
+  });
+  it('resolves both lists for the viewer and renders the hidden count', () => {
+    expect(pageSource).toContain('resolveDependencyHolders(reachScope, depTaskIds)');
+    expect(pageSource).toContain('resolveDependencyHolders(reachScope, dependentRows.map(d => d.id))');
+    expect(pageSource).toContain('blocksList(dependentRows, dependentReach)');
+    expect(pageSource).toContain('data-testid="task-unblocked-hidden"');
+  });
+});
+
 describe('reading width (Navigation R-21)', () => {
   it('keeps the content column at most 840px', () => {
     expect(pageSource).toMatch(/className="max-w-\[840px\] w-full" data-testid="task-content-column"/);

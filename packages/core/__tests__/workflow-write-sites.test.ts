@@ -81,6 +81,10 @@ const KERNEL_ENTRY_POINTS = new Set(['kernel-client', 'command-api', 'command-ke
   // S4a review: the fast heal's due-queue (kernel-heal.ts). Its tick calls the floor pass for named
   // deliveries (seam functions only), like kernel-floor; it never imports the reducer.
   'kernel-heal',
+  // workflow-kernel-library.md §3 trunk recovery: the trunk incidents' recheck queue (trunk-recheck.ts). The
+  // webhook marks a branch's unresolved incidents due (one SELECT, a Redis write); the recheck itself is the
+  // seam's, run by the control plane's tick. It issues no command and writes no kernel table.
+  'trunk-recheck',
   // S4b: the one automated mission-completion write, compare-and-set on the mission's delivery records
   // (a fingerprint read and one UPDATE of missions; it reads the epochs and writes no kernel table).
   'mission-completion-write',

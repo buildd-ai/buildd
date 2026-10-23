@@ -132,6 +132,28 @@ describe('classifyMigration', () => {
     expect(r.requiredAcks).not.toContain('mission-dep:m2');
   });
 
+  // Spec e28018c2 R-15 / AC-15: a task dependency between this workspace and
+  // another of the team would cross teams after the move.
+  it('lists a cross-workspace task dependency, in either direction, as WILL_BREAK', () => {
+    const r = classifyMigration(snap({
+      crossWorkspaceTaskDeps: [
+        { dependentId: 't-b', dependentTitle: 'Write the docs', upstreamId: 't-a', upstreamTitle: 'Ship the API' },
+        { dependentId: 't-c', dependentTitle: 'Release', upstreamId: 't-d', upstreamTitle: 'Migrate' },
+      ],
+    }), at);
+    const g = r.groups.find(x => x.entity === 'Cross-workspace task dependencies')!;
+    expect(g.disposition).toBe('WILL_BREAK');
+    expect(g.count).toBe(2);
+    expect(g.items![0].label).toBe('Task "Write the docs" depends on "Ship the API" in another workspace; the dependency is removed');
+    expect(r.requiredAcks).toContain('task-dep:t-b:t-a');
+    expect(r.requiredAcks).toContain('task-dep:t-c:t-d');
+  });
+
+  it('no cross-workspace task dependency adds no group', () => {
+    const r = classifyMigration(snap(), at);
+    expect(r.groups.some(x => x.entity === 'Cross-workspace task dependencies')).toBe(false);
+  });
+
   it('PRECHECK FAIL when the workspace GitHub installation is missing/suspended', () => {
     const r = classifyMigration(snap({
       workspace: { id: 'ws-1', name: 'Cue', teamId: 'team-src', githubInstallationId: 'inst-1' },
