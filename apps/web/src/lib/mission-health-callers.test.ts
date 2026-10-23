@@ -86,15 +86,14 @@ describe('role page counts live agents from worker statuses', () => {
   });
 });
 
-describe('mission detail header chip reads the shared state view', () => {
+describe('mission detail display state reads the shared state view', () => {
   const src = readFileSync(join(APP_ROOT, 'app', '(protected)', 'missions', '[id]', 'page.tsx'), 'utf8');
 
-  it('display state and chip come from the explain answer, with the old chain only as fallback', () => {
+  it('display state comes from the explain answer, with the old chain only as fallback', () => {
     expect(src).toContain('missionAnswer?.displayState ??');
-    expect(src).toContain('missionAnswer?.chip ??');
   });
 
-  it('the explain answer is awaited before the chip is derived', () => {
-    expect(src.indexOf('explainMission(id)')).toBeLessThan(src.indexOf('const stateChip'));
+  it('the explain answer is awaited before the display state is derived', () => {
+    expect(src.indexOf('explainMission(id)')).toBeLessThan(src.indexOf('const displayState'));
   });
 });

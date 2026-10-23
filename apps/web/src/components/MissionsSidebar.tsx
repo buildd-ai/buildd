@@ -6,6 +6,7 @@ import UserAvatarMenu from './UserAvatarMenu';
 import ScopeSwitcher from './ScopeSwitcher';
 import { isAccountRoute, isNavActive } from '@/lib/nav-active';
 import { NAV_ITEMS } from '@/lib/nav-config';
+import { useNavSection } from '@/lib/nav-section-store';
 import { useHomeAttentionCount } from '@/lib/home-attention-store';
 
 interface SidebarTeam {
@@ -30,6 +31,7 @@ interface MissionsSidebarProps {
  */
 export default function MissionsSidebar({ userInitial = 'M', teams = [], currentTeamId = null, workspaces = [] }: MissionsSidebarProps) {
   const pathname = usePathname();
+  const claimed = useNavSection();
   const homeCount = useHomeAttentionCount() ?? 0;
 
   return (
@@ -38,7 +40,7 @@ export default function MissionsSidebar({ userInitial = 'M', teams = [], current
 
       <nav aria-label="Primary" className="flex flex-col gap-0.5 px-2">
         {NAV_ITEMS.map((item) => {
-          const active = isNavActive(pathname, item.href);
+          const active = isNavActive(pathname, item.href, claimed);
           const badge = item.href === '/app/home' && homeCount > 0 ? homeCount : null;
           return (
             <Link

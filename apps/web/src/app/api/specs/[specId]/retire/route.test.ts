@@ -13,6 +13,7 @@ mock.module('@/lib/specs/retire', () => ({
   retireSpec: async (c: unknown, _id: string, input: { reason: unknown; supersededBy?: unknown }) => {
     seen.push(input);
     if (!isPerson(c)) return { ok: false, status: 403, error: 'a person retires' };
+    if ((c as { kind: string }).kind === 'account') return { ok: true, spec: { id: 's1', status: 'draft' }, pending: { op: 'retire', confirmUrl: 'https://buildd.dev/app/specs/s1/retire?request=tok', to: 'retired' } };
     if (typeof input.reason !== 'string' || input.reason.length < 10) return { ok: false, status: 400, error: 'reason is required' };
     return { ok: true, spec: { id: 's1', status: input.supersededBy ? 'superseded' : 'retired' } };
   },
@@ -29,9 +30,11 @@ describe('POST|DELETE /api/specs/[specId]/retire', () => {
     expect([res.status, (await res.json()).spec.status]).toEqual([200, 'superseded']);
     expect(seen.at(-1)).toEqual({ reason: 'a duplicate import', supersededBy: 's2' });
   });
-  it('a person\'s own OAuth session retires too', async () => {
+  it('a person\'s own OAuth session gets 202 with the confirm link, and nothing retired', async () => {
     caller = { kind: 'account', account: { id: 'a1', sessionUserId: 'u1' } };
-    expect((await POST(req('POST', { reason: 'a duplicate import' }), { params })).status).toBe(200);
+    const res = await POST(req('POST', { reason: 'a duplicate import' }), { params });
+    const body = await res.json();
+    expect([res.status, body.spec.status, body.pending.confirmUrl]).toEqual([202, 'draft', 'https://buildd.dev/app/specs/s1/retire?request=tok']);
   });
   it('an agent run or API key is a 403 on both; no caller is a 401', async () => {
     for (const c of [{ kind: 'account', account: { id: 'a1', taskScope: { taskId: 't1', workspaceId: 'w1' } } }, { kind: 'account', account: { id: 'a1' } }]) {

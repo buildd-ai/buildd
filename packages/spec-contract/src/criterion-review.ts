@@ -66,14 +66,73 @@ export function wordDiff(a: string, b: string): WordOp[] {
     while (i < x.length) raw.push({ op: '-', text: x[i++]! });
     while (j < y.length) raw.push({ op: '+', text: y[j++]! });
   }
-  // Runs of one op join into one entry.
-  const out: WordOp[] = [];
+  return tidyWordOps(raw);
+}
+
+const hasWord = (s: string) => /[\p{L}\p{N}]/u.test(s);
+const wordCount = (s: string) => s.match(/[\p{L}\p{N}_'’]+/gu)?.length ?? 0;
+/** An unchanged stretch too small to be worth a break in a changed run: no words, or one short word. */
+const isBridge = (s: string) => !hasWord(s) || (wordCount(s) === 1 && s.trim().length <= 4);
+
+/**
+ * Clean up a raw word diff for reading ("Reviewing a spec revision" R-17):
+ * a changed run is never whitespace or punctuation alone, two changed runs
+ * with one short unchanged word (or none) between them become one, and a
+ * changed point is always one removed run then one added run. The kept and
+ * added ops still join to the new text; the removed and kept ops join to the
+ * old text except for whitespace and punctuation differences, which are not marked.
+ */
+export function tidyWordOps(raw: readonly WordOp[]): WordOp[] {
+  // Each entry: unchanged text, or a changed point with its removed and added text.
+  type Seg = { eq: string } | { del: string; add: string };
+  let segs: Seg[] = [];
   for (const o of raw) {
+    const last = segs[segs.length - 1];
+    if (o.op === '=') {
+      if (last && 'eq' in last) last.eq += o.text; else segs.push({ eq: o.text });
+    } else {
+      const point = last && !('eq' in last) ? last : null;
+      const t = point ?? { del: '', add: '' };
+      if (o.op === '-') t.del += o.text; else t.add += o.text;
+      if (!point) segs.push(t);
+    }
+  }
+  // Absorb small unchanged stretches between two changed points.
+  for (let again = true; again;) {
+    again = false;
+    const next: Seg[] = [];
+    for (let i = 0; i < segs.length; i++) {
+      const s = segs[i]!; const prev = next[next.length - 1]; const after = segs[i + 1];
+      if ('eq' in s && prev && !('eq' in prev) && after && !('eq' in after) && isBridge(s.eq)) {
+        prev.del += s.eq + after.del; prev.add += s.eq + after.add;
+        i++; again = true;
+      } else next.push(s);
+    }
+    segs = next;
+  }
+  const out: WordOp[] = [];
+  const push = (op: WordOp['op'], text: string) => {
+    if (!text) return;
     const last = out[out.length - 1];
-    if (last && last.op === o.op) last.text += o.text;
-    else out.push({ ...o });
+    if (last && last.op === op) last.text += text; else out.push({ op, text });
+  };
+  for (const s of segs) {
+    if ('eq' in s) push('=', s.eq);
+    else if (!hasWord(s.del) && !hasWord(s.add)) push('=', s.add || s.del);
+    else { push('-', s.del); push('+', s.add); }
   }
   return out;
+}
+
+/** True when more than a third of the words changed: read it as Was and Now, not as inline marks (R-18). */
+export function mostlyRewritten(words: readonly WordOp[]): boolean {
+  let changed = 0; let total = 0;
+  for (const w of words) {
+    const n = wordCount(w.text);
+    total += n;
+    if (w.op !== '=') changed += n;
+  }
+  return total > 0 && changed * 3 > total;
 }
 
 const idParts = (id: string) => {
