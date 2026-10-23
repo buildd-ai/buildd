@@ -26,6 +26,20 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
 }
 
+/** Windows can keep a temp repo open for a moment after git or sh exits (EBUSY), so teardown retries briefly. */
+function removeDir(path: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      rmSync(path, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (attempt >= 20 || !['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(code ?? '')) throw err;
+      Bun.sleepSync(100);
+    }
+  }
+}
+
 /** A repo whose `feature` branch and `main` both changed `bun.lock` (and optionally `src.ts`). */
 function conflictedRepo(opts: { alsoRealConflict?: boolean } = {}): string {
   const dir = mkdtempSync(join(tmpdir(), 'merge-drivers-'));
@@ -121,7 +135,7 @@ describe('planMergeDrivers', () => {
 
 describe('registerMergeDrivers + mergeBaseWithDerivedFiles (real git)', () => {
   let dir: string;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+  afterEach(() => { if (dir) removeDir(dir); });
 
   test('derived-only conflict: merged, regenerated and committed with no agent work left', async () => {
     dir = conflictedRepo();
@@ -219,7 +233,7 @@ describe('registerMergeDrivers + mergeBaseWithDerivedFiles (real git)', () => {
 
 describe('mergiraf (real git)', () => {
   let dir: string;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+  afterEach(() => { if (dir) removeDir(dir); });
 
   function mergirafPath(): string | null {
     try {
@@ -273,8 +287,8 @@ describe('mergeBaseWithDerivedFiles: structural resolutions and slow merges (rea
   let dir: string;
   let bin: string;
   afterEach(() => {
-    if (dir) rmSync(dir, { recursive: true, force: true });
-    if (bin) rmSync(bin, { recursive: true, force: true });
+    if (dir) removeDir(dir);
+    if (bin) removeDir(bin);
   });
 
   /** A stand-in for mergiraf: optionally slow, takes theirs, reports a solve on stderr like the real one. */
@@ -371,8 +385,8 @@ describe('finishDerivedMerge (real git, bare remote)', () => {
   let dir: string;
   let remote: string;
   afterEach(() => {
-    if (dir) rmSync(dir, { recursive: true, force: true });
-    if (remote) rmSync(remote, { recursive: true, force: true });
+    if (dir) removeDir(dir);
+    if (remote) removeDir(remote);
   });
 
   /** A derived-only conflict merged by the runner, with `feature` tracking a bare origin. */
@@ -430,7 +444,7 @@ describe('finishDerivedMerge (real git, bare remote)', () => {
       expect(finish.error).toBeTruthy();
       expect(git(remote, 'rev-parse', 'refs/heads/feature')).toBe(theirs);
     } finally {
-      rmSync(other, { recursive: true, force: true });
+      removeDir(other);
     }
   });
 
