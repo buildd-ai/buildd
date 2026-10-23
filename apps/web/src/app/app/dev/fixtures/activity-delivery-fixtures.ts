@@ -208,6 +208,41 @@ export function activityContextFixture() {
 }
 
 /**
+ * Every state Activity's rows can carry, on one screen (`&data=states`, spec
+ * 9430a28f R-7 visual QA): a new mission with its New marker, the five-generation
+ * chain folded, a recorded verification that passed, one that failed, one gone
+ * stale on a newer approved revision and one never judged, work filed by you,
+ * work for a teammate and unattributed work.
+ */
+export function activityStatesFixture() {
+  const claim = (outcome: 'verified' | 'fail' | 'unverified', revision: number, approved: number, verdict: 'pass' | 'fail' | null, sha: string | null) =>
+    verificationClaim({
+      specId: 'fx-spec', revision, outcome, currentHeadSha: H2,
+      criteria: [
+        { criterionId: 'R-1', text: 'A scheduled export emails a download link.', verdict, stale: false, headSha: sha },
+        { criterionId: 'AC-1', text: 'A failed send retries once, then tells the owner.', verdict: verdict === 'fail' ? 'pass' : verdict, stale: false, headSha: sha },
+      ],
+    }, { title: 'Billing exports', approvedRevision: approved }, verdict ? Date.parse(at('11:03')) : null);
+  const building = (id: string, title: string, over: Partial<ActivityTaskInput>) =>
+    row(id, title, null, { status: 'in_progress', createdAt: at('09:20'), updatedAt: at('11:06'), workers: [live('runner-v', '10:40')], ...over });
+  const tasks = [
+    ...activityContextFixture().tasks,
+    building('fx-ver-pass', 'feat: export retries once on a failed send', { verification: claim('verified', 2, 2, 'pass', H2), attribution: filedByYou }),
+    building('fx-ver-fail', 'feat: export link expires after a day', { verification: claim('fail', 2, 2, 'fail', H2), attribution: forAda }),
+    building('fx-ver-stale', 'feat: export email names the workspace', { verification: claim('verified', 1, 2, 'pass', H1) }),
+    building('fx-ver-none', 'feat: export footer links to settings', { verification: claim('unverified', 2, 2, null, null) }),
+  ];
+  const ctx = activityContextFixture();
+  const args = { tasks, missions: ctx.missions, rules };
+  return {
+    tasks,
+    missions: ctx.missions,
+    now: buildActivityNow({ ...args, now: ACTIVITY_FIXTURE_NOW }),
+    history: buildActivityHistory({ ...args, creations: ctx.missions }),
+  };
+}
+
+/**
  * A busy workspace's 30 days, shaped like real data (`&data=scale`): more
  * roots than the loader's recent window, mostly fresh completed work, retries
  * that landed and retries that failed, cancelled work (standalone and in a

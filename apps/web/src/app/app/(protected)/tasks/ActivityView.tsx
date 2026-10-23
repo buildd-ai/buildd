@@ -17,8 +17,10 @@
  * where none was recorded (R-6). Who work is for shows only from recorded
  * lineage, else "Unattributed"; the identity filters appear only when the
  * page says they can be answered, and never hide unattributed work from All (R-4).
+ * A live update keeps what is open, what has focus and where the reader is,
+ * and shows each delivery once (R-7, ./stable-live.ts).
  */
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { TERMS } from '@buildd/shared';
 import { DeliveryEvidence, TONE_TEXT } from '@/components/delivery/DeliveryParts';
@@ -44,6 +46,7 @@ import LocalTime from './LocalTime';
 import { HISTORY_PAGE, groupEpisodesByDay } from './history-days';
 import { displayTaskTitle } from '@/lib/task-title';
 import { TaskTitle } from '@/components/tasks/TaskTitle';
+import { ExpandedContext, useExpanded, useExpandedSet, useKeepFocus, useScrollAnchor } from './stable-live';
 
 export type ActivityMode = 'now' | 'history';
 
@@ -136,10 +139,15 @@ export default function ActivityView({ mode, now, history, nowMs, hrefs, mission
   const who = identityFilters ? whoPicked : 'all';
   // A History-only outcome stays selected there, but cannot hide all of Now.
   const nowFilterOutcome = nowOutcome === 'landed' || nowOutcome === 'you' ? 'any' : nowOutcome;
-  const groups = useMemo(() => filterNow(now, { scope: initialFilters?.scope ?? 'all', outcome: nowFilterOutcome, who }), [now, initialFilters?.scope, nowFilterOutcome, who]);
+  const groups = useMemo(() => onePerRow(filterNow(now, { scope: initialFilters?.scope ?? 'all', outcome: nowFilterOutcome, who })), [now, initialFilters?.scope, nowFilterOutcome, who]);
   const nowHidden = hiddenUnattributed(now.groups.flatMap(g => [...g.rows, ...g.hiddenWaitingRows]), who);
+  const expanded = useExpandedSet(openRowIds.map(id => `ev:${id}`));
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useKeepFocus(scrollRef);
+  useScrollAnchor(scrollRef);
   return (
-    <div className="h-full overflow-y-auto">
+    <ExpandedContext.Provider value={expanded}>
+    <div ref={scrollRef} data-testid="activity-scroll" className="h-full overflow-y-auto">
       <div data-testid="activity-view" data-mode={mode} className="mx-auto max-w-[1000px] px-4 pb-10 pt-14 md:px-6 md:pt-8">
         {missionFilter && (
           <nav aria-label="Breadcrumb" className="mb-2 flex flex-wrap items-center gap-x-2 text-meta text-text-muted">
@@ -196,14 +204,34 @@ export default function ActivityView({ mode, now, history, nowMs, hrefs, mission
               ? (now.groups.length === 0
                 ? <Empty text="Nothing in motion. Finished work is in History." />
                 : <FilteredEmpty text="Nothing in motion matches these filters." available={`${now.groups.reduce((n, g) => n + g.rows.length + g.moreWaiting, 0)} deliveries in Now`} onClear={() => { setNowOutcome('any'); setWho('all'); }} />)
-              : groups.map(g => <NowGroupView key={g.missionId ?? '__standalone__'} group={g} nowMs={nowMs} openRowIds={openRowIds} />)}
+              : groups.map(g => <NowGroupView key={g.missionId ?? '__standalone__'} group={g} nowMs={nowMs} />)}
           </>
         ) : (
           <HistoryView history={history} nowMs={nowMs} historyReach={historyReach} outcome={nowOutcome} onOutcomeChange={setNowOutcome} who={who} onWhoChange={identityFilters ? setWho : null} />
         )}
       </div>
     </div>
+    </ExpandedContext.Provider>
   );
+}
+
+/**
+ * One card per delivery, whatever the rows say: a delivery read twice, or
+ * caught mid-move between groups, keeps its first place (the groups arrive in
+ * attention order) and is dropped from any later one.
+ */
+export function onePerRow(groups: NowGroup[]): NowGroup[] {
+  const seen = new Set<string>();
+  const once = (rows: NowRow[]) => rows.filter(r => (seen.has(r.id) ? false : (seen.add(r.id), true)));
+  return groups
+    .map(g => {
+      const rows = once(g.rows);
+      const hiddenWaitingRows = once(g.hiddenWaitingRows);
+      return rows.length === g.rows.length && hiddenWaitingRows.length === g.hiddenWaitingRows.length
+        ? g
+        : { ...g, rows, hiddenWaitingRows, moreWaiting: Math.min(g.moreWaiting, hiddenWaitingRows.length) };
+    })
+    .filter(g => g.rows.length > 0 || g.hiddenWaitingRows.length > 0);
 }
 
 /**
@@ -336,7 +364,9 @@ const NewMarker = () => <span data-testid="activity-new" className="shrink-0"><T
 const transitionText = (t: Transition, nowMs: number) => `${t.text} · ${age(t.at, nowMs) === 'now' ? 'just now' : `${age(t.at, nowMs)} ago`}`;
 const createdText = (at: number, nowMs: number) => `created ${age(at, nowMs) === 'now' ? 'just now' : `${age(at, nowMs)} ago`}`;
 
-function NowGroupView({ group, nowMs, openRowIds }: { group: NowGroup; nowMs: number; openRowIds: readonly string[] }) {
+function NowGroupView({ group, nowMs }: { group: NowGroup; nowMs: number }) {
+  const groupKey = group.missionId ?? 'standalone';
+  const [waitingOpen, setWaitingOpen] = useExpanded(`wait:${groupKey}`);
   const rowProps = { nowMs, groupNew: group.isNew };
   // A mission's group is one outcome: name the task that moved last, unless it is the only row.
   const current = group.missionId && group.current && group.rows.length > 1 ? group.current : null;
@@ -359,20 +389,22 @@ function NowGroupView({ group, nowMs, openRowIds }: { group: NowGroup; nowMs: nu
           {current.transition && <> · {transitionText(current.transition, nowMs)}</>}
         </p>
       )}
-      {group.rows.map(r => <NowRowView key={r.id} row={r} {...rowProps} startOpen={openRowIds.includes(r.id)} />)}
+      {group.rows.map(r => <NowRowView key={r.id} row={r} {...rowProps} />)}
       {group.moreWaiting > 0 && (
         group.href
           ? <Link href={group.href} className="flex min-h-11 items-center text-meta text-text-muted">+{group.moreWaiting} more waiting ›</Link>
-          : <Disclosure summary={`+${group.moreWaiting} more waiting`}>
-              {group.hiddenWaitingRows.map(r => <NowRowView key={r.id} row={r} {...rowProps} startOpen={openRowIds.includes(r.id)} />)}
-            </Disclosure>
+          : <div data-focus-key={`wait:${groupKey}`}>
+              <Disclosure summary={`+${group.moreWaiting} more waiting`} open={waitingOpen} onOpenChange={setWaitingOpen}>
+                {group.hiddenWaitingRows.map(r => <NowRowView key={r.id} row={r} {...rowProps} />)}
+              </Disclosure>
+            </div>
       )}
     </section>
   );
 }
 
-function NowRowView({ row, nowMs, startOpen, groupNew }: { row: NowRow; nowMs: number; startOpen: boolean; groupNew: boolean }) {
-  const [open, setOpen] = useState(startOpen);
+function NowRowView({ row, nowMs, groupNew }: { row: NowRow; nowMs: number; groupNew: boolean }) {
+  const [open, setOpen] = useExpanded(`ev:${row.id}`);
   const expandable = row.evidence.length > 0;
   const rounds = row.delivery.repairRounds;
   const state = lifecycleState(row.delivery.kind);
@@ -398,21 +430,20 @@ function NowRowView({ row, nowMs, startOpen, groupNew }: { row: NowRow; nowMs: n
       <span className="col-span-2 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-meta text-text-muted">
         {/* New once: on the mission's group when the mission is new, else on the task. */}
         {row.isNew && !groupNew && <NewMarker />}
-        {row.transition && <span data-testid="activity-transition">{transitionText(row.transition, nowMs)}</span>}
-        {row.transition && <span aria-hidden="true">·</span>}
-        <span data-testid="activity-created">{createdText(row.createdAt, nowMs)}</span>
-        <span aria-hidden="true">·</span>
+        {/* A separator ends the item before it, so a wrapped line never starts with one. */}
+        {row.transition && <span><span data-testid="activity-transition">{transitionText(row.transition, nowMs)}</span><span aria-hidden="true"> ·</span></span>}
+        <span className="whitespace-nowrap"><span data-testid="activity-created">{createdText(row.createdAt, nowMs)}</span><span aria-hidden="true"> ·</span></span>
         <AttributionText attribution={row.attribution} />
       </span>
     </>
   );
   const grid = 'grid w-full grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 py-2.5 text-left min-h-14';
   return (
-    <div data-testid="activity-now-row" data-row={row.id} data-kind={row.delivery.kind} className="border-b border-border-default">
+    <div data-testid="activity-now-row" data-row={row.id} data-kind={row.delivery.kind} data-scroll-anchor={`row:${row.id}`} className="border-b border-border-default">
       {expandable ? (
-        <button type="button" aria-expanded={open} aria-controls={`ev-${row.id}`} onClick={() => setOpen(o => !o)} className={grid}>{head}</button>
+        <button type="button" data-focus-key={`row:${row.id}`} aria-expanded={open} aria-controls={`ev-${row.id}`} onClick={() => setOpen(!open)} className={grid}>{head}</button>
       ) : (
-        <Link href={row.href} className={grid}>{head}</Link>
+        <Link href={row.href} data-focus-key={`row:${row.id}`} className={grid}>{head}</Link>
       )}
       {row.quietHold && (
         <Link href={row.href} data-testid="activity-release-slot" className="mb-2 inline-flex min-h-11 items-center font-mono text-meta text-accent-text md:min-h-0">Release slot ›</Link>
@@ -422,8 +453,8 @@ function NowRowView({ row, nowMs, startOpen, groupNew }: { row: NowRow; nowMs: n
           {repairs.map((r, i) => <RepairChild key={i} entry={r} />)}
         </ul>
       )}
-      {row.children.length > 0 && <DerivedChildren items={row.children} />}
-      {row.verification && <VerificationView claim={row.verification} />}
+      {row.children.length > 0 && <DerivedChildren items={row.children} openKey={`der:${row.id}`} />}
+      {row.verification && <VerificationView claim={row.verification} openKey={`ver:${row.id}`} />}
       {expandable && open && (
         <div id={`ev-${row.id}`} data-testid="activity-evidence" className="pb-3">
           {row.evidence.filter(e => e.type !== 'repair').map((e, i) => <DeliveryEvidence key={i} entry={e} />)}
@@ -446,7 +477,8 @@ function AttributionText({ attribution }: { attribution: Attribution | null | un
  * is read on, then the criteria and their evidence commits on demand. Only
  * rendered when an outcome was recorded; a merged PR alone never gets one.
  */
-function VerificationView({ claim }: { claim: VerificationClaim }) {
+function VerificationView({ claim, openKey }: { claim: VerificationClaim; openKey: string }) {
+  const [open, setOpen] = useExpanded(openKey);
   const rev = claim.approvedRevision ?? claim.revision;
   const summary = (
     <span className="min-w-0 break-words text-meta text-text-muted">
@@ -456,8 +488,8 @@ function VerificationView({ claim }: { claim: VerificationClaim }) {
     </span>
   );
   return (
-    <div data-testid="activity-verification" data-state={claim.state} className="mb-2">
-      <Disclosure summary={summary}>
+    <div data-testid="activity-verification" data-state={claim.state} data-focus-key={openKey} className="mb-2">
+      <Disclosure summary={summary} open={open} onOpenChange={setOpen}>
         <div className="ml-3 border-l border-border-strong pl-3 text-meta">
           <p className="text-text-secondary">{claim.line}</p>
           <ul className="mt-1">
@@ -481,13 +513,14 @@ function VerificationView({ claim }: { claim: VerificationClaim }) {
  * Reviews and repairs derived from a task, every generation, folded beneath it:
  * each links to its own task, to the task it was spawned from and to the mission.
  */
-function DerivedChildren({ items }: { items: readonly DerivedChild[] }) {
+function DerivedChildren({ items, openKey }: { items: readonly DerivedChild[]; openKey: string }) {
+  const [open, setOpen] = useExpanded(openKey);
   const reviews = items.filter(c => c.role === 'review').length;
   const repairs = items.length - reviews;
   const parts = [reviews > 0 && count(reviews, 'review', 'reviews'), repairs > 0 && count(repairs, 'repair', 'repairs')].filter(Boolean).join(' · ');
   return (
-    <div data-testid="activity-derived" className="mb-2">
-      <Disclosure summary={<span className="text-meta text-text-muted">{count(items.length, 'attempt', 'attempts')}: {parts}</span>}>
+    <div data-testid="activity-derived" data-focus-key={openKey} className="mb-2">
+      <Disclosure summary={<span className="text-meta text-text-muted">{count(items.length, 'attempt', 'attempts')}: {parts}</span>} open={open} onOpenChange={setOpen}>
         <ol className="ml-3 border-l border-border-strong pl-3">
           {items.map(c => (
             <li key={c.id} data-testid="activity-derived-child" data-generation={c.generation} className="py-1 text-meta">
@@ -552,7 +585,7 @@ function EpisodeView({ episode, nowMs, lens }: { episode: Episode; nowMs: number
 }
 
 function DeliveryEpisodeView({ episode, nowMs, lens }: { episode: Episode; nowMs: number; lens: HistoryLens }) {
-  const [all, setAll] = useState(false);
+  const [all, setAll] = useExpanded(`steps:${episode.id}`);
   // Highlights leave detail out (a new head, a review that could not run), unless detail is all there is.
   const meaningful = episode.steps.filter(s => !s.detail);
   const told = lens === 'all' || meaningful.length === 0 ? episode.steps : meaningful;
@@ -560,9 +593,9 @@ function DeliveryEpisodeView({ episode, nowMs, lens }: { episode: Episode; nowMs
   const hidden = all || lens === 'all' ? 0 : Math.max(0, told.length - STEPS_SHOWN);
   const steps = told.slice(hidden);
   return (
-    <article data-testid="activity-episode" data-kind={episode.kind} className="border-b border-border-default py-3">
+    <article data-testid="activity-episode" data-kind={episode.kind} data-scroll-anchor={`ep:${episode.id}`} className="border-b border-border-default py-3">
       <div className="flex items-start justify-between gap-3">
-        <Link href={episode.href} className="line-clamp-2 min-w-0 break-words text-body font-semibold text-text-primary" title={episode.title}>{displayTaskTitle(episode.title)}</Link>
+        <Link href={episode.href} data-focus-key={`ep:${episode.id}`} className="line-clamp-2 min-w-0 break-words text-body font-semibold text-text-primary" title={episode.title}>{displayTaskTitle(episode.title)}</Link>
         <span className="shrink-0 whitespace-nowrap font-mono text-meta text-text-muted">{age(episode.at, nowMs)}</span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -572,7 +605,7 @@ function DeliveryEpisodeView({ episode, nowMs, lens }: { episode: Episode; nowMs
         <span aria-hidden="true" className="text-meta text-text-muted">·</span>
         <span className="text-meta text-text-muted"><AttributionText attribution={episode.attribution} /></span>
       </div>
-      {episode.verification && <div className="mt-1"><VerificationView claim={episode.verification} /></div>}
+      {episode.verification && <div className="mt-1"><VerificationView claim={episode.verification} openKey={`ver:${episode.id}`} /></div>}
       {hidden > 0 && (
         <button type="button" onClick={() => setAll(true)} className="mt-1 inline-flex min-h-11 items-center text-meta text-text-muted md:min-h-0">
           Show {hidden} earlier {hidden === 1 ? 'step' : 'steps'}

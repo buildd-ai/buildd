@@ -335,7 +335,8 @@ function foldDeliveries(tasks: readonly ActivityTaskInput[], rules: MissionTaskR
   const kids = new Map<string, ActivityTaskInput[]>();
   const lineage = new Map<string, { generation: number; parent: ActivityTaskInput }>();
   const roots: ActivityTaskInput[] = [];
-  for (const t of tasks) {
+  // A task read twice (overlapping reads) is one delivery: the last copy, the newer read, wins.
+  for (const t of byId.values()) {
     const { root, generation } = rootOf(t);
     if (generation === 0) { roots.push(t); continue; }
     kids.set(root.id, [...(kids.get(root.id) ?? []), t]);
