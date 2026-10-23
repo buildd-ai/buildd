@@ -32,6 +32,8 @@ export type PauseMode = 'session' | 'park' | 'none';
 export const PAUSED_ERROR_PREFIX = 'paused:';
 /** The full `worker.error` while paused: the prefix, then a sentence a person can read. */
 export const PAUSED_ERROR = `${PAUSED_ERROR_PREFIX} paused by a person; Resume continues the same session`;
+/** The full `worker.error` of an agent the runner paused to apply an update (update-drain.ts). */
+export const PAUSED_FOR_UPDATE_ERROR = `${PAUSED_ERROR_PREFIX} paused for a runner update; it continues in the same session after the update`;
 
 export const PAUSE_UNAVAILABLE_MESSAGE =
   "Pause isn't available on this runner (resumable runs are off), so the agent keeps running. Stop it, or let it finish.";
@@ -72,15 +74,17 @@ export function decidePause(input: {
 
 /**
  * Who paused it: a person (`p` in top, Pause on the dashboard, `buildd stop`),
- * or the runner itself when its service stopped or restarted (R-37), or when
- * it came back from a crash with the run's worktree and session intact.
+ * or the runner itself when its service stopped or restarted (R-37), when it
+ * came back from a crash with the run's worktree and session intact, or when
+ * it paused the run to apply an update (spec 47c97f48, R-2).
  */
-export type PauseCause = 'person' | 'shutdown' | 'crash';
+export type PauseCause = 'person' | 'shutdown' | 'crash' | 'update';
 
 const PAUSE_CONTEXT: Record<PauseCause, string> = {
   person: 'You paused this run. Its worktree, uncommitted work and session are kept.',
   shutdown: 'The runner stopped or restarted, so it paused this run. Its worktree, uncommitted work and session are kept.',
   crash: 'The runner stopped without warning while this run was going. Its worktree and session were still there, so it is paused, not failed.',
+  update: 'Paused for update: the runner paused this run to apply an update. Its worktree, uncommitted work and session are kept, and it continues in the same session after the update.',
 };
 
 export function pausedWaitingFor(cause: PauseCause = 'person', now: number = Date.now()): WaitingFor {

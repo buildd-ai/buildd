@@ -9,7 +9,7 @@
  * with `SlotLanes`' own `assignSlots` (components/fleet/slot-lanes-layout.ts),
  * so the slot a row describes here is the slot the lanes chart draws.
  */
-import { INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, questionSessionEnded, activeRunnerHold, executorDisplayName, isRecordedModelRoute, type RecordedModelRoute, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSlotCounts, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
+import { INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, questionSessionEnded, activeRunnerHold, runnerUpdateState, executorDisplayName, isRecordedModelRoute, type RecordedModelRoute, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSlotCounts, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
 import { assignSlots, fitLaneWindowStart } from '@/components/fleet/slot-lanes-layout';
 import { runnerIdentity, runnerNameFromUrl } from './runner-display';
 import { missionTaskHref } from './mission-task-href';
@@ -32,6 +32,8 @@ export interface FleetHeartbeatRow {
   lastHeartbeatAt: DateLike;
   /** What the runner last reported running. Decides an ephemeral run's share of capacity. */
   activeWorkerCount?: number | null;
+  /** The self-update it reported applying (@buildd/shared runner-update), when one. */
+  updateDrain?: unknown;
 }
 
 interface FleetGroup {
@@ -124,7 +126,7 @@ function barState(status: string): LaneBar['state'] {
   return 'done';
 }
 
-type CapacityBeat = Pick<FleetHeartbeatRow, 'maxConcurrentWorkers' | 'lastHeartbeatAt'> & Partial<Pick<FleetHeartbeatRow, 'localUiUrl' | 'environment' | 'activeWorkerCount'>>;
+type CapacityBeat = Pick<FleetHeartbeatRow, 'maxConcurrentWorkers' | 'lastHeartbeatAt'> & Partial<Pick<FleetHeartbeatRow, 'localUiUrl' | 'environment' | 'activeWorkerCount' | 'updateDrain'>>;
 
 /** The slots one runner advertises. */
 function advertisedSlots(hb: CapacityBeat): number {
@@ -156,7 +158,8 @@ export function fleetSlotCounts(
     configured += n;
     if (now - ms(hb.lastHeartbeatAt) > windowMs) continue;
     online += n;
-    if (!activeRunnerHold(hb.environment, now)) schedulable += n;
+    // Held, or updating (it claims nothing until it continues its paused agents): no free slots.
+    if (!activeRunnerHold(hb.environment, now) && !runnerUpdateState({ updateDrain: hb.updateDrain, lastHeartbeatAt: hb.lastHeartbeatAt }, now)) schedulable += n;
   }
   return { configured, online, schedulable, asOf: now, windowMs };
 }
@@ -332,7 +335,9 @@ export function buildFleetSnapshot(
     const routeCounts = new Map<RecordedModelRoute, number>();
     for (const w of g.workers) if (isRecordedModelRoute(w.modelRoute)) routeCounts.set(w.modelRoute, (routeCounts.get(w.modelRoute) ?? 0) + 1);
     const routes = [...routeCounts].map(([route, count]) => ({ route, count })).sort((a, b) => b.count - a.count || a.route.localeCompare(b.route));
-    runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: advertised, online, slots, ...(routes.length ? { routes } : {}), ...(hold ? { hold } : {}) });
+    // A self-update in progress (spec 47c97f48 R-5..R-7): updating, or stuck.
+    const update = g.hb ? runnerUpdateState({ updateDrain: g.hb.updateDrain, lastHeartbeatAt: g.hb.lastHeartbeatAt }, now) : null;
+    runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: advertised, online, slots, ...(routes.length ? { routes } : {}), ...(hold ? { hold } : {}), ...(update ? { update } : {}) });
   }
 
   runners.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));

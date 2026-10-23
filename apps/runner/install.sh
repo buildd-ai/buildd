@@ -575,6 +575,9 @@ esac
 # (it exits on its own within its grace); the launcher waits for that. In a
 # terminal the runner stays in the foreground: Ctrl-C reaches it directly.
 RUNNER_PID=""
+# Tells the runner a launcher restarts it after an update (exit 75); a runner
+# started by hand with no launcher has none and says so before an update restart.
+export BUILDD_LAUNCHER=buildd
 forward_signal() {
   [ -n "$RUNNER_PID" ] && kill -s "$1" "$RUNNER_PID" 2>/dev/null
 }

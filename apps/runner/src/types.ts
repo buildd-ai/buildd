@@ -184,6 +184,9 @@ export interface LocalWorker {
   toolInFlight?: boolean;
   // Set while a pause waits for the running tool to finish (pause.ts). Transient.
   pauseRequestedAt?: number;
+  // Persisted with pauseRequestedAt: 'update' when the runner asked for that
+  // pause to apply an update (update-drain.ts); absent for a person's pause.
+  pauseRequestedFor?: 'update';
   // Transient (never persisted): set by loadAllWorkers when it rewrites a
   // 'working' worker to 'error' because SDK sessions cannot survive a runner
   // restart. restoreWorkersFromDisk reads it to notify the server, which would
@@ -196,9 +199,10 @@ export interface LocalWorker {
    * and continues in its own session when the runner next starts (unless it
    * is on hold). `shutdown`: a service stop or restart paused it within the
    * grace; `crash`: the runner died with it running and the next start found
-   * its worktree and session intact (restart-resume.ts, R-37).
+   * its worktree and session intact (restart-resume.ts, R-37); `update`: the
+   * runner paused it to apply an update (update-drain.ts, spec 47c97f48).
    */
-  resumeOnStart?: 'shutdown' | 'crash';
+  resumeOnStart?: 'shutdown' | 'crash' | 'update';
   completedAt?: number;  // When task completed/errored (for sorting)
   milestones: Milestone[];
   currentAction: string;

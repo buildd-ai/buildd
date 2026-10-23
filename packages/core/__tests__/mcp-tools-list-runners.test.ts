@@ -319,13 +319,51 @@ describe('list_runners', () => {
         localUiUrl: 'http://localhost:8766', accountName: 'Runner A', activeWorkers: 4, maxConcurrent: 10,
         workspaceNames: [], updateAvailable: true, updating: false, trackedBranch: 'dev',
         updateDrain: { since: '2026-10-11T10:00:00.000Z', endsAt: '2026-10-11T11:00:00.000Z', busy: 4 },
-        lastUpdated: '2026-10-11T10:05:00.000Z',
+        // Beating: an older runner's drain (no phase) keeps its old line.
+        lastUpdated: new Date().toISOString(),
       }],
     });
     const res = await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx());
     const out = res.content[0].text;
     expect(out).toContain('claims halted: draining for update since 2026-10-11T10:00:00.000Z');
     expect(out).toContain('applies by 2026-10-11T11:00:00.000Z or when 4 busy worker(s) finish');
+  });
+
+  // Spec 47c97f48 (r1) AC-7: an update in progress names the version and the
+  // paused agents, and the runner has no free slots.
+  it('AC-7: reads "Updating to <version>" with the paused agents named, and no free slots', async () => {
+    const now = Date.now();
+    mockApi.mockResolvedValueOnce({
+      activeLocalUis: [{
+        localUiUrl: 'http://localhost:8766', accountName: 'Runner A', activeWorkers: 0, maxConcurrent: 12,
+        workspaceNames: [], trackedBranch: 'main', environment: { labels: { hostname: 'DESKTOP-1' } },
+        updateDrain: {
+          since: new Date(now - 120_000).toISOString(), endsAt: new Date(now - 60_000).toISOString(), busy: 0,
+          phase: 'updating', targetVersion: 'v0.377.0',
+          paused: [{ workerId: 'w-1', taskId: 't-1', title: 'Refactor the claim route', since: new Date(now - 100_000).toISOString() }],
+        },
+        lastUpdated: new Date(now - 20_000).toISOString(),
+      }],
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
+    expect(out).toContain('0 busy, no free slots (updating)');
+    expect(out).not.toContain('of 12 slots');
+    expect(out).toContain('Updating to v0.377.0 · Paused for update: "Refactor the claim route"');
+  });
+
+  it('AC-4: silent 15 minutes after the window\'s end reads "Update stuck on <runner> since <time>"', async () => {
+    const now = Date.now();
+    const lastBeat = new Date(now - 20 * 60_000).toISOString();
+    mockApi.mockResolvedValueOnce({
+      activeLocalUis: [{
+        localUiUrl: 'http://localhost:8766', accountName: 'Runner A', activeWorkers: 0, maxConcurrent: 12,
+        workspaceNames: [], trackedBranch: 'main', environment: { labels: { hostname: 'DESKTOP-1' } },
+        updateDrain: { since: lastBeat, endsAt: lastBeat, busy: 0, phase: 'updating', targetVersion: 'v0.377.0', paused: [{ workerId: 'w-1', taskId: null, title: 'Long task', since: lastBeat }] },
+        lastUpdated: lastBeat,
+      }],
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
+    expect(out).toContain(`Update stuck on DESKTOP-1 since ${new Date(Date.parse(lastBeat)).toISOString()} (1 paused agent waiting)`);
   });
 
   it('says a runner a person put on hold is on hold, since when and until when (R-35)', async () => {
