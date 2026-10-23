@@ -135,20 +135,64 @@ Unset `BUILDD_DISABLE_SANDBOX` for the sandbox route. The separate
 `BUILDD_ALLOW_REDUCED_ISOLATION=1` opt-in permits trusted-local work without full
 confinement; it never makes protected work eligible and is not a WSL setup step.
 
-## 5. Start one runner and check its own report
+## 5. Hand over from Windows and start at logon
 
-Before replacing an existing Windows runner, let its active work finish. On Windows,
-`buildd hold` prevents new claims; then close its foreground runner, or explicitly
-`buildd service uninstall` for its Scheduled Task. Do not terminate an active task
-just to migrate. Keep that service removed while using the WSL runner.
+Once step 4 passes, run this **from PowerShell** (the Windows launcher, `buildd.cmd`):
+
+```powershell
+buildd wsl migrate                    # one WSL2 distribution
+buildd wsl migrate --distro Ubuntu    # several: name the one with the runner
+```
+
+It checks first, then hands over in this order:
+
+1. **Check, changing nothing.** The runner inside the distribution must be
+   installed, logged in and pass `--verify-wsl` now, systemd must be running
+   there, and no runner may be running in the foreground inside it. If any of
+   these fails, migrate stops and says what to do, and the Windows runner keeps
+   working. It also asks before it enables linger for your Linux user
+   (`sudo loginctl enable-linger`, which needs your Linux password). Answering
+   no also stops it here.
+2. **Hold the Windows runner** (`buildd hold`) and wait for its running tasks to
+   finish, listing them. Nothing is stopped, paused or aborted. If you press
+   Ctrl+C to leave the wait, the Windows runner stays on hold and a rerun picks
+   up where you left off.
+3. **Install the runner service inside WSL** (`buildd service install`) and check
+   that it is running.
+4. **Register and start the `buildd wsl` logon task.** At each Windows logon it
+   starts the distribution and keeps it running (`wsl.exe --distribution <name>
+   --exec sleep infinity`). This is needed because WSL does not start a
+   distribution after a reboot and stops one that is idle. The task does not run
+   a runner itself.
+5. **Remove the Windows runner's Scheduled Task** (`buildd service uninstall`)
+   once it has checked again that nothing is running on that runner. If a Windows
+   runner was started in a terminal, migrate names it and waits for you to close it.
+
+If a step fails after the hold, the Windows runner stays on hold and keeps its
+Scheduled Task, so it is never removed while no WSL service is running. Fix what
+the message says and rerun `buildd wsl migrate`, or run `buildd resume` to put
+the Windows runner back to work. On a machine that has already been handed over,
+a rerun changes nothing and reports each step as done. `buildd wsl migrate --undo`
+removes the logon task. The service inside WSL stays until you run
+`buildd service uninstall` there.
+
+Then check **this WSL runner's** own report, not the old Windows runner's. In
+`buildd top` inside Linux and on the dashboard it should show `linux-wsl`, Claude
+`bwrap`, and a probe from its current process. If the running process reports a
+failure or no current probe, keep protected work blocked and find the cause. A
+successful standalone probe does not override a failure from the running runner.
+
+### By hand (fallback)
+
+If `buildd wsl migrate` is not available (an older runner), do the same steps
+yourself. Before replacing an existing Windows runner, let its active work finish.
+On Windows, `buildd hold` prevents new claims; then close its foreground runner,
+or explicitly `buildd service uninstall` for its Scheduled Task. Do not terminate
+an active task just to migrate. Keep that service removed while using the WSL runner.
 
 Inside Linux, start `buildd` in the foreground. Check its startup backend lines
-and `buildd top`: Claude must report confinement by bubblewrap. In the dashboard,
-check **this WSL runner's** current isolation report/heartbeat, not the old Windows
-runner: `linux-wsl`, Claude `bwrap`, and a probe from its current process. Confirm
-its configured workspace/task uses the Claude backend. If the running process
-reports failure or no current probe, keep protected work blocked and diagnose it;
-a standalone successful probe does not override the running runner's failure.
+and `buildd top`: Claude must report confinement by bubblewrap. Confirm its
+configured workspace/task uses the Claude backend.
 
 For a persistent runner, end the foreground process first, then check user systemd:
 
@@ -157,19 +201,22 @@ systemctl --user status
 buildd service install
 buildd service status
 buildd service logs
+sudo loginctl enable-linger "$USER"
 ```
 
 If systemd/user services are unavailable, keep the foreground launcher in an open
 WSL terminal. To enable systemd, follow
 [Microsoft's WSL systemd instructions](https://learn.microsoft.com/windows/wsl/systemd)
 explicitly, and restart the distribution from Windows after work has drained.
-WSL shutdown ends Linux services; Windows reboot does not guarantee the distribution
-starts. Open `wsl --distribution Ubuntu` after reboot, then check service status.
-Do not add a second Windows Scheduled Task that runs the native runner.
+Shutting WSL down ends Linux services, and a Windows reboot does not start the
+distribution. Without the `buildd wsl` logon task, open `wsl --distribution Ubuntu`
+after each reboot, then check the service status. Do not add a second Windows
+Scheduled Task that runs the native runner.
 
-The launcher/service restarts after runner updates. For an operator restart, drain
-work with `buildd hold`, then uninstall/install the Linux service (or stop/start the
-foreground launcher); use `buildd resume` when ready. Never run a foreground runner
-and a service as competing supervisors. Recheck the new process's heartbeat after
-restart. Linger, if desired, is an explicit operator choice described in README;
-it does not guarantee Windows will start WSL after reboot.
+## Restarts
+
+The launcher or service restarts the runner after an update. To restart it
+yourself, drain its work with `buildd hold`, then uninstall and reinstall the
+Linux service (or stop and start the foreground launcher), and run `buildd resume`
+when ready. Never run a foreground runner and a service at the same time, as
+competing supervisors. After a restart, check the new process's heartbeat.
