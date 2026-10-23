@@ -42,7 +42,7 @@ function expectValidModel(m: VisualReviewModel) {
 
 describe('visual review fixture', () => {
   it('is a fixture view alongside the worker states, without joining mockWorkers', () => {
-    expect(FIXTURE_VIEWS).toEqual([...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, 'mission-board-visual', 'mission-list-executor', 'mission-check-ins', 'goal-criteria', 'task-evidence', 'evidence-storage', 'model-providers', 'model-providers-lone', 'model-providers-stored-policy', 'operator-access', 'task-shipped', 'commit-checks', 'task-page', 'answer-states', 'agent-access', 'failure-kinds', 'entitlement-blocked', 'coordination-hold', 'onboarding', 'mission-task-strip', 'mission-plan', 'tool-breakdown', 'runner-size', 'runner-isolation', 'interactive-sessions', 'workspaces-list', 'hosted-runner', 'service-status', 'delivery-states', 'surface-audit-waiver', 'delivery-review-actions', 'delivery-dock', 'delivery-run-fix', 'activity-delivery', 'team-members', 'refined-components', 'mission-flow', 'mission-detail-compact', 'run-activity', 'home-cards', 'mcp-connections', 'task-error-evidence', 'spec-surface', 'branch-panel', 'spec-index', 'spec-attachments', 'spec-delivery', 'spec-import-review', 'runner-keys', 'mission-deliveries', 'design-preview']);
+    expect(FIXTURE_VIEWS).toEqual([...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, 'mission-board-visual', 'mission-list-executor', 'mission-check-ins', 'goal-criteria', 'task-evidence', 'evidence-storage', 'model-providers', 'model-providers-lone', 'model-providers-stored-policy', 'operator-access', 'task-shipped', 'commit-checks', 'task-page', 'answer-states', 'agent-access', 'failure-kinds', 'entitlement-blocked', 'coordination-hold', 'onboarding', 'mission-task-strip', 'mission-plan', 'tool-breakdown', 'runner-size', 'runner-isolation', 'interactive-sessions', 'workspaces-list', 'hosted-runner', 'service-status', 'delivery-states', 'surface-audit-waiver', 'skip-row', 'delivery-review-actions', 'delivery-dock', 'delivery-run-fix', 'activity-delivery', 'team-members', 'refined-components', 'mission-flow', 'mission-detail-compact', 'run-activity', 'home-cards', 'mcp-connections', 'task-error-evidence', 'spec-surface', 'branch-panel', 'spec-index', 'spec-attachments', 'spec-delivery', 'spec-import-review', 'runner-keys', 'mission-deliveries', 'design-preview']);
     expect(VISUAL_REVIEW_FIXTURE_STATE in mockWorkers).toBe(false);
     expect(isFixtureView('visual-review')).toBe(true);
     expect(isFixtureView('waiting-input')).toBe(true);
@@ -101,6 +101,16 @@ describe('visual review fixture', () => {
     expect(hrefs.some(h => h.endsWith('view=fix-merged'))).toBe(true);
     // Plain words: a link label never names a round.
     expect(visualReviewFixtureLinks().filter(l => /fix/.test(l.label)).every(l => !/round/i.test(l.label))).toBe(true);
+  });
+
+  it('links the stuck merged-fix states (spec 072de598 I-15): owed, queued, your call', () => {
+    const next = { recapture: 'capture', 'recapture-queued': 'queued', 'recapture-decide': 'decide' } as const;
+    for (const view of ['recapture', 'recapture-queued', 'recapture-decide'] as const) {
+      const p = parseVisualReviewFixtureParams(new URLSearchParams(`view=${view}`));
+      expect(p.view).toBe(view);
+      expect(buildVisualReviewFixtureModel(p.phase, p.options).recapture?.next).toBe(next[view]);
+      expect(visualReviewFixtureLinks().some(l => l.href.endsWith(`view=${view}`))).toBe(true);
+    }
   });
 
   it('the page no longer imports the retired strip', () => {

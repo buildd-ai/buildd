@@ -103,6 +103,10 @@ const CASES: Case[] = [
     },
   },
   {
+    name: 'permission hook: kill by process name',
+    run: async () => reasonOf(await makeFactory().createPermissionHook(worker)(pre('PowerShell', { command: 'Get-Process bun,git | Stop-Process -Force' }), undefined, signal)),
+  },
+  {
     name: 'permission hook: dangerous Bash command',
     run: async () => reasonOf(await makeFactory().createPermissionHook(worker)(pre('Bash', { command: 'rm -rf /' }), undefined, signal)),
   },

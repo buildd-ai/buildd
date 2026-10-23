@@ -32,7 +32,7 @@ import type { WaitingFor } from '@buildd/shared';
 import { waitingForOptionLabels } from '@/lib/waiting-for-options';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { noteWorkChanged } from '@/lib/work-changed';
-import { heldForRunnerUpdate, loadRunnerBeats, runnerLiveness } from '@/lib/runner-offline';
+import { heldForRunnerUpdate, loadRunnerBeats, runnerLiveness, UNVOUCHED_GRACE_MS } from '@/lib/runner-offline';
 
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
@@ -1157,6 +1157,141 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
   }
 
   return orphanedByHeartbeat.length;
+}
+
+/** The error a worker its own live runner stopped reporting is failed with. */
+export const RUNNER_NO_LONGER_REPORTS_ERROR =
+  'Worker runner no longer reports this worker (its heartbeat stopped naming it): the session ended with a runner restart and the server was never told';
+
+export interface UnvouchedCandidate {
+  id: string;
+  taskId: string | null;
+  accountId: string | null;
+  runner: string | null;
+  startedAt: Date | null;
+  turns?: number | null;
+  costUsd?: string | number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  prUrl: string | null;
+  prNumber: number | null;
+  commitCount: number | null;
+  branch: string | null;
+  error: string | null;
+}
+
+export interface UnvouchedDeps {
+  /** Live-status workers of `runner` on this account, absent from `vouched`, whose lease lapsed before `leaseBefore`. */
+  findCandidates(input: { accountId: string; runner: string; vouched: string[]; leaseBefore: Date; now: Date }): Promise<UnvouchedCandidate[]>;
+  /** CAS on the same predicate: a heartbeat that renewed the lease in between wins. Returns the ids failed. */
+  fail(groups: Array<{ ids: string[]; exitCause: WorkerExitCause; error: string }>, leaseBefore: Date, now: Date): Promise<string[]>;
+  releaseSeats(accountIds: Array<string | null>): Promise<unknown>;
+  resolveTasks(failed: UnvouchedCandidate[]): Promise<void>;
+  log(line: string): void;
+}
+
+/** Live statuses a runner must vouch for: an idle worker holds no session. */
+const UNVOUCHED_LIVE_STATUSES = LIVE_WORKER_STATUSES.filter(s => s !== 'idle');
+
+const unvouchedScope = (accountId: string, runner: string, leaseBefore: Date) => and(
+  eq(workers.accountId, accountId),
+  sql`COALESCE(${workers.localUiUrl}, ${workers.runner}) = ${runner}`,
+  inArray(workers.status, [...UNVOUCHED_LIVE_STATUSES]),
+  // NULL: never renewed, so no runner ever vouched for it by id. No evidence.
+  isNotNull(workers.leaseExpiresAt),
+  lt(workers.leaseExpiresAt, leaseBefore),
+);
+
+const defaultUnvouchedDeps: UnvouchedDeps = {
+  async findCandidates({ accountId, runner, vouched, leaseBefore, now }) {
+    return db.query.workers.findMany({
+      where: sqlWhere(and(
+        unvouchedScope(accountId, runner, leaseBefore),
+        ...(vouched.length > 0 ? [notInArray(workers.id, vouched)] : []),
+        runnerWorkerOnly(),
+        notParkedScope(now),
+      )),
+      columns: {
+        id: true, taskId: true, accountId: true, runner: true, startedAt: true,
+        turns: true, costUsd: true, inputTokens: true, outputTokens: true,
+        prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
+      },
+      limit: 50,
+    });
+  },
+  async fail(groups, leaseBefore, now) {
+    const failed: string[] = [];
+    for (const g of groups) {
+      if (g.ids.length === 0) continue;
+      const rows = await db.update(workers)
+        .set({ status: 'failed', exitCause: g.exitCause, error: g.error, completedAt: now, updatedAt: now })
+        .where(and(
+          inArray(workers.id, g.ids),
+          inArray(workers.status, [...UNVOUCHED_LIVE_STATUSES]),
+          lt(workers.leaseExpiresAt, leaseBefore),
+        ))
+        .returning({ id: workers.id });
+      failed.push(...rows.map(r => r.id));
+    }
+    if (failed.length > 0) noteWorkChanged({ workerIds: failed });
+    return failed;
+  },
+  releaseSeats: releaseConcurrencySeats,
+  resolveTasks: failed => resolveTasksOfReapedWorkers(failed),
+  log: line => console.warn(line),
+};
+
+/**
+ * A live runner vouches for each worker it holds (spec c7410e76 R-38, read
+ * with the claim handoff, lib/lost-claim.ts).
+ *
+ * R-38 keeps a worker un-reaped while its runner heartbeats, paused or not,
+ * and the offline-runner rule above judges only whether the runner is alive.
+ * Neither catches a worker the runner itself has forgotten: its session died
+ * with a runner restart and the restart settled it locally without the server
+ * hearing (2026-10-23: an agent killed its own Windows runner; the worker read
+ * `running` for nine hours while the runner beat every minute).
+ *
+ * Called from the heartbeat of a runner that reports `claimHandoff`, whose
+ * `activeWorkerIds` names every worker it runs or holds paused (and whose
+ * pending starts the handoff names). A live-status worker of THAT runner that
+ * the beat does not name, whose lease (renewed only by a beat naming it)
+ * lapsed UNVOUCHED_GRACE_MS ago, is failed as an infra failure: seats
+ * released, the task resolved by the reaper's rules (requeued with the infra
+ * backoff, completed on deliverables, path claims released). A worker the beat
+ * names, including a paused one, is never touched. Returns the number failed.
+ */
+export async function failWorkersUnvouchedByRunner(
+  input: { accountId: string; runner: string; vouched: readonly string[]; now?: Date },
+  deps: UnvouchedDeps = defaultUnvouchedDeps,
+): Promise<number> {
+  const now = input.now ?? new Date();
+  const leaseBefore = new Date(now.getTime() - UNVOUCHED_GRACE_MS);
+  const vouched = [...new Set(input.vouched)];
+  const candidates = (await deps.findCandidates({ accountId: input.accountId, runner: input.runner, vouched, leaseBefore, now }))
+    // Defence in depth: whatever the query returned, a named worker stays.
+    .filter(w => !vouched.includes(w.id));
+  if (candidates.length === 0) return 0;
+
+  // Same taxonomy as the offline-runner rule: a row the runner never started
+  // is still a never-started row and must not be charged to the task.
+  const byCause = new Map<WorkerExitCause, { ids: string[]; exitCause: WorkerExitCause; error: string }>();
+  for (const w of candidates) {
+    const { exitCause, error } = classifyStaleExit(w as any);
+    const message = exitCause === 'infra_failure' ? RUNNER_NO_LONGER_REPORTS_ERROR : error;
+    const group = byCause.get(exitCause);
+    if (group) group.ids.push(w.id);
+    else byCause.set(exitCause, { ids: [w.id], exitCause, error: message });
+  }
+  const failedIds = new Set(await deps.fail([...byCause.values()], leaseBefore, now));
+  const failed = candidates.filter(w => failedIds.has(w.id));
+  if (failed.length === 0) return 0;
+  for (const w of failed) {
+    deps.log(`[runner-vouch] ${JSON.stringify({ event: 'worker_unvouched_failed', workerId: w.id, taskId: w.taskId, accountId: w.accountId, runner: input.runner })}`);
+  }
+  await deps.releaseSeats(failed.map(w => w.accountId));
+  await deps.resolveTasks(failed);
+  return failed.length;
 }
 
 /**

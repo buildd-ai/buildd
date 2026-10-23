@@ -13,6 +13,10 @@ import { tmpdir } from 'os';
 import { basename, join } from 'path';
 import { resolveBuilddHome } from './buildd-home';
 import { isolationCheck, probeThisHost } from './isolation-check';
+import { isolationVerdict } from '@buildd/shared';
+import { backendLoginLines, resolveLaunchedCodexBinary } from './model-login-report';
+import { NO_MODEL_AUTH_FIX, type MachineLoginProbe } from './host-seat';
+import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import type { RunnerIsolationRecord } from '@buildd/shared';
 import {
   parseWorktreeList,
@@ -446,6 +450,59 @@ export function checkIsolation(record?: RunnerIsolationRecord): CheckResult {
   return isolationCheck(record ?? probeThisHost());
 }
 
+export interface BackendCheckOpts {
+  /** Login probe (env, home); defaults to this process. Injected in tests. */
+  probe?: MachineLoginProbe;
+  /** Path of the program the runner launches, or null/undefined when missing. Injected in tests. */
+  program?: string | null;
+  isolation?: RunnerIsolationRecord;
+}
+
+function backendConfinement(record: RunnerIsolationRecord | undefined, backend: 'claude' | 'codex'): string {
+  const lines = isolationVerdict(record ?? probeThisHost()).backends.filter((b) => b.backend === backend).map((b) => b.line);
+  return lines.join('; ');
+}
+
+/**
+ * One line per agent backend (login spec R-14 to R-18): the program the runner
+ * launches, which login it uses, and its confinement. Labels only; the login
+ * comes from the same detector as startup and the heartbeat, and nothing here
+ * calls a model.
+ */
+export function checkClaudeBackend(opts: BackendCheckOpts = {}): CheckResult {
+  const program = 'program' in opts ? opts.program : resolveClaudeBinaryPath();
+  const login = backendLoginLines(opts.probe).find((l) => l.backend === 'claude')!;
+  const sandbox = backendConfinement(opts.isolation, 'claude');
+  const message = `${login.text}. Sandbox: ${sandbox}`;
+  if (!program) {
+    return {
+      name: 'claude', status: 'error',
+      message: `Claude CLI not found; the runner cannot start Claude tasks. ${message}`,
+      detail: 'Reinstall the runner dependencies: run `bun install` in the buildd checkout.',
+    };
+  }
+  if (login.label === 'none') {
+    return { name: 'claude', status: 'warn', message, detail: `To fix: ${NO_MODEL_AUTH_FIX}` };
+  }
+  return { name: 'claude', status: 'ok', message };
+}
+
+export function checkCodexBackend(opts: BackendCheckOpts = {}): CheckResult {
+  const program = 'program' in opts ? opts.program : resolveLaunchedCodexBinary();
+  const login = backendLoginLines(opts.probe).find((l) => l.backend === 'codex')!;
+  const sandbox = backendConfinement(opts.isolation, 'codex');
+  const message = `${login.text}. Sandbox: ${sandbox}`;
+  if (!program) {
+    return {
+      name: 'codex', status: 'warn',
+      message: `Bundled Codex binary not found; Codex tasks will not run here. ${message}`,
+      detail: 'Reinstall the runner dependencies (`bun install`) so @openai/codex-sdk brings its binary.',
+    };
+  }
+  // A missing Codex login is not a warning: Codex is optional. The fix is in the words.
+  return { name: 'codex', status: 'ok', message };
+}
+
 function checkScreenSession(): CheckResult {
   if (IS_WINDOWS) return notCheckedOnWindows('screen-session');
   try {
@@ -459,6 +516,13 @@ function checkScreenSession(): CheckResult {
   }
 }
 
+export function isRunnerNeverStarted(): boolean {
+  const dbPath = join(builddDir(), 'history.db');
+  const walPath = join(builddDir(), 'history.db-wal');
+  const logPath = process.env.BUILDD_RUNNER_LOG_PATH || RUNNER_LOG_PATH;
+  return !existsSync(dbPath) && !existsSync(walPath) && !existsSync(logPath);
+}
+
 function checkRunnerProcess(): CheckResult {
   if (IS_WINDOWS) return notCheckedOnWindows('runner-process');
   try {
@@ -466,9 +530,15 @@ function checkRunnerProcess(): CheckResult {
     if (ps) {
       return { name: 'runner-process', status: 'ok', message: 'Runner process running' };
     }
+    if (isRunnerNeverStarted()) {
+      return { name: 'runner-process', status: 'ok', message: 'Runner not started yet. Start it with `buildd`.' };
+    }
     return { name: 'runner-process', status: 'error', message: 'Runner process not found' };
   } catch {
     // grep exit 1 = no match
+    if (isRunnerNeverStarted()) {
+      return { name: 'runner-process', status: 'ok', message: 'Runner not started yet. Start it with `buildd`.' };
+    }
     return { name: 'runner-process', status: 'error', message: 'Runner process not found', fixable: true };
   }
 }
@@ -541,11 +611,28 @@ export function tailLines(path: string, n: number): string {
   return lines.slice(-n).join('\n') + '\n';
 }
 
-function checkRunnerLog(): CheckResult {
-  const logPath = RUNNER_LOG_PATH;
+function checkRunnerLog(opts: { hasService?: boolean } = {}): CheckResult {
+  const logPath = process.env.BUILDD_RUNNER_LOG_PATH || RUNNER_LOG_PATH;
   try {
     if (!existsSync(logPath)) {
-      return { name: 'runner-log', status: 'warn', message: `No runner log at ${logPath}` };
+      if (isRunnerNeverStarted()) {
+        return { name: 'runner-log', status: 'ok', message: 'Runner not started yet. Start it with `buildd`.' };
+      }
+      // Check if runner runs as service: buildd service status reports one
+      let hasService = opts.hasService;
+      if (hasService === undefined) {
+        try {
+          const serviceStatus = execSync('buildd service status 2>&1', { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' });
+          hasService = serviceStatus.includes('active') || serviceStatus.includes('enabled');
+        } catch {
+          // buildd service status failed, assume no service
+          hasService = false;
+        }
+      }
+      if (hasService) {
+        return { name: 'runner-log', status: 'warn', message: `Runner log not found at ${logPath}. Service logs available at: buildd service logs` };
+      }
+      return { name: 'runner-log', status: 'warn', message: `Runner log not created yet at ${logPath}` };
     }
 
     // Proactive, size-triggered rotation on every doctor cycle — decoupled
@@ -590,7 +677,7 @@ function checkHistoryDb(): CheckResult {
 
   try {
     if (!existsSync(dbPath)) {
-      return { name: 'history-db', status: 'warn', message: 'No history database' };
+      return { name: 'history-db', status: 'ok', message: 'History database created on first run' };
     }
 
     const dbSize = statSync(dbPath).size;
@@ -857,7 +944,12 @@ export function runDiagnostics(opts: {
    * reported a running runner as missing.
    */
   runnerProcess?: CheckResult;
+  /** Per-backend overrides for tests. */
+  backends?: { claude?: BackendCheckOpts; codex?: BackendCheckOpts };
+  /** Injected service status for tests. */
+  hasService?: boolean;
 } = {}): DoctorReport {
+  const record = opts.isolation ?? probeThisHost();
   const checks = [
     opts.runnerProcess ?? checkRunnerProcess(),
     checkConfig(),
@@ -865,9 +957,11 @@ export function runDiagnostics(opts: {
     checkGitDirty(),
     checkGitUntracked(),
     checkBunInstall(),
-    checkIsolation(opts.isolation),
+    checkIsolation(record),
+    checkClaudeBackend({ isolation: record, ...opts.backends?.claude }),
+    checkCodexBackend({ isolation: record, ...opts.backends?.codex }),
     checkScreenSession(),
-    checkRunnerLog(),
+    checkRunnerLog({ hasService: opts.hasService }),
     checkDiskUsage(),
     checkStaleWorktrees(),
     checkHistoryDb(),

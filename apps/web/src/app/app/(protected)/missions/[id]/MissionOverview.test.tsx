@@ -85,6 +85,18 @@ describe('MissionOverview over AC-4\u2019s mission (16 tasks)', () => {
     expect(card).toContain('Not now');
   });
 
+  it('with three open decisions one card leads and the rest are reached from it, so the bar stays on the first screen (AC-4)', () => {
+    const d = f.decisions[0];
+    const three = [d, { ...d, key: 'note:x2', question: 'Second?' }, { ...d, key: 'note:x3', question: 'Third?' }];
+    const many = renderToStaticMarkup(<MissionOverview model={f.model} missionId="mission-1" checks={f.checks} decisions={three} history={f.history} />);
+    expect((many.match(/data-testid="decision-card"/g) ?? []).length).toBe(1);
+    expect(many).not.toContain('Second?');
+    expect(many).toMatch(/data-testid="decision-more"[^>]*>[^<]*2 more decisions/);
+    expect(many.indexOf('data-testid="decision-more"')).toBeLessThan(many.indexOf('data-testid="task-strip"'));
+    // One decision: no more-line.
+    expect(out).not.toContain('data-testid="decision-more"');
+  });
+
   it('the bar draws the five looks: merged, running, person, waiting', () => {
     const looks = [...out.matchAll(/data-testid="task-strip-fill"[^>]*data-look="([a-z]+)"/g)].map(m => m[1]);
     expect(looks.filter(l => l === 'merged')).toHaveLength(11);
@@ -98,6 +110,13 @@ describe('MissionOverview over AC-4\u2019s mission (16 tasks)', () => {
     expect(list).toMatch(/Queued \d+[mh]/);
     expect(list).not.toContain('Next in line');
     expect(list).toMatch(/Fixing · CI failed · resumes \d\d:\d\d/);
+  });
+
+  it('without estimates the summary names no finish; with them it ends finish depends on <task> (R-22, AC-18)', () => {
+    expect(out).not.toContain('finish depends on');
+    const withEstimates = renderToStaticMarkup(<MissionOverview model={f.model} missionId="mission-1" checks={f.checks} decisions={f.decisions} expectedMinutes={f.expectedMinutes!} />);
+    const summary = withEstimates.match(/data-testid="mission-build-summary"[^>]*>([^<]*)</)?.[1];
+    expect(summary).toBe('11 of 16 merged · 1 running · 1 fixing · 1 your decision · 2 waiting · finish depends on Mirror the runner image to Docker Hub, then The release publishes an image digest');
   });
 });
 

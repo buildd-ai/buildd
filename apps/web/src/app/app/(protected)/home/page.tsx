@@ -34,6 +34,7 @@ import { isActionableChip, kernelInboxMembership, missionPrRoleOf, reviewMachine
 import { describeConflictReason } from '@/lib/merge-blocker';
 import { describeCriteriaBlocker } from '@/lib/completion-check-summary';
 import { resolveCiGate } from '@/lib/ci-gate';
+import { ciFixHistory, parseRedRecord, redCheckView } from '@/lib/red-check-cause';
 import { DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
 import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { ActionQueueItem, EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
@@ -61,6 +62,7 @@ import HomeLive, { type HomeRegion } from './HomeLive';
 import { deliveryAtRead, groupQuietCauses, quietCauseOf, selectHomeMilestones, type MissionDeliveryRow, type QuietMissionCause } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
 import type { HomeListedMission } from '@/lib/home-attention';
+import { awaitingApprovalCounts, mayApproveIn } from '@/lib/specs/approval-inbox';
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
 import { fleetHeartbeatsQuery, homeQuestionsFrom, homeQuestionWorkersQuery, admittedQuestionRows, loadHomeFleet, loadQueueHistory } from '@/lib/home-fleet';
 import { loadSupersededQuestionTaskIds } from '@/lib/incident-recovery-load';
@@ -125,6 +127,8 @@ interface HomeView {
   workspaceCount: number;
   refreshWorkspaceIds: string[];
   serviceStatus: ServiceStatusView;
+  /** Spec revisions waiting on this person's approval: one Needs you card (spec b7fc9316 R-9). */
+  specApprovals: number;
   hostedRunnerBanner: { level: 'warn' | 'used'; text: string } | null;
   modelUpgradeTeamId: string | null;
   chatPlacement: HomeChatPlacement;
@@ -150,7 +154,7 @@ interface HomeView {
 
 const EMPTY_VIEW: HomeView = {
   teamWorkspaces: [], workspaceCount: 0, refreshWorkspaceIds: [],
-  serviceStatus: EMPTY_SERVICE_STATUS, hostedRunnerBanner: null, modelUpgradeTeamId: null,
+  serviceStatus: EMPTY_SERVICE_STATUS, specApprovals: 0, hostedRunnerBanner: null, modelUpgradeTeamId: null,
   chatPlacement: { kind: 'none' }, chatTeamId: null, hasAgentCredential: null, firstTask: 'none',
   runnerConnected: undefined, actionQueue: [], discrepancyOverflowCount: 0, actionQueueInitiatives: [],
   questions: [], held: [], listed: [], openMissions: 0, milestones: [], quietMissions: 0, quietCauses: [],
@@ -311,7 +315,7 @@ async function HomePage({
 /** The data HomeBody renders from, derived from one load: also what a live event re-reads. */
 function homeRegionOf(view: HomeView, initFilter: string | undefined): HomeRegion {
   const queue = initFilter ? view.actionQueue.filter((i) => i.initiativeId === initFilter) : view.actionQueue;
-  const { items, inProgress } = deriveHomeNeedsYou({ queue, missions: view.listed, questions: view.questions, held: view.held, isActionable: isActionableChip, status: view.serviceStatus.needsYou });
+  const { items, inProgress } = deriveHomeNeedsYou({ queue, missions: view.listed, questions: view.questions, held: view.held, isActionable: isActionableChip, status: view.serviceStatus.needsYou, specApprovals: view.specApprovals });
   return {
     items,
     inProgress,
@@ -489,6 +493,8 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
     // and the rest collapse to the owner row: one PR, one card.
     // One PR can sit on several worker rows; they collapse to one card below.
     openPrWorkers: hasWs ? openPrWorkersQuery(wsIds) : null,
+    // Spec revisions waiting for approval, per workspace; kept below only where this person may approve.
+    specApprovals: hasWs ? awaitingApprovalCounts(wsIds) : null,
     // PR blockers: pending tasks whose upstream deps may hold open PRs.
     pendingWithDeps: hasWs ? db.select({ id: tasks.id, missionId: tasks.missionId, dependsOn: tasks.dependsOn }).from(tasks)
       .where(and(
@@ -582,6 +588,9 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
   view.firstTask = firstTaskState(countsByStatus);
 
   const wsById = new Map((r1.inboxWorkspaces ?? []).map(ws => [ws.id, ws]));
+  view.specApprovals = (r1.specApprovals ?? [])
+    .filter(r => mayApproveIn(role, wsById.get(r.workspaceId)?.gitConfig, userId))
+    .reduce((n, r) => n + Number(r.n), 0);
   const openPrWorkers = oneRowPerPr(r1.openPrWorkers ?? []);
   const openTaskIds = openPrWorkers.map(w => w.taskId).filter((id): id is string => !!id);
   const openPrNumbers = [...new Set(openPrWorkers.map(w => w.prNumber).filter((n): n is number => n != null))];
@@ -657,7 +666,8 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
           eq(tasks.taskClass, 'attempt'),
           sql`(${tasks.context}->>'prNumber') IN (${sql.join(openPrNumbers.map(n => sql`${String(n)}`), sql`, `)})`,
         )),
-        columns: { id: true, workspaceId: true, status: true, title: true, reviewerRetryPrNumber: true },
+        // ciRetryHeadSha: the head a CI fix was filed for; still the head means it pushed nothing.
+        columns: { id: true, workspaceId: true, status: true, title: true, reviewerRetryPrNumber: true, ciRetryHeadSha: true },
         extras: sqlExtras({
           context: sql<Record<string, unknown>>`jsonb_build_object('prNumber', ${tasks.context}->'prNumber', 'iteration', ${tasks.context}->'iteration')`,
           result: sql<{ nextSuggestion?: string } | null>`jsonb_build_object('nextSuggestion', ${tasks.result}->'nextSuggestion')`,
@@ -1135,6 +1145,8 @@ function openPrWorkersQuery(wsIds: string[]) {
           context: sql<Record<string, unknown>>`jsonb_build_object('refreshTrunk', ${tasks.context}->'refreshTrunk')`,
           landing: sql<unknown>`${tasks.context}->'landing'`,
           landingHandoff: sql<unknown>`${tasks.context}->'landingHandoff'`,
+          // Which checks failed on the red head and why (lib/red-check-record.ts).
+          redChecks: sql<unknown>`${tasks.context}->'redChecks'`,
           result: sql<{ nextSuggestion?: string } | null>`jsonb_build_object('nextSuggestion', ${tasks.result}->'nextSuggestion')`,
         }),
         with: { mission: { columns: { id: true, title: true, mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
@@ -1443,6 +1455,8 @@ async function buildEscalationInbox(input: {
   const ciAttemptMap = new Map<string, {
     liveTaskId: string | null; liveIteration: number | null; liveKind: 'ci' | 'review'; liveClaimed: boolean;
     liveTaskTitle: string | null; attemptsConsumed: number; recommendation: string | null;
+    /** Heads finished CI fixes were filed for: the card says which pushed nothing (surface-ia §11 R-3). */
+    finishedCiFixHeads: Array<string | null>;
   }>();
   for (const t of r2.attemptTasks ?? []) {
     const ctx = (t.context ?? {}) as Record<string, unknown>;
@@ -1451,7 +1465,7 @@ async function buildEscalationInbox(input: {
     const key = `${t.workspaceId}:${prNumber}`;
     const entry = ciAttemptMap.get(key) ?? {
       liveTaskId: null, liveIteration: null, liveKind: 'ci' as const, liveClaimed: false,
-      liveTaskTitle: null, attemptsConsumed: 0, recommendation: null,
+      liveTaskTitle: null, attemptsConsumed: 0, recommendation: null, finishedCiFixHeads: [],
     };
     const iteration = typeof ctx.iteration === 'number' ? ctx.iteration : null;
     if ((LIVE_TASK_STATUSES as readonly string[]).includes(t.status)) {
@@ -1469,6 +1483,7 @@ async function buildEscalationInbox(input: {
       entry.attemptsConsumed = Math.max(entry.attemptsConsumed, iteration ?? 0);
       const suggestion = (t.result as { nextSuggestion?: string } | null)?.nextSuggestion;
       if (!entry.recommendation && suggestion) entry.recommendation = suggestion;
+      if (t.reviewerRetryPrNumber == null) entry.finishedCiFixHeads.push(typeof t.ciRetryHeadSha === 'string' ? t.ciRetryHeadSha : null);
     }
     ciAttemptMap.set(key, entry);
   }
@@ -1530,6 +1545,11 @@ async function buildEscalationInbox(input: {
       const conflictRetry = w.prNumber != null ? conflictRetryMap.get(`${w.workspaceId}:${w.prNumber}`) : undefined;
       const deadZoneInfo = deadZoneExhaustedMap.get(w.id);
       const ciAttempts = w.prNumber != null ? ciAttemptMap.get(`${w.workspaceId}:${w.prNumber}`) : undefined;
+      // The stored reading counts only for the head it was read on.
+      const redRecord = parseRedRecord((w.task as { redChecks?: unknown } | null)?.redChecks);
+      const red = redRecord && w.lastCommitSha && redRecord.headSha === w.lastCommitSha
+        ? redCheckView(redRecord, ciFixHistory(ciAttempts?.finishedCiFixHeads ?? [], w.lastCommitSha))
+        : null;
       const ciGate = resolveCiGate({
         prLifecycleStatus: w.prLifecycleStatus as PrLifecycle,
         liveFixTaskId: ciAttempts?.liveTaskId ?? null,
@@ -1540,6 +1560,8 @@ async function buildEscalationInbox(input: {
         liveFixKind: ciAttempts?.liveKind,
         liveFixClaimed: ciAttempts?.liveClaimed ?? null,
         liveFixTaskTitle: ciAttempts?.liveTaskTitle ?? null,
+        red,
+        reviewApproved: !!w.taskId && reviewApprovedTaskIds.has(w.taskId),
       });
       return {
         workerId: w.id,

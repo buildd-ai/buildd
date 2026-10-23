@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
-let waiverNotes: Array<{ authorType: string; body: string | null; actorLabel?: string | null; createdAt?: Date }> = [];
+let waiverNotes: Array<{ authorType: string; body: string | null; actorLabel?: string | null; createdAt?: Date; status?: string; missionId?: string }> = [];
 let repoRow: any = { githubRepo: { fullName: 'acme/app', installation: { installationId: 7 } } };
 
 mock.module('@buildd/core/db', () => ({
@@ -145,6 +145,14 @@ describe('evaluateSurfaceAuditGate', () => {
       { authorType: 'system', body: 'skip it' },
       { authorType: 'user', body: '   ' },
     ];
+    const gate = await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
+    expect(gate.required).toBe(true);
+  });
+
+  // Spec 072de598 I-18: a Skip holds until a person withdraws it, and then no longer clears the gate.
+  it('is not cleared by a Skip a person withdrew', async () => {
+    diffOf(UI_FILE);
+    waiverNotes = [{ authorType: 'user', body: 'Ship it anyway', status: 'dismissed' }];
     const gate = await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
     expect(gate.required).toBe(true);
   });
@@ -331,6 +339,11 @@ describe('loadSurfaceAuditWaiver', () => {
     expect(await loadSurfaceAuditWaiver('m1')).toEqual({
       reason: 'Copy-only change', actorLabel: 'owner@example.com', at: '2026-10-02T00:00:00.000Z',
     });
+  });
+
+  it('is null once the person withdrew it', async () => {
+    waiverNotes = [{ missionId: 'm1', authorType: 'user', body: 'Ship it anyway', actorLabel: 'owner@example.com', createdAt: new Date(), status: 'dismissed' }];
+    expect(await loadSurfaceAuditWaiver('m1')).toBeNull();
   });
 
   it('is null when no person waived it', async () => {

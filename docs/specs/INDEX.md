@@ -12,7 +12,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
 - [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-10-16
   Inbound credentials MUST resolve to an account and apply claim limits according to how the runner pays for model usage.
-- [Capability Requests and Grants](./capability-requests.md) · @max — verified 2026-10-20
+- [Capability Requests and Grants](./capability-requests.md) · @max — verified 2026-10-23
   An agent MUST get access it lacked at start only by asking for a provider and an access (read or write), resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
 - [Credential Isolation & MCP Injection Security Model](./credential-isolation.md) · @builder — verified 2026-10-05
   The runner MUST inject MCP connectors resolved from the task's own workspace, abort worker startup when a required connector is unreachable, and keep runner coordination secrets out of the agent subprocess.
@@ -90,7 +90,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Every committed migration MUST execute exactly once, recognised by its folder name (legacy history by its exact-ms journal time) and never by a high-water mark for post-cutover files; a missing tracking row for legacy history MUST be backfilled on evidence, never replayed.
 - [Mission Release Gate](./mission-release-gate.md) · @max — verified 2026-10-15
   For a mission with an integration base, canCompleteMission and the on_mission_complete release trigger MUST gate on the mission PR's merge into trunk through one shared accessor.
-- [Release Flow](./release-flow.md) · @max — verified 2026-10-17
+- [Release Flow](./release-flow.md) · @max — verified 2026-10-23
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
 ### runners (14)
@@ -119,7 +119,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A Claude Code session holding a live buildd claim MUST ask its questions through buildd, not the terminal-only prompt, and a reply typed at the terminal MUST withdraw the open buildd question.
 - [Provider-Backed Browser for Visual Review](./visual-qa-browser-providers.md) · @max — verified 2026-10-07
   The visual-auditor role is eligible only after a selected browser provider proves usable; a cloud browser reaches registered container-local services through a task-scoped CDP relay.
-- [Worker Reclamation](./worker-reclamation.md) · @max — verified 2026-10-22
+- [Worker Reclamation](./worker-reclamation.md) · @max — verified 2026-10-23
   Silent workers MUST be reclaimed with the correct timeout, exit cause and retry treatment.
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-10-17
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
@@ -152,10 +152,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Settings index descriptions MUST be one short fragment stating what the page manages, with no team-policy conditions, trailing filler or em dashes; the voice authority stays design-system section 5 and copy-rules.
 - [Settings Models Page](./settings-models.md) · @max — verified 2026-10-13
   Settings › Team › Models MUST show one provider list, use a lone provider for every surface it serves, offer per-surface choice only at two or more, and put a person's own key before the team's.
-- [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-10-15
+- [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-10-23
   Home, Missions and Initiatives MUST each answer one question (what needs me, what state is each mission in, what do an initiative's missions need) and MUST place release state per §8-10.
-- [Task Page](./task-page.md) · @max — verified 2026-10-22
-  The task page MUST lead with the deliverable, its track and one outcome, list checks by round from delivery facts, frame attempts by their parent, fit a phone's first screen, and open Code review only to substance.
+- [Task Page](./task-page.md) · @max — verified 2026-10-23
+  The task page leads with the live run and steering while running, then one Build/Verify/Deliver timeline when stopped; Run holds execution material and Details holds spec, dependencies, attempts and time.
 - [Team Namespace Scoping](./team-namespace-scoping.md) · @max — verified 2026-10-15
   Home, the missions view and the workspaces view MUST all show only the single active team resolved server-side from the buildd-team cookie, via the same resolver the app shell uses.
 - [Team Service Status](./team-service-status.md) · @max — verified 2026-10-12
@@ -208,7 +208,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Task and Worker State Machines](./task-state-machine.md) · @max — verified 2026-10-15
   Task and worker transitions MUST preserve output requirements, terminal-state guards and dependency resolution.
 
-## Draft (13)
+## Draft (12)
 
 - [Bug Intake and Quality](./bug-intake-and-quality.md) · @max — verified 2026-10-11
   Every defect report MUST land as one report on one failure incident, every incident above noise MUST have exactly one owner, and every resolved defect MUST trace to the change, release and agent that introduced it.
@@ -226,11 +226,9 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The knowledge store MUST split a buildd-owned ranking pipeline from a swappable index backend, keep pgvector the default until measured triggers fire, and never export sensitive-workspace content.
 - [Real and Virtual Cost](./real-and-virtual-cost.md) · @max — verified 2026-10-15
   Every worker's tokens and cost MUST carry a basis, real (charged per token) or virtual (list-price value of plan usage), and every rollup MUST report the two separately rather than as one sum.
-- [Runner model login: detect, say, report](./runner-model-login-detect-say-report.md) · @buildd — verified 2026-10-14
-  Context: a runner already uses its machine's own Claude login when the claim brings no credential (`host-seat.ts`), and its own `codex login` for Codex tasks (`decideCodexSeat`).
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-10-15
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
-- [Workflow Kernel Library and Single Host](./workflow-kernel-library.md) · @max — verified 2026-10-18
+- [Workflow Kernel Library and Single Host](./workflow-kernel-library.md) · @max — verified 2026-10-23
   Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 - [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-19
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
@@ -250,6 +248,6 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Runner Liveness](./runner-liveness.md) · @max — verified 2026-10-15
   The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path. → replaced by `runner-heartbeat`
 - [Runner Model Auth Source](./runner-model-auth-source.md) · @max — verified 2026-10-14
-  A runner MUST detect the model login on its own machine, use it with no setup, say which one it uses, and report that label (never the value) to the server. → replaced by `runner-model-login-detect-say-report`
+  A runner MUST detect the model login on its own machine, use it with no setup, say which one it uses, and report that label (never the value) to the server. → replaced by Living Spec `runner-model-login-detect-say-report`
 - [Mobile Timeline Rail](./timeline-mobile-rail.md) · @builder — verified 2026-09-23
   Below the md breakpoint, the mission Timeline MUST render as one continuous vertical rail from chain heads to the goal root, in which every disclosure is in-place and only a row standing for exactly one task navigates. → replaced by `mission-feed`

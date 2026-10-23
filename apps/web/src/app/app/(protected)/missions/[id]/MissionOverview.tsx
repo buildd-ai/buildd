@@ -14,7 +14,7 @@
  * 11 merged ›
  * ```
  *
- * Only the current stage renders. Build: the decision cards, the bar, the
+ * Only the current stage renders. Build: the leading decision card, the bar, the
  * summary line and the task list. Verify: the bar folded to `16 tasks
  * merged ›` and the checks. Deliver: `Delivered into <branch>` with the
  * requirements folded. One predicate (`isBuildComplete`) decides which. A
@@ -63,6 +63,8 @@ export interface MissionOverviewProps extends BoardLinkContext {
   decisions?: readonly DecisionView[];
   /** What raises History into the page (Navigation R-6; `historyRaised`). */
   history?: HistoryRaised | null;
+  /** Task id → expected minutes (task estimates), for the summary's `finish depends on` (Navigation R-22). */
+  expectedMinutes?: Readonly<Record<string, number | null | undefined>>;
 }
 
 /** Checks already at work before the build ends (R-13) are shown under the list. */
@@ -79,7 +81,7 @@ export default function MissionOverview(props: MissionOverviewProps) {
 function OverviewView({
   model: serverModel, completionText = null, notice, visual: _visual, review,
   checks: checksSource = null, planTasks = null, held = false, outcomeSpecTitles = null,
-  decisions = [], history = null, ...link
+  decisions = [], history = null, expectedMinutes, ...link
 }: MissionOverviewProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
   const now = useNow(model.now, 15_000, !model.complete);
@@ -131,7 +133,7 @@ function OverviewView({
   const bar = order.length > 0 && (
     <TaskStrip cells={cells} groups={groups} ticks={false} selectedId={selectedId} onSelect={setSelectedId} onOpen={openTask} label="Mission tasks, merged first" />
   );
-  const cards = decisions.map(d => <DecisionCard key={d.key} view={d} now={model.now} />);
+  const cards = decisions.length > 0 && <LeadDecision decisions={decisions} now={model.now} />;
 
   return (
     <div data-testid="mission-overview" data-stage={stage} className="flex min-w-0 flex-col gap-5">
@@ -145,7 +147,7 @@ function OverviewView({
           {review && <MissionVisualAsk review={review} board={model} />}
           {model.phases.length === 0 && model.planning && <PlanningPlaceholder planning={model.planning} now={now} link={link} />}
           {bar}
-          {order.length > 0 && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} />}
+          {order.length > 0 && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} expectedMinutes={expectedMinutes} />}
           {handoff && handoff.rows.some(r => STARTED.has(r.status)) && <ChecksCard rows={handoff.rows.filter(r => STARTED.has(r.status))} onOpenTask={openTask} />}
           {estimate && <p data-testid="overview-estimate" className="font-mono text-meta text-text-muted">{estimate}</p>}
         </>
@@ -154,7 +156,7 @@ function OverviewView({
         <>
           <BuildCompleteBar done={buildIds.length} where={where} open={showBuild} onToggle={() => setShowBuild(v => !v)}>
             {bar}
-            {showBuild && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} />}
+            {showBuild && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} expectedMinutes={expectedMinutes} />}
           </BuildCompleteBar>
           {cards}
           {history && <HistoryRaisedLine item={history} missionId={link.missionId} />}
@@ -187,6 +189,32 @@ function OverviewView({
           {model.complete && <CompletionRecord model={model} text={completionText} visual={vm} />}
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * One decision card leads (AC-4): the bar, the summary line and the list stay
+ * on the first phone screen. The rest are reached from it, one line that
+ * opens them in place.
+ */
+function LeadDecision({ decisions, now }: { decisions: readonly DecisionView[]; now: number }) {
+  const [open, setOpen] = useState(false);
+  const rest = decisions.length - 1;
+  return (
+    <div className="flex min-w-0 flex-col gap-2">
+      <DecisionCard view={decisions[0]} now={now} />
+      {rest > 0 && !open && (
+        <button
+          type="button"
+          data-testid="decision-more"
+          onClick={() => setOpen(true)}
+          className="inline-flex min-h-11 items-center self-start text-body text-text-secondary underline-offset-4 hover:text-text-primary hover:underline md:min-h-0"
+        >
+          {`${rest} more ${rest === 1 ? 'decision' : 'decisions'} ›`}
+        </button>
+      )}
+      {open && decisions.slice(1).map(d => <DecisionCard key={d.key} view={d} now={now} />)}
     </div>
   );
 }

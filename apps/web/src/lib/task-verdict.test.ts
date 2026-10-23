@@ -5,6 +5,7 @@ import {
   latestChecks,
   parseStoredVerdictDecision,
   type StoredVerdictDecision,
+  type VerdictCheck,
   type VerdictInput,
   verdictLinksPr,
   verdictRepeatsOpenQuestion,
@@ -55,10 +56,13 @@ describe('deriveTaskVerdict', () => {
 
   // Surface audit (task 3c538a39): a merged PR was stated three times. The
   // status row is the one place that names it, so it also carries the time.
-  it('merged → the status row carries the claim-to-merge time, in words', () => {
-    const v = deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'merged', merged: true }, claimToMerge: '2h 14m' }))!;
+  // Surface audit ff33de4d (phone-task-merged): the run, its fixes and its review rounds.
+  it('merged → the status row says how long it ran, its fixes and its review rounds', () => {
+    const v = deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'merged', merged: true }, mergedRun: { took: '1h 03m', fixes: 2, reviewRounds: 2 } }))!;
     expect(v.headline).toBe('Merged · PR #12');
-    expect(v.cause).toBe('2h 14m from claim to merge.');
+    expect(v.cause).toBe('Ran 1h 03m · 2 fixes · 2 review rounds');
+    expect(deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'merged', merged: true }, mergedRun: { took: '9m', fixes: 1, reviewRounds: 1 } }))!.cause).toBe('Ran 9m · 1 fix · 1 review round');
+    expect(deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'merged', merged: true }, mergedRun: { took: null, fixes: 0, reviewRounds: 0 } }))!.cause).toBeNull();
     expect(verdictLinksPr(v, PR.url)).toBe(true);
     expect(verdictLinksPr(v, 'https://github.com/acme/app/pull/13')).toBe(false);
     expect(verdictLinksPr(null, PR.url)).toBe(false);
@@ -278,5 +282,56 @@ describe('review escalation verdict (PR #4996 shape)', () => {
 
   it('without an escalation the generic PR reading is unchanged', () => {
     expect(deriveTaskVerdict({ ...base })!.causeKey).toBe('needs_you:pr_open');
+  });
+});
+
+describe('completed task with an open PR: who is the next actor', () => {
+  const pr = { url: 'https://github.com/acme/widgets/pull/9', number: 9, lifecycle: 'pr_open', merged: false };
+  const base: VerdictInput = { taskStatus: 'completed', live: null, openQuestion: false, pr, checks: null, openAttempt: null };
+  const checks = (passed: number, pending: number): VerdictCheck[] => [
+    ...Array.from({ length: passed }, (_, i): VerdictCheck => ({ name: `p${i}`, state: 'passed', url: null })),
+    ...Array.from({ length: pending }, (_, i): VerdictCheck => ({ name: `r${i}`, state: 'pending', url: null })),
+  ];
+
+  it('a running check reads as pending, never Waiting on you, even when the policy merges on green', () => {
+    const v = deriveTaskVerdict({ ...base, awaitingCi: true, deliveryOwner: 'landing', checks: checks(22, 1) })!;
+    expect(v.state).toBe('in_progress');
+    expect(v.headline).toBe('Checks running · 22 of 23 passed · PR #9');
+    expect(v.cause).toContain('merges by itself');
+    expect(v.actions.some(a => a.label === 'Review & merge')).toBe(false);
+  });
+
+  it('green and an auto-merging policy reads as merging, not waiting on you', () => {
+    const v = deriveTaskVerdict({ ...base, pr: { ...pr, lifecycle: 'ci_green' }, deliveryOwner: 'landing' })!;
+    expect(v.state).toBe('in_progress');
+    expect(v.headline).toBe('Merging · PR #9');
+  });
+
+  it('green and a policy that needs a person is the one that waits on you', () => {
+    const v = deriveTaskVerdict({ ...base, pr: { ...pr, lifecycle: 'ci_green' }, deliveryOwner: 'human' })!;
+    expect(v.state).toBe('needs_you');
+    expect(v.causeKey).toBe('needs_you:merge');
+  });
+
+  it('no check has reported yet says so, and is not the same as some running', () => {
+    const auto = deriveTaskVerdict({ ...base, deliveryOwner: 'landing' })!;
+    expect(auto.state).toBe('in_progress');
+    expect(auto.headline).toContain('waiting on checks');
+    const person = deriveTaskVerdict({ ...base, deliveryOwner: 'human' })!;
+    expect(person.headline).toBe('PR #9 open · no checks reported yet');
+  });
+
+  it('green with the reviewer as owner waits for review and never claims a merge', () => {
+    const v = deriveTaskVerdict({ ...base, pr: { ...pr, lifecycle: 'ci_green' }, deliveryOwner: 'reviewer' })!;
+    expect(v.state).toBe('in_progress');
+    expect(v.headline).toBe('Waiting for review · PR #9');
+    expect(`${v.headline} ${v.cause}`).not.toMatch(/merg/i);
+  });
+
+  it.each(['trunk', 'worker', 'none', null])('green with owner %s is not claimed as merging', (owner) => {
+    const v = deriveTaskVerdict({ ...base, pr: { ...pr, lifecycle: 'ci_green' }, deliveryOwner: owner })!;
+    expect(v.headline).not.toMatch(/^Merging/);
+    expect(v.cause ?? '').not.toContain('without you');
+    expect(v.state).toBe('needs_you');
   });
 });

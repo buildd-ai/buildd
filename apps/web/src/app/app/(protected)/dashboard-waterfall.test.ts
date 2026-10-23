@@ -28,11 +28,8 @@ const CEILINGS: Record<string, number> = {
   'missions/page.tsx': 11,
   // 17: the live-region wrapper awaits its params and the body once each (not reads).
   'missions/[id]/page.tsx': 17,
-  // 21: the plan-chain eyebrow (runner online count) landed alongside the
-  // stored evidence record, each adding one wait; the failure-kind lookup
-  // (worker vs verification failure) adds one more, only for failed tasks.
-  // +2 for the live-region wrapper (params, then the body); neither is a read.
-  'tasks/[id]/page.tsx': 23,
+  // Task page no longer loads sibling navigation or execution-plan chains.
+  'tasks/[id]/page.tsx': 14,
 };
 
 /**

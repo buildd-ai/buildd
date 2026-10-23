@@ -87,7 +87,7 @@
   /* State tints (a cell or chip fill behind its hue) and hatches (queued or
      in-audit shares of a strip). */
   --ok-tint: rgba(94, 196, 149, 0.13);
-  --ok-cell: #3d5a47;
+  --ok-cell: #4f7a5c;
   --ok-hatch: #5e8f6d;
   --run-tint: rgba(122, 172, 202, 0.13);
   --run-hatch: #4f7896;
@@ -175,11 +175,11 @@
   --status-info: #2d5a7c;
 
   --ok-tint: #e6efe7;
-  --ok-cell: #b9d2bf;
+  --ok-cell: #649273;
   --ok-hatch: #8db89a;
   --run-tint: #e4ecf2;
   --run-hatch: #7fa3c0;
-  --act-hatch: #e6a774;
+  --act-hatch: #b5662a;
   --bad-tint: #f6e5df;
   --q: #5f594f;
   --q-tint: #eeebe4;

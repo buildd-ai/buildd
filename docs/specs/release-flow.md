@@ -2,13 +2,13 @@
 title: Release Flow
 status: active
 owner: max
-last_verified: 2026-10-17
+last_verified: 2026-10-23
 summary: The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 domain: releases
 surfaces: [apps/web/src/lib/release-executor.ts, packages/core/release-strategy.ts, apps/web/src/app/api/releases/trigger/route.ts, apps/web/src/app/api/releases/status/route.ts]
 related: [db-migration-gates, webhook-dataflow]
 keywords: [trigger_release, release_status, workflow_dispatch, branch_merge, prodbranch, releaseresult, release candidate, release/v]
-verified_by: [apps/web/src/lib/release-candidate-ci.test.ts, apps/web/src/lib/ci-failure-retry.release-candidate.test.ts, apps/web/src/lib/release/record.test.ts, apps/web/src/lib/release/candidate-amend.test.ts, packages/core/__tests__/release-strategy.test.ts, packages/core/__tests__/release-compose.test.ts, apps/web/src/lib/release/compose-actions.test.ts, scripts/release-candidate.test.ts, packages/core/__tests__/release-candidate.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/release-executor.test.ts]
+verified_by: [apps/web/src/lib/release-candidate-ci.test.ts, apps/web/src/lib/ci-failure-retry.release-candidate.test.ts, apps/web/src/lib/release/record.test.ts, apps/web/src/lib/release/candidate-amend.test.ts, apps/web/src/lib/workflow-dispatch-inputs.test.ts, apps/web/src/app/api/workspaces/[id]/config/route.test.ts, packages/core/__tests__/release-strategy.test.ts, packages/core/__tests__/release-compose.test.ts, apps/web/src/lib/release/compose-actions.test.ts, scripts/release-candidate.test.ts, packages/core/__tests__/release-candidate.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/candidate-review.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/release-executor.test.ts]
 assertions:
   - id: trigger-release-route
     type: route
@@ -32,6 +32,10 @@ assertions:
     type: symbol
     name: classifyReleasePr
     path: packages/core/release-candidate.ts
+  - id: candidate-review-scope
+    type: symbol
+    name: candidateReviewScope
+    path: apps/web/src/lib/workflow/candidate-review.ts
   - id: release-compose-route
     type: route
     method: POST
@@ -174,6 +178,28 @@ path escalation or the migration inspector.
   (version bump + CHANGELOG) is a release artifact. Anything else (a
   release-only change, an unapproved PR, a direct commit) is a novel delta
   that gets its own review.
+- A release candidate gets **no aggregate review**. Since it has no kernel
+  delivery, the landing gate attests its composition at its exact head before
+  any reviewer is asked (`candidateReviewScope`). Its review scope is only the
+  landed changes with no approved reviewed patch: direct commits on
+  `sourceBranch`, any release-only change beyond the version + CHANGELOG
+  commit, and patches that differ from their approved head. Empty: no
+  reviewer at all, the attestation is the review. Not empty: one reviewer over
+  exactly those commits, told to read each one, never the full candidate diff.
+  Unreadable: the full review, as before.
+- Also covered: a PR merged with a merge commit (the merge, against its first
+  parent, must equal the approved head's change; the PR's own commits must be
+  on that head), and `prodBranch` merged back into `sourceBranch` after a
+  release when it brings only CHANGELOG and `"version"` lines. An aggregate
+  diff past GitHub's 300-file cap is not a reason to review in full: the
+  complete commit list stands in for it.
+- Size cap and workspace path classes (e.g. destructive schema changes) are
+  judged on the delta only, at dispatch and at the verdict
+  (`scopeToCompositionDelta`): a constituent reviewed on its own PR never
+  escalates the candidate. The migration inspector at merge, CI, `release
+  candidate verified` and branch protection are unchanged.
+- An amendment makes a new candidate SHA whose metadata names it, so the new
+  head is composed afresh; only the amendment's new commits can add delta.
 - A candidate workspace's releases are `gated`: a successful release workflow
   run moves its row to `pending_external` (the PR is open), never to
   `deploying`. Only a merge into `prodBranch` whose head contains the row's sha
@@ -187,17 +213,35 @@ path escalation or the migration inspector.
   webhook, red-PR sweep, manual Fix CI) ask `classifyCiRedReleasePr` before
   any CI fix and before the kernel door. A trusted candidate at its recorded
   head gets one fix task per head, based on `sourceBranch` and bound to no PR;
-  the candidate is then amended through the release workflow once that fix
-  merges. A candidate-shaped PR that is not provably one gets nothing filed.
+  once that fix merges the candidate is amended through the declared amend
+  contract, or the team is told it needs a re-cut. A candidate-shaped PR that is not provably one gets nothing filed.
   The manual Fix CI is refused for both.
 - `trigger_release` dedupes a dispatch against an in-flight release for the
-  same source commit, except an amendment (`amend` or `exclude` input set):
-  a plain dispatch leaves an open candidate unchanged, so an amendment is
-  never a repeat of it.
-- When the fix for a red candidate merges into `sourceBranch`, the amendment is
-  dispatched automatically: the release workflow once with `amend` and
-  `amend_confirm` set to the candidate's version, and a comment on the
-  candidate. Once per fix PR (a marker on the fix task, handed back if the
+  same source commit, except an amendment (`amend` or `exclude` input set, or
+  an automatic amendment through the declared contract): a plain dispatch
+  leaves an open candidate unchanged, so an amendment is never a repeat of it.
+- buildd moves a candidate only through an amend contract the workspace
+  declared: `releaseConfig.candidate.amend = { mode: 'inputs', versionInput,
+  confirmInput? }` (dispatch the release workflow with those inputs set to the
+  candidate's version) or `{ mode: 'redispatch' }` (dispatch it with its
+  ordinary inputs; the team's pipeline re-cuts). `workflow_dispatch` only. No
+  default and no inference from the workflow's input names: buildd's own
+  workspace declares `{ mode: 'inputs', versionInput: 'amend', confirmInput:
+  'amend_confirm' }` explicitly. The declaration lives in workspace config, next
+  to the trust policy (`authors`, `branches`), because a repo-editable file
+  would let any PR author change what buildd dispatches. Whether the workflow
+  can carry it out is read from the workflow file's
+  `on.workflow_dispatch.inputs` at `ref`: on save (a mapping the file does not
+  declare, or a file that cannot be read, is refused) and again before every
+  dispatch, so the config cannot drift from the workflow silently.
+- When the fix for a red candidate merges into `sourceBranch` and the contract
+  holds at `ref`, the amendment is dispatched automatically and the candidate
+  is commented. Without a contract, or when the workflow at `ref` no longer
+  declares its inputs (or cannot be read), nothing is dispatched: the
+  candidate PR gets a comment, the fix task an open note, and the team a
+  needs-attention alert, each saying the fix merged, the candidate needs a
+  re-cut or amend by the team's pipeline, and what was checked. Neither a
+  silent skip nor a failed task. Once per fix PR (a marker on the fix task, handed back if the
   dispatch fails). A candidate that is closed, or whose head is no longer the
   one the fix was filed for, is left alone. A merge found by reconciliation
   rather than the webhook amends the same way: the base is read from the fix
@@ -221,10 +265,22 @@ path escalation or the migration inspector.
 - AC-13: GIVEN the same PR opened by another account, from a fork, without
   metadata, or after a push moved its head THEN it is `kind: 'none'` and gets
   the full review and the aggregate size cap.
-- AC-14: GIVEN a candidate whose every commit is an approved dev PR plus the
-  version commit THEN its head is covered by composition and no aggregate
+- AC-14: GIVEN a candidate whose every commit is an approved dev PR (squashed
+  or merged with a merge commit) plus the version commit and any version-only
+  merge of `prodBranch` back into `sourceBranch`, at any diff size, WHEN the
+  landing gate reaches review THEN its head is covered by composition and no
   reviewer is dispatched; a migration still meets the migration inspector at
   merge.
+- AC-25: GIVEN a fully composed candidate WHEN it is amended THEN the new head
+  is composed afresh and, with no new uncovered commit, no reviewer is
+  dispatched for it either.
+- AC-26: GIVEN a candidate with N direct commits on `sourceBranch` (no PR)
+  THEN exactly one reviewer is dispatched, scoped to exactly those N commits
+  and their paths, and the size cap and path classes are judged on that delta
+  alone.
+- AC-27: GIVEN a constituent touching `packages/core/drizzle/` that was
+  approved on its own PR THEN it does not escalate the candidate, while a
+  migration inside the delta still does.
 
 - AC-19: GIVEN a trusted candidate whose CI is red at its recorded head WHEN
   the check-suite webhook or the red-PR sweep reports it THEN one fix task is
@@ -236,12 +292,29 @@ path escalation or the migration inspector.
   workflow is dispatched and the row re-armed, not reported as deduped.
 - AC-21: GIVEN the fix task for a red candidate WHEN its PR merges into
   `sourceBranch` THEN the release workflow is dispatched once with
-  `amend = amend_confirm = <version>` and the candidate's activity comment
-  is updated to track the fix PR and amendment; a redelivery, a closed
-  candidate, or a candidate already amended dispatches nothing, and a failed
-  dispatch hands the marker back so a retry can amend. A merge reported
-  without a webhook delivery reads the fix PR's base from GitHub and amends
-  the same way.
+  `amend = amend_confirm = <version>` and the candidate is commented; a
+  redelivery, a closed candidate, or a candidate already amended dispatches
+  nothing, and a failed dispatch hands the marker back so a retry can amend.
+  A merge reported without a webhook delivery reads the fix PR's base from
+  GitHub and amends the same way. This requires the declared contract: the
+  workflow is dispatched with the contract's `versionInput` (and
+  `confirmInput`) set to `<version>`, after the workflow file at `ref` was read
+  and found to declare them.
+- AC-22: GIVEN a candidate workspace with no `candidate.amend` (or a strategy
+  other than `workflow_dispatch`) WHEN the fix PR for its red candidate merges
+  THEN nothing is dispatched, and the candidate PR, the fix task and the team
+  are told the fix merged and the candidate needs a re-cut or amend by their
+  pipeline, naming what was checked; a redelivery posts nothing again.
+- AC-23: GIVEN `candidate.amend` maps inputs the workflow file at `ref` does
+  not declare (or the file cannot be read) WHEN the config is saved THEN the
+  save is refused 422 naming the missing inputs; and WHEN the workflow loses
+  them after a valid save THEN the fix merging dispatches nothing and posts
+  the re-cut notice of AC-22.
+- AC-24: GIVEN buildd's own workspace with `candidate.amend = { mode: 'inputs',
+  versionInput: 'amend', confirmInput: 'amend_confirm' }` and its
+  `release.yml` WHEN a red candidate's fix merges THEN the dispatch is the same
+  as before the contract existed: `amend = amend_confirm = <version>`, once,
+  with the candidate commented.
 
 **Code surface**:
 - Policy and classifier: `packages/core/release-candidate.ts`:
@@ -253,9 +326,20 @@ path escalation or the migration inspector.
 - Auto-amend: `apps/web/src/lib/release/candidate-amend.ts`:
   `amendCandidateOnFixMerge()`; subscriber `release-candidate-amend-on-fix`
   in `apps/web/src/lib/release/subscribers.ts`
+- Amend contract: `packages/core/release-config-shape.ts`:
+  `amendContractShapeError()`, `amendContractCapabilityError()`,
+  `amendDispatchInputs()`; workflow inputs read from the file at `ref`:
+  `apps/web/src/lib/workflow-dispatch-inputs.ts`:
+  `readWorkflowDispatchInputs()`
 - Amendment dedup: `apps/web/src/lib/release/record.ts`: `isAmendmentDispatch()`
 - Composition: `apps/web/src/lib/workflow/review-composition.ts`:
-  `compositionConstituentBase()`; write site `review-effects.ts`
+  `compositionConstituentBase()`, `isReleaseArtifactMerge()`; write site
+  `review-effects.ts` (kernel PRs)
+- Candidate review scope: `apps/web/src/lib/workflow/candidate-review.ts`:
+  `candidateReviewScope()`; asked by the landing gate
+  (`apps/web/src/lib/pr-landing.ts`, agent-review step); delta reviewer through
+  `apps/web/src/lib/stale-approval-re-review.ts`; verdict-time scope
+  `scopeToCompositionDelta()` in `apps/web/src/lib/reviewer.ts`
 - Merge gate: `apps/web/src/lib/auto-merge.ts`
 - Tracking: `packages/core/release-archetype.ts`,
   `apps/web/src/lib/release/gated-merge.ts`,

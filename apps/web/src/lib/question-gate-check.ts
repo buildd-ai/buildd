@@ -54,6 +54,7 @@ import {
 } from '@buildd/core/question-gate-decision';
 import { briefedQuestionText, optionLabels, questionDecideAnswerText, questionPushbackText, recommendedOf, type BriefedQuestion } from '@buildd/core/question-brief';
 import { classifyRecoverableBlocker, recoveredAnswerText, repairTaskSpec, type RecoverableBlocker, type RepairTaskSpec } from '@buildd/core/human-attention';
+import { detectInteractiveSessionAsk, INTERACTIVE_SESSION_REFUSAL_REASON } from '@buildd/core/interactive-session-ask';
 import type { AttentionDisposition, DispositionBy } from '@buildd/core/needs-you';
 import type { DecisionAccess, DecisionReceipt } from '@buildd/core/decision-client';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
@@ -286,6 +287,19 @@ export async function checkQuestion(
 
   if (!scope.gateEnabled) {
     return { verdict: 'send', outcome: 'off', version: null, latencyMs: now() - started };
+  }
+
+  // ── Stage -1: an option the platform cannot carry out ───────────────────
+  // "Request an interactive session" is acted on by nothing, so the question
+  // would sit unanswered. Deterministic and model-free; refused before any rail.
+  if (detectInteractiveSessionAsk(req.question.prompt, req.question.context, ...optionLabels(req.question))) {
+    return {
+      verdict: 'pushback',
+      outcome: 'pushback',
+      reason: INTERACTIVE_SESSION_REFUSAL_REASON,
+      version: null,
+      latencyMs: now() - started,
+    };
   }
 
   // ── Stage 0: recover instead of asking ──────────────────────────────────

@@ -28,7 +28,7 @@
  *
  * Spec: docs/specs/capability-requests.md
  */
-import { isLiveWorkerStatus, isOpenTaskStatus } from '@buildd/shared';
+import { runClosure } from './open-ask';
 import type { CapabilityCandidate, CapabilityResolution } from './connector-capabilities';
 import {
   MODEL_INFERENCE_CAPABILITY,
@@ -624,8 +624,8 @@ export function checkGrantUse(g: GrantRecord, use: CapabilityUse, ctx: UseContex
   if (g.teamId !== p.teamId || g.workspaceId !== p.workspaceId || g.taskId !== p.taskId || g.workerId !== p.workerId) return 'grant_mismatch';
   if (g.status !== 'granted' || g.revokedAt) return 'grant_not_live';
   if (!g.expiresAt || g.expiresAt.getTime() <= ctx.now.getTime()) return 'grant_expired';
-  if (!isOpenTaskStatus(ctx.taskStatus)) return 'task_terminal';
-  if (!isLiveWorkerStatus(ctx.workerStatus)) return 'worker_not_live';
+  const ended = runClosure(ctx.taskStatus, ctx.workerStatus);
+  if (ended) return ended;
   if ((g.roleSlug ?? null) !== (p.roleSlug ?? null)) return 'role_changed';
   if (g.capability !== use.capability || g.provider !== use.provider || (g.connectorId ?? null) !== (use.connectorId ?? null)) return 'target_mismatch';
   const useRisk = use.tool ? maxRisk(classifyToolRisk(use.tool), use.risk ?? 'read') : use.risk ?? null;
@@ -667,8 +667,8 @@ export type ApprovalRefusal = 'task_terminal' | 'worker_not_live' | 'role_change
  * block or a workspace disable, and never for a run that has ended.
  */
 export function approvalRefusal(g: GrantRecord, ctx: Omit<UseContext, 'principal' | 'now'> & { currentRoleSlug: string | null }): ApprovalRefusal | null {
-  if (!isOpenTaskStatus(ctx.taskStatus)) return 'task_terminal';
-  if (!isLiveWorkerStatus(ctx.workerStatus)) return 'worker_not_live';
+  const ended = runClosure(ctx.taskStatus, ctx.workerStatus);
+  if (ended) return ended;
   if ((g.roleSlug ?? null) !== (ctx.currentRoleSlug ?? null)) return 'role_changed';
   if (g.connectorId) {
     const c = ctx.candidate;
@@ -682,6 +682,16 @@ export function approvalRefusal(g: GrantRecord, ctx: Omit<UseContext, 'principal
   }, (ctx.candidate?.roles.withAccess.length ?? 0) > 0);
   if (policy.effect === 'forbidden') return 'policy_forbidden';
   return null;
+}
+
+/**
+ * Does a decide refusal mean nobody can decide this request any more: its run
+ * ended, its role changed, it was already decided, or it is gone? A card then
+ * drops its buttons; any other refusal (a policy, a block) still leaves Deny.
+ */
+export function decisionClosesRequest(code: string | undefined, grantStatus?: string | null): boolean {
+  if (code === 'task_terminal' || code === 'worker_not_live' || code === 'role_changed' || code === 'not_found') return true;
+  return !!code?.startsWith('already_') && !!grantStatus && grantStatus !== 'pending';
 }
 
 /** The TTL an approval gives: the request's, narrowed by the approver and policy. */

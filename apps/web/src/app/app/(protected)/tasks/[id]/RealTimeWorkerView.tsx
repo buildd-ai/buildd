@@ -1,15 +1,17 @@
 'use client';
 
-import { resolvePrDisplayState, type PrDisplayState } from '@/lib/pr-presentation';
+import type { PrDisplayState } from '@/lib/pr-presentation';
 import { isOpenAsk, recoveredRepairTaskId } from '@/lib/open-ask';
+import { runStall } from '@/lib/run-stall';
+import { RunStallContext } from './run-stall-context';
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import WorkerActivityTimeline, { collapseWorkspacePath, ageLabel } from './WorkerActivityTimeline';
 import ModelUsagePanel from './ModelUsagePanel';
 import NowStrip, { PausedBar } from './NowStrip';
-import StatRow, { formatTokens } from './StatRow';
+import { LiveStats, formatTokens } from './StatRow';
 import TaskQuestion from '@/components/tasks/TaskQuestion';
 import { buildAgentTree, flattenAgentTree, type AgentProgressEntry } from '@/lib/agent-tree';
 import { useRegionRefresher, useRegionValue } from '@/components/LiveRegion';
@@ -96,6 +98,8 @@ export interface LiveWorker {
 
 interface Props {
   initialWorker: LiveWorker;
+  /** Live controls stay near Now rather than below an unbounded history. */
+  controls?: ReactNode;
   outputRequirement?: string | null;
   deliverableArtifactCount?: number;
   usesReviewer?: boolean;
@@ -148,7 +152,7 @@ interface Props {
 // trees can be reconstructed; see @/lib/agent-tree.
 type TaskProgressEntry = AgentProgressEntry;
 
-export default function RealTimeWorkerView({ initialWorker: renderedWorker, outputRequirement, deliverableArtifactCount, usesReviewer, reviewState, taskId, taskStatus: renderedStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp, delivery = null, focusAnswer = false, refresh }: Props) {
+export default function RealTimeWorkerView({ initialWorker: renderedWorker, outputRequirement, deliverableArtifactCount, usesReviewer, reviewState, taskId, taskStatus: renderedStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp, delivery = null, focusAnswer = false, refresh, controls }: Props) {
   // On the task page a live event re-reads the worker and the task's status
   // (LiveData); a read of this worker wins over what the page rendered.
   const region = useRegionValue<TaskLiveRegion>();
@@ -275,6 +279,8 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
     nowMs,
   });
   const elapsed = startMs != null ? elapsedLabel(nowMs - startMs) : null;
+  // No reported progress for 30 minutes: flagged, and the controls offer Restart (R-7).
+  const stall = worker.waitingFor ? null : runStall({ status: worker.status, startMs, progressMs: now.updatedTs, nowMs });
   const tokens = (worker.inputTokens || 0) + (worker.outputTokens || 0);
   // 0 tokens after real turns is a reporting gap, not a measurement: hide it.
   const tokensShown = showTokenCount(tokens, worker.turns);
@@ -287,15 +293,14 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
   const filesEdited = touched.rows.filter(r => r.kind !== 'run').length;
   const commands = touched.rows.filter(r => r.kind === 'run').length;
 
-  const activity = (
-    <WorkerActivityTimeline
-      milestones={milestones}
-      currentAction={isActive ? worker.currentAction : undefined}
-      startedAt={worker.startedAt}
-      nowMs={nowMs}
-      live={isActive && !worker.waitingFor}
-    />
-  );
+  const activityProps = {
+    milestones,
+    currentAction: isActive ? worker.currentAction : undefined,
+    startedAt: worker.startedAt,
+    nowMs,
+    live: isActive && !worker.waitingFor,
+  };
+  const activity = <WorkerActivityTimeline {...activityProps} />;
 
   const staleBanner = staleNotice && (
     <div data-testid="worker-answer-stale" className="mb-4 border-2 border-border-strong px-4 py-3 text-sm text-text-secondary">
@@ -318,6 +323,7 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
           <p className="mt-1 text-sm font-semibold text-text-primary">{delivery.headline}</p>
           {delivery.detail && <p className="mt-1 text-sm text-text-secondary">{delivery.detail}</p>}
         </div>
+        {controls}
       </div>
     );
   }
@@ -335,6 +341,7 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
           </p>
           <p className="mt-1 text-sm text-text-secondary">A platform problem stopped this task. It resumes when the repair completes.</p>
         </div>
+        {controls}
       </div>
     );
   }
@@ -363,6 +370,7 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
           />
         </div>
 
+        {controls}
         <PausedBar evidence={now.evidence} elapsed={elapsed} turns={worker.turns} tokens={tokensShown ? formatTokens(tokens) : null} nowMs={nowMs} />
 
         <div data-testid="worker-paused-context" className="border-t border-border-default">
@@ -386,53 +394,59 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
   }
 
   return (
-    <div data-testid="worker-view" data-state="running">
+    <RunStallContext.Provider value={stall}>
+    <div data-testid="worker-view" data-state={stall ? 'stalled' : 'running'}>
       {staleBanner}
-      {isActive ? (
-        <NowStrip now={now} nowMs={nowMs} />
-      ) : (
-        worker.currentAction && (
-          <p data-testid="worker-current-action" className="text-sm text-text-secondary truncate">{collapseWorkspacePath(worker.currentAction)}</p>
-        )
-      )}
-
-      {/* Results: what the run has produced so far, before the log. */}
-      <StatRow
-        elapsed={elapsed}
-        turns={worker.turns}
-        tokens={tokensShown ? tokens : null}
-        pr={worker.prUrl ? { url: worker.prUrl, number: worker.prNumber, state: resolvePrDisplayState({ delivery, prLifecycleStatus: worker.prLifecycleStatus }) } : null}
-        filesTouched={Math.max(filesEdited, worker.filesChanged ?? 0)}
-        added={added}
-        removed={removed}
-      />
-
-      {/* Subagent progress indicator — nested by parentAgentId into an agent tree */}
-      {taskProgress.length > 0 && isActive && (
-        <div className="mt-4 p-3 bg-surface-2 border border-border-default">
-          <div className="section-label mb-1.5">Background agents</div>
-          <div className="space-y-1">
-            {flattenAgentTree(buildAgentTree(taskProgress)).map((tp) => (
-              <div key={tp.taskId} className="flex items-center justify-between font-mono text-[11px]">
-                <div
-                  className="flex items-center gap-2 min-w-0"
-                  style={{ paddingLeft: tp.depth > 0 ? `${tp.depth * 14}px` : undefined }}
-                >
-                  {tp.depth > 0 && <span className="text-text-muted select-none" aria-hidden>└</span>}
-                  <span className="w-1.5 h-1.5 bg-status-running animate-status-pulse shrink-0" />
-                  <span className="text-text-secondary truncate">{tp.agentName || tp.taskId.slice(0, 8)}</span>
-                </div>
-                <div className="flex items-center gap-3 text-text-muted shrink-0">
-                  <span>{tp.toolCount} tool{tp.toolCount !== 1 ? 's' : ''}</span>
-                  <span>{Math.round(tp.durationMs / 1000)}s</span>
-                </div>
-              </div>
-            ))}
-          </div>
+      {/* One live block (design 6356e80d `phone-task-running`): the Now line
+          and its age, the stats inline, the activity strip with the latest
+          three milestones, and Steer, Pause and Stop together. */}
+      <section aria-label="Live" data-testid="worker-live-block" className="card flex flex-col gap-3 px-4 py-3.5 md:gap-4 md:px-6 md:py-[18px]">
+        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+          {isActive ? (
+            <NowStrip now={now} nowMs={nowMs} stall={stall} variant="inline" />
+          ) : (
+            worker.currentAction && (
+              <p data-testid="worker-current-action" className="min-w-0 flex-1 text-sm text-text-secondary truncate">{collapseWorkspacePath(worker.currentAction)}</p>
+            )
+          )}
+          <LiveStats
+            elapsed={elapsed}
+            turns={worker.turns}
+            files={Math.max(filesEdited, worker.filesChanged ?? 0)}
+            added={added}
+            removed={removed}
+          />
         </div>
-      )}
 
-      {activity}
+        {/* Subagent progress indicator — nested by parentAgentId into an agent tree */}
+        {taskProgress.length > 0 && isActive && (
+          <div className="p-3 bg-surface-2 border border-border-default">
+            <div className="section-label mb-1.5">Background agents</div>
+            <div className="space-y-1">
+              {flattenAgentTree(buildAgentTree(taskProgress)).map((tp) => (
+                <div key={tp.taskId} className="flex items-center justify-between font-mono text-[11px]">
+                  <div
+                    className="flex items-center gap-2 min-w-0"
+                    style={{ paddingLeft: tp.depth > 0 ? `${tp.depth * 14}px` : undefined }}
+                  >
+                    {tp.depth > 0 && <span className="text-text-muted select-none" aria-hidden>└</span>}
+                    <span className="w-1.5 h-1.5 bg-status-running animate-status-pulse shrink-0" />
+                    <span className="text-text-secondary truncate">{tp.agentName || tp.taskId.slice(0, 8)}</span>
+                  </div>
+                  <div className="flex items-center gap-3 text-text-muted shrink-0">
+                    <span>{tp.toolCount} tool{tp.toolCount !== 1 ? 's' : ''}</span>
+                    <span>{Math.round(tp.durationMs / 1000)}s</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <WorkerActivityTimeline {...activityProps} variant="strip" maxVisible={3} />
+
+        {controls && <div data-testid="worker-live-controls" className="border-t border-border-default pt-3">{controls}</div>}
+      </section>
 
       {/* Model usage — collapsible, the run's accounting rather than its story */}
       {worker.resultMeta?.modelUsage && Object.keys(worker.resultMeta.modelUsage).length > 0 && (
@@ -458,6 +472,7 @@ export default function RealTimeWorkerView({ initialWorker: renderedWorker, outp
         </div>
       )}
     </div>
+    </RunStallContext.Provider>
   );
 }
 

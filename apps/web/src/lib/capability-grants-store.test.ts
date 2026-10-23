@@ -90,7 +90,7 @@ mock.module('./connector-capabilities', () => ({
   resolveProviderAccess: (_i: any, provider: string, access: string) => ({ capability: `${provider}:${access}`, role: null, candidates: candidate ? [candidate] : [], operator: null, unclassifiedConnectors: [], runtime: '', summary: '' }),
 }));
 
-const { requestCapability, decideCapabilityRequest, authorizeCapabilityUse, capabilityGrantSource, loadGrant } = await import('./capability-grants-store');
+const { requestCapability, decideCapabilityRequest, authorizeCapabilityUse, capabilityGrantSource, loadGrant, expireLapsedTeamGrants, listTeamRequests } = await import('./capability-grants-store');
 const { parseCapabilityRequest } = await import('./capability-grants');
 
 // ── fixtures (illustrative) ──────────────────────────────────────────────────
@@ -390,5 +390,35 @@ describe('analytics:read requests (provider buildd, access read)', () => {
     expect(out.ok && out.resolution.kind).toBe('forbidden');
     expect(parseCapabilityRequest({ capability: 'analytics:read', resource: OTHER_WS })).toMatchObject({ ok: true, request: { provider: 'buildd', access: 'read', capability: 'analytics:read' } });
     expect(parseCapabilityRequest({ capability: 'analytics:read', access: 'write', resource: OTHER_WS }).ok).toBe(false);
+  });
+});
+
+describe('a pending request whose run ended is closed on read', () => {
+  it('task ended: the row closes with the reason an approval would give, before anyone clicks', async () => {
+    const g = await pending();
+    T.tasks[0].status = 'completed';
+    await expireLapsedTeamGrants(TEAM);
+    expect(await loadGrant(g.id)).toMatchObject({ status: 'expired', decidedBy: 'system', decisionReason: 'task_terminal' });
+  });
+
+  it('agent run stopped: closed as worker_not_live; Settings reads it closed', async () => {
+    const g = await pending();
+    T.workers[0].status = 'failed';
+    const rows = await listTeamRequests(TEAM);
+    expect(rows.find(r => r.id === g.id)).toMatchObject({ status: 'expired', decisionReason: 'worker_not_live' });
+  });
+
+  it('a live run keeps its request pending', async () => {
+    const g = await pending();
+    await expireLapsedTeamGrants(TEAM);
+    expect((await loadGrant(g.id))!.status).toBe('pending');
+  });
+
+  it('a decision made first wins: a closed-run sweep never overwrites it', async () => {
+    const g = await pending();
+    await decideCapabilityRequest(g, 'deny', ADMIN);
+    T.tasks[0].status = 'completed';
+    await expireLapsedTeamGrants(TEAM);
+    expect((await loadGrant(g.id))!.status).toBe('denied');
   });
 });

@@ -5,7 +5,6 @@ import { describe, it, expect } from 'bun:test';
 // tasks/page.test.ts's mission-budget plumbing suite — a re-derivation of the
 // wiring in this test file would prove nothing about the actual page.
 const pageSource = await Bun.file(new URL('./page.tsx', import.meta.url)).text();
-const missionContextLoadSource = await Bun.file(new URL('./mission-context-load.ts', import.meta.url)).text();
 // The load (lib/task-view.ts) and the pick it makes (lib/task-view-pick.ts).
 const taskViewSource = (await Bun.file(new URL('../../../../../lib/task-view.ts', import.meta.url)).text())
   + (await Bun.file(new URL('../../../../../lib/task-view-pick.ts', import.meta.url)).text());
@@ -25,35 +24,6 @@ describe('ship badge plumbing — tasks/[id]/page.tsx (spec §10.3)', () => {
 
   it('mounts TaskShipBadge with task.release and the resolved shippedReleaseId', () => {
     expect(pageSource).toContain('<TaskShipBadge release={task.release} shippedReleaseId={shippedRelease?.releaseId ?? null} />');
-  });
-});
-
-describe('plan chain — tasks/[id]/page.tsx (reviewer task navigation)', () => {
-  it('prepends parent task to chain when current task is a child', () => {
-    // When a reviewer task (child) is viewed, the parent (builder) task should be
-    // included in the chain so the user can navigate from reviewer to builder.
-    expect(pageSource).toContain('if (task.parentTaskId && task.parentTask) {');
-    // The parent carries its classification so selectExecutionPlan can drop attempts (D9).
-    expect(pageSource).toContain('{ id: task.parentTaskId, title: task.parentTask.title, status: task.parentTask.status, roleSlug: task.parentTask.roleSlug, taskClass: task.parentTask.taskClass, mode: task.parentTask.mode, parentTaskId: task.parentTask.parentTaskId, roleInferred: task.parentTask.roleInferred },');
-  });
-
-  it('filters out one-phase chains (a self-loop, or another task alone)', () => {
-    // A chain of one is no plan: fall back to the Related Tasks section, which
-    // has more comprehensive navigation (rule: execution-plan.ts isMeaningfulPlan).
-    expect(pageSource).toContain('if (!isMeaningfulPlan(planChain)) {');
-    expect(pageSource).toContain('planChain = [];');
-  });
-
-  it('renders PlanChainView when chain has content', () => {
-    expect(pageSource).toContain('{planChain.length > 0 ? (');
-    expect(pageSource).toContain('<PlanChainView');
-  });
-
-  it('falls back to Related Tasks only when chain is empty', () => {
-    // The Related Tasks section (with parent link) only renders when the chain is empty.
-    expect(pageSource).toContain(') : hasRelatedTasks && (');
-    // An attempt names its deliverable in the header, so the parent row is the deliverable's only (task-page spec).
-    expect(pageSource).toContain('const hasRelatedTasks = showParentRow || childTasks.subtasks.length > 0 || relatedAttempts.length > 0;');
   });
 });
 
@@ -85,13 +55,9 @@ describe('dependency blocking — tasks/[id]/page.tsx reads every dep worker', (
 });
 
 describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-mobile-continuity.md S6)', () => {
-  it('renders the mission context bar for a mission task, built from one light mission query', () => {
-    expect(pageSource).toContain("import MissionContextBar from './MissionContextBar'");
-    expect(pageSource).toContain('missionContextBarFor(');
-    expect(pageSource).toContain('<MissionContextBar bar={missionContextBar} />');
-    // The sibling query selects the card's columns, never task result/context or artifact content.
-    expect(pageSource).toContain('missionContextReads(task.missionId)');
-    expect(missionContextLoadSource).toContain('pick(tasks as never, MISSION_CARD_TASK_COLUMNS)');
+  it('loads executor and review policy with the mission relation', () => {
+    expect(pageSource).toContain('executor: true, requiresReview: true, mergePolicy: true');
+    expect(pageSource).toContain('missionExecutorOf(task.mission)');
   });
 
   it('drops the `!task.missionId` gates: a mission task shows its scoped questions', () => {
@@ -138,7 +104,8 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
   it('drops "Also running" (Home\'s Agents panel has it) and the bare "Next" link ("Unblocked by this" stays)', () => {
     expect(pageSource).not.toContain('AlsoRunning');
     expect(pageSource).not.toContain('nextChainTask');
-    expect(pageSource).toContain('data-testid="task-unblocked"');
+    // "Blocks" lives in the open Details card (TaskDetailsCard owns the hook).
+    expect(pageSource).toContain('blocks={dependentTasks.map(');
   });
 
   it('the side panel follows the main column: the hero stays the first screen on mobile', () => {
@@ -176,8 +143,7 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
   });
 
   it('attempts never render as the Execution plan (D9)', () => {
-    expect(pageSource).toContain('selectExecutionPlan(');
-    expect(pageSource).toContain('partitionChildTasks(');
+    expect(pageSource).not.toContain('<PlanChainView');
   });
 
   it('does not print the deliverable twice (D9)', () => {
@@ -206,16 +172,6 @@ describe('mobile layout — tasks/[id]/page.tsx', () => {
 });
 
 
-
-describe('Related tasks status — tasks/[id]/page.tsx (demo polish)', () => {
-  it('renders each related task through StatusPill + deriveDisplayStatus, never the raw status enum', () => {
-    const related = pageSource.slice(pageSource.indexOf('Related Tasks'), pageSource.indexOf('{/* Attachments */}'));
-    expect(related).not.toContain('{sub.status}');
-    expect(related).not.toContain('{task.parentTask.status}');
-    expect(related).toContain('<StatusPill status={deriveDisplayStatus(sub.status)} />');
-    expect(related).toContain('<StatusPill status={deriveDisplayStatus(task.parentTask.status)} />');
-  });
-});
 
 describe('Worker history branch — tasks/[id]/page.tsx (demo polish)', () => {
   it('shows the branch through displayBranchName with the full name in title', () => {
@@ -246,9 +202,9 @@ describe('deterministic attempt order — tasks/[id]/page.tsx', () => {
     expect(pageSource).not.toMatch(/orderBy:\s*(sqlOrderBy\()?desc\(workers\.createdAt\)\)?\s*[,}]/);
     expect(pageSource).not.toMatch(/orderBy:\s*(sqlOrderBy\()?\[\s*desc\(workers\.createdAt\)\s*\]/);
     const withTiebreak = pageSource.match(/orderBy:\s*(sqlOrderBy\()?\[desc\(workers\.createdAt\), desc\(workers\.id\)\]/g) ?? [];
-    // Three reads here (dependencies, CI-retry attempts, the plan chain); the
+    // Two reads here (dependencies, CI-retry attempts); the
     // task's own workers are read by lib/task-view.ts, with the same tiebreak.
-    expect(withTiebreak.length).toBeGreaterThanOrEqual(3);
+    expect(withTiebreak.length).toBeGreaterThanOrEqual(2);
     expect(taskViewSource).toContain('orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)])');
   });
 
@@ -286,7 +242,7 @@ describe('one verdict — tasks/[id]/page.tsx (lib/task-verdict.ts)', () => {
   });
 
   it('every captured error stays inspectable through the full-evidence list', () => {
-    expect(pageSource).toContain('<TaskErrorEvidence items={errorEvidenceItems}');
+    expect(pageSource).toContain("<TaskErrorEvidence items={errorEvidenceItems.filter(item => item.presentation !== 'unclear')}");
   });
 });
 
@@ -358,5 +314,102 @@ describe('state words on the task page (terms catalog)', () => {
   it('the mission budget banner names the cause, never "on hold"', () => {
     expect(pageSource).toContain('waits for more budget. Raise the mission budget to start them, or force-start this task.');
     expect(pageSource).not.toMatch(/\bon hold\b/);
+  });
+});
+
+describe('navigation task hierarchy (R-7 to R-10)', () => {
+  it('removes mission strip and execution-plan reads', () => {
+    expect(pageSource).not.toContain('<MissionContextBar');
+    expect(pageSource).not.toContain('<PlanChainView');
+    expect(pageSource).not.toContain('missionContextReads(');
+  });
+  it('puts the live block before the timeline and includes steering there', () => {
+    expect(pageSource.indexOf('data-testid="task-active-worker"')).toBeLessThan(pageSource.indexOf('<TaskTimeline'));
+    const block = pageSource.slice(pageSource.indexOf('data-testid="task-active-worker"'), pageSource.indexOf('<TaskTimeline'));
+    expect(block).toContain('<WorkerSteerPanel');
+  });
+  it('loads dependents regardless of completion, and hides unknown-effect errors', () => {
+    expect(pageSource).toContain('const dependentsQuery = db.query.tasks.findMany(');
+    expect(pageSource).toContain("item.presentation !== 'unclear'");
+  });
+});
+
+// Spec e28018c2 R-6, R-9, AC-16: dependencies and dependents cross workspaces,
+// and both lists go through the one per-viewer resolver.
+describe('cross-workspace dependencies on the task page', () => {
+  it('reads dependents from every workspace, not just this task\'s', () => {
+    const q = pageSource.slice(pageSource.indexOf('const dependentsQuery'), pageSource.indexOf('const dependentsQuery') + 400);
+    expect(q).not.toContain('eq(tasks.workspaceId');
+  });
+  it('resolves both lists for the viewer and renders the hidden count', () => {
+    expect(pageSource).toContain('resolveDependencyHolders(reachScope, depTaskIds)');
+    expect(pageSource).toContain('resolveDependencyHolders(reachScope, dependentRows.map(d => d.id))');
+    expect(pageSource).toContain('blocksList(dependentRows, dependentReach)');
+    expect(pageSource).toContain('data-testid="task-unblocked-hidden"');
+  });
+});
+
+describe('reading width (Navigation R-21)', () => {
+  it('keeps the content column at most 840px', () => {
+    expect(pageSource).toMatch(/className="max-w-\[840px\] w-full" data-testid="task-content-column"/);
+    expect(pageSource).not.toContain('max-w-[900px]');
+  });
+});
+
+// Surface fix 59a6dec1 (design 6356e80d `phone-task-running`,
+// `desktop-task-running`; Navigation R-7, R-9, R-14; AC-6).
+describe('running task — status line, one live block, Details open', () => {
+  it('the status line sits under the title, before the sub-line', () => {
+    const header = pageSource.slice(pageSource.indexOf('data-testid="task-header"'), pageSource.indexOf('{/* Action first'));
+    const title = header.indexOf('<TaskTitle title={heading.heading} />');
+    const line = header.indexOf('<TaskStatusLine');
+    expect(line).toBeGreaterThan(title);
+    expect(line).toBeLessThan(header.indexOf('data-testid="task-subline"'));
+  });
+
+  it('with the status line up, the in-progress verdict chip is not repeated further down', () => {
+    expect(pageSource).toMatch(/verdict && !\(statusLine && verdict\.state === 'in_progress'\)/);
+  });
+
+  it('Steer, Pause and Stop ride in the live block as one row', () => {
+    expect(pageSource).toMatch(/<WorkerSteerPanel \{\.\.\.workerSteerProps\(activeWorker, taskWorkers, isTerminal\)\} taskId=\{task\.id\} showHistory=\{false\} layout="row" \/>/);
+  });
+
+  it('Details is an open card above Run, not a collapsed disclosure', () => {
+    const card = pageSource.indexOf('<TaskDetailsCard');
+    const run = pageSource.indexOf('cursor-pointer text-body">Run</summary>');
+    expect(card).toBeGreaterThan(0);
+    expect(card).toBeLessThan(run);
+    expect(pageSource).not.toContain('<summary className="min-h-11 flex items-center cursor-pointer text-body font-medium">Details</summary>');
+  });
+});
+
+describe('the shell marks — tasks/[id]/page.tsx (design 6356e80d, desktop-task-running)', () => {
+  it('hides the questions banner: a waiting task asks its question on its own page', () => {
+    expect(pageSource).toMatch(/<ShellPageMarks[^>]*hideQuestionsBanner/);
+  });
+
+  it("a mission's task claims Missions in the nav; a loose task claims nothing", () => {
+    expect(pageSource).toMatch(/<ShellPageMarks[^>]*navSection=\{task\.missionId \? '\/app\/missions' : null\}/);
+  });
+});
+
+// Surface audit ff33de4d against phone-task-merged and desktop-task-waiting (R-9, R-11, R-20).
+describe('merged and waiting tasks — tasks/[id]/page.tsx', () => {
+  it('a waiting task reads its status line under the title, not a Queued chip', () => {
+    expect(pageSource).toContain('{!shippedView && !verdict && !waitingOn && !statusLine && (');
+    expect(pageSource).toContain('<TaskWaitingLine on={waitingOn}');
+  });
+  it('the timeline gets the legacy review, the linked runs\' times and what the task waits on', () => {
+    const from = pageSource.indexOf('const timeline = buildTaskTimeline(');
+    const call = pageSource.slice(from, pageSource.indexOf('});', from));
+    for (const arg of ['review: legacyReview', 'eventTimes', 'waitingOn:', 'deliverInto:']) expect(call).toContain(arg);
+  });
+  it('a legacy review counts as at least one round, even with no stored iteration', () => {
+    expect(pageSource).toContain('legacyReview ? Math.max(1, legacyReview.round ?? 0) : 0');
+  });
+  it('no loop chip and no Loop history without loop history', () => {
+    expect(pageSource).toContain('{task.loopConfig && loopHistory.length > 0 && (');
+    expect(pageSource).toContain('{task.loopConfig && loopHistory.length > 0 ? (');
   });
 });

@@ -114,10 +114,15 @@ async function workspacePolicy(workspaceId: string | null | undefined): Promise<
 async function hasWaiver(missionId: string): Promise<boolean> {
   const notes = await db.query.missionNotes.findMany({
     where: sqlWhere(and(eq(missionNotes.missionId, missionId), eq(missionNotes.title, SURFACE_AUDIT_WAIVER_NOTE_TITLE))),
-    columns: { authorType: true, body: true },
+    columns: { authorType: true, body: true, status: true },
     limit: 20,
   });
-  return notes.some(n => (n.authorType === 'user' || n.authorType === 'mcp') && (n.body ?? '').trim().length > 0);
+  return notes.some(standingWaiverNote);
+}
+
+/** A person wrote it, it says something, and they have not withdrawn it (spec 072de598 I-18). */
+function standingWaiverNote(n: { authorType: string; body: string | null; status?: string | null }): boolean {
+  return (n.authorType === 'user' || n.authorType === 'mcp') && (n.body ?? '').trim().length > 0 && n.status !== 'dismissed';
 }
 
 /**
@@ -164,7 +169,7 @@ export async function loadSurfaceAuditWaivers(missionIds: readonly string[]): Pr
   if (missionIds.length === 0) return out;
   const notes = await db.query.missionNotes.findMany({
     where: sqlWhere(and(inArray(missionNotes.missionId, [...missionIds]), eq(missionNotes.title, SURFACE_AUDIT_WAIVER_NOTE_TITLE))),
-    columns: { missionId: true, authorType: true, body: true, actorLabel: true, createdAt: true },
+    columns: { missionId: true, authorType: true, body: true, actorLabel: true, createdAt: true, status: true },
     orderBy: sqlOrderBy([desc(missionNotes.createdAt)]),
   });
   const byMission = new Map<string, typeof notes>();
@@ -176,7 +181,7 @@ export async function loadSurfaceAuditWaivers(missionIds: readonly string[]): Pr
   }
   for (const [missionId, list] of byMission) {
     const latest = list
-      .filter(n => (n.authorType === 'user' || n.authorType === 'mcp') && (n.body ?? '').trim().length > 0)
+      .filter(standingWaiverNote)
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
     if (latest) out.set(missionId, { reason: (latest.body ?? '').trim(), actorLabel: latest.actorLabel ?? null, at: new Date(latest.createdAt).toISOString() });
   }
