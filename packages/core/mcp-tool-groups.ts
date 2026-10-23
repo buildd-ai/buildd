@@ -778,7 +778,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
       { text: 'event type', actions: ['emit_event', 'query_events'] },
     ]),
     param('content', str, [{ text: 'Artifact text', actions: ['create_artifact'] }]),
-    param('defaultChoice', str, [{ text: 'Question: what you chose', actions: ['post_note'] }]),
+    param('defaultChoice', str, [{ text: 'What you chose', actions: ['post_note'] }]),
     param('filename', str, [{ text: 'File name', actions: ['upload_artifact'] }]),
     param('mimeType', str, [{ text: 'MIME type', actions: ['upload_artifact'] }]),
     param('sizeBytes', num, [{ text: 'Exact bytes', actions: ['upload_artifact'] }]),
