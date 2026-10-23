@@ -16,6 +16,7 @@ import { buildMissionListCard, type ListMissionRow } from './mission-list-card';
 import { deriveMissionStateView, missionNeedsYou } from './mission-state-view';
 import { continueOnRunnerBlockedReason } from './local-strand';
 import { unmetDependencyIds, unmetDependencyPrs, type DependencyRow } from './mission-helpers';
+import { holderFacts, type HolderSourceRow } from './mission-task-hold';
 
 const NOW = Date.parse('2026-10-01T12:00:00Z');
 const ago = (min: number) => new Date(NOW - min * 60_000);
@@ -127,7 +128,11 @@ describe('card and explain agree on the same rows', () => {
       const explainView = deriveMissionStateView({
         status: row.status, isHeld: false, executor: row.executor ?? null, activeAgents: 0, health: 'NOMINAL',
         completion: { ok: false, code: 'pending_deliverables', reason: 'open', pendingDeliverables: open.length, pendingByStatus: { pending: open.length } },
-        openTasks: open.map(t => ({ id: t.id, status: t.status, title: t.title, waitingOnTaskIds: unmetDependencyIds(t, byId), waitingOnPrs: unmetDependencyPrs(t, byId) })),
+        // R-14: explain names the dependency from its row, as the card does.
+        openTasks: open.map(t => ({
+          id: t.id, status: t.status, title: t.title, waitingOnTaskIds: unmetDependencyIds(t, byId), waitingOnPrs: unmetDependencyPrs(t, byId),
+          dependencies: unmetDependencyIds(t, byId).map(id => holderFacts(byId.get(id) as HolderSourceRow)),
+        })),
         localStrand: strand ? { ...strand, flipBlockedReason: continueOnRunnerBlockedReason({ status: row.status, workspaceId: row.workspaceId }) } : null,
         unmergedPrs: ownerUnmergedPrs(tasks, NOW),
       });

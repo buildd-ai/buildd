@@ -89,7 +89,9 @@ describe('mission header — Part 2 regression: a live worker must not suppress 
     });
 
     expect(html).toContain('13 times in a row');
-    expect(html).toContain('workspace_cap');
+    // The reason in the gate's own words (Navigation R-14), never its slug.
+    expect(html).toContain('every agent slot in the workspace is in use');
+    expect(html).not.toContain('workspace_cap');
   });
 });
 

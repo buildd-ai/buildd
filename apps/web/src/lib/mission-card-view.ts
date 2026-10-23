@@ -21,6 +21,8 @@
  * - chip: `deriveMissionStateView(...).chip`, the detail header's accessor.
  */
 import { openCriteriaChecks, type MissionVisualReviewSummary } from './mission-open-checks';
+import type { ClaimHoldFacts } from './mission-claim-deferrals';
+import { derivePendingTaskHold, holderFacts, type PendingHolderFacts, type PendingTaskHold, type PendingTaskHoldInput } from './mission-task-hold';
 import { isBuildComplete } from './mission-checks';
 import { isMissionAuditTask } from '@buildd/core/surface-audit';
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
@@ -312,6 +314,71 @@ export function failedDeliverableTaskIds(rows: readonly Pick<MissionCardRow, 'ta
 export const MISSION_CARD_VIEW_CAP = 30;
 
 /**
+ * What a card surface loaded about why its pending rows are not running
+ * (Navigation R-14): each pending task's newest claim refusal
+ * (`loadClaimHolds`), the holder rows those refusals and the rows'
+ * dependencies name (`loadPendingHolderFacts`), and out-of-mission
+ * dependencies by id (`loadDependencyRows`). All optional: a surface that
+ * loaded none reads its rows as before.
+ */
+export interface MissionCardHoldFacts {
+  claimHolds?: ReadonlyMap<string, ClaimHoldFacts> | null;
+  holders?: ReadonlyMap<string, PendingHolderFacts> | null;
+  dependencies?: ReadonlyMap<string, DependencyRow> | null;
+}
+
+/** The holder facts for a pending row's dependencies and the holder its refusal named: loaded ones first, else the mission's own rows. */
+function cardHolders(tasks: readonly MissionCardTaskRow[], facts: MissionCardHoldFacts): Map<string, PendingHolderFacts> {
+  const out = new Map<string, PendingHolderFacts>();
+  for (const t of tasks) out.set(t.id, holderFacts({ id: t.id, title: t.title, status: t.status, startAt: t.startAt ?? null, workers: t.workers ?? [] }));
+  for (const [id, h] of facts.holders ?? []) out.set(id, h);
+  return out;
+}
+
+/** The facts the state view reads for one pending card row (`MissionStateInput.openTasks[]`). */
+function cardRowHoldFacts(
+  t: MissionCardTaskRow,
+  byId: ReadonlyMap<string, DependencyRow>,
+  holders: ReadonlyMap<string, PendingHolderFacts>,
+  facts: MissionCardHoldFacts,
+): Pick<PendingTaskHoldInput, 'deferral' | 'dependencies' | 'createdAt' | 'startAt' | 'budgetExhausted'> {
+  const h = facts.claimHolds?.get(t.id);
+  return {
+    deferral: h ? { reason: h.reason, firstDeferredAt: h.firstDeferredAt, detail: h.detail } : null,
+    dependencies: unmetDependencyIds(t, byId).map(id => holders.get(id)).filter((f): f is PendingHolderFacts => !!f),
+    createdAt: t.createdAt ?? null,
+    startAt: t.startAt ?? null,
+    budgetExhausted: t.context?.budgetExhausted === true,
+  };
+}
+
+/**
+ * Each pending deliverable's R-14 hold, as the card's state view reads it, for
+ * the delivery projection's row (`MissionTaskRow.hold`): one derivation for
+ * the chip and for Home's next step.
+ */
+export function cardTaskHolds(
+  row: Pick<MissionCardRow, 'tasks' | 'executor'>,
+  opts: { now: number; runnerOnline?: boolean; facts?: MissionCardHoldFacts | null },
+): Map<string, PendingTaskHold> {
+  const facts = opts.facts ?? {};
+  const tasks = row.tasks ?? [];
+  const byId = new Map<string, DependencyRow>([...(facts.dependencies ?? []), ...tasks.map(t => [t.id, t as DependencyRow] as const)]);
+  const holders = cardHolders(tasks, facts);
+  const out = new Map<string, PendingTaskHold>();
+  for (const t of tasks) {
+    if (t.status !== 'pending' || !isDeliverableTask(t as any)) continue;
+    out.set(t.id, derivePendingTaskHold({
+      now: opts.now,
+      ...cardRowHoldFacts(t, byId, holders, facts),
+      holders,
+      runnerOnline: row.executor === 'local' ? null : opts.runnerOnline ?? null,
+    }));
+  }
+  return out;
+}
+
+/**
  * `liveWorkers`: an exact count from a batched query. The nested worker
  * relation is capped per task, so counting it can miss a live re-claim.
  * `deliveryViews`: the kernel's DeliveryViews for this mission's failed
@@ -329,6 +396,8 @@ export function summarizeMissionForCard(
     visualReview?: MissionVisualReviewSummary | null;
     /** `loadRunnerOnlineByWorkspace`: queued work in a workspace with no runner reads "No runner online". */
     runnerOnlineByWorkspace?: ReadonlyMap<string, boolean> | null;
+    /** Why the pending rows are not running (R-14), when the surface loaded it. */
+    holdFacts?: MissionCardHoldFacts | null;
   } = {},
 ): MissionCardSummary {
   const now = opts.now ?? Date.now();
@@ -373,7 +442,7 @@ export function summarizeMissionForCard(
   // The card's state — chip, situation, and whether the next step is yours —
   // is derived once, here, so the group the header counts and the chip the
   // card shows cannot come from two derivations (F1, D2).
-  const state = deriveCardState(row, { liveWorkers, progress, build: { done: completedTasks, total: totalTasks }, healthState, hasPendingDeliverableWork: pending, now, replaced, escalationGateVerdict: row.escalationGateVerdict, visualReview: opts.visualReview ?? null, runnerOnline: row.workspaceId ? opts.runnerOnlineByWorkspace?.get(row.workspaceId) : undefined });
+  const state = deriveCardState(row, { liveWorkers, progress, build: { done: completedTasks, total: totalTasks }, healthState, hasPendingDeliverableWork: pending, now, replaced, escalationGateVerdict: row.escalationGateVerdict, visualReview: opts.visualReview ?? null, runnerOnline: row.workspaceId ? opts.runnerOnlineByWorkspace?.get(row.workspaceId) : undefined, holdFacts: opts.holdFacts ?? null });
   const health = deriveMissionHealth({
     status: row.status,
     activeAgents: liveWorkers,
@@ -500,9 +569,11 @@ function toWaitClassifiable(t: MissionCardTaskRow): WaitClassifiableTask {
  */
 function deriveCardState(
   row: MissionCardRow,
-  s: { liveWorkers: number; progress: number; build: { done: number; total: number }; healthState: Health; hasPendingDeliverableWork: boolean; now: number; replaced: ReadonlySet<string>; escalationGateVerdict?: { owner: 'person' | 'machine'; reason?: string | null } | null; visualReview?: MissionVisualReviewSummary | null; runnerOnline?: boolean },
+  s: { liveWorkers: number; progress: number; build: { done: number; total: number }; healthState: Health; hasPendingDeliverableWork: boolean; now: number; replaced: ReadonlySet<string>; escalationGateVerdict?: { owner: 'person' | 'machine'; reason?: string | null } | null; visualReview?: MissionVisualReviewSummary | null; runnerOnline?: boolean; holdFacts?: MissionCardHoldFacts | null },
 ): MissionStateView {
   const tasks = row.tasks ?? [];
+  const holdFacts = s.holdFacts ?? {};
+  const holders = cardHolders(tasks, holdFacts);
   const deliverables = tasks.filter(t => isDeliverableTask(t as any));
   const criteriaState = (row.goalCriteriaState ?? null) as
     { overall?: string; criteria?: Array<{ verdict: string; label?: string; type?: string }> } | null;
@@ -517,10 +588,13 @@ function deriveCardState(
       });
   const integrationPr = deriveMissionIntegrationPr({ mission: row as any, tasks: tasks as any });
   const unmergedPrs = ownerUnmergedPrs(tasks, s.now);
-  const byId = new Map<string, DependencyRow>(tasks.map(t => [t.id, t as DependencyRow]));
+  // Out-of-mission dependencies are judged from their own rows when the surface loaded them, never guessed.
+  const byId = new Map<string, DependencyRow>([...(holdFacts.dependencies ?? []), ...tasks.map(t => [t.id, t as DependencyRow] as const)]);
   const strand = cardLocalStrand(row, s.now);
   return deriveMissionStateView({
     runnerOnline: s.runnerOnline,
+    now: s.now,
+    holders,
     status: row.status,
     isHeld: row.isHeld ?? false,
     armedAt: row.armedAt ?? null,
@@ -540,7 +614,7 @@ function deriveCardState(
       .filter(t => OPEN_TASK.has(t.status))
       .map(t => ({
         id: t.id, status: t.status, title: t.title,
-        ...(t.status === 'pending' ? { waitingOnTaskIds: unmetDependencyIds(t, byId), waitingOnPrs: unmetDependencyPrs(t, byId) } : {}),
+        ...(t.status === 'pending' ? { waitingOnTaskIds: unmetDependencyIds(t, byId), waitingOnPrs: unmetDependencyPrs(t, byId), ...cardRowHoldFacts(t, byId, holders, holdFacts) } : {}),
         surfaceAudit: isMissionAuditTask(t),
         // The audit's hold is the one the review state read (the same claim-loop record `explain` reads).
         ...(t.status === 'pending' && isMissionAuditTask(t) && s.visualReview?.holdReason ? { holdReason: s.visualReview.holdReason } : {}),

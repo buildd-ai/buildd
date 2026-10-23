@@ -232,7 +232,8 @@ export const COPY_RULES: CopyRule[] = [
   {
     id: 'state-jargon',
     name: 'Internal state word',
-    test: re(/^held\b|\bheld (?:for|by|until|back|at)\b|\bon hold\b|\b(?:dis)?arm(?:ed|s|ing)?\b|\bforce[- ]override\b|\b(?:un)?claimed\b|\bclaim (?:loop|limit|gate|window)\b|\bpoll(?:s|ed|ing)?\b|\bheartbeats?\b|\blease[sd]?\b|\b(?:waiting_input|in_progress|awaiting_review|needs_input|pr_open)\b/i),
+    // `held: runs after <task>` is Navigation R-14's cause for a queued task behind another task's files: named, not jargon.
+    test: re(/^held\b(?!: runs after )|\bheld (?:for|by|until|back|at)\b|\bon hold\b|\b(?:dis)?arm(?:ed|s|ing)?\b|\bforce[- ]override\b|\b(?:un)?claimed\b|\bclaim (?:loop|limit|gate|window)\b|\bpoll(?:s|ed|ing)?\b|\bheartbeats?\b|\blease[sd]?\b|\b(?:waiting_input|in_progress|awaiting_review|needs_input|pr_open)\b/i),
     why: 'Held, armed, claimed, polled, leased and raw status values are how the system talks to itself. Say what is happening in the reader\u2019s terms. Operator screens (Health) are exempt by path.',
     bad: 'Held for review until the gate is armed.',
     good: 'Waiting for review.',
