@@ -169,6 +169,9 @@ export type DesignOrigin = 'task' | 'mission' | 'spec';
 /** One spec criterion the task builds, with the design screens its `screen:` lines name. */
 export interface DesignCriterion { id: string; screens: string[] }
 
+/** A screen of the design as the file declares it: its id, name and the size it was drawn at. */
+export interface DesignScreenInfo { id: string; name: string; viewport: string }
+
 export interface DesignSource {
   /** A claude.ai artifact URL (e.g. a Design canvas). */
   sourceUrl?: string;
@@ -182,6 +185,8 @@ export interface DesignSource {
   screens?: string[];
   /** Which criterion names which screen. */
   criteria?: DesignCriterion[];
+  /** Name and size of the screens that matter (every screen when no criterion names one). */
+  screenInfo?: DesignScreenInfo[];
   from?: DesignOrigin;
 }
 
@@ -189,6 +194,7 @@ const CLAUDE_AI_ARTIFACT_URL = /^https:\/\/claude\.ai\/artifact\/[A-Za-z0-9_-]+\
 const ARTIFACT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // A screen id goes into a URL fragment and a CSS selector in the prompt, so only plain ids pass.
 const SCREEN_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/;
+const VIEWPORT = /^[1-9]\d{1,4}x[1-9]\d{1,4}$/;
 const CRITERION_ID = /^[A-Za-z]+-[0-9]+$/;
 
 const screenIds = (v: unknown): string[] =>
@@ -218,6 +224,13 @@ export function designSourceFromContext(context: Record<string, unknown> | null 
         .map(c => ({ id: c.id as string, screens: screenIds(c.screens) }))
         .filter(c => c.screens.length > 0);
       if (criteria.length > 0) out.criteria = criteria;
+    }
+    if (Array.isArray(ds.screenInfo)) {
+      const info = ds.screenInfo
+        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object' && typeof (s as any).id === 'string' && SCREEN_ID.test((s as any).id)
+          && typeof (s as any).name === 'string' && (s as any).name.length > 0 && typeof (s as any).viewport === 'string' && VIEWPORT.test((s as any).viewport))
+        .map(s => ({ id: s.id as string, name: (s.name as string).replace(/\s+/g, ' ').slice(0, 120), viewport: s.viewport as string }));
+      if (info.length > 0) out.screenInfo = info;
     }
     if (ds.from === 'task' || ds.from === 'mission' || ds.from === 'spec') out.from = ds.from;
   }
@@ -271,6 +284,10 @@ export function designArtifactLines(ds: DesignSource & { artifactId: string }): 
       + `Open each: ${screens.map(s => `\`file://<file>#${s}\` or \`section[data-screen="${s}"]\``).join('; ')}.`);
   } else {
     lines.push('No spec criterion this task builds names a screen, so every `section[data-screen]` in the file is a screen to match.');
+  }
+  const shown = (ds.screenInfo ?? []).filter(i => screens.length === 0 || screens.includes(i.id));
+  if (shown.length > 0) {
+    lines.push('Screens, as the file names them: ' + shown.map(i => `\`${i.id}\` ${i.name}, ${i.viewport}`).join('; ') + '.');
   }
   return lines;
 }

@@ -40,6 +40,10 @@ describe('isDesignArtifact', () => {
     expect(isDesignArtifact({ storageKey: null, metadata: { mimeType: 'text/html', kind: 'design' } })).toBe(false);
     expect(isDesignArtifact({ storageKey: 'k', metadata: null })).toBe(false);
   });
+  it('a design buildd stored (inert text/plain) is a design', () => {
+    expect(isDesignArtifact({ ...base, metadata: { mimeType: 'text/plain; charset=utf-8', kind: 'design' } })).toBe(true);
+    expect(isDesignArtifact({ ...base, metadata: { mimeType: 'text/plain', screens: ['a'] } })).toBe(false);
+  });
   it('accepts a charset suffix on the mime type', () => {
     expect(isDesignArtifact({ ...base, metadata: { mimeType: 'text/html; charset=utf-8', kind: 'design' } })).toBe(true);
   });
