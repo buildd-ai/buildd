@@ -186,6 +186,19 @@ export interface TaskDeliveryInput {
   headSha?: string | null;
   /** Why an unclaimed task has not started. Defaults to capacity. */
   waitingOn?: 'dependency' | 'capacity';
+  /** The R-14 hold the state view read for a pending task (`derivePendingTaskHold`), when the caller has it. */
+  hold?: TaskHold | null;
+}
+
+/**
+ * A pending task's hold as the row prints it (Navigation R-14): `Queued 2h ·
+ * held: runs after <task>`, `Waiting on <task> 3d`. `dead` says the task it
+ * waits on is cancelled, merged or itself deferred, so the wait is a person's.
+ */
+export interface TaskHold {
+  row: string;
+  kind: 'dependency' | 'overlap' | 'no_runner' | 'trunk_red' | 'budget' | 'scheduled' | 'hold' | 'next_in_line';
+  dead?: boolean;
 }
 
 export interface TaskDelivery {
@@ -201,6 +214,8 @@ export interface TaskDelivery {
   /** Only a question or an escalation. Auto-recovery never is. */
   needsHuman: boolean;
   waitingOn: 'dependency' | 'capacity' | null;
+  /** Kind `waiting`: the hold as the row prints it (R-14), when the caller read it; null otherwise. */
+  holdText: string | null;
   /** What repair is for, when the kind is repair. */
   repairReason: 'ci' | 'conflict' | 'review' | null;
   /**
@@ -235,6 +250,7 @@ export function projectTaskDelivery(input: TaskDeliveryInput): TaskDelivery {
     verdict,
     needsHuman: kind === 'needs',
     waitingOn: null,
+    holdText: null,
     repairReason: null,
     reconciling: false,
     confirmPrNumber: null,
@@ -271,7 +287,10 @@ export function projectTaskDelivery(input: TaskDeliveryInput): TaskDelivery {
   if (live.length > 0) return make('build');
   if (input.status === 'completed') return make('landed');
   if (input.status === 'failed' || input.status === 'cancelled') return make('notlanded');
-  return make('waiting', { waitingOn: input.waitingOn ?? 'capacity' });
+  return make('waiting', {
+    waitingOn: input.waitingOn ?? (input.hold?.kind === 'dependency' ? 'dependency' : 'capacity'),
+    holdText: input.hold?.row ?? null,
+  });
 }
 
 // ── Mission projection ──────────────────────────────────────────────────────
@@ -292,6 +311,8 @@ export interface MissionTaskRow {
   isIntegrationRefresh?: boolean | null;
   createdAt?: Date | string | number | null;
   workers?: readonly DeliveryWorker[] | null;
+  /** A pending task's R-14 hold, when the caller read it (the same one the mission state view reads). */
+  hold?: TaskHold | null;
 }
 
 export interface MissionDeliveryInput {
@@ -496,7 +517,7 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
   const landedIds = new Set<string>();
   const deliveries = first.map(({ t, workers, reviewers, status, repairRounds }) => {
     const r = m.reviews?.get(t.id);
-    const delivery = projectTaskDelivery({ status, workers, repairRounds, review: r?.review, headSha: r?.headSha });
+    const delivery = projectTaskDelivery({ status, workers, repairRounds, review: r?.review, headSha: r?.headSha, hold: t.hold ?? null });
     if (delivery.landed) landedIds.add(t.id);
     return { t, workers, reviewers, status, repairRounds, delivery };
   });
@@ -550,9 +571,12 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
     }
     else if (focus.delivery.kind === 'unavailable') exception = { tone: 'warning', text: `The audit for ${displayTaskTitle(focus.title)} could not run; it retries on its own` };
     else if (kind === 'waiting') {
-      exception = focus.delivery.waitingOn === 'dependency' ? { tone: 'muted', text: 'Waiting on earlier work, not on you' }
+      const hold = focus.delivery.holdText ? byId.get(focus.id)?.hold ?? null : null;
+      exception = hold?.dead ? { tone: 'warning', text: hold.row }
+        : focus.delivery.waitingOn === 'dependency' && !hold ? { tone: 'muted', text: 'Waiting on earlier work, not on you' }
         : m.localStrand?.stranded ? { tone: 'warning', text: 'No session is running it' }
         : m.localStrand ? { tone: 'muted', text: WAITING_FOR_SESSION }
+        : hold ? { tone: 'muted', text: `${hold.row}, not waiting on you` }
         : { tone: 'muted', text: 'Next in line for a runner, not waiting on you' };
     }
   }
@@ -650,6 +674,8 @@ function describe(kind: DeliveryKind, focus: MissionDelivery['tasks'][number] | 
           ? { evidence: `${t} has not started.`, next: `${WAITING_FOR_SESSION} (none for ${quietLabel(m.localStrand.quietMs)})` }
           : { evidence: `${t} has not started.`, next: WAITING_FOR_SESSION };
       }
+      // R-14: the hold the state view read, in the row's own words.
+      if (d?.holdText) return { evidence: `${t} has not started.`, next: d.holdText };
       return { evidence: `${t} has not started.`, next: d?.waitingOn === 'dependency' ? `After its dependencies land` : 'Next in line for a runner' };
     case 'held':
       return startState(m) === 'paused'
@@ -753,9 +779,14 @@ function quietCause(m: MissionDeliveryHead): string {
   if (m.visualOpen && m.next.startsWith(m.visualOpen.text)) {
     return m.visualOpen.hold ? `waiting on visual review (${m.visualOpen.hold})` : 'waiting on visual review';
   }
-  if (m.next.startsWith('After its dependencies')) return 'waiting on earlier work';
+  if (m.next.startsWith('After its dependencies') || m.next.startsWith('Waiting on ')) return 'waiting on earlier work';
   if (m.next.startsWith('Waiting for your session')) return 'waiting for your session';
   if (m.next === 'Next in line for a runner') return 'next in line for a runner';
+  // An R-14 row (`Queued 2h · held: runs after <task>`): the cause after the state word.
+  if (/^Queued\b/.test(m.next)) {
+    const cause = m.next.replace(/^Queued[^·]*·\s*/, '');
+    if (cause && cause !== m.next) return cause;
+  }
   return 'waiting';
 }
 

@@ -266,6 +266,9 @@ is recorded only when the content verifies.
 |---|---|---|---|---|
 | 61a | `pr-supersession-detect.ts:recordVerified` | `auto_pr_supersession` | accepted | candidate's merged diff carries the closed PR's changes; edge recorded with `detail.method` (patch-id or content) and `detail.confidence` |
 | 61b | `pr-supersession-detect.ts:detectPrSupersession` | `auto_pr_supersession` | deferred | candidate found but not content-verified: suggestion stored for the mission card, no edge |
+| 61c | `dead-pr-shutdown.ts:closePrWithComment` | `auto_pr_supersession` | accepted | a subject-anchored loser PR closed because the merged winner provably carries its content (`verifyPrCarriedBy`: `detail.method` patch-id or content, `detail.confidence`); edge recorded in the same flow as the close |
+| 61d | `dead-pr-shutdown.ts:leftOpen` | `auto_pr_supersession` | rejected | the pre-filters (subject, mission, base, idle time) nominated a loser but the winner does not carry its content (`detail.verdict` unverified) or could not be checked (unavailable): left open, no comment, no edge |
+| 61g | `dead-pr-shutdown.ts:edgeNotRecorded` | `auto_pr_supersession` | warned | closed on verified content but `recordPrSupersession` refused or failed: closed-unsuperseded until the close-time scan or hourly sweep records the same proof |
 
 ### Supersession reconciler (`lib/supersession.ts`, `lib/supersession-store.ts`)
 
