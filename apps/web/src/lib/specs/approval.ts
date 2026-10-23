@@ -10,6 +10,17 @@ import { signSpecApprovalRequest, specApprovalConfirmPath, verifySpecApprovalReq
 import { emit } from '@/lib/core-emit';
 import { approvedAttachmentsSql } from './attachment-pins';
 import { after } from 'next/server';
+import type { SpecApprovalRecord, SpecGateResult } from '@buildd/core/db/schema';
+import { users } from '@buildd/core/db/schema';
+
+/** What a request tells the approver: the confirm page's address and the gate's verdict. */
+export interface ApprovalRequestedNotice {
+  workspaceId: string;
+  title: string;
+  revision: number;
+  confirmUrl: string;
+  gate: SpecGateResult;
+}
 
 /**
  * Living Specs approval (G2, decision D-4): a person decides that one revision
@@ -38,7 +49,11 @@ import { after } from 'next/server';
  * embedding call, so it runs after the response (`after()`), never while a
  * person waits on the Approve button. Overridable for tests.
  */
-export const specApprovalDeps: { afterResponse: (task: () => Promise<unknown>) => void } = {
+export const specApprovalDeps: { afterResponse: (task: () => Promise<unknown>) => void; notify: (n: ApprovalRequestedNotice) => Promise<void> } = {
+  notify: n => emit({
+    type: 'spec.approval_requested', workspaceId: n.workspaceId, title: n.title, revision: n.revision,
+    confirmUrl: n.confirmUrl, warnings: n.gate.warnings.length,
+  }),
   afterResponse: task => {
     const run = () => task().catch(() => {});
     // Outside a request (a script, a test) there is no response to wait for.
@@ -117,9 +132,21 @@ export async function submitSpecRevision(caller: SpecCaller, specId: string, inp
  * so a racing revise or a second approver changes nothing.
  */
 /** What an approve over MCP or chat returns: the link a person opens to confirm it. */
-export interface PendingSpecApproval { confirmUrl: string; revision: number; expiresAt: string }
+export interface PendingSpecApproval {
+  confirmUrl: string; revision: number; expiresAt: string;
+  /** The gate's result: it passed, and may carry warnings. */
+  gate: SpecGateResult;
+  /** Who the confirmation was sent to. */
+  sentTo: string;
+}
 
-export async function approveSpecRevision(caller: SpecCaller, specId: string, input: { revision: unknown; expectedVersion: unknown }, opts: {
+/** The shortest reason a person gives to override a gate refusal. */
+export const MIN_OVERRIDE_REASON = 10;
+export const MAX_OVERRIDE_REASON = 500;
+
+export async function approveSpecRevision(caller: SpecCaller, specId: string, input: { revision: unknown; expectedVersion: unknown; via?: unknown }, opts: {
+  /** How the approval is recorded; a person's own press in the dashboard when absent. */
+  record?: SpecApprovalRecord;
   /**
    * A person confirming an import (§18, R-19, ./import.ts), which has checked
    * the repo file is unchanged since the imported commit. The confirmation is
@@ -147,15 +174,27 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
     const [rev] = await db.select({ contentHash: specRevisions.contentHash }).from(specRevisions)
       .where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, n))).limit(1);
     if (!rev) return fail(404, `Revision ${n} not found`);
+    // The quality gate comes before anyone is asked.
+    const { runApprovalGate } = await import('./approval-gate');
+    const { gate } = await runApprovalGate(spec, n);
+    if (!gate.passed) {
+      return fail(409, `Not sent for approval: the revision fails the quality gate.\n${gate.refusals.map((r) => `- ${r.message}`).join('\n')}\nFix these in a new revision, then ask again.`, { code: 'gate_refused', gate, currentVersion: spec.version });
+    }
     const now = Date.now();
-    const token = signSpecApprovalRequest({ specId, workspaceId: spec.workspaceId, revision: n, expectedVersion: spec.version, contentHash: rev.contentHash, requestedBy: approver }, now);
+    const via = input.via === 'chat' ? 'chat' : 'mcp';
+    const token = signSpecApprovalRequest({ specId, workspaceId: spec.workspaceId, revision: n, expectedVersion: spec.version, contentHash: rev.contentHash, requestedBy: approver, via }, now);
     if (!token) return fail(502, 'Approval links are not configured on this deployment. Approve from buildd.dev.');
     const verdict = verifySpecApprovalRequest(token, now);
     const expiresAt = new Date(verdict.ok ? verdict.payload.exp : now).toISOString();
-    return { ok: true, spec, pending: { confirmUrl: `${appBaseUrl()}${specApprovalConfirmPath(specId, token)}`, revision: n, expiresAt } };
+    const confirmUrl = `${appBaseUrl()}${specApprovalConfirmPath(specId, token)}`;
+    // One notification per request: it is how the confirm page reaches the person.
+    const [who] = await db.select({ name: users.name }).from(users).where(eq(users.id, approver)).limit(1);
+    await specApprovalDeps.notify({ workspaceId: spec.workspaceId, title: spec.title, revision: n, confirmUrl, gate }).catch(() => {});
+    return { ok: true, spec, pending: { confirmUrl, revision: n, expiresAt, gate, sentTo: who?.name?.trim() || 'you' } };
   }
 
   const label = `user:${approver}`;
+  const recordJson = JSON.stringify(opts.record ?? { via: 'dashboard', gate: null } satisfies SpecApprovalRecord);
   // The binding attachments (§21) are recorded in the same statement as the
   // stamp, at their artifact revisions now, beside the design the revision pins.
   // A confirmed import records who, when and what, with the approval (R-19), and buildd is the source from then on.
@@ -164,7 +203,7 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
     : null;
   const rows = await db.execute(sql`
     WITH stamp AS (
-      UPDATE spec_revisions SET approved_by = ${label}, approved_at = now(),
+      UPDATE spec_revisions SET approved_by = ${label}, approved_at = now(), approval = ${recordJson}::jsonb,
         approved_attachments = ${approvedAttachmentsSql(specId, n)}
       WHERE spec_id = ${specId}::uuid AND revision = ${n} AND approved_at IS NULL
         AND EXISTS (SELECT 1 FROM specs WHERE id = ${specId}::uuid AND version = ${spec.version} AND head_revision = ${n}
@@ -217,7 +256,7 @@ async function conflictNow(specId: string): Promise<SpecError> {
  * body hash, and anything that moved since makes it stale. A request that was
  * already confirmed reads as done and changes nothing.
  */
-export async function confirmSpecApproval(caller: SpecCaller, specId: string, token: unknown): Promise<{ ok: true; already: boolean; spec: SpecRow; revision: SpecRevisionRow } | SpecError> {
+export async function confirmSpecApproval(caller: SpecCaller, specId: string, token: unknown, opts: { overrideReason?: unknown } = {}): Promise<{ ok: true; already: boolean; spec: SpecRow; revision: SpecRevisionRow } | SpecError> {
   if (caller.kind !== 'user') return fail(403, 'Confirm the approval on buildd.dev, signed in. An agent session cannot confirm it.');
   const v = verifySpecApprovalRequest(typeof token === 'string' ? token : null);
   if (!v.ok) {
@@ -240,7 +279,19 @@ export async function confirmSpecApproval(caller: SpecCaller, specId: string, to
   if (spec.version !== req.expectedVersion || spec.headRevision !== req.revision) {
     return fail(409, 'The spec changed since this approval was asked for. Ask for a new link.', { code: 'request_stale', currentVersion: spec.version });
   }
-  const r = await approveSpecRevision(caller, specId, { revision: req.revision, expectedVersion: req.expectedVersion });
+  // Asked again now: a pin or a body may have moved since the request. A
+  // refusal stands unless the person gives a reason, which is recorded.
+  const { runApprovalGate } = await import('./approval-gate');
+  const { gate } = await runApprovalGate(spec, req.revision);
+  const reason = typeof opts.overrideReason === 'string' ? opts.overrideReason.trim() : '';
+  if (!gate.passed) {
+    if (reason.length < MIN_OVERRIDE_REASON) {
+      return fail(409, `The quality gate refuses this revision:\n${gate.refusals.map((x) => `- ${x.message}`).join('\n')}\nTo approve anyway, give a reason (at least ${MIN_OVERRIDE_REASON} characters).`, { code: 'gate_refused', gate, currentVersion: spec.version });
+    }
+    if (reason.length > MAX_OVERRIDE_REASON) return fail(400, `The reason is at most ${MAX_OVERRIDE_REASON} characters.`);
+  }
+  const record: SpecApprovalRecord = { via: req.via ?? 'mcp', gate, ...(!gate.passed ? { overrideReason: reason } : {}) };
+  const r = await approveSpecRevision(caller, specId, { revision: req.revision, expectedVersion: req.expectedVersion }, { record });
   if (!r.ok) return r.status === 409 ? { ...r, code: 'request_stale' } : r;
   if ('pending' in r) return fail(403, NOT_A_PERSON);
   return { ok: true, already: false, spec: r.spec, revision: r.revision };

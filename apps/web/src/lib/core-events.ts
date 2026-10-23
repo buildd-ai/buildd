@@ -395,6 +395,13 @@ export type CoreEvent =
    */
   | { type: 'spec.approved'; specId: string; workspaceId: string; revision: number }
   /**
+   * A bearer session (MCP or chat) asked for a spec revision's approval and the
+   * quality gate passed (lib/specs/approval.ts). Once per request. The
+   * notifications module sends the confirm link to the team's channel; nothing
+   * is approved until a person opens it.
+   */
+  | { type: 'spec.approval_requested'; workspaceId: string; title: string; revision: number; confirmUrl: string; warnings: number }
+  /**
    * The kernel's epoch path recorded a settlement or retirement of a mission delivery
    * (workflow/seam.ts `missionEpochCommand`, S4b). The missions module asks its one completion
    * writer to decide: a mission held only by its deliveries completes on the transition that
