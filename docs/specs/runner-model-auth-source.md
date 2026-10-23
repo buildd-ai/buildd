@@ -1,7 +1,7 @@
 ---
 title: Runner Model Auth Source
 status: superseded
-superseded_by: runner-model-login-detect-say-report
+superseded_by: living-spec:runner-model-login-detect-say-report
 owner: max
 last_verified: 2026-10-14
 summary: A runner MUST detect the model login on its own machine, use it with no setup, say which one it uses, and report that label (never the value) to the server.
