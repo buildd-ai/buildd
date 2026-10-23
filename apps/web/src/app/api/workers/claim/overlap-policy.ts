@@ -72,6 +72,21 @@ export function leaseOverlapHolds(
 }
 
 /**
+ * The first open PR (in the order given) whose declared paths overlap
+ * `manifest` at all, lane or not, with the shared paths. Null when none does.
+ * The repo-wide sentinel on either side overlaps nothing.
+ */
+export function findOverlappingOpenPr<T extends { pathManifest?: string[] | null; prNumber?: number | null; prUrl?: string | null }>(
+  manifest: string[],
+  openPrs: readonly T[],
+): { pr: T; paths: string[] } | null {
+  for (const pr of openPrs) {
+    if (findBlockingPr(manifest, [pr])) return { pr, paths: intersectPaths(manifest, pr.pathManifest ?? []) };
+  }
+  return null;
+}
+
+/**
  * The first open PR (in the order given) whose overlap with `manifest` holds
  * the claim, with the shared paths. Null when every overlapping PR shares only
  * mergeable files, which then start alongside it.

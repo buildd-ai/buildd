@@ -320,10 +320,9 @@ non-live holder, are reported with the reason.
 
 **Invariants**
 
-- I-37 The coordination probe (`evaluateCoordinationGates`,
-  `softOverlapReasons`) uses the claim's overlap policy: a mergeable overlap
-  with an open PR, a live lease or a soft-overlap holder is not a waiting
-  reason.
+- I-37 The coordination probe (`evaluateCoordinationGates`) uses the claim's
+  overlap policy: a mergeable overlap with an open PR or a live lease is not a
+  waiting reason, and a stored soft overlap never is.
 - I-38 When a task started past an overlap, explain and the runner's top Queue
   say "starts alongside #n (same files, merges at the end)", naming the PR or
   holder. Explain reads it from the task's newest claim's `soft_overlap_start`
@@ -368,7 +367,7 @@ non-live holder, are reported with the reason.
   merges at the end)".
 
 **Code surface.** Route: `/api/explain`. Helpers: `explainTask`,
-`evaluateCoordinationGates`, `softOverlapReasons`, `buildCoordinationHolds`,
+`evaluateCoordinationGates`, `buildCoordinationHolds`,
 `overlapStartLink`, `queueAlongside`,
 `detectFailurePatterns`, `checkStarvation`.
 

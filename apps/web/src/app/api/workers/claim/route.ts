@@ -63,7 +63,7 @@ import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, ty
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
 import { callerSeatKeys } from '@/lib/runner-seat-wall';
-import { findBlockingPr, intersectPaths, boundDeferralPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { intersectPaths, boundDeferralPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
   BYPASS_MISSION_BUDGET_KEY,
@@ -161,7 +161,7 @@ import {
 import { candidateLandingBase, partitionOpenPrsByLandingBase, workspaceTrunk } from './open-pr-target-base';
 import { effectiveBackendOf, fireClaimPlanRecord, fireOrderedBehind, loadPlannerSignals } from './claim-plan-store';
 import { acquireStartPaths, releaseStartPaths } from './start-lease';
-import { exclusiveStartPaths, findHoldingLease, findHoldingOpenPr, workspaceHardSurface } from './overlap-policy';
+import { exclusiveStartPaths, findHoldingLease, findHoldingOpenPr, findOverlappingOpenPr, workspaceHardSurface } from './overlap-policy';
 import { loadIdleHolderIds } from './soft-overlap-store';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 import { runnerLiveCandidateCutoff, withLiveRunnerBeats } from '@/lib/runner-beats';
@@ -1220,7 +1220,6 @@ export async function POST(req: NextRequest) {
     connector_mismatch: 0,
     subject_dead: 0,
     path_overlap: 0,
-    advisory_manifest: 0,
     soft_overlap: 0,
     mission_budget: 0,
     mission_concurrent: 0,
@@ -1720,22 +1719,22 @@ export async function POST(req: NextRequest) {
         splitOwnOpenPrs(task, openPrTasks).others,
       ).sameBase.filter(pr => !(isRepairAttempt && (pr as any).awaitingRepair));
       const prCheckStarted = performance.now();
-      const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
+      const overlapping = findOverlappingOpenPr(taskManifest, filterOpenPrTasks);
       pathChecksMs += performance.now() - prCheckStarted;
       // Only a lane path holds (./overlap-policy: migration or schema, the
       // unmergeable list, a workspace hard surface). An open PR sharing only
       // other files does not: the task starts alongside it and the merge
       // settles it (spec: Overlap scheduling, R-2). No model is asked (R-3).
       const wsHardSurface = workspaceHardSurface((task as any).workspace?.gitConfig ?? null);
-      const holdingPr = blocking ? findHoldingOpenPr(taskManifest, filterOpenPrTasks, wsHardSurface, idleHolderIds) : null;
+      const holdingPr = overlapping ? findHoldingOpenPr(taskManifest, filterOpenPrTasks, wsHardSurface, idleHolderIds) : null;
       const heldByPr = holdingPr ? { prNumber: holdingPr.pr.prNumber ?? null, prUrl: holdingPr.pr.prUrl ?? null } : null;
-      if (blocking) sawCoordinationBlocker = true;
-      if (blocking && !heldByPr) {
-        console.log(`[claim] overlap_start: task ${task.id} starts alongside PR #${blocking.prNumber ?? blocking.prUrl} (non-lane files)`);
-        const alongside = filterOpenPrTasks.find(t => (t.prNumber ?? null) === blocking.prNumber && (t.prUrl ?? null) === blocking.prUrl);
-        const sharedPaths = boundDeferralPaths(intersectPaths(taskManifest, alongside?.pathManifest ?? []));
+      if (overlapping) sawCoordinationBlocker = true;
+      if (overlapping && !heldByPr) {
+        const alongside = overlapping.pr;
+        console.log(`[claim] overlap_start: task ${task.id} starts alongside PR #${alongside.prNumber ?? alongside.prUrl} (non-lane files)`);
+        const sharedPaths = boundDeferralPaths(overlapping.paths);
         overlapStarts.push({
-          gate: 'open_pr_overlap', holderTaskId: alongside?.taskId ?? null, prNumber: blocking.prNumber ?? null, paths: sharedPaths,
+          gate: 'open_pr_overlap', holderTaskId: alongside.taskId ?? null, prNumber: alongside.prNumber ?? null, paths: sharedPaths,
           overlapKind: 'mergeable', decidedBy: 'rule', riskTier: null, areaClass: CLAIM_LEARNING_HOOKS.areaClass(sharedPaths),
         });
         const exclusive = exclusiveStartPaths(taskManifest, wsHardSurface);
