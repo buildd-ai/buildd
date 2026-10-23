@@ -33,7 +33,7 @@ const realSimilar = neighbourDeps.similar;
 const realKnowledge = { ...specKnowledgeDeps };
 afterEach(() => { neighbourDeps.similar = realSimilar; Object.assign(specKnowledgeDeps, realKnowledge); });
 // No embedding or recall store in these tests: chunks go nowhere, the graph is real.
-const noStore = () => { specKnowledgeDeps.store = async () => ({ upsert: async () => ({ upserted: 0 } as any), deleteBySource: async () => 0 as any }); };
+const noStore = () => { specKnowledgeDeps.store = async () => ({ upsert: async () => ({ upserted: 0 } as any), query: async () => [], deleteBySource: async () => 0 as any }); };
 
 const user = () => ({ kind: 'user' as const, userId: admin });
 const BODY = (t: string) => `# ${t}\n- AC-1: ${t} shows the empty state.\n- AC-2: ${t} lists each line.\n`;
@@ -109,7 +109,7 @@ describe('neighbours (§14)', () => {
     expect(await rows(b.id)).toEqual([]);
   });
 
-  test('similar keeps its own floor and skips the spec\'s parent; overlaps passed in read from either side', async () => {
+  test('similar skips the spec\'s parent; overlaps passed in read from either side', async () => {
     noStore();
     const product = await approved('Shop', { scope: 'product' });
     const x = await approved('Totals', { parentSpecId: product.id });
@@ -159,7 +159,8 @@ describe('neighbours (§14)', () => {
     expect(await suggestParent(ws, 'new', 'invoices')).toMatchObject({ specId: product.id, reason: 'Closest product by what it asks for' });
     neighbourDeps.similar = async () => [{ specId: child.id, score: 0.9, source: 'vector' }];
     expect(await suggestParent(ws, 'new', 'invoices')).toMatchObject({ specId: product.id });
-    neighbourDeps.similar = async () => [{ specId: child.id, score: 0.2, source: 'vector' }];
+    // Nothing near (the knowledge store's floor already dropped what was far): nothing suggested.
+    neighbourDeps.similar = async () => [];
     expect(await suggestParent(ws, 'new', 'invoices')).toBeNull();
   });
 });

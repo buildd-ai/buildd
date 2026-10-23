@@ -34,7 +34,7 @@ buildd, not in a repo file.
 
 Asked to "spec this"? Look for an existing spec first: `list` (below), and
 `recall query="<topic>" scope=["spec"]`, which finds approved revisions only
-(drafts are not indexed).
+(drafts are left out).
 
 ## The loop
 
@@ -179,7 +179,9 @@ say so and stop.
 
 ## Duplicates (409 `spec_duplicate`)
 
-`create_draft` compares the draft with approved specs in the workspace.
+`create_draft` compares each criterion and section of the draft with the
+workspace's other specs, approved and draft, and the reply names the
+criteria that matched.
 
 - A clear duplicate is refused with 409 `spec_duplicate` naming the spec(s).
   Nothing is written. Read the named spec. Then either revise it instead,
@@ -189,7 +191,10 @@ say so and stop.
   Both are recorded. Do not invent a reason to get past the check.
 - An overlap only warns: the draft is created and the reply lists the
   overlapping specs. Check the shared criteria; consider a common parent.
+- A matching draft only warns: nothing is in force yet.
 - A check that could not run says so; the draft is still created.
+- `revise` checks the criteria it adds or changes the same way. It only
+  warns: the revision is written.
 
 ## Structure and neighbours
 

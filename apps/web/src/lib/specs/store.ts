@@ -17,7 +17,7 @@ import { parseDuplicateOverride, type DuplicateCandidate, type DuplicateCheck } 
 import type { DuplicateCheckDeps } from '@/lib/spec-duplicate-decision';
 import { sameDesign } from '@buildd/spec-contract/design';
 import { recordManualPlacement } from './filings';
-import { retiredIdRefusal, writeCriterionRecords } from './criteria';
+import { criterionHashes, retiredIdRefusal, writeCriterionRecords } from './criteria';
 import { acceptanceRoleRefusal } from './verdict-guards';
 
 /**
@@ -143,6 +143,19 @@ async function afterRevisionWritten(spec: SpecRow, revision: SpecRevisionRow, bo
   } catch (err) {
     console.error(`[specs] keeping the criteria of ${spec.id} revision ${revision.revision} failed:`, err);
   }
+  // The draft head goes into the spec corpus once the response is out (R-106).
+  try {
+    const { scheduleSpecDraftIndex } = await import('./knowledge');
+    scheduleSpecDraftIndex(spec.id);
+  } catch (err) {
+    console.error(`[specs] scheduling the draft index of ${spec.id} failed:`, err);
+  }
+}
+
+/** The criteria of `next` that `prev` did not have, or had in other words. Pure. */
+export function changedCriteria(prev: string, next: string): string[] {
+  const before = criterionHashes(prev);
+  return [...criterionHashes(next)].filter(([id, h]) => before.get(id) !== h).map(([id]) => id);
 }
 
 export async function createSpecDraft(caller: SpecCaller, input: {
@@ -230,7 +243,9 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
 }, opts: {
   /** A re-import of a changed repo file (R-18, ./import.ts): the new revision is that file, still imported. */
   imported?: SpecRevisionImport & { importedAt: string };
-} = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; unchanged: boolean } | SpecError> {
+  /** The duplicate check on added or changed criteria (R-105); false skips it (a copy). Never refuses. */
+  duplicates?: DuplicateCheckDeps | false;
+} = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; unchanged: boolean; duplicateCheck?: DuplicateCheck | null } | SpecError> {
   if (!isUuid(specId)) return fail(404, 'Spec not found');
   if (!Number.isInteger(input.expectedVersion)) return fail(400, 'expectedVersion (the spec version you read) is required');
   const body = checkBody(input.body);
@@ -327,8 +342,34 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   // The spec as this write left it: the version the CAS matched, plus one.
   // A later revise moves the head on, never what this revision was written against.
   await afterRevisionWritten({ ...spec, version: spec.version + 1, headRevision: revision.revision }, revision, body);
+  const duplicateCheck = hash === head.contentHash || opts.imported || opts.duplicates === false
+    ? null
+    : await reviseDuplicateCheck(caller, spec, head, body, opts.duplicates ?? {});
   const [after] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
-  return { ok: true, spec: after, revision, unchanged: false };
+  return { ok: true, spec: after, revision, unchanged: false, duplicateCheck };
+}
+
+/**
+ * R-105: the duplicate check on the criteria a revise added or changed,
+ * against every other spec, drafts included. The revision is already written:
+ * this only warns, so a blocking answer is reported as a warning. Null when no
+ * criterion changed.
+ */
+async function reviseDuplicateCheck(caller: SpecCaller, spec: SpecRow, head: SpecRevisionRow, body: string, deps: DuplicateCheckDeps): Promise<DuplicateCheck | null> {
+  try {
+    const prev = (await getArtifactRevision(spec.bodyArtifactId, head.artifactRevision))?.content ?? '';
+    const criteria = changedCriteria(prev, body);
+    if (criteria.length === 0) return null;
+    const { SPEC_DUPLICATE_CHECK } = await import('@/modules');
+    const check = await SPEC_DUPLICATE_CHECK({
+      workspaceId: spec.workspaceId, title: spec.title, body, criteria, excludeSpecId: spec.id,
+      userId: caller.kind === 'user' ? caller.userId : null, accountId: caller.kind === 'account' ? caller.account.id : null,
+    }, deps);
+    return check.ran ? { ...check, blocking: [], warnings: [...check.blocking, ...check.warnings] } : check;
+  } catch (err) {
+    console.warn('[specs] revise duplicate check failed (revision kept):', (err as Error)?.message ?? err);
+    return { ran: false, reason: 'the duplicate check failed' };
+  }
 }
 
 /**
