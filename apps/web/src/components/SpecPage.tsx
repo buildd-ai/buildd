@@ -502,8 +502,8 @@ function History({ view, base, reviewing, at }: { view: Ok; base: string; review
                     className={`inline-flex min-h-11 items-center underline md:min-h-0 ${here ? 'font-semibold' : 'font-medium'}`}
                   >
                     Revision {r.revision}
-                  </Link>
-                  {badge ? <Chip tone={badge.tone} variant="soft" dot={false}>{badge.label}</Chip> : null}
+                  </Link>{' '}
+                  {badge ? <Chip tone={badge.tone} variant="soft" dot={false}>{badge.label}</Chip> : null}{' '}
                   <span className="text-meta text-text-muted">
                     by {r.author === 'person' ? 'a person' : 'an agent'}, {r.createdAgo}
                   </span>
@@ -526,16 +526,14 @@ function History({ view, base, reviewing, at }: { view: Ok; base: string; review
 /** Contents (R-95): the sections and the criteria in each; picking one scrolls to it. */
 function ContentsList({ sections, onPick }: { sections: Array<{ title: string; criteria: number }>; onPick: (i: number) => void }) {
   return (
-    <ol className="flex flex-col" data-testid="spec-page-contents-list">
+    <div className="flex flex-col" data-testid="spec-page-contents-list">
       {sections.map((s, i) => (
-        <li key={`${i}:${s.title}`}>
-          <button type="button" onClick={() => onPick(i)} className="flex min-h-11 w-full items-center gap-2 text-left text-body text-text-primary hover:underline md:min-h-9" data-testid="spec-page-contents-item">
-            <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{s.title}</span>
-            {s.criteria ? <span className="shrink-0 font-mono text-meta tabular-nums text-text-muted">{s.criteria}</span> : null}
-          </button>
-        </li>
+        <button key={`${i}:${s.title}`} type="button" onClick={() => onPick(i)} className="flex min-h-11 w-full items-center gap-2 text-left text-body text-text-primary hover:underline md:min-h-9" data-testid="spec-page-contents-item">
+          <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{s.title}</span>{' '}
+          {s.criteria ? <span className="shrink-0 font-mono text-meta tabular-nums text-text-muted">{s.criteria}</span> : null}
+        </button>
       ))}
-    </ol>
+    </div>
   );
 }
 
@@ -620,7 +618,10 @@ export default function SpecPage({ view }: { view: Ok }) {
   const pickSection = (i: number) => {
     setContentsOpen(false);
     setTab('spec');
-    setTimeout(() => article.current?.querySelectorAll('h2')[i]?.scrollIntoView({ block: 'start' }), 0);
+    const scroll = () => article.current?.querySelectorAll('h2')[i]?.scrollIntoView({ block: 'start' });
+    // Now when the text is already showing, and again once focus has settled.
+    scroll();
+    setTimeout(scroll, 0);
   };
   const marks = criterionMarks(view);
   const marksKey = JSON.stringify(marks);
@@ -808,7 +809,9 @@ export default function SpecPage({ view }: { view: Ok }) {
   );
   const hasRepoState = !!(view.source?.path || view.source?.source || view.retirement?.repoLine || view.restoredRepoNote || view.source?.copy || view.criteriaUnread);
   // Below lg the rail's parts follow the text, on the Spec tab only.
-  const specOnly = tab === 'spec' ? '' : 'hidden lg:flex';
+  // A tab that has gone (its content went with a re-render) falls back to Spec.
+  const shown: Tab = tabs.includes(tab) ? tab : 'spec';
+  const specOnly = shown === 'spec' ? '' : 'hidden lg:flex';
 
   return (
     <div className="flex flex-col gap-4">
@@ -820,11 +823,11 @@ export default function SpecPage({ view }: { view: Ok }) {
           <button
             type="button"
             onClick={() => setMoreOpen(true)}
-            aria-label="More"
             aria-haspopup="dialog"
             data-testid="spec-page-more"
             className="-mr-2.5 flex h-11 w-11 shrink-0 items-center justify-center text-text-secondary transition-colors hover:text-text-primary"
           >
+            <span className="sr-only">More</span>
             <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor" aria-hidden="true">
               <circle cx="3.5" cy="9" r="1.5" />
               <circle cx="9" cy="9" r="1.5" />
@@ -847,12 +850,13 @@ export default function SpecPage({ view }: { view: Ok }) {
         </p>
       </header>
 
-      <Tabs tabs={tabs} counts={{ history: view.revisions.length, related: relatedCount, comments: view.comments.length, files: (view.attachments ?? []).length }} active={tab} onPick={setTab} />
+      <Tabs tabs={tabs} counts={{ history: view.revisions.length, related: relatedCount, comments: view.comments.length, files: (view.attachments ?? []).length }} active={shown} onPick={setTab} />
 
       <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[minmax(0,45rem)_20rem] lg:grid-rows-[auto_auto_auto_1fr] lg:items-start lg:gap-x-10 lg:gap-y-0">
         <div className="flex min-w-0 flex-col lg:col-start-1 lg:row-span-4 lg:row-start-1">
-          {tabs.map((t) => (
-            <div key={t} role="tabpanel" id={panelId(t)} aria-labelledby={tabId(t)} hidden={t !== tab} className="flex flex-col gap-4" data-testid={`spec-page-panel-${t}`}>
+          {/* Only the picked tab is on the page: nothing of the others sits under the text (R-93). */}
+          {tabs.filter((t) => t === shown).map((t) => (
+            <div key={t} role="tabpanel" id={panelId(t)} aria-labelledby={tabId(t)} className="flex flex-col gap-4" data-testid={`spec-page-panel-${t}`}>
               {panels[t]}
             </div>
           ))}

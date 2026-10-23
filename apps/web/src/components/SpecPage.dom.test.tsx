@@ -146,10 +146,16 @@ describe('SpecPage', () => {
     expect(q('spec-page-body')!.querySelector('strong')!.textContent).toBe('Totals');
     // The body's own "# Checkout" would repeat the page title right under it.
     expect(q('spec-page-body')!.querySelector('h1')).toBeNull();
+    expect(q('spec-page-review')!.getAttribute('href')).toBe(`/app/specs/${SPEC}?review=1`);
+    expect(q('spec-page-approve')).toBeNull();
+    // Only the picked tab is on the page (R-93).
+    expect(q('spec-page-parent')).toBeNull();
+    act(() => tab('Related').click());
     expect(q('spec-page-parent')!.querySelector('a')!.getAttribute('href')).toBe('/app/specs/parent-id');
     const ref = q('spec-page-repo-refs')!.querySelector('a')!;
     expect(ref.textContent).toBe('docs/specs/checkout.md @ abcdef123456');
     expect(ref.getAttribute('href')).toContain('/blob/abc/docs/specs/checkout.md');
+    act(() => tab('History').click());
     const revs = [...container.querySelectorAll('[data-testid="spec-page-revision"]')];
     expect(revs.map((r) => r.getAttribute('data-revision'))).toEqual(['2', '1']);
     expect(revs[0].textContent).toContain('by an agent');
@@ -159,8 +165,6 @@ describe('SpecPage', () => {
     expect(revs[0].textContent).toContain('Waiting');
     expect(revs[1].querySelector('a')!.getAttribute('aria-current')).toBe('page');
     expect(revs[0].querySelector('a')!.getAttribute('aria-current')).toBeNull();
-    expect(q('spec-page-review')!.getAttribute('href')).toBe(`/app/specs/${SPEC}?review=1`);
-    expect(q('spec-page-approve')).toBeNull();
   });
 
   it('says when an import could not read some criteria, and says nothing when it read them all', () => {
@@ -173,6 +177,7 @@ describe('SpecPage', () => {
   it('names the design the revision is built to, and says when it changed since approval', () => {
     const design = { label: 'Cart prototype', href: '/app/artifacts/a1', version: '3', screens: ['Empty cart'], changedSince: null };
     act(() => root.render(<SpecPage view={{ ...base, design }} />));
+    act(() => tab('Related').click());
     const d = q('spec-page-design')!;
     expect(d.textContent).toContain('Built to the design Cart prototype, version 3.');
     expect(d.querySelector('a')!.getAttribute('href')).toBe('/app/artifacts/a1');
@@ -190,6 +195,7 @@ describe('SpecPage', () => {
       { specId: 'n2', title: 'Pricing', kind: 'similar', score: 0.7, reason: 'Similar in what it asks for' },
     ];
     act(() => root.render(<SpecPage view={{ ...base, nearby }} />));
+    act(() => tab('Related').click());
     const items = [...container.querySelectorAll('[data-testid="spec-page-nearby-item"]')];
     expect(items.map((i) => [i.getAttribute('data-kind'), i.querySelector('a')!.getAttribute('href'), i.querySelector('span')!.textContent]))
       .toEqual([['shares_files', '/app/specs/n1', "Changes 3 files this spec's work changed"], ['similar', '/app/specs/n2', 'Similar in what it asks for']]);
@@ -202,6 +208,7 @@ describe('SpecPage', () => {
     const siblings = [{ id: 's1', title: 'Refunds' }, { id: 's2', title: 'Invoices' }];
     const nearby = Array.from({ length: 10 }, (_, i) => ({ specId: `n${i}`, title: `Near ${i}`, kind: i < 2 ? 'overlaps' : 'similar', score: 0.9 - i / 20, reason: 'Similar in what it asks for' }));
     act(() => root.render(<SpecPage view={{ ...base, siblings, nearby }} />));
+    act(() => tab('Related').click());
     // List first: parent, siblings and neighbours in words, no graph mounted.
     expect(q('spec-graph')).toBeNull();
     const list = q('spec-page-related-list')!;
@@ -241,6 +248,7 @@ describe('SpecPage', () => {
     }) as typeof fetch;
     const filed = { id: 'f1', kind: 'filed', status: 'applied', parent: { specId: 'area-1', title: 'Payments' }, previousParent: null, source: 'model', p: 0.97, newArea: null, createdAt: iso };
     act(() => root.render(<SpecPage view={{ ...base, filing: filed }} />));
+    act(() => tab('Related').click());
     expect(q('spec-page-filing')!.textContent).toContain('Filed by buildd under Payments');
     expect(q('spec-page-filing')!.querySelector('a')!.getAttribute('href')).toBe('/app/specs/area-1');
     await act(async () => { q('spec-page-filing-undo')!.click(); });
@@ -656,6 +664,7 @@ describe('an imported spec: confirm the repo baseline first, then amendments are
     expect(qd('spec-page-import-batch')!.getAttribute('href')).toBe(`/app/workspaces/${W}/specs#imported`);
     expect(q('spec-page-body')!.textContent).toContain('Totals');
     expect(q('spec-page-review-panel')).toBeNull();
+    act(() => tab('History').click());
     const revs = [...container.querySelectorAll('[data-testid="spec-page-revision"]')];
     expect(revs[0].textContent).toContain('Imported');
     expect(revs[0].textContent).not.toContain('Waiting');
@@ -859,7 +868,7 @@ describe('Spec page layout (fc80b5a4 R-92 to R-100)', () => {
     expect(tabNames()).toContain('Comments');
     expect(tab('Comments').getAttribute('aria-selected')).toBe('true');
     expect(q('spec-page-panel-comments')!.hidden).toBe(false);
-    expect(q('spec-page-panel-spec')!.hidden).toBe(true);
+    expect(q('spec-page-panel-spec')).toBeNull();
   });
 
   it('Comments and Files are tabs with their counts when they have something', () => {
@@ -893,11 +902,13 @@ describe('Spec page layout (fc80b5a4 R-92 to R-100)', () => {
       // Phone: a sheet.
       act(() => q('spec-page-contents')!.click());
       const items = [...qd('spec-page-contents-sheet')!.querySelectorAll('[data-testid="spec-page-contents-item"]')];
-      expect(items.map((i) => i.textContent)).toEqual(['Part 12', 'Part 22', 'Part 32', 'Part 42', 'Part 52', 'Part 62']);
+      expect(items.map((i) => i.textContent)).toEqual(['Part 1 2', 'Part 2 2', 'Part 3 2', 'Part 4 2', 'Part 5 2', 'Part 6 2']);
       await act(async () => { (items[3] as HTMLElement).click(); await new Promise((r) => setTimeout(r, 0)); });
-      expect(scrolled).toHaveLength(1);
-      expect(scrolled[0].textContent).toBe('Part 4');
-      expect(q('spec-page-body')!.querySelectorAll('h2')[3] === scrolled[0]).toBe(true);
+      // Scrolled at once, and again once the closing sheet has handed focus back.
+      expect(scrolled.length).toBeGreaterThan(0);
+      const h2 = q('spec-page-body')!.querySelectorAll('h2')[3];
+      expect(h2.textContent).toBe('Part 4');
+      expect(scrolled.every((e) => e === h2)).toBe(true);
       expect(qd('spec-page-contents-sheet')).toBeNull();
       // Criteria render as rows with their id as a chip.
       expect(q('spec-page-body')!.querySelectorAll('[data-testid="spec-criterion"]')).toHaveLength(12);
@@ -952,7 +963,7 @@ describe('Spec page layout (fc80b5a4 R-92 to R-100)', () => {
     act(() => root.render(<SpecPage view={{ ...view, compare: diff(1, 2) }} />));
     expect(tab('History').getAttribute('aria-selected')).toBe('true');
     expect(q('spec-page-panel-history')!.hidden).toBe(false);
-    expect(q('spec-page-panel-spec')!.hidden).toBe(true);
+    expect(q('spec-page-panel-spec')).toBeNull();
     expect(q('spec-page-compare-panel')).not.toBeNull();
     expect(checked()).toEqual([false, true, true]);
 
@@ -969,8 +980,9 @@ describe('Spec page layout (fc80b5a4 R-92 to R-100)', () => {
     act(() => root.render(<SpecPage view={{ ...view, reading: { revision: 2, approved: false, isHead: false }, body: '# Checkout\n\nRevision two text.\n' }} />));
     expect(tab('Spec').getAttribute('aria-selected')).toBe('true');
     expect(q('spec-page-panel-spec')!.hidden).toBe(false);
-    expect(q('spec-page-panel-history')!.hidden).toBe(true);
+    expect(q('spec-page-panel-history')).toBeNull();
     expect(q('spec-page-body')!.textContent).toContain('Revision two text.');
+    act(() => tab('History').click());
     expect(checked()).toEqual([false, false, false]);
 
     // Revision N from History while already reading without a comparison: Spec again.
@@ -986,7 +998,7 @@ describe('Spec page layout (fc80b5a4 R-92 to R-100)', () => {
     act(() => tab('History').click());
     act(() => { window.history.pushState(null, '', `/app/specs/${SPEC}?revision=1`); root.render(<SpecPage view={{ ...view }} />); });
     expect(q('spec-page-panel-spec')!.hidden).toBe(false);
-    expect(q('spec-page-panel-history')!.hidden).toBe(true);
+    expect(q('spec-page-panel-history')).toBeNull();
   });
 
   it('a manual tab pick survives a re-render that navigates nowhere', () => {
