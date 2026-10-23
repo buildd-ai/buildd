@@ -130,7 +130,7 @@ describe('redCheckView (R-4, R-5, AC-51, AC-52)', () => {
     const jobs = [job({ name: 'DB architecture (real Postgres)', rule: 'db_connection_lost' })];
     const view = redCheckView(record({ jobs, cause: causeOf(jobs) }), { pushedNothing: 0, noChange: 2 });
     expect(view.checks).toEqual(['DB architecture (real Postgres)']);
-    expect(view.sentence).toBe('DB architecture (real Postgres) failed: the Postgres tests lost their database connection. This looks like a flake, not the code. 2 automatic fixes did not change the result.');
+    expect(view.sentence).toBe('DB architecture (real Postgres) failed: the Postgres tests lost their database connection, which looks like a flake, not the code. 2 automatic fixes did not change the result.');
     expect(view.primary).toBe('rerun');
   });
 
@@ -160,7 +160,7 @@ describe('mergeRedRecord (R-4, AC-54)', () => {
     expect(merged.reruns).toHaveLength(1);
     const view = redCheckView(merged);
     expect(view.primary).toBe('fix');
-    expect(view.sentence).toContain('It failed twice, before and after a re-run');
+    expect(view.sentence).toBe('DB architecture (real Postgres) failed twice, before and after a re-run: the Postgres tests lost their database connection. So it is probably not a flake.');
   });
 
   it('a different failure after the re-run is not "failed twice"', () => {

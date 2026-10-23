@@ -317,8 +317,14 @@ export function redCheckView(record: RedCheckRecord, history: RedFixHistory = { 
     if (lead) parts.push(jobSentence(lead));
   }
   const flake = record.cause === 'flake';
-  if (record.failedAfterRerun) parts.push('It failed twice, before and after a re-run, so it is probably not a flake.');
-  else if (flake) parts.push('This looks like a flake, not the code.');
+  // The verdict rides on the first sentence: it is the one line the card shows
+  // unfolded, and the line is what says why Re-run or Start fix leads.
+  if (parts.length > 0 && record.failedAfterRerun) {
+    parts[0] = parts[0].replace(/ (failed|timed out)(:?)/, ' $1 twice, before and after a re-run$2');
+    parts.splice(1, 0, 'So it is probably not a flake.');
+  } else if (parts.length > 0 && flake) {
+    parts[0] = `${parts[0].replace(/\.$/, '')}, which looks like a flake, not the code.`;
+  }
   if (history.pushedNothing > 0) parts.push(`${plural(history.pushedNothing, 'automatic fix', 'automatic fixes')} pushed nothing.`);
   if (history.noChange > 0) parts.push(`${plural(history.noChange, 'automatic fix', 'automatic fixes')} did not change the result.`);
   return {

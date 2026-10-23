@@ -251,7 +251,7 @@ describe('a PR whose checks are failing (surface-ia §11)', () => {
   it('AC-51: the Postgres flake names the job and cause, and leads with Re-run', () => {
     const c = card(postgres);
     expect(c.label).toBe('checks failing');
-    expect(c.sentence).toBe('DB architecture (real Postgres) failed: the Postgres tests lost their database connection. This looks like a flake, not the code. 2 automatic fixes did not change the result.');
+    expect(c.sentence).toBe('DB architecture (real Postgres) failed: the Postgres tests lost their database connection, which looks like a flake, not the code. 2 automatic fixes did not change the result.');
     expect(c.primary?.label).toBe('Re-run');
     expect(c.details?.label).toBe('Logs');
   });
