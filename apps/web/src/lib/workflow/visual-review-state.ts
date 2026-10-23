@@ -14,7 +14,7 @@
  * writes. Surfaces consume it through `getMissionVisualReviewState`
  * (`visual-review-state-load.ts`) so none re-derives status from `phase`.
  */
-import { OPEN_TASK_STATUSES, type VisualReviewPhase } from '@buildd/shared';
+import { OPEN_TASK_STATUSES, isTerminalTaskStatus, type VisualReviewModel, type VisualReviewPhase } from '@buildd/shared';
 import type { ResolvedVisualReviewPolicy } from './visual-review-policy';
 
 export const MISSION_VISUAL_REVIEW_STATUSES = [
@@ -45,11 +45,18 @@ export interface VisualReviewStateInput {
     awaitingHuman: number;
     openFixes: number;
     roundCapOpen: boolean;
-    needsYouReason: 'question' | 'unsure' | 'round_cap' | null;
+    needsYouReason: 'question' | 'unsure' | 'round_cap' | 'fix_check' | null;
     captured: number;
     expected: number | null;
     /** For `waiting_on_failed_work`: the failed build task the audit waits on. */
     waitingOn?: { taskId: string; title: string | null } | null;
+    /**
+     * Screens whose fix merged with no screenshot since (`VisualReviewModel.recapture`,
+     * spec 072de598 I-15), as `recaptureScreenLabel` names them, and who takes the next step.
+     */
+    recapture?: VisualReviewRecaptureState | null;
+    /** Cells waiting on a new screenshot (`summary.awaitingCapture`): counted in `effectiveIssues`, not open findings of their own. */
+    awaitingCapture?: number;
   } | null;
   /** The newest waiver a person recorded. */
   waiver: { reason: string; actorLabel: string | null; at: string } | null;
@@ -77,6 +84,45 @@ export interface VisualReviewStateInput {
    * check that will run again.
    */
   missionClosed?: boolean;
+}
+
+/** Screens a merged fix waits on a new screenshot of (spec 072de598 I-15). */
+export interface VisualReviewRecaptureState {
+  /** `queued`: an audit that will take them is queued or running. `capture`: one is filed next. `decide`: a person decides. */
+  next: 'queued' | 'capture' | 'decide';
+  /** `recaptureScreenLabel` of each, in model order. */
+  screens: string[];
+  /** Their routes, for the recapture audit's required routes. */
+  routes: string[];
+}
+
+/** One screen to re-shoot, as every surface names it: `/app/x · dialog-state · phone`. */
+export function recaptureScreenLabel(s: { route: string; viewport: 'mobile' | 'desktop'; state: string | null; variant?: string | null }): string {
+  return [s.route, s.state ?? s.variant ?? null, s.viewport === 'mobile' ? 'phone' : 'desktop'].filter(Boolean).join(' · ');
+}
+
+/**
+ * The slice of the review model the state reads. The one mapping: the loader
+ * and every test go through it, so a surface's count cannot come from a
+ * second reading of the model (spec 072de598 AC-14).
+ */
+export function reviewInputFromModel(model: VisualReviewModel): NonNullable<VisualReviewStateInput['review']> {
+  return {
+    phase: model.phase,
+    screens: model.summary.shots,
+    effectiveIssues: model.summary.effectiveIssues,
+    awaitingHuman: model.summary.awaitingHuman,
+    openFixes: model.fixTasks.filter(f => !isTerminalTaskStatus(f.status)).length,
+    roundCapOpen: model.roundCapOpen,
+    needsYouReason: model.needsYou?.reason ?? null,
+    captured: model.progress?.captured ?? 0,
+    expected: model.progress?.expected ?? null,
+    waitingOn: model.waitingOn ?? null,
+    recapture: model.recapture
+      ? { next: model.recapture.next, screens: model.recapture.screens.map(recaptureScreenLabel), routes: model.recapture.screens.map(s => s.route) }
+      : null,
+    awaitingCapture: model.summary.awaitingCapture ?? 0,
+  };
 }
 
 export interface MissionVisualReviewState {
@@ -112,6 +158,8 @@ export interface MissionVisualReviewState {
    * absent and nothing here offers a retry; the recovery is on this task.
    */
   waitingOn?: { taskId: string; title: string | null };
+  /** Screens a merged fix waits on a new screenshot of, and who takes the next step (spec 072de598 I-15). */
+  recapture?: VisualReviewRecaptureState;
   /** The claim loop's newest refusal reason for a queued audit (gate_events), when the loader read one. */
   holdReason?: string | null;
   branch: {
@@ -168,6 +216,11 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
   let staleEvidence = false;
   let passedOnEarlierCommit = false;
   let waitingOn: MissionVisualReviewState['waitingOn'];
+  const recapture = review?.recapture && review.recapture.screens.length > 0 ? review.recapture : null;
+  // Findings besides the screens waiting on a new screenshot: those are not a decision for anyone yet.
+  const otherFindings = !!review && (
+    review.phase === 'needs_you' || review.phase === 'fixing' || review.awaitingHuman > 0 || review.roundCapOpen || review.openFixes > 0
+    || review.effectiveIssues > (recapture ? review.awaitingCapture ?? recapture.screens.length : 0));
 
   const hasAudit = !!audit && !(review && review.phase === 'off');
   if (waiverActive) {
@@ -189,6 +242,11 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
     } else if (review.phase === 'capturing') {
       status = 'running';
       nextActor = 'system';
+    } else if (recapture?.next === 'capture' && !otherFindings) {
+      // A fix merged and the last audit did not re-shoot its screen: the
+      // scheduler files one capture of exactly that screen (spec 072de598 I-15).
+      status = 'needed';
+      nextActor = 'system';
     } else if (review.phase === 'needs_you' || review.phase === 'fixing' || review.effectiveIssues > 0 || review.awaitingHuman > 0 || review.roundCapOpen) {
       status = 'findings';
       const fixing = review.openFixes > 0 && review.awaitingHuman === 0 && !review.roundCapOpen && review.phase !== 'needs_you';
@@ -197,7 +255,8 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
         undecided: review.awaitingHuman,
         fixesOpen: review.openFixes,
         stage: fixing || review.phase === 'fixing' ? 'fixing' : 'needs_decision',
-        exhausted: review.roundCapOpen,
+        // No automatic step is left: the round cap, or a merged fix no screenshot will be taken of.
+        exhausted: review.roundCapOpen || recapture?.next === 'decide',
       };
       // Ambiguity is Jev's; the owner is not a routine reviewer. Only when the
       // automatic fix rounds are spent and the audit still finds issues is it theirs.
@@ -261,6 +320,7 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
       : {}),
     auditTaskId: audit?.id ?? null,
     ...(waitingOn ? { waitingOn } : {}),
+    ...(recapture && status !== 'waived' && status !== 'passed' ? { recapture: { next: recapture.next, screens: recapture.screens, routes: recapture.routes } } : {}),
     branch: {
       headSha: branch.headSha,
       base: branch.base,

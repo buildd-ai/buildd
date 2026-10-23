@@ -481,6 +481,14 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
     return;
   }
 
+  // A suite finished on a branch that is the base of an open trunk incident: the incident is due for
+  // its recheck now, on the control plane's next minute, not at the hourly floor (§3, T26). Whatever
+  // the conclusion: green may be the last of the incident's checks finishing.
+  if (check_suite.head_branch) {
+    const { requestTrunkRecheckForBranch } = await import('@/lib/workflow/trunk-recheck');
+    await requestTrunkRecheckForBranch({ repoFullName: repository.full_name, branch: check_suite.head_branch });
+  }
+
   const headSha = check_suite.head_sha;
 
   // A Living Spec's generated repo copy (docs/specs/living-specs.md §18, R-35)

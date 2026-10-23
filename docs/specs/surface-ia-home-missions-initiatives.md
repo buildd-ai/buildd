@@ -19,6 +19,17 @@ assertions:
   - id: "initiative-view-tests"
     type: "test_file"
     path: "apps/web/src/lib/initiative-view.test.ts"
+  - id: "red-check-not-this-pr"
+    type: "symbol"
+    name: "applyNotThisPr"
+    path: "apps/web/src/lib/red-check-cause.ts"
+  - id: "red-check-cause-kind"
+    type: "symbol"
+    name: "redCheckCauseKind"
+    path: "packages/core/decision-kind-red-check-cause.ts"
+  - id: "red-check-judgement-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/red-check-decision.test.ts"
 ---
 
 # Surface IA — Home, Missions, Initiatives
@@ -410,10 +421,21 @@ flight. A PR with a fix in flight keeps its agent-handled card, unchanged.
 - **R-3 Say when it looks like a flake.** Rules decide first: a database
   connection the server terminated, a lost runner or an image the runner
   could not pull, and a timeout with no failing assertion each read as a likely
-  flake. A real failing test or compile error reads as a real failure. Where
-  no rule decides, Jev judges. Until Jev is wired, the card says what failed and
-  treats it as a real failure. The card also says when earlier automatic fixes
-  pushed nothing, or pushed and did not change the result.
+  flake. A real failing test or compile error reads as a real failure. Two
+  rules say a job is not this PR's code whatever its lines show: the same job
+  is red on the base branch at the same time (the newest completed run of the
+  same workflow there that started before this run ended), or the job is
+  scoped to paths the PR's diff does not touch (the Windows runner job when no
+  runner path changed). Where no rule decides, Jev judges from the failing
+  lines whether the environment or the code failed (`buildd.red_check_cause`,
+  an opt-in capability). The judgement is a recorded decision with its model
+  and threshold, stored on the PR's red-check record, and made after the
+  failure is read, never while Home renders. An unsure, failed or missing
+  answer reads as a real failure, which is also what the card says when the
+  team has it off. The card also says when earlier automatic fixes pushed
+  nothing, or pushed and did not change the result. A lost database
+  connection is re-run automatically like the infrastructure signatures,
+  bounded by the run's attempts.
 - **R-4 Actions follow the cause.** A likely flake: **Re-run** is the primary
   action and Start fix the secondary. A real failure: **Start fix** is primary.
   Re-run re-runs the failed jobs of the head's failed workflow run only, through
@@ -454,6 +476,21 @@ flight. A PR with a fix in flight keeps its agent-handled card, unchanged.
 - **AC-56**: GIVEN a Windows runner job that failed a test the log does not
   name and an uploaded `unit-test-report-windows` artifact naming it, WHEN the
   failure is recorded, THEN the card names that test.
+- **AC-57**: GIVEN a failed job with a failing test that is also red on the
+  PR's base branch at the same time, WHEN the failure is recorded, THEN the card
+  says it is failing on the base branch too and is not this PR's code, and
+  Re-run leads; GIVEN the same job is green there, THEN it stays a real failure.
+- **AC-58**: GIVEN "Runner unit tests (windows)" failed on a PR whose diff
+  touches no runner path, WHEN the failure is recorded, THEN the card says the
+  PR changes nothing it tests; GIVEN the diff cannot be read in full, THEN the
+  rule does not decide.
+- **AC-59**: GIVEN a red head no rule can call, WHEN the failure is recorded,
+  THEN Jev is asked once for that failure off the render path and its answer
+  is stored on the record; an `environment` answer above the threshold makes
+  Re-run lead, and any other answer leaves Start fix primary.
+- **AC-60**: GIVEN a job whose database connection was terminated, WHEN its
+  CI failure is handled, THEN the failed jobs are re-run automatically until
+  the run has used its attempts.
 
 ---
 
