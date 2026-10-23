@@ -4,7 +4,7 @@ import { artifactRevisions, artifacts, specRevisions, specs, workspaces, type Ar
 import { ArtifactType } from '@buildd/shared';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
-import { deleteObject, isStorageConfigured, uploadBuffer } from '@/lib/storage';
+import { deleteObject, isStorageConfigured, readObject, uploadBuffer } from '@/lib/storage';
 import { buildArtifactKey } from '@/lib/storage-keys';
 import { resolveWorkspaceAccess } from '@/lib/workspace-access';
 import {
@@ -12,6 +12,7 @@ import {
   type LinkCaller, type LinkRow,
 } from '@/lib/artifact-links';
 import { extractScreens, parseScreens, type DesignScreen } from './screens';
+import { isAdoptableFile, planAdoption } from './adopt';
 import { DESIGN_ATTACH_KINDS, planStore, type DesignAttachKind } from './store';
 import { DESIGN_STORED_CONTENT_TYPE, validateDesignHtml } from './upload';
 
@@ -72,6 +73,37 @@ async function loadDesign(caller: LinkCaller, designId: string) {
   // Missing, not a design and unreachable read the same.
   if (!a || !a.workspaceId || !(await canAccessWorkspace(caller, a.workspaceId))) return null;
   return a;
+}
+
+/** An adopted file is read whole to find its screens; a larger one is not a design export. */
+const ADOPT_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
+ * A design to attach: a design artifact, or an HTML file already in buildd that
+ * declares its screens, which is marked a design here (its bytes and revisions
+ * are untouched). An artifact the caller cannot reach, or that is neither,
+ * reads as not found.
+ */
+async function loadDesignOrAdopt(caller: LinkCaller, designId: string): Promise<Awaited<ReturnType<typeof loadDesign>> | DesignError> {
+  const design = await loadDesign(caller, designId);
+  if (design || !isUuid(designId)) return design;
+  const [a] = await db.select({
+    id: artifacts.id, title: artifacts.title, workspaceId: artifacts.workspaceId, currentRevision: artifacts.currentRevision,
+    metadata: artifacts.metadata, storageKey: artifacts.storageKey, uploadState: artifacts.uploadState,
+  }).from(artifacts).where(eq(artifacts.id, designId)).limit(1);
+  const metadata = (a?.metadata ?? null) as Record<string, unknown> | null;
+  if (!a || !a.workspaceId || !(await canAccessWorkspace(caller, a.workspaceId))) return null;
+  if (!isAdoptableFile({ storageKey: a.storageKey, metadata }) || (a.uploadState && a.uploadState !== 'ready')) return null;
+  if (!isStorageConfigured()) return fail(503, 'Storage not configured');
+  const bytes = await readObject(a.storageKey!, ADOPT_MAX_BYTES);
+  if (!bytes) return fail(413, 'This file could not be read as a design (missing, or over 8 MB)');
+  const plan = planAdoption(bytes.toString('utf8'));
+  if (!plan.ok) return fail(400, plan.message, plan.field);
+  const patch = { kind: DESIGN_KIND, screens: plan.screens };
+  await db.update(artifacts)
+    .set({ metadata: sql`coalesce(${artifacts.metadata}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb` })
+    .where(eq(artifacts.id, a.id));
+  return { ...a, metadata: { ...(metadata ?? {}), ...patch } };
 }
 
 export interface StoreInput {
@@ -185,7 +217,8 @@ export async function storeDesign(caller: LinkCaller, input: StoreInput): Promis
 }
 
 export async function attachDesign(caller: LinkCaller, designId: string, input: { attachTo: AttachInput; pin?: number }): Promise<{ ok: true; link: LinkRow } | DesignError> {
-  const design = await loadDesign(caller, designId);
+  const design = await loadDesignOrAdopt(caller, designId);
+  if (isErr(design)) return design;
   if (!design) return fail(404, 'design not found');
   const target = await resolveTarget(input.attachTo);
   if (isErr(target)) return target;

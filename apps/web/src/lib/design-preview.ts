@@ -28,8 +28,9 @@ const DESKTOP_VIEWPORT: Viewport = { width: 1440, height: 900 };
 export function isDesignArtifact(a: { storageKey: string | null; metadata: Record<string, unknown> | null }): boolean {
   if (!a.storageKey || !a.metadata) return false;
   const mime = typeof a.metadata.mimeType === 'string' ? a.metadata.mimeType.split(';')[0].trim().toLowerCase() : '';
-  if (mime !== 'text/html') return false;
-  return a.metadata.kind === 'design' || Array.isArray(a.metadata.screens);
+  // A design stored by buildd is written as inert text (designs/upload.ts), so it states text/plain.
+  if (a.metadata.kind === 'design') return mime === 'text/html' || mime === 'text/plain';
+  return mime === 'text/html' && Array.isArray(a.metadata.screens);
 }
 
 /** `WxH` (or `W×H`), or `{ width, height }`; null for anything else. */

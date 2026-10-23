@@ -1,5 +1,6 @@
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import LinkedDesigns from '@/components/LinkedDesigns';
 import { specPageView } from '@/lib/specs/page-view';
 import SpecPage from '@/components/SpecPage';
 import { resolveSpecShortId, SHORT_ID } from '@/lib/specs/short-id';
@@ -65,6 +66,7 @@ export default async function SpecDetailPage({
     // A div, not <main>: the app layout's scroll root is already the page's main landmark.
     <div className="mx-auto w-full max-w-6xl px-4 pt-[4.5rem] pb-24 md:px-8 md:pt-8 md:pb-10">
       <SpecPage view={view} />
+      <LinkedDesigns subjectKind="spec" subjectId={view.spec.id} userId={user.id} />
     </div>
   );
 }

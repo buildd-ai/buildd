@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
-import { missions, specCriterionRecords, specRevisions } from '@buildd/core/db/schema';
+import { artifacts, missions, specCriterionRecords, specRevisions } from '@buildd/core/db/schema';
 import { asc, eq } from 'drizzle-orm';
-import { criterionScreens, designSourceFromContext, pickDesign, type DesignCriterion, type DesignSource } from '@buildd/shared';
+import { criterionScreens, designSourceFromContext, pickDesign, type DesignCriterion, type DesignScreenInfo, type DesignSource } from '@buildd/shared';
 import { artifactsLinkedTo } from '@/lib/artifact-links';
 import { isUuid } from '@/lib/uuid';
 
@@ -27,6 +27,8 @@ export interface DesignSourceDeps {
   designLinks(kind: 'task' | 'mission', id: string): Promise<Link[]>;
   /** The mission's outcome spec pin, when it has one. */
   missionSpecPin(missionId: string): Promise<SpecPin | null>;
+  /** The screens the design file declares (artifact metadata). Optional: absent, the context carries ids only. */
+  designScreens?(artifactId: string): Promise<DesignScreenInfo[]>;
   specRevision(specRevisionId: string): Promise<{ design: unknown; criteria: DesignCriterion[] } | null>;
 }
 
@@ -67,6 +69,12 @@ export const designSourceDeps: DesignSourceDeps = {
       .find((c) => c?.type === 'living_spec' && c.role !== 'standard' && typeof c.specRevisionId === 'string');
     return pin ? { specRevisionId: pin.specRevisionId as string, criteria: scopeOf(pin.criteria) } : null;
   },
+  async designScreens(artifactId) {
+    const [a] = await db.select({ metadata: artifacts.metadata }).from(artifacts).where(eq(artifacts.id, artifactId)).limit(1);
+    const raw = (a?.metadata as { screens?: unknown } | null)?.screens;
+    return (Array.isArray(raw) ? raw : []).filter((s): s is DesignScreenInfo =>
+      !!s && typeof s === 'object' && typeof (s as DesignScreenInfo).id === 'string' && typeof (s as DesignScreenInfo).name === 'string' && typeof (s as DesignScreenInfo).viewport === 'string');
+  },
   async specRevision(specRevisionId) {
     const [rev] = await db.select({ design: specRevisions.design }).from(specRevisions).where(eq(specRevisions.id, specRevisionId)).limit(1);
     if (!rev) return null;
@@ -95,9 +103,13 @@ export async function resolveDesignSourceAtClaim(
   const criteria = (spec?.criteria ?? [])
     .filter((c) => !pin?.criteria || pin.criteria.includes(c.id))
     .filter((c) => c.screens.length > 0);
+  const matter = criteria.length > 0 ? criterionScreens(criteria) : [];
+  const screenInfo = await deps.designScreens?.(picked.artifactId).catch(() => [] as DesignScreenInfo[]) ?? [];
+  const named = matter.length > 0 ? screenInfo.filter((s) => matter.includes(s.id)) : screenInfo;
   return {
     ...(filed ?? {}),
     ...picked,
-    ...(criteria.length > 0 ? { screens: criterionScreens(criteria), criteria } : {}),
+    ...(criteria.length > 0 ? { screens: matter, criteria } : {}),
+    ...(named.length > 0 ? { screenInfo: named } : {}),
   };
 }
