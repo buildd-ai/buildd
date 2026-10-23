@@ -10,6 +10,23 @@ Linux/WSL2 use bubblewrap and socat. The sandbox covers shell commands; Claude f
 tools, MCP servers and hooks have a different boundary. Do not interpret a passing
 probe as whole-machine isolation or a model authentication test.
 
+## Guided setup: `buildd wsl install`
+
+From PowerShell, with the Windows runner installed:
+
+```powershell
+buildd wsl install            # or: buildd wsl install --distro <name>
+```
+
+It needs Windows 10 build 19041 or later, or Windows 11, and stops on anything
+older. It reuses a WSL2 distribution that is already there. With none, it shows
+`wsl --install -d Ubuntu --no-launch` and runs it only after you answer yes; a
+no (or no terminal) installs nothing. If Windows asks for a restart, restart and
+run the same command again. It then opens the distribution so you create your
+Linux user, and runs the Linux installer inside it as that user. It never
+converts WSL1, creates a Linux user or runs anything as root. The manual steps
+below remain the fallback, and `bun run wsl:setup` stays a probe only.
+
 ## 1. Probe from PowerShell
 
 From a current buildd source checkout with Windows Bun installed:
