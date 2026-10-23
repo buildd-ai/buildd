@@ -6,7 +6,7 @@
  * an agent that sends it can still not retire anything (AC-123).
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import { handleBuilddAction, buildParamsDescription, type ApiFn, type ActionContext } from '../mcp-tools';
+import { handleBuilddAction, buildParamsDescription, type ApiFn, type ActionContext } from '../../../../packages/core/mcp-tools';
 
 const WS = '00000000-0000-0000-0000-000000000001';
 const OLD = '00000000-0000-4000-8000-0000000000a1';

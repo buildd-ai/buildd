@@ -23,7 +23,7 @@ const OTHER_WS = '55555555-5555-4555-8555-555555555555';
 
 describe('R-76: a draft or revision names the specs it replaces, as data', () => {
   it('R-76: replaces is a list of spec ids, a bad shape is refused, and nothing named means nothing replaced', async () => {
-    const { parseReplaces } = await import('./replaces');
+    const { parseReplaces } = await import('../../src/lib/specs/replaces');
     expect(parseReplaces(undefined, B)).toEqual({ ok: true, ids: [] });
     expect(parseReplaces([A, A, C], B)).toEqual({ ok: true, ids: [A, C] });
     for (const bad of ['not a list', [A, 'checkout'], [B], [1]]) {
@@ -32,7 +32,7 @@ describe('R-76: a draft or revision names the specs it replaces, as data', () =>
   });
 
   it('R-76: a replaced spec must be live and in the same workspace, else 400', async () => {
-    const { replacedSpecProblem } = await import('./replaces');
+    const { replacedSpecProblem } = await import('../../src/lib/specs/replaces');
     const self = { id: B, workspaceId: WS };
     expect(replacedSpecProblem(self, { id: A, workspaceId: WS, status: 'approved' })).toBeNull();
     expect(replacedSpecProblem(self, { id: A, workspaceId: WS, status: 'draft' })).toBeNull();
@@ -45,7 +45,7 @@ describe('R-76: a draft or revision names the specs it replaces, as data', () =>
 
 describe('R-77 and AC-122: approving a replacement offers to retire what it replaces', () => {
   it('AC-122: the default choice supersedes every replaced spec; unchecking approves only', async () => {
-    const { retireChoice } = await import('./replaces');
+    const { retireChoice } = await import('../../src/lib/specs/replaces');
     expect(retireChoice([A], undefined)).toEqual([A]);
     expect(retireChoice([A, C], null)).toEqual([A, C]);
     expect(retireChoice([A], [])).toEqual([]);
@@ -55,7 +55,7 @@ describe('R-77 and AC-122: approving a replacement offers to retire what it repl
   });
 
   it('AC-122: each superseded spec gets its own change row, whose reason names the approval', async () => {
-    const { approvalRetireReason } = await import('./replaces');
+    const { approvalRetireReason } = await import('../../src/lib/specs/replaces');
     const reason = approvalRetireReason({ id: B, title: 'Checkout v2' }, 3);
     expect(reason).toContain('Checkout v2');
     expect(reason).toContain('revision 3');
@@ -64,7 +64,7 @@ describe('R-77 and AC-122: approving a replacement offers to retire what it repl
   });
 
   it('R-77: the confirmation link an OAuth session returns carries the same choice', async () => {
-    const { signSpecApprovalRequest, verifySpecApprovalRequest } = await import('./approval-request');
+    const { signSpecApprovalRequest, verifySpecApprovalRequest } = await import('../../src/lib/specs/approval-request');
     const token = signSpecApprovalRequest({
       specId: B, workspaceId: WS, revision: 3, expectedVersion: 5, contentHash: 'a'.repeat(64), requestedBy: 'u1',
       retireReplaced: [A],
