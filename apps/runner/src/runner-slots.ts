@@ -25,6 +25,9 @@ export const MAX_SLOTS = 50;
 
 export type SlotsSource = 'config' | 'env' | 'default';
 
+/** Who last set N and when: kept in config.json beside `maxConcurrent` (spec 34a48877 R-21, R-22). */
+export interface SlotsMeta { changedAt: number; origin: 'dashboard' | 'machine'; setBy: string | null }
+
 /** Where N comes from: config.json wins, then MAX_CONCURRENT, then the default (3). */
 export function slotsSource(saved: { maxConcurrent?: unknown }, env: Record<string, string | undefined>): SlotsSource {
   if (typeof saved.maxConcurrent === 'number' && saved.maxConcurrent > 0) return 'config';
@@ -47,8 +50,8 @@ export function parseSlots(raw: unknown): number | null {
 const agents = (n: number) => `${n} agent${n === 1 ? '' : 's'}`;
 
 /** `buildd slots` alone: "6 slots (set in ~/.buildd/config.json): 2 running, 4 free." */
-export function slotsStatusLine(slots: number, running: number, source: SlotsSource): string {
-  return `${slots} slot${slots === 1 ? '' : 's'} (${SOURCE_WORDS[source]}): ${running} running, ${Math.max(0, slots - running)} free.`;
+export function slotsStatusLine(slots: number, running: number, source: SlotsSource, origin?: string | null): string {
+  return `${slots} slot${slots === 1 ? '' : 's'} (${origin || SOURCE_WORDS[source]}): ${running} running, ${Math.max(0, slots - running)} free.`;
 }
 
 import type { ExtrasMode, SlotsCommand } from './cli-args';
@@ -124,8 +127,12 @@ function readConfigObject(file: string): Record<string, unknown> | null {
   }
 }
 
-/** Write `maxConcurrent` into config.json, keeping every other field (refuses an unreadable file, which holds the API key). */
-export function saveSlotsToConfig(configFile: string, slots: number): void {
+/**
+ * Write `maxConcurrent` into config.json, keeping every other field (refuses an
+ * unreadable file, which holds the API key). Records who set it and when: this
+ * machine, now, unless `meta` says it came from buildd.dev.
+ */
+export function saveSlotsToConfig(configFile: string, slots: number, meta?: Partial<SlotsMeta>): void {
   let cfg: Record<string, unknown> = {};
   if (existsSync(configFile)) {
     const existing = readConfigObject(configFile);
@@ -133,7 +140,46 @@ export function saveSlotsToConfig(configFile: string, slots: number): void {
     cfg = existing;
   }
   cfg.maxConcurrent = slots;
+  cfg.slotsSetAt = meta?.changedAt ?? Date.now();
+  cfg.slotsOrigin = meta?.origin ?? 'machine';
+  cfg.slotsSetBy = meta?.setBy ?? null;
   writeSecretJsonFile(configFile, cfg);
+}
+
+/** Who last set N, from config.json; null when it was never recorded (set before this was kept). */
+export function readSlotsMeta(configFile: string): SlotsMeta | null {
+  const cfg = readConfigObject(configFile);
+  const at = cfg?.slotsSetAt;
+  if (typeof at !== 'number' || !Number.isFinite(at) || at <= 0) return null;
+  return { changedAt: at, origin: cfg?.slotsOrigin === 'dashboard' ? 'dashboard' : 'machine', setBy: typeof cfg?.slotsSetBy === 'string' ? cfg.slotsSetBy : null };
+}
+
+/** "set on buildd.dev by Max, 14:02" / "set on this machine, Oct 17" (R-22); null when never recorded. */
+export function slotsOriginLine(meta: SlotsMeta | null, now: number = Date.now()): string | null {
+  if (!meta) return null;
+  const d = new Date(meta.changedAt);
+  const sameDay = new Date(now).toDateString() === d.toDateString();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const at = sameDay ? `${pad(d.getHours())}:${pad(d.getMinutes())}` : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return meta.origin === 'dashboard' ? `set on buildd.dev${meta.setBy ? ` by ${meta.setBy}` : ''}, ${at}` : `set on this machine, ${at}`;
+}
+
+/** A dashboard-set value as the heartbeat reply carries it. */
+export interface ServerSlots { slots: number; setBy: string | null; setAt: number }
+
+/**
+ * The slots the runner should take from a heartbeat reply, or null. The server
+ * only sends a value newer than the runner's own change; this checks it again,
+ * so a local change made since wins and is reported back, never overwritten
+ * (R-21).
+ */
+export function serverSlotsToApply(reply: unknown, current: { slots: number; changedAt: number | null }): ServerSlots | null {
+  const r = reply as Partial<ServerSlots> | null | undefined;
+  const slots = parseSlots(r?.slots);
+  if (slots === null || typeof r?.setAt !== 'number' || !Number.isFinite(r.setAt)) return null;
+  if (slots === current.slots) return null;
+  if (current.changedAt !== null && current.changedAt > r.setAt) return null;
+  return { slots, setBy: typeof r.setBy === 'string' ? r.setBy : null, setAt: r.setAt };
 }
 
 export function readSlotsFromConfig(configFile: string): number | null {
@@ -220,7 +266,8 @@ export async function runSlotsCommand(cmd: SlotsCommand, deps: SlotsCommandDeps)
       const b = r.body as { slots?: unknown; running?: unknown; source?: unknown };
       if (r.status !== 200 || typeof b?.slots !== 'number') return { code: 1, stdout: '', stderr: `The runner did not say its slots (${refusal(r.body, r.status)}).` };
       const source: SlotsSource = b.source === 'env' || b.source === 'default' ? b.source : 'config';
-      return { code: 0, stdout: slotsStatusLine(b.slots, typeof b.running === 'number' ? b.running : 0, source), stderr: '' };
+      const origin = typeof (b as { origin?: unknown }).origin === 'string' ? (b as { origin: string }).origin : null;
+      return { code: 0, stdout: slotsStatusLine(b.slots, typeof b.running === 'number' ? b.running : 0, source, origin), stderr: '' };
     } catch (err) {
       return { code: 1, stdout: '', stderr: `The runner on this machine did not answer (${(err as Error)?.message ?? err}).` };
     }
