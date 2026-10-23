@@ -179,6 +179,20 @@ if (CLI.kind === 'web') {
   process.exit(await runWebCommand({ socketPath: socketPathFor(BUILDD_DIR) }));
 }
 
+// `buildd wsl install [--distro <name>]`: Windows only. Asks before installing
+// WSL and Ubuntu, then runs the Linux installer inside the distribution
+// (wsl-setup.ts). Never starts a runner here.
+if (CLI.kind === 'wsl-install') {
+  const { installWsl, realWslCommand, realWslInteractive } = await import('./wsl-setup');
+  const { terminalConfirm } = await import('./runner-hold');
+  const { release } = await import('os');
+  process.exit(await installWsl(CLI.distro ?? undefined, {
+    platform: process.platform, release: release(),
+    run: realWslCommand, runInteractive: realWslInteractive,
+    confirm: terminalConfirm(), out: line => console.log(line),
+  }));
+}
+
 // --version: print and exit. Deliberately after every static import above, so a
 // zero exit also proves the runner's whole module graph loads (the installer
 // smoke test relies on that).
