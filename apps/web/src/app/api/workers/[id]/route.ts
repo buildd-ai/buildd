@@ -6223,6 +6223,38 @@ async function handleReviewerOutcomeIfNeeded(
     }).catch((err: unknown) => console.warn(`[reviewer] copy review note for PR #${prNumber} not posted:`, err));
   }
 
+  // Design screens (lib/reviewer-design.ts): a task whose criteria name screens
+  // is approved only on a comparison with each screen made on the real route.
+  // The builder's own "matches the design" is never that evidence. Applied
+  // after the gates above, so an escalation to a person is kept; before the
+  // evidence gate, which still wins.
+  if (effectiveVerdict === 'approve') {
+    const { loadDesignRequirement } = await import('@/lib/reviewer');
+    const { applyDesignGate, parseDesignChecks } = await import('@/lib/reviewer-design');
+    const requirement = await loadDesignRequirement(originalTaskId);
+    const designGate = applyDesignGate({
+      verdict: effectiveVerdict,
+      required: requirement.criteria,
+      checks: parseDesignChecks(output),
+      feedback: output.feedback,
+    });
+    if (designGate.reason) {
+      console.log(`[reviewer] PR #${prNumber}: design gate turned approve into request-changes`);
+      effectiveVerdict = designGate.verdict;
+      output.feedback = designGate.feedback ?? undefined;
+      await db
+        .update(tasks)
+        .set({
+          result: sql`jsonb_set(COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('effectiveVerdict', ${effectiveVerdict}::text, 'effectiveVerdictReason', ${designGate.reason}::text), '{structuredOutput,feedback}', to_jsonb(${designGate.feedback ?? ''}::text), true)`,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, reviewerTaskId))
+        .catch((err: unknown) =>
+          console.error(`[reviewer] could not persist the design review for PR #${prNumber}:`, err),
+        );
+    }
+  }
+
   // The reviewer's evidence: the commit its checkout was at when it judged. It is
   // recorded with the verdict, and a verdict read at any other commit than the
   // round's head (or with none reported) is inconclusive: it never approves.

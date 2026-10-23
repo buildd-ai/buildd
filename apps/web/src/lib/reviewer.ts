@@ -33,6 +33,7 @@ import {
 } from './workspace-policy';
 import { inheritPhaseFromParent } from './mission-phase';
 import { DEFAULT_REVIEW_CONFIDENCE_THRESHOLD } from './reviewer-output';
+import { renderDesignGuidance, screenNamedCriteria, type DesignScreenCriterion, type PinnedDesignRef } from './reviewer-design';
 import { wrapUntrustedText, sanitizeUntrustedText } from './untrusted-text';
 import { extractLede } from '@buildd/core/pr-lede';
 import { resolvePrompt, resolvePromptTemplate } from '@buildd/core/prompts';
@@ -141,6 +142,12 @@ export interface ReviewerTaskOutput {
    * head it was asked about (or with none reported) is inconclusive and never approves.
    */
   checkoutSha?: string;
+  /**
+   * One entry per screen a criterion names (lib/reviewer-design.ts): the route
+   * compared, the shots of it at the head, and whether it matches. An approve
+   * on a task whose criteria name screens needs them.
+   */
+  designChecks?: Array<{ criterionId: string; screen: string; route: string; shotIds: string[]; matches: boolean; fixtureReason?: string }>;
 }
 
 export const REVIEWER_TASK_OUTPUT_SCHEMA = {
@@ -246,6 +253,24 @@ export const REVIEWER_TASK_OUTPUT_SCHEMA = {
       type: 'string',
       description:
         'The full commit SHA `git rev-parse HEAD` prints in your worktree after you checked out the head you were asked to review. A verdict read at any other commit is discarded.',
+    },
+    designChecks: {
+      type: 'array',
+      description:
+        'ONLY when the prompt has a "Design screens to judge" section: one entry per criterion and screen you compared with the build on the REAL route at the head. shotIds are screenshot artifact ids of that route (the builder\'s or your own capture). A dev fixture route needs fixtureReason (the state the real route cannot reach).',
+      items: {
+        type: 'object',
+        required: ['criterionId', 'screen', 'route', 'shotIds', 'matches'],
+        properties: {
+          criterionId: { type: 'string' },
+          screen: { type: 'string' },
+          route: { type: 'string' },
+          shotIds: { type: 'array', items: { type: 'string' } },
+          matches: { type: 'boolean' },
+          fixtureReason: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
     },
     copyFindings: {
       type: 'array',
@@ -1477,6 +1502,30 @@ export function specVerdictInstruction(taskId: string, criteriaIds: readonly str
   ].join('\n');
 }
 
+/**
+ * The screen-named criteria the reviewed task answers for, and the design they
+ * point at, read from its pinned spec revision. Empty when the task is pinned
+ * to no spec, the revision has no design, or no criterion names a screen.
+ */
+export async function loadDesignRequirement(originalTaskId: string): Promise<{ design: PinnedDesignRef | null; criteria: DesignScreenCriterion[] }> {
+  const none = { design: null, criteria: [] as DesignScreenCriterion[] };
+  const specSource = await loadTaskSpecSource(originalTaskId);
+  if (!specSource?.specId) return none;
+  try {
+    const { readPinnedSpecRevision } = await import('@/lib/specs/pin');
+    const pinned = await readPinnedSpecRevision(specSource as Record<string, unknown>);
+    if (!pinned.ok || !pinned.design) return none;
+    const { specCriteria } = await import('@buildd/spec-contract/requirements');
+    const { inScope } = await import('@buildd/spec-contract/scope');
+    const ids = inScope(specSource as Record<string, unknown>, specCriteria(pinned.body)).map((c) => c.id);
+    const design = pinned.design as PinnedDesignRef;
+    return { design, criteria: screenNamedCriteria({ body: pinned.body, design, inScopeIds: ids }) };
+  } catch (err) {
+    console.warn(`[reviewer] Failed to read the design requirement for task ${originalTaskId}:`, err);
+    return none;
+  }
+}
+
 export async function renderSpecConformanceGuidance(params: {
   specSource: SpecSourceRef | null | undefined;
   installationId: number;
@@ -1492,6 +1541,7 @@ export async function renderSpecConformanceGuidance(params: {
   let specText: string | undefined;
   let unavailable: string | undefined;
   let criteriaIds: string[] = [];
+  let designGuidance = '';
   if (specSource.specId) {
     const { readPinnedSpecRevision } = await import('@/lib/specs/pin');
     const pinned = await readPinnedSpecRevision(specSource as Record<string, unknown>).catch((err: unknown) => {
@@ -1504,6 +1554,8 @@ export async function renderSpecConformanceGuidance(params: {
       const { specCriteria } = await import('@buildd/spec-contract/requirements');
       const { inScope } = await import('@buildd/spec-contract/scope');
       criteriaIds = inScope(specSource as Record<string, unknown>, specCriteria(pinned.body)).map((c) => c.id);
+      const design = pinned.design as PinnedDesignRef | null | undefined;
+      designGuidance = renderDesignGuidance({ design, criteria: screenNamedCriteria({ body: pinned.body, design, inScopeIds: criteriaIds }) });
     } else {
       label = `Living Spec ${specSource.specId}`;
       unavailable = pinned.reason;
@@ -1542,6 +1594,7 @@ export async function renderSpecConformanceGuidance(params: {
       ? `\nThis task builds part of the spec: it answers for ${criteriaIds.join(', ')}. The other criteria are context for what it must not break, not work it owes; do not request changes for them.`
       : '',
     criteriaIds.length > 0 && params.taskId ? specVerdictInstruction(params.taskId, criteriaIds, headSha) : '',
+    designGuidance ? `\n${designGuidance}` : '',
   ].join('\n');
 
   return { doctrine, section };
