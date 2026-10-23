@@ -65,7 +65,13 @@
  *                                     follows the OS theme renders in it, and also seeds buildd's own
  *                                     `buildd-theme` key. Recorded on every capture as `theme` (copy into
  *                                     the shot's metadata.qa.theme). Unset keeps the app default and
- *                                     records no theme.
+ *                                     records no theme. With QA_DESIGN and no QA_THEME, the
+ *                                     design's theme: the page is compared in the theme it was drawn in.
+ *   QA_DESIGN                       — a design plan (scripts/qa/design.ts): after the pages, render each
+ *                                     design screen a spec criterion names, in this browser but a fresh
+ *                                     context, into designs/, pair it with its route and write
+ *                                     side-by-side/ and design-captures.json (scripts/qa/design-capture.ts).
+ *                                     A missing screen exits 6 after everything is written.
  */
 
 import { connectReviewBrowser, exposeService } from './browser-provider';
@@ -84,6 +90,7 @@ import {
   type CaptureConfigError,
 } from '../../packages/core/visual-qa-page-source';
 import { writeCaptureFailure } from './capture-failure';
+import { designPlanText, designTheme, runDesignCapture } from './design-capture';
 
 /** This script's step in visual-qa.yml: the `step` of every failure it types. */
 const CAPTURE_STEP = 'Capture screenshots and a11y snapshots';
@@ -96,9 +103,15 @@ const CAPTURE_STEP = 'Capture screenshots and a11y snapshots';
 // and nothing left to await.
 let contextOptions: BrowserContextOptions;
 let QA_THEME: QaTheme | null;
+let designPlan: string | null = null;
 try {
   contextOptions = resolveViewport(process.env.QA_VIEWPORT);
   QA_THEME = resolveTheme(process.env.QA_THEME);
+  if (process.env.QA_DESIGN?.trim()) {
+    designPlan = designPlanText(process.env.QA_DESIGN);
+    // The page is shot in the design's theme first; parity across themes is checked separately.
+    if (!QA_THEME) QA_THEME = await designTheme(designPlan);
+  }
 } catch (err) {
   console.error(`[capture] ${(err as Error).message}`);
   process.exit(1);
@@ -362,6 +375,8 @@ type Capture = {
   state?: string;
   /** light | dark from QA_THEME: copy into the shot's metadata.qa.theme. Absent when QA_THEME was unset. */
   theme?: QaTheme;
+  /** The viewport the shot was taken at, so a design screen can be paired by width. */
+  viewport?: { width: number; height: number };
   /** The step that did not settle. The shot was still taken, at that point. */
   stepFailed?: StepFailure;
   /** Writes the page tried during the steps, aborted by the guard. */
@@ -381,7 +396,11 @@ const captures: Capture[] = [];
 for (const route of routes) {
   // Present only on a state shot, so a QA_ROUTES run's entries are unchanged.
   // The theme rides along the same way: present only when QA_THEME was set.
-  const shotFields = { ...(route.state ? { state: route.state } : {}), ...(QA_THEME ? { theme: QA_THEME } : {}) };
+  const shotFields = {
+    ...(route.state ? { state: route.state } : {}),
+    ...(QA_THEME ? { theme: QA_THEME } : {}),
+    ...(contextOptions.viewport ? { viewport: { width: contextOptions.viewport.width, height: contextOptions.viewport.height } } : {}),
+  };
   if (route.skipReason) {
     captures.push({
       source: PAGE_SOURCE,
@@ -548,6 +567,22 @@ for (const route of routes) {
 }
 
 writeFileSync(join(OUTPUT_DIR, 'captures.json'), JSON.stringify(captures.map(c => ({ ...c, browser: browserMetadata })), null, 2));
+
+// The design screens, in this browser but never in the page's context: the
+// design is untrusted and must not see buildd's session (design-capture.ts).
+let designMissing = false;
+if (designPlan) {
+  try {
+    const design = await runDesignCapture({ browser, outDir: OUTPUT_DIR, planText: designPlan, captures });
+    for (const s of design.shots) console.log(s.error ? `[capture] DESIGN MISS ${s.screen}: ${s.error}` : `[capture] DESIGN ${s.screen} → ${s.file}`);
+    for (const p of design.pairs) console.log(`[capture] PAIR  ${p.captureId} ↔ ${p.screen}${p.sideBySide ? ` → ${p.sideBySide}` : ''}`);
+    for (const s of design.unmatchedScreens) console.log(`[capture] UNPAIRED design screen ${s} (no capture of its route at its width)`);
+    designMissing = design.shots.some((s) => s.error);
+  } catch (err) {
+    console.error(`[capture] design capture failed: ${(err as Error).message}`);
+    designMissing = true;
+  }
+}
 await browser.close();
 console.log(`[capture] done — ${captures.length} routes → ${OUTPUT_DIR}`);
 
@@ -586,3 +621,6 @@ if (providerFailure) {
   writeCaptureFailure(OUTPUT_DIR, classifyCaptureFailure({ step: CAPTURE_STEP, component: 'visual_qa.browser', error: providerFailure.providerError }));
   process.exit(1);
 }
+
+// A design screen a criterion names did not render: the comparison is incomplete.
+if (designMissing) process.exit(6);

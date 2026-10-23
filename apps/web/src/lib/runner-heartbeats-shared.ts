@@ -79,6 +79,19 @@ export interface RunnerHeartbeat {
   runnerClass?: RunnerClass;
   /** How the runner's model usage is paid: `oauth` = the login on its own machine, `api` = a key. Absent when unknown. */
   authType?: 'oauth' | 'api';
+  /**
+   * The slots a team owner or admin set (or the runner last reported) and
+   * where that came from (worker_heartbeats.desired_slots*); `canEdit` is
+   * whether the viewer may change it (spec 34a48877 R-23). Absent where a
+   * loader does not fill it.
+   */
+  slots?: {
+    desired: number | null;
+    origin: 'dashboard' | 'machine' | null;
+    setBy: string | null;
+    setAt: string | null;
+    canEdit: boolean;
+  };
 }
 
 /** Capability string the runner advertises when mount isolation is enforced. */
