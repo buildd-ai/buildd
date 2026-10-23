@@ -286,6 +286,27 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
   return collapseSystemic([...items.values()]);
 }
 
+/** The Awaiting your approval inbox (Living Spec b7fc9316). */
+export const SPEC_APPROVALS_HREF = '/app/specs/approvals';
+
+/**
+ * Home's one card for spec revisions waiting on this person (R-9): a count
+ * and the inbox, while the count is above zero. Never one card per spec, and
+ * never an approve action of its own: approving happens in the inbox, one
+ * revision per click.
+ */
+export function specApprovalsAttention(count: number): HomeAttentionItem | null {
+  if (!Number.isFinite(count) || count <= 0) return null;
+  const one = count === 1;
+  return {
+    key: 'spec-approvals', kind: 'queue', label: 'spec approval', tone: 'warning',
+    title: `${count} spec ${one ? 'revision waits' : 'revisions wait'} for your approval`,
+    sentence: `Review ${one ? 'it' : 'each one'} and approve with a click.`,
+    meta: '', href: SPEC_APPROVALS_HREF, actionType: 'approve',
+    primary: { label: 'Review approvals', href: SPEC_APPROVALS_HREF }, owner: 'human',
+  };
+}
+
 /** A waiting task as the layout's needs-input feed carries it (components/needs-input-context.ts). */
 export interface WaitingInputTask {
   id: string;

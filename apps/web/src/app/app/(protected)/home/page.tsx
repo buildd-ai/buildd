@@ -61,7 +61,8 @@ import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import HomeLive, { type HomeRegion } from './HomeLive';
 import { deliveryAtRead, groupQuietCauses, quietCauseOf, selectHomeMilestones, type MissionDeliveryRow, type QuietMissionCause } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
-import type { HomeListedMission } from '@/lib/home-attention';
+import { specApprovalsAttention, type HomeListedMission } from '@/lib/home-attention';
+import { awaitingApprovalCounts, mayApproveIn } from '@/lib/specs/approval-inbox';
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
 import { fleetHeartbeatsQuery, homeQuestionsFrom, homeQuestionWorkersQuery, admittedQuestionRows, loadHomeFleet, loadQueueHistory } from '@/lib/home-fleet';
 import { loadSupersededQuestionTaskIds } from '@/lib/incident-recovery-load';
@@ -126,6 +127,8 @@ interface HomeView {
   workspaceCount: number;
   refreshWorkspaceIds: string[];
   serviceStatus: ServiceStatusView;
+  /** Spec revisions waiting on this person's approval: one Needs you card (spec b7fc9316 R-9). */
+  specApprovals: number;
   hostedRunnerBanner: { level: 'warn' | 'used'; text: string } | null;
   modelUpgradeTeamId: string | null;
   chatPlacement: HomeChatPlacement;
@@ -151,7 +154,7 @@ interface HomeView {
 
 const EMPTY_VIEW: HomeView = {
   teamWorkspaces: [], workspaceCount: 0, refreshWorkspaceIds: [],
-  serviceStatus: EMPTY_SERVICE_STATUS, hostedRunnerBanner: null, modelUpgradeTeamId: null,
+  serviceStatus: EMPTY_SERVICE_STATUS, specApprovals: 0, hostedRunnerBanner: null, modelUpgradeTeamId: null,
   chatPlacement: { kind: 'none' }, chatTeamId: null, hasAgentCredential: null, firstTask: 'none',
   runnerConnected: undefined, actionQueue: [], discrepancyOverflowCount: 0, actionQueueInitiatives: [],
   questions: [], held: [], listed: [], openMissions: 0, milestones: [], quietMissions: 0, quietCauses: [],
@@ -312,7 +315,9 @@ async function HomePage({
 /** The data HomeBody renders from, derived from one load: also what a live event re-reads. */
 function homeRegionOf(view: HomeView, initFilter: string | undefined): HomeRegion {
   const queue = initFilter ? view.actionQueue.filter((i) => i.initiativeId === initFilter) : view.actionQueue;
-  const { items, inProgress } = deriveHomeNeedsYou({ queue, missions: view.listed, questions: view.questions, held: view.held, isActionable: isActionableChip, status: view.serviceStatus.needsYou });
+  const specCard = specApprovalsAttention(view.specApprovals);
+  const status = specCard ? [...view.serviceStatus.needsYou, specCard] : view.serviceStatus.needsYou;
+  const { items, inProgress } = deriveHomeNeedsYou({ queue, missions: view.listed, questions: view.questions, held: view.held, isActionable: isActionableChip, status });
   return {
     items,
     inProgress,
@@ -490,6 +495,8 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
     // and the rest collapse to the owner row: one PR, one card.
     // One PR can sit on several worker rows; they collapse to one card below.
     openPrWorkers: hasWs ? openPrWorkersQuery(wsIds) : null,
+    // Spec revisions waiting for approval, per workspace; kept below only where this person may approve.
+    specApprovals: hasWs ? awaitingApprovalCounts(wsIds) : null,
     // PR blockers: pending tasks whose upstream deps may hold open PRs.
     pendingWithDeps: hasWs ? db.select({ id: tasks.id, missionId: tasks.missionId, dependsOn: tasks.dependsOn }).from(tasks)
       .where(and(
@@ -583,6 +590,9 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
   view.firstTask = firstTaskState(countsByStatus);
 
   const wsById = new Map((r1.inboxWorkspaces ?? []).map(ws => [ws.id, ws]));
+  view.specApprovals = (r1.specApprovals ?? [])
+    .filter(r => mayApproveIn(role, wsById.get(r.workspaceId)?.gitConfig, userId))
+    .reduce((n, r) => n + Number(r.n), 0);
   const openPrWorkers = oneRowPerPr(r1.openPrWorkers ?? []);
   const openTaskIds = openPrWorkers.map(w => w.taskId).filter((id): id is string => !!id);
   const openPrNumbers = [...new Set(openPrWorkers.map(w => w.prNumber).filter((n): n is number => n != null))];
