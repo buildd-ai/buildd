@@ -408,10 +408,6 @@ async function TaskDetailPage({
         where: sqlWhere(sql`${tasks.dependsOn} @> ${JSON.stringify([id])}::jsonb`),
         columns: { id: true, title: true, label: true, status: true },
       });
-  const dependentsRead = dependentsQuery.then((dependentRows) => (dependentRows.length > 0
-    ? resolveDependencyHolders(reachScope, dependentRows.map(d => d.id)).catch(() => new Map<string, DependencyHolder>())
-    : Promise.resolve(new Map<string, DependencyHolder>())
-  ).then(dependentReach => ({ dependentRows, dependentReach })));
   // The canonical "is a fix attempt open on this task" fact — same
   // predicate explain.ts and Home's action queue use (mission-state-view.ts
   // rule 6½). Only while the task's PR is open.
@@ -419,7 +415,15 @@ async function TaskDetailPage({
     ? openAttemptQuery(task.id)
     : null;
   // Those five in one round trip.
-  const round2 = batchReads([artifactsQuery, errorTracesQuery, ciAttemptsQuery, openAttemptRead]);
+  const round2 = batchReads([artifactsQuery, errorTracesQuery, ciAttemptsQuery, dependentsQuery, openAttemptRead]);
+  // The dependents' reach is resolved off round 2's rows, beside the reads below.
+  const dependentsRead = round2.then((reads) => {
+    const dependentRows = (reads(dependentsQuery) ?? []) as Awaited<NonNullable<typeof dependentsQuery>>;
+    return (dependentRows.length > 0
+      ? resolveDependencyHolders(reachScope, dependentRows.map(d => d.id)).catch(() => new Map<string, DependencyHolder>())
+      : Promise.resolve(new Map<string, DependencyHolder>())
+    ).then(dependentReach => ({ dependentRows, dependentReach }));
+  });
   // The delivery this task belongs to, started with round 2: the review status
   // below reads the same view when this task owns the PR, so it is read once.
   const deliveryContextPromise = loadTaskDeliveryContext(task.id, user.id);

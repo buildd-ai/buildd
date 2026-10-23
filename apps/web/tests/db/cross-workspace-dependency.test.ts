@@ -92,7 +92,7 @@ describe('the claim gate across workspaces of one team', () => {
       await setStatus(busy, 'completed');
       expect(await passesCap(b)).toBe(true);
     } finally {
-      await q(sql`UPDATE workspaces SET repo = NULL, max_concurrent_tasks = NULL WHERE id IN (${w1}::uuid, ${w2}::uuid)`);
+      await q(sql`UPDATE workspaces SET repo = NULL, max_concurrent_tasks = DEFAULT WHERE id IN (${w1}::uuid, ${w2}::uuid)`);
     }
   });
 
