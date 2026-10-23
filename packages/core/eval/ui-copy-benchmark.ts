@@ -11,6 +11,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { summarizeDecisionEval, type EvalPrediction, type EvalSummary } from '@buildd/ai-kit/decide';
+import type { MeasurementReason, StoredMeasurement } from '../decision-model-measurements';
 import {
   UI_MATERIAL_ROLES, UI_SURFACE_BLOCK_ROLES, UI_SURFACE_OPERATIONS, parseSurfaceEvidence, uiCopyFeaturesFromSurface,
   type SurfaceEvidence, type UiCopyDecision, type UiCopyFeatures,
@@ -164,10 +165,47 @@ export interface UiCopyPolicyIdentity {
   engine: number;
 }
 
-/** One cached answer per identical (state sent, policy identity, requested model). Nothing looser is reused. */
-export function uiCopyCacheKey(state: unknown, policy: UiCopyPolicyIdentity, model: string): string {
-  return createHash('sha256').update(canonical({ state, policy, model })).digest('hex');
+/**
+ * One cached answer per identical (state sent, policy identity, requested model, measurement policy). Nothing
+ * looser is reused: the stored measurements decide whether an answer is applied and at what confidence, so an
+ * answer recorded under one measurement policy is not replayed under another.
+ */
+export function uiCopyCacheKey(state: unknown, policy: UiCopyPolicyIdentity, model: string, measurementFingerprint: string): string {
+  return createHash('sha256').update(canonical({ state, policy, model, measurementFingerprint })).digest('hex');
 }
+
+// ── Measurement policy ───────────────────────────────────────────────────────
+
+/** The fields of a stored (kind, model) measurement that `measurementFor` reads: eligibility and threshold. */
+export interface UiCopyMeasurementRow {
+  kind: string;
+  model: string;
+  threshold: number;
+  measuredFingerprint: string;
+  status: StoredMeasurement['status'];
+  confidenceSource: NonNullable<StoredMeasurement['confidenceSource']>;
+  calibration: StoredMeasurement['calibration'] | null;
+  labelThresholds: StoredMeasurement['labelThresholds'] | null;
+}
+/** The stored measurements a run applied, frozen, with a fingerprint that goes into every cache key. */
+export interface UiCopyMeasurementPolicy { fingerprint: string; rows: UiCopyMeasurementRow[] }
+
+/** Freeze the rows production would read for this kind. The empty set is a policy too (Jev at the kind's threshold). */
+export function uiCopyMeasurementPolicy(stored: readonly (StoredMeasurement | UiCopyMeasurementRow)[], kind: string): UiCopyMeasurementPolicy {
+  const rows = stored.filter(r => r.kind === kind).map((r): UiCopyMeasurementRow => ({
+    kind: r.kind, model: r.model, threshold: r.threshold, measuredFingerprint: r.measuredFingerprint, status: r.status,
+    confidenceSource: r.confidenceSource ?? 'confidence', calibration: r.calibration ?? null, labelThresholds: r.labelThresholds ?? null,
+  })).sort((a, b) => canonical(a).localeCompare(canonical(b)));
+  return { fingerprint: createHash('sha256').update(canonical(rows)).digest('hex'), rows };
+}
+
+/** The frozen rows as the broker reads them. Fields `measurementFor` ignores are filled, never invented as evidence. */
+export const storedFromPolicy = (policy: UiCopyMeasurementPolicy): StoredMeasurement[] => policy.rows.map(r => ({
+  ...r, precisionLower: null, coverage: null, n: 0, evalRunId: null, setByAccountId: null, setAt: new Date(0), reason: null,
+}));
+
+/** How the applied measurement policy treated one model: may its answer act, and at what confidence. */
+export interface UiCopyModelPolicy { model: string; eligible: boolean; threshold: number; reason: MeasurementReason | 'code_listed' }
 
 export interface UiCopyCacheEntry {
   /** The versioned model that answered. */
@@ -177,11 +215,28 @@ export interface UiCopyCacheEntry {
   latencyMs: number;
   answeredAt: string;
 }
-export interface UiCopyCacheFile { version: 1; entries: Record<string, UiCopyCacheEntry> }
-export const emptyUiCopyCache = (): UiCopyCacheFile => ({ version: 1, entries: {} });
+/** Answers, and every measurement policy a network run applied (by fingerprint), so offline replay reapplies it. */
+export interface UiCopyCacheFile { version: 1; entries: Record<string, UiCopyCacheEntry>; measurementPolicies: Record<string, UiCopyMeasurementRow[]> }
+export const emptyUiCopyCache = (): UiCopyCacheFile => ({ version: 1, entries: {}, measurementPolicies: {} });
 export function parseUiCopyCache(input: unknown): UiCopyCacheFile {
   const v = input as Partial<UiCopyCacheFile> | null;
-  return v && v.version === 1 && v.entries && typeof v.entries === 'object' ? { version: 1, entries: { ...v.entries } } : emptyUiCopyCache();
+  if (!(v && v.version === 1 && v.entries && typeof v.entries === 'object')) return emptyUiCopyCache();
+  return { version: 1, entries: { ...v.entries }, measurementPolicies: { ...(v.measurementPolicies && typeof v.measurementPolicies === 'object' ? v.measurementPolicies : {}) } };
+}
+
+/**
+ * Which recorded measurement policy an offline replay applies. Named (a fingerprint or its prefix) when the
+ * cache holds several; the only one when it holds one; the empty policy when it holds none. Never a guess.
+ */
+export function selectMeasurementPolicy(cache: UiCopyCacheFile, kind: string, wanted?: string | null): { ok: true; policy: UiCopyMeasurementPolicy } | { ok: false; reason: string } {
+  const recorded = Object.entries(cache.measurementPolicies);
+  if (wanted) {
+    const match = recorded.filter(([fp]) => fp.startsWith(wanted));
+    if (match.length !== 1) return { ok: false, reason: `measurement policy ${wanted} ${match.length ? 'is ambiguous' : 'is not recorded in the cache'} (recorded: ${recorded.map(([fp]) => fp.slice(0, 12)).join(', ') || 'none'})` };
+    return { ok: true, policy: uiCopyMeasurementPolicy(match[0]![1], kind) };
+  }
+  if (recorded.length > 1) return { ok: false, reason: `the cache holds ${recorded.length} measurement policies (${recorded.map(([fp]) => fp.slice(0, 12)).join(', ')}): name one with --measurement-policy` };
+  return { ok: true, policy: uiCopyMeasurementPolicy(recorded[0]?.[1] ?? [], kind) };
 }
 
 // ── Material facts ───────────────────────────────────────────────────────────
@@ -238,6 +293,8 @@ export interface UiCopyCaseResult {
   raw: { decision: UiCopyDecision; confidence: number; reasonCode: string; axes: Record<string, { choice: string; confidence: number }> } | null;
   /** What production accepted: the evaluator's verdict, method and observation. */
   accepted: { verdict: string; method: string; observed: string | null; confidence: number | null };
+  /** The threshold the measurement policy applied to the answering model. Null without an answer. */
+  appliedThreshold: number | null;
   /**
    * Why no pass/fail was accepted: answered below the threshold, answered `insufficient_evidence`, answered at
    * the threshold but not applied (a model the kind is not measured on), refused before any call (incomplete
@@ -249,6 +306,8 @@ export interface UiCopyCaseResult {
   findings: number;
   retention: MaterialRetention;
   cacheHit: boolean;
+  /** This run invoked the provider for the case, whatever came back (an answer, a timeout, a failure). */
+  invoked: boolean;
   modelVersion: string | null;
   /** Spent by this run: zero on a cache hit. */
   incrementalCostUsd: number;
@@ -274,7 +333,12 @@ export interface UiCopyBenchmarkReport {
   labelSource: typeof UI_COPY_CORPUS_LABEL_SOURCE;
   mode: 'offline' | 'network';
   split: string;
-  policy: UiCopyPolicyIdentity & { threshold: number };
+  policy: UiCopyPolicyIdentity & {
+    /** The kind's code threshold: what applies to a model the stored measurements say nothing about. */
+    kindThreshold: number;
+    /** The stored measurements this run applied, and what they did to each model it saw. */
+    measurement: { fingerprint: string; rows: number; models: UiCopyModelPolicy[] };
+  };
   requestedModel: string;
   modelVersions: string[];
   status: 'complete' | 'incomplete';
@@ -288,7 +352,8 @@ export interface UiCopyBenchmarkReport {
   rawEval: EvalSummary;
   retention: { cases: number; ok: number; material: number; retained: number; flaggedMaterial: number };
   inspected: Record<string, number>;
-  calls: { live: number; cacheHits: number; incrementalCostUsd: number; latencyMs: { p50: number | null; p90: number | null } };
+  /** `live`: provider invocations this run, answered or not. `answered`: of those, with an answer. */
+  calls: { live: number; answered: number; failed: number; cacheHits: number; incrementalCostUsd: number; latencyMs: { p50: number | null; p90: number | null } };
   correctionsRefused: number;
   limits: string[];
 }
@@ -328,7 +393,7 @@ export function summarizeUiCopyBenchmark(input: {
     id: c.id, truth: c.expected.copy, pred: rawVerdict(c), confidence: c.raw!.confidence, costUsd: c.incrementalCostUsd, latencyMs: c.latencyMs ?? 0,
   }));
   const withState = r.filter(c => c.expected.actionState && c.actionState);
-  const latencies = r.filter(c => !c.cacheHit && c.latencyMs !== null).map(c => ({ id: c.id, truth: '', pred: '', confidence: 0, costUsd: 0, latencyMs: c.latencyMs! }));
+  const latencies = r.filter(c => c.invoked && c.latencyMs !== null).map(c => ({ id: c.id, truth: '', pred: '', confidence: 0, costUsd: 0, latencyMs: c.latencyMs! }));
   const inspected: Record<string, number> = {};
   for (const c of r) for (const cap of c.inspected) inspected[cap] = (inspected[cap] ?? 0) + 1;
 
@@ -353,7 +418,7 @@ export function summarizeUiCopyBenchmark(input: {
       accepted: tally(confirmed.map(c => outcomeOf(c.confirmed!.expected, c.accepted.verdict))),
       raw: tally(confirmed.filter(c => c.raw).map(c => outcomeOf(c.confirmed!.expected, rawVerdict(c)))),
     } : null,
-    rawEval: summarizeDecisionEval(rows, { thresholds: [0.5, 0.7, 0.8, 0.85, 0.9, 0.95], applyAt: input.policy.threshold }),
+    rawEval: summarizeDecisionEval(rows, { thresholds: [0.5, 0.7, 0.8, 0.85, 0.9, 0.95], applyAt: appliedAt(r, input.policy.kindThreshold) }),
     retention: {
       cases: r.length, ok: r.length - lost.length,
       material: r.reduce((s, c) => s + c.retention.material, 0), retained: r.reduce((s, c) => s + c.retention.retained, 0),
@@ -361,7 +426,9 @@ export function summarizeUiCopyBenchmark(input: {
     },
     inspected,
     calls: {
-      live: r.filter(c => c.raw && !c.cacheHit).length,
+      live: r.filter(c => c.invoked).length,
+      answered: r.filter(c => c.invoked && c.raw).length,
+      failed: r.filter(c => c.invoked && !c.raw).length,
       cacheHits: r.filter(c => c.cacheHit).length,
       incrementalCostUsd: r.reduce((s, c) => s + c.incrementalCostUsd, 0),
       latencyMs: summarizeDecisionEval(latencies).latencyMs,
@@ -369,6 +436,12 @@ export function summarizeUiCopyBenchmark(input: {
     correctionsRefused: input.correctionsRefused ?? 0,
     limits: [...UI_COPY_BENCHMARK_LIMITS],
   };
+}
+
+/** The one threshold the answers were held to, when there is one; the kind's otherwise. */
+function appliedAt(r: UiCopyCaseResult[], kindThreshold: number): number {
+  const applied = [...new Set(r.map(c => c.appliedThreshold).filter((t): t is number => t !== null))];
+  return applied.length === 1 ? applied[0]! : kindThreshold;
 }
 
 const pct = (n: number | null) => (n === null ? '-' : `${(n * 100).toFixed(0)}%`);
@@ -380,7 +453,9 @@ export function formatUiCopyBenchmark(report: UiCopyBenchmarkReport): string {
   const lines = [
     `ui_copy detector benchmark: ${report.corpusVersion}, split ${report.split}, ${report.mode}`,
     `status: ${report.status.toUpperCase()}${report.incompleteReasons.length ? ` (${report.incompleteReasons.join('; ')})` : ''}`,
-    `policy ${report.policy.kind} ${report.policy.policyVersion} / ${report.policy.featureSchemaVersion}, prompt ${report.policy.promptFingerprint.slice(0, 12)}, config ${report.policy.configFingerprint.slice(0, 12)}, threshold ${report.policy.threshold}`,
+    `policy ${report.policy.kind} ${report.policy.policyVersion} / ${report.policy.featureSchemaVersion}, prompt ${report.policy.promptFingerprint.slice(0, 12)}, config ${report.policy.configFingerprint.slice(0, 12)}, kind threshold ${report.policy.kindThreshold}`,
+    `measurement policy ${report.policy.measurement.fingerprint.slice(0, 12)} (${report.policy.measurement.rows} stored row(s) for this kind)`,
+    ...report.policy.measurement.models.map(m => `  ${m.model}: ${m.eligible ? 'applied' : 'recorded only'} at threshold ${m.threshold} (${m.reason})`),
     `model requested ${report.requestedModel}; answered by ${report.modelVersions.join(', ') || 'none'}`,
     `labels: ${report.labelSource} (not ground truth)${report.confirmed ? `; ${report.confirmed.n} person-confirmed` : '; no person-confirmed corrections'}${report.correctionsRefused ? `; ${report.correctionsRefused} correction(s) refused` : ''}`,
     '',
@@ -401,7 +476,7 @@ export function formatUiCopyBenchmark(report: UiCopyBenchmarkReport): string {
     '',
     `material facts: ${report.retention.retained}/${report.retention.material} material blocks retained, ${report.retention.ok}/${report.retention.cases} cases intact, ${report.retention.flaggedMaterial} flagged as dispensable`,
     `inspected: ${Object.entries(report.inspected).map(([k, v]) => `${k} ${v}`).join(', ') || 'nothing'}`,
-    `calls: ${report.calls.live} live, ${report.calls.cacheHits} cached; incremental cost $${report.calls.incrementalCostUsd.toFixed(6)}; live latency p50 ${report.calls.latencyMs.p50 ?? '-'}ms p90 ${report.calls.latencyMs.p90 ?? '-'}ms`,
+    `calls: ${report.calls.live} live (${report.calls.answered} answered, ${report.calls.failed} failed), ${report.calls.cacheHits} cached; incremental cost $${report.calls.incrementalCostUsd.toFixed(6)}; live latency p50 ${report.calls.latencyMs.p50 ?? '-'}ms p90 ${report.calls.latencyMs.p90 ?? '-'}ms`,
     '',
     'case                           expect       raw            conf   accepted      abstained',
     ...report.cases.map(c => `${c.id.padEnd(30)} ${c.expected.copy.padEnd(12)} ${(c.raw?.decision ?? '-').padEnd(14)} ${c.raw ? c.raw.confidence.toFixed(2) : ' -  '}   ${c.accepted.verdict.padEnd(13)} ${c.abstained ?? ''}`),
