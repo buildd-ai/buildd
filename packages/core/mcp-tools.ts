@@ -8062,6 +8062,7 @@ import { buildAuthoringPriorWork } from './prior-work-render';
 import { keepOwnProjectMemoryHits, memoryOverfetchTopK, type MemoryHitScope } from './memory-hit-scope';
 import { retrieveMemory, recordMemoryPulls, type MemoryCaller, type MemoryLedgerWriter, type MemoryStoreSearcher } from './memory-retrieval';
 import { memoryStateOf, type MemoryProvenance } from './memory-candidates';
+import {
   buildMemoryIndex,
   isMemoryIndexEnabled,
   memoryIndexTokenBudget,
@@ -8069,6 +8070,7 @@ import { memoryStateOf, type MemoryProvenance } from './memory-candidates';
   readMemoryIndexEntries,
   type MemoryIndexEntry,
 } from './memory-claim-index';
+import {
   fallbackLearnJudgement,
   FALLBACK_UPDATE_JUDGEMENT,
   KEEP_NOT_DURABLE_TAG,
@@ -8078,6 +8080,7 @@ import { memoryStateOf, type MemoryProvenance } from './memory-candidates';
   type UpdateJudgement,
 } from './memory-decisions';
 import { findNearDuplicates, findDecayedUnused, archiveChunks } from './knowledge-store/consolidation';
+import {
   buildTaskCard,
   buildSessionCard,
   buildPrCard,
