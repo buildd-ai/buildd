@@ -21,7 +21,7 @@ export type RunnerHostPlatform = 'darwin' | 'linux' | 'linux-wsl' | 'linux-conta
  * mode (`windows.sandbox="unelevated"`): a restricted token that confines
  * writes to the workspace and temp dirs but does not block network access.
  */
-export type IsolationMechanism = 'seatbelt' | 'bwrap' | 'landlock' | 'windows_restricted_token' | 'none';
+export type IsolationMechanism = 'seatbelt' | 'bwrap' | 'landlock' | 'windows_restricted_token' | 'windows_mxc' | 'none';
 
 /** What the confinement restricts. */
 export type IsolationScope = 'read' | 'write' | 'network' | 'env';
@@ -40,6 +40,8 @@ export interface BackendConfinement {
   scope: IsolationScope[];
   /** Present exactly when `mechanism` is `none`. */
   reason?: IsolationReason;
+  /** Windows selection verified by this process; startup rechecks the worker home. */
+  windowsSandbox?: { implementation: 'mxc' | 'unelevated'; binary: string };
 }
 
 export type CodexSandboxMode = 'read-only' | 'workspace-write';
@@ -149,7 +151,7 @@ export function isolationRemediation(reason: IsolationReason, platform: RunnerHo
           : [];
     case 'unsupported_platform':
       return platform === 'windows'
-        ? ['Run the runner inside WSL2 with bubblewrap installed there to take tasks that need a sandbox.']
+        ? ['Run the runner and Claude inside WSL2 with bubblewrap and socat installed there. From a buildd checkout in PowerShell, run bun run wsl:setup; follow apps/runner/WSL2.md for installation, login and verification.']
         : ['Run the runner on Linux (bubblewrap) or macOS (Seatbelt); on Windows, run it inside WSL2 with bubblewrap installed there.'];
   }
 }
@@ -170,7 +172,7 @@ export function confinementLevel(c: BackendConfinement | null | undefined): 'ful
 /** The operator's steps when a backend is confined, but not enough for protected work. */
 export function partialConfinementRemediation(platform: RunnerHostPlatform): string[] {
   return platform === 'windows'
-    ? ['Run the runner inside WSL2 with bubblewrap installed there, or on Linux or macOS, to take protected Codex tasks.']
+    ? ['Run the runner inside WSL2 with bubblewrap installed there, or on Linux or macOS, to take protected Codex tasks. From a buildd checkout in PowerShell, run bun run wsl:setup; see apps/runner/WSL2.md.']
     : ['Run the runner on a host whose sandbox also confines network access (bubblewrap on Linux, Seatbelt on macOS).'];
 }
 
@@ -204,6 +206,7 @@ const MECHANISM_TEXT: Record<Exclude<IsolationMechanism, 'none'>, string> = {
   bwrap: 'bubblewrap',
   landlock: 'Landlock',
   windows_restricted_token: "Codex's Windows sandbox",
+  windows_mxc: "Codex's Windows MXC sandbox",
 };
 
 const SCOPE_TEXT: Record<IsolationScope, string> = { read: 'reads', write: 'writes', network: 'network', env: 'env' };

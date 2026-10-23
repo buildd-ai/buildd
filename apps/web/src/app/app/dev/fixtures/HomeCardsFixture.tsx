@@ -12,6 +12,9 @@ import { AgentsPanel } from '../../(protected)/home/AgentsPanel';
 import { LandedThisWeek, type LandedMission } from '../../(protected)/home/LandedThisWeek';
 import { HomeBody } from '../../(protected)/home/HomeBody';
 import { deriveHomeAttention } from '@/lib/home-attention';
+import { describeCriteriaBlocker } from '@/lib/completion-check-summary';
+import { CRITERIA_ESCALATION_NOTE_TITLE } from '@/lib/escalation-note-title';
+import type { GoalCriteriaState } from '@buildd/shared';
 import type { ActionQueueItem } from '@/lib/action-queue';
 import { toDeliveryRow, type DeliveryCounts, type MissionDelivery } from '@/lib/delivery-projection';
 import type { OccupancySeries } from '@/lib/fleet-occupancy';
@@ -86,11 +89,23 @@ const ONE = deriveHomeAttention({ queue: QUEUE.slice(0, 1), missions: [], questi
 const COUNTS: DeliveryCounts = { openMissions: 11, executingMissions: 3, liveAgents: 3, slots: { used: 3, total: 4 } };
 const COUNTS_EMPTY: DeliveryCounts = { openMissions: 0, executingMissions: 0, liveAgents: 0, slots: { used: 0, total: 4 } };
 
+// `&data=checks`: repeated escalations and a held mission with no ready tasks.
+const CHECKS = deriveHomeAttention({
+  queue: ['Visual review passes', 'Runner checks pass'].map((label, i) => ({
+    subjectKey: `decide:example-${i}`, chip: 'DECIDE', missionId: `example-${i}`,
+    missionTitle: ['Improve navigation', 'Reliable task execution'][i],
+    noteTitle: CRITERIA_ESCALATION_NOTE_TITLE,
+    recommendation: describeCriteriaBlocker({ criteria: [{ label, verdict: 'fail' }] } as GoalCriteriaState),
+  } as ActionQueueItem)),
+  missions: [], questions: [], isActionable: () => true,
+  held: [{ id: 'example-held', title: 'Activity improvements', href: '#', ready: 0, total: 2, done: 0, roles: [], heldFor: null }],
+});
+
 export default function HomeCardsFixture() {
   const [data, setData] = useState<string | null>(null);
   useEffect(() => { setData(new URLSearchParams(window.location.search).get('data')); }, []);
   const empty = data === 'empty';
-  const items = empty ? [] : data === 'one' ? ONE : DECISIONS;
+  const items = empty ? [] : data === 'checks' ? CHECKS : data === 'one' ? ONE : DECISIONS;
   const agents = <AgentsPanel model={empty ? AGENTS_IDLE : AGENTS} occupancy={empty ? QUIET_DAY : BUSY_DAY} idle={empty ? [] : IDLE} />;
   const milestones = empty ? [] : MILESTONES.map(toDeliveryRow);
   const counts = empty ? COUNTS_EMPTY : COUNTS;

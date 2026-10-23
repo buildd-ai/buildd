@@ -203,10 +203,11 @@ describe('who records and who reads', () => {
     const self = token(teamA, wsA, g.taskId);
     expect(await recordSpecVerdict(self, g.taskId, { criterionId: 'R-1', verdict: 'pass', headSha: HEAD1 })).toMatchObject({ ok: false, status: 403 });
     expect(await readGovernedOutcome(self, g.taskId)).toMatchObject({ ok: true });
-    // An unrelated task's token in the same workspace does neither.
+    // An unrelated task's token in the same workspace cannot record, but reads:
+    // a task token is confined to its workspace and get_task already reads any task in it.
     const [other] = await q<{ id: string }>(sql`INSERT INTO tasks (workspace_id, title, status) VALUES (${wsA}::uuid, 'other', 'in_progress') RETURNING id`);
     expect(await recordSpecVerdict(token(teamA, wsA, other.id), g.taskId, { criterionId: 'R-1', verdict: 'pass', headSha: HEAD1 })).toMatchObject({ ok: false, status: 403 });
-    expect(await readGovernedOutcome(token(teamA, wsA, other.id), g.taskId)).toMatchObject({ ok: false, status: 404 });
+    expect(await readGovernedOutcome(token(teamA, wsA, other.id), g.taskId)).toMatchObject({ ok: true });
     // A person with write access records.
     expect(await recordSpecVerdict(user(admin), g.taskId, { criterionId: 'R-1', verdict: 'pass', headSha: HEAD1 })).toMatchObject({ ok: true });
   });
@@ -247,6 +248,21 @@ describe('who records and who reads', () => {
     expect(await readGovernedOutcome(token(teamB, wsB, g.taskId), g.taskId)).toMatchObject({ ok: false, status: 404 });
     const [{ n }] = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM spec_outcome_verdicts WHERE task_id = ${g.taskId}::uuid`);
     expect(n).toBe(0);
+  });
+
+  test('a sibling task token reads the outcome of a task pinned provisionally to a draft revision', async () => {
+    const d = await createSpecDraft(user(admin), { workspaceId: wsA, title: `Draft ${rand()}`, body: BODY });
+    if (!d.ok) throw new Error(d.error);
+    const pinned = await pinSpecSource(wsA, { specSource: { specId: d.spec.id } });
+    if (!pinned.ok) throw new Error(pinned.error);
+    expect((pinned.context as any).specSource.provisional).toBe(true);
+    const [task] = await q<{ id: string }>(sql`
+      INSERT INTO tasks (workspace_id, title, status, context) VALUES (${wsA}::uuid, ${`draft build ${rand()}`}, 'completed', ${JSON.stringify(pinned.context)}::jsonb) RETURNING id`);
+    await q(sql`INSERT INTO workflow_deliveries (workspace_id, owner_task_id, state, authority, current_head_sha, merged_at)
+      VALUES (${wsA}::uuid, ${task.id}::uuid, 'MERGED', 'kernel', ${HEAD1}, now())`);
+    const [sibling] = await q<{ id: string }>(sql`INSERT INTO tasks (workspace_id, title, status) VALUES (${wsA}::uuid, 'sibling', 'in_progress') RETURNING id`);
+    expect(await readGovernedOutcome(token(teamA, wsA, sibling.id), task.id)).toMatchObject({ ok: true });
+    expect(await readGovernedOutcome(user(admin), task.id)).toMatchObject({ ok: true });
   });
 
   test('a task with no Living Spec has no governed outcome', async () => {

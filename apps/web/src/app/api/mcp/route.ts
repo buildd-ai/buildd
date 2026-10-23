@@ -594,17 +594,42 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           return await handleLearnAction(memStore, args as Record<string, unknown>, resolved.memCtx);
         }
       } else if (name === "check_path_claim") {
-        if (!workerId) {
+        // The URL's ?worker= binds the session; an interactive session that
+        // claimed a task mid-conversation names its worker per call instead.
+        // The named worker must be inside the caller's reach, as for ?worker=.
+        const explicitWorkerId = typeof args?.workerId === 'string' ? args.workerId : undefined;
+        if (workerId && explicitWorkerId && explicitWorkerId !== workerId) {
           return {
-            content: [{ type: "text" as const, text: "check_path_claim requires a worker context. Reconnect with ?worker=<workerId> in the MCP URL." }],
+            content: [{ type: "text" as const, text: "workerId does not match the worker this session is bound to." }],
             isError: true,
           };
+        }
+        const callWorkerId = workerId ?? explicitWorkerId;
+        if (!callWorkerId) {
+          return {
+            content: [{ type: "text" as const, text: "check_path_claim requires a worker context. Pass workerId, or reconnect with ?worker=<workerId> in the MCP URL." }],
+            isError: true,
+          };
+        }
+        if (!workerId) {
+          const identity = await workerIdentity(callWorkerId);
+          const inReach = !!identity
+            && (tokenWorkspaceIds == null || tokenWorkspaceIds.includes(identity.workspaceId))
+            && (accountId
+              ? identity.accountId === accountId || (!!accountTeamId && identity.workspace?.teamId === accountTeamId)
+              : tokenWorkspaceIds != null);
+          if (!inReach) {
+            return {
+              content: [{ type: "text" as const, text: "Worker not found or not accessible." }],
+              isError: true,
+            };
+          }
         }
 
         // Resolve taskId from the worker row; everything after that is the
         // shared implementation (lib/path-claim-check.ts), same as REST.
         const workerRow = await db.query.workers.findFirst({
-          where: sqlWhere(eq(workersTable.id, workerId)),
+          where: sqlWhere(eq(workersTable.id, callWorkerId)),
           columns: { taskId: true },
         });
         if (!workerRow?.taskId) {
@@ -624,7 +649,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
             reason: args?.reason,
             expectedRevision: args?.expectedRevision,
             surface: 'mcp:check_path_claim',
-            callerOrigin: gateCallerOrigin({ workerId }),
+            callerOrigin: gateCallerOrigin({ workerId: callWorkerId }),
           });
           switch (narrowed.kind) {
             case 'invalid_paths':
@@ -644,7 +669,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           taskId: workerRow.taskId,
           paths: args?.paths,
           surface: 'mcp:check_path_claim',
-          callerOrigin: gateCallerOrigin({ workerId }),
+          callerOrigin: gateCallerOrigin({ workerId: callWorkerId }),
         });
 
         switch (outcome.kind) {

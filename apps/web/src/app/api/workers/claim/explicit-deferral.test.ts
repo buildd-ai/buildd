@@ -86,4 +86,17 @@ describe('describeExplicitDeferral', () => {
       expect(describeExplicitDeferral(reason).detail).not.toContain('force: true');
     }
   });
+
+  it('says which runner a pinned task is waiting for', () => {
+    const d = describeExplicitDeferral('runner_capability', { pinnedRunner: 'the-mac' });
+    expect(d.code).toBe('runner_capability');
+    expect(d.detail).toContain('waiting for runner the-mac');
+  });
+
+  it('keeps the model/version message when no runner is pinned', () => {
+    const d = describeExplicitDeferral('runner_capability', { model: 'claude-fable-5-1', requiredVersion: '2.1.272' }).detail;
+    expect(d).toContain('claude-fable-5-1');
+    expect(d).toContain('2.1.272');
+    expect(d).not.toContain('waiting for runner');
+  });
 });

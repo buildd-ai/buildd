@@ -144,6 +144,18 @@ export function isMissionAuditTask(t: { title?: string | null; roleSlug?: string
 
 const TRUNK_MERGE_TITLE_RE = /\bmerge\s+`?(?:origin\/)?(?:dev|main|master|trunk)`?\s+into\b/i;
 
+/** Kinds that produce no change for the audit to look at: coordination, research and analysis, or another observation. */
+const NON_BUILD_KINDS: ReadonlySet<string> = new Set(['coordination', 'observation', 'analysis', 'research']);
+
+/**
+ * Whether a task's kind can hold the audit. Coordination, observation, analysis
+ * and research tasks ship nothing the audit captures, so depending on one only
+ * delays it. An unset kind is treated as build work (older rows).
+ */
+export function isAuditBuildKind(kind: string | null | undefined): boolean {
+  return !kind || !NON_BUILD_KINDS.has(kind);
+}
+
 /**
  * A task that merges trunk into a branch: the automated mission-branch refresh
  * (`context.requireMergeCommit` / `context.refreshTrunk`) or a hand-filed one
@@ -158,6 +170,18 @@ export function isTrunkRefreshTask(task: { title?: string | null; context?: unkn
     if (c.requireMergeCommit === true || (typeof c.refreshTrunk === 'string' && c.refreshTrunk.length > 0)) return true;
   }
   return TRUNK_MERGE_TITLE_RE.test(task.title ?? '');
+}
+
+/**
+ * Kinds that are bookkeeping, not a deliverable: an organizer driving the
+ * mission (`coordination`) or a read-only analysis. They never change what a
+ * page renders, so an audit neither waits on them nor is held by them (an
+ * organizer whose job is to drive the audit would otherwise block it).
+ * `engineering` stays a dependency (a backend change can alter the UI), and a
+ * task with no kind (legacy) is treated as a deliverable.
+ */
+export function isBookkeepingKind(task: { kind?: string | null }): boolean {
+  return task.kind === 'coordination' || task.kind === 'analysis';
 }
 
 /**

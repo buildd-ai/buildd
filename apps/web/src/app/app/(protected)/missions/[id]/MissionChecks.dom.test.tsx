@@ -136,13 +136,31 @@ describe('the stage rail (R-35, AC-18)', () => {
   });
 });
 
-describe('the outcome spec line (R-40)', () => {
-  it('stays on one line: the title truncates, the revision and status never wrap', () => {
-    act(() => root.render(<OutcomeSpecLines lines={[{ specId: 's1', title: 'Mission Overview: progress waves, verification handoff and honest delivery', revision: 'rev 8', status: 'not checked', href: '/app/specs/s1' }]} />));
-    const li = q('[data-testid="mission-outcome-spec-line"]')!;
-    expect(li.className).toContain('whitespace-nowrap');
-    expect(li.className).not.toContain('flex-wrap');
-    expect(li.querySelector('a')!.className).toContain('truncate');
-    expect(li.querySelector('a')!.getAttribute('href')).toBe('/app/specs/s1');
+describe('the spec line (Navigation R-3)', () => {
+  it('reads Spec <name> linking to the spec, with no revision, status or count', () => {
+    act(() => root.render(<OutcomeSpecLines lines={[{ specId: 's1', title: 'Cloud runner: deploy from Settings', revision: 'rev 8', status: 'not checked', href: '/app/specs/s1' }]} />));
+    const line = q('[data-testid="mission-outcome-spec"]')!;
+    expect(line.textContent).toBe('SpecCloud runner: deploy from Settings');
+    expect(line.querySelector('a')!.getAttribute('href')).toBe('/app/specs/s1');
+  });
+
+  it('several selected specs read Specs <a>, <b>', () => {
+    act(() => root.render(<OutcomeSpecLines lines={[
+      { specId: 's1', title: 'Cloud runner: deploy from Settings', revision: 'rev 8', status: 'passed', href: '/app/specs/s1' },
+      { specId: 's2', title: 'Settings: Runners', revision: 'rev 2', status: 'not checked', href: '/app/specs/s2' },
+    ]} />));
+    expect(q('[data-testid="mission-outcome-spec"]')!.textContent).toBe('SpecsCloud runner: deploy from Settings, Settings: Runners');
+  });
+});
+
+describe('the stage line (Navigation R-15)', () => {
+  it('a stage not started is one word; the current and finished stages carry their text', () => {
+    act(() => root.render(<CheckRail steps={[
+      { key: 'build', label: 'Build', state: 'now', text: '11 of 16 done' },
+      { key: 'verify', label: 'Verify', state: 'todo', text: 'after build' },
+      { key: 'deliver', label: 'Deliver', state: 'todo', text: 'into dev' },
+    ]} />));
+    const steps = Array.from(document.querySelectorAll('[data-step]')).map(s => s.textContent);
+    expect(steps).toEqual(['Build· 11 of 16 done', 'Verify', 'Deliver']);
   });
 });

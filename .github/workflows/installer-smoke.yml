@@ -21,6 +21,7 @@ on:
       - 'packages/dispatch-contract/**'
       - 'packages/spec-contract/**'
       - 'scripts/stub-server-only.ts'
+      - 'scripts/ci/apt-install.sh'
       - 'bunfig.toml'
       - 'bun.lock'
       - 'package.json'
@@ -35,6 +36,7 @@ on:
       - 'packages/dispatch-contract/**'
       - 'packages/spec-contract/**'
       - 'scripts/stub-server-only.ts'
+      - 'scripts/ci/apt-install.sh'
       - 'bunfig.toml'
       - 'bun.lock'
       - 'package.json'
@@ -63,13 +65,16 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ github.token }}
     steps:
+      # Before git exists, so checkout downloads the tree over the REST API; the
+      # installer clones the commit under test itself and never needs .git here.
+      - uses: actions/checkout@v7
+
+      # Retries and falls back to another Ubuntu mirror: archive.ubuntu.com
+      # being unreachable from the runner once turned dev red (2026-10-22).
       - name: Base tools a fresh machine has
         run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl git unzip ca-certificates procps >/dev/null
+          bash scripts/ci/apt-install.sh curl git unzip ca-certificates procps
           useradd -m -s /bin/bash stranger
-
-      - uses: actions/checkout@v7
 
       - name: Install from this commit and start the runner
         env:
@@ -98,13 +103,16 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ github.token }}
     steps:
+      # Before git exists, so checkout downloads the tree over the REST API; the
+      # installer clones the commit under test itself and never needs .git here.
+      - uses: actions/checkout@v7
+
+      # Retries and falls back to another Ubuntu mirror: archive.ubuntu.com
+      # being unreachable from the runner once turned dev red (2026-10-22).
       - name: Base tools a fresh machine has
         run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl git unzip ca-certificates procps >/dev/null
+          bash scripts/ci/apt-install.sh curl git unzip ca-certificates procps
           useradd -m -s /bin/bash stranger
-
-      - uses: actions/checkout@v7
 
       - name: Client install, then upgrade to the full runner, then --client over it
         env:
