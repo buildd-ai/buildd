@@ -307,10 +307,10 @@
       "method": "GET"
     },
     {
-      "$comment": "Runner update watch (apps/web/src/lib/runner-update-watch.ts, spec 47c97f48 R-6/R-7): a runner that goes quiet while it updates is reported as stuck to its team once, and after an hour of silence the tasks it paused for the update start again as new attempts. Redis-gated: reads buildd:due:runner-update, which the heartbeat marks only while a runner reports an update, so */5 costs Redis reads and no Neon wake time otherwise. The hourly core maintenance tick runs the same sweep as the floor.",
-      "title": "Buildd: Runner Update Watch (gated)",
-      "profile": "core",
-      "path": "/api/cron/runner-update-watch?gate=due",
+      "$comment": "Runner update notify (apps/web/src/lib/runner-update-watch.ts, spec 47c97f48 R-6/R-7): a runner that goes quiet while it updates is reported as stuck to its team once, and after an hour of silence the tasks it paused for the update start again as new attempts. Redis-gated: reads buildd:due:runner-update, which the heartbeat marks only while a runner reports an update, so */5 costs Redis reads and no Neon wake time otherwise. The hourly core maintenance tick runs the release as the floor (it sends no notification: that is this module's).",
+      "title": "Buildd: Runner Update Notify (gated)",
+      "profile": "module:notifications",
+      "path": "/api/cron/runner-update-notify?gate=due",
       "schedule": "*/5 * * * *",
       "method": "GET"
     },

@@ -107,3 +107,15 @@ describe('heldForRunnerUpdate (R-38 for an update)', () => {
     expect(heldForRunnerUpdate(paused, beat(T0, null), new Date(T0 + MIN))).toBe(false);
   });
 });
+
+describe('without a sender (the core maintenance floor)', () => {
+  it('stamps nothing as told and still releases', async () => {
+    const endsAt = T0 + 10 * MIN;
+    let stamped = 0;
+    const { deps, calls } = fakeDeps([row({ lastBeat: endsAt, endsAt })]);
+    const out = await runUpdateWatch({ ...deps, notify: undefined, claimNotify: async () => { stamped++; return true; } }, new Date(endsAt + 60 * MIN));
+    expect(out).toMatchObject({ notified: 0, released: 1 });
+    expect(stamped).toBe(0);
+    expect(calls).toContain('release');
+  });
+});

@@ -9,7 +9,7 @@
  */
 import type { ApiFn, ToolResult } from './mcp-tools';
 import { formatVisualReview, missionArtifacts } from './visual-review-text';
-import { activeRunnerHold, executorDisplayName, fleetGroupKey, runnerFleetIdentity, runnerUpdateLine, runnerUpdateState, type RunnerFleetIdentity, type RunnerUpdateView, type VisualReviewModel, type ActiveRunnerWorkspaces } from '@buildd/shared';
+import { activeRunnerHold, executorDisplayName, fleetGroupKey, runnerFleetIdentity, runnerUpdateLine, runnerUpdateState, type RunnerFleetIdentity, type VisualReviewModel, type ActiveRunnerWorkspaces } from '@buildd/shared';
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
 const errorResult = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }], isError: true });
@@ -230,10 +230,9 @@ export async function runListRunners(
   });
 
   const lines = hosts.map((r) => {
-    // An update in progress (spec 47c97f48 R-5..R-7): the server's verdict, or
-    // derived from the stored drain when an older server sent none.
-    const updateView = (r.update && typeof r.update === 'object' ? r.update as RunnerUpdateView : null)
-      ?? runnerUpdateState({ updateDrain: r.updateDrain, lastHeartbeatAt: r.lastUpdated as string | undefined });
+    // An update in progress (spec 47c97f48 R-5..R-7), judged from the stored
+    // drain and the last heartbeat by the same rule the server uses.
+    const updateView = runnerUpdateState({ updateDrain: r.updateDrain, lastHeartbeatAt: String(r.lastUpdated ?? '') });
     const newShape = !!(r.updateDrain && typeof r.updateDrain === 'object' && 'phase' in r.updateDrain);
     const slots = updateView && (newShape || updateView.stuck)
       ? `${r.activeWorkers ?? '?'} busy, no free slots (updating)`
@@ -249,7 +248,9 @@ export async function runListRunners(
     if (r.updateAvailable) update.push(`updateAvailableSince=${r.updateAvailableSince ?? 'unknown'}`);
     if (r.trackedBranch === 'main') update.push(`upToDateWithDeployed=${r.upToDateWithDeployed ?? 'null'}`);
     const drain = r.updateDrain;
-    const runnerName = (r.environment as { labels?: Record<string, string> } | null)?.labels?.hostname || String(r.localUiUrl ?? 'runner');
+    const labels = (r.environment as { labels?: unknown } | null)?.labels;
+    const hostname = labels && typeof labels === 'object' ? (labels as { hostname?: unknown }).hostname : undefined;
+    const runnerName = typeof hostname === 'string' && hostname ? hostname : String(r.localUiUrl ?? 'runner');
     const drainLine = updateView && (newShape || updateView.stuck)
       ? `\n  ${runnerUpdateLine(updateView, runnerName)}`
       : drain && typeof drain === 'object' && 'since' in drain

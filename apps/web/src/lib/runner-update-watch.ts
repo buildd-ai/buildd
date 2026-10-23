@@ -3,9 +3,12 @@
  * minutes", 47c97f48, R-6 and R-7).
  *
  *  - Stuck: its heartbeat is late while draining, or it has not beaten again
- *    15 minutes after the window's end (shared runner-update.ts). The team is
- *    told once, on its own channel; Health, Home and list_runners say
- *    "Update stuck on <runner> since <time>" from the same row.
+ *    15 minutes after the window's end (shared runner-update.ts). Health, Home
+ *    and list_runners say "Update stuck on <runner> since <time>" from the
+ *    same row. The team is told once, on its own channel, by the notifications
+ *    module's tick (api/cron/runner-update-notify), which hands its sender in
+ *    as `notify`: core never imports a module. Without a sender (the core
+ *    maintenance floor) nothing is stamped as told.
  *  - Released: after 60 minutes of silence each task it paused for the update
  *    starts again as a new attempt from its pushed checkpoint, reason
  *    "runner stopped during an update" (stale-workers.ts
@@ -13,8 +16,9 @@
  *    with it: the offline-runner reaper leaves them alone (heldForRunnerUpdate).
  *
  * The heartbeat marks the runner due (Redis, `buildd:due:runner-update`) at the
- * moment it would turn stuck if it went quiet then; a gated cron tick wakes
- * Postgres only when one is due, and the hourly maintenance tick is the floor.
+ * moment it would turn stuck if it went quiet then; the gated notify tick wakes
+ * Postgres only when one is due, and the hourly maintenance tick is the floor
+ * for the release.
  */
 import { db } from '@buildd/core/db';
 import { accounts, workerHeartbeats } from '@buildd/core/db/schema';
@@ -95,7 +99,8 @@ export interface UpdateWatchDeps {
   loadRows(): Promise<UpdateRow[]>;
   /** Stamp the one notification; true when this call stamped it (nobody did before). */
   claimNotify(accountId: string, localUiUrl: string, now: Date): Promise<boolean>;
-  notify(accountId: string, notice: ReturnType<typeof stuckUpdateNotice>): Promise<void>;
+  /** Sends the notice to the account's team. Absent: no notification is sent or stamped. */
+  notify?: (accountId: string, notice: ReturnType<typeof stuckUpdateNotice>) => Promise<void>;
   release(accountId: string, localUiUrl: string, now: Date): Promise<number>;
   markDue(accountId: string, localUiUrl: string, at: number): Promise<void>;
   clearDue(accountId: string, localUiUrl: string): Promise<void>;
@@ -107,7 +112,7 @@ export async function runUpdateWatch(deps: UpdateWatchDeps, now: Date = new Date
   for (const a of planUpdateWatch(rows, now.getTime())) {
     try {
       if (a.kind === 'notify') {
-        if (await deps.claimNotify(a.accountId, a.localUiUrl, now)) {
+        if (deps.notify && await deps.claimNotify(a.accountId, a.localUiUrl, now)) {
           await deps.notify(a.accountId, stuckUpdateNotice(a.name, a.view, appUrl));
           counts.notified++;
         }
@@ -125,9 +130,16 @@ export async function runUpdateWatch(deps: UpdateWatchDeps, now: Date = new Date
   return counts;
 }
 
-/** The real dependencies. */
-export function createUpdateWatchDeps(): UpdateWatchDeps {
+/** The team an account belongs to, for the notifications module's sender. */
+export async function accountTeamId(accountId: string): Promise<string | null> {
+  const account = await db.query.accounts.findFirst({ where: sqlWhere(eq(accounts.id, accountId)), columns: { teamId: true } });
+  return account?.teamId ?? null;
+}
+
+/** The real dependencies; `notify` only from the notifications module. */
+export function createUpdateWatchDeps(opts: { notify?: UpdateWatchDeps['notify'] } = {}): UpdateWatchDeps {
   return {
+    notify: opts.notify,
     loadRows: async () => {
       const rows = await db.query.workerHeartbeats.findMany({
         where: sqlWhere(isNotNull(workerHeartbeats.updateDrain)),
@@ -148,12 +160,6 @@ export function createUpdateWatchDeps(): UpdateWatchDeps {
         ))
         .returning({ id: workerHeartbeats.id });
       return stamped.length > 0;
-    },
-    notify: async (accountId, notice) => {
-      const account = await db.query.accounts.findFirst({ where: sqlWhere(eq(accounts.id, accountId)), columns: { teamId: true } });
-      if (!account?.teamId) return;
-      const { notifyTeam } = await import('@/lib/notify');
-      await notifyTeam(account.teamId, 'needsAttention', notice);
     },
     release: async (accountId, localUiUrl, now) => {
       const { releasePausedWorkersOfStoppedUpdate } = await import('@/lib/stale-workers');
