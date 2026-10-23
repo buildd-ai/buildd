@@ -81,6 +81,7 @@ async function TasksPage({
               now: Date.now(),
               rules: missionHelpers,
               deriveHeads,
+              viewerUserId: user.id,
             }),
           ]);
           localSessions = sessions;
@@ -117,6 +118,7 @@ async function TasksPage({
       localSessions={localSessions}
       loadError={loadFailed}
       historyReach={historyReach}
+      identityFilters={activity?.identityFilters ?? false}
     />
   );
 }

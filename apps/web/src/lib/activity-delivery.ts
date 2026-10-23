@@ -21,6 +21,8 @@ import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { isQuietHold, type LocalHold } from './local-session-display';
 import { deriveTaskChecks, roundReading, type CheckRow, type ChecksInput } from './task-checks';
 import { repairPhaseOf } from './workflow/projections';
+import type { VerificationClaim } from './activity-verification';
+import { UNATTRIBUTED, matchesWho, type ActivityWho, type Attribution } from './activity-attribution';
 
 // ── Input ───────────────────────────────────────────────────────────────────
 
@@ -59,6 +61,13 @@ export interface ActivityTaskInput {
    * reviewer and repair task rows say what an agent reported, not what the kernel applied.
    */
   kernel?: KernelEvidenceInput | null;
+  /**
+   * Its governed outcome against the Living Spec it is pinned to, when one is
+   * recorded (lib/activity-verification.ts). Absent: no claim is shown.
+   */
+  verification?: VerificationClaim | null;
+  /** Who it is for and who filed it, from recorded lineage (lib/activity-attribution.ts). Absent: unattributed. */
+  attribution?: Attribution | null;
 }
 
 /** What a revision card reads of a kernel delivery: the task page's checks input (task-checks.ts). */
@@ -159,6 +168,9 @@ export interface NowRow {
   transition: Transition | null;
   /** Reviews and repairs derived from it, every generation, oldest first. */
   children: DerivedChild[];
+  /** Its recorded spec verification; null when none is recorded. */
+  verification: VerificationClaim | null;
+  attribution: Attribution;
 }
 
 export interface NowGroup {
@@ -196,6 +208,11 @@ export interface EpisodeStep {
   text: string;
   tone: DeliveryTone;
   void: boolean;
+  /**
+   * Detail, not a highlight: told when History shows every step (a new head,
+   * a review that could not run, a queued task), left out of Highlights.
+   */
+  detail?: true;
 }
 
 export interface Episode {
@@ -214,6 +231,9 @@ export interface Episode {
   steps: EpisodeStep[];
   /** Set on a creation event: a mission's creation, beside the deliveries, not one of them. */
   event?: 'created';
+  /** Its recorded spec verification; null when none is recorded. */
+  verification?: VerificationClaim | null;
+  attribution?: Attribution;
 }
 
 const record = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {});
@@ -653,6 +673,8 @@ function toRow(d: Delivery, delivery: TaskDelivery, now: number): NowRow {
     isNew: isNewAt(ms(d.root.createdAt), now),
     transition: transitionOf(d, delivery),
     children: childrenOf(d),
+    verification: d.root.verification ?? null,
+    attribution: d.root.attribution ?? UNATTRIBUTED,
   };
 }
 
@@ -814,10 +836,29 @@ export function buildTaskDeliveryDetails(input: {
 
 // ── History ─────────────────────────────────────────────────────────────────
 
+/** A recorded spec verdict as a step: told as it stands, a stale one struck through. */
+function verificationStep(v: VerificationClaim): { text: string; tone: DeliveryTone; void: boolean } {
+  const on = v.headSha ? ` on ${v.headSha}` : '';
+  switch (v.state) {
+    case 'passed': return { text: `Verified against spec revision ${v.approvedRevision ?? v.revision}${on}`, tone: 'success', void: false };
+    case 'failed': {
+      const ids = v.criteria.filter(c => c.mark === 'fail' || c.mark === 'stale-fail').map(c => c.criterionId);
+      return { text: `Spec check failed${ids.length ? `: ${ids.join(', ')}` : ''} on revision ${v.revision}`, tone: 'error', void: false };
+    }
+    case 'stale': return {
+      text: v.approvedRevision != null && v.approvedRevision !== v.revision
+        ? `Spec verdicts for revision ${v.revision}: stale, revision ${v.approvedRevision} is approved now`
+        : 'Spec verdicts on an older commit: stale, not counted',
+      tone: 'muted', void: true,
+    };
+    case 'unverified': return { text: 'Spec check recorded; not verified', tone: 'muted', void: false };
+  }
+}
+
 function stepsFor(d: Delivery, delivery: TaskDelivery): EpisodeStep[] {
-  const raw: Array<EpisodeStep & { seq: number }> = [];
-  const add = (at: number | null, text: string, tone: DeliveryTone, isVoid = false) => {
-    if (at != null) raw.push({ at, text, tone, void: isVoid, seq: raw.length });
+  const raw: Array<EpisodeStep & { seq: number; terminal?: true }> = [];
+  const add = (at: number | null, text: string, tone: DeliveryTone, isVoid = false, opts: { detail?: true; terminal?: true } = {}) => {
+    if (at != null) raw.push({ at, text, tone, void: isVoid, seq: raw.length, ...opts });
   };
   const { owner, head } = prOf(d);
   const rootWorkers = [...d.root.workers].sort((a, b) => (ms(a.startedAt) ?? 0) - (ms(b.startedAt) ?? 0));
@@ -829,13 +870,24 @@ function stepsFor(d: Delivery, delivery: TaskDelivery): EpisodeStep[] {
       break;
     }
   }
+  // The head each repair started from: the owner's, then whatever the last repair pushed.
+  let onHead = pushedBy(d.root);
   d.repairs.forEach((r, i) => {
     const reason = repairReasonOf(r.title);
+    // A CI repair is dispatched because CI failed on the head before it: one step, told once.
+    if (reason === 'ci') add(ms(r.createdAt), `CI failed${onHead ? ` on ${short(onHead)}` : ''}`, 'error');
     add(ms(r.createdAt), `Automatic repair ${i + 1}${reason ? `: ${REPAIR_FOR[reason]}` : ''}`, 'warning');
     const pushed = [...r.workers].reverse().find(w => w.lastCommitSha);
-    if (pushed) add(ms(pushed.completedAt ?? pushed.updatedAt), `New head ${short(pushed.lastCommitSha)}; earlier verdicts superseded`, 'info');
-    else if (r.status === 'failed') add(ms(r.updatedAt), `Repair ${i + 1} failed`, 'error');
+    if (pushed) {
+      add(ms(pushed.completedAt ?? pushed.updatedAt), `New head ${short(pushed.lastCommitSha)}; earlier verdicts superseded`, 'info', false, { detail: true });
+      onHead = pushed.lastCommitSha ?? onHead;
+    } else if (r.status === 'failed') add(ms(r.updatedAt), `Repair ${i + 1} failed`, 'error');
   });
+  // CI failing on the current head with no repair dispatched for it yet.
+  const lastRepair = d.repairs[d.repairs.length - 1];
+  if (owner?.prLifecycleStatus === 'ci_failed' && !(lastRepair && repairReasonOf(lastRepair.title) === 'ci' && !lastRepair.workers.some(w => w.lastCommitSha))) {
+    add(ms(owner.updatedAt), `CI failed${head ? ` on ${short(head)}` : ''}`, 'error');
+  }
   for (const r of d.reviews) {
     const bound = bindVerdict(reviewState(r), head);
     const at = ms(r.workers[0]?.completedAt ?? r.updatedAt);
@@ -843,16 +895,31 @@ function stepsFor(d: Delivery, delivery: TaskDelivery): EpisodeStep[] {
     if (r.review?.verdict === 'approve') add(at, bound === 'stale' ? `Late approval${on}: stale head, not counted` : `Review approved${on}`, bound === 'stale' ? 'muted' : 'success', bound === 'stale');
     else if (r.review?.verdict === 'request-changes') add(at, `Review requested changes${on}`, 'error');
     else if (r.review?.verdict === 'escalate') add(at, 'Review asked a person to decide', 'ink');
-    else if (r.status === 'completed' || r.status === 'failed') add(at, 'Review could not run', 'warning');
+    else if (r.status === 'completed' || r.status === 'failed') add(at, 'Review could not run', 'warning', false, { detail: true });
   }
-  if (owner?.mergedAt) add(ms(owner.mergedAt as string), 'Merged', 'success');
-  else if (owner?.supersededByPrNumber) add(ms(owner.updatedAt), `Merged in #${owner.supersededByPrNumber}`, 'success');
+  const v = d.root.verification;
+  if (v?.at != null) {
+    const s = verificationStep(v);
+    add(v.at, s.text, s.tone, s.void);
+  }
+  if (owner?.mergedAt) add(ms(owner.mergedAt as string), 'Merged', 'success', false, { terminal: true });
+  else if (owner?.supersededByPrNumber) add(ms(owner.updatedAt), `Merged in #${owner.supersededByPrNumber}`, 'success', false, { terminal: true });
   else if (delivery.kind === 'notlanded') {
-    add(ms(owner?.updatedAt ?? d.root.updatedAt), owner?.prUrl ? (owner.abandonedAt ? 'PR closed and set aside' : 'PR closed without merging') : 'Stopped without a change to merge', 'error');
-  } else if (!owner && d.root.status === 'completed') add(ms(d.root.updatedAt), 'Finished; nothing to merge', 'success');
-  if (d.root.status === 'cancelled') add(ms(d.root.updatedAt), 'Cancelled', 'muted');
-  if (raw.length === 0) add(ms(d.root.createdAt), 'Queued', 'muted');
-  return raw.sort((a, b) => a.at - b.at || a.seq - b.seq).map(({ seq: _seq, ...s }) => s);
+    add(ms(owner?.updatedAt ?? d.root.updatedAt), owner?.prUrl ? (owner.abandonedAt ? 'PR closed and set aside' : 'PR closed without merging') : 'Stopped without a change to merge', 'error', false, { terminal: true });
+  } else if (!owner && d.root.status === 'completed') add(ms(d.root.updatedAt), 'Finished; nothing to merge', 'success', false, { terminal: true });
+  if (d.root.status === 'cancelled') add(ms(d.root.updatedAt), 'Cancelled', 'muted', false, { terminal: true });
+  // A run of the task itself that started after it had finished: it was reopened.
+  const ends = raw.filter(s => s.terminal).map(s => s.at).sort((a, b) => a - b);
+  let after = -Infinity;
+  for (const w of rootWorkers.slice(1)) {
+    const started = ms(w.startedAt);
+    const end = ends.find(e => e > after && started != null && e < started);
+    if (started == null || end == null) continue;
+    add(started, 'Reopened', 'warning');
+    after = started;
+  }
+  if (raw.length === 0) add(ms(d.root.createdAt), 'Queued', 'muted', false, { detail: true });
+  return raw.sort((a, b) => a.at - b.at || a.seq - b.seq).map(({ seq: _seq, terminal: _terminal, ...s }) => s);
 }
 
 /**
@@ -886,6 +953,8 @@ export function buildActivityEpisodes(input: {
         prNumber: prOf(d).owner?.prNumber ?? null,
         at: steps[steps.length - 1]?.at ?? 0,
         steps,
+        verification: d.root.verification ?? null,
+        attribution: d.root.attribution ?? UNATTRIBUTED,
       }];
     })
     .sort((a, b) => b.at - a.at || a.id.localeCompare(b.id));
@@ -951,21 +1020,35 @@ const EXCEPTION: ReadonlySet<DeliveryKind> = new Set(['notlanded', 'unavailable'
 const inScope = (missionId: string | null, scope: ActivityScope) =>
   scope === 'all' || (scope === 'missions' ? missionId != null : missionId == null);
 
-export function filterNow(now: ActivityNow, f: { scope: ActivityScope; outcome: ActivityOutcome }): NowGroup[] {
+export function filterNow(now: ActivityNow, f: { scope: ActivityScope; outcome: ActivityOutcome; who?: ActivityWho }): NowGroup[] {
+  const who = f.who ?? 'all';
   return now.groups
     .filter(g => inScope(g.missionId, f.scope))
     .map(g => {
-      if (f.outcome === 'any') return g;
-      const rows = g.rows.filter(r => (f.outcome === 'retries' ? r.delivery.repairRounds > 0 : f.outcome === 'exceptions' ? EXCEPTION.has(r.delivery.kind) : r.delivery.kind === 'landed'));
-      return { ...g, rows, hiddenWaitingRows: [], moreWaiting: 0 };
+      if (f.outcome === 'any' && who === 'all') return g;
+      const rows = g.rows.filter(r => matchesWho(r.attribution, who) && (f.outcome === 'any' || (f.outcome === 'retries' ? r.delivery.repairRounds > 0 : f.outcome === 'exceptions' ? EXCEPTION.has(r.delivery.kind) : r.delivery.kind === 'landed')));
+      // Waiting rows past the cap are filtered too, never dropped unseen.
+      const hidden = f.outcome === 'any' ? g.hiddenWaitingRows.filter(r => matchesWho(r.attribution, who)) : [];
+      return { ...g, rows, hiddenWaitingRows: hidden, moreWaiting: hidden.length };
     })
-    .filter(g => g.rows.length > 0);
+    .filter(g => g.rows.length > 0 || g.hiddenWaitingRows.length > 0);
 }
 
-export function filterEpisodes(episodes: readonly Episode[], f: { scope: ActivityScope; outcome: ActivityOutcome; missionId?: string | null }): Episode[] {
+/**
+ * Unattributed items a narrower identity filter leaves out, so the view can
+ * say so: unknown work is never excluded silently, and All never excludes it.
+ */
+export function hiddenUnattributed(items: ReadonlyArray<{ attribution?: Attribution | null; event?: string }>, who: ActivityWho): number {
+  return who === 'all' ? 0 : items.filter(i => !i.event && !i.attribution?.known).length;
+}
+
+export function filterEpisodes(episodes: readonly Episode[], f: { scope: ActivityScope; outcome: ActivityOutcome; missionId?: string | null; who?: ActivityWho }): Episode[] {
+  const who = f.who ?? 'all';
   return episodes.filter(e =>
     inScope(e.missionId, f.scope)
     && (!f.missionId || e.missionId === f.missionId)
+    // A creation event belongs to no one here: only All shows it.
+    && (who === 'all' || (!e.event && matchesWho(e.attribution, who)))
     && (f.outcome === 'any'
       // A creation event is no outcome: only All shows it.
       || (!e.event && (

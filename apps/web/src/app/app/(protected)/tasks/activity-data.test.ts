@@ -46,10 +46,14 @@ const taskRow = (id: string, over: Partial<Record<string, unknown>> = {}) => {
     createdAt: NOW - 3_600_000, updatedAt: NOW - 1_800_000, dependsOn: null, reviewVerdict: null, reviewHeadSha: null, ...over };
   return Object.values(r);
 };
+/** The roots' lineage read: only roots with recorded lineage or a spec pin come back. */
+const isLineageRead = (s: string) => norm(s).includes(' from "tasks" left join "users"');
+const lineageRow = (id: string, over: Partial<Record<string, unknown>> = {}) =>
+  Object.values({ id, createdByUserId: null, requesterSource: null, createdByWorkerId: null, specSource: null, name: null, ...over });
 
-async function load(tab: 'now' | 'history', scope: Record<string, unknown> = {}) {
+async function load(tab: 'now' | 'history', scope: Record<string, unknown> = {}, extra: Partial<Parameters<typeof loadActivity>[0]> = {}) {
   statements.length = 0;
-  return loadActivity({ scope: { workspaceIds: WS, ...scope }, tab, localHolds: new Map(), now: NOW, rules });
+  return loadActivity({ scope: { workspaceIds: WS, ...scope }, tab, localHolds: new Map(), now: NOW, rules, ...extra });
 }
 
 describe('task reads', () => {
@@ -260,5 +264,88 @@ describe('live work with context (spec 9430a28f R-2, R-3)', () => {
     expect(out.history.filter(e => e.event === 'created').map(e => e.id)).toEqual(['created:m-new']);
     const now = await load('now');
     expect(now.now.groups.find(g => g.missionId === 'm-new')?.isNew).toBe(true);
+  });
+});
+
+describe('attribution and verification (spec 9430a28f R-4, R-6, AC-4)', () => {
+  const ME = '00000000-0000-4000-8000-0000000000e1';
+  const ADA = '00000000-0000-4000-8000-0000000000e2';
+
+  it('reads lineage and the spec pin in one read over the roots, never on every task row', async () => {
+    answer = (s) => (isRecentRead(s) ? [taskRow('r1'), taskRow('r2')] : []);
+    await load('history');
+    for (const s of statements.filter(isTaskRead)) {
+      const head = norm(s).split(' from "tasks"')[0];
+      expect(head).not.toContain('"created_by_user_id"');
+      expect(head).not.toContain(`'specsource'`);
+    }
+    const lineage = statements.filter(isLineageRead);
+    expect(lineage.length).toBe(1);
+    const q = norm(lineage[0]);
+    expect(q).toContain('"created_by_user_id"');
+    expect(q).toContain('"requester_source"');
+    expect(q).toContain('"created_by_worker_id"');
+    expect(q).toContain(`"context"->'specsource' end`);
+    expect(q).toContain('"users"."name"');
+    expect(q).toContain('"tasks"."id" in ($, $)');
+    // Only rows with something to show come back: a decided source, or a pin
+    // naming a spec that exists (one that does not resolve gets no claim anyway).
+    expect(q).toContain('"tasks"."requester_source" in (');
+    expect(q).toContain(`jsonb_typeof("tasks"."context"->'specsource') = 'object'`);
+    expect(q).toContain('exists (select 1 from "specs" where "specs"."id" =');
+    expect(statements.some(s => norm(s).includes(' from "users"') && !isLineageRead(s))).toBe(false);
+  });
+
+  it('attributes only recorded lineage, names people from users, and offers identity filters when they can be answered', async () => {
+    answer = (s) => {
+      if (isRecentRead(s)) return [taskRow('r1'), taskRow('r2'), taskRow('r3'), taskRow('r4')];
+      if (isLineageRead(s)) return [
+        lineageRow('r1', { createdByUserId: ME, requesterSource: 'explicit' }),
+        lineageRow('r2', { createdByUserId: ADA, requesterSource: 'parent', createdByWorkerId: 'w-1', name: 'Ada' }),
+        lineageRow('r3', { createdByUserId: ADA, requesterSource: null, name: 'Ada' }),
+      ];
+      return [];
+    };
+    const out = await load('history', {}, { viewerUserId: ME });
+    const text = new Map(out.history.map(e => [e.id, e.attribution?.text]));
+    expect(Object.fromEntries(text)).toEqual({ r1: 'Filed by you', r2: 'For Ada · filed by an agent', r3: 'Unattributed', r4: 'Unattributed' });
+    expect(out.identityFilters).toBe(true);
+  });
+
+  it('a lineage read that fails leaves work unattributed rather than failing the page', async () => {
+    answer = (s) => {
+      if (isLineageRead(s)) throw new Error('down');
+      return isRecentRead(s) ? [taskRow('r1')] : [];
+    };
+    const out = await load('history', {}, { viewerUserId: ME });
+    expect(out.history.find(e => e.id === 'r1')?.attribution?.text).toBe('Unattributed');
+    expect(out.identityFilters).toBe(false);
+  });
+
+  it('with no viewer or no recorded lineage, no identity filter is offered', async () => {
+    answer = (s) => (isRecentRead(s) ? [taskRow('r1')] : []);
+    expect((await load('history', {}, { viewerUserId: ME })).identityFilters).toBe(false);
+    answer = (s) => (isRecentRead(s) ? [taskRow('r1')] : isLineageRead(s) ? [lineageRow('r1', { createdByUserId: ME, requesterSource: 'explicit' })] : []);
+    expect((await load('history')).identityFilters).toBe(false);
+  });
+
+  it('asks for verification only for pinned roots, and shows the claims it returns', async () => {
+    const pin = { specId: 's1', specRevisionId: 'sr1' };
+    answer = (s) => (isRecentRead(s) ? [taskRow('r1'), taskRow('r2')] : isLineageRead(s) ? [lineageRow('r1', { specSource: pin })] : []);
+    let asked: string[] = [];
+    const claim = { state: 'passed', label: 'Verified' } as never;
+    const out = await load('history', {}, {
+      readVerifications: async (roots) => { asked = roots.map(r => r.id); return new Map([['r1', claim]]); },
+    });
+    expect(asked).toEqual(['r1']);
+    expect(out.history.find(e => e.id === 'r1')?.verification).toBe(claim);
+    expect(out.history.find(e => e.id === 'r2')?.verification).toBeNull();
+  });
+
+  it('a verification read that fails shows no claim rather than failing the page', async () => {
+    const pin = { specId: 's1', specRevisionId: 'sr1' };
+    answer = (s) => (isRecentRead(s) ? [taskRow('r1')] : isLineageRead(s) ? [lineageRow('r1', { specSource: pin })] : []);
+    const out = await load('history', {}, { readVerifications: async () => { throw new Error('down'); } });
+    expect(out.history.find(e => e.id === 'r1')?.verification).toBeNull();
   });
 });

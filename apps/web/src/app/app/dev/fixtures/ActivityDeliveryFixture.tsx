@@ -13,7 +13,8 @@ import { ACTIVITY_FIXTURE_NOW, ACTIVITY_SEQUENCE, activityContextFixture, activi
  * nothing retried still in motion, so Had retries is empty in Now only), `&data=context` live work with
  * its context (a new mission already building, a five-generation chain, a new standalone task),
  * `&outcome=retries|landed|exceptions`
- * starts with that filter, `&error=1` shows a failed load.
+ * starts with that filter, `&error=1` shows a failed load. Task 34 is filed by you and, from step 6, carries a
+ * recorded spec verification; one Search task is for a teammate; the rest read unattributed.
  */
 export default function ActivityDeliveryFixture() {
   const [step, setStep] = useState(4);
@@ -55,6 +56,7 @@ export default function ActivityDeliveryFixture() {
         openRowIds={['fx-t34', 'fx-k']}
         loadError={variant.error}
         initialFilters={variant.outcome ? { outcome: variant.outcome } : undefined}
+        identityFilters
       />
       </div>
     </div>
