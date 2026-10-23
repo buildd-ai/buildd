@@ -236,11 +236,12 @@ path escalation or the migration inspector.
   workflow is dispatched and the row re-armed, not reported as deduped.
 - AC-21: GIVEN the fix task for a red candidate WHEN its PR merges into
   `sourceBranch` THEN the release workflow is dispatched once with
-  `amend = amend_confirm = <version>` and the candidate is commented; a
-  redelivery, a closed candidate, or a candidate already amended dispatches
-  nothing, and a failed dispatch hands the marker back so a retry can amend.
-  A merge reported without a webhook delivery reads the fix PR's base from
-  GitHub and amends the same way.
+  `amend = amend_confirm = <version>` and the candidate's activity comment
+  is updated to track the fix PR and amendment; a redelivery, a closed
+  candidate, or a candidate already amended dispatches nothing, and a failed
+  dispatch hands the marker back so a retry can amend. A merge reported
+  without a webhook delivery reads the fix PR's base from GitHub and amends
+  the same way.
 
 **Code surface**:
 - Policy and classifier: `packages/core/release-candidate.ts`:
