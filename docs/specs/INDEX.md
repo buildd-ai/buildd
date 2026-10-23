@@ -185,7 +185,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A decision call site MUST target a typed decision kind that owns its features, override, fallback and objective, while routes, ledger rows, outcomes and the readout come from one shared substrate.
 - [Failure Incident Recovery](./failure-incident-recovery.md) · @max — verified 2026-10-16
   A failure incident MUST carry one fresh, versioned recovery assessment that is re-checked before any repair, resolved only by a passing check, and shown identically on every surface.
-- [Force Start Past a Coordination Wait](./force-start.md) · @max — verified 2026-10-18
+- [Force Start Past a Coordination Wait](./force-start.md) · @max — verified 2026-10-22
   A dashboard Start MUST name the real waiting reasons, and Force start MUST lift exactly the confirmed forceable ones through one audited, single-use intent a runner's claim honours.
 - [Human Answer Delivery](./human-answer-delivery.md) · @max — verified 2026-10-20
   An authorised human answer MUST reach a live session or a new attempt of the same task, and MUST never be applied twice or silently dropped.
@@ -208,12 +208,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Task and Worker State Machines](./task-state-machine.md) · @max — verified 2026-10-15
   Task and worker transitions MUST preserve output requirements, terminal-state guards and dependency resolution.
 
-## Draft (13)
+## Draft (12)
 
 - [Bug Intake and Quality](./bug-intake-and-quality.md) · @max — verified 2026-10-11
   Every defect report MUST land as one report on one failure incident, every incident above noise MUST have exactly one owner, and every resolved defect MUST trace to the change, release and agent that introduced it.
-- [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-18
-  Overlapping work MUST start by default, undeclared scope included; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, hard surfaces) and only while its holder is live.
 - [Commercial Licensing Foundation](./commercial-licensing.md) · @builder — verified 2026-10-09
   The public core MUST verify a signed license offline and answer scoped capability checks for future commercial modules, denying only the premium capability and never core features or data.
 - [Decision Model Selection (Per-Decision Model, Measured Thresholds, Signal Collection)](./decision-model-selection.md) · @max — verified 2026-10-16
@@ -237,8 +235,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Workspace Routing and Reach](./workspace-routing-and-reach.md) · @max — verified 2026-10-19
   Every task MUST be filed into the workspace its subject lives in, with the reason recorded, and MUST reach any other workspace only through a named, person-granted delegation checked before it runs.
 
-## Superseded (7)
+## Superseded (8)
 
+- [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-22
+  Overlap scheduling MUST follow the approved serial lanes and file locks spec that replaces this contract. → replaced by `75217f55 / Overlap scheduling: serial lanes and file locks`
 - [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-10-15
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped. → replaced by `agent-question-protocol`
 - [Mission Structure View](./mission-structure-view.md) · @builder — verified 2026-10-09
