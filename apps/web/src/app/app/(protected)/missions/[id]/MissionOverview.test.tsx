@@ -85,6 +85,18 @@ describe('MissionOverview over AC-4\u2019s mission (16 tasks)', () => {
     expect(card).toContain('Not now');
   });
 
+  it('with three open decisions one card leads and the rest are reached from it, so the bar stays on the first screen (AC-4)', () => {
+    const d = f.decisions[0];
+    const three = [d, { ...d, key: 'note:x2', question: 'Second?' }, { ...d, key: 'note:x3', question: 'Third?' }];
+    const many = renderToStaticMarkup(<MissionOverview model={f.model} missionId="mission-1" checks={f.checks} decisions={three} history={f.history} />);
+    expect((many.match(/data-testid="decision-card"/g) ?? []).length).toBe(1);
+    expect(many).not.toContain('Second?');
+    expect(many).toMatch(/data-testid="decision-more"[^>]*>[^<]*2 more decisions/);
+    expect(many.indexOf('data-testid="decision-more"')).toBeLessThan(many.indexOf('data-testid="task-strip"'));
+    // One decision: no more-line.
+    expect(out).not.toContain('data-testid="decision-more"');
+  });
+
   it('the bar draws the five looks: merged, running, person, waiting', () => {
     const looks = [...out.matchAll(/data-testid="task-strip-fill"[^>]*data-look="([a-z]+)"/g)].map(m => m[1]);
     expect(looks.filter(l => l === 'merged')).toHaveLength(11);

@@ -99,6 +99,7 @@ export const SPEC_PAGE_APPROVAL_VIEW: Extract<ApprovalRequestView, { state: 'rea
   state: 'ready',
   title: 'Checkout',
   revision: 3,
+  pin: { revision: 3, expectedVersion: 5, contentHash: 'f'.repeat(64) },
   replaces: 2,
   sections: [{ kind: 'changed', path: 'Checkout > 6. Cancelling', level: 2, linesAdded: 1, linesRemoved: 1 }],
   hunks: [{ kind: 'changed', path: 'Checkout > 6. Cancelling', linesAdded: 1, linesRemoved: 1, rows: [

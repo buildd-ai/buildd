@@ -3,7 +3,12 @@ import { NextRequest } from 'next/server';
 
 let caller: unknown = { kind: 'user', userId: 'u1' };
 const seen: unknown[] = [];
-mock.module('@/lib/specs/caller', () => ({ specCaller: async () => caller }));
+// dashboardCaller's own rule (any Authorization header is a 403) is tested in lib/specs/caller.test.ts.
+mock.module('@/lib/specs/caller', () => ({
+  specCaller: async () => caller,
+  dashboardCaller: async () => (caller === null ? { ok: false, status: 401, error: 'Unauthorized' }
+    : (caller as { kind: string }).kind === 'user' ? { ok: true, caller } : { ok: false, status: 403, error: 'confirm on buildd.dev' }),
+}));
 mock.module('@/lib/specs/approval', () => ({
   approveSpecRevision: async (c: unknown, _id: string, input: { revision: unknown; expectedVersion: unknown }) => {
     seen.push([c, input]);

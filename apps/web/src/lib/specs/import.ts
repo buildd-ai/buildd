@@ -768,7 +768,7 @@ export async function confirmImportedSpecs(caller: SpecCaller, input: { workspac
       const r = await retireSpec(caller, s.id, { reason, supersededBy: by?.specId }, {
         repoFile: { kind: s.repoCopy?.path ? 'copy' : 'source', path: src.path, state: file ? 'already' : 'removed', via: 'import', at: deps.now().toISOString() },
       });
-      if (!r.ok) { result.skipped.push({ specId: s.id, title: s.title, path: src.path, reason: 'conflict', message: r.error }); continue; }
+      if (!r.ok || 'pending' in r) { result.skipped.push({ specId: s.id, title: s.title, path: src.path, reason: 'conflict', message: r.ok ? 'not retired' : r.error }); continue; }
       result.retired.push({ specId: s.id, title: s.title, path: src.path, status: r.spec.status as 'retired' | 'superseded', reason, supersededBy: by });
       continue;
     }

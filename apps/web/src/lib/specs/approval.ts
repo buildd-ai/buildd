@@ -14,6 +14,7 @@ import { liveReplaced, parseRetireChoice, type RetireChoice } from './replaces';
 import type { ApprovalRetirement } from './retire';
 import type { SpecApprovalRecord, SpecGateResult } from '@buildd/core/db/schema';
 import { users } from '@buildd/core/db/schema';
+import { specApprovalInboxUrl, specPageUrl } from './approval-inbox';
 
 /** What a request tells the approver: the confirm page's address and the gate's verdict. */
 export interface ApprovalRequestedNotice {
@@ -93,6 +94,8 @@ async function reachAndApprover(caller: SpecCaller, workspaceId: string): Promis
 }
 
 const NOT_A_PERSON = 'Approving a spec is a person\'s decision: an owner or admin of this team, or a delegated approver, from their own session. An agent run or API key cannot submit or approve.';
+/** The refusal, with where a person does it (R-8): the spec's page and the inbox of everything waiting. */
+const notAPerson = (specId: string) => `${NOT_A_PERSON} A person approves it on buildd.dev: ${specPageUrl(specId)}, or with everything waiting for approval at ${specApprovalInboxUrl()}.`;
 
 async function loadForDecision(caller: SpecCaller, specId: string, expectedVersion: unknown): Promise<{ spec: SpecRow; approver: string } | SpecError> {
   if (!isUuid(specId)) return fail(404, 'Spec not found');
@@ -101,7 +104,7 @@ async function loadForDecision(caller: SpecCaller, specId: string, expectedVersi
   if (!spec) return fail(404, 'Spec not found');
   const { reached, approver } = await reachAndApprover(caller, spec.workspaceId);
   if (!reached) return fail(404, 'Spec not found');
-  if (!approver) return fail(403, NOT_A_PERSON);
+  if (!approver) return fail(403, notAPerson(specId));
   if (spec.status === 'retired' || spec.status === 'superseded') return fail(409, `A ${spec.status} spec is not approved`);
   if (spec.version !== expectedVersion) {
     return fail(409, `The spec changed since version ${expectedVersion as number}: it is now at version ${spec.version}. Re-read it before deciding.`, { currentVersion: spec.version });
@@ -140,6 +143,8 @@ export interface PendingSpecApproval {
   gate: SpecGateResult;
   /** Who the confirmation was sent to. */
   sentTo: string;
+  /** Everything waiting on a person's approval, this one among them (R-8). */
+  inboxUrl: string;
 }
 
 /** The shortest reason a person gives to override a gate refusal. */
@@ -212,7 +217,7 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
     // One notification per request: it is how the confirm page reaches the person.
     const [who] = await db.select({ name: users.name }).from(users).where(eq(users.id, approver)).limit(1);
     await specApprovalDeps.notify({ workspaceId: spec.workspaceId, title: spec.title, revision: n, confirmUrl, gate }).catch(() => {});
-    return { ok: true, spec, pending: { confirmUrl, revision: n, expiresAt, gate, sentTo: who?.name?.trim() || 'you' } };
+    return { ok: true, spec, pending: { confirmUrl, revision: n, expiresAt, gate, sentTo: who?.name?.trim() || 'you', inboxUrl: specApprovalInboxUrl() } };
   }
 
   const label = `user:${approver}`;
@@ -297,23 +302,65 @@ export async function confirmSpecApproval(caller: SpecCaller, specId: string, to
   }
   const req = v.payload;
   if (!isUuid(specId) || req.specId !== specId) return fail(400, 'This approval link is not valid.', { code: 'request_invalid' });
+  return approvePinned(caller, specId, req, {
+    via: req.via ?? 'mcp', staleCode: 'request_stale', workspaceId: req.workspaceId,
+    staleText: 'The spec changed since this approval was asked for. Ask for a new link.', overrideReason: opts.overrideReason,
+    retire: opts.retire !== undefined ? opts.retire : req.retire,
+  });
+}
+
+/**
+ * Approve one row of the Awaiting your approval inbox (spec b7fc9316 R-3 to
+ * R-6): the revision, version and content hash the page rendered, re-checked
+ * now, from a dashboard session and nothing else. Any bearer, the person's own
+ * OAuth session included, is a 403 (the route also refuses any request that
+ * carries an Authorization header). Anything that moved since the page loaded
+ * is a 409 with code `stale` and approves nothing. One row, one revision: there
+ * is no batch form.
+ */
+export async function approveFromInbox(caller: SpecCaller, specId: string, input: { revision?: unknown; expectedVersion?: unknown; contentHash?: unknown; overrideReason?: unknown; retire?: unknown }): Promise<{ ok: true; already: boolean; spec: SpecRow; revision: SpecRevisionRow; retirements: ApprovalRetirement[] } | SpecError> {
+  if (caller.kind !== 'user') return fail(403, 'Approve on buildd.dev, signed in, with a click. A session token, API key or agent run cannot approve.');
+  if (!isUuid(specId)) return fail(404, 'Spec not found');
+  if (!Number.isInteger(input.revision) || !Number.isInteger(input.expectedVersion)) return fail(400, 'revision and expectedVersion (as the page showed them) are required');
+  if (typeof input.contentHash !== 'string' || !/^[0-9a-f]{64}$/.test(input.contentHash)) return fail(400, 'contentHash (the sha256 of the revision the page showed) is required');
+  return approvePinned(caller, specId, { revision: input.revision as number, expectedVersion: input.expectedVersion as number, contentHash: input.contentHash }, {
+    via: 'dashboard', staleCode: 'stale', staleText: 'The spec changed since this page loaded. It now shows the latest revision; read it, then approve.', overrideReason: input.overrideReason, retire: input.retire,
+  });
+}
+
+/**
+ * The checks every pinned approval shares (a confirm link, an inbox row): the
+ * person may approve here, the revision's body is the one that was shown, the
+ * spec has not moved, and the quality gate passes now or the person gives a
+ * reason, which is recorded. Then the same atomic stamp as any approval.
+ */
+async function approvePinned(
+  caller: Extract<SpecCaller, { kind: 'user' }>,
+  specId: string,
+  pin: { revision: number; expectedVersion: number; contentHash: string },
+  opts: {
+    via: SpecApprovalRecord['via']; staleCode: string; staleText: string; overrideReason?: unknown; workspaceId?: string;
+    /** R-77: which replaced specs to supersede; omitted, all of them (the default choice). */
+    retire?: unknown;
+  },
+): Promise<{ ok: true; already: boolean; spec: SpecRow; revision: SpecRevisionRow; retirements: ApprovalRetirement[] } | SpecError> {
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   if (!spec) return fail(404, 'Spec not found');
   const { reached, approver } = await reachAndApprover(caller, spec.workspaceId);
   if (!reached) return fail(404, 'Spec not found');
-  if (spec.workspaceId !== req.workspaceId) return fail(400, 'This approval link is not valid.', { code: 'request_invalid' });
-  if (!approver) return fail(403, NOT_A_PERSON);
+  if (opts.workspaceId && spec.workspaceId !== opts.workspaceId) return fail(400, 'This approval link is not valid.', { code: 'request_invalid' });
+  if (!approver) return fail(403, notAPerson(specId));
   const [rev] = await db.select().from(specRevisions)
-    .where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, req.revision))).limit(1);
-  if (!rev || rev.contentHash !== req.contentHash) return fail(409, 'The spec changed since this approval was asked for.', { code: 'request_stale', currentVersion: spec.version });
-  if (spec.approvedRevision === req.revision && rev.approvedAt) return { ok: true, already: true, spec, revision: rev, retirements: [] };
-  if (spec.version !== req.expectedVersion || spec.headRevision !== req.revision) {
-    return fail(409, 'The spec changed since this approval was asked for. Ask for a new link.', { code: 'request_stale', currentVersion: spec.version });
+    .where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, pin.revision))).limit(1);
+  if (!rev || rev.contentHash !== pin.contentHash) return fail(409, opts.staleText, { code: opts.staleCode, currentVersion: spec.version });
+  if (spec.approvedRevision === pin.revision && rev.approvedAt) return { ok: true, already: true, spec, revision: rev, retirements: [] };
+  if (spec.version !== pin.expectedVersion || spec.headRevision !== pin.revision) {
+    return fail(409, opts.staleText, { code: opts.staleCode, currentVersion: spec.version });
   }
-  // Asked again now: a pin or a body may have moved since the request. A
-  // refusal stands unless the person gives a reason, which is recorded.
+  // Asked again now: a pin or a body may have moved since the page or the
+  // request. A refusal stands unless the person gives a reason, which is recorded.
   const { runApprovalGate } = await import('./approval-gate');
-  const { gate } = await runApprovalGate(spec, req.revision);
+  const { gate } = await runApprovalGate(spec, pin.revision);
   const reason = typeof opts.overrideReason === 'string' ? opts.overrideReason.trim() : '';
   if (!gate.passed) {
     if (reason.length < MIN_OVERRIDE_REASON) {
@@ -321,9 +368,9 @@ export async function confirmSpecApproval(caller: SpecCaller, specId: string, to
     }
     if (reason.length > MAX_OVERRIDE_REASON) return fail(400, `The reason is at most ${MAX_OVERRIDE_REASON} characters.`);
   }
-  const record: SpecApprovalRecord = { via: req.via ?? 'mcp', gate, ...(!gate.passed ? { overrideReason: reason } : {}) };
-  const r = await approveSpecRevision(caller, specId, { revision: req.revision, expectedVersion: req.expectedVersion, retire: opts.retire !== undefined ? opts.retire : req.retire }, { record });
-  if (!r.ok) return r.status === 409 ? { ...r, code: 'request_stale' } : r;
-  if ('pending' in r) return fail(403, NOT_A_PERSON);
+  const record: SpecApprovalRecord = { via: opts.via, gate, ...(!gate.passed ? { overrideReason: reason } : {}) };
+  const r = await approveSpecRevision(caller, specId, { revision: pin.revision, expectedVersion: pin.expectedVersion, retire: opts.retire }, { record });
+  if (!r.ok) return r.status === 409 ? { ...r, code: opts.staleCode } : r;
+  if ('pending' in r) return fail(403, notAPerson(specId));
   return { ok: true, already: false, spec: r.spec, revision: r.revision, retirements: r.retirements };
 }
