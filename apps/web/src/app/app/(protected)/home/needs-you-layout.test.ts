@@ -26,7 +26,7 @@ describe('Needs you at volume: a few decisions, then rows', () => {
 
   it('a systemic cause and a failure outrank an older review for a card', () => {
     const systemic = item(1, { systemic: { count: 3, subjects: ['a', 'b', 'c'] } }, 0);
-    const failing = item(2, { tone: 'error', actionType: 'fix', label: 'tests failing' }, 0);
+    const failing = item(2, { tone: 'error', actionType: 'fix', label: 'checks failing' }, 0);
     const out = layoutNeedsYou([item(9), item(8), item(7), systemic, failing]);
     expect(out.cards.map(i => i.key)).toEqual(['k1', 'k2', 'k9']);
   });

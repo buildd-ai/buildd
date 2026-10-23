@@ -34,6 +34,7 @@ import { isActionableChip, kernelInboxMembership, missionPrRoleOf, reviewMachine
 import { describeConflictReason } from '@/lib/merge-blocker';
 import { describeCriteriaBlocker } from '@/lib/completion-check-summary';
 import { resolveCiGate } from '@/lib/ci-gate';
+import { ciFixHistory, parseRedRecord, redCheckView } from '@/lib/red-check-cause';
 import { DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
 import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { ActionQueueItem, EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
@@ -657,7 +658,8 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
           eq(tasks.taskClass, 'attempt'),
           sql`(${tasks.context}->>'prNumber') IN (${sql.join(openPrNumbers.map(n => sql`${String(n)}`), sql`, `)})`,
         )),
-        columns: { id: true, workspaceId: true, status: true, title: true, reviewerRetryPrNumber: true },
+        // ciRetryHeadSha: the head a CI fix was filed for; still the head means it pushed nothing.
+        columns: { id: true, workspaceId: true, status: true, title: true, reviewerRetryPrNumber: true, ciRetryHeadSha: true },
         extras: sqlExtras({
           context: sql<Record<string, unknown>>`jsonb_build_object('prNumber', ${tasks.context}->'prNumber', 'iteration', ${tasks.context}->'iteration')`,
           result: sql<{ nextSuggestion?: string } | null>`jsonb_build_object('nextSuggestion', ${tasks.result}->'nextSuggestion')`,
@@ -1135,6 +1137,8 @@ function openPrWorkersQuery(wsIds: string[]) {
           context: sql<Record<string, unknown>>`jsonb_build_object('refreshTrunk', ${tasks.context}->'refreshTrunk')`,
           landing: sql<unknown>`${tasks.context}->'landing'`,
           landingHandoff: sql<unknown>`${tasks.context}->'landingHandoff'`,
+          // Which checks failed on the red head and why (lib/red-check-record.ts).
+          redChecks: sql<unknown>`${tasks.context}->'redChecks'`,
           result: sql<{ nextSuggestion?: string } | null>`jsonb_build_object('nextSuggestion', ${tasks.result}->'nextSuggestion')`,
         }),
         with: { mission: { columns: { id: true, title: true, mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
@@ -1443,6 +1447,8 @@ async function buildEscalationInbox(input: {
   const ciAttemptMap = new Map<string, {
     liveTaskId: string | null; liveIteration: number | null; liveKind: 'ci' | 'review'; liveClaimed: boolean;
     liveTaskTitle: string | null; attemptsConsumed: number; recommendation: string | null;
+    /** Heads finished CI fixes were filed for: the card says which pushed nothing (surface-ia §11 R-3). */
+    finishedCiFixHeads: Array<string | null>;
   }>();
   for (const t of r2.attemptTasks ?? []) {
     const ctx = (t.context ?? {}) as Record<string, unknown>;
@@ -1451,7 +1457,7 @@ async function buildEscalationInbox(input: {
     const key = `${t.workspaceId}:${prNumber}`;
     const entry = ciAttemptMap.get(key) ?? {
       liveTaskId: null, liveIteration: null, liveKind: 'ci' as const, liveClaimed: false,
-      liveTaskTitle: null, attemptsConsumed: 0, recommendation: null,
+      liveTaskTitle: null, attemptsConsumed: 0, recommendation: null, finishedCiFixHeads: [],
     };
     const iteration = typeof ctx.iteration === 'number' ? ctx.iteration : null;
     if ((LIVE_TASK_STATUSES as readonly string[]).includes(t.status)) {
@@ -1469,6 +1475,7 @@ async function buildEscalationInbox(input: {
       entry.attemptsConsumed = Math.max(entry.attemptsConsumed, iteration ?? 0);
       const suggestion = (t.result as { nextSuggestion?: string } | null)?.nextSuggestion;
       if (!entry.recommendation && suggestion) entry.recommendation = suggestion;
+      if (t.reviewerRetryPrNumber == null) entry.finishedCiFixHeads.push(typeof t.ciRetryHeadSha === 'string' ? t.ciRetryHeadSha : null);
     }
     ciAttemptMap.set(key, entry);
   }
@@ -1530,6 +1537,11 @@ async function buildEscalationInbox(input: {
       const conflictRetry = w.prNumber != null ? conflictRetryMap.get(`${w.workspaceId}:${w.prNumber}`) : undefined;
       const deadZoneInfo = deadZoneExhaustedMap.get(w.id);
       const ciAttempts = w.prNumber != null ? ciAttemptMap.get(`${w.workspaceId}:${w.prNumber}`) : undefined;
+      // The stored reading counts only for the head it was read on.
+      const redRecord = parseRedRecord((w.task as { redChecks?: unknown } | null)?.redChecks);
+      const red = redRecord && w.lastCommitSha && redRecord.headSha === w.lastCommitSha
+        ? redCheckView(redRecord, ciFixHistory(ciAttempts?.finishedCiFixHeads ?? [], w.lastCommitSha))
+        : null;
       const ciGate = resolveCiGate({
         prLifecycleStatus: w.prLifecycleStatus as PrLifecycle,
         liveFixTaskId: ciAttempts?.liveTaskId ?? null,
@@ -1540,6 +1552,8 @@ async function buildEscalationInbox(input: {
         liveFixKind: ciAttempts?.liveKind,
         liveFixClaimed: ciAttempts?.liveClaimed ?? null,
         liveFixTaskTitle: ciAttempts?.liveTaskTitle ?? null,
+        red,
+        reviewApproved: !!w.taskId && reviewApprovedTaskIds.has(w.taskId),
       });
       return {
         workerId: w.id,
