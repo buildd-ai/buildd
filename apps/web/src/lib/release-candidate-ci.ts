@@ -96,7 +96,9 @@ ${logCommand ? `\nRead the failing job's log:\n\n\`\`\`bash\n${logCommand}\n\`\`
 1. Work on a branch from the latest \`${p.sourceBranch}\`. The failure was introduced by commits that are on \`${p.sourceBranch}\` too, so reproduce it there first.
 2. Fix the cause (code or test), run the failing tests locally.
 3. Open a PR into \`${p.sourceBranch}\` with \`create_pr\` (base \`${p.sourceBranch}\`).
-4. In the PR body and your completion summary, say that release candidate ${v} (PR #${p.prNumber}) needs an amendment once this merges: Release workflow with \`amend: ${v}\` and \`amend_confirm: ${v}\` (buildd \`trigger_release\` with those inputs). Do not dispatch it yourself; the fix must be merged first.
+4. In the PR body and your completion summary, say that once this PR merges, release candidate ${v} (PR #${p.prNumber}) will be amended automatically: its checks and approvals restart on the new head.
+
+**If the amendment cannot run automatically** (the candidate is closed, its head moved, or the workspace has no amendment contract), you will need to manually run the Release workflow with \`amend: ${v}\` and \`amend_confirm: ${v}\` (buildd \`trigger_release\` with those inputs).
 `;
   return {
     workspaceId: p.workspaceId,

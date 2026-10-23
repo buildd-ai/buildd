@@ -79,10 +79,12 @@ describe('buildReleaseCandidateFixTask', () => {
     expect('parentTaskId' in built).toBe(false);
   });
 
-  it('says never to push to the candidate, to open the PR into the source branch, and that an amendment follows', () => {
+  it('says never to push to the candidate, to open the PR into the source branch, and that an amendment is automatic', () => {
     expect(built.title).toContain('v1.2.3');
     expect(built.description).toContain('Do not push to `release/v1.2.3`');
     expect(built.description).toContain('into `dev`');
+    expect(built.description).toContain('will be amended automatically');
+    expect(built.description).toContain('If the amendment cannot run automatically');
     expect(built.description).toContain('amend: v1.2.3');
     expect(built.description).toContain('Integration: 4 tests failed');
     expect(built.description).toContain('/repos/acme/app/actions/jobs/9/logs');
