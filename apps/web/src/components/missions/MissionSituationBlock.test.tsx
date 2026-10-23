@@ -422,7 +422,7 @@ describe('mission header — a deliverable PR closed without merging', () => {
     expect(row(suggested)).toContain('merged by a sibling task');
     const none = row(render(closed()).html);
     expect(none).not.toContain('closed without merging');
-    expect(none).toContain('can’t complete');
+    expect(none).toContain('Mission blocked until this work is accounted for.');
   });
 
   it('keeps Review the closed PR a secondary link, so Confirm is the one filled button', () => {
