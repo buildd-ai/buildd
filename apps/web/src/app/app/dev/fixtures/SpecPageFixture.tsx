@@ -50,12 +50,15 @@ const SECTIONS: Array<[string, string[]]> = [
   ]],
 ];
 
+// A paragraph's first sentence, ending in exactly one full stop.
+const firstSentence = (p: string) => `${p.split('. ')[0]!.replace(/\.$/, '')}.`;
+
 const section = ([title, paragraphs]: [string, string[]], i: number) => [
   `## ${i + 1}. ${title}`,
   '',
   ...paragraphs.flatMap((p) => [p, '']),
-  `- R-${2 * i + 1}: ${paragraphs[0]!.split('. ')[0]}.`,
-  `- R-${2 * i + 2}: ${paragraphs[1]!.split('. ')[0]}.`,
+  `- R-${2 * i + 1}: ${firstSentence(paragraphs[0]!)}`,
+  `- R-${2 * i + 2}: ${firstSentence(paragraphs[1]!)}`,
   `- AC-${i + 1}: GIVEN a cart with three items, WHEN the shopper reaches part ${i + 1}, THEN it reads as written above and nothing on the page needs a second look.`,
   '',
 ].join('\n');
@@ -97,11 +100,10 @@ export const SPEC_PAGE_APPROVAL_VIEW: Extract<ApprovalRequestView, { state: 'rea
   title: 'Checkout',
   revision: 3,
   replaces: 2,
-  sections: [{ kind: 'changed', path: 'Checkout > 6. Cancelling', level: 2, linesAdded: 2, linesRemoved: 1 }],
-  hunks: [{ kind: 'changed', path: 'Checkout > 6. Cancelling', linesAdded: 2, linesRemoved: 1, rows: [
+  sections: [{ kind: 'changed', path: 'Checkout > 6. Cancelling', level: 2, linesAdded: 1, linesRemoved: 1 }],
+  hunks: [{ kind: 'changed', path: 'Checkout > 6. Cancelling', linesAdded: 1, linesRemoved: 1, rows: [
     { op: '-', oldLine: 60, newLine: null, text: 'An order can be cancelled until it is packed.' },
     { op: '+', oldLine: null, newLine: 60, text: 'An order can be cancelled until it is packed, from the order page or the confirmation email.' },
-    { op: '+', oldLine: null, newLine: 61, text: '' },
   ] }],
   omittedLines: 0,
   body: SPEC_PAGE_FIXTURE_BODY,
