@@ -25,15 +25,15 @@
  * Server-only. Never throws: a failed read leaves a task out of the map, and
  * the caller keeps what it said before rather than inventing a reason.
  */
-import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { gateEvents, tasks, workers, workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { GATE_SLUGS } from '@buildd/core/gate-slugs';
 import { makeWaitingReason, orderWaitingReasons, queueWaitOf, type WaitingKind, type WaitingReason } from '@buildd/core/waiting-reason';
 import type { QueueWait } from '@buildd/shared';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { claimCandidateWhere, type ClaimGateName } from '@/lib/claim-candidate-where';
 import { claimHoldPhrase } from '@/lib/claim-hold-phrase';
-import { DEFERRAL_FRESHNESS_MS, loadClaimHolds, type ClaimHoldFacts } from '@/lib/mission-claim-deferrals';
 import { dependencySatisfied } from '@/app/api/workers/claim/deps-gate';
 import { evaluateCoordinationGates, type MissionCoordination, type OpenPrTask } from '@/app/api/workers/claim/coordination-gates';
 import { lanesOf } from '@/lib/serial-lanes';
@@ -69,6 +69,21 @@ export interface QueueWaitTask {
   gates: Partial<Record<QueueWaitGate, boolean>>;
 }
 
+/**
+ * A claim-loop refusal recent enough to still be an observation: the same
+ * fifteen minutes (about thirty runner polls) the mission header uses for a
+ * live refusal streak (`DEFERRAL_FRESHNESS_MS`, lib/mission-claim-deferrals).
+ */
+export const LEDGER_FRESH_MS = 15 * 60 * 1000;
+
+/** The task's newest claim-loop refusal, as the gate ledger recorded it. */
+export interface LedgerHold {
+  reason: string;
+  occurredAt: string;
+  firstDeferredAt: string | null;
+  detail: Record<string, unknown> | null;
+}
+
 /** A dependency the deps gate still holds the task on. */
 export interface UnmetDependency { id: string; title: string | null; status: string | null }
 
@@ -81,7 +96,7 @@ export interface QueueWaitFacts {
   /** The task's mission is budget_exhausted and nothing bypasses it. */
   missionBudgetExhausted: boolean;
   /** The task's newest claim-loop refusal, when fresh enough to still be an observation. */
-  ledger: ClaimHoldFacts | null;
+  ledger: LedgerHold | null;
 }
 
 const iso = (v: Date | string | null | undefined): string | null => {
@@ -146,10 +161,10 @@ const LEDGER_NO_RUNNER = new Set([
   'provider_unavailable', 'delegation_unmet', 'provider_not_allowed', 'tier_policy',
 ]);
 
-export function ledgerLimitReasons(hold: ClaimHoldFacts | null, now: Date): WaitingReason[] {
+export function ledgerLimitReasons(hold: LedgerHold | null, now: Date): WaitingReason[] {
   if (!hold) return [];
   const at = Date.parse(hold.occurredAt);
-  if (!Number.isFinite(at) || now.getTime() - at > DEFERRAL_FRESHNESS_MS) return [];
+  if (!Number.isFinite(at) || now.getTime() - at > LEDGER_FRESH_MS) return [];
   const detail = hold.detail ?? {};
   const resets = typeof detail.resetsAt === 'string' ? iso(detail.resetsAt) : null;
   const firstSeenAt = hold.firstDeferredAt ?? undefined;
@@ -322,6 +337,38 @@ async function readCoordination(list: QueueWaitTask[], now: Date): Promise<Coord
   };
 }
 
+/** Each task's newest fresh claim-loop refusal (deferred or stranded), newest first. Never throws. */
+async function readLedger(taskIds: string[], now: Date): Promise<Map<string, LedgerHold>> {
+  const out = new Map<string, LedgerHold>();
+  if (taskIds.length === 0) return out;
+  try {
+    const rows = await db
+      .select({ taskId: gateEvents.taskId, reason: gateEvents.reason, occurredAt: gateEvents.occurredAt, detail: gateEvents.detail })
+      .from(gateEvents)
+      .where(and(
+        inArray(gateEvents.taskId, taskIds),
+        eq(gateEvents.gate, GATE_SLUGS.CLAIM_LOOP_DEFERRAL),
+        inArray(gateEvents.outcome, ['deferred', 'stranded']),
+        gt(gateEvents.occurredAt, new Date(now.getTime() - LEDGER_FRESH_MS)),
+      ))
+      .orderBy(desc(gateEvents.occurredAt))
+      .limit(Math.min(500, taskIds.length * 5));
+    for (const r of rows) {
+      if (!r.taskId || out.has(r.taskId)) continue;
+      const detail = r.detail && typeof r.detail === 'object' ? (r.detail as Record<string, unknown>) : null;
+      out.set(r.taskId, {
+        reason: r.reason,
+        occurredAt: new Date(r.occurredAt).toISOString(),
+        firstDeferredAt: typeof detail?.firstDeferredAt === 'string' ? detail.firstDeferredAt : null,
+        detail,
+      });
+    }
+  } catch {
+    // No ledger reading: the claim gates still speak.
+  }
+  return out;
+}
+
 /** The bypass flag the claim loop honours on the mission budget gate. */
 function bypassesMissionBudget(context: unknown): boolean {
   return hasBypassFlag(context as Record<string, unknown> | null, BYPASS_MISSION_BUDGET_KEY);
@@ -342,7 +389,7 @@ export async function loadQueueWaits(taskIds: readonly string[], now: Date = new
     const [deps, coord, holds] = await Promise.all([
       readUnmetDependencies(list.filter(t => refuses(t, 'deps'))).catch(() => new Map<string, UnmetDependency[]>()),
       readCoordination(list, now),
-      loadClaimHolds(list.map(t => t.id)),
+      readLedger(list.map(t => t.id), now),
     ]);
     for (const t of list) {
       const mission = t.missionId ? coord.missions.get(t.missionId) ?? null : null;
