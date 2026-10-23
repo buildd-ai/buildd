@@ -15,7 +15,9 @@
  * advisory conflict between two criteria. None of them blocks anything.
  *
  * revise with `section` (an outline id) or `heading` replaces just that
- * section; the server rebuilds the whole body and revises it as usual.
+ * section; `find` + `replace` patches one exact, unique piece of text. The
+ * server rebuilds the whole body and revises it as usual. An omitted design
+ * carries the head's forward.
  *
  * repoRefs (on create_draft / revise) cite repo specs at an exact commit (D-1);
  * read_ref reads one of them at that commit, bounded, over
@@ -410,17 +412,24 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
     case 'revise': {
       const specId = need(params.specId, 'specId');
       if (!Number.isInteger(params.expectedVersion)) throw new Error('expectedVersion (the version you read with get) is required');
-      // section / heading: body is that one section's text, sent as written.
+      // find + replace: a one-place text patch. section / heading: body is that one section's text, sent as written.
+      const patch = params.find !== undefined;
       const target = params.section !== undefined ? { section: params.section } : params.heading !== undefined ? { heading: params.heading } : null;
-      if (target && (typeof params.body !== 'string' || !params.body.trim())) throw new Error('body (the section text, its heading line included) is required');
-      const payload: Record<string, unknown> = { expectedVersion: params.expectedVersion, ...target, body: target ? params.body : need(params.body, 'body') };
+      // `content` is accepted for `body`: the common slip.
+      const bodyText = params.body !== undefined ? params.body : params.content;
+      if (patch && (target || bodyText !== undefined)) throw new Error('find + replace patch the whole body: do not also pass body, section or heading');
+      if (patch && typeof params.replace !== 'string') throw new Error('replace (the new text; "" deletes the match) is required with find');
+      if (!patch && target && (typeof bodyText !== 'string' || !bodyText.trim())) throw new Error('body (the section text, its heading line included) is required');
+      const payload: Record<string, unknown> = patch
+        ? { expectedVersion: params.expectedVersion, find: params.find, replace: params.replace }
+        : { expectedVersion: params.expectedVersion, ...target, body: target ? bodyText : need(bodyText, 'body (or find + replace to patch)') };
       if (params.changeSummary !== undefined) payload.changeSummary = params.changeSummary;
       if (params.repoRefs !== undefined) payload.repoRefs = params.repoRefs;
       if (params.design !== undefined) payload.design = params.design;
       try {
         const r = await api(`/api/specs/${encodeURIComponent(specId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
         if (r.unchanged) return text(`Unchanged: the body and repo references match revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);
-        const what = target ? ` (${'section' in target ? `section ${String(target.section)}` : `section "${String(target.heading)}"`} replaced, the rest kept)` : '';
+        const what = patch ? ' (find/replace applied, the rest kept)' : target ? ` (${'section' in target ? `section ${String(target.section)}` : `section "${String(target.heading)}"`} replaced, the rest kept)` : '';
         return text(`Revised${what}: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).\nSpec URL: ${specUrl(specId)}${tipText(r.formatHints)}`);
       } catch (err) {
         const e = apiError(err);

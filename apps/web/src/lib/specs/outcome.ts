@@ -67,7 +67,10 @@ async function mayAct(caller: SpecCaller, task: TaskRow, mode: Mode): Promise<bo
   if (!(await reach(caller, task.workspaceId, mode === 'record'))) return false;
   const scope = caller.kind === 'account' ? (caller.account.taskScope as { taskId?: string } | undefined) : undefined;
   if (!scope) return true;
-  if (mode === 'read' && scope.taskId === task.id) return true;
+  // A task token is already confined to its workspace (the route's
+  // taskScopeAllowsWorkspace, `reach` above), and get_task reads any task in it,
+  // so reading a sibling's outcome is no wider. Recording stays narrow, below.
+  if (mode === 'read') return true;
   // Only the review round of the subject's own delivery records. Its delivery
   // role and delivery are set by the platform when it files the round, never
   // by a task filing a child, so a fix attempt or a self-filed child cannot pass.
