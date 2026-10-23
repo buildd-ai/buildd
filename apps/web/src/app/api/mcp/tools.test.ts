@@ -264,7 +264,7 @@ describe('listMcpTools — group tools', () => {
   // 4.81k task token, so the task-token ceiling moves 4.8k -> 4.85k.
   // store_design + manage_designs named on More: (task e3ef49b1): +8, measured
   // 4.86k task token, so the task-token ceiling moves 4.85k -> 4.9k; the admin
-  // surface stays under 6k.
+  // surface stays under 6k (trimmed the purpose line to pay for it).
   it('keeps the whole groups surface under the 6k spec budget', () => {
     const all = tools({ accountLevel: 'admin', isSensitive: false, surface: 'groups' });
     expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(6000);

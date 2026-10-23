@@ -384,7 +384,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   },
   artifacts: {
     parts: [
-      { text: 'reports, analyses, other artifacts', actions: ['list_artifacts', 'get_artifact', 'list_artifact_templates', 'update_artifact'] },
+      { text: 'reports, artifacts', actions: ['list_artifacts', 'get_artifact', 'list_artifact_templates', 'update_artifact'] },
       { text: 'link one to a task, mission or chat', actions: ['link_artifact', 'list_artifact_links', 'store_design', 'manage_designs'] },
       { text: 'Living Specs', actions: ['manage_specs'] },
     ],
@@ -479,8 +479,8 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   list_artifact_templates: 'artifact templates and their schemas',
   update_artifact: 'edit an artifact',
   link_artifact: 'link an artifact to a task, mission or chat',
-  store_design: 'store a design from HTML',
-  manage_designs: 'attach, detach, list designs',
+  store_design: 'store a design',
+  manage_designs: 'attach/list designs',
   list_artifact_links: 'what is linked, without bodies',
   manage_specs: 'Living Specs: draft, read, revise, approve, verify, comment',
   trigger_release: 'start a release',
@@ -746,7 +746,6 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('expectedRevision', num, [{ text: 'Refuse if the body moved on', actions: ['update_artifact'] }]),
     param('missionId', str, [{ text: 'list_artifacts: mission UUID (not a title)', actions: ['list_artifacts'] }]),
     param('action', str, [{ text: `manage_specs: ${alt('manage_specs')}`, actions: ['manage_specs'], moreOnly: true }, { text: 'manage_designs: attach|detach|list', actions: ['manage_designs'], moreOnly: true }]),
-    param('html', str, [{ text: 'HTML export', actions: ['store_design'] }]),
     // Nearly every manage_specs call names a spec, and every write carries the version read.
     param('specId', str, [{ text: 'Spec UUID', actions: ['manage_specs'], forMore: true }]),
     param('expectedVersion', num, [{ text: 'Writes: the version you read', actions: ['manage_specs'], forMore: true }]),
