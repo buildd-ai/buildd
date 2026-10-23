@@ -25,6 +25,7 @@ import SpecFiling from '@/components/SpecFiling';
 import SpecRepoChecksFetch from '@/components/SpecRepoChecksFetch';
 import SpecDelivery from '@/components/SpecDelivery';
 import SpecRetire from '@/components/SpecRetire';
+import SpecReplacedChoice, { approvalResultText, retireChoice, type ApprovalRetirementReply, type ReplacedOption } from '@/components/SpecReplacedChoice';
 import { useHideAskButton } from '@/lib/ask-button-hidden';
 import type { SpecPageView, SpecPanes } from '@/lib/specs/page-view';
 import { nativeHistoryData } from '@/lib/native-history';
@@ -177,28 +178,53 @@ function ConfirmImport({ specId, workspaceId, revision }: { specId: string; work
   );
 }
 
-function Approve({ specId, revision, expectedVersion }: { specId: string; revision: number; expectedVersion: number }) {
+/**
+ * The approval: the specs the revision replaces, each "Retire it" checked
+ * (R-77, AC-137), then one action. Confirming approves and supersedes each
+ * checked spec at the version read here; unchecked, it approves only.
+ */
+function Approve({ specId, revision, expectedVersion, replacing = [] }: { specId: string; revision: number; expectedVersion: number; replacing?: ReplacedOption[] }) {
   const router = useRouter();
+  const [checked, setChecked] = useState<Set<string>>(() => new Set(replacing.map((r) => r.id)));
+  const toggle = (id: string) => setChecked((c) => { const n = new Set(c); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const approvedText = `Approved revision ${revision}.`;
   const { shown, retry, approve } = useOptimisticApprove(async () => {
     const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ revision, expectedVersion }),
+      body: JSON.stringify({ revision, expectedVersion, retire: retireChoice(replacing, checked) }),
     });
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    if (res.ok) return { tone: 'ok', text: approvedText };
+    const body = (await res.json().catch(() => ({}))) as { error?: string; retirements?: ApprovalRetirementReply[] };
+    if (res.ok) return approvalResultText(revision, body.retirements);
     return { tone: res.status === 409 ? 'warn' : 'err', text: body.error ?? 'Approval failed. Try again.' };
   }, approvedText, () => router.refresh());
+  const retiring = replacing.some((r) => checked.has(r.id));
   return (
     <div className="flex flex-col gap-2">
       {shown ? <Notice tone={shown.tone} data-testid="spec-page-approve-result">{shown.text}</Notice> : null}
       {!shown || retry ? (
-        <PrimaryAction onClick={approve} fullWidthOnMobile data-testid="spec-page-approve">
-          Approve revision {revision}
-        </PrimaryAction>
+        <>
+          <SpecReplacedChoice options={replacing} checked={checked} onToggle={toggle} />
+          <PrimaryAction onClick={approve} fullWidthOnMobile data-testid="spec-page-approve">
+            {retiring ? 'Approve and retire' : `Approve revision ${revision}`}
+          </PrimaryAction>
+        </>
       ) : null}
     </div>
+  );
+}
+
+/** Specs named in the status line, each a link, joined by commas. */
+function SpecLinks({ specs }: { specs: Array<{ id: string; title: string }> }) {
+  return (
+    <>
+      {specs.map((x, i) => (
+        <span key={x.id}>
+          {i ? ', ' : ''}
+          <Link href={`/app/specs/${x.id}`} className="text-text-secondary underline">{x.title}</Link>
+        </span>
+      ))}
+    </>
   );
 }
 
@@ -777,7 +803,7 @@ export default function SpecPage({ view }: { view: Ok }) {
       </div>
     </div>
   ) : reviewing ? (
-    reviewPanes ? <Approve key={reviewPanes.revision} specId={spec.id} revision={reviewPanes.revision} expectedVersion={reviewPanes.version ?? spec.version} /> : null
+    reviewPanes ? <Approve key={reviewPanes.revision} specId={spec.id} revision={reviewPanes.revision} expectedVersion={reviewPanes.version ?? spec.version} replacing={reviewPanes.replacing} /> : null
   ) : reviewLink ? (
     <a href={`${base}?review=1`} onClick={openReview} className={primaryActionClass({ fullWidthOnMobile: true })} data-testid="spec-page-review">
       Review revision {view.waiting}
@@ -844,6 +870,16 @@ export default function SpecPage({ view }: { view: Ok }) {
             </span>
           ) : status.words ? (
             <span data-testid={view.retirement ? 'spec-retired-line' : 'spec-page-reading'}>{status.words}</span>
+          ) : null}
+          {!view.retirement && view.replacesSpecs?.length ? (
+            <span data-testid="spec-page-replaces">
+              Replaces <SpecLinks specs={view.replacesSpecs} />
+            </span>
+          ) : null}
+          {!view.retirement && view.replacementWaiting?.length ? (
+            <span data-testid="spec-page-replacement-waiting">
+              A replacement is waiting: <SpecLinks specs={view.replacementWaiting} />
+            </span>
           ) : null}
           {view.standard ? <span className="font-medium text-text-secondary" data-testid="spec-page-standard">Standard, applies to every change</span> : null}
           {titledInText ? <span data-testid="spec-page-text-title">Titled in the text: {titledInText}</span> : null}

@@ -220,7 +220,7 @@ const SAFE: Record<string, string[]> = {
   artifact_links: ['subject_kind', 'relation'],
   // Closed vocabularies (SPEC_SCOPES / SPEC_STATUSES) and a sha256 of a body scrubbed elsewhere.
   specs: ['scope', 'status'],
-  spec_revisions: ['content_hash', 'repo_refs'], // repo paths pinned to commit SHAs
+  spec_revisions: ['content_hash', 'repo_refs', 'replaces'], // repo paths pinned to commit SHAs; replaces is spec ids
   // A criterion id from the spec body (R-1, AC-2) and a git SHA.
   spec_outcome_verdicts: ['criterion_id', 'head_sha'],
   spec_verdict_sources: ['criterion_id'], // a criterion id from the spec body; source is a test|review literal union

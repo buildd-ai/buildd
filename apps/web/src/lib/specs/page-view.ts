@@ -27,6 +27,7 @@ import { revisionReview, type RevisionReview } from './revision-changes';
 import { readCriterionHistory, type CriterionHistory } from './criteria';
 import { importConfirmPath } from './import';
 import { holdsInWorkspace } from '@/lib/team-access';
+import { liveReplaced, replacesOfHeadQuery, waitingReplacementsQuery, type ReplacedSpec } from './replaces';
 
 /**
  * What the dashboard's spec pages show (living-specs.md §9): a workspace's
@@ -287,6 +288,8 @@ export interface SpecPanes {
   changes?: Pick<RevisionReview, 'summary' | 'lines' | 'otherText' | 'mismatch'>;
   /** Review only, nothing approved yet: what this revision changed from the one before it, so a later draft still shows its own change. */
   since?: { revision: number; changes: Pick<RevisionReview, 'summary' | 'lines' | 'otherText' | 'mismatch'> } | null;
+  /** Review only: the live specs this revision replaces, each offered "Retire it", checked (R-77). */
+  replacing?: ReplacedSpec[];
 }
 
 export type SpecPageView =
@@ -351,6 +354,10 @@ export type SpecPageView =
     /** The reader may retire or restore it (a person with approval rights, §22 R-51), and the live specs that could replace it. */
     canRetire?: boolean;
     retireTargets?: Array<{ id: string; title: string }>;
+    /** The live specs the head revision names in `replaces`: the status line says "Replaces <spec>" (R-100). */
+    replacesSpecs?: Array<{ id: string; title: string }>;
+    /** Specs whose unapproved head replaces this one: "A replacement is waiting: <spec>" (R-76). */
+    replacementWaiting?: Array<{ id: string; title: string }>;
     /** With `history`: that criterion's wordings ("Reviewing a spec revision" R-12); null when the spec never had it. */
     criterionHistory?: { criterionId: string; history: CriterionHistory | null } | null;
     /**
@@ -409,7 +416,9 @@ async function reviewPanes(spec: SpecRow, reading: Reading | null): Promise<Spec
   const review = panes(r.hunks, r.omittedLines, head.body, spec.headRevision, spec.approvedRevision);
   review.changes = { summary: r.summary, lines: r.lines, otherText: r.otherText, mismatch: r.mismatch };
   review.since = before && since ? { revision: before, changes: { summary: since.summary, lines: since.lines, otherText: since.otherText, mismatch: since.mismatch } } : null;
-  review.attachmentSources = await sources;
+  const [attachments, replacing] = await Promise.all([sources, liveReplaced(spec.workspaceId, head.revision.replaces).catch(() => [])]);
+  review.attachmentSources = attachments;
+  review.replacing = replacing;
   return review;
 }
 
@@ -508,6 +517,9 @@ export async function specPageView(userId: string, specId: string, opts: { revis
         .where(and(eq(specs.workspaceId, spec.workspaceId), ne(specs.id, spec.id), notInArray(specs.status, ['retired', 'superseded'])))
         .orderBy(specs.title).limit(200)
       : null,
+    // R-76, R-100: what the head replaces, and a replacement waiting for this spec.
+    replacesSpecs: open ? replacesOfHeadQuery(spec) : null,
+    replacementWaiting: open ? waitingReplacementsQuery(spec) : null,
   }));
   const revRowsP = roundP.then((r) => r.revRows);
   const namesP = revRowsP.then(async (revRows) => {
@@ -563,6 +575,8 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     : Promise.resolve(null);
 
   const retirementP = open ? Promise.resolve(null) : specRetirement(spec.id).catch(() => null);
+  const replacesP = roundP.then((r) => r.replacesSpecs ?? []);
+  const waitingReplacementP = roundP.then((r) => r.replacementWaiting ?? []);
   // Only a spec that came from or was copied to a repo file can have one.
   const restoredNoteP = open && (spec.repoSource || spec.repoCopy?.path) ? specRestoredRepoFile(spec.id, spec.status).catch(() => null) : Promise.resolve(null);
   // The replacements a person may pick (§22): live specs of the workspace, by title.
@@ -580,8 +594,8 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     return null;
   });
 
-  const [read, [ws], revRows, names, [parent], siblings, children, repoRefs, design, views, comments, nearby, filing, compare, approverId, retirement, retireTargets, review, delivery, criterionHistory, restoredRepoNote] = await Promise.all([
-    readP, wsP, revRowsP, namesP, parentP, siblingsP, childrenP, repoRefsP, designP, viewsP, commentsP, nearbyP, filingP, compareP, approverP, retirementP, retireTargetsP, reviewP, deliveryP, historyP, restoredNoteP,
+  const [read, [ws], revRows, names, [parent], siblings, children, repoRefs, design, views, comments, nearby, filing, compare, approverId, retirement, retireTargets, review, delivery, criterionHistory, restoredRepoNote, replacesSpecs, replacementWaiting] = await Promise.all([
+    readP, wsP, revRowsP, namesP, parentP, siblingsP, childrenP, repoRefsP, designP, viewsP, commentsP, nearbyP, filingP, compareP, approverP, retirementP, retireTargetsP, reviewP, deliveryP, historyP, restoredNoteP, replacesP, waitingReplacementP,
   ]);
   if (!read) return { state: 'not_found' };
 
@@ -636,6 +650,7 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     canComment: true,
     compare, canApprove: pending && open && approver, review,
     retirement, canRetire: approver, retireTargets, restoredRepoNote,
+    replacesSpecs, replacementWaiting,
     criterionHistory,
     importConfirmation,
   };

@@ -10,6 +10,8 @@ import { signSpecApprovalRequest, specApprovalConfirmPath, verifySpecApprovalReq
 import { emit } from '@/lib/core-emit';
 import { approvedAttachmentsSql } from './attachment-pins';
 import { after } from 'next/server';
+import { liveReplaced, parseRetireChoice, type RetireChoice } from './replaces';
+import type { ApprovalRetirement } from './retire';
 import type { SpecApprovalRecord, SpecGateResult } from '@buildd/core/db/schema';
 import { users } from '@buildd/core/db/schema';
 
@@ -144,7 +146,16 @@ export interface PendingSpecApproval {
 export const MIN_OVERRIDE_REASON = 10;
 export const MAX_OVERRIDE_REASON = 500;
 
-export async function approveSpecRevision(caller: SpecCaller, specId: string, input: { revision: unknown; expectedVersion: unknown; via?: unknown }, opts: {
+export async function approveSpecRevision(caller: SpecCaller, specId: string, input: {
+  revision: unknown; expectedVersion: unknown; via?: unknown;
+  /**
+   * R-77: which of the specs the revision replaces to supersede with this
+   * approval, as ids or { specId, expectedVersion } (the version read; a spec
+   * that moved since is reported stale and the approval stands). Omitted: all
+   * of them, the default choice; [] approves only.
+   */
+  retire?: unknown;
+}, opts: {
   /** How the approval is recorded; a person's own press in the dashboard when absent. */
   record?: SpecApprovalRecord;
   /**
@@ -154,7 +165,7 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
    * spec is refused: its file may have moved, and only confirmation checks.
    */
   importConfirmation?: { note: string };
-} = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow } | { ok: true; spec: SpecRow; pending: PendingSpecApproval } | SpecError> {
+} = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; retirements: ApprovalRetirement[] } | { ok: true; spec: SpecRow; pending: PendingSpecApproval } | SpecError> {
   if (!Number.isInteger(input.revision)) return fail(400, 'revision (the spec revision you read and are approving) is required');
   const loaded = await loadForDecision(caller, specId, input.expectedVersion);
   if ('ok' in loaded) return loaded;
@@ -169,11 +180,22 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
     return fail(409, 'This spec has no imported revision waiting for confirmation', { code: 'not_imported' });
   }
 
+  const [rev] = await db.select({ contentHash: specRevisions.contentHash, replaces: specRevisions.replaces }).from(specRevisions)
+    .where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, n))).limit(1);
+  if (!rev) return fail(404, `Revision ${n} not found`);
+  // R-77: the replaced specs to supersede, each at the version read (now, when the caller named none).
+  const live = await liveReplaced(spec.workspaceId, rev.replaces);
+  let choice: RetireChoice;
+  if (input.retire === undefined) choice = live.map((r) => ({ specId: r.id, expectedVersion: r.version }));
+  else {
+    const parsed = parseRetireChoice(input.retire, rev.replaces ?? []);
+    if ('error' in parsed) return fail(400, parsed.error);
+    choice = parsed.map((c) => ({ specId: c.specId, expectedVersion: c.expectedVersion ?? live.find((r) => r.id === c.specId)?.version }));
+  }
+
   if (caller.kind === 'account') {
-    // A bearer session: the person's own, but maybe driven by an agent. Ask, don't approve.
-    const [rev] = await db.select({ contentHash: specRevisions.contentHash }).from(specRevisions)
-      .where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, n))).limit(1);
-    if (!rev) return fail(404, `Revision ${n} not found`);
+    // A bearer session: the person's own, but maybe driven by an agent. Ask, don't
+    // approve. The link carries the retire choice, at the versions read now.
     // The quality gate comes before anyone is asked.
     const { runApprovalGate } = await import('./approval-gate');
     const { gate } = await runApprovalGate(spec, n);
@@ -182,7 +204,7 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
     }
     const now = Date.now();
     const via = input.via === 'chat' ? 'chat' : 'mcp';
-    const token = signSpecApprovalRequest({ specId, workspaceId: spec.workspaceId, revision: n, expectedVersion: spec.version, contentHash: rev.contentHash, requestedBy: approver, via }, now);
+    const token = signSpecApprovalRequest({ specId, workspaceId: spec.workspaceId, revision: n, expectedVersion: spec.version, contentHash: rev.contentHash, requestedBy: approver, via, retire: choice }, now);
     if (!token) return fail(502, 'Approval links are not configured on this deployment. Approve from buildd.dev.');
     const verdict = verifySpecApprovalRequest(token, now);
     const expiresAt = new Date(verdict.ok ? verdict.payload.exp : now).toISOString();
@@ -242,7 +264,12 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
     // approved revision of it re-decides every spec in the workspace.
     if (after.scope === 'product') await redecidePublication(workspaceId);
   });
-  return { ok: true, spec: after, revision };
+  // R-77: then each replaced spec the person left checked, superseded by this one.
+  // The approval has committed: a replaced spec that moved is reported stale, never undoes it.
+  const retirements = choice.length
+    ? await (await import('./retire')).supersedeOnApproval(approver, { id: specId, title: after.title, workspaceId, revision: n }, choice)
+    : [];
+  return { ok: true, spec: after, revision, retirements };
 }
 
 async function conflictNow(specId: string): Promise<SpecError> {
@@ -256,7 +283,11 @@ async function conflictNow(specId: string): Promise<SpecError> {
  * body hash, and anything that moved since makes it stale. A request that was
  * already confirmed reads as done and changes nothing.
  */
-export async function confirmSpecApproval(caller: SpecCaller, specId: string, token: unknown, opts: { overrideReason?: unknown } = {}): Promise<{ ok: true; already: boolean; spec: SpecRow; revision: SpecRevisionRow } | SpecError> {
+export async function confirmSpecApproval(caller: SpecCaller, specId: string, token: unknown, opts: {
+  overrideReason?: unknown;
+  /** The person's own retire choice on the confirm page; omitted, the one the link carries (R-77). */
+  retire?: unknown;
+} = {}): Promise<{ ok: true; already: boolean; spec: SpecRow; revision: SpecRevisionRow; retirements: ApprovalRetirement[] } | SpecError> {
   if (caller.kind !== 'user') return fail(403, 'Confirm the approval on buildd.dev, signed in. An agent session cannot confirm it.');
   const v = verifySpecApprovalRequest(typeof token === 'string' ? token : null);
   if (!v.ok) {
@@ -275,7 +306,7 @@ export async function confirmSpecApproval(caller: SpecCaller, specId: string, to
   const [rev] = await db.select().from(specRevisions)
     .where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, req.revision))).limit(1);
   if (!rev || rev.contentHash !== req.contentHash) return fail(409, 'The spec changed since this approval was asked for.', { code: 'request_stale', currentVersion: spec.version });
-  if (spec.approvedRevision === req.revision && rev.approvedAt) return { ok: true, already: true, spec, revision: rev };
+  if (spec.approvedRevision === req.revision && rev.approvedAt) return { ok: true, already: true, spec, revision: rev, retirements: [] };
   if (spec.version !== req.expectedVersion || spec.headRevision !== req.revision) {
     return fail(409, 'The spec changed since this approval was asked for. Ask for a new link.', { code: 'request_stale', currentVersion: spec.version });
   }
@@ -291,8 +322,8 @@ export async function confirmSpecApproval(caller: SpecCaller, specId: string, to
     if (reason.length > MAX_OVERRIDE_REASON) return fail(400, `The reason is at most ${MAX_OVERRIDE_REASON} characters.`);
   }
   const record: SpecApprovalRecord = { via: req.via ?? 'mcp', gate, ...(!gate.passed ? { overrideReason: reason } : {}) };
-  const r = await approveSpecRevision(caller, specId, { revision: req.revision, expectedVersion: req.expectedVersion }, { record });
+  const r = await approveSpecRevision(caller, specId, { revision: req.revision, expectedVersion: req.expectedVersion, retire: opts.retire !== undefined ? opts.retire : req.retire }, { record });
   if (!r.ok) return r.status === 409 ? { ...r, code: 'request_stale' } : r;
   if ('pending' in r) return fail(403, NOT_A_PERSON);
-  return { ok: true, already: false, spec: r.spec, revision: r.revision };
+  return { ok: true, already: false, spec: r.spec, revision: r.revision, retirements: r.retirements };
 }
