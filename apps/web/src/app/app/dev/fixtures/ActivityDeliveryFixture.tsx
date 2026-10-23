@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import ActivityView, { type ActivityMode } from '../../(protected)/tasks/ActivityView';
 import type { ActivityNow, ActivityOutcome } from '@/lib/activity-delivery';
-import { ACTIVITY_FIXTURE_NOW, ACTIVITY_SEQUENCE, activityContextFixture, activityFixture, activityScaleFixture } from './activity-delivery-fixtures';
+import { ACTIVITY_FIXTURE_NOW, ACTIVITY_SEQUENCE, activityContextFixture, activityFixture, activityScaleFixture, activityStatesFixture } from './activity-delivery-fixtures';
 
 /**
  * Activity Now/History on fabricated data (activity-delivery-fixtures.ts).
@@ -11,7 +11,8 @@ import { ACTIVITY_FIXTURE_NOW, ACTIVITY_SEQUENCE, activityContextFixture, activi
  * `&view=history` opens History. Task 34's evidence starts expanded, and so does the kernel-owned row's.
  * `&data=scale` swaps in a busy workspace's 30 days (`&data=quiet`: the same, with
  * nothing retried still in motion, so Had retries is empty in Now only), `&data=context` live work with
- * its context (a new mission already building, a five-generation chain, a new standalone task),
+ * its context (a new mission already building, a five-generation chain, a new standalone task), `&data=states`
+ * that context beside every verification state (verified, failing, stale, not verified) and every attribution,
  * `&outcome=retries|landed|exceptions`
  * starts with that filter, `&error=1` shows a failed load. Task 34 is filed by you and, from step 6, carries a
  * recorded spec verification; one Search task is for a teammate; the rest read unattributed.
@@ -19,20 +20,20 @@ import { ACTIVITY_FIXTURE_NOW, ACTIVITY_SEQUENCE, activityContextFixture, activi
 export default function ActivityDeliveryFixture() {
   const [step, setStep] = useState(4);
   const [mode, setMode] = useState<ActivityMode>('now');
-  const [variant, setVariant] = useState<{ scale: boolean; quiet: boolean; context: boolean; outcome: ActivityOutcome | null; error: boolean }>({ scale: false, quiet: false, context: false, outcome: null, error: false });
+  const [variant, setVariant] = useState<{ scale: boolean; quiet: boolean; context: boolean; states: boolean; outcome: ActivityOutcome | null; error: boolean }>({ scale: false, quiet: false, context: false, states: false, outcome: null, error: false });
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     const n = Number(q.get('step'));
     if (Number.isFinite(n) && q.get('step') != null) setStep(n);
     if (q.get('view') === 'history') setMode('history');
     const o = q.get('outcome');
-    setVariant({ scale: q.get('data') === 'scale' || q.get('data') === 'quiet', quiet: q.get('data') === 'quiet', context: q.get('data') === 'context', outcome: o === 'retries' || o === 'landed' || o === 'exceptions' ? o : null, error: q.get('error') === '1' });
+    setVariant({ scale: q.get('data') === 'scale' || q.get('data') === 'quiet', quiet: q.get('data') === 'quiet', context: q.get('data') === 'context', states: q.get('data') === 'states', outcome: o === 'retries' || o === 'landed' || o === 'exceptions' ? o : null, error: q.get('error') === '1' });
   }, []);
   const seq = activityFixture(step);
   const scale = variant.scale ? activityScaleFixture() : null;
-  const context = variant.context ? activityContextFixture() : null;
+  const context = variant.states ? activityStatesFixture() : variant.context ? activityContextFixture() : null;
   const data = scale ? { ...scale, step: seq.step, now: variant.quiet ? quietNow(scale.now) : scale.now } : context ? { ...context, step: seq.step } : seq;
-  const extra = `${variant.scale ? `&data=${variant.quiet ? 'quiet' : 'scale'}` : variant.context ? '&data=context' : ''}${variant.outcome ? `&outcome=${variant.outcome}` : ''}${variant.error ? '&error=1' : ''}`;
+  const extra = `${variant.scale ? `&data=${variant.quiet ? 'quiet' : 'scale'}` : variant.states ? '&data=states' : variant.context ? '&data=context' : ''}${variant.outcome ? `&outcome=${variant.outcome}` : ''}${variant.error ? '&error=1' : ''}`;
   const href = (view: ActivityMode, s = data.step) => `/app/dev/fixtures?state=activity-delivery&step=${s}${view === 'history' ? '&view=history' : ''}${extra}`;
 
   return (
