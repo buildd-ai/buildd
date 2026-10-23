@@ -172,6 +172,19 @@ mock.module('@buildd/core/db/schema', () => ({
   taskSchedules: 'taskSchedules',
 }));
 
+// Selecting outcome specs at create (Living Specs D-41): the selection logic is
+// tested in lib/specs/mission-selection.test.ts; here only the route's use of it.
+const resolveCreateSelectionsCalls: any[] = [];
+let resolveCreateSelectionsAnswer: any = { ok: true, selections: [] };
+const startCreateSelectionsCalls: any[] = [];
+mock.module('@/lib/specs/mission-selection', () => ({
+  parseCreateSelections: (raw: unknown) => (Array.isArray(raw)
+    ? { ok: true, entries: raw }
+    : raw && typeof raw === 'object' ? { ok: true, entries: [raw] } : { ok: false, error: 'outcomeSpec must be { specId, ... }' }),
+  resolveCreateSelections: async (workspaceId: string, entries: unknown[]) => { resolveCreateSelectionsCalls.push({ workspaceId, entries }); return resolveCreateSelectionsAnswer; },
+  startCreateSelections: async (caller: unknown, missionId: string, selections: unknown[]) => { startCreateSelectionsCalls.push({ caller, missionId, selections }); },
+}));
+
 import { GET, POST } from './route';
 import { capturedOrderBy, capturedWhere } from '@buildd/core/db/relational-sql';
 
@@ -223,6 +236,64 @@ describe('POST /api/missions', () => {
         };
       }),
     }));
+  });
+
+  describe('outcomeSpec at create (Living Specs D-41)', () => {
+    const SPEC_A = '11111111-1111-4111-8111-111111111111';
+    const SPEC_B = '22222222-2222-4222-8222-222222222222';
+    const crit = (specId: string, criteria?: string[]) => ({ type: 'living_spec', specId, specRevisionId: `rev-${specId}`, revision: 4, contentHash: 'h', ...(criteria ? { criteria, narrowedReason: 'The criteria revision 4 adds or changes' } : {}), label: 'Spec "X" revision 4' });
+    const post = (body: unknown) => POST(new NextRequest('http://localhost/api/missions', { method: 'POST', body: JSON.stringify(body) }));
+
+    beforeEach(() => {
+      resolveCreateSelectionsCalls.length = 0;
+      startCreateSelectionsCalls.length = 0;
+      resolveCreateSelectionsAnswer = { ok: true, selections: [] };
+    });
+
+    it('stores one living_spec criterion per selected spec with the mission, then starts their acceptance tests', async () => {
+      resolveCreateSelectionsAnswer = { ok: true, selections: [{ criterion: crit(SPEC_A, ['R-17']), inScope: ['R-17'] }, { criterion: crit(SPEC_B), inScope: ['R-1', 'R-2'] }] };
+      const res = await post({ title: 'Verify plumbing', workspaceId: 'ws-1', outcomeSpec: [{ specId: SPEC_A }, { specId: SPEC_B }] });
+      expect(res.status).toBe(201);
+      expect(resolveCreateSelectionsCalls).toEqual([{ workspaceId: 'ws-1', entries: [{ specId: SPEC_A }, { specId: SPEC_B }] }]);
+      expect(insertedMissionValues.goalCriteria).toEqual([crit(SPEC_A, ['R-17']), crit(SPEC_B)]);
+      expect(startCreateSelectionsCalls).toHaveLength(1);
+      expect(startCreateSelectionsCalls[0].missionId).toBe('obj-1');
+      expect(startCreateSelectionsCalls[0].caller).toEqual({ kind: 'user', userId: 'user-1' });
+      const body = await res.json();
+      expect(body.goalCriteria).toHaveLength(2);
+    });
+
+    it('refuses the create, writing nothing, when a selection does not resolve', async () => {
+      resolveCreateSelectionsAnswer = { ok: false, status: 400, error: 'Revision 4 adds or changes no criteria' };
+      const res = await post({ title: 'X', workspaceId: 'ws-1', outcomeSpec: { specId: SPEC_A } });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('adds or changes no criteria');
+      expect(insertedMissionValues).toBeNull();
+      expect(startCreateSelectionsCalls).toHaveLength(0);
+    });
+
+    it('needs a workspace, and refuses outcomeSpec beside goalCriteria', async () => {
+      const noWs = await post({ title: 'X', outcomeSpec: { specId: SPEC_A } });
+      expect(noWs.status).toBe(400);
+      expect((await noWs.json()).error).toContain('workspaceId');
+      const both = await post({ title: 'X', workspaceId: 'ws-1', outcomeSpec: { specId: SPEC_A }, goalCriteria: [{ type: 'no_open_tasks' }] });
+      expect(both.status).toBe(400);
+      expect(insertedMissionValues).toBeNull();
+      expect(resolveCreateSelectionsCalls).toHaveLength(0);
+    });
+
+    it('refuses a malformed outcomeSpec before reading anything', async () => {
+      const res = await post({ title: 'X', workspaceId: 'ws-1', outcomeSpec: 'nav' });
+      expect(res.status).toBe(400);
+      expect(resolveCreateSelectionsCalls).toHaveLength(0);
+    });
+
+    it('a mission without outcomeSpec stores no criteria and starts nothing', async () => {
+      const res = await post({ title: 'Chore', workspaceId: 'ws-1' });
+      expect(res.status).toBe(201);
+      expect(insertedMissionValues).not.toHaveProperty('goalCriteria');
+      expect(startCreateSelectionsCalls).toHaveLength(0);
+    });
   });
 
   it('rolls back the mission and fires no side effects when the schedule insert fails', async () => {
