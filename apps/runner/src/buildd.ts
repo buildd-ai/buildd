@@ -1275,7 +1275,9 @@ export class BuilddClient {
      * older callers; the server then keeps the account's default.
      */
     maxConcurrent?: number,
-  ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number; claimsReleased?: number; budgetProbeRequestedAt?: string | null }> {
+    /** Epoch ms of the last change of those slots (config.json `slotsSetAt`): the later change wins against buildd.dev (spec 34a48877 R-21). */
+    slotsChangedAt?: number,
+  ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number; claimsReleased?: number; budgetProbeRequestedAt?: string | null; desiredSlots?: { slots: number; setBy: string | null; setAt: number } | null }> {
     const payload: Record<string, unknown> = {
       localUiUrl,
       activeWorkerCount,
@@ -1319,11 +1321,12 @@ export class BuilddClient {
       if (modelAuth.codexSource) payload.codexAuthSource = modelAuth.codexSource;
     }
     if (typeof maxConcurrent === 'number' && Number.isInteger(maxConcurrent) && maxConcurrent > 0) payload.maxConcurrent = maxConcurrent;
+    if (typeof slotsChangedAt === 'number' && Number.isFinite(slotsChangedAt) && slotsChangedAt > 0) payload.slotsChangedAt = slotsChangedAt;
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit, leasesRenewed: data.leasesRenewed, claimsReleased: data.claimsReleased, budgetProbeRequestedAt: data.budgetProbeRequestedAt };
+    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit, leasesRenewed: data.leasesRenewed, claimsReleased: data.claimsReleased, budgetProbeRequestedAt: data.budgetProbeRequestedAt, desiredSlots: data.desiredSlots ?? null };
   }
 
   /** Report a provider-wall probe result (budget-wall-probe.ts); the server clears or keeps the wall. */

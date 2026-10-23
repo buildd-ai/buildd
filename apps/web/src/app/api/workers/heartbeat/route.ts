@@ -11,6 +11,9 @@ import {
   isRunnerCodexAuthSource,
   parseUpdateDrain,
   nextUpdateCheckAt,
+  parseRunnerSlots,
+  reconcileDesiredSlots,
+  type DesiredSlots,
 } from '@buildd/shared';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { randomBytes } from 'crypto';
@@ -36,8 +39,8 @@ import { redisRunnerBeatStateStore, runnerBeatId, RUNNER_BEAT_TTL_MS } from '@/l
  * changes, when a new worker is named, or once per
  * LIVENESS_DB_WRITE_INTERVAL_MS. Without Redis every beat writes, as before.
  */
-/** The most slots a runner may report (the runner's own `buildd slots` bound). */
-const MAX_RUNNER_SLOTS = 50;
+/** The stored desired-slots columns of a heartbeat row. */
+type DesiredRow = { desiredSlots: number | null; desiredSlotsOrigin: 'dashboard' | 'machine' | null; desiredSlotsSetBy: string | null; desiredSlotsSetAt: Date | null };
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -110,6 +113,8 @@ export async function POST(req: NextRequest) {
        * which keep the account's default here.
        */
       maxConcurrent: rawMaxConcurrent = undefined,
+      /** Epoch ms of the runner's own last change of its slots (config.json `slotsSetAt`); the later change wins. */
+      slotsChangedAt: rawSlotsChangedAt = undefined,
     } = body;
     const modelAuthSource = isRunnerModelAuthSource(rawModelAuthSource) ? rawModelAuthSource : null;
     const codexAuthSource = isRunnerCodexAuthSource(rawCodexAuthSource) ? rawCodexAuthSource : null;
@@ -140,9 +145,7 @@ export async function POST(req: NextRequest) {
     // `hold` (a person's `buildd hold`, R-35) is kept only as a valid
     // { since, until }; a lifted (null) or malformed one is dropped.
     const storedEnvironment = withNormalizedRunnerHold(storedHeartbeatEnvironment(environment, fleet));
-    const reportedSlots = typeof rawMaxConcurrent === 'number' && Number.isInteger(rawMaxConcurrent) && rawMaxConcurrent >= 1 && rawMaxConcurrent <= MAX_RUNNER_SLOTS
-      ? rawMaxConcurrent
-      : null;
+    const reportedSlots = parseRunnerSlots(rawMaxConcurrent);
     const maxConcurrentWorkers = fleet.ephemeral ? 1 : (reportedSlots ?? account.maxConcurrentWorkers);
 
     const now = new Date();
@@ -164,7 +167,7 @@ export async function POST(req: NextRequest) {
             eq(workerHeartbeats.accountId, account.id),
             eq(workerHeartbeats.localUiUrl, localUiUrl),
           )),
-          columns: { viewerToken: true, updateAvailable: true, updateAvailableSince: true },
+          columns: { viewerToken: true, updateAvailable: true, updateAvailableSince: true, desiredSlots: true, desiredSlotsOrigin: true, desiredSlotsSetBy: true, desiredSlotsSetAt: true },
         });
 
     // Generate token on first registration, reuse on subsequent heartbeats
@@ -316,6 +319,50 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // One source of truth for the runner's slots: the later change wins, and a
+    // dashboard value newer than the runner's own is handed back in the reply.
+    // Never for a `--once` run, which holds one task and exits.
+    let desiredSlots: { slots: number; setBy: string | null; setAt: number } | null = null;
+    // A beat that wrote nothing cannot have a new dashboard value waiting: the
+    // dashboard forgets the runner's cached state when it sets one (forgetRunnerBeatState).
+    if (writeDb && !fleet.ephemeral && !account.taskScope) {
+      try {
+        const row = cached ? await db.query.workerHeartbeats.findFirst({
+          where: sqlWhere(and(
+            eq(workerHeartbeats.accountId, account.id),
+            eq(workerHeartbeats.localUiUrl, localUiUrl),
+          )),
+          columns: { desiredSlots: true, desiredSlotsOrigin: true, desiredSlotsSetBy: true, desiredSlotsSetAt: true },
+        }) : (existing as DesiredRow | null | undefined);
+        const current: DesiredSlots | null = row?.desiredSlots != null && row.desiredSlotsSetAt
+          ? { slots: row.desiredSlots, origin: row.desiredSlotsOrigin ?? 'machine', setBy: row.desiredSlotsSetBy ?? null, setAt: row.desiredSlotsSetAt.getTime() }
+          : null;
+        const verdict = reconcileDesiredSlots({
+          desired: current,
+          reported: reportedSlots,
+          reportedChangedAt: typeof rawSlotsChangedAt === 'number' && Number.isFinite(rawSlotsChangedAt) ? rawSlotsChangedAt : null,
+          now: now.getTime(),
+        });
+        if (verdict.write && verdict.desired) {
+          await db.update(workerHeartbeats)
+            .set({
+              desiredSlots: verdict.desired.slots,
+              desiredSlotsOrigin: verdict.desired.origin,
+              desiredSlotsSetBy: verdict.desired.setBy,
+              desiredSlotsSetAt: new Date(verdict.desired.setAt),
+            })
+            .where(and(
+              eq(workerHeartbeats.accountId, account.id),
+              eq(workerHeartbeats.localUiUrl, localUiUrl),
+            ));
+        }
+        if (verdict.deliver) desiredSlots = { slots: verdict.deliver.slots, setBy: verdict.deliver.setBy, setAt: verdict.deliver.setAt };
+      } catch (err) {
+        // Best effort: the next beat reconciles again.
+        console.error('[heartbeat] slots reconcile failed:', err);
+      }
+    }
+
     // Release workers minted for this runner that it says it never received
     // (lost claim response, restart between claim and start). A `--once` run
     // exits on a failed claim and never heartbeats again, so it is not asked.
@@ -366,7 +413,7 @@ export async function POST(req: NextRequest) {
       // Best effort: a missed nudge is picked up by the runner's own interval.
     }
 
-    return NextResponse.json({ ok: true, viewerToken, pendingTaskCount: 0, latestCommit, leasesRenewed, claimsReleased, budgetProbeRequestedAt });
+    return NextResponse.json({ ok: true, viewerToken, pendingTaskCount: 0, latestCommit, leasesRenewed, claimsReleased, budgetProbeRequestedAt, desiredSlots });
   } catch (error) {
     console.error('Heartbeat error:', error);
     return NextResponse.json({ error: 'Failed to process heartbeat' }, { status: 500 });

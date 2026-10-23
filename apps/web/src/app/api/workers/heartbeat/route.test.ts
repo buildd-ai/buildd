@@ -1526,3 +1526,72 @@ describe('POST /api/workers/heartbeat — liveness in Redis (spec 3ef37387 R-32)
     expect(leaseUpdateCalls).toHaveLength(2);
   });
 });
+
+describe('POST /api/workers/heartbeat — slots set on buildd.dev (spec 34a48877 R-20, R-21)', () => {
+  const RUNNER = 'http://localhost:8766';
+  const beat = (body: Record<string, unknown> = {}) => POST(createMockRequest({
+    headers: { Authorization: 'Bearer bld_test' },
+    body: { localUiUrl: RUNNER, activeWorkerCount: 0, activeWorkerIds: [], ...body },
+  }));
+  const row = (over: Record<string, unknown> = {}) => ({
+    viewerToken: 'tok', updateAvailable: null, updateAvailableSince: null,
+    desiredSlots: 12, desiredSlotsOrigin: 'dashboard', desiredSlotsSetBy: 'Max', desiredSlotsSetAt: new Date(2000),
+    ...over,
+  });
+
+  beforeEach(() => {
+    redisUp = false;
+    redisKeys.clear();
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3 });
+    mockHeartbeatsFindFirst.mockReset();
+    mockHeartbeatsInsert.mockReset();
+    mockHeartbeatsInsert.mockImplementation(() => ({ values: mock(() => ({ onConflictDoUpdate: mock(() => Promise.resolve()) })) }));
+    mockGetLatestVersion.mockResolvedValue({ latestCommit: 'abc123', latestTag: null, updatedAt: '2026-01-01T00:00:00.000Z' });
+    leaseUpdateCalls = [];
+    leaseRenewedRows = [];
+    leaseUpdateThrows = null;
+  });
+
+  it('hands a dashboard value newer than the runner\'s own back in the reply', async () => {
+    mockHeartbeatsFindFirst.mockResolvedValue(row());
+    const data = await (await beat({ maxConcurrent: 5, slotsChangedAt: 1000 })).json();
+    expect(data.desiredSlots).toEqual({ slots: 12, setBy: 'Max', setAt: 2000 });
+    // The stored reported value is what the runner says, not the desired one.
+    expect(leaseUpdateCalls.some(c => 'desiredSlots' in c.set)).toBe(false);
+  });
+
+  it('delivers to a runner that never recorded a change time', async () => {
+    mockHeartbeatsFindFirst.mockResolvedValue(row());
+    const data = await (await beat({ maxConcurrent: 5 })).json();
+    expect(data.desiredSlots?.slots).toBe(12);
+  });
+
+  it('a local change made after the dashboard one becomes the desired value and is not put back', async () => {
+    mockHeartbeatsFindFirst.mockResolvedValue(row());
+    const data = await (await beat({ maxConcurrent: 6, slotsChangedAt: 3000 })).json();
+    expect(data.desiredSlots).toBeNull();
+    const write = leaseUpdateCalls.find(c => 'desiredSlots' in c.set);
+    expect(write?.set).toMatchObject({ desiredSlots: 6, desiredSlotsOrigin: 'machine', desiredSlotsSetBy: null });
+    expect(write?.set.desiredSlotsSetAt.getTime()).toBe(3000);
+  });
+
+  it('a runner already at the desired value gets nothing back', async () => {
+    mockHeartbeatsFindFirst.mockResolvedValue(row());
+    const data = await (await beat({ maxConcurrent: 12, slotsChangedAt: 2000 })).json();
+    expect(data.desiredSlots).toBeNull();
+  });
+
+  it('a first report is recorded as set on the machine', async () => {
+    mockHeartbeatsFindFirst.mockResolvedValue(row({ desiredSlots: null, desiredSlotsOrigin: null, desiredSlotsSetBy: null, desiredSlotsSetAt: null }));
+    await beat({ maxConcurrent: 4, slotsChangedAt: 500 });
+    const write = leaseUpdateCalls.find(c => 'desiredSlots' in c.set);
+    expect(write?.set).toMatchObject({ desiredSlots: 4, desiredSlotsOrigin: 'machine' });
+  });
+
+  it('an older runner that reports no slots is not sent a value', async () => {
+    mockHeartbeatsFindFirst.mockResolvedValue(row());
+    const data = await (await beat()).json();
+    expect(data.desiredSlots).toBeNull();
+  });
+});
