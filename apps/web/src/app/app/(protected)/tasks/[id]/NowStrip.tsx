@@ -6,6 +6,7 @@ import Disclosure from '@/components/ui/Disclosure';
 import Lifecycle from '@/components/ui/Lifecycle';
 import type { StateKey } from '@/components/ui/states';
 import { collapseWorkspacePath, ageLabel } from './WorkerActivityTimeline';
+import type { RunStall } from '@/lib/run-stall';
 
 type Phase = NowState['evidence']['phases'][number];
 
@@ -213,7 +214,7 @@ function Headline({ text }: { text: string }) {
 /**
  * The live hero: what the agent is doing right now, which lifecycle facts have been observed.
  */
-export default function NowStrip({ now, nowMs }: { now: NowState; nowMs: number }) {
+export default function NowStrip({ now, nowMs, stall = null }: { now: NowState; nowMs: number; stall?: RunStall | null }) {
   return (
     <section
       data-testid="worker-now-strip"
@@ -225,11 +226,16 @@ export default function NowStrip({ now, nowMs }: { now: NowState; nowMs: number 
             <span className="w-[9px] h-[9px] rounded-sm bg-accent animate-status-pulse motion-reduce:animate-none" aria-hidden="true" />
             Now
             {now.updatedTs != null && (
-              <span className="font-normal text-text-muted" suppressHydrationWarning>
+              <span className={`font-normal ${stall ? 'text-status-warning' : 'text-text-muted'}`} suppressHydrationWarning>
                 · updated {ageLabel(nowMs - now.updatedTs)} ago
               </span>
             )}
           </div>
+          {stall && (
+            <p data-testid="worker-stall" className="mt-1 font-mono text-meta text-status-warning" suppressHydrationWarning>
+              {stall.label}
+            </p>
+          )}
           <Headline text={now.headline ? collapseWorkspacePath(now.headline) : 'Waiting for the first update'} />
           {now.detail && (
             <p className="mt-1.5 font-mono text-meta text-text-secondary truncate">

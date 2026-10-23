@@ -52,14 +52,14 @@ export const DELIVERY_KIND: Record<DeliveryKind, { label: string; glyph: string;
   // The PR words come from the terms catalog (packages/shared/src/terms.ts).
   landed: { label: TERMS['pr.merged'].word, glyph: '■', tone: 'success' },
   landing: { label: TERMS['pr.merging'].word, glyph: '▲', tone: 'success' },
-  audit: { label: 'In audit', glyph: '◐', tone: 'info' },
+  audit: { label: 'Verifying', glyph: '◐', tone: 'info' },
   repair: { label: 'Repairing', glyph: '↻', tone: 'warning' },
   build: { label: 'Building', glyph: '▶', tone: 'ink' },
   waiting: { label: 'Waiting', glyph: '◇', tone: 'muted' },
   // A held start gate; deliveryKindLabel says Paused for one that ran before.
   held: { label: TERMS['mission.not_started'].word, glyph: '‖', tone: 'muted' },
   planning: { label: 'Planning', glyph: '○', tone: 'muted' },
-  unavailable: { label: 'Audit can’t run', glyph: '⊘', tone: 'warning' },
+  unavailable: { label: 'Verify can’t run', glyph: '⊘', tone: 'warning' },
   notlanded: { label: TERMS['pr.closed'].word, glyph: '✕', tone: 'error' },
   needs: { label: 'Waiting on you', glyph: '!', tone: 'ink' },
 };
