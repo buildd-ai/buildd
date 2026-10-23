@@ -283,13 +283,15 @@ describe('scripts/qa/plans/mission-history.json', () => {
 });
 
 describe('scripts/qa/plans/mission-tabs.json', () => {
-  it('opens Overview and reaches Flow and History by clicking their tabs, the path a person takes', () => {
+  it('opens Overview and reaches Flow and History from the ⋯ menu, the path a person takes (Navigation d25d923d R-3: no tab bar)', () => {
     const plan = parsePlan(readFileSync(join(import.meta.dir, 'plans/mission-tabs.json'), 'utf-8'), { pageSource: 'sandbox' });
-    // No ?layout=: the server builds Overview, so each tab must load on the client.
+    // No ?layout=: the server builds Overview, so each layout must load on the client.
     expect(plan.map(r => r.route)).toEqual(['/app/missions/:id']);
-    expect(plan[0].states.map(s => s.key)).toEqual(['flow-tab', 'history-tab']);
+    expect(plan[0].states.map(s => s.key)).toEqual(['flow-from-menu', 'history-from-menu']);
     for (const s of plan[0].states) {
-      expect(s.steps.some(st => st.action === 'click' && st.selector?.startsWith('role:tab'))).toBe(true);
+      expect(s.steps.some(st => st.action === 'click' && st.selector === 'testid:mission-overflow-menu')).toBe(true);
+      expect(s.steps.some(st => st.action === 'click' && st.selector?.startsWith('testid:mission-menu-'))).toBe(true);
+      expect(s.steps.some(st => st.selector?.startsWith('role:tab'))).toBe(false);
       expect(s.steps.at(-1)?.action).toBe('assertLayout');
     }
   });

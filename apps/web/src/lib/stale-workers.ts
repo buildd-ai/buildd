@@ -32,6 +32,7 @@ import type { WaitingFor } from '@buildd/shared';
 import { waitingForOptionLabels } from '@/lib/waiting-for-options';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { noteWorkChanged } from '@/lib/work-changed';
+import { loadRunnerBeats, runnerLiveness } from '@/lib/runner-offline';
 
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
@@ -51,10 +52,10 @@ export const INFRA_BACKOFF_MINUTES: readonly number[] = [5, 15, 30];
 const MAX_SILENT_START_ATTEMPTS = 3;
 
 /**
- * How long an account may go without any runner heartbeat before its runner
- * workers are failed as orphaned. This is the "not dead" window
- * (RUNNER_STALE_CUTOFF_MS, 2.5× the poll cycle): being wrong here kills
- * in-flight work, so it must never be a presence window.
+ * How long a runner may go without a heartbeat before the workers IT claimed
+ * are failed as orphaned, whatever the account's other runners do. This is
+ * the "not dead" window (RUNNER_STALE_CUTOFF_MS, 2.5× the poll cycle): being
+ * wrong here kills in-flight work, so it must never be a presence window.
  */
 export const HEARTBEAT_STALE_MS = RUNNER_STALE_CUTOFF_MS;
 
@@ -650,15 +651,26 @@ export function neverStartedTeamScope(accountId: string, idleStaleThreshold: Dat
 }
 
 /**
- * Worker scope for the heartbeat-expiry rule. Deliberately account-scoped —
- * do NOT widen this to the team.
+ * Candidate scope for the offline-runner rule: the account's live-status
+ * runner workers whose own runner has shown no sign of life in the window.
+ * Each candidate is then judged against ITS runner's heartbeat row
+ * (`runnerLiveness`, lib/runner-offline.ts), never against "any runner on
+ * the account".
  *
- * Widening it is unsafe in both directions. Widen only this query and account
- * A's offline runner starts failing account B's live, working workers, because
- * the `freshHeartbeat` lookup that gates it is keyed on one account. Widen the
- * freshness lookup to match and the gate only fires when every runner in the
- * team is offline — a gate that can never fire in practice, which is worse than
- * no gate because it reads as protection.
+ * Deliberately account-scoped — do NOT widen this to the team. The heartbeat
+ * rows it is judged against are the account's, and a `localhost` URL is
+ * shared by every team's runners: cross the account and account A's offline
+ * runner starts failing account B's live, working workers.
+ *
+ * The clock is the runner's own evidence only:
+ *  - `lease_expires_at`, renewed by the owning runner's heartbeat timer
+ *    (NULL on a build that never renews: no evidence either way);
+ *  - `created_at`, so a worker claimed inside the window is never a candidate
+ *    (its runner beat at least once that recently, by claiming).
+ * NOT `updated_at`: a message a person sends, an idle probe, a
+ * description-change or path-release notice all bump it from the server
+ * side, and under the old predicate kept a dead runner's worker alive for as
+ * long as anyone kept talking to it.
  *
  * Unlike the never-started arm there is no `started_at IS NULL` narrowing here:
  * this rule kills workers in any live status, including ones mid-session.
@@ -668,7 +680,8 @@ export function heartbeatOrphanScope(accountId: string, heartbeatCutoff: Date, n
   return and(
     eq(workers.accountId, accountId),
     inArray(workers.status, [...LIVE_WORKER_STATUSES]),
-    lt(workers.updatedAt, heartbeatCutoff),
+    sql`(${workers.leaseExpiresAt} IS NULL OR ${workers.leaseExpiresAt} < ${heartbeatCutoff})`,
+    lt(workers.createdAt, heartbeatCutoff),
     // An interactive (MCP-claimed) worker has no runner, so no runner heartbeat
     // ever vouches for it; this rule would read every one as orphaned. Its
     // liveness is MCP activity, judged by the interactive arm of staleWorkerScope.
@@ -677,14 +690,6 @@ export function heartbeatOrphanScope(accountId: string, heartbeatCutoff: Date, n
     // design. Its park bundle holds it until parked_until; past that the
     // waiting_input sweep owns it (lib/worker-park.ts).
     notParkedScope(now),
-  );
-}
-
-/** Freshness lookup gating {@link heartbeatOrphanScope}. Must stay account-keyed — see above. */
-export function heartbeatFreshnessScope(accountId: string, heartbeatCutoff: Date) {
-  return and(
-    eq(workerHeartbeats.accountId, accountId),
-    gt(workerHeartbeats.lastHeartbeatAt, heartbeatCutoff),
   );
 }
 
@@ -987,6 +992,25 @@ export async function resolveTasksOfReapedWorkers(
 }
 
 /**
+ * A heartbeat row no live-status runner worker still names. Both deletion
+ * sweeps (POST /api/tasks/cleanup step 7, the maintenance cron) delete a row
+ * past the "not dead" cutoff only under this guard, so a runner's row outlives
+ * its workers: the offline-runner rule judges each worker against its own
+ * runner's row, and a row that vanished before the reap would leave the
+ * worker with no runner to be judged by. Joined the way the worker names its
+ * runner (lib/runner-display.ts `runnerKey`: localUiUrl, else the claim-time
+ * runner). Interactive workers name 'mcp', which no row ever is.
+ */
+export function heartbeatRowHasNoLiveWorkers() {
+  return sql`NOT EXISTS (
+    SELECT 1 FROM ${workers} w_hb
+    WHERE w_hb.account_id = ${workerHeartbeats.accountId}
+      AND COALESCE(w_hb.local_ui_url, w_hb.runner) = ${workerHeartbeats.localUiUrl}
+      AND w_hb.status IN ('running', 'starting', 'idle', 'waiting_input')
+  )`;
+}
+
+/**
  * THE offline-runner rule. Every sweep that fails workers because "the runner
  * went offline" calls this — the claim-path reaper (cleanupStaleWorkers), the
  * runner's own /api/tasks/cleanup call, and the per-minute maintenance cron.
@@ -994,17 +1018,23 @@ export async function resolveTasksOfReapedWorkers(
  * every live worker on an account as soon as ANY one heartbeat row on it went
  * stale (a second runner, a restarted runner's old URL), one after only 10
  * minutes — killing in-flight workers under a runner that was still beating.
+ * The consolidated rule then over-corrected the other way: keyed on the
+ * account ("is any runner alive?"), a dead runner's workers were never
+ * orphans while a sibling runner kept beating (Oct 22).
  *
- * Per account in `scope`:
- *  - If ANY heartbeat row on the account is inside HEARTBEAT_STALE_MS, a runner
- *    is alive and nothing is failed. Workers do not record which heartbeat row
- *    they belong to reliably enough to judge them row by row, and a false kill
- *    of live work is far worse than a late reap (a dead runner's workers are
- *    also reaped by the WORKER_STALE_REAP_MS arm of staleWorkerScope).
- *  - Otherwise, runner workers (never interactive MCP ones) in a live status
- *    with no update since the cutoff are failed, their seats released, and
- *    their tasks resolved (requeued, completed on deliverables, or failed at the
- *    retry cap) with path claims released.
+ * Per account in `scope`, each worker is judged by ITS OWN runner:
+ *  - A worker whose runner (the `localUiUrl` it was claimed under, joined to
+ *    the account's heartbeat rows with the Redis beat overlaid) beat inside
+ *    HEARTBEAT_STALE_MS is alive, whatever its row says. Never killed.
+ *  - A worker whose runner's last beat is past the cutoff, or whose runner's
+ *    row is gone and whose lease (renewed by that runner alone) lapsed past
+ *    the cutoff, is an orphan.
+ *  - A worker that names no runner any row can match is judged as before: an
+ *    orphan only when no runner on the account is alive at all.
+ *  Orphans (never interactive MCP workers, never a live cloud park) are
+ *  failed, their seats released, and their tasks resolved (requeued, completed
+ *  on deliverables, or failed at the retry cap) with path claims released, so
+ *  another runner claims them.
  *
  * Returns the number of workers failed.
  */
@@ -1026,11 +1056,14 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
   // fail in-flight workers.
   const heartbeatCutoff = new Date(now.getTime() - HEARTBEAT_STALE_MS);
 
-  const freshHeartbeat = await db.query.workerHeartbeats.findFirst({
-    where: sqlWhere(heartbeatFreshnessScope(accountId, heartbeatCutoff)),
-    columns: { id: true },
-  });
-  if (freshHeartbeat) return 0;
+  // Every runner on the account, any age. A read failure throws: not being
+  // able to ask is not evidence that anything died.
+  const beats = await loadRunnerBeats(accountId);
+  const liveRunners = beats.filter(b => b.lastHeartbeatAt.getTime() > heartbeatCutoff.getTime()).length;
+  // Every runner on record beat inside the window. Rows outlive their workers
+  // (a row is deleted only past this same cutoff, after this reap in the same
+  // sweep), so no worker here is under a runner this account has lost.
+  if (beats.length > 0 && liveRunners === beats.length) return 0;
 
   const orphanCandidates = await db.query.workers.findMany({
     // Account-scoped on purpose — NOT widened to the team. See
@@ -1039,9 +1072,20 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
     columns: {
       id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
       startedAt: true, turns: true, costUsd: true, inputTokens: true, outputTokens: true,
+      // The runner each candidate is judged against.
+      runner: true, localUiUrl: true, accountId: true, leaseExpiresAt: true,
     },
   });
-  const orphanedByHeartbeat = await withoutRecentWorkerHeartbeat(orphanCandidates, () => heartbeatCutoff.getTime());
+  // Judged one by one against the candidate's OWN runner. A worker that names
+  // no runner any row can match keeps the old account-wide reading.
+  const ownRunnerDead = orphanCandidates.filter(w => {
+    const verdict = runnerLiveness(w, beats, now, HEARTBEAT_STALE_MS).verdict;
+    return verdict === 'dead' || (verdict === 'unknown' && liveRunners === 0);
+  });
+  // The runner speaking through its worker reports (Redis beat, PATCH
+  // /api/workers/[id]) is the last veto: still a runner signal, never a
+  // server-side write.
+  const orphanedByHeartbeat = await withoutRecentWorkerHeartbeat(ownRunnerDead, () => heartbeatCutoff.getTime());
   if (orphanedByHeartbeat.length === 0) return 0;
 
   const orphanIds = orphanedByHeartbeat.map(w => w.id);

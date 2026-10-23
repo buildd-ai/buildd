@@ -16,7 +16,7 @@
  * emitting request gains no latency.
  */
 import { subscriber, type AnySubscriber, type SlotFailure } from '@/lib/core-events';
-import { notifyTeam } from '@/lib/notify';
+import { notifyTeam, notifyTeamOf } from '@/lib/notify';
 import { isCredentialExpiredError } from '@/lib/notify-rules';
 import {
   recordEvent, taskCompletedEvent, taskFailedEvent, taskNeedsInputEvent, prMergedEvent, prCiFailedEvent,
@@ -35,6 +35,16 @@ function failureLine(failure: SlotFailure | null | undefined, sensitive: boolean
 }
 
 export const notificationSubscribers: readonly AnySubscriber[] = [
+  // A spec approval was asked for over MCP or chat: bring the confirm page to the person.
+  subscriber('notifications', 'spec.approval_requested', 'push-spec-approval-requested', async e => {
+    await notifyTeamOf({ workspaceId: e.workspaceId }, 'needsAttention', {
+      title: `Approve "${e.title}"?`,
+      message: `Revision ${e.revision} is waiting for your approval.${e.warnings ? ` ${e.warnings} ${e.warnings === 1 ? 'thing' : 'things'} to look at.` : ''}`,
+      url: e.confirmUrl,
+      urlTitle: 'Review and approve',
+      priority: 0,
+    });
+  }),
   // ── Subscriptions ledger ───────────────────────────────────────────────────
   subscriber('notifications', 'task.completed', 'ledger-task-completed', async e => {
     if (e.via === 'merge') {

@@ -47,6 +47,16 @@ mock.module('@openai/codex-sdk', () => ({
   },
 }));
 
+const windowsChecks: unknown[][] = [];
+let windowsCheckFails = false;
+mock.module('../../../src/codex-windows-sandbox', () => ({
+  resolveCodexBinary: () => 'sdk-codex.exe',
+  verifiedWindowsSandboxConfig: (...args: unknown[]) => {
+    windowsChecks.push(args);
+    if (windowsCheckFails) throw new Error('Windows sandbox startup probe failed');
+    return { windows: { sandbox: args[3] }, features: { prefer_mxc: false }, sandbox_workspace_write: { network_access: true } };
+  },
+}));
 import { CodexBackend } from '../../../src/backends/codex-backend';
 
 const BASE_OPTS = {
@@ -149,6 +159,7 @@ describe("CodexBackend on Windows — Codex's own sandbox, named on every run", 
 
   beforeEach(() => {
     mockStartThread.mockClear();
+    mockRunStreamed.mockClear();
     codexCtorOpts.length = 0;
     process.env.OPENAI_API_KEY = 'sk-test';
   });
@@ -158,17 +169,49 @@ describe("CodexBackend on Windows — Codex's own sandbox, named on every run", 
   test('passes windows.sandbox="unelevated", so workspace-write is not silently read-only', async () => {
     await run({ sandboxConfinement: WIN });
     expect(mockStartThread.mock.calls[0][0].sandboxMode).toBe('workspace-write');
-    expect(codexCtorOpts[0].config).toEqual({ windows: { sandbox: 'unelevated' } });
+    expect(codexCtorOpts[0].config.windows).toEqual({ sandbox: 'unelevated' });
   });
 
   test('read-only keeps the same sandbox', async () => {
     await run({ sandboxMode: 'read-only', sandboxConfinement: WIN });
     expect(mockStartThread.mock.calls[0][0].sandboxMode).toBe('read-only');
-    expect(codexCtorOpts[0].config).toEqual({ windows: { sandbox: 'unelevated' } });
+    expect(codexCtorOpts[0].config.windows).toEqual({ sandbox: 'unelevated' });
   });
 
   test('other hosts get no Windows config', async () => {
     await run({ sandboxConfinement: BWRAP });
     expect(codexCtorOpts[0].config).toBeUndefined();
+  });
+
+  test('binds the probed binary and implementation to the worker home and SDK', async () => {
+    await run({ env: { CODEX_HOME: 'worker-home' }, sandboxMode: 'read-only', sandboxConfinement: {
+      mechanism: 'windows_mxc', scope: ['write'], windowsSandbox: { implementation: 'mxc', binary: 'verified.exe' },
+    } });
+    expect(windowsChecks.at(-1)).toEqual(['verified.exe', 'worker-home', 'read-only', 'mxc']);
+    expect(codexCtorOpts[0].codexPathOverride).toBe('verified.exe');
+    expect(codexCtorOpts[0].env.CODEX_HOME).toBe('worker-home');
+    expect(codexCtorOpts[0].config.windows.sandbox).toBe('mxc');
+  });
+
+  test('startup failure never constructs a worker or downgrades either mode', async () => {
+    windowsCheckFails = true;
+    try {
+      for (const sandboxMode of ['read-only', 'workspace-write']) {
+        await expect(run({ sandboxMode, sandboxConfinement: WIN, allowReducedConfinement: true })).rejects.toThrow(/startup probe failed/);
+      }
+      expect(codexCtorOpts).toHaveLength(0);
+    } finally { windowsCheckFails = false; }
+  });
+
+  test('mid-run sandbox failure ends the attempt without a second thread or weaker mode', async () => {
+    mockRunStreamed.mockImplementationOnce(async () => ({ events: makeEventStream([
+      { type: 'turn.failed', error: { message: 'windows sandbox failed: CreateRestrictedToken failed: 87' } },
+    ]) }));
+    const events: any[] = [];
+    for await (const event of new CodexBackend().runStreamed({ ...BASE_OPTS, sandboxConfinement: WIN } as any)) events.push(event);
+    expect(events.some(e => e.type === 'error' && /windows sandbox failed/.test(e.error))).toBe(true);
+    expect(mockStartThread).toHaveBeenCalledTimes(1);
+    expect(mockStartThread.mock.calls[0][0].sandboxMode).toBe('workspace-write');
+    expect(mockRunStreamed).toHaveBeenCalledTimes(1);
   });
 });

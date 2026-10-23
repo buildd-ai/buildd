@@ -22,7 +22,8 @@ import {
   type RunnerIsolationRecord,
   type TaskIsolationDecision,
 } from '@buildd/shared';
-import { probeCodexWindowsSandbox } from './codex-windows-sandbox';
+import { probeCodexWindowsModes, resolveCodexBinary, runInCodexSandbox, type WindowsSandboxModes } from './codex-windows-sandbox';
+import { resolveBuilddHome } from './buildd-home';
 
 /** Why a bwrap probe failed, in the isolation record's vocabulary. */
 export type BwrapProbeFailure = Extract<IsolationReason, 'opt_out' | 'userns_sysctl_denied' | 'bwrap_missing' | 'probe_exec_failed'>;
@@ -142,6 +143,8 @@ export interface IsolationProbeInputs {
   seatbelt: boolean | null;
   /** windows: Codex's unelevated Windows sandbox probe (./codex-windows-sandbox). Ignored elsewhere. */
   codexWindows?: boolean | null;
+  codexWindowsModes?: WindowsSandboxModes | null;
+  codexWindowsBinary?: string | null;
   probeAt: string;
   processStartedAt: string;
   runnerVersion: string;
@@ -197,6 +200,15 @@ export function buildIsolationRecord(inputs: IsolationProbeInputs): RunnerIsolat
     'read-only': { ...codex, scope: [...codex.scope] },
     'workspace-write': { ...codex, scope: [...codex.scope] },
   };
+  if (!inputs.optOut && host.platform === 'windows' && inputs.codexWindowsModes) {
+    for (const mode of ['read-only', 'workspace-write'] as const) {
+      const implementation = inputs.codexWindowsModes[mode];
+      codexModes[mode] = implementation && inputs.codexWindowsBinary
+        ? { mechanism: implementation === 'mxc' ? 'windows_mxc' : 'windows_restricted_token',
+            scope: [...CODEX_WINDOWS_SCOPE], windowsSandbox: { implementation, binary: inputs.codexWindowsBinary } }
+        : none('backend_probe_failed');
+    }
+  }
   return {
     platform: host.platform,
     evidence: host.evidence,
@@ -240,6 +252,7 @@ export interface IsolationProbes {
   seatbelt(): boolean;
   /** The Windows Codex sandbox probe; absent reads as not confined. */
   codexWindows?(): boolean;
+  codexWindowsModes?(): { modes: WindowsSandboxModes; binary: string | null };
   /** The operator's reduced-confinement opt-in (R-5); absent reads as not opted in. */
   reducedOptIn?(): boolean;
 }
@@ -250,7 +263,10 @@ export const realIsolationProbes: IsolationProbes = {
   optOut: () => process.env.BUILDD_DISABLE_SANDBOX === '1',
   bwrap: () => probeBwrapNamespacesDetailed(CLAUDE_INNER_SANDBOX_UNSHARE, true),
   seatbelt: probeSeatbelt,
-  codexWindows: () => probeCodexWindowsSandbox(),
+  codexWindowsModes: () => {
+    const binary = resolveCodexBinary();
+    return { binary, modes: probeCodexWindowsModes({ codexBin: () => binary, run: runInCodexSandbox, probeRoot: resolveBuilddHome }) };
+  },
   reducedOptIn: () => reducedIsolationOptedIn(process.env),
 };
 
@@ -272,8 +288,12 @@ export function probeIsolationRecord(
   let bwrap: BwrapProbeResult | null = null;
   let seatbelt: boolean | null = null;
   let codexWindows: boolean | null = null;
+  let windows: { modes: WindowsSandboxModes; binary: string | null } | undefined;
   if (!optOut && host.platform === 'darwin') seatbelt = probes.seatbelt();
-  else if (!optOut && host.platform === 'windows') codexWindows = probes.codexWindows?.() ?? false;
+  else if (!optOut && host.platform === 'windows') {
+    if (probes.codexWindowsModes) windows = probes.codexWindowsModes();
+    else codexWindows = probes.codexWindows?.() ?? false;
+  }
   else if (!optOut && host.platform !== 'other') bwrap = probes.bwrap();
   return buildIsolationRecord({
     host,
@@ -281,6 +301,8 @@ export function probeIsolationRecord(
     bwrap,
     seatbelt,
     codexWindows,
+    codexWindowsModes: windows?.modes,
+    codexWindowsBinary: windows?.binary,
     probeAt: meta.probeAt?.() ?? new Date().toISOString(),
     processStartedAt: meta.processStartedAt,
     runnerVersion: meta.runnerVersion,
@@ -298,6 +320,7 @@ const MECHANISM_WORDS: Record<BackendConfinement['mechanism'], string> = {
   bwrap: 'bubblewrap',
   landlock: 'Landlock',
   windows_restricted_token: "Codex's Windows sandbox (writes only)",
+  windows_mxc: "Codex's Windows MXC sandbox (writes only)",
   none: 'nothing',
 };
 

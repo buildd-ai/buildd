@@ -207,6 +207,24 @@ describe('runTestFile', () => {
   });
 });
 
+describe('runTestFile spawn denied', () => {
+  it('names the sandbox and the remote workflow on EPERM', async () => {
+    const result = await runTestFile('example.test.ts', () => {
+      throw new Error('EPERM: operation not permitted, uv_spawn bun.exe');
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain('inconclusive');
+    expect(result.output).toContain('Verify Unit Tests');
+  });
+
+  it('adds no hint for other launch failures', async () => {
+    const result = await runTestFile('example.test.ts', () => {
+      throw new Error("ENOENT: posix_spawn 'bun'");
+    });
+    expect(result.output).not.toContain('inconclusive');
+  });
+});
+
 describe('runTestFile wall-clock cap', () => {
   it('kills a hung file and says why', async () => {
     process.env.BUILDD_TEST_FILE_TIMEOUT_MS = '50';

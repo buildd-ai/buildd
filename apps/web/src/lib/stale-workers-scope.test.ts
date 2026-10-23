@@ -21,12 +21,12 @@ import { GroupingNormalisedPgDialect } from '@buildd/core/db/sql-grouping';
  * as `apps/web/src/app/api/workers/claim/held-gate.test.ts`.
  */
 // Recorded so the failWorkersOfOfflineRunners tests can render the WHERE each
-// query was issued with. `freshHeartbeatFor` decides, per account, whether the
-// freshness lookup finds a live runner.
+// query was issued with. `heartbeatRowsFor` holds, per account, the runner
+// heartbeat rows the rule judges each worker against.
 const heartbeatLookups: any[] = [];
 const workerLookups: any[] = [];
 const workerUpdates: any[] = [];
-let freshHeartbeatFor = new Set<string>();
+let heartbeatRowsFor = new Map<string, any[]>();
 let orphanRows: any[] = [];
 
 mock.module('@buildd/core/db', () => ({
@@ -41,10 +41,11 @@ mock.module('@buildd/core/db', () => ({
       },
       tasks: { findFirst: async () => null, findMany: async () => [] },
       workerHeartbeats: {
-        findFirst: async (args: any) => {
+        findMany: async (args: any) => {
           heartbeatLookups.push(args.where);
           const rendered = dialect.sqlToQuery(args.where);
-          return rendered.params.some((p: unknown) => freshHeartbeatFor.has(p as string)) ? { id: 'hb' } : null;
+          const account = rendered.params.find((p: unknown) => heartbeatRowsFor.has(p as string)) as string | undefined;
+          return account ? heartbeatRowsFor.get(account)! : [];
         },
       },
     },
@@ -56,7 +57,6 @@ mock.module('@buildd/core/db', () => ({
 import {
   neverStartedTeamScope,
   heartbeatOrphanScope,
-  heartbeatFreshnessScope,
   staleWorkerScope,
   failWorkersOfOfflineRunners,
   HEARTBEAT_STALE_MS,
@@ -133,15 +133,10 @@ describe('neverStartedTeamScope — the widened never-started arm', () => {
 
 describe('heartbeatOrphanScope — the boundary deliberately NOT crossed', () => {
   /**
-   * Mutation-style guard. Widening the heartbeat rule is unsafe in BOTH
-   * directions and this test is here to make either mutation loud:
-   *
-   *  - Widen only this worker query (leaving the `freshHeartbeat` lookup keyed
-   *    on one account) and account A's offline runner starts failing account
-   *    B's live, working workers.
-   *  - Widen the freshness lookup too and the gate only fires when EVERY runner
-   *    in the team is offline — a gate that can never fire in practice, which
-   *    is worse than no gate because it reads as protection.
+   * Mutation-style guard. The candidates are judged against the ACCOUNT's
+   * heartbeat rows, and a `localhost` URL is shared by every team's runners:
+   * widen this worker query to the team and account A's offline runner starts
+   * failing account B's live, working workers.
    */
   it('stays account-scoped', () => {
     const sqlText = render(heartbeatOrphanScope('account-1', THRESHOLD));
@@ -154,10 +149,16 @@ describe('heartbeatOrphanScope — the boundary deliberately NOT crossed', () =>
     expect(sqlText).not.toContain('select');
   });
 
-  it('keeps its live-status set and staleness clock', () => {
+  it('keeps its live-status set, and clocks on the runner\'s own evidence — never updated_at', () => {
+    // Oct 22: an agent message, idle probe or description notice bumps
+    // updated_at from the server side; under `updated_at <` a dead runner's
+    // worker stayed alive for as long as anyone kept talking to it.
     const sqlText = render(heartbeatOrphanScope('account-1', THRESHOLD));
     expect(sqlText).toContain('"workers"."status" in');
-    expect(sqlText).toContain('"workers"."updated_at" <');
+    expect(sqlText).toContain('("workers"."lease_expires_at" is null or "workers"."lease_expires_at" < $');
+    expect(sqlText).toContain('"workers"."created_at" <');
+    expect(sqlText).not.toContain('"workers"."updated_at"');
+    expect(dialect.sqlToQuery(heartbeatOrphanScope('account-1', THRESHOLD)).params.filter(p => p === THRESHOLD.toISOString() || p === THRESHOLD)).toHaveLength(2);
   });
 });
 
@@ -182,20 +183,6 @@ describe('parked workers are exempt from the runner-evidence sweeps while the pa
     const q = dialect.sqlToQuery(staleWorkerScope('account-1', NOW));
     const text = q.sql.replace(/\s+/g, ' ').toLowerCase();
     expect(text.match(/"workers"\."parked_until" is null/g)?.length).toBe(2);
-  });
-});
-
-describe('heartbeatFreshnessScope — must stay account-keyed', () => {
-  it('looks up the heartbeat for one account only', () => {
-    const sqlText = render(heartbeatFreshnessScope('account-1', THRESHOLD));
-    expect(sqlText).toMatch(/"worker_heartbeats"\."account_id" = \$\d/);
-    expect(sqlText).not.toContain('team_id');
-    expect(sqlText).not.toContain('select');
-  });
-
-  it('asserts freshness with a greater-than on last_heartbeat_at', () => {
-    const sqlText = render(heartbeatFreshnessScope('account-1', THRESHOLD));
-    expect(sqlText).toContain('"worker_heartbeats"."last_heartbeat_at" >');
   });
 });
 
@@ -321,12 +308,16 @@ describe('interactiveTouchScope: what one MCP call keeps alive', () => {
 describe('failWorkersOfOfflineRunners: the one offline-runner rule', () => {
   const NOW = new Date('2026-09-29T12:00:00.000Z');
   const CUTOFF_ISO = new Date(NOW.getTime() - RUNNER_STALE_CUTOFF_MS).toISOString();
+  const LIVE_URL = 'http://alive.local:8766';
+  const DEAD_URL = 'http://gone.local:8766';
+  const liveRow = (accountId: string) => ({ accountId, localUiUrl: LIVE_URL, lastHeartbeatAt: new Date(NOW.getTime() - 30_000), environment: null });
+  const deadRow = (accountId: string) => ({ accountId, localUiUrl: DEAD_URL, lastHeartbeatAt: new Date(NOW.getTime() - RUNNER_STALE_CUTOFF_MS - 60_000), environment: null });
 
   function reset() {
     heartbeatLookups.length = 0;
     workerLookups.length = 0;
     workerUpdates.length = 0;
-    freshHeartbeatFor = new Set();
+    heartbeatRowsFor = new Map();
     orphanRows = [];
   }
 
@@ -335,56 +326,68 @@ describe('failWorkersOfOfflineRunners: the one offline-runner rule', () => {
     expect(HEARTBEAT_STALE_MS).toBe(RUNNER_STALE_CUTOFF_MS);
   });
 
-  it('kills nothing on an account that still has one live runner', async () => {
-    // The regression: one runner's dead heartbeat row on the account used to
-    // fail every running worker under the account's OTHER, live runner.
+  it('kills nothing on an account whose every runner is alive', async () => {
     reset();
-    freshHeartbeatFor = new Set(['account-1']);
-    orphanRows = [{ id: 'w1', taskId: null }];
+    heartbeatRowsFor = new Map([['account-1', [liveRow('account-1')]]]);
+    orphanRows = [{ id: 'w1', taskId: null, runner: LIVE_URL }];
 
     expect(await failWorkersOfOfflineRunners({ accountIds: ['account-1'] }, NOW)).toBe(0);
     expect(workerLookups).toHaveLength(0);
     expect(workerUpdates).toHaveLength(0);
   });
 
-  it('asks "is any runner on this account alive" with the account key and the not-dead cutoff', async () => {
+  it('reads the account\'s heartbeat rows with the account key alone: every runner, any age', async () => {
     reset();
-    freshHeartbeatFor = new Set(['account-1']);
+    heartbeatRowsFor = new Map([['account-1', [liveRow('account-1')]]]);
     await failWorkersOfOfflineRunners({ accountIds: ['account-1'] }, NOW);
 
     const q = dialect.sqlToQuery(heartbeatLookups[0]);
     const text = q.sql.replace(/\s+/g, ' ').toLowerCase();
-    expect(text).toMatch(/"worker_heartbeats"\."account_id" = \$\d/);
-    expect(text).toContain('"worker_heartbeats"."last_heartbeat_at" >');
-    expect(q.params).toContain('account-1');
-    // 150 min, not the cleanup route's old 10 — an in-flight worker whose
-    // runner missed a few beats is not dead.
-    expect(q.params).toContain(CUTOFF_ISO);
+    expect(text).toMatch(/^"worker_heartbeats"\."account_id" = \$\d$/);
+    expect(q.params).toEqual(['account-1']);
   });
 
-  it('only when no runner on the account is alive, fails its runner workers idle past the cutoff', async () => {
+  it('a dead runner\'s worker is failed while a sibling runner on the account is alive; the sibling\'s worker is kept', async () => {
+    // The Oct 22 regression: keyed on the account, "is any runner alive?" was
+    // true, so the dead Mac's two workers never became orphans.
     reset();
-    orphanRows = [{ id: 'w1', taskId: null, startedAt: new Date(), turns: 3 }];
+    heartbeatRowsFor = new Map([['account-1', [liveRow('account-1'), deadRow('account-1')]]]);
+    orphanRows = [
+      { id: 'w-dead', taskId: null, runner: DEAD_URL, startedAt: new Date(), turns: 3 },
+      { id: 'w-live', taskId: null, runner: LIVE_URL, startedAt: new Date(), turns: 3 },
+    ];
 
     expect(await failWorkersOfOfflineRunners({ accountIds: ['account-1'] }, NOW)).toBe(1);
     expect(workerLookups).toHaveLength(1);
     const q = dialect.sqlToQuery(workerLookups[0]);
     const text = q.sql.replace(/\s+/g, ' ').toLowerCase();
     expect(text).toMatch(/"workers"\."account_id" = \$\d/);
-    expect(text).toContain('"workers"."updated_at" <');
+    expect(text).not.toContain('"workers"."updated_at"');
     expect(text).toMatch(/"workers"\."runner" <> \$\d/);
+    // 150 min, not the cleanup route's old 10 — an in-flight worker whose
+    // runner missed a few beats is not dead.
     expect(q.params).toEqual(expect.arrayContaining(['account-1', 'mcp', CUTOFF_ISO]));
+    const failed = workerUpdates.filter(u => u.status === 'failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0].error).toBe('Worker runner went offline (heartbeat expired)');
+  });
+
+  it('with no runner on the account alive, a worker naming no known runner is failed as before', async () => {
+    reset();
+    orphanRows = [{ id: 'w1', taskId: null, runner: 'runner', startedAt: new Date(), turns: 3 }];
+
+    expect(await failWorkersOfOfflineRunners({ accountIds: ['account-1'] }, NOW)).toBe(1);
     expect(workerUpdates.some(u => u.status === 'failed')).toBe(true);
   });
 
   it('judges each account on its own runners', async () => {
     reset();
-    freshHeartbeatFor = new Set(['account-live']);
-    orphanRows = [{ id: 'w1', taskId: null, startedAt: new Date(), turns: 3 }];
+    heartbeatRowsFor = new Map([['account-live', [liveRow('account-live')]]]);
+    orphanRows = [{ id: 'w1', taskId: null, runner: 'runner', startedAt: new Date(), turns: 3 }];
 
     await failWorkersOfOfflineRunners({ accountIds: ['account-live', 'account-dead', 'account-dead'] }, NOW);
 
-    // One freshness lookup per distinct account, one orphan query — for the dead one only.
+    // One heartbeat read per distinct account, one orphan query — for the dead one only.
     expect(heartbeatLookups).toHaveLength(2);
     expect(workerLookups).toHaveLength(1);
     expect(dialect.sqlToQuery(workerLookups[0]).params).toContain('account-dead');
@@ -403,15 +406,18 @@ describe('R-38: a paused agent on a heartbeating runner is kept, not reaped', ()
     expect(text).not.toContain("'waiting_input'");
   });
 
-  it('the offline-runner rule never runs while one runner on the account heartbeats', async () => {
+  it('the offline-runner rule never reaps a worker whose own runner heartbeats', async () => {
     heartbeatLookups.length = 0;
     workerLookups.length = 0;
     workerUpdates.length = 0;
-    freshHeartbeatFor = new Set(['account-1']);
-    orphanRows = [{ id: 'w-paused', taskId: 'task-paused', status: 'waiting_input', waitingFor: { type: 'pause' } }];
+    const now = new Date();
+    heartbeatRowsFor = new Map([['account-1', [
+      { accountId: 'account-1', localUiUrl: 'http://alive.local:8766', lastHeartbeatAt: now, environment: null },
+      { accountId: 'account-1', localUiUrl: 'http://gone.local:8766', lastHeartbeatAt: new Date(now.getTime() - RUNNER_STALE_CUTOFF_MS - 1), environment: null },
+    ]]]);
+    orphanRows = [{ id: 'w-paused', taskId: 'task-paused', status: 'waiting_input', runner: 'http://alive.local:8766', waitingFor: { type: 'pause' } }];
 
-    expect(await failWorkersOfOfflineRunners({ accountIds: ['account-1'] }, new Date())).toBe(0);
-    expect(workerLookups).toHaveLength(0);
+    expect(await failWorkersOfOfflineRunners({ accountIds: ['account-1'] }, now)).toBe(0);
     expect(workerUpdates).toHaveLength(0);
   });
 });

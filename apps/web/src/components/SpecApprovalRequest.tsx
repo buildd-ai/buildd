@@ -1,12 +1,17 @@
 'use client';
 
+import { useState } from 'react';
 import { useOptimisticApprove } from '@/components/useOptimisticApprove';
 import Lede from '@/components/ui/Lede';
 import Notice from '@/components/ui/Notice';
 import PrimaryAction from '@/components/ui/PrimaryAction';
+import SpecReviewChanges from '@/components/SpecReviewChanges';
 import SpecRevisionPanes from '@/components/SpecRevisionPanes';
 import SpecRepoChecksFetch from '@/components/SpecRepoChecksFetch';
 import type { ApprovalRequestView } from '@/lib/specs/approval-view';
+
+/** The shortest reason that overrides a gate refusal (lib/specs/approval.ts MIN_OVERRIDE_REASON). */
+const MIN_REASON = 10;
 
 /** States with nothing to approve: one line each. */
 const CLOSED: Record<Exclude<ApprovalRequestView['state'], 'ready'>, { tone: 'info' | 'warn' | 'ok' | 'err'; text: string }> = {
@@ -28,11 +33,13 @@ const CLOSED: Record<Exclude<ApprovalRequestView['state'], 'ready'>, { tone: 'in
  */
 export default function SpecApprovalRequest({ specId, token, view }: { specId: string; token: string; view: ApprovalRequestView }) {
   const approvedText = `Approved revision ${view.state === 'ready' ? view.revision : ''}.`;
+  const [reason, setReason] = useState('');
+  const refused = view.state === 'ready' && !view.gate.passed;
   const { shown: result, retry, approve } = useOptimisticApprove(async () => {
     const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/approve/confirm`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ request: token }),
+      body: JSON.stringify({ request: token, ...(refused ? { overrideReason: reason.trim() } : {}) }),
     });
     const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
     if (res.ok) return { tone: 'ok', text: approvedText };
@@ -61,11 +68,42 @@ export default function SpecApprovalRequest({ specId, token, view }: { specId: s
       <Lede>
         {view.replaces ? `Revision ${view.revision} replaces revision ${view.replaces}.` : 'Nothing is approved yet.'}
       </Lede>
+      {view.changes ? <SpecReviewChanges {...view.changes} /> : null}
+      <section className="flex flex-col gap-2" aria-label="Quality gate" data-testid="spec-approval-gate">
+        {view.gate.passed && !view.gate.warnings.length ? <Notice tone="ok">Quality gate passed.</Notice> : null}
+        {view.gate.refusals.length ? (
+          <Notice tone="err" title="Quality gate failed" data-testid="spec-approval-refusals">
+            <ul className="flex list-disc flex-col gap-1 pl-5">
+              {view.gate.refusals.map((f) => <li key={f.code} data-code={f.code} className="[overflow-wrap:anywhere]">{f.message}</li>)}
+            </ul>
+          </Notice>
+        ) : null}
+        {view.gate.warnings.length ? (
+          <Notice tone="warn" title={view.gate.passed ? 'Quality gate passed, with warnings' : 'Warnings'} data-testid="spec-approval-warnings">
+            <ul className="flex list-disc flex-col gap-1 pl-5">
+              {view.gate.warnings.map((f) => <li key={f.code} data-code={f.code} className="[overflow-wrap:anywhere]">{f.message}</li>)}
+            </ul>
+          </Notice>
+        ) : null}
+        {refused && (!result || retry) ? (
+          <label className="flex flex-col gap-1 text-body text-text-primary">
+            Override reason (recorded on the approval)
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={2}
+              maxLength={500}
+              className="border border-border-default bg-surface-1 px-2 py-1 text-body text-text-primary"
+              data-testid="spec-approval-override-reason"
+            />
+          </label>
+        ) : null}
+      </section>
       {result ? <Notice tone={result.tone} data-testid="spec-approval-result">{result.text}</Notice> : null}
       {!result || retry ? (
         <div>
-          <PrimaryAction onClick={approve} fullWidthOnMobile data-testid="spec-approval-approve">
-            Approve revision {view.revision}
+          <PrimaryAction onClick={approve} disabled={refused && reason.trim().length < MIN_REASON} fullWidthOnMobile data-testid="spec-approval-approve">
+            {refused ? 'Override and approve' : 'Approve'} revision {view.revision}
           </PrimaryAction>
         </div>
       ) : null}
