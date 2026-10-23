@@ -491,6 +491,32 @@ describe('explainMission', () => {
 
 // ─── Task scope ───────────────────────────────────────────────────────────────
 
+describe('explainTask: an upstream in another workspace (spec e28018c2)', () => {
+  const setup = () => {
+    missionRow = null;
+    taskRows = [
+      task({ id: 'task-b', status: 'pending', title: 'Write the docs', missionId: null, workspaceId: 'ws-2', dependsOn: ['task-a'], workspace: { teamId: 'team-1', name: 'Docs' } }),
+      task({ id: 'task-a', status: 'pending', title: 'Private plan', missionId: null, workspaceId: 'ws-1', workspace: { teamId: 'team-1', name: 'App' } }),
+    ];
+  };
+
+  it('AC-7: a caller who cannot see the upstream is told only that it waits on a task it cannot see', async () => {
+    setup();
+    const token = { kind: 'account' as const, account: { id: 'acc-1', taskScope: { taskId: 'task-b', workspaceId: 'ws-2', expiresAt: 0 } } };
+    const answer = (await explainTask('task-b', ACTOR, token))!.subjects[0];
+    expect(answer.because[0].claim).toBe(`"Write the docs" is waiting on a task in a workspace you can't see.`);
+    expect(answer.because[0].refs.taskId).not.toBe('task-a');
+    expect(JSON.stringify(answer)).not.toContain('Private plan');
+  });
+
+  it('AC-8: a caller who sees both names the upstream and its workspace', async () => {
+    setup();
+    const answer = (await explainTask('task-b', ACTOR, { kind: 'member' }))!.subjects[0];
+    expect(answer.because[0].claim).toBe('"Write the docs" is waiting on "Private plan" in App.');
+    expect(answer.because[0].refs.taskId).toBe('task-a');
+  });
+});
+
 describe('explainTask', () => {
   // executor='local' (task 09ed6675): a queued task in a local mission is the
   // person's session's to claim — never "stalled, dispatch a worker".

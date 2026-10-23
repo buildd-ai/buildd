@@ -18,6 +18,7 @@ import './decision-kind-scout-probe-selection';
 import './decision-kind-failure-incident-triage';
 import './decision-kind-operator-recovery';
 import './decision-kind-mission-scope';
+import './decision-kind-red-check-cause';
 import './manifest-prediction';
 
 export { listRegisteredPrompts, type RegisteredPrompt } from './prompts';
