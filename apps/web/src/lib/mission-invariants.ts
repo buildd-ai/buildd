@@ -1173,7 +1173,8 @@ export const INVARIANTS: Invariant[] = [
  */
 export const PERSON_GATED_PR_REMEDY =
   'This PR waits on a person (its delivery is ESCALATED), so do not close it. Rebase it if the base ' +
-  'moved under it, then ask the owner to decide (ask_human, or post_note type=question on the owning task).';
+  'moved under it, then ask the owner to decide with a comment on the PR itself (a sweep worker\'s task token may post only to its own task, ' +
+  'and a runner-managed worker cannot ask_human), or ask_human / post_note type=question where those are open to you.';
 
 const BY_KEY = new Map<InvariantKey, Invariant>(INVARIANTS.map(i => [i.key, i]));
 
