@@ -2,12 +2,12 @@
 title: Worker Reclamation
 status: active
 owner: max
-last_verified: 2026-10-17
+last_verified: 2026-10-22
 summary: Silent workers MUST be reclaimed with the correct timeout, exit cause and retry treatment.
 domain: runners
-surfaces: [apps/web/src/lib/stale-workers.ts, apps/web/src/lib/lost-claim.ts, apps/web/src/lib/sessionless-worker-settle.ts]
+surfaces: [apps/web/src/lib/stale-workers.ts, apps/web/src/lib/runner-offline.ts, apps/web/src/lib/lost-claim.ts, apps/web/src/lib/sessionless-worker-settle.ts]
 related: [runner-heartbeat, runner-failure-alerts]
-verified_by: [apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/sessionless-worker-settle.test.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/lost-claim.test.ts, apps/runner/__tests__/unit/claim-handoff.test.ts]
+verified_by: [apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/stale-workers-dead-runner.test.ts, apps/web/src/lib/runner-offline.test.ts, apps/web/src/lib/sessionless-worker-settle.test.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/lost-claim.test.ts, apps/runner/__tests__/unit/claim-handoff.test.ts]
 assertions:
   - id: extra-guard-1
     type: test_file
@@ -178,21 +178,44 @@ before and after this change.
 ## Heartbeat-driven Liveness (machine offline)
 
 **Invariants**:
-- If no `worker_heartbeats` row for the account has `lastHeartbeatAt` within the
-  last **150 minutes** (`HEARTBEAT_STALE_MS`), the runner machine is considered
-  offline.
-- When the runner is offline, all active runner workers (`running`, `starting`,
-  `idle`, `waiting_input`; never interactive `runner = 'mcp'` ones) for that
-  account whose `updatedAt` is older than the cutoff are marked `failed` with
-  `error: "Worker runner went offline (heartbeat expired)"`.
+- A runner whose `worker_heartbeats` row (Redis beat overlaid,
+  `lib/runner-beats.ts`) has no `lastHeartbeatAt` within the last **150
+  minutes** (`HEARTBEAT_STALE_MS`) is considered offline. **Each worker is
+  judged by its own runner**: the row keyed on the `localUiUrl` the worker was
+  claimed under (`workers.localUiUrl`, else `workers.runner`;
+  `runnerLiveness` in `lib/runner-offline.ts`). Whether the account's OTHER
+  runners are alive is irrelevant: keyed on the account, a dead runner's
+  workers never became orphans while a sibling kept heartbeating (Oct 22: two
+  workers of an offline Mac stayed `running` for hours, held their path
+  leases, and tasks a person set back to pending stayed unclaimable).
+- When its runner is offline, an active runner worker (`running`, `starting`,
+  `idle`, `waiting_input`; never interactive `runner = 'mcp'` ones, never a
+  live cloud park) is marked `failed` with `error: "Worker runner went offline
+  (heartbeat expired)"`, its path claims released, and its task requeued as an
+  infra failure (backoff, no retry charge) so another runner claims it.
+- **Only the runner speaking counts as liveness**: its heartbeat row, the
+  worker lease it renews on that beat (`workers.lease_expires_at`), and its
+  worker reports (the Redis worker beat). `workers.updated_at` MUST NOT gate
+  this rule: an agent message, idle probe, description-change or path-release
+  notice bumps it from the server side and kept a dead runner's worker alive
+  indefinitely. A candidate is a live-status worker created before the cutoff
+  whose lease is null or lapsed past it.
+- A worker whose runner key matches no heartbeat row is an orphan if its lease
+  lapsed past the cutoff; with no lease to judge by it falls back to the old
+  account-wide reading (an orphan only when no runner on the account is alive).
 - **There is exactly one copy of this rule**, `failWorkersOfOfflineRunners`.
   The claim-path reaper, `POST /api/tasks/cleanup` and the per-minute
-  maintenance cron all call it. A single stale heartbeat row on an account
-  MUST NOT fail anything by itself while another row on the account is fresh —
-  a second runner's dead row, or a restarted runner's old URL, used to fail
-  every in-flight worker under the account's live runner.
-- Heartbeat rows are deleted only once past the same cutoff, so "no fresh row"
-  and "row deleted" mean the same thing.
+  maintenance cron all call it. A stale heartbeat row fails the workers under
+  THAT runner only; it MUST NOT touch a worker under the account's other, live
+  runner — a second runner's dead row, or a restarted runner's old URL, used
+  to fail every in-flight worker under the account's live runner.
+- Heartbeat rows are deleted only once past the same cutoff, and never while a
+  live-status worker still names the runner (`heartbeatRowHasNoLiveWorkers`),
+  so a runner's row outlives its workers and the rule can always judge a
+  worker by its own runner.
+- `explain` on a task whose live-status worker's runner has been silent past
+  `RUNNER_RECENTLY_SEEN_MS` says `waiting for runner <name> (offline <n>m) to
+  be confirmed dead`, not RUNNING.
 - Every "is this runner up" window is a named constant derived from the
   heartbeat cadence in `packages/shared/src/runner-liveness.ts`:
   `RUNNER_LIVE_WINDOW_MS` (online now, presence UI), `RUNNER_RECENTLY_SEEN_MS`
@@ -201,35 +224,35 @@ before and after this change.
   may gate failing workers or deleting rows.
 - The 150-minute window is 2.5× the typical 60-minute poll cycle so one dropped
   heartbeat doesn't kill in-flight workers.
-- **This rule MUST stay account-scoped — both halves of it.** Unlike the
-  never-started arm above it carries no `startedAt IS NULL` narrowing, so it can
-  kill workers mid-session. Widening only the worker query while the freshness
-  lookup stays account-keyed would let one account's offline runner fail a
-  sibling account's live, working workers. Widening the freshness lookup to
-  match makes the gate fire only when every runner in the team is offline — a
-  gate that can never fire, which is worse than no gate because it reads as
-  protection.
+- **This rule MUST stay account-scoped.** Unlike the never-started arm above it
+  carries no `startedAt IS NULL` narrowing, so it can kill workers mid-session.
+  The candidates are judged against the account's own heartbeat rows, and a
+  `localhost` URL is shared by every team's runners: widening the worker query
+  to the team would let one account's offline runner fail a sibling account's
+  live, working workers.
 
 **Acceptance criteria**:
-- AC-7: GIVEN no heartbeat for an account in the last 150 minutes WHEN
-  `cleanupStaleWorkers` runs THEN all active workers for that account are marked
-  `failed`.
-- AC-8: GIVEN at least one heartbeat for the account within 150 minutes WHEN
+- AC-7: GIVEN no heartbeat row for an account at all WHEN `cleanupStaleWorkers`
+  runs THEN all active runner workers for that account are marked `failed`.
+- AC-8: GIVEN every heartbeat row on the account within 150 minutes WHEN
   `cleanupStaleWorkers` runs THEN the heartbeat-offline path is skipped (no
   workers failed by this check).
-- AC-9: `heartbeatOrphanScope` and `heartbeatFreshnessScope` MUST each render a
-  single-account predicate and MUST NOT reference `team_id`.
+- AC-9: `heartbeatOrphanScope` MUST render a single-account predicate, MUST
+  NOT reference `team_id`, and MUST NOT reference `workers.updated_at`.
 - AC-35: GIVEN an account with one stale and one fresh heartbeat row WHEN
-  `POST /api/tasks/cleanup` or the maintenance cron runs THEN no worker on the
-  account is failed by the offline-runner rule.
+  `POST /api/tasks/cleanup` or the maintenance cron runs THEN the workers
+  under the stale runner are failed and no worker under the fresh runner is.
+- AC-54: GIVEN a worker under the stale runner whose `updated_at` was bumped
+  a minute ago by a message WHEN the rule runs THEN it is still failed.
 
 **Code surface**:
 - Constant: `HEARTBEAT_STALE_MS = RUNNER_STALE_CUTOFF_MS` (150 min at the
   default cadence) in `apps/web/src/lib/stale-workers.ts`
 - Rule: `failWorkersOfOfflineRunners()` in `apps/web/src/lib/stale-workers.ts`
-- Scopes: `heartbeatOrphanScope()`, `heartbeatFreshnessScope()` in
-  `apps/web/src/lib/stale-workers.ts`
-- Query: uses `workerHeartbeats.lastHeartbeatAt` to find fresh beats
+- Scope: `heartbeatOrphanScope()` in `apps/web/src/lib/stale-workers.ts`;
+  deletion guard `heartbeatRowHasNoLiveWorkers()`
+- Judgment: `loadRunnerBeats()`, `runnerLiveness()`, `offlineRunnerWaitLine()`
+  in `apps/web/src/lib/runner-offline.ts`
 
 ---
 

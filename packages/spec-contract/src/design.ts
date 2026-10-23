@@ -12,38 +12,47 @@ const SCREEN_ID = /^[A-Za-z0-9._/:#-]{1,100}$/;
 export type DesignParse = { ok: true; design: DesignRef } | { ok: false; error: string };
 
 export function parseDesignRef(raw: unknown): DesignParse {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'design must be { kind, ref, version?, screens? }' };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'design must be { kind, ref, version?, screens?: [{ id, name }] }' };
   const r = raw as Record<string, unknown>;
-  if (typeof r.kind !== 'string' || !(DESIGN_KINDS as readonly string[]).includes(r.kind)) {
-    return { ok: false, error: `design.kind must be one of: ${DESIGN_KINDS.join(', ')}` };
-  }
-  const kind = r.kind as DesignKind;
-  if (typeof r.ref !== 'string' || !r.ref.trim() || r.ref.length > 500) return { ok: false, error: 'design.ref is required (at most 500 characters)' };
-  const ref = r.ref.trim();
-  if (kind === 'url' && !/^https:\/\/\S+$/.test(ref)) return { ok: false, error: 'design.ref must be an https URL for kind url' };
+  // Every problem in one error, so a retry fixes them all.
+  const problems: string[] = [];
+  const kindOk = typeof r.kind === 'string' && (DESIGN_KINDS as readonly string[]).includes(r.kind);
+  if (!kindOk) problems.push(`design.kind must be one of: ${DESIGN_KINDS.join(', ')}`);
+  const kind = (kindOk ? r.kind : 'artifact') as DesignKind;
+  const refOk = typeof r.ref === 'string' && !!r.ref.trim() && r.ref.length <= 500;
+  if (!refOk) problems.push('design.ref is required (at most 500 characters)');
+  const ref = refOk ? (r.ref as string).trim() : '';
+  if (refOk && kindOk && kind === 'url' && !/^https:\/\/\S+$/.test(ref)) problems.push('design.ref must be an https URL for kind url');
   let version: string | undefined;
+  let versionInvalid = false;
   if (r.version !== undefined && r.version !== null) {
-    if (typeof r.version !== 'string' && typeof r.version !== 'number') return { ok: false, error: 'design.version must be a string or number' };
-    version = String(r.version).trim();
-    if (!version || version.length > 100) return { ok: false, error: 'design.version must be 1 to 100 characters' };
-  }
-  // Only an artifact can be versioned by its host; anything else names its version.
-  if (!version && kind !== 'artifact') return { ok: false, error: `design.version is required for kind ${kind}: an approval binds to one version of the design` };
-  if (kind === 'artifact' && version !== undefined && !/^[1-9]\d*$/.test(version)) return { ok: false, error: 'design.version for an artifact is its revision number' };
-  let screens: DesignScreen[] | undefined;
-  if (r.screens !== undefined) {
-    if (!Array.isArray(r.screens) || r.screens.length > MAX_DESIGN_SCREENS) return { ok: false, error: `design.screens must be at most ${MAX_DESIGN_SCREENS} { id, name }` };
-    const ids = new Set<string>();
-    screens = [];
-    for (const s of r.screens) {
-      const o = s && typeof s === 'object' ? (s as Record<string, unknown>) : {};
-      if (typeof o.id !== 'string' || !SCREEN_ID.test(o.id)) return { ok: false, error: 'each design screen needs an id of letters, digits and . _ / : # - (at most 100)' };
-      if (ids.has(o.id)) return { ok: false, error: `design screen ${o.id} is listed twice` };
-      ids.add(o.id);
-      const name = typeof o.name === 'string' && o.name.trim() ? o.name.trim().slice(0, 200) : o.id;
-      screens.push({ id: o.id, name });
+    if (typeof r.version !== 'string' && typeof r.version !== 'number') { problems.push('design.version must be a string or number'); versionInvalid = true; }
+    else {
+      version = String(r.version).trim();
+      if (!version || version.length > 100) { problems.push('design.version must be 1 to 100 characters'); version = undefined; versionInvalid = true; }
     }
   }
+  // Only an artifact can be versioned by its host; anything else names its version.
+  if (kindOk && !version && kind !== 'artifact' && !versionInvalid) problems.push(`design.version is required for kind ${kind}: an approval binds to one version of the design`);
+  if (kindOk && kind === 'artifact' && version !== undefined && !/^[1-9]\d*$/.test(version)) problems.push('design.version for an artifact is its revision number');
+  let screens: DesignScreen[] | undefined;
+  if (r.screens !== undefined) {
+    if (!Array.isArray(r.screens) || r.screens.length > MAX_DESIGN_SCREENS) problems.push(`design.screens must be at most ${MAX_DESIGN_SCREENS} { id, name }`);
+    else {
+      const ids = new Set<string>();
+      screens = [];
+      r.screens.forEach((s, i) => {
+        // A bare id string is accepted as { id, name: id }.
+        const o = typeof s === 'string' ? { id: s } : s && typeof s === 'object' ? (s as Record<string, unknown>) : {};
+        if (typeof o.id !== 'string' || !SCREEN_ID.test(o.id)) { problems.push(`design.screens[${i}] needs an id of letters, digits and . _ / : # - (at most 100)`); return; }
+        if (ids.has(o.id)) { problems.push(`design screen ${o.id} is listed twice`); return; }
+        ids.add(o.id);
+        const name = typeof (o as { name?: unknown }).name === 'string' && ((o as { name: string }).name).trim() ? (o as { name: string }).name.trim().slice(0, 200) : o.id;
+        screens!.push({ id: o.id, name });
+      });
+    }
+  }
+  if (problems.length) return { ok: false, error: problems.join('; ') };
   return { ok: true, design: { kind, ref, ...(version ? { version } : {}), ...(screens ? { screens } : {}) } as DesignRef };
 }
 

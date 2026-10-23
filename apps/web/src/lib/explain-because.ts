@@ -29,6 +29,7 @@ import { cancellationLine } from './task-cancellation';
 import { claimHoldPhrase } from './claim-hold-phrase';
 import type { DeliveryDisagreement } from './delivery-overlay';
 import { roundTriggerSentence, type DeliveryRound } from '@buildd/workflow-kernel/projections';
+import { offlineRunnerWaitLine, type RunnerLiveness } from './runner-offline';
 
 const repoOf = (url: string | null | undefined) => url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/)?.[1] ?? null;
 
@@ -793,6 +794,21 @@ export function taskRecoveryLink(status: string, context: unknown, subject: Beca
     return line ? link(line, 'tasks.context.credentialHold', refs) : null;
   }
   return null;
+}
+
+/**
+ * A live-status worker whose own runner has gone quiet (lib/runner-offline.ts):
+ * the task is not RUNNING, it is waiting for that runner to be confirmed dead,
+ * after which the offline-runner reaper requeues it for another runner.
+ */
+export function offlineRunnerLink(liveness: RunnerLiveness, subject: BecauseSubjectRefs, workerId: string | null): Link {
+  const refs: ExplainRefs = {
+    ...(subject.taskId ? { taskId: subject.taskId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+    ...(workerId ? { workerId } : {}),
+  };
+  const line = offlineRunnerWaitLine(liveness);
+  return link(`${line.charAt(0).toUpperCase()}${line.slice(1)}.`, 'workers.runner + workerHeartbeats.lastHeartbeatAt', refs);
 }
 
 /** Insert the wake link before the chain's closing conclusion, renumbered. */

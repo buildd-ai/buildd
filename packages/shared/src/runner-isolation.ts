@@ -21,7 +21,7 @@ export type RunnerHostPlatform = 'darwin' | 'linux' | 'linux-wsl' | 'linux-conta
  * mode (`windows.sandbox="unelevated"`): a restricted token that confines
  * writes to the workspace and temp dirs but does not block network access.
  */
-export type IsolationMechanism = 'seatbelt' | 'bwrap' | 'landlock' | 'windows_restricted_token' | 'none';
+export type IsolationMechanism = 'seatbelt' | 'bwrap' | 'landlock' | 'windows_restricted_token' | 'windows_mxc' | 'none';
 
 /** What the confinement restricts. */
 export type IsolationScope = 'read' | 'write' | 'network' | 'env';
@@ -40,6 +40,8 @@ export interface BackendConfinement {
   scope: IsolationScope[];
   /** Present exactly when `mechanism` is `none`. */
   reason?: IsolationReason;
+  /** Windows selection verified by this process; startup rechecks the worker home. */
+  windowsSandbox?: { implementation: 'mxc' | 'unelevated'; binary: string };
 }
 
 export type CodexSandboxMode = 'read-only' | 'workspace-write';
@@ -204,6 +206,7 @@ const MECHANISM_TEXT: Record<Exclude<IsolationMechanism, 'none'>, string> = {
   bwrap: 'bubblewrap',
   landlock: 'Landlock',
   windows_restricted_token: "Codex's Windows sandbox",
+  windows_mxc: "Codex's Windows MXC sandbox",
 };
 
 const SCOPE_TEXT: Record<IsolationScope, string> = { read: 'reads', write: 'writes', network: 'network', env: 'env' };

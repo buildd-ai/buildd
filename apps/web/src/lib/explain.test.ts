@@ -100,6 +100,11 @@ mock.module('@/lib/mission-pr', () => ({ evaluateMissionWorkState: mockEvaluateM
 let browserHeartbeats: Row[] | null = [];
 mock.module('@/lib/runner-heartbeats', () => ({ loadBrowserRunnerHeartbeats: mock(async () => browserHeartbeats) }));
 
+// The runner heartbeat rows a live worker's runner is judged by (lib/runner-offline.ts).
+let runnerBeats: Row[] = [];
+const realRunnerOffline = await import('./runner-offline');
+mock.module('@/lib/runner-offline', () => ({ ...realRunnerOffline, loadRunnerBeats: mock(async () => runnerBeats) }));
+
 // Imported AFTER the mocks.
 import { explainMission, explainTask, explainPr, explainWorkspace, historyPrStateOf, kernelUnmergedPr } from './explain';
 import { summarizeMissionForCard, type MissionCardRow } from './mission-card-view';
@@ -446,6 +451,62 @@ describe('explainTask', () => {
     expect(answer.situation.nextAction ?? '').not.toMatch(/Dispatch a worker/);
     expect(answer.because.map(l => l.claim).join(' ')).toContain('is ready to start. Claim it from your session.');
     expect(answer.because.map(l => l.claim).join(' ')).not.toMatch(/waiting for a runner|nothing is running it/);
+  });
+
+  // Oct 22: a Mac went offline with two workers running; the tasks read
+  // RUNNING in explain for 40 minutes while nothing was running them.
+  describe('a running task whose own runner has gone quiet', () => {
+    const runningOn = (runner: string, accountId: string | null = 'acct-1') =>
+      [task({ id: 'task-1', status: 'in_progress', workers: [worker({ id: 'w-1', status: 'running', runner, localUiUrl: runner, accountId })] })];
+    const beat = (minutesAgo: number) =>
+      [{ accountId: 'acct-1', localUiUrl: 'headless://mac', lastHeartbeatAt: new Date(Date.now() - minutesAgo * 60_000), environment: { labels: { name: 'studio' } } }];
+
+    it('says it is waiting for that runner to be confirmed dead, not RUNNING', async () => {
+      missionRow = { id: 'mission-1', executor: 'runner', isHeld: false };
+      taskRows = runningOn('headless://mac');
+      runnerBeats = beat(12);
+      try {
+        const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+        expect(answer.situation.headline).toBe('Waiting for runner studio (offline 12m) to be confirmed dead.');
+        expect(answer.nextAction).toContain('waiting for runner studio (offline 12m) to be confirmed dead');
+        expect(answer.nextAction).toContain('requeued for another runner');
+        expect(answer.situation.nextAction).toBe(answer.nextAction);
+        expect(answer.derivedFrom.nextAction).toBe('workers.runner + workerHeartbeats.lastHeartbeatAt');
+        const link = answer.because.find(l => l.derivedFrom === 'workers.runner + workerHeartbeats.lastHeartbeatAt');
+        expect(link?.claim).toContain('Waiting for runner studio (offline 12m) to be confirmed dead');
+        expect(link?.refs.taskId).toBe('task-1');
+        // Before the closing conclusion, numbered in order.
+        expect(answer.because[answer.because.length - 1].derivedFrom).not.toBe('workers.runner + workerHeartbeats.lastHeartbeatAt');
+        expect(answer.because.map(l => l.order)).toEqual(answer.because.map((_, i) => i + 1));
+      } finally {
+        runnerBeats = [];
+      }
+    });
+
+    it('a runner that beat inside the "demonstrably up" window is simply running', async () => {
+      missionRow = { id: 'mission-1', executor: 'runner', isHeld: false };
+      taskRows = runningOn('headless://mac');
+      runnerBeats = beat(1);
+      try {
+        const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+        expect(answer.situation.headline).not.toContain('confirmed dead');
+        expect(answer.because.some(l => l.derivedFrom === 'workers.runner + workerHeartbeats.lastHeartbeatAt')).toBe(false);
+      } finally {
+        runnerBeats = [];
+      }
+    });
+
+    it('an interactive (mcp) worker is never judged by a runner heartbeat', async () => {
+      missionRow = { id: 'mission-1', executor: 'runner', isHeld: false };
+      taskRows = runningOn('mcp');
+      runnerBeats = beat(500);
+      try {
+        const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+        expect(answer.situation.headline).not.toContain('confirmed dead');
+      } finally {
+        runnerBeats = [];
+      }
+    });
   });
 
   it('the same pending task in a runner mission still reads as a stall', async () => {

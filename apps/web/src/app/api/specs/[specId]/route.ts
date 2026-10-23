@@ -57,7 +57,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const body = await req.json().catch(() => null);
   if (!body || typeof body !== 'object') return NextResponse.json({ error: 'a JSON body is required' }, { status: 400 });
-  const r = 'section' in body || 'heading' in body ? await reviseSpecSection(caller, specId, body) : await reviseSpecDraft(caller, specId, body);
+  const r = 'section' in body || 'heading' in body || 'find' in body ? await reviseSpecSection(caller, specId, body) : await reviseSpecDraft(caller, specId, body);
   if (!r.ok) return NextResponse.json({ error: r.error, ...(r.currentVersion !== undefined ? { code: 'version_conflict', currentVersion: r.currentVersion } : r.code ? { code: r.code } : {}) }, { status: r.status });
   return NextResponse.json({ spec: r.spec, revision: r.revision, unchanged: r.unchanged, formatHints: formatHints(String((body as Record<string, unknown>).body ?? '')) });
 }
