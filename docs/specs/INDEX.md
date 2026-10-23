@@ -238,7 +238,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 ## Superseded (8)
 
 - [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-22
-  Overlap scheduling MUST follow the approved serial lanes and file locks spec that replaces this contract. → replaced by `75217f55 / Overlap scheduling: serial lanes and file locks`
+  Overlap scheduling MUST follow the approved serial lanes and file locks spec that replaces this contract. → replaced by `?`
 - [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-10-15
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped. → replaced by `agent-question-protocol`
 - [Mission Structure View](./mission-structure-view.md) · @builder — verified 2026-10-09
