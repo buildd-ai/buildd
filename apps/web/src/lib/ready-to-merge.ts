@@ -80,9 +80,16 @@ export function decideReadyToMerge(facts: ReadyToMergeFacts): ReadyToMergeDecisi
   } else if (v.pendingVerification && v.branch.integrationPr?.stage !== 'merged') {
     const where = v.branch.headSha ? ` on commit ${v.branch.headSha.slice(0, 8)}` : '';
     if (v.status === 'findings') {
+      const owner = v.nextActor === 'owner';
+      const screens = v.recapture?.next === 'decide' ? [...new Set(v.recapture.screens)] : [];
+      const why = screens.length > 0
+        ? `${screens.length === 1 ? 'a fix merged' : `${screens.length} fixes merged`} with no new screenshot of ${screens.join(', ')}; decide Fixed or Still broken, or skip the review`
+        : v.findings?.stage === 'fixing' ? 'fixes are in progress'
+        : owner ? 'the automatic fixes did not settle them; decide on the flagged screens, or skip the review'
+        : 'a decision on the flagged screens is pending';
       blockers.push({
         code: 'visual_review_findings',
-        reason: `The visual review found issues${where} that are not resolved yet (${v.findings?.stage === 'fixing' ? 'fixes are in progress' : 'a decision is pending'}). It re-runs on the fixed commit before this can merge.`,
+        reason: `The visual review found issues${where} that are not resolved yet (${why}).${owner ? '' : ' It re-runs on the fixed commit before this can merge.'}`,
         nextActor: BLOCKED_ACTOR(v),
       });
     } else if (v.status === 'blocked') {
@@ -101,7 +108,9 @@ export function decideReadyToMerge(facts: ReadyToMergeFacts): ReadyToMergeDecisi
     } else {
       blockers.push({
         code: 'visual_review_owed',
-        reason: v.status === 'needed'
+        reason: v.recapture && v.recapture.next !== 'decide'
+          ? `A fix merged and ${[...new Set(v.recapture.screens)].join(', ')} has not been shot again${where}. The capture is ${v.recapture.next === 'queued' ? 'queued' : 'filed automatically'} and the merge proceeds once it passes.`
+          : v.status === 'needed'
           ? `This mission changes what people see and its visual review has not run${where}. It is filed automatically and the merge proceeds once it passes.`
           : `The visual review is ${v.status}${where} and has to pass before this merges.`,
         nextActor: BLOCKED_ACTOR(v),
