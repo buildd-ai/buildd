@@ -5,6 +5,8 @@ let pathname = '/app/chat';
 let homeCount: number | null = 4;
 mock.module('next/navigation', () => ({ usePathname: () => pathname }));
 mock.module('./NeedsInputProvider', () => ({ useNeedsInput: () => ({ count: 3 }) }));
+let navSection: string | null = null;
+mock.module('@/lib/nav-section-store', () => ({ useNavSection: () => navSection }));
 mock.module('@/lib/home-attention-store', () => ({ useHomeAttentionCount: () => homeCount }));
 
 const { default: MissionsBottomNav } = await import('./MissionsBottomNav');
@@ -63,6 +65,21 @@ describe('MissionsBottomNav', () => {
       expect(render()).not.toContain('nav-tab-badge');
     } finally {
       homeCount = 4;
+    }
+  });
+  it("a mission's task page marks Missions, not Activity (design 6356e80d)", () => {
+    const before = pathname;
+    pathname = '/app/tasks/t-1';
+    navSection = '/app/missions';
+    try {
+      const html = render();
+      expect(tab(html, '/app/missions')).toContain('aria-current="page"');
+      expect(tab(html, '/app/tasks')).not.toContain('aria-current="page"');
+      navSection = null;
+      expect(tab(render(), '/app/tasks')).toContain('aria-current="page"');
+    } finally {
+      pathname = before;
+      navSection = null;
     }
   });
 });
