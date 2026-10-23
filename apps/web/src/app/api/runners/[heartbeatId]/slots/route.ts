@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { parseRunnerSlots, MIN_RUNNER_SLOTS, MAX_RUNNER_SLOTS } from '@buildd/shared';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamRole } from '@/lib/team-access';
+import { roleHas } from '@/lib/permissions';
 import { isUuid } from '@/lib/uuid';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { channels, events, triggerEvent } from '@/lib/pusher';
@@ -41,7 +42,7 @@ export async function PATCH(
   // A runner of another team is not found, not forbidden: its existence is not for this caller.
   const role = hb && teamId ? await getUserTeamRole(user.id, teamId) : null;
   if (!hb || !role) return NextResponse.json({ error: 'Runner not found' }, { status: 404 });
-  if (role !== 'owner' && role !== 'admin') {
+  if (!roleHas(role, 'manage_runner_slots')) {
     return NextResponse.json({ error: 'Only a team owner or admin can change a runner\'s slots.' }, { status: 403 });
   }
 
