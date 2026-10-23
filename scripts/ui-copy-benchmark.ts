@@ -16,14 +16,13 @@
  * Offline (default): replays cached answers for identical (state sent, policy identity, model, measurement
  * policy) only. A case with no cached answer has no answer, so the run is INCOMPLETE. It never calls a provider.
  *
- * Network: the team's own route through the scoped resolver (`resolveDecisionAccess`: the team's ui_copy
- * opt-in, its decision model and its key). There is no provider fallback: a team without the capability or a
- * key gets no answers, and the run is INCOMPLETE. Bounded by decisions and spend; new answers join the cache.
+ * Network: buildd's own `model.inference` capability route, under the worker's approved grant (the server
+ * holds the key and writes the usage ledger; this process has no database and no provider key). There is no
+ * provider fallback: no route, no grant or a refusal gives no answers, and the run is INCOMPLETE. Bounded by decisions and spend; new answers join the cache.
  */
 import type { DecisionQuestions } from '../packages/ai-kit/src/decide';
 import { DEFAULT_DECISION_MODEL, decisionCall, type DecisionResult } from '../packages/core/decision-client';
 import { measuredRoute, type BuilddDecisionDeps, type BuilddDecisionScope } from '../packages/core/decision-policy';
-import { loadMeasurementsSafe } from '../packages/core/decision-model-measurements';
 import { UI_COPY_CONFIG, uiCopyKind } from '../packages/core/decision-kind-ui-copy';
 import {
   benchmarkFeatures, materialRetention, parseUiCopyCorpus,
@@ -32,6 +31,7 @@ import {
   type UiCopyBenchmarkReport, type UiCopyCacheEntry, type UiCopyCacheFile, type UiCopyCaseResult, type UiCopyMeasurementPolicy,
   type UiCopyModelPolicy, type UiCopyNoAnswer, type UiCopyPolicyIdentity, type UiCopySplit,
 } from '../packages/core/eval/ui-copy-benchmark';
+import { grantRouteConfigured, grantTransport, type GrantRoute } from './ui-copy-grant-transport';
 import { executeUiVerification } from '../apps/web/src/lib/specs/ui-verification-decision';
 
 export const DEFAULT_CORPUS = 'packages/core/eval/ui-copy/corpus-v1.json';
@@ -51,15 +51,18 @@ export interface UiCopyBenchmarkOptions {
   model?: string;
   /** Offline: which recorded measurement policy to reapply (fingerprint or prefix). See `selectMeasurementPolicy`. */
   measurementPolicy?: string | null;
-  network?: { teamId: string; workspaceId?: string | null; maxDecisions: number; maxCostUsd: number } | null;
+  /** Network: buildd's own model.inference route (`GrantRoute`), under the worker's grant. `teamId`/`workspaceId` are legacy and unused. */
+  network?: ({ teamId?: string; workspaceId?: string | null; maxDecisions: number; maxCostUsd: number } & GrantRoute) | null;
 }
 export interface UiCopyBenchmarkDeps {
   /** The provider transport for network runs. Default the production `decisionCall`. */
   transport?: typeof decisionCall;
   /** Network runs: the scoped resolver. Default production's (`runBuilddDecision` resolves it). */
   resolveAccess?: BuilddDecisionDeps['resolveAccess'];
-  /** Network runs: the stored measurements. Default production's `loadMeasurementsSafe`. Read once, then frozen. */
+  /** Network runs: the stored measurements. Default none (no database here): only the kind's code-listed models count. Read once, then frozen. */
   measurements?: BuilddDecisionDeps['measurements'];
+  /** Network runs: the HTTP client for the capability route (tests only). */
+  fetch?: typeof fetch;
   now?: () => Date;
 }
 
@@ -100,7 +103,7 @@ export async function runUiCopyBenchmark(
   // The measurement policy every case is held to: read once and frozen live, the recorded one offline.
   let measurement: UiCopyMeasurementPolicy;
   if (net) {
-    measurement = uiCopyMeasurementPolicy(await (deps.measurements ?? (() => loadMeasurementsSafe()))().catch(() => []), uiCopyKind.kind);
+    measurement = uiCopyMeasurementPolicy(await (deps.measurements ?? (async () => []))().catch(() => []), uiCopyKind.kind);
     cache.measurementPolicies[measurement.fingerprint] = measurement.rows;
   } else {
     const chosen = selectMeasurementPolicy(cache, uiCopyKind.kind, opts.measurementPolicy);
@@ -112,6 +115,8 @@ export async function runUiCopyBenchmark(
   const modelPolicy = (model: string): UiCopyModelPolicy => ({
     model, eligible: route.isMeasured(model), threshold: route.thresholdFor(model) ?? UI_COPY_CONFIG.minConfidence, reason: route.reasonFor(model),
   });
+  // The only provider route is buildd's own capability route; nothing else is ever tried.
+  const transport = deps.transport ?? (grantRouteConfigured(net) ? grantTransport(net, deps.fetch) : null);
   const spent = { calls: 0, costUsd: 0 };
   let newEntries = 0;
   let cur: CaseCapture;
@@ -133,10 +138,11 @@ export async function runUiCopyBenchmark(
       return { ok: true, answers: hit.answers, model: hit.modelVersion, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 }, latencyMs: 0, attempts: 0 };
     }
     if (!net) return fail('cache_miss', 'no cached answer for this identity');
+    if (!transport) return fail('no_provider', 'no server route configured: set BUILDD_SERVER, BUILDD_API_KEY and BUILDD_WORKER_ID');
     if (spent.calls >= net.maxDecisions || spent.costUsd >= net.maxCostUsd) return fail('budget_deferred', 'benchmark spend bound reached');
     spent.calls++;
     cur.invoked = true;
-    const res = await (deps.transport ?? decisionCall)(params);
+    const res = await transport({ ...params, model });
     cur.latencyMs = res.latencyMs;
     if (!res.ok) { cur.noAnswer = 'provider_failure'; return res; }
     const costUsd = res.usage.costUsd ?? null;
@@ -152,7 +158,7 @@ export async function runUiCopyBenchmark(
   }) as typeof decisionCall;
 
   const scope: BuilddDecisionScope = net
-    ? { teamId: net.teamId, workspaceId: net.workspaceId ?? null }
+    ? { teamId: net.teamId ?? 'capability-route', workspaceId: net.workspaceId ?? null }
     : { teamId: 'offline-replay' };
   const brokerDeps: BuilddDecisionDeps = {
     call,
@@ -160,7 +166,8 @@ export async function runUiCopyBenchmark(
     record: async () => `benchmark-receipt-${++receipt}`,
     measurements: async () => frozen,
     ...(net
-      ? (deps.resolveAccess ? { resolveAccess: deps.resolveAccess } : {})
+      // The server resolves the key; locally the pinned model is all the broker needs to name.
+      ? { resolveAccess: deps.resolveAccess ?? (async () => ({ ok: true as const, apiKey: 'via-capability-grant', model: offlineModel })) }
       : { resolveAccess: async () => ({ ok: true as const, apiKey: 'offline-replay', model: offlineModel }) }),
   };
 
