@@ -80,6 +80,8 @@ const PERSISTED_FIELDS = [
   // session, so a restart replays deltas instead of starting from nothing.
   // Bounded by the task's own change set, never the repo.
   'workingSet', 'pendingShipReports',
+  // A terminal report the server has not acknowledged (WorkerSync.reportTerminal).
+  'terminalReport',
 ] as const;
 
 // Bounds to keep files reasonable
@@ -165,6 +167,13 @@ function restoredConnectors(data: PersistedWorker): { mcpConnectors?: ReturnType
   return list.length > 0 ? { mcpConnectors: list } : {};
 }
 
+/** An unacknowledged terminal report, validated; a malformed one is dropped. */
+function restoredTerminalReport(data: PersistedWorker): { terminalReport?: LocalWorker['terminalReport'] } {
+  const r = data.terminalReport as LocalWorker['terminalReport'] | undefined;
+  if (!r || typeof r !== 'object' || !r.payload || typeof r.payload !== 'object' || typeof r.since !== 'number') return {};
+  return { terminalReport: { payload: r.payload, since: r.since, ...(typeof r.attempts === 'number' ? { attempts: r.attempts } : {}) } };
+}
+
 /** Save a worker's state to disk (atomic write) */
 export function saveWorker(worker: LocalWorker): void {
   ensureDir();
@@ -231,8 +240,19 @@ export function saveWorker(worker: LocalWorker): void {
   }
 }
 
-/** Load all persisted workers from disk */
-export function loadAllWorkers(): LocalWorker[] {
+/**
+ * Load all persisted workers from disk.
+ *
+ * `reconcileRestart` is for the one startup restore (WorkerSync.
+ * restoreWorkersFromDisk) and nobody else: it rewrites every 'working' record
+ * to 'error' because no session survives the process. Every other reader (the
+ * terminal-worktree sweep, the terminal history cache behind getWorkers, purge)
+ * runs while those workers are alive in memory. When they rewrote too, a live
+ * worker silent in one long tool call (so not re-persisted) read 'error' on
+ * disk; a crash then left a record the next start skipped as already terminal,
+ * the server was never told, and the sweep deleted its worktree (2026-10-23).
+ */
+export function loadAllWorkers(opts: { reconcileRestart?: boolean } = {}): LocalWorker[] {
   if (!existsSync(workersDir())) return [];
 
   const workers: LocalWorker[] = [];
@@ -272,17 +292,20 @@ export function loadAllWorkers(): LocalWorker[] {
       // cannot survive a runner restart. Mark all of them as error immediately.
       // Previously we only caught workers with no activity, but even workers mid-session
       // are dead after a restart and would block concurrency indefinitely if left as working.
-      // `killedByRestart` is a transient in-memory marker (never written to
-      // disk) telling restoreWorkersFromDisk that this row still needs its
-      // terminal state reported to the server. Rewriting the status here used to
-      // silently disable that notification, because the caller keyed off
-      // status === 'working' and by then it was already 'error' — so every
-      // restart left every in-flight worker's server row at 'running' until the
-      // reaper expired it.
-      let killedByRestart = false;
-      if (data.status === 'working') {
+      // `killedByRestart` tells restoreWorkersFromDisk that this row still needs
+      // settling (continued, or its terminal state reported to the server).
+      // Rewriting the status here used to silently disable that notification,
+      // because the caller keyed off status === 'working' and by then it was
+      // already 'error' — so every restart left every in-flight worker's server
+      // row at 'running' until the reaper expired it. It is written into the
+      // rewritten file as well: a start that dies before the restore saves the
+      // worker (a crash loop, a failed save) leaves it for the next start
+      // instead of a record that reads as already terminal.
+      let killedByRestart = data.killedByRestart === true;
+      if (opts.reconcileRestart && data.status === 'working') {
         data.status = 'error';
         data.error = 'Killed: runner restarted, in-flight session terminated';
+        data.killedByRestart = true;
         // `_savedAt` deliberately NOT bumped: this is a status correction, not
         // activity. Bumping it renewed the 24h TTL on every runner restart,
         // which is how records (including leaked test fixtures) became immortal.
@@ -327,6 +350,7 @@ export function loadAllWorkers(): LocalWorker[] {
         lastAssistantMessage: data.lastAssistantMessage as string | undefined,
         ...restoredConnectors(data),
         ...restoredIsolation(data),
+        ...restoredTerminalReport(data),
         // Transient defaults
         hasNewActivity: false,
         currentAction: '',
@@ -400,6 +424,7 @@ export function loadWorker(workerId: string): LocalWorker | null {
       lastAssistantMessage: data.lastAssistantMessage as string | undefined,
       ...restoredConnectors(data),
       ...restoredIsolation(data),
+      ...restoredTerminalReport(data),
       hasNewActivity: false,
       currentAction: '',
       subagentTasks: [],

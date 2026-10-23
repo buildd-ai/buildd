@@ -517,6 +517,7 @@ const ATTEMPT_SITES: Record<string, AttemptSite[]> = {
     { at: /\.set\(\{ releaseResult, result: resultWithRelease, updatedAt/, kind: 'NO_STATUS', why: 'the release record' },
     { at: /\.set\(\{ status: 'failed', updatedAt: new Date\(\) \}\)[\s\S]*not\(eq\(tasks\.status, 'cancelled'\)\)/, kind: 'NOT_OWNER', predicate: true, why: 'a sandbox mount gap whose cost exhausts its mission fails the requeued task; an owner is refused by AttemptWithdrawn(failed, no claim) (AC-1 slice 9)' },
     { at: /'effectiveVerdictReason', \$\{copyGate\.reason/, kind: 'NO_STATUS', why: 'the copy review\'s verdict on the reviewer task\'s result' },
+    { at: /'effectiveVerdictReason', \$\{designGate\.reason\}/, kind: 'NO_STATUS', why: 'the design gate\'s verdict on the reviewer task\'s result' },
     { at: /'effectiveVerdictReason', \$\{serverOverrideReason\}/, kind: 'NO_STATUS', why: 'the server\'s escalation on the reviewer task\'s result' },
     { at: /'evidenceSha', \$\{evidenceSha\}/, kind: 'NO_STATUS', why: 'the commit the reviewer read its verdict at, on the reviewer task\'s result' },
     { at: /'settledVerdict', \$\{effectiveVerdict\}/, kind: 'NO_STATUS', why: 'the verdict once every gate ran, on the reviewer task\'s result (a later delivery open adopts it)' },

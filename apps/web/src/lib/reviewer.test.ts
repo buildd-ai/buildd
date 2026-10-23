@@ -2242,6 +2242,32 @@ describe('renderSpecConformanceGuidance', () => {
     expect(without.section).not.toContain('Criteria to verdict');
   });
 
+  it('a pin whose criteria name design screens loads those screens and refuses a builder claim as evidence', async () => {
+    pinnedReadImpl = async () => ({
+      ok: true, specId: 's-1', revision: 1, contentHash: 'ab'.repeat(32), title: 'Nav',
+      body: ['# Nav', '- AC-4: the mission page leads with the build.', '  - screen: phone-mission, desktop-mission', '- AC-5: copy.'].join('\n'),
+      design: { kind: 'artifact', ref: 'art-1', version: '3', screens: [{ id: 'phone-mission', name: 'Mission, phone' }] },
+    });
+    const pin = { specId: 's-1', specRevisionId: 'r-1', revision: 1, contentHash: 'ab'.repeat(32) };
+    const r = await renderSpecConformanceGuidance({ specSource: pin, installationId: 1, repoFullName: 'buildd-ai/buildd', headSha: 'd'.repeat(40), taskId: 't-1' });
+    expect(r.section).toContain('## Design screens to judge');
+    expect(r.section).toContain('get_artifact { artifactId: "art-1", revision: 3 }');
+    expect(r.section).toContain('AC-4: phone-mission (Mission, phone), desktop-mission');
+    expect(r.section).not.toContain('- AC-5:  ');
+    expect(r.section).toContain('is a claim, not evidence');
+    expect(r.section).toContain('`designChecks`');
+  });
+
+  it('a pin with a design but no screen-named criteria adds no design section', async () => {
+    pinnedReadImpl = async () => ({
+      ok: true, specId: 's-1', revision: 1, contentHash: 'ab'.repeat(32), title: 'Nav', body: '# Nav\n- AC-1: copy.',
+      design: { kind: 'artifact', ref: 'art-1', version: '3' },
+    });
+    const pin = { specId: 's-1', specRevisionId: 'r-1', revision: 1, contentHash: 'ab'.repeat(32) };
+    const r = await renderSpecConformanceGuidance({ specSource: pin, installationId: 1, repoFullName: 'buildd-ai/buildd', headSha: 'd'.repeat(40) });
+    expect(r.section).not.toContain('Design screens to judge');
+  });
+
   it('a Living Spec pin that no longer resolves is an explicit finding naming why', async () => {
     pinnedReadImpl = async () => ({ ok: false, reason: 'pinned spec revision 1 has a different hash than the task was pinned to' });
     const result = await renderSpecConformanceGuidance({

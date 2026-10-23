@@ -120,16 +120,21 @@ export function TaskShippedBody({
 export function TaskShippedDetails({
   view,
   runDetails = [],
+  openRun = false,
   children,
 }: {
   view: TaskShippedView;
   runDetails?: RunDetail[];
+  openRun?: boolean;
   children?: ReactNode;
 }) {
-  const hasRunDetails = runDetails.length > 0 || !!children || !!view.raw;
+  const hasRunDetails = !!view.technicalSummary || runDetails.length > 0 || !!children || !!view.raw;
   if (!view.technicalSummary && !hasRunDetails) return null;
   return (
     <div className="flex flex-col border-b border-border-default">
+      {hasRunDetails && (
+        <div className="border-t border-border-default" data-testid="task-shipped-run-details">
+          <Disclosure summary="Run" defaultOpen={openRun}>
       {view.technicalSummary && (
         <div className="border-t border-border-default" data-testid="task-shipped-technical">
           <Disclosure summary="Technical summary">
@@ -142,9 +147,7 @@ export function TaskShippedDetails({
           </Disclosure>
         </div>
       )}
-      {hasRunDetails && (
-        <div className="border-t border-border-default" data-testid="task-shipped-run-details">
-          <Disclosure summary="Run details">
+
             {runDetails.length > 0 && (
               <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-2 pb-4 pt-1 text-body">
                 {runDetails.map(r => (

@@ -142,6 +142,22 @@ describe('fetchCiFailureExcerpts', () => {
     expect(one.excerpt!.split('\n').length).toBeLessThanOrEqual(CI_EXCERPT_LINES);
   });
 
+  // surface-ia §11 AC-53: the failure sat mid-log and the tail was checkout cleanup.
+  it('returns the failing lines from mid-log, not the cleanup tail', async () => {
+    reset();
+    jobs.set(12, { steps: [{ name: 'Run runner unit tests', conclusion: 'failure' }] });
+    logs.set(12, [
+      '2026-10-23T09:00:01.0000000Z (pass) launcher > parses argv [0.12ms]',
+      '2026-10-23T09:00:02.0000000Z (fail) launcher > dispatches status on Windows [5003.21ms]',
+      '2026-10-23T09:00:03.0000000Z ##[error]Process completed with exit code 1.',
+      '2026-10-23T09:00:04.0000000Z Post job cleanup.',
+      ...Array.from({ length: 200 }, (_, i) => `2026-10-23T09:00:05.0000000Z git config cleanup ${i}`),
+    ].join('\n'));
+    const [one] = await fetchCiFailureExcerpts(1, 'o/r', [{ name: 'Runner unit tests (windows)', conclusion: 'failure', url: url(12) }]);
+    expect(one.excerpt).toContain('(fail) launcher > dispatches status on Windows');
+    expect(one.excerpt).not.toContain('git config cleanup');
+  });
+
   it('degrades to name plus URL when the job has no logs', async () => {
     reset();
     jobs.set(21, { steps: [{ name: 'Test', conclusion: 'failure' }] });

@@ -5597,7 +5597,7 @@ export async function handleBuilddAction(
         const data = await api(`/api/artifacts/designs?${qs}`);
         const ds = (data.designs ?? []) as Array<Record<string, any>>;
         if (!ds.length) return text('No designs found.');
-        return text(`${ds.length} design(s):\n${ds.map(d => `- ${d.title || '(untitled)'} — revision ${d.revision}${d.pinnedRevision ? ` (pinned ${d.pinnedRevision})` : ''}, screens: ${(d.screens ?? []).map((s: any) => s.id).join(', ')}. id: ${d.id}${d.linkId ? `, link: ${d.linkId}` : ''}`).join('\n')}`);
+        return text(`${ds.length} design(s):\n${ds.map(d => `- ${d.title || '(untitled)'} — revision ${d.revision}${d.specPin ? ` (pinned by this spec revision at revision ${d.pinnedRevision}; not an attachment)` : d.pinnedRevision ? ` (pinned ${d.pinnedRevision})` : ''}, screens: ${(d.screens ?? []).map((s: any) => s.id).join(', ')}. id: ${d.id}${d.linkId ? `, link: ${d.linkId}` : ''}`).join('\n')}`);
       }
       throw new Error('action must be one of: attach, detach, list');
     }

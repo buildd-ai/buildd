@@ -187,13 +187,22 @@ export interface LocalWorker {
   // Persisted with pauseRequestedAt: 'update' when the runner asked for that
   // pause to apply an update (update-drain.ts); absent for a person's pause.
   pauseRequestedFor?: 'update';
-  // Transient (never persisted): set by loadAllWorkers when it rewrites a
-  // 'working' worker to 'error' because SDK sessions cannot survive a runner
-  // restart. restoreWorkersFromDisk reads it to notify the server, which would
-  // otherwise leave the row 'running' until the reaper expires it. A marker,
-  // rather than re-deriving intent from the error string, keeps the two sides
-  // from silently drifting the way the status check did.
+  // Set by loadAllWorkers({ reconcileRestart: true }) at startup when it
+  // rewrites a 'working' worker to 'error' because SDK sessions cannot survive
+  // a runner restart. restoreWorkersFromDisk reads it to settle the worker
+  // (continue it, or report it failed), which would otherwise leave the server
+  // row 'running'. A marker, rather than re-deriving intent from the error
+  // string, keeps the two sides from silently drifting the way the status
+  // check did. Written into the rewritten file too, so a restart that dies
+  // before the restore settles the worker settles it on the next start; never
+  // in PERSISTED_FIELDS, so the restore's own save clears it.
   killedByRestart?: boolean;
+  /**
+   * Persisted: a terminal report the server has not acknowledged yet
+   * (WorkerSync.reportTerminal). Re-sent with backoff until it lands, and on
+   * the next start when the process dies first.
+   */
+  terminalReport?: { payload: Record<string, unknown>; since: number; attempts?: number };
   /**
    * Persisted: this worker was paused by the runner itself, not by a person,
    * and continues in its own session when the runner next starts (unless it
