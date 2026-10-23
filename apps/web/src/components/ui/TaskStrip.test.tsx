@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
-import TaskStrip, { stripDot, stripLook, stripRowCapacity, wrapStripGroups, type TaskStripCell } from './TaskStrip';
+import TaskStrip, { stripLook, stripRowCapacity, wrapStripGroups, type TaskStripCell } from './TaskStrip';
 import { STATES, type StateKey } from './states';
 
 const cells: TaskStripCell[] = (['landed', 'landed', 'review', 'running', 'blocked', 'queued', 'queued'] as StateKey[])
@@ -199,24 +199,43 @@ describe('TaskStrip grouped looks', () => {
   /** Each fill's opening tag: a dot is a child, so `fills()` (fill through its text) would miss those. */
   const fillTags = (html: string) => html.match(/<span[^>]*data-testid="task-strip-fill"[^>]*>/g) ?? [];
 
-  it('merged is solid, work in flight is the hatch, everything else is a dashed outline', () => {
-    expect(fillTags(grouped).map(f => attr(f, 'data-look'))).toEqual(['merged', 'running', 'running', 'waiting', 'waiting', 'waiting', 'waiting', 'waiting', 'waiting', 'waiting']);
+  it('merged is solid, an agent working is the hatch, a person\'s move is outlined amber, a failure outlined red, the rest dashed (R-4 r5)', () => {
+    expect(fillTags(grouped).map(f => attr(f, 'data-look'))).toEqual(['merged', 'running', 'running', 'waiting', 'waiting', 'waiting', 'failed', 'failed', 'person', 'waiting']);
     expect(stripLook('landed')).toBe('merged');
     expect(stripLook('fixing')).toBe('running');
+    expect(stripLook('waiting')).toBe('person');
+    expect(stripLook('ci_failed')).toBe('failed');
+    expect(grouped).not.toContain('task-strip-dot');
   });
 
-  it('a person\'s move carries an amber dot, a failure a red one; nothing else has a dot', () => {
-    const dots = [...grouped.matchAll(/data-testid="task-strip-dot" data-dot="(\w+)"/g)].map(m => m[1]);
-    expect(dots).toEqual(['red', 'red', 'amber']);
-    expect(stripDot('not_landed')).toBeNull();
-    expect(stripDot('running')).toBeNull();
+  it('a fix attempt an agent is on hatches; one waiting out its retry is dashed', () => {
+    expect(stripLook('fixing', true)).toBe('running');
+    expect(stripLook('fixing', false)).toBe('waiting');
+    const two: TaskStripCell[] = [{ id: 'a', state: 'fixing', live: true }, { id: 'b', state: 'fixing', live: false }];
+    const html = renderToStaticMarkup(<TaskStrip cells={two} groups={[{ key: 'all', ids: ['a', 'b'] }]} />);
+    expect(fillTags(html).map(f => attr(f, 'data-look'))).toEqual(['running', 'waiting']);
   });
 
-  it('only the running cell drifts, and no glyph is drawn in a look', () => {
+  it('every running cell drifts, and no glyph is drawn in a look', () => {
     const drifting = fillTags(grouped).filter(f => f.includes('data-drift'));
-    expect(drifting).toHaveLength(1);
-    expect(attr(drifting[0], 'data-look')).toBe('running');
+    expect(drifting).toHaveLength(2);
+    expect(drifting.every(f => attr(f, 'data-look') === 'running')).toBe(true);
     expect(grouped).not.toContain('✕');
+  });
+
+  it('a grouped cell is at least 32px tall on a phone; a plain cell stays a slim bar', () => {
+    for (const f of fillTags(grouped)) expect(f).toContain(' h-8 ');
+    for (const f of fillTags(renderToStaticMarkup(<TaskStrip cells={all} />))) expect(f).toContain(' h-4 ');
+  });
+
+  it('without ticks each cell is named by its task and state, never a number, and no tick row renders', () => {
+    const html = renderToStaticMarkup(<TaskStrip cells={all} groups={[{ key: 'all', ids: all.map(c => c.id) }]} ticks={false} />);
+    expect(html).not.toContain('data-testid="task-strip-ticks"');
+    const tags = cellTags(html);
+    expect(tags[0]).toContain('aria-label="Task 0: merged"');
+    expect(tags[0]).toContain('title="Task 0: merged"');
+    expect(tags[8]).toMatch(/aria-label="Task 8: [a-z]/);
+    for (const t of tags) expect(t).not.toMatch(/aria-label="\d\d /);
   });
 
   it('the state (what buildd top reads) is unchanged: each button keeps its data-state', () => {
@@ -236,5 +255,14 @@ describe('TaskStrip grouped looks', () => {
     expect(css).toMatch(/@keyframes cell-hatch-drift/);
     expect(css).not.toMatch(/data-drift\][^{]*\{[^}]*animation:\s*none/);
     expect(css).toMatch(/\.state-cell\[data-look="waiting"\] \{[^}]*dashed/);
+  });
+
+  it('the looks use theme tokens only, so Night and Day both keep their contrast (R-21)', () => {
+    const css = readFileSync(join(import.meta.dir, '..', '..', 'app', 'globals.css'), 'utf8');
+    const looks = css.match(/\.state-cell\[data-look="[a-z]+"\] \{[^}]*\}/g) ?? [];
+    expect(looks.map(l => l.match(/data-look="([a-z]+)"/)![1])).toEqual(['merged', 'running', 'person', 'failed', 'waiting']);
+    for (const rule of looks) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(/i);
+    expect(looks[2]).toMatch(/solid var\(--status-warning\)/);
+    expect(looks[3]).toMatch(/solid var\(--status-error\)/);
   });
 });
