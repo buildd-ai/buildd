@@ -19,7 +19,7 @@ import { computeMissionProgress, deriveMissionProgressMetric, deriveCriteriaGate
 import { isMissionAuditTask, isSurfaceFixTask, surfaceAuditHeadline } from '@buildd/core/surface-audit';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
-import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
+import { describeCriteriaBlocker } from '@/lib/completion-check-summary';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { describeLastCheck, selectOrganizerRuns } from '@/lib/mission-checkins';
@@ -31,7 +31,6 @@ import MissionOverflowMenu from './MissionOverflowMenu';
 import MissionNoticeSlot, { noticeNeedsPerson } from './MissionNoticeSlot';
 import MissionRecoveryNotice from '@/components/recovery/MissionRecoveryNotice';
 import { loadTaskRecoveryViewsForViewer } from '@/lib/incident-recovery-load';
-import { AskAboutLink } from '@/components/chat/ChatEntry';
 import MissionMergePolicyRow from '@/components/MissionMergePolicyRow';
 import MissionReviewSummary from './MissionReviewSummary';
 import MissionInitiativeSelector, { type InitiativeOption } from './MissionInitiativeSelector';
@@ -56,7 +55,9 @@ import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
 import { MissionNotesSheet } from './MissionFeed';
 import { mastheadBack, parseMissionOrigin } from './MissionDetailView';
-import MissionLayoutShell, { MISSION_HEADER_ACTION, MissionBoardHeader, MissionLayoutTabs } from './MissionLayoutShell';
+import MissionLayoutShell, { MissionBoardHeader } from './MissionLayoutShell';
+import { historyRaised, missionDecisions, type OpenQuestionNote } from '@/lib/mission-decisions';
+import { boardTaskHref } from './MissionBoardParts';
 import FlowTimeline from './FlowTimeline';
 import { expectedMinutesFromPredictions, sameFilesFromRows } from '@/lib/flow-timeline';
 import MissionOverview, { type MissionChecksSource } from './MissionOverview';
@@ -251,6 +252,14 @@ async function MissionDetailBody({
       columns: { id: true, type: true, authorType: true, title: true, taskId: true, createdAt: true },
       orderBy: sqlOrderBy(desc(missionNotes.createdAt)),
       limit: 200,
+    }) : null,
+    // The Overview's decision cards and raised History line (Navigation
+    // R-6, R-16): the open organizer questions, bounded (spec 3ef37387).
+    openQuestionNotes: layout === 'board' ? db.query.missionNotes.findMany({
+      where: sqlWhere(and(onMissionOrItsTasks, eq(missionNotes.type, 'question' as any), eq(missionNotes.status, 'open'))),
+      columns: { id: true, type: true, status: true, title: true, body: true, taskId: true, workerId: true, defaultChoice: true, createdAt: true },
+      orderBy: sqlOrderBy(desc(missionNotes.createdAt)),
+      limit: 20,
     }) : null,
   });
   let mission = r1.mission;
@@ -1016,8 +1025,7 @@ async function MissionDetailBody({
   const recordItems = artifactItems.filter(a => recordIds.has(a.id));
 
   const decisionBlock = displayState === 'waiting_decision' && (() => {
-        const reading = inferCriteriaFailureReading(goalCriteriaStateFull);
-        const readingCopy = describeCriteriaFailureReading(reading);
+        const readingCopy = describeCriteriaBlocker(goalCriteriaStateFull);
         // First non-passing criterion, by its stable `index` — not array
         // position in `criteria`, which can skip entries.
         const failingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
@@ -1258,14 +1266,18 @@ async function MissionDetailBody({
     </MissionNoticeSlot>
   );
   const boardLink = { missionId: id, from: parseMissionOrigin(from), initiativeId: initiativeId ?? null };
-  // The Landed strip's drawer: the tasks' actions run in this workspace, and
-  // when the situation block's one affordance is a single task, the drawer
-  // opens on it with the accessor's sentence (and the block points at it).
-  const boardStrip = {
-    stripFocus: !quietState && missionAnswer && primaryAffordance?.kind === 'internal' && primaryAffordance.taskId
-      ? { taskId: primaryAffordance.taskId, reason: missionAnswer.situation.headline }
-      : null,
-  };
+  // The decisions a person must give and what raises History (Navigation
+  // R-6, R-16), over the board and the open organizer questions read above.
+  const openQuestionNotes: OpenQuestionNote[] = (r1.openQuestionNotes ?? []).map(n => ({
+    id: n.id, type: n.type as string, status: n.status as string, title: n.title, body: n.body ?? null,
+    workerId: n.workerId ?? null, taskId: n.taskId ?? null, defaultChoice: n.defaultChoice ?? null,
+    subjectTaskId: (n as { subjectTaskId?: string | null }).subjectTaskId ?? null,
+    createdAt: new Date(n.createdAt).getTime(),
+  }));
+  const decisions = layout === 'board'
+    ? missionDecisions({ model: boardModel, notes: openQuestionNotes, mission: { id, title: mission.title, href: `/app/missions/${id}` }, hrefFor: taskId => boardTaskHref(boardLink, taskId) })
+    : [];
+  const history = layout === 'board' ? historyRaised(boardModel, openQuestionNotes) : null;
   // Verified reads current verdicts, never a stale stored overall: a criterion not
   // passing on the board's live counts, or a blocking visual review not clear, holds it.
   const verifiedHoldReason = verifiedHold({
@@ -1286,8 +1298,7 @@ async function MissionDetailBody({
       overall={missionCriteriaOverall as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null}
     />
   );
-  // Chat is how you ask about work: opens a conversation with this mission docked.
-  const askAbout = <AskAboutLink kind="mission" id={id} teamId={mission.teamId} workspaceId={mission.workspaceId} className={MISSION_HEADER_ACTION} />;
+  // Ask is the docked panel, not a header link (Navigation R-3, R-21).
   // The mission's visual review as a mission command (never the task composer),
   // started from ⋯ on any open mission with a workspace to run it in; once an
   // audit exists the footer's Screens row is where it is reviewed.
@@ -1366,7 +1377,7 @@ async function MissionDetailBody({
       title={mission.title}
       chip={stateChip}
       verified={verifiedPill}
-      actions={<>{askAbout}{overflowMenu}</>}
+      actions={overflowMenu}
       goal={goalLine}
       description={mission.description || !isTerminal ? <MissionDescription missionId={id} initialDescription={mission.description} readonly={isTerminal} defaultExpanded /> : undefined}
       serverNow={renderedAt}
@@ -1403,7 +1414,7 @@ async function MissionDetailBody({
       <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
         initial={layout}
-        board={layout !== 'board' ? null : boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} checks={overviewChecks} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} {...boardLink} {...boardStrip} />)}
+        board={layout !== 'board' ? null : boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} checks={overviewChecks} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} decisions={decisions} history={history} {...boardLink} />)}
         flow={layout !== 'flow' ? null : boardHeader(<FlowTimeline model={boardModel} sameFiles={flowSameFiles} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
         feed={layout !== 'feed' ? null : boardHeader(
           <MissionFeedLayout

@@ -313,6 +313,13 @@ Setting `TMPDIR` only helps when the sandbox already permits writes there;
 it does not grant filesystem access. Keep source protection enabled and use
 the manual **Verify Unit Tests** workflow when local writes are unavailable.
 
+The same applies to `EPERM` from `uv_spawn bun.exe` (restricted native-Windows
+sessions, including Codex's nested sandbox failing `CreateRestrictedToken`): the
+host denies child processes, and the runner reports the files as inconclusive.
+Launching each file yourself from PowerShell keeps isolation but is not a
+supported substitute for the runner; do not batch files into one `bun test`
+process. Use the remote workflow below for evidence.
+
 After `verify-unit-tests.yml` is available on `dev`, dispatch it from trunk
 with the full, pushed commit SHA under review:
 

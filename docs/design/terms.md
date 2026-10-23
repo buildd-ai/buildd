@@ -41,6 +41,7 @@ shorten the word, never re-word it.
 | `pr.closed` | ✕ Closed without merging | `closed` | The PR closed and its change did not merge. |  | `kernel:CLOSED_UNMERGED`, `kernel:ABANDONED`, `strip:not_landed`, `waiting:subject_dead` |
 | `decision.approval_required` | ! Approval required | `approval required` | A policy gate only a person can clear: a migration, a human merge or an escalation. | Approve or decline it |  |
 | `decision.waiting_on_you` | ! Waiting on you | `waiting on you` | A decision only a person can make. | Answer the decision | `kernel:ESCALATED`, `strip:needs_you` |
+| `decision.your_decision` | ! Your decision | `your decision` | An agent asked a question only a person can answer; the work waits for the answer. | Answer the question |  |
 | `wait.scheduled` | Scheduled | `scheduled` | Starts by itself at its start time. | starts at its start time | `waiting:start_deferred` |
 | `wait.usage_limit` | Usage limit | `usage limit` | The provider’s usage limit is reached; it starts when the limit resets. | the limit resets | `waiting:budget_paused`, `waiting:managed_entitlement`, `runner:budget_exhausted` |
 | `wait.budget` | Budget reached | `budget reached` | The mission spent its budget; it starts when someone raises it. | Raise the mission budget | `waiting:mission_budget` |

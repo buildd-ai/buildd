@@ -1,7 +1,8 @@
 /**
- * The Overview: the lg strip with the finish-setting task selected (its marks
- * only: a tap opens the task page), and the right rail. Static markup from the
- * strip fixtures.
+ * The Overview (Navigation d25d923d R-3 to R-6, R-15, R-16): the stage line,
+ * the bar with no numbers, the summary line and task list, the decision
+ * cards, the raised History line, and only the current stage. Static markup
+ * from the strip fixtures.
  */
 import { describe, expect, it, mock } from 'bun:test';
 
@@ -13,9 +14,9 @@ mock.module('next/navigation', () => ({
 
 const { renderToStaticMarkup } = await import('react-dom/server');
 const { default: MissionOverview } = await import('./MissionOverview');
-const { railLines, overviewLayout } = await import('@/lib/mission-overview');
-const { dagBoard, dagId, DAG_SPECS, overviewWavesBoard } = await import('@/app/app/dev/fixtures/mission-task-strip-fixtures');
-const legendText = (markup: string) => [...(markup.match(/data-testid="overview-counts"[\s\S]*?<\/p>/)?.[0] ?? '').matchAll(/data-legend="[^"]+"[^>]*>(?:<span[^>]*><\/span>)?([^<]*)</g)].map(m => m[1]);
+const { overviewLayout } = await import('@/lib/mission-overview');
+const { dagBoard, DAG_SPECS, overviewWavesBoard } = await import('@/app/app/dev/fixtures/mission-task-strip-fixtures');
+const { missionDecisions, historyRaised } = await import('@/lib/mission-decisions');
 
 const spec = DAG_SPECS.linear;
 const html = renderToStaticMarkup(<MissionOverview model={dagBoard(spec)} missionId="mission-1" />);
@@ -23,32 +24,80 @@ const html = renderToStaticMarkup(<MissionOverview model={dagBoard(spec)} missio
 const compact = await import('@/app/app/dev/fixtures/mission-detail-compact-fixtures');
 
 describe('MissionOverview', () => {
-  it('opens on the task in flight, not the first task', () => {
-    const selected = html.match(/data-id="([^"]+)"[^>]*aria-pressed="true"/)?.[1];
-    expect(selected).toBe(dagId(spec, 'B'));
-  });
-
-  it('draws the lg strip and the counts, with no focus card or ‹ › stepper (spec d25d923d R-1)', () => {
+  it('draws the bar with no tick numbers, the summary line and the list; no focus card, legend, rail or stepper (R-1, R-3, R-5)', () => {
     expect(html).toContain('data-size="lg"');
-    expect(legendText(html)).toEqual(['1 done', '1 in progress', '3 waiting on tasks']);
+    expect(html).not.toContain('data-testid="task-strip-ticks"');
+    expect(html).toContain('data-testid="mission-build-summary"');
+    expect(html).toContain('data-testid="mission-task-list"');
     expect(html).not.toContain('data-testid="focus-card"');
     expect(html).not.toContain('data-testid="overview-stepper"');
+    expect(html).not.toContain('data-testid="overview-counts"');
+    expect(html).not.toContain('data-testid="overview-rail"');
     expect(html).not.toMatch(/role="dialog"|data-testid="task-sheet/);
   });
 
-  it('puts the agents and needs-you counts in the rail, capped to a 720px main column', () => {
-    expect(html).toContain('data-testid="overview-rail"');
-    expect(html).toContain('data-testid="rail-needs"');
-    expect(html).toContain('min-[900px]:grid-cols-[minmax(0,720px)');
+  it('names tasks in the bar and the list, never numbers', () => {
+    expect(html).not.toMatch(/aria-label="\d\d /);
+    expect(html).toMatch(/aria-label="feat: task A: merged"/);
+    const list = html.slice(html.indexOf('data-testid="mission-task-list"'));
+    expect(list).toContain('feat: task B');
+    expect(list).not.toMatch(/>0\d</);
   });
 
-  // Owner report: "Agents live 1 / Needs you 0" is label-speak. Counts read as words.
-  it('says the counts in words, not label and number', () => {
-    const rail = html.slice(html.indexOf('data-testid="overview-counts-rail"'));
-    expect(rail).not.toMatch(/Agents live|Needs you|waiting on you/);
-    expect(railLines(0, 0)).toEqual({ agents: 'No agents working', needs: 'Nothing to decide' });
-    expect(railLines(1, 1)).toEqual({ agents: '1 agent working', needs: '1 decision to make' });
-    expect(railLines(3, 2)).toEqual({ agents: '3 agents working', needs: '2 decisions to make' });
+  it('a row opens its task page, and carries the #t- anchor', () => {
+    expect(html).toMatch(/id="t-[^"]+" data-task-id="[^"]+" data-testid="mission-task-row"/);
+    expect(html).toMatch(/data-testid="mission-task-row"[^>]*><a [^>]*href="\/app\/tasks\//);
+  });
+});
+
+describe('MissionOverview over AC-4\u2019s mission (16 tasks)', () => {
+  const f = compact.missionDetailCompactFixture('building', null);
+  const out = renderToStaticMarkup(<MissionOverview model={f.model} missionId="mission-1" checks={f.checks} outcomeSpecTitles={f.specTitles} decisions={f.decisions} history={f.history} />);
+
+  it('the decision card, bar, summary line and the decision\u2019s row are visible; no Verify or Deliver card; no tab bar', () => {
+    expect(out).toContain('data-testid="decision-card"');
+    expect(out).toContain('data-testid="task-strip"');
+    expect(out).toContain('11 of 16 merged · 1 running · 1 fixing · 1 your decision · 2 waiting');
+    expect(out).toMatch(/data-testid="mission-task-row" data-state="decision"/);
+    expect(out).toContain('data-stage="build"');
+    expect(out).not.toContain('data-testid="mission-checks"');
+    expect(out).not.toContain('data-testid="build-complete-bar"');
+    expect(out).not.toContain('data-testid="mission-delivered-line"');
+    expect(out).not.toContain('role="tablist"');
+  });
+
+  it('the header reads one spec line and the stage line names the current stage only', () => {
+    expect(out).toMatch(/data-testid="mission-outcome-spec"[^>]*>.*Spec.*Cloud runner: deploy from Settings/);
+    expect(out).not.toMatch(/data-testid="mission-outcome-spec"[^>]*>[^<]*rev /);
+    const steps = [...out.matchAll(/data-step="([^"]+)" data-state="([^"]+)"/g)].map(m => `${m[1]}:${m[2]}`);
+    expect(steps).toEqual(['build:now', 'verify:todo', 'deliver:todo']);
+    expect((out.match(/data-testid="mission-check-rail-text"/g) ?? []).length).toBe(1);
+  });
+
+  it('the decision card names the task, every task waiting on it, each option\u2019s effect, Answer differently and Not now (AC-10)', () => {
+    const card = out.slice(out.indexOf('data-testid="decision-card"'), out.indexOf('data-testid="task-strip"'));
+    expect(card).toContain('Mirror the runner image to Docker Hub');
+    expect(card).toContain('The release publishes an image digest');
+    expect(card).toMatch(/The release publishes an image digest waits on this\./);
+    expect(card).toContain('How should Docker Hub credentials be set up?');
+    expect((card.match(/data-testid="decision-option-effect"/g) ?? []).length).toBe(2);
+    expect(card).toContain('Answer differently');
+    expect(card).toContain('Not now');
+  });
+
+  it('the bar draws the five looks: merged, running, person, waiting', () => {
+    const looks = [...out.matchAll(/data-testid="task-strip-fill"[^>]*data-look="([a-z]+)"/g)].map(m => m[1]);
+    expect(looks.filter(l => l === 'merged')).toHaveLength(11);
+    expect(looks).toContain('running');
+    expect(looks).toContain('person');
+    expect(looks).toContain('waiting');
+  });
+
+  it('a held task reads Queued with its age, never Running or Next in line (AC-14)', () => {
+    const list = out.slice(out.indexOf('data-testid="mission-task-list"'));
+    expect(list).toMatch(/Queued \d+[mh]/);
+    expect(list).not.toContain('Next in line');
+    expect(list).toMatch(/Fixing · CI failed · resumes \d\d:\d\d/);
   });
 });
 
@@ -61,21 +110,21 @@ describe('MissionOverview, 11 tasks with delivery', () => {
     expect(out).not.toContain('data-testid="delivery-stages"');
   });
 
-  it('the counts line is build counts only; criteria live in the Verified pill and the rail', () => {
-    const counts = legendText(out);
-    expect(counts[0]).toBe('3 done');
-    expect(counts.join(' ')).not.toMatch(/criteri/);
+  it('the summary line is build counts only; merged tasks fold into one row', () => {
+    expect(out).toMatch(/data-testid="mission-build-summary"[^>]*>3 of 11 merged/);
+    expect(out).toContain('3 merged ›');
+    expect(out).not.toMatch(/criteri/);
   });
 });
 
-// Spec f7f67f1a R-1, R-3, R-5, R-6 (revision 6).
+// Spec f7f67f1a R-1, R-3 (the bar's groups and outline).
 describe('MissionOverview groups', () => {
   const model = overviewWavesBoard(20);
   const layout = overviewLayout(model);
   const out = renderToStaticMarkup(<MissionOverview model={model} missionId="mission-1" />);
   const cellIds = [...out.matchAll(/<button[^>]*data-id="([^"]+)"/g)].map(m => m[1]);
 
-  it('draws cells Done first, then In progress, Waiting and checks, so the keys step in that order', () => {
+  it('draws cells merged first, then in progress, waiting and checks, so the keys step in that order', () => {
     expect(cellIds).toEqual(layout.order);
   });
 
@@ -89,20 +138,6 @@ describe('MissionOverview groups', () => {
     expect(to).toBe(col(active[active.length - 1]) + 1);
   });
 
-  it('marks each waiting cell with its cause, and names it', () => {
-    expect(out).toContain('data-wait="tasks"');
-    expect(out).toContain('data-wait="slot"');
-    expect(out).toContain('data-wait="hold"');
-    expect(out).toMatch(/aria-label="\d\d Next in line: /);
-    // A hold names its cause (terms catalog); with no cause known it reads Waiting, never Held.
-    expect(out).toMatch(/aria-label="\d\d Waiting: /);
-    expect(out).not.toMatch(/aria-label="\d\d Held: /);
-  });
-
-  it('the legend says the groups in words', () => {
-    expect(legendText(out)).toEqual(['10 done', '2 in progress', '4 waiting on tasks', '2 next in line', '1 blocked', '1 not started', '1 check']);
-  });
-
   it('a two-task mission draws two compact cells, not two wide slabs', () => {
     const two = renderToStaticMarkup(<MissionOverview model={overviewWavesBoard(2)} missionId="mission-1" />);
     expect(two).toContain('md:[--cell:minmax(0,56px)]');
@@ -112,7 +147,7 @@ describe('MissionOverview groups', () => {
 
 const { handoffFixture } = await import('@/app/app/dev/fixtures/mission-task-strip-fixtures');
 
-describe('MissionOverview handoff (spec f7f67f1a R-11 to R-24)', () => {
+describe('MissionOverview stages (Navigation R-15, AC-9; spec f7f67f1a R-11 to R-24)', () => {
   const base = { now: Date.UTC(2026, 9, 14, 12), missionCreatedAt: Date.UTC(2026, 9, 14, 11), missionStatus: 'active' as const };
   const render = (variant: Parameters<typeof handoffFixture>[0]) => {
     const f = handoffFixture(variant, base);
@@ -123,21 +158,22 @@ describe('MissionOverview handoff (spec f7f67f1a R-11 to R-24)', () => {
   const rows = (markup: string) => [...markup.matchAll(/data-testid="mission-check" data-kind="([^"]+)" data-status="([^"]+)"/g)].map(m => `${m[1]}:${m[2]}`);
   const rail = (markup: string) => [...markup.matchAll(/data-step="([^"]+)" data-state="([^"]+)"/g)].map(m => `${m[1]}:${m[2]}`);
 
-  it('while building: the strip and counts stay, Build is the checkpoint, and the estimate says build only', () => {
+  it('while building: the bar and list stay, Build is the stage, and the estimate says build only', () => {
     const html = render('handoff-building');
+    expect(html).toContain('data-stage="build"');
     expect(html).toContain('data-testid="task-strip"');
     expect(html).not.toContain('data-testid="build-complete-bar"');
     expect(rail(html)).toEqual(['build:now', 'verify:todo', 'deliver:todo']);
     expect(html).toMatch(/data-testid="overview-estimate"[^>]*>build only: /);
   });
 
-  it('build done: the strip folds into Build complete and the checks take the focus, with no overall done claim', () => {
+  it('build done: the bar folds into one line and Verify is the page, with no overall done claim', () => {
     const html = render('handoff-verifying');
+    expect(html).toContain('data-stage="verify"');
     expect(html).toContain('data-testid="build-complete-bar"');
-    expect(html).toContain('Build complete');
-    expect(html).toContain('Show tasks');
+    expect(html).toContain('10 tasks merged ›');
     expect(html).not.toContain('data-testid="task-strip"');
-    expect(html).not.toContain('data-testid="overview-counts"');
+    expect(html).not.toContain('data-testid="mission-build-summary"');
     expect(rows(html)).toEqual(['visual:running', 'mission_pr:queued', 'criterion:queued', 'release:queued']);
     expect(rail(html)).toEqual(['build:done', 'verify:now', 'deliver:todo']);
     expect(html).not.toMatch(/Delivered|%/);
@@ -148,7 +184,7 @@ describe('MissionOverview handoff (spec f7f67f1a R-11 to R-24)', () => {
     expect(rows(html)[0]).toBe('visual:finding');
     expect(html).toContain('data-testid="mission-check-repairs"');
     expect(html).toContain('filter selection resets after a refresh');
-    expect(html).toContain('10 of 10 in the mission branch');
+    expect(html).toContain('10 tasks merged ›');
   });
 
   it('reviewer merge shows no owner button; human merge names the owner but adds no Approve or Merge button here', () => {
@@ -156,22 +192,34 @@ describe('MissionOverview handoff (spec f7f67f1a R-11 to R-24)', () => {
     expect(reviewer).toContain('reviewer deciding');
     const human = render('handoff-approval');
     expect(human).toContain('approve to deliver');
-    const checksAndRail = human.slice(0, human.indexOf('data-testid="overview-rail"'));
-    expect(checksAndRail).not.toMatch(/your merge|your call|waiting on you/);
-    // The rail agrees with the check: one decision waits on the owner.
-    expect(human).toMatch(/data-testid="rail-needs" data-count="1"/);
-    expect(reviewer).toMatch(/data-testid="rail-needs" data-count="0"/);
     for (const html of [reviewer, human]) {
       const card = html.slice(html.indexOf('data-testid="mission-checks"'));
       expect(card).not.toMatch(/<button[^>]*>(Approve|Merge)[^<]*<\/button>/);
     }
   });
 
-  it('a failed deploy never reads delivered; a healthy one does', () => {
-    expect(rail(render('handoff-deploy-failed'))).toEqual(['build:done', 'verify:done', 'deliver:held']);
+  it('a failed deploy never reads delivered; a healthy one reads Delivered into the branch with the requirements folded', () => {
+    const failed = render('handoff-deploy-failed');
+    expect(rail(failed)).toEqual(['build:done', 'verify:done', 'deliver:held']);
+    expect(failed).not.toContain('data-testid="mission-delivered-line"');
     const healthy = render('handoff-delivered');
     expect(rail(healthy)).toEqual(['build:done', 'verify:done', 'deliver:done']);
-    expect(healthy).toContain('released, healthy');
+    expect(healthy).toContain('data-stage="deliver"');
+    // The catalog's word for the delivered state (terms.ts `mission.done`), then the branch.
+    expect(healthy).toMatch(/data-testid="mission-delivered-line"[^>]*>.*Done · merged into dev/);
+    expect(healthy).toContain('data-testid="mission-requirements-fold"');
+    expect(healthy).toMatch(/Requirements.*\d+ of \d+ met ›/);
+    expect(healthy).not.toContain('data-testid="mission-build-summary"');
+  });
+
+  it('a reopened task returns the Build stage (AC-9)', () => {
+    const f = handoffFixture('handoff-verifying', base);
+    const [first] = Object.keys(f.model.tasks).filter(id => f.model.tasks[id].deliverableRole === 'build');
+    const reopened = { ...f.model, tasks: { ...f.model.tasks, [first]: { ...f.model.tasks[first], status: 'running' as const, executing: true, reopened: true } } };
+    const html = renderToStaticMarkup(<MissionOverview model={reopened} missionId="mission-1" checks={f.checks} history={historyRaised(reopened, [])} />);
+    expect(html).toContain('data-stage="build"');
+    expect(html).toContain('data-testid="task-strip"');
+    expect(html).toMatch(/data-testid="mission-history-raised" data-kind="reopened"/);
   });
 
   it('the build-only estimate is the Plan page\u2019s schedule for the same build tasks', async () => {
@@ -185,5 +233,21 @@ describe('MissionOverview handoff (spec f7f67f1a R-11 to R-24)', () => {
 
   it('a budget hold removes the time promise', () => {
     expect(render('handoff-budget')).not.toContain('data-testid="overview-estimate"');
+  });
+});
+
+describe('History raised (Navigation R-6, AC-8)', () => {
+  it('an open organizer decision raises one History line above the list, naming it', () => {
+    const model = dagBoard(spec);
+    const notes = [{ id: 'n1', type: 'question', status: 'open', title: 'Keep the legacy export?', body: null, createdAt: Date.UTC(2026, 0, 1) }];
+    const history = historyRaised(model, notes);
+    const decisions = missionDecisions({ model, notes, mission: { id: 'mission-1', title: 'M', href: '/app/missions/mission-1' }, hrefFor: id => `/app/tasks/${id}` });
+    const html = renderToStaticMarkup(<MissionOverview model={model} missionId="mission-1" decisions={decisions} history={history} />);
+    const raised = html.match(/data-testid="mission-history-raised"[^>]*>[\s\S]*?<\/div>/)?.[0] ?? '';
+    expect(raised).toContain('data-kind="decision"');
+    expect(raised).toContain('Decision open: Keep the legacy export?');
+    expect(raised).toContain('layout=feed');
+    expect(html.indexOf('data-testid="mission-history-raised"')).toBeLessThan(html.indexOf('data-testid="mission-task-list"'));
+    expect((html.match(/data-testid="mission-history-raised"/g) ?? []).length).toBe(1);
   });
 });

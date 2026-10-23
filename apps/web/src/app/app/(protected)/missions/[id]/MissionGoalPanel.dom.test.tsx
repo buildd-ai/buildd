@@ -47,17 +47,11 @@ afterEach(() => {
 });
 
 describe('Goal panel: an unevaluated N/N criterion', () => {
-  it('Overview rail: not the unmet circle, says it is not checked, keeps the ratio', () => {
+  it('Overview: the criteria are the Verified pill’s, not a rail beside the bar (Navigation d25d923d R-3)', () => {
     act(() => root.render(createElement(MissionOverview, { model, missionId: 'mission-1', workspaceId: 'ws-1' })));
-    const row = container.querySelector('[data-testid="criteria"] li')!;
-    expect(row).not.toBeNull();
-    expect(row.getAttribute('data-state')).toBe('unchecked');
-    const glyph = row.querySelector('[aria-hidden="true"]')!.textContent;
-    expect(glyph).not.toBe('○');
-    expect(glyph).not.toBe('✓');
-    expect(row.textContent).toContain('Not checked');
-    expect(row.textContent).not.toContain('Unmet');
-    expect(row.textContent).toContain('3/3');
+    expect(container.querySelector('[data-testid="criteria"]')).toBeNull();
+    expect(container.querySelector('[data-testid="overview-rail"]')).toBeNull();
+    expect(container.textContent).not.toContain('Unmet');
   });
 
   it('Board goal cell: a distinct not-checked box, not the partial or empty one', () => {
