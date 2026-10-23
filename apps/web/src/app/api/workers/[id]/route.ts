@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
 import { isUuid } from '@/lib/uuid';
 import { decisionTitleAdvisory } from '@buildd/core/human-attention';
-import { checkSubjectTask } from '@/lib/decision-subject';
+import { checkSubjectTask } from '@/lib/question-subject';
 import { db } from '@buildd/core/db';
 import { withLoaderLabel } from '@buildd/core/db/query-label';
 import { deferredReplyWork } from '@/lib/deferred-reply-work';

@@ -12,7 +12,7 @@ import { isUuid } from '@/lib/uuid';
 import { disposeQuestionNote, gatedNoteResponse } from '@/lib/note-question-disposition';
 import { RECOVERABLE_BLOCKER_REPAIR } from '@/modules';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
-import { questionDecisionFields, sensitiveDecisionOptions } from '@/lib/decision-subject';
+import { questionDecisionFields, sensitiveDecisionOptions } from '@/lib/question-subject';
 
 const VALID_TYPES: MissionNoteType[] = ['decision', 'question', 'warning', 'suggestion', 'update'];
 const VALID_AUTHOR_TYPES: MissionNoteAuthorType[] = ['agent', 'user', 'system'];

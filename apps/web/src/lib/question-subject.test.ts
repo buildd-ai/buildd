@@ -5,7 +5,7 @@ mock.module('@buildd/core/db', () => ({
   db: { query: { tasks: { findFirst: mockTasksFindFirst } } },
 }));
 
-import { checkSubjectTask, questionDecisionFields, sensitiveDecisionOptions } from './decision-subject';
+import { checkSubjectTask, questionDecisionFields, sensitiveDecisionOptions } from './question-subject';
 
 const SUBJECT = '44444444-4444-4444-8444-444444444444';
 

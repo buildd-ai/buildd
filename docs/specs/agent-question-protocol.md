@@ -7,7 +7,7 @@ summary: An agent question MUST include an actionable brief, pass the question g
 domain: tasks
 surfaces: [apps/web/src/lib/question-gate-check.ts, packages/core/needs-you.ts, apps/web/src/lib/sessionless-worker-settle.ts]
 related: [human-answer-delivery, worker-reclamation]
-verified_by: [apps/web/src/lib/decision-subject.test.ts, packages/core/__tests__/mcp-tools-post-note.test.ts, apps/web/src/lib/recoverable-blocker-reconcile.test.ts, apps/runner/__tests__/unit/completion-replay.test.ts, apps/web/src/lib/sessionless-worker-settle.test.ts, apps/runner/__tests__/unit/worker-remote-404.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/web/src/app/api/workers/[id]/question-check/route.test.ts, packages/core/__tests__/needs-you.test.ts]
+verified_by: [apps/web/src/lib/question-subject.test.ts, packages/core/__tests__/mcp-tools-post-note.test.ts, apps/web/src/lib/recoverable-blocker-reconcile.test.ts, apps/runner/__tests__/unit/completion-replay.test.ts, apps/web/src/lib/sessionless-worker-settle.test.ts, apps/runner/__tests__/unit/worker-remote-404.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/web/src/app/api/workers/[id]/question-check/route.test.ts, packages/core/__tests__/needs-you.test.ts]
 assertions:
   - id: "question-gate-check"
     type: "route"
@@ -474,7 +474,7 @@ what an agent must send for that card to exist.
 - `subjectTaskId` names the task a decision is about when it is not the
   asker's own (an organizer asking about a build task). It is checked on
   write: same mission, or same workspace for a question with no mission
-  (`apps/web/src/lib/decision-subject.ts`); a task outside is refused with
+  (`apps/web/src/lib/question-subject.ts`); a task outside is refused with
   400. Stored on `waitingFor.subjectTaskId` and `mission_notes.subject_task_id`;
   a note's structured options on `mission_notes.options`. Absent, the card
   falls back to the mission.
@@ -502,7 +502,7 @@ what an agent must send for that card to exist.
   `DECISION_OPTIONS_GUIDANCE`, `DECISION_TITLE_GUIDANCE`)
 - `packages/core/human-attention.ts` (`isGenericDecisionTitle`,
   `decisionTitleAdvisory`)
-- `apps/web/src/lib/decision-subject.ts`,
+- `apps/web/src/lib/question-subject.ts`,
   `apps/web/src/app/api/missions/[id]/notes/route.ts`,
   `apps/web/src/app/api/tasks/[id]/notes/route.ts`
 - `apps/web/src/lib/mission-prompts.ts` (`decisionQuestions`)

@@ -18,7 +18,7 @@ import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import type { MissionNoteType, MissionNoteAuthorType, MissionNoteStatus } from '@buildd/shared';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
-import { questionDecisionFields, sensitiveDecisionOptions } from '@/lib/decision-subject';
+import { questionDecisionFields, sensitiveDecisionOptions } from '@/lib/question-subject';
 
 function invalidUuid(label: string, value: string, status: 400 | 404) {
   return NextResponse.json(

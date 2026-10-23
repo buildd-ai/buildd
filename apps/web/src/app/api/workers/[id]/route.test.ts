@@ -934,9 +934,9 @@ mock.module('@/lib/deferred-reply-work', () => ({
   }),
 }));
 
-// The subject check itself is covered in lib/decision-subject.test.ts.
+// The subject check itself is covered in lib/question-subject.test.ts.
 const mockCheckSubjectTask = mock(async (raw: unknown, _scope: unknown): Promise<any> => ({ ok: true, subjectTaskId: (raw as string) ?? null }));
-mock.module('@/lib/decision-subject', () => ({ checkSubjectTask: mockCheckSubjectTask }));
+mock.module('@/lib/question-subject', () => ({ checkSubjectTask: mockCheckSubjectTask }));
 
 import { GET, PATCH } from './route';
 import { composeBodyWithLede, extractLede } from '@buildd/core/pr-lede';
