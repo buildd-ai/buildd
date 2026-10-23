@@ -11,6 +11,11 @@ const target = {
 mock.module('@/lib/release/target', () => ({ resolveReleaseTarget: async () => target }));
 mock.module('@/lib/release/record', () => ({ recordAndDispatchRelease: async () => ({ ok: true }) }));
 
+const activities: any[] = [];
+mock.module('@/lib/pr-activity-comment', () => ({
+  appendPrActivity: async (p: any) => { activities.push(p); return { action: 'updated' }; },
+}));
+
 const { amendCandidateOnFixMerge, RELEASE_CANDIDATE_AMEND_PR_KEY } = await import('./candidate-amend');
 const { RELEASE_CANDIDATE_FIX_KEY } = await import('@/lib/release-candidate-ci');
 
@@ -57,10 +62,11 @@ function gh(candidate: { state: string; sha: string }, fixPr: { merged: boolean;
 }
 
 describe('amendCandidateOnFixMerge', () => {
-  it('dispatches the amendment once with amend and amend_confirm, and comments on the candidate', async () => {
+  it('dispatches the amendment once with amend and amend_confirm, updates activity, and comments on the fix PR', async () => {
+    activities.length = 0;
     const { db } = stubDb({});
     const g = gh({ state: 'open', sha: 'cand-sha' });
-    const dispatch = mock(async (_p: any) => ({ ok: true as const, releaseId: 'r1', deduped: false, headSha: 'x' }));
+    const dispatch = mock(async (_p: any) => ({ ok: true as const, releaseId: 'r1', deduped: false, headSha: 'x', value: { runUrl: 'https://example.test/run/1' } }));
     const out = await amendCandidateOnFixMerge(input, { db, githubApi: g.fn, dispatch: dispatch as any });
     expect(out).toEqual({ kind: 'amended', version: '1.2.3', candidatePr: 90 });
     expect(dispatch).toHaveBeenCalledTimes(1);
@@ -68,10 +74,17 @@ describe('amendCandidateOnFixMerge', () => {
     expect(p.inputs.amend).toBe('1.2.3');
     expect(p.inputs.amend_confirm).toBe('1.2.3');
     expect(p.ref).toBe('dev');
-    const comment = g.calls.find((c) => c.path === '/repos/o/r/issues/90/comments');
-    expect(comment?.opts.method).toBe('POST');
-    expect(JSON.parse(comment!.opts.body).body).toContain('amend: 1.2.3');
-    expect(JSON.parse(comment!.opts.body).body).toMatch(/^The fix for this candidate merged in #\d+\. /);
+    // Activity comment on candidate PR
+    expect(activities).toHaveLength(1);
+    expect(activities[0].prNumber).toBe(90);
+    expect(activities[0].entry.kind).toBe('release_amended');
+    expect(activities[0].entry.note).toContain('merged into `dev`');
+    expect(activities[0].entry.note).toContain('Release candidate v1.2.3 was amended automatically');
+    // Comment on fix PR (legacy)
+    const comment = g.calls.find((c) => c.path === '/repos/o/r/issues/101/comments');
+    expect(comment?.opts?.method).toBe('POST');
+    expect(JSON.parse(comment!.opts!.body).body).toContain('amend: 1.2.3');
+    expect(JSON.parse(comment!.opts!.body).body).toMatch(/^The fix for this candidate merged in #\d+\. /);
   });
 
   it('does nothing a second time for the same fix PR (marker already taken)', async () => {

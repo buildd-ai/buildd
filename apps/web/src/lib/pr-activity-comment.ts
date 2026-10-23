@@ -79,6 +79,7 @@ export type PrActivityKind =
   | 'work_superseded'
   | 'human_applied_recommendation'
   | 'human_override_merge'
+  | 'release_amended'
   | 'merged'
   | 'closed_unmerged'
   // Kernel-rendered kinds (docs/specs/workflow-state-kernel.md §12.1).
@@ -302,6 +303,8 @@ function present(e: NormalizedEntry, story: Story): Rendered {
       return { tone: 'plain', label: 'Superseded', aside: true };
     case 'human_override_merge':
       return { tone: 'done', label: 'Merged · escalation overridden', noteLabel: 'Reason' };
+    case 'release_amended':
+      return { tone: 'done', label: 'Release candidate amended', status: 'checks and approvals restarting on the new head', urlLabel: 'Run' };
     case 'merged':
       return { tone: 'done', label: 'Merged' };
     case 'closed_unmerged':
@@ -480,7 +483,7 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set<PrActivityKind>([
   'migration_collision_fixing',
   'ci_exhausted', 'fix_started', 'fix_ended', 'fix_superseded_by_approval', 'changes_pushed',
   'review_superseded_by_merge', 'work_superseded',
-  'human_applied_recommendation', 'human_override_merge', 'merged', 'closed_unmerged',
+  'human_applied_recommendation', 'human_override_merge', 'release_amended', 'merged', 'closed_unmerged',
   'push_pending', 'push_undeliverable', 'composition_verified', 'composition_delta_approved', 'blocked_on_trunk', 'trunk_recovered',
 ]);
 
