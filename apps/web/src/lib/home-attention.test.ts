@@ -143,7 +143,7 @@ describe('Needs You card contract', () => {
     for (const i of items) {
       expect(i.title).not.toContain('owner decision needed');
       expect(i.primary?.href).toMatch(/^\/app\/missions\/m[12]$/);
-      expect(i.primary?.label).toBe('Review criteria');
+      expect(i.primary?.label).toBe('Review checks');
     }
   });
   it('a mixed fixture yields only actionable cards: machine-owned work never lists, every card names a destination', () => {
@@ -181,6 +181,29 @@ describe('Needs You card contract', () => {
   it('summarises mixed action types instead of calling everything a merge', () => {
     const items = deriveHomeAttention({ queue: [pr('a', undefined, 'REVIEW'), { ...pr('b'), prNumber: 2 }, { ...pr('c'), prNumber: 3 }].map(i => i.chip === 'REVIEW' ? { ...i, verdictSummary: 'Protected paths changed.' } : i), missions: [], questions: [], held: [] });
     expect(homeAttentionCopy(items).subline).toBe('1 review · 2 merges');
+  });
+});
+
+describe('held mission readiness', () => {
+  it('does not promise ready work when no tasks are ready', () => {
+    for (const startState of ['not_started', 'paused'] as const) {
+      const [item] = deriveHomeAttention({ queue: [], questions: [], missions: [], held: [{
+        id: 'example-mission', title: 'Improve navigation', href: '/app/missions/example-mission',
+        ready: 0, total: 3, done: 0, roles: [], heldFor: null, startState,
+      }] });
+      expect(item.sentence).toBe('No tasks are ready to run.');
+      expect(item.meta).toBe('');
+    }
+  });
+  it('names available tasks when starting or resuming would release them', () => {
+    for (const [startState, verb] of [['not_started', 'Start'], ['paused', 'Resume']] as const) {
+      const [item] = deriveHomeAttention({ queue: [], questions: [], missions: [], held: [{
+        id: 'example-mission', title: 'Improve navigation', href: '/app/missions/example-mission',
+        ready: 2, total: 3, done: 0, roles: [], heldFor: null, startState,
+      }] });
+      expect(item.sentence).toBe(`${verb} this mission to run its ready tasks.`);
+      expect(item.meta).toBe('2 ready');
+    }
   });
 });
 
