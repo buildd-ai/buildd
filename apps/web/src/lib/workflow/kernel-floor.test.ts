@@ -3,13 +3,27 @@
  * (docs/specs/workflow-kernel-library.md §3, AC-10): the control plane's cron
  * in own mode, nothing in shadow or on another host; each step isolated.
  */
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, mock } from 'bun:test';
+
+// The per-minute tick's due-queues (effect-timer.ts, trunk-recheck.ts), in memory.
+const due = new Map<string, Map<string, number>>();
+const queue = (job: string) => { if (!due.has(job)) due.set(job, new Map()); return due.get(job)!; };
+const realRedis = await import('@/lib/redis');
+mock.module('@/lib/redis', () => ({
+  ...realRedis,
+  markDueEarliest: async (job: string, member: string, at: number) => { const q = queue(job); const p = q.get(member); if (p === undefined || at < p) q.set(member, at); },
+  clearDue: async (job: string, members: string | string[]) => { for (const m of [members].flat()) queue(job).delete(m); },
+  countDue: async (job: string, now: number) => [...queue(job).values()].filter((t) => t <= now).length,
+  listDue: async (job: string, now: number, limit: number) => [...queue(job).entries()].filter(([, t]) => t <= now).sort((a, b) => a[1] - b[1]).slice(0, limit).map(([m]) => m),
+}));
+
 import { REVIEW_DISPATCH_BACKOFF_MS, REVIEW_DISPATCH_RETRIES } from '@buildd/workflow-kernel/handlers/review';
-import { KERNEL_FLOOR_PERIOD_MS, kernelFloorOutcome, runKernelFloor, runScheduledKernelFloor, type KernelFloorDeps } from './kernel-floor';
+import { KERNEL_FLOOR_PERIOD_MS, kernelFloorOutcome, runKernelFloor, runScheduledEffectTick, runScheduledKernelFloor, type KernelFloorDeps } from './kernel-floor';
+import { TRUNK_RECHECK_QUEUE, scheduleTrunkRecheck } from './trunk-recheck';
 import { setKernelHost } from './kernel-host';
 import { setKernelSpanSink, type KernelSpanRecord } from './kernel-telemetry';
 
-afterEach(() => { setKernelHost('web'); setKernelSpanSink(null); });
+afterEach(() => { setKernelHost('web'); setKernelSpanSink(null); due.clear(); });
 
 function steps(o: Partial<Record<keyof KernelFloorDeps, () => Promise<unknown>>> = {}) {
   const ran: string[] = [];
@@ -187,5 +201,53 @@ describe('dead effects', () => {
     const r = await runKernelFloor(s.deps);
     expect(r.deadEffects).toEqual({ error: 'db down' });
     expect(kernelFloorOutcome(r).errors).toBe(1);
+  });
+});
+
+describe('the per-minute tick: trunk rechecks (§3, T26)', () => {
+  const OWN = { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s' };
+  const recorder = () => {
+    const calls: string[][] = [];
+    return { calls, recheckTrunk: async (ids: string[]) => { calls.push([...ids]); return { unresolved: [] }; }, drain: async () => null };
+  };
+
+  it('on the control plane in own mode, a due incident is rechecked on the next tick, not at the hourly floor', async () => {
+    setKernelHost('control-plane');
+    await scheduleTrunkRecheck('inc-1', Date.now() - 1);
+    const r = recorder();
+    const out = await runScheduledEffectTick({ env: OWN, ...r });
+    expect(out).toMatchObject({ ran: true, trunk: { due: 1, rechecked: 1, requeued: 0, failed: 0 } });
+    expect(r.calls).toEqual([['inc-1']]);
+    expect(queue(TRUNK_RECHECK_QUEUE).has('inc-1')).toBe(false);
+  });
+
+  it('an idle minute rechecks nothing', async () => {
+    setKernelHost('control-plane');
+    await scheduleTrunkRecheck('inc-1');
+    const r = recorder();
+    expect(await runScheduledEffectTick({ env: OWN, ...r })).toMatchObject({ ran: true, trunk: { due: 0 } });
+    expect(r.calls).toEqual([]);
+  });
+
+  it('shadow, no command key, or the web host: no recheck, and the queue is left for the host that owns it', async () => {
+    await scheduleTrunkRecheck('inc-1', Date.now() - 1);
+    const r = recorder();
+    setKernelHost('control-plane');
+    expect(await runScheduledEffectTick({ env: { EXECUTION_MODE: 'shadow', KERNEL_COMMAND_SECRET: 'k1:s' }, ...r })).toEqual({ ran: false, reason: 'shadow' });
+    expect(await runScheduledEffectTick({ env: { EXECUTION_MODE: 'own' }, ...r })).toEqual({ ran: false, reason: 'no_command_key' });
+    setKernelHost('web');
+    expect(await runScheduledEffectTick({ env: OWN, ...r })).toEqual({ ran: false, reason: 'not_control_plane' });
+    expect(r.calls).toEqual([]);
+    expect(queue(TRUNK_RECHECK_QUEUE).has('inc-1')).toBe(true);
+  });
+
+  it('a failing effect drain never skips the trunk recheck', async () => {
+    setKernelHost('control-plane');
+    queue('kernel-effects').set('d1', Date.now() - 1);
+    await scheduleTrunkRecheck('inc-1', Date.now() - 1);
+    const r = recorder();
+    const out = await runScheduledEffectTick({ env: OWN, recheckTrunk: r.recheckTrunk, drain: async () => { throw new Error('drain down'); } });
+    expect(out).toMatchObject({ ran: true, result: { failed: 1 }, trunk: { rechecked: 1 } });
+    expect(r.calls).toEqual([['inc-1']]);
   });
 });

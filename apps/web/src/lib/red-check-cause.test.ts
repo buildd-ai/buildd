@@ -2,7 +2,8 @@ import { describe, it, expect } from 'bun:test';
 import {
   failingLines, testReportFailures, firstTestName, foldSummaryGates, isSummaryGate,
   classifyJob, causeOf, signatureOf, mergeRedRecord, redCheckView, parseRedRecord, ciFixHistory,
-  type RedCheckRecord, type RedJob,
+  applyNotThisPr, unrelatedToDiff, effectiveCause, detectRerunnableFailure,
+  type RedCheckRecord, type RedJob, type RedJudgement,
 } from './red-check-cause';
 
 /**
@@ -194,5 +195,91 @@ describe('ciFixHistory (R-3)', () => {
   it('a fix filed for the current head pushed nothing; one for an earlier head did not change the result', () => {
     expect(ciFixHistory(['h3', 'h1', 'h2', null], 'h3')).toEqual({ pushedNothing: 1, noChange: 2 });
     expect(ciFixHistory([], 'h3')).toEqual({ pushedNothing: 0, noChange: 0 });
+  });
+});
+
+describe("not this PR's code (R-3 rules)", () => {
+  const windows = job({ name: 'Runner unit tests (windows)', lines: '(fail) launcher > dispatches status', rule: 'test' });
+
+  it('a scoped job is unrelated when the diff touches none of its paths', () => {
+    expect(unrelatedToDiff('Runner unit tests (windows)', ['apps/web/src/app/page.tsx', 'docs/x.md'])).toBe(true);
+    expect(unrelatedToDiff('Runner unit tests (windows)', ['apps/runner/src/workers.ts'])).toBe(false);
+    expect(unrelatedToDiff('Runner unit tests (windows)', ['packages/core/db/schema.ts'])).toBe(false);
+  });
+
+  it('never decides without a readable diff, or for a job with no declared scope', () => {
+    expect(unrelatedToDiff('Runner unit tests (windows)', null)).toBe(false);
+    expect(unrelatedToDiff('Runner unit tests (windows)', [])).toBe(false);
+    expect(unrelatedToDiff('build · unit tests (1/3)', ['docs/x.md'])).toBe(false);
+  });
+
+  it("a failing test in a job unrelated to the diff is not this PR's code", () => {
+    const jobs = applyNotThisPr([windows], { changed: ['apps/web/src/app/page.tsx'] });
+    expect(jobs[0].rule).toBe('unrelated_to_diff');
+    expect(jobs[0].lines).toBe(windows.lines);
+    expect(causeOf(jobs)).toBe('flake');
+  });
+
+  it('the same job red on the base branch wins over its failing test', () => {
+    const jobs = applyNotThisPr([windows], { redOnBase: new Set(['Runner unit tests (windows)']), changed: ['apps/runner/a.ts'] });
+    expect(jobs[0].rule).toBe('red_on_base');
+    expect(causeOf(jobs)).toBe('flake');
+  });
+
+  it('a job green on the base branch keeps its own rule', () => {
+    const jobs = applyNotThisPr([windows], { redOnBase: new Set(['lint']), changed: ['apps/runner/a.ts'] });
+    expect(jobs[0].rule).toBe('test');
+    expect(causeOf(jobs)).toBe('failure');
+  });
+
+  it('the card says why, and does not call it a flake', () => {
+    const base = redCheckView(record({ jobs: [{ ...windows, rule: 'red_on_base' }], cause: 'flake' }));
+    expect(base.sentence).toBe("Runner unit tests (windows) is failing on the base branch too, so it is not this PR's code.");
+    expect(base.primary).toBe('rerun');
+    const unrelated = redCheckView(record({ jobs: [{ ...windows, rule: 'unrelated_to_diff' }], cause: 'flake' }));
+    expect(unrelated.sentence).toBe('Runner unit tests (windows) failed, but this PR changes nothing it tests.');
+  });
+});
+
+describe("the decision model's judgement (R-3 fallback)", () => {
+  const jobs = [job({ name: 'e2e', step: 'Run e2e', lines: 'Error: page.goto: net::ERR_CONNECTION_RESET' })];
+  const sig = signatureOf(jobs);
+  const judged = (decision: RedJudgement['decision'], signature = sig): RedJudgement => ({
+    decision, confidence: 0.9, source: 'model', model: 'jev', reasonCode: `cause_${decision}`, policyVersion: 'p', signature, at: 't',
+  });
+
+  it('an environment judgement of an unknown cause reads as a flake and leads with Re-run', () => {
+    const r = record({ jobs, cause: 'unknown', signature: sig, judgement: judged('environment') });
+    expect(effectiveCause(r)).toBe('flake');
+    const view = redCheckView(r);
+    expect(view.cause).toBe('flake');
+    expect(view.primary).toBe('rerun');
+    expect(view.sentence).toBe('e2e failed at "Run e2e", which looks like a flake, not the code.');
+  });
+
+  it('a code judgement leads with Start fix', () => {
+    const r = record({ jobs, cause: 'unknown', signature: sig, judgement: judged('code') });
+    expect(effectiveCause(r)).toBe('failure');
+    expect(redCheckView(r).primary).toBe('fix');
+  });
+
+  it('never overrides a rule, and never answers for a different failure', () => {
+    expect(effectiveCause(record({ jobs, cause: 'failure', signature: sig, judgement: judged('environment') }))).toBe('failure');
+    expect(effectiveCause(record({ jobs, cause: 'unknown', signature: sig, judgement: judged('environment', 'other') }))).toBe('unknown');
+  });
+
+  it('is kept across readings of the same failure and dropped for a new one', () => {
+    const prev = record({ jobs, cause: 'unknown', signature: sig, judgement: judged('environment') });
+    expect(mergeRedRecord(prev, record({ jobs, cause: 'unknown', signature: sig, runAttempt: 2 })).judgement?.decision).toBe('environment');
+    expect(mergeRedRecord(prev, record({ jobs, cause: 'unknown', signature: 'new', runAttempt: 2 })).judgement).toBeUndefined();
+  });
+});
+
+describe('detectRerunnableFailure', () => {
+  it('names a lost database connection and the infra signatures, never a test failure', () => {
+    expect(detectRerunnableFailure('FATAL: terminating connection due to administrator command')).toBe('db_connection_lost');
+    expect(detectRerunnableFailure('toomanyrequests: You have reached your pull rate limit')).toBe('registry_rate_limit');
+    expect(detectRerunnableFailure('(fail) a > b')).toBeNull();
+    expect(detectRerunnableFailure(null)).toBeNull();
   });
 });

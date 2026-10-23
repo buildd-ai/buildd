@@ -38,6 +38,18 @@ describe('rerunIfInfraFailure', () => {
     expect(calls.some(c => c.method === 'POST')).toBe(false);
   });
 
+  it('re-runs a job whose database connection was terminated', async () => {
+    jobLog = 'error: terminating connection due to administrator command\n(fail) store > writes [12ms]';
+    expect(await rerunIfInfraFailure(1, 'o/r', 'sha')).toEqual({ rerun: true, signature: 'db_connection_lost', runId: 9, runAttempt: 1 });
+    expect(calls.at(-1)).toEqual({ path: '/repos/o/r/actions/runs/9/rerun-failed-jobs', method: 'POST' });
+  });
+
+  it('a lost database connection is bounded by run_attempt like the infra signatures', async () => {
+    jobLog = 'Connection terminated unexpectedly';
+    run = { id: 9, run_attempt: 3 };
+    expect(await rerunIfInfraFailure(1, 'o/r', 'sha')).toEqual({ rerun: false, reason: 'attempts_exhausted' });
+  });
+
   it('stops re-running once the run has used its attempts', async () => {
     run = { id: 9, run_attempt: 3 };
     expect(await rerunIfInfraFailure(1, 'o/r', 'sha')).toEqual({ rerun: false, reason: 'attempts_exhausted' });
