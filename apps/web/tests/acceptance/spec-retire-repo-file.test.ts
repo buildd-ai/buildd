@@ -42,7 +42,7 @@ describe('R-78: retiring a spec with a repo file opens one PR', () => {
   it('R-78: the source-file edit sets status and superseded_by and leaves the body as it is', async () => {
     const { supersededFileText } = await import('../../src/lib/specs/retire-file');
     const next = supersededFileText(FILE, 'checkout-v2');
-    const fm = parseSpecFrontmatter(next);
+    const { fm } = parseSpecFrontmatter(next);
     expect(fm?.status).toBe('superseded');
     expect(fm?.superseded_by).toBe('checkout-v2');
     expect(fm?.title).toBe('Checkout');

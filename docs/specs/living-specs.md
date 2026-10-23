@@ -1829,6 +1829,26 @@ an agent MUST NOT.
   "Replaced by <spec>", with Restore for a person who may; for a live spec
   that person gets Retire among the page's secondary actions, never in the
   Approve corner, with a reason and an optional replacement.
+- R-78: When a spec is retired or superseded and a repo file stands for it
+  (an imported spec's source file, or its generated copy from §18), buildd
+  opens one PR: an imported source file gets `status: superseded` and
+  `superseded_by` in its frontmatter with its body left as is; a generated
+  copy is removed and the index updated. A generated-copy PR lands under the
+  exception of R-35, only at the head buildd wrote; a source-file PR is an
+  ordinary PR a person merges. `superseded_by` is the replacement's slug when
+  it has a file in the repo, `buildd:<short id>` when it lives only in buildd,
+  `none` when nothing replaces it. A file that already reads superseded, or is
+  gone, gets no PR. The outcome is `repoFile` on the retirement's change row,
+  and the spec page names the PR until it merges.
+- R-79: An import run (§18) lists a previously imported file that is now
+  deleted, or whose frontmatter says `status: superseded`, as `retire` with
+  the reason ("file removed in <commit>", "marked superseded by <title>").
+  Confirming the batch retires those specs, as superseded when the file names
+  a replacement buildd can match, else retired. Nothing is retired without
+  that confirmation, a dry run writes nothing, and a spec already retired or
+  superseded is skipped, not listed again.
+- R-80: Restoring a spec retired by R-78 or R-79 does not recreate or edit a
+  repo file; the page says the repo file still reads superseded.
 
 **Acceptance criteria**:
 - AC-109: GIVEN an agent token, an API key or a plain member WHEN it retires
@@ -1845,14 +1865,26 @@ an agent MUST NOT.
   (`apps/web/tests/db/spec-retire.test.ts`,
   `packages/core/__tests__/mcp-specs-retire.test.ts`,
   `apps/web/src/components/SpecRetire.dom.test.tsx`).
+- AC-124: GIVEN imported spec A from `docs/specs/a.md` WHEN A is superseded
+  THEN one PR sets `status: superseded` and `superseded_by` in that file's
+  frontmatter, and the next import reports the file as superseded and skips
+  it (`apps/web/tests/db/spec-retire-repo-file.test.ts`,
+  `packages/spec-contract/src/repo-spec-superseded.test.ts`).
+- AC-125: GIVEN a previously imported file deleted from the repo WHEN import
+  runs dry THEN it lists the spec under Retire with the commit and writes
+  nothing; WHEN the person confirms THEN the spec is retired
+  (`apps/web/tests/db/spec-retire-repo-file.test.ts`).
+- AC-126: GIVEN a spec retired by AC-124 WHEN a person restores it THEN no PR
+  is opened and the page says the repo file still reads superseded
+  (`apps/web/tests/db/spec-retire-repo-file.test.ts`).
 
 **Code surface**:
 - `apps/web/src/lib/specs/retire.ts` — `retireSpec`, `restoreSpec`, `specRetirement`
 - `apps/web/src/app/api/specs/[specId]/retire/route.ts` — `POST`, `DELETE`
 - `apps/web/src/components/SpecRetire.tsx` — `SpecRetire`
-
-**Not yet**:
-- Retiring does not close the generated repo copy (§18) of a native spec.
+- `apps/web/src/lib/specs/retire-repo-file.ts` — `openRetirementPr`, `landRetirementPr`, `settleRetirementPr`
+- `apps/web/src/lib/specs/import.ts` — `replacementFor`, `confirmImportedSpecs`
+- `packages/spec-contract/src/repo-spec.ts` — `markSpecSuperseded`, `SUPERSEDED_BY_ELSEWHERE`
 
 ## 23. Which specs leave buildd: the publication policy
 
