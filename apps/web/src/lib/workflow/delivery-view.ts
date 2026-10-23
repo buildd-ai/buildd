@@ -305,6 +305,28 @@ WHERE d.state = 'MERGED'
 }
 
 /**
+ * The newest delivery each task owns: its PR number and state, for a reader
+ * that names a task's PR beside it (the mission's Verify evidence,
+ * lib/specs/mission-evidence.ts). Any authority. A SELECT; throws on a read
+ * failure.
+ */
+export async function newestOwnerDeliveries(
+  taskIds: string[],
+  exec: Exec = dbExec,
+): Promise<Array<{ ownerTaskId: string; state: string; prNumber: number | null }>> {
+  const ids = [...new Set(taskIds.filter(Boolean))];
+  if (ids.length === 0) return [];
+  const res = await exec(sql`-- workflow:newest_owner_deliveries
+SELECT DISTINCT ON (d.owner_task_id) d.owner_task_id AS "ownerTaskId", d.state AS state, d.pr_number AS "prNumber"
+FROM workflow_deliveries d
+WHERE d.owner_task_id IN (SELECT x::uuid FROM jsonb_array_elements_text(${JSON.stringify(ids)}::jsonb) x)
+ORDER BY d.owner_task_id, d.created_at DESC`);
+  return ((res.rows ?? []) as Array<{ ownerTaskId: unknown; state: unknown; prNumber: unknown }>).flatMap(r =>
+    typeof r.ownerTaskId === 'string' && typeof r.state === 'string'
+      ? [{ ownerTaskId: r.ownerTaskId, state: r.state, prNumber: r.prNumber == null ? null : Number(r.prNumber) }] : []);
+}
+
+/**
  * Each workspace PR's delivery state and merge time, for the path-overlap
  * incident reconcile (lib/failure-pattern-sweep.ts): has the blocker landed?
  * Any authority: a merge recorded on a legacy-owned delivery is still a merge.

@@ -16,7 +16,7 @@ import { assertMemberRepoAccess, memberRepoAccessSubject, resolveMemberRepoAcces
 import { stampLandingOverrideGrant } from '@/lib/landing-override-grant';
 import { requestingPerson } from '@/lib/request-person';
 import { withoutReviewDispatchContext } from '@/lib/verdict-provenance';
-import { specRepairStamp, withoutMissionVerificationMarkers } from '@/lib/server-context-markers';
+import { specRepairStamp, withoutMissionVerificationMarkers, type SpecRepairMarker } from '@/lib/server-context-markers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { authenticateTaskScopedCaller, isDelegatedReach, taskScopeAllowsDelegated, taskScopeAllowsMission, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
@@ -1105,14 +1105,15 @@ export async function POST(req: NextRequest) {
       };
     }
     const prReachCtx = prReach ? { prReach } : {};
-    let specRepairCtx: { specRepair?: NonNullable<ReturnType<typeof specRepairStamp>> } = {};
+    let specRepairCtx: { specRepair?: SpecRepairMarker } = {};
     if (prReachFiler.kind === 'task' && missionId) {
       const filerTask = await db.query.tasks.findFirst({
         where: sqlWhere(eq(tasks.id, prReachFiler.taskId)),
         columns: { missionId: true, context: true },
       });
       const stamp = specRepairStamp({ requested: requestedSpecRepair, missionId, filerTaskId: prReachFiler.taskId, filerTask: filerTask ?? null });
-      if (stamp) specRepairCtx = { specRepair: stamp };
+      if (stamp && !stamp.ok) return NextResponse.json({ error: stamp.reason }, { status: 400 });
+      if (stamp) specRepairCtx = { specRepair: stamp.marker };
     }
 
     // Decomposition re-check gate. `runMission()` detects pre-filed sibling
