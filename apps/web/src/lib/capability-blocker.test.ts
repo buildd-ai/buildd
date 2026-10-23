@@ -53,6 +53,14 @@ describe('matchesNeed', () => {
     expect(matchesNeed({ need: 'observability:query' }, 'observability:query', null)).toBe(true);
     expect(matchesNeed({ need: 'model.inference' }, 'axiom:read', 'axiom')).toBe(false);
   });
+
+  it('does not let a shared provider alone link a different ask to a named capability', () => {
+    // A denied axiom:read ask is not an answer to "I lacked model.inference", whatever provider the claim names.
+    expect(matchesNeed({ need: 'model.inference', provider: 'axiom' }, 'axiom:read', 'axiom')).toBe(false);
+    expect(matchesNeed({ need: 'axiom:read', provider: 'openrouter' }, 'model.inference', 'openrouter')).toBe(false);
+    // The same named capability still matches through any provider.
+    expect(matchesNeed({ need: 'model.inference', provider: 'litellm' }, 'model.inference', 'openrouter')).toBe(true);
+  });
 });
 
 describe('capabilityCallFor', () => {

@@ -103,10 +103,19 @@ export function parseBlockedByCapability(structuredOutput: unknown):
   };
 }
 
+/** A named capability (`model.inference`) rather than a provider ask (`axiom`, `axiom:read`) or a category (`observability:query`). */
+function isNamedCapability(s: string): boolean {
+  return s.includes('.') && !s.includes(':');
+}
+
 /** Does a call or request row ask for this need? By the ask itself, or by the provider named on either side. */
 export function matchesNeed(claim: Pick<BlockedByCapability, 'need' | 'provider'>, capability: string | null, provider: string | null): boolean {
   const need = claim.need;
   if (capability && capability === need) return true;
+  // A named capability is answered only by an ask for itself: a provider in
+  // common does not make a denied axiom:read answer "I lacked model.inference",
+  // nor the other way round.
+  if (isNamedCapability(need) || (capability && isNamedCapability(capability))) return false;
   if (provider && (provider === claim.provider || provider === need)) return true;
   // `axiom:read` names the provider before the colon; a category does not, and only matches itself.
   if (provider && need.includes(':') && need.split(':')[0] === provider) return true;

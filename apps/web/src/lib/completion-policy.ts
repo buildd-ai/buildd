@@ -40,6 +40,12 @@ export interface EvidenceInput {
  *   gates, and there is nothing to release.
  * `fail`: the report is refused with `reason`; nothing is written. `hint`
  *   labels the refusal for the runner and the rejected-payload record.
+ *
+ * The one other outcome that stands in for a PR or artifact is core's, not a
+ * slot: a `structuredOutput.blockedByCapability` the PATCH accepted
+ * (lib/capability-blocker.ts, `isCapabilityBlocked` in the PATCH). Unlike a
+ * `pass` it does not license the worker's own unshipped commits or edits:
+ * those still need a PR or `discardEdits`. It is never a review waiver.
  */
 export type EvidenceVerdict = null | { kind: 'pass' } | { kind: 'fail'; reason: string; hint: string };
 

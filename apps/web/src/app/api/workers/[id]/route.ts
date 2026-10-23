@@ -2097,6 +2097,11 @@ async function patchWorker(
     // request row or files one [capability] task; never a review waiver.
     // (lib/capability-blocker.ts)
     const blockerClaim = parseBlockedByCapability(body.structuredOutput);
+    // An accepted blocker is the run's deliverable: the output-requirement
+    // arms below take it in place of a PR or artifact, the way they take the
+    // evidence slot's pass. The worker's own unshipped edits still need
+    // discardEdits.
+    let isCapabilityBlocked = false;
     if (blockerClaim && worker.taskId) {
       const refuseBlocker = async (error: string, hint: string, code: string) => {
         await applyMetricsOnlyPatch(id, worker, body, reportedBasis).catch(() => null);
@@ -2124,6 +2129,7 @@ async function patchWorker(
       });
       if (!settled.ok) return refuseBlocker(settled.refusal.error, settled.refusal.hint, settled.refusal.code);
       body.structuredOutput = { ...(body.structuredOutput as Record<string, unknown>), blockedByCapability: settled.record };
+      isCapabilityBlocked = true;
     }
 
     // §9 completion gate (docs/specs/workflow-state-kernel.md): a kernel fix
@@ -2736,9 +2742,11 @@ async function patchWorker(
         // need the same explicit discard the `auto` arm asks for.
         const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
         const strandsOwnEdits = (effectiveCommits > 0 || effectiveDirtyWorktree) && !discardReason;
-        if ((!alreadyShipped && !refreshAlreadyLanded) || strandsOwnEdits) {
+        if ((!alreadyShipped && !refreshAlreadyLanded && !isCapabilityBlocked) || strandsOwnEdits) {
           const frictionSignature = await persistRejectedCompletionPayload('pr_required');
-          const error = alreadyShipped || refreshAlreadyLanded
+          const error = isCapabilityBlocked && !alreadyShipped && !refreshAlreadyLanded
+            ? `blockedByCapability is accepted, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`
+            : alreadyShipped || refreshAlreadyLanded
             ? `${alreadyShipped ? `PR #${alreadyShipped.prNumber} is merged` : refreshAlreadyLanded!.evidence === 'mission_pr_merged' ? `the mission's shipping PR${refreshAlreadyLanded!.missionPrNumber ? ` #${refreshAlreadyLanded!.missionPrNumber}` : ''} is merged` : `${refreshAlreadyLanded!.branch} already contains ${refreshAlreadyLanded!.trunk}`}, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`
             : alreadyShippedRefusal
               ? `This task requires a pull request before completing. ${alreadyShippedRefusal}`
@@ -2762,7 +2770,9 @@ async function patchWorker(
             ? refreshAlreadyLanded.evidence === 'mission_pr_merged'
               ? 'completion accepted under pr_required: the mission shipping PR merged, so the refresh is moot'
               : 'completion accepted under pr_required: mission branch already contains the refresh trunk sha'
-            : 'completion accepted under pr_required: work already shipped in a merged PR',
+            : alreadyShipped
+              ? 'completion accepted under pr_required: work already shipped in a merged PR'
+              : 'completion accepted under pr_required: an accepted blockedByCapability is the outcome',
           workspaceId: worker.workspaceId,
           missionId: taskMissionId,
           taskId: worker.taskId,
@@ -2772,6 +2782,7 @@ async function patchWorker(
             outputRequirement: 'pr_required',
             ...(alreadyShipped ? { alreadyShippedIn: alreadyShipped.prNumber } : {}),
             ...(refreshAlreadyLanded ? { refreshAlreadyLanded } : {}),
+            ...(isCapabilityBlocked ? { blockedByCapability: true } : {}),
             commits: effectiveCommits,
             dirtyWorktree: effectiveDirtyWorktree,
             ...(discardReason ? { discardEdits: discardReason.slice(0, 500) } : {}),
@@ -2783,7 +2794,18 @@ async function patchWorker(
 
       // artifact_required: require PR or artifact (regardless of commits)
       if (outputReq === 'artifact_required' && !hasPR && !evidenceIsDeliverable) {
-        if (!(await hasDeliverableArtifact())) {
+        const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
+        const blockerStrandsOwnEdits = isCapabilityBlocked && (effectiveCommits > 0 || effectiveDirtyWorktree) && !discardReason;
+        if (blockerStrandsOwnEdits && !(await hasDeliverableArtifact())) {
+          const frictionSignature = await persistRejectedCompletionPayload('artifact_required');
+          return NextResponse.json({
+            error: `blockedByCapability is accepted, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`,
+            hint: 'create_pr',
+            gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+            frictionSignature,
+          }, { status: 400 });
+        }
+        if (!isCapabilityBlocked && !(await hasDeliverableArtifact())) {
           const frictionSignature = await persistRejectedCompletionPayload('artifact_required');
           return NextResponse.json({
             error: 'This task requires a deliverable before completing. Use create_pr or create_artifact.',

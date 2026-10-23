@@ -4025,6 +4025,70 @@ describe('PATCH /api/workers/[id]', () => {
       expect(recorded).toMatchObject({ routedTo: 'capability_request', requestId: 'g-1', outcome: 'denied' });
     });
 
+    // The motivating case: a requirement the run could not meet ends with no
+    // PR. An accepted blocker is the outcome, so the output-requirement arms
+    // must not answer it with "needs a PR".
+    describe('an accepted blocker satisfies the output requirement', () => {
+      const noPrWorker = (over: Record<string, unknown> = {}) => ({
+        ...runningWorker(), branch: 'buildd/eval-harness', prUrl: null, prNumber: null, pendingInstructions: null, ...over,
+      });
+      beforeEach(() => {
+        blockerCalls = [{ call: 'request', capability: 'model.inference', provider: 'openrouter', outcome: 'unavailable', grantId: null, at: new Date() }];
+        mockArtifactsFindMany.mockResolvedValue([]);
+      });
+
+      it('completes a pr_required task with no PR', async () => {
+        mockWorkersFindFirst.mockResolvedValue(noPrWorker());
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', kind: 'engineering', outputRequirement: 'pr_required', title: 'Eval harness' });
+        const res = await complete({ structuredOutput: { blockedByCapability: inferenceClaim } });
+        expect(res.status).toBe(200);
+        expect(capabilityTasks).toHaveLength(1);
+      });
+
+      it('completes an auto task with zero commits and no PR', async () => {
+        mockWorkersFindFirst.mockResolvedValue(noPrWorker());
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', kind: 'engineering', outputRequirement: 'auto', title: 'Eval harness' });
+        const res = await complete({ structuredOutput: { blockedByCapability: inferenceClaim } });
+        expect(res.status).toBe(200);
+      });
+
+      it('completes an artifact_required task with no PR or artifact', async () => {
+        mockWorkersFindFirst.mockResolvedValue(noPrWorker());
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', kind: 'engineering', outputRequirement: 'artifact_required', title: 'Eval harness' });
+        const res = await complete({ structuredOutput: { blockedByCapability: inferenceClaim } });
+        expect(res.status).toBe(200);
+      });
+
+      it('still needs discardEdits for a pr_required worker with commits of its own', async () => {
+        mockWorkersFindFirst.mockResolvedValue(noPrWorker({ commitCount: 2 }));
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', kind: 'engineering', outputRequirement: 'pr_required', title: 'Eval harness' });
+        const refused = await complete({ commitCount: 2, structuredOutput: { blockedByCapability: inferenceClaim } });
+        expect(refused.status).toBe(400);
+        const json = await refused.json();
+        expect(json.error).toContain('discardEdits');
+        expect(json.hint).toBe('create_pr');
+
+        const accepted = await complete({ commitCount: 2, discardEdits: 'Scratch client for the missing model call; not meant to ship.', structuredOutput: { blockedByCapability: inferenceClaim } });
+        expect(accepted.status).toBe(200);
+      });
+
+      it('still needs discardEdits for an auto worker with commits of its own', async () => {
+        mockWorkersFindFirst.mockResolvedValue(noPrWorker({ commitCount: 1 }));
+        const res = await complete({ commitCount: 1, structuredOutput: { blockedByCapability: inferenceClaim } });
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toContain('discardEdits');
+      });
+
+      it('a refused blocker does not satisfy pr_required', async () => {
+        blockerCalls = [];
+        mockWorkersFindFirst.mockResolvedValue(noPrWorker());
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', kind: 'engineering', outputRequirement: 'pr_required', title: 'Eval harness' });
+        const res = await complete({ structuredOutput: { blockedByCapability: inferenceClaim } });
+        expect(res.status).toBe(400);
+        expect((await res.json()).code).toBe('capability_not_asked');
+      });
+    });
+
     it('refuses a malformed claim', async () => {
       const res = await complete({ structuredOutput: { blockedByCapability: { need: 'model.inference' } } });
       expect(res.status).toBe(400);
