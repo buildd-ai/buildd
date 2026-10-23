@@ -2862,6 +2862,23 @@ export async function handleBuilddAction(
         }
       }
 
+      // Attached designs, with the screens a builder is asked to match. The
+      // artifact list above shows a design as one file; this names its screens.
+      if (includes.includes('artifacts')) {
+        let attached: any = null;
+        try { attached = await api(`/api/artifacts/designs?taskId=${encodeURIComponent(task.id)}`); } catch { /* designs are optional detail */ }
+        const designs = Array.isArray(attached?.designs) ? attached.designs as Array<Record<string, any>> : [];
+        if (designs.length > 0) {
+          lines.push('', `## Designs (${designs.length})`);
+          for (const d of designs) {
+            const screens = (Array.isArray(d.screens) ? d.screens : []) as Array<{ id: string; name?: string; viewport?: string }>;
+            const rev = d.pinnedRevision ? `revision ${d.pinnedRevision} pinned` : `revision ${d.revision}`;
+            lines.push(`- **${d.title || '(untitled)'}** (${rev}) id: ${d.id}${d.linkId ? `, link: ${d.linkId}` : ''}`);
+            for (const s of screens) lines.push(`  - screen ${s.id}${s.name ? `: ${s.name}` : ''}${s.viewport ? ` (${s.viewport})` : ''}`);
+          }
+        }
+      }
+
       if (includes.includes('dispatch')) lines.push('', ...formatDispatchTrail(task.dispatch));
 
       if (workers.length === 0 && !hasResult) {
