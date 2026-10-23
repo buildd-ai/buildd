@@ -83,11 +83,9 @@ const REASON_ORDER: Record<HealthQueueReason, number> = { lane: 0, limit: 1, dec
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
+/** The holder's state in the terms catalog's words: an agent on it is Running. */
 function holderState(m: HealthQueueLaneMemberInput): string {
-  if (m.prNumber != null) return 'PR open';
-  if (m.status === 'in_progress') return 'Running';
-  if (m.status === 'review') return 'In review';
-  return 'Starting';
+  return m.prNumber != null ? 'PR open' : 'Running';
 }
 
 function laneView(l: HealthQueueViewInput['lanes'][number], now: number): HealthQueueLane | null {

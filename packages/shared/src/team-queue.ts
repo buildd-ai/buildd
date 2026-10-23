@@ -75,7 +75,7 @@ export interface HealthQueueLaneMember {
   title: string;
   /** 1 for the first waiter; null for the holder. */
   position: number | null;
-  /** Holder: `Running`, `PR open`, `In review`, `Starting`. Waiter: null. */
+  /** Holder: `Running` or `PR open`. Waiter: null. */
   state: string | null;
   /** How long it has held the lane, or waited in it. */
   age: string | null;

@@ -15,6 +15,11 @@ import PrimaryAction from '@/components/ui/PrimaryAction';
  * is a pure component so it renders in a test without a DOM.
  */
 
+const CHECK_FAILED = 'Could not check what holds it. Try again.';
+const START_FAILED = 'Could not start it. Try again.';
+const REMOVE_FAILED = 'Could not remove it. Try again.';
+const RELEASE_FAILED = 'Could not release the lane. Try again.';
+
 function Rows({ rows }: { rows: Array<[string, React.ReactNode]> }) {
   return (
     <dl className="grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-2 text-body">
@@ -97,9 +102,9 @@ export function ForceStartSheet({ row, onClose, onDone }: { row: HealthQueueWait
     try {
       const res = await fetch(`/api/tasks/${id}/waiting`);
       const body = (await res.json().catch(() => ({}))) as WaitingBody;
-      setState(res.ok ? forceStateOf(body) : { kind: 'error', message: body.error ?? 'Could not check what holds it. Try again.' });
+      setState(res.ok ? forceStateOf(body) : { kind: 'error', message: body.error ?? CHECK_FAILED });
     } catch {
-      setState({ kind: 'error', message: 'Could not check what holds it. Try again.' });
+      setState({ kind: 'error', message: CHECK_FAILED });
     }
   }
 
@@ -118,9 +123,9 @@ export function ForceStartSheet({ row, onClose, onDone }: { row: HealthQueueWait
       if (res.ok) { setState({ kind: 'started' }); onDone(); return; }
       // 409: what holds it changed since the sheet opened; show the new reasons.
       if (res.status === 409) setState(forceStateOf(body));
-      else setState({ kind: 'error', message: body.error ?? 'Could not start it. Try again.' });
+      else setState({ kind: 'error', message: body.error ?? START_FAILED });
     } catch {
-      setState({ kind: 'error', message: 'Could not start it. Try again.' });
+      setState({ kind: 'error', message: START_FAILED });
     } finally {
       setBusy(false);
     }
@@ -211,9 +216,9 @@ export function DependencySheet({ row, onClose, onDone }: { row: HealthQueueWait
       });
       if (res.ok) { onDone(); onClose(); return; }
       const body = (await res.json().catch(() => ({}))) as { error?: string };
-      setError(body.error ?? 'Could not remove it. Try again.');
+      setError(body.error ?? REMOVE_FAILED);
     } catch {
-      setError('Could not remove it. Try again.');
+      setError(REMOVE_FAILED);
     } finally {
       setBusy(false);
     }
@@ -286,9 +291,9 @@ export function LaneSheet({ lane, onClose, onDone }: { lane: HealthQueueLane | n
       });
       if (res.ok) { onDone(); onClose(); return; }
       const body = (await res.json().catch(() => ({}))) as { error?: string };
-      setError(body.error ?? 'Could not release the lane. Try again.');
+      setError(body.error ?? RELEASE_FAILED);
     } catch {
-      setError('Could not release the lane. Try again.');
+      setError(RELEASE_FAILED);
     } finally {
       setBusy(false);
     }
