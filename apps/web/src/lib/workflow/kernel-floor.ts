@@ -25,6 +25,7 @@ import { kernelHost } from './kernel-host';
 import { commandsConfigured, executionModeOf } from './command-api';
 import { publishOpenPrStatuses, type OpenPrStatusSummary } from './open-pr-status';
 import { runDueEffectDrains, type EffectTickResult } from './effect-timer';
+import { runDueTrunkRechecks, type TrunkRecheckOutcome, type TrunkRecheckTickResult } from './trunk-recheck';
 import { drainDueEpochEffects, type EpochDrainSummary } from './epoch-effects';
 import { sweepDeadEffects, type DeadEffectsSummary } from './dead-effect-sweep';
 import { KERNEL_SPAN, emitKernelSpan, floorSpanAttributes, type FloorRepairs, type OutboxDepth } from './kernel-telemetry';
@@ -226,16 +227,28 @@ export async function runScheduledKernelFloor(o: { env?: Record<string, string |
 
 /**
  * The control plane's per-minute tick (apps/control-plane/wrangler.jsonc): drain the deliveries whose
- * effect came due (effect-timer.ts). It reads Redis and, when nothing is due, touches no Postgres. The
- * hourly floor above stays the backstop for a lost queue write.
+ * effect came due (effect-timer.ts), then recheck the trunk incidents that came due (trunk-recheck.ts:
+ * a base suite completed, or the fallback elapsed) and recover what they blocked. It reads Redis and,
+ * when nothing is due, touches no Postgres and no GitHub. The hourly floor above stays the backstop
+ * for a lost queue write. Each step is isolated: a failed drain never skips the trunk recheck.
  */
-export async function runScheduledEffectTick(o: { env?: Record<string, string | undefined>; drain?: (deliveryId: string) => Promise<unknown> } = {}): Promise<{ ran: boolean; reason?: string; result?: EffectTickResult | null }> {
+export async function runScheduledEffectTick(o: {
+  env?: Record<string, string | undefined>;
+  drain?: (deliveryId: string) => Promise<unknown>;
+  recheckTrunk?: (incidentIds: string[]) => Promise<TrunkRecheckOutcome>;
+} = {}): Promise<{ ran: boolean; reason?: string; result?: EffectTickResult | null; trunk?: Isolated<TrunkRecheckTickResult | null> }> {
   const env = o.env ?? process.env;
   if (kernelHost() !== 'control-plane') return { ran: false, reason: 'not_control_plane' };
   if (executionModeOf(env.EXECUTION_MODE) !== 'own') return { ran: false, reason: 'shadow' };
   if (!commandsConfigured(env)) return { ran: false, reason: 'no_command_key' };
   const drain = o.drain ?? (async (id: string) => (await import('./seam')).drainDelivery(id));
-  const result = await runDueEffectDrains({ drain });
+  const result = await runDueEffectDrains({ drain }).catch((err: unknown) => {
+    console.error('[EffectTimer] control-plane tick failed:', err instanceof Error ? err.message : err);
+    return null;
+  });
   if (result && result.due > 0) console.log(`[EffectTimer] control-plane ${JSON.stringify(result)}`);
-  return { ran: true, result };
+  const recheck = o.recheckTrunk ?? (async (ids: string[]) => (await import('./seam')).recheckTrunkIncidents(ids));
+  const trunk = await isolate(() => runDueTrunkRechecks({ recheck }));
+  if (trunk && (!ok(trunk) || trunk.due > 0)) console.log(`[TrunkRecheck] control-plane ${JSON.stringify(trunk)}`);
+  return { ran: true, result, trunk };
 }

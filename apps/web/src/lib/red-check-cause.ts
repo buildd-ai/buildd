@@ -30,6 +30,16 @@ export function detectInfraFailure(log: string | null | undefined): string | nul
 
 /** The database server dropped the test's connections: the environment, not the code. */
 const DB_CONNECTION_LOST = /terminating connection due to administrator command|Connection terminated unexpectedly|server closed the connection unexpectedly/i;
+
+/**
+ * What a re-run of the same code is expected to clear: the database dropping
+ * its connections, or an infra signature. `ci-infra-failure.ts` re-runs on it.
+ */
+export function detectRerunnableFailure(log: string | null | undefined): string | null {
+  if (!log) return null;
+  if (DB_CONNECTION_LOST.test(log)) return 'db_connection_lost';
+  return detectInfraFailure(log);
+}
 /** The job or step ran out of time. */
 const TIMED_OUT = /has timed out after \d+|exceeded the maximum execution time|SIGTERM received before the run finished/i;
 
@@ -162,8 +172,10 @@ export type RedCauseKind = 'flake' | 'failure' | 'unknown';
 /**
  * Which rule decided. `db_connection_lost`, `timeout_no_assertion` and the
  * infra slugs read as a likely flake; `test` and `error` as a real failure.
+ * `red_on_base` and `unrelated_to_diff` say the job is red for a reason that
+ * is not this PR's code, whatever its lines show (`applyNotThisPr`).
  */
-export type RedRule = 'db_connection_lost' | 'timeout_no_assertion' | 'registry_rate_limit' | 'image_pull_failed' | 'registry_unavailable' | 'runner_lost' | 'test' | 'error' | 'none';
+export type RedRule = 'db_connection_lost' | 'timeout_no_assertion' | 'registry_rate_limit' | 'image_pull_failed' | 'registry_unavailable' | 'runner_lost' | 'red_on_base' | 'unrelated_to_diff' | 'test' | 'error' | 'none';
 
 export interface RedJob {
   name: string;
@@ -193,7 +205,55 @@ export function classifyJob(log: string | null | undefined, lines: string | null
   return 'none';
 }
 
-const FLAKE_RULES: ReadonlySet<RedRule> = new Set(['db_connection_lost', 'timeout_no_assertion', 'registry_rate_limit', 'image_pull_failed', 'registry_unavailable', 'runner_lost']);
+/** Rules that say the job is red for a reason other than this PR's code. */
+const NOT_THIS_PR_RULES: ReadonlySet<RedRule> = new Set(['red_on_base', 'unrelated_to_diff']);
+const FLAKE_RULES: ReadonlySet<RedRule> = new Set(['db_connection_lost', 'timeout_no_assertion', 'registry_rate_limit', 'image_pull_failed', 'registry_unavailable', 'runner_lost', ...NOT_THIS_PR_RULES]);
+
+// ── Not this PR's code ───────────────────────────────────────────────────────
+
+/**
+ * A job whose result depends only on some paths: a PR that changes none of
+ * them cannot have turned it red. Mirrors the job's own path filter, so a job
+ * missing here is never called unrelated.
+ */
+export interface JobPathScope { job: RegExp; paths: RegExp }
+
+/**
+ * buildd's own scoped jobs (.github/workflows/build.yml `runner-changes`):
+ * the Windows runner job tests only what the runner loads.
+ */
+export const DEFAULT_JOB_PATH_SCOPES: readonly JobPathScope[] = [
+  {
+    job: /^Runner unit tests \(windows\)$/,
+    paths: /^(apps\/runner\/|packages\/(core|shared|ai-kit|dispatch-contract|spec-contract)\/|scripts\/(run-unit-tests|stub-server-only)\.ts$|bunfig\.toml$|bun\.lock$|package\.json$|\.gitattributes$|\.github\/workflows\/build\.yml$)/,
+  },
+];
+
+/**
+ * R-3, rule: the job is scoped to paths this PR's diff does not touch. A null
+ * or empty `changed` (the diff could not be read) never decides.
+ */
+export function unrelatedToDiff(jobName: string, changed: readonly string[] | null, scopes: readonly JobPathScope[] = DEFAULT_JOB_PATH_SCOPES): boolean {
+  if (!changed || changed.length === 0) return false;
+  const scope = scopes.find(s => s.job.test(jobName));
+  return !!scope && !changed.some(p => scope.paths.test(p));
+}
+
+/**
+ * R-3, rules over the log rules: a job red on the base branch at the same
+ * time, or scoped to paths the diff does not touch, is not the PR's code
+ * whatever its lines say. The lines are kept for the card.
+ */
+export function applyNotThisPr(
+  jobs: readonly RedJob[],
+  ctx: { redOnBase?: ReadonlySet<string> | null; changed?: readonly string[] | null; scopes?: readonly JobPathScope[] },
+): RedJob[] {
+  return jobs.map(j => {
+    if (ctx.redOnBase?.has(j.name)) return { ...j, rule: 'red_on_base' as const };
+    if (unrelatedToDiff(j.name, ctx.changed ?? null, ctx.scopes)) return { ...j, rule: 'unrelated_to_diff' as const };
+    return j;
+  });
+}
 
 export function causeOf(jobs: readonly RedJob[]): RedCauseKind {
   if (jobs.length === 0) return 'unknown';
@@ -208,6 +268,24 @@ export function signatureOf(jobs: readonly RedJob[]): string {
 }
 
 // ── The stored record ────────────────────────────────────────────────────────
+
+/**
+ * The decision model's reading of a head the rules left `unknown`
+ * (`buildd.red_check_cause`, written by `red-check-decision.ts`). It answers
+ * for the signature it read; a different failure on the same head is asked again.
+ */
+export interface RedJudgement {
+  decision: 'environment' | 'code';
+  /** Model answers only. */
+  confidence: number | null;
+  /** `model`, or `fallback` when no confident model answer (always `code`). */
+  source: string;
+  model: string | null;
+  reasonCode: string;
+  policyVersion: string;
+  signature: string;
+  at: string;
+}
 
 /** One re-run a person asked for (R-4): who, when, which run. */
 export interface RedRerun { at: string; by: string; runId: number; signature: string }
@@ -229,6 +307,18 @@ export interface RedCheckRecord {
   reruns?: RedRerun[];
   /** A re-run of this head failed again with the same signature. */
   failedAfterRerun?: boolean;
+  /** The decision model's reading, when the rules left the cause `unknown`. */
+  judgement?: RedJudgement;
+}
+
+/**
+ * The cause the card acts on: the rules', or, when they left it `unknown`,
+ * the decision model's judgement of this same failure.
+ */
+export function effectiveCause(record: Pick<RedCheckRecord, 'cause' | 'signature' | 'judgement'>): RedCauseKind {
+  const j = record.judgement;
+  if (record.cause !== 'unknown' || !j || j.signature !== record.signature) return record.cause;
+  return j.decision === 'environment' ? 'flake' : 'failure';
 }
 
 /**
@@ -241,7 +331,9 @@ export function mergeRedRecord(prev: RedCheckRecord | null | undefined, next: Re
   const last = reruns[reruns.length - 1];
   const reran = !!last && next.runAttempt != null && prev.runAttempt != null && next.runAttempt > prev.runAttempt;
   const failedAfterRerun = !!prev.failedAfterRerun || (reran && last.signature === next.signature);
-  return { ...next, reruns, failedAfterRerun };
+  // A judgement answers for the failure it read: kept while the signature holds.
+  const judgement = prev.judgement?.signature === next.signature ? prev.judgement : undefined;
+  return { ...next, reruns, failedAfterRerun, ...(judgement ? { judgement } : {}) };
 }
 
 /** A stored value read back from JSON: the record, or null when it is not one. */
@@ -289,6 +381,8 @@ function jobSentence(job: RedJob): string {
     case 'image_pull_failed':
     case 'registry_unavailable': return `${n} failed: the runner could not pull its image.`;
     case 'timeout_no_assertion': return `${n} timed out before any test failed.`;
+    case 'red_on_base': return `${n} is failing on the base branch too, so it is not this PR's code.`;
+    case 'unrelated_to_diff': return `${n} failed, but this PR changes nothing it tests.`;
     default: {
       const test = firstTestName(job.lines);
       if (test) return `${n} failed: ${test}.`;
@@ -316,20 +410,23 @@ export function redCheckView(record: RedCheckRecord, history: RedFixHistory = { 
     const lead = record.jobs.find(j => j.rule !== 'none');
     if (lead) parts.push(jobSentence(lead));
   }
-  const flake = record.cause === 'flake';
+  const cause = effectiveCause(record);
+  const flake = cause === 'flake';
+  // The not-this-PR sentences already say why; "looks like a flake" would contradict them.
+  const saysWhy = record.jobs.length > 0 && record.jobs.every(j => NOT_THIS_PR_RULES.has(j.rule));
   // The verdict rides on the first sentence: it is the one line the card shows
   // unfolded, and the line is what says why Re-run or Start fix leads.
   if (parts.length > 0 && record.failedAfterRerun) {
     parts[0] = parts[0].replace(/ (failed|timed out)(:?)/, ' $1 twice, before and after a re-run$2');
     parts.splice(1, 0, 'So it is probably not a flake.');
-  } else if (parts.length > 0 && flake) {
+  } else if (parts.length > 0 && flake && !saysWhy) {
     parts[0] = `${parts[0].replace(/\.$/, '')}, which looks like a flake, not the code.`;
   }
   if (history.pushedNothing > 0) parts.push(`${plural(history.pushedNothing, 'automatic fix', 'automatic fixes')} pushed nothing.`);
   if (history.noChange > 0) parts.push(`${plural(history.noChange, 'automatic fix', 'automatic fixes')} did not change the result.`);
   return {
     checks,
-    cause: record.cause,
+    cause,
     sentence: parts.join(' ') || 'A check failed.',
     primary: flake && !record.failedAfterRerun ? 'rerun' : 'fix',
   };
