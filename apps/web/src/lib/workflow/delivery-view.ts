@@ -61,7 +61,13 @@ SELECT to_jsonb(d.*) AS delivery,
   ${findings} AS findings,
   (SELECT jsonb_build_object('command', tr.command, 'from_state', tr.from_state, 'to_state', tr.to_state, 'evidence', tr.evidence, 'created_at', tr.created_at)
      FROM workflow_transitions tr WHERE tr.delivery_id = d.id ORDER BY tr.to_version DESC LIMIT 1) AS last_transition,
-  COALESCE((SELECT jsonb_agg(jsonb_build_object('id', t.id, 'role', COALESCE(t.delivery_role, CASE WHEN t.id = d.owner_task_id THEN 'owner' END), 'status', t.status, 'created_at', t.created_at) ORDER BY t.created_at)
+  COALESCE((SELECT jsonb_agg(jsonb_build_object('id', t.id, 'role', COALESCE(t.delivery_role, CASE WHEN t.id = d.owner_task_id THEN 'owner' END), 'status', t.status, 'created_at', t.created_at,
+       'owner_question', COALESCE(
+         (SELECT COALESCE(NULLIF(n.body, ''), n.title) FROM mission_notes n
+            WHERE n.task_id = t.id AND n.type = 'question' AND n.status = 'open' AND n.default_choice IS NULL
+              AND COALESCE(n.disposition, 'ask') = 'ask'
+            ORDER BY n.created_at DESC LIMIT 1),
+         CASE WHEN t.status IN ('failed', 'pending', 'assigned') THEN NULLIF(t.result->'waitingFor'->>'prompt', '') END)) ORDER BY t.created_at)
      FROM tasks t WHERE t.delivery_id = d.id OR t.id = d.owner_task_id), '[]'::jsonb) AS attempt_tasks,
   (SELECT jsonb_build_object('id', t.id, 'status', t.status, 'created_at', t.created_at, 'claimed_at', t.claimed_at,
             'worker_status', w.status, 'worker_updated_at', w.updated_at, 'recovered_at', t.context->'conflictRecovery'->>'at')
@@ -158,6 +164,7 @@ export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson:
   } : null;
   const attemptTasks: AttemptTaskRef[] = ((row.attempt_tasks as J[]) ?? []).map((t) => ({
     taskId: String(t.id), role: t.role == null ? 'attempt' : String(t.role), status: String(t.status), createdAt: iso(t.created_at),
+    ownerQuestion: typeof t.owner_question === 'string' && t.owner_question.trim() ? t.owner_question.trim() : null,
   }));
   const view = deriveDeliveryView({
     view: { delivery: toDeliverySnapshot(row.delivery as J), rounds, attempts, findings },

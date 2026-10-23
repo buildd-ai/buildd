@@ -2,13 +2,13 @@
 title: Task Page
 status: active
 owner: max
-last_verified: 2026-10-13
+last_verified: 2026-10-22
 summary: The task page MUST lead with the deliverable, its track and one outcome, list checks by round from delivery facts, frame attempts by their parent, fit a phone's first screen, and open Code review only to substance.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/tasks/[id]/page.tsx, apps/web/src/lib/task-checks.ts, apps/web/src/lib/task-result.ts, apps/web/src/lib/workflow/projections.ts]
 related: [workflow-state-kernel, mission-task-lifecycle, surface-ia-home-missions-initiatives]
 keywords: [task detail, mobile header, show full title, review queued, no findings yet, review of PR, what shipped, why this, verdict block, review approved, updating branch, awaiting merge, repair 1, checks list, review round, attempt, reviewer task, fix attempt, structured output, technical summary, raw output, lifecycle track]
-verified_by: [apps/web/src/lib/workflow/escalation-copy.test.ts, apps/web/src/components/EscalationDecision.test.tsx, apps/web/src/lib/workflow/delivery-rounds.test.ts, apps/web/src/lib/projections-agree.test.tsx, packages/workflow-kernel/src/escalation-brief.test.ts, apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx, apps/web/src/lib/task-view.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, apps/web/src/lib/task-sections.test.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskPanel.sections.test.tsx, apps/web/src/app/app/(protected)/missions/[id]/TaskPanel.page-body.test.tsx, apps/web/src/lib/task-live-view.test.ts, apps/web/src/lib/mission-board.test.ts]
+verified_by: [apps/web/src/app/app/(protected)/tasks/[id]/mission-sibling-nav.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/MissionContextBar.test.tsx, apps/web/src/lib/workflow/escalation-copy.test.ts, apps/web/src/components/EscalationDecision.test.tsx, apps/web/src/lib/workflow/delivery-rounds.test.ts, apps/web/src/lib/projections-agree.test.tsx, packages/workflow-kernel/src/escalation-brief.test.ts, apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx, apps/web/src/lib/task-view.test.ts, apps/web/src/lib/task-sections.test.ts, apps/web/src/lib/task-live-view.test.ts, apps/web/src/lib/mission-board.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -32,10 +32,13 @@ assertions:
     type: "symbol_reachable"
     symbol: "taskDeliverySections"
     entry: "apps/web/src/app/app/(protected)/tasks/[id]/page.tsx"
-  - id: "checks-in-sheet"
+  - id: "mission-sibling-navigation"
     type: "symbol_reachable"
-    symbol: "taskDeliverySections"
-    entry: "apps/web/src/app/api/tasks/[id]/summary/route.ts"
+    symbol: "buildMissionSiblingNav"
+    entry: "apps/web/src/app/app/(protected)/tasks/[id]/mission-context-bar.ts"
+  - id: "mission-sibling-navigation-tests"
+    type: "test_file"
+    path: "apps/web/src/app/app/(protected)/tasks/[id]/mission-sibling-nav.test.ts"
   - id: "checks-derived-once"
     type: "symbol_reachable"
     symbol: "deriveTaskChecks"
@@ -236,25 +239,17 @@ never described as released.
   figure. The card draws only recorded figures (diff counters, more than one
   attempt, the diff bar), and no card at all when there are none; PR history
   stays. The status row's link is the way to the PR at every width.
-- The page and the mission sheet (`/api/tasks/[id]/summary`) read a task's
-  workers and open question through one loader, `loadTaskView`. Workers are
-  ordered by `createdAt`, then `id`. Both show the newest live worker, else the
-  newest, and both drop its question once the task has ended or a failure
-  recovery owns the next step.
-- The sheet renders the page's header pill, stored PR card, runner and branch
-  fact rows and summary card. `lib/task-sections.ts` decides the PR card (the
-  PR worker's PR, none once closed), the Merged header and the last-message
-  summary mark for both.
-- The sheet also renders the page's delivery reading in that pill, its checks
-  list, its live run view (`RealTimeWorkerView`) and steer panel, its
-  Deliverables block and its Access list, from props the page's own helpers
-  build (`taskDeliverySections`, `liveWorkerViewProps`, `workerSteerProps`).
-  The sheet has no live view of its own. A live worker's question is asked
-  once, in the live run view, on both. In the sheet a worker event refetches
-  the sheet's data, never the mission page.
-- The mission board shows the worker `pickTaskView` picks
-  (`lib/task-view-pick.ts`), so the board, the sheet and the page agree on
-  the task's worker.
+- The task page is the single task view at every width. Mission task links,
+  strip cells, Flow's Open task link and History rows open it, carrying the
+  mission's `?from=` back context. The mission context bar's sibling links open
+  sibling task pages in feed order (`buildMissionSiblingNav`).
+- `loadTaskView` reads workers and the open question. Workers are ordered by
+  `createdAt`, then `id`; the page shows the newest live worker, else the newest,
+  and drops its question once the task ends or a failure recovery owns the next step.
+- `taskDeliverySections` builds the checks and delivery reading; `liveWorkerViewProps`
+  and `workerSteerProps` build the live run view and steer panel. A live worker's
+  question appears once, in the live run view. The page also owns Deliverables and Access.
+- The mission board uses `pickTaskView` too, so it and the page agree on the worker.
 
 ## Interaction
 
@@ -366,8 +361,8 @@ branch update" for a carried approval), binding what follows to that round.
 - AC-17: GIVEN a title longer than three phone lines WHEN the header renders below `md` THEN the h1 is `text-heading`, spans the full width, is clamped to three lines with a 44px "Show full title" (`aria-expanded=false`) that expands it in place and "Show less" that collapses it; Ask and ⋯ sit on the row under the title, never beside it.
 - AC-18: GIVEN a review attempt of a deliverable with PR #N WHEN the header renders THEN the attempt link reads "Review of PR #N ›" and the deliverable's full title is in its accessible name and tooltip, not its visible text.
 - AC-19: GIVEN the long-title pending reviewer fixture (`review-pending`) at 390×844 with the title collapsed WHEN it renders THEN the Checks heading and the Code review and Tests rows are above the bottom nav without scrolling; at 320 and 360 wide there is no sideways scroll and no tap target under 44px (Visual QA `assertLayout`).
-- AC-20: GIVEN an older worker parked on a question and a newer worker that failed, on a task still in progress, WHEN the page and the sheet load THEN both show the parked worker and the same linked question note; GIVEN the task completed THEN neither offers the question.
-- AC-21: GIVEN a task with a live worker whose PR is in review WHEN the sheet opens THEN its header pill reads the delivery's state, the Checks list and the live run view render as on the page, and a waiting worker's question appears once; GIVEN the board lists the same task, whatever order its workers were read in, THEN the board's worker is the sheet's.
+- AC-20: GIVEN an older worker parked on a question and a newer worker that failed, on a task still in progress, WHEN the task page loads THEN it shows the parked worker and linked question note; GIVEN the task completed THEN it offers no question.
+- AC-21: GIVEN a mission task with a live worker whose PR is in review WHEN its task link opens THEN the task page shows the delivery's header pill, Checks and live run view, with a waiting worker's question once; GIVEN the board lists that task, whatever its workers' read order, THEN it selects the same worker as the page.
 
 ## Code surface
 
@@ -386,11 +381,17 @@ branch update" for a carried approval), binding what follows to that round.
 - `apps/web/src/lib/workflow/projections.ts` — `deriveDeliveryView` headlines, `rounds` and `ledger` on the view.
 - `apps/web/src/components/LoopStatus.tsx` — loop chip (`loopAttemptShown`) and Loop history.
 - `apps/web/src/components/task/PrCard.tsx` — the PR card; `statedAbove` drops what the status row already says.
-- `apps/web/src/lib/task-view.ts` — `loadTaskView` / `pickTaskView`: the workers, worker and question the page and the sheet share.
-- `apps/web/src/lib/task-sections.ts` — `taskPrFacts` / `taskHeaderMerged` / `isFallbackSummary` / `taskDeliverySections`: the PR card, header, summary and checks decisions the page and the sheet share.
-- `apps/web/src/lib/task-live-view.ts` — `liveWorkerViewProps` / `workerSteerProps`: the live run view and steer panel props, for the page and the sheet.
+- `apps/web/src/lib/task-view.ts` — `loadTaskView` / `pickTaskView`: the workers, worker and question for the page.
+- `apps/web/src/lib/task-sections.ts` — `taskPrFacts` / `taskHeaderMerged` / `isFallbackSummary` / `taskDeliverySections`: the PR card, header, summary and checks decisions for the page.
+- `apps/web/src/lib/task-live-view.ts` — `liveWorkerViewProps` / `workerSteerProps`: the live run view and steer panel props, for the task page.
 - `apps/web/src/lib/task-view-pick.ts` — `pickTaskView`, database-free, so the mission board picks the same worker.
-- `apps/web/src/components/task/TaskDeliverables.tsx` — the Deliverables block on both.
+- `apps/web/src/components/task/TaskDeliverables.tsx` — the task page's Deliverables block.
+
+- `apps/web/src/app/app/(protected)/tasks/[id]/mission-sibling-nav.ts` —
+  `buildMissionSiblingNav`: sibling page links in feed order with mission back context.
+- `apps/web/src/app/app/(protected)/tasks/[id]/MissionContextBar.tsx` — the
+  mission back link, pulse and sibling controls; stepping replaces the current
+  task page's history entry.
 
 ## Regression cases (visual)
 

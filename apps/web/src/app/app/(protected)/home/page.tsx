@@ -366,7 +366,7 @@ async function HomeAgents({ teamId, wsIds, timezone, now }: { teamId: string; ws
     : [];
   const missionTitleById = new Map(titleRows.map(m => [m.id, m.title] as const));
   const idle = queueHistory ? idleWhileQueued({ ...queueHistory, from: now - 24 * 3_600_000, to: now }) : [];
-  const model = buildAgentsModel(fleetData.fleet, now, missionTitleById, ({ missionId, taskId }) => missionTaskHref({ missionId, taskId, from: 'home', mode: 'sheet' }));
+  const model = buildAgentsModel(fleetData.fleet, now, missionTitleById, ({ missionId, taskId }) => missionTaskHref({ missionId, taskId, from: 'home' }));
   return <AgentsPanel model={model} occupancy={occupancy} idle={idle} />;
 }
 

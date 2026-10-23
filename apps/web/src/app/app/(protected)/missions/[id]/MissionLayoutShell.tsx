@@ -3,9 +3,10 @@
 /**
  * Overview · Flow · History. The shell mounts one layout at a time and switches on
  * the client: the tab writes `?layout=` with `replaceState` (never a router
- * navigation, so the task sheet's own history entries are left alone). The
- * server builds only the layout the URL names; a tab it has not built yet is
- * fetched with one `router.refresh()`, and one shown before switches back at once.
+ * navigation). The server builds only the layout the URL names; a tab it has
+ * not built yet is fetched with one `router.refresh()`, and one shown before
+ * switches back at once. Flow is a desktop view: a Flow link opened below md
+ * lands on the mission page (spec d25d923d R-2).
  *
  * Board and Flow share `MissionBoardHeader`; the Feed keeps its masthead and
  * carries the same tabs in it.
@@ -19,6 +20,7 @@ import { formatClock } from '@/lib/mission-board';
 import { describeMissionDuration, formatDuration } from '@/lib/mission-duration';
 import { useNow } from './MissionBoardParts';
 import MissionSheetRow from './MissionSheetRow';
+import { nativeHistoryData } from '@/lib/native-history';
 
 const LayoutContext = createContext<{ layout: MissionLayout; setLayout: (l: MissionLayout) => void } | null>(null);
 
@@ -61,7 +63,7 @@ export function MissionLayoutTabs({ className = '' }: { className?: string }) {
             tabIndex={on ? 0 : -1}
             data-layout={l}
             onClick={() => ctx.setLayout(l)}
-            className={`-mb-px min-h-11 border-b-2 text-title md:min-h-10 ${on ? 'border-text-primary font-semibold text-text-primary' : 'border-transparent font-medium text-text-muted hover:text-text-primary'}`}
+            className={`-mb-px min-h-11 min-w-11 border-b-2 text-title md:min-h-10 md:min-w-0 ${on ? 'border-text-primary font-semibold text-text-primary' : 'border-transparent font-medium text-text-muted hover:text-text-primary'}`}
           >
             {MISSION_LAYOUT_LABEL[l]}
           </button>
@@ -79,6 +81,9 @@ export interface MissionLayoutShellProps {
   feed: ReactNode;
 }
 
+/** Tailwind's `md` is 768px: below it, Flow opens as the mission page. */
+export const BELOW_MD = '(max-width: 767.98px)';
+
 export default function MissionLayoutShell({ initial, board, flow, feed }: MissionLayoutShellProps) {
   const [layout, set] = useState<MissionLayout>(initial);
   // The last render of each layout the server sent, so a tab shown before
@@ -89,11 +94,18 @@ export default function MissionLayoutShell({ initial, board, flow, feed }: Missi
   const setLayout = useCallback((l: MissionLayout) => {
     set(l);
     try {
-      window.history.replaceState(window.history.state, '', missionLayoutHref(window.location.href, l));
+      // Without Next's markers, or the router never sees the URL (its patch
+      // skips a write carrying `__NA`) and the refresh rebuilds the old layout.
+      window.history.replaceState(nativeHistoryData(window.history.state), '', missionLayoutHref(window.location.href, l));
     } catch {
       // A sandboxed frame can refuse history writes; the tab still switches.
     }
   }, []);
+  // On arrival only: a Flow link opened on a phone shows the mission page.
+  const arrival = useRef(initial);
+  useEffect(() => {
+    if (arrival.current === 'flow' && window.matchMedia?.(BELOW_MD).matches) setLayout('board');
+  }, [setLayout]);
   const value = useMemo(() => ({ layout, setLayout }), [layout, setLayout]);
   const content = shown.current[layout];
   return (
@@ -105,17 +117,46 @@ export default function MissionLayoutShell({ initial, board, flow, feed }: Missi
   );
 }
 
+/** How long a layout may take before the panel says it did not load. */
+export const LAYOUT_LOAD_TIMEOUT_MS = 15_000;
+
 /**
  * A layout the server has not built: it builds it for the URL that now names
- * it (one refresh when this mounts), and the tabs stay usable meanwhile.
+ * it (one refresh when this mounts), and the tabs stay usable meanwhile. A
+ * refresh that brings nothing within the timeout says so, with a retry.
  */
 function LayoutLoading({ layout }: { layout: MissionLayout }) {
   const router = useRouter();
-  useEffect(() => { router.refresh(); }, [router, layout]);
+  const routerRef = useRef(router);
+  routerRef.current = router;
+  const [attempt, setAttempt] = useState(0);
+  const [failed, setFailed] = useState(false);
+  // One refresh per layout and per retry, whatever the router's identity.
+  useEffect(() => {
+    setFailed(false);
+    routerRef.current.refresh();
+    const t = setTimeout(() => setFailed(true), LAYOUT_LOAD_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [layout, attempt]);
+  const label = MISSION_LAYOUT_LABEL[layout];
   return (
-    <div data-testid="mission-layout-loading" className="py-10">
+    <div className="py-10">
       <MissionLayoutTabs />
-      <p className="mt-6 text-body text-text-muted">Loading {MISSION_LAYOUT_LABEL[layout]}…</p>
+      {failed ? (
+        <div data-testid="mission-layout-error" role="alert" className="mt-6 flex flex-wrap items-center gap-3">
+          <p className="text-body text-text-secondary">{label} didn’t load.</p>
+          <button
+            type="button"
+            data-testid="mission-layout-retry"
+            onClick={() => setAttempt(a => a + 1)}
+            className="btn h-11 md:h-8"
+          >
+            Try again
+          </button>
+        </div>
+      ) : (
+        <p data-testid="mission-layout-loading" className="mt-6 text-body text-text-muted">Loading {label}…</p>
+      )}
     </div>
   );
 }

@@ -379,6 +379,11 @@ export interface StepResult {
   status: StepStatus;
   message: string;
   durationMs?: number;
+  /**
+   * Tail of a failed command's combined output. `message` keeps only the first
+   * line for the worker record; a repair session needs the rest.
+   */
+  output?: string;
 }
 
 export interface VerifyReport {
@@ -468,6 +473,14 @@ function failMessage(out: CommandOutcome): string {
   const firstLine = stream.split('\n').filter(Boolean)[0] ?? '';
   const detail = firstLine.slice(0, 200);
   return detail ? `exit ${out.code}: ${detail}` : `exit ${out.code}`;
+}
+
+const OUTPUT_TAIL_CHARS = 4_000;
+
+/** Last few KB of a failed command's stdout + stderr, for whoever has to fix it. */
+function outputTail(out: CommandOutcome): string {
+  const text = [out.stdout, out.stderr].map((s) => (s ?? '').trim()).filter(Boolean).join('\n');
+  return text.length <= OUTPUT_TAIL_CHARS ? text : `…${text.slice(-OUTPUT_TAIL_CHARS)}`;
 }
 
 /**
@@ -635,7 +648,7 @@ export async function executeSteps(steps: Step[], opts: ExecuteOptions): Promise
         // docs/design/reliable-env-provisioning.md.
         result = { phase: step.phase, label: step.label, status: 'warn', message: failMessage(out) };
       } else {
-        result = { phase: step.phase, label: step.label, status: 'fail', message: failMessage(out) };
+        result = { phase: step.phase, label: step.label, status: 'fail', message: failMessage(out), output: outputTail(out) };
       }
     }
 

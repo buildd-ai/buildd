@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { criterionWords, markOf } from '@/lib/specs/delivery-words';
 
 /**
  * Shape of `tasks.context.specSource`: a repo spec document, written by
@@ -47,11 +48,22 @@ const OUTCOME_LABEL = { verified: 'Verified', fail: 'Failed', unverified: 'Not v
 const OUTCOME_TONE = { verified: 'text-status-success', fail: 'text-status-error', unverified: 'text-text-muted' } as const;
 const CRITERIA_SHOWN = 8;
 
+const MARK_TONE = { success: 'text-status-success', error: 'text-status-error', muted: 'text-text-muted', warning: 'text-status-warning' } as const;
+
+/**
+ * One criterion in the spec page's words (lib/specs/delivery-words.ts): no
+ * recorded verdict is Not verified, and Fails only a fail on the current head.
+ */
 function standingLabel(c: SpecCriterionStanding): { label: string; tone: string } {
-  if (c.verdict === null) return { label: 'No verdict', tone: 'text-text-muted' };
-  if (c.verdict === 'fail') return { label: 'Fails', tone: 'text-status-error' };
-  if (c.verdict === 'pass') return c.stale ? { label: 'Passed on an older commit', tone: 'text-text-muted' } : { label: 'Passes', tone: 'text-status-success' };
-  return { label: c.verdict === 'inconclusive' ? 'Inconclusive' : 'Unsupported', tone: 'text-status-warning' };
+  const w = criterionWords(markOf(c));
+  return { label: w.label, tone: MARK_TONE[w.tone] };
+}
+
+/** "0 of 26 verified", then any that failed: counted by what was recorded, never "all N". */
+function countLine(criteria: readonly SpecCriterionStanding[]): string {
+  const verified = criteria.filter((c) => c.verdict === 'pass' && !c.stale).length;
+  const failed = criteria.filter((c) => c.verdict === 'fail').length;
+  return `${verified} of ${criteria.length} verified${failed ? ` · ${failed} failed` : ''}`;
 }
 
 // Failures first, then what is still open, then what holds.
@@ -101,7 +113,8 @@ export function SpecSourceBlock({ specSource, living }: SpecSourceBlockProps) {
                 {OUTCOME_LABEL[living.outcome.outcome]}
               </span>
               <span className="text-text-muted">
-                {' · '}{living.scoped ? `answers for ${living.outcome.criteria.map((c) => c.criterionId).join(', ')}` : (living.outcome.criteria.length === 1 ? 'its one criterion' : `all ${living.outcome.criteria.length} criteria`)}
+                {living.scoped ? ` · answers for ${living.outcome.criteria.map((c) => c.criterionId).join(', ')}` : ''}
+                {` · ${countLine(living.outcome.criteria)}`}
               </span>
             </div>
             <ul className="space-y-1">

@@ -181,7 +181,7 @@ describe('F2: a failing criterion is said once, and names what holds it', () => 
     expect(html.split('no open tasks').length - 1).toBe(1);
   });
 
-  it('open blockers: up to three linked into the task sheet, then +N more', () => {
+  it('open blockers: up to three linked to their task pages, then +N more', () => {
     const openTasks = ['a', 'b', 'c', 'd'].map(id => ({ id: `t-${id}`, status: 'pending', title: `Blocker ${id}` }));
     const { html } = render({ ...failing, openTasks });
     expect(html).toContain('data-testid="mission-situation-blockers"');
@@ -190,7 +190,7 @@ describe('F2: a failing criterion is said once, and names what holds it', () => 
     expect(html).not.toContain('Blocker d');
     expect(html).toContain('+1 more');
     expect(html).toContain('data-task-id="t-a"');
-    expect(html).toContain('/app/missions/m-1?');
+    expect(html).toContain('href="/app/tasks/t-a?from=mission&amp;missionId=m-1"');
     expect(html).toContain('· ready');
   });
 });
@@ -358,22 +358,22 @@ describe('affordanceFor', () => {
     expect(affordanceFor(focus, { missionId: 'm-1' })?.label).not.toBe('Open the blocking task');
   });
 
-  it("opens a mission task in the sheet over the mission, never a bare task-page push", () => {
+  it("opens a mission task on its task page (spec d25d923d R-1)", () => {
     const failed = { kind: 'task_failed' as const, tone: 'error' as const, label: 'A task failed', infra: false, taskIds: ['t-9'], titles: ['Example'] };
     expect(affordanceFor(failed, { missionId: 'm-1' })).toEqual({
       kind: 'internal',
       label: 'Open the failed task',
-      href: '/app/missions/m-1?task=t-9',
+      href: '/app/tasks/t-9?from=mission&missionId=m-1',
       taskId: 't-9',
     });
   });
 
-  it('marks a task affordance with data-task-id so the sheet owner intercepts it', () => {
+  it('marks a task affordance with data-task-id', () => {
     const view = deriveMissionStateView(base);
     const situation = { ...view.situation, focus: { kind: 'task_failed' as const, tone: 'error' as const, label: 'A task failed', infra: false, taskIds: ['t-9'], titles: ['Example'] } };
     const html = renderToStaticMarkup(<MissionSituationBlock missionId="m-1" situation={situation} because={[]} />);
     expect(html).toContain('data-task-id="t-9"');
-    expect(html).toContain('href="/app/missions/m-1?task=t-9"');
+    expect(html).toContain('href="/app/tasks/t-9?from=mission&amp;missionId=m-1"');
   });
 });
 

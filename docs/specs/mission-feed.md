@@ -2,7 +2,7 @@
 title: Mission Feed
 status: active
 owner: builder
-last_verified: 2026-09-23
+last_verified: 2026-10-22
 summary: The mission detail page MUST answer "is this done" before listing tasks, and below md MUST render every deliverable exactly once in one grouped list under a sticky masthead.
 domain: surfaces
 surfaces: ["apps/web/src/app/app/(protected)/missions/[id]/MissionDetailView.tsx", "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.tsx", apps/web/src/lib/mission-feed-groups.ts, apps/web/src/lib/mission-delivery.ts]
@@ -24,9 +24,11 @@ assertions:
     type: "symbol_reachable"
     symbol: "MissionFeedList"
     entry: "apps/web/src/app/app/(protected)/missions/[id]/MissionDetailView.tsx"
-  - id: "page-renders-detail-view"
+  # The current page mounts History directly; the old detail/list assertions
+  # above cover the retained components, not page reachability.
+  - id: "page-renders-history"
     type: "symbol_reachable"
-    symbol: "MissionDetailView"
+    symbol: "MissionFeedLayout"
     entry: "apps/web/src/app/app/(protected)/missions/[id]/page.tsx"
   - id: "delivery-model"
     type: "symbol"
@@ -41,6 +43,11 @@ assertions:
 ---
 
 # Mission Feed
+
+Navigation amendment (2026-10-22): Overview, Flow and History are the current
+mission layouts. The original grouped-list contract below documents retained
+components; it does not assert that the page mounts `MissionDetailView`. All
+task entries lead to the task page with mission back context.
 
 **Capability statement**: The mission detail page MUST state whether the
 mission is done, what it is waiting on and what is left — the masthead, the
@@ -148,7 +155,8 @@ Timeline and Structure views are unchanged and are covered by
 
 ## Out of scope
 
-- What opens when a row is tapped (the task sheet) and its history rules.
+- Task-page content. Task links now open `/app/tasks/<id>` with mission back
+  context; the old task sheet and its query/history interception are retired.
 - The md-and-up list, which remains the Timeline and Structure toggle.
 - Realtime refresh cadence and the RSC payload size.
 - Mission and task cards on Home and the missions list.

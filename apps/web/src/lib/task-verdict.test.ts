@@ -123,6 +123,15 @@ describe('deriveTaskVerdict', () => {
   it('a closed PR is failed', () => {
     expect(deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'closed' } }))!.state).toBe('failed');
   });
+
+  it('a closed PR the supersession record says merged in another PR is shipped there, never failed', () => {
+    const v = deriveTaskVerdict(input({
+      pr: { ...PR, lifecycle: 'closed', supersededBy: { prNumber: 5408, url: 'https://github.com/acme/app/pull/5408' } },
+    }))!;
+    expect(v).toMatchObject({ state: 'shipped', headline: 'Merged in #5408', causeKey: 'shipped:superseded' });
+    expect(v.actions).toEqual([{ label: 'View PR #5408', href: 'https://github.com/acme/app/pull/5408', tone: 'quiet', external: true }]);
+    expect(`${v.headline} ${v.cause ?? ''}`).not.toMatch(/closed without merging|Failed/i);
+  });
 });
 
 describe('applyVerdictDecision', () => {

@@ -44,7 +44,7 @@ export async function loadVerdictRecord(taskId: string): Promise<{ record: Verdi
   const taskWorkers = await db.query.workers.findMany({
     where: sqlWhere(eq(workers.taskId, taskId)),
     orderBy: sqlOrderBy(desc(workers.createdAt)),
-    columns: { id: true, status: true, waitingFor: true, prUrl: true, prNumber: true, prLifecycleStatus: true, mergedAt: true, error: true, createdAt: true, milestones: true, lastCommitSha: true, linesAdded: true, linesRemoved: true, filesChanged: true, branch: true, startedAt: true, exitCause: true, commitCount: true },
+    columns: { id: true, status: true, waitingFor: true, prUrl: true, prNumber: true, prLifecycleStatus: true, mergedAt: true, supersededByPrNumber: true, supersededByPrUrl: true, error: true, createdAt: true, milestones: true, lastCommitSha: true, linesAdded: true, linesRemoved: true, filesChanged: true, branch: true, startedAt: true, exitCause: true, commitCount: true },
   });
   const prWorker = taskWorkers.find(w => w.prUrl && w.prNumber) ?? null;
   const prOpen = !!prWorker && !prWorker.mergedAt && prWorker.prLifecycleStatus !== 'closed';

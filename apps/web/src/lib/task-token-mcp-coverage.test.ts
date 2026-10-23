@@ -29,6 +29,7 @@ const API = 'apps/web/src/app/';
 const REFUSED_ACTIONS: Record<string, string> = {
   get_budget_forecast: 'team-wide by nature (team spend, seat pressure across accounts); cannot be narrowed to one workspace',
   suggest_schedule_update: 'writes a pending change to a workspace schedule, not to its own task or worker',
+  probe_budget_wall: 'team-wide runner control; a task has no claim on the other runners of its team',
 };
 
 /**

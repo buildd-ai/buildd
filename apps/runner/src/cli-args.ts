@@ -48,6 +48,7 @@ export const RUNNER_USAGE = [
   '  buildd slots [<n>]         How many agents run at once (+ and - in buildd top); with no n,',
   '                             print it. Lowering lets the extras finish; --pause pauses the',
   '                             newest extras instead, --abort ends them (asks first)',
+  '  buildd budget reset        Probe a held provider limit now; clears it if capacity is back',
   '  buildd web                 Open the runner on this machine in your browser',
   '  buildd help                Show this help',
   '',
@@ -119,6 +120,8 @@ export type CliDecision =
   | { kind: 'slots'; cmd: SlotsCommand }
   /** `buildd logins [<mode>]` (runner-logins.ts). */
   | { kind: 'logins'; cmd: LoginsCommand }
+  /** `buildd budget reset`: probe a held provider wall now (budget-wall-probe.ts). */
+  | { kind: 'budget-reset' }
   /** `buildd web`: open the running runner's local web UI (runner-web.ts). */
   | { kind: 'web' }
   | { kind: 'run' }
@@ -229,6 +232,10 @@ export function classifyCliArgs(argv: string[]): CliDecision {
   if (args[0] === 'logins') {
     const c = classifyLoginsArgs(args.slice(1));
     return c.kind === 'unknown' ? c : { kind: 'logins', cmd: c };
+  }
+  if (args[0] === 'budget') {
+    if (args[1] !== 'reset') return { kind: 'unknown', arg: args[1] ?? 'budget' };
+    return args.length > 2 ? { kind: 'unknown', arg: args[2] } : { kind: 'budget-reset' };
   }
   if (args[0] === 'web') {
     return args.length > 1 ? { kind: 'unknown', arg: args[1] } : { kind: 'web' };

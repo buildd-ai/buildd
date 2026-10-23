@@ -7,37 +7,34 @@
  * 2 done · 1 in progress · 2 waiting on tasks · 1 next in line
  * [■][■] ┌[▶]┐ [┊][┊][▢]  [◐]   TaskStrip (lg): Done, In progress (outlined),
  *  01 02    03   04 05 06   07    Waiting, then checks (spec f7f67f1a R-1)
- * ┌ 03 of 07 · level 1 of 3 ───┐   FocusCard: the selected task
- * │ Shared delivery projection  │
- * │ Build › Verify › Deliver        │   (once: no second stage grid)
- * └─────────────────────────────┘
- * ‹ ›                                           Goal · 1 of 4 criteria
+ *                                               Goal · 1 of 4 criteria
  * ```
  *
- * On arrival the task a hold names is selected, else the first in flight
- * (`overviewDefaultSelection`), never just the first. The selection is a task
- * id, so a task keeps it when it moves to another group. From 900px the main column stops at 720px and the
- * goal criteria and the agent counts sit in a right rail beside it.
+ * Tapping a cell opens that task's page, the only task view (spec d25d923d
+ * R-1). The selection (← → move it) only marks what holds a task or what it
+ * holds: on arrival the task a hold names, else the first in flight
+ * (`overviewDefaultSelection`), never just the first. From 900px the main
+ * column stops at 720px and the goal criteria and the agent counts sit in a
+ * right rail beside it.
  */
 import { displayTaskTitle } from '@/lib/task-title';
-import { useCallback, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { VisualReviewModel } from '@buildd/shared';
 import Criteria, { type Criterion } from '@/components/ui/Criteria';
-import FocusCard from '@/components/ui/FocusCard';
 import TaskStrip from '@/components/ui/TaskStrip';
+import { useMissionFocusSnapshot } from '@/components/missions/mission-focus-context';
 import { MissionStripContext, createMissionStripStore, type MissionStripValue } from '@/components/missions/mission-strip-context';
 import { BOARD_LANDED, boardNeedsYouCount, type MissionBoardModel } from '@/lib/mission-board';
 import { buildEstimate, missionChecks, outcomeSpecLines, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
-import { isClosedUnshipped, overviewCellState, overviewCells, overviewDefaultSelection, overviewLayout, overviewLegend, overviewSelection, overviewWaitLine, railLines, type OverviewLegendEntry } from '@/lib/mission-overview';
-import { stepIndex, stripOrder, stripState } from '@/lib/mission-task-strip';
+import { isClosedUnshipped, overviewCells, overviewDefaultSelection, overviewLayout, overviewLegend, overviewSelection, railLines, type OverviewLegendEntry } from '@/lib/mission-overview';
+import { stripOrder } from '@/lib/mission-task-strip';
 import { STATES, type StateKey } from '@/components/ui/states';
-import type { MissionExecutor } from '@/lib/task-actions';
+import { useRouter } from 'next/navigation';
 import { AskBanner, CompletionRecord, PlanningPlaceholder } from './MissionBoard';
-import { useLiveBoard, useNow, type BoardLinkContext } from './MissionBoardParts';
-import { DrawerDelivery, StripTaskActions, stripReason, type StripFocus } from './MissionTaskStrip';
+import { boardTaskHref, useLiveBoard, useNow, type BoardLinkContext } from './MissionBoardParts';
+import type { StripFocus } from './MissionTaskStrip';
 import CriteriaCheckNow from './CriteriaCheckNow';
 import { MissionVisualAsk, WithMissionVisualReview, type MissionVisualReviewValue } from './MissionVisualReview';
-import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
 import type { PlanTask } from '@/lib/mission-plan';
 import { BuildCompleteBar, CheckRail, ChecksCard, OutcomeSpecLines } from './MissionChecks';
 
@@ -50,11 +47,8 @@ export interface MissionOverviewProps extends BoardLinkContext {
   /** What the strip cannot say (a decision gate, the integration PR). */
   notice?: ReactNode;
   visual?: VisualReviewModel | null;
-  workspaceId?: string | null;
-  executor?: MissionExecutor | null;
-  /** The situation block's task, when its one affordance is a single task. */
+  /** The situation block's task, when its one affordance is a single task: the default selection. */
   stripFocus?: StripFocus | null;
-  deliveries?: Readonly<Record<string, TaskDeliveryDetail>> | null;
   /** The checks that apply after the build (spec f7f67f1a R-11 to R-22). Absent: the build view only. */
   checks?: MissionChecksSource | null;
   /** The build tasks as the Plan page schedules them (frozen estimates), for the build-only estimate (R-23). */
@@ -78,7 +72,7 @@ export default function MissionOverview(props: MissionOverviewProps) {
 
 function OverviewView({
   model: serverModel, completionText = null, notice, visual: _visual, review,
-  workspaceId = null, executor = null, stripFocus = null, deliveries = null,
+  stripFocus = null,
   checks: checksSource = null, planTasks = null, held = false, outcomeSpecTitles = null, ...link
 }: MissionOverviewProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
@@ -91,9 +85,13 @@ function OverviewView({
   const [store] = useState(createMissionStripStore);
   const stripValue = useMemo<MissionStripValue | null>(() => (order.length > 0 ? { store, taskIds: order } : null), [store, order]);
   const chosen = useSyncExternalStore(store.subscribe, store.getSelected, () => null);
-  // A tap or the situation block chooses through the store; else the task a hold names, else the first in flight.
-  const selectedId = overviewDefaultSelection(model, order, chosen, stripFocus?.taskId ?? null);
+  // Arrow keys choose through the store; a `#t-<id>` arrival through the page's
+  // focus store; else the task a hold names, else the first in flight.
+  const hashed = useMissionFocusSnapshot()?.selectedTaskId ?? null;
+  const selectedId = overviewDefaultSelection(model, order, chosen ?? (hashed && order.includes(hashed) ? hashed : null), stripFocus?.taskId ?? null);
   const select = useCallback((id: string) => store.select(id), [store]);
+  const router = useRouter();
+  const openTask = useCallback((id: string) => router.push(boardTaskHref(link, id)), [router, link]);
   const vm = review?.model ?? null;
   const unevaluated = model.complete && !model.criteriaEvaluated && model.criteria.length > 0;
 
@@ -112,6 +110,8 @@ function OverviewView({
   const needs = Math.max(boardNeedsYouCount(model, vm), handoff?.rows.filter(r => r.status === 'owner').length ?? 0);
   const rail = railLines(model.live, needs);
   const [showBuild, setShowBuild] = useState(false);
+  // A `#t-<id>` arrival shows the build strip it points into, even once the build is done.
+  useEffect(() => { if (hashed) setShowBuild(true); }, [hashed]);
   const activeCount = layout.groups.find(g => g.key === 'active')?.ids.length ?? 0;
   const waitingCount = layout.groups.find(g => g.key === 'waiting')?.ids.length ?? 0;
   // A decision, a hold or nothing running while work waits (capacity, outside) removes any time promise.
@@ -119,13 +119,9 @@ function OverviewView({
     ? buildEstimate(planTasks, now, held || needs > 0 || (activeCount === 0 && waitingCount > 0))?.line ?? null
     : null;
   const where = checksSource?.branch === 'mission-branch' ? 'the mission branch' : checksSource?.target ?? 'the target branch';
-  const openTask = (id: string) => { setShowBuild(true); select(id); };
 
-  const stripAndFocus = selectedId && (
-    <>
-      <TaskStrip cells={cells} groups={groups} selectedId={selectedId} onSelect={select} marks={overviewSelection(model, order, selectedId).marks} label="Mission tasks, done first" />
-      <Focus model={model} order={order} id={selectedId} onSelect={select} link={link} workspaceId={workspaceId} executor={executor} focusReason={stripFocus?.taskId === selectedId ? stripFocus.reason : null} delivery={deliveries?.[selectedId] ?? null} />
-    </>
+  const strip = selectedId && (
+    <TaskStrip cells={cells} groups={groups} selectedId={selectedId} onSelect={select} onOpen={openTask} marks={overviewSelection(model, order, selectedId).marks} label="Mission tasks, done first" />
   );
 
   return (
@@ -146,14 +142,14 @@ function OverviewView({
           {handoff?.buildComplete ? (
             <>
               <BuildCompleteBar done={buildIds.length} where={where} open={showBuild} onToggle={() => setShowBuild(v => !v)}>
-                {stripAndFocus}
+                {strip}
               </BuildCompleteBar>
               <ChecksCard rows={handoff.rows} onOpenTask={openTask} />
             </>
           ) : (
             <>
-              {stripAndFocus}
-              {handoff && handoff.rows.some(r => STARTED.has(r.status)) && <ChecksCard rows={handoff.rows.filter(r => STARTED.has(r.status))} onOpenTask={select} />}
+              {strip}
+              {handoff && handoff.rows.some(r => STARTED.has(r.status)) && <ChecksCard rows={handoff.rows.filter(r => STARTED.has(r.status))} onOpenTask={openTask} />}
               {estimate && <p data-testid="overview-estimate" className="font-mono text-meta text-text-muted">{estimate}</p>}
             </>
           )}
@@ -208,58 +204,5 @@ function Legend({ entries }: { entries: readonly OverviewLegendEntry[] }) {
         );
       })}
     </p>
-  );
-}
-
-const STEP_BTN = 'inline-flex h-11 w-11 items-center justify-center rounded-[var(--radius-card)] border border-border-default text-heading text-text-primary hover:bg-surface-3 md:h-9 md:w-9';
-
-function Focus({ model, order, id, onSelect, link, workspaceId, executor, focusReason, delivery }: {
-  model: MissionBoardModel;
-  order: readonly string[];
-  id: string;
-  onSelect: (id: string) => void;
-  link: BoardLinkContext;
-  workspaceId: string | null;
-  executor: MissionExecutor | null;
-  focusReason: string | null;
-  delivery: TaskDeliveryDetail | null;
-}) {
-  const t = model.tasks[id];
-  const i = order.indexOf(id);
-  const state = overviewCellState(model, id);
-  const actionState = stripState(model, id);
-  const { reason } = overviewSelection(model, order, id);
-  const why = state === 'landed' ? null : focusReason ?? overviewWaitLine(model, id) ?? stripReason(t, executor);
-  const tick = String(i + 1).padStart(2, '0');
-  const of = `${tick} of ${String(order.length).padStart(2, '0')}`;
-  const meta = [of, t.levels > 1 ? `level ${t.level} of ${t.levels}` : null, t.roleName?.toLowerCase() ?? null, t.pr ? `PR #${t.pr.number}` : null].filter(Boolean).join(' · ');
-  const needsYou = t.status === 'waiting' ? (t.waitingFor?.prompt ?? 'An answer') : t.delivery?.action?.label ?? null;
-  const prev = () => onSelect(order[stepIndex(i, -1, order.length)]);
-  const next = () => onSelect(order[stepIndex(i, 1, order.length)]);
-
-  return (
-    // scroll-mb: a focused stepper or action never lands under the phone tab bar.
-    <div className="flex scroll-mb-[calc(5rem+env(safe-area-inset-bottom))] flex-col gap-2.5 [&_button]:scroll-mb-[calc(5rem+env(safe-area-inset-bottom))]">
-      <FocusCard
-        meta={meta}
-        title={displayTaskTitle(t.title)}
-        state={state}
-        repairs={delivery?.repairs || undefined}
-        next={why ?? undefined}
-        reason={reason}
-        needs={needsYou ?? undefined}
-        footer={
-          <div className="flex min-w-0 flex-col gap-2">
-            {delivery && delivery.evidence.length > 0 && <DrawerDelivery key={t.id} delivery={delivery} stages={false} />}
-            {workspaceId && <StripTaskActions task={t} state={actionState} link={link} workspaceId={workspaceId} executor={executor} why={why} />}
-          </div>
-        }
-      />
-      <div className="flex items-center gap-2" data-testid="overview-stepper">
-        <button type="button" aria-label="Previous task" data-testid="overview-prev" onClick={prev} className={STEP_BTN}>‹</button>
-        <button type="button" aria-label="Next task" data-testid="overview-next" onClick={next} className={STEP_BTN}>›</button>
-        <span className="ml-auto hidden font-mono text-meta text-text-muted md:inline">← → to move between tasks</span>
-      </div>
-    </div>
   );
 }

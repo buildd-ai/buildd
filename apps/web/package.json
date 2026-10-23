@@ -1,10 +1,10 @@
 {
   "name": "@buildd/web",
-  "version": "0.375.0",
+  "version": "0.376.0",
   "private": true,
   "scripts": {
     "dev": "bun --bun next dev",
-    "build": "bun run db:migrate && bun run prompts:seed && NODE_OPTIONS=\"--max-old-space-size=${BUILD_MAX_OLD_SPACE_MB:-6144} ${NODE_OPTIONS:-}\" next build",
+    "build": "bun run db:migrate && bun run prompts:seed && RAYON_NUM_THREADS=\"${RAYON_NUM_THREADS:-2}\" NODE_OPTIONS=\"--max-old-space-size=${BUILD_MAX_OLD_SPACE_MB:-6144} ${NODE_OPTIONS:-}\" next build",
     "build:only": "bun ../../scripts/heavy-slot.ts -- next build",
     "chat-eval": "bun --preload ../../scripts/stub-server-only.ts scripts/chat-eval/cli.ts",
     "db:migrate": "bun run ../../packages/core/db/migrate.ts",
@@ -36,8 +36,8 @@
     "@openrouter/ai-sdk-provider": "^3.1.0",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/api-logs": "^0.223.0",
-    "@opentelemetry/instrumentation": "^0.223.0",
-    "@opentelemetry/sdk-logs": "^0.223.0",
+    "@opentelemetry/instrumentation": "^0.300.0",
+    "@opentelemetry/sdk-logs": "^3.0.0",
     "@upstash/redis": "^1.36.2",
     "@vercel/otel": "^2.1.1",
     "ai": "^7.0.116",

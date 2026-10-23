@@ -184,6 +184,10 @@ const INFRA_PATTERNS: RegExp[] = [
   /does not support this model[\s\S]*or newer is required/i,
   /stale worker expired/i,
   /\b(econnreset|econnrefused|etimedout|enotfound|eai_again|epipe|ehostunreach|enetunreach)\b/i,
+  // A slow disk timing out `git worktree add` / `git checkout` (git-operations.ts
+  // says "(timed out)" first). Nothing of the task ran; same call as the server's
+  // isWorktreeSetupTimeoutError.
+  /git (?:worktree add|checkout) failed \(timed out\)/i,
   /fetch failed|socket hang up|network error|getaddrinfo/i,
   /\b(overloaded|rate.?limit|429|502|503|504)\b/i,
 ];

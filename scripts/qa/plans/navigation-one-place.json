@@ -1,0 +1,27 @@
+[
+  {
+    "route": "/app/missions/:id",
+    "states": [
+      {
+        "key": "open-task-page",
+        "steps": [
+          { "action": "click", "selector": "css:[data-testid=\"task-strip-cells\"] button[data-id]:first-of-type" },
+          { "action": "waitFor", "selector": "testid:mission-context-bar", "timeoutMs": 30000 }
+        ]
+      }
+    ]
+  },
+  { "route": "/app/missions/:id?layout=flow" },
+  {
+    "route": "/app/missions/:id?qaHistory=1",
+    "states": [
+      {
+        "key": "history-arrival",
+        "steps": [
+          { "action": "waitFor", "selector": "testid:mission-event-feed", "timeoutMs": 30000 }
+        ]
+      }
+    ]
+  },
+  { "route": "/app/tasks/:id" }
+]

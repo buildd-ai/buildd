@@ -515,6 +515,7 @@ const ATTEMPT_SITES: Record<string, AttemptSite[]> = {
     { at: /'effectiveVerdictReason', \$\{copyGate\.reason/, kind: 'NO_STATUS', why: 'the copy review\'s verdict on the reviewer task\'s result' },
     { at: /'effectiveVerdictReason', \$\{serverOverrideReason\}/, kind: 'NO_STATUS', why: 'the server\'s escalation on the reviewer task\'s result' },
     { at: /'evidenceSha', \$\{evidenceSha\}/, kind: 'NO_STATUS', why: 'the commit the reviewer read its verdict at, on the reviewer task\'s result' },
+    { at: /'settledVerdict', \$\{effectiveVerdict\}/, kind: 'NO_STATUS', why: 'the verdict once every gate ran, on the reviewer task\'s result (a later delivery open adopts it)' },
   ],
   'apps/web/src/app/api/workers/claim/route.ts': [
     { at: /claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending'/, kind: 'NOT_OWNER', predicate: true, why: 'rollBackClaim gives back the route\'s own assigned claim (a fix the kernel deferred, a worker the account cap refused); an owner\'s is AttemptWithdrawn(requeued) on exactly that claim (AC-1 slice 9)' },

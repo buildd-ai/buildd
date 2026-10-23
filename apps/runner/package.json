@@ -1,6 +1,6 @@
 {
   "name": "@buildd/runner",
-  "version": "0.375.0",
+  "version": "0.376.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -21,7 +21,7 @@
     "@buildd/core": "workspace:*",
     "@buildd/shared": "workspace:*",
     "@openai/codex-sdk": "^0.163.0",
-    "@sourcegraph/scip-typescript": "^0.4.0",
+    "@sourcegraph/scip-typescript": "^0.5.0",
     "marked": "^18.0.0",
     "pusher-js": "^8.4.0",
     "zod": "^4.3.6"
