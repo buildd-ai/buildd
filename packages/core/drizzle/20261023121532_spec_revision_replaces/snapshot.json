@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "ede4346b-c400-4191-ab7e-58fa0596bd61",
+  "id": "051297d9-1d90-4c85-bcd9-57bbf0ee8ece",
   "prevIds": [
-    "20b993d5-ec7f-485f-b156-b48b9ba2ba56"
+    "0057cf59-1e1c-43c9-9512-e9ccbe997454"
   ],
   "ddl": [
     {
@@ -12451,6 +12451,32 @@
       "generated": null,
       "identity": null,
       "name": "default_choice",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "mission_notes"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "subject_task_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "mission_notes"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "options",
       "entityType": "columns",
       "schema": "public",
       "table": "mission_notes"
