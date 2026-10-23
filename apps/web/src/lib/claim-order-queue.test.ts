@@ -178,6 +178,25 @@ describe('loadRunnerQueue', () => {
     expect(read).toBe(0);
   });
 
+  // Spec: Overlap scheduling, AC-10 / Health › Queue, AC-9: the terminal Queue reads the same one reason.
+  it('carries each queued task\'s one wait from the shared read; a failed read leaves none', async () => {
+    let asked: string[] = [];
+    const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller, now: NOW }, {
+      calibrated: () => false,
+      read: async () => [row({ id: 't-lane' }), row({ id: 't-ready' }), row({ id: 't-local', g_missionLocal: false })],
+      waits: async (ids) => { asked = ids; return new Map([['t-lane', { kind: 'lane' as const, lane: 'migration', position: 2, holderTaskId: 'h' }], ['t-ready', { kind: 'slot' as const, noRunnerReason: null }]]); },
+    });
+    // Only what this runner may take is asked about.
+    expect(asked).toEqual(['t-lane', 't-ready']);
+    const byId = Object.fromEntries(out.teams[0].queue.map(t => [t.id, t.wait]));
+    expect(byId['t-lane']).toMatchObject({ kind: 'lane', position: 2 });
+    expect(byId['t-ready']).toEqual({ kind: 'slot', noRunnerReason: null });
+    const failed = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller, now: NOW }, {
+      calibrated: () => false, read: async () => [row({ id: 't-1' })], waits: async () => { throw new Error('down'); },
+    });
+    expect(failed.teams[0].queue[0].wait).toBeUndefined();
+  });
+
   it('keeps queue order but hides raw forecasts when calibration is unknown', async () => {
     let reads = 0;
     const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, {

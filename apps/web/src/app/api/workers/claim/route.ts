@@ -170,6 +170,7 @@ import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 import { runnerLiveCandidateCutoff, withLiveRunnerBeats } from '@/lib/runner-beats';
 import { CLAIM_COOLDOWN_MS, claimOrderBy, claimableWorkspaceIds } from '@/lib/claim-order';
 import { claimCandidateWhere } from '@/lib/claim-candidate-where';
+import { recordDepsBlocked } from './deps-blocked-ledger';
 import { settleWorkChanges } from '@/lib/settle-work-changes';
 
 // Candidate pages fetched past role-env-gapped tasks before the window is cut
@@ -790,6 +791,19 @@ export async function POST(req: NextRequest) {
       const gaps = await runRoleEnvPreFilter(fresh, account.id);
       runnable += fresh.length - fresh.filter(t => gaps.has(t.id)).length;
       if (runnable >= candidateLimit) break;
+    }
+  }
+
+  // The dependency gate is in the WHERE above, so a task it holds never
+  // reaches the loop's deferral rows. Record this poll's dependency waits
+  // (tasks only that gate kept out), coalesced, after the response, so a wait
+  // on a dependency is measurable like every other (./deps-blocked-ledger). An
+  // explicit claim already records its own exclusion.
+  if (!taskId && !forceClaim) {
+    try {
+      after(() => recordDepsBlocked({ workspaceIds, gates: builtGates, fire: fireDeferralEvent }).then(() => undefined));
+    } catch {
+      // Outside a request scope (scripts, tests): the next real poll records it.
     }
   }
 

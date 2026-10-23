@@ -12,9 +12,13 @@
  * that lifts on its own (a start time, a dependency, a hold, a cooldown) stays
  * in the queue and is named as a hold. The claim route itself is unchanged.
  *
- * In-loop deferrals the claim makes after reading the window (plan and rate
- * limits, path overlap, mission pacing) are not visible to a read: the runner
- * adds them from its last claim outcome for the task (R-25).
+ * Each queued task also carries its one wait (`wait`, lib/queue-wait-load.ts:
+ * spec "Overlap scheduling", AC-10): the same reason explain, the task page
+ * and the web Queue give, read from the claim route's own query and gates,
+ * the lane order, mission pacing and caps, and the loop's fresh limits. A
+ * task the claim would refuse is never "now" in the terminal. What only one
+ * runner's claim saw (its own cooldown, a provider wall on its login) the
+ * runner still adds from its last claim outcome for the task (R-25).
  */
 import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
@@ -32,6 +36,7 @@ import { findHoldingLease, findHoldingOpenPr, workspaceHardSurface } from '@/app
 import type { OpenPrTask } from '@/app/api/workers/claim/coordination-gates';
 import { lanesOf, laneVerdict, stuckSince } from '@/lib/serial-lanes';
 import { loadLanes, type LaneRead } from '@/lib/serial-lanes-store';
+import type { QueueWait } from '@buildd/shared';
 
 /** At most this many waiting tasks are read, in claim order. */
 export const RUNNER_QUEUE_LIMIT = 300;
@@ -225,6 +230,13 @@ export interface RunnerQueueDeps {
   overlaps?: (workspaceIds: string[]) => Promise<QueueOverlapState>;
   /** The serial lanes, in the claim route's stored order (lib/serial-lanes-store loadLanes). */
   lanes?: (workspaceIds: string[], now: Date) => Promise<LaneRead>;
+  /** Each task's one wait (lib/queue-wait-load.ts loadQueueWaitMap). */
+  waits?: (taskIds: string[], now: Date) => Promise<Map<string, QueueWait>>;
+}
+
+async function readWaits(taskIds: string[], now: Date): Promise<Map<string, QueueWait>> {
+  const { loadQueueWaitMap } = await import('@/lib/queue-wait-load');
+  return loadQueueWaitMap(taskIds, now);
 }
 
 /**
@@ -416,6 +428,12 @@ export async function loadRunnerQueue(
         }
       }
     }
+  }
+  // The one wait per queued task: the reason every surface gives. A failed read leaves none.
+  const queuedIds = teamsOut.flatMap(team => team.queue.map(t => t.id));
+  if (queuedIds.length > 0) {
+    const waits = await (deps.waits ?? readWaits)(queuedIds, now).catch(() => null);
+    if (waits) for (const team of teamsOut) for (const t of team.queue) if (waits.has(t.id)) t.wait = waits.get(t.id)!;
   }
   const estimates = deps.estimates ?? readEstimates;
   await Promise.all(teamsOut.map(async (team) => {

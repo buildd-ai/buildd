@@ -6,13 +6,11 @@
  * refuse with the real blocker instead of accepting a start no runner will
  * take.
  *
- * Dependency holds are fed from what `explain` already reports
- * (`loadTaskCoordinationHolds`, lib/coordination-holds.ts): an inferred
- * (creation-time overlap, older rows only) edge is a coordination hold a
- * person may force past, a declared edge is a dependency no force lifts.
- * Whether an edge still holds is the claim's own SQL predicate
- * (`dependencySatisfied`). A stored soft overlap holds nothing at claim any
- * more (spec: Overlap scheduling, R-2), so it is not a reason here either.
+ * Every dependency edge still in `dependsOn` is a declared dependency no
+ * force lifts: guessed edges are gone (spec: Overlap scheduling, R-1, R-4),
+ * and nothing here re-guesses one. Whether an edge still holds is the claim's
+ * own SQL predicate (`dependencySatisfied`). A stored soft overlap holds
+ * nothing at claim any more (R-2), so it is not a reason here either.
  *
  * Never throws: a probe failure returns `null` (unknown) and the caller falls
  * back to today's behaviour rather than blocking a start on a read error.
@@ -22,9 +20,7 @@ import { db } from '@buildd/core/db';
 import { gateEvents, tasks, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { getActiveClaimsByWorkspace } from '@buildd/core/path-claim';
-import { makeWaitingReason, orderWaitingReasons, overlapAreas, type WaitingReason } from '@buildd/core/waiting-reason';
-import { loadTaskCoordinationHolds } from '@/lib/coordination-holds';
-import type { CoordinationHold } from '@/lib/explain-coordination';
+import { makeWaitingReason, orderWaitingReasons, type WaitingReason } from '@buildd/core/waiting-reason';
 import { dependencySatisfied } from '@/app/api/workers/claim/deps-gate';
 import { checkMissionLocal } from '@/app/api/workers/claim/held-gate';
 import { BYPASS_DEPS_GATE_KEY, BYPASS_HELD_GATE_KEY, hasBypassFlag } from '@/lib/bypass-flags';
@@ -143,63 +139,31 @@ async function withTaskLabels(reasons: WaitingReason[]): Promise<WaitingReason[]
 const DEP_CAP = 25;
 const LIVE_TASK_STATUSES = new Set(['assigned', 'in_progress']);
 
-function holdOverlap(paths: string[], overlapKind: string | null) {
-  return {
-    areas: overlapAreas(paths),
-    pathCount: paths.length,
-    paths: paths.slice(0, 50),
-    basis: 'declared' as const,
-    ...(overlapKind ? { overlapKind } : {}),
-  };
-}
-
 /**
- * Dependency edges that still hold: declared → `dep_declared` (never
- * forceable), inferred → `dep_inferred` (coordination; forceable for claim
- * order). "Still holds" is the claim route's own per-edge SQL predicate.
+ * Dependency edges that still hold, each a `dep_declared` reason (never
+ * forceable) naming the dependency and its status. "Still holds" is the
+ * claim route's own per-edge SQL predicate.
  */
 async function dependencyReasons(task: ProbeTask): Promise<WaitingReason[]> {
   const deps = ((task.dependsOn as string[] | null) ?? []).filter(id => id !== task.id).slice(0, DEP_CAP);
   if (deps.length === 0) return [];
   if (hasBypassFlag(task.context as Record<string, unknown> | null, BYPASS_DEPS_GATE_KEY)) return [];
-  const [holds, satisfied] = await Promise.all([
-    loadTaskCoordinationHolds({ ...(task as any), status: 'pending' }).catch(() => [] as CoordinationHold[]),
-    unsatisfiedDeps(task.id, deps),
-  ]);
-  const byId = new Map(holds.filter(h => h.holderTaskId).map(h => [h.holderTaskId!, h]));
-  const inferred = new Set(((task.pathDeclaration as { inferredDependsOn?: unknown } | null)?.inferredDependsOn as string[] | undefined) ?? []);
-  const out: WaitingReason[] = [];
-  for (const id of deps) {
-    if (!satisfied.has(id)) continue;
-    const h = byId.get(id);
-    const isInferred = h ? h.edge === 'inferred_dependency' : inferred.has(id);
-    const blocker = {
-      type: 'task' as const,
+  const unmet = await unsatisfiedDeps(task.id, deps);
+  if (unmet.size === 0) return [];
+  const rows = await db.query.tasks.findMany({ where: sqlWhere(inArray(tasks.id, [...unmet])), columns: { id: true, status: true } }).catch(() => []);
+  const statusOf = new Map(rows.map(r => [r.id, r.status as string]));
+  return deps.filter(id => unmet.has(id)).map(id => makeWaitingReason('dep_declared', {
+    because: 'it was declared as a dependency',
+    blocker: {
+      type: 'task',
       id,
       label: `task ${id.slice(0, 8)}`,
       href: `/app/tasks/${id}`,
-      live: LIVE_TASK_STATUSES.has(h?.holderStatus ?? ''),
-    };
-    if (isInferred) {
-      const paths = h?.paths ?? [];
-      const kind = h?.overlapKind ?? null;
-      out.push(makeWaitingReason('dep_inferred', {
-        because: paths.length === 0
-          ? 'it was ordered after this task when both declared overlapping files'
-          : `${kind === 'migration' ? 'both change migrations in' : `both edit ${paths.length} file${paths.length === 1 ? '' : 's'} in`} ${overlapAreas(paths).slice(0, 2).map(a => a.area).join(', ')}`,
-        blocker,
-        overlap: holdOverlap(paths, kind),
-        provenance: { source: 'task_context', derivedFrom: 'tasks.pathDeclaration.inferredDependsOn' },
-      }));
-    } else {
-      out.push(makeWaitingReason('dep_declared', {
-        because: 'it was declared as a dependency',
-        blocker,
-        provenance: { source: 'task_context', derivedFrom: 'tasks.dependsOn' },
-      }));
-    }
-  }
-  return out;
+      live: LIVE_TASK_STATUSES.has(statusOf.get(id) ?? ''),
+      ...(statusOf.has(id) ? { status: statusOf.get(id)! } : {}),
+    },
+    provenance: { source: 'task_context', derivedFrom: 'tasks.dependsOn' },
+  }));
 }
 
 /** The dependency ids the claim's dependency gate would still hold this task on. */

@@ -6,11 +6,17 @@
  * deferring never reads "next in line for a runner" on one surface and
  * "held" on another.
  *
- * The facts are the ones already recorded: the task's newest claim-loop
- * refusal (`gate_events`, with the blocker it named), its unmet `dependsOn`
- * holders, its `startAt`, and the fleet. Nothing here re-decides a claim; it
- * presents what the gate decided. The order is the order a person would fix
- * them:
+ * When the caller read the task's queue wait (`wait`, lib/queue-wait-load.ts:
+ * the claim route's own query and gates, read live), that decides: a declared
+ * dependency, a lane position, a limit, a start time, or nothing but a free
+ * slot (spec: Overlap scheduling, AC-10). Only a slot wait can read "next in
+ * line"; then the fleet and a red trunk still speak.
+ *
+ * Without one, the facts are the ones already recorded: the task's newest
+ * claim-loop refusal (`gate_events`, with the blocker it named), its unmet
+ * `dependsOn` holders, its `startAt`, and the fleet. Nothing here re-decides a
+ * claim; it presents what the gate decided. The order is the order a person
+ * would fix them:
  *
  *   1. a dependency not merged           `Waiting on <task>`
  *   2. a file or migration overlap       `held: runs after <task>`
@@ -27,6 +33,7 @@
  *
  * Pure and client-safe: no I/O, the clock is an argument.
  */
+import { laneLabel, ordinal, queueLimitLabel, type QueueLimit, type QueueWait } from '@buildd/shared';
 import { BROWSER_RUNNER_MISSING, claimHoldPhrase } from './claim-hold-phrase';
 import { formatDuration } from './mission-duration';
 
@@ -100,6 +107,8 @@ export interface PendingTaskHoldInput {
   missingBrowser?: boolean | null;
   /** The task's base branch has an open trunk incident. */
   trunkRed?: { branch: string } | null;
+  /** The one reason the claim route's query and gates give now (lib/queue-wait-load.ts). Decides when present. */
+  wait?: QueueWait | null;
 }
 
 export interface PendingTaskHold {
@@ -118,9 +127,28 @@ export interface PendingTaskHold {
   holder: { id: string; title: string | null; note: string | null } | null;
   /** The cause's key for a presentation: the gate's reason, `runner_offline`, `browser_runner`, `trunk_red`, `scheduled`, `dependency`, or `next_in_line`. */
   holdKey: string;
+  /** Decided by the live queue wait (the claim route's own query and gates), not a recorded refusal. */
+  fromClaimGates?: boolean;
 }
 
 const OVERLAP_REASONS = new Set(['path_overlap', 'soft_overlap', 'ordered_behind', 'advisory_manifest']);
+
+/** The claim-gate key each limit is held under, so a presentation sorts it as before. */
+const LIMIT_HOLD_KEY: Record<QueueLimit, string> = {
+  mission_pacing: 'mission_paced',
+  mission_cap: 'mission_concurrent',
+  workspace_cap: 'workspace_cap',
+  workspace_paused: 'workspace_paused',
+  mission_budget: 'mission_budget',
+  budget: 'budget_paused',
+  plan: 'managed_runner_hours',
+  seats: 'oauth_parallelism',
+  task_paused: 'task_held',
+  mission_paused: 'mission_held',
+  local_session: 'mission_local',
+  pr_closed: 'subject_dead',
+};
+const BUDGET_LIMITS: ReadonlySet<QueueLimit> = new Set<QueueLimit>(['mission_budget', 'budget', 'plan']);
 const NO_RUNNER_REASONS = new Set([
   'runner_capability', 'isolation_unenforced', 'connector_mismatch', 'role_env_unsatisfied',
   'no_personal_credential', 'provider_unavailable', 'delegation_unmet', 'provider_not_allowed', 'tier_policy',
@@ -179,6 +207,11 @@ export function holderNote(h: PendingHolderFacts, now: number): string | null {
   return null;
 }
 
+/** "; the lane is stuck: its holder's PR has been quiet 26h", or nothing when the lane is not stuck. */
+function stuckNote(quietSince: number | null, now: number): string {
+  return quietSince != null ? `; the lane is stuck: its holder's PR has been quiet ${formatDuration(Math.max(0, now - quietSince))}` : '';
+}
+
 function nameOf(h: PendingHolderFacts, now: number): { text: string; note: string | null } {
   const note = holderNote(h, now);
   const title = h.title?.trim() || 'another task';
@@ -195,6 +228,11 @@ function noRunnerReason(reason: string, detail: Record<string, unknown>): string
 }
 
 export function derivePendingTaskHold(input: PendingTaskHoldInput): PendingTaskHold {
+  const h = derivePendingTaskHoldInner(input);
+  return input.wait ? { ...h, fromClaimGates: true } : h;
+}
+
+function derivePendingTaskHoldInner(input: PendingTaskHoldInput): PendingTaskHold {
   const now = input.now ?? Date.now();
   const deferral = input.deferral ?? null;
   const detail = (deferral?.detail ?? {}) as Record<string, unknown>;
@@ -206,8 +244,48 @@ export function derivePendingTaskHold(input: PendingTaskHoldInput): PendingTaskH
     row: [`Queued${ageLabel ? ` ${ageLabel}` : ''}`, cause].filter((s): s is string => !!s).join(' · '),
   });
 
+  const wait = input.wait ?? null;
+  const startAt = epoch(input.startAt);
+  const noRunner = (why: string | null, holdKey: string) => queued('no_runner', why ? `no runner can take it: ${why}` : 'no runner can take it', holdKey);
+
+  // The live queue wait decides; only a slot wait falls through to the fleet and trunk below.
+  if (wait && wait.kind !== 'slot' && !(wait.kind === 'declared' && (input.dependencies?.length ?? 0) > 0)) {
+    if (wait.kind === 'declared') {
+      const name = `${wait.blockerTitle?.trim() || (wait.blockerId ? `task ${wait.blockerId.slice(0, 8)}` : 'another task')}${(wait.count ?? 1) > 1 ? ` and ${(wait.count ?? 1) - 1} more` : ''}`;
+      const word = `Waiting on ${name}`;
+      return {
+        kind: 'dependency', word, cause: null, sinceMs, ageLabel,
+        row: ageLabel ? `${word} ${ageLabel}` : word,
+        holder: wait.blockerId ? { id: wait.blockerId, title: wait.blockerTitle ?? null, note: null } : null,
+        holdKey: 'dependency',
+      };
+    }
+    if (wait.kind === 'lane') {
+      const lane = `the ${laneLabel(wait.lane ?? 'migration').toLowerCase()} lane`;
+      const place = wait.position != null && wait.position > 0 ? `in ${lane}, ${ordinal(wait.position)} in line` : `in ${lane}`;
+      const holderId = wait.holderTaskId ?? wait.aheadTaskId ?? null;
+      const h = holderId ? input.holders?.get(holderId) ?? null : null;
+      const after = h ? nameOf(h, now) : null;
+      const stuck = stuckNote(epoch(wait.stuckSince ?? null), now);
+      return queued('overlap', `${after ? `${place}: runs after ${after.text}` : place}${stuck}`, 'lane',
+        h ? { id: h.id, title: h.title ?? null, note: after!.note } : null);
+    }
+    if (wait.kind === 'limit') {
+      const limit = wait.limit ?? 'workspace_cap';
+      const label = queueLimitLabel(limit);
+      const lifts = wait.liftsAt ? `, lifts ${whenLabel(wait.liftsAt, now)}` : '';
+      return queued(BUDGET_LIMITS.has(limit) ? 'budget' : 'hold', `${label.charAt(0).toLowerCase()}${label.slice(1)}${lifts}`, LIMIT_HOLD_KEY[limit]);
+    }
+    // start_time
+    const at = epoch(wait.startAt ?? null) ?? startAt;
+    return queued('scheduled', at != null && at > now ? `starts ${whenLabel(at, now)}` : 'scheduled', 'scheduled');
+  }
+  // A slot wait: the claim query returns it now, so only the fleet and the trunk can still speak (steps 3, 4).
+  const slot = wait?.kind === 'slot';
+  if (slot && wait.noRunnerReason) return noRunner(wait.noRunnerReason, 'runner_capability');
+
   // 1. A dependency not merged.
-  const deps = input.dependencies ?? [];
+  const deps = slot ? [] : input.dependencies ?? [];
   if (deps.length > 0) {
     const first = deps[0];
     const named = nameOf(first, now);
@@ -221,7 +299,8 @@ export function derivePendingTaskHold(input: PendingTaskHoldInput): PendingTaskH
     };
   }
 
-  const reason = deferral?.reason ?? null;
+  // A dependency refusal names nothing once no dependency is unmet: the row is older than the edge's release.
+  const reason = !slot && deferral?.reason && deferral.reason !== 'deps_blocked' ? deferral.reason : null;
   const reasonKind = reason ? holdKindOfReason(reason) : null;
 
   // 2. A file or migration overlap: runs after the task that holds the files.
@@ -231,8 +310,7 @@ export function derivePendingTaskHold(input: PendingTaskHoldInput): PendingTaskH
     // A serial lane wait (spec: Overlap scheduling, I-3): which line and how many go first.
     const lane = str(detail.lane);
     if (lane && typeof detail.position === 'number') {
-      const quiet = epoch(str(detail.holderQuietSince));
-      const stuck = quiet != null ? `; the lane is stuck: its holder's PR has been quiet ${formatDuration(Math.max(0, now - quiet))}` : '';
+      const stuck = stuckNote(epoch(str(detail.holderQuietSince)), now);
       const line = `in line for the ${lane.replace(/^surface:/, '')} lane, ${detail.position} ahead`;
       const after = h ? nameOf(h, now) : null;
       const pr = typeof detail.prNumber === 'number' ? ` #${detail.prNumber}` : '';
@@ -249,7 +327,6 @@ export function derivePendingTaskHold(input: PendingTaskHoldInput): PendingTaskH
   }
 
   // 3. No runner able to take it: the gate's reason, else no browser runner, else none online.
-  const noRunner = (why: string | null, holdKey: string) => queued('no_runner', why ? `no runner can take it: ${why}` : 'no runner can take it', holdKey);
   if (reason && reasonKind === 'no_runner') return noRunner(noRunnerReason(reason, detail), reason);
   if (input.missingBrowser) return noRunner(BROWSER_RUNNER_MISSING, 'browser_runner');
   if (input.runnerOnline === false) return noRunner('none is online', 'runner_offline');
@@ -258,7 +335,6 @@ export function derivePendingTaskHold(input: PendingTaskHoldInput): PendingTaskH
   if (input.trunkRed) return queued('trunk_red', `merges paused: ${input.trunkRed.branch} is red`, 'trunk_red');
 
   // 5. A spent budget.
-  const startAt = epoch(input.startAt);
   if (reason && reasonKind === 'budget') {
     if (reason === 'budget_paused') {
       const resets = epoch(str(detail.resetsAt)) ?? (startAt != null && startAt > now ? startAt : null);
@@ -268,12 +344,12 @@ export function derivePendingTaskHold(input: PendingTaskHoldInput): PendingTaskH
     }
     return queued('budget', claimHoldPhrase(reason), reason);
   }
-  if (input.budgetExhausted && startAt != null && startAt > now) {
+  if (!slot && input.budgetExhausted && startAt != null && startAt > now) {
     return queued('budget', `team daily budget reached, resumes ${whenLabel(startAt, now)}`, 'budget_paused');
   }
 
   // 6. A scheduled start or a backoff.
-  if (startAt != null && startAt > now) return queued('scheduled', `starts ${whenLabel(startAt, now)}`, 'scheduled');
+  if (!slot && startAt != null && startAt > now) return queued('scheduled', `starts ${whenLabel(startAt, now)}`, 'scheduled');
 
   // 7. Any other recorded hold, in the gate's own words; none for a reason it has no words for.
   if (reason) return queued('hold', claimHoldPhrase(reason), reason);

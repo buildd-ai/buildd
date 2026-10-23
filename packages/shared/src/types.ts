@@ -3651,6 +3651,13 @@ export interface RunnerQueueTask {
    */
   lane?: { lane: string; position: number; holderTaskId: string | null; aheadTaskId?: string | null; stuckSince?: string | null } | null;
   /**
+   * The one reason it waits, from the claim route's own query and gates
+   * (spec: Overlap scheduling, AC-10): the same reason explain, the task page
+   * and the web Queue give. `slot` = the claim query would return it now.
+   * Absent from an older server, or when the read failed.
+   */
+  wait?: import('./queue-wait').QueueWait | null;
+  /**
    * Whose work it is (spec c7410e76 R-58): the task's owner (who filed it, else
    * its mission's, else its schedule's) against the person behind the runner's
    * key, never the runner or login that runs it. Absent from an older server.

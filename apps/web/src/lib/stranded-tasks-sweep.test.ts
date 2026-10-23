@@ -71,7 +71,7 @@ mock.module('./gate-ledger', () => ({
   GATE_SLUGS: { CLAIM_LOOP_DEFERRAL: 'claim_loop_deferral' },
 }));
 
-const { sweepStrandedTasks } = await import('./stranded-tasks-sweep');
+const { sweepStrandedTasks, isStrandedCandidate } = await import('./stranded-tasks-sweep');
 
 beforeEach(() => {
   candidateRows = [];
@@ -251,5 +251,18 @@ describe('sweepStrandedTasks', () => {
     expect(insertedNotes).toHaveLength(0);
     expect(updatedNotes).toHaveLength(0);
     expect(firedEvents).toHaveLength(0);
+  });
+});
+
+describe('isStrandedCandidate', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z');
+  const long = { consecutiveDeferrals: 500, firstDeferredAt: '2026-10-21T00:00:00Z' };
+  const row = (reason: string, startAt: string | null = null) => ({ id: 't', title: 'x', workspaceId: 'ws', missionId: null, startAt, reason, detail: long });
+  it('a long dependency wait is the dependency\'s pace, never stranded (spec: Overlap scheduling, AC-10)', () => {
+    expect(isStrandedCandidate(row('deps_blocked'), now)).toBe(false);
+    expect(isStrandedCandidate(row('workspace_cap'), now)).toBe(true);
+  });
+  it('a start time long past still strands it, whatever the last reason', () => {
+    expect(isStrandedCandidate(row('deps_blocked', '2026-10-21T00:00:00Z'), now)).toBe(true);
   });
 });

@@ -58,8 +58,8 @@ describe('terms catalog: held splits by cause (§2.1)', () => {
     ['task_held', 'Paused'],
     ['start_deferred', 'Scheduled'],
     ['budget_paused', 'Usage limit'],
-    ['lease_overlap', 'Waiting for files'],
-    ['pr_overlap_live', 'Waiting for files'],
+    ['lane', 'Waiting in line'],
+    ['lease_stale', 'Waiting in line'],
     ['unknown', 'Not started: reason unknown'],
   ])('waiting kind %s reads %s', (value, word) => {
     expect(termFor({ kind: 'waiting', value }).word).toBe(word);

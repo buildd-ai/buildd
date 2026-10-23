@@ -224,3 +224,59 @@ describe('whenLabel', () => {
     expect(whenLabel(new Date('2026-10-25T00:00:00.000Z'), NOW)).toBe('Oct 25');
   });
 });
+
+/**
+ * The live queue wait decides (spec: Overlap scheduling, AC-10): one reason
+ * per kind, read from the claim route's own query and gates, and "next in
+ * line" only for a slot wait. A stale or missing ledger row cannot make a
+ * refused task read ready.
+ */
+describe('derivePendingTaskHold with the live queue wait', () => {
+  const at = (ms: number) => new Date(NOW + ms).toISOString();
+  const TABLE: Array<{ name: string; wait: import('@buildd/shared').QueueWait; kind: string; cause: string | null; word?: string; holdKey: string }> = [
+    { name: 'declared', wait: { kind: 'declared', blockerId: 'dep-1', blockerTitle: '“Add the index”', count: 1 }, kind: 'dependency', cause: null, word: 'Waiting on “Add the index”', holdKey: 'dependency' },
+    { name: 'lane', wait: { kind: 'lane', lane: 'migration', position: 2, holderTaskId: 'h' }, kind: 'overlap', cause: 'in the schema lane, 2nd in line', holdKey: 'lane' },
+    { name: 'limit: pacing', wait: { kind: 'limit', limit: 'mission_pacing', liftsAt: at(4 * 60_000) }, kind: 'hold', cause: 'mission pacing, lifts in 4m', holdKey: 'mission_paced' },
+    { name: 'limit: cap', wait: { kind: 'limit', limit: 'mission_cap' }, kind: 'hold', cause: 'mission limit', holdKey: 'mission_concurrent' },
+    { name: 'limit: plan', wait: { kind: 'limit', limit: 'plan' }, kind: 'budget', cause: 'plan limit', holdKey: 'managed_runner_hours' },
+    { name: 'limit: budget', wait: { kind: 'limit', limit: 'budget', liftsAt: at(2 * H) }, kind: 'budget', cause: 'daily budget, lifts in 2h 00m', holdKey: 'budget_paused' },
+    { name: 'limit: seats', wait: { kind: 'limit', limit: 'seats' }, kind: 'hold', cause: 'seats in use', holdKey: 'oauth_parallelism' },
+    { name: 'start time', wait: { kind: 'start_time', startAt: at(3 * H) }, kind: 'scheduled', cause: 'starts in 3h 00m', holdKey: 'scheduled' },
+    { name: 'free slot', wait: { kind: 'slot', noRunnerReason: null }, kind: 'next_in_line', cause: 'next in line for a runner', holdKey: 'next_in_line' },
+    { name: 'free slot, no runner', wait: { kind: 'slot', noRunnerReason: 'no online runner has what it needs' }, kind: 'no_runner', cause: 'no runner can take it: no online runner has what it needs', holdKey: 'runner_capability' },
+  ];
+  for (const row of TABLE) {
+    it(row.name, () => {
+      const h = derivePendingTaskHold({ now: NOW, wait: row.wait });
+      expect(h.kind).toBe(row.kind as never);
+      expect(h.cause).toBe(row.cause);
+      if (row.word) expect(h.word).toBe(row.word);
+      expect(h.holdKey).toBe(row.holdKey);
+    });
+  }
+
+  it('2026-10-22: refused on path_overlap with no fresh ledger row still reads its lane, never next in line', () => {
+    const h = derivePendingTaskHold({ now: NOW, deferral: null, wait: { kind: 'lane', lane: 'migration', position: 5, holderTaskId: 'holder-1' }, holders: new Map([['holder-1', holder()]]) });
+    expect(h.kind).toBe('overlap');
+    expect(h.cause).toBe('in the schema lane, 5th in line: runs after approve a spec from chat or MCP');
+  });
+
+  it('2026-10-22: a declared dependency on a running task the status read missed: waiting on it', () => {
+    const h = derivePendingTaskHold({ now: NOW, dependencies: [], wait: { kind: 'declared', blockerId: 'run-1', blockerTitle: '“Rework claim order”', blockerStatus: 'in_progress', count: 1 } });
+    expect(h.word).toBe('Waiting on “Rework claim order”');
+    expect(h.kind).not.toBe('next_in_line');
+  });
+
+  it('a slot wait beats an old refusal: the claim query returns it now', () => {
+    const h = derivePendingTaskHold({ now: NOW, deferral: { reason: 'path_overlap', detail: { blockingTaskId: 'holder-1' } }, wait: { kind: 'slot', noRunnerReason: null } });
+    expect(h.kind).toBe('next_in_line');
+  });
+
+  it('a slot wait with no runner online still says so', () => {
+    expect(derivePendingTaskHold({ now: NOW, runnerOnline: false, wait: { kind: 'slot', noRunnerReason: null } }).holdKey).toBe('runner_offline');
+  });
+
+  it('without a wait, a deps_blocked row once its dependencies are met reads no cause from it', () => {
+    expect(derivePendingTaskHold({ now: NOW, deferral: { reason: 'deps_blocked' } }).kind).toBe('next_in_line');
+  });
+});

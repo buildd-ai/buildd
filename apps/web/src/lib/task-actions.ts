@@ -323,6 +323,8 @@ export interface GateCopyContext {
  */
 export interface TaskWaiting {
   waitingReasons: WaitingReason[];
+  /** The one reason it waits, the same explain and both queues give (lib/queue-wait-load.ts). */
+  queueWait?: import('@buildd/shared').QueueWait;
   reasonsDigest?: string;
   canForce?: boolean;
   force?: ForceOffer | null;
