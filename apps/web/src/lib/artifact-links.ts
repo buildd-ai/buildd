@@ -197,7 +197,7 @@ export async function checkPendingLink(
   if (input.revision !== undefined && input.revision !== null) return fail(400, 'A new upload has only its first revision: attach without revision');
   if (!(await canAccessWorkspace(caller, target.workspaceId))) return fail(404, 'Workspace not found');
   const kind = input.subjectKind as ArtifactLinkSubject;
-  const subject = await loadSubject(kind, input.subjectId as string);
+  const subject = await loadLinkSubject(kind, input.subjectId as string);
   if (!subject || !(await canReachSubject(caller, subject))) return fail(404, `${kind} not found`);
   if (subject.teamId !== (await teamOfWorkspace(target.workspaceId))) return fail(403, 'An artifact can be linked only to a subject of its own team');
   if (subject.ownerUserId !== undefined) return fail(400, `A ${kind} is linked once the upload is ready, with link_artifact`);
@@ -217,7 +217,7 @@ export async function applyPendingLinks(artifactId: string): Promise<number> {
   if (a?.teamId && a.workspaceId && a.uploadState !== 'pending' && a.uploadState !== 'failed') {
     for (const p of pending as Partial<PendingLink>[]) {
       if (!p || checkLinkInput({ subjectKind: p.subjectKind, subjectId: p.subjectId, relation: p.relation })) continue;
-      const subject = await loadSubject(p.subjectKind!, p.subjectId!);
+      const subject = await loadLinkSubject(p.subjectKind!, p.subjectId!);
       // The same rule checkPendingLink applied, again: metadata is data, not a grant.
       if (!subject || subject.teamId !== a.teamId || (subject.workspaceId && subject.workspaceId !== a.workspaceId) || subject.ownerUserId !== undefined) continue;
       const pinned = p.relation === 'normative_reference' ? Math.max(a.currentRevision, 1) : null;
