@@ -240,6 +240,18 @@ describe('R-100: retired and replacing specs say so in the status line', () => {
     render({ ...base, spec: { ...base.spec, status: 'superseded' }, retirement: { ...retirement, status: 'superseded', reason: 'Replaced', supersededBy: { id: 'n', title: 'Checkout v2' } } });
     expect(container.textContent).toContain('Replaced by Checkout v2');
   });
+
+  it('R-78/R-80: the repo file PR of a retired spec, and the note on a restored one, are in the repo rail', () => {
+    const retirement = { status: 'retired', reason: 'Folded', supersededBy: null, by: 'user:u', at: iso, repoLine: { text: 'PR #7 marks docs/specs/checkout.md superseded in the repo.', href: 'https://example.test/pr/7' } };
+    render({ ...base, spec: { ...base.spec, status: 'retired' }, retirement });
+    const line = document.querySelector('[data-testid="spec-page-repo-state"] [data-testid="spec-retired-repo-pr"]');
+    expect(line?.textContent).toContain('PR #7 marks docs/specs/checkout.md superseded');
+    expect(line?.querySelector('a')?.getAttribute('href')).toBe('https://example.test/pr/7');
+    act(() => root.unmount());
+    root = createRoot(container);
+    render({ ...base, restoredRepoNote: 'docs/specs/checkout.md is no longer in the repo; restoring does not recreate it.' });
+    expect(document.querySelector('[data-testid="spec-page-repo-state"] [data-testid="spec-page-restored-repo-file"]')?.textContent).toContain('restoring does not recreate it');
+  });
 });
 
 describe('R-98: History picks two rows to compare', () => {
