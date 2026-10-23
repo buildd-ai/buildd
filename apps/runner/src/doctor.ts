@@ -13,6 +13,10 @@ import { tmpdir } from 'os';
 import { basename, join } from 'path';
 import { resolveBuilddHome } from './buildd-home';
 import { isolationCheck, probeThisHost } from './isolation-check';
+import { isolationVerdict } from '@buildd/shared';
+import { backendLoginLines, resolveLaunchedCodexBinary } from './model-login-report';
+import { NO_MODEL_AUTH_FIX, type MachineLoginProbe } from './host-seat';
+import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import type { RunnerIsolationRecord } from '@buildd/shared';
 import {
   parseWorktreeList,
@@ -446,6 +450,59 @@ export function checkIsolation(record?: RunnerIsolationRecord): CheckResult {
   return isolationCheck(record ?? probeThisHost());
 }
 
+export interface BackendCheckOpts {
+  /** Login probe (env, home); defaults to this process. Injected in tests. */
+  probe?: MachineLoginProbe;
+  /** Path of the program the runner launches, or null/undefined when missing. Injected in tests. */
+  program?: string | null;
+  isolation?: RunnerIsolationRecord;
+}
+
+function backendConfinement(record: RunnerIsolationRecord | undefined, backend: 'claude' | 'codex'): string {
+  const lines = isolationVerdict(record ?? probeThisHost()).backends.filter((b) => b.backend === backend).map((b) => b.line);
+  return lines.join('; ');
+}
+
+/**
+ * One line per agent backend (login spec R-14 to R-18): the program the runner
+ * launches, which login it uses, and its confinement. Labels only; the login
+ * comes from the same detector as startup and the heartbeat, and nothing here
+ * calls a model.
+ */
+export function checkClaudeBackend(opts: BackendCheckOpts = {}): CheckResult {
+  const program = 'program' in opts ? opts.program : resolveClaudeBinaryPath();
+  const login = backendLoginLines(opts.probe).find((l) => l.backend === 'claude')!;
+  const sandbox = backendConfinement(opts.isolation, 'claude');
+  const message = `${login.text}. Sandbox: ${sandbox}`;
+  if (!program) {
+    return {
+      name: 'claude', status: 'error',
+      message: `Claude CLI not found; the runner cannot start Claude tasks. ${message}`,
+      detail: 'Reinstall the runner dependencies: run `bun install` in the buildd checkout.',
+    };
+  }
+  if (login.label === 'none') {
+    return { name: 'claude', status: 'warn', message, detail: `To fix: ${NO_MODEL_AUTH_FIX}` };
+  }
+  return { name: 'claude', status: 'ok', message };
+}
+
+export function checkCodexBackend(opts: BackendCheckOpts = {}): CheckResult {
+  const program = 'program' in opts ? opts.program : resolveLaunchedCodexBinary();
+  const login = backendLoginLines(opts.probe).find((l) => l.backend === 'codex')!;
+  const sandbox = backendConfinement(opts.isolation, 'codex');
+  const message = `${login.text}. Sandbox: ${sandbox}`;
+  if (!program) {
+    return {
+      name: 'codex', status: 'warn',
+      message: `Bundled Codex binary not found; Codex tasks will not run here. ${message}`,
+      detail: 'Reinstall the runner dependencies (`bun install`) so @openai/codex-sdk brings its binary.',
+    };
+  }
+  // A missing Codex login is not a warning: Codex is optional. The fix is in the words.
+  return { name: 'codex', status: 'ok', message };
+}
+
 function checkScreenSession(): CheckResult {
   if (IS_WINDOWS) return notCheckedOnWindows('screen-session');
   try {
@@ -857,7 +914,10 @@ export function runDiagnostics(opts: {
    * reported a running runner as missing.
    */
   runnerProcess?: CheckResult;
+  /** Per-backend overrides for tests. */
+  backends?: { claude?: BackendCheckOpts; codex?: BackendCheckOpts };
 } = {}): DoctorReport {
+  const record = opts.isolation ?? probeThisHost();
   const checks = [
     opts.runnerProcess ?? checkRunnerProcess(),
     checkConfig(),
@@ -865,7 +925,9 @@ export function runDiagnostics(opts: {
     checkGitDirty(),
     checkGitUntracked(),
     checkBunInstall(),
-    checkIsolation(opts.isolation),
+    checkIsolation(record),
+    checkClaudeBackend({ isolation: record, ...opts.backends?.claude }),
+    checkCodexBackend({ isolation: record, ...opts.backends?.codex }),
     checkScreenSession(),
     checkRunnerLog(),
     checkDiskUsage(),
