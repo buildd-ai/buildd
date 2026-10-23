@@ -43,6 +43,24 @@ async function layoutReads(userId: string) {
 
 type ActivityProps = { mode: string; loadError: boolean; now: { groups: unknown[] }; history: unknown[] };
 
+/**
+ * The page returns ActivityView inside its LiveRegion (R-7), beside the
+ * auto-refresh: find the view's element in the tree by its own props.
+ */
+function findActivityProps(node: unknown): ActivityProps | null {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findActivityProps(child);
+      if (found) return found;
+    }
+    return null;
+  }
+  const props = (node as { props?: Record<string, unknown> } | null)?.props;
+  if (!props) return null;
+  if ('mode' in props && 'history' in props && 'loadError' in props) return props as unknown as ActivityProps;
+  return findActivityProps(props.children);
+}
+
 async function renderActivity(userId: string, searchParams: Record<string, string>) {
   await page.newRequest(userId, () => layoutReads(userId));
   let rendered: Awaited<ReturnType<typeof page.render>> | null = null;
@@ -50,7 +68,8 @@ async function renderActivity(userId: string, searchParams: Record<string, strin
   const m = await measureLoader(label, async () => {
     rendered = await page.render(() => TasksPage({ searchParams: Promise.resolve(searchParams) }));
   });
-  const props = (rendered!.tree as { props: ActivityProps }).props;
+  const props = findActivityProps(rendered!.tree);
+  if (!props) throw new Error('TasksPage rendered no ActivityView');
   return { m, rendered: rendered!, props };
 }
 

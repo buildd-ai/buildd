@@ -8,7 +8,7 @@
  * the waiting rows group by what they wait on. Every row opens its task page.
  *
  * ```
- * 11 of 16 merged · 1 running · 1 fixing · 1 your decision · 2 waiting
+ * 11 of 16 merged · 1 running · 1 fixing · 1 your decision · 2 waiting · finish depends on Mirror the runner image…
  * Mirror the runner image to Docker Hub      Your decision        1m ago
  * Redeploy keeps the dispatch token          Running 12m · writing the test · updated 14s ago
  * The release publishes an image digest      Waiting on Mirror the runner image…
@@ -19,8 +19,9 @@
  * them. A row carries `missionTaskAnchorId`, so a `#t-<id>` link lands on it.
  */
 import Link from 'next/link';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
+import { missionFinishClause } from '@/lib/flow-timeline';
 import { buildStage, mergedFoldLine, type BuildStageRow } from '@/lib/mission-build-stage';
 import type { MissionBoardModel } from '@/lib/mission-board';
 import { missionTaskAnchorId } from '@/lib/mission-task-href';
@@ -32,6 +33,8 @@ export interface MissionBuildStageProps {
   hrefFor: (taskId: string) => string;
   /** A `#t-<id>` arrival: the merged fold opens when it names a merged task. */
   revealTaskId?: string | null;
+  /** Task id → expected minutes (task estimates). The summary names what sets the finish only when the whole path has one (R-22). */
+  expectedMinutes?: Readonly<Record<string, number | null | undefined>>;
 }
 
 const DOT: Record<BuildStageRow['tone'], string> = {
@@ -49,9 +52,10 @@ function useClock(): (ts: number) => string {
   return (ts: number) => new Date(ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false, ...(tz ? { timeZone: tz } : {}) });
 }
 
-export default function MissionBuildStage({ model, now, hrefFor, revealTaskId = null }: MissionBuildStageProps) {
+export default function MissionBuildStage({ model, now, hrefFor, revealTaskId = null, expectedMinutes }: MissionBuildStageProps) {
   const clock = useClock();
-  const stage = buildStage(model, now, { hrefFor, clock });
+  const finish = useMemo(() => (expectedMinutes ? missionFinishClause(model, now, expectedMinutes) : null), [model, now, expectedMinutes]);
+  const stage = buildStage(model, now, { hrefFor, clock, finish });
   const [mergedOpen, setMergedOpen] = useState(false);
   const reveal = revealTaskId != null && stage.merged.ids.includes(revealTaskId);
   const showMerged = mergedOpen || reveal;

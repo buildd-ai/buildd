@@ -150,4 +150,45 @@ describe('ask_human', () => {
     ).rejects.toThrow('options');
     expect(mockApi).not.toHaveBeenCalled();
   });
+
+  describe('decision options and subject (Navigation R-16, AC-16)', () => {
+    it('refuses four options before any call, telling the agent to cut to two', async () => {
+      await expect(
+        handleBuilddAction(mockApi as unknown as ApiFn, 'ask_human', { question: 'Q?', options: ['a', 'b', 'c', 'd'] }, ctx()),
+      ).rejects.toThrow('Cut to two');
+      await expect(
+        handleBuilddAction(mockApi as unknown as ApiFn, 'ask_human', { question: 'Q?', options: ['Ship it', 'Not now'] }, ctx()),
+      ).rejects.toThrow('Not now');
+      expect(mockApi).not.toHaveBeenCalled();
+    });
+
+    it('sends structured options with consequence and effect, and the subject task', async () => {
+      mockApi
+        .mockResolvedValueOnce({ id: WORKER_ID, runner: 'mcp', status: 'running' })
+        .mockResolvedValueOnce({ id: WORKER_ID, status: 'waiting_input' });
+      const SUBJECT = '33333333-3333-4333-8333-333333333333';
+      const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'ask_human', {
+        question: 'How should Docker Hub credentials be set up?',
+        options: [{ label: 'Team secret', consequence: 'One token for every workspace. Deploy unblocks now.', recommended: true }, 'Per workspace'],
+        subjectTaskId: SUBJECT,
+      }, ctx());
+      const body = JSON.parse(mockApi.mock.calls[1][1].body);
+      expect(body.waitingFor.subjectTaskId).toBe(SUBJECT);
+      expect(body.waitingFor.options).toEqual([
+        { label: 'Team secret', consequence: 'One token for every workspace. Deploy unblocks now.', effect: 'One token for every workspace', recommended: true },
+        'Per workspace',
+      ]);
+      expect(JSON.parse(result.content[0].text).advisory).toBeUndefined();
+    });
+
+    it('parks a generic question but returns an advisory to name the decision', async () => {
+      mockApi
+        .mockResolvedValueOnce({ id: WORKER_ID, runner: 'mcp', status: 'running' })
+        .mockResolvedValueOnce({ id: WORKER_ID, status: 'waiting_input' });
+      const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'ask_human', { question: 'How should I proceed?' }, ctx());
+      expect(result.isError).toBeFalsy();
+      expect(JSON.parse(result.content[0].text).advisory).toContain('How should Docker Hub credentials be set up?');
+    });
+  });
 });
+

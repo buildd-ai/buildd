@@ -8,7 +8,8 @@
  * one line each with renewals behind a toggle, and never as an approval. What
  * team policy or a person governs (capability requests and grants) is listed
  * apart; a request still waiting links to the one decision in Settings › Apps
- * (the same request as its Needs You card).
+ * (the same request as its Needs You card). A request whose run ended was
+ * never decided and can no longer be: it reads as closed, with no link.
  *
  * Collapsed by default; opens on its own when anything was refused or waits on
  * a person, since that is what someone opens it for. Renders nothing for a task with no
@@ -58,8 +59,8 @@ function Governed({ item }: { item: AccessItem }) {
     <li
       data-testid="task-access-item"
       data-source="grant"
-      data-decision={item.pending ? 'pending' : item.decision}
-      className={`${ROW} ${item.decision === 'refused' && !item.pending ? 'border-l-2 border-l-status-error' : ''}`}
+      data-decision={item.pending ? 'pending' : item.closed ? 'closed' : item.decision}
+      className={`${ROW} ${item.decision === 'refused' && !item.pending && !item.closed ? 'border-l-2 border-l-status-error' : ''}`}
     >
       <ZonedTime value={item.at} format="time" className="text-meta text-text-muted tabular-nums w-16 shrink-0" />
       <span className="text-body text-text-primary flex-1 min-w-0">
@@ -73,6 +74,8 @@ function Governed({ item }: { item: AccessItem }) {
               waiting on a person · Review
             </a>
           ) : <span className="text-text-muted">waiting on a person</span>
+        ) : item.closed ? (
+          <span data-testid="task-access-closed" className="text-text-muted">closed · {item.closed}</span>
         ) : item.decision === 'refused' ? (
           <span className="text-status-error">refused{item.reason ? ` · ${item.reason}` : ''}</span>
         ) : (
@@ -88,7 +91,7 @@ function Governed({ item }: { item: AccessItem }) {
 
 export default function TaskAccessSection({ items }: { items: AccessItem[] }) {
   if (items.length === 0) return null;
-  const refused = items.filter(i => i.decision === 'refused' && !i.pending).length;
+  const refused = items.filter(i => i.decision === 'refused' && !i.pending && !i.closed).length;
   const waiting = items.filter(i => i.pending).length;
   const run = items.filter(i => i.source === 'run');
   const governed = items.filter(i => i.source !== 'run');

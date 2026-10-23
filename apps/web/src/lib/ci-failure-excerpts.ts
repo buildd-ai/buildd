@@ -9,6 +9,7 @@
 
 import { githubApi, githubApiText } from '@/lib/github';
 import type { FailedCheck } from '@/lib/failed-checks';
+import { failingLines } from '@/lib/red-check-cause';
 
 export const CI_EXCERPT_LINES = 150;
 export const CI_EXCERPT_MAX_CHARS = 4000;
@@ -21,7 +22,10 @@ export interface CiFailureExcerpt {
   url: string | null;
   /** First failing step of the job, when GitHub reports one. */
   step: string | null;
-  /** Last lines of the job log, cleaned and redacted; null when no log was readable. */
+  /**
+   * The job log's failing test or error lines (surface-ia §11 R-2), cleaned and
+   * redacted, never its cleanup tail; null when no log was readable.
+   */
   excerpt: string | null;
 }
 
@@ -166,7 +170,7 @@ async function excerptFor(
     if (failing?.name) base.step = redactLogText(failing.name);
   }
   if (log.status === 'fulfilled' && log.value) {
-    const excerpt = capChars(redactLogText(lastLines(cleanLogText(log.value))), maxChars);
+    const excerpt = capChars(redactLogText(failingLines(cleanLogText(log.value), CI_EXCERPT_LINES) ?? ''), maxChars);
     base.excerpt = excerpt || null;
   }
   return base;

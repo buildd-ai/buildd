@@ -62,6 +62,11 @@ Details, including `discardEdits` and `alreadyShippedIn`: topic
 
 - Soft question you can proceed on: `buildd action=post_note` with
   `type: "question"` and `defaultChoice`. Work continues.
+- Any decision you ask for: the question names the decision, never "How
+  should I proceed?". Two `options` by default (recommended plus one
+  alternative, each with a `consequence`), three only for a genuinely
+  different choice, never "Not now" or "Skip". About another task? Pass
+  `subjectTaskId`. Details in topic `task-lifecycle`.
 - Blocked by another task (it must merge first, or it is fixing the same
   root cause): wait on it, do not fail.
   `buildd action=complete_task params={ blockedOnTaskId, summary }` puts this
