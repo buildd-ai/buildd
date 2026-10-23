@@ -93,7 +93,7 @@ function ClosedPrRow({ missionId, item, named }: { missionId: string; item: Clos
         </p>
       ) : (
         <p data-verify-block="consequence" className="text-text-secondary">
-          {named ? `${prRef}: nothing says where its work went.` : 'The mission can’t complete until this work is accounted for.'}
+          {named ? `${prRef}: nothing says where its work went.` : 'Mission blocked until this work is accounted for.'}
         </p>
       )}
 

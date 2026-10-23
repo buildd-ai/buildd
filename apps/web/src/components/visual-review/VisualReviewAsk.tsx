@@ -43,7 +43,7 @@ export function AnswerRow({ target, options = [], onAnswer }: { target: AnswerTa
   }
 
   if (sent) {
-    return <p data-testid="visual-review-answer-sent" data-verify-block="consequence" className="font-mono text-[13px] text-status-success">Answer sent. The audit picks up from here.</p>;
+    return <p data-testid="visual-review-answer-sent" data-verify-block="consequence" className="font-mono text-[13px] text-status-success">Answer sent.</p>;
   }
   return (
     <div className="flex min-w-0 flex-col gap-2">
