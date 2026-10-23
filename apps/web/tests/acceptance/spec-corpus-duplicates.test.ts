@@ -13,7 +13,7 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
-import { assertDbConfigured, q, seedWorkspace } from './harness';
+import { assertDbConfigured, q, seedWorkspace } from '../db/harness';
 
 const { createSpecDraft, reviseSpecDraft } = await import('../../src/lib/specs/store');
 const { approveSpecRevision } = await import('../../src/lib/specs/approval');
