@@ -47,6 +47,7 @@ import { projectKernelState } from '@/lib/delivery-projection';
 
 import { getModelDisplayName, primaryModelFromUsage, compareAssignedActual } from '@buildd/core/model-display';
 import TaskAutoRefresh from './TaskAutoRefresh';
+import ShellPageMarks from '@/components/ShellPageMarks';
 import { DisplayTimezoneProvider, ZonedTime } from '@/components/DisplayTimezone';
 import { blockedHeadline, gateName, lastForceStart } from '@buildd/core/waiting-reason';
 import SwitchBackendButton, { type BackendOption } from './SwitchBackendButton';
@@ -1381,6 +1382,8 @@ async function TaskDetailPage({
     <div className="p-4 md:p-8 overflow-x-hidden overflow-y-auto h-full">
       {/* Reading width: at most 840px, never stretched to the window (Navigation R-21). */}
       <div className="max-w-[840px] w-full" data-testid="task-content-column">
+        {/* The question is asked on this page; a mission's task belongs to Missions (design 6356e80d). */}
+        <ShellPageMarks hideQuestionsBanner navSection={task.missionId ? '/app/missions' : null} />
         {/* Auto-refresh when worker claims this task or deps resolve */}
         <TaskAutoRefresh
           taskId={task.id}
