@@ -253,6 +253,32 @@ criteria that matched.
   `figma`; `url` and `figma` need `version`. Figma is one kind among several,
   not the default.
 
+### Storing a design
+
+A design (an HTML export, a prototype, images) is a file artifact. Store it
+with `upload_artifact`, never by pasting it into `create_artifact`: a large
+export is far too many tokens for a tool call. One call, no worker needed:
+
+```
+buildd action=upload_artifact params={ filename: "nav.html", mimeType: "text/html",
+  sizeBytes, missionId (or specId / initiativeId),
+  metadata: { kind: "design", screens: [{ id: "home", name: "Home", viewport: "1440x900" }] },
+  attach: [{ subjectKind: "mission", subjectId }] }
+```
+
+Run the `curl` PUT it returns, then `upload_artifact { artifactId }` to
+verify the bytes; the `attach` links (a design reference unless `relation`
+says otherwise) are written then. Screen ids are letters,
+digits and `. _ / : # -`; `viewport` is `WIDTHxHEIGHT`. Bad screens are
+refused with the field named. You need write access to the scope: an owner or
+admin session, or a worker whose task is in it.
+
+A re-export is a new revision of the same artifact, not a new artifact:
+`upload_artifact { artifactId, filename, mimeType, sizeBytes }`, the PUT, then
+`upload_artifact { artifactId }`. Links that follow the current body move to
+it; pinned links and a spec's `design` with a `version` stay. Read an earlier
+one with `get_artifact { artifactId, revision }`.
+
 ## Attachments
 
 A spec can carry files beside its text: mockups, screenshots, diagrams as

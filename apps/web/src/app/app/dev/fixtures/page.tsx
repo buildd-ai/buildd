@@ -57,6 +57,7 @@ import MissionDetailCompactFixture from './MissionDetailCompactFixture';
 import BranchPanelFixture from './BranchPanelFixture';
 import HomeCardsFixture from './HomeCardsFixture';
 import ServiceStatusFixture from './ServiceStatusFixture';
+import DesignPreviewFixture from './DesignPreviewFixture';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
@@ -90,6 +91,7 @@ import {
     SPEC_PAGE_FIXTURE_STATE,
     RUNNER_KEYS_FIXTURE_STATE,
     MISSION_DELIVERIES_FIXTURE_STATE,
+    DESIGN_PREVIEW_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
     TASK_PAGE_FIXTURE_STATE,
@@ -255,6 +257,9 @@ export default function DevFixturesPage() {
     }
     if (state === EVIDENCE_STORAGE_FIXTURE_STATE) {
         return <EvidenceStorageFixture />;
+    }
+    if (state === DESIGN_PREVIEW_FIXTURE_STATE) {
+        return <DesignPreviewFixture />;
     }
     if (state === MCP_CONNECTIONS_FIXTURE_STATE) {
         return <ConnectionsFixture />;

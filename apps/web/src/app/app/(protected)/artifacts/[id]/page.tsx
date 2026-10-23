@@ -15,6 +15,72 @@ import { memberHasRepoAccess } from '@/lib/member-repo-access';
 import { ARTIFACT_TYPE_LABELS, isArtifactType, type ArtifactTypeValue } from '@buildd/shared';
 import { displayTaskTitle } from '@/lib/task-title';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import DesignPreview from '@/components/DesignPreview';
+import { isDesignArtifact, resolveDesignScreens, type DesignScreen } from '@/lib/design-preview';
+import { getArtifactRevision } from '@/lib/artifact-revisions';
+import { generateDownloadUrl, isStorageConfigured, readObject } from '@/lib/storage';
+
+/** A design file larger than this is framed without reading it for its screens' viewports. */
+const DESIGN_SCAN_MAX_BYTES = 4 * 1024 * 1024;
+
+interface DesignView {
+  revision: number;
+  /** The signed, per-viewer storage URL for this render; null when storage cannot serve the file. */
+  frameUrl: string | null;
+  screens: DesignScreen[];
+  /** Set when `?revision=` named a revision the artifact does not have. */
+  revisionNote: string | null;
+}
+
+/**
+ * What the design preview frames: the requested (or current) revision's file,
+ * signed for this viewer now, plus the screens and their sizes. The file is
+ * read here only as text, to find `data-viewport` on its sections, and only
+ * when metadata does not state them; it never reaches the page's HTML.
+ */
+async function designView(
+  artifact: { id: string; storageKey: string | null; currentRevision: number; uploadState: string | null; metadata: Record<string, unknown> | null },
+  requestedRevision: string | undefined,
+): Promise<DesignView> {
+  const current = artifact.currentRevision > 0 ? artifact.currentRevision : 1;
+  let revision = current;
+  let storageKey = artifact.storageKey;
+  let revisionNote: string | null = null;
+  if (requestedRevision !== undefined) {
+    const n = Number(requestedRevision);
+    if (!Number.isInteger(n) || n < 1) {
+      revisionNote = `"${requestedRevision}" is not a revision; showing revision ${current}.`;
+    } else if (n !== current || artifact.currentRevision > 0) {
+      const row = n === current && artifact.currentRevision === 0 ? null : await getArtifactRevision(artifact.id, n);
+      if (row?.storageKey) {
+        revision = n;
+        storageKey = row.storageKey;
+      } else if (n !== current) {
+        revisionNote = `This design has no revision ${n}; showing revision ${current}.`;
+      }
+    }
+  }
+
+  const servable = !!storageKey && isStorageConfigured() && (!artifact.uploadState || artifact.uploadState === 'ready');
+  let frameUrl: string | null = null;
+  let html: string | null = null;
+  if (servable && storageKey) {
+    try {
+      frameUrl = await generateDownloadUrl(storageKey);
+    } catch {
+      frameUrl = null;
+    }
+    const stated = resolveDesignScreens(artifact.metadata, null);
+    if (!stated.length || stated.some((s) => !s.viewport)) {
+      try {
+        html = (await readObject(storageKey, DESIGN_SCAN_MAX_BYTES))?.toString('utf8') ?? null;
+      } catch {
+        html = null;
+      }
+    }
+  }
+  return { revision, frameUrl, screens: resolveDesignScreens(artifact.metadata, html), revisionNote };
+}
 
 export const dynamic = 'force-dynamic';
 
@@ -61,10 +127,10 @@ export default async function ArtifactDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ from?: string; taskId?: string; missionId?: string }>;
+  searchParams: Promise<{ from?: string; taskId?: string; missionId?: string; screen?: string; revision?: string }>;
 }) {
   const { id } = await params;
-  const { from, taskId: fromTaskId, missionId: fromMissionId } = await searchParams;
+  const { from, taskId: fromTaskId, missionId: fromMissionId, screen, revision: revisionParam } = await searchParams;
   const user = await getCurrentUser();
 
   if (!user) {
@@ -105,10 +171,18 @@ export default async function ArtifactDetailPage({
   const fileName = metadata?.filename as string | undefined;
   const fileSizeBytes = metadata?.sizeBytes as number | undefined;
   const isImage = artifact.storageKey && fileMimeType?.startsWith('image/');
-  const isFile = artifact.storageKey && !isImage;
+  // A design (an HTML file with screens) is framed, sandboxed, instead of offered as a download only.
+  const isDesign = isDesignArtifact({ storageKey: artifact.storageKey, metadata });
+  const isFile = artifact.storageKey && !isImage && !isDesign;
   const downloadUrl = artifact.storageKey
     ? `/api/artifacts/${artifact.id}/download`
     : undefined;
+  const design = isDesign ? await designView(artifact, revisionParam) : null;
+  const sizeLabel = fileSizeBytes
+    ? fileSizeBytes < 1024 * 1024
+      ? `${(fileSizeBytes / 1024).toFixed(1)} KB`
+      : `${(fileSizeBytes / (1024 * 1024)).toFixed(1)} MB`
+    : null;
   const taskTitle = artifact.worker?.task?.title;
   const taskId = artifact.worker?.task?.id;
   const style = typeStyle(artifact.type);
@@ -227,16 +301,36 @@ export default async function ArtifactDetailPage({
             </div>
           )}
 
+          {design && (
+            <div>
+              {design.revisionNote && (
+                <p className="text-meta text-status-warning mb-3" data-testid="design-revision-note">{design.revisionNote}</p>
+              )}
+              <DesignPreview
+                artifactId={artifact.id}
+                title={artifact.title || fileName || 'Design'}
+                revision={design.revision}
+                frameUrl={design.frameUrl}
+                screens={design.screens}
+                initialScreenId={screen ?? null}
+                downloadUrl={downloadUrl}
+                fileName={fileName}
+                sizeLabel={sizeLabel}
+              />
+              {artifact.content && (
+                <div className="mt-4">
+                  <MarkdownContent content={artifact.content} />
+                </div>
+              )}
+            </div>
+          )}
+
           {isFile && downloadUrl && (
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium">{fileName || 'File'}</p>
-                {fileSizeBytes && (
-                  <p className="text-xs text-text-muted mt-1">
-                    {fileSizeBytes < 1024 * 1024
-                      ? `${(fileSizeBytes / 1024).toFixed(1)} KB`
-                      : `${(fileSizeBytes / (1024 * 1024)).toFixed(1)} MB`}
-                  </p>
+                {sizeLabel && (
+                  <p className="text-xs text-text-muted mt-1">{sizeLabel}</p>
                 )}
               </div>
               <a
