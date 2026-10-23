@@ -2956,6 +2956,16 @@ export async function GET(req: NextRequest) {
     const evidenceReachable = !!(worker.taskId && worker.workspaceId) && (
       sessionUser ? true : await verifyAccountWorkspaceAccess(account!, worker.workspaceId)
     );
+    // The mission-level merge gate every door asks (spec 072de598 I-12): an open
+    // mission PR whose visual review is owed reads blocked here too, never "ready to merge".
+    const missionMergeGate = canonicalState === 'open' && worker.taskId
+      ? await db.query.tasks.findFirst({
+          where: sqlWhere(eq(tasks.id, worker.taskId)),
+          columns: { id: true, title: true, taskClass: true, missionId: true, context: true },
+        })
+          .then(t => (t?.missionId ? guardMissionPrMerge(t) : null))
+          .catch((err) => { console.warn('[get_pr] mission merge gate unreadable:', err instanceof Error ? err.message : err); return null; })
+      : null;
     const evidenceObjects = evidenceReachable
       ? await loadInlineEvidence(worker.workspaceId, worker.taskId, {
         surface: 'get_pr',
@@ -2999,6 +3009,7 @@ export async function GET(req: NextRequest) {
       // rounds and repairs, from its delivery. GitHub's review counts above
       // stay for a PR with no delivery.
       ...(kernelView && kernelView.prNumber === prNumber ? { delivery: prDeliveryReport(kernelView) } : {}),
+      ...(missionMergeGate?.blocks ? { mergeGate: { blocks: true, reason: missionMergeGate.reason ?? null } } : {}),
       ...(comments ? { comments } : {}),
       ...(ciFailures ? { ciFailures } : {}),
       ...(attempts.length > 0 ? { attempts } : {}),

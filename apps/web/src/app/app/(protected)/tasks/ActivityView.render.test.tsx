@@ -121,7 +121,9 @@ describe('ActivityView: History', () => {
   it('keeps the prototype outcome chips and adds the finished exception filter, with day tallies', () => {
     const html = render(ACTIVITY_SEQUENCE.length - 1, 'history');
     const chips = [...html.matchAll(/<button[^>]*aria-pressed="(true|false)"[^>]*>([^<]+)<\/button>/g)].map(m => m[2]);
-    expect(chips).toEqual(['All', 'Merged', 'Had repairs', 'Sent to you', 'Closed without merging']);
+    // Outcome chips, then History's two lenses (spec 9430a28f R-5); no identity filter without reliable lineage.
+    expect(chips).toEqual(['All', 'Merged', 'Had repairs', 'Sent to you', 'Closed without merging', 'Highlights', 'All activity']);
+    expect(html).not.toContain('data-testid="activity-who"');
     expect(html).toContain('data-testid="activity-day"');
     expect(html).not.toContain('aria-label="Mission"');
   });

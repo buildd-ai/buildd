@@ -206,7 +206,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
       onKeyDown={onKeyDown}
       className="card-decision flex min-w-0 flex-col gap-2.5 p-4 md:px-5"
     >
-      <p data-testid="decision-subject" className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-meta font-medium text-status-warning">
+      <p data-testid="question-subject" className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-meta font-medium text-status-warning">
         <span aria-hidden="true">●</span>
         {subject}
         {age && <span className="text-text-muted">· {age}</span>}

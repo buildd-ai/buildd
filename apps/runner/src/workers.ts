@@ -5184,6 +5184,12 @@ export class WorkerManager {
       // run_in_background; they should poll synchronously or wait for results.
       systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Tool Parameter Policy\nDo NOT use `run_in_background: true` in Bash tool calls. This parameter expects to re-invoke you after the task completes, but that mechanism does not exist in this execution environment. Instead: poll the task status synchronously in a loop, or wait for the tool result directly. If a long-running task would exceed your tool timeout, that is a blocker you should report to the user rather than work around with background execution.';
 
+      // Process kill policy: the runner is a bun process, so a kill by name
+      // (`Get-Process bun | Stop-Process`, `taskkill /IM bun.exe`) ends it and
+      // every agent on the machine. The permission hook refuses those
+      // (kill-guard.ts); this tells the agent how to stop its own work instead.
+      systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Process Kill Policy\nNever kill processes by name (`Stop-Process -Name`, `Get-Process bun | Stop-Process`, `taskkill /IM`, `pkill`, `killall`). The buildd runner and other agents run as bun, node and git on this machine, so a kill by name ends them and your own session. Record the PID of anything you start (`Start-Process -PassThru`, `$!`) and stop it with `Stop-Process -Id <pid>` or `kill <pid>`.';
+
       // Narration policy: a text block right before a tool call becomes an
       // Activity milestone, so "Now let me check X…" filler stacked up as rows.
       // The dashboard names such phases by their calls (milestone-log.ts) — that

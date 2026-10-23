@@ -1,8 +1,33 @@
-import { isTerminalTaskStatus } from '@buildd/shared';
+import { isLiveWorkerStatus, isOpenTaskStatus, isTerminalTaskStatus } from '@buildd/shared';
 
 /** An ask belongs to a waiting worker on a task that can still continue. */
 export function isOpenAsk(taskStatus: string | null | undefined, workerStatus: string | null | undefined): boolean {
   return !!taskStatus && !isTerminalTaskStatus(taskStatus) && workerStatus === 'waiting_input';
+}
+
+/** Why the run (task and worker) something is bound to has ended, if it has. */
+export type RunClosure = 'task_terminal' | 'worker_not_live';
+
+/**
+ * Has the run a capability request or grant belongs to ended? A grant lives
+ * and dies with its run, so this one rule decides a use, an approval, and
+ * whether a person is shown a request as open. A missing or unknown status
+ * reads as ended: fail closed, never open.
+ */
+export function runClosure(taskStatus: string | null | undefined, workerStatus: string | null | undefined): RunClosure | null {
+  if (!isOpenTaskStatus(taskStatus)) return 'task_terminal';
+  if (!isLiveWorkerStatus(workerStatus)) return 'worker_not_live';
+  return null;
+}
+
+/**
+ * An access request's `isOpenAsk`: open for a person to decide only while it
+ * is pending on a run that has not ended. The agent keeps working while it
+ * waits, so its worker is live rather than `waiting_input`. Every surface that
+ * offers Approve or Deny, or counts a request as waiting, reads it here.
+ */
+export function isOpenAccessRequest(status: string, taskStatus: string | null | undefined, workerStatus: string | null | undefined): boolean {
+  return status === 'pending' && runClosure(taskStatus, workerStatus) === null;
 }
 
 export function isOpenQuestionNote(

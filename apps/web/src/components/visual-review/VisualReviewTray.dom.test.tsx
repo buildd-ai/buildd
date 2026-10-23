@@ -213,6 +213,6 @@ describe('VisualReviewAsk', () => {
   it('the round cap asks for your call', () => {
     const m = buildVisualReviewFixtureModel('needs_you', { needsYou: 'round_cap' });
     render(<VisualReviewAsk model={m} onReview={() => {}} />);
-    expect(q('visual-review-ask')!.textContent).toContain('Issues remain after 2 rounds');
+    expect(q('visual-review-ask')!.textContent).toContain('Issues remain after the automatic fixes');
   });
 });

@@ -108,6 +108,16 @@ describe('visual review fixture', () => {
     expect(visualReviewFixtureLinks().filter(l => /fix/.test(l.label)).every(l => !/round/i.test(l.label))).toBe(true);
   });
 
+  it('links the stuck merged-fix states (spec 072de598 I-15): owed, queued, your call', () => {
+    const next = { recapture: 'capture', 'recapture-queued': 'queued', 'recapture-decide': 'decide' } as const;
+    for (const view of ['recapture', 'recapture-queued', 'recapture-decide'] as const) {
+      const p = parseVisualReviewFixtureParams(new URLSearchParams(`view=${view}`));
+      expect(p.view).toBe(view);
+      expect(buildVisualReviewFixtureModel(p.phase, p.options).recapture?.next).toBe(next[view]);
+      expect(visualReviewFixtureLinks().some(l => l.href.endsWith(`view=${view}`))).toBe(true);
+    }
+  });
+
   it('the page no longer imports the retired strip', () => {
     const src = readFileSync(join(import.meta.dir, 'page.tsx'), 'utf8');
     expect(src).not.toContain('VisualReviewStrip');

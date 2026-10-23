@@ -12,6 +12,7 @@
  */
 import { createHash } from 'crypto';
 import { isOpenTaskStatus } from '@buildd/shared';
+import { runClosure, type RunClosure } from './open-ask';
 import { db } from '@buildd/core/db';
 import { capabilityGrants, capabilityPolicies, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray, lte } from 'drizzle-orm';
@@ -90,9 +91,43 @@ export async function loadPolicyRules(teamId: string): Promise<PolicyRule[]> {
 }
 
 /** Granted rows past their expiry become `expired`, so the dedupe slot frees up. */
-/** Expire the team's lapsed grants: a write, so a page runs it after its response. */
+/**
+ * Expire the team's lapsed grants and close its pending requests whose run
+ * ended: a write, so a page runs it after its response.
+ */
 export async function expireLapsedTeamGrants(teamId: string, now: Date = new Date()): Promise<void> {
   await expireLapsed(eq(capabilityGrants.teamId, teamId), now);
+  await closeEndedRunRequests(teamId, now);
+}
+
+/**
+ * A pending request whose task or agent run has ended can never be approved
+ * (`approvalRefusal`): close it the way an approval attempt would, so a list
+ * read from the row agrees with the rule without anyone clicking first. Each
+ * write is conditional on the row still being pending, so a concurrent
+ * decision wins.
+ */
+async function closeEndedRunRequests(teamId: string, now: Date) {
+  const open = await db.query.capabilityGrants.findMany({
+    where: sqlWhere(and(eq(capabilityGrants.teamId, teamId), eq(capabilityGrants.status, 'pending'))),
+    columns: { id: true, taskId: true, workerId: true },
+  });
+  if (open.length === 0) return;
+  const [taskRows, workerRows] = await Promise.all([
+    db.query.tasks.findMany({ where: sqlWhere(inArray(tasks.id, [...new Set(open.map(g => g.taskId))])), columns: { id: true, status: true } }),
+    db.query.workers.findMany({ where: sqlWhere(inArray(workers.id, [...new Set(open.map(g => g.workerId))])), columns: { id: true, status: true } }),
+  ]);
+  const taskStatus = new Map(taskRows.map(t => [t.id, t.status as string]));
+  const workerStatus = new Map(workerRows.map(w => [w.id, w.status as string]));
+  const closing = new Map<RunClosure, string[]>();
+  for (const g of open) {
+    const why = runClosure(taskStatus.get(g.taskId), workerStatus.get(g.workerId));
+    if (why) closing.set(why, [...(closing.get(why) ?? []), g.id]);
+  }
+  for (const [why, ids] of closing) {
+    await db.update(capabilityGrants).set({ status: 'expired', decidedBy: 'system', decidedAt: now, decisionReason: why })
+      .where(and(inArray(capabilityGrants.id, ids), eq(capabilityGrants.status, 'pending')));
+  }
 }
 
 async function expireLapsed(where: ReturnType<typeof eq>, now: Date) {
@@ -515,8 +550,7 @@ export const capabilityGrantSource: ModelInferenceGrantSource = {
 // ── Listing (people) ─────────────────────────────────────────────────────────
 
 export async function listTeamRequests(teamId: string, opts: { status?: string[]; workspaceId?: string | null; limit?: number } = {}) {
-  const now = new Date();
-  await expireLapsed(eq(capabilityGrants.teamId, teamId), now);
+  await expireLapsedTeamGrants(teamId);
   const conds = [eq(capabilityGrants.teamId, teamId)];
   if (opts.status?.length) conds.push(inArray(capabilityGrants.status, opts.status as GrantRow['status'][]));
   if (opts.workspaceId) conds.push(eq(capabilityGrants.workspaceId, opts.workspaceId));

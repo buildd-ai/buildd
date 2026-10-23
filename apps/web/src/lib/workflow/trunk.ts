@@ -26,6 +26,7 @@ import type { CheckRunsRead, Trunk, TrunkIncident } from '@buildd/workflow-kerne
 import type { Exec } from './kernel';
 import type { GithubFactReader } from './facts';
 import { UNKNOWN_CI_SIGNATURE, ciSignature, signatureCheckNames, trunkExplains, trunkRecovered } from './trunk-signature';
+import { scheduleTrunkRecheck } from './trunk-recheck';
 
 export { UNKNOWN_CI_SIGNATURE, ciSignature, signatureCheckNames, signatureChecks, trunkExplains, trunkRecovered } from './trunk-signature';
 
@@ -113,6 +114,14 @@ SELECT id, workspace_id, repo_full_name, base_ref, signature FROM trunk_incident
 WHERE status <> 'resolved' ORDER BY updated_at, id LIMIT ${limit}::int`;
 }
 
+/** The named incidents, still unresolved (the recheck queue's members, trunk-recheck.ts). */
+export function unresolvedIncidentsByIdSql(ids: readonly string[]): SQL {
+  const list = sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `);
+  return sql`-- workflow:trunk_unresolved_by_id
+SELECT id, workspace_id, repo_full_name, base_ref, signature FROM trunk_incidents
+WHERE id IN (${list}) AND status <> 'resolved'`;
+}
+
 /**
  * An incident rechecked and left unresolved goes to the back of the sweep's
  * queue. Without it the same oldest page (a base still red, a workspace with
@@ -131,12 +140,16 @@ WHERE id = ${id}::uuid AND status <> 'resolved'
 RETURNING id`;
 }
 
-/** Deliveries still blocked on an incident that has resolved (this pass or an earlier, interrupted one). */
-export function blockedOnResolvedSql(limit: number): SQL {
+/**
+ * Deliveries still blocked on an incident that has resolved (this pass or an earlier, interrupted one),
+ * or only on the named incidents (a recheck of a few).
+ */
+export function blockedOnResolvedSql(limit: number, incidentIds?: readonly string[]): SQL {
+  const only = incidentIds ? sql`AND i.id IN (${sql.join(incidentIds.map((id) => sql`${id}::uuid`), sql`, `)})` : sql``;
   return sql`-- workflow:trunk_blocked_on_resolved
 SELECT d.id, d.workspace_id, d.repo_full_name, d.current_head_sha, d.trunk_incident_id, i.base_ref
 FROM workflow_deliveries d JOIN trunk_incidents i ON i.id = d.trunk_incident_id
-WHERE d.state = 'BLOCKED_ON_TRUNK' AND d.authority = 'kernel' AND i.status = 'resolved'
+WHERE d.state = 'BLOCKED_ON_TRUNK' AND d.authority = 'kernel' AND i.status = 'resolved' ${only}
 LIMIT ${limit}::int`;
 }
 
@@ -243,6 +256,8 @@ export async function classifyCiFailure(p: {
   const baseRef = p.baseRef;
   const join = async (incidentSignature: string, rule: 'base_red' | 'threshold' | 'open_incident') => {
     const row = ((await exec(openOrJoinIncidentSql({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef, signature: incidentSignature, deliveryId: p.deliveryId }))).rows ?? [])[0] as { id: string; opened: boolean } | undefined;
+    // On the recheck queue from the start: rechecked within the fallback even if no base suite reports.
+    if (row) await scheduleTrunkRecheck(String(row.id));
     return row ? { signature, incident: { id: String(row.id), opened: !!row.opened, signature: incidentSignature, rule } } : { signature, incident: null };
   };
 

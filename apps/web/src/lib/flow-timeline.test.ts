@@ -8,8 +8,8 @@ import { join } from 'node:path';
 import { missionFlowFixture } from '@/app/app/dev/fixtures/mission-flow-fixtures';
 import { dagBoard, dagId, type DagSpec } from '@/app/app/dev/fixtures/mission-task-strip-fixtures';
 import {
-  buildFlowTimeline, criticalPath, criticalPathLine, defaultFlowSelection, flowAxisTicks, flowEdgePaths, flowEdges, flowLit,
-  FLOW_AUDIT_WAIT_MS, FLOW_DEFAULT_TASK_MS, FLOW_FOLD_ABOVE, FLOW_ROW_UNITS, FLOW_X_UNITS, layoutFlowTimeline, shouldFoldMerged,
+  buildFlowTimeline, criticalPath, criticalPathLine, defaultFlowSelection, finishDependsOn, flowAxisTicks, flowEdgePaths, flowEdges, flowLit,
+  flowTaskName, missionFinishClause, FINISH_NAMES_MAX, FLOW_AUDIT_WAIT_MS, FLOW_DEFAULT_TASK_MS, FLOW_FOLD_ABOVE, FLOW_ROW_UNITS, FLOW_X_UNITS, layoutFlowTimeline, shouldFoldMerged,
   type FlowTask,
   flowTickNearNow,
 } from './flow-timeline';
@@ -91,9 +91,9 @@ describe('critical path (R-15..R-17)', () => {
     expect(tl.critical).toEqual(['A', 'B', 'C'].map(n => dagId(spec, n)));
   });
 
-  it('the line names the first unlanded task on it, then the rest', () => {
-    const { tl } = flow('small');
-    expect(criticalPathLine(tl, word)).toBe('Finish is set by 04 (building), then 06 → 07.');
+  it('the line names the first unlanded task on it, then the rest, by name', () => {
+    const { tl, model } = flow('small');
+    expect(criticalPathLine(tl, word, flowTaskName(model))).toBe('Finish is set by Missions portfolio list (building), then Mission detail: gates and repair → Final audit at 360, 390 and desktop.');
   });
 
   it('the Flow tab opens on the task setting the finish', () => {
@@ -103,7 +103,7 @@ describe('critical path (R-15..R-17)', () => {
 
   it('no line once every task on it has landed', () => {
     const model = dagBoard({ tasks: ['A', 'B'], edges: { B: ['A'] }, states: { A: 'landed', B: 'landed' } });
-    expect(criticalPathLine(buildFlowTimeline({ model }), word)).toBeNull();
+    expect(criticalPathLine(buildFlowTimeline({ model }), word, flowTaskName(model))).toBeNull();
   });
 
   it('a cycle terminates', () => {
@@ -129,12 +129,16 @@ describe('same-files edges gate (R-5, R-6)', () => {
     expect(tl.tasks[f.idOf(10)].start).toBe(tl.now);
   });
 
-  it('a same-files wait can set the critical path', () => {
-    const spec: DagSpec = { tasks: ['A', 'B', 'C'], states: { A: 'running' } };
+  it('a same-files wait holds the start but never sets the critical path (Navigation R-22)', () => {
+    const spec: DagSpec = { tasks: ['A', 'B', 'C'], edges: { C: ['B'] } };
     const model = dagBoard(spec);
     const [A, B, C] = ['A', 'B', 'C'].map(n => dagId(spec, n));
-    const tl = buildFlowTimeline({ model, sameFiles: { [C]: [A] }, expectedMinutes: { [A]: 120, [B]: 30, [C]: 30 } });
-    expect(tl.critical).toEqual([A, C]);
+    const expectedMinutes = { [A]: 120, [B]: 30, [C]: 30 };
+    const tl = buildFlowTimeline({ model, sameFiles: { [C]: [A] }, expectedMinutes });
+    expect(tl.tasks[C].start).toBeGreaterThanOrEqual(tl.tasks[A].end + FLOW_AUDIT_WAIT_MS);
+    // Through declared dependencies alone, A (120m) finishes after B → C (70m with the audit wait).
+    expect(tl.critical).toEqual([A]);
+    expect(tl.critical).toEqual(buildFlowTimeline({ model, expectedMinutes }).critical);
   });
 
   it('ignores a same-files wait on a task outside the mission, on itself, or one that duplicates a dependency', () => {
@@ -272,5 +276,68 @@ describe('flowTickNearNow: an axis tick never runs into "now" (visual review rou
     expect(flowTickNearNow(80, 92)).toBe('phone');
     expect(flowTickNearNow(40, 92)).toBe('show');
     expect(flowTickNearNow(100, null)).toBe('show');
+  });
+});
+
+describe('finish depends on (Navigation d25d923d R-22, AC-18)', () => {
+  // A → B → C → D → E, all unmerged, A running; F is short and off the path.
+  const spec: DagSpec = { tasks: ['A', 'B', 'C', 'D', 'E', 'F'], edges: { B: ['A'], C: ['B'], D: ['C'], E: ['D'] }, states: { A: 'running' } };
+  const model = dagBoard(spec);
+  const ids = Object.fromEntries(spec.tasks.map(n => [n, dagId(spec, n)]));
+  const name = flowTaskName(model);
+  const all = Object.fromEntries(spec.tasks.map(n => [ids[n], 30]));
+
+  it('three unmerged tasks, all estimated: the first, then the rest, by name', () => {
+    const three: DagSpec = { tasks: ['A', 'B', 'C'], edges: { B: ['A'], C: ['B'] }, states: { A: 'running' } };
+    const m = dagBoard(three);
+    const [A, B, C] = three.tasks.map(n => dagId(three, n));
+    const clause = missionFinishClause(m, m.now, { [A]: 40, [B]: 30, [C]: 20 });
+    const n = flowTaskName(m);
+    expect(clause).toBe(`finish depends on ${n(A)}, then ${n(B)} → ${n(C)}`);
+  });
+
+  it('a path longer than three names ends +N', () => {
+    expect(FINISH_NAMES_MAX).toBe(3);
+    const tl = buildFlowTimeline({ model, expectedMinutes: all });
+    expect(tl.critical).toEqual(['A', 'B', 'C', 'D', 'E'].map(n => ids[n]));
+    expect(finishDependsOn(tl, name)).toBe(`finish depends on ${name(ids.A)}, then ${name(ids.B)} → ${name(ids.C)} +2`);
+    expect(criticalPathLine(tl, word, name)).toBe(`Finish is set by ${name(ids.A)} (building), then ${name(ids.B)} → ${name(ids.C)} +2.`);
+  });
+
+  it('one task on the path without an estimate: no clause (a default duration never counts)', () => {
+    const { [ids.C]: _gone, ...missing } = all;
+    expect(missionFinishClause(model, model.now, missing)).toBeNull();
+    expect(missionFinishClause(model, model.now, {})).toBeNull();
+    expect(missionFinishClause(model, model.now, undefined)).toBeNull();
+  });
+
+  it('an estimate missing off the path does not matter', () => {
+    const { [ids.F]: _gone, ...offPath } = all;
+    expect(missionFinishClause(model, model.now, offPath)).toStartWith(`finish depends on ${name(ids.A)}`);
+  });
+
+  it('a merged task on the path needs no estimate; the clause starts at the first unmerged one', () => {
+    const s: DagSpec = { tasks: ['A', 'B', 'C'], edges: { B: ['A'], C: ['B'] }, states: { A: 'landed', B: 'running' } };
+    const m = dagBoard(s);
+    const [, B, C] = s.tasks.map(n => dagId(s, n));
+    const n = flowTaskName(m);
+    expect(missionFinishClause(m, m.now, { [B]: 30, [C]: 30 })).toBe(`finish depends on ${n(B)}, then ${n(C)}`);
+  });
+
+  it('the path all merged: no clause', () => {
+    const s: DagSpec = { tasks: ['A', 'B'], edges: { B: ['A'] }, states: { A: 'landed', B: 'landed' } };
+    const m = dagBoard(s);
+    expect(missionFinishClause(m, m.now, Object.fromEntries(s.tasks.map(n => [dagId(s, n), 30])))).toBeNull();
+  });
+
+  it('Flow (with its same-files waits) and the summary name the same first task', () => {
+    for (const v of ['small', 'wide'] as const) {
+      const f = missionFlowFixture(v);
+      const flowTl = buildFlowTimeline({ model: f.model, sameFiles: f.sameFiles, expectedMinutes: f.expectedMinutes });
+      const n = flowTaskName(f.model);
+      const head = defaultFlowSelection(flowTl)!;
+      expect(criticalPathLine(flowTl, word, n)).toStartWith(`Finish is set by ${n(head)} (`);
+      expect(missionFinishClause(f.model, f.model.now, f.expectedMinutes)).toStartWith(`finish depends on ${n(head)}`);
+    }
   });
 });

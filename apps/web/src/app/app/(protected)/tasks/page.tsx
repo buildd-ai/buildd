@@ -7,6 +7,8 @@ import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveActiveTeamId, getTeamWorkspaceIds } from '@/lib/team-access';
 import ActivityView from './ActivityView';
+import ActivityAutoRefresh from './ActivityAutoRefresh';
+import { LiveRegion } from '@/components/LiveRegion';
 import { loadActivity, type ActivityData, type ActivityMissionRow } from './activity-data';
 import { listLocalSessions, type LocalSessionView } from '@/lib/local-session-view';
 import { localHoldsByWorker } from '@/lib/local-session-display';
@@ -20,12 +22,24 @@ async function deriveHeads(ids: string[]): Promise<Map<string, ActivityMissionRo
   return new Map(live.map(r => [r.id, { kind: r.home.delivery.kind, landed: r.home.delivery.landed, total: r.home.delivery.total, next: r.home.delivery.next }]));
 }
 
-async function TasksPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ mission?: string; workspace?: string; initiative?: string; view?: string }>;
-}) {
+type ActivityParams = { mission?: string; workspace?: string; initiative?: string; view?: string };
+
+/**
+ * Live events re-read this body through `loadRegion` (components/LiveRegion.tsx),
+ * asked by ActivityAutoRefresh through the 5 s page gate, instead of a router
+ * refresh. The new body is reconciled into the old one: rows keep their
+ * place, and what is open, focused and scrolled stays (ActivityView, R-7).
+ */
+async function TasksPage({ searchParams }: { searchParams: Promise<ActivityParams> }) {
   const params = await searchParams;
+  async function loadRegion() {
+    'use server';
+    return ActivityBody(params);
+  }
+  return <LiveRegion load={loadRegion}>{await ActivityBody(params)}</LiveRegion>;
+}
+
+async function ActivityBody(params: ActivityParams) {
   const { mission: missionId, workspace: wsFilter, initiative: initiativeId } = params;
   const mode = params.view === 'history' ? 'history' : 'now';
 
@@ -45,6 +59,8 @@ async function TasksPage({
   let historyReach: { oldestAt: string } | null = null;
   // A failed load says so; it never renders as an empty Now and History.
   let loadFailed = false;
+  // The workspaces whose events can change what Activity shows.
+  let liveWorkspaceIds: string[] = [];
 
   if (!isDev && user) {
     try {
@@ -62,6 +78,7 @@ async function TasksPage({
 
         // Narrow to selected workspace if filter is set (must belong to team)
         const wsIds = (wsFilter && teamWsIds.includes(wsFilter)) ? [wsFilter] : teamWsIds;
+        liveWorkspaceIds = wsIds;
 
         if (wsIds.length > 0) {
           // Presence of local interactive sessions, which only Now shows.
@@ -81,6 +98,7 @@ async function TasksPage({
               now: Date.now(),
               rules: missionHelpers,
               deriveHeads,
+              viewerUserId: user.id,
             }),
           ]);
           localSessions = sessions;
@@ -106,6 +124,8 @@ async function TasksPage({
     return `/app/tasks${qs ? `?${qs}` : ''}`;
   };
   return (
+    <>
+    <ActivityAutoRefresh workspaceIds={liveWorkspaceIds} />
     <ActivityView
       mode={mode}
       now={activity?.now ?? { groups: [], inMotion: 0, liveAgents: 0 }}
@@ -117,7 +137,9 @@ async function TasksPage({
       localSessions={localSessions}
       loadError={loadFailed}
       historyReach={historyReach}
+      identityFilters={activity?.identityFilters ?? false}
     />
+    </>
   );
 }
 

@@ -63,6 +63,8 @@ export interface MissionOverviewProps extends BoardLinkContext {
   decisions?: readonly DecisionView[];
   /** What raises History into the page (Navigation R-6; `historyRaised`). */
   history?: HistoryRaised | null;
+  /** Task id → expected minutes (task estimates), for the summary's `finish depends on` (Navigation R-22). */
+  expectedMinutes?: Readonly<Record<string, number | null | undefined>>;
 }
 
 /** Checks already at work before the build ends (R-13) are shown under the list. */
@@ -79,7 +81,7 @@ export default function MissionOverview(props: MissionOverviewProps) {
 function OverviewView({
   model: serverModel, completionText = null, notice, visual: _visual, review,
   checks: checksSource = null, planTasks = null, held = false, outcomeSpecTitles = null,
-  decisions = [], history = null, ...link
+  decisions = [], history = null, expectedMinutes, ...link
 }: MissionOverviewProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
   const now = useNow(model.now, 15_000, !model.complete);
@@ -145,7 +147,7 @@ function OverviewView({
           {review && <MissionVisualAsk review={review} board={model} />}
           {model.phases.length === 0 && model.planning && <PlanningPlaceholder planning={model.planning} now={now} link={link} />}
           {bar}
-          {order.length > 0 && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} />}
+          {order.length > 0 && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} expectedMinutes={expectedMinutes} />}
           {handoff && handoff.rows.some(r => STARTED.has(r.status)) && <ChecksCard rows={handoff.rows.filter(r => STARTED.has(r.status))} onOpenTask={openTask} />}
           {estimate && <p data-testid="overview-estimate" className="font-mono text-meta text-text-muted">{estimate}</p>}
         </>
@@ -154,7 +156,7 @@ function OverviewView({
         <>
           <BuildCompleteBar done={buildIds.length} where={where} open={showBuild} onToggle={() => setShowBuild(v => !v)}>
             {bar}
-            {showBuild && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} />}
+            {showBuild && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} expectedMinutes={expectedMinutes} />}
           </BuildCompleteBar>
           {cards}
           {history && <HistoryRaisedLine item={history} missionId={link.missionId} />}

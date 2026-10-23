@@ -31,7 +31,10 @@ const bad = (error: string) => NextResponse.json({ error }, { status: 400 });
 
 /** A branch name or sha: no spaces, no `..`, nothing a workflow input could smuggle. */
 const REF = /^(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
-const ROUTES = /^\/[A-Za-z0-9_\-./,:]*$/;
+// Query strings are allowed (dev fixtures are addressed by `?state=...`). The workflow hands
+// routes to capture.ts through the QA_ROUTES env var, never a shell line, and the charset still
+// excludes quotes, spaces, `$`, backticks and `;`. A comma always separates routes.
+const ROUTES = /^\/[A-Za-z0-9_\-./,:?=&%+]*$/;
 const VIEWPORT = /^(mobile|desktop|\d{3,4}x\d{3,4})$/;
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {

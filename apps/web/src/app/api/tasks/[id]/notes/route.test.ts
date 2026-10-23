@@ -183,4 +183,26 @@ describe('POST /api/tasks/[id]/notes', () => {
     expect(res.status).toBe(201);
     expect(mockWorkersFindFirst).not.toHaveBeenCalled();
   });
+
+  it('a question names a subject task in the same workspace and stores structured options (Navigation R-16)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    const SUBJ = '77777777-7777-4777-8777-777777777777';
+    mockTasksFindFirst.mockImplementation(async () => ({ id: SUBJ, workspaceId: 'ws-1', missionId: null }));
+    const res = await post(TASK, { type: 'question', title: 'How should the cache be invalidated?', subjectTaskId: SUBJ, options: [{ label: 'On write', consequence: 'Readers see fresh data at once.', recommended: true }, 'On a timer'] });
+    expect(res.status).toBe(201);
+    const row = mockNotesInsertValues.mock.calls[0][0];
+    expect(row.subjectTaskId).toBe(SUBJ);
+    expect(row.options).toHaveLength(2);
+    expect(row.defaultChoice).toBe('On write');
+  });
+
+  it('refuses a subject task in another workspace, and four options', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    const SUBJ = '77777777-7777-4777-8777-777777777777';
+    let call = 0;
+    mockTasksFindFirst.mockImplementation(async () => (call++ === 0 ? { id: TASK, workspaceId: 'ws-1', missionId: null } : { id: SUBJ, workspaceId: 'ws-2', missionId: null }));
+    expect((await post(TASK, { type: 'question', title: 'Q?', subjectTaskId: SUBJ })).status).toBe(400);
+    expect((await post(TASK, { type: 'question', title: 'Q?', options: ['A', 'B', 'C', 'D'] })).status).toBe(400);
+    expect(mockNotesInsertValues).not.toHaveBeenCalled();
+  });
 });
