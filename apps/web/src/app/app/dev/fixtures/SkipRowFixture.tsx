@@ -55,6 +55,9 @@ export default function SkipRowFixture() {
             ? 'Skipped before this audit round ran. The round’s findings show under the Skip as information, never a blocker, and the row never reads passed.'
             : 'Open findings, not yet skipped. Tap Skip to see the two buttons and the optional note.'}
         </p>
+        <a href={held ? '?state=skip-row' : '?state=skip-row&held=1'} className="mt-2 inline-block font-mono text-meta text-accent-text underline underline-offset-4">
+          {held ? 'See it before skipping' : 'See it held through a later round'}
+        </a>
       </header>
       <div className="mx-auto max-w-2xl">
         <MissionSurfaceAuditWaiverProvider missionId="fixture-mission" waiver={held ? EARLY_WAIVER : null} missionBranch={false} readonly={false}>
