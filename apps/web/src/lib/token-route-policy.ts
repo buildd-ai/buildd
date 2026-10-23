@@ -109,7 +109,7 @@ export function canAccessTokenRoute(token: ScopedToken, request?: RouteRequest):
     // Listing workspaces is filtered to the token's own (listReachableWorkspaceIds),
     // so name-to-id resolution works; creating one would escape the restriction.
     if (url.pathname === '/api/workspaces' && request.method !== 'GET' && request.method !== 'HEAD') return false;
-    const filteredCollections = ['/api/tasks', '/api/missions', '/api/initiatives', '/api/prs', '/api/releases', '/api/specs'];
+    const filteredCollections = ['/api/tasks', '/api/missions', '/api/initiatives', '/api/prs', '/api/releases', '/api/specs', '/api/specs/approvals'];
     if ((request.method === 'GET' || request.method === 'HEAD') && filteredCollections.includes(url.pathname) && !url.searchParams.get('workspaceId')) return false;
   }
   // A write grant has no scopes: its role level gates actions in-handler.

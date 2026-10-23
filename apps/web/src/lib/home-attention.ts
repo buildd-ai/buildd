@@ -247,7 +247,7 @@ export interface HomeListedMission {
 }
 
 /** One owner decision per subject. PR identity includes the workspace because numbers are repository-local. */
-export function deriveHomeAttention({ queue, missions, questions, held, isActionable, status = [] }: {
+export function deriveHomeAttention({ queue, missions, questions, held, isActionable, status = [], specApprovals = 0 }: {
   /** Supplied by Home, where the action queue and core UI are composed. */
   isActionable: (chip: ActionQueueItem['chip']) => boolean;
   queue: readonly ActionQueueItem[];
@@ -256,9 +256,13 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
   held: readonly HomeHeldMission[];
   /** Service-status cards, already only the action holder's (lib/service-status.ts `statusAttentionItems`). */
   status?: readonly HomeAttentionItem[];
+  /** Spec revisions waiting on this person's approval: one card (specApprovalsAttention). */
+  specApprovals?: number;
 }): HomeAttentionItem[] {
   const items = new Map<string, HomeAttentionItem>();
   for (const s of status) items.set(s.key, s);
+  const specCard = specApprovalsAttention(specApprovals);
+  if (specCard) items.set(specCard.key, specCard);
   for (const q of questions) {
     const key = `question:${q.taskId ?? q.workerId}`;
     items.set(key, { key, kind: 'question', label: 'question', tone: 'warning', title: q.question.headline, sentence: questionSentence(q), meta: q.label, href: q.href ?? '/app/activity', actionType: 'answer', owner: 'human', question: q });
@@ -299,6 +303,27 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
     if (!items.has(key)) items.set(key, { key, kind: 'held', label: copy.label.toLowerCase(), tone: 'warning', title: m.title, sentence: m.ready > 0 ? `${m.startState === 'paused' ? 'Resume' : 'Start'} this mission to run its ready tasks.` : 'No tasks are ready to run.', meta: m.ready > 0 ? `${m.ready} ready` : '', href: m.href, actionType: 'start', owner: 'human', held: m });
   }
   return collapseSystemic([...items.values()]);
+}
+
+/** The Awaiting your approval inbox (Living Spec b7fc9316). */
+export const SPEC_APPROVALS_HREF = '/app/specs/approvals';
+
+/**
+ * Home's one card for spec revisions waiting on this person (R-9): a count
+ * and the inbox, while the count is above zero. Never one card per spec, and
+ * never an approve action of its own: approving happens in the inbox, one
+ * revision per click.
+ */
+export function specApprovalsAttention(count: number): HomeAttentionItem | null {
+  if (!Number.isFinite(count) || count <= 0) return null;
+  const one = count === 1;
+  return {
+    key: 'spec-approvals', kind: 'queue', label: 'spec approval', tone: 'warning',
+    title: `${count} spec ${one ? 'revision waits' : 'revisions wait'} for your approval`,
+    sentence: `Review ${one ? 'it' : 'each one'} and approve with a click.`,
+    meta: '', href: SPEC_APPROVALS_HREF, actionType: 'approve',
+    primary: { label: 'Review approvals', href: SPEC_APPROVALS_HREF }, owner: 'human',
+  };
 }
 
 /** A waiting task as the layout's needs-input feed carries it (components/needs-input-context.ts). */
