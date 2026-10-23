@@ -27,7 +27,7 @@ import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/sh
 import { taskRecoverySentence } from './task-recovery-hold';
 import { cancellationLine } from './task-cancellation';
 import { claimHoldPhrase } from './claim-hold-phrase';
-import { HIDDEN_TASK_WORDS } from './mission-task-hold';
+import { HIDDEN_TASK_WORDS } from './hidden-task-words';
 import type { DeliveryDisagreement } from './delivery-overlay';
 import { roundTriggerSentence, type DeliveryRound } from '@buildd/workflow-kernel/projections';
 import { offlineRunnerWaitLine, type RunnerLiveness } from './runner-offline';

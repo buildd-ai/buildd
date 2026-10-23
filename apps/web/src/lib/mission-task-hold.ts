@@ -29,6 +29,7 @@
  */
 import { BROWSER_RUNNER_MISSING, claimHoldPhrase } from './claim-hold-phrase';
 import { formatDuration } from './mission-duration';
+import { HIDDEN_TASK_WORDS } from './hidden-task-words';
 
 export type PendingHoldKind =
   | 'dependency'
@@ -40,12 +41,7 @@ export type PendingHoldKind =
   | 'hold'
   | 'next_in_line';
 
-/**
- * How every surface names an upstream the viewer cannot see (spec e28018c2
- * R-6). Its facts are resolved per viewer before they get here
- * (`resolveDependencyHolders`, lib/task-dependency-reach.ts).
- */
-export const HIDDEN_TASK_WORDS = "a task in a workspace you can't see";
+export { HIDDEN_TASK_WORDS };
 
 /** A task another task waits on: enough to name it and to say whether it is alive. */
 export interface PendingHolderFacts {

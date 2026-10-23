@@ -6,8 +6,7 @@
  * `HIDDEN_TASK_WORDS` with nothing else about it; one in another workspace
  * carries that workspace. Pure; the page does the reads.
  */
-import { HIDDEN_TASK_WORDS } from './mission-task-hold';
-import { taskPageHref } from './mission-task-href';
+import { HIDDEN_TASK_WORDS } from './hidden-task-words';
 import type { DependencyHolder } from './task-dependency-reach';
 
 export interface NeedsRow {
@@ -16,7 +15,6 @@ export interface NeedsRow {
   title: string;
   status: string | null;
   workspaceName: string | null;
-  href: string | null;
 }
 
 /** An upstream the resolver could not read is hidden, never named from the raw row. */
@@ -26,8 +24,8 @@ export function needsList(
 ): NeedsRow[] {
   return deps.map(d => {
     const r = reach.get(d.id);
-    if (!r || r.hidden) return { id: d.id, hidden: true, title: HIDDEN_TASK_WORDS, status: null, workspaceName: null, href: null };
-    return { id: d.id, hidden: false, title: d.title, status: d.status, workspaceName: r.workspaceName, href: taskPageHref({ taskId: d.id }) };
+    if (!r || r.hidden) return { id: d.id, hidden: true, title: HIDDEN_TASK_WORDS, status: null, workspaceName: null };
+    return { id: d.id, hidden: false, title: d.title, status: d.status, workspaceName: r.workspaceName };
   });
 }
 

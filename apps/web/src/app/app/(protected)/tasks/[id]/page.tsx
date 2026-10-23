@@ -30,7 +30,7 @@ import LinkedDesigns from '@/components/LinkedDesigns';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveDependencyHolders, type DependencyHolder } from '@/lib/task-dependency-reach';
 import { blocksList, hiddenDependentsLine, needsList } from '@/lib/task-page-dependencies';
-import { HIDDEN_TASK_WORDS } from '@/lib/mission-task-hold';
+import { HIDDEN_TASK_WORDS } from '@/lib/hidden-task-words';
 import { parseCredentialBlock, CREDENTIAL_BLOCK_CONTEXT_KEY } from '@/lib/credential-block-copy';
 import { displayWorkspaceName, isLiveWorkerStatus, isTerminalTaskStatus, ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
@@ -276,7 +276,10 @@ async function TaskDetailPage({
     : null;
   // The task's workers and open question notes, as the sheet reads them (lib/task-view.ts).
   const [viewWorkersQuery, viewQuestionsQuery] = taskViewReads(task.id);
-  const [round1, recovery, answerInChat, taskPr] = await Promise.all([
+  // Each dependency and dependent as this viewer may see it (spec e28018c2
+  // R-6, R-9): one in a workspace they cannot see is named only as that.
+  const reachScope = { viewer: { kind: 'person' as const, userId: user.id }, teamId: task.workspace?.teamId ?? null, dependentWorkspaceId: task.workspaceId };
+  const [round1, recovery, answerInChat, taskPr, depReach] = await Promise.all([
     batchReads([viewWorkersQuery, viewQuestionsQuery, depQuery, estimateQuery]),
     loadTaskViewRecovery(task, viewer),
     // An answer link for a mission filed from the reader's own conversation
@@ -284,13 +287,10 @@ async function TaskDetailPage({
     focusAnswer && task.missionId ? ANSWER_IN_CHAT(id, user.id).catch(() => null) : Promise.resolve(null),
     // The task's PR, derived on read (workflow/task-pr.ts), for the Deliverables block.
     taskPrOf(task.id),
+    depTaskIds.length > 0
+      ? resolveDependencyHolders(reachScope, depTaskIds).catch(() => new Map<string, DependencyHolder>())
+      : Promise.resolve(new Map<string, DependencyHolder>()),
   ]);
-  // Each dependency and dependent as this viewer may see it (spec e28018c2
-  // R-6, R-9): one in a workspace they cannot see is named only as that.
-  const reachScope = { viewer: { kind: 'person' as const, userId: user.id }, teamId: task.workspace?.teamId ?? null, dependentWorkspaceId: task.workspaceId };
-  const depReach: Map<string, DependencyHolder> = depTaskIds.length > 0
-    ? await resolveDependencyHolders(reachScope, depTaskIds).catch(() => new Map())
-    : new Map();
   const depTasks = ((round1(depQuery) ?? []) as Awaited<NonNullable<typeof depQuery>>)
     .map(d => (depReach.get(d.id)?.hidden === false ? d : { ...d, title: HIDDEN_TASK_WORDS, result: null }));
   const needsRows = needsList(depTasks, depReach);
@@ -408,6 +408,12 @@ async function TaskDetailPage({
         where: sqlWhere(sql`${tasks.dependsOn} @> ${JSON.stringify([id])}::jsonb`),
         columns: { id: true, title: true, label: true, status: true },
       });
+  const dependentsRead = dependentsQuery.then(async (dependentRows) => ({
+    dependentRows,
+    dependentReach: dependentRows.length > 0
+      ? await resolveDependencyHolders(reachScope, dependentRows.map(d => d.id)).catch(() => new Map<string, DependencyHolder>())
+      : new Map<string, DependencyHolder>(),
+  }));
   // The canonical "is a fix attempt open on this task" fact — same
   // predicate explain.ts and Home's action queue use (mission-state-view.ts
   // rule 6½). Only while the task's PR is open.
@@ -415,12 +421,12 @@ async function TaskDetailPage({
     ? openAttemptQuery(task.id)
     : null;
   // Those five in one round trip.
-  const round2 = batchReads([artifactsQuery, errorTracesQuery, ciAttemptsQuery, dependentsQuery, openAttemptRead]);
+  const round2 = batchReads([artifactsQuery, errorTracesQuery, ciAttemptsQuery, openAttemptRead]);
   // The delivery this task belongs to, started with round 2: the review status
   // below reads the same view when this task owns the PR, so it is read once.
   const deliveryContextPromise = loadTaskDeliveryContext(task.id, user.id);
   deliveryContextPromise.catch(() => {});
-  const [evidenceReview, reads2, ship, teamTimezone, roleRow, runnerHeartbeats, auditVisual, evidenceFiles, runnerReachRaw, accessItems, failureRaw, livingSpec, taskServiceStatus] = await Promise.all([
+  const [evidenceReview, reads2, ship, teamTimezone, roleRow, runnerHeartbeats, auditVisual, evidenceFiles, runnerReachRaw, accessItems, failureRaw, livingSpec, taskServiceStatus, dependentsLoaded] = await Promise.all([
     prWorker?.prNumber
       ? RUN_PROGRESS_READERS.review({
           workspaceId: task.workspaceId, prNumber: prWorker.prNumber,
@@ -476,6 +482,7 @@ async function TaskDetailPage({
     // The Living Spec the task is pinned to, with its outcome. No query unless it names one.
     livingSpecLoad(task.id, task.context),
     serviceStatusPromise,
+    dependentsRead,
   ]);
   const taskArtifacts = (reads2(artifactsQuery) ?? []) as Awaited<NonNullable<typeof artifactsQuery>>;
   // The live worker's deliverables, counted from the rows above: no read of its own.
@@ -485,10 +492,7 @@ async function TaskDetailPage({
     : 0;
   const errorTraces = reads2(errorTracesQuery) as Awaited<typeof errorTracesQuery>;
   const ciAttemptRows = (reads2(ciAttemptsQuery) ?? []) as Awaited<NonNullable<typeof ciAttemptsQuery>>;
-  const dependentRows = (reads2(dependentsQuery) ?? []) as Awaited<NonNullable<typeof dependentsQuery>>;
-  const dependentReach: Map<string, DependencyHolder> = dependentRows.length > 0
-    ? await resolveDependencyHolders(reachScope, dependentRows.map(d => d.id)).catch(() => new Map())
-    : new Map();
+  const { dependentRows, dependentReach } = dependentsLoaded;
   const { visible: dependentTasks, hiddenCount: hiddenDependents } = blocksList(dependentRows, dependentReach);
   const hiddenDependentsText = hiddenDependentsLine(hiddenDependents);
   const openAttempt = openAttemptRead
@@ -1028,7 +1032,7 @@ async function TaskDetailPage({
                     <span className={ok ? 'text-status-success' : stalled ? 'text-status-warning' : 'text-text-muted'} aria-label={ok ? 'resolved' : dep.status}>
                       {ok ? '✓' : stalled ? '!' : '○'}
                     </span>
-                    <Link href={row.href!} className="min-w-0 truncate hover:underline" title={dep.title}><TaskTitleText short title={dep.title} /></Link>
+                    <Link href={taskPageHref({ taskId: dep.id })} className="min-w-0 truncate hover:underline" title={dep.title}><TaskTitleText short title={dep.title} /></Link>
                     {row.workspaceName && <span className="shrink-0 text-[11px] text-text-muted">in {row.workspaceName}</span>}
                     {stalled && <span className="shrink-0 text-[11px] text-status-warning">infra stalled</span>}
                   </li>

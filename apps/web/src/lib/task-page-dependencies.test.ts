@@ -12,7 +12,7 @@ describe('task page: what a task needs (spec e28018c2 R-6, AC-8)', () => {
       [{ id: 'up-a', title: 'Ship the API', status: 'pending' }],
       new Map([['up-a', holder('up-a', { workspaceName: 'App' })]]),
     );
-    expect(rows).toEqual([{ id: 'up-a', hidden: false, title: 'Ship the API', status: 'pending', workspaceName: 'App', href: '/app/tasks/up-a' }]);
+    expect(rows).toEqual([{ id: 'up-a', hidden: false, title: 'Ship the API', status: 'pending', workspaceName: 'App' }]);
   });
 
   it('a hidden upstream carries no title, status, workspace or link', () => {
@@ -20,7 +20,7 @@ describe('task page: what a task needs (spec e28018c2 R-6, AC-8)', () => {
       [{ id: 'up-a', title: 'Private plan', status: 'failed' }],
       new Map([['up-a', holder('up-a', { hidden: true, title: null, workspaceId: null })]]),
     );
-    expect(rows).toEqual([{ id: 'up-a', hidden: true, title: "a task in a workspace you can't see", status: null, workspaceName: null, href: null }]);
+    expect(rows).toEqual([{ id: 'up-a', hidden: true, title: "a task in a workspace you can't see", status: null, workspaceName: null }]);
   });
 });
 

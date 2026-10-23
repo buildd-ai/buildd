@@ -23,7 +23,7 @@
 import { isTerminalTaskStatus } from '@buildd/shared';
 import { classifyManifestOverlap } from '@buildd/core/path-overlap';
 import type { CausalLink, ExplainRefs } from '@/lib/explain-types';
-import { HIDDEN_TASK_WORDS } from '@/lib/mission-task-hold';
+import { HIDDEN_TASK_WORDS } from '@/lib/hidden-task-words';
 
 export type CoordinationEdge = 'declared_dependency' | 'inferred_dependency' | 'soft_overlap' | 'path_lease' | 'open_pr';
 

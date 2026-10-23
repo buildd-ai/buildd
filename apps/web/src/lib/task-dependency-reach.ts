@@ -29,7 +29,7 @@ import { inArray } from 'drizzle-orm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 import type { TaskScopedAccount } from '@/lib/task-token-auth';
-import { HIDDEN_TASK_WORDS } from '@/lib/mission-task-hold';
+import { HIDDEN_TASK_WORDS } from '@/lib/hidden-task-words';
 
 /** Who is asking: a person's session, an account key, grant session or per-task token, or a surface only team members read. */
 export type DependencyViewer =
