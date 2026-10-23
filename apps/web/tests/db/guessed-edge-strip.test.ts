@@ -48,10 +48,13 @@ describe('guessed-edge strip on real Postgres', () => {
     // Still held by the declared edge: the strip never touches it.
     expect(await claimable(t)).toBe(false);
 
-    const outboxBefore = await outboxFor(t);
+    // Compare which outbox rows exist, not their delivery state: delivery runs
+    // asynchronously after the wake and may advance between the two reads.
+    const outboxRows = async () => (await outboxFor(t)).map(r => ({ id: r.id, causes: r.causes }));
+    const outboxBefore = await outboxRows();
     await sweepGuessedEdges();
     expect(await row(t)).toEqual(after);
-    expect(await outboxFor(t)).toEqual(outboxBefore);
+    expect(await outboxRows()).toEqual(outboxBefore);
   });
 
   test('a task held only by guesses becomes claimable', async () => {
@@ -82,8 +85,14 @@ describe('guessed-edge strip on real Postgres', () => {
     await setDecl(malformed, { inferredDependsOn: 'nope', softOverlaps: {} });
     const ids = [declaredOnly, running, malformed];
     const before = await Promise.all(ids.map(row));
-    await sweepGuessedEdges();
-    expect(await Promise.all(ids.map(row))).toEqual(before);
+    try {
+      await sweepGuessedEdges();
+      expect(await Promise.all(ids.map(row))).toEqual(before);
+    } finally {
+      // Other files in this database run migrations over every pending task
+      // (0267, 0276) and expect well-formed declarations: leave none behind.
+      await q(sql`DELETE FROM tasks WHERE id = ${malformed}::uuid`);
+    }
   });
 
   test('a concurrent edit between read and write wins; the next run strips the row as it now stands', async () => {

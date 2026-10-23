@@ -69,7 +69,7 @@ export async function stripGuessedEdgesFrom(rows: readonly GuessedEdgeRow[]): Pr
     const next = stripGuessedEdges(row);
     if (!next) continue;
     try {
-      const won = await db.update(tasks).set(next).where(and(
+      const won = await db.update(tasks).set({ dependsOn: next.dependsOn, pathDeclaration: next.pathDeclaration }).where(and(
         eq(tasks.id, row.id),
         eq(tasks.status, 'pending'),
         // A concurrent claim, declaration or dependency edit wins over this read.
