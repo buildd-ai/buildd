@@ -743,13 +743,13 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('subjectId', str, [{ text: 'Subject UUID', actions: ['link_artifact', 'list_artifact_links'] }]),
     param('relation', str, [{ text: 'context|requirement|normative_reference|…', actions: ['link_artifact', 'list_artifact_links'] }]),
     param('revision', num, [{ text: 'Read this revision', actions: ['get_artifact'] }]),
-    param('expectedRevision', num, [{ text: 'Refuse if the body moved on', actions: ['update_artifact'] }]),
+    param('expectedRevision', num, [{ text: 'Refuse if body changed', actions: ['update_artifact'] }]),
     param('missionId', str, [{ text: 'list_artifacts: mission UUID (not a title)', actions: ['list_artifacts'] }]),
     param('action', str, [{ text: `manage_specs: ${alt('manage_specs')}`, actions: ['manage_specs'], moreOnly: true }, { text: 'designs: attach|detach|list', actions: ['manage_designs'], moreOnly: true }]),
     param('html', str, [{ text: 'HTML', actions: ['store_design'] }]),
     // Nearly every manage_specs call names a spec, and every write carries the version read.
     param('specId', str, [{ text: 'Spec UUID', actions: ['manage_specs'], forMore: true }]),
-    param('expectedVersion', num, [{ text: 'Writes: the version you read', actions: ['manage_specs'], forMore: true }]),
+    param('expectedVersion', num, [{ text: 'Writes: version you read', actions: ['manage_specs'], forMore: true }]),
   ],
   schedules: [
     param('scheduleId', str, [{ text: 'Schedule UUID', actions: ['update_schedule', 'delete_schedule'] }]),
