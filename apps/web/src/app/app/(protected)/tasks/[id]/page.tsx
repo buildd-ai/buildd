@@ -42,7 +42,8 @@ import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
-import { liveWorkerViewProps, workerSteerProps } from '@/lib/task-live-view';
+import { RunEvidenceRail } from './NowStrip';
+import { liveRunEvidence, liveWorkerViewProps, workerSteerProps } from '@/lib/task-live-view';
 import PlanReviewPanel from './PlanReviewPanel';
 import TaskTimeline from './TaskTimeline';
 import { TaskWaitingLine } from './TaskWaitingLine';
@@ -146,6 +147,9 @@ import { canSeeDiagnostics } from '@/lib/diagnostics-audience';
 import { isPlatformOperator } from '@/lib/platform-operator';
 import { taskPrOf, withTaskPr } from '@/lib/workflow/task-pr';
 import { withPageBudget } from '@/lib/page-budget-watch';
+import TaskStatusLine from './TaskStatusLine';
+import TaskDetailsCard from './TaskDetailsCard';
+import { runningStatusLine } from './status-line';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -1151,6 +1155,27 @@ async function TaskDetailPage({
   });
   const stoppedSummary = shippedView?.lede ?? readableTaskResult(ownResult?.summary, ownResult?.structuredOutput).prose;
   const hostedRunnerUsage = await hostedRunnerUsagePromise;
+  const activeWorkerView = activeWorker ? liveWorkerViewProps({
+    task: { id: task.id, status: task.status, outputRequirement: task.outputRequirement },
+    worker: activeWorker,
+    delivery: deliveryPill,
+    deliverableArtifactCount: evidenceArtifactCount,
+    usesReviewer: RUN_PROGRESS_READERS.usesReviewer(task.workspace, task.mission, task, { baseRef: activeWorker.prBaseRef }),
+    reviewState: evidenceReview?.state,
+    modelTier: modelSummary.tierLabel,
+    questionNote,
+    roleName,
+  }) : null;
+  // `Running 12m` under the title while the builder works (R-14, R-7).
+  const statusLine = activeWorkerView ? runningStatusLine({
+    status: activeWorkerView.initialWorker.status,
+    startedAt: activeWorkerView.initialWorker.startedAt,
+    milestones: activeWorkerView.initialWorker.milestones,
+    waiting: !!activeWorkerView.initialWorker.waitingFor,
+    nowMs: Date.now(),
+  }) : null;
+  // What the run has been observed to do, behind Run while it is live.
+  const liveEvidence = activeWorkerView && !activeWorker?.waitingFor ? liveRunEvidence(activeWorkerView, Date.now()) : null;
   const runDetails: RunDetail[] = [];
   let runElapsed: string | null = null;
   {
@@ -1495,10 +1520,11 @@ async function TaskDetailPage({
             ) : (
             <div className="min-w-0 col-span-2 row-start-1 md:col-span-1 md:col-start-1">
               <TaskTitle title={heading.heading} />
+              {statusLine && <TaskStatusLine line={statusLine} displayStatus={displayStatus} />}
             </div>
             )}
             {/* With a verdict, the verdict block carries the state (and this hook). */}
-            {!shippedView && !verdict && !waitingOn && (
+            {!shippedView && !verdict && !waitingOn && !statusLine && (
               <span data-testid="task-header-status" data-status={displayStatus} className="col-start-1 row-start-2 self-center md:col-start-2 md:row-start-1 md:self-start md:mt-0.5">
                 <HeaderStatusPill
                   status={displayStatus}
@@ -1600,19 +1626,9 @@ async function TaskDetailPage({
         {activeWorker && (
           <div className="mb-8 order-first" data-testid="task-active-worker">
             <RealTimeWorkerView
-              {...liveWorkerViewProps({
-                task: { id: task.id, status: task.status, outputRequirement: task.outputRequirement },
-                worker: activeWorker,
-                delivery: deliveryPill,
-                deliverableArtifactCount: evidenceArtifactCount,
-                usesReviewer: RUN_PROGRESS_READERS.usesReviewer(task.workspace, task.mission, task, { baseRef: activeWorker.prBaseRef }),
-                reviewState: evidenceReview?.state,
-                modelTier: modelSummary.tierLabel,
-                questionNote,
-                roleName,
-              })}
+              {...activeWorkerView!}
               focusAnswer={focusAnswer}
-              controls={<WorkerSteerPanel {...workerSteerProps(activeWorker, taskWorkers, isTerminal)} taskId={task.id} showHistory={false} />}
+              controls={<WorkerSteerPanel {...workerSteerProps(activeWorker, taskWorkers, isTerminal)} taskId={task.id} showHistory={false} layout="row" />}
             />
           </div>
         )}
@@ -1638,7 +1654,8 @@ async function TaskDetailPage({
         )}
 
         {/* An open question's own card is below: the verdict would only point at it. */}
-        {verdict && !verdictRepeatsOpenQuestion(verdict, { questionOnPage: !!activeWorker?.waitingFor }) && (
+        {/* While it runs, the status line under the title is the state. */}
+        {verdict && !(statusLine && verdict.state === 'in_progress') && !verdictRepeatsOpenQuestion(verdict, { questionOnPage: !!activeWorker?.waitingFor }) && (
           <TaskVerdictBlock verdict={!activeWorker && prWorker?.prUrl ? { ...verdict, actions: verdict.actions.filter(a => a.href !== prWorker.prUrl || a.tone !== 'quiet') } : verdict} displayStatus={displayStatus} />
         )}
         {deliveryView?.escalation && deliveryView.prNumber != null && subject.kind === 'deliverable' && (
@@ -1943,7 +1960,25 @@ async function TaskDetailPage({
         )}
 
         {activeWorker && runArtifacts}
+        {/* Details, open (R-9): what it fixes, waits on and blocks, by name. */}
+        {!shippedView && (
+          <TaskDetailsCard
+            fixes={specSource?.specId || specSource?.specPath ? {
+              criteria: livingSpec?.outcome?.criteria.map(c => c.criterionId) ?? [],
+              title: specSource.specId ? (livingSpec?.title ?? 'Specification') : specSource.specPath!,
+              href: specSource.specId ? `/app/specs/${specSource.specId}` : null,
+            } : null}
+            waitsOn={unresolvedDeps.map(d => ({ id: d.id, title: displayTaskTitle(d.title), href: taskPageHref({ taskId: d.id }) }))}
+            blocks={dependentTasks.map(d => ({ id: d.id, title: displayTaskTitle(d.title), href: taskPageHref({ taskId: d.id, missionId: task.missionId }) }))}
+            attempt={[
+              String(Math.max(1, workerHistory.filter(h => !isBookkeepingAttempt(h.worker)).length)),
+              // While it runs, the status line carries the time.
+              activeWorker ? null : lineageClaimToMergeMs != null ? formatElapsed(lineageClaimToMergeMs) : runElapsed,
+            ].filter(Boolean).join(' · ')}
+          />
+        )}
         {!shippedView && <details open={!!initialOpenArtifactId} className="border-y border-border-default mb-6"><summary className="min-h-11 flex items-center cursor-pointer text-body">Run</summary>
+          {liveEvidence && <div className="pb-3"><RunEvidenceRail evidence={liveEvidence} nowMs={Date.now()} /></div>}
           <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-3 pb-4 text-body">{runDetails.map(row => <div className="contents" key={row.label}><dt className="text-text-muted">{row.label}</dt><dd className="min-w-0 break-words">{row.value}</dd></div>)}</dl>
           {archivedWorkerSection}
           {!activeWorker && <TaskDeliverables taskId={task.id} result={withTaskPr(task.result as Record<string, unknown> | null, taskPr) as TaskDeliverablesResult | null} prCard summaryInPrCard suppressedSummary={suppressedSummaryArtifact} baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'} />}
@@ -1983,9 +2018,9 @@ async function TaskDetailPage({
             main column; the question or the Now strip stays the first screen. */}
         <aside data-testid="task-side-panel" className="mt-6 space-y-6">
           <details data-testid="task-details" className="group border-y border-border-default">
-            <summary className="min-h-11 flex items-center cursor-pointer text-body font-medium">Details</summary>
+            <summary className="min-h-11 flex items-center cursor-pointer text-body font-medium">{shippedView ? 'Details' : 'More'}</summary>
           <TaskAccessSection items={accessItems} />
-          <FactSheet rows={factRows.filter(row => ['needs', 'time', 'origin'].includes(row.key))} />
+          <FactSheet rows={factRows.filter(row => (shippedView ? ['needs', 'time', 'origin'] : ['time', 'origin']).includes(row.key))} />
 
           {/* Description — reference material, collapsed in the side panel */}
           {task.description && !descriptionIsSummary && (
@@ -1994,14 +2029,16 @@ async function TaskDetailPage({
             </SideDescription>
           )}
 
-          {(specSource?.specId || specSource?.specPath) && <section data-testid="task-fixes" className="py-3 text-body">
+          {/* A merged task keeps what it fixed, its attempts and what it
+              unblocked here; before that they lead in TaskDetailsCard. */}
+          {shippedView && (specSource?.specId || specSource?.specPath) && <section className="py-3 text-body">
             <h2 className="text-meta text-text-muted mb-2">What it fixes</h2>
             {specSource.specId ? <Link href={`/app/specs/${specSource.specId}`} className="text-accent-text hover:underline">{livingSpec?.title ?? 'Specification'} · revision {specSource.revision}</Link> : <p>{specSource.specPath}</p>}
             {livingSpec?.outcome?.criteria.map(c => <p key={c.criterionId} className="mt-2 [overflow-wrap:anywhere]">{c.criterionId} · {c.text} <span className="text-text-muted">{c.stale ? 'Needs recheck' : c.verdict === 'pass' ? 'Met' : c.verdict === 'fail' ? 'Not met' : 'Not verified'}</span></p>)}
           </section>}
-          <p className="text-body text-text-secondary py-3">{workerHistory.filter(h => !isBookkeepingAttempt(h.worker)).length} attempts{lineageClaimToMergeMs != null ? ` · ${formatElapsed(lineageClaimToMergeMs)}` : runElapsed ? ` · ${runElapsed}` : ''}</p>
+          {shippedView && <p className="text-body text-text-secondary py-3">{workerHistory.filter(h => !isBookkeepingAttempt(h.worker)).length} attempts{lineageClaimToMergeMs != null ? ` · ${formatElapsed(lineageClaimToMergeMs)}` : runElapsed ? ` · ${runElapsed}` : ''}</p>}
 
-          {(dependentTasks.length > 0 || hiddenDependentsText) && (
+          {(shippedView ? (dependentTasks.length > 0 || hiddenDependentsText) : (hiddenDependentsText && dependentTasks.length === 0)) && (
             <section data-testid="task-unblocked">
               <div className="section-label border-b border-border-default pb-2 mb-1">Blocks</div>
               {hiddenDependentsText && <p data-testid="task-unblocked-hidden" className="text-meta text-text-muted py-2">{hiddenDependentsText}</p>}

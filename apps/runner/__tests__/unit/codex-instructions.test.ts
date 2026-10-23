@@ -90,7 +90,7 @@ describe('writeCodexAgentsMd / restoreCodexAgentsMd', () => {
     dir = await mkdtemp(join(tmpdir(), 'codex-agents-'));
   });
   afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   test('creates AGENTS.md with the buildd section when none exists', async () => {
@@ -182,7 +182,7 @@ describe('Codex instruction block never reaches a commit', () => {
     g('config', 'core.symlinks', 'true');
   });
   afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   async function committedText(): Promise<string> {
@@ -253,7 +253,7 @@ describe('Codex instruction block: review findings on restore', () => {
     g('config', 'core.symlinks', 'true');
   });
   afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   async function linkedRepo() {

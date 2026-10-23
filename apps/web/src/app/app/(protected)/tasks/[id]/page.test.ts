@@ -104,7 +104,8 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
   it('drops "Also running" (Home\'s Agents panel has it) and the bare "Next" link ("Unblocked by this" stays)', () => {
     expect(pageSource).not.toContain('AlsoRunning');
     expect(pageSource).not.toContain('nextChainTask');
-    expect(pageSource).toContain('data-testid="task-unblocked"');
+    // "Blocks" lives in the open Details card (TaskDetailsCard owns the hook).
+    expect(pageSource).toContain('blocks={dependentTasks.map(');
   });
 
   it('the side panel follows the main column: the hero stays the first screen on mobile', () => {
@@ -355,6 +356,34 @@ describe('reading width (Navigation R-21)', () => {
   });
 });
 
+// Surface fix 59a6dec1 (design 6356e80d `phone-task-running`,
+// `desktop-task-running`; Navigation R-7, R-9, R-14; AC-6).
+describe('running task — status line, one live block, Details open', () => {
+  it('the status line sits under the title, before the sub-line', () => {
+    const header = pageSource.slice(pageSource.indexOf('data-testid="task-header"'), pageSource.indexOf('{/* Action first'));
+    const title = header.indexOf('<TaskTitle title={heading.heading} />');
+    const line = header.indexOf('<TaskStatusLine');
+    expect(line).toBeGreaterThan(title);
+    expect(line).toBeLessThan(header.indexOf('data-testid="task-subline"'));
+  });
+
+  it('with the status line up, the in-progress verdict chip is not repeated further down', () => {
+    expect(pageSource).toMatch(/verdict && !\(statusLine && verdict\.state === 'in_progress'\)/);
+  });
+
+  it('Steer, Pause and Stop ride in the live block as one row', () => {
+    expect(pageSource).toMatch(/<WorkerSteerPanel \{\.\.\.workerSteerProps\(activeWorker, taskWorkers, isTerminal\)\} taskId=\{task\.id\} showHistory=\{false\} layout="row" \/>/);
+  });
+
+  it('Details is an open card above Run, not a collapsed disclosure', () => {
+    const card = pageSource.indexOf('<TaskDetailsCard');
+    const run = pageSource.indexOf('cursor-pointer text-body">Run</summary>');
+    expect(card).toBeGreaterThan(0);
+    expect(card).toBeLessThan(run);
+    expect(pageSource).not.toContain('<summary className="min-h-11 flex items-center cursor-pointer text-body font-medium">Details</summary>');
+  });
+});
+
 describe('the shell marks — tasks/[id]/page.tsx (design 6356e80d, desktop-task-running)', () => {
   it('hides the questions banner: a waiting task asks its question on its own page', () => {
     expect(pageSource).toMatch(/<ShellPageMarks[^>]*hideQuestionsBanner/);
@@ -368,7 +397,7 @@ describe('the shell marks — tasks/[id]/page.tsx (design 6356e80d, desktop-task
 // Surface audit ff33de4d against phone-task-merged and desktop-task-waiting (R-9, R-11, R-20).
 describe('merged and waiting tasks — tasks/[id]/page.tsx', () => {
   it('a waiting task reads its status line under the title, not a Queued chip', () => {
-    expect(pageSource).toContain('{!shippedView && !verdict && !waitingOn && (');
+    expect(pageSource).toContain('{!shippedView && !verdict && !waitingOn && !statusLine && (');
     expect(pageSource).toContain('<TaskWaitingLine on={waitingOn}');
   });
   it('the timeline gets the legacy review, the linked runs\' times and what the task waits on', () => {

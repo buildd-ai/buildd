@@ -235,8 +235,9 @@ UI components have `data-testid` attributes for reliable E2E test selectors.
 | `worker-needs-input-options` | Choices container (`question-option`, `data-recommended`) | Question hero |
 | `worker-needs-input-freetext` | Free-text answer form | Question hero |
 | `worker-paused-bar` | "Paused at N%" strip | Waiting state |
-| `worker-now-strip` | Now strip hero (`worker-current-action`, `worker-progress-bar`, `worker-step-rail`) | Running state |
-| `worker-stats` | Stat row (`worker-pr-link` inside the PR tile) | Running state |
+| `worker-live-block` | The one live block (`worker-now-strip`, `worker-stats`, `worker-activity-timeline`, `worker-live-controls`) | Running state |
+| `worker-now-strip` | The Now line (`worker-current-action`, `worker-now-headline`, `worker-now-path`) | Running state |
+| `worker-stats` | Elapsed, turns, files, lines beside the Now line (`StatRow` with `worker-pr-link` remains for other views) | Running state |
 | `worker-activity-timeline` | Activity: tape (`worker-activity-tape`), Touched (`worker-touched-row`), log | Running state |
 | `pr-outcome` | PR outcome card (`pr-diff-bar`, `pr-lineage`, `pr-commit-checks`) | Task page |
 | `task-side-panel` | Side panel (`task-fact-sheet`, `task-also-running`, `task-while-you-decide`) | Task page |
