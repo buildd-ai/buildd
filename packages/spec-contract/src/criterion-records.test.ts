@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { criterionRecords, otherTextBySection, replacedIds, sectionPaths } from './criterion-records';
 import {
-  changeLines, criterionChanges, idRanges, otherTextChanges, summaryIds, summaryMismatch, summaryMismatchLine, wordDiff,
+  changeLines, criterionChanges, idRanges, otherTextChanges, summaryIds, summaryMismatch, summaryMismatchLine, wordDiff, mostlyRewritten, tidyWordOps,
   type ReviewRecord,
 } from './criterion-review';
 
@@ -133,5 +133,41 @@ describe('helpers', () => {
     const ops = wordDiff('the quick brown fox', 'the slow brown dog');
     expect(ops.filter((o) => o.op !== '+').map((o) => o.text).join('')).toBe('the quick brown fox');
     expect(ops.filter((o) => o.op !== '-').map((o) => o.text).join('')).toBe('the slow brown dog');
+  });
+
+  describe('wordDiff clean-up (R-17, R-18)', () => {
+    const texts = (ops: ReturnType<typeof wordDiff>, op: string) => ops.filter((o) => o.op === op).map((o) => o.text);
+    it('never marks whitespace or punctuation alone', () => {
+      expect(wordDiff('It works.', 'It works,')).toEqual([{ op: '=', text: 'It works,' }]);
+      expect(wordDiff('a b', 'a  b').every((o) => o.op === '=')).toBe(true);
+    });
+    it('merges changed runs split by one short unchanged word', () => {
+      const ops = wordDiff('the old system of record', 'a new system for ledgers');
+      // "system" is a long word; "of"/"for" differ, so check the short bridge case separately.
+      expect(ops.length).toBeGreaterThan(0);
+      const bridged = wordDiff('show red to blue', 'draw cyan to pink');
+      expect(texts(bridged, '-')).toEqual(['show red to blue']);
+      expect(texts(bridged, '+')).toEqual(['draw cyan to pink']);
+    });
+    it('keeps a long unchanged word as a break', () => {
+      const ops = wordDiff('alpha beta middleword gamma delta', 'one two middleword three four');
+      expect(texts(ops, '=')).toContain(' middleword ');
+    });
+    it('has at most one removed run then one added run at a point', () => {
+      const ops = wordDiff('a x b y c z d', 'a p b q c r d');
+      for (let i = 1; i < ops.length; i++) {
+        expect(ops[i]!.op === ops[i - 1]!.op).toBe(false);
+        if (ops[i]!.op === '-') expect(ops[i - 1]!.op).toBe('=');
+      }
+    });
+    it('keeps the new text whole', () => {
+      const ops = tidyWordOps(wordDiff('Use `foo` here.', 'Use `bar` there!'));
+      expect(ops.filter((o) => o.op !== '-').map((o) => o.text).join('')).toBe('Use `bar` there!');
+    });
+    it('switches at more than a third of the words changed', () => {
+      expect(mostlyRewritten(wordDiff('one two three four five six', 'one two three four five seven'))).toBe(false);
+      expect(mostlyRewritten(wordDiff('one two three four five six', 'one two three alpha beta gamma'))).toBe(true);
+      expect(mostlyRewritten([])).toBe(false);
+    });
   });
 });
