@@ -5,6 +5,7 @@ import { outlineOf, type OutlineSection } from '@buildd/core/artifact-read';
 import { isUuid } from '@/lib/uuid';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { fail, reach, reviseSpecDraft, type SpecCaller, type SpecError, type SpecRevisionRow, type SpecRow } from './store';
+import type { DuplicateCheck } from './duplicates';
 
 /**
  * Revise one section of a spec without resending the whole body. The section
@@ -59,7 +60,7 @@ export function applyFindReplace(body: string, find: unknown, replace: unknown):
 
 export async function reviseSpecSection(caller: SpecCaller, specId: string, input: SectionTarget & {
   expectedVersion: unknown; body?: unknown; find?: unknown; replace?: unknown; changeSummary?: unknown; repoRefs?: unknown; design?: unknown;
-}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; unchanged: boolean } | SpecError> {
+}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; unchanged: boolean; duplicateCheck?: DuplicateCheck | null } | SpecError> {
   if (!isUuid(specId)) return fail(404, 'Spec not found');
   if (!Number.isInteger(input.expectedVersion)) return fail(400, 'expectedVersion (the spec version you read) is required');
   const patch = input.find !== undefined;

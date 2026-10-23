@@ -792,6 +792,12 @@ export default function SpecPage({ view }: { view: Ok }) {
           {view.source.href ? <a href={view.source.href} className="font-mono underline">{view.source.path}</a> : <span className="font-mono">{view.source.path}</span>}
         </p>
       ) : view.source?.source ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-source">{view.source.source}</p> : null}
+      {view.retirement?.repoLine ? (
+        <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-retired-repo-pr">
+          {view.retirement.repoLine.href ? <a href={view.retirement.repoLine.href} className="underline">{view.retirement.repoLine.text}</a> : view.retirement.repoLine.text}
+        </p>
+      ) : null}
+      {view.restoredRepoNote ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-restored-repo-file">{view.restoredRepoNote}</p> : null}
       {view.source?.copy ? (
         view.source.behind
           ? <Notice tone="warn" data-testid="spec-page-repo-copy">{view.source.copy}</Notice>
@@ -800,7 +806,7 @@ export default function SpecPage({ view }: { view: Ok }) {
       {view.criteriaUnread ? <Notice tone="warn" data-testid="spec-page-criteria-unread">{view.criteriaUnread}</Notice> : null}
     </>
   );
-  const hasRepoState = !!(view.source?.path || view.source?.source || view.source?.copy || view.criteriaUnread);
+  const hasRepoState = !!(view.source?.path || view.source?.source || view.retirement?.repoLine || view.restoredRepoNote || view.source?.copy || view.criteriaUnread);
   // Below lg the rail's parts follow the text, on the Spec tab only.
   const specOnly = tab === 'spec' ? '' : 'hidden lg:flex';
 

@@ -34,6 +34,7 @@ supersedes: []                         # slugs this spec replaces
 |---|---|---|
 | `title` | yes | Unique across active specs (duplicate = error). |
 | `status` | yes | `active` \| `draft` \| `superseded`. `superseded` requires `superseded_by`. |
+| `superseded_by` | if superseded | What replaces it: a spec **slug** in this folder (existence-checked), `buildd:<8-hex short id>` for a Living Spec in buildd that has no repo file, or `none` when it was retired with nothing replacing it. buildd writes this line itself when a spec is retired there, with `status: superseded`, leaving the body as it is. |
 | `owner` | yes | GitHub handle, no `@`. |
 | `last_verified` | warn | ISO date. Missing or >90d old warns; an unparseable date is an error. Bump it in the same PR that changes behaviour. |
 | `summary` | **yes** | ONE sentence, present tense, states what MUST hold. This is what a reader sees in the index and what a retrieval agent matches on — write the capability, not the topic. Missing is an error; over 220 chars warns. Must not begin with `[` — that parses as a list and is rejected. |

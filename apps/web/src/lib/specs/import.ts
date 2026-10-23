@@ -19,6 +19,10 @@ import { insertFiling, setParentIfUnfiled } from './filings';
 import { author, createSpecDraft, fail, reach, reviseSpecDraft, type SpecCaller, type SpecError, type SpecRow } from './store';
 import { approveSpecRevision, specApprovalDeps, specApprover } from './approval';
 import { FILE_METADATA_KEYS, updateSpecMetadata } from './metadata';
+import { parseSpecFrontmatter } from '@buildd/spec-contract/repo-spec';
+import { specShortId } from '@buildd/spec-contract/repo-copy';
+import { retireSpec } from './retire';
+import { confirmedRetirements, planImportRetirements, type ImportRetirement } from './import-retire';
 
 /**
  * Import a workspace's repo spec files as native specs (docs/specs/living-specs.md
@@ -67,6 +71,15 @@ import { FILE_METADATA_KEYS, updateSpecMetadata } from './metadata';
  * commit, else it is reported stale and stays imported. An agent run or API
  * key is refused; an OAuth session gets the link to the specs page, where
  * the person confirms.
+ *
+ * Retirements (§22, R-79): a previously imported file that is now deleted, or
+ * whose frontmatter says `status: superseded`, is listed as `retire` with the
+ * reason ("file removed in <commit>", "marked superseded by <title>"). The
+ * import itself, dry or not, retires nothing: confirming the batch does, as
+ * superseded when the file names a replacement buildd can match
+ * (`replacementFor`), else retired. A spec already retired or superseded is
+ * skipped as before, so a file marked superseded after the spec was is not
+ * listed again and no second PR is opened.
  */
 
 type Api = (installationId: number, path: string, init?: RequestInit) => Promise<any>;
@@ -112,7 +125,7 @@ export function decodeImportCursor(raw: unknown): ImportCursor | null {
   }
 }
 
-export interface RepoSpecFile { path: string; name: string; text: string; blobSha: string }
+export interface RepoSpecFile { path: string; name: string; text: string; blobSha: string; /** An imported spec's file that is not in the directory any more. */ deleted?: true }
 
 const errMsg = (err: unknown) => (err instanceof Error ? err.message : String(err)).slice(0, 300);
 
@@ -152,9 +165,9 @@ async function readSpecDir(repo: { fullName: string; installationId: number }, c
   return out.sort((a, b) => a.path.localeCompare(b.path)).slice(0, MAX_IMPORT_FILES);
 }
 
-/** The PR that last merged a change to each path, as of the commit: one GraphQL request per chunk of files. */
-async function lastPrs(repo: { fullName: string; installationId: number }, commitSha: string, paths: readonly string[], deps: ImportDeps): Promise<Map<string, number | null>> {
-  const out = new Map<string, number | null>();
+/** The last commit that touched each path as of the commit, and the PR that merged it: one GraphQL request per chunk of files. */
+async function lastPrs(repo: { fullName: string; installationId: number }, commitSha: string, paths: readonly string[], deps: ImportDeps): Promise<Map<string, { pr: number | null; oid: string | null }>> {
+  const out = new Map<string, { pr: number | null; oid: string | null }>();
   const [owner, name] = repo.fullName.split('/');
   for (let i = 0; i < paths.length; i += HISTORY_CHUNK) {
     const chunk = paths.slice(i, i + HISTORY_CHUNK);
@@ -169,14 +182,15 @@ async function lastPrs(repo: { fullName: string; installationId: number }, commi
       });
       const commit = gql?.data?.repository?.commit ?? {};
       chunk.forEach((p, j) => {
-        const prs = (commit[`f${j}`]?.nodes?.[0]?.associatedPullRequests?.nodes ?? []) as Array<{ number?: number; merged?: boolean }>;
+        const node = commit[`f${j}`]?.nodes?.[0];
+        const prs = (node?.associatedPullRequests?.nodes ?? []) as Array<{ number?: number; merged?: boolean }>;
         const pr = prs.find((x) => x.merged) ?? prs[0];
-        out.set(p, typeof pr?.number === 'number' ? pr.number : null);
+        out.set(p, { pr: typeof pr?.number === 'number' ? pr.number : null, oid: typeof node?.oid === 'string' ? node.oid : null });
       });
     } catch (err) {
       // Provenance without the PR beats no import: the path, commit and blob still pin the file.
       console.warn('[spec-import] last PR lookup failed:', errMsg(err));
-      for (const p of chunk) out.set(p, null);
+      for (const p of chunk) out.set(p, { pr: null, oid: null });
     }
   }
   return out;
@@ -184,7 +198,7 @@ async function lastPrs(repo: { fullName: string; installationId: number }, commi
 
 // ── Import ──────────────────────────────────────────────────────────────────
 
-export type ImportAction = 'create' | 'reimport' | 'exists' | 'skip';
+export type ImportAction = 'create' | 'reimport' | 'exists' | 'skip' | 'retire';
 export type ImportSkip = 'meta_file' | 'not_a_spec_file' | 'superseded' | 'generated_copy' | 'no_title' | 'too_large' | 'already_imported' | 'confirmed' | 'duplicate' | 'failed';
 
 export interface ImportFileRow {
@@ -202,6 +216,12 @@ export interface ImportFileRow {
   existing?: { specId: string; title: string; url: string; matchedBy: 'provenance' | 'title' | 'named' };
   /** Native specs that cite this path in their repoRefs: not this spec, but `attachTo` may name one. */
   related?: Array<{ specId: string; title: string; url: string }>;
+  /**
+   * `retire` (R-79): the imported spec whose file was removed or marked
+   * superseded, what confirming does to it, and why. `removedIn`: the commit
+   * that removed the file, when GitHub says.
+   */
+  retire?: { why: 'removed' | 'marked_superseded'; status: 'retired' | 'superseded'; supersededBy: { specId: string; title: string } | null; removedIn?: string | null };
   /** `exists` with attachProvenance on a real run: the path and commit are on that spec's metadata block. */
   provenanceAttached?: boolean;
   /**
@@ -237,7 +257,7 @@ export interface ImportResult {
   batchId: string | null;
   /** This page's files, in path order. */
   files: ImportFileRow[];
-  counts: { create: number; reimport: number; exists: number; skip: number };
+  counts: { create: number; reimport: number; exists: number; skip: number; retire: number };
   /** Page size used. */
   limit: number;
   /** Files after this page; 0 on the last page. A page cut short by its time bound leaves more. */
@@ -287,6 +307,48 @@ const strList = (v: unknown): string[] | null => (Array.isArray(v) && v.every((x
 
 const NOT_PLACED = 'no single area';
 
+const isGone = (status: string) => status === 'retired' || status === 'superseded';
+
+/** The retirement plan (./import-retire.ts) for these imported specs, with each `superseded_by` matched by `replacementFor`. */
+function retirementPlan(
+  imported: ReadonlyArray<Pick<SpecRow, 'id' | 'title' | 'status' | 'repoSource'>>, files: ReadonlyArray<{ path: string; text: string }>, commit: string,
+  candidates: readonly ReplacementCandidate[], dir: ReadonlyMap<string, string>, removedIn: Record<string, string | null>,
+): ImportRetirement[] {
+  const titles: Record<string, string> = {};
+  const names: Record<string, string> = {};
+  for (const f of files) {
+    const named = parseSpecFrontmatter(f.text).fm?.superseded_by;
+    const self = imported.find((s) => s.repoSource?.path === f.path)?.id ?? '';
+    const by = typeof named === 'string' ? replacementFor(named, self, candidates, dir) : null;
+    if (by && typeof named === 'string') { titles[named] = by.specId; names[named] = by.title; }
+  }
+  return planImportRetirements({
+    imported: imported.map((s) => ({ specId: s.id, title: s.title, path: s.repoSource!.path, status: s.status })),
+    files, commit, titles, names, removedIn,
+  });
+}
+type ReplacementCandidate = Pick<SpecRow, 'id' | 'title' | 'status' | 'scope' | 'metadata' | 'repoSource' | 'repoCopy'>;
+
+/**
+ * The live spec a superseded file's `superseded_by` names (SPEC-FORMAT.md), or
+ * null: `buildd:<short id>` by its id; a slug by the spec whose file it is (its
+ * import, its generated copy or its recorded provenance), else by that file's
+ * title. `none` and anything unmatched are null, so confirming retires it.
+ */
+export function replacementFor(value: unknown, self: string, candidates: readonly ReplacementCandidate[], dir: ReadonlyMap<string, string>): { specId: string; title: string } | null {
+  if (typeof value !== 'string' || !value || value === 'none') return null;
+  const live = candidates.filter((c) => c.id !== self && !isGone(c.status) && !(AREA_SCOPES as readonly string[]).includes(c.scope));
+  const short = /^buildd:([0-9a-f]{8})$/.exec(value)?.[1];
+  const pick = (c: ReplacementCandidate | undefined) => (c ? { specId: c.id, title: c.title } : null);
+  if (short) return pick(live.find((c) => specShortId(c.id) === short));
+  const path = `${SPECS_DIR}/${value}.md`;
+  const byFile = live.find((c) => c.repoSource?.path === path || c.repoCopy?.path === path || c.metadata?.repo_provenance?.path === path);
+  if (byFile) return pick(byFile);
+  const text = dir.get(path);
+  const title = text ? parseSpecFrontmatter(text).fm?.title?.trim().toLowerCase() : undefined;
+  return title ? pick(live.find((c) => c.title.trim().toLowerCase() === title)) : null;
+}
+
 export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, deps: ImportDeps = defaultImportDeps): Promise<{ ok: true; result: ImportResult } | SpecError> {
   const clock = deps.clock ?? Date.now;
   const started = clock();
@@ -330,14 +392,28 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
   } catch (err) {
     return fail(502, `GitHub could not be read: ${errMsg(err)}; nothing was imported`);
   }
+  const [existing, everyone] = await Promise.all([
+    db.select().from(specs).where(and(eq(specs.workspaceId, workspaceId), isNotNull(specs.repoSource))),
+    db.select({ id: specs.id, title: specs.title, status: specs.status, scope: specs.scope, metadata: specs.metadata, repoSource: specs.repoSource, repoCopy: specs.repoCopy })
+      .from(specs).where(eq(specs.workspaceId, workspaceId)),
+  ]);
+  // Every file at the commit, whatever page this is: a superseded file's replacement may be on another.
+  const dir = new Map(files.map((f) => [f.path, f.text]));
+  // R-79: a live imported spec whose file left the directory is listed with the rest, in path order.
+  if (files.length < MAX_IMPORT_FILES) {
+    for (const s of existing) {
+      const path = s.repoSource!.path;
+      if (!isGone(s.status) && path.startsWith(`${SPECS_DIR}/`) && !dir.has(path)) files.push({ path, name: path.slice(SPECS_DIR.length + 1), text: '', blobSha: '', deleted: true });
+    }
+    files.sort((a, b) => a.path.localeCompare(b.path));
+  }
   if (only) files = files.filter((f) => only.includes(f.path));
   if (cursor) files = files.filter((f) => f.path.localeCompare(cursor.a) > 0);
   const after = files.length;
   files = files.slice(0, limit);
 
-  const [areas, existing, natives] = await Promise.all([
+  const [areas, natives] = await Promise.all([
     listAreas(workspaceId),
-    db.select().from(specs).where(and(eq(specs.workspaceId, workspaceId), isNotNull(specs.repoSource))),
     db.select({ id: specs.id, title: specs.title, metadata: specs.metadata, repoRefs: specRevisions.repoRefs }).from(specs)
       .leftJoin(specRevisions, and(eq(specRevisions.specId, specs.id), eq(specRevisions.revision, specs.headRevision)))
       .where(and(eq(specs.workspaceId, workspaceId), isNull(specs.repoSource), notInArray(specs.scope, [...AREA_SCOPES]), notInArray(specs.status, [...AREA_GONE_STATUSES])))
@@ -350,8 +426,8 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
   const areaById = new Map(areas.map((a) => [a.id, a]));
   const byPath = new Map(existing.map((s) => [s.repoSource!.path, s]));
   const parsed = files.map((f) => ({ f, p: repoSpecForImport(f.path, f.text) }));
-  const wanted = parsed.filter((x) => x.p.ok).map((x) => x.f.path);
-  const prs = wanted.length ? await lastPrs(repo, commitSha, wanted, deps) : new Map<string, number | null>();
+  const wanted = parsed.filter((x) => x.p.ok || x.f.deleted).map((x) => x.f.path);
+  const prs = wanted.length ? await lastPrs(repo, commitSha, wanted, deps) : new Map<string, { pr: number | null; oid: string | null }>();
   const who = author(caller);
   const ids = caller.kind === 'user' ? { userId: caller.userId } : { accountId: caller.account.id };
   const { SPEC_DUPLICATE_CHECK } = await import('@/modules');
@@ -406,13 +482,25 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
   };
 
   const one = async ({ f, p }: (typeof parsed)[number]): Promise<ImportFileRow> => {
-    const provenance = { path: f.path, commitSha, blobSha: f.blobSha, prNumber: prs.get(f.path) ?? null };
+    const provenance = { path: f.path, commitSha, blobSha: f.blobSha, prNumber: prs.get(f.path)?.pr ?? null };
     const base = { path: f.path, provenance, metadata: {}, unread: [], criteria: { unreadable: [], duplicates: [] }, duplicates: [], duplicateCheck: null, area: null } satisfies Omit<ImportFileRow, 'action'>;
-    if (!p.ok) return { ...base, action: 'skip', reason: p.reason, message: p.message };
-    const row: ImportFileRow = { ...base, metadata: p.metadata, unread: p.unread, criteria: p.criteria, action: 'create', spec: { title: p.title, scope: 'feature', body: p.body } };
     const prior = byPath.get(f.path);
+    // R-79: listed for the person to confirm; nothing here retires it.
+    if (prior && !isGone(prior.status) && (f.deleted || (!p.ok && p.reason === 'superseded'))) {
+      const oid = prs.get(f.path)?.oid ?? null;
+      const [plan] = retirementPlan([prior], f.deleted ? [] : [{ path: f.path, text: f.text }], commitSha, everyone, dir, { [f.path]: oid });
+      if (plan) {
+        const by = plan.supersededBy ? { specId: plan.supersededBy, title: everyone.find((c) => c.id === plan.supersededBy)?.title ?? '' } : null;
+        return {
+          ...base, action: 'retire', specId: prior.id, message: plan.reason,
+          retire: { why: plan.why, status: by ? 'superseded' : 'retired', supersededBy: by, ...(plan.why === 'removed' ? { removedIn: oid } : {}) },
+        };
+      }
+    }
+    if (!p.ok) return { ...base, action: 'skip', reason: p.reason, message: p.message, ...(prior ? { specId: prior.id } : {}) };
+    const row: ImportFileRow = { ...base, metadata: p.metadata, unread: p.unread, criteria: p.criteria, action: 'create', spec: { title: p.title, scope: 'feature', body: p.body } };
     if (prior?.repoSource?.state === 'confirmed') return { ...row, action: 'skip', reason: 'confirmed', message: `${f.path} was imported and confirmed; buildd is its source now`, specId: prior.id };
-    if (prior && (prior.status === 'retired' || prior.status === 'superseded')) return { ...row, action: 'skip', reason: 'superseded', message: `${f.path} was imported as "${prior.title}" (${prior.id}), which is now ${prior.status}; restore it first to re-import`, specId: prior.id };
+    if (prior && isGone(prior.status)) return { ...row, action: 'skip', reason: 'superseded', message: `${f.path} was imported as "${prior.title}" (${prior.id}), which is now ${prior.status}; restore it first to re-import`, specId: prior.id };
     if (prior && prior.repoSource!.blobSha === f.blobSha) return { ...row, action: 'skip', reason: 'already_imported', message: `${f.path} is imported at this blob already`, specId: prior.id };
     if (!prior) {
       // Already in buildd as the same spec: never a second one, at most its provenance.
@@ -478,11 +566,11 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
   const remaining = Math.max(0, after - covered);
   const nextCursor = remaining > 0 ? encodeImportCursor({ c: commitSha, a: parsed[covered - 1]!.f.path }) : null;
 
-  const counts = { create: 0, reimport: 0, exists: 0, skip: 0 };
+  const counts = { create: 0, reimport: 0, exists: 0, skip: 0, retire: 0 };
   const areaCount = new Map<string, ImportResult['byArea'][number]>();
   for (const r of rows) {
     counts[r.action]++;
-    if (r.action === 'skip' || r.action === 'exists') continue;
+    if (r.action === 'skip' || r.action === 'exists' || r.action === 'retire') continue;
     const key = r.area ? `${r.area.specId ?? 'new'}:${r.area.title}:${r.area.by}` : 'unfiled';
     const cur = areaCount.get(key) ?? { area: r.area?.title ?? 'Unfiled', areaSpecId: r.area?.specId ?? null, proposed: !!r.area?.proposed, count: 0, by: r.area?.by ?? null };
     cur.count++;
@@ -582,6 +670,8 @@ async function importMetadata(caller: SpecCaller, specId: string, metadata: Reco
 
 export interface ConfirmResult {
   confirmed: Array<{ specId: string; title: string; path: string; commitSha: string; revision: number; area: string | null }>;
+  /** Retired because the repo file was removed or marked superseded (R-79). */
+  retired: Array<{ specId: string; title: string; path: string; status: 'retired' | 'superseded'; reason: string; supersededBy: { specId: string; title: string } | null }>;
   skipped: Array<{ specId: string; title?: string; path?: string; reason: 'stale' | 'not_imported' | 'not_found' | 'conflict' | 'unavailable' | 'retired'; message: string }>;
   /** From an OAuth session: where the person confirms. Nothing is approved. */
   pending?: { confirmUrl: string; specIds: string[] };
@@ -619,52 +709,73 @@ export async function confirmImportedSpecs(caller: SpecCaller, input: { workspac
   if (caller.kind === 'account') {
     const personId = requestingPerson(null, caller.account);
     if (!personId || !(await specApprover(caller, workspaceId))) return fail(403, NOT_A_PERSON);
-    return { ok: true, result: { confirmed: [], skipped: [], pending: { confirmUrl: `${appBaseUrl()}${importConfirmPath(workspaceId)}`, specIds } } };
+    return { ok: true, result: { confirmed: [], retired: [], skipped: [], pending: { confirmUrl: `${appBaseUrl()}${importConfirmPath(workspaceId)}`, specIds } } };
   }
   if (!(await specApprover(caller, workspaceId))) return fail(403, NOT_A_PERSON);
 
   const rows = await db.select().from(specs).where(eq(specs.workspaceId, workspaceId));
   const byId = new Map(rows.map((r) => [r.id, r]));
-  const result: ConfirmResult = { confirmed: [], skipped: [] };
-  const todo: SpecRow[] = [];
+  const result: ConfirmResult = { confirmed: [], retired: [], skipped: [] };
+  // `waiting`: an imported revision is the head, to approve. Any imported spec may be retired instead when its file says so (R-79).
+  const todo: Array<{ s: SpecRow; waiting: boolean }> = [];
   for (const id of [...new Set(specIds)]) {
     const s = byId.get(id);
     if (!s) { result.skipped.push({ specId: id, reason: 'not_found', message: 'no spec with this id in this workspace' }); continue; }
     // A retired import (§22) left the confirm list: confirming it would approve a spec a person took out of force.
     if (s.status === 'retired' || s.status === 'superseded') { result.skipped.push({ specId: id, title: s.title, path: s.repoSource?.path, reason: 'retired', message: `it is ${s.status}; restore it first to confirm it` }); continue; }
-    if (s.repoSource?.state !== 'imported' || s.repoSource.revision !== s.headRevision) {
-      result.skipped.push({ specId: id, title: s.title, path: s.repoSource?.path, reason: 'not_imported', message: s.repoSource?.state === 'confirmed' ? 'already confirmed' : 'no imported revision is waiting for confirmation' });
-      continue;
-    }
+    const waiting = s.repoSource?.state === 'imported' && s.repoSource.revision === s.headRevision;
+    if (!s.repoSource) { result.skipped.push({ specId: id, title: s.title, reason: 'not_imported', message: notWaiting(s) }); continue; }
     const saw = expected[id];
-    if (saw !== undefined && saw !== s.headRevision) {
+    if (waiting && saw !== undefined && saw !== s.headRevision) {
       result.skipped.push({ specId: id, title: s.title, path: s.repoSource.path, reason: 'conflict', message: `you read revision ${saw}, and revision ${s.headRevision} was imported since: read it, then confirm` });
       continue;
     }
-    todo.push(s);
+    todo.push({ s, waiting });
   }
   if (!todo.length) return { ok: true, result };
 
   // R-19: each approval only while its file is unchanged since the imported commit, read once at the default branch head.
   const repo = await deps.repo(workspaceId);
-  let current: Map<string, string> | null = null;
+  let current: Map<string, { blobSha: string; text: string }> | null = null;
+  let head = '';
   let unavailable = 'this workspace has no GitHub repo linked through the GitHub App';
   if (repo) {
     try {
-      const head = await resolveCommit(workspaceId, repo, undefined, deps);
-      current = new Map((await readSpecDir(repo, head, deps)).map((f) => [f.path, f.blobSha]));
+      head = await resolveCommit(workspaceId, repo, undefined, deps);
+      current = new Map((await readSpecDir(repo, head, deps)).map((f) => [f.path, { blobSha: f.blobSha, text: f.text }]));
     } catch (err) {
       unavailable = `GitHub could not be read: ${errMsg(err)}`;
     }
   }
+  // R-79: a file gone at the head, or marked superseded there, retires its spec (the commit that removed it named when GitHub says).
+  const removed = current ? todo.filter(({ s }) => !current!.has(s.repoSource!.path)).map(({ s }) => s.repoSource!.path) : [];
+  const removedIn = removed.length && repo ? await lastPrs(repo, head, removed, deps) : new Map<string, { pr: number | null; oid: string | null }>();
+  const dir = new Map([...(current ?? new Map<string, { text: string }>())].map(([p, f]) => [p, f.text]));
+  const plan = current
+    ? confirmedRetirements(retirementPlan(todo.map((t) => t.s), [...dir].map(([path, text]) => ({ path, text })), head, rows, dir,
+      Object.fromEntries([...removedIn].map(([p, v]) => [p, v.oid]))), specIds as string[])
+    : [];
+  const retiring = new Map(plan.map((p) => [p.specId, p]));
   const titles = new Map(rows.map((r) => [r.id, r.title]));
-  for (const s of todo) {
+  for (const { s, waiting } of todo) {
     const src = s.repoSource!;
     const short = src.commitSha.slice(0, 7);
+    const file = current?.get(src.path);
+    const planned = retiring.get(s.id);
+    if (planned) {
+      const reason = planned.reason;
+      const by = planned.supersededBy ? { specId: planned.supersededBy, title: titles.get(planned.supersededBy) ?? '' } : null;
+      const r = await retireSpec(caller, s.id, { reason, supersededBy: by?.specId }, {
+        repoFile: { kind: s.repoCopy?.path ? 'copy' : 'source', path: src.path, state: file ? 'already' : 'removed', via: 'import', at: deps.now().toISOString() },
+      });
+      if (!r.ok) { result.skipped.push({ specId: s.id, title: s.title, path: src.path, reason: 'conflict', message: r.error }); continue; }
+      result.retired.push({ specId: s.id, title: s.title, path: src.path, status: r.spec.status as 'retired' | 'superseded', reason, supersededBy: by });
+      continue;
+    }
+    if (!waiting) { result.skipped.push({ specId: s.id, title: s.title, path: src.path, reason: 'not_imported', message: notWaiting(s) }); continue; }
     if (!current) { result.skipped.push({ specId: s.id, title: s.title, path: src.path, reason: 'unavailable', message: `${unavailable}; nothing was confirmed, try again` }); continue; }
-    const now = current.get(src.path);
-    if (now !== src.blobSha) {
-      result.skipped.push({ specId: s.id, title: s.title, path: src.path, reason: 'stale', message: now ? `${src.path} changed since ${short}: run import again, then confirm the new revision` : `${src.path} is no longer in the repo at the default branch` });
+    if (file!.blobSha !== src.blobSha) {
+      result.skipped.push({ specId: s.id, title: s.title, path: src.path, reason: 'stale', message: `${src.path} changed since ${short}: run import again, then confirm the new revision` });
       continue;
     }
     const r = await approveSpecRevision(caller, s.id, { revision: s.headRevision, expectedVersion: s.version }, { importConfirmation: { note: `confirmed import of ${src.path}@${short}` } });
@@ -676,3 +787,5 @@ export async function confirmImportedSpecs(caller: SpecCaller, input: { workspac
   }
   return { ok: true, result };
 }
+
+const notWaiting = (s: SpecRow) => (s.repoSource?.state === 'confirmed' ? 'already confirmed' : 'no imported revision is waiting for confirmation');

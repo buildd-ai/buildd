@@ -148,6 +148,17 @@ describe('manage_specs', () => {
     expect(JSON.parse(api.mock.calls[1][1].body)).toEqual({ expectedVersion: 2, heading: 'Caching', body: text });
   });
 
+  it('AC-142: a revise whose new criterion another spec has is written, and the reply warns naming both criteria', async () => {
+    api.mockResolvedValueOnce({
+      spec: { ...spec, version: 3 }, revision: { revision: 3 }, unchanged: false,
+      duplicateCheck: { ran: true, blocking: [], warnings: [{ specId: 'cart-id', title: 'Cart', relation: 'duplicate', p: 0.93, pairs: [{ here: 'R-2', there: 'AC-4' }] }] },
+    });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'revise', specId: SPEC, expectedVersion: 2, body: 'R-2: x' }, ctx()));
+    expect(r).toContain('Revised: revision 3');
+    expect(r).toContain('The criteria you added or changed overlap other specs');
+    expect(r).toContain('Cart (cart-id): duplicate, p 0.93; R-2 here matches AC-4 there');
+  });
+
   // R-48 / AC-36: the server's formatHints come back as one gentle Tip line; the write still happened.
   it('create_draft and revise show formatHints as one Tip line, and no line when there are none', async () => {
     const hints = [
@@ -263,8 +274,11 @@ describe('manage_specs', () => {
     expect(JSON.parse(api.mock.calls[0][1].body)).toMatchObject({ distinctBecause: 'B2B quotes, not the cart' });
     expect(r).toContain('Cart (cart-id): overlap, p 0.82');
     expect(r).toContain('Suggested parent: "Shop" (shop-id), closest product by what it asks for.');
-    api.mockResolvedValueOnce({ spec: { id: SPEC, title: 'B', version: 1, status: 'draft' }, duplicateCheck: { ran: false, reason: 'this team has no decision-model key' }, suggestedParent: null });
-    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'create_draft', title: 'B', body: 'x' }, ctx()))).toContain('Duplicate check did not run: this team has no decision-model key.');
+    api.mockResolvedValueOnce({ spec: { id: SPEC, title: 'B', version: 1, status: 'draft' }, duplicateCheck: { ran: false, reason: 'this team has no decision model set up' }, suggestedParent: null });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'create_draft', title: 'B', body: 'x' }, ctx()))).toContain('Duplicate check did not run: this team has no decision model set up.');
+    // R-104, R-106: the matched criteria side by side, and a draft says so.
+    api.mockResolvedValueOnce({ spec: { id: SPEC, title: 'D', version: 1, status: 'draft' }, duplicateCheck: { ran: true, warnings: [{ specId: 'd-id', title: 'Cart draft', relation: 'duplicate', p: 0.95, draft: true, pairs: [{ here: 'R-2', there: 'AC-4' }] }] }, suggestedParent: null });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'create_draft', title: 'D', body: 'x' }, ctx()))).toContain('Cart draft (d-id), a draft: duplicate, p 0.95; R-2 here matches AC-4 there');
     api.mockRejectedValueOnce(new Error('API error: 409 - {"error":"This spec looks like a duplicate of \\"Cart\\"","code":"spec_duplicate"}'));
     const refused: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'create_draft', title: 'C', body: 'x' }, ctx());
     expect(refused.isError).toBe(true);
@@ -404,6 +418,27 @@ describe('manage_specs', () => {
     expect(r).toContain(`related: "Claim routing overview" (${REL}) cites this path`);
     expect(r).toContain(`attach_to: { "docs/specs/claim-ordering.md": "${REL}" }`);
     expect(r).toContain('Tasks and missions (by domain, classifier unavailable: this team has no decision-model key)');
+  });
+
+  it('import lists files removed or marked superseded under Retire, for a person to confirm; confirm_import says what it retired', async () => {
+    const NEXT = '44444444-4444-4444-8444-444444444444';
+    api.mockResolvedValueOnce({
+      dryRun: true, repo: 'acme/app', commitSha: 'a'.repeat(40), counts: { create: 0, reimport: 0, skip: 0, retire: 2 }, byArea: [],
+      files: [
+        { path: 'docs/specs/gone.md', action: 'retire', specId: SPEC, area: null, message: 'file removed in 1234567', retire: { why: 'removed', status: 'retired', supersededBy: null, removedIn: '1234567'.padEnd(40, '0') } },
+        { path: 'docs/specs/old-flow.md', action: 'retire', specId: 'x3', area: null, message: 'marked superseded by New Flow', retire: { why: 'marked_superseded', status: 'superseded', supersededBy: { specId: NEXT, title: 'New Flow' } } },
+      ],
+    });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'import' }, ctx()));
+    expect(r).toContain('2 to retire');
+    expect(r).toContain(`retire: docs/specs/gone.md (${SPEC}): file removed in 1234567`);
+    expect(r).toContain(`retire: docs/specs/old-flow.md (x3): marked superseded by New Flow, as superseded by ${NEXT}`);
+    expect(r).toContain('Nothing is retired until a person confirms');
+
+    api.mockResolvedValueOnce({ confirmed: [], retired: [{ specId: SPEC, title: 'Gone', path: 'docs/specs/gone.md', status: 'retired', reason: 'file removed in 1234567', supersededBy: null }], skipped: [] });
+    const c = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'confirm_import', specIds: [SPEC] }, ctx()));
+    expect(c).toContain('Confirmed 0 import(s), retired 1');
+    expect(c).toContain(`retired: Gone (${SPEC}) from docs/specs/gone.md: file removed in 1234567`);
   });
 
   it('confirm_import POSTs the batch and passes an agent run\'s 403 through; an OAuth session is told where to confirm', async () => {

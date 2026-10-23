@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/mission-outcome.ts, apps/web/src/lib/specs/mission-selection.ts, apps/web/src/lib/specs/provisional.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/lib/specs/copy.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, spec_taxonomy, cold-start taxonomy, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index, provisional pin, build ahead of approval, attach_provisional, re-grade, confirm_import, import confirmation, repo_source, spec attachment, attachment:, binding attachment, reference attachment, changed since approval, Files, retire, retired, superseded, restore, copy spec, copied_from, cross-workspace handoff, publication policy, spec_publication, publish anyway, removal PR, outcome spec, outcomeSpec, final verification, integrated target, mission-level verdict, spec repair]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/src/lib/spec-taxonomy-decision.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/lib/specs/hub.test.ts, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-import.test.ts, packages/spec-contract/src/repo-import.test.ts, apps/web/src/app/api/specs/import/route.test.ts, apps/web/src/lib/specs/index-view-imported.test.ts, apps/web/tests/db/spec-attachments.test.ts, apps/web/src/components/MarkdownContent.attachments.dom.test.tsx, packages/core/__tests__/mcp-specs-attachments.test.ts, apps/web/src/app/api/specs/[specId]/attachments/[name]/route.test.ts, apps/web/src/components/SpecAttachments.dom.test.tsx, apps/web/tests/db/spec-retire.test.ts, apps/web/src/app/api/specs/[specId]/retire/route.test.ts, packages/core/__tests__/mcp-specs-retire.test.ts, apps/web/src/components/SpecRetire.dom.test.tsx, apps/web/src/lib/spec-publication-decision.test.ts, apps/web/src/lib/specs/mission-outcome-fold.test.ts, apps/web/src/lib/specs/mission-selection.test.ts, apps/web/src/lib/specs/mission-verdict-authority.test.ts, packages/core/__tests__/goal-criteria-living-spec.test.ts, apps/web/tests/db/spec-copy.test.ts, packages/core/__tests__/mcp-specs-copy.test.ts]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/src/lib/spec-taxonomy-decision.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/lib/specs/hub.test.ts, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-similarity.test.ts, apps/web/src/lib/specs/knowledge-similarity.test.ts, packages/core/__tests__/knowledge-spec-corpus-query.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-import.test.ts, packages/spec-contract/src/repo-import.test.ts, apps/web/src/app/api/specs/import/route.test.ts, apps/web/src/lib/specs/index-view-imported.test.ts, apps/web/tests/db/spec-attachments.test.ts, apps/web/src/components/MarkdownContent.attachments.dom.test.tsx, packages/core/__tests__/mcp-specs-attachments.test.ts, apps/web/src/app/api/specs/[specId]/attachments/[name]/route.test.ts, apps/web/src/components/SpecAttachments.dom.test.tsx, apps/web/tests/db/spec-retire.test.ts, apps/web/src/app/api/specs/[specId]/retire/route.test.ts, packages/core/__tests__/mcp-specs-retire.test.ts, apps/web/src/components/SpecRetire.dom.test.tsx, apps/web/src/lib/spec-publication-decision.test.ts, apps/web/src/lib/specs/mission-outcome-fold.test.ts, apps/web/src/lib/specs/mission-selection.test.ts, apps/web/src/lib/specs/mission-verdict-authority.test.ts, packages/core/__tests__/goal-criteria-living-spec.test.ts, apps/web/tests/db/spec-copy.test.ts, packages/core/__tests__/mcp-specs-copy.test.ts]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -422,19 +422,25 @@ recall, and its explicit references MUST be walkable in the knowledge graph,
 without an approval ever depending on either.
 
 **Invariants**:
-- Only the approved revision is indexed. When a person's approval commits
+- Only the approved revision is in recall. When a person's approval commits
   (`approveSpecRevision`, which the confirmation link also goes through), it
   emits the core event `spec.approved` and the knowledge module indexes it: that
-  revision's body, exactly the artifact revision it pins, is chunked with the
-  docs markdown chunker into the workspace's `spec` corpus
-  (`{workspaceId}:spec`). Drafts and proposed revisions are never indexed: a
-  revise on an approved spec leaves the approved text in recall until N+1 is
-  approved.
-- One approved text per spec. Every chunk id starts with
-  `living-spec:<specId>#`, and an approval first deletes every chunk under that
-  prefix, so re-approval replaces the earlier text instead of adding a second.
+  revision's body, exactly the artifact revision it pins, goes into the
+  workspace's `spec` corpus (`{workspaceId}:spec`) as its whole text, one chunk
+  per section and one per criterion (`livingSpecPieces`). A draft head is
+  indexed too, after each revision is written, under its own prefix
+  `living-spec-draft:<specId>@<revision>#` and source type
+  `living_spec_draft`; every store query leaves those out unless it passes
+  `includeDrafts` (only the duplicate check does), so a revise on an approved
+  spec leaves the approved text in recall until N+1 is approved.
+- One approved text per spec. Every chunk id is
+  `living-spec:<specId>@<revision>#<key>` (`text`, a section's outline id, or a
+  criterion id), and an approval first deletes every chunk under
+  `living-spec:<specId>` (the earlier `#<line>` ids included) and the spec's
+  draft chunks, so re-approval replaces the earlier text instead of adding a second.
   Chunks carry `specId`, `revision`, `contentHash`, `parentSpecId`, `scope`,
-  `workspaceId` and `approvedAt`, source type `living_spec`, and no source
+  `workspaceId`, `approvedAt`, `draft` and `chunkKind`, a criterion chunk its
+  `criterionId` and `section`, source type `living_spec`, and no source
   path: the repo ingest prunes paths it did not see on disk, and these are not
   repo files. Their source URL is the spec page, `/app/specs/<specId>` (§9),
   so a recall hit opens the spec, not an approval.
@@ -840,9 +846,14 @@ stop a spec.
 - `createSpecDraft` (`POST /api/specs`, MCP `manage_specs action=create_draft`)
   runs `checkSpecDuplicates` (`apps/web/src/lib/spec-duplicate-decision.ts`, reached from core through the `SPEC_DUPLICATE_CHECK` slot in `apps/web/src/modules.ts`)
   before anything is written:
-  - Shortlist: TF-IDF cosine between the new spec and each approved revision
-    in the workspace (title, the opening line, every R-n/AC-n), at most 5 above
-    a floor. The shortlist only picks what the model reads; it never decides.
+  - Shortlist: each criterion and section of the new text against the spec
+    corpus (`specCorpusShortlist`, §14's query), drafts included, aggregated by
+    spec, at most 5, each with its best criterion pairs. The model reads the
+    matched criteria first on both cards (`sideBySide`). The shortlist only
+    picks what the model reads; it never decides. A draft candidate only warns.
+  - `reviseSpecDraft` runs the same check on the criteria it added or changed
+    (`changedCriteria`), against every other spec, after the revision is
+    written: warnings only, in the PATCH reply's `duplicateCheck`.
   - Judge: decision kind `buildd.spec_duplicate`, capability `spec_duplicate`
     (built in: on for every team whose decision-model key resolves), one call per shortlisted spec, the question
     the offline eval measured (knowledge base:
@@ -879,7 +890,8 @@ stop a spec.
   duplicate at 0.89 only warns (`apps/web/src/lib/spec-duplicate-decision.test.ts`).
 
 **Code surface**:
-- `apps/web/src/lib/spec-duplicate-decision.ts` — `checkSpecDuplicates`, `tfidfShortlist`, `specDuplicateKind`, `recordDuplicateOverride`
+- `apps/web/src/lib/spec-duplicate-decision.ts` — `checkSpecDuplicates`, `sideBySide`, `specDuplicateKind`, `recordDuplicateOverride`
+- `apps/web/src/lib/specs/knowledge.ts` — `specCorpusShortlist`, `indexSpecDraft`
 - `apps/web/src/lib/specs/duplicates.ts` — `parseDuplicateOverride`
 - `apps/web/src/lib/specs/store.ts` — `createSpecDraft`
 
@@ -905,9 +917,12 @@ data; none of it MAY approve, pin, grade or block anything (D-11, D-12).
 - Neighbours live in `spec_neighbors` (one row per spec, neighbour and kind:
   score 0 to 1, source, a reason detail):
   - `similar`: the nearest approved specs in the workspace's spec corpus, at
-    most 5, by cosine at 0.55 or above when an embedder answered (source
-    `vector`), else by lexical rank (source `lexical`, no floor). The spec's
-    own parent and children are left out: they are already related.
+    most 5, from the store's hybrid query with the spec's own stored chunks
+    as probes (`nearChunkId`: no embedding call), aggregated by spec
+    (`aggregateSpecMatches`); the best criterion pair is kept as the reason
+    ("AC-3 here reads like R-7 there"). The floor is the store's, per mode
+    (`LIVING_SPEC_SIMILAR_FLOOR`: cosine 0.55 for vector hits, none for lexical
+    ranks). The spec's own parent and children are left out: they are already related.
   - `shares_files`: specs whose pinned tasks changed the same files, at most
     5, scored by the shared share of the smaller set. Files come from the
     knowledge ingest's record of each merged PR (source `pr_files`), else
@@ -980,14 +995,16 @@ data; none of it MAY approve, pin, grade or block anything (D-11, D-12).
 
 **Code surface**:
 - `apps/web/src/lib/specs/neighbours.ts` — `computeSpecNeighbours`, `replaceSpecNeighbours`, `readSpecNeighbours`, `suggestParent`, `specFiles`
-- `apps/web/src/lib/specs/knowledge.ts` — `refreshSpecDerived`, `refreshAllSpecDerived`
-- `packages/core/knowledge-store/living-spec.ts` — `buildLivingSpecGraph` (`derived`)
+- `apps/web/src/lib/specs/knowledge.ts` — `refreshSpecDerived`, `refreshAllSpecDerived`, `reindexSpecCorpus`, `specCorpusSimilar`
+- `packages/core/knowledge-store/living-spec.ts` — `buildLivingSpecGraph` (`derived`), `livingSpecPieces`, `aggregateSpecMatches`
+- `packages/core/knowledge-store/pg-vector-store.ts` — `PgVectorStore.query` (`includeDrafts`, `nearChunkId`, `embedding`), `embedQueries`
 - `apps/web/src/app/api/specs/[specId]/nearby/route.ts` — `GET`
 - `apps/web/src/lib/specs/index-view.ts` — `specIndexView` (the list's groups)
 
 **Not yet**:
-- `similar` is lexical wherever no embedder key is configured, and lexical
-  scores are not comparable to cosine, so it has no floor there.
+- Graph expansion and the reranker recall applies are not used by `similar`:
+  neighbour edges would feed back into the neighbours they came from, and the
+  rerank order does not change a spec's best cosine.
 
 ## 15. Diagrams and tables
 
@@ -1812,6 +1829,26 @@ an agent MUST NOT.
   "Replaced by <spec>", with Restore for a person who may; for a live spec
   that person gets Retire among the page's secondary actions, never in the
   Approve corner, with a reason and an optional replacement.
+- R-78: When a spec is retired or superseded and a repo file stands for it
+  (an imported spec's source file, or its generated copy from §18), buildd
+  opens one PR: an imported source file gets `status: superseded` and
+  `superseded_by` in its frontmatter with its body left as is; a generated
+  copy is removed and the index updated. A generated-copy PR lands under the
+  exception of R-35, only at the head buildd wrote; a source-file PR is an
+  ordinary PR a person merges. `superseded_by` is the replacement's slug when
+  it has a file in the repo, `buildd:<short id>` when it lives only in buildd,
+  `none` when nothing replaces it. A file that already reads superseded, or is
+  gone, gets no PR. The outcome is `repoFile` on the retirement's change row,
+  and the spec page names the PR until it merges.
+- R-79: An import run (§18) lists a previously imported file that is now
+  deleted, or whose frontmatter says `status: superseded`, as `retire` with
+  the reason ("file removed in <commit>", "marked superseded by <title>").
+  Confirming the batch retires those specs, as superseded when the file names
+  a replacement buildd can match, else retired. Nothing is retired without
+  that confirmation, a dry run writes nothing, and a spec already retired or
+  superseded is skipped, not listed again.
+- R-80: Restoring a spec retired by R-78 or R-79 does not recreate or edit a
+  repo file; the page says the repo file still reads superseded.
 
 **Acceptance criteria**:
 - AC-109: GIVEN an agent token, an API key or a plain member WHEN it retires
@@ -1828,14 +1865,26 @@ an agent MUST NOT.
   (`apps/web/tests/db/spec-retire.test.ts`,
   `packages/core/__tests__/mcp-specs-retire.test.ts`,
   `apps/web/src/components/SpecRetire.dom.test.tsx`).
+- AC-124: GIVEN imported spec A from `docs/specs/a.md` WHEN A is superseded
+  THEN one PR sets `status: superseded` and `superseded_by` in that file's
+  frontmatter, and the next import reports the file as superseded and skips
+  it (`apps/web/tests/db/spec-retire-repo-file.test.ts`,
+  `packages/spec-contract/src/repo-spec-superseded.test.ts`).
+- AC-125: GIVEN a previously imported file deleted from the repo WHEN import
+  runs dry THEN it lists the spec under Retire with the commit and writes
+  nothing; WHEN the person confirms THEN the spec is retired
+  (`apps/web/tests/db/spec-retire-repo-file.test.ts`).
+- AC-126: GIVEN a spec retired by AC-124 WHEN a person restores it THEN no PR
+  is opened and the page says the repo file still reads superseded
+  (`apps/web/tests/db/spec-retire-repo-file.test.ts`).
 
 **Code surface**:
 - `apps/web/src/lib/specs/retire.ts` — `retireSpec`, `restoreSpec`, `specRetirement`
 - `apps/web/src/app/api/specs/[specId]/retire/route.ts` — `POST`, `DELETE`
 - `apps/web/src/components/SpecRetire.tsx` — `SpecRetire`
-
-**Not yet**:
-- Retiring does not close the generated repo copy (§18) of a native spec.
+- `apps/web/src/lib/specs/retire-repo-file.ts` — `openRetirementPr`, `landRetirementPr`, `settleRetirementPr`
+- `apps/web/src/lib/specs/import.ts` — `replacementFor`, `confirmImportedSpecs`
+- `packages/spec-contract/src/repo-spec.ts` — `markSpecSuperseded`, `SUPERSEDED_BY_ELSEWHERE`
 
 ## 23. Which specs leave buildd: the publication policy
 
