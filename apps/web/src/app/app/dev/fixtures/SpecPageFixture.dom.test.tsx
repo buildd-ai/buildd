@@ -18,7 +18,7 @@ mock.module('next/navigation', () => ({
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { default: SpecPageFixture, SPEC_PAGE_VARIANTS, SPEC_PAGE_FIXTURE_BODY, parseSpecPageVariant } = await import('./SpecPageFixture');
+const { default: SpecPageFixture, SPEC_PAGE_VARIANTS, SPEC_PAGE_FIXTURE_BODY, SPEC_PAGE_APPROVAL_VIEW, parseSpecPageVariant } = await import('./SpecPageFixture');
 
 async function render(v: string) {
   window.history.replaceState(null, '', `/app/dev/fixtures?state=spec-page&v=${v}`);
@@ -39,6 +39,21 @@ describe('SpecPageFixture', () => {
   it('has six numbered sections and a body long enough to scroll', () => {
     expect(SPEC_PAGE_FIXTURE_BODY.match(/^## \d+\. /gm)).toHaveLength(6);
     expect(SPEC_PAGE_FIXTURE_BODY.split('\n').length).toBeGreaterThan(60);
+  });
+
+  it('ends every requirement with one full stop', () => {
+    const reqs = SPEC_PAGE_FIXTURE_BODY.split('\n').filter((l) => /^- (R|AC)-\d+: /.test(l));
+    expect(reqs).toHaveLength(18);
+    for (const r of reqs) expect(r).toMatch(/[^.]\.$/);
+  });
+
+  it('approve-replaces: the diff has no empty added line', () => {
+    const rows = SPEC_PAGE_APPROVAL_VIEW.hunks.flatMap((h) => h.rows);
+    expect(rows.filter((r) => r.text.trim() === '')).toEqual([]);
+    for (const h of SPEC_PAGE_APPROVAL_VIEW.hunks) {
+      expect(h.linesAdded).toBe(h.rows.filter((r) => r.op === '+').length);
+      expect(h.linesRemoved).toBe(h.rows.filter((r) => r.op === '-').length);
+    }
   });
 
   it('falls back to approved for an unknown variant', () => {
