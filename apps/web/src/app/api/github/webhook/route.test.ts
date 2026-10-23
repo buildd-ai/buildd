@@ -186,6 +186,11 @@ mock.module('@/lib/ci-job-log-evidence', () => ({
   captureCiJobLogEvidence: mockCaptureCiJobLogEvidence,
 }));
 
+// Home's red-check record (surface-ia §11) is its own suite's concern
+// (red-check-record.test.ts); here it must not consume the queued DB mocks.
+const mockRecordRedChecks = mock(async () => null);
+mock.module('@/lib/red-check-record', () => ({ recordRedChecks: mockRecordRedChecks }));
+
 // The red-PR sweep's due queue: a skipped CI retry that someone must come back
 // to (fix in flight, head already tried) schedules a look here.
 const mockScheduleCiRedLook = mock((_ref: any, _dueAtMs: number) => Promise.resolve());

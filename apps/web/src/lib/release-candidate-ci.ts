@@ -96,7 +96,7 @@ ${logCommand ? `\nRead the failing job's log:\n\n\`\`\`bash\n${logCommand}\n\`\`
 1. Work on a branch from the latest \`${p.sourceBranch}\`. The failure was introduced by commits that are on \`${p.sourceBranch}\` too, so reproduce it there first.
 2. Fix the cause (code or test), run the failing tests locally.
 3. Open a PR into \`${p.sourceBranch}\` with \`create_pr\` (base \`${p.sourceBranch}\`).
-4. In the PR body and your completion summary, say that release candidate ${v} (PR #${p.prNumber}) needs an amendment once this merges: Release workflow with \`amend: ${v}\` and \`amend_confirm: ${v}\` (buildd \`trigger_release\` with those inputs). Do not dispatch it yourself; the fix must be merged first.
+4. In the PR body and your completion summary, say that release candidate ${v} (PR #${p.prNumber}) needs an amendment or a re-cut once this merges. Do not dispatch a release yourself: when this PR merges, buildd amends the candidate through the release workflow if the workspace declared how, and otherwise tells the team the candidate needs a re-cut.
 `;
   return {
     workspaceId: p.workspaceId,

@@ -224,6 +224,8 @@ import {
   createReviewerTask,
   DELTA_APPROVAL_REVIEW_TIER,
   enforceServerSideEscalation,
+  scopeToCompositionDelta,
+  compositionScopeSection,
   preflightEscalationCheck,
   isSchemaTouchingFile,
   renderManifestGuidance,
@@ -1287,6 +1289,41 @@ describe('preflightEscalationCheck — mergePolicy.dataMigrations', () => {
   });
 });
 
+describe('a composition delta review is judged on its delta (release-flow.md AC-25 to AC-27)', () => {
+  const PR_FILES = [
+    { filename: 'apps/web/src/lib/foo.ts', status: 'modified' },
+    { filename: 'packages/core/drizzle/0099_add_column.sql', status: 'added' },
+  ];
+  const POLICY: MergePolicy = { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } };
+
+  it('(c) a migration approved on its own PR does not escalate the candidate: only the delta paths are checked', () => {
+    const ctx = { compositionDelta: { novelDeltaPaths: ['apps/web/src/lib/foo.ts'] } };
+    const scoped = scopeToCompositionDelta(PR_FILES, ctx);
+    expect(scoped).toEqual([PR_FILES[0]]);
+    expect(enforceServerSideEscalation({ verdict: 'approve', prFiles: scoped, policy: POLICY }).verdict).toBe('approve');
+    // The whole PR's list, which this review was never about, escalates.
+    expect(enforceServerSideEscalation({ verdict: 'approve', prFiles: PR_FILES, policy: POLICY }).verdict).toBe('escalate');
+  });
+
+  it('a migration in the delta itself still escalates', () => {
+    const scoped = scopeToCompositionDelta(PR_FILES, { compositionDelta: { novelDeltaPaths: [PR_FILES[1].filename] } });
+    expect(enforceServerSideEscalation({ verdict: 'approve', prFiles: scoped, policy: POLICY }).verdict).toBe('escalate');
+  });
+
+  it('a delta path past the PR file list cap counts by name; an ordinary review keeps its list as read', () => {
+    expect(scopeToCompositionDelta([], { compositionDelta: { novelDeltaPaths: ['late.ts'] } })).toEqual([{ filename: 'late.ts' }]);
+    expect(scopeToCompositionDelta(PR_FILES, { reviewerFor: 't' })).toBe(PR_FILES);
+    expect(scopeToCompositionDelta(null, {})).toBeNull();
+  });
+
+  it("the prompt names the delta's commits and how to read each one", () => {
+    const text = compositionScopeSection({ novelDeltaPaths: ['a.ts'], novelCommits: [{ sha: 'abc123', reason: 'direct_commit', paths: ['a.ts'] }] });
+    expect(text).toContain('- `abc123` (direct commit): `a.ts`');
+    expect(text).toContain('git show <sha>');
+    expect(compositionScopeSection({ novelDeltaPaths: ['a.ts'] })).not.toContain('git show');
+  });
+});
+
 describe('enforceServerSideEscalation', () => {
   const CLEAN = [{ filename: 'apps/web/src/lib/foo.ts' }];
   const MIGRATION = [
@@ -2203,6 +2240,32 @@ describe('renderSpecConformanceGuidance', () => {
     expect(withTask.section).toContain('never as pass');
     const without = await renderSpecConformanceGuidance({ specSource: pin, installationId: 1, repoFullName: 'buildd-ai/buildd', headSha: head });
     expect(without.section).not.toContain('Criteria to verdict');
+  });
+
+  it('a pin whose criteria name design screens loads those screens and refuses a builder claim as evidence', async () => {
+    pinnedReadImpl = async () => ({
+      ok: true, specId: 's-1', revision: 1, contentHash: 'ab'.repeat(32), title: 'Nav',
+      body: ['# Nav', '- AC-4: the mission page leads with the build.', '  - screen: phone-mission, desktop-mission', '- AC-5: copy.'].join('\n'),
+      design: { kind: 'artifact', ref: 'art-1', version: '3', screens: [{ id: 'phone-mission', name: 'Mission, phone' }] },
+    });
+    const pin = { specId: 's-1', specRevisionId: 'r-1', revision: 1, contentHash: 'ab'.repeat(32) };
+    const r = await renderSpecConformanceGuidance({ specSource: pin, installationId: 1, repoFullName: 'buildd-ai/buildd', headSha: 'd'.repeat(40), taskId: 't-1' });
+    expect(r.section).toContain('## Design screens to judge');
+    expect(r.section).toContain('get_artifact { artifactId: "art-1", revision: 3 }');
+    expect(r.section).toContain('AC-4: phone-mission (Mission, phone), desktop-mission');
+    expect(r.section).not.toContain('- AC-5:  ');
+    expect(r.section).toContain('is a claim, not evidence');
+    expect(r.section).toContain('`designChecks`');
+  });
+
+  it('a pin with a design but no screen-named criteria adds no design section', async () => {
+    pinnedReadImpl = async () => ({
+      ok: true, specId: 's-1', revision: 1, contentHash: 'ab'.repeat(32), title: 'Nav', body: '# Nav\n- AC-1: copy.',
+      design: { kind: 'artifact', ref: 'art-1', version: '3' },
+    });
+    const pin = { specId: 's-1', specRevisionId: 'r-1', revision: 1, contentHash: 'ab'.repeat(32) };
+    const r = await renderSpecConformanceGuidance({ specSource: pin, installationId: 1, repoFullName: 'buildd-ai/buildd', headSha: 'd'.repeat(40) });
+    expect(r.section).not.toContain('Design screens to judge');
   });
 
   it('a Living Spec pin that no longer resolves is an explicit finding naming why', async () => {

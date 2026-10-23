@@ -31,6 +31,8 @@ export interface SweepRecord {
   worktreePath?: string;
   branch?: string;
   lastActivity: number;
+  /** Rewritten by a start that died before settling it (worker-store.ts): it may still be continued. */
+  killedByRestart?: boolean;
 }
 
 export type SweepOutcome = 'removed' | 'archived' | 'kept' | 'missing';
@@ -106,6 +108,8 @@ export async function sweepTerminalWorktrees(opts: SweepTerminalWorktreesOptions
   for (const rec of opts.records) {
     if (examined >= maxPerPass) break;
     if (rec.status !== 'done' && rec.status !== 'error') continue;
+    // Not terminal yet: the next start's restore decides, and may continue it here.
+    if (rec.killedByRestart) continue;
     if (opts.skipIds?.has(rec.id)) continue;
     const path = rec.worktreePath;
     // Never touch a directory the runner did not create (the base clone, a

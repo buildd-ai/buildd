@@ -136,7 +136,9 @@ export type MissionStateSource =
   | 'workers.prUrl + workers.mergedAt'
   | 'workers.prLifecycleStatus + tasks.parentTaskId'
   | 'tasks.parentTaskId + tasks.taskClass'
-  | 'deriveLandingBlocker';
+  | 'deriveLandingBlocker'
+  | 'getMissionVisualReviewState'
+  | 'workers.prLifecycleStatus';
 
 export interface MissionStateProvenance {
   /** What produced `kind`. */
@@ -642,7 +644,7 @@ export interface MissionStateInput {
    * caller read it: the header follows it rather than the audit task row, so a
    * waiver or a blocked review reads the same here as on the check row.
    */
-  visualReview?: { status: string; blockedDetail?: string | null } | null;
+  visualReview?: { status: string; blockedDetail?: string | null; blocksMerge?: boolean; label?: string; needsOwner?: boolean } | null;
   /**
    * Required goal criteria the Checks rail shows as not yet passed, the
    * selected outcome spec included (`openCriteriaChecks`). Names what is left
@@ -699,7 +701,7 @@ export interface MissionStateInput {
    * merge the mission PR" into an affordance when there is. A caller that
    * has not loaded the row omits this rather than guessing.
    */
-  missionPr?: { state: 'open' | 'closed' | 'not_opened'; prNumber: number | null; prUrl: string | null } | null;
+  missionPr?: { state: 'open' | 'closed' | 'not_opened'; prNumber: number | null; prUrl: string | null; ciRed?: boolean } | null;
   /**
    * The escalation gate verdict for the mission PR, read from the decision
    * ledger. Used to determine if the mission should be marked as needs-you
@@ -1271,7 +1273,8 @@ function fixLabel(a: { iteration: number | null; maxIterations: number | null; k
 }
 
 function ciRedPhrase(d: { attempts: number; failing: string[]; prNumbers: number[] }): string {
-  const after = `CI red after ${d.attempts} fix attempt${d.attempts === 1 ? '' : 's'}`;
+  // The mission PR's own red CI has no fix chain counted: say red, never "after 0 fix attempts".
+  const after = d.attempts > 0 ? `CI red after ${d.attempts} fix attempt${d.attempts === 1 ? '' : 's'}` : 'CI red';
   if (d.failing.length > 0) return `${after}: ${d.failing.join(', ')}`;
   return d.prNumbers.length === 1 ? `${after} on PR #${d.prNumbers[0]}` : after;
 }
@@ -1349,6 +1352,46 @@ function landingFact(
     displayState: person ? 'blocked' : 'active',
     source: 'deriveLandingBlocker',
   };
+}
+
+/**
+ * The open mission PR is not ready to merge (spec 072de598 I-12, AC-10): its
+ * visual review holds the merge, or its CI is red. "Ready to merge" over
+ * either sends the owner to a merge every door refuses. The visual review
+ * outranks CI: its refusal is the one a merge door gives first.
+ */
+function missionPrHoldFact(input: MissionStateInput, prNumbers: number[], prUrls: string[], taskIds: string[]): Resolution | null {
+  const ref = prNumbers.length === 1 ? ` #${prNumbers[0]}` : '';
+  const vr = input.visualReview;
+  if (vr?.blocksMerge) {
+    const person = vr.needsOwner === true;
+    return {
+      kind: person ? 'blocked' : 'waiting',
+      waitingOn: {
+        kind: 'landing_blocked',
+        tone: person ? 'warning' : 'info',
+        label: `Mission PR${ref} waits on the visual review: ${lowerFirst(vr.label ?? 'not finished')}`,
+        count: 1,
+        cause: 'visual_review',
+        owner: person ? 'person' : 'platform',
+        nextAction: person ? 'Open the visual review and decide, or skip it.' : 'It merges once the visual review passes.',
+        prNumbers, prUrls, taskIds,
+      },
+      displayState: person ? 'blocked' : 'active',
+      source: 'getMissionVisualReviewState',
+    };
+  }
+  if (input.missionPr?.ciRed) {
+    return {
+      kind: 'blocked',
+      waitingOn: {
+        kind: 'ci_red', tone: 'error', label: `CI red on mission PR${ref}`, count: 1, attempts: 0, failing: [], prNumbers, prUrls, taskIds,
+      },
+      displayState: 'blocked',
+      source: 'workers.prLifecycleStatus',
+    };
+  }
+  return null;
 }
 
 /** Rule 7 — the work is done and has not reached trunk. */
@@ -1451,6 +1494,9 @@ function mergeFact(input: MissionStateInput): Resolution | null {
       if (landing) return landing;
       const red = ciRedFact(input.ciRed, details);
       if (red) return red;
+    } else {
+      const hold = missionPrHoldFact(input, prNumbers, prUrls, details.map(d => d.taskId));
+      if (hold) return hold;
     }
 
     return {
@@ -1507,6 +1553,14 @@ function mergeFact(input: MissionStateInput): Resolution | null {
       if (landing) return landing;
       const red = ciRedFact(input.ciRed, rowPrs);
       if (red) return red;
+    } else {
+      const hold = missionPrHoldFact(
+        input,
+        openMissionPr!.prNumber != null ? [openMissionPr!.prNumber] : [],
+        openMissionPr!.prUrl ? [openMissionPr!.prUrl] : [],
+        [],
+      );
+      if (hold) return hold;
     }
     return {
       kind: 'awaiting_merge',

@@ -66,6 +66,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   pauseRequestedAt: true, // a timestamp, no content
   pauseRequestedFor: true, // 'update' or absent, no content
   killedByRestart: true,
+  terminalReport: true, // the pending terminal PATCH: status and error text, no credentials
   resumeOnStart: true, // shutdown, crash or update, no content
   completedAt: true,
   milestones: true,
