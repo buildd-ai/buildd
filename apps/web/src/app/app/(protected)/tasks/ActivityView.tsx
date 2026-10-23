@@ -430,10 +430,9 @@ function NowRowView({ row, nowMs, groupNew }: { row: NowRow; nowMs: number; grou
       <span className="col-span-2 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-meta text-text-muted">
         {/* New once: on the mission's group when the mission is new, else on the task. */}
         {row.isNew && !groupNew && <NewMarker />}
-        {row.transition && <span data-testid="activity-transition">{transitionText(row.transition, nowMs)}</span>}
-        {row.transition && <span aria-hidden="true">·</span>}
-        <span data-testid="activity-created">{createdText(row.createdAt, nowMs)}</span>
-        <span aria-hidden="true">·</span>
+        {/* A separator ends the item before it, so a wrapped line never starts with one. */}
+        {row.transition && <span><span data-testid="activity-transition">{transitionText(row.transition, nowMs)}</span><span aria-hidden="true"> ·</span></span>}
+        <span className="whitespace-nowrap"><span data-testid="activity-created">{createdText(row.createdAt, nowMs)}</span><span aria-hidden="true"> ·</span></span>
         <AttributionText attribution={row.attribution} />
       </span>
     </>
