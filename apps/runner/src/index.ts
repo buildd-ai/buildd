@@ -5,8 +5,8 @@ import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import { fetchOpenRouterCatalog } from '@buildd/core/model-catalog';
 import { setCatalogPrices } from '@buildd/core/model-prices';
 import { join } from 'path';
-import { hostname } from 'os';
 import { resolveBuilddHome } from './buildd-home';
+import { headlessRunnerKey, runnerHostName, wslIdentityNotice } from './runner-host';
 import { resolveBuilddServer } from './server-url';
 import type { LocalUIConfig, LLMProvider, LocalWorker, ProviderConfig } from './types';
 import { DEFAULT_LOGIN_MODE, parseLoginMode } from '@buildd/shared';
@@ -678,8 +678,12 @@ function detectTailscaleIp(): string | null {
 // In headless mode (no --debug), returns a sentinel for heartbeat identification only
 function resolveLocalUiUrl(): string {
   if (!DEBUG_MODE) {
-    // Headless sentinel — unique per host, used as heartbeat upsert key only
-    return `headless://${hostname()}`;
+    // Headless sentinel — unique per host, used as heartbeat upsert key only.
+    // Inside WSL it is `headless://<hostname>-wsl`, apart from a Windows runner
+    // on this machine (spec a0b82b5d R-22); say so once (R-26).
+    const notice = wslIdentityNotice({ builddHome: BUILDD_DIR });
+    if (notice) console.log(`  ${notice}`);
+    return headlessRunnerKey();
   }
   if (process.env.LOCAL_UI_URL) return process.env.LOCAL_UI_URL;
   if (savedConfig.localUiUrl) return savedConfig.localUiUrl;
@@ -764,7 +768,7 @@ if (ONCE_RUN) {
     config,
     resolver,
     builddHome: BUILDD_DIR,
-    host: hostname(),
+    host: runnerHostName(),
     env: process.env as Record<string, string | undefined>,
   });
   if (isRun) await (await import('./run-attach')).recordRunExit(BUILDD_DIR, recordTask, code);
