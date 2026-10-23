@@ -283,7 +283,8 @@ const CheckSkip = {
         className="col-start-2 mt-1 flex flex-col gap-2 md:col-[2/4]"
         onSubmit={e => { e.preventDefault(); void submit(); }}
       >
-        <label htmlFor={id} className="text-meta text-text-secondary">Why skip it?</label>
+        {/* Nothing is saved until Skip review: say so, since the word Skip alone only opens this field. */}
+        <label htmlFor={id} className="text-meta text-text-secondary">Why skip it? Not skipped until you press Skip review ({SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH}+ characters).</label>
         <div className="flex flex-col gap-2 md:flex-row md:items-center">
           <input
             id={id}

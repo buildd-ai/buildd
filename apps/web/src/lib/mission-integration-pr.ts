@@ -61,6 +61,8 @@ export interface MissionIntegrationPrView {
    * cannot tell, so the surface never claims it; settlement decides that live.
    */
   landedIn?: number;
+  /** The open PR's owner worker reads CI failed (`prLifecycleStatus` `ci_failed`): not ready to merge (spec 072de598 I-12). */
+  ciRed?: boolean;
 }
 
 /** The delivery record as a surface reads it (`EpochSnapshot`'s shown fields). */
@@ -132,6 +134,7 @@ export function deriveMissionIntegrationPr(args: {
       branch: current.branch, state, prNumber: current.prNumber, prUrl: prUrlOf(current) ?? ownerWorker?.w.prUrl ?? null,
       taskId: current.ownerTaskId ?? ownerWorker?.t.id ?? null, delivery: current.epoch, shippedDeliveries,
       ...(landedIn != null ? { landedIn } : {}),
+      ...(state === 'open' && ownerWorker?.w.prLifecycleStatus === 'ci_failed' ? { ciRed: true } : {}),
     };
   }
 
@@ -151,6 +154,7 @@ export function deriveMissionIntegrationPr(args: {
       prUrl: worker.prUrl ?? null,
       taskId: task.id ?? null,
       ...(landedIn != null ? { landedIn } : {}),
+      ...(state === 'open' && worker.prLifecycleStatus === 'ci_failed' ? { ciRed: true } : {}),
     };
   }
 

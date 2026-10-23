@@ -102,7 +102,8 @@ export default {
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     installKernelTelemetry(envOf(env), currentWaitUntil);
     await runInRequest(p => ctx.waitUntil(p), async () => {
-      // The per-minute trigger is the effect timer (effect-timer.ts); the hourly one is the floor.
+      // The per-minute trigger is the effect timer and the trunk recheck queue (effect-timer.ts,
+      // trunk-recheck.ts); the hourly one is the floor.
       if (controller.cron === EFFECT_TICK_CRON) {
         const { runScheduledEffectTick } = await import('@/lib/workflow/kernel-floor');
         await runScheduledEffectTick({ env: envOf(env) });
