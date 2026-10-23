@@ -23,7 +23,8 @@
 import { isOpenAsk, missionOpenQuestions } from './open-ask';
 import { loadTaskAccess } from './agent-capabilities/access-log';
 import { BACKEND_ROUTING_KEY, describeBackendRouting } from '@buildd/core/backend-policy';
-import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES, VISUAL_AUDITOR_ROLE_SLUG, type TaskEvidence, type TaskMismatch } from '@buildd/shared';
+import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, RUNNER_RECENTLY_SEEN_MS, type TaskEvidence, type TaskMismatch } from '@buildd/shared';
+import { loadRunnerBeats, offlineRunnerWaitLine, runnerLiveness, type RunnerLiveness } from '@/lib/runner-offline';
 import { isWorktreeSetupTimeoutError } from '@/lib/worker-exit-taxonomy';
 import { collectLineage } from '@/lib/attempt-lineage';
 import { evidenceHint } from '@/lib/task-evidence';
@@ -75,6 +76,7 @@ import {
   withDispatchLink,
   entitlementHoldLink,
   taskRecoveryLink,
+  offlineRunnerLink,
   type BaseSideMerge,
   type StateBecauseExtras,
   type ConflictSubject,
@@ -214,6 +216,12 @@ type LoadedTask = {
     abandonedAt?: Date | null;
     abandonedReason?: string | null;
     supersessionScan?: import('@buildd/core/pr-shipped').SupersessionScan | null;
+    /** The runner this worker ran under, for the offline-runner wait (lib/runner-offline.ts). */
+    runner?: string | null;
+    localUiUrl?: string | null;
+    accountId?: string | null;
+    parkedUntil?: Date | null;
+    leaseExpiresAt?: Date | null;
   }>;
 };
 
@@ -239,9 +247,44 @@ const WORKER_WITH = {
     abandonedAt: true, abandonedReason: true, supersessionScan: true,
     // A worker parked on a question: what it asked (`missionOpenQuestions`).
     waitingFor: true,
+    // Which runner a live worker is under, so a task whose runner went quiet
+    // reads as waiting on that runner rather than RUNNING (`offlineRunnerWaitFor`).
+    runner: true, localUiUrl: true, accountId: true, parkedUntil: true, leaseExpiresAt: true,
   },
   orderBy: sqlOrderBy([desc(workers.startedAt)]),
 };
+
+/**
+ * A live-status worker whose own runner has gone quiet (lib/runner-offline.ts):
+ * past the "demonstrably up" window the task is not RUNNING, it is waiting
+ * for that runner to be confirmed dead, after which the offline-runner reaper
+ * requeues it. Null when the runner is fine, the worker is interactive or
+ * parked, or nothing can be judged (an unreadable heartbeat table is not
+ * evidence of anything).
+ */
+async function offlineRunnerWaitFor(w: LoadedTask['workers'][number] | undefined, now: Date): Promise<RunnerLiveness | null> {
+  if (!w || !(w.status === 'running' || w.status === 'starting' || w.status === 'idle')) return null;
+  if (w.runner === INTERACTIVE_WORKER_RUNNER || !w.accountId) return null;
+  if (w.parkedUntil && new Date(w.parkedUntil).getTime() > now.getTime()) return null;
+  const beats = await loadRunnerBeats(w.accountId).catch(() => null);
+  if (!beats) return null;
+  const liveness = runnerLiveness(w, beats, now);
+  if (liveness.verdict === 'dead') return liveness;
+  return liveness.verdict === 'live' && liveness.silentMs !== null && liveness.silentMs >= RUNNER_RECENTLY_SEEN_MS ? liveness : null;
+}
+
+/** The answer's headline and next action say what the task waits on: the runner's death, not RUNNING. */
+function withOfflineRunnerWait(answer: ExplainAnswer, wait: RunnerLiveness | null): ExplainAnswer {
+  if (!wait) return answer;
+  const line = offlineRunnerWaitLine(wait);
+  const headline = `${line.charAt(0).toUpperCase()}${line.slice(1).split(':')[0]}.`;
+  return {
+    ...answer,
+    nextAction: line,
+    situation: { ...answer.situation, headline, nextAction: line },
+    derivedFrom: { ...answer.derivedFrom, nextAction: 'workers.runner + workerHeartbeats.lastHeartbeatAt' },
+  };
+}
 
 const LIVE_WORKER_STATUSES = new Set<string>(SHARED_LIVE_WORKER_STATUSES);
 const OPEN_TASK_STATUSES = new Set<string>(SHARED_OPEN_TASK_STATUSES);
@@ -1198,10 +1241,14 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
     ? overlapStartLink(latestOverlapStarts(gateRows.map(r => ({ reason: r.entry.reason, detail: r.detail }))), { taskId, workspaceId })
     : null;
   const recovery = taskRecoveryLink(task.status, task.context, { taskId, workspaceId });
-  const because = withDisagreements(withDispatchLink(withDispatchLink(
+  // A live worker whose runner went quiet: the task waits on that runner's
+  // death, not on anything the state accessor can see.
+  const runnerWait = await offlineRunnerWaitFor(task.workers?.[0], new Date());
+  const runnerLink = runnerWait ? offlineRunnerLink(runnerWait, { taskId, workspaceId }, task.workers?.[0]?.id ?? null) : null;
+  const because = withDisagreements(withDispatchLink(withDispatchLink(withDispatchLink(
     withDispatchLink(withDispatchLink(withDispatchLink(withDispatchLink(buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras), transition), roundWhy), wake), hold),
     (coordLink ?? alongside) as Parameters<typeof withDispatchLink>[1],
-  ), recovery), deliveryDisagreements([task], deliveries), { missionId, workspaceId });
+  ), recovery), runnerLink), deliveryDisagreements([task], deliveries), { missionId, workspaceId });
   const evidenceObjects = workspaceId
     ? await loadInlineEvidence(workspaceId, taskId, { surface: 'explain', actor })
     : [];
@@ -1209,7 +1256,7 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
   // long-running task's renewals do not crowd out the answer.
   const access = (await loadTaskAccess(taskId).catch(() => [])).slice(-40);
   const routed = withBackendRouting(answerFrom(view, subject, buildHistory(lineage, deliveries), because, gateHistory, evidenceObjects), task);
-  const answer = withDelivery(routed, dv);
+  const answer = withOfflineRunnerWait(withDelivery(routed, dv), runnerWait);
   // The verdict the task page leads with, from the same loader the
   // state-change recompute uses. Read-only: no model call. A failure omits it.
   const verdict = await loadTaskVerdictForExplain(taskId).catch(() => null);
