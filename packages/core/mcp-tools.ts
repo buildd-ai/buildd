@@ -2865,7 +2865,8 @@ export async function handleBuilddAction(
       // Attached designs, with the screens a builder is asked to match. The
       // artifact list above shows a design as one file; this names its screens.
       if (includes.includes('artifacts')) {
-        const attached = await api(`/api/artifacts/designs?taskId=${encodeURIComponent(task.id)}`).catch(() => null);
+        let attached: any = null;
+        try { attached = await api(`/api/artifacts/designs?taskId=${encodeURIComponent(task.id)}`); } catch { /* designs are optional detail */ }
         const designs = Array.isArray(attached?.designs) ? attached.designs as Array<Record<string, any>> : [];
         if (designs.length > 0) {
           lines.push('', `## Designs (${designs.length})`);
