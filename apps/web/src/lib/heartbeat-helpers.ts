@@ -2,6 +2,8 @@
  * Pure helper functions for heartbeat mission UI.
  */
 
+import { MANIFEST_ITEM } from './mission-checklist-repair';
+
 import { resolvePrompt, resolvePromptValue } from '@buildd/core/prompts';
 import { registerTextPrompt, registerValuePrompt } from '@buildd/core/prompts';
 
@@ -28,7 +30,7 @@ export const DEFAULT_HEARTBEAT_CRON = '0 * * * *';
 export const DEFAULT_MISSION_HEARTBEAT_CHECKLIST = `- [ ] Assess mission phase: are we planning, building, reviewing, or stalled?
 - [ ] If plan exists but no coding tasks: create them (outputRequirement=pr_required, roleSlug=builder)
 - [ ] If no workspace/repo exists: create one with manage_workspaces, then create coding tasks
-- [ ] When creating a batch of build tasks: include a CONCRETE pathManifest (actual file/directory paths each task will create or modify) so the platform can serialize tasks that touch the same files. Example: pathManifest=["apps/web/src/lib/foo.ts","packages/core/db/schema.ts"]. The API auto-adds dependsOn edges between tasks whose concrete manifests overlap — you declare the paths, not the edges. A task filed WITHOUT a pathManifest defaults to the repo-wide sentinel ["**"], which means "scope not declared": it is advisory only and buys no serialization at all — no dependsOn edges in, none out, and no claim-time blocking. So an undeclared scope does not make a task safe; it makes it race. Declaring the paths is the only way to get serialization.
+${MANIFEST_ITEM}
 - [ ] NEVER re-implement a file that is already declared in a sibling task's pathManifest or described as that task's primary deliverable. If you need code owned by a pending/active sibling task, report blocked with the sibling taskId so a dependsOn edge can be added.
 - [ ] Never file your own task to verify a selected outcome spec: only the mission's [final verification] task or a person can record its verdicts, and anything else is refused. If the outcome spec reads failing or unverified after repairs merged, call manage_missions action=evaluate, which files the final verification when one is due
 - [ ] If ALL planned work is done (tasks completed, PRs merged or delivered), set missionComplete: true in structuredOutput. This PROPOSES completion — the platform then counts open tasks and evaluates the mission's goal criteria, and refuses if either does not clear. Setting the flag is not the same as the mission closing; check the mission's goal criteria (shown below when set) before asserting it, and if completion is refused the reason is posted to the mission feed`;

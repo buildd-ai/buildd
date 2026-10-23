@@ -472,11 +472,19 @@ describe('DEFAULT_ROLES', () => {
       expect(c()).toMatch(/off by default|unless the mission has explicitly opted in/i);
     });
 
-    it('makes path overlap the reason to chain, in both shapes', () => {
-      expect(c()).toContain('Serialize on path overlap');
-      expect(c()).toContain('in both shapes');
-      // Blanket "same repo => chain" survives only as the non-opted-in rule.
-      expect(c()).toMatch(/Without an integration branch, tasks on the \*\*same repo\*\* MUST be chained/);
+    it('resyncs an unedited organizer and preserves a custom organizer', () => {
+      const role = bySlug.organizer;
+      const row = { id: 'organizer-row', slug: 'organizer', source: 'system',
+        contentHash: '5933265ac362a46104864fa854d07d04450ef1564ca6d1dc3b9c5aef1e8accdc', metadata: {} };
+      expect(planDefaultRoleResync([row])).toMatchObject([{ id: row.id, content: role.content, version: 2 }]);
+      expect(planDefaultRoleResync([{ ...row, contentHash: roleContentHash('custom organizer') }])).toEqual([]);
+    });
+
+    it('chains only for real ordering needs and explains lanes and locks', () => {
+      expect(c()).toContain('dependsOn only for a real ordering need');
+      expect(c()).toContain('first come');
+      expect(c()).toContain('edit-time file lock');
+      expect(c()).not.toContain('MUST be chained');
     });
 
     it('keeps DONE = MERGED and scopes "merged" to the integration branch when there is one', () => {
@@ -493,14 +501,9 @@ describe('DEFAULT_ROLES', () => {
       expect(c()).not.toMatch(/push (commits )?to (one|the same|a shared) branch/i);
     });
 
-    it('does not promise parallelism the platform will not deliver', () => {
-      // A plan step cannot declare its file scope (`PlanStep` has no
-      // `pathManifest` and approve-plan sets none), so claim time serializes
-      // same-mission siblings whatever the plan says. The prompt used to tell
-      // the organizer that disjoint-path steps run in parallel, which made it
-      // drop `dependsOn` and buy nothing but lost ordering.
-      expect(c()).not.toMatch(/run in parallel in the same repo/);
-      expect(c()).toMatch(/shorter wait per link/);
+    it('allows parallel work outside serial lanes in either branch shape', () => {
+      expect(c()).toContain('Everything else runs in parallel');
+      expect(c()).not.toContain('serializes same-mission siblings');
     });
 
     it('keeps the example plan valid JSON and consistent with the rules', () => {
@@ -509,7 +512,7 @@ describe('DEFAULT_ROLES', () => {
       const plan = JSON.parse(block![1]) as Array<Record<string, unknown>>;
       expect(plan).toHaveLength(2);
       expect(plan[0].dependsOn).toBeUndefined();
-      // Same-repo chain: the default (trunk-based) shape's rule.
+      // The UI needs the endpoint delivered by step-1.
       expect(plan[1].dependsOn).toEqual(['step-1']);
       expect(plan[1].baseBranch).toBe('step-1');
       for (const step of plan) {

@@ -1513,6 +1513,7 @@ export async function POST(req: NextRequest) {
     ) {
       const error =
         'pathManifest is required for mission tasks that produce a PR — declare at least one concrete path, e.g. pathManifest: ["apps/web/src/lib/foo.ts"]. ' +
+        'Schema, migrations and configured hard surfaces use serial lanes; the edit-time file lock stops concurrent edits to the same file. ' +
         "If this task won't produce a PR, set outputRequirement: 'none' instead.";
       const frictionSignature = fireGateEvent({
         gate: GATE_SLUGS.MANIFEST_REQUIRED,

@@ -52,6 +52,9 @@ mock.module('@/lib/artifact-attachment-cleanup', () => ({ removeOrphanChatAttach
 const mockTeamFiles = mock(async (_opts: unknown) => ({ removed: 5, objectsRemoved: 5 }));
 mock.module('@/lib/artifact-team-files', () => ({ removeDetachedTeamFiles: mockTeamFiles }));
 
+const missionChecklists = { updated: 1, customized: 2, current: 3, raced: 0 };
+const mockChecklists = mock(async () => missionChecklists);
+mock.module('./mission-checklists', () => ({ repairMissionChecklists: mockChecklists }));
 const { GET } = await import('./route');
 
 const CRON_SECRET = 'test-cron-secret';
@@ -100,9 +103,9 @@ describe('maintenance cron — the core sweeps', () => {
     const uploads = { finalized: 2, removed: 1, waiting: 0 };
     const chatAttachments = { removed: 4, objectsRemoved: 2 };
     const teamFiles = { removed: 5, objectsRemoved: 5 };
-    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2 });
+    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments, teamFiles, missionChecklists, oauthClientsPruned: 2 });
     const row = cronRunRows.find(r => r.job === 'maintenance');
-    expect(row).toMatchObject({ ok: true, changed: 20, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2 } });
+    expect(row).toMatchObject({ ok: true, changed: 21, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments, teamFiles, missionChecklists, oauthClientsPruned: 2 } });
   });
 
   it('a failing chat attachment sweep is logged and reads as nothing removed', async () => {
@@ -117,6 +120,15 @@ describe('maintenance cron — the core sweeps', () => {
     const res = await GET(makeRequest());
     expect(res.status).toBe(200);
     expect((await res.json()).teamFiles).toEqual({ removed: 0, objectsRemoved: 0 });
+  });
+});
+
+describe('checklist repair isolation', () => {
+  it('reports a failed repair without stopping maintenance', async () => {
+    mockChecklists.mockRejectedValueOnce(new Error('boom'));
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    expect((await res.json()).missionChecklists).toEqual({ updated: 0, customized: 0, current: 0, raced: 0, error: true });
   });
 });
 
