@@ -368,6 +368,9 @@ jobs:
       - name: Start app
         id: boot
         run: |
+          # Object storage stand-in: the clone has none, so design artifacts would
+          # read "Preview unavailable". Serves a synthetic design for any key.
+          QA_STORAGE_STUB_PORT=9100 bun "$QA_HARNESS/scripts/qa/storage-stub.ts" > /tmp/storage-stub.log 2>&1 &
           cd apps/web
           bun dev > /tmp/app.log 2>&1 &
           echo $! > /tmp/app.pid
@@ -390,6 +393,9 @@ jobs:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}
           AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
           NEXTAUTH_URL: http://localhost:3000
+          STORAGE_ENDPOINT: http://localhost:9100
+          STORAGE_ACCESS_KEY: qa-placeholder
+          STORAGE_SECRET_KEY: qa-placeholder
           DEV_USER_EMAIL: ${{ steps.scrub.outputs.ci_user_email }}
           # Only on request (viewer=operator): the owner-only pages 404 for anyone else.
           BUILDD_OPERATOR_USER_EMAILS: ${{ inputs.viewer == 'operator' && steps.scrub.outputs.ci_user_email || '' }}
