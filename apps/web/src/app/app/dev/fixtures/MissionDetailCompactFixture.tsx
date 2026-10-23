@@ -2,7 +2,7 @@
 
 /**
  * `?state=mission-detail-compact`: mission detail as a phone meets it. The
- * real header (back, title, state chip, Verified pill, clock, the ⋯ menu,
+ * real header (back, the ⋯ menu, title,
  * goal line, spec line) over the real Overview (the stage line, the decision
  * cards, the bar, the summary line and the task list), inside the app's
  * scroll root with the phone tab bar fixed over it. See
@@ -14,7 +14,6 @@ import { selectStripCell } from './strip-select';
 import { useEffect, useState } from 'react';
 import type { GoalCriterion } from '@buildd/shared';
 import MissionsBottomNav from '@/components/MissionsBottomNav';
-import { getMissionStateChip } from '@/lib/mission-helpers';
 import MissionLayoutShell, { MissionBoardHeader } from '@/app/app/(protected)/missions/[id]/MissionLayoutShell';
 import MissionOverview from '@/app/app/(protected)/missions/[id]/MissionOverview';
 import MissionVerifiedPill from '@/app/app/(protected)/missions/[id]/MissionVerifiedPill';
@@ -51,15 +50,14 @@ export default function MissionDetailCompactFixture() {
 
   const { model, title, goal, variant } = fixture;
   const complete = variant === 'all-landed' || variant === 'delivered';
-  const chip = getMissionStateChip(complete ? 'complete' : 'running');
   const link = { missionId: MISSION_ID, from: null, initiativeId: null };
   const header = (content: React.ReactNode) => (
     <MissionBoardHeader
       back={{ label: 'Missions', href: '/app/missions' }}
       title={title}
-      chip={chip}
       verified={
         <MissionVerifiedPill
+          sheetOnly
           missionId={MISSION_ID}
           criteria={CRITERIA}
           criteriaState={null}
@@ -83,10 +81,6 @@ export default function MissionDetailCompactFixture() {
       }
       goal={goal}
       description={<p className="text-body text-text-secondary">{goal}</p>}
-      serverNow={model.now}
-      startedAt={model.startedAt}
-      endedAt={model.endedAt}
-      activeMs={model.activeMs}
     >
       {content}
     </MissionBoardHeader>
