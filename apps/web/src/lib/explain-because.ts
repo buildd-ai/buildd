@@ -27,6 +27,7 @@ import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/sh
 import { taskRecoverySentence } from './task-recovery-hold';
 import { cancellationLine } from './task-cancellation';
 import { claimHoldPhrase } from './claim-hold-phrase';
+import { HIDDEN_TASK_WORDS } from './mission-task-hold';
 import type { DeliveryDisagreement } from './delivery-overlay';
 import { roundTriggerSentence, type DeliveryRound } from '@buildd/workflow-kernel/projections';
 import { offlineRunnerWaitLine, type RunnerLiveness } from './runner-offline';
@@ -77,13 +78,15 @@ export interface StateBecauseExtras {
      * the row text and the task it waits behind. The chain prints the same
      * words the list row shows, and refs the holder.
      */
-    pendingHold?: { row: string; kind: string; holder: { id: string; title: string | null; note: string | null } | null } | null;
+    pendingHold?: { row: string; kind: string; holder: { id: string; title: string | null; note: string | null; hidden?: true } | null } | null;
     /**
      * Unmet dependencies of a pending row. Such a row cannot be claimed, so it
-     * is described as waiting on them (and ref'd to the first), never as
-     * orphaned — and it never leads the chain.
+     * is described as waiting on them (and ref'd to the first it may name),
+     * never as orphaned — and it never leads the chain. Resolved per viewer
+     * (spec e28018c2 R-7): a `hidden` one is worded `HIDDEN_TASK_WORDS` and
+     * never ref'd; one in another workspace carries `workspaceName`.
      */
-    waitingOn?: Array<{ id: string; title: string | null }>;
+    waitingOn?: Array<{ id: string; title: string | null; hidden?: boolean; workspaceName?: string | null }>;
   }>;
   /** Failed rows with the signature their failure was bucketed under. */
   failedTasks?: Array<{ id: string; title: string | null; errorSignature?: string | null }>;
@@ -224,11 +227,14 @@ function openTaskLinks(
   return rows.filter(t => !t.waiting).slice(0, 10).map(t => {
     if (depBlocked(t)) {
       const deps = t.waitingOn!;
-      const named = deps.map(d => `"${d.title ?? d.id}"`).join(', ');
+      const named = deps.map(d => (d.hidden
+        ? HIDDEN_TASK_WORDS
+        : `"${d.title ?? d.id}"${d.workspaceName ? ` in ${d.workspaceName}` : ''}`)).join(', ');
+      const visible = deps.find(d => !d.hidden);
       return link(
         `${name(t)} is waiting on ${named}.`,
         'tasks.dependsOn',
-        { ...base, taskId: deps[0].id },
+        visible ? { ...base, taskId: visible.id } : { ...base, taskId: t.id },
       );
     }
     // A local-executor mission: its rows are the person's session's to claim,
@@ -255,7 +261,7 @@ function openTaskLinks(
       const derivedFrom = h.kind === 'dependency' ? 'tasks.dependsOn'
         : h.kind === 'next_in_line' || h.kind === 'scheduled' ? 'tasks.status + workers.status'
         : 'gate_events.detail';
-      return link(`${name(t)}: ${h.row}.`, derivedFrom, { ...base, taskId: h.holder?.id ?? t.id });
+      return link(`${name(t)}: ${h.row}.`, derivedFrom, { ...base, taskId: h.holder && !h.holder.hidden ? h.holder.id : t.id });
     }
     const hold = t.status === 'pending' ? claimHoldPhrase(t.holdReason) : null;
     if (hold && orphaned(t)) {

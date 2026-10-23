@@ -215,6 +215,8 @@ import {
   reopenChecksFailedBy,
   shouldAutoApprovePlan,
   requirePlanApprovalEnabled,
+  releaseCrossWorkspaceDependentsOf,
+  removeDependencyEdges,
 } from './task-dependencies';
 
 function resetMocks() {
@@ -1574,5 +1576,62 @@ describe('resolveCompletedTask — mission-PR opener wiring', () => {
     await resolveCompletedTask('task-1', 'ws-1');
 
     expect(mockMaybeOpenMissionIntegrationPr).not.toHaveBeenCalled();
+  });
+});
+
+// Spec e28018c2 R-14 / R-15: an upstream that leaves the picture stops holding
+// its dependents, and the dependent records why.
+describe('releasing dependency edges', () => {
+  beforeEach(resetMocks);
+
+  it('AC-11: deleting an upstream drops it from cross-workspace dependents, records it, and wakes them', async () => {
+    findFirstResults[0] = { workspaceId: 'ws-1' };
+    selectWhereResults = [[
+      { id: 'dep-b', workspaceId: 'ws-2', status: 'pending', dependsOn: ['up-a', 'other'], context: { keep: 1 } },
+      { id: 'dep-same', workspaceId: 'ws-1', status: 'pending', dependsOn: ['up-a'], context: null },
+    ]];
+
+    const released = await releaseCrossWorkspaceDependentsOf('up-a');
+
+    expect(released).toEqual(['dep-b']);
+    expect(mockUpdateSet).toHaveBeenCalledTimes(1);
+    const set = (mockUpdateSet.mock.calls[0] as any[])[0];
+    expect(set.dependsOn).toEqual(['other']);
+    expect(set.context.keep).toBe(1);
+    expect(set.context.removedDependencies).toEqual([{ id: 'up-a', reason: 'upstream_deleted', at: expect.any(String) }]);
+    expect(mockWakeTask).toHaveBeenCalledWith('dep-b', 'dependency.satisfied');
+    // Same-workspace dependents keep today's behaviour.
+    expect(mockWakeTask).not.toHaveBeenCalledWith('dep-same', expect.anything());
+  });
+
+  it('the last edge gone announces the dependent unblocked', async () => {
+    findFirstResults[0] = { workspaceId: 'ws-1' };
+    selectWhereResults = [[{ id: 'dep-b', workspaceId: 'ws-2', status: 'pending', dependsOn: ['up-a'], context: { removedDependencies: [{ id: 'old', reason: 'upstream_deleted', at: 'x' }] } }]];
+    await releaseCrossWorkspaceDependentsOf('up-a');
+    const set = (mockUpdateSet.mock.calls[0] as any[])[0];
+    expect(set.dependsOn).toEqual([]);
+    expect(set.context.removedDependencies).toHaveLength(2);
+    expect(mockTriggerEvent).toHaveBeenCalledWith('workspace-ws-2', 'task:unblocked', { taskId: 'dep-b', resolvedDependency: 'up-a' });
+  });
+
+  it('a missing upstream releases nothing', async () => {
+    findFirstResults[0] = null;
+    expect(await releaseCrossWorkspaceDependentsOf('up-a')).toEqual([]);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('removeDependencyEdges records the reason it is given and wakes only pending dependents', async () => {
+    selectWhereResults = [[
+      { id: 'dep-b', workspaceId: 'ws-2', status: 'pending', dependsOn: ['up-a'], context: null },
+      { id: 'dep-c', workspaceId: 'ws-2', status: 'completed', dependsOn: ['up-a'], context: null },
+    ]];
+    const released = await removeDependencyEdges(
+      [{ dependentId: 'dep-b', upstreamId: 'up-a' }, { dependentId: 'dep-c', upstreamId: 'up-a' }],
+      'workspace_left_team',
+    );
+    expect(released).toEqual(['dep-b', 'dep-c']);
+    expect((mockUpdateSet.mock.calls[0] as any[])[0].context.removedDependencies[0].reason).toBe('workspace_left_team');
+    expect(mockWakeTask).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith('dep-b', 'dependency.satisfied');
   });
 });

@@ -40,10 +40,21 @@ export type PendingHoldKind =
   | 'hold'
   | 'next_in_line';
 
+/**
+ * How every surface names an upstream the viewer cannot see (spec e28018c2
+ * R-6). Its facts are resolved per viewer before they get here
+ * (`resolveDependencyHolders`, lib/task-dependency-reach.ts).
+ */
+export const HIDDEN_TASK_WORDS = "a task in a workspace you can't see";
+
 /** A task another task waits on: enough to name it and to say whether it is alive. */
 export interface PendingHolderFacts {
   id: string;
   title?: string | null;
+  /** The viewer cannot see it: named `HIDDEN_TASK_WORDS`, with no note. */
+  hidden?: boolean;
+  /** A visible holder in another workspace than the waiting task's: named with it. */
+  workspaceName?: string | null;
   status?: string | null;
   /** Its PR merged (a completed holder whose work landed). */
   merged?: boolean | null;
@@ -57,6 +68,8 @@ export interface PendingHolderFacts {
 export interface HolderSourceRow {
   id: string;
   title?: string | null;
+  hidden?: boolean;
+  workspaceName?: string | null;
   status: string;
   startAt?: Date | string | null;
   workers?: ReadonlyArray<{ mergedAt?: Date | string | null }> | null;
@@ -66,7 +79,9 @@ export interface HolderSourceRow {
 export function holderFacts(row: HolderSourceRow, firstDeferredAt?: string | null): PendingHolderFacts {
   return {
     id: row.id,
-    title: row.title ?? null,
+    title: row.hidden ? null : row.title ?? null,
+    ...(row.hidden ? { hidden: true } : {}),
+    ...(row.workspaceName && !row.hidden ? { workspaceName: row.workspaceName } : {}),
     status: row.status,
     merged: (row.workers ?? []).some(w => !!w.mergedAt),
     startAt: row.startAt ?? null,
@@ -114,8 +129,8 @@ export interface PendingTaskHold {
   ageLabel: string | null;
   /** The row as a list prints it: `Queued 2h · held: runs after <task>`, `Waiting on <task> 3d`. */
   row: string;
-  /** The task this one waits on, when one is named. `note` says why it is not a live hold. */
-  holder: { id: string; title: string | null; note: string | null } | null;
+  /** The task this one waits on, when one is named. `note` says why it is not a live hold; `hidden` that the viewer cannot see it. */
+  holder: { id: string; title: string | null; note: string | null; hidden?: true } | null;
   /** The cause's key for a presentation: the gate's reason, `runner_offline`, `browser_runner`, `trunk_red`, `scheduled`, `dependency`, or `next_in_line`. */
   holdKey: string;
 }
@@ -180,9 +195,17 @@ export function holderNote(h: PendingHolderFacts, now: number): string | null {
 }
 
 function nameOf(h: PendingHolderFacts, now: number): { text: string; note: string | null } {
+  // Nothing about a hidden holder is said: not its title, not its state.
+  if (h.hidden) return { text: HIDDEN_TASK_WORDS, note: null };
   const note = holderNote(h, now);
   const title = h.title?.trim() || 'another task';
-  return { text: note ? `${title} (${note})` : title, note };
+  const named = h.workspaceName ? `${title} in ${h.workspaceName}` : title;
+  return { text: note ? `${named} (${note})` : named, note };
+}
+
+/** The holder a hold names, as data: a hidden one carries no title. */
+function holderOf(h: PendingHolderFacts, note: string | null): NonNullable<PendingTaskHold['holder']> {
+  return h.hidden ? { id: h.id, title: null, note: null, hidden: true } : { id: h.id, title: h.title ?? null, note };
 }
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
@@ -216,7 +239,7 @@ export function derivePendingTaskHold(input: PendingTaskHoldInput): PendingTaskH
     return {
       kind: 'dependency', word, cause: null, sinceMs, ageLabel,
       row: ageLabel ? `${word} ${ageLabel}` : word,
-      holder: { id: first.id, title: first.title ?? null, note: named.note },
+      holder: holderOf(first, named.note),
       holdKey: 'dependency',
     };
   }
@@ -230,7 +253,7 @@ export function derivePendingTaskHold(input: PendingTaskHoldInput): PendingTaskH
     const h = holderId ? input.holders?.get(holderId) ?? null : null;
     if (h) {
       const named = nameOf(h, now);
-      return queued('overlap', `held: runs after ${named.text}`, reason, { id: h.id, title: h.title ?? null, note: named.note });
+      return queued('overlap', `held: runs after ${named.text}`, reason, holderOf(h, named.note));
     }
     const pr = typeof detail.prNumber === 'number' ? detail.prNumber : null;
     if (pr != null) return queued('overlap', `held: runs after #${pr}`, reason);

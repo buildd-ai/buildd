@@ -29,6 +29,7 @@ import { inArray } from 'drizzle-orm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 import type { TaskScopedAccount } from '@/lib/task-token-auth';
+import { HIDDEN_TASK_WORDS } from '@/lib/mission-task-hold';
 
 /** Who is asking: a person's session, an account key, grant session or per-task token, or a surface only team members read. */
 export type DependencyViewer =
@@ -50,7 +51,7 @@ export function dependencyViewerOf(
 export const UNREACHABLE_DEPENDENCY_ERROR = 'dependsOn references tasks you cannot reach in this team';
 
 /** How every surface names an upstream the viewer cannot see (R-6). */
-export const HIDDEN_TASK_WORDS = "a task in a workspace you can't see";
+export { HIDDEN_TASK_WORDS };
 
 /** At most this many tasks are visited by the cycle walk (R-16). */
 export const MAX_CYCLE_WALK = 500;

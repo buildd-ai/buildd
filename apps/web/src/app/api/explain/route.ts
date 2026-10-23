@@ -10,6 +10,7 @@ import { resolveWorkerByPrNumber, resolveWorkerByPrNumberInWorkspaces } from '@/
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
 import { explainMission, explainTask, explainWorkspace, explainPr } from '@/lib/explain';
+import { dependencyViewerOf } from '@/lib/task-dependency-reach';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -117,6 +118,8 @@ export async function GET(req: NextRequest) {
     const reaches = async (wsId: string) =>
       !account || (taskScopeAllowsWorkspace(account, wsId) && verifyAccountWorkspaceAccess(account, wsId));
     const actor: EvidenceActor = account ? { accountId: account.id } : { userId: sessionUser!.id };
+    // Who a waiting task's upstream is named for (spec e28018c2 R-7).
+    const viewer = dependencyViewerOf(sessionUser, account);
 
     // ── PR ──────────────────────────────────────────────────────────────────
     if (prNumberRaw) {
@@ -188,7 +191,7 @@ export async function GET(req: NextRequest) {
       if (!row || !row.workspaceId || !teamWsIds.includes(row.workspaceId) || !(await reaches(row.workspaceId))) {
         return NextResponse.json({ error: 'Task not found or not in your team' }, { status: 404 });
       }
-      const result = await explainTask(taskId, actor);
+      const result = await explainTask(taskId, actor, viewer);
       if (!result) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
       return NextResponse.json(result);
     }
@@ -213,7 +216,7 @@ export async function GET(req: NextRequest) {
         || (account && !taskScopeAllowsWorkspace(account, row.workspaceId))) {
         return NextResponse.json({ error: 'Mission not found or not in your team' }, { status: 404 });
       }
-      const result = await explainMission(missionId);
+      const result = await explainMission(missionId, { viewer });
       if (!result) return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
       return NextResponse.json(result);
     }
@@ -232,7 +235,7 @@ export async function GET(req: NextRequest) {
     if (!ws || !teamIds.includes(ws.teamId) || !(await reaches(ws.id))) {
       return NextResponse.json({ error: 'Workspace not found or not in your team' }, { status: 404 });
     }
-    return NextResponse.json(await explainWorkspace(workspaceId!, actor));
+    return NextResponse.json(await explainWorkspace(workspaceId!, actor, viewer));
   } catch (error) {
     console.error('[explain] failed:', error);
     return NextResponse.json(

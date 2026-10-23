@@ -28,6 +28,9 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import LinkedDesigns from '@/components/LinkedDesigns';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { resolveDependencyHolders, type DependencyHolder } from '@/lib/task-dependency-reach';
+import { blocksList, hiddenDependentsLine, needsList } from '@/lib/task-page-dependencies';
+import { HIDDEN_TASK_WORDS } from '@/lib/mission-task-hold';
 import { parseCredentialBlock, CREDENTIAL_BLOCK_CONTEXT_KEY } from '@/lib/credential-block-copy';
 import { displayWorkspaceName, isLiveWorkerStatus, isTerminalTaskStatus, ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
@@ -282,7 +285,15 @@ async function TaskDetailPage({
     // The task's PR, derived on read (workflow/task-pr.ts), for the Deliverables block.
     taskPrOf(task.id),
   ]);
-  const depTasks = (round1(depQuery) ?? []) as Awaited<NonNullable<typeof depQuery>>;
+  // Each dependency and dependent as this viewer may see it (spec e28018c2
+  // R-6, R-9): one in a workspace they cannot see is named only as that.
+  const reachScope = { viewer: { kind: 'person' as const, userId: user.id }, teamId: task.workspace?.teamId ?? null, dependentWorkspaceId: task.workspaceId };
+  const depReach: Map<string, DependencyHolder> = depTaskIds.length > 0
+    ? await resolveDependencyHolders(reachScope, depTaskIds).catch(() => new Map())
+    : new Map();
+  const depTasks = ((round1(depQuery) ?? []) as Awaited<NonNullable<typeof depQuery>>)
+    .map(d => (depReach.get(d.id)?.hidden === false ? d : { ...d, title: HIDDEN_TASK_WORDS, result: null }));
+  const needsRows = needsList(depTasks, depReach);
   const taskEstimate = (round1(estimateQuery) ?? null) as Awaited<NonNullable<typeof estimateQuery>> | null;
   // One worker and one question, picked the way the sheet picks them: the same
   // on both surfaces. A mission task's questions carry its missionId too; they
@@ -391,8 +402,10 @@ async function TaskDetailPage({
       })
     : null;
   // What this task unblocks, once it has landed.
+  // From every workspace (spec e28018c2 R-9): the resolver below shows the
+  // ones this viewer sees and counts the rest.
   const dependentsQuery = db.query.tasks.findMany({
-        where: sqlWhere(and(eq(tasks.workspaceId, task.workspaceId), sql`${tasks.dependsOn} @> ${JSON.stringify([id])}::jsonb`)),
+        where: sqlWhere(sql`${tasks.dependsOn} @> ${JSON.stringify([id])}::jsonb`),
         columns: { id: true, title: true, label: true, status: true },
       });
   // The canonical "is a fix attempt open on this task" fact — same
@@ -472,7 +485,12 @@ async function TaskDetailPage({
     : 0;
   const errorTraces = reads2(errorTracesQuery) as Awaited<typeof errorTracesQuery>;
   const ciAttemptRows = (reads2(ciAttemptsQuery) ?? []) as Awaited<NonNullable<typeof ciAttemptsQuery>>;
-  const dependentTasks = (reads2(dependentsQuery) ?? []) as Awaited<NonNullable<typeof dependentsQuery>>;
+  const dependentRows = (reads2(dependentsQuery) ?? []) as Awaited<NonNullable<typeof dependentsQuery>>;
+  const dependentReach: Map<string, DependencyHolder> = dependentRows.length > 0
+    ? await resolveDependencyHolders(reachScope, dependentRows.map(d => d.id)).catch(() => new Map())
+    : new Map();
+  const { visible: dependentTasks, hiddenCount: hiddenDependents } = blocksList(dependentRows, dependentReach);
+  const hiddenDependentsText = hiddenDependentsLine(hiddenDependents);
   const openAttempt = openAttemptRead
     ? openAttemptOf(reads2(openAttemptRead) as Awaited<NonNullable<typeof openAttemptRead>>)
     : null;
@@ -991,7 +1009,17 @@ async function TaskDetailPage({
           label: 'Needs',
           value: (
             <ul className="space-y-1">
-              {depTasks.map(dep => {
+              {needsRows.map(row => {
+                // A dependency in a workspace this viewer cannot see: its words, no state, no link.
+                if (row.hidden) {
+                  return (
+                    <li key={row.id} className="flex items-baseline gap-2 min-w-0 text-text-muted">
+                      <span aria-hidden="true">○</span>
+                      <span className="min-w-0 truncate">{row.title}</span>
+                    </li>
+                  );
+                }
+                const dep = depTasks.find(d => d.id === row.id)!;
                 const depResult = dep.result as Record<string, unknown> | null;
                 const stalled = dep.status === 'failed' && depResult?.errorType === 'infra_stalled';
                 const ok = !unresolvedDepIds.has(dep.id);
@@ -1000,7 +1028,8 @@ async function TaskDetailPage({
                     <span className={ok ? 'text-status-success' : stalled ? 'text-status-warning' : 'text-text-muted'} aria-label={ok ? 'resolved' : dep.status}>
                       {ok ? '✓' : stalled ? '!' : '○'}
                     </span>
-                    <Link href={taskPageHref({ taskId: dep.id })} className="min-w-0 truncate hover:underline" title={dep.title}><TaskTitleText short title={dep.title} /></Link>
+                    <Link href={row.href!} className="min-w-0 truncate hover:underline" title={dep.title}><TaskTitleText short title={dep.title} /></Link>
+                    {row.workspaceName && <span className="shrink-0 text-[11px] text-text-muted">in {row.workspaceName}</span>}
                     {stalled && <span className="shrink-0 text-[11px] text-status-warning">infra stalled</span>}
                   </li>
                 );
@@ -1928,15 +1957,17 @@ async function TaskDetailPage({
           </section>}
           <p className="text-body text-text-secondary py-3">{workerHistory.filter(h => !isBookkeepingAttempt(h.worker)).length} attempts{lineageClaimToMergeMs != null ? ` · ${formatElapsed(lineageClaimToMergeMs)}` : runElapsed ? ` · ${runElapsed}` : ''}</p>
 
-          {dependentTasks.length > 0 && (
+          {(dependentTasks.length > 0 || hiddenDependentsText) && (
             <section data-testid="task-unblocked">
               <div className="section-label border-b border-border-default pb-2 mb-1">Blocks</div>
+              {hiddenDependentsText && <p data-testid="task-unblocked-hidden" className="text-meta text-text-muted py-2">{hiddenDependentsText}</p>}
               <ul>
                 {dependentTasks.map(d => (
                   <li key={d.id} className="border-b border-border-default">
                     <Link href={taskPageHref({ taskId: d.id, missionId: task.missionId })} className="flex items-center gap-3 min-h-12 hover:bg-surface-2">
                       <span className={`w-[9px] h-[9px] shrink-0 ${d.status === 'pending' ? 'border-2 border-accent' : 'bg-accent'}`} aria-hidden="true" />
                       <span className="flex-1 min-w-0 truncate font-mono text-[13px] text-text-primary">{displayTaskTitle(d.title)}</span>
+                      {d.workspaceName && <span className="shrink-0 text-[12px] text-text-muted">in {d.workspaceName}</span>}
                       <span className={`shrink-0 font-mono text-[12px] ${d.status === 'completed' ? 'text-status-success' : d.status === 'pending' ? 'text-text-muted' : 'text-accent-text'}`}>
                         {statusPill(d.status).label}
                       </span>

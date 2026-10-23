@@ -922,3 +922,90 @@ export async function sweepChecksFailedByRecoveredDeps(limit = 50): Promise<numb
   for (const r of recovered) await reopenChecksFailedBy(r.id);
   return recovered.length;
 }
+
+/** Why an edge was removed from a dependent (spec e28018c2 R-14, R-15); recorded in `context.removedDependencies`. */
+export type RemovedDependencyReason = 'upstream_deleted' | 'workspace_left_team';
+
+export interface RemovedDependency {
+  id: string;
+  reason: RemovedDependencyReason;
+  at: string;
+}
+
+type EdgeRow = { id: string; workspaceId: string; status: string; dependsOn: unknown; context: unknown };
+
+/**
+ * Drop each named edge from its dependent's `dependsOn`, record the removal on
+ * the dependent (`context.removedDependencies`), and wake a pending dependent,
+ * so it never waits on an upstream that can no longer finish for it. Returns
+ * the dependents changed. A dependent that no longer holds the edge is left alone.
+ */
+export async function removeDependencyEdges(
+  edges: ReadonlyArray<{ dependentId: string; upstreamId: string }>,
+  reason: RemovedDependencyReason,
+  known?: readonly EdgeRow[],
+): Promise<string[]> {
+  if (edges.length === 0) return [];
+  const drop = new Map<string, Set<string>>();
+  for (const e of edges) {
+    const set = drop.get(e.dependentId) ?? new Set<string>();
+    set.add(e.upstreamId);
+    drop.set(e.dependentId, set);
+  }
+  const rows: EdgeRow[] = known
+    ? [...known]
+    : await db
+        .select({ id: tasks.id, workspaceId: tasks.workspaceId, status: tasks.status, dependsOn: tasks.dependsOn, context: tasks.context })
+        .from(tasks)
+        .where(inArray(tasks.id, [...drop.keys()]));
+  const at = new Date().toISOString();
+  const released: string[] = [];
+  for (const row of rows) {
+    const gone = drop.get(row.id);
+    const deps = Array.isArray(row.dependsOn) ? (row.dependsOn as string[]) : [];
+    const removed = deps.filter(d => gone?.has(d));
+    if (removed.length === 0) continue;
+    const remaining = deps.filter(d => !gone!.has(d));
+    const ctx = (row.context && typeof row.context === 'object' ? row.context : {}) as Record<string, unknown>;
+    const prior = Array.isArray(ctx.removedDependencies) ? (ctx.removedDependencies as RemovedDependency[]) : [];
+    await db
+      .update(tasks)
+      .set({
+        dependsOn: remaining,
+        context: { ...ctx, removedDependencies: [...prior, ...removed.map(id => ({ id, reason, at }))] },
+        updatedAt: new Date(),
+      })
+      .where(and(eq(tasks.id, row.id), sql`${tasks.dependsOn}::jsonb @> ${JSON.stringify(removed)}::jsonb`));
+    released.push(row.id);
+    if (row.status !== 'pending') continue;
+    if (remaining.length === 0) {
+      await triggerEvent(channels.workspace(row.workspaceId), events.TASK_UNBLOCKED, { taskId: row.id, resolvedDependency: removed[0] });
+    }
+    // The claim gate decides; this only has it look again now.
+    await wakeTask(row.id, 'dependency.satisfied');
+  }
+  return released;
+}
+
+/**
+ * R-14: before a task is deleted, its dependents in other workspaces stop
+ * waiting on it (a missing row reads as unmet, so they would wait forever).
+ * Same-workspace dependents keep today's behaviour. Never throws past a log.
+ */
+export async function releaseCrossWorkspaceDependentsOf(upstreamId: string): Promise<string[]> {
+  const upstream = await db.query.tasks.findFirst({
+    where: sqlWhere(eq(tasks.id, upstreamId)),
+    columns: { workspaceId: true },
+  });
+  if (!upstream) return [];
+  const dependents: EdgeRow[] = await db
+    .select({ id: tasks.id, workspaceId: tasks.workspaceId, status: tasks.status, dependsOn: tasks.dependsOn, context: tasks.context })
+    .from(tasks)
+    .where(sql`${tasks.dependsOn}::jsonb @> ${JSON.stringify([upstreamId])}::jsonb`);
+  const elsewhere = dependents.filter(d => d.workspaceId !== upstream.workspaceId);
+  return removeDependencyEdges(
+    elsewhere.map(d => ({ dependentId: d.id, upstreamId })),
+    'upstream_deleted',
+    elsewhere,
+  );
+}

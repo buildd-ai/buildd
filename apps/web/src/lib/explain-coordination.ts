@@ -23,6 +23,7 @@
 import { isTerminalTaskStatus } from '@buildd/shared';
 import { classifyManifestOverlap } from '@buildd/core/path-overlap';
 import type { CausalLink, ExplainRefs } from '@/lib/explain-types';
+import { HIDDEN_TASK_WORDS } from '@/lib/mission-task-hold';
 
 export type CoordinationEdge = 'declared_dependency' | 'inferred_dependency' | 'soft_overlap' | 'path_lease' | 'open_pr';
 
@@ -38,6 +39,13 @@ export interface CoordinationHold {
   overlapKind: string | null;
   /** Set when the holder cannot run soon, so the wait is not "next in line". */
   holderStall?: HolderStall | null;
+  /** The caller cannot see the holder (spec e28018c2 R-7): nothing about it is said. */
+  holderHidden?: boolean;
+}
+
+/** A hold as a caller who cannot see its holder may read it: no title, state, PR, paths or id. */
+export function hiddenHold(h: CoordinationHold): CoordinationHold {
+  return { edge: h.edge, holderTaskId: null, holderTitle: null, holderStatus: null, prNumber: null, paths: [], verdict: null, overlapKind: null, holderHidden: true };
 }
 
 export interface CoordinationHolder {
@@ -203,7 +211,9 @@ export function coordinationLink(
 ): Omit<CausalLink, 'order'> | null {
   const h = holds[0];
   if (!h) return null;
-  const who = h.edge === 'open_pr'
+  const who = h.holderHidden
+    ? HIDDEN_TASK_WORDS
+    : h.edge === 'open_pr'
     ? `#${h.prNumber}`
     : `task ${h.holderTaskId}${h.holderTitle ? ` ("${h.holderTitle}")` : ''}${h.holderStatus ? `, ${h.holderStatus}` : ''}`;
   const on = h.paths.length > 0 ? ` on ${h.paths.slice(0, 5).join(', ')}` : '';
