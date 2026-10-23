@@ -2,13 +2,13 @@
 title: Capability Requests and Grants
 status: active
 owner: max
-last_verified: 2026-10-20
+last_verified: 2026-10-23
 summary: An agent MUST get access it lacked at start only by asking for a provider and an access (read or write), resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
 domain: auth
 surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/task-delegation.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/lib/connector-gateway.ts]
 related: [agent-capabilities, model-inference-agent-capability, mcp-connectors-and-roles, team-permissions]
 keywords: [connector gateway, native MCP, tools/list, tools/call, readOnlyHint, toolPolicy, connectorCeiling, request_capability, capability grant, capability policy, auto_grant, ask_human, forbidden, approve, deny, revoke, lease, TTL, provider write guard]
-verified_by: [packages/core/__tests__/provider-access-ask.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/web/src/lib/connector-gateway-store.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts]
+verified_by: [packages/core/__tests__/provider-access-ask.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/web/src/lib/connector-gateway-store.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/app/app/(protected)/home/DecisionCard.access.dom.test.tsx, apps/web/src/lib/agent-capabilities/access-log.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts]
 supersedes: []
 assertions:
   - id: request-route
@@ -243,12 +243,27 @@ for, what they hold and the policy, without being able to change any of it.
   row per exact ask). The card names what, who, workspace, why and the lease,
   and approves for the asked lease or denies in place; Settings → Team → Apps
   → Agent access (`/app/settings/apps?request=<id>`) offers a shorter lease.
+- A request is open only while it is `pending` AND its run has not ended
+  (`isOpenAccessRequest`, built on `runClosure`, the same rule an approval
+  and every use check). Only an open request is a Home card, adds to Home's
+  count and its tab badge, or offers Approve and Deny. A pending row whose
+  task or agent run ended reads as closed even before the row says so (fail
+  closed: an unreadable run is ended), and the next team read closes the row
+  the way an approval attempt would (`expired`, `decidedBy: system`, reason
+  `task_terminal` or `worker_not_live`).
+- A closed request leaves Home rather than collapsing there, as a past
+  agent question does: Settings and the task's Access section keep its
+  history. If it closes while its card is up, a decision answers 409 and the
+  card drops every button and says why (the route marks the refusal
+  `closed`, `decisionClosesRequest`).
 - A new pending request pages the team once; a repeat ask (same row) does not.
 - A task's Access section tells a run's own credentials (buildd token, repo
   access, model endpoint: issued on start, renewed while it lives, nobody
   approved) from governed requests. Credentials read "active", renewals sit
-  behind a toggle; a request still pending links to the same decision as its
-  Needs You card (`accessRequestHref`) and never reads as refused.
+  behind a toggle; a request still open links to the same decision as its
+  Needs You card (`accessRequestHref`) and never reads as refused. One that
+  closed undecided reads "closed" with why, no link, and does not open the
+  section.
 - Settings → Team → Apps → Team apps shows each app's real state from the
   team's connector on the same host (Connected, Sign-in expired, Not
   connected, Not set up, Not available, Blocked by your team) and offers only
@@ -268,6 +283,8 @@ for, what they hold and the policy, without being able to change any of it.
 - AC-10: GIVEN a pending request WHEN an admin opens Home THEN one access card shows the ask and lease; WHEN a member opens Home THEN none.
 - AC-11: GIVEN an approved request WHEN the admin approves again THEN the page says it is already approved, not an error.
 - AC-12: GIVEN a policy auto-grant THEN no card and no push; it is listed under Allowed now.
+- AC-19: GIVEN a pending request whose task has ended (row still `pending`) WHEN an admin opens Home THEN no card, no count, no Approve or Deny; the task's Access section reads it as closed.
+- AC-20: GIVEN an access card on Home WHEN its task ends and the admin taps Approve THEN the card shows why it closed and no buttons.
 
 **Out of scope**: the model-inference budget ledger (its own spec). Provider
 tool calls go through the connector gateway below.

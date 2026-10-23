@@ -27,15 +27,18 @@ function dayLabel(ms: number, nowMs: number, timeZone: string): string {
 }
 
 export function dayTally(episodes: readonly Episode[]): string {
-  const landed = episodes.filter(e => e.kind === 'landed').length;
+  const landed = episodes.filter(e => !e.event && e.kind === 'landed').length;
   const repaired = episodes.filter(e => e.repairRounds > 0).length;
-  const toYou = episodes.filter(e => e.kind === 'needs').length;
+  const toYou = episodes.filter(e => !e.event && e.kind === 'needs').length;
+  const created = episodes.filter(e => e.event === 'created').length;
+  const deliveries = episodes.length - created;
   const parts = [
     landed && `${landed} merged`,
     repaired && `${repaired} repaired`,
     toYou && `${toYou} to you`,
   ].filter(Boolean);
-  return parts.length > 0 ? parts.join(' · ') : `${episodes.length} ${episodes.length === 1 ? 'delivery' : 'deliveries'}`;
+  const head = parts.length > 0 ? parts.join(' · ') : deliveries > 0 ? `${deliveries} ${deliveries === 1 ? 'delivery' : 'deliveries'}` : '';
+  return [head, created > 0 && `${created} ${created === 1 ? 'mission' : 'missions'} created`].filter(Boolean).join(' · ');
 }
 
 /**
