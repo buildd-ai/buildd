@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { cpus, homedir, loadavg, tmpdir } from 'os';
-import { join } from 'path';
+import { isAbsolute, join } from 'path';
 
 // Anything matching one of these prefixes and ending in .test.ts(x) is run.
 //
@@ -702,7 +702,7 @@ export async function runTestFile(
   const elapsed = (): number => Math.round(performance.now() - startedAt);
   try {
     const timeoutMs = getTestTimeoutMs(process.env.BUILDD_TEST_TIMEOUT_MS);
-    const child = spawn([process.execPath, 'test', '--preload', storeGuardPath(), '--timeout', String(timeoutMs), ...(testNamePattern ? ['--test-name-pattern', testNamePattern] : []), `./${file}`], {
+    const child = spawn([process.execPath, 'test', '--preload', storeGuardPath(), '--timeout', String(timeoutMs), ...(testNamePattern ? ['--test-name-pattern', testNamePattern] : []), (isAbsolute(file) ? file : `./${file}`)], {
       stdout: 'pipe',
       stderr: 'pipe',
       // TMPDIR is the throwaway dir and BUILDD_HOME a child of it (the home
