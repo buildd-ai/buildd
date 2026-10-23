@@ -209,3 +209,38 @@ describe('whenLabel', () => {
     expect(whenLabel(new Date('2026-10-25T00:00:00.000Z'), NOW)).toBe('Oct 25');
   });
 });
+
+// Spec e28018c2 R-6: an upstream in another workspace is named per viewer.
+describe('derivePendingTaskHold: a cross-workspace upstream', () => {
+  it('a hidden upstream reads as a task in a workspace you can\'t see, with no note and nothing about it', () => {
+    const h = derivePendingTaskHold({
+      now: NOW,
+      dependencies: [{ id: 'up-a', hidden: true, title: null, status: 'failed', merged: false, startAt: new Date(NOW + 2 * D) }],
+    });
+    expect(h.kind).toBe('dependency');
+    expect(h.word).toBe("Waiting on a task in a workspace you can't see");
+    expect(h.holder).toEqual({ id: 'up-a', title: null, note: null, hidden: true });
+    expect(h.row).not.toContain('failed');
+    expect(h.row).not.toContain('up-a');
+  });
+
+  it('a hidden holder never shows a title even when a caller left one on the facts', () => {
+    const h = derivePendingTaskHold({ now: NOW, dependencies: [{ id: 'up-a', hidden: true, title: 'Private plan', status: 'cancelled' }] });
+    expect(h.word).toBe("Waiting on a task in a workspace you can't see");
+    expect(JSON.stringify(h)).not.toContain('Private plan');
+  });
+
+  it('a visible upstream in another workspace is named with its workspace', () => {
+    const h = derivePendingTaskHold({ now: NOW, dependencies: [holder({ workspaceName: 'Docs' })] });
+    expect(h.word).toBe('Waiting on approve a spec from chat or MCP in Docs');
+  });
+
+  it('a hidden overlap holder is worded the same way', () => {
+    const h = derivePendingTaskHold({
+      now: NOW,
+      deferral: { reason: 'path_overlap', detail: { blockingTaskId: 'up-a' } },
+      holders: new Map([['up-a', { id: 'up-a', hidden: true, title: null, status: 'pending' }]]),
+    });
+    expect(h.cause).toBe("held: runs after a task in a workspace you can't see");
+  });
+});

@@ -927,7 +927,7 @@ describe('POST /api/tasks', () => {
         mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2', teamId: 'team-1', accessMode: 'open' });
         mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
         mockMissionsFindFirst.mockResolvedValue({ id: MISSION_THERE, workspaceId: 'ws-2', teamId: 'team-1' });
-        mockTasksFindMany.mockResolvedValue([{ id: DEP_THERE }]);
+        mockTasksFindMany.mockResolvedValue([{ id: DEP_THERE, workspaceId: 'ws-2' }]);
         const values = mock((_v: any) => ({ returning: mock(() => [elsewhere]) }));
         mockTasksInsert.mockReturnValue({ values });
         const response = await fileIn({ missionId: MISSION_THERE, dependsOn: [DEP_THERE] });
@@ -948,6 +948,21 @@ describe('POST /api/tasks', () => {
         mockTasksFindMany.mockResolvedValue([]);
         expect((await fileIn({ dependsOn: [DEP_THERE] })).status).toBe(400);
         expect((await fileIn({ parentTaskId: '66666666-6666-4666-8666-666666666666' })).status).toBe(400);
+        expect(mockTasksInsert).not.toHaveBeenCalled();
+      });
+
+      // Spec e28018c2 R-5 / AC-4: lifting the same-workspace rule must not widen
+      // a delegated filing. Its dependencies stay in the delegated workspace,
+      // refused by name, before anything is written.
+      it('AC-4: a delegated filing may not depend on a task outside the delegated workspace, its own filing task included', async () => {
+        mockAccountsFindFirst.mockResolvedValue(delegated(['tasks:create']));
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2', teamId: 'team-1', accessMode: 'open' });
+        mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+        const FILING_TASK = '77777777-7777-4777-8777-777777777777';
+        mockTasksFindMany.mockResolvedValue([{ id: FILING_TASK, workspaceId: 'ws-1', workspace: { teamId: 'team-1', name: 'Home' } }]);
+        const response = await fileIn({ dependsOn: [FILING_TASK] });
+        expect(response.status).toBe(403);
+        expect((await response.json()).error).toBe('A delegated task may depend only on tasks in the workspace its delegation names');
         expect(mockTasksInsert).not.toHaveBeenCalled();
       });
     });
@@ -3781,7 +3796,7 @@ describe('POST /api/tasks', () => {
     const captured = missionPathManifestSetup();
     const explicitDepId = '11111111-1111-1111-1111-111111111111';
     mockTasksFindMany
-      .mockResolvedValueOnce([{ id: explicitDepId }])
+      .mockResolvedValueOnce([{ id: explicitDepId, workspaceId: 'ws-1', workspace: { teamId: 'team-1', name: 'ws' } }])
       .mockResolvedValueOnce([{ id: explicitDepId, pathManifest: ['apps/web/src/lib'] }]);
 
     const response = await POST(createMockRequest({
@@ -3807,7 +3822,7 @@ describe('POST /api/tasks', () => {
     // then the in-flight sibling scan result.
     const explicitDepId = '11111111-1111-1111-1111-111111111111';
     mockTasksFindMany
-      .mockResolvedValueOnce([{ id: explicitDepId }])
+      .mockResolvedValueOnce([{ id: explicitDepId, workspaceId: 'ws-1', workspace: { teamId: 'team-1', name: 'ws' } }])
       .mockResolvedValueOnce([
         { id: '22222222-2222-2222-2222-222222222222', pathManifest: ['**'] },
         { id: '33333333-3333-3333-3333-333333333333', pathManifest: ['packages/core/db/schema.ts'] },
@@ -3883,8 +3898,65 @@ describe('POST /api/tasks', () => {
 
     expect(response.status).toBe(400);
     const json = await response.json();
-    expect(json.error).toContain('dependsOn references unknown tasks in this workspace');
+    expect(json.error).toContain('dependsOn references tasks you cannot reach in this team');
     expect(json.error).toContain(missingId);
+  });
+
+  // Spec e28018c2: a dependency may be in another workspace of the same team.
+  describe('cross-workspace dependsOn (spec e28018c2)', () => {
+    const UPSTREAM = '0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f';
+    const elsewhereRow = (teamId: string) => ({ id: UPSTREAM, title: 'Upstream', workspaceId: 'ws-9', dependsOn: [], workspace: { teamId, name: 'Docs' } });
+
+    it('AC-1: a team member files a task depending on a task in another workspace of the team', async () => {
+      setupBasicCreation();
+      const values = mock((_v: any) => ({ returning: mock(() => [{ id: 'task-1', workspaceId: 'ws-1', title: 'T', status: 'pending' }]) }));
+      mockTasksInsert.mockReturnValue({ values });
+      mockTasksFindMany.mockResolvedValueOnce([elsewhereRow('team-1')]);
+      mockVerifyWorkspaceAccess.mockResolvedValue({ role: 'member', teamId: 'team-1' });
+      const response = await POST(createMockRequest({ method: 'POST', body: { workspaceId: 'ws-1', title: 'B', dependsOn: [UPSTREAM] } }));
+      expect(response.status).toBe(200);
+      expect(values.mock.calls[0][0].dependsOn).toEqual([UPSTREAM]);
+      expect(mockVerifyWorkspaceAccess).toHaveBeenCalledWith('user-1', 'ws-9');
+    });
+
+    it('AC-2: a task of another team reads like an unknown id', async () => {
+      setupBasicCreation();
+      mockTasksFindMany.mockResolvedValueOnce([elsewhereRow('team-other')]);
+      const other = await POST(createMockRequest({ method: 'POST', body: { workspaceId: 'ws-1', title: 'B', dependsOn: [UPSTREAM] } }));
+      mockTasksFindMany.mockResolvedValueOnce([]);
+      const unknown = await POST(createMockRequest({ method: 'POST', body: { workspaceId: 'ws-1', title: 'B', dependsOn: [UPSTREAM] } }));
+      expect(other.status).toBe(400);
+      expect(unknown.status).toBe(400);
+      expect((await other.json()).error).toBe((await unknown.json()).error);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
+
+    it('AC-3: a per-task token cannot depend on a task outside its own workspace', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-run', level: 'worker', teamId: 'team-1', taskScope: { taskId: 't-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+      mockTasksFindMany.mockResolvedValueOnce([elsewhereRow('team-1')]);
+      const response = await POST(createMockRequest({
+        method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { title: 'B', dependsOn: [UPSTREAM] },
+      }));
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toBe(`dependsOn references tasks you cannot reach in this team: ${UPSTREAM}`);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
+
+    it('an account key must reach the upstream workspace', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx', teamId: 'team-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      mockVerifyAccountWorkspaceAccess.mockImplementation(async (_a: unknown, ws: unknown) => ws === 'ws-1');
+      mockTasksFindMany.mockResolvedValueOnce([elsewhereRow('team-1')]);
+      const response = await POST(createMockRequest({
+        method: 'POST', headers: { Authorization: 'Bearer bld_xxx' }, body: { workspaceId: 'ws-1', title: 'B', dependsOn: [UPSTREAM] },
+      }));
+      expect(response.status).toBe(400);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
   });
 
   it('returns generic 500 error without exposing driver query text on database failure', async () => {
@@ -4228,7 +4300,7 @@ describe('POST /api/tasks', () => {
       setupBasicCreation();
       // dep validation returns the dep task
       const depTaskId = '44444444-4444-4444-4444-444444444444';
-      mockTasksFindMany.mockResolvedValueOnce([{ id: depTaskId }]);
+      mockTasksFindMany.mockResolvedValueOnce([{ id: depTaskId, workspaceId: 'ws-1', workspace: { teamId: 'team-1', name: 'ws' } }]);
 
       const response = await POST(createMockRequest({
         method: 'POST',
