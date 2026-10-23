@@ -571,7 +571,6 @@
       "apps/web/src/lib/ci-retry.ts": "reviews-merge",
       "apps/web/src/lib/conflict-retry.ts": "reviews-merge",
       "apps/web/src/lib/connector-status.ts": "connectors",
-      "apps/web/src/lib/criteria-rearm.ts": "missions",
       "apps/web/src/lib/dependency-bot-pr.ts": "reviews-merge",
       "apps/web/src/lib/fleet-view.ts": "health-quality",
       "apps/web/src/lib/merge-policy.ts": "reviews-merge",
