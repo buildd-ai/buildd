@@ -179,7 +179,7 @@ describe('runTestFile', () => {
       storeGuardPath(),
       '--timeout',
       String(getTestTimeoutMs(process.env.BUILDD_TEST_TIMEOUT_MS)),
-      'example.test.ts',
+      './example.test.ts',
     ]);
     expect(result.exitCode).toBe(1);
     expect(result.output).toContain("Failed to launch Bun");
