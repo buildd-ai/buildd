@@ -8,7 +8,7 @@ import { eq, and, lt, inArray, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
-import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnreadInteractiveAnswers, cleanupUnresumedAnswers } from '@/lib/stale-workers';
+import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnreadInteractiveAnswers, cleanupUnresumedAnswers, heartbeatRowHasNoLiveWorkers } from '@/lib/stale-workers';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
 import { kernelDeliveryById } from '@/lib/workflow/authority';
 import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
@@ -438,13 +438,16 @@ export async function POST(req: NextRequest) {
 
   // 7. Delete heartbeat rows of runners presumed dead. Same "not dead" window
   //    the offline-runner rule uses, so "no fresh row" and "row deleted" mean
-  //    the same thing and a runner that is merely slow keeps its row.
+  //    the same thing and a runner that is merely slow keeps its row. Never a
+  //    row a live-status worker still names: the offline-runner rule judges a
+  //    worker against its own runner's row, so the row outlives the workers.
   const deadRunnerCutoff = new Date(now.getTime() - RUNNER_STALE_CUTOFF_MS);
   const deletedHeartbeats = !hasAccounts ? [] : await db
     .delete(workerHeartbeats)
     .where(and(
       inArray(workerHeartbeats.accountId, scope.accountIds),
       lt(workerHeartbeats.lastHeartbeatAt, deadRunnerCutoff),
+      heartbeatRowHasNoLiveWorkers(),
     ))
     .returning({ id: workerHeartbeats.id });
 
