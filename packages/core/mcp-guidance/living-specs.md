@@ -260,6 +260,11 @@ say so and stop.
   HTML prototype or images, pinned to its current revision), `url` or
   `figma`; `url` and `figma` need `version`. Figma is one kind among several,
   not the default.
+- Pin a design as a buildd design artifact at a revision:
+  `design: { kind: "artifact", ref: <artifactId>, version: <revision> }`.
+  Every runner can read that. A claude.ai canvas URL (`kind: "url"`) can be
+  read only by a session signed in to claude.ai: store the canvas as a design
+  (below) and keep its URL in the artifact's `metadata.source`.
 
 ### Storing a design
 
@@ -286,6 +291,18 @@ A re-export is a new revision of the same artifact, not a new artifact:
 `upload_artifact { artifactId }`. Links that follow the current body move to
 it; pinned links and a spec's `design` with a `version` stay. Read an earlier
 one with `get_artifact { artifactId, revision }`.
+
+### From a Claude Design canvas
+
+In the buildd repo, `scripts/design/export-canvas.ts` turns a canvas's files
+into one design: every board a screen with an id and viewport, links between
+boards working, `metadata.screens` filled in. Get the files with the Artifact
+tool (an owner session, or a worker given `claudeAiArtifacts: 'read'`):
+`list scope=files`, then `read path=project/canvas.json` and each
+`project/<Board>.dc.html`, into a temp dir. A worker with no Artifact tool
+asks a person to copy them in. Pass `--source <canvas url>`; `--upload
+--mission <id>` stores it (`--artifact <id>` for a new revision).
+Steps: `scripts/design/README.md`.
 
 ## Attachments
 
