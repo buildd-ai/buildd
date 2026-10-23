@@ -49,14 +49,16 @@ assertions:
 
 # Mission Flow Timeline
 
-**Capability statement**: The mission detail page has three tabs, Overview,
-Flow and History. Its Flow tab MUST render every
-deliverable task as one row on one shared time axis, in the strip's dependency
-order, with every gate between two tasks drawn as an edge from the blocker's
-bar end to the dependent's bar start, and MUST say in one sentence which task
-currently sets the mission's finish. It replaces the Lanes tab (runner slots
-over time) and the Structure graph (a layered DAG); there is no second view of
-the same graph and no Graph/Timeline toggle.
+**Capability statement**: The mission page has three layouts: Overview (the
+page itself), Flow and History, the last two opened from the page's one ⋯
+menu; there is no tab bar (Navigation d25d923d R-3). Flow is a desktop
+layout: a Flow link opened below md lands on the mission page (R-2). Flow
+MUST render every deliverable task as one row on one shared time axis, in
+the strip's dependency order, with every gate between two tasks drawn as an
+edge from the blocker's bar end to the dependent's bar start, and MUST say in
+one sentence which task currently sets the mission's finish. It replaces the
+Lanes tab (runner slots over time) and the Structure graph (a layered DAG);
+there is no second view of the same graph and no Graph/Timeline toggle.
 
 The model is pure (`buildFlowTimeline`, `layoutFlowTimeline`, `flowEdgePaths`
 in `apps/web/src/lib/flow-timeline.ts`); the component only draws it.
@@ -120,11 +122,13 @@ nothing. The Flow tab MUST NOT define a second relation rule.
 **R-10**: A lit edge that is also consecutive on the critical path draws
 in ink; any other lit edge draws in the accent.
 
-**R-11**: The tab MUST open on the task that sets the finish (R-16), or
+**R-11**: Flow MUST open on the task that sets the finish (R-16), or
 on the last row once the critical path has landed (`defaultFlowSelection`). The
-selected task's card sits beside the timeline on desktop and below it on a
-phone. Its Open task link opens the task page, carrying mission back
-context; selecting a timeline row only updates the card and lit edges.
+selected task's card sits beside the timeline. Flow is a desktop layout (md
+and up); below md there is no Flow and a Flow link lands on the mission page
+(Navigation d25d923d R-2), so the card has no phone arrangement. Its Open task
+link opens the task page, carrying mission back context; selecting a timeline
+row only updates the card and lit edges.
 
 ## 4. Merged fold
 
@@ -213,8 +217,11 @@ start, plus `now` while the mission runs.
 - `apps/web/src/app/app/(protected)/missions/[id]/mission-page-query.ts`:
   `MISSION_TASK_COLUMNS` (`pathDeclaration`)
 - `apps/web/src/app/app/(protected)/missions/[id]/MissionLayoutShell.tsx`:
-  the tabs Overview · Flow · History (`MISSION_LAYOUT_TABS`,
-  `MISSION_LAYOUT_LABEL`; the layout keys stay `board`, `flow`, `feed`)
+  the layouts Overview · Flow · History, one mounted at a time and switched
+  from the ⋯ menu through `useMissionLayout` (`MISSION_LAYOUT_LABEL`; the
+  layout keys stay `board`, `flow`, `feed`; no tab bar)
+- `apps/web/src/app/app/(protected)/missions/[id]/MissionOverflowMenu.tsx`:
+  the History and Flow rows (Flow from md)
 - `apps/web/src/lib/mission-layout.ts`: `parseMissionLayout`,
   `MISSION_LAYOUTS`, `MISSION_LAYOUT_LABEL`
 - `apps/web/src/lib/mission-task-strip.ts`: `stripOrder`, `stripMarks`,
@@ -230,7 +237,7 @@ start, plus `now` while the mission runs.
   them (the estimates work supplies p80 later; R-3 says what renders until then).
 - Runner slots and concurrency over time (the old Lanes view); the fleet's own
   slot lanes are a separate surface.
-- Visual review on this tab: the Overview and History tabs carry it.
+- Visual review in Flow: Overview and History carry it.
 - Phase bands, work-kind glyphs and chain collapsing on the timeline.
 - Editing dependencies from the tab.
 

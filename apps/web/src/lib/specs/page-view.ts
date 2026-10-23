@@ -27,7 +27,7 @@ import { revisionReview, type RevisionReview } from './revision-changes';
 import { readCriterionHistory, type CriterionHistory } from './criteria';
 import { importConfirmPath } from './import';
 import { holdsInWorkspace } from '@/lib/team-access';
-import { liveReplaced, waitingReplacements, type ReplacedSpec } from './replaces';
+import { liveReplaced, replacesOfHeadQuery, waitingReplacementsQuery, type ReplacedSpec } from './replaces';
 
 /**
  * What the dashboard's spec pages show (living-specs.md §9): a workspace's
@@ -517,6 +517,9 @@ export async function specPageView(userId: string, specId: string, opts: { revis
         .where(and(eq(specs.workspaceId, spec.workspaceId), ne(specs.id, spec.id), notInArray(specs.status, ['retired', 'superseded'])))
         .orderBy(specs.title).limit(200)
       : null,
+    // R-76, R-100: what the head replaces, and a replacement waiting for this spec.
+    replacesSpecs: open ? replacesOfHeadQuery(spec) : null,
+    replacementWaiting: open ? waitingReplacementsQuery(spec) : null,
   }));
   const revRowsP = roundP.then((r) => r.revRows);
   const namesP = revRowsP.then(async (revRows) => {
@@ -572,13 +575,8 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     : Promise.resolve(null);
 
   const retirementP = open ? Promise.resolve(null) : specRetirement(spec.id).catch(() => null);
-  // R-76, R-100: what the head replaces, and a replacement waiting for this spec.
-  const replacesP = open
-    ? (readN === spec.headRevision ? readP.then((r) => r?.revision.replaces ?? null) : db.select({ replaces: specRevisions.replaces }).from(specRevisions)
-      .where(and(eq(specRevisions.specId, spec.id), eq(specRevisions.revision, spec.headRevision))).limit(1).then(([r]) => r?.replaces ?? null))
-      .then((ids) => liveReplaced(spec.workspaceId, ids)).then((rs) => rs.map(({ id, title }) => ({ id, title }))).catch(() => [])
-    : Promise.resolve([]);
-  const waitingReplacementP = open ? waitingReplacements(spec).catch(() => []) : Promise.resolve([]);
+  const replacesP = roundP.then((r) => r.replacesSpecs ?? []);
+  const waitingReplacementP = roundP.then((r) => r.replacementWaiting ?? []);
   // Only a spec that came from or was copied to a repo file can have one.
   const restoredNoteP = open && (spec.repoSource || spec.repoCopy?.path) ? specRestoredRepoFile(spec.id, spec.status).catch(() => null) : Promise.resolve(null);
   // The replacements a person may pick (§22): live specs of the workspace, by title.

@@ -3059,6 +3059,17 @@ export const specs = pgTable('specs', {
   repoSourcePathIdx: index('specs_repo_source_path_idx').on(t.workspaceId, sql`(${t.repoSource}->>'path')`),
 }));
 
+/** One finding of the approval quality gate (apps/web/src/lib/specs/approval-gate.ts). */
+export interface SpecGateFinding { code: string; message: string; ids?: string[] }
+/** What the approval gate said about a revision: refusals block, warnings do not. */
+export interface SpecGateResult { passed: boolean; refusals: SpecGateFinding[]; warnings: SpecGateFinding[] }
+/** How a revision was approved. `gate` is null where the gate did not run (a person approving in the dashboard). */
+export interface SpecApprovalRecord {
+  via: 'mcp' | 'chat' | 'dashboard';
+  gate: SpecGateResult | null;
+  overrideReason?: string;
+}
+
 export const specRevisions = pgTable('spec_revisions', {
   id: uuid('id').primaryKey().defaultRandom(),
   specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
@@ -3095,6 +3106,10 @@ export const specRevisions = pgTable('spec_revisions', {
   // Set once by a person's approval (G2); never for an agent.
   approvedBy: text('approved_by'),
   approvedAt: timestamp('approved_at', { withTimezone: true }),
+  // How it was approved, written with approved_at: the surface, the quality
+  // gate's result and the reason a person overrode a refusal. NULL: approved
+  // before this was recorded.
+  approval: jsonb('approval').$type<SpecApprovalRecord>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   specRevisionIdx: uniqueIndex('spec_revisions_spec_revision_idx').on(t.specId, t.revision),

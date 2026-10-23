@@ -10,6 +10,9 @@ import { getSpec } from './store';
 import { nativeSourceOn } from './repo-copy';
 import { attachmentSources, type AttachmentSource } from './attachments';
 import { liveReplaced } from './replaces';
+import { runApprovalGate } from './approval-gate';
+import type { SpecGateResult } from '@buildd/core/db/schema';
+import type { RevisionReview } from './revision-changes';
 
 /**
  * What the confirm page (/app/specs/[specId]/approve) shows a signed-in person
@@ -45,6 +48,10 @@ export type ApprovalRequestView =
      * at the version the link read, so one that moved since reports stale.
      */
     replacing: Array<{ id: string; title: string; version: number; checked: boolean }>;
+    /** The quality gate now: refusals need a reason to approve anyway, warnings are shown. */
+    gate: SpecGateResult;
+    /** What the revision changes, by criterion (the Review change list); null when it cannot be read. */
+    changes: Pick<RevisionReview, 'summary' | 'lines' | 'otherText' | 'mismatch'> | null;
   };
 
 export async function approvalRequestView(userId: string, specId: string, token: string | null | undefined): Promise<ApprovalRequestView> {
@@ -65,20 +72,24 @@ export async function approvalRequestView(userId: string, specId: string, token:
   if (spec.version !== req.expectedVersion || spec.headRevision !== req.revision) return { state: 'stale', ...base };
 
   const repoChecks = nativeSourceOn({ livingSpecs: (await personReach(userId, spec.workspaceId))?.livingSpecs });
-  const attachments = await attachmentSources(specId, req.revision).catch(() => ({}));
+  const [attachments, { gate, review }] = await Promise.all([
+    attachmentSources(specId, req.revision).catch(() => ({})),
+    runApprovalGate(spec, req.revision),
+  ]);
   const replacing = (await liveReplaced(spec.workspaceId, rev.replaces)).map((r) => {
     const chosen = req.retire?.find((c) => c.specId === r.id);
     return { id: r.id, title: r.title, version: chosen?.expectedVersion ?? r.version, checked: req.retire ? !!chosen : true };
   });
+  const changes = review ? { summary: review.summary, lines: review.lines, otherText: review.otherText, mismatch: review.mismatch } : null;
   if (spec.approvedRevision) {
     const d = await diffSpecRevisions(caller, specId, { from: spec.approvedRevision, to: req.revision, rows: true });
     if (!d.ok || d.diff.toBody === undefined) return { state: 'stale', ...base };
-    return { state: 'ready', ...base, replaces: spec.approvedRevision, sections: d.diff.sections, hunks: d.diff.hunks ?? [], omittedLines: d.diff.omittedLines, body: d.diff.toBody, repoChecks, attachments, replacing };
+    return { state: 'ready', ...base, replaces: spec.approvedRevision, sections: d.diff.sections, hunks: d.diff.hunks ?? [], omittedLines: d.diff.omittedLines, body: d.diff.toBody, repoChecks, attachments, replacing, gate, changes };
   }
   // Nothing approved yet: the whole revision is what comes into force.
   const s = await getSpec(caller, specId, { revision: req.revision });
   if (!s.ok || typeof s.view.body !== 'string') return { state: 'stale', ...base };
   const d = diffSpecBodies('', s.view.body);
   const h = diffSpecHunks('', s.view.body);
-  return { state: 'ready', ...base, replaces: null, sections: d.sections, hunks: h.hunks, omittedLines: h.omittedLines, body: s.view.body, repoChecks, attachments, replacing };
+  return { state: 'ready', ...base, replaces: null, sections: d.sections, hunks: h.hunks, omittedLines: h.omittedLines, body: s.view.body, repoChecks, attachments, replacing, gate, changes };
 }

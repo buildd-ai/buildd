@@ -151,7 +151,7 @@ export function isolationRemediation(reason: IsolationReason, platform: RunnerHo
           : [];
     case 'unsupported_platform':
       return platform === 'windows'
-        ? ['Run the runner inside WSL2 with bubblewrap installed there to take tasks that need a sandbox.']
+        ? ['Run the runner and Claude inside WSL2 with bubblewrap and socat installed there. From a buildd checkout in PowerShell, run bun run wsl:setup; follow apps/runner/WSL2.md for installation, login and verification.']
         : ['Run the runner on Linux (bubblewrap) or macOS (Seatbelt); on Windows, run it inside WSL2 with bubblewrap installed there.'];
   }
 }
@@ -172,7 +172,7 @@ export function confinementLevel(c: BackendConfinement | null | undefined): 'ful
 /** The operator's steps when a backend is confined, but not enough for protected work. */
 export function partialConfinementRemediation(platform: RunnerHostPlatform): string[] {
   return platform === 'windows'
-    ? ['Run the runner inside WSL2 with bubblewrap installed there, or on Linux or macOS, to take protected Codex tasks.']
+    ? ['Run the runner inside WSL2 with bubblewrap installed there, or on Linux or macOS, to take protected Codex tasks. From a buildd checkout in PowerShell, run bun run wsl:setup; see apps/runner/WSL2.md.']
     : ['Run the runner on a host whose sandbox also confines network access (bubblewrap on Linux, Seatbelt on macOS).'];
 }
 

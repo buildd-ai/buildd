@@ -4,9 +4,53 @@ import {
   decideCriteriaRearm,
   formatVerdictLines,
   inferCriteriaFailureReading,
+  formatCriteriaEscalationBody,
   MAX_REARM_CYCLES,
 } from './criteria-rearm';
 import type { GoalCriteriaState } from '@buildd/shared';
+import { describeCriteriaBlocker } from './completion-check-summary';
+
+describe('criteria escalation note copy', () => {
+  it('retains the blocking evidence and recovery without inventing a cause', () => {
+    const body = formatCriteriaEscalationBody({
+      blockReason: 'Visual review has not passed.',
+      evaluatedAt: '2026-10-01T12:00:00Z',
+      verdictLines: '- [fail] Visual review — Layout overlaps on phone',
+    });
+    expect(body).toContain('Layout overlaps on phone');
+    expect(body).toContain('Visual review has not passed.');
+    expect(body).toContain('Automatic retries are paused.');
+    expect(body).toContain('Review the checks');
+    expect(body).not.toMatch(/no owner|unowned|unmeasurable|most likely|machine-checked|cadence/);
+  });
+});
+
+describe('describeCriteriaBlocker', () => {
+  it('names the actual failed check without diagnosing its cause', () => {
+    expect(describeCriteriaBlocker(state('fail', [
+      { label: 'Build succeeds', verdict: 'pass' },
+      { label: 'Visual review passes', verdict: 'fail' },
+    ]))).toBe('Failed check: Visual review passes');
+  });
+
+  it('distinguishes an unverified check from a failed check', () => {
+    expect(describeCriteriaBlocker(state('fail', [
+      { label: 'Release checks', verdict: 'NOT_EVALUATED' },
+    ]))).toBe('Check not verified: Release checks');
+  });
+
+  it('summarizes multiple blockers without expanding the whole report', () => {
+    expect(describeCriteriaBlocker(state('fail', [
+      { label: 'Build succeeds', verdict: 'fail' },
+      { label: 'Visual review passes', verdict: 'fail' },
+    ]))).toBe('2 completion checks need review.');
+  });
+
+  it('keeps missing or lengthy detail factual and compact', () => {
+    expect(describeCriteriaBlocker(null)).toBe('Completion checks need review.');
+    expect(describeCriteriaBlocker(state('fail', [{ label: 'x'.repeat(200), verdict: 'fail' }]))).toBe('Completion checks need review.');
+  });
+});
 
 function state(overall: GoalCriteriaState['overall'], criteria: Array<Partial<GoalCriteriaState['criteria'][number]>>): GoalCriteriaState {
   return {

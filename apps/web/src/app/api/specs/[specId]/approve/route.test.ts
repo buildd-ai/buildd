@@ -8,6 +8,7 @@ mock.module('@/lib/specs/approval', () => ({
   approveSpecRevision: async (c: unknown, _id: string, input: { revision: unknown; expectedVersion: unknown }) => {
     seen.push([c, input]);
     const acct = (c as { account?: { sessionUserId?: string } }).account;
+    if (input.expectedVersion === 99) return { ok: false, status: 409, error: 'refused by the gate', code: 'gate_refused', gate: { passed: false, refusals: [{ code: 'duplicate_id', message: 'R-2 twice' }], warnings: [] } };
     if (acct?.sessionUserId) return { ok: true, spec: { id: 's1', version: 3 }, pending: { confirmUrl: 'https://buildd.dev/app/specs/s1/approve?request=tok', revision: input.revision, expiresAt: '2026-10-12T00:00:00.000Z' } };
     if ((c as { kind: string }).kind === 'account') return { ok: false, status: 403, error: 'a person decides' };
     if (input.expectedVersion !== 3) return { ok: false, status: 409, error: 'stale', currentVersion: 3 };
@@ -72,6 +73,13 @@ describe('POST /api/specs/[specId]/approve and /submit', () => {
     const res = await approve(req('approve', { revision: 2, expectedVersion: 3 }), { params });
     const body = await res.json();
     expect([res.status, body.pending.confirmUrl, body.revision]).toEqual([202, 'https://buildd.dev/app/specs/s1/approve?request=tok', undefined]);
+  });
+  it('a gate refusal is a 409 carrying the code and the reasons, with no link', async () => {
+    caller = { kind: 'account', account: { id: 'a1', sessionUserId: 'u1' } };
+    const res = await approve(req('approve', { revision: 2, expectedVersion: 99, via: 'chat' }), { params });
+    const body = await res.json();
+    expect([res.status, body.code, body.gate.refusals[0].code, body.pending]).toEqual([409, 'gate_refused', 'duplicate_id', undefined]);
+    expect((seen.at(-1) as unknown[])[1]).toMatchObject({ via: 'chat' });
   });
   it('confirm approves from a dashboard session, refuses any bearer, and passes a bad token\'s code through', async () => {
     caller = { kind: 'user', userId: 'u1' };

@@ -25,6 +25,12 @@ describe('missionSummaryLine', () => {
     expect(missionSummaryLine('Context: the export is slow.\nGoal: cut export time under a minute.\n')).toBe('Cut export time under a minute.');
   });
 
+  it('reads an "Owner goal:" line as the goal too (Navigation R-3)', () => {
+    const d = 'Owner goal: a person deploys the cloud runner from Settings with one button. Then the runner registers itself.\n\n## Context\nLong story.';
+    expect(missionSummaryLine(d)).toBe('A person deploys the cloud runner from Settings with one button.');
+    expect(missionSummaryLine('## Product goal\nShip it.\nMission goal: keep every export readable.')).toBe('Keep every export readable.');
+  });
+
   it('keeps a sentence that only happens to contain a colon', () => {
     expect(missionSummaryLine('Two things matter here: speed and cost.')).toBe('Two things matter here: speed and cost.');
   });

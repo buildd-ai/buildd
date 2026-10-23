@@ -214,6 +214,26 @@ describe('check_path_claim MCP handler', () => {
     expect(res.status).toBe(200);
   });
 
+  it('claims for an explicit workerId when the URL has no ?worker=', async () => {
+    mockWorkersFindFirst.mockResolvedValue({ taskId: TASK_ID, workspaceId: WORKSPACE_ID, accountId: 'acc-1', workspace: { teamId: 'team-1' } });
+    const body: any = await callTool({ paths: ['src/new.ts'], workerId: WORKER_ID }, '');
+    expect(body.result.isError).toBeFalsy();
+    expect(JSON.parse(body.result.content[0].text).claimed).toBe(true);
+  });
+
+  it('refuses an explicit workerId owned by another account and team', async () => {
+    mockWorkersFindFirst.mockResolvedValue({ taskId: TASK_ID, workspaceId: WORKSPACE_ID, accountId: 'acc-other', workspace: { teamId: 'team-other' } });
+    const body: any = await callTool({ paths: ['src/new.ts'], workerId: WORKER_ID }, '');
+    expect(body.result.isError).toBe(true);
+    expect(mockAcquirePathClaims).not.toHaveBeenCalled();
+  });
+
+  it('refuses an explicit workerId that differs from the ?worker= binding', async () => {
+    const body: any = await callTool({ paths: ['src/new.ts'], workerId: 'b2b2b2b2-0000-4000-8000-000000000222' });
+    expect(body.result.isError).toBe(true);
+    expect(mockAcquirePathClaims).not.toHaveBeenCalled();
+  });
+
   it('returns isError when paths is empty', async () => {
     const body: any = await callTool({ paths: [] });
     const result = body.result;

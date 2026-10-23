@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "e09f5611-d118-4f88-a6a6-931500e8de9c",
+  "id": "adeed96e-fbea-46d8-861f-c5d41a647eb3",
   "prevIds": [
     "c2ef131d-bce9-4063-a866-c22313622c77"
   ],
@@ -21823,19 +21823,6 @@
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "replaces",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "spec_revisions"
-    },
-    {
-      "type": "jsonb",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
       "name": "approved_attachments",
       "entityType": "columns",
       "schema": "public",
@@ -21876,6 +21863,19 @@
       "generated": null,
       "identity": null,
       "name": "approved_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_revisions"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "approval",
       "entityType": "columns",
       "schema": "public",
       "table": "spec_revisions"

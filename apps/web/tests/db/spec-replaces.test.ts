@@ -38,13 +38,15 @@ async function person(teamId: string, role: 'owner' | 'admin' | 'member') {
 }
 
 let teamA: string; let wsA: string; let wsB: string;
-let admin: string; let member: string;
+let admin: string; let member: string; let adminB: string;
 beforeAll(async () => {
   assertDbConfigured();
   ({ teamId: teamA, workspaceId: wsA } = await seedWorkspace());
   await q(sql`UPDATE workspaces SET access_mode = 'open' WHERE id = ${wsA}::uuid`);
-  ({ workspaceId: wsB } = await seedWorkspace());
+  let teamB: string;
+  ({ teamId: teamB, workspaceId: wsB } = await seedWorkspace());
   admin = await person(teamA, 'admin');
+  adminB = await person(teamB, 'admin');
   member = await person(teamA, 'member');
 });
 
@@ -63,8 +65,10 @@ async function spec(workspaceId = wsA, extra: Record<string, unknown> = {}, call
   return r;
 }
 async function approved(workspaceId = wsA) {
-  const r = await spec(workspaceId);
-  const a = await approveSpecRevision(user(admin), r.spec.id, { revision: 1, expectedVersion: r.spec.version });
+  // Each workspace's own people write and approve there.
+  const [writer, approver] = workspaceId === wsA ? [member, admin] : [adminB, adminB];
+  const r = await spec(workspaceId, {}, user(writer));
+  const a = await approveSpecRevision(user(approver), r.spec.id, { revision: 1, expectedVersion: r.spec.version });
   if (!a.ok || 'pending' in a) throw new Error('approve failed');
   return a.spec;
 }

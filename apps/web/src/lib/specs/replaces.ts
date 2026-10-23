@@ -57,10 +57,21 @@ export async function liveReplaced(workspaceId: string, ids: readonly string[] |
 }
 
 /**
- * On a live spec's page: the specs whose head revision names it in `replaces`
- * and is not approved yet ("A replacement is waiting: <spec>", R-76).
+ * On a live spec's page, two un-run reads for the page's one read round
+ * (lib/read-round.ts), so they cost no round trip of their own:
+ * - the live specs its head revision names in `replaces` ("Replaces <spec>", R-100);
+ * - the specs whose unapproved head names it ("A replacement is waiting: <spec>", R-76).
  */
-export async function waitingReplacements(spec: { id: string; workspaceId: string }): Promise<Array<{ id: string; title: string }>> {
+export function replacesOfHeadQuery(spec: { id: string; workspaceId: string; headRevision: number }) {
+  return db.select({ id: specs.id, title: specs.title }).from(specs)
+    .innerJoin(specRevisions, and(
+      eq(specRevisions.specId, spec.id), eq(specRevisions.revision, spec.headRevision),
+      sql`${specRevisions.replaces} @> jsonb_build_array(${specs.id}::text)`,
+    ))
+    .where(and(eq(specs.workspaceId, spec.workspaceId), notInArray(specs.status, RETIRED)))
+    .orderBy(specs.title).limit(MAX_REPLACES);
+}
+export function waitingReplacementsQuery(spec: { id: string; workspaceId: string }) {
   return db.select({ id: specs.id, title: specs.title }).from(specs)
     .innerJoin(specRevisions, and(eq(specRevisions.specId, specs.id), eq(specRevisions.revision, specs.headRevision)))
     .where(and(
