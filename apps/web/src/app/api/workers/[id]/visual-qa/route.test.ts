@@ -6,9 +6,10 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const WORKER = '33333333-3333-4333-8333-333333333333';
+const TASK = '55555555-5555-4555-8555-555555555555';
 const ACCOUNT = '44444444-4444-4444-8444-444444444444';
 
-let authed: { id: string } | null;
+let authed: { id: string; taskScope?: { taskId: string; workspaceId: string; expiresAt: number } } | null;
 let workspace: Record<string, unknown> | null;
 let dispatched: Array<{ ref: string; inputs: Record<string, string> }>;
 let workflowExists: boolean;
@@ -33,7 +34,7 @@ mock.module('@/lib/quality-scout-visual-adapter', () => ({
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      workers: { findFirst: async () => ({ id: WORKER, accountId: ACCOUNT, workspaceId: 'ws-1', branch: 'buildd/abc12345-fix' }) },
+      workers: { findFirst: async () => ({ id: WORKER, accountId: ACCOUNT, workspaceId: 'ws-1', taskId: TASK, branch: 'buildd/abc12345-fix' }) },
       workspaces: { findFirst: async () => workspace },
     },
   },
@@ -70,6 +71,18 @@ describe('POST /api/workers/[id]/visual-qa', () => {
     const json = await res.json();
     expect(json.runId).toBe(99);
     expect(json.runUrl).toBe('https://github.com/acme/web/actions/runs/99');
+  });
+
+  it('lets a task token for the worker\'s own task dispatch', async () => {
+    authed = { id: ACCOUNT, taskScope: { taskId: TASK, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+    expect((await POST(req(), params())).status).toBe(200);
+    expect(dispatched).toHaveLength(1);
+  });
+
+  it('404 for a task token scoped to a different task', async () => {
+    authed = { id: ACCOUNT, taskScope: { taskId: '66666666-6666-4666-8666-666666666666', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+    expect((await POST(req(), params())).status).toBe(404);
+    expect(dispatched).toEqual([]);
   });
 
   it('rejects an unsafe captureRef or viewport before dispatching', async () => {

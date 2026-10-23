@@ -44,7 +44,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const worker = await db.query.workers.findFirst({
     where: sqlWhere(eq(workers.id, id)),
-    columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true, branch: true },
+    columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true, taskId: true, branch: true },
   });
   if (!worker || !callerOwnsWorker(account, worker)) return notFound();
 
