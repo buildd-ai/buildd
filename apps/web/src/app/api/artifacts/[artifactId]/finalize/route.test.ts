@@ -19,7 +19,12 @@ mock.module('@/lib/task-token-auth', () => ({
   taskScopeAllowsWorkspace: () => true,
 }));
 mock.module('@/lib/storage', () => ({ isStorageConfigured: () => true }));
-mock.module('@/lib/artifact-upload', () => ({ finalizeArtifactUpload: mockFinalize }));
+const mockRevision = mock(() => Promise.resolve(null as any));
+mock.module('@/lib/artifact-upload', () => ({
+  finalizeArtifactUpload: mockFinalize,
+  pendingRevisionOf: (m: any) => m?.pendingRevision ?? null,
+}));
+mock.module('@/lib/artifact-revisions', () => ({ getArtifactRevision: mockRevision }));
 mock.module('@buildd/core/db', () => ({ db: { query: { artifacts: { findFirst: mockFindFirst } } } }));
 
 import { POST } from './route';
@@ -32,6 +37,25 @@ describe('POST /api/artifacts/[artifactId]/finalize', () => {
     mockAuth.mockReset().mockResolvedValue({ id: 'acct-1' });
     mockFindFirst.mockReset();
     mockFinalize.mockClear();
+    mockRevision.mockReset().mockResolvedValue(null);
+  });
+
+  // The revision trigger clears content_author once it records the body, so
+  // the author a workerless upload keeps is its revision's.
+  it('lets the author recorded on the revision finalize a workerless upload', async () => {
+    mockFindFirst.mockResolvedValue({ id: ID, workspaceId: 'w', storageKey: 'k', worker: null, contentAuthor: null, currentRevision: 1 });
+    mockRevision.mockResolvedValue({ author: 'account:acct-1' });
+    expect((await call()).status).toBe(200);
+    mockRevision.mockResolvedValue({ author: 'account:other' });
+    expect((await call()).status).toBe(403);
+  });
+
+  it('a new revision is finalized by whoever started it, even on a worker\'s artifact', async () => {
+    const pendingRevision = { author: 'account:acct-1' };
+    mockFindFirst.mockResolvedValue({ workspaceId: 'w', storageKey: 'k', worker: { accountId: 'other' }, metadata: { pendingRevision } });
+    expect((await call()).status).toBe(200);
+    mockFindFirst.mockResolvedValue({ workspaceId: 'w', storageKey: 'k', worker: { accountId: 'acct-1' }, metadata: { pendingRevision: { author: 'account:other' } } });
+    expect((await call()).status).toBe(403);
   });
 
   it('lets the author of a workerless upload finalize it', async () => {

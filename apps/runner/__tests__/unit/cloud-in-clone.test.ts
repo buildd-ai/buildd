@@ -139,6 +139,11 @@ test('cleanup never removes the primary clone', async () => {
 test('cloud preserves unpushed branch when its orphan name is already taken', async () => {
   process.env.BUILDD_EXECUTOR = 'cloud';
   const clone = repo();
+  // Origin holds the branch at base, so the on-demand fetch of it succeeds and
+  // git waits for its upload-pack. Fetching a missing ref dies without waiting,
+  // and on Windows that upload-pack (cwd: the origin, i.e. the temp root) can
+  // still hold the directory when teardown removes it (EBUSY).
+  git(dirname(clone), 'branch', 'buildd/fresh');
   git(clone, 'checkout', '-qb', 'buildd/fresh');
   writeFileSync(join(clone, 'extra'), 'unpushed');
   git(clone, 'add', '.');
@@ -148,5 +153,6 @@ test('cloud preserves unpushed branch when its orphan name is already taken', as
   const result = await setupWorktree(clone, 'buildd/fresh', 'dev', 'collision');
   expect(result).toBeNull();
   expect(git(clone, 'rev-parse', 'buildd/fresh')).toBe(sha);
+  expect(git(clone, 'rev-parse', 'origin/buildd/fresh')).toBe(git(clone, 'rev-parse', 'origin/dev'));
   expect(existsSync(join(clone, '.git'))).toBe(true);
 });
