@@ -158,8 +158,14 @@ export function lintSpecFile(slug: string, fm: SpecFrontmatter | null, body: str
       warnings.push(`last_verified is ${age}d old (>${STALE_DAYS}d) — re-verify against code`);
   }
 
-  if (fm.status === 'superseded' && !fm.superseded_by)
-    errors.push('status is `superseded` but no `superseded_by` successor named');
+  if (fm.status === 'superseded' && !fm.superseded_by) {
+    // Allow superseded specs without superseded_by if they reference a native Living Spec in the body
+    // (e.g., "Replaced by approved Living Spec **75217f55: ...")
+    const hasLivingSpecRef = /Living Spec\s+\*\*[a-f0-9]{8}/.test(body);
+    if (!hasLivingSpecRef) {
+      errors.push('status is `superseded` but no `superseded_by` successor named');
+    }
+  }
 
   // ── Ingestion fields ──────────────────────────────────────────────────────
   // A spec that cannot be summarised in one line and filed under one domain is
