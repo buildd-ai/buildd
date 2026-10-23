@@ -10,6 +10,8 @@ mock.module('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(search),
 }));
 mock.module('next-auth/react', () => ({ signOut: () => {} }));
+let navSection: string | null = null;
+mock.module('@/lib/nav-section-store', () => ({ useNavSection: () => navSection }));
 mock.module('@/lib/home-attention-store', () => ({ useHomeAttentionCount: () => homeCount }));
 
 const { default: MissionsSidebar } = await import('./MissionsSidebar');
@@ -86,5 +88,20 @@ describe('MissionsSidebar (labelled side rail)', () => {
     expect(html).not.toContain('aria-label="Settings"');
     expect(html).not.toMatch(/text-\[(7|8|9)px\]|\buppercase\b/);
     expect(html).toContain('aria-label="Account menu"');
+  });
+  it("a mission's task page marks Missions, not Activity (design 6356e80d)", () => {
+    const before = pathname;
+    pathname = '/app/tasks/t-1';
+    navSection = '/app/missions';
+    try {
+      const html = render();
+      expect(link(html, '/app/missions')).toContain('aria-current="page"');
+      expect(link(html, '/app/tasks')).not.toContain('aria-current="page"');
+      navSection = null;
+      expect(link(render(), '/app/tasks')).toContain('aria-current="page"');
+    } finally {
+      pathname = before;
+      navSection = null;
+    }
   });
 });

@@ -1,3 +1,4 @@
+import type { ReportedLimitWall } from './provider-limit';
 import type { BuilddTask, LocalUIConfig } from './types';
 import { AGENT_ENDPOINT_HEADERS_RUNNER_FEATURE, AGENT_ENDPOINT_RUNNER_FEATURE } from '@buildd/core/agent-endpoint';
 import { AGENT_GITHUB_TOKEN_RUNNER_FEATURE } from '@buildd/core/agent-github-credentials';
@@ -335,7 +336,7 @@ export class BuilddClient {
     return out;
   }
 
-  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment, opts: { byPerson?: boolean; claudeLoginId?: string | null; loginUse?: RunnerLoginUse } = {}): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
+  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment, opts: { byPerson?: boolean; claudeLoginId?: string | null; loginUse?: RunnerLoginUse; limitWalls?: ReportedLimitWall[] } = {}): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
     const body: Record<string, unknown> = {
       maxTasks, workspaceId, taskId, runner: runner || 'runner',
       // AGENT_ENDPOINT_RUNNER_FEATURE: this build applies modelEndpoint
@@ -390,6 +391,12 @@ export class BuilddClient {
     // nothing ties to one from it. Absent = an older runner's behaviour.
     if (opts.loginUse) {
       body.loginUse = opts.loginUse;
+    }
+    // The provider's own limit signals for this runner's login (provider-limit.ts):
+    // each provider's status, kind and reset time, so the server holds this runner's
+    // claims on it until then. Nothing derived: only what the provider said.
+    if (opts.limitWalls && opts.limitWalls.length > 0) {
+      body.limitWalls = opts.limitWalls;
     }
     // BUILDD_EXECUTOR=cloud is set by apps/cloud-runner for the container. It
     // is sent verbatim so the server can refuse a value it does not know

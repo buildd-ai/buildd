@@ -14,6 +14,10 @@ export interface WaitingTask {
   /** The task's mission, so a link can open it in mission context. */
   missionId?: string | null;
   waitingFor: WaitingFor | null;
+  /** The waiting worker, so Home's card can post the answer in place. */
+  workerId?: string | null;
+  /** When it asked, ISO. */
+  askedAt?: string | null;
   /** Answered; the worker has not picked the answer up yet. Not counted as waiting. */
   answerSent?: boolean;
 }

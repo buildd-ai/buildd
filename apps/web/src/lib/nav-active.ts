@@ -1,8 +1,11 @@
 /**
  * Returns true if the given nav href should be considered active for the current pathname.
  * Handles prefix-matching for most routes, with exact match for /app/home.
+ * `claimed` is the destination the open page claimed (lib/nav-section-store.ts)
+ * when its path cannot say, e.g. Missions for a mission's task; it wins.
  */
-export function isNavActive(pathname: string, href: string): boolean {
+export function isNavActive(pathname: string, href: string, claimed?: string | null): boolean {
+  if (claimed) return href === claimed;
   if (href === '/app/home') {
     return pathname === '/app/home' || pathname === '/app/dashboard';
   }

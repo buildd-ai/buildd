@@ -221,10 +221,11 @@ the three below ink all resolve to `--sub` and are the floor for text.
 Each hue has a tint for the chip or cell behind it, all at least 4.5:1 against
 their hue: `--ok-tint`, `--run-tint`, `--accent-soft`, `--bad-tint`, `--q-tint`
 (night `rgba` over the card, day solid: `#e6efe7`, `#e4ecf2`, `#faeadb`,
-`#f6e5df`, `#eeebe4`). A landed strip cell is `--ok-cell` (`#3d5a47` /
-`#b9d2bf`). The hatches mark a share of a strip that is in audit or queued, never
+`#f6e5df`, `#eeebe4`). A landed strip cell is `--ok-cell` (`#4f7a5c` /
+`#649273`), and a bar cell's ink (`--ok-cell`, `--act-hatch`, the amber and
+red outlines) is at least 3:1 on the page and the card in both themes. The hatches mark a share of a strip that is in audit or queued, never
 decoration: `--ok-hatch` (`#5e8f6d` / `#8db89a`), `--run-hatch` (`#4f7896` /
-`#7fa3c0`), `--act-hatch` (`#a5612c` / `#e6a774`). The fleet aliases
+`#7fa3c0`), `--act-hatch` (`#a5612c` / `#b5662a`). The fleet aliases
 `--fleet-ok-soft`, `--fleet-err-soft` and `--fleet-faint` now read `--ok-tint`,
 `--bad-tint` and `--faint`.
 

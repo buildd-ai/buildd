@@ -169,6 +169,16 @@ mock.module('@/lib/surface-audit-waiver-cancel', () => ({
   cancelWaivedSurfaceAudits: mockCancelWaivedSurfaceAudits,
 }));
 
+// Every Skip is recorded centrally (lib/visual-review-skip-record.ts, tested on its own):
+// the snapshot is read before the waiver is written, the record after the response.
+const skipSnapshot = { commit: 'def5678', cause: 'findings_wrong', findings: [], openFindings: 2 };
+const mockSnapshotSkip = mock(async (_m: string, _w: string | null) => skipSnapshot);
+const mockRecordSkip = mock(async (_i: any) => ({ bug: null }));
+mock.module('@/lib/visual-review-skip-record', () => ({
+  snapshotVisualReviewForSkip: mockSnapshotSkip,
+  recordVisualReviewSkip: mockRecordSkip,
+}));
+
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
 }));
@@ -224,7 +234,7 @@ mock.module('@buildd/core/db', () => ({
     },
     update: (table: any) => {
       if (table === 'taskSchedules') return mockScheduleUpdate();
-      if (table === 'missionNotes') return { set: mock(() => ({ where: mock(() => Promise.resolve()) })) };
+      if (table === 'missionNotes') return { set: mock((data: any) => { updatedNoteSets.push(data); return { where: mock(() => Promise.resolve()) }; }) };
       return mockMissionsUpdate();
     },
     insert: (table: any) => ({
@@ -292,6 +302,7 @@ import { criterionFingerprint } from '@buildd/core/mission-helpers';
 import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 const makeParams = (id: string) => Promise.resolve({ id });
+let updatedNoteSets: any[] = [];
 
 // Living Specs D-44: only a mission that already carries hand-written goal
 // criteria may keep editing them. These tests exercise those legacy rules, so
@@ -2213,7 +2224,7 @@ describe('PATCH /api/missions/[id] — surface audit gate and waiver', () => {
 
   it('a refused waiver cancels nothing', async () => {
     mockCancelWaivedSurfaceAudits.mockClear();
-    expect((await patch({ surfaceAuditWaiver: 'skip' })).status).toBe(400);
+    expect((await patch({ surfaceAuditWaiver: '   ' })).status).toBe(400);
     expect(mockCancelWaivedSurfaceAudits).not.toHaveBeenCalled();
   });
 
@@ -2246,11 +2257,74 @@ describe('PATCH /api/missions/[id] — surface audit gate and waiver', () => {
     expect(insertedNotes).toHaveLength(0);
   });
 
-  it('rejects a waiver with no real reason', async () => {
-    const res = await patch({ surfaceAuditWaiver: 'skip' });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toContain('surfaceAuditWaiver');
+  it('rejects an empty waiver, or a button that does not exist', async () => {
+    for (const w of ['   ', { reason: 'because' }, 42]) {
+      const res = await patch({ surfaceAuditWaiver: w });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('surfaceAuditWaiver');
+    }
     expect(insertedNotes).toHaveLength(0);
+  });
+
+  // Spec 072de598 r15 I-7 / AC-26: two buttons, an optional note, no minimum length, one tap.
+  it('a short free-text reason is accepted: there is no minimum length any more', async () => {
+    expect((await patch({ surfaceAuditWaiver: 'ok' })).status).toBe(200);
+    expect(insertedNotes.find(n => n.title === 'Surface audit waived')?.body).toBe('ok');
+  });
+
+  it('a button Skip records the button\'s words and the note, cancels the queued audit, and is recorded centrally', async () => {
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1', email: 'owner@example.com' } as any);
+    mockCancelWaivedSurfaceAudits.mockClear();
+    mockSnapshotSkip.mockClear();
+    mockRecordSkip.mockClear();
+    const res = await patch({ surfaceAuditWaiver: { reason: 'wrong_or_stuck', note: 'shots of the wrong page' } });
+    expect(res.status).toBe(200);
+    const note = insertedNotes.find(n => n.title === 'Surface audit waived');
+    expect(note).toMatchObject({ body: 'The review is wrong or stuck: shots of the wrong page', authorType: 'user' });
+    expect(mockCancelWaivedSurfaceAudits.mock.calls[0]).toEqual([MID, 'The review is wrong or stuck: shots of the wrong page', 'user:user-1']);
+    // Read before the waiver is written, so the record names what the person saw.
+    expect(mockSnapshotSkip).toHaveBeenCalledWith(MID, 'ws-1');
+    await new Promise(r => setTimeout(r, 0));
+    expect(mockRecordSkip).toHaveBeenCalledTimes(1);
+    expect(mockRecordSkip.mock.calls[0][0]).toMatchObject({
+      mission: { id: MID, title: 'Existing Mission', workspaceId: 'ws-1' },
+      skipReason: 'wrong_or_stuck', note: 'shots of the wrong page', actorLabel: 'owner@example.com', snapshot: skipSnapshot,
+    });
+  });
+
+  it('ship it anyway with no note is one tap', async () => {
+    mockRecordSkip.mockClear();
+    expect((await patch({ surfaceAuditWaiver: { reason: 'ship_anyway' } })).status).toBe(200);
+    expect(insertedNotes.find(n => n.title === 'Surface audit waived')?.body).toBe('Ship it anyway');
+    await new Promise(r => setTimeout(r, 0));
+    expect(mockRecordSkip.mock.calls[0][0]).toMatchObject({ skipReason: 'ship_anyway', note: null });
+  });
+
+  // I-18: a Skip holds until a person withdraws it.
+  it('a person withdraws a Skip with null: the waiver notes are retired and the withdrawal is on the feed', async () => {
+    updatedNoteSets = [];
+    mockRecordSkip.mockClear();
+    const res = await patch({ surfaceAuditWaiver: null });
+    expect(res.status).toBe(200);
+    expect(updatedNoteSets).toContainEqual({ status: 'dismissed' });
+    expect(insertedNotes.find(n => n.title === 'Visual review skip withdrawn')).toMatchObject({ authorType: 'user' });
+    expect(mockRecordSkip).not.toHaveBeenCalled();
+  });
+
+  it('an in-task agent cannot withdraw a Skip either', async () => {
+    updatedNoteSets = [];
+    mockGetCurrentUser.mockReturnValue(null);
+    mockAuthenticateApiKey.mockReturnValue({ id: 'acct-1', name: 'key', level: 'admin', teamId: 'team-1' } as any);
+    const res = await PATCH(
+      new NextRequest(`http://localhost/api/missions/${MID}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ surfaceAuditWaiver: null, actorWorkerId: 'worker-1' }),
+        headers: { authorization: 'Bearer bld_test' },
+      }),
+      { params: makeParams(MID) },
+    );
+    expect(res.status).toBe(403);
+    expect(updatedNoteSets).toHaveLength(0);
   });
 
   it('rejects a waiver from an in-task agent', async () => {
