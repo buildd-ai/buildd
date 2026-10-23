@@ -48,9 +48,10 @@ describe('guessed-edge strip on real Postgres', () => {
     // Still held by the declared edge: the strip never touches it.
     expect(await claimable(t)).toBe(false);
 
-    // Compare which outbox rows exist, not their delivery state: delivery runs
-    // asynchronously after the wake and may advance between the two reads.
-    const outboxRows = async () => (await outboxFor(t)).map(r => ({ id: r.id, causes: r.causes }));
+    // Compare each outbox row's identity (cause, dedupe key), not its delivery
+    // state: delivery runs asynchronously after the wake and may advance status,
+    // delivered_via, attempt_count and not_before between the two reads.
+    const outboxRows = async () => (await outboxFor(t)).map(r => ({ id: r.id, cause: r.cause, causes: r.causes, dedupe_key: r.dedupe_key }));
     const outboxBefore = await outboxRows();
     await sweepGuessedEdges();
     expect(await row(t)).toEqual(after);
