@@ -252,7 +252,7 @@ export interface WorkspaceAwaitingMission {
   status: string;
   phase: VisualReviewModel['phase'];
   /** Why it waits on a human (`needsYou.reason`): unsure screens, the round cap, or a question. */
-  reason: 'unsure' | 'round_cap' | 'question';
+  reason: 'unsure' | 'round_cap' | 'question' | 'fix_check';
   /** Current screens the agent was unsure about that no human has decided. */
   awaitingHuman: number;
 }

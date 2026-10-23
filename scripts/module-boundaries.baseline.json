@@ -496,6 +496,7 @@
       "packages/core/decision-kind-mission-scope.ts": "jev-decisions",
       "packages/core/decision-kind-operator-recovery.ts": "jev-decisions",
       "packages/core/decision-kind-post-session-triage.ts": "jev-decisions",
+      "packages/core/decision-kind-red-check-cause.ts": "jev-decisions",
       "packages/core/decision-kind-scout-probe-selection.ts": "jev-decisions",
       "packages/core/escalation-gate-decision.ts": "jev-decisions",
       "packages/core/memory-decisions.ts": "jev-decisions",

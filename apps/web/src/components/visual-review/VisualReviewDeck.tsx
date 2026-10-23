@@ -52,7 +52,7 @@ import { findingIsStillThere } from '@buildd/core/visual-fix-label';
 import Dialog from '@/components/ui/Dialog';
 import { Kbd } from '@/components/KeyHints';
 import { taskPageHref } from '@/lib/mission-task-href';
-import { awaitingCapture, cellStanding, screensToReview } from '@/lib/visual-review-model';
+import { awaitingCapture, cellStanding, fixDecisionOf, isFixCheck, screensToReview } from '@/lib/visual-review-model';
 import { planShotReviewEffect } from '@/lib/visual-review-outcome';
 import ShotImage, { VERDICT_DOT, VIEWPORT_LABEL } from './ShotImage';
 import VisualShotCompare, { FixStatus, fixTitleText } from './VisualShotCompare';
@@ -65,7 +65,7 @@ import { chunkCells, type DecideInput, type DecideResult, type UndoResult } from
 /** The decision buttons a cell offers, by label: the one place a dead button could come back. */
 export function decisionLabels(cell: VisualReviewCell): Record<VisualReviewDecision, string> | null {
   if (awaitingCapture(cell)) return null;
-  if (cell.fixCheck?.state === 'check') return { looks_right: 'Fixed', needs_fix: 'Still broken' };
+  if (isFixCheck(cell)) return { looks_right: 'Fixed', needs_fix: 'Still broken' };
   return { looks_right: 'Looks right', needs_fix: 'Needs fix' };
 }
 
@@ -85,7 +85,7 @@ const FIX_OVER = new Set(['completed', 'cancelled', 'failed']);
  * it is pending; a started one gets a note instead.
  */
 export function buttonHints(cell: VisualReviewCell): Record<VisualReviewDecision, string> {
-  const check = cell.fixCheck?.state === 'check';
+  const check = isFixCheck(cell);
   // On a fix check the merged fix is what the screenshot tests, never the fix a decision acts on.
   const fix = check && cell.current.fixTask?.id === cell.fixCheck!.fix.id ? null : cell.current.fixTask;
   const linkedFix = fix ? { id: fix.id, status: fix.mergedAt ? 'completed' : fix.status } : null;
@@ -129,8 +129,8 @@ export function outcomeText(r: Extract<DecideResult, { ok: true }>): string {
 /** A read-only row's status in the end-of-queue groups. */
 export function standingNote(cell: VisualReviewCell): string {
   if (awaitingCapture(cell)) return FIX_MERGED_STATUS;
-  const review = cell.current.review;
-  const check = cell.fixCheck?.state === 'check';
+  const review = fixDecisionOf(cell);
+  const check = isFixCheck(cell);
   if (review) {
     if (review.decision === 'needs_fix') return check ? 'Still broken' : 'Needs fix';
     return check ? 'Marked fixed' : cell.current.agentVerdict === 'issue' ? 'Not a bug' : 'Marked fine';
@@ -399,7 +399,7 @@ function DeckInner({
   const needsFix = useCallback(() => {
     if (!focused || awaitingCapture(focused)) return;
     // Still broken: a new fix, prefilled with what the merged fix was for.
-    const check = focused.fixCheck?.state === 'check' ? focused.fixCheck : null;
+    const check = isFixCheck(focused) ? focused.fixCheck! : null;
     if (check) {
       setGuidance(null);
       setNote(focused.history.find(h => h.shot.id === check.beforeShotId)?.finding ?? focused.current.finding);
@@ -621,7 +621,7 @@ function DeckInner({
   const primary: VisualReviewDecision | null = focused && !focused.fixCheck
     ? focused.current.agentVerdict === 'ok' ? 'looks_right' : focused.current.agentVerdict === 'issue' ? 'needs_fix' : null
     : null;
-  const checking = focused?.fixCheck?.state === 'check';
+  const checking = !!focused && isFixCheck(focused);
   // The note either files a fix (ok, unsure, or still broken) or adds guidance to one you agreed with.
   const filesFix = !!focused && !guidance && (checking || focused.current.agentVerdict !== 'issue');
   const noteRequired = filesFix && focused!.current.agentVerdict === 'ok';
@@ -799,7 +799,8 @@ function ShotPanel({ cell, focused, paired, done, zoomed, onFocus, onImageClick,
   fixTaskHref: (id: string) => string;
 }) {
   const entry = cell.current;
-  const review = entry.review;
+  // A merged fix with no new screenshot: the before shot's older review asked for the fix, it is not a decision on it.
+  const review = fixDecisionOf(cell);
   // On a fix check the new screenshot has no fix of its own: show the merged one it tests.
   const fix = entry.fixTask ?? cell.fixCheck?.fix ?? null;
   const settled = awaitingCapture(cell);
@@ -825,7 +826,7 @@ function ShotPanel({ cell, focused, paired, done, zoomed, onFocus, onImageClick,
           <span className="inline-flex items-center gap-1.5 font-mono text-meta text-text-secondary">
             <ReviewMarker marker={review ? cell.marker : 'confirmed'} />
             {review
-              ? `Decided: ${(cell.fixCheck?.state === 'check' ? CHECK_WORDS : DECISION_WORDS)[review.decision]}`
+              ? `Decided: ${(isFixCheck(cell) ? CHECK_WORDS : DECISION_WORDS)[review.decision]}`
               : 'Saving'}
           </span>
         )}

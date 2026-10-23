@@ -158,15 +158,20 @@ export function formatGetPrDelivery(data: {
     repairs: Array<{ label: string; words: string }>;
     reviewApproval?: { state: string; description: string } | null;
   } | null;
-}): { standingLine: string; reviewLine: string; roundsLine: string; decisionLine: string; repairsLine: string; approvalLine: string } {
+  /** The mission-level merge gate (`guardMissionPrMerge`), present only when it holds the PR. */
+  mergeGate?: { blocks: boolean; reason: string | null } | null;
+}): { standingLine: string; reviewLine: string; roundsLine: string; decisionLine: string; repairsLine: string; approvalLine: string; mergeGateLine: string } {
   const d = data.delivery;
+  // Spec 072de598 I-12: an approval is not "ready to merge" while a merge door would refuse the PR.
+  const gate = data.mergeGate?.blocks ? data.mergeGate : null;
+  const mergeGateLine = gate ? `Merge blocked: ${gate.reason ?? 'a mission check has not passed'}` : '';
   const r = data.reviews ?? {};
   const approved = r.approved ?? 0;
   const changes = r.changesRequested ?? 0;
   const github = approved > 0 || changes > 0
     ? `Reviews: ${approved} approved${changes > 0 ? `, ${changes} changes requested` : ''}`
     : 'Reviews: none';
-  if (!d) return { standingLine: '', reviewLine: github, roundsLine: '', decisionLine: '', repairsLine: '', approvalLine: '' };
+  if (!d) return { standingLine: '', reviewLine: github, roundsLine: '', decisionLine: '', repairsLine: '', approvalLine: '', mergeGateLine };
   const githubStates = githubReviewStatesLine(r) ?? '';
   const dec = d.decision;
   const decisionLine = dec
@@ -188,7 +193,10 @@ export function formatGetPrDelivery(data: {
     ].filter(Boolean).join('\n'),
     repairsLine: d.repairs.length > 0 ? `Repairs: ${d.repairs.map(x => `${x.label} · ${x.words}`).join('; ')}` : '',
     // R-43: the review gate is its own line, never folded into CI.
-    approvalLine: d.reviewApproval ? `Review approval: ${d.reviewApproval.description}` : '',
+    approvalLine: d.reviewApproval
+      ? `Review approval: ${gate ? d.reviewApproval.description.replace(/^Ready to merge:/, 'Approved:') : d.reviewApproval.description}`
+      : '',
+    mergeGateLine,
   };
 }
 
@@ -3719,7 +3727,7 @@ export async function handleBuilddAction(
         ? `Failing: ${shownFailing.map(c => (c.url ? `${c.name} (${c.url})` : c.name)).join(', ')}${omittedFailing > 0 ? ` (+${omittedFailing} more — all:true lists every one)` : ''}`
         : '';
 
-      const { standingLine, reviewLine, roundsLine, decisionLine, repairsLine, approvalLine } = formatGetPrDelivery(data);
+      const { standingLine, reviewLine, roundsLine, decisionLine, repairsLine, approvalLine, mergeGateLine } = formatGetPrDelivery(data);
 
       const mergeableLine = pr.mergeable === true ? 'Mergeable: yes'
         : pr.mergeable === false ? `Mergeable: no (${pr.mergeableState ?? 'blocked'})`
@@ -3805,6 +3813,7 @@ export async function handleBuilddAction(
         `**PR #${pr.number}: ${pr.title ?? '(no title)'}**`,
         `State: ${pr.state} | ${mergeableLine}`,
         standingLine,
+        mergeGateLine,
         ciLine,
         failingLine,
         approvalLine,
@@ -5588,7 +5597,7 @@ export async function handleBuilddAction(
         const data = await api(`/api/artifacts/designs?${qs}`);
         const ds = (data.designs ?? []) as Array<Record<string, any>>;
         if (!ds.length) return text('No designs found.');
-        return text(`${ds.length} design(s):\n${ds.map(d => `- ${d.title || '(untitled)'} — revision ${d.revision}${d.pinnedRevision ? ` (pinned ${d.pinnedRevision})` : ''}, screens: ${(d.screens ?? []).map((s: any) => s.id).join(', ')}. id: ${d.id}${d.linkId ? `, link: ${d.linkId}` : ''}`).join('\n')}`);
+        return text(`${ds.length} design(s):\n${ds.map(d => `- ${d.title || '(untitled)'} — revision ${d.revision}${d.specPin ? ` (pinned by this spec revision at revision ${d.pinnedRevision}; not an attachment)` : d.pinnedRevision ? ` (pinned ${d.pinnedRevision})` : ''}, screens: ${(d.screens ?? []).map((s: any) => s.id).join(', ')}. id: ${d.id}${d.linkId ? `, link: ${d.linkId}` : ''}`).join('\n')}`);
       }
       throw new Error('action must be one of: attach, detach, list');
     }

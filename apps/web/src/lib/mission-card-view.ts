@@ -643,7 +643,7 @@ function deriveCardState(
     // (they read as no fact, same as before) and keeps this in step with
     // `deriveMissionIntegrationPr`'s real state rather than re-deriving it.
     missionPr: integrationPr && integrationPr.state !== 'merged'
-      ? { state: integrationPr.state, prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl }
+      ? { state: integrationPr.state, prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl, ...(integrationPr.ciRed ? { ciRed: true } : {}) }
       : null,
     unmergedPrs,
     ciRed: deriveCiRedChains(unmergedPrs, tasks),

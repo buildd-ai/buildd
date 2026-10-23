@@ -76,6 +76,7 @@ import { answerInChatHref } from '@/lib/chat/answer-link';
 import { loadPrActionSheet } from '@/lib/pr-landing-sheet';
 import type { ClaimContextInjection } from '@/app/api/workers/claim/context-injection';
 import { attachVisualAuditRoutes } from '@/app/api/workers/claim/visual-audit-routes';
+import { attachVisualAuditRecapture } from '@/app/api/workers/claim/visual-audit-recapture';
 import { attachVisualAuditSpecCriteria } from '@/app/api/workers/claim/visual-audit-spec-criteria';
 import { recordVisualVerdict } from '@/lib/visual-audit-spec-verdict';
 import { checkSpecDuplicates, recordDuplicateOverride } from '@/lib/spec-duplicate-decision';
@@ -368,6 +369,7 @@ export const OPERATOR_ONLY_RESPONSE = operatorOnlyResponse;
  */
 export const VISUAL_AUDIT_ROUTES: ClaimContextInjection = async (claimedWorkers, claimedTasks) => {
   await attachVisualAuditRoutes(claimedWorkers, claimedTasks);
+  await attachVisualAuditRecapture(claimedWorkers, claimedTasks);
   await attachVisualAuditSpecCriteria(claimedWorkers, claimedTasks);
 };
 

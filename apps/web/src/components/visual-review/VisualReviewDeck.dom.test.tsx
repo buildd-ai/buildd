@@ -413,6 +413,13 @@ describe('after a fix merges: the buttons follow the fix, never local state', ()
     expect(q('deck-still-broken')!.textContent).toContain('Still broken');
     expect(q('deck-fixed')!.textContent).toContain('Fixed');
 
+    // Merged, no screenshot is coming (spec 072de598 I-15): the person decides Fixed / Still broken.
+    const decide = buildVisualReviewFixtureModel('reviewed', { scenario: 'recapture-decide' });
+    const decideKey = decide.queue[0]!;
+    act(() => root.render(<VisualReviewDeck key="decide" model={decide} layout="sheet" startKey={decideKey} onDecide={okDecide()} onUndo={async () => ({ ok: true })} />));
+    expect(focused()).toBe(decideKey);
+    expect(buttons()).toEqual(['deck-still-broken', 'deck-fixed']);
+
     // Failed or cancelled: Looks right / Needs fix, with the outcome shown.
     for (const status of ['failed', 'cancelled']) {
       act(() => root.render(<VisualReviewDeck key={status} model={withFixStatus('fixture-fix-2', status)} layout="sheet" startKey="/app/settings|desktop|" onDecide={okDecide()} onUndo={async () => ({ ok: true })} />));
