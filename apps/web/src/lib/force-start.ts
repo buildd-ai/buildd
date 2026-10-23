@@ -58,7 +58,6 @@ export function buildForceStartIntent(opts: {
   note?: string | null;
 }): ForceStartIntent {
   const kinds = [...new Set(opts.reasons.map(r => r.kind))];
-  const liftDependsOn = opts.reasons.filter(r => r.kind === 'dep_inferred' && r.blocker?.id).map(r => r.blocker!.id);
   return {
     id: randomUUID(),
     at: opts.now.toISOString(),
@@ -68,7 +67,6 @@ export function buildForceStartIntent(opts: {
     kinds,
     loopKeys: claimLoopKeysFor(kinds),
     prefilterLifts: prefilterLiftsFor(kinds),
-    ...(liftDependsOn.length > 0 ? { liftDependsOn: [...new Set(liftDependsOn)] } : {}),
     reasonsDigest: waitingReasonsDigest(opts.digestOf ?? opts.reasons),
     blockers: opts.reasons.map(r => ({
       kind: r.kind,

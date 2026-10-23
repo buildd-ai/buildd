@@ -6,7 +6,8 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { probeCoordination } from '@/lib/coordination-probe';
-import { blockingReasons, coordinationHoldBody, readForceStart } from '@buildd/core/waiting-reason';
+import { loadQueueWaits } from '@/lib/queue-wait-load';
+import { blockingReasons, coordinationHoldBody, orderWaitingReasons, readForceStart, type WaitingKind } from '@buildd/core/waiting-reason';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
@@ -17,9 +18,19 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
  * mission drawer can say "Waiting on PR #1234 · both edit …" instead of
  * runner-liveness copy. Read-only. A non-pending task has no reasons.
  *
- * Body: { waitingReasons, reasonsDigest?, canForce?, force?, notForceable?,
+ * The probe's reasons are joined by the claim query's own prefilters and the
+ * claim loop's limits it does not cover (lib/queue-wait-load.ts), so a task
+ * the claim refuses for a start time, a hold, the workspace cap or a budget is
+ * never shown as ready; `queueWait` is the one reason explain, the mission row
+ * and both queues give (spec: Overlap scheduling, AC-10). None of the joined
+ * reasons is forceable, so a Force start's digest is the probe's own.
+ *
+ * Body: { waitingReasons, queueWait?, reasonsDigest?, canForce?, force?, notForceable?,
  *         forceStart? (an unexpired intent awaiting its claim), probed }
  */
+
+/** Kinds the start probe produces itself; the queue-wait read adds the rest. */
+const PROBE_KINDS: ReadonlySet<WaitingKind> = new Set<WaitingKind>(['mission_local', 'dep_declared', 'lane', 'mission_concurrent', 'mission_paced', 'ordered_behind']);
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -48,13 +59,18 @@ export async function GET(
   if (task.status !== 'pending') return NextResponse.json({ waitingReasons: [], probed: true });
 
   const now = new Date();
-  const reasons = await probeCoordination(task as any, now);
+  const [probed, live] = await Promise.all([
+    probeCoordination(task as any, now),
+    loadQueueWaits([task.id], now).then(m => m.get(task.id) ?? null),
+  ]);
   const forceStart = readForceStart(task.context as Record<string, unknown> | null, now);
-  if (reasons === null) return NextResponse.json({ waitingReasons: [], probed: false });
+  if (probed === null) return NextResponse.json({ waitingReasons: [], ...(live ? { queueWait: live.wait } : {}), probed: false });
+  const reasons = orderWaitingReasons([...probed, ...(live?.reasons ?? []).filter(r => !PROBE_KINDS.has(r.kind))]);
   const blocking = blockingReasons(reasons);
   return NextResponse.json({
     ...(blocking.length > 0 ? coordinationHoldBody(blocking) : {}),
     waitingReasons: reasons,
+    ...(live ? { queueWait: live.wait } : {}),
     ...(forceStart ? { forceStart: { kinds: forceStart.kinds, expiresAt: forceStart.expiresAt } } : {}),
     probed: true,
   });

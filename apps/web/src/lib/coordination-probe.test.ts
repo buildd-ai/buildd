@@ -4,8 +4,8 @@
  * `evaluateCoordinationGates` (claim/coordination-gates.test.ts); here the
  * reads are stubbed and the classification is what is pinned:
  *
- *  - an inferred (creation-time overlap) edge is `dep_inferred`, carrying the
- *    explain hold's paths and overlap kind; a declared edge is `dep_declared`;
+ *  - every unmet edge is `dep_declared`, naming its dependency's status: no
+ *    edge is read as a guessed overlap (spec: Overlap scheduling, R-1);
  *  - a satisfied edge (the claim's own predicate says so) is not a reason;
  *  - a local mission is `mission_local` unless already handed over;
  *  - a stored soft overlap holds nothing (spec: Overlap scheduling, R-2).
@@ -26,13 +26,12 @@ mock.module('@buildd/core/db', () => ({
     select: (cols?: Record<string, unknown>) => chain(() => (cols && 'd0' in cols ? [depRow] : cols && 'detail' in cols && !('occurredAt' in cols) ? softGateRows : [])),
     query: {
       workers: { findMany: async () => [] },
-      tasks: { findMany: async () => [] },
+      tasks: { findMany: async () => depStatuses },
     },
   },
 }));
 
-let holds: any[] = [];
-mock.module('@/lib/coordination-holds', () => ({ loadTaskCoordinationHolds: async () => holds }));
+let depStatuses: Array<{ id: string; status: string; title?: string }> = [];
 mock.module('@/app/api/workers/claim/coordination-snapshot', () => ({
   loadOpenPrTasksByWorkspace: async () => new Map(),
   loadMissionCoordination: async () => ({ missionClaimMap: new Map(), missionActiveCountMap: new Map(), missionInFlightRows: [] }),
@@ -46,26 +45,20 @@ const { probeCoordination } = await import('./coordination-probe');
 const base = { id: 'task-1', workspaceId: 'ws', missionId: null as string | null, pathManifest: ['packages/core/db/schema.ts'], context: {}, status: 'pending' };
 
 beforeEach(() => {
-  depRow = {}; holds = []; local = false; softGateRows = [];
+  depRow = {}; depStatuses = []; local = false; softGateRows = [];
 });
 
 describe('probeCoordination: dependencies, local missions', () => {
-  it('splits inferred overlap edges from declared ones; a satisfied edge is no reason', async () => {
-    const task = { ...base, dependsOn: ['h1', 'h2', 'd1', 'done'], pathDeclaration: { inferredDependsOn: ['h1', 'h2'] } };
-    depRow = { d0: false, d1: false, d2: false, d3: true };
-    holds = [
-      { edge: 'inferred_dependency', holderTaskId: 'h1', holderTitle: 'A', holderStatus: 'in_progress', prNumber: null, paths: ['packages/core/db/schema.ts'], verdict: null, overlapKind: 'migration' },
-      { edge: 'inferred_dependency', holderTaskId: 'h2', holderTitle: 'B', holderStatus: 'pending', prNumber: null, paths: ['packages/core/db/schema.ts'], verdict: null, overlapKind: 'migration' },
-      { edge: 'declared_dependency', holderTaskId: 'd1', holderTitle: 'C', holderStatus: 'pending', prNumber: null, paths: [], verdict: null, overlapKind: null },
-    ];
+  // 2026-10-22: a task declared on a running task read "next in line".
+  it('every unmet edge is a declared dependency naming its status, even one stored as inferred; a satisfied edge is no reason', async () => {
+    const task = { ...base, dependsOn: ['h1', 'd1', 'done'], pathDeclaration: { inferredDependsOn: ['h1'] } };
+    depRow = { d0: false, d1: false, d2: true };
+    depStatuses = [{ id: 'h1', status: 'in_progress' }, { id: 'd1', status: 'pending' }];
     const reasons = (await probeCoordination(task as any))!;
+    expect(reasons.map(r => r.kind)).toEqual(['dep_declared', 'dep_declared']);
     const byBlocker = Object.fromEntries(reasons.map(r => [r.blocker?.id, r]));
-    expect(byBlocker.h1.kind).toBe('dep_inferred');
-    expect(byBlocker.h1.overlap?.overlapKind).toBe('migration');
-    expect(byBlocker.h1.overlap?.areas).toEqual([{ area: 'core/db', count: 1 }]);
-    expect(byBlocker.h1.blocker?.live).toBe(true);
-    expect(byBlocker.h2.blocker?.live).toBe(false);
-    expect(byBlocker.d1.kind).toBe('dep_declared');
+    expect(byBlocker.h1.blocker).toMatchObject({ live: true, status: 'in_progress' });
+    expect(byBlocker.d1.blocker).toMatchObject({ live: false, status: 'pending' });
     expect(byBlocker.d1.action.force).toBeNull();
     expect(byBlocker.done).toBeUndefined();
   });
