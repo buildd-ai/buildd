@@ -516,6 +516,13 @@ function checkScreenSession(): CheckResult {
   }
 }
 
+function isRunnerNeverStarted(): boolean {
+  const dbPath = join(builddDir(), 'history.db');
+  const walPath = join(builddDir(), 'history.db-wal');
+  const logPath = process.env.BUILDD_RUNNER_LOG_PATH || RUNNER_LOG_PATH;
+  return !existsSync(dbPath) && !existsSync(walPath) && !existsSync(logPath);
+}
+
 function checkRunnerProcess(): CheckResult {
   if (IS_WINDOWS) return notCheckedOnWindows('runner-process');
   try {
@@ -523,9 +530,15 @@ function checkRunnerProcess(): CheckResult {
     if (ps) {
       return { name: 'runner-process', status: 'ok', message: 'Runner process running' };
     }
+    if (isRunnerNeverStarted()) {
+      return { name: 'runner-process', status: 'ok', message: 'Runner not started yet. Start it with `buildd`.' };
+    }
     return { name: 'runner-process', status: 'error', message: 'Runner process not found' };
   } catch {
     // grep exit 1 = no match
+    if (isRunnerNeverStarted()) {
+      return { name: 'runner-process', status: 'ok', message: 'Runner not started yet. Start it with `buildd`.' };
+    }
     return { name: 'runner-process', status: 'error', message: 'Runner process not found', fixable: true };
   }
 }
@@ -599,9 +612,13 @@ export function tailLines(path: string, n: number): string {
 }
 
 function checkRunnerLog(): CheckResult {
-  const logPath = RUNNER_LOG_PATH;
+  const logPath = process.env.BUILDD_RUNNER_LOG_PATH || RUNNER_LOG_PATH;
   try {
     if (!existsSync(logPath)) {
+      if (isRunnerNeverStarted()) {
+        return { name: 'runner-log', status: 'ok', message: 'Runner not started yet. Start it with `buildd`.' };
+      }
+      // TODO: detect if runner runs as service and suggest 'buildd service logs'
       return { name: 'runner-log', status: 'warn', message: `No runner log at ${logPath}` };
     }
 
@@ -647,7 +664,7 @@ function checkHistoryDb(): CheckResult {
 
   try {
     if (!existsSync(dbPath)) {
-      return { name: 'history-db', status: 'warn', message: 'No history database' };
+      return { name: 'history-db', status: 'ok', message: 'History database created on first run' };
     }
 
     const dbSize = statSync(dbPath).size;
