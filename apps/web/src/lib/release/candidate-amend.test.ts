@@ -66,7 +66,7 @@ describe('amendCandidateOnFixMerge', () => {
     activities.length = 0;
     const { db } = stubDb({});
     const g = gh({ state: 'open', sha: 'cand-sha' });
-    const dispatch = mock(async (_p: any) => ({ ok: true as const, releaseId: 'r1', deduped: false, headSha: 'x', value: { runUrl: 'https://example.test/run/1' } }));
+    const dispatch = mock(async (_p: any) => ({ ok: true as const, releaseId: 'r1', deduped: false, headSha: 'x', runUrl: 'https://example.test/run/1' }));
     const out = await amendCandidateOnFixMerge(input, { db, githubApi: g.fn, dispatch: dispatch as any });
     expect(out).toEqual({ kind: 'amended', version: '1.2.3', candidatePr: 90 });
     expect(dispatch).toHaveBeenCalledTimes(1);
@@ -75,11 +75,18 @@ describe('amendCandidateOnFixMerge', () => {
     expect(p.inputs.amend_confirm).toBe('1.2.3');
     expect(p.ref).toBe('dev');
     // Activity comment on candidate PR
-    expect(activities).toHaveLength(1);
+    expect(activities).toHaveLength(2);
+    // First entry: fix PR opened
     expect(activities[0].prNumber).toBe(90);
-    expect(activities[0].entry.kind).toBe('release_amended');
-    expect(activities[0].entry.note).toContain('merged into `dev`');
-    expect(activities[0].entry.note).toContain('Release candidate v1.2.3 was amended automatically');
+    expect(activities[0].entry.kind).toBe('fix_pr_opened');
+    expect(activities[0].entry.note).toContain('Fix opened in #101');
+    expect(activities[0].entry.url).toBe('https://github.com/o/r/pull/101');
+    // Second entry: amendment dispatched
+    expect(activities[1].prNumber).toBe(90);
+    expect(activities[1].entry.kind).toBe('release_amended');
+    expect(activities[1].entry.note).toContain('merged into `dev`');
+    expect(activities[1].entry.note).toContain('Release candidate v1.2.3 was amended automatically');
+    expect(activities[1].entry.url).toBe('https://example.test/run/1');
     // Comment on fix PR (legacy)
     const comment = g.calls.find((c) => c.path === '/repos/o/r/issues/101/comments');
     expect(comment?.opts?.method).toBe('POST');

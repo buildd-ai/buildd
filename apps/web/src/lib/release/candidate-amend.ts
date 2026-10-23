@@ -125,8 +125,25 @@ export async function amendCandidateOnFixMerge(
       return { kind: 'dispatch_failed', error: recorded.error };
     }
 
-    // Update the candidate PR's activity comment to show the amendment was dispatched
-    const releaseRunUrl = recorded.value?.runUrl ?? null;
+    // Update the candidate PR's activity comment to show the fix PR opened and amendment was dispatched
+    const releaseRunUrl = recorded.runUrl ?? null;
+    const fixPrUrl = `https://github.com/${input.repoFullName}/pull/${input.prNumber}`;
+
+    // Add entry for fix PR opened (retroactively, since we only know about it when it merges)
+    await appendPrActivity({
+      installationId,
+      repoFullName: input.repoFullName,
+      prNumber: fix.prNumber,
+      entry: {
+        kind: 'fix_pr_opened',
+        note: `Fix opened in #${input.prNumber} on \`${fix.sourceBranch}\`.`,
+        url: fixPrUrl,
+      },
+      onlyIfPresent: true,
+      workspaceId: t.workspaceId,
+    }).catch((err: unknown) => console.error(`[release-amend] activity update (fix_pr_opened) on PR #${fix.prNumber} failed:`, err));
+
+    // Add entry for amendment dispatched
     await appendPrActivity({
       installationId,
       repoFullName: input.repoFullName,
@@ -138,7 +155,7 @@ export async function amendCandidateOnFixMerge(
       },
       onlyIfPresent: true,
       workspaceId: t.workspaceId,
-    }).catch((err: unknown) => console.error(`[release-amend] activity update on PR #${fix.prNumber} failed:`, err));
+    }).catch((err: unknown) => console.error(`[release-amend] activity update (release_amended) on PR #${fix.prNumber} failed:`, err));
 
     // Post a separate comment on the fix PR (legacy behavior, now redundant with activity update)
     await githubApi(installationId, `/repos/${input.repoFullName}/issues/${input.prNumber}/comments`, {
