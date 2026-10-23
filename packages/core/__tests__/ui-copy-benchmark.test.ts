@@ -2,9 +2,11 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { UI_COPY_CONFIG } from '../decision-kind-ui-copy';
+import type { StoredMeasurement } from '../decision-model-measurements';
 import {
   benchmarkFeatures, materialRetention, outcomeOf, parseUiCopyCorpus, parseUiCopyCorrections, selectCases, summarizeUiCopyBenchmark,
-  surfaceOf, uiCopyCacheKey, type UiCopyCase, type UiCopyCorpus,
+  emptyUiCopyCache, parseUiCopyCache, selectMeasurementPolicy, surfaceOf, uiCopyCacheKey, uiCopyMeasurementPolicy,
+  type UiCopyCase, type UiCopyCorpus,
 } from '../eval/ui-copy-benchmark';
 
 const raw = JSON.parse(readFileSync(join(import.meta.dir, '../eval/ui-copy/corpus-v1.json'), 'utf8'));
@@ -78,16 +80,49 @@ describe('selection, corrections and identity', () => {
     expect(out.refused.map(r => r.reason)).toEqual(['not_person_confirmed', 'not_person_confirmed', 'unknown_case', 'invalid_json']);
   });
 
-  it('keys the cache on the exact state, every policy identity field and the model', () => {
+  it('keys the cache on the exact state, every policy identity field, the model and the measurement policy', () => {
     const policy = { kind: 'buildd.ui_copy', policyVersion: 'v4', featureSchemaVersion: 'f2', promptFingerprint: 'p', configFingerprint: 'c', engine: 1 };
     const state = { segments: [{ id: 'h', text: 'A', role: 'heading' }] };
-    const base = uiCopyCacheKey(state, policy, 'm');
-    expect(uiCopyCacheKey({ segments: [{ role: 'heading', text: 'A', id: 'h' }] }, policy, 'm')).toBe(base);
-    expect(uiCopyCacheKey({ segments: [{ id: 'h', text: 'B', role: 'heading' }] }, policy, 'm')).not.toBe(base);
+    const base = uiCopyCacheKey(state, policy, 'm', 'mp');
+    expect(uiCopyCacheKey({ segments: [{ role: 'heading', text: 'A', id: 'h' }] }, policy, 'm', 'mp')).toBe(base);
+    expect(uiCopyCacheKey({ segments: [{ id: 'h', text: 'B', role: 'heading' }] }, policy, 'm', 'mp')).not.toBe(base);
     for (const k of Object.keys(policy) as (keyof typeof policy)[]) {
-      expect(uiCopyCacheKey(state, { ...policy, [k]: k === 'engine' ? 2 : 'changed' }, 'm')).not.toBe(base);
+      expect(uiCopyCacheKey(state, { ...policy, [k]: k === 'engine' ? 2 : 'changed' }, 'm', 'mp')).not.toBe(base);
     }
-    expect(uiCopyCacheKey(state, policy, 'other')).not.toBe(base);
+    expect(uiCopyCacheKey(state, policy, 'other', 'mp')).not.toBe(base);
+    expect(uiCopyCacheKey(state, policy, 'm', 'other-policy')).not.toBe(base);
+  });
+});
+
+describe('measurement policy', () => {
+  const row = (over: Partial<StoredMeasurement> = {}): StoredMeasurement => ({
+    kind: 'buildd.ui_copy', model: 'typesafe/jev-1.13', threshold: 0.6, measuredFingerprint: 'p', status: 'active',
+    precisionLower: 0.9, coverage: 0.5, n: 40, evalRunId: 'run-a', setByAccountId: 'acct-a', setAt: new Date(1), reason: 'measured', ...over,
+  });
+
+  it('fingerprints only what decides eligibility and threshold, for this kind, in any order', () => {
+    const a = uiCopyMeasurementPolicy([row(), row({ model: 'acme/judge-1', threshold: 0.9 })], 'buildd.ui_copy');
+    const b = uiCopyMeasurementPolicy([row({ model: 'acme/judge-1', threshold: 0.9 }), row({ n: 99, evalRunId: 'run-b', setAt: new Date(2) })], 'buildd.ui_copy');
+    expect(b.fingerprint).toBe(a.fingerprint);
+    expect(uiCopyMeasurementPolicy([row(), row({ kind: 'buildd.other' })], 'buildd.ui_copy').rows).toHaveLength(1);
+    for (const change of [{ threshold: 0.7 }, { status: 'retired' as const }, { measuredFingerprint: 'q' }, { labelThresholds: { needs_edit: 0.5 } }]) {
+      expect(uiCopyMeasurementPolicy([row(change)], 'buildd.ui_copy').fingerprint).not.toBe(uiCopyMeasurementPolicy([row()], 'buildd.ui_copy').fingerprint);
+    }
+    expect(uiCopyMeasurementPolicy([], 'buildd.ui_copy').rows).toEqual([]);
+  });
+
+  it('offline replay reapplies the recorded policy, and needs a name when there are several', () => {
+    const one = uiCopyMeasurementPolicy([row()], 'buildd.ui_copy');
+    const two = uiCopyMeasurementPolicy([], 'buildd.ui_copy');
+    const cache = { ...emptyUiCopyCache(), measurementPolicies: { [one.fingerprint]: one.rows } };
+    expect(selectMeasurementPolicy(emptyUiCopyCache(), 'buildd.ui_copy')).toEqual({ ok: true, policy: two });
+    expect(selectMeasurementPolicy(cache, 'buildd.ui_copy')).toEqual({ ok: true, policy: one });
+    const both = { ...cache, measurementPolicies: { ...cache.measurementPolicies, [two.fingerprint]: two.rows } };
+    expect(selectMeasurementPolicy(both, 'buildd.ui_copy')).toMatchObject({ ok: false });
+    expect(selectMeasurementPolicy(both, 'buildd.ui_copy', two.fingerprint.slice(0, 10))).toEqual({ ok: true, policy: two });
+    expect(selectMeasurementPolicy(both, 'buildd.ui_copy', 'zzz')).toMatchObject({ ok: false });
+    // A cache written before policies were recorded still parses, with none.
+    expect(parseUiCopyCache({ version: 1, entries: {} }).measurementPolicies).toEqual({});
   });
 });
 
@@ -121,7 +156,8 @@ describe('material facts and scoring', () => {
   it('zero cases can never be complete', () => {
     const report = summarizeUiCopyBenchmark({
       corpus, mode: 'offline', split: 'development', requestedModel: 'm', results: [],
-      policy: { kind: 'k', policyVersion: 'p', featureSchemaVersion: 'f', promptFingerprint: 'x', configFingerprint: 'y', engine: 1, threshold: 0.85 },
+      policy: { kind: 'k', policyVersion: 'p', featureSchemaVersion: 'f', promptFingerprint: 'x', configFingerprint: 'y', engine: 1,
+        kindThreshold: 0.85, measurement: { fingerprint: 'f', rows: 0, models: [] } },
     });
     expect(report.status).toBe('incomplete');
     expect(report.incompleteReasons).toContain('zero_cases');

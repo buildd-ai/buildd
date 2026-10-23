@@ -1,6 +1,6 @@
-#!/usr/bin/env bun
 /**
- * Repeatable benchmark for the `buildd.ui_copy` detector (the registered `ui.card_clarity` check).
+ * Runner for the `buildd.ui_copy` detector benchmark (the registered `ui.card_clarity` check). The command
+ * is `scripts/ui-copy-eval.ts` (`bun run eval:ui-copy`); this module is what it runs.
  *
  * Every case goes through the production entry point, `executeUiVerification`: the stored-capture parse, the
  * shared evaluator, the production broker adapter, `runBuilddDecision` and the kind's own questions,
@@ -8,45 +8,29 @@
  * cache and to enforce the spend bound. Nothing is written to the database: decision records are local
  * receipt ids, and no policy, measurement or threshold is ever written or promoted.
  *
- * Offline (default): replays cached answers for identical (state sent, policy identity, model) only. A case
- * with no cached answer has no answer, so the run is INCOMPLETE and exits 1. It never calls a provider.
+ * Measurement policy: the stored (kind, model) measurements decide whether a model's answer is applied and at
+ * what confidence. A network run reads them once (production's loader), freezes them, applies the frozen set
+ * to every case, fingerprints it into every cache key and records it in the cache. Offline replay reapplies
+ * the recorded set, so a cached answer gets the same accepted verdict it got live.
  *
- * Network (`--network`): the team's own route through the scoped resolver (`resolveDecisionAccess`: the
- * team's ui_copy opt-in, its decision model and its key). Needs DATABASE_URL and `--team`. There is no
- * provider fallback: a team without the capability or a key gets no answers, and the run is INCOMPLETE.
- * Bounded by `--max-decisions` and `--max-cost-usd`; new answers are added to the cache.
+ * Offline (default): replays cached answers for identical (state sent, policy identity, model, measurement
+ * policy) only. A case with no cached answer has no answer, so the run is INCOMPLETE. It never calls a provider.
  *
- *   bun run eval:ui-copy                                   # offline replay of the development split
- *   bun run eval:ui-copy --network --team <id> --max-decisions 20
- *   bun run eval:ui-copy --split untouched --open-untouched   # the reserved split, deliberately
- *
- * Flags:
- *   --corpus <path>         default packages/core/eval/ui-copy/corpus-v1.json
- *   --split development|untouched|all   (default development; the others need --open-untouched)
- *   --case <id>             only this case (repeatable)
- *   --limit <n>             first n selected cases
- *   --cache <path>          default .decision-data/ui-copy-benchmark-cache.json (gitignored)
- *   --corrections <path>    person-confirmed corrections, JSONL (see parseUiCopyCorrections)
- *   --model <id>            offline: which model's cached answers to replay (default the platform's Jev)
- *   --network --team <id> [--workspace <id>]
- *   --max-decisions <n>     network: new provider calls (default 12, at most 60)
- *   --max-cost-usd <x>      network: stop issuing calls once spend reaches this (default 0.01, at most 0.10)
- *   --json <path>           write the full report as JSON
- *
- * Exit 0 only when every selected case got the evidence it needs. That says the measurement is complete,
- * not that the detector is good: read the false positives, false negatives and abstentions.
+ * Network: the team's own route through the scoped resolver (`resolveDecisionAccess`: the team's ui_copy
+ * opt-in, its decision model and its key). There is no provider fallback: a team without the capability or a
+ * key gets no answers, and the run is INCOMPLETE. Bounded by decisions and spend; new answers join the cache.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
 import type { DecisionQuestions } from '../packages/ai-kit/src/decide';
 import { DEFAULT_DECISION_MODEL, decisionCall, type DecisionResult } from '../packages/core/decision-client';
-import type { BuilddDecisionDeps, BuilddDecisionScope } from '../packages/core/decision-policy';
+import { measuredRoute, type BuilddDecisionDeps, type BuilddDecisionScope } from '../packages/core/decision-policy';
+import { loadMeasurementsSafe } from '../packages/core/decision-model-measurements';
 import { UI_COPY_CONFIG, uiCopyKind } from '../packages/core/decision-kind-ui-copy';
 import {
-  benchmarkFeatures, emptyUiCopyCache, formatUiCopyBenchmark, materialRetention, parseUiCopyCache, parseUiCopyCorpus,
-  parseUiCopyCorrections, selectCases, summarizeUiCopyBenchmark, surfaceOf, uiCopyCacheKey,
-  type UiCopyBenchmarkReport, type UiCopyCacheEntry, type UiCopyCacheFile, type UiCopyCaseResult, type UiCopyNoAnswer,
-  type UiCopyPolicyIdentity, type UiCopySplit,
+  benchmarkFeatures, materialRetention, parseUiCopyCorpus,
+  parseUiCopyCorrections, selectCases, selectMeasurementPolicy, storedFromPolicy, summarizeUiCopyBenchmark, surfaceOf,
+  uiCopyCacheKey, uiCopyMeasurementPolicy,
+  type UiCopyBenchmarkReport, type UiCopyCacheEntry, type UiCopyCacheFile, type UiCopyCaseResult, type UiCopyMeasurementPolicy,
+  type UiCopyModelPolicy, type UiCopyNoAnswer, type UiCopyPolicyIdentity, type UiCopySplit,
 } from '../packages/core/eval/ui-copy-benchmark';
 import { executeUiVerification } from '../apps/web/src/lib/specs/ui-verification-decision';
 
@@ -65,6 +49,8 @@ export interface UiCopyBenchmarkOptions {
   corrections?: string | null;
   /** Offline replay identity. Network runs use the team's resolved model. */
   model?: string;
+  /** Offline: which recorded measurement policy to reapply (fingerprint or prefix). See `selectMeasurementPolicy`. */
+  measurementPolicy?: string | null;
   network?: { teamId: string; workspaceId?: string | null; maxDecisions: number; maxCostUsd: number } | null;
 }
 export interface UiCopyBenchmarkDeps {
@@ -72,6 +58,7 @@ export interface UiCopyBenchmarkDeps {
   transport?: typeof decisionCall;
   /** Network runs: the scoped resolver. Default production's (`runBuilddDecision` resolves it). */
   resolveAccess?: BuilddDecisionDeps['resolveAccess'];
+  /** Network runs: the stored measurements. Default production's `loadMeasurementsSafe`. Read once, then frozen. */
   measurements?: BuilddDecisionDeps['measurements'];
   now?: () => Date;
 }
@@ -89,6 +76,7 @@ interface CaseCapture {
   incrementalCostUsd: number;
   latencyMs: number | null;
   noAnswer: UiCopyNoAnswer | null;
+  invoked: boolean;
 }
 
 export async function runUiCopyBenchmark(
@@ -107,7 +95,23 @@ export async function runUiCopyBenchmark(
   const confirmed = new Map(corrections.accepted.map(c => [c.caseId, c]));
   const policy = policyIdentity();
   const offlineModel = opts.model ?? DEFAULT_DECISION_MODEL;
-  const cache: UiCopyCacheFile = { version: 1, entries: { ...opts.cache.entries } };
+  const cache: UiCopyCacheFile = { version: 1, entries: { ...opts.cache.entries }, measurementPolicies: { ...opts.cache.measurementPolicies } };
+
+  // The measurement policy every case is held to: read once and frozen live, the recorded one offline.
+  let measurement: UiCopyMeasurementPolicy;
+  if (net) {
+    measurement = uiCopyMeasurementPolicy(await (deps.measurements ?? (() => loadMeasurementsSafe()))().catch(() => []), uiCopyKind.kind);
+    cache.measurementPolicies[measurement.fingerprint] = measurement.rows;
+  } else {
+    const chosen = selectMeasurementPolicy(cache, uiCopyKind.kind, opts.measurementPolicy);
+    if (!chosen.ok) return { ok: false, problems: [chosen.reason] };
+    measurement = chosen.policy;
+  }
+  const frozen = storedFromPolicy(measurement);
+  const route = measuredRoute(uiCopyKind, frozen);
+  const modelPolicy = (model: string): UiCopyModelPolicy => ({
+    model, eligible: route.isMeasured(model), threshold: route.thresholdFor(model) ?? UI_COPY_CONFIG.minConfidence, reason: route.reasonFor(model),
+  });
   const spent = { calls: 0, costUsd: 0 };
   let newEntries = 0;
   let cur: CaseCapture;
@@ -117,7 +121,7 @@ export async function runUiCopyBenchmark(
   const call = (async (params: Parameters<typeof decisionCall>[0]) => {
     const access = params.access ? await params.access : null;
     const model = params.model ?? (access?.ok ? access.model : null) ?? offlineModel;
-    const key = uiCopyCacheKey(params.state, policy, model);
+    const key = uiCopyCacheKey(params.state, policy, model, measurement.fingerprint);
     cur.stateSent = params.state;
     const fail = (noAnswer: UiCopyNoAnswer, message: string): DecisionResult<DecisionQuestions> => {
       cur.noAnswer = noAnswer;
@@ -131,6 +135,7 @@ export async function runUiCopyBenchmark(
     if (!net) return fail('cache_miss', 'no cached answer for this identity');
     if (spent.calls >= net.maxDecisions || spent.costUsd >= net.maxCostUsd) return fail('budget_deferred', 'benchmark spend bound reached');
     spent.calls++;
+    cur.invoked = true;
     const res = await (deps.transport ?? decisionCall)(params);
     cur.latencyMs = res.latencyMs;
     if (!res.ok) { cur.noAnswer = 'provider_failure'; return res; }
@@ -153,14 +158,15 @@ export async function runUiCopyBenchmark(
     call,
     // Local receipt ids: the broker adapter requires a recorded decision, and nothing is persisted.
     record: async () => `benchmark-receipt-${++receipt}`,
+    measurements: async () => frozen,
     ...(net
-      ? { ...(deps.resolveAccess ? { resolveAccess: deps.resolveAccess } : {}), ...(deps.measurements ? { measurements: deps.measurements } : {}) }
-      : { resolveAccess: async () => ({ ok: true as const, apiKey: 'offline-replay', model: offlineModel }), measurements: async () => [] }),
+      ? (deps.resolveAccess ? { resolveAccess: deps.resolveAccess } : {})
+      : { resolveAccess: async () => ({ ok: true as const, apiKey: 'offline-replay', model: offlineModel }) }),
   };
 
   const results: UiCopyCaseResult[] = [];
   for (const c of selected.cases) {
-    cur = { answers: null, stateSent: null, cacheHit: false, modelVersion: null, incrementalCostUsd: 0, latencyMs: null, noAnswer: null };
+    cur = { answers: null, stateSent: null, cacheHit: false, modelVersion: null, incrementalCostUsd: 0, latencyMs: null, noAnswer: null, invoked: false };
     const surface = surfaceOf(c);
     const features = benchmarkFeatures(c);
     const copy = await executeUiVerification('ui.card_clarity', surface, scope, { criterion: c.criterion }, { ...brokerDeps, nowDate: deps.now });
@@ -172,11 +178,12 @@ export async function runUiCopyBenchmark(
       axes: Object.fromEntries(Object.entries(cur.answers!).map(([k, a]) => [k, { choice: a.choice, confidence: a.confidence }])),
     } : null;
     const verdict = copy.result.verdict;
+    const applied = raw && cur.modelVersion ? modelPolicy(cur.modelVersion) : null;
     let abstained: UiCopyCaseResult['abstained'] = null;
     if (verdict !== 'pass' && verdict !== 'fail') {
       if (copy.method === 'model') abstained = 'model_uncertain';
       else if (copy.findings?.[0]?.kind === 'partial_evidence' || copy.findings?.[0]?.kind === 'invalid_evidence') abstained = 'evaluator_refused';
-      else if (raw) abstained = raw.confidence < UI_COPY_CONFIG.minConfidence ? 'below_threshold' : 'not_applied';
+      else if (raw && applied) abstained = raw.confidence < applied.threshold ? 'below_threshold' : 'not_applied';
       else abstained = cur.noAnswer ?? 'no_provider';
     }
     // Retention is read off the state production actually sent, or would send when no call was made.
@@ -187,69 +194,30 @@ export async function runUiCopyBenchmark(
       confirmed: confirmed.get(c.id) ?? null,
       raw,
       accepted: { verdict, method: copy.method, observed: copy.result.observed ?? null, confidence: copy.result.confidence ?? null },
+      appliedThreshold: applied?.threshold ?? null,
       abstained,
       actionState: state ? { verdict: state.result.verdict, observed: state.result.observed ?? null } : null,
       inspected: copy.inspected ?? [],
       findings: copy.findings?.length ?? 0,
       retention: materialRetention(surface, sent, copy.method === 'model' ? copy.findings ?? [] : []),
       cacheHit: cur.cacheHit,
+      invoked: cur.invoked,
       modelVersion: cur.modelVersion,
       incrementalCostUsd: cur.incrementalCostUsd,
       latencyMs: cur.latencyMs,
     });
   }
 
+  const requestedModel = net ? 'team decision model' : offlineModel;
+  const seen = [...new Set([...(net ? [] : [offlineModel]), ...results.map(r => r.modelVersion).filter((m): m is string => !!m)])].sort();
   const report = summarizeUiCopyBenchmark({
     corpus, mode: net ? 'network' : 'offline', split: opts.split,
-    policy: { ...policy, threshold: UI_COPY_CONFIG.minConfidence },
-    requestedModel: net ? 'team decision model' : offlineModel,
+    policy: {
+      ...policy, kindThreshold: UI_COPY_CONFIG.minConfidence,
+      measurement: { fingerprint: measurement.fingerprint, rows: measurement.rows.length, models: seen.map(modelPolicy) },
+    },
+    requestedModel,
     results, correctionsRefused: corrections.refused.length,
   });
   return { ok: true, report, cache, newEntries };
-}
-
-// ── CLI ──────────────────────────────────────────────────────────────────────
-
-function arg(name: string): string | undefined {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : undefined;
-}
-const args = (name: string) => process.argv.flatMap((v, i) => (v === `--${name}` && process.argv[i + 1] ? [process.argv[i + 1]!] : []));
-
-async function main(): Promise<number> {
-  const flag = (n: string) => process.argv.includes(`--${n}`);
-  const split = (arg('split') ?? 'development') as UiCopySplit | 'all';
-  if (!['development', 'untouched', 'all'].includes(split)) { console.error('--split must be development, untouched or all'); return 1; }
-  const cachePath = arg('cache') ?? DEFAULT_CACHE;
-  let network: UiCopyBenchmarkOptions['network'] = null;
-  if (flag('network')) {
-    const teamId = arg('team');
-    if (!teamId) { console.error('--network needs --team <id>: the run spends that team\'s own route, through its ui_copy opt-in'); return 1; }
-    if (!process.env.DATABASE_URL) { console.error('--network needs DATABASE_URL: the scoped resolver reads the team\'s policy and key; there is no fallback key'); return 1; }
-    network = { teamId, workspaceId: arg('workspace') ?? null, maxDecisions: Number(arg('max-decisions') ?? 12), maxCostUsd: Number(arg('max-cost-usd') ?? 0.01) };
-  }
-  const out = await runUiCopyBenchmark({
-    corpus: JSON.parse(readFileSync(arg('corpus') ?? DEFAULT_CORPUS, 'utf8')),
-    split, openUntouched: flag('open-untouched'), ids: args('case'),
-    limit: arg('limit') ? Number(arg('limit')) : undefined,
-    cache: existsSync(cachePath) ? parseUiCopyCache(JSON.parse(readFileSync(cachePath, 'utf8'))) : emptyUiCopyCache(),
-    corrections: arg('corrections') ? readFileSync(arg('corrections')!, 'utf8') : null,
-    model: arg('model'), network,
-  });
-  if (!out.ok) { for (const p of out.problems) console.error(`[ui-copy-benchmark] ${p}`); return 1; }
-  if (out.newEntries) {
-    mkdirSync(dirname(cachePath), { recursive: true });
-    writeFileSync(cachePath, `${JSON.stringify(out.cache, null, 2)}\n`);
-  }
-  console.log(formatUiCopyBenchmark(out.report));
-  const jsonPath = arg('json');
-  if (jsonPath) writeFileSync(jsonPath, `${JSON.stringify(out.report, null, 2)}\n`);
-  return out.report.status === 'complete' ? 0 : 1;
-}
-
-if (import.meta.main) {
-  main().then(code => process.exit(code), err => {
-    console.error(`[ui-copy-benchmark] ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(1);
-  });
 }
