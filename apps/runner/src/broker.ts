@@ -13,9 +13,9 @@
  * which credentials to manage and schedule refresh for.
  */
 
-import { hostname } from 'os';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { buildClaudeCredentialsFile } from './claude-auth';
+import { runnerHostName } from './runner-host';
 import { runnerRefreshCredential } from './credential-refresh';
 import { hostRunnerRefusalHint } from './host-runner-refusal';
 
@@ -79,7 +79,8 @@ class CredentialBroker {
     // before config.json is loaded. The real values arrive via configure()/start().
     this.baseUrl = process.env.BUILDD_CLIENT_URL ?? 'https://buildd.dev';
     this.apiKey = process.env.BUILDD_API_KEY ?? '';
-    this.runnerId = process.env.BUILDD_RUNNER_ID ?? hostname();
+    // Inside WSL, `<hostname>-wsl`: apart from a Windows runner on this machine (a0b82b5d R-22).
+    this.runnerId = process.env.BUILDD_RUNNER_ID ?? runnerHostName();
     this.platform = opts.platform ?? process.platform;
     this.restrictToOwner = opts.restrictToOwner ?? chmodOwnerOnly;
     this.serve = opts.serve ?? ((o) => Bun.serve(o));

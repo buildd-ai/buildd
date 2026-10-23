@@ -407,7 +407,7 @@ function refusal(body: unknown, status: number): string {
 }
 
 /** The runner's agents (what `buildd top` lists), or an error line. */
-async function listAgents(deps: HoldCommandDeps): Promise<LiveAgent[] | { error: string }> {
+export async function listAgents(deps: Pick<HoldCommandDeps, 'socketPath' | 'get'>): Promise<LiveAgent[] | { error: string }> {
   const get = deps.get ?? ((path: string) => socketGet(deps.socketPath, path));
   try {
     const r = await get('/api/workers?view=top');

@@ -26,7 +26,8 @@ afterEach(() => {
   __resetGitOpsDeps();
   if (saved === undefined) delete process.env.BUILDD_EXECUTOR;
   else process.env.BUILDD_EXECUTOR = saved;
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  // Windows can hold a just-exited git process's handles for a moment (EBUSY); retry the teardown.
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 });
 
 function git(cwd: string, ...args: string[]) {
