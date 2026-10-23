@@ -1703,6 +1703,12 @@ export async function POST(req: NextRequest) {
     });
     if (delegationGap) { deferTask(task, 'delegation_unmet', { gaps: delegationGap.gaps, message: delegationGap.detail }); continue; }
 
+    // Runner pin: a `runner:<name>` entry in requiredCapabilities restricts the
+    // task to that one runner; every other runner defers it.
+    const pinnedRunner = ((task as any).requiredCapabilities as string[] | null | undefined)
+      ?.find((c) => typeof c === 'string' && c.startsWith('runner:'))?.slice('runner:'.length);
+    if (pinnedRunner && pinnedRunner !== runner) { deferTask(task, 'runner_capability', { pinnedRunner }); continue; }
+
     // Subject-liveness in-loop guard (defense-in-depth for race between the SQL
     // prefilter and per-task processing). The SQL condition above should already
     // exclude reconciled tasks, but a concurrent reconciliation sweep might have

@@ -1440,6 +1440,94 @@ describe('landPr — behind base is work with an owner', () => {
     expect(outcomeOwner(out)).toEqual({ kind: 'marker', headSha: 'head2' });
   });
 
+  describe('early refresh while CI is pending', () => {
+    const running = () => { gh.checkRuns = [{ name: 'build', status: 'in_progress', conclusion: null }]; };
+    const approvedAt = (head: string) => { reviewStatus = { state: 'approved', verdict: 'approve', confidence: 0.9, merged: false, reviewHeadSha: head }; };
+    const kernelAt = (state: string, head: string) => async () => ({ deliveryId: 'd1', stateReason: null, current: { state, version: 2, head, round: 1 } });
+
+    it('an approved head that is behind is refreshed while CI runs, not after it', async () => {
+      running();
+      approvedAt('head1');
+      const out = await land();
+      expect(out).toEqual({ kind: 'updating_branch', newHeadSha: 'head2' });
+      expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+      expect(mockDispatchConflictRetry.mock.calls[0]![0]).toMatchObject({ behindOnly: true, headSha: 'head1' });
+      expect(markerStore).toMatchObject({ pendingHeadSha: 'head2', refreshCount: 1 });
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('a kernel delivery APPROVED at this head is refreshed early too', async () => {
+      running();
+      const out = await land({}, { ...deps(), kernelLandingView: kernelAt('APPROVED', 'head1') } as any);
+      expect(out.kind).toBe('updating_branch');
+      expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['not yet approved at this head', () => approvedAt('older-head')],
+      ['no stored approval', () => { reviewStatus = { state: 'queued', verdict: null, confidence: null, merged: false }; }],
+      ['not behind', () => { approvedAt('head1'); gh.behindBy = 0; }],
+      ['this head is already a platform refresh', () => { approvedAt('head1'); markerStore = marker({ pendingHeadSha: 'head1', refreshCount: 1 }); }],
+      ['the refresh cycle is spent', () => { approvedAt('head1'); markerStore = marker({ pendingHeadSha: 'head1', refreshCount: TREADMILL_MAX_REFRESHES, updatedAt: new Date(NOW).toISOString() }); }],
+    ])('keeps waiting when %s', async (_n, setup) => {
+      running();
+      setup();
+      const out = await land();
+      expect(out).toMatchObject({ kind: 'waiting_ci' });
+      expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+    });
+
+    it('a kernel delivery that is not APPROVED at this head keeps waiting', async () => {
+      running();
+      for (const [state, head] of [['AWAITING_REVIEW', 'head1'], ['APPROVED', 'other']]) {
+        expect(await land({}, { ...deps(), kernelLandingView: kernelAt(state!, head!) } as any)).toMatchObject({ kind: 'waiting_ci' });
+      }
+      expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+    });
+
+    it('red CI is still a CI fix, never a refresh', async () => {
+      approvedAt('head1');
+      gh.checkRuns = [{ name: 'build', status: 'completed', conclusion: 'failure' }, { name: 'e2e', status: 'in_progress', conclusion: null }];
+      expect(await land()).toMatchObject({ kind: 'needs_fix', fix: 'ci_fix' });
+      expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+    });
+
+    it('a duplicate event while a refresh is in flight waits and refreshes nothing twice', async () => {
+      running();
+      approvedAt('head1');
+      mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: false, refreshInFlight: true }));
+      expect(await land()).toMatchObject({ kind: 'waiting_ci' });
+      expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+      expect(markerStore).toBeNull();
+    });
+
+    it('an event for a head that is no longer live does not refresh', async () => {
+      running();
+      approvedAt('head1');
+      await land({ eventHeadSha: 'stale-head' });
+      expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+    });
+
+    it('a mission integration base is refreshed through the same door', async () => {
+      running();
+      approvedAt('head1');
+      gh.baseRef = 'mission/example-slug-0a1b2c3d';
+      expect((await land()).kind).toBe('updating_branch');
+      expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+    });
+
+    it('a moved base after the early refresh is the ordinary post-CI call, not a second early refresh', async () => {
+      running();
+      approvedAt('head1');
+      await land();
+      mockDispatchConflictRetry.mockClear();
+      gh.behindBy = 1; // base moved again while CI runs on head2
+      approvedAt('head2');
+      expect(await land({ eventHeadSha: 'head2' })).toMatchObject({ kind: 'waiting_ci' });
+      expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+    });
+  });
+
   it('replay: approval, same-minute base-merge push with unchanged diff, then green → carried, one refresh, merged', async () => {
     verdict = 'carried';
     // Event 1: the approve lands while the head is behind.
