@@ -12,7 +12,7 @@
  * Run directly (install.sh does, after `bun install`), it prints the verdict
  * and exits 0 either way: reduced isolation is not an install failure.
  */
-import { confinementLevel, isolationRemediation, isolationVerdict, partialConfinementRemediation, type RunnerIsolationRecord } from '@buildd/shared';
+import { confinementLevel, isIsolationRecordCurrent, isolationRemediation, isolationVerdict, partialConfinementRemediation, type RunnerIsolationRecord } from '@buildd/shared';
 import { probeIsolationRecord, processStartedAt, realIsolationProbes } from './isolation-probe';
 import { PKG_VERSION } from './updater';
 
@@ -83,8 +83,23 @@ export function formatIsolationCheck(record: RunnerIsolationRecord): string[] {
   return lines;
 }
 
+/** Setup gate for this Linux process, never a Windows host's WSL inventory. */
+export function verifyWslClaude(record: RunnerIsolationRecord): boolean {
+  return record.platform === 'linux-wsl' && isIsolationRecordCurrent(record)
+    && record.claude.mechanism === 'bwrap' && confinementLevel(record.claude) === 'full';
+}
+
 if (import.meta.main) {
+  if (process.argv.includes('--verify-wsl') && process.platform !== 'linux') {
+    console.error('WSL verification must run inside the Linux distribution, not on the Windows host.');
+    process.exit(1);
+  }
   const record = probeThisHost();
+  if (process.argv.includes('--verify-wsl')) {
+    const verified = verifyWslClaude(record);
+    console.log(JSON.stringify({ backend: 'claude', verified, isolation: record }, null, 2));
+    process.exit(verified ? 0 : 1);
+  }
   // install.sh asks for Claude's cause alone, to decide whether to offer bubblewrap.
   if (process.argv.includes('--claude-reason')) console.log(record.claude.reason ?? 'confined');
   else for (const line of formatIsolationCheck(record)) console.log(line);
