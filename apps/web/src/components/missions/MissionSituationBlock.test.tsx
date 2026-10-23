@@ -411,4 +411,25 @@ describe('mission header — a deliverable PR closed without merging', () => {
     expect(html).toContain('data-testid="closed-pr-abandon"');
     expect(html).not.toContain('data-testid="closed-pr-confirm"');
   });
+
+  it('the row under the headline says only what the headline does not (R-13)', () => {
+    const suggested = render(closed({
+      repo: 'org/kb', prNumber: 3366, prUrl: 'https://github.com/org/kb/pull/3366', signal: 'sibling_task', why: 'merged by a sibling task', score: 0.6,
+    })).html;
+    const row = (html: string) => html.slice(html.indexOf('data-testid="closed-pr-row"'));
+    expect(row(suggested)).not.toContain('superseded');
+    expect(row(suggested)).not.toContain('PR #6');
+    expect(row(suggested)).toContain('merged by a sibling task');
+    const none = row(render(closed()).html);
+    expect(none).not.toContain('closed without merging');
+    expect(none).toContain('can’t complete');
+  });
+
+  it('keeps Review the closed PR a secondary link, so Confirm is the one filled button', () => {
+    const { html } = render(closed({
+      repo: 'org/kb', prNumber: 3366, prUrl: 'https://github.com/org/kb/pull/3366', signal: 'sibling_task', why: 'merged by a sibling task', score: 0.6,
+    }));
+    expect(html.match(/btn-primary/g)).toHaveLength(1);
+    expect(html).toMatch(/data-verify-prominence="secondary"[^>]*>Review the closed PR/);
+  });
 });
