@@ -84,3 +84,47 @@ describe('findActiveClaimBlocker', () => {
     expect(findActiveClaimBlocker('t1', ['**', 'a.ts'], new Map([['x', ['a.ts', 'b.ts']]]))).toEqual({ holderTaskId: 'x', claimedPaths: ['a.ts', 'b.ts'], overlapPaths: ['a.ts'] });
   });
 });
+
+describe('serial lanes in the probe (spec: Overlap scheduling, I-1, I-3, I-4, I-7)', () => {
+  const at = (h: number) => new Date(Date.parse('2026-10-07T12:00:00Z') + h * 3600_000);
+  const m = (taskId: string, o: Record<string, unknown> = {}) => ({
+    taskId, claimableSince: at(-10), priority: 0, createdAt: at(-20), heldAt: null, holding: false, ready: true,
+    status: 'pending', prNumber: null, prUrl: null, lastActivityAt: null, ...o,
+  });
+  const lanes = (members: ReturnType<typeof m>[], released: string[] = []) => ({
+    views: new Map([['migration', { workspaceId: 'ws', lane: 'migration', members: members as never }]]),
+    releasedTaskIds: new Set(released),
+  });
+
+  it('a held lane is one lane_wait naming the holder and the position, not an overlap', () => {
+    const reasons = evaluateCoordinationGates(task(), snap({
+      openPrTasks: [pr()],
+      lanes: lanes([m('pr-task', { holding: true, heldAt: at(-2), prNumber: 1234, lastActivityAt: at(-1) }), m('other', { claimableSince: at(-9) }), m('t1', { claimableSince: at(-8) })]),
+    }));
+    expect(reasons.map(r => r.kind)).toEqual(['lane_wait']);
+    expect(reasons[0].lane).toEqual({ lane: 'migration', holderTaskId: 'pr-task', position: 2 });
+    expect(reasons[0].because).toContain('position 2');
+    expect(reasons[0].blocker).toMatchObject({ type: 'task', id: 'pr-task' });
+  });
+
+  it('a stuck holder is named as stuck', () => {
+    const [r] = evaluateCoordinationGates(task(), snap({ lanes: lanes([m('h', { holding: true, heldAt: at(-40), prNumber: 9, lastActivityAt: at(-30) }), m('t1')]) }));
+    expect(r.lane?.stuckSince).toBe(at(-30).toISOString());
+    expect(r.because).toContain('no activity since');
+  });
+
+  it('free lane, ready task ahead: waits behind it; parked task ahead: nothing holds', () => {
+    const behind = evaluateCoordinationGates(task(), snap({ lanes: lanes([m('first'), m('t1', { claimableSince: at(-5) })]) }));
+    expect(behind[0]).toMatchObject({ kind: 'lane_wait', lane: { position: 1, holderTaskId: null } });
+    expect(evaluateCoordinationGates(task(), snap({ lanes: lanes([m('first', { ready: false }), m('t1', { claimableSince: at(-5) })]) }))).toEqual([]);
+  });
+
+  it('a holder a person released holds nobody, its open PR included', () => {
+    expect(evaluateCoordinationGates(task(), snap({ openPrTasks: [pr()], lanes: lanes([m('t1')], ['pr-task']) }))).toEqual([]);
+  });
+
+  it('an own-PR repair is in no lane', () => {
+    const repair = task({ taskClass: 'attempt', conflictRetryPrNumber: 1234 });
+    expect(evaluateCoordinationGates(repair, snap({ lanes: lanes([m('h', { holding: true }), m('t1')]) }))).toEqual([]);
+  });
+});

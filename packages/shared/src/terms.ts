@@ -91,6 +91,7 @@ export type TermKey =
   | 'wait.scheduled'
   | 'wait.usage_limit'
   | 'wait.budget'
+  | 'wait.lane'
   | 'wait.files'
   | 'wait.slot'
   | 'wait.runner'
@@ -226,6 +227,9 @@ const TERM_LIST: Term[] = [
   { key: 'wait.budget', word: 'Budget reached', short: 'budget reached', tone: 'q',
     means: 'The mission spent its budget; it starts when someone raises it.', liftedBy: 'Raise the mission budget',
     from: wk('mission_budget') },
+  { key: 'wait.lane', word: 'Waiting in line', short: 'in line', tone: 'q',
+    means: 'Schema, migration and other one-at-a-time work runs one task at a time, first come; it starts when the task holding the line lands and the tasks ahead of it have gone.',
+    from: wk('lane_wait') },
   { key: 'wait.files', word: 'Waiting for files', short: 'same files', tone: 'q',
     means: 'Another task is changing the same files; it starts when that task finishes.',
     from: wk('pr_overlap_live', 'pr_overlap_ended', 'lease_overlap', 'lease_stale', 'soft_overlap', 'scope_undeclared_mutex', 'serialized_surface') },

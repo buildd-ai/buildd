@@ -16,6 +16,7 @@ import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { splitOwnOpenPrs } from './claim-plan-input';
 import { checkMissionConcurrencyGate, checkMissionPacingGate } from './pacing-gate';
 import { findHoldingLease, findHoldingOpenPr, workspaceHardSurface } from './overlap-policy';
+import { laneKeysFor, laneSentence, laneVerdict, lanesOf, stuckSince, type LaneView } from '@/lib/serial-lanes';
 
 /**
  * True when the task's declared deliverable is not a code change
@@ -87,6 +88,12 @@ export interface CoordinationSnapshot {
   /** Tasks with a live worker, to mark a lease holder or ordering blocker live. */
   liveTaskIds: ReadonlySet<string>;
   now: Date;
+  /**
+   * The workspace's serial lanes in stored order (lib/serial-lanes-store
+   * `loadLanes`), the claim route's own read. Absent: only the open-PR and
+   * lease checks speak for lane paths, and a lane wait names no position.
+   */
+  lanes?: { views: ReadonlyMap<string, LaneView>; releasedTaskIds: ReadonlySet<string> } | null;
 }
 
 const MAX_DRILLDOWN_PATHS = 50;
@@ -111,13 +118,38 @@ export function evaluateCoordinationGates(task: any, s: CoordinationSnapshot): W
   const out: WaitingReason[] = [];
   const manifest = (task.pathManifest as string[] | null) ?? null;
 
-  if (manifest?.length) {
+  // Serial lanes (spec: Overlap scheduling, I-1, I-3, I-4): held by another
+  // task, or someone ahead in the stored order is ready to take it.
+  const laneReasons: WaitingReason[] = [];
+  if (s.lanes) {
+    for (const lane of lanesOf(task)) {
+      const view = s.lanes.views.get(lane) ?? { workspaceId: task.workspaceId, lane, members: [] };
+      const verdict = laneVerdict(view, task.id);
+      if (verdict.kind !== 'held' && verdict.kind !== 'behind') continue;
+      const who = verdict.kind === 'held' ? verdict.holder : verdict.ahead;
+      const stuck = verdict.kind === 'held' ? stuckSince(verdict.holder, s.now) : null;
+      laneReasons.push(makeWaitingReason('lane_wait', {
+        because: laneSentence(lane, verdict, s.now),
+        blocker: { type: 'task', id: who.taskId, label: `task ${shortId(who.taskId)}`, href: `/app/tasks/${who.taskId}`, live: verdict.kind === 'held' },
+        lane: { lane, holderTaskId: verdict.kind === 'held' ? verdict.holder.taskId : null, position: verdict.position, ...(stuck ? { stuckSince: stuck.toISOString() } : {}) },
+        provenance: { source: 'probe', derivedFrom: 'serial_lane_entries (claim-order laneOrderBy)' },
+      }));
+    }
+  }
+  out.push(...laneReasons);
+  const released = s.lanes?.releasedTaskIds;
+  const positionBehind = (holderTaskId: string | null, paths: string[]): { lane: string; holderTaskId: string | null; position: number | null } | undefined => {
+    const lane = laneKeysFor(paths, task.workspace?.gitConfig ?? null)[0];
+    return lane ? { lane, holderTaskId, position: null } : undefined;
+  };
+
+  if (manifest?.length && laneReasons.length === 0) {
     // Same overlap policy as the claim (./overlap-policy): only an overlap on
     // an unmergeable surface holds; mergeable files start alongside.
     const gitConfig = task.workspace?.gitConfig ?? null;
     // Layer 1: an open PR whose task's manifest overlaps this one.
     const others = splitOwnOpenPrs(task, s.openPrTasks).others;
-    const held = findHoldingOpenPr(manifest, others, workspaceHardSurface(gitConfig));
+    const held = findHoldingOpenPr(manifest, others, workspaceHardSurface(gitConfig), released);
     const pr = held ? { prNumber: held.pr.prNumber ?? null, prUrl: held.pr.prUrl ?? null } : null;
     if (pr) {
       const entry = held!.pr;
@@ -133,17 +165,19 @@ export function evaluateCoordinationGates(task: any, s: CoordinationSnapshot): W
           live,
         },
         overlap: overlapOf(paths, 'declared'),
+        lane: positionBehind(entry?.taskId ?? null, paths),
         provenance: { source: 'probe', derivedFrom: 'workers.prUrl ∩ tasks.pathManifest (claim layer 1)' },
       }));
     }
 
     // Layer 2: a live lease another task holds on these files.
-    const lease = findHoldingLease(task.id, manifest, s.activeClaims, undefined, gitConfig);
+    const lease = findHoldingLease(task.id, manifest, s.activeClaims, undefined, gitConfig, released);
     if (lease) {
       out.push(makeWaitingReason('lease_overlap', {
         because: overlapSentence(lease.overlapPaths),
         blocker: { type: 'task', id: lease.holderTaskId, label: `task ${shortId(lease.holderTaskId)}`, href: `/app/tasks/${lease.holderTaskId}`, live: s.liveTaskIds.has(lease.holderTaskId) },
         overlap: overlapOf(lease.overlapPaths, 'lease'),
+        lane: positionBehind(lease.holderTaskId, lease.overlapPaths),
         provenance: { source: 'probe', derivedFrom: 'path_claims (claim layer 2)' },
       }));
     }

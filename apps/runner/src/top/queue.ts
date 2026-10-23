@@ -240,6 +240,11 @@ function waitWords(t: RunnerQueueTask, positions: Map<string, number>, state: To
   if (refused) return { text: refused, kind: refusalKind(o!) };
   // The claim starts one task per mission that declares no files (the server's read of its serialization).
   if (t.holds.includes('advisory_manifest')) return { text: holderWords(t.holderTaskId, positions, state), kind: 'same_files' };
+  // Serial lane: one task at a time, first come (the server's stored order).
+  if (t.holds.includes('serial_lane') && t.lane) {
+    const pos = t.lane.position;
+    return { text: t.lane.stuckSince ? `in line (${pos} ahead), holder stalled` : `in line, ${pos} ahead`, kind: 'same_files' };
+  }
   if (t.holds.includes('deps_blocked')) return { text: 'after its dependency', kind: 'dependency' };
   if (t.holds.includes('workspace_cap')) return { text: CLAIM_EXCLUSION_WORDS.workspace_cap, kind: 'limit' };
   return null;

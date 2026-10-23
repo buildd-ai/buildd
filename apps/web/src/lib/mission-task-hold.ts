@@ -228,6 +228,17 @@ export function derivePendingTaskHold(input: PendingTaskHoldInput): PendingTaskH
   if (reason && reasonKind === 'overlap') {
     const holderId = str(detail.blockingTaskId) ?? str(detail.holderTaskId);
     const h = holderId ? input.holders?.get(holderId) ?? null : null;
+    // A serial lane wait (spec: Overlap scheduling, I-3): which line and how many go first.
+    const lane = str(detail.lane);
+    if (lane && typeof detail.position === 'number') {
+      const quiet = epoch(str(detail.holderQuietSince));
+      const stuck = quiet != null ? `; the lane is stuck: its holder's PR has been quiet ${formatDuration(Math.max(0, now - quiet))}` : '';
+      const line = `in line for the ${lane.replace(/^surface:/, '')} lane, ${detail.position} ahead`;
+      const after = h ? nameOf(h, now) : null;
+      const pr = typeof detail.prNumber === 'number' ? ` #${detail.prNumber}` : '';
+      return queued('overlap', (after ? `${line}: runs after ${after.text}` : pr ? `${line}: runs after${pr}` : line) + stuck, reason,
+        h ? { id: h.id, title: h.title ?? null, note: after!.note } : null);
+    }
     if (h) {
       const named = nameOf(h, now);
       return queued('overlap', `held: runs after ${named.text}`, reason, { id: h.id, title: h.title ?? null, note: named.note });
