@@ -16,6 +16,7 @@ import { sessionLog } from './session-logger';
 import { decideRestore, fsResumeProbe, restartNewAttemptError, type ResumeProbe } from './restart-resume';
 import { PAUSED_ERROR, pausedWaitingFor } from './pause';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
+import { deliverTerminalReport, reportTerminal, type TerminalReportDeps } from './terminal-report';
 import { reapSession, teardownSession } from './session-teardown';
 import { WORKER_HARD_TIMEOUT_MS } from '@buildd/shared';
 import { sweepWorktreeChanges, refreshBaseRef, type PathCollision } from './path-claim-enforcement';
@@ -237,6 +238,8 @@ export interface WorkerSyncContext {
   onPauseRequested?: (worker: LocalWorker) => void;
   /** What a restart checks before continuing a worker in its own session (restart-resume.ts). Default: the filesystem. */
   resumeProbe?: ResumeProbe;
+  /** Schedules a terminal report's retry (terminal-report.ts). Default: an unref'd setTimeout. */
+  terminalReportTimer?: (fn: () => void, ms: number) => unknown;
 }
 
 /**
@@ -335,12 +338,23 @@ export class WorkerSync {
    * - Anything else that was running is reported failed, "Process restarted",
    *   with what was missing, and the task retries from its last pushed commit.
    */
+  /** How a terminal report reaches the server (terminal-report.ts). */
+  private terminalReportDeps(): TerminalReportDeps {
+    return {
+      send: (id, payload) => this.ctx.buildd.updateWorker(id, payload as Parameters<BuilddClient['updateWorker']>[1]),
+      save: storeSaveWorker,
+      setTimer: this.ctx.terminalReportTimer,
+    };
+  }
+
   restoreWorkersFromDisk() {
     try {
       const probe = this.ctx.resumeProbe ?? fsResumeProbe({ workspaceIsolationRoot: this.ctx.config?.workspaceIsolationRoot });
-      const restored = loadAllWorkers();
+      const restored = loadAllWorkers({ reconcileRestart: true });
       let skippedTerminal = 0;
       for (const worker of restored) {
+        // A terminal report an earlier process could not deliver goes out now.
+        if (worker.terminalReport && !worker.killedByRestart) void deliverTerminalReport(worker, this.terminalReportDeps());
         // A record that was ALREADY done/error before this restart (not one
         // this restart just killed) needs no live tracking: it's already
         // correctly persisted, getWorkers() merges it straight off disk, and
@@ -370,7 +384,7 @@ export class WorkerSync {
           const verdict = decideRestore(worker, probe);
           if (verdict.kind === 'continue' && wasRunning) {
             // R-37: the worktree and the session survived, so this is a pause,
-            // not a failure. The server hears it on the first report.
+            // not a failure. Marked dirty, so the first sync tick reports it.
             worker.status = 'waiting';
             worker.error = PAUSED_ERROR;
             worker.completedAt = undefined;
@@ -387,6 +401,7 @@ export class WorkerSync {
             delete worker.killedByRestart;
             sessionLog(worker.id, 'info', 'restart_paused', 'runner stopped with this worker running; worktree and session intact, restored as paused', worker.taskId);
             storeSaveWorker(worker);
+            this.ctx.dirtyWorkers.add(worker.id);
           } else if (verdict.kind === 'new_attempt') {
             missing = verdict.missing;
           }
@@ -401,13 +416,12 @@ export class WorkerSync {
           worker.waitingFor = undefined;
           worker.resumeOnStart = undefined;
           sessionLog(worker.id, 'warn', 'restart_new_attempt', error, worker.taskId);
-          storeSaveWorker(worker);
-          this.ctx.buildd.updateWorker(worker.id, {
+          void reportTerminal(worker, {
             status: 'failed',
             error,
             crashReconciled: true,
             ...buildTerminalAttributionPayload(worker),
-          }).catch(() => {});
+          }, this.terminalReportDeps());
         } else if (missing && wasRunning) {
           const error = restartNewAttemptError(missing);
           worker.status = 'error';
@@ -425,8 +439,10 @@ export class WorkerSync {
           // was built alongside. `crashReconciled` tells the server this
           // 'failed' write is a reconciliation, not the agent's own report,
           // so its terminal record's outcome reads 'crashed' rather than an
-          // ordinary failure.
-          this.ctx.buildd.updateWorker(worker.id, {
+          // ordinary failure. Retried until the server answers, and saved
+          // with the record (which also clears the disk restart marker), so a
+          // failed send or a second crash cannot strand the row (terminal-report.ts).
+          void reportTerminal(worker, {
             status: 'failed',
             error,
             crashReconciled: true,
@@ -434,7 +450,7 @@ export class WorkerSync {
             ...(typeof worker.resultMeta?.numTurns === 'number' && worker.resultMeta.numTurns > 0
               ? { resultMeta: { numTurns: worker.resultMeta.numTurns } }
               : {}),
-          }).catch(() => {});
+          }, this.terminalReportDeps());
         }
         // Ensure arrays exist (workers saved before these features were added)
         if (!worker.checkpoints) worker.checkpoints = [];
