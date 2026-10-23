@@ -10,6 +10,8 @@ const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(false));
 const mockLoadDiscoveryInput = mock((..._args: any[]) => Promise.resolve(null as any));
 const mockTaskFindFirst = mock(() => Promise.resolve(null as any));
+const mockWorkerFindFirst = mock(() => Promise.resolve(null as any));
+const mockRecordCapabilityDecision = mock((_row: any) => Promise.resolve());
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
@@ -18,7 +20,8 @@ mock.module('@/lib/team-access', () => ({
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
 mock.module('@/lib/connector-capabilities-store', () => ({ loadDiscoveryInput: mockLoadDiscoveryInput }));
-mock.module('@buildd/core/db', () => ({ db: { query: { tasks: { findFirst: mockTaskFindFirst } } } }));
+mock.module('@buildd/core/db', () => ({ db: { query: { tasks: { findFirst: mockTaskFindFirst }, workers: { findFirst: mockWorkerFindFirst } } } }));
+mock.module('@/lib/agent-capabilities/audit', () => ({ recordCapabilityDecision: mockRecordCapabilityDecision }));
 
 import { GET } from './route';
 import { CONNECTOR_CATALOG } from '@/lib/connector-catalog';
@@ -46,7 +49,7 @@ function makeRequest(query: Record<string, string> = { workspaceId: WORKSPACE_ID
 
 describe('GET /api/connectors/capabilities', () => {
   beforeEach(() => {
-    for (const m of [mockGetCurrentUser, mockAuthenticateApiKey, mockVerifyWorkspaceAccess, mockVerifyAccountWorkspaceAccess, mockLoadDiscoveryInput, mockTaskFindFirst]) m.mockReset();
+    for (const m of [mockGetCurrentUser, mockAuthenticateApiKey, mockVerifyWorkspaceAccess, mockVerifyAccountWorkspaceAccess, mockLoadDiscoveryInput, mockTaskFindFirst, mockWorkerFindFirst, mockRecordCapabilityDecision]) m.mockReset();
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'worker', teamId: 'team-1' });
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
@@ -135,6 +138,41 @@ describe('GET /api/connectors/capabilities', () => {
       mockAuthenticateApiKey.mockResolvedValue(scoped(OTHER_WORKSPACE_ID));
       expect((await GET(makeRequest())).status).toBe(404);
       expect(mockLoadDiscoveryInput).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('recording the search against the caller worker (blockedByCapability reads it)', () => {
+    const WORKER_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+
+    it('records a search that found a provider as served, with the providers', async () => {
+      mockWorkerFindFirst.mockResolvedValue({ id: WORKER_ID, accountId: 'acc-1', taskId: 't-1', workspaceId: WORKSPACE_ID });
+      const res = await GET(makeRequest({ workspaceId: WORKSPACE_ID, capability: 'observability:query', roleSlug: 'builder', workerId: WORKER_ID }));
+      expect(res.status).toBe(200);
+      expect(mockRecordCapabilityDecision).toHaveBeenCalledTimes(1);
+      expect(mockRecordCapabilityDecision.mock.calls[0][0]).toMatchObject({
+        capability: 'capability.resolve', workerId: WORKER_ID, taskId: 't-1', reasonCode: 'served',
+        sideEffect: { capability: 'observability:query', providers: ['axiom'] },
+      });
+    });
+
+    it('records a search nothing serves as none', async () => {
+      mockWorkerFindFirst.mockResolvedValue({ id: WORKER_ID, accountId: 'acc-1', taskId: 't-1', workspaceId: WORKSPACE_ID });
+      mockLoadDiscoveryInput.mockImplementation(() => Promise.resolve({ ...discoveryInput('builder'), connectors: [], roles: [] }));
+      await GET(makeRequest({ workspaceId: WORKSPACE_ID, provider: 'axiom', access: 'read', workerId: WORKER_ID }));
+      expect(mockRecordCapabilityDecision.mock.calls[0][0]).toMatchObject({ reasonCode: 'none', sideEffect: { provider: 'axiom', access: 'read' } });
+    });
+
+    it('records nothing for a worker of another account, and answers the same', async () => {
+      mockWorkerFindFirst.mockResolvedValue({ id: WORKER_ID, accountId: 'acc-2', taskId: 't-1', workspaceId: WORKSPACE_ID });
+      const res = await GET(makeRequest({ workspaceId: WORKSPACE_ID, capability: 'observability:query', workerId: WORKER_ID }));
+      expect(res.status).toBe(200);
+      expect(mockRecordCapabilityDecision).not.toHaveBeenCalled();
+    });
+
+    it('records nothing without a workerId', async () => {
+      await GET(makeRequest({ workspaceId: WORKSPACE_ID, capability: 'observability:query' }));
+      expect(mockWorkerFindFirst).not.toHaveBeenCalled();
+      expect(mockRecordCapabilityDecision).not.toHaveBeenCalled();
     });
   });
 

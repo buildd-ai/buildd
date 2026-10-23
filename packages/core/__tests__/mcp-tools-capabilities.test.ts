@@ -31,15 +31,21 @@ describe('resolve_capability', () => {
     api.mockResolvedValueOnce({ capability: 'observability:query', candidates: [] });
     const res = await handleBuilddAction(api as unknown as ApiFn, 'resolve_capability', { capability: ' observability:query ', roleSlug: 'builder' }, ctx());
     expect(res.isError).toBeFalsy();
-    expect(api.mock.calls[0][0]).toBe(`/api/connectors/capabilities?workspaceId=${WS}&capability=observability%3Aquery&roleSlug=builder`);
+    expect(api.mock.calls[0][0]).toBe(`/api/connectors/capabilities?workspaceId=${WS}&capability=observability%3Aquery&roleSlug=builder&workerId=00000000-0000-0000-0000-000000000002`);
     expect(api.mock.calls[0][1]).toBeUndefined();
     expect(JSON.parse(res.content[0].text).capability).toBe('observability:query');
   });
 
   it('without a capability it lists, and passes no role unless given', async () => {
     api.mockResolvedValueOnce({ capabilities: [] });
-    await handleBuilddAction(api as unknown as ApiFn, 'resolve_capability', { capability: '  ' }, ctx());
+    await handleBuilddAction(api as unknown as ApiFn, 'resolve_capability', { capability: '  ' }, ctx({ workerId: undefined }));
     expect(api.mock.calls[0][0]).toBe(`/api/connectors/capabilities?workspaceId=${WS}`);
+  });
+
+  it('names its own worker so the search is recorded for a blockedByCapability completion', async () => {
+    api.mockResolvedValueOnce({ capability: 'axiom:read', candidates: [] });
+    await handleBuilddAction(api as unknown as ApiFn, 'resolve_capability', { provider: 'axiom' }, ctx());
+    expect(new URL(api.mock.calls[0][0], 'http://x').searchParams.get('workerId')).toBe('00000000-0000-0000-0000-000000000002');
   });
 
   it('fails clearly when no workspace resolves', async () => {

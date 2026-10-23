@@ -65,6 +65,8 @@ import {
   type SubjectEvent,
 } from '@/lib/supersession';
 import { parseReviewerOutput, applyConfidenceGate, applyEvidenceGate, reviewerEvidenceSha, REVIEWER_VERDICTS } from '@/lib/reviewer-output';
+import { parseBlockedByCapability } from '@/lib/capability-blocker';
+import { settleCapabilityBlocker } from '@/lib/capability-blocker-store';
 import { attemptIdentityFrom } from '@/lib/attempt-identity';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import type { MigrationSafety } from '@/lib/migration-safety';
@@ -2086,6 +2088,42 @@ async function patchWorker(
           }, { status: 400 });
         }
       }
+    }
+
+    // A run that could not meet a requirement for lack of a capability says so
+    // in structuredOutput.blockedByCapability, and only after it asked through
+    // request_capability / resolve_capability: no ask, a pending ask or a held
+    // grant is refused with the call to make. An accepted one stays on its
+    // request row or files one [capability] task; never a review waiver.
+    // (lib/capability-blocker.ts)
+    const blockerClaim = parseBlockedByCapability(body.structuredOutput);
+    if (blockerClaim && worker.taskId) {
+      const refuseBlocker = async (error: string, hint: string, code: string) => {
+        await applyMetricsOnlyPatch(id, worker, body, reportedBasis).catch(() => null);
+        const frictionSignature = fireGateEvent({
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'rejected',
+          reason: `completion refused: ${code}`,
+          workspaceId: worker.workspaceId,
+          missionId: taskMissionId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+          detail: { code },
+        });
+        return NextResponse.json({ error, hint, code, gate: GATE_SLUGS.OUTPUT_REQUIREMENT, frictionSignature }, { status: 400 });
+      };
+      if (!blockerClaim.ok) return refuseBlocker(blockerClaim.error, 'structuredOutput.blockedByCapability', 'invalid_blocker');
+      const settled = await settleCapabilityBlocker({
+        claim: blockerClaim.value,
+        workerId: worker.id,
+        workspaceId: worker.workspaceId,
+        taskId: worker.taskId,
+        taskTitle: terminalTaskRow[0]?.title ?? null,
+      });
+      if (!settled.ok) return refuseBlocker(settled.refusal.error, settled.refusal.hint, settled.refusal.code);
+      body.structuredOutput = { ...(body.structuredOutput as Record<string, unknown>), blockedByCapability: settled.record };
     }
 
     // §9 completion gate (docs/specs/workflow-state-kernel.md): a kernel fix

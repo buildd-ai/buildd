@@ -773,6 +773,35 @@ export interface TaskHandoff {
   leftUndone?: string[];
 }
 
+/**
+ * `structuredOutput.blockedByCapability` on complete_task: the run could not
+ * meet a requirement because it lacks a capability (model.inference, a
+ * provider's read or write). Accepted only after this worker asked through
+ * resolve_capability / request_capability for that need and the answer was a
+ * real "no" (unavailable, forbidden, denied, need_connection …); a
+ * pending_approval is not a blocker. See apps/web/src/lib/capability-blocker.ts.
+ */
+export interface BlockedByCapability {
+  /** What was needed: `model.inference`, a provider slug (`axiom`), `<provider>:<access>`, or a category (`observability:query`). */
+  need: string;
+  /** Catalog slug of the provider asked for, when there is one. */
+  provider?: string;
+  access?: 'read' | 'write';
+  /** What the run tried, in a sentence or two. */
+  triedPath: string;
+  /** The capability request (request_capability's grant id) this blocker is about. */
+  requestId?: string;
+}
+
+/** What the server records on an accepted blocker, merged into `structuredOutput.blockedByCapability`. */
+export interface CapabilityBlockerRecord extends BlockedByCapability {
+  /** The answer the blocker rests on: a request_capability outcome or grant status, or `none_serves` from resolve_capability. */
+  outcome: string;
+  /** `capability_request`: the request row (Needs you / Access section) carries it. `capability_task`: a `[capability]` task was filed or appended to. */
+  routedTo: 'capability_request' | 'capability_task';
+  capabilityTaskId?: string;
+}
+
 export interface TaskResult {
   summary?: string;
   branch?: string;

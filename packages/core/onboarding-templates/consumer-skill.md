@@ -68,6 +68,16 @@ Details, including `discardEdits` and `alreadyShippedIn`: topic
   task back in the queue and it starts again by itself when that task merges.
   If the server refuses (that task merged, was cancelled, or already waits on
   this one), fail with `error` or ask a person.
+- Missing a capability (a model call, a provider's read or write): ask for
+  it through buildd's capability request, never work around it (never read
+  keys or `DATABASE_URL` yourself). A request still pending approval is not a
+  blocker: keep working and ask again. Only a real no ends the requirement,
+  and you report it as `complete_task params={ summary, structuredOutput: {
+  blockedByCapability: { need, provider?, access?, triedPath, requestId? } } }`,
+  never as "the sandbox has no X" in prose. The server refuses it unless you
+  asked first, and names the call to make. An accepted blocker reaches a
+  person; it is never a waiver. The calls and outcomes: topic
+  `task-lifecycle`.
 - Hard block in a runner session: `AskUserQuestion`. The task waits; it is not
   a failure and is not retried into the same wall.
 - Hard block in your own interactive session (you called `claim_task`):

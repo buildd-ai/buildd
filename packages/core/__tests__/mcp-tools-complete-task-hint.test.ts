@@ -86,6 +86,37 @@ describe('MCP complete_task — 400 hint handling', () => {
   });
 });
 
+describe('MCP complete_task — blockedByCapability', () => {
+  const blocker = { need: 'model.inference', triedPath: 'Needed a governed model call.' };
+
+  it('forwards the outcome in structuredOutput to the worker PATCH', async () => {
+    const api = mock(async () => ({ status: 'completed', turns: 1 }));
+    await handleBuilddAction(api as unknown as ApiFn, 'complete_task', { summary: 'done', structuredOutput: { blockedByCapability: blocker } }, context);
+    expect(patchBody(api).structuredOutput).toEqual({ blockedByCapability: blocker });
+  });
+
+  it('a refusal for no capability call tells the agent to use request_capability, then retry', async () => {
+    const api = mock(async () => {
+      throw new Error(
+        'API error: 400 - {"error":"blockedByCapability is accepted only after you ask for the capability: call request_capability { capability: \\"model.inference\\" }.","hint":"request_capability","code":"capability_not_asked"}',
+      );
+    });
+    const result = await handleBuilddAction(api as unknown as ApiFn, 'complete_task', { summary: 'done', structuredOutput: { blockedByCapability: blocker } }, context);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('request_capability { capability: "model.inference" }');
+    expect(result.content[0].text).toContain('Please use `request_capability` before calling complete_task again.');
+  });
+
+  it('a pending_approval refusal does not invent a tool call: its own text says keep working', async () => {
+    const api = mock(async () => {
+      throw new Error('API error: 400 - {"error":"Your capability request is pending_approval. Keep working on everything else.","hint":"keep_working","code":"capability_pending_approval"}');
+    });
+    const result = await handleBuilddAction(api as unknown as ApiFn, 'complete_task', { summary: 'done', structuredOutput: { blockedByCapability: blocker } }, context);
+    expect(result.content[0].text).toContain('Keep working');
+    expect(result.content[0].text).not.toContain('use `keep_working`');
+  });
+});
+
 describe('MCP complete_task — self-reported usage', () => {
   it('forwards inputTokens/outputTokens/costUsd to the worker PATCH', async () => {
     const api = mock(async () => ({ turns: 1 }));

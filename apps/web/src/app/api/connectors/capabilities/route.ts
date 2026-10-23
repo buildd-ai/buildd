@@ -1,15 +1,53 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks } from '@buildd/core/db/schema';
+import { tasks, workers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { loadDiscoveryInput } from '@/lib/connector-capabilities-store';
-import { listCapabilities, resolveCapability, resolveProviderAccess } from '@/lib/connector-capabilities';
+import { listCapabilities, resolveCapability, resolveProviderAccess, type CapabilityResolution } from '@/lib/connector-capabilities';
+import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const ROLE_SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * With `workerId` (the MCP passes the caller's own), the search is recorded
+ * against that worker (`capability.resolve`): a `blockedByCapability`
+ * completion is accepted only after the worker asked (lib/capability-blocker.ts).
+ * Recorded only for the caller's own worker on a task in this workspace;
+ * anything else is answered the same and not recorded.
+ */
+async function recordResolve(
+  account: { id: string; taskScope?: { taskId: string } } | null,
+  workerId: string | null,
+  workspaceId: string,
+  ask: { capability: string | null; provider: string | null; access: string | null },
+  result: CapabilityResolution,
+): Promise<void> {
+  if (!account || !workerId || !UUID_RE.test(workerId)) return;
+  const worker = await db.query.workers.findFirst({
+    where: sqlWhere(eq(workers.id, workerId)),
+    columns: { id: true, accountId: true, taskId: true, workspaceId: true },
+  });
+  if (!worker || worker.accountId !== account.id || worker.workspaceId !== workspaceId || !worker.taskId) return;
+  if (account.taskScope && account.taskScope.taskId !== worker.taskId) return;
+  // Serves = an installed connector the team has not forbidden; the agent's next step is request_capability.
+  const providers = [...new Set(result.candidates
+    .filter(c => c.connector && c.access !== 'forbidden' && c.provider.slug)
+    .map(c => c.provider.slug as string))];
+  await recordCapabilityDecision({
+    capability: 'capability.resolve',
+    decision: 'allowed',
+    workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id,
+    principalVia: account.taskScope ? 'task_token' : 'runner_key',
+    resource: result.capability,
+    reasonCode: providers.length > 0 ? 'served' : 'none',
+    sideEffect: { capability: ask.capability ?? result.capability, provider: ask.provider, access: ask.access, providers: providers.slice(0, 5) },
+  });
+}
 
 // GET /api/connectors/capabilities?workspaceId=<id>[&capability=observability:query][&roleSlug=builder]
 //
@@ -64,7 +102,9 @@ export async function GET(req: NextRequest) {
     if (!/^[a-z0-9][a-z0-9-]{0,47}$/.test(provider) || (access !== 'read' && access !== 'write')) {
       return NextResponse.json({ error: 'invalid_provider', message: 'provider is a catalog slug; access is read or write' }, { status: 400 });
     }
-    return NextResponse.json(resolveProviderAccess(input, provider, access));
+    const result = resolveProviderAccess(input, provider, access);
+    await recordResolve(apiAccount, params.get('workerId'), workspaceId, { capability: null, provider, access }, result);
+    return NextResponse.json(result);
   }
 
   const capability = params.get('capability');
@@ -72,5 +112,6 @@ export async function GET(req: NextRequest) {
 
   const result = resolveCapability(input, capability);
   if ('error' in result) return NextResponse.json({ error: 'unknown_capability', message: result.error }, { status: 400 });
+  await recordResolve(apiAccount, params.get('workerId'), workspaceId, { capability, provider: null, access: null }, result);
   return NextResponse.json(result);
 }

@@ -934,6 +934,28 @@ mock.module('@/lib/deferred-reply-work', () => ({
   }),
 }));
 
+// blockedByCapability: the store is mocked (no db), but the gate runs the
+// real rules (lib/capability-blocker.ts) over the calls a test records.
+const { decideCapabilityBlocker } = await import('@/lib/capability-blocker');
+let blockerCalls: any[] = [];
+let blockerRequests: any[] = [];
+const capabilityTasks: Array<{ id: string; need: string; workspaceId: string; reports: number }> = [];
+const mockFileCapabilityTask = mock(async (input: any) => {
+  const open = capabilityTasks.find(t => t.need === input.claim.need && t.workspaceId === input.workspaceId);
+  if (open) { open.reports += 1; return { id: open.id, deduplicated: true }; }
+  const t = { id: `cap-task-${capabilityTasks.length + 1}`, need: input.claim.need, workspaceId: input.workspaceId, reports: 1 };
+  capabilityTasks.push(t);
+  return { id: t.id, deduplicated: false };
+});
+const mockSettleCapabilityBlocker = mock(async (input: any) => {
+  const d = decideCapabilityBlocker(input.claim, blockerCalls, blockerRequests);
+  if (!d.accept) return { ok: false, refusal: d };
+  if (d.routedTo === 'capability_request') return { ok: true, record: { ...input.claim, requestId: d.requestId, outcome: d.outcome, routedTo: d.routedTo } };
+  const filed = await mockFileCapabilityTask(input);
+  return { ok: true, record: { ...input.claim, outcome: d.outcome, routedTo: 'capability_task', capabilityTaskId: filed.id } };
+});
+mock.module('@/lib/capability-blocker-store', () => ({ settleCapabilityBlocker: mockSettleCapabilityBlocker }));
+
 import { GET, PATCH } from './route';
 import { composeBodyWithLede, extractLede } from '@buildd/core/pr-lede';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -3925,6 +3947,95 @@ describe('PATCH /api/workers/[id]', () => {
       expect(settled.claimedBy).toBeNull();
       expect(settled.context.failureContext.priorSummaryUnauthored).toBe(true);
       expect(mockTriggerEvent).toHaveBeenCalled();
+    });
+  });
+
+  describe('blockedByCapability completion outcome', () => {
+    const inferenceClaim = { need: 'model.inference', triedPath: 'Needed a governed model call to score the eval set.' };
+    const runningWorker = () => ({
+      id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1',
+      taskId: 'task-1', commitCount: 0, filesChanged: 0, prUrl: 'https://github.com/org/repo/pull/7', prNumber: 7,
+    });
+    const complete = (extra: Record<string, unknown>) => PATCH(createMockRequest({
+      method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', viaCompleteTask: true, summarySource: 'agent', summary: 'Shipped the eval harness; scoring needs a governed model call.', ...extra },
+    }), { params: mockParams });
+    let taskSets: any[];
+
+    beforeEach(() => {
+      blockerCalls = [];
+      blockerRequests = [];
+      capabilityTasks.length = 0;
+      mockSettleCapabilityBlocker.mockClear();
+      mockFileCapabilityTask.mockClear();
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(runningWorker());
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', kind: 'engineering', outputRequirement: 'auto', title: 'Eval harness' });
+      taskSets = [];
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((values: any) => {
+          taskSets.push(values);
+          return { where: mock(() => ({ returning: mock(() => Promise.resolve([{ id: 'task-1' }])) })) };
+        }),
+      }));
+    });
+
+    it('refuses the outcome when the worker never called resolve/request_capability, naming the call to make', async () => {
+      const res = await complete({ structuredOutput: { blockedByCapability: inferenceClaim } });
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.code).toBe('capability_not_asked');
+      expect(json.hint).toBe('request_capability');
+      expect(json.error).toContain('request_capability { capability: "model.inference"');
+      expect(mockFileCapabilityTask).not.toHaveBeenCalled();
+    });
+
+    it('refuses after a request that came back pending_approval and tells the worker to keep working', async () => {
+      blockerCalls = [{ call: 'request', capability: 'model.inference', provider: 'openrouter', outcome: 'pending_approval', grantId: 'g-1', at: new Date() }];
+      blockerRequests = [{ id: 'g-1', capability: 'model.inference', provider: 'openrouter', status: 'pending', requestedAt: new Date() }];
+      const res = await complete({ structuredOutput: { blockedByCapability: inferenceClaim } });
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.code).toBe('capability_pending_approval');
+      expect(json.error).toContain('Keep working');
+      expect(mockFileCapabilityTask).not.toHaveBeenCalled();
+    });
+
+    it.each(['unavailable', 'forbidden'])('accepts after a request that came back %s and files one [capability] task; a repeat appends', async (outcome) => {
+      blockerCalls = [{ call: 'request', capability: 'model.inference', provider: 'openrouter', outcome, grantId: null, at: new Date() }];
+      const first = await complete({ structuredOutput: { blockedByCapability: inferenceClaim } });
+      expect(first.status).toBe(200);
+      expect(capabilityTasks).toHaveLength(1);
+      const recorded = taskSets.map(v => v.result?.structuredOutput?.blockedByCapability).find(Boolean);
+      expect(recorded).toMatchObject({ need: 'model.inference', outcome, routedTo: 'capability_task', capabilityTaskId: 'cap-task-1' });
+
+      mockWorkersFindFirst.mockResolvedValue({ ...runningWorker(), id: 'worker-2' });
+      const second = await complete({ structuredOutput: { blockedByCapability: inferenceClaim } });
+      expect(second.status).toBe(200);
+      expect(capabilityTasks).toHaveLength(1);
+      expect(capabilityTasks[0].reports).toBe(2);
+    });
+
+    it('a denied request routes to that request, not a new task', async () => {
+      blockerRequests = [{ id: 'g-1', capability: 'model.inference', provider: 'openrouter', status: 'denied', requestedAt: new Date() }];
+      const res = await complete({ structuredOutput: { blockedByCapability: inferenceClaim } });
+      expect(res.status).toBe(200);
+      expect(mockFileCapabilityTask).not.toHaveBeenCalled();
+      const recorded = taskSets.map(v => v.result?.structuredOutput?.blockedByCapability).find(Boolean);
+      expect(recorded).toMatchObject({ routedTo: 'capability_request', requestId: 'g-1', outcome: 'denied' });
+    });
+
+    it('refuses a malformed claim', async () => {
+      const res = await complete({ structuredOutput: { blockedByCapability: { need: 'model.inference' } } });
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('invalid_blocker');
+    });
+
+    it('KNOWN GAP: a free-text "sandbox has no" summary with the requirement unmet is not converted into a blocker (behaviour unchanged)', async () => {
+      const res = await complete({ summary: 'Done except scoring: the sandbox has no Jev access, so that requirement is left unmet.' });
+      expect(res.status).toBe(200);
+      expect(mockSettleCapabilityBlocker).not.toHaveBeenCalled();
+      expect(mockFileCapabilityTask).not.toHaveBeenCalled();
     });
   });
 

@@ -154,21 +154,23 @@ export async function requestCapability(principal: AgentPrincipal, req: Capabili
     now,
   });
 
-  const audit = (decision: 'allowed' | 'refused', grantId: string | null, expiresAt: Date | null = null) => void recordCapabilityDecision({
+  // Awaited, never thrown: a blockedByCapability completion reads these rows
+  // back (capability-blocker-store.ts), so they must land before the answer.
+  const audit = (decision: 'allowed' | 'refused', grantId: string | null, expiresAt: Date | null = null) => recordCapabilityDecision({
     capability: 'capability.request', decision,
     workspaceId: rp.workspaceId, taskId: rp.taskId, workerId: rp.workerId, accountId: principal.accountId, principalVia: principal.via,
     resource: grantId ? `grant:${grantId}` : `${req.capability}@${resolution.target?.provider ?? req.provider ?? 'any'}`,
     reasonCode: `${resolution.kind}:${resolution.reasonCode}`, expiresAt,
-    sideEffect: { risk: req.risk, tool: req.tool, resource: req.resource, environment: req.environment },
+    sideEffect: { capability: req.capability, provider: resolution.target?.provider ?? req.provider, risk: req.risk, tool: req.tool, resource: req.resource, environment: req.environment },
   });
 
   if (resolution.grantId) {
     const existing = grants.find(g => g.id === resolution.grantId)!;
-    audit(resolution.kind === 'existing' ? 'allowed' : 'refused', existing.id, existing.expiresAt);
+    await audit(resolution.kind === 'existing' ? 'allowed' : 'refused', existing.id, existing.expiresAt);
     return { ok: true, resolution, grant: grantView(existing), deduped: true };
   }
   if ((resolution.kind !== 'auto_granted' && resolution.kind !== 'pending_approval') || !resolution.target) {
-    audit(resolution.kind === 'existing' ? 'allowed' : 'refused', null);
+    await audit(resolution.kind === 'existing' ? 'allowed' : 'refused', null);
     return { ok: true, resolution, grant: null, deduped: false };
   }
 
@@ -196,12 +198,12 @@ export async function requestCapability(principal: AgentPrincipal, req: Capabili
     where: sqlWhere(and(eq(capabilityGrants.dedupeKey, dedupeKey), inArray(capabilityGrants.status, ['pending', 'granted']))),
   });
   if (!row) {
-    audit('refused', null);
+    await audit('refused', null);
     return { ok: true, resolution: { ...resolution, kind: 'unavailable', reasonCode: 'request_race_lost' }, grant: null, deduped: false };
   }
   const rec = toGrantRecord(row);
   const kind = rec.status === 'granted' ? (granted ? 'auto_granted' : 'existing') : 'pending_approval';
-  audit(rec.status === 'granted' ? 'allowed' : 'refused', rec.id, rec.expiresAt);
+  await audit(rec.status === 'granted' ? 'allowed' : 'refused', rec.id, rec.expiresAt);
   return { ok: true, resolution: { ...resolution, kind, grantId: rec.id }, grant: grantView(rec), deduped: !inserted[0] };
 }
 
@@ -225,14 +227,14 @@ async function requestTaskFiling(principal: AgentPrincipal, rp: RequestPrincipal
   const resolution = (kind: Resolution['kind'], reasonCode: string, nextSteps: string[], grantId: string | null = null): Resolution => ({
     kind, reasonCode, target: TASK_FILING_TARGET, policy: null, ttlSeconds: req.ttlSeconds, grantId, nextSteps, alternatives: [],
   });
-  const audit = (decision: 'allowed' | 'refused', r: Resolution) => void recordCapabilityDecision({
+  const audit = (decision: 'allowed' | 'refused', r: Resolution) => recordCapabilityDecision({
     capability: 'capability.request', decision,
     workspaceId: rp.workspaceId, taskId: rp.taskId, workerId: rp.workerId, accountId: principal.accountId, principalVia: principal.via,
     resource: r.grantId ? `grant:${r.grantId}` : `${cap}@workspace:${target}`,
-    reasonCode: `${r.kind}:${r.reasonCode}`,
+    reasonCode: `${r.kind}:${r.reasonCode}`, sideEffect: { capability: cap, provider: TASK_FILING_PROVIDER },
   });
-  const done = (r: Resolution, grant: GrantRow | null = null, deduped = false): RequestOutcome => {
-    audit(r.kind === 'existing' ? 'allowed' : 'refused', r);
+  const done = async (r: Resolution, grant: GrantRow | null = null, deduped = false): Promise<RequestOutcome> => {
+    await audit(r.kind === 'existing' ? 'allowed' : 'refused', r);
     return { ok: true, resolution: r, grant: grant ? grantView(toGrantRecord(grant)) : null, deduped };
   };
 

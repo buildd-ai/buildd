@@ -66,8 +66,25 @@ waiting. Each message comes back once.
   `buildd action=post_note params={ type: "question", title, body, defaultChoice }`.
   Write the body for someone who has not seen the task: what is being decided,
   one line per option, why you chose the default. Work continues.
-- **Hard block in a runner session** (a required tool or credential is
-  missing, or the instruction is impossible as written): `AskUserQuestion`.
+- **Missing a capability** (a model call, a provider's read or write): ask
+  for it, never work around it. Never read keys or `DATABASE_URL` yourself.
+  `buildd action=request_capability params={ provider, access }`, or
+  `params={ capability: "model.inference", provider, models, budget }` for a
+  model call; `buildd action=resolve_capability params={ capability }` first
+  if you only know the category (e.g. observability:query). Outcome
+  auto_granted or existing: use it. Outcome pending_approval: not a blocker,
+  so keep working and ask again (same request) until it is decided. Only a
+  real no (denied, forbidden, unavailable, need_connection, need_reauth,
+  unhealthy, or nothing serves it) ends the requirement. Report it as
+  `buildd action=complete_task params={ summary, structuredOutput: {
+  blockedByCapability: { need, provider?, access?, triedPath, requestId? } } }`,
+  never as "the sandbox has no X" in prose. Without a prior call for that need
+  the server refuses it and names the call to make. An accepted blocker stays
+  on its request, which a person sees, or files one `[capability]` task per
+  need and workspace (a repeat appends to it). It is never a waiver.
+- **Hard block in a runner session** (a required tool is missing, or the
+  instruction is impossible as written; a missing capability goes through the
+  bullet above first): `AskUserQuestion`.
   The task waits for an answer, is not counted as a failure and is not retried
   into the same wall. Not for design choices you can make yourself.
 - **Hard block in your own interactive session** (you called `claim_task`

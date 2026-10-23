@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-20
 summary: An agent MUST get access it lacked at start only by asking for a provider and an access (read or write), resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.
 domain: auth
-surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/task-delegation.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/lib/connector-gateway.ts]
+surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-blocker.ts, apps/web/src/lib/capability-blocker-store.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/task-delegation.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/lib/connector-gateway.ts]
 related: [agent-capabilities, model-inference-agent-capability, mcp-connectors-and-roles, team-permissions]
 keywords: [connector gateway, native MCP, tools/list, tools/call, readOnlyHint, toolPolicy, connectorCeiling, request_capability, capability grant, capability policy, auto_grant, ask_human, forbidden, approve, deny, revoke, lease, TTL, provider write guard]
-verified_by: [packages/core/__tests__/provider-access-ask.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/web/src/lib/connector-gateway-store.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts]
+verified_by: [packages/core/__tests__/provider-access-ask.test.ts, apps/web/src/lib/capability-blocker.test.ts, apps/web/src/lib/capability-blocker-store.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/web/src/lib/connector-gateway-store.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts]
 supersedes: []
 assertions:
   - id: request-route
@@ -150,6 +150,16 @@ without naming a connector id or seeing a credential.
   it from the delegation. A refused read of another workspace's analytics is
   therefore one real action: the agent asks `buildd` `read` on that workspace,
   a person approves, and the same call is retried.
+- A run that cannot meet a requirement for lack of a capability reports
+  `structuredOutput.blockedByCapability { need, provider?, access?, triedPath,
+  requestId? }` on completion (`lib/capability-blocker.ts`). It is refused
+  (400, naming the call to make) unless this worker called `request_capability`
+  or `resolve_capability` for that need (`capability.request` /
+  `capability.resolve` rows in `agent_capability_decisions`, plus its grant
+  rows); a `pending_approval` or a held grant is refused too. A real no is
+  accepted: a request row carries it, or with none, one open `[capability]`
+  task per need and workspace is filed or appended to. It never routes to a
+  waiver. A free-text "the sandbox has no X" is not converted (known gap).
 
 **Acceptance criteria**:
 - AC-1: GIVEN Axiom installed and connected but the team has blocked it in the catalog WHEN an agent asks for `axiom` `read` THEN the outcome is `forbidden` (`catalog_blocked`) and no row is written.
@@ -157,6 +167,7 @@ without naming a connector id or seeing a credential.
 - AC-3: GIVEN another role mounts Axiom and no rule WHEN an agent asks for a read THEN it is `auto_granted` with the requested TTL (narrowed by policy).
 - AC-4: GIVEN the role mounts a provider WHEN an agent asks for `write` THEN it is `pending_approval` (`write_needs_human`), whatever the team rule says.
 - AC-5: WHEN a body names a connector id THEN the route returns 400.
+- AC-5d: GIVEN a worker that never called request_capability or resolve_capability WHEN it completes with `blockedByCapability` THEN the completion is refused with the call to make; GIVEN its request came back `unavailable` THEN it is accepted and one `[capability]` task is filed, and a second run's identical outcome appends to it (`apps/web/src/app/api/workers/[id]/route.test.ts`).
 - AC-5a: GIVEN a running task with no delegation WHEN its agent asks for `buildd` `write` (or `read`) on a same-team workspace THEN the outcome is `pending_approval`; WHEN a person who reaches that workspace approves THEN the task's delegation grants `tasks:create` (`analytics:read` for read) there and a repeat ask is `existing`; WHEN revoked THEN the grant leaves the delegation.
 
 ## Team policy

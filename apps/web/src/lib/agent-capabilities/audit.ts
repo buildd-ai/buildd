@@ -21,6 +21,8 @@ export type CapabilityName =
   | 'model.endpoint'
   | 'model.inference'
   | 'capability.request'
+  // resolve_capability, recorded per worker when the MCP names it (blockedByCapability reads it).
+  | 'capability.resolve'
   | 'capability.approve'
   | 'capability.deny'
   | 'capability.revoke'
