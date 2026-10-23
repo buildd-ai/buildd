@@ -237,6 +237,8 @@ const SAFE: Record<string, string[]> = {
   worker_heartbeats: [
     'workspace_ids', 'runner_commit', 'runner_version', 'current_commit', 'disk_commit',
     'tracked_branch',
+    // desired_slots_origin: dashboard | machine.
+    'desired_slots_origin',
     // update_drain: two timestamps and a busy-worker count, no free text.
     'update_drain',
   ],

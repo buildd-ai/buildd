@@ -92,7 +92,7 @@ import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, get
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate, type PausedForUpdateReport } from './update-drain';
 import { claimsHeldByPerson, currentRunnerHold, withRunnerHold } from './runner-hold';
-import { SlotPauseQueue, slotResumes } from './runner-slots';
+import { SlotPauseQueue, slotResumes, saveSlotsToConfig, serverSlotsToApply } from './runner-slots';
 import { ClaimRefusalBackoff } from './claim-refusal-backoff';
 import { RESTART_CONTINUE_MESSAGE, SHUTDOWN_CHECKPOINT_MS, SHUTDOWN_SAFE_POINT_MS, UPDATE_CONTINUE_MESSAGE, UPDATE_CONTINUE_PROBE_MS, commitShutdownCheckpoint, pushUpdateCheckpoint } from './restart-resume';
 import { collectLoopVerificationEvidence, VERIFICATION_COMMAND_TIMEOUT_MS } from './runner-verification';
@@ -1395,15 +1395,42 @@ export class WorkerManager {
    * The caller saves it in config.json. The next heartbeat reports it; a raise
    * claims for the new free slots straight away.
    */
-  setSlots(slots: number): void {
+  setSlots(slots: number, meta: { changedAt: number; origin: 'dashboard' | 'machine'; setBy: string | null } = { changedAt: Date.now(), origin: 'machine', setBy: null }): void {
     const raised = slots > this.config.maxConcurrent;
     this.config.maxConcurrent = slots;
+    this.config.slotsChangedAt = meta.changedAt;
+    this.config.slotsOrigin = meta.origin;
+    this.config.slotsSetBy = meta.setBy;
     this.emit({ type: 'slots', maxConcurrent: slots });
     void this.sendHeartbeat();
     if (raised) {
       this.refusalBackoff.reset();
       this.claimPendingTasks().catch(() => {});
     }
+  }
+
+  /**
+   * Take the slots a team owner or admin set on buildd.dev (the heartbeat reply
+   * carries them, a Pusher nudge makes that beat happen now). Applied the way
+   * `buildd slots` applies: a raise claims at once, a lower lets running agents
+   * finish; saved to config.json so a restart keeps it. A local change made
+   * after the dashboard one is not overwritten (R-20, R-21).
+   */
+  applyServerSlots(reply: unknown): boolean {
+    const next = serverSlotsToApply(reply, { slots: this.config.maxConcurrent, changedAt: this.config.slotsChangedAt ?? null });
+    if (!next) return false;
+    const meta = { changedAt: next.setAt, origin: 'dashboard' as const, setBy: next.setBy };
+    if (this.config.slotsConfigFile) {
+      try {
+        saveSlotsToConfig(this.config.slotsConfigFile, next.slots, meta);
+      } catch (err) {
+        // An unreadable config.json holds the API key: leave it alone and keep the number for this run only.
+        console.warn('[slots] could not save the dashboard-set slots:', err instanceof Error ? err.message : err);
+      }
+    }
+    console.log(`[slots] ${next.slots} slots, set on buildd.dev${next.setBy ? ` by ${next.setBy}` : ''}`);
+    this.setSlots(next.slots, meta);
+    return true;
   }
 
   /**
@@ -1491,7 +1518,9 @@ export class WorkerManager {
       // whether Claude is confined here, not whether bwrap is installed, so a
       // macOS runner on Seatbelt no longer reads as "user namespaces denied".
       const sandboxEnabled = probeAt !== null ? isConfined(getIsolationRecord().claude) : null;
-      const { viewerToken, pendingTaskCount, latestCommit, budgetProbeRequestedAt } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth }, this.config.singleTask ? undefined : this.config.maxConcurrent);
+      const { viewerToken, pendingTaskCount, latestCommit, budgetProbeRequestedAt, desiredSlots } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth }, this.config.singleTask ? undefined : this.config.maxConcurrent, this.config.singleTask ? undefined : this.config.slotsChangedAt);
+      // A slot change made on buildd.dev, newer than this runner's own (spec 34a48877 R-20).
+      if (!this.config.singleTask) this.applyServerSlots(desiredSlots);
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
