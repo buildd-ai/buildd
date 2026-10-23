@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "49ba1150-c116-4bbf-be28-946ec96363f0",
+  "id": "50758e4b-01d8-46d5-b415-b35dcfb08c32",
   "prevIds": [
-    "adeed96e-fbea-46d8-861f-c5d41a647eb3"
+    "20b993d5-ec7f-485f-b156-b48b9ba2ba56"
   ],
   "ddl": [
     {
@@ -28369,6 +28369,58 @@
       "generated": null,
       "identity": null,
       "name": "max_concurrent_workers",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "worker_heartbeats"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "desired_slots",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "worker_heartbeats"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "desired_slots_origin",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "worker_heartbeats"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "desired_slots_set_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "worker_heartbeats"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "desired_slots_set_at",
       "entityType": "columns",
       "schema": "public",
       "table": "worker_heartbeats"
