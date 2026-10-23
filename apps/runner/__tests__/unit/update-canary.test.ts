@@ -19,6 +19,7 @@ import {
   readCanaryConfig,
   recordOutcome,
   runCanaryTrip,
+  UPDATE_CONTINUE_ROLE,
   type CanaryConfig,
   type CanaryOutcome,
   type CanaryState,
@@ -392,5 +393,60 @@ describe('runCanaryTrip — rollback mechanics', () => {
     expect(r.claimsHalted).toBe(true);
     expect(r.lastTrip?.role).toBe('reviewer');
     expect(r.lastTrip?.badCommit).toBe(BAD.slice(0, 12));
+  });
+});
+
+// Spec 47c97f48 (r1) R-8 / AC-6: the updated runner cannot continue any agent
+// paused for the update → the canary rolls back so they continue on the old version.
+describe('tripOnUpdateContinueFailure', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'canary-continue-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  const fresh = (initial = { ...emptyCanaryState(), lastBootCommit: GOOD }) => {
+    const c = new UpdateCanary({ file: join(dir, 'update-canary.json'), config: cfg, now: () => 5_000, initialState: initial });
+    c.boot(BAD);
+    return c;
+  };
+
+  test('AC-6: on probation it trips at once, with a rollback to the previous commit, and the handler rolls back', async () => {
+    const c = fresh();
+    const seen: string[] = [];
+    c.setTripHandler((trip) => { seen.push(`${trip.role}:${trip.rollbackTo}:${trip.rollback}`); });
+    const trip = c.tripOnUpdateContinueFailure({ agents: 2, excerpt: 'No conversation found', workspaceId: 'ws-1' })!;
+    expect(trip).toMatchObject({ badCommit: BAD, rollbackTo: GOOD, role: UPDATE_CONTINUE_ROLE, failures: 2, rollback: true });
+    expect(seen).toEqual([`${UPDATE_CONTINUE_ROLE}:${GOOD}:true`]);
+    expect(c.claimsHalted()).toBe(true);
+
+    const calls: string[] = [];
+    await runCanaryTrip(c, trip, {
+      emit: () => {},
+      reportFriction: async () => {},
+      waitForIdle: async () => { calls.push('idle'); },
+      rollbackTo: async (sha) => { calls.push(`rollback:${sha}`); return { success: true, newCommit: sha }; },
+      restart: () => { calls.push('restart'); },
+      setUpdating: () => {},
+    });
+    expect(calls).toEqual(['idle', `rollback:${GOOD}`, 'restart']);
+    expect(c.isSkipped(BAD)).toBe(true);
+  });
+
+  test('trips once: a second report is ignored', () => {
+    const c = fresh();
+    expect(c.tripOnUpdateContinueFailure({ agents: 1, excerpt: 'x', workspaceId: null })).not.toBeNull();
+    expect(c.tripOnUpdateContinueFailure({ agents: 1, excerpt: 'x', workspaceId: null })).toBeNull();
+  });
+
+  test('not on probation (no update just applied): nothing, so the old version never loops', () => {
+    const c = new UpdateCanary({ file: join(dir, 'update-canary.json'), config: cfg, now: () => 5_000, initialState: { ...emptyCanaryState(), lastBootCommit: GOOD } });
+    c.boot(GOOD);
+    expect(c.tripOnUpdateContinueFailure({ agents: 1, excerpt: 'x', workspaceId: null })).toBeNull();
+    expect(c.claimsHalted()).toBe(false);
+  });
+
+  test('canary off: nothing', () => {
+    const c = new UpdateCanary({ file: join(dir, 'update-canary.json'), config: { ...cfg, enabled: false }, now: () => 5_000, initialState: { ...emptyCanaryState(), lastBootCommit: GOOD } });
+    c.boot(BAD);
+    expect(c.tripOnUpdateContinueFailure({ agents: 1, excerpt: 'x', workspaceId: null })).toBeNull();
   });
 });

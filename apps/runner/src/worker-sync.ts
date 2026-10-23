@@ -376,11 +376,14 @@ export class WorkerSync {
             worker.completedAt = undefined;
             // A pause a person had asked for (still waiting on a tool when the
             // process died) stays theirs: it waits for them, never auto-continues.
-            const byPerson = !!worker.pauseRequestedAt;
+            // One the runner was pausing for an update stays an update pause.
+            const forUpdate = worker.pauseRequestedFor === 'update' || worker.resumeOnStart === 'update';
+            const byPerson = !!worker.pauseRequestedAt && !forUpdate;
             worker.pauseRequestedAt = undefined;
-            worker.waitingFor = pausedWaitingFor(byPerson ? 'person' : 'crash');
+            worker.pauseRequestedFor = undefined;
+            worker.waitingFor = pausedWaitingFor(byPerson ? 'person' : forUpdate ? 'update' : 'crash');
             worker.currentAction = 'Paused';
-            worker.resumeOnStart = byPerson ? undefined : 'crash';
+            worker.resumeOnStart = byPerson ? undefined : forUpdate ? 'update' : 'crash';
             delete worker.killedByRestart;
             sessionLog(worker.id, 'info', 'restart_paused', 'runner stopped with this worker running; worktree and session intact, restored as paused', worker.taskId);
             storeSaveWorker(worker);
@@ -747,7 +750,7 @@ export class WorkerSync {
 
       // A person paused this run. Repeated on every sync until the worker
       // parks; pauseWorker ignores the repeats (a pending or applied pause).
-      if ((response as { pauseRequested?: boolean } | null)?.pauseRequested === true && worker.status === 'working' && !worker.pauseRequestedAt) {
+      if ((response as { pauseRequested?: boolean } | null)?.pauseRequested === true && worker.status === 'working' && (!worker.pauseRequestedAt || worker.pauseRequestedFor === 'update')) {
         this.ctx.onPauseRequested?.(worker);
       }
 
