@@ -39,7 +39,7 @@ import {
 
 function WorkerView({ worker, taskStatus = 'running' }: { worker: RunActivityWorker; taskStatus?: string }) {
   const outputRequirement = worker.id === 'research' ? 'artifact_required' : 'pr_required';
-  const live = ['running', 'starting'].includes(worker.status) && !worker.waitingFor;
+  const live = (worker.status === 'running' || worker.status === 'starting') && !worker.waitingFor;
   return (
     <>
       <RealTimeWorkerView

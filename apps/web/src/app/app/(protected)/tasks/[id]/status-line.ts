@@ -13,8 +13,6 @@ export interface RunningStatusLine {
   stalled: boolean;
 }
 
-const RUNNING = new Set(['running', 'starting']);
-
 export function runningStatusLine({ status, startedAt, milestones, waiting, nowMs }: {
   status: string;
   startedAt: string | Date | null;
@@ -23,7 +21,7 @@ export function runningStatusLine({ status, startedAt, milestones, waiting, nowM
   waiting: boolean;
   nowMs: number;
 }): RunningStatusLine | null {
-  if (waiting || !RUNNING.has(status)) return null;
+  if (waiting || (status !== 'running' && status !== 'starting')) return null;
   const startMs = startedAt ? new Date(startedAt).getTime() : null;
   if (startMs == null || !Number.isFinite(startMs)) return { text: 'Running', stalled: false };
   const progressMs = milestones.reduce<number | null>((m, x) => (m == null || x.ts > m ? x.ts : m), null);

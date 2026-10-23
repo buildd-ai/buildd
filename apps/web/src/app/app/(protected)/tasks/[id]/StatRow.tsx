@@ -133,7 +133,7 @@ export function LiveStats({ elapsed, turns, files, added, removed }: {
     <div data-testid="worker-stats" className="grid w-full grid-cols-4 gap-2 md:flex md:w-auto md:gap-7 text-meta text-text-muted">
       {items.map(i => (
         <div key={i.key} data-testid={i.testId} className="min-w-0">
-          <div className="truncate text-body md:text-[16px] text-text-primary tabular-nums">{i.value}</div>
+          <div className="truncate text-body text-text-primary tabular-nums">{i.value}</div>
           <div>{i.label}</div>
         </div>
       ))}

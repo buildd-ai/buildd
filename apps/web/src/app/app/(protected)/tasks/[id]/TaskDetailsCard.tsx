@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import Chip from '@/components/ui/Chip';
 
 export interface DetailsTaskLink {
   id: string;
@@ -28,7 +29,7 @@ export default function TaskDetailsCard({ fixes, waitsOn, blocks, attempt }: {
             <dt className="text-text-muted">Fixes</dt>
             <dd className="min-w-0 [overflow-wrap:anywhere]">
               {fixes.criteria.map(c => (
-                <span key={c} className="mr-1.5 inline-block rounded-[4px] border border-border-default px-1.5 font-mono text-chip text-text-muted">{c}</span>
+                <span key={c} className="mr-1.5 inline-block align-baseline"><Chip tone="muted" dot={false}>{c}</Chip></span>
               ))}
               {fixes.href ? <Link href={fixes.href} className="text-accent-text hover:underline">{fixes.title}</Link> : <span>{fixes.title}</span>}
             </dd>

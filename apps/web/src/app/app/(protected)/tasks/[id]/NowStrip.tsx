@@ -231,7 +231,7 @@ export default function NowStrip({ now, nowMs, stall = null, variant = 'card' }:
           {stall && (
             <p data-testid="worker-stall" className="text-meta text-status-warning" suppressHydrationWarning>{stall.label}</p>
           )}
-          <p data-testid="worker-now-headline" title={headline} className="truncate text-body md:text-[16px] leading-[1.45] text-text-primary">
+          <p data-testid="worker-now-headline" title={headline} className="truncate text-body text-text-primary">
             {headline}
           </p>
           {now.detail && (
