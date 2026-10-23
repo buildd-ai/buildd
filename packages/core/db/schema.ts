@@ -2849,8 +2849,8 @@ export const artifactReads = pgTable('artifact_reads', {
 
 /**
  * Typed links from an artifact to the things it informs: a chat message or
- * conversation, a task, a mission, a plan, and later a spec revision or a
- * verification. One payload row, many links; nothing is copied.
+ * conversation, a task, a mission, a plan, a spec (e.g. its design), and later
+ * a spec revision or a verification. One payload row, many links; nothing is copied.
  * Owned by Living Specs (docs/specs/execution-control-plane.md): only
  * apps/web/src/lib/artifact-links.ts writes it; the kernel reads it by id.
  *
@@ -2859,7 +2859,7 @@ export const artifactReads = pgTable('artifact_reads', {
  * only with a pinned `artifact_revision`, and no relation approves anything.
  * `artifact_revision` NULL = floating (follows the current body).
  */
-export const ARTIFACT_LINK_SUBJECTS = ['conversation', 'message', 'task', 'mission', 'plan', 'spec_revision', 'verification'] as const;
+export const ARTIFACT_LINK_SUBJECTS = ['conversation', 'message', 'task', 'mission', 'plan', 'spec', 'spec_revision', 'verification'] as const;
 export const ARTIFACT_LINK_RELATIONS = ['context', 'requirement', 'normative_reference', 'design_reference', 'evidence', 'output'] as const;
 export type ArtifactLinkSubject = (typeof ARTIFACT_LINK_SUBJECTS)[number];
 export type ArtifactLinkRelation = (typeof ARTIFACT_LINK_RELATIONS)[number];
