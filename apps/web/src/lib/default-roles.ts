@@ -104,7 +104,7 @@ const ROLE_DEFINITIONS: DefaultRoleDefinition[] = [
   {
     slug: 'organizer',
     version: 2,
-    supersededContentHashes: ['5933265ac362a46104864fa854d07d04450ef1564ca6d1dc3b9c5aef1e8accdc'],
+    supersededContentHashes: ['feaff128442aff056114b6401392527a5525886595cd6b2b5de97944f656b641'],
     name: 'Organizer',
     description: 'Mission orchestration — evaluates state, routes work, manages task flow',
     content: `# Organizer

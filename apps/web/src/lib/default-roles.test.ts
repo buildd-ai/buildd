@@ -475,7 +475,7 @@ describe('DEFAULT_ROLES', () => {
     it('resyncs an unedited organizer and preserves a custom organizer', () => {
       const role = bySlug.organizer;
       const row = { id: 'organizer-row', slug: 'organizer', source: 'system',
-        contentHash: '5933265ac362a46104864fa854d07d04450ef1564ca6d1dc3b9c5aef1e8accdc', metadata: {} };
+        contentHash: 'feaff128442aff056114b6401392527a5525886595cd6b2b5de97944f656b641', metadata: {} };
       expect(planDefaultRoleResync([row])).toMatchObject([{ id: row.id, content: role.content, version: 2 }]);
       expect(planDefaultRoleResync([{ ...row, contentHash: roleContentHash('custom organizer') }])).toEqual([]);
     });
