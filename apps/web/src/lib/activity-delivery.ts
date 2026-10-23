@@ -118,7 +118,11 @@ export type EvidenceEntry =
   | { type: 'earlier'; rounds: number; line: string };
 
 /** The last meaningful thing that happened to a delivery: History's newest step for it, never a worker heartbeat. */
-export interface Transition { at: number; text: string; tone: DeliveryTone }
+export interface Transition {
+  at: number; text: string; tone: DeliveryTone;
+  /** It tells a repair attempt's start or failure: a row that lists its repairs already says it. */
+  repair?: true;
+}
 
 /**
  * A review or repair derived from a delivery, at any depth of its chain: folded
@@ -213,6 +217,8 @@ export interface EpisodeStep {
    * a review that could not run, a queued task), left out of Highlights.
    */
   detail?: true;
+  /** A repair attempt's start or failure. */
+  repair?: true;
 }
 
 export interface Episode {
@@ -650,7 +656,7 @@ function childrenOf(d: Delivery): DerivedChild[] {
 /** The newest of the steps History tells for this delivery. */
 function transitionOf(d: Delivery, delivery: TaskDelivery): Transition | null {
   const last = stepsFor(d, delivery).at(-1);
-  return last ? { at: last.at, text: last.text, tone: last.tone } : null;
+  return last ? { at: last.at, text: last.text, tone: last.tone, ...(last.repair ? { repair: true as const } : {}) } : null;
 }
 
 function toRow(d: Delivery, delivery: TaskDelivery, now: number): NowRow {
@@ -861,7 +867,7 @@ function verificationStep(v: VerificationClaim): { text: string; tone: DeliveryT
 
 function stepsFor(d: Delivery, delivery: TaskDelivery): EpisodeStep[] {
   const raw: Array<EpisodeStep & { seq: number; terminal?: true }> = [];
-  const add = (at: number | null, text: string, tone: DeliveryTone, isVoid = false, opts: { detail?: true; terminal?: true } = {}) => {
+  const add = (at: number | null, text: string, tone: DeliveryTone, isVoid = false, opts: { detail?: true; terminal?: true; repair?: true } = {}) => {
     if (at != null) raw.push({ at, text, tone, void: isVoid, seq: raw.length, ...opts });
   };
   const { owner, head } = prOf(d);
@@ -880,12 +886,12 @@ function stepsFor(d: Delivery, delivery: TaskDelivery): EpisodeStep[] {
     const reason = repairReasonOf(r.title);
     // A CI repair is dispatched because CI failed on the head before it: one step, told once.
     if (reason === 'ci') add(ms(r.createdAt), `CI failed${onHead ? ` on ${short(onHead)}` : ''}`, 'error');
-    add(ms(r.createdAt), `Automatic repair ${i + 1}${reason ? `: ${REPAIR_FOR[reason]}` : ''}`, 'warning');
+    add(ms(r.createdAt), `Automatic repair ${i + 1}${reason ? `: ${REPAIR_FOR[reason]}` : ''}`, 'warning', false, { repair: true });
     const pushed = [...r.workers].reverse().find(w => w.lastCommitSha);
     if (pushed) {
       add(ms(pushed.completedAt ?? pushed.updatedAt), `New head ${short(pushed.lastCommitSha)}; earlier verdicts superseded`, 'info', false, { detail: true });
       onHead = pushed.lastCommitSha ?? onHead;
-    } else if (r.status === 'failed') add(ms(r.updatedAt), `Repair ${i + 1} failed`, 'error');
+    } else if (r.status === 'failed') add(ms(r.updatedAt), `Repair ${i + 1} failed`, 'error', false, { repair: true });
   });
   // CI failing on the current head with no repair dispatched for it yet.
   const lastRepair = d.repairs[d.repairs.length - 1];

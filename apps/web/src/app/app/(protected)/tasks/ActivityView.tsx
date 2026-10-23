@@ -413,6 +413,8 @@ function NowRowView({ row, nowMs, groupNew }: { row: NowRow; nowMs: number; grou
   const repairs = row.evidence.filter((e): e is Extract<EvidenceEntry, { type: 'repair' }> => e.type === 'repair');
   if (repairs.every(r => r.round != null)) repairs.sort((a, b) => a.round! - b.round!);
   else repairs.reverse();
+  // Each fact told once: the repair list says what a repair step would, so the meta line drops it.
+  const transition = row.transition?.repair && repairs.length > 0 ? null : row.transition;
   const head = (
     <>
       <span className="line-clamp-2 min-w-0 break-words text-body font-semibold text-text-primary" title={row.title}><TaskTitle short title={row.title} /></span>
@@ -431,7 +433,7 @@ function NowRowView({ row, nowMs, groupNew }: { row: NowRow; nowMs: number; grou
         {/* New once: on the mission's group when the mission is new, else on the task. */}
         {row.isNew && !groupNew && <NewMarker />}
         {/* A separator ends the item before it, so a wrapped line never starts with one. */}
-        {row.transition && <span><span data-testid="activity-transition">{transitionText(row.transition, nowMs)}</span><span aria-hidden="true"> ·</span></span>}
+        {transition && <span><span data-testid="activity-transition">{transitionText(transition, nowMs)}</span><span aria-hidden="true"> ·</span></span>}
         <span className="whitespace-nowrap"><span data-testid="activity-created">{createdText(row.createdAt, nowMs)}</span><span aria-hidden="true"> ·</span></span>
         <AttributionText attribution={row.attribution} />
       </span>
@@ -453,7 +455,7 @@ function NowRowView({ row, nowMs, groupNew }: { row: NowRow; nowMs: number; grou
           {repairs.map((r, i) => <RepairChild key={i} entry={r} />)}
         </ul>
       )}
-      {row.children.length > 0 && <DerivedChildren items={row.children} openKey={`der:${row.id}`} />}
+      {row.children.length > 0 && <DerivedChildren items={row.children} repairsListed={repairs.length > 0} openKey={`der:${row.id}`} />}
       {row.verification && <VerificationView claim={row.verification} openKey={`ver:${row.id}`} />}
       {expandable && open && (
         <div id={`ev-${row.id}`} data-testid="activity-evidence" className="pb-3">
@@ -512,15 +514,19 @@ function VerificationView({ claim, openKey }: { claim: VerificationClaim; openKe
 /**
  * Reviews and repairs derived from a task, every generation, folded beneath it:
  * each links to its own task, to the task it was spawned from and to the mission.
+ * When the row already lists its repairs, the summary does not count them again.
  */
-function DerivedChildren({ items, openKey }: { items: readonly DerivedChild[]; openKey: string }) {
+function DerivedChildren({ items, repairsListed, openKey }: { items: readonly DerivedChild[]; repairsListed: boolean; openKey: string }) {
   const [open, setOpen] = useExpanded(openKey);
   const reviews = items.filter(c => c.role === 'review').length;
   const repairs = items.length - reviews;
   const parts = [reviews > 0 && count(reviews, 'review', 'reviews'), repairs > 0 && count(repairs, 'repair', 'repairs')].filter(Boolean).join(' · ');
+  const summary = !repairsListed || repairs === 0
+    ? `${count(items.length, 'attempt', 'attempts')}: ${parts}`
+    : reviews > 0 ? `${count(reviews, 'review', 'reviews')} · repair tasks` : 'Repair tasks';
   return (
     <div data-testid="activity-derived" data-focus-key={openKey} className="mb-2">
-      <Disclosure summary={<span className="text-meta text-text-muted">{count(items.length, 'attempt', 'attempts')}: {parts}</span>} open={open} onOpenChange={setOpen}>
+      <Disclosure summary={<span className="text-meta text-text-muted">{summary}</span>} open={open} onOpenChange={setOpen}>
         <ol className="ml-3 border-l border-border-strong pl-3">
           {items.map(c => (
             <li key={c.id} data-testid="activity-derived-child" data-generation={c.generation} className="py-1 text-meta">
