@@ -203,23 +203,28 @@ export async function loadTaskAccess(taskId: string, limit = 300): Promise<Acces
     limit,
     columns: ROW_COLUMNS,
   }) as CapabilityRow[];
-  return summarizeAccess(rows, await repoNamesFor(rows), await requestRunState(taskId));
+  // Only a request that still reads as waiting needs its run checked: most
+  // tasks have none, and they pay no extra query.
+  const waiting = rows.some(r => r.capability === 'capability.request' && (r.reasonCode ?? '').startsWith('pending_approval:'));
+  const [repoNames, run] = await Promise.all([repoNamesFor(rows), waiting ? requestRunState(taskId) : undefined]);
+  return summarizeAccess(rows, repoNames, run);
 }
 
-/** The task's status and, for each of its capability requests, the row's and its worker's status. */
+/**
+ * The task's status and, for each of its capability requests, the row's and
+ * its worker's status, in one query. No row found leaves the task status
+ * unknown, which `runClosure` reads as ended: fail closed.
+ */
 async function requestRunState(taskId: string): Promise<RequestRunState> {
-  const [task, grants] = await Promise.all([
-    db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { status: true } }),
-    db.query.capabilityGrants.findMany({ where: sqlWhere(eq(capabilityGrants.taskId, taskId)), columns: { id: true, status: true, workerId: true } }),
-  ]);
-  const workerIds = [...new Set(grants.map(g => g.workerId))];
-  const ws = workerIds.length
-    ? await db.query.workers.findMany({ where: sqlWhere(inArray(workers.id, workerIds)), columns: { id: true, status: true } })
-    : [];
-  const workerStatus = new Map(ws.map(w => [w.id, w.status as string]));
+  const grants = await db
+    .select({ id: capabilityGrants.id, status: capabilityGrants.status, workerStatus: workers.status, taskStatus: tasks.status })
+    .from(capabilityGrants)
+    .leftJoin(workers, eq(workers.id, capabilityGrants.workerId))
+    .leftJoin(tasks, eq(tasks.id, capabilityGrants.taskId))
+    .where(eq(capabilityGrants.taskId, taskId));
   return {
-    taskStatus: task?.status ?? null,
-    requests: new Map(grants.map(g => [g.id, { status: g.status as string, workerStatus: workerStatus.get(g.workerId) ?? null }])),
+    taskStatus: grants[0]?.taskStatus ?? null,
+    requests: new Map(grants.map(g => [g.id, { status: g.status as string, workerStatus: (g.workerStatus as string | null) ?? null }])),
   };
 }
 
