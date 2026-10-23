@@ -1190,7 +1190,8 @@ export interface UnvouchedDeps {
   log(line: string): void;
 }
 
-const UNVOUCHED_LIVE_STATUSES = ['running', 'starting', 'waiting_input'] as const;
+/** Live statuses a runner must vouch for: an idle worker holds no session. */
+const UNVOUCHED_LIVE_STATUSES = LIVE_WORKER_STATUSES.filter(s => s !== 'idle');
 
 const unvouchedScope = (accountId: string, runner: string, leaseBefore: Date) => and(
   eq(workers.accountId, accountId),
