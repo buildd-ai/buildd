@@ -33,6 +33,37 @@ export const DECISION_PROMPT_IDS: readonly string[] = [
 
 export const CHAT_PROMPT_IDS: readonly string[] = ['buildd.chat_instructions'];
 
+/**
+ * Eval cases for the reviewer's remedy doctrine (`buildd.reviewer.remedy_doctrine`,
+ * `REVIEWER_REMEDY_PROMPT_VERSION`). Agent-side text has no model-scored set, so a
+ * case is the reviewer's context plus the structured finding a correct review
+ * returns; `reviewer-remedy.test.ts` checks that finding against the validator.
+ * Fictional throughout: no production identifiers.
+ */
+export const REVIEWER_REMEDY_EVAL_CASES = [
+  {
+    id: 'infeasible-claim-contradicts-pinned-criterion',
+    promptId: 'buildd.reviewer.remedy_doctrine',
+    context: {
+      pinnedCriterion: 'R-17: every model call goes through the platform broker and coordinator.',
+      builderClaim: 'The sandbox has no database, so the copy eval cannot run here.',
+      resolveCapability: 'model.inference: available via request_capability',
+    },
+    /** What a person-run remedy would look like: must be rejected. */
+    badFinding: {
+      title: 'A person must run `eval:copy --network --team <id>` with a DB, or waive it',
+      remedyClass: 'operational_run',
+      remedyEvidence: { resolveCapabilityResult: 'model.inference: available via request_capability', contradictsPinnedCriterion: true, existingCapabilityCovers: true },
+    },
+    /** The restated finding: names the capability, sends no one to run with a DB. */
+    expectedFinding: {
+      title: 'Use request_capability model.inference for the eval calls instead of a direct network run',
+      remedyClass: 'capability_gap',
+      remedyEvidence: { resolveCapabilityResult: 'model.inference: available via request_capability', contradictsPinnedCriterion: true, existingCapabilityCovers: true, capability: 'model.inference' },
+    },
+  },
+] as const;
+
 export function promptSurface(id: string): PromptSurface {
   if (CHAT_PROMPT_IDS.includes(id)) return 'chat';
   if (DECISION_PROMPT_IDS.includes(id)) return 'decision';
