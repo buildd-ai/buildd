@@ -1462,6 +1462,11 @@ describe('buildMissionContext', () => {
     expect(result!.description).toContain('0.82');
     expect(result!.description).toContain('14 days');
     expect(result!.description).toContain('Situational Guidance');
+    // Navigation R-16: an organizer decision names itself and its task, with two options by default.
+    expect(result!.description).toContain('never "How should I proceed?"');
+    expect(result!.description).toContain('subjectTaskId');
+    expect(result!.description).toContain('two options by default');
+    expect(result!.description).not.toMatch(/offer three options/i);
   });
 
   it('heartbeat context does not fail when knowledge retrieval throws', async () => {

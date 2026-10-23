@@ -12,6 +12,7 @@ import { isUuid } from '@/lib/uuid';
 import { disposeQuestionNote, gatedNoteResponse } from '@/lib/note-question-disposition';
 import { RECOVERABLE_BLOCKER_REPAIR } from '@/modules';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { questionDecisionFields, sensitiveDecisionOptions } from '@/lib/decision-subject';
 
 const VALID_TYPES: MissionNoteType[] = ['decision', 'question', 'warning', 'suggestion', 'update'];
 const VALID_AUTHOR_TYPES: MissionNoteAuthorType[] = ['agent', 'user', 'system'];
@@ -91,7 +92,7 @@ export async function POST(
   }
 
   const body = await req.json();
-  const { type, title, bodyText, workerId, authorType, defaultChoice, status } = body;
+  const { type, title, bodyText, workerId, authorType, status } = body;
   if (!type || !VALID_TYPES.includes(type)) {
     return NextResponse.json({ error: `Invalid type. Must be one of: ${VALID_TYPES.join(', ')}` }, { status: 400 });
   }
@@ -102,6 +103,10 @@ export async function POST(
   if (apiAccount && !(await taskScopeAllowsWorkerId(apiAccount, workerId))) {
     return NextResponse.json({ error: 'A task token may attribute a note only to its own worker' }, { status: 403 });
   }
+  // A decision's subject (same workspace: this task has no mission) and options.
+  const decision = await questionDecisionFields(body, { workspaceId: task.workspaceId });
+  if ('error' in decision) return NextResponse.json({ error: decision.error }, { status: 400 });
+  const defaultChoice = decision.defaultChoice;
 
   // A task token speaks only as an agent: its authorType and status are
   // forced, silently, whatever the body says. A user-authored note or an
@@ -121,10 +126,8 @@ export async function POST(
     where: sqlWhere(eq(workspaces.id, task.workspaceId)),
     columns: { dataClass: true },
   });
-  const effectiveBody =
-    workspace?.dataClass === 'sensitive' && effectiveAuthorType === 'agent'
-      ? null
-      : (bodyText || null);
+  const sensitiveAgent = workspace?.dataClass === 'sensitive' && effectiveAuthorType === 'agent';
+  const effectiveBody = sensitiveAgent ? null : (bodyText || null);
 
   // Needs You admission (lib/note-question-disposition.ts): an agent's
   // question passes the gate's deterministic half before anyone sees it.
@@ -142,6 +145,8 @@ export async function POST(
     title,
     body: effectiveBody,
     defaultChoice: defaultChoice || null,
+    subjectTaskId: decision.subjectTaskId,
+    options: sensitiveAgent ? sensitiveDecisionOptions(decision.options) : decision.options,
     // A recovered question is settled by its repair task, not a person.
     status: gated.disposition === 'recovered' ? 'answered' : effectiveStatus,
     disposition: gated.disposition,

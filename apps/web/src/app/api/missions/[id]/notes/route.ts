@@ -18,6 +18,7 @@ import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import type { MissionNoteType, MissionNoteAuthorType, MissionNoteStatus } from '@buildd/shared';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { questionDecisionFields, sensitiveDecisionOptions } from '@/lib/decision-subject';
 
 function invalidUuid(label: string, value: string, status: 400 | 404) {
   return NextResponse.json(
@@ -154,7 +155,7 @@ export async function POST(
 
   try {
     const body = await req.json();
-    const { type, title, bodyText, taskId, workerId, authorType, replyTo, defaultChoice, status } = body;
+    const { type, title, bodyText, taskId, workerId, authorType, replyTo, status } = body;
 
     if (!type || !VALID_TYPES.includes(type)) {
       return NextResponse.json({ error: `Invalid type. Must be one of: ${VALID_TYPES.join(', ')}` }, { status: 400 });
@@ -178,6 +179,15 @@ export async function POST(
     if (taskToken && (type === 'guidance' || type === 'reply' || replyTo)) {
       return NextResponse.json({ error: "A task token may not post guidance or replies: those are a person's" }, { status: 403 });
     }
+
+    // A decision's subject and options (Navigation R-16): refused here, not
+    // dropped, so the agent learns what to fix (more than three options,
+    // "Not now" as an option, a subject outside this mission).
+    const decision = await questionDecisionFields(body, { missionId: id });
+    if ('error' in decision) {
+      return NextResponse.json({ error: decision.error }, { status: 400 });
+    }
+    const defaultChoice = decision.defaultChoice;
 
     // A task token's authorType and status are forced, silently, whatever the
     // body says: notes feed the organizer's planning context, where a
@@ -230,6 +240,8 @@ export async function POST(
       body: effectiveBody,
       replyTo: replyTo || null,
       defaultChoice: defaultChoice || null,
+      subjectTaskId: decision.subjectTaskId,
+      options: isSensitive && effectiveAuthorType === 'agent' ? sensitiveDecisionOptions(decision.options) : decision.options,
       // A recovered question is settled by its repair task, not a person.
       status: gated.disposition === 'recovered' ? 'answered' : effectiveStatus,
       disposition: gated.disposition,

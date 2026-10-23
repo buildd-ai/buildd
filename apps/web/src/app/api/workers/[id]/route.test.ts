@@ -934,6 +934,10 @@ mock.module('@/lib/deferred-reply-work', () => ({
   }),
 }));
 
+// The subject check itself is covered in lib/decision-subject.test.ts.
+const mockCheckSubjectTask = mock(async (raw: unknown, _scope: unknown): Promise<any> => ({ ok: true, subjectTaskId: (raw as string) ?? null }));
+mock.module('@/lib/decision-subject', () => ({ checkSubjectTask: mockCheckSubjectTask }));
+
 import { GET, PATCH } from './route';
 import { composeBodyWithLede, extractLede } from '@buildd/core/pr-lede';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -2942,6 +2946,60 @@ describe('PATCH /api/workers/[id]', () => {
 
     expect(res.status).toBe(200);
     expect(capturedSet.waitingFor.contractViolation).toBeUndefined();
+  });
+
+  describe('decision fields on a park (Navigation R-16)', () => {
+    const SUBJECT = '33333333-3333-4333-8333-333333333333';
+    let capturedSet: any;
+    beforeEach(() => {
+      capturedSet = null;
+      mockCheckSubjectTask.mockClear();
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'waiting_input', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' }]) })) };
+        }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null });
+    });
+    const park = (waitingFor: Record<string, unknown>) => PATCH(createMockRequest({
+      method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'waiting_input', waitingFor },
+    }), { params: mockParams });
+
+    it('stores a validated subject task', async () => {
+      const res = await park({ type: 'question', prompt: 'How should Docker Hub credentials be set up?', subjectTaskId: SUBJECT });
+      expect(res.status).toBe(200);
+      expect(mockCheckSubjectTask).toHaveBeenCalledTimes(1);
+      expect((mockCheckSubjectTask.mock.calls[0] as any[])[1]).toMatchObject({ workspaceId: 'ws-1' });
+      expect(capturedSet.waitingFor.subjectTaskId).toBe(SUBJECT);
+    });
+
+    it('refuses a subject task outside the mission and parks nothing', async () => {
+      mockCheckSubjectTask.mockImplementationOnce(async () => ({ ok: false, error: 'subjectTaskId must name a task in the same mission.' }));
+      const res = await park({ type: 'question', prompt: 'How should Docker Hub credentials be set up?', subjectTaskId: SUBJECT });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('same mission');
+      expect(capturedSet).toBeNull();
+    });
+
+    it('a question with no subject never checks one', async () => {
+      await park({ type: 'question', prompt: 'How should Docker Hub credentials be set up?' });
+      expect(mockCheckSubjectTask).not.toHaveBeenCalled();
+      expect(capturedSet.waitingFor.subjectTaskId).toBeUndefined();
+    });
+
+    it('flags a generic title as advisory and still parks it', async () => {
+      const res = await park({ type: 'question', prompt: 'The deploy task needs a registry login. How should I proceed?' });
+      expect(res.status).toBe(200);
+      expect(capturedSet.status).toBe('waiting_input');
+      expect(capturedSet.waitingFor.genericTitle).toBe(true);
+    });
+
+    it('does not flag a question that names its decision', async () => {
+      await park({ type: 'question', prompt: 'How should Docker Hub credentials be set up?' });
+      expect(capturedSet.waitingFor.genericTitle).toBeUndefined();
+    });
   });
 
   it('an AskUserQuestion abort (status=waiting_input, error=needs_input:...) never touches task status, never auto-retries, and still notifies the owner', async () => {
