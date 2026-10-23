@@ -1031,7 +1031,7 @@ async function TaskDetailPage({
                       {ok ? '✓' : stalled ? '!' : '○'}
                     </span>
                     <Link href={taskPageHref({ taskId: dep.id })} className="min-w-0 truncate hover:underline" title={dep.title}><TaskTitleText short title={dep.title} /></Link>
-                    {row.workspaceName && <span className="shrink-0 text-[11px] text-text-muted">in {row.workspaceName}</span>}
+                    {row.workspaceName && <span className="shrink-0 text-meta text-text-muted">in {row.workspaceName}</span>}
                     {stalled && <span className="shrink-0 text-[11px] text-status-warning">infra stalled</span>}
                   </li>
                 );
@@ -1969,7 +1969,7 @@ async function TaskDetailPage({
                     <Link href={taskPageHref({ taskId: d.id, missionId: task.missionId })} className="flex items-center gap-3 min-h-12 hover:bg-surface-2">
                       <span className={`w-[9px] h-[9px] shrink-0 ${d.status === 'pending' ? 'border-2 border-accent' : 'bg-accent'}`} aria-hidden="true" />
                       <span className="flex-1 min-w-0 truncate font-mono text-[13px] text-text-primary">{displayTaskTitle(d.title)}</span>
-                      {d.workspaceName && <span className="shrink-0 text-[12px] text-text-muted">in {d.workspaceName}</span>}
+                      {d.workspaceName && <span className="shrink-0 text-meta text-text-muted">in {d.workspaceName}</span>}
                       <span className={`shrink-0 font-mono text-[12px] ${d.status === 'completed' ? 'text-status-success' : d.status === 'pending' ? 'text-text-muted' : 'text-accent-text'}`}>
                         {statusPill(d.status).label}
                       </span>
