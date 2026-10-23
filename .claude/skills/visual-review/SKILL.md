@@ -118,6 +118,14 @@ gh api "repos/buildd-ai/buildd/actions/runs/$RUN/artifacts" -q '.artifacts[].id'
   | xargs -I{} gh api -X DELETE "repos/buildd-ai/buildd/actions/artifacts/{}"
 ```
 
+**`gh` not authenticated** ("please run: gh auth login"), as on some Windows runners:
+no MCP action dispatches this workflow, and `get_page_source` only returns the
+command. Do not stall on it. Fall back to a local capture with no DB: run
+`next dev` and shoot the dev fixture (`/app/dev/fixtures?state=<state>`) with
+Playwright at 320, 360, 390 and desktop width, in light and dark. Say in your
+completion note that the capture is local (fixture data, not the scrubbed clone) and
+why. Report the missing auth once as `[friction]` against buildd itself, not your repo.
+
 **Wait for the run in the same turn — never end your turn saying you'll wait for a
 notification or a background watcher.** A worker agent's session is not resumed by a
 background job finishing: a runner-hosted turn that ends is recorded as complete
