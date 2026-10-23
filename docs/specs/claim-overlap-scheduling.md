@@ -1,7 +1,6 @@
 ---
 title: Claim Overlap Scheduling
 status: superseded
-superseded_by: "75217f55 / Overlap scheduling: serial lanes and file locks"
 owner: max
 last_verified: 2026-10-22
 summary: Overlap scheduling MUST follow the approved serial lanes and file locks spec that replaces this contract.
