@@ -35,7 +35,7 @@ const click = async (id: string) => { await act(async () => { q(id)!.click(); })
 describe('RunnerSlotsControl', () => {
   it('says how many are busy and where the number came from', async () => {
     await mount({ info: { desired: 12, origin: 'dashboard', setBy: 'Max', setAt: new Date().toISOString() } });
-    expect(q('runner-slots-busy')!.textContent).toBe('9 of 12 busy');
+    expect(q('runner-slots-busy')!.textContent).toBe('9 of 12 slots in use');
     expect(q('runner-slots-origin')!.textContent).toMatch(/12 slots · set on buildd\.dev by Max, \d\d:\d\d/);
     expect(q('runner-slots-waiting')).toBeNull();
   });

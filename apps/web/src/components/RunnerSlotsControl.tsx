@@ -22,7 +22,7 @@ export function slotsClock(ms: number, now: number = Date.now()): string {
 }
 
 export interface SlotsView {
-  /** "9 of 12 busy", or "9 running on 6 slots" while a lowered limit drains. */
+  /** "9 of 12 slots in use", or "9 running on 6 slots" while a lowered limit drains. */
   busy: string;
   /** "12 slots · set on buildd.dev by Max, 14:02"; null when nothing records where it came from. */
   origin: string | null;
@@ -39,7 +39,7 @@ export function slotsView(opts: { active: number; reported: number; online: bool
   const desired = info?.desired ?? null;
   const pending = desired !== null && desired !== reported && info?.origin === 'dashboard';
   const shown = pending ? desired : reported;
-  const busy = active > reported ? `${active} running on ${reported} ${reported === 1 ? 'slot' : 'slots'}` : `${active} of ${reported} busy`;
+  const busy = active > reported ? `${active} running on ${reported} ${reported === 1 ? 'slot' : 'slots'}` : `${active} of ${reported} slots in use`;
   const word = (n: number) => `${n} ${n === 1 ? 'slot' : 'slots'}`;
   let origin: string | null = null;
   if (info?.origin && info.setAt) {
