@@ -354,3 +354,13 @@ describe('reading width (Navigation R-21)', () => {
     expect(pageSource).not.toContain('max-w-[900px]');
   });
 });
+
+describe('the shell marks — tasks/[id]/page.tsx (design 6356e80d, desktop-task-running)', () => {
+  it('hides the questions banner: a waiting task asks its question on its own page', () => {
+    expect(pageSource).toMatch(/<ShellPageMarks[^>]*hideQuestionsBanner/);
+  });
+
+  it("a mission's task claims Missions in the nav; a loose task claims nothing", () => {
+    expect(pageSource).toMatch(/<ShellPageMarks[^>]*navSection=\{task\.missionId \? '\/app\/missions' : null\}/);
+  });
+});
