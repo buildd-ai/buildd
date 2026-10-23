@@ -539,7 +539,7 @@ const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   manage_evidence_backends: '{action, backendId?, …}',
   read_evidence: '{taskId?|prNumber?, grep?, …}',
   get_artifact: '{artifactId, view?, section?, grep?, full?, …}',
-  manage_specs: `{action: ${alt('manage_specs')}, specId?, title?, body?, expectedVersion?, parentSpecId?, …}`,
+  manage_specs: `{action: ${alt('manage_specs')}, specId?, title?, body?, expectedVersion?, …}`,
   record_pr_supersession: '{prNumber?, supersedingPrNumber, supersedingRepo?, reason, …}',
   merge_pr: '{prNumber, workspaceId?, overrides?, reason?, …}',
   manage_providers: `{action: ${alt('manage_providers')}, provider?, scope?, value?, surface?, …}`,
