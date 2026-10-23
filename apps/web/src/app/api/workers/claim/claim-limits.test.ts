@@ -98,6 +98,10 @@ describe('accountWorkerSlotLimit', () => {
   it('adds up the slots live runners report', () => {
     expect(accountWorkerSlotLimit(3, [9, 5])).toBe(14);
   });
+  it('follows a runner raised on the dashboard: the account total is the sum, never a smaller stored number', () => {
+    // One runner 5 -> 12 beside one at 3, on an account whose stored limit is 3.
+    expect(accountWorkerSlotLimit(3, [12, 3])).toBe(15);
+  });
   it('falls back to the account limit when no runner reports', () => {
     expect(accountWorkerSlotLimit(3, [])).toBe(3);
   });

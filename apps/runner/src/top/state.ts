@@ -153,6 +153,8 @@ export interface TopState {
     version: string | null;
     pid: number | null;
     maxConcurrent: number;
+    /** Where N came from and when: "set on buildd.dev by Max, 14:02" (spec 34a48877 R-22); null when never recorded. */
+    slotsNote: string | null;
     builddServer: string | null;
     online: boolean;
     /** The event stream has been up at least once: offline before that is loading, after it reconnecting. */
@@ -257,7 +259,7 @@ export const NO_MISSION_TITLE = 'Other tasks';
 export function initialState(opts: { hostname: string; missionId?: string | null; workspace?: string | null; team?: string | null; build?: TopDevBuild | null }): TopState {
   return {
     build: opts.build ?? null,
-    runner: { hostname: opts.hostname, version: null, pid: null, maxConcurrent: 1, builddServer: null, online: false, connectedOnce: false, hold: null, routes: [], routeProblems: [], loginMode: null, sandbox: null },
+    runner: { hostname: opts.hostname, version: null, pid: null, maxConcurrent: 1, slotsNote: null, builddServer: null, online: false, connectedOnce: false, hold: null, routes: [], routeProblems: [], loginMode: null, sandbox: null },
     workers: {},
     tasks: [],
     workspaces: [],
@@ -286,7 +288,7 @@ export function initialState(opts: { hostname: string; missionId?: string | null
 
 export type TopEvent =
   | { type: 'runner'; pid?: number | null; version?: string | null }
-  | { type: 'config'; maxConcurrent?: number; builddServer?: string | null; routes?: RunRoute[]; routeProblems?: RouteProblem[]; loginMode?: unknown; sandbox?: unknown }
+  | { type: 'config'; maxConcurrent?: number; slotsNote?: unknown; builddServer?: string | null; routes?: RunRoute[]; routeProblems?: RouteProblem[]; loginMode?: unknown; sandbox?: unknown }
   /** The runner's login mode changed (`buildd logins`, b; spec 34a48877 R-14). */
   | { type: 'logins'; loginMode: string }
   | { type: 'workers'; workers: TopWorker[]; fresher?: string[] }
@@ -337,6 +339,8 @@ export function reduce(state: TopState, event: TopEvent): TopState {
         runner: {
           ...state.runner,
           maxConcurrent: typeof e.maxConcurrent === 'number' && e.maxConcurrent > 0 ? e.maxConcurrent : state.runner.maxConcurrent,
+          // An older runner sends none: keep what we had.
+          slotsNote: typeof e.slotsNote === 'string' ? e.slotsNote : e.slotsNote === null ? null : state.runner.slotsNote,
           builddServer: e.builddServer ?? state.runner.builddServer,
           // An older runner sends neither: keep what we had.
           routes: Array.isArray(e.routes) ? e.routes.filter(isRoute) : state.runner.routes,

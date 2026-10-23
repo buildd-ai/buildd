@@ -5,6 +5,7 @@ import { deriveHomeNeedsYou } from './home-needs-you';
 const deriveHomeAttention = (input: Omit<Parameters<typeof derive>[0], 'isActionable'>) => derive({ ...input, isActionable: isActionableChip });
 import type { ActionQueueItem } from './action-queue';
 import { CRITERIA_ESCALATION_NOTE_TITLE } from './escalation-note-title';
+import { redCheckView } from './red-check-cause';
 const pr = (key: string, workspaceId = 'workspace-a', chip: ActionQueueItem['chip'] = 'MERGE'): ActionQueueItem => ({ subjectKey: key, chip, workspaceId, prNumber: 42, taskTitle: 'Improve navigation', prUrl: 'https://example.test/o/r/pull/42', taskId: 'task-a' });
 const one = (q: Partial<ActionQueueItem>) => deriveHomeAttention({ queue: [{ subjectKey: 's', chip: 'MERGE', taskTitle: 'Improve navigation', taskId: 'task-a', ...q } as ActionQueueItem], missions: [], questions: [], held: [] });
 const FORBIDDEN = ['Work needs a decision', 'Open decision', 'The checks are clear. Nothing else is blocking it.', '/app/health'];
@@ -143,7 +144,7 @@ describe('Needs You card contract', () => {
     for (const i of items) {
       expect(i.title).not.toContain('owner decision needed');
       expect(i.primary?.href).toMatch(/^\/app\/missions\/m[12]$/);
-      expect(i.primary?.label).toBe('Review criteria');
+      expect(i.primary?.label).toBe('Review checks');
     }
   });
   it('a mixed fixture yields only actionable cards: machine-owned work never lists, every card names a destination', () => {
@@ -184,6 +185,29 @@ describe('Needs You card contract', () => {
   });
 });
 
+describe('held mission readiness', () => {
+  it('does not promise ready work when no tasks are ready', () => {
+    for (const startState of ['not_started', 'paused'] as const) {
+      const [item] = deriveHomeAttention({ queue: [], questions: [], missions: [], held: [{
+        id: 'example-mission', title: 'Improve navigation', href: '/app/missions/example-mission',
+        ready: 0, total: 3, done: 0, roles: [], heldFor: null, startState,
+      }] });
+      expect(item.sentence).toBe('No tasks are ready to run.');
+      expect(item.meta).toBe('');
+    }
+  });
+  it('names available tasks when starting or resuming would release them', () => {
+    for (const [startState, verb] of [['not_started', 'Start'], ['paused', 'Resume']] as const) {
+      const [item] = deriveHomeAttention({ queue: [], questions: [], missions: [], held: [{
+        id: 'example-mission', title: 'Improve navigation', href: '/app/missions/example-mission',
+        ready: 2, total: 3, done: 0, roles: [], heldFor: null, startState,
+      }] });
+      expect(item.sentence).toBe(`${verb} this mission to run its ready tasks.`);
+      expect(item.meta).toBe('2 ready');
+    }
+  });
+});
+
 describe('auto-recovery and systemic failures', () => {
   const failed = (taskId: string, title: string): ActionQueueItem => ({ subjectKey: `failed:${taskId}`, chip: 'FAILED', taskId, taskTitle: title, failureMessage: 'The agent has no working model key.', fixHref: '/app/settings/providers', fixLabel: 'Fix key' });
   it('a red PR with a fix or CI run in flight, or a conflict retry with attempts left, never needs you', () => {
@@ -210,3 +234,42 @@ describe('auto-recovery and systemic failures', () => {
   });
 });
 
+
+// surface-ia §11: the two cards from 2026-10-23 that said only "Tests are failing." with Start fix.
+describe('a PR whose checks are failing (surface-ia §11)', () => {
+  const postgres = redCheckView({
+    headSha: 'h1', runId: 1, runAttempt: 1, at: 't', cause: 'flake', signature: 's',
+    jobs: [{ name: 'DB architecture (real Postgres)', step: 'Run DB architecture tests', lines: null, rule: 'db_connection_lost' }],
+  }, { pushedNothing: 0, noChange: 2 });
+  const windows = redCheckView({
+    headSha: 'h2', runId: 2, runAttempt: 1, at: 't', cause: 'failure', signature: 's',
+    jobs: [{ name: 'Runner unit tests (windows)', step: 'Run runner unit tests', lines: '(fail) launcher > dispatches status', rule: 'test' }],
+  }, { pushedNothing: 1, noChange: 0 });
+  const card = (red: typeof postgres | null, reviewApproved = false) =>
+    one({ chip: 'BLOCKED', prNumber: 5511, workspaceId: 'w', prUrl: 'https://example.test/o/r/pull/5511', ciGate: { kind: 'blocked', reason: 'x', recommendation: null, ...(red ? { red } : {}), ...(reviewApproved ? { reviewApproved } : {}) } })[0];
+
+  it('AC-51: the Postgres flake names the job and cause, and leads with Re-run', () => {
+    const c = card(postgres);
+    expect(c.label).toBe('checks failing');
+    expect(c.sentence).toBe('DB architecture (real Postgres) failed: the Postgres tests lost their database connection, which looks like a flake, not the code. 2 automatic fixes did not change the result.');
+    expect(c.primary?.label).toBe('Re-run');
+    expect(c.details?.label).toBe('Logs');
+  });
+
+  it('AC-52: the Windows failure names the runner job and its test, never build, and leads with Start fix', () => {
+    const c = card(windows);
+    expect(c.sentence).toBe('Runner unit tests (windows) failed: launcher > dispatches status. 1 automatic fix pushed nothing.');
+    expect(c.sentence).not.toMatch(/\bbuild\b/);
+    expect(c.primary?.label).toBe('Start fix');
+  });
+
+  it('AC-55: an approved PR reads "Approved · checks failing", the words of 072de598 AC-10', () => {
+    expect(card(windows, true).label).toBe('Approved · checks failing');
+  });
+
+  it('with no stored reading it never says "Tests are failing." alone', () => {
+    const c = card(null);
+    expect(c.sentence).not.toBe('Tests are failing.');
+    expect(c.primary?.label).toBe('Start fix');
+  });
+});

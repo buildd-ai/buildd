@@ -171,7 +171,7 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
       // A criteria escalation's note title is the same sentence on every mission, so as the card title it
       // made N escalated missions read as one duplicated ask. The mission is the subject; the verdict is the why.
       if (i.noteTitle === CRITERIA_ESCALATION_NOTE_TITLE && text(i.missionTitle) && text(i.recommendation)) {
-        return make({ label: 'decision', tone: 'warning', title: text(i.missionTitle), sentence: text(i.recommendation), actionType: 'decide', primary: { label: 'Review criteria', href: subjectHref ?? '' } });
+        return make({ label: 'checks need review', tone: 'warning', title: text(i.missionTitle), sentence: text(i.recommendation), actionType: 'decide', primary: { label: 'Review checks', href: subjectHref ?? '' } });
       }
       const title = text(i.noteTitle) ?? text(i.escalationReason) ?? text(i.recommendation);
       return make({ label: 'decision', tone: 'warning', title, sentence: text(i.recommendation) && title !== text(i.recommendation) ? `Recommended: ${text(i.recommendation)}` : subject ? `Mission: ${subject}` : 'The mission is waiting on your choice.', actionType: 'decide', primary: { label: 'Choose…', href: subjectHref ?? '' } });
@@ -189,9 +189,20 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
       return make({ label: 'spec mismatch', tone: 'warning', title: text(i.specPath) ?? subject, sentence: dir, actionType: 'resolve', primary: { label: 'Resolve…', href: text(i.fixHref) ?? subjectHref ?? '' } });
     }
     case 'BLOCKED': {
-      const ci = i.ciGate?.kind === 'blocked' && !i.mergeConflict && !i.deadZoneExhausted;
-      const reason = ci ? 'Tests are failing. No fix is running.' : i.mergeConflict ? text(i.conflictReason) ?? 'The branch conflicts with its base and needs resolving.' : text(i.escalationReason) ?? text(i.failureMessage);
-      return make({ label: ci ? 'tests failing' : 'blocked', tone: 'error', title: subject, sentence: reason, actionType: ci ? 'fix' : 'resolve', primary: { label: ci ? 'Start fix' : 'Resolve…', href: pr ?? subjectHref ?? '' }, details: pr && ci ? { label: 'Logs', href: `${pr}/checks` } : null });
+      const ci = i.ciGate?.kind === 'blocked' && !i.mergeConflict && !i.deadZoneExhausted ? i.ciGate : null;
+      if (ci) {
+        // surface-ia §11: name the failing check and its cause; a likely flake leads with Re-run.
+        // Approval is not a merge (Mission checks 072de598 I-12): an approved PR still reads its checks.
+        const red = ci.red ?? null;
+        return make({
+          label: ci.reviewApproved ? 'Approved · checks failing' : 'checks failing', tone: 'error', title: subject,
+          sentence: red?.sentence ?? 'A required check is failing and no fix is running.',
+          actionType: 'fix', primary: { label: red?.primary === 'rerun' ? 'Re-run' : 'Start fix', href: pr ?? subjectHref ?? '' },
+          details: pr ? { label: 'Logs', href: `${pr}/checks` } : null,
+        });
+      }
+      const reason = i.mergeConflict ? text(i.conflictReason) ?? 'The branch conflicts with its base and needs resolving.' : text(i.escalationReason) ?? text(i.failureMessage);
+      return make({ label: 'blocked', tone: 'error', title: subject, sentence: reason, actionType: 'resolve', primary: { label: 'Resolve…', href: pr ?? subjectHref ?? '' } });
     }
     case 'STALE':
       return make({ label: 'check needed', tone: 'warning', title: subject, sentence: pr ? 'The last known tests and review are out of date. Check the PR before deciding.' : null, actionType: 'check', primary: { label: 'Check PR', href: pr ?? '' } });
@@ -270,7 +281,7 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
   for (const m of held) {
     const key = `mission:${m.id}`;
     const copy = MISSION_START_COPY[m.startState ?? 'not_started'];
-    if (!items.has(key)) items.set(key, { key, kind: 'held', label: copy.label.toLowerCase(), tone: 'warning', title: m.title, sentence: m.startState === 'paused' ? 'The work is ready for you to resume.' : 'The work is ready for you to start.', meta: `${m.ready} ready`, href: m.href, actionType: 'start', owner: 'human', held: m });
+    if (!items.has(key)) items.set(key, { key, kind: 'held', label: copy.label.toLowerCase(), tone: 'warning', title: m.title, sentence: m.ready > 0 ? `${m.startState === 'paused' ? 'Resume' : 'Start'} this mission to run its ready tasks.` : 'No tasks are ready to run.', meta: m.ready > 0 ? `${m.ready} ready` : '', href: m.href, actionType: 'start', owner: 'human', held: m });
   }
   return collapseSystemic([...items.values()]);
 }

@@ -53,7 +53,8 @@ import { getDeliveryViewsForTasks, replacedFailedTaskIds } from '@/lib/workflow/
 import { missionEpochsOf } from '@/lib/workflow/delivery-ship';
 import { deliveryDisagreements, overlayDeliveryLifecycle, type DeliveryDisagreement } from '@/lib/delivery-overlay';
 import { attemptLine } from '@/lib/workflow/projections';
-import { loadClaimHoldReasons, loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
+import { loadClaimHolds, loadMissionClaimDeferrals, type ClaimHoldFacts } from '@/lib/mission-claim-deferrals';
+import { derivePendingTaskHold, type HolderSourceRow, type PendingHolderFacts, type PendingTaskHoldInput } from '@/lib/mission-task-hold';
 import { isMissionAuditTask } from '@buildd/core/surface-audit';
 import { openCriteriaChecks, summarizeVisualReview } from '@/lib/mission-open-checks';
 import { isBuildComplete } from '@/lib/mission-checks';
@@ -128,6 +129,74 @@ async function loadGateRows(taskId: string): Promise<Array<{ entry: GateHistoryE
       detail,
     };
   });
+}
+
+// ─── R-14: why a pending row is not running ───────────────────────────────────
+
+const holdStr = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
+
+/** The task an overlap deferral recorded as the blocker, when it named one. */
+function deferralBlockerId(h: ClaimHoldFacts | undefined): string | null {
+  return holdStr(h?.detail?.blockingTaskId) ?? holdStr(h?.detail?.holderTaskId);
+}
+
+/**
+ * The holder loader, loaded at call time: a static edge from this module
+ * into the db-backed loader reshaped the server chunk graph into a Turbopack
+ * output-path collision (two unrelated lib chunks with one name), the same
+ * failure answer-attempt.ts met; a lazy edge keeps the graph as it was.
+ */
+async function loadHolders(ids: readonly string[], known: ReadonlyMap<string, HolderSourceRow>): Promise<Map<string, PendingHolderFacts>> {
+  if (ids.length === 0) return new Map();
+  const { loadPendingHolderFacts } = await import('@/lib/mission-task-hold-load');
+  return loadPendingHolderFacts(ids, known);
+}
+
+/** A loaded row in the shape the holder loader reads, so a known holder costs no query. */
+function holderSourceRows(rows: Iterable<[string, DependencyRow | LoadedTask]>): Map<string, HolderSourceRow> {
+  const out = new Map<string, HolderSourceRow>();
+  for (const [id, r] of rows) {
+    out.set(id, { id, title: r.title ?? null, status: r.status, startAt: (r as LoadedTask).startAt ?? null, workers: r.workers ?? [] });
+  }
+  return out;
+}
+
+/**
+ * The facts `derivePendingTaskHold` reads for one pending row: its newest
+ * refusal with the blocker it named, its unmet dependencies as holder facts,
+ * its schedule. Empty for a row that is not pending.
+ */
+function pendingRowFacts(
+  t: LoadedTask,
+  holds: ReadonlyMap<string, ClaimHoldFacts>,
+  unmetDeps: readonly string[],
+  holders: ReadonlyMap<string, PendingHolderFacts>,
+): Pick<PendingTaskHoldInput, 'deferral' | 'dependencies' | 'createdAt' | 'startAt' | 'budgetExhausted'> {
+  if (t.status !== 'pending') return {};
+  const h = holds.get(t.id);
+  return {
+    deferral: h ? { reason: h.reason, firstDeferredAt: h.firstDeferredAt, detail: h.detail } : null,
+    dependencies: unmetDeps.map(id => holders.get(id)).filter((f): f is PendingHolderFacts => !!f),
+    createdAt: t.createdAt,
+    startAt: t.startAt,
+    budgetExhausted: (t.context as Record<string, unknown> | null)?.budgetExhausted === true,
+  };
+}
+
+/** The hold as the because[] chain prints it. */
+function pendingHoldSummary(input: PendingTaskHoldInput): NonNullable<NonNullable<StateBecauseExtras['openTasks']>[number]['pendingHold']> {
+  const h = derivePendingTaskHold(input);
+  return { row: h.row, kind: h.kind, holder: h.holder };
+}
+
+/** The mission's base is red (a delivery is BLOCKED_ON_TRUNK): queued work reads `merges paused`. */
+function trunkRedOf(deliveries: ReadonlyMap<string, DeliveryView>, loaded: readonly LoadedTask[], fallback: string | null): { branch: string } | null {
+  for (const [taskId, d] of deliveries) {
+    if (d.state !== 'BLOCKED_ON_TRUNK') continue;
+    const base = loaded.find(t => t.id === taskId)?.workers?.find(w => w.prBaseRef)?.prBaseRef ?? fallback ?? 'trunk';
+    return { branch: base };
+  }
+  return null;
 }
 
 /** Who holds a pending task, and why (lib/coordination-holds.ts). A failure omits it. */
@@ -269,7 +338,7 @@ async function offlineRunnerWaitFor(w: LoadedTask['workers'][number] | undefined
   const beats = await loadRunnerBeats(w.accountId).catch(() => null);
   if (!beats) return null;
   const liveness = runnerLiveness(w, beats, now);
-  if (liveness.verdict === 'dead') return liveness;
+  if (liveness.verdict === 'dead' || liveness.verdict === 'unvouched') return liveness;
   return liveness.verdict === 'live' && liveness.silentMs !== null && liveness.silentMs >= RUNNER_RECENTLY_SEEN_MS ? liveness : null;
 }
 
@@ -625,7 +694,8 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
   // An open audit row also needs it: the header follows the visual review state
   // (waived, blocked, running), not the audit task row (spec 8e137fdb I-1, I-5).
   const openAudit = loaded.some(t => OPEN_TASK_STATUSES.has(t.status) && isMissionAuditTask(t));
-  const visualReviewState = !(completion.code === 'surface_audit_missing' || openAudit) ? null
+  // An open mission PR needs it too: "ready to merge" is said only when the review does not hold it (spec 072de598 I-12).
+  const visualReviewState = !(completion.code === 'surface_audit_missing' || completion.code === 'awaiting_mission_pr' || openAudit) ? null
     : inputs ? inputs.visualReviewState
     : await import('@/lib/workflow/visual-review-state-load')
         .then(m => m.getMissionVisualReviewState(missionId))
@@ -652,12 +722,14 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
   // already loaded above is the current answer to "did it leave pending" and
   // costs nothing extra to consult.
   const pendingTaskIds = new Set(loaded.filter(t => t.status === 'pending').map(t => t.id));
-  const [deferralRows, holdReasons] = await Promise.all([
+  const [deferralRows, claimHolds] = await Promise.all([
     loadMissionClaimDeferrals(missionId),
-    // R-33: the newest refusal names why a pending task has not started.
-    loadClaimHoldReasons([...pendingTaskIds]),
+    // R-33 / Navigation R-14: the newest refusal, with the blocker it named,
+    // says why a pending task has not started.
+    loadClaimHolds([...pendingTaskIds]),
   ]);
   const deferrals = deferralRows.filter(d => pendingTaskIds.has(d.taskId));
+  const holdReasons = new Map([...claimHolds].map(([id, h]) => [id, h.reason]));
 
   // `canCompleteMission` knows the mission PR has not merged; only the task
   // rows know where it is. Supplying it turns "the mission PR has not merged"
@@ -676,6 +748,18 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
   const loadedById = new Map<string, DependencyRow>(foreignDeps);
   for (const t of loaded) loadedById.set(t.id, t);
   const waitingOnOf = (t: LoadedTask) => (t.status === 'pending' ? unmetDependencyIds(t, loadedById) : []);
+  // R-14: the tasks the pending rows wait behind, by name: each unmet
+  // dependency, and the task an overlap deferral recorded as its blocker (which
+  // may sit in another mission). One read for the rows not already loaded.
+  const holderIds = new Set<string>();
+  for (const t of openTasks) {
+    if (t.status !== 'pending') continue;
+    const blocker = deferralBlockerId(claimHolds.get(t.id));
+    if (blocker && blocker !== t.id) holderIds.add(blocker);
+    for (const id of waitingOnOf(t)) holderIds.add(id);
+  }
+  const holders = await loadHolders([...holderIds], holderSourceRows(loadedById));
+  const trunkRed = trunkRedOf(deliveries, loaded, m.integrationBranchEnabled && m.workingBranch ? String(m.workingBranch) : null);
   // The card's own reading of the same rows (`ownerUnmergedPrs`,
   // `deriveLocalStrand`), so a card and this answer cannot disagree on
   // "waiting on you to merge" or "stranded".
@@ -699,8 +783,21 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
 
   const missingBrowser = await missingBrowserFor(openTasks, m.workspaceId ?? null, m.executor === 'local');
   const runnerOnline = await runnerOnlineFor(openTasks, m.workspaceId ?? null, m.executor === 'local');
+  // The same facts for the view and for the because[] rows, so the header and
+  // the chain word one hold one way.
+  const holdInputOf = (t: LoadedTask): PendingTaskHoldInput => ({
+    now,
+    ...pendingRowFacts(t, claimHolds, waitingOnOf(t), holders),
+    holders,
+    runnerOnline: m.executor === 'local' ? null : runnerOnline ?? null,
+    missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
+    trunkRed,
+  });
   const input: MissionStateInput = {
     runnerOnline,
+    now,
+    holders,
+    trunkRed,
     status: String(m.status),
     isHeld: m.isHeld === true,
     armedAt: m.armedAt ?? null,
@@ -725,6 +822,7 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
       ...(t.status === 'pending' ? { waitingOnPrs: unmetDependencyPrs(t, loadedById) } : {}),
       surfaceAudit: isMissionAuditTask(t),
       holdReason: t.status === 'pending' ? holdReasons.get(t.id) ?? null : null,
+      ...pendingRowFacts(t, claimHolds, waitingOnOf(t), holders),
       missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
     })),
     visualReview,
@@ -752,7 +850,7 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
     // at all. `open` / `closed` / `not_opened` are passed through as-is:
     // `mergeFact` is what turns each into honest text (or none).
     missionPr: integrationPr && integrationPr.state !== 'merged'
-      ? { state: integrationPr.state, prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl }
+      ? { state: integrationPr.state, prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl, ...(integrationPr.ciRed ? { ciRed: true } : {}) }
       : null,
     ciRed: deriveCiRedChains(
       (completion?.awaitingMergeDetails ?? []).filter(d => !d.closedUnsuperseded),
@@ -776,6 +874,7 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
         runnerClaimable: !!(t.context as Record<string, unknown> | null)?.reviewerFor,
         missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
         holdReason: t.status === 'pending' ? holdReasons.get(t.id) ?? null : null,
+        ...(t.status === 'pending' ? { pendingHold: pendingHoldSummary(holdInputOf(t)) } : {}),
         waitingOn: waitingOnOf(t).map(id => ({ id, title: loadedById.get(id)?.title ?? null })),
       })),
       failedTasks: failedTasks.map(t => ({
@@ -1107,8 +1206,26 @@ async function viewForTask(taskId: string): Promise<{
   const openAttempt = deriveOpenAttempt(attempts);
 
   const terminal = ['completed', 'failed', 'cancelled'].includes(task.status);
+  // R-14: a pending task names what holds it: its unmet dependencies (judged
+  // from their own rows, never guessed), the blocker its newest refusal named,
+  // its schedule. Nothing is read for a task that is not pending.
+  const pending = task.status === 'pending';
+  const [claimHolds, depRows] = await Promise.all([
+    pending ? loadClaimHolds([taskId]) : Promise.resolve(new Map<string, ClaimHoldFacts>()),
+    pending && (task.dependsOn?.length ?? 0) > 0 ? loadDependencyRows(task.dependsOn!) : Promise.resolve(new Map<string, DependencyRow>()),
+  ]);
+  const unmetDeps = pending ? unmetDependencyIds(task, depRows) : [];
+  const blockerId = pending ? deferralBlockerId(claimHolds.get(taskId)) : null;
+  const holders = await loadHolders(
+    [...unmetDeps, ...(blockerId && blockerId !== taskId ? [blockerId] : [])],
+    holderSourceRows([...depRows].filter(([id]) => id !== taskId)),
+  );
+  const rowFacts = pendingRowFacts(task as LoadedTask, claimHolds, unmetDeps, holders);
   const openTasks = OPEN_TASK_STATUSES.has(task.status)
-    ? [{ id: task.id, status: task.status, title: task.title }]
+    ? [{
+        id: task.id, status: task.status, title: task.title,
+        ...(pending ? { waitingOnTaskIds: unmetDeps, waitingOnPrs: unmetDependencyPrs(task, depRows), ...rowFacts } : {}),
+      }]
     : openAttempt
       ? [{ id: openAttempt.taskId, status: openAttempt.status, title: openAttempt.title }]
       : [];
@@ -1121,6 +1238,7 @@ async function viewForTask(taskId: string): Promise<{
   const landingBlocked = openPr ? await loadLandingBlocker(task, openPr, prDelivery, worker?.prLifecycleStatus ?? null, historyTasks) : [];
 
   const runnerOnline = await runnerOnlineFor(family, task.workspaceId, executor === 'local');
+  const missingBrowser = await missingBrowserFor(family, task.workspaceId, executor === 'local');
   const input: MissionStateInput = {
     // A cancelled task is closed, not idle. `completed` is only terminal for
     // this view once its PR has landed — the merge rule below decides that.
@@ -1132,6 +1250,7 @@ async function viewForTask(taskId: string): Promise<{
     openAttempt,
     isHeld: false,
     runnerOnline,
+    holders,
     executor,
     activeAgents,
     health,
@@ -1162,7 +1281,6 @@ async function viewForTask(taskId: string): Promise<{
       : null,
   };
 
-  const missingBrowser = await missingBrowserFor(family, task.workspaceId, executor === 'local');
   return {
     view: deriveMissionStateView(input),
     deliveries,
@@ -1173,7 +1291,22 @@ async function viewForTask(taskId: string): Promise<{
     workspaceId: task.workspaceId ?? null,
     missionId: task.missionId ?? null,
     answerExtras: {
-      openTasks: openTasks.map(t => ({ id: t.id, title: t.title, status: t.status, live: family.some(f => f.id === t.id && hasLiveWorker(f)), waiting: family.some(f => f.id === t.id && hasOpenAsk(f)), missingBrowser: missingBrowser && family.some(f => f.id === t.id && f.roleSlug === VISUAL_AUDITOR_ROLE_SLUG) })),
+      openTasks: openTasks.map(t => ({
+        id: t.id, title: t.title, status: t.status,
+        live: family.some(f => f.id === t.id && hasLiveWorker(f)),
+        waiting: family.some(f => f.id === t.id && hasOpenAsk(f)),
+        missingBrowser: missingBrowser && family.some(f => f.id === t.id && f.roleSlug === VISUAL_AUDITOR_ROLE_SLUG),
+        ...(t.id === taskId && pending
+          ? {
+              waitingOn: unmetDeps.map(id => ({ id, title: depRows.get(id)?.title ?? null })),
+              pendingHold: pendingHoldSummary({
+                ...rowFacts, holders, trunkRed: null,
+                runnerOnline: executor === 'local' ? null : runnerOnline ?? null,
+                missingBrowser: missingBrowser && task.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
+              }),
+            }
+          : {}),
+      })),
       failedTasks: failedTasks.map(t => ({
         id: t.id,
         title: t.title,

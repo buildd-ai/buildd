@@ -179,7 +179,50 @@ function review(artifactId: string, route: string, viewport: Viewport, agentVerd
   };
 }
 
+/**
+ * A merged fix waiting for a screenshot (spec 072de598 I-15), as a real
+ * mission hit it: round 1 flagged a dialog state (two shots of it) and a tray
+ * with no state; both fixes merged; round 2 shot a sibling state of the same
+ * route and found it ok, which re-checks neither (AC-15).
+ * - `recapture`: rounds are left, so one recapture is owed;
+ * - `recapture-queued`: that recapture is queued;
+ * - `recapture-decide`: the recapture finished without them, so a person decides.
+ */
+export function recaptureFixtureInput(scenario: 'recapture' | 'recapture-queued' | 'recapture-decide'): BuildVisualReviewInput {
+  const R = '/app/dev/fixtures';
+  const row = (id: string, w: string, task: string, title: string, verdict: Verdict, min: number, qa: Record<string, unknown> = {}): VisualReviewShotRow => ({
+    id, type: 'screenshot', workerId: w, taskId: task, createdAt: at(min), title,
+    metadata: { qa: { runKey: `fixture-${w}`, route: R, viewport: 'mobile', verdict, theme: 'dark', ...qa } },
+  });
+  const fix = (id: string, finding: string, pr: number, mergedMin: number): VisualReviewTaskInput => ({
+    id, title: `[surface fix] ${R}: ${finding}`, status: 'completed', createdAt: at(20), updatedAt: at(mergedMin),
+    workers: [{ id: `${id}-w`, status: 'completed', startedAt: at(22), prUrl: `https://example.test/pulls/${pr}`, prNumber: pr, mergedAt: at(mergedMin) }],
+  });
+  const shots = [
+    row('fixture-rc-1', 'fixture-w1', 'fixture-audit-1', 'fixtures-closed-pr-awaiting-confirmation', 'issue', 2, { state: 'abandon-reason', fixTaskId: 'fixture-rc-fix-1', finding: 'The abandon-reason panel covers the confirm button.' }),
+    row('fixture-rc-2', 'fixture-w1', 'fixture-audit-1', 'fixtures-closed-pr-awaiting-confirmation', 'issue', 3, { state: 'abandon-reason', fixTaskId: 'fixture-rc-fix-1', finding: 'The panel close button has no label.' }),
+    row('fixture-rc-3', 'fixture-w1', 'fixture-audit-1', 'fixtures-visual-review-boot_failed', 'issue', 4, { fixTaskId: 'fixture-rc-fix-2', finding: 'The boot-failure tray repeats its heading.' }),
+    row('fixture-rc-4', 'fixture-w1', 'fixture-audit-1', 'fixtures-closed-pr', 'ok', 5, { finding: 'Closed PR card reads clearly.' }),
+    // Round 2: the closed-PR page with the panel shut. It re-checks neither finding.
+    row('fixture-rc-5', 'fixture-w2', 'fixture-audit-2', 'fixtures-closed-pr', 'ok', 100, { variant: 'closed-pr', finding: 'Resolved: the closed-PR card reads clearly.' }),
+  ];
+  const tasks: VisualReviewTaskInput[] = [
+    buildTask('completed'),
+    auditTask('fixture-audit-1', 1, 'completed', 'fixture-w1'),
+    auditTask('fixture-audit-2', 2, 'completed', 'fixture-w2', { dependsOn: ['fixture-rc-fix-1', 'fixture-rc-fix-2'] }),
+    fix('fixture-rc-fix-1', 'The abandon-reason panel covers the confirm button.', 21, 80),
+    fix('fixture-rc-fix-2', 'The boot-failure tray repeats its heading.', 22, 82),
+  ];
+  if (scenario === 'recapture-queued') {
+    tasks.push(auditTask('fixture-audit-3', 3, 'pending', null, { createdAt: at(150), dependsOn: [], context: { surfaceAuditRound: 3, visualReview: { reason: 'recapture' } } }));
+  } else if (scenario === 'recapture-decide') {
+    tasks.push(auditTask('fixture-audit-3', 3, 'completed', 'fixture-w3', { createdAt: at(150), dependsOn: [], context: { surfaceAuditRound: 3, visualReview: { reason: 'recapture' } } }));
+  }
+  return { missionId: 'fixture-mission', now: VISUAL_REVIEW_FIXTURE_NOW, shots, tasks, browserRunnerOnline: true };
+}
+
 function inputFor(phase: VisualReviewPhase, reason: VisualReviewNeedsYouReason = 'unsure', scenario?: VisualReviewFixtureScenario): BuildVisualReviewInput {
+  if (scenario === 'recapture' || scenario === 'recapture-queued' || scenario === 'recapture-decide') return recaptureFixtureInput(scenario);
   const base = { missionId: 'fixture-mission', now: VISUAL_REVIEW_FIXTURE_NOW, requiredRoutesOf: () => ['/app/tasks', '/app/tasks/:id', '/app/missions/:id', '/app/settings'] };
   const waived = review('fixture-shot-05', '/app/missions/:id', 'mobile', 'unsure', {});
   switch (phase) {
@@ -297,9 +340,9 @@ function inputFor(phase: VisualReviewPhase, reason: VisualReviewNeedsYouReason =
  * `deck`: two rounds with mixed human reviews, an unsure cell, an issue whose
  * fix is still open, a merged fix with a new screenshot to check (Fixed /
  * Still broken), and a merged fix with no screenshot since (settled) (phase
- * `needs_you`).
+ * `needs_you`). `recapture*`: see `recaptureFixtureInput` (the phase is ignored).
  */
-export type VisualReviewFixtureScenario = 'deck';
+export type VisualReviewFixtureScenario = 'deck' | 'recapture' | 'recapture-queued' | 'recapture-decide';
 
 export interface VisualReviewFixtureOptions {
   expired?: boolean;

@@ -111,6 +111,7 @@ import { isRepeatedlyDeferred, SURFACE_DEFERRAL_MS } from './claim-deferral-thre
 import { quietLabel } from './local-strand';
 import type { LandingBlocker, LandingBlockCause } from './landing-blocker';
 import { BROWSER_RUNNER_MISSING, claimHoldPhrase } from './claim-hold-phrase';
+import { derivePendingTaskHold, type PendingDeferralFacts, type PendingHoldKind, type PendingHolderFacts, type PendingTaskHold } from './mission-task-hold';
 
 // ─── Provenance ───────────────────────────────────────────────────────────────
 
@@ -135,7 +136,9 @@ export type MissionStateSource =
   | 'workers.prUrl + workers.mergedAt'
   | 'workers.prLifecycleStatus + tasks.parentTaskId'
   | 'tasks.parentTaskId + tasks.taskClass'
-  | 'deriveLandingBlocker';
+  | 'deriveLandingBlocker'
+  | 'getMissionVisualReviewState'
+  | 'workers.prLifecycleStatus';
 
 export interface MissionStateProvenance {
   /** What produced `kind`. */
@@ -199,7 +202,12 @@ export type WaitingOnDescriptor =
        * merge, and how many dependencies are still unfinished (no PR yet).
        * Nothing here is the owner's to do.
        */
-      blockedBy?: { prNumbers: number[]; unfinished: number };
+      blockedBy?: {
+        prNumbers: number[];
+        unfinished: number;
+        /** The dependencies by name (Navigation R-14), with a dead one said so, when the caller loaded them. */
+        names?: string[];
+      };
       /**
        * Spec 8e137fdb I-15: open rows a worker started (`assigned` / `in_progress`)
        * with nothing executing them now. Work status and execution are separate
@@ -213,6 +221,15 @@ export type WaitingOnDescriptor =
       hold?: string;
       /** The claim gate's own key for `hold` (`ClaimHoldReason`, or `browser_runner`): the presentation reads the cause from it, never from the phrase. */
       holdKey?: string;
+      /**
+       * The R-14 reading of the hold (`derivePendingTaskHold`): which cause,
+       * and the row as a list prints it (`Queued 2h · held: runs after <task>`),
+       * so the header, `explain` and the row cannot word one hold two ways.
+       */
+      holdKind?: PendingHoldKind;
+      holdRow?: string;
+      /** The task the open rows wait behind, when the hold names one. */
+      holder?: PendingTaskHold['holder'];
       /**
        * The mission PR has merged and only the visual review is left (spec
        * f7f67f1a R-32): the mission is waiting on a check, not stalled.
@@ -407,6 +424,12 @@ export type WaitingOnDescriptor =
       firstDeferredAt: string | null;
       /** For `path_overlap`: the open PR the worst offender is waiting on. */
       blockedByPr?: number | null;
+      /**
+       * The refusal in R-14 words (`held: runs after <task>`, `no runner can
+       * take it: …`), from the same derivation the open-task fact reads, so
+       * the warning and the row name one cause. Null when the reason has none.
+       */
+      cause?: string | null;
       taskIds: string[];
     };
 
@@ -531,6 +554,8 @@ export interface MissionStateInput {
   runnerOnline?: boolean;
   /** `missions.status`. */
   status: string;
+  /** The clock for time-in-state (`Queued 2h`); the wall clock when absent. */
+  now?: number;
   /** Start gate not released (`startMode === 'held'`). */
   isHeld: boolean;
   /**
@@ -595,15 +620,31 @@ export interface MissionStateInput {
     surfaceAudit?: boolean;
     /** The claim loop's newest refusal reason for this row (gate_events), when known. */
     holdReason?: string | null;
+    /**
+     * The same refusal with its detail (the blocker it named, a reset time),
+     * for the R-14 cause (`derivePendingTaskHold`). Wins over `holdReason`.
+     */
+    deferral?: PendingDeferralFacts | null;
+    /** The rows behind `waitingOnTaskIds`, for naming them and saying when one is dead. */
+    dependencies?: readonly PendingHolderFacts[] | null;
+    createdAt?: Date | string | number | null;
+    /** `tasks.startAt`: a scheduled start, a retry's backoff, a budget reset. */
+    startAt?: Date | string | number | null;
+    /** `context.budgetExhausted`: `startAt` is the budget reset. */
+    budgetExhausted?: boolean | null;
     /** A visual-auditor row no online browser runner can take: that is its one cause. */
     missingBrowser?: boolean;
   }>;
+  /** Holder rows by id, for naming the task an overlap deferral recorded (`detail.blockingTaskId`). */
+  holders?: ReadonlyMap<string, PendingHolderFacts> | null;
+  /** The mission's base branch has an open trunk incident: queued work reads `merges paused`. */
+  trunkRed?: { branch: string } | null;
   /**
    * The canonical visual review state (`getMissionVisualReviewState`), when the
    * caller read it: the header follows it rather than the audit task row, so a
    * waiver or a blocked review reads the same here as on the check row.
    */
-  visualReview?: { status: string; blockedDetail?: string | null } | null;
+  visualReview?: { status: string; blockedDetail?: string | null; blocksMerge?: boolean; label?: string; needsOwner?: boolean } | null;
   /**
    * Required goal criteria the Checks rail shows as not yet passed, the
    * selected outcome spec included (`openCriteriaChecks`). Names what is left
@@ -649,6 +690,8 @@ export interface MissionStateInput {
     firstDeferredAt?: string | null;
     /** For `path_overlap`: the open PR the claim loop deferred this task behind. */
     blockedByPr?: number | null;
+    /** For an overlap: the task holding the files (`detail.blockingTaskId` / `holderTaskId`), named through `holders`. */
+    blockedByTaskId?: string | null;
   }>;
   /**
    * The mission's own integration PR, when one exists. `canCompleteMission`
@@ -658,7 +701,7 @@ export interface MissionStateInput {
    * merge the mission PR" into an affordance when there is. A caller that
    * has not loaded the row omits this rather than guessing.
    */
-  missionPr?: { state: 'open' | 'closed' | 'not_opened'; prNumber: number | null; prUrl: string | null } | null;
+  missionPr?: { state: 'open' | 'closed' | 'not_opened'; prNumber: number | null; prUrl: string | null; ciRed?: boolean } | null;
   /**
    * The escalation gate verdict for the mission PR, read from the decision
    * ledger. Used to determine if the mission should be marked as needs-you
@@ -1230,7 +1273,8 @@ function fixLabel(a: { iteration: number | null; maxIterations: number | null; k
 }
 
 function ciRedPhrase(d: { attempts: number; failing: string[]; prNumbers: number[] }): string {
-  const after = `CI red after ${d.attempts} fix attempt${d.attempts === 1 ? '' : 's'}`;
+  // The mission PR's own red CI has no fix chain counted: say red, never "after 0 fix attempts".
+  const after = d.attempts > 0 ? `CI red after ${d.attempts} fix attempt${d.attempts === 1 ? '' : 's'}` : 'CI red';
   if (d.failing.length > 0) return `${after}: ${d.failing.join(', ')}`;
   return d.prNumbers.length === 1 ? `${after} on PR #${d.prNumbers[0]}` : after;
 }
@@ -1308,6 +1352,46 @@ function landingFact(
     displayState: person ? 'blocked' : 'active',
     source: 'deriveLandingBlocker',
   };
+}
+
+/**
+ * The open mission PR is not ready to merge (spec 072de598 I-12, AC-10): its
+ * visual review holds the merge, or its CI is red. "Ready to merge" over
+ * either sends the owner to a merge every door refuses. The visual review
+ * outranks CI: its refusal is the one a merge door gives first.
+ */
+function missionPrHoldFact(input: MissionStateInput, prNumbers: number[], prUrls: string[], taskIds: string[]): Resolution | null {
+  const ref = prNumbers.length === 1 ? ` #${prNumbers[0]}` : '';
+  const vr = input.visualReview;
+  if (vr?.blocksMerge) {
+    const person = vr.needsOwner === true;
+    return {
+      kind: person ? 'blocked' : 'waiting',
+      waitingOn: {
+        kind: 'landing_blocked',
+        tone: person ? 'warning' : 'info',
+        label: `Mission PR${ref} waits on the visual review: ${lowerFirst(vr.label ?? 'not finished')}`,
+        count: 1,
+        cause: 'visual_review',
+        owner: person ? 'person' : 'platform',
+        nextAction: person ? 'Open the visual review and decide, or skip it.' : 'It merges once the visual review passes.',
+        prNumbers, prUrls, taskIds,
+      },
+      displayState: person ? 'blocked' : 'active',
+      source: 'getMissionVisualReviewState',
+    };
+  }
+  if (input.missionPr?.ciRed) {
+    return {
+      kind: 'blocked',
+      waitingOn: {
+        kind: 'ci_red', tone: 'error', label: `CI red on mission PR${ref}`, count: 1, attempts: 0, failing: [], prNumbers, prUrls, taskIds,
+      },
+      displayState: 'blocked',
+      source: 'workers.prLifecycleStatus',
+    };
+  }
+  return null;
 }
 
 /** Rule 7 — the work is done and has not reached trunk. */
@@ -1410,6 +1494,9 @@ function mergeFact(input: MissionStateInput): Resolution | null {
       if (landing) return landing;
       const red = ciRedFact(input.ciRed, details);
       if (red) return red;
+    } else {
+      const hold = missionPrHoldFact(input, prNumbers, prUrls, details.map(d => d.taskId));
+      if (hold) return hold;
     }
 
     return {
@@ -1466,6 +1553,14 @@ function mergeFact(input: MissionStateInput): Resolution | null {
       if (landing) return landing;
       const red = ciRedFact(input.ciRed, rowPrs);
       if (red) return red;
+    } else {
+      const hold = missionPrHoldFact(
+        input,
+        openMissionPr!.prNumber != null ? [openMissionPr!.prNumber] : [],
+        openMissionPr!.prUrl ? [openMissionPr!.prUrl] : [],
+        [],
+      );
+      if (hold) return hold;
     }
     return {
       kind: 'awaiting_merge',
@@ -1546,16 +1641,24 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
     for (const t of openTasks) for (const [dep, pr] of Object.entries(t.waitingOnPrs ?? {})) prByDep.set(dep, pr);
     const prNumbers = [...new Set(depIds.map(id => prByDep.get(id)).filter((n): n is number => typeof n === 'number'))];
     const unfinished = depIds.filter(id => !prByDep.has(id)).length;
+    // R-14: the dependencies by name, when every one was loaded; a dead one says so.
+    const facts = new Map<string, PendingHolderFacts>();
+    for (const t of openTasks) for (const d of t.dependencies ?? []) facts.set(d.id, d);
+    const names = depIds.every(id => facts.has(id))
+      ? depIds.map(id => derivePendingTaskHold({ now: nowOf(input), dependencies: [facts.get(id)!] }).word.replace(/^Waiting on /, ''))
+      : undefined;
     return {
       kind: 'waiting',
       waitingOn: {
         kind: 'task',
         tone: 'neutral',
-        label: `${pendingCount} task(s) waiting on ${depIds.length === 1 ? 'an unmet dependency' : `${depIds.length} unmet dependencies`}`,
+        label: names?.length === 1
+          ? `${pendingCount} task(s) waiting on ${names[0]}`
+          : `${pendingCount} task(s) waiting on ${depIds.length === 1 ? 'an unmet dependency' : `${depIds.length} unmet dependencies`}`,
         count: pendingCount,
         taskIds: depIds,
         byStatus,
-        blockedBy: { prNumbers, unfinished },
+        blockedBy: { prNumbers, unfinished, ...(names ? { names } : {}) },
       },
       displayState: 'active',
       source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
@@ -1563,16 +1666,29 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
   }
   const citedIds = (live ? openTasks : claimable).map(t => t.id);
 
-  // R-32 / R-33: with nothing live, say what the open rows actually wait on.
+  // R-32 / R-33 / Navigation R-14: with nothing live, say what the open rows
+  // actually wait on, one cause per row from the facts the gate recorded.
   if (!live && claimable.length > 0) {
-    // One cause per row: a missing browser runner outranks a claim-loop hold,
-    // because the hold lifting would still leave nothing able to run it.
-    const holds = claimable.map(t => (t.missingBrowser ? BROWSER_RUNNER_MISSING : claimHoldPhrase(t.holdReason)));
-    const hold = holds.every(h => h && h === holds[0]) ? holds[0]! : undefined;
-    const holdKeys = claimable.map(t => (t.missingBrowser ? 'browser_runner' : t.holdReason ?? ''));
-    const holdKey = hold && holdKeys.every(k => k && k === holdKeys[0]) ? holdKeys[0] : undefined;
-    const base = { kind: 'task' as const, count: pendingCount, taskIds: citedIds, byStatus, ...(isLocal(input) ? { local: true as const } : {}), ...(holdKey ? { holdKey } : {}) };
+    const reads = claimable.map(t => pendingHoldOf(input, t));
+    // Every row held the same way: that is the hold. A missing browser runner
+    // outranks a claim-loop hold (the hold lifting would still leave nothing
+    // able to run it), which `derivePendingTaskHold` orders for us.
+    const first = reads[0];
+    const same = reads.every(h => h.cause === first.cause && h.holdKey === first.holdKey);
+    const held = same && first.kind !== 'next_in_line' && first.cause ? first : undefined;
+    const hold = held?.cause ?? undefined;
+    const holdKey = held?.holdKey;
+    const oldest = reads.reduce((a, b) => ((b.sinceMs ?? -1) > (a.sinceMs ?? -1) ? b : a), first);
+    const base = {
+      kind: 'task' as const, count: pendingCount, taskIds: citedIds, byStatus,
+      ...(isLocal(input) ? { local: true as const } : {}),
+      ...(held ? { holdKey, holdKind: held.kind, holdRow: oldest.row, ...(held.holder ? { holder: held.holder } : {}) } : {}),
+    };
     if (input.missionPrMerged && claimable.every(t => t.surfaceAudit)) {
+      // The review's own cause words (spec 8e137fdb I-5): a missing browser
+      // runner outranks a claim-loop hold.
+      const visualHolds = claimable.map(t => (t.missingBrowser ? BROWSER_RUNNER_MISSING : claimHoldPhrase(t.holdReason)));
+      const hold = visualHolds.every(h => h && h === visualHolds[0]) ? visualHolds[0]! : undefined;
       const vr = input.visualReview?.status;
       if (vr === 'blocked') {
         const why = input.visualReview?.blockedDetail ?? null;
@@ -1598,12 +1714,23 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
         source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
       };
     }
+    const subject = pendingCount === 1 ? 'The open task is' : `${pendingCount} open tasks are`;
+    const source = completion?.code === 'pending_deliverables' ? 'canCompleteMission' as const : 'deriveTaskHealthSignal' as const;
+    // No runner has heartbeated: the fleet, not a gate, is what holds it.
+    if (held && holdKey === 'runner_offline' && !isLocal(input)) {
+      return {
+        kind: 'waiting',
+        waitingOn: { ...base, tone: 'warning', label: `No runner online: ${subject} queued`, noRunner: true },
+        displayState: 'active',
+        source,
+      };
+    }
     if (hold) {
       return {
         kind: 'waiting',
-        waitingOn: { ...base, tone: 'warning', label: `${pendingCount === 1 ? 'The open task is' : `${pendingCount} open tasks are`} queued: ${hold}`, hold },
+        waitingOn: { ...base, tone: 'warning', label: `${subject} ${lowerFirst(oldest.row)}`, hold },
         displayState: 'active',
-        source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
+        source,
       };
     }
     // Spec 8e137fdb I-4: queued rows nothing holds are next in line; a reason
@@ -1612,17 +1739,16 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
     // started row with nothing running it is one. A local mission keeps its own
     // local-session reading.
     if (!isLocal(input) && claimable.every(t => t.status === 'pending')) {
-      const subject = pendingCount === 1 ? 'The open task is' : `${pendingCount} open tasks are`;
-      const nothingHolds = claimable.every(t => !t.holdReason && !t.missingBrowser);
+      const nothingHolds = reads.every(h => h.kind === 'next_in_line');
       return {
         kind: 'waiting',
         waitingOn: nothingHolds
-          ? input.runnerOnline === false
-            ? { ...base, tone: 'warning', label: `No runner online: ${subject} queued`, noRunner: true }
-            : { ...base, tone: 'neutral', label: `${subject} next in line for a runner`, nextInLine: true }
-          : { ...base, tone: 'neutral', label: `${subject} waiting`, waitingNoCause: true },
+          ? { ...base, tone: 'neutral', label: `${subject} next in line for a runner`, nextInLine: true, holdRow: oldest.row }
+          : same
+            ? { ...base, tone: 'neutral', label: `${subject} waiting`, waitingNoCause: true }
+            : { ...base, tone: 'neutral', label: `${subject} queued for several reasons`, waitingNoCause: true },
         displayState: 'active',
-        source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
+        source,
       };
     }
   }
@@ -1652,6 +1778,36 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
     displayState: live ? 'running' : 'stalled',
     source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
   };
+}
+
+/** The clock the hold reads: the caller's, else now. */
+function nowOf(input: MissionStateInput): number {
+  return input.now ?? Date.now();
+}
+
+function lowerFirst(s: string): string {
+  return s.charAt(0).toLowerCase() + s.slice(1);
+}
+
+/**
+ * One open row's R-14 hold, from whatever facts the caller loaded: the
+ * deferral with its detail when it has it, else the bare reason; the fleet;
+ * its schedule. A caller that loaded nothing gets "next in line", which is
+ * then true of what it knows.
+ */
+function pendingHoldOf(input: MissionStateInput, t: NonNullable<MissionStateInput['openTasks']>[number]): PendingTaskHold {
+  return derivePendingTaskHold({
+    now: nowOf(input),
+    createdAt: t.createdAt ?? null,
+    startAt: t.startAt ?? null,
+    budgetExhausted: t.budgetExhausted ?? false,
+    deferral: t.deferral ?? (t.holdReason ? { reason: t.holdReason } : null),
+    dependencies: t.dependencies ?? null,
+    holders: input.holders ?? null,
+    runnerOnline: isLocal(input) ? null : input.runnerOnline ?? null,
+    missingBrowser: t.missingBrowser ?? false,
+    trunkRed: input.trunkRed ?? null,
+  });
 }
 
 const OPEN_STATUS_LABEL: Record<string, string> = {
@@ -1869,16 +2025,23 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
  * a task the claim loop had turned away a dozen times running.
  */
 /** The gate reason, plus the PR it waits on when the ledger named one. */
-function deferralReasonText(d: { reason: string; blockedByPr?: number | null }): string {
+function deferralReasonText(d: { reason: string; blockedByPr?: number | null; cause?: string | null }): string {
+  // R-14 words when the reason has them (the holder by name); the raw reason otherwise.
+  if (d.cause) return d.cause;
   return typeof d.blockedByPr === 'number' ? `${d.reason}, blocked by PR #${d.blockedByPr}` : d.reason;
 }
 
 function deferralFact(input: MissionStateInput): WaitingOnDescriptor | null {
-  const stuck = (input.deferrals ?? []).filter(d => isRepeatedlyDeferred(d.consecutiveDeferrals, d.firstDeferredAt));
+  const stuck = (input.deferrals ?? []).filter(d => isRepeatedlyDeferred(d.consecutiveDeferrals, d.firstDeferredAt, nowOf(input)));
   if (stuck.length === 0) return null;
   // Worst offender leads: it is the one with the longest unbroken refusal.
   const worst = stuck.reduce((a, b) => (b.consecutiveDeferrals > a.consecutiveDeferrals ? b : a));
-  const reason = deferralReasonText(worst);
+  const cause = derivePendingTaskHold({
+    now: nowOf(input),
+    deferral: { reason: worst.reason, detail: { blockingTaskId: worst.blockedByTaskId ?? undefined, prNumber: worst.blockedByPr ?? undefined } },
+    holders: input.holders ?? null,
+  }).cause;
+  const reason = deferralReasonText({ ...worst, cause });
   return {
     kind: 'claim_deferral',
     tone: 'warning',
@@ -1890,6 +2053,7 @@ function deferralFact(input: MissionStateInput): WaitingOnDescriptor | null {
     consecutiveDeferrals: worst.consecutiveDeferrals,
     firstDeferredAt: worst.firstDeferredAt ?? null,
     blockedByPr: worst.blockedByPr ?? null,
+    cause,
     taskIds: stuck.map(d => d.taskId),
   };
 }
@@ -1985,7 +2149,10 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
       if (d.visualBlocked) return d.hold ? `visual review unable to run: ${d.hold}` : 'visual review unable to run';
       if (d.visualRunning) return 'visual review running';
       if (d.visualQueued) return d.hold ? `visual review queued: ${d.hold}` : 'visual review queued';
-      if (d.hold) return `${d.count === 1 ? 'the open task is' : `${d.count} open tasks are`} queued: ${d.hold}`;
+      if (d.hold) {
+        const subject = d.count === 1 ? 'the open task is' : `${d.count} open tasks are`;
+        return d.holdRow ? `${subject} ${lowerFirst(d.holdRow)}` : `${subject} queued: ${d.hold}`;
+      }
       if (d.noRunner) return `no runner online: ${d.count === 1 ? 'the open task is' : `${d.count} open tasks are`} queued`;
       if (d.nextInLine) return `${d.count === 1 ? 'the open task is' : `${d.count} open tasks are`} next in line for a runner`;
       if (d.waitingNoCause) return `${d.count === 1 ? 'the open task is' : `${d.count} open tasks are`} waiting`;
@@ -2197,7 +2364,13 @@ function listPrs(prs: readonly number[]): string {
  * What a dependency-blocked task is waiting on, as a phrase.
  * `phrase`: "#3319 and #3317 to merge" · `action`: "#3319 and #3317 merge".
  */
-function unblocksWhen(b: { prNumbers: number[]; unfinished: number }, form: 'phrase' | 'action'): string {
+function unblocksWhen(b: { prNumbers: number[]; unfinished: number; names?: string[] }, form: 'phrase' | 'action'): string {
+  // One named dependency (Navigation R-14): "<task> to merge (#3319)".
+  if (b.names?.length === 1) {
+    const pr = b.prNumbers.length === 1 ? ` (#${b.prNumbers[0]})` : '';
+    const verb = b.prNumbers.length > 0 ? (form === 'phrase' ? 'to merge' : 'merges') : (form === 'phrase' ? 'to finish' : 'finishes');
+    return `${b.names[0]} ${verb}${pr}`;
+  }
   const parts: string[] = [];
   if (b.prNumbers.length > 0) {
     const verb = form === 'phrase' ? 'to merge' : b.prNumbers.length === 1 && b.unfinished > 0 ? 'merges' : 'merge';
@@ -2239,9 +2412,17 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       if (waitingOn.visualBlocked) return 'A person can skip the visual review, or fix what keeps it from running.';
       if (waitingOn.visualRunning) return 'Nothing to do: the visual review is taking its screenshots.';
       if (waitingOn.hold && !waitingOn.local) {
-        return waitingOn.visualQueued
-          ? 'It starts when the hold lifts. A person can skip the visual review instead.'
-          : 'It starts when the hold lifts. Cancel it if you no longer want the work.';
+        if (waitingOn.visualQueued) return 'It starts when the hold lifts. A person can skip the visual review instead.';
+        // A dead holder will not lift on its own: say so, with the way out.
+        if (waitingOn.holder?.note) return `The task it waits on is ${waitingOn.holder.note}: start this one anyway, or cancel it.`;
+        switch (waitingOn.holdKind) {
+          case 'overlap': return 'It starts by itself once that task merges. Cancel it if you no longer want the work.';
+          case 'no_runner': return 'It starts when a runner that can take it comes online. Cancel it if you no longer want the work.';
+          case 'trunk_red': return 'It starts once trunk is green again. Cancel it if you no longer want the work.';
+          case 'budget': return 'It starts when the budget resets. Cancel it if you no longer want the work.';
+          case 'scheduled': return 'It starts at its scheduled time. Cancel it if you no longer want the work.';
+          default: return 'It starts when the hold lifts. Cancel it if you no longer want the work.';
+        }
       }
       if (waitingOn.visualQueued && !waitingOn.local) return 'It starts when a browser runner picks it up. A person can skip the visual review instead.';
       if (waitingOn.local) {

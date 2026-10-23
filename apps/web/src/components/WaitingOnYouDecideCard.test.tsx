@@ -30,12 +30,13 @@ describe('WaitingOnYouDecideCard', () => {
     const html = renderToStaticMarkup(
       <WaitingOnYouDecideCard
         item={item({
-          recommendation: 'The same machine-checked criterion has failed unchanged across every retry — the work it names likely has no owner.',
+          recommendation: 'Failed check: Visual review passes',
         })}
       />,
     );
     expect(html).toContain('Agent recommends:');
-    expect(html).toContain('the work it names likely has no owner');
+    expect(html).toContain('Failed check: Visual review passes');
+    expect(html).not.toMatch(/no owner|unmeasurable/);
     // No exit-specific affordance (file/fix/waive) exists on this card at all —
     // those live on the mission-detail decision sheet, not here.
     expect(html).not.toContain('File the work');

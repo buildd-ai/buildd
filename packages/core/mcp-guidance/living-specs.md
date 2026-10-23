@@ -260,6 +260,49 @@ say so and stop.
   HTML prototype or images, pinned to its current revision), `url` or
   `figma`; `url` and `figma` need `version`. Figma is one kind among several,
   not the default.
+- Pin a design as a buildd design artifact at a revision:
+  `design: { kind: "artifact", ref: <artifactId>, version: <revision> }`.
+  Every runner can read that. A claude.ai canvas URL (`kind: "url"`) can be
+  read only by a session signed in to claude.ai: store the canvas as a design
+  (below) and keep its URL in the artifact's `metadata.source`.
+
+### Storing a design
+
+A design (an HTML export, a prototype, images) is a file artifact. Store it
+with `upload_artifact`, never by pasting it into `create_artifact`: a large
+export is far too many tokens for a tool call. One call, no worker needed:
+
+```
+buildd action=upload_artifact params={ filename: "nav.html", mimeType: "text/html",
+  sizeBytes, missionId (or specId / initiativeId),
+  metadata: { kind: "design", screens: [{ id: "home", name: "Home", viewport: "1440x900" }] },
+  attach: [{ subjectKind: "mission", subjectId }] }
+```
+
+Run the `curl` PUT it returns, then `upload_artifact { artifactId }` to
+verify the bytes; the `attach` links (a design reference unless `relation`
+says otherwise) are written then. Screen ids are letters,
+digits and `. _ / : # -`; `viewport` is `WIDTHxHEIGHT`. Bad screens are
+refused with the field named. You need write access to the scope: an owner or
+admin session, or a worker whose task is in it.
+
+A re-export is a new revision of the same artifact, not a new artifact:
+`upload_artifact { artifactId, filename, mimeType, sizeBytes }`, the PUT, then
+`upload_artifact { artifactId }`. Links that follow the current body move to
+it; pinned links and a spec's `design` with a `version` stay. Read an earlier
+one with `get_artifact { artifactId, revision }`.
+
+### From a Claude Design canvas
+
+In the buildd repo, `scripts/design/export-canvas.ts` turns a canvas's files
+into one design: every board a screen with an id and viewport, links between
+boards working, `metadata.screens` filled in. Get the files with the Artifact
+tool (an owner session, or a worker given `claudeAiArtifacts: 'read'`):
+`list scope=files`, then `read path=project/canvas.json` and each
+`project/<Board>.dc.html`, into a temp dir. A worker with no Artifact tool
+asks a person to copy them in. Pass `--source <canvas url>`; `--upload
+--mission <id>` stores it (`--artifact <id>` for a new revision).
+Steps: `scripts/design/README.md`.
 
 ## Attachments
 

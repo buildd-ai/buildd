@@ -11,7 +11,7 @@
  * here as `visualReviewPhaseCopy` for callers that need the bare strings.
  */
 import type { VisualReviewModel, VisualReviewPhase } from '@buildd/shared';
-import { awaitingCapture, describeVisualPhase, visualPhaseDetailRole } from '@/lib/visual-review-model';
+import { awaitingCapture, describeVisualPhase, visualPhaseDetailRole, fixDecisionOf } from '@/lib/visual-review-model';
 import { VERDICT_DOT } from './ShotImage';
 
 export const visualReviewPhaseCopy = describeVisualPhase;
@@ -70,8 +70,8 @@ export function VerdictDots({ cells }: { cells: VisualReviewModel['cells'] }) {
   return (
     <span data-testid="visual-review-dots" className="inline-flex flex-wrap items-center gap-[3px]" aria-hidden="true">
       {shown.map(c => {
-        const decided = !!c.current.review;
-        if (c.needsHuman) {
+        const decided = !!fixDecisionOf(c);
+        if (c.needsHuman || (c.fixCheck?.state === 'decide' && !decided)) {
           return <i key={c.key} data-dot="awaiting" className="inline-block h-2.5 w-2.5 border-2 border-status-info" />;
         }
         if (awaitingCapture(c)) {

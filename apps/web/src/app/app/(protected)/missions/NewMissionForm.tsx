@@ -7,12 +7,13 @@ import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect'
 import { Select } from '@/components/ui/Select';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import { initialWorkspaceId } from '@/lib/onboarding-view';
+import NewMissionSpecPicker, { chosenProblem, outcomeSpecPayload, type ChosenSpec } from './NewMissionSpecPicker';
 
 const LAST_WORKSPACE_KEY = 'buildd:lastWorkspaceId';
 
-/** What decides "done" now that hand-written criteria are retired (Living Specs D-44). */
+/** What decides "done" now that hand-written criteria are retired (Living Specs D-41, D-44). */
 export const DONE_WHEN_NOTE =
-  'The spec this mission delivers decides when it is done. Select it on the mission page once the mission exists. A chore with no product intent selects none.';
+  'The spec requirements this mission makes true decide when it is done. A chore with no product intent selects none.';
 
 interface WorkspaceOption {
   id: string;
@@ -158,8 +159,12 @@ export default function NewMissionForm({
     if (picked) setWorkspaceId(picked);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Specs belong to a workspace: a new workspace starts the choice again.
+  const [chosenSpecs, setChosenSpecs] = useState<ChosenSpec[]>([]);
+
   function handleWorkspaceChange(id: string) {
     setWorkspaceId(id);
+    setChosenSpecs([]);
     if (id) localStorage.setItem(LAST_WORKSPACE_KEY, id);
   }
 
@@ -208,7 +213,8 @@ export default function NewMissionForm({
   }, [cronExpression, validateCron]);
 
   function canSubmit(): boolean {
-    return name.trim().length > 0;
+    const specsReady = chosenSpecs.every(c => c.requirements !== null && !chosenProblem(c));
+    return name.trim().length > 0 && specsReady;
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -219,7 +225,7 @@ export default function NewMissionForm({
   }
 
   async function handleSubmit() {
-    if (!name.trim()) return;
+    if (!canSubmit()) return;
 
     setSubmitting(true);
     setError('');
@@ -254,6 +260,9 @@ export default function NewMissionForm({
       if (initiativeId) {
         payload.initiativeId = initiativeId;
       }
+
+      const outcomeSpec = workspaceId ? outcomeSpecPayload(chosenSpecs) : undefined;
+      if (outcomeSpec) payload.outcomeSpec = outcomeSpec;
 
       const parsedBudget = costBudgetUsd.trim() ? parseFloat(costBudgetUsd.trim()) : null;
       if (parsedBudget != null && !isNaN(parsedBudget) && parsedBudget > 0) {
@@ -367,11 +376,12 @@ export default function NewMissionForm({
         )}
       </div>
 
-      {/* Done when… Living Specs D-44: a mission is done when the spec it
-          delivers passes. Hand-written criteria are no longer offered. */}
+      {/* Done when… Living Specs D-41, D-44: a mission is done when the spec
+          requirements it selects pass. Hand-written criteria are not offered. */}
       <div className="mb-5" data-testid="mission-criteria-section">
         <label className="block text-xs text-text-muted mb-1.5">Done when…</label>
-        <p className="text-xs text-text-muted/80">{DONE_WHEN_NOTE}</p>
+        <p className="text-xs text-text-muted/80 mb-2">{DONE_WHEN_NOTE}</p>
+        <NewMissionSpecPicker workspaceId={workspaceId} chosen={chosenSpecs} onChange={setChosenSpecs} />
       </div>
 
       {/* Advanced options toggle */}

@@ -593,8 +593,10 @@ describe('runTop', () => {
     const t = fakeTerminal();
     const done = runTop({ socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false });
     await until(() => t.screen().includes('t team: all · w workspace: all'));
+    // Teams come from the first fetch; a 't' before it lands has nothing to narrow to.
+    await until(() => t.screen().includes('Quiet mission'), 8_000);
     t.type('t');
-    await until(() => t.screen().includes('t team: Team One · w workspace: all'));
+    await until(() => t.screen().includes('t team: Team One · w workspace: all'), 4_000);
     t.type('q');
     await done;
 

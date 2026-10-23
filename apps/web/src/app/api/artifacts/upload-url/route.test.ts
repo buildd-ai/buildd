@@ -27,6 +27,18 @@ const mockTasksFindFirst = mock(() => null as any);
 const mockMissionsFindFirst = mock(() => null as any);
 const mockInitiativesFindFirst = mock(() => null as any);
 const mockGenerateSizedUploadUrl = mock(() => Promise.resolve('https://r2.example/signed'));
+const mockSpecsFindFirst = mock(() => null as any);
+const mockArtifactsFindFirst = mock(() => null as any);
+const mockReach = mock(async (..._a: unknown[]) => true);
+const mockVerifyAccountWorkspaceAccess = mock(async (..._a: unknown[]) => true);
+const mockStartFileRevision = mock(async (..._a: unknown[]) => ({ ok: true, artifactId: 'art-1', revision: 2, storageKey: 'artifacts/ws-1/art-1.r2/nav.html', uploadUrl: 'https://r2.example/rev' }) as any);
+const mockCheckPendingLink = mock(async (_c: unknown, _t: unknown, input: any) => ({ ok: true, link: { ...input, createdBy: 'account:account-1' } }) as any);
+const mockLinkArtifact = mock(async (..._a: unknown[]) => ({ ok: true, link: { id: 'link-1' } }) as any);
+
+mock.module('@/lib/specs/store', () => ({ reach: mockReach }));
+mock.module('@/lib/team-access', () => ({ verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess }));
+mock.module('@/lib/artifact-upload', () => ({ startFileRevision: mockStartFileRevision, PENDING_REVISION_KEY: 'pendingRevision' }));
+mock.module('@/lib/artifact-links', () => ({ checkPendingLink: mockCheckPendingLink, linkArtifact: mockLinkArtifact, PENDING_LINKS_KEY: 'pendingLinks' }));
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -52,6 +64,8 @@ mock.module('@buildd/core/db', () => ({
       tasks: { findFirst: mockTasksFindFirst },
       missions: { findFirst: mockMissionsFindFirst },
       initiatives: { findFirst: mockInitiativesFindFirst },
+      specs: { findFirst: mockSpecsFindFirst },
+      artifacts: { findFirst: mockArtifactsFindFirst },
     },
     insert: () => ({ values: mockInsertValues }),
   },
@@ -71,6 +85,7 @@ mock.module('@buildd/core/db/schema', () => ({
   tasks: { id: 'tasks.id' },
   missions: { id: 'missions.id' },
   initiatives: { id: 'initiatives.id' },
+  specs: { id: 'specs.id' },
   // lib/task-token-auth's account lookup.
   accounts: { id: 'accounts.id' },
 }));
@@ -341,6 +356,148 @@ describe('POST /api/artifacts/upload-url', () => {
       mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'sensitive' });
       const res = await POST(req(noWorker({ missionId: MISSION })));
       expect(res.status).toBe(403);
+    });
+
+    describe('specId', () => {
+      const SPEC = '33333333-3333-4333-8333-333333333333';
+      beforeEach(() => {
+        mockReach.mockReset().mockResolvedValue(true);
+        mockSpecsFindFirst.mockReset().mockResolvedValue({ workspaceId: 'ws-1' });
+      });
+
+      it("stores a file in the spec's workspace for a caller who may write it", async () => {
+        const res = await POST(req(noWorker({ specId: SPEC })));
+        expect(res.status).toBe(200);
+        const row = mockInsertValues.mock.calls[0][0];
+        expect(row.workspaceId).toBe('ws-1');
+        expect(row.workerId).toBeNull();
+        expect(row.contentAuthor).toBe('account:account-1');
+        expect(mockReach.mock.calls.at(-1)).toEqual([{ kind: 'account', account: expect.objectContaining({ id: 'account-1' }) }, 'ws-1', true]);
+      });
+
+      it('404s a spec the caller cannot read, 403s one it can only read', async () => {
+        mockReach.mockResolvedValue(false);
+        expect((await POST(req(noWorker({ specId: SPEC })))).status).toBe(404);
+        mockReach.mockImplementation(async (...a: unknown[]) => a[2] === false);
+        expect((await POST(req(noWorker({ specId: SPEC })))).status).toBe(403);
+        expect(mockInsertValues).not.toHaveBeenCalled();
+      });
+
+      it('takes one scope, not several', async () => {
+        expect((await POST(req(noWorker({ specId: SPEC, missionId: MISSION })))).status).toBe(400);
+      });
+    });
+
+    describe('a design', () => {
+      const screens = [{ id: 'home', name: 'Home', viewport: '1440x900' }];
+      beforeEach(() => {
+        mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', workspaceId: 'ws-1' });
+        mockCheckPendingLink.mockClear();
+      });
+
+      it('stores kind and screens, unknown keys included', async () => {
+        const res = await POST(req(noWorker({ missionId: MISSION, mimeType: 'text/html', filename: 'nav.html', metadata: { kind: 'design', screens, tool: 'claude-design' } })));
+        expect(res.status).toBe(200);
+        expect(mockInsertValues.mock.calls[0][0].metadata).toMatchObject({ kind: 'design', screens, tool: 'claude-design', filename: 'nav.html' });
+      });
+
+      it('refuses bad screens with a message naming the field', async () => {
+        const res = await POST(req(noWorker({ missionId: MISSION, metadata: { kind: 'design', screens: [{ id: 'home', name: 'Home', viewport: 'wide' }] } })));
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toContain('metadata.screens[0].viewport');
+        expect(mockInsertValues).not.toHaveBeenCalled();
+      });
+
+      it('attach: checked now, kept with the upload until its bytes are verified', async () => {
+        const res = await POST(req(noWorker({ missionId: MISSION, metadata: { kind: 'design', screens }, attach: [{ subjectKind: 'mission', subjectId: MISSION, relation: 'design_reference' }] })));
+        expect(res.status).toBe(200);
+        expect(mockCheckPendingLink).toHaveBeenCalledTimes(1);
+        expect(mockCheckPendingLink.mock.calls[0][1]).toEqual({ workspaceId: 'ws-1' });
+        expect(mockInsertValues.mock.calls[0][0].metadata.pendingLinks).toEqual([
+          { subjectKind: 'mission', subjectId: MISSION, relation: 'design_reference', createdBy: 'account:account-1' },
+        ]);
+      });
+
+      it('attach defaults to design_reference, and a refused attach stores nothing', async () => {
+        mockCheckPendingLink.mockResolvedValueOnce({ ok: false, status: 404, error: 'task not found' });
+        const res = await POST(req(noWorker({ missionId: MISSION, attach: [{ subjectKind: 'task', subjectId: MISSION }] })));
+        expect(res.status).toBe(404);
+        expect((await res.json()).error).toContain('attach[0]');
+        expect(mockCheckPendingLink.mock.calls[0][2]).toMatchObject({ relation: 'design_reference' });
+        expect(mockInsertValues).not.toHaveBeenCalled();
+      });
+
+      it('attach takes only mission, task or spec subjects', async () => {
+        const res = await POST(req(noWorker({ missionId: MISSION, attach: [{ subjectKind: 'conversation', subjectId: MISSION }] })));
+        expect(res.status).toBe(400);
+      });
+
+      it('a caller cannot write server-owned keys through metadata', async () => {
+        await POST(req(noWorker({ missionId: MISSION, metadata: { pendingLinks: [{ subjectKind: 'task' }], pendingRevision: { author: 'x' }, note: 'kept' } })));
+        const meta = mockInsertValues.mock.calls[0][0].metadata;
+        expect(meta.pendingLinks).toBeUndefined();
+        expect(meta.pendingRevision).toBeUndefined();
+        expect(meta.note).toBe('kept');
+      });
+    });
+  });
+
+  describe('artifactId: a new revision of a file artifact', () => {
+    const ART = '44444444-4444-4444-8444-444444444444';
+    const MISSION = '11111111-1111-4111-8111-111111111111';
+    const rev = (o: Record<string, unknown> = {}) => ({ artifactId: ART, filename: 'nav.html', mimeType: 'text/html', sizeBytes: 2048, ...o });
+    beforeEach(() => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1' } as any);
+      mockArtifactsFindFirst.mockReset().mockResolvedValue({ id: ART, workspaceId: 'ws-1', workerId: 'w-9', missionId: MISSION, initiativeId: null, metadata: { kind: 'design', screens: [{ id: 'home', name: 'Home', viewport: '1440x900' }] }, worker: { accountId: 'account-runner', taskId: 't-9', workspaceId: 'ws-1' } });
+      mockVerifyAccountWorkspaceAccess.mockReset().mockResolvedValue(true);
+      mockStartFileRevision.mockClear();
+      mockLinkArtifact.mockClear();
+    });
+
+    it("needs no worker: an owner's key uploads the next body of another worker's artifact", async () => {
+      const res = await POST(req(rev()));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toMatchObject({ artifactId: ART, revision: 2, uploadUrl: 'https://r2.example/rev' });
+      expect(data.revisionDownloadUrl).toContain('/download?revision=2');
+      const [id, input] = mockStartFileRevision.mock.calls[0] as [string, any];
+      expect(id).toBe(ART);
+      expect(input).toMatchObject({ filename: 'nav.html', mimeType: 'text/html', sizeBytes: 2048, author: 'account:account-1', metadata: null });
+      expect(mockInsertValues).not.toHaveBeenCalled();
+      expect(mockWorkersFindFirst).not.toHaveBeenCalled();
+    });
+
+    it('refuses a caller outside the workspace', async () => {
+      mockVerifyAccountWorkspaceAccess.mockResolvedValue(false);
+      expect((await POST(req(rev()))).status).toBe(403);
+      expect(mockStartFileRevision).not.toHaveBeenCalled();
+    });
+
+    it("refuses a task token another task's artifact", async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'worker', scopes: null, taskScope: { taskId: 'task-own', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } } as any);
+      mockTasksFindFirst.mockResolvedValue({ missionId: 'another-mission' });
+      expect((await POST(req(rev()))).status).toBe(403);
+      expect(mockStartFileRevision).not.toHaveBeenCalled();
+    });
+
+    it("validates the design it will become: the artifact's metadata with the new screens on top", async () => {
+      const res = await POST(req(rev({ metadata: { screens: [{ id: 'bad id', name: 'x', viewport: '1x1' }] } })));
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('metadata.screens[0].id');
+      expect(mockStartFileRevision).not.toHaveBeenCalled();
+    });
+
+    it('attach writes links right away, through the links table rules', async () => {
+      const res = await POST(req(rev({ attach: [{ subjectKind: 'spec', subjectId: MISSION, relation: 'design_reference' }] })));
+      expect(res.status).toBe(200);
+      expect(mockLinkArtifact).toHaveBeenCalledWith(expect.objectContaining({ kind: 'account' }), ART, expect.objectContaining({ subjectKind: 'spec', relation: 'design_reference' }));
+      expect((await res.json()).links).toEqual(['link-1']);
+    });
+
+    it('passes a refusal from the revision step through', async () => {
+      mockStartFileRevision.mockResolvedValueOnce({ ok: false, status: 400, error: 'Only a file artifact takes a new uploaded body' });
+      const res = await POST(req(rev()));
+      expect(res.status).toBe(400);
     });
   });
 

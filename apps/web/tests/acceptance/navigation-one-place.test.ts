@@ -106,8 +106,9 @@ describe('links that work today keep working', () => {
     expect(target.searchParams.get('initiativeId')).toBe('i1');
     expect(target.searchParams.get('respond')).toBe('1');
     // The task page draws the mission and initiative back link from these params.
-    const ctx = code(read(join(TASK_DIR, 'mission-context-bar.ts')));
-    matches(ctx, /initiative/i);
+    const task = code(read(join(TASK_DIR, 'page.tsx')));
+    matches(task, /parseMissionOriginParams\(\{ from, initiativeId \}\)/);
+    matches(task, /missionTaskHref\(\{[^}]*\.\.\.missionBack/);
   });
 
   it('AC-3: every row of the R-2 table lands where it says', () => {
@@ -304,6 +305,24 @@ describe('the mission page, r5: the header, the bar, the Build stage, the stages
     expect(rows.find(r => r.state === 'fixing')!.line).toMatch(/^Fixing · CI failed · resumes \d\d:\d\d$/);
   });
 
+  it('AC-18: the summary ends finish depends on <first>, then <second> → <third> when the whole path is estimated, Flow names the same first task, and one missing estimate drops the clause', async () => {
+    const { dagBoard, dagId } = await import('../../src/app/app/dev/fixtures/mission-task-strip-fixtures');
+    const { buildFlowTimeline, criticalPathLine, flowTaskName, missionFinishClause } = await import('../../src/lib/flow-timeline');
+    const { buildStage } = await import('../../src/lib/mission-build-stage');
+    const spec = { tasks: ['A', 'B', 'C'], edges: { B: ['A'], C: ['B'] }, states: { A: 'running' as const } };
+    const model = dagBoard(spec);
+    const [A, B, C] = spec.tasks.map(n => dagId(spec, n));
+    const name = flowTaskName(model);
+    const estimates = { [A]: 40, [B]: 30, [C]: 20 };
+    const finish = missionFinishClause(model, model.now, estimates);
+    expect(buildStage(model, model.now, { hrefFor: id => id, finish }).summary).toEndWith(`· finish depends on ${name(A)}, then ${name(B)} → ${name(C)}`);
+    expect(criticalPathLine(buildFlowTimeline({ model, expectedMinutes: estimates }), s => s, name)).toStartWith(`Finish is set by ${name(A)} (`);
+    const { [B]: _gone, ...missing } = estimates;
+    expect(missionFinishClause(model, model.now, missing)).toBeNull();
+    // The page feeds the summary the same estimates it feeds Flow.
+    matches(page(), /<MissionOverview [^>]*expectedMinutes=\{flowExpectedMinutes\}/);
+  });
+
   it('R-21: the mission column keeps the reading width through the design token', () => {
     matches(code(read(join(MISSION_DIR, 'MissionLayoutShell.tsx'))), /max-w-\[var\(--content-measure\)\]/);
   });
@@ -329,5 +348,37 @@ describe('words', () => {
     matches(all, 'Approval required');
     matches(all, /Retry in /);
     matches(all, 'Retry now');
+  });
+});
+
+describe('the task page', () => {
+  const page = () => code(read(join(TASK_DIR, 'page.tsx')));
+
+  it('AC-6: a running builder leads with its live block, which carries Steer, Pause and Stop', () => {
+    const src = page();
+    const live = src.indexOf('data-testid="task-active-worker"');
+    expect(live).toBeGreaterThan(-1);
+    expect(src.slice(src.lastIndexOf('<div', live), live)).toContain('order-first');
+    const block = src.slice(live, src.indexOf('<TaskTimeline'));
+    matches(block, '<WorkerSteerPanel');
+  });
+
+  it('AC-6: a stopped task leads with the timeline; the live block is behind Run; no mission strip or Execution Plan', () => {
+    const src = page();
+    matches(src, /\{!activeWorker && <TaskTimeline groups=\{timeline\} \/>\}/);
+    // The stopped run's live view only renders inside a Run disclosure.
+    const archived = src.indexOf('const archivedWorkerSection');
+    matches(src.slice(archived, src.indexOf('</>);', archived)), '<RealTimeWorkerView');
+    const uses = [...src.matchAll(/\{archivedWorkerSection\}/g)].map(m => m.index!);
+    expect(uses.length).toBeGreaterThan(0);
+    for (const at of uses) {
+      const before = src.slice(0, at);
+      const opened = Math.max(before.lastIndexOf('<TaskShippedDetails'), before.lastIndexOf('>Run</summary>'));
+      expect(opened).toBeGreaterThan(Math.max(before.lastIndexOf('</TaskShippedDetails>'), before.lastIndexOf('</details>')));
+    }
+    expect(src.indexOf('<TaskTimeline')).toBeLessThan(src.indexOf('<TaskShippedDetails'));
+    expect(src).not.toMatch(/\bMissionContextBar\b|\bPlanChainView\b/);
+    expect(existsSync(join(TASK_DIR, 'MissionContextBar.tsx'))).toBe(false);
+    expect(existsSync(join(TASK_DIR, 'PlanChainView.tsx'))).toBe(false);
   });
 });

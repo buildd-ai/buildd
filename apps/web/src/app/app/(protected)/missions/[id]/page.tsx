@@ -7,6 +7,7 @@ import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import LinkedDesigns from '@/components/LinkedDesigns';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { formatCompletionRecord, situationRepeatsCompletion } from '@/lib/mission-completion-record';
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
@@ -19,7 +20,7 @@ import { computeMissionProgress, deriveMissionProgressMetric, deriveCriteriaGate
 import { isMissionAuditTask, isSurfaceFixTask, surfaceAuditHeadline } from '@buildd/core/surface-audit';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
-import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
+import { describeCriteriaBlocker } from '@/lib/completion-check-summary';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { describeLastCheck, selectOrganizerRuns } from '@/lib/mission-checkins';
@@ -855,9 +856,10 @@ async function MissionDetailBody({
   // "Waive visual audit" (a person's call): offered beside the Visual review
   // control and on the audit task's drawer whenever the mission has an audit,
   // is blocked on a missing one, or already carries a waiver.
+  // A waiver a later review replaced no longer stands: Skip is offered again, and the row names the earlier one.
   const auditWaiverProps = {
     missionId: id,
-    waiver: surfaceAuditWaiver ?? null,
+    waiver: visualReviewState?.waiver?.supersededBy ? null : surfaceAuditWaiver ?? null,
     missionBranch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true,
     readonly: isTerminal,
   };
@@ -1025,8 +1027,7 @@ async function MissionDetailBody({
   const recordItems = artifactItems.filter(a => recordIds.has(a.id));
 
   const decisionBlock = displayState === 'waiting_decision' && (() => {
-        const reading = inferCriteriaFailureReading(goalCriteriaStateFull);
-        const readingCopy = describeCriteriaFailureReading(reading);
+        const readingCopy = describeCriteriaBlocker(goalCriteriaStateFull);
         // First non-passing criterion, by its stable `index` — not array
         // position in `criteria`, which can skip entries.
         const failingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
@@ -1389,6 +1390,7 @@ async function MissionDetailBody({
       {shippedView && <MissionShippedHeader missionId={id} view={shippedView} />}
       {isTerminal && visualPresentation?.record && <MissionVisualRecord record={visualPresentation.record} />}
       {content}
+      <LinkedDesigns subjectKind="mission" subjectId={id} userId={user.id} />
       <div data-testid="mission-board-footer" className="mt-10">
         {footerRows}
       </div>
@@ -1415,7 +1417,7 @@ async function MissionDetailBody({
       <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
         initial={layout}
-        board={layout !== 'board' ? null : boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} checks={overviewChecks} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} decisions={decisions} history={history} {...boardLink} />)}
+        board={layout !== 'board' ? null : boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} checks={overviewChecks} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} decisions={decisions} history={history} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
         flow={layout !== 'flow' ? null : boardHeader(<FlowTimeline model={boardModel} sameFiles={flowSameFiles} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
         feed={layout !== 'feed' ? null : boardHeader(
           <MissionFeedLayout

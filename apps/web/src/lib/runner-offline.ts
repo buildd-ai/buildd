@@ -23,7 +23,7 @@ import { db } from '@buildd/core/db';
 import { workerHeartbeats } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import { RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
+import { RUNNER_STALE_CUTOFF_MS, runnerUpdateState } from '@buildd/shared';
 import { withLiveRunnerBeats } from '@/lib/runner-beats';
 import { runnerIdentity, runnerKey, runnerNameFromUrl, type RunnerHeartbeatLike, type RunnerWorkerLike } from '@/lib/runner-display';
 
@@ -32,6 +32,8 @@ export interface RunnerBeat extends RunnerHeartbeatLike {
   localUiUrl: string;
   /** Stored value raised to the Redis beat when that is newer. */
   lastHeartbeatAt: Date;
+  /** The update the runner reported it was applying (shared runner-update.ts), when one. */
+  updateDrain?: unknown;
 }
 
 /** A worker row as the liveness judgment reads it. */
@@ -40,9 +42,23 @@ export interface RunnerWorkerEvidence extends RunnerWorkerLike {
   leaseExpiresAt?: Date | string | null;
 }
 
+/**
+ * How long past its lease a worker of a LIVE runner may go before it counts as
+ * forgotten by that runner. The lease is renewed only by a heartbeat that names
+ * the worker (activeWorkerIds: working, stale and paused alike), always at
+ * least WORKER_LEASE_TTL_MS plus one write interval ahead of the last write, so
+ * a worker the runner still holds never gets near it. A lease this far gone
+ * under a runner that keeps beating means the runner stopped naming it: its
+ * session died with the runner and the restart settled it locally without the
+ * server hearing (2026-10-23: nine hours `running` on a heartbeating runner).
+ */
+export const UNVOUCHED_GRACE_MS = 10 * 60_000;
+
 export type RunnerVerdict =
-  /** Its runner beat inside the cutoff. */
+  /** Its runner beat inside the cutoff, and still names it. */
   | 'live'
+  /** Its runner beats, but its lease lapsed past UNVOUCHED_GRACE_MS: the runner no longer reports it. */
+  | 'unvouched'
   /** Its runner's last beat (or its lease) is past the cutoff. */
   | 'dead'
   /** Nothing to judge by: no runner named, or no row and no lease. The caller falls back to the account-wide rule. */
@@ -68,13 +84,14 @@ export interface RunnerLiveness {
 export async function loadRunnerBeats(accountId: string): Promise<RunnerBeat[]> {
   const rows = await db.query.workerHeartbeats.findMany({
     where: sqlWhere(eq(workerHeartbeats.accountId, accountId)),
-    columns: { accountId: true, localUiUrl: true, lastHeartbeatAt: true, environment: true },
+    columns: { accountId: true, localUiUrl: true, lastHeartbeatAt: true, environment: true, updateDrain: true },
   });
   const live = await withLiveRunnerBeats(rows.map(r => ({
     accountId: r.accountId,
     localUiUrl: r.localUiUrl,
     lastHeartbeatAt: r.lastHeartbeatAt,
     environment: { labels: r.environment?.labels ?? null },
+    updateDrain: r.updateDrain ?? null,
   })));
   return live.map(r => ({ ...r, lastHeartbeatAt: r.lastHeartbeatAt instanceof Date ? r.lastHeartbeatAt : new Date(r.lastHeartbeatAt as string) }));
 }
@@ -84,6 +101,11 @@ const toMs = (v: Date | string | null | undefined): number | null => {
   const t = v instanceof Date ? v.getTime() : new Date(v).getTime();
   return Number.isNaN(t) ? null : t;
 };
+
+/** A lease its runner renewed and then stopped renewing, UNVOUCHED_GRACE_MS ago. NULL is no evidence. */
+function isUnvouched(leaseMs: number | null, now: Date): boolean {
+  return leaseMs !== null && leaseMs < now.getTime() - UNVOUCHED_GRACE_MS;
+}
 
 /**
  * Judge one worker by its own runner. `beats` are the worker's account's rows
@@ -99,17 +121,37 @@ export function runnerLiveness(
   const key = runnerKey(w);
   if (!key) return { key: null, name: null, lastBeatAt: null, silentMs: null, verdict: 'unknown' };
   const hb = beats.find(h => h.localUiUrl === key && (!w.accountId || h.accountId === w.accountId)) ?? null;
+  const lease = toMs(w.leaseExpiresAt);
   if (hb) {
     const lastBeatAt = hb.lastHeartbeatAt;
     const silentMs = Math.max(0, now.getTime() - lastBeatAt.getTime());
-    return { key, name: runnerIdentity(hb).name, lastBeatAt, silentMs, verdict: silentMs > cutoffMs ? 'dead' : 'live' };
+    const verdict: RunnerVerdict = silentMs > cutoffMs ? 'dead' : isUnvouched(lease, now) ? 'unvouched' : 'live';
+    return { key, name: runnerIdentity(hb).name, lastBeatAt, silentMs, verdict };
   }
   // No row: deleted once past the cutoff, or never written. The worker's own
   // lease is the runner's other signature: a lease the runner was renewing
   // and let lapse past the cutoff is a runner that stopped.
-  const lease = toMs(w.leaseExpiresAt);
   const verdict: RunnerVerdict = lease !== null && lease < now.getTime() - cutoffMs ? 'dead' : 'unknown';
   return { key, name: runnerNameFromUrl(key), lastBeatAt: null, silentMs: null, verdict };
+}
+
+/**
+ * R-38 for an update (spec 47c97f48, R-6): a worker paused while its runner
+ * updates stays with that runner, however late its heartbeat, until the
+ * runner has been silent UPDATE_RELEASE_SILENCE_MS. The offline-runner reaper
+ * skips it; the update watch (lib/runner-update-watch.ts) releases it then.
+ */
+export function heldForRunnerUpdate(
+  w: RunnerWorkerEvidence & { status?: string | null; waitingFor?: { type?: string } | null },
+  beats: readonly RunnerBeat[],
+  now: Date,
+): boolean {
+  if (w.status !== 'waiting_input' || w.waitingFor?.type !== 'pause') return false;
+  const key = runnerKey(w);
+  const hb = key ? beats.find(h => h.localUiUrl === key && (!w.accountId || h.accountId === w.accountId)) : undefined;
+  if (!hb?.updateDrain) return false;
+  const view = runnerUpdateState({ updateDrain: hb.updateDrain, lastHeartbeatAt: hb.lastHeartbeatAt }, now.getTime());
+  return !!view && !view.release;
 }
 
 /** "12m", "2h 31m". Under a minute rounds to "0m". */
@@ -125,6 +167,9 @@ export function formatSilence(ms: number): string {
  */
 export function offlineRunnerWaitLine(l: RunnerLiveness, cutoffMs: number = RUNNER_STALE_CUTOFF_MS): string {
   const name = l.name ?? 'unknown';
+  if (l.verdict === 'unvouched') {
+    return `runner ${name} no longer reports this worker: the runner is online but has stopped naming it on its heartbeat, so its session is gone; the worker is failed and the task requeued on that runner's next heartbeat`;
+  }
   const offline = l.silentMs !== null ? `offline ${formatSilence(l.silentMs)}` : 'offline, no heartbeat on record';
   return `waiting for runner ${name} (${offline}) to be confirmed dead: its worker is still recorded as running, and the task is requeued for another runner once the runner has been silent for ${formatSilence(cutoffMs)}`;
 }

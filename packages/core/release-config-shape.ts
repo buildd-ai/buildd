@@ -8,7 +8,7 @@
 // as core. Provenance (`classifyReleasePr`) stays in release-candidate.ts,
 // which re-exports everything here.
 
-import type { WorkspaceReleaseConfig } from './db/schema';
+import type { ReleaseCandidateAmendContract, WorkspaceReleaseConfig } from './db/schema';
 
 // ── Branch patterns ─────────────────────────────────────────────────────────
 
@@ -86,7 +86,69 @@ export function releaseCandidateConfigError(config: WorkspaceReleaseConfig): str
     }
   }
   if (!c.authors?.some((a) => a.trim())) return 'candidate.authors needs the GitHub login that opens candidate PRs, e.g. github-actions[bot]';
+  return amendContractShapeError(config);
+}
+
+// ── Amend contract ──────────────────────────────────────────────────────────
+//
+// Where it lives: the declaration (which inputs mean "amend") is workspace
+// config, next to the trust policy above, because a repo-editable file would
+// let any PR author change what buildd dispatches. Whether the workflow CAN
+// take those inputs is a fact about the workflow file, so it is read from the
+// file at `ref` (lib/workflow-dispatch-inputs.ts) on save and again before
+// every dispatch; the config cannot silently drift from the code.
+
+const INPUT_NAME = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+
+/** The reason a `candidate.amend` declaration is refused on its own shape, or null. */
+export function amendContractShapeError(config: WorkspaceReleaseConfig): string | null {
+  const a = config.candidate?.amend as Partial<ReleaseCandidateAmendContract> & Record<string, unknown> | undefined;
+  if (a === undefined) return null;
+  if (!a || typeof a !== 'object') return 'candidate.amend must be { mode: "inputs", versionInput, confirmInput? } or { mode: "redispatch" }';
+  if (config.strategy !== 'workflow_dispatch') return 'candidate.amend needs strategy workflow_dispatch: buildd amends a candidate only by dispatching your release workflow';
+  if (a.mode === 'redispatch') return null;
+  if (a.mode !== 'inputs') return 'candidate.amend.mode must be "inputs" or "redispatch"';
+  if (typeof a.versionInput !== 'string' || !INPUT_NAME.test(a.versionInput)) return 'candidate.amend.versionInput must name a workflow_dispatch input, e.g. amend';
+  if (a.confirmInput !== undefined && (typeof a.confirmInput !== 'string' || !INPUT_NAME.test(a.confirmInput))) {
+    return 'candidate.amend.confirmInput must name a workflow_dispatch input, e.g. amend_confirm';
+  }
+  if (a.confirmInput === a.versionInput) return 'candidate.amend.confirmInput must differ from versionInput';
   return null;
+}
+
+/** The workflow_dispatch input names a contract needs the workflow to declare. */
+export function amendContractInputs(contract: ReleaseCandidateAmendContract): string[] {
+  if (contract.mode === 'redispatch') return [];
+  return contract.confirmInput ? [contract.versionInput, contract.confirmInput] : [contract.versionInput];
+}
+
+/**
+ * Why the workflow file cannot carry out this contract, or null when it can.
+ * `declared` is the file's `on.workflow_dispatch.inputs` names, or null when
+ * the file has no workflow_dispatch trigger at all. `where` names the file and
+ * ref for the message.
+ */
+export function amendContractCapabilityError(
+  contract: ReleaseCandidateAmendContract,
+  declared: string[] | null,
+  where: string,
+): string | null {
+  if (declared === null) return `${where} has no workflow_dispatch trigger, so buildd cannot dispatch it`;
+  const missing = amendContractInputs(contract).filter((i) => !declared.includes(i));
+  if (missing.length === 0) return null;
+  return `${where} does not declare workflow_dispatch input${missing.length > 1 ? 's' : ''} ${missing.map((m) => `\`${m}\``).join(', ')}` +
+    (declared.length ? ` (it declares ${declared.map((d) => `\`${d}\``).join(', ')})` : ' (it declares none)');
+}
+
+/** The inputs an amendment dispatch sends: the workflow's ordinary inputs plus the contract's version inputs. */
+export function amendDispatchInputs(
+  contract: ReleaseCandidateAmendContract,
+  version: string,
+  base: Record<string, string>,
+): Record<string, string> {
+  const out = { ...base };
+  for (const name of amendContractInputs(contract)) out[name] = version;
+  return out;
 }
 
 /** Legacy fixed-branch release PR (releaseBranch → prodBranch). Refs only. */

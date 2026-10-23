@@ -85,7 +85,12 @@ export function describeVisualPhase(
         // a fix check included); the detail names the unsure ones.
         return { label: `${s.toReview ?? n} to review`, detail: `${plural(n, 'screen')} the agent was unsure about ${n === 1 ? 'needs' : 'need'} a decision.` };
       }
-      return { label: 'Your call', detail: `Issues remain after ${plural(s.rounds, 'round')} of fixes. Decide whether to fix or waive them.` };
+      if (reason === 'fix_check') {
+        // Spec 072de598 I-15: no new screenshot is coming for these, so a person says whether the fix worked.
+        const k = s.fixChecks ?? s.toReview ?? 0;
+        return { label: `${plural(k, 'fixed screen')} to check`, detail: `A fix merged and no new screenshot is coming. Decide Fixed or Still broken for ${k === 1 ? 'it' : 'each'}.` };
+      }
+      return { label: 'Your call', detail: 'Issues remain after the automatic fixes. Decide whether to fix or waive them.' };
     }
     case 'fixing':
       return { label: `Fixing ${s.openFixes}`, detail: `${plural(s.openFixes, 'fix', 'fixes')} in progress. The audit re-checks after they land.` };
@@ -281,7 +286,9 @@ function cellLine(c: VisualReviewCell, o: FormatVisualReviewOptions): string {
     `agent: ${e.agentVerdict}`,
     e.finding ? `"${one(e.finding)}"` : 'no finding',
     c.fixCheck?.state === 'awaiting_capture'
-      ? 'fix merged, waiting for a new screenshot (nothing to decide)'
+      ? `fix merged, waiting for a new screenshot of this screen${c.current.shot.qa.state ? ` (state ${c.current.shot.qa.state})` : ''}`
+      : c.fixCheck?.state === 'decide' && !(e.review && Date.parse(e.review.createdAt) > Date.parse(c.fixCheck.fix.mergedAt ?? ''))
+      ? `fix merged, no new screenshot is coming: ${mcp ? 'needs review' : 'decide'} fixed or still broken`
       : e.review
         ? `${who}: ${DECISION_WORD[e.review.decision]} (${RELATION_WORD[e.review.relation]})${e.review.note ? `, note "${one(e.review.note)}"` : ''}`
         : c.fixCheck?.state === 'check' ? `fix merged, new screenshot to check: fixed or still broken`
@@ -364,7 +371,7 @@ function wrongRefLines(model: VisualReviewModel, o: FormatVisualReviewOptions): 
   }
   const resolved = model.resolvedElsewhere ?? [];
   if (resolved.length > 0) {
-    lines.push(`Resolved (${resolved.length}): a merged fix's cell with no screenshot of its own since, verified instead by a later round's capture of the same route, viewport and state under a different variant; kept for audit, not shown for review:`);
+    lines.push(`Resolved (${resolved.length}): cells covered by another cell's shot of the same route, viewport and state; kept for audit, not shown for review:`);
     for (const r of resolved) lines.push(`  - ${r.route} ${VIEWPORT_WORD[r.viewport]}${r.variant ? ` (${r.variant})` : ''}: resolved by ${r.resolvedBy}`);
   }
   return lines;
@@ -379,8 +386,9 @@ function needsYouLine(model: VisualReviewModel): string {
     return `Question: ${prompt ? one(prompt) : 'the visual audit asked a question (see the mission page).'}`;
   }
   if (n > 0) return `${plural(n, 'screen', 'screens')} to review.`;
+  if (reason === 'fix_check') return `Decision needed: ${plural(model.summary.fixChecks ?? model.summary.toReview ?? 0, 'fixed screen')} with no new screenshot (fixed or still broken).`;
   if (reason === 'round_cap' || (model.phase === 'needs_you' && !reason)) {
-    return `Decision needed: issues remain after ${plural(model.summary.rounds, 'round')} (fix or waive).`;
+    return 'Decision needed: issues remain after the automatic fixes (fix or waive).';
   }
   return 'Nothing to review.';
 }
@@ -435,6 +443,15 @@ function formatVisualReviewBody(
   const s = model.summary;
   const human = mcp ? 'await a human' : 'await the user';
   lines.push(`Screens: ${s.shots} current across ${plural(s.rounds, 'round')}; agent said ${s.ok} ok, ${plural(s.issues, 'issue')}, ${s.unsure} unsure; ${s.awaitingHuman} ${human}; ${s.reviewed} decided by ${mcp ? 'a human' : 'the user'}; ${plural(s.openFixes, 'fix', 'fixes')} open.`);
+  // Spec 072de598 I-15: a merged fix waiting for a screenshot names what takes the next step.
+  const rc = model.recapture;
+  if (rc && rc.screens.length > 0) {
+    const named = rc.screens.map(x => [x.route, x.state ?? x.variant, VIEWPORT_WORD[x.viewport]].filter(Boolean).join(' · '));
+    const next = rc.next === 'queued' ? 'a capture of each is queued'
+      : rc.next === 'capture' ? 'a capture of each is filed next'
+      : `no new screenshot is coming: ${mcp ? 'a human decides' : 'the user decides'} fixed or still broken`;
+    lines.push(`Fixes merged, waiting for a new screenshot (${rc.screens.length}): ${next}: ${[...new Set(named)].join('; ')}.`);
+  }
 
   const shown = opts.awaitingOnly ? model.cells.filter(c => c.needsHuman) : model.cells;
   if (model.cells.length === 0) {

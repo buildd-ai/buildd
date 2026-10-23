@@ -78,6 +78,7 @@ const MARKER_LABEL: Record<VisualReviewMarker, string> = {
 /** The thumbnail's plain words: what the agent said, or where the fix stands. */
 function thumbState(cell: VisualReviewCell): string {
   if (awaitingCapture(cell)) return MARKER_LABEL.fix_merged;
+  if (cell.fixCheck?.state === 'decide') return cell.current.review && cell.marker !== 'awaiting' ? `fix merged, ${MARKER_LABEL[cell.marker]}` : 'fix merged, no new screenshot: fixed or still broken';
   if (cell.fixCheck?.state === 'check') return cell.current.review ? `fix merged, ${MARKER_LABEL[cell.marker]}` : 'fix merged, new screenshot to check';
   return `agent said ${cell.current.agentVerdict}, ${MARKER_LABEL[cell.marker]}`;
 }
@@ -120,7 +121,7 @@ function Thumb({ cell, onOpen }: { cell: VisualReviewCell; onOpen?: (key: string
       <span data-verify-block="label" className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[1px] text-text-muted">
         <ReviewMarker marker={cell.marker} />
         {VIEWPORT_LABEL[cell.viewport]}
-        {awaitingCapture(cell) ? ' · Fix merged' : cell.fixCheck ? ' · After fix' : cell.current.round > 1 ? ` · R${cell.current.round}` : ''}
+        {awaitingCapture(cell) || cell.fixCheck?.state === 'decide' ? ' · Fix merged' : cell.fixCheck ? ' · After fix' : cell.current.round > 1 ? ` · R${cell.current.round}` : ''}
       </span>
     </>
   );

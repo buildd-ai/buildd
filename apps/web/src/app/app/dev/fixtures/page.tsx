@@ -9,6 +9,7 @@ import VisualReviewLine from '@/components/visual-review/VisualReviewLine';
 import VisualReviewTray, { type VisualReviewPhaseActions } from '@/components/visual-review/VisualReviewTray';
 import { createFixtureVisualReviewTransport } from '@/components/visual-review/fixture-transport';
 import { useVisualReviewDecisions } from '@/components/visual-review/review-transport';
+import VerifyRowPreview from './VisualReviewVerifyRowFixture';
 import { mockWorkers, type FixtureState } from './fixtures-data';
 import MissionBoardVisualFixture from './MissionBoardVisualFixture';
 import MissionListExecutorFixture from './MissionListExecutorFixture';
@@ -58,6 +59,7 @@ import HomeCardsFixture from './HomeCardsFixture';
 import ServiceStatusFixture from './ServiceStatusFixture';
 import ClosedPrFixture from './ClosedPrFixture';
 import { CLOSED_PR_FIXTURE_STATE } from './closed-pr-fixtures';
+import DesignPreviewFixture from './DesignPreviewFixture';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
@@ -90,6 +92,7 @@ import {
     SPEC_IMPORT_REVIEW_FIXTURE_STATE,
     RUNNER_KEYS_FIXTURE_STATE,
     MISSION_DELIVERIES_FIXTURE_STATE,
+    DESIGN_PREVIEW_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
     TASK_PAGE_FIXTURE_STATE,
@@ -109,6 +112,7 @@ import {
     HOME_CARDS_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
+    isRecaptureFixtureView,
     visualReviewFixtureLinks,
     type VisualReviewFixtureParams,
 } from './visual-review-fixtures';
@@ -251,6 +255,9 @@ export default function DevFixturesPage() {
     }
     if (state === EVIDENCE_STORAGE_FIXTURE_STATE) {
         return <EvidenceStorageFixture />;
+    }
+    if (state === DESIGN_PREVIEW_FIXTURE_STATE) {
+        return <DesignPreviewFixture />;
     }
     if (state === MCP_CONNECTIONS_FIXTURE_STATE) {
         return <ConnectionsFixture />;
@@ -470,6 +477,7 @@ function VisualReviewFixtureView({ params }: { params: VisualReviewFixtureParams
                             <VisualReviewAsk model={model} onReview={openDeck} onAnswer={actions.onAnswer} answerOptions={['Use the demo account']} />
                             {model.phase !== 'needs_you' && <p className="font-mono text-[12px] text-text-muted">No ask in this phase.</p>}
                         </section>
+                        {isRecaptureFixtureView(params.view) && <VerifyRowPreview model={model} />}
                         <section className="flex flex-col gap-2">
                             <h2 className="section-label">Tray</h2>
                             <div className="border-2 border-border-strong bg-card p-4 shadow-[var(--card-shadow)]">

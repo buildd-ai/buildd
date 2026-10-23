@@ -21,8 +21,13 @@ import { appendContextBlock } from './context-injection';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const VISUAL_AUDIT_SPEC_CRITERIA_CONTEXT_KEY = 'visualAuditSpecCriteria';
+/** The design the audit compares against: `{ artifactId, revision, from: 'mission' | 'spec' }`. */
+export const VISUAL_AUDIT_DESIGN_CONTEXT_KEY = 'visualAuditDesign';
 
-type AuditTask = { id: string; roleSlug?: string | null; dependsOn?: unknown };
+type AuditTask = { id: string; roleSlug?: string | null; dependsOn?: unknown; missionId?: string | null };
+
+/** A buildd design artifact at one revision: the mission's `design_reference` link. */
+export interface AuditDesign { artifactId: string; revision?: number }
 
 export interface SubjectCriteria {
   taskId: string;
@@ -49,10 +54,48 @@ const pinOf = (context: unknown): Record<string, unknown> | null => {
   return c && typeof c === 'object' && !Array.isArray(c) ? (c as Record<string, unknown>) : null;
 };
 
+/**
+ * The design for the audit: the mission's `design_reference`, else the design
+ * a dependency's pinned spec revision names (when it is a buildd artifact).
+ */
+export function resolveAuditDesign(subjects: readonly SubjectCriteria[], missionDesign?: AuditDesign | null): (AuditDesign & { from: 'mission' | 'spec' }) | null {
+  if (missionDesign) return { ...missionDesign, from: 'mission' };
+  const pinned = subjects.find((s) => s.design?.kind === 'artifact')?.design;
+  if (!pinned) return null;
+  const revision = Number(pinned.version);
+  return { artifactId: pinned.ref, ...(Number.isInteger(revision) && revision > 0 ? { revision } : {}), from: 'spec' };
+}
+
+/**
+ * Design vs built (scripts/qa/design-capture.ts): a QA_DESIGN plan with every
+ * criterion that names a screen, so the auditor renders those screens beside
+ * its page shots and judges both. A criterion with no screen is judged as before.
+ */
+function designVsBuilt(subjects: readonly SubjectCriteria[], design: AuditDesign & { from: 'mission' | 'spec' }): string[] {
+  const criteria = subjects.flatMap((s) => s.criteria.filter((c) => c.screens?.length).map((c) => ({ id: c.id, text: c.text, screens: c.screens! })));
+  if (criteria.length === 0) return [];
+  const plan = JSON.stringify({ design: { artifactId: design.artifactId, ...(design.revision ? { revision: design.revision } : {}), file: '<the downloaded file>' }, criteria });
+  return [
+    '',
+    '### Design vs built',
+    design.from === 'mission'
+      ? `Design: the mission's design_reference, artifact ${design.artifactId}${design.revision ? ` at revision ${design.revision}` : ''}. It replaces the spec's pin below.`
+      : `Design: the spec's pin, artifact ${design.artifactId}${design.revision ? ` at revision ${design.revision}` : ''}.`,
+    `1. Capture each route in the design's theme (\`theme=light\` for a Day design) at the screen's size: \`viewport=mobile\` (390x844) for phone screens, \`viewport=1440x900\` for desktop ones. Night/Day parity is captured and judged separately.`,
+    `2. Download the design (\`get_artifact { artifactId: "${design.artifactId}"${design.revision ? `, revision: ${design.revision}` : ''} }\`, its download URL) into its own folder, then over each downloaded qa-screenshots folder run \`QA_DESIGN='<plan>' QA_OUTPUT=<folder> QA_VIEWPORT=<the viewport you captured> bun scripts/qa/design-capture.ts\` with this plan (add \`"routes": { "<screen>": "<route>" }\` when a screen's route is not named like it, e.g. a fixture):`,
+    '```json',
+    plan,
+    '```',
+    '3. It writes designs/<screen>.png, side-by-side/<shot>--<screen>.png (design | built) and design-captures.json. `bun scripts/qa/judge.ts prepare` then lists each pair under designChecks with the ask: differences that matter to the criterion (layout, content order, words, states shown), not pixels.',
+    '4. Upload the side-by-side image and the design shot, cite the screen id in `observed`, and pass the design shot as `designShotIds`.',
+  ];
+}
+
 /** The prompt block. Null when no dependency is pinned to a spec. */
-export function renderVisualAuditSpecCriteria(subjects: readonly SubjectCriteria[]): string | null {
+export function renderVisualAuditSpecCriteria(subjects: readonly SubjectCriteria[], missionDesign?: AuditDesign | null): string | null {
   const withCriteria = subjects.filter((s) => s.criteria.length > 0);
   if (withCriteria.length === 0) return null;
+  const design = resolveAuditDesign(withCriteria, missionDesign);
   return [
     '## Spec criteria to judge (computed at claim)',
     'These tasks are built to an approved Living Spec. For each criterion below that a page can show, record one verdict with what you captured:',
@@ -82,6 +125,7 @@ export function renderVisualAuditSpecCriteria(subjects: readonly SubjectCriteria
       ...(s.design ? [designLine(s.design)] : []),
       ...s.criteria.map((c) => `- **${c.id}** ${c.text}${c.screens?.length ? ` (screens: ${c.screens.join(', ')})` : ''}${c.captures?.length ? ` (captures: ${c.captures.join(', ')})` : ''}`),
     ]),
+    ...(design ? designVsBuilt(withCriteria, design) : []),
   ].join('\n');
 }
 
@@ -121,10 +165,19 @@ export async function loadVisualAuditSpecCriteria(dependsOn: readonly string[]):
   return out;
 }
 
+/** The mission's `design_reference` link, at its pinned revision, else the artifact's current one. */
+export async function loadMissionDesign(missionId: string): Promise<AuditDesign | null> {
+  const { artifactsLinkedTo } = await import('@/lib/artifact-links');
+  const linked = await artifactsLinkedTo('mission', missionId, { relations: ['design_reference'] });
+  const l = Array.isArray(linked) ? linked[0] : null;
+  return l ? { artifactId: l.artifactId, revision: l.pinnedRevision ?? l.currentRevision } : null;
+}
+
 export async function attachVisualAuditSpecCriteria(
   claimedWorkers: ClaimTasksResponse['workers'],
   claimedTasks: readonly AuditTask[],
   load: (dependsOn: readonly string[]) => Promise<SubjectCriteria[]> = loadVisualAuditSpecCriteria,
+  missionDesign: (missionId: string) => Promise<AuditDesign | null> = loadMissionDesign,
 ): Promise<void> {
   for (const cw of claimedWorkers) {
     const task = claimedTasks.find((t) => t.id === cw.taskId);
@@ -132,13 +185,18 @@ export async function attachVisualAuditSpecCriteria(
     try {
       const deps = Array.isArray(task.dependsOn) ? (task.dependsOn as string[]) : [];
       const subjects = await load(deps);
-      const block = renderVisualAuditSpecCriteria(subjects);
+      // A failed link read leaves the spec's pin in charge, never the block out.
+      const linked = task.missionId ? await missionDesign(task.missionId).catch(() => null) : null;
+      const block = renderVisualAuditSpecCriteria(subjects, linked);
       if (!block) continue;
       const taskObj = cw.task as any;
       if (taskObj) {
         taskObj.context = taskObj.context ?? {};
-        taskObj.context[VISUAL_AUDIT_SPEC_CRITERIA_CONTEXT_KEY] = subjects.filter((s) => s.criteria.length > 0)
+        const withCriteria = subjects.filter((s) => s.criteria.length > 0);
+        taskObj.context[VISUAL_AUDIT_SPEC_CRITERIA_CONTEXT_KEY] = withCriteria
           .map((s) => ({ taskId: s.taskId, revision: s.revision, criteria: s.criteria.map((c) => c.id) }));
+        const design = resolveAuditDesign(withCriteria, linked);
+        if (design) taskObj.context[VISUAL_AUDIT_DESIGN_CONTEXT_KEY] = design;
       }
       appendContextBlock(cw, block);
     } catch (err) {

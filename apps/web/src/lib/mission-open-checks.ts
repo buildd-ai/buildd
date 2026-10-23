@@ -31,6 +31,12 @@ export interface MissionVisualReviewSummary {
   blockedDetail: string | null;
   /** For `queued`: the claim loop's newest refusal reason, when the loader read one. */
   holdReason: string | null;
+  /** The review holds the open mission PR (`MissionVisualReviewState.blocksMerge`): it is not ready to merge. */
+  blocksMerge?: boolean;
+  /** `presentVisualReview(state).label`: what the review waits on, in its own words. */
+  label?: string;
+  /** A person owes the review a decision (`presentVisualReview(state).needsYou`). */
+  needsOwner?: boolean;
 }
 
 /** The visual review as the mission state reads it: one cause, from the review's own state. */
@@ -42,5 +48,6 @@ export function summarizeVisualReview(state: MissionVisualReviewState | null | u
       ? state.blocked?.cause === 'no_browser_runner' ? BROWSER_RUNNER_MISSING : presentVisualReview(state).label.toLowerCase()
       : null,
     holdReason: state.status === 'queued' ? state.holdReason ?? null : null,
+    ...(state.blocksMerge ? { blocksMerge: true, label: presentVisualReview(state).label, needsOwner: presentVisualReview(state).needsYou } : {}),
   };
 }

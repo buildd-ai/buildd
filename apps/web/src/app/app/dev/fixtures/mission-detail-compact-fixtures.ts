@@ -85,6 +85,8 @@ export interface MissionDetailCompactFixture {
   /** The decision cards (Navigation R-16) and the raised History line (R-6). */
   decisions: DecisionView[];
   history: HistoryRaised | null;
+  /** Task id → expected minutes, for the summary's `finish depends on` (Navigation R-22). */
+  expectedMinutes: Record<string, number> | null;
 }
 
 export function parseMissionDetailCompact(q: URLSearchParams): { variant: MissionDetailCompactVariant; select: string | null } {
@@ -223,7 +225,7 @@ const MISSION_ID = stripFixtureId(950);
 export function missionDetailCompactFixture(variant: MissionDetailCompactVariant, select: string | null, now = T0 + 60 * 60_000): MissionDetailCompactFixture {
   const opened = now - 60 * 60_000;
   const base = { now, missionCreatedAt: opened };
-  const empty = { deliveries: {}, selectIndex: null, checks: null, planTasks: null, specTitles: {}, decisions: [], history: null };
+  const empty = { deliveries: {}, selectIndex: null, checks: null, planTasks: null, specTitles: {}, decisions: [], history: null, expectedMinutes: null };
   const hrefFor = (taskId: string) => `/app/tasks/${taskId}?from=mission&missionId=${MISSION_ID}`;
   const mission = { id: MISSION_ID, title: BUILDING_TITLE, href: `/app/missions/${MISSION_ID}` };
 
@@ -239,6 +241,8 @@ export function missionDetailCompactFixture(variant: MissionDetailCompactVariant
       specTitles: { [BUILDING_SPEC_ID]: BUILDING_SPEC_TITLE },
       decisions: missionDecisions({ model, notes: [], mission, hrefFor }),
       history: historyRaised(model, []),
+      // Every unmerged task estimated, so the summary names what sets the finish (AC-18).
+      expectedMinutes: { [stripFixtureId(12)]: 40, [stripFixtureId(13)]: 30, [stripFixtureId(14)]: 25, [stripFixtureId(15)]: 35, [stripFixtureId(16)]: 20 },
     };
   }
   if (variant === 'verify' || variant === 'delivered') {

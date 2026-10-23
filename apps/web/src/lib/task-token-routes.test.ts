@@ -39,6 +39,9 @@ const OPTED_IN = [
   'apps/web/src/app/api/artifacts/[artifactId]/links/route.ts',
   // POST only: its own worker (taskScopeAllowsWorker + taskScopeAllowsWorkspace) asks for a capability; deciding is session-only.
   'apps/web/src/app/api/agent-capabilities/requests/route.ts',
+  // Designs: the routes pass the token taskScope to the link caller (lib/designs/service.ts), which confines the design and its attach target to that workspace.
+  'apps/web/src/app/api/artifacts/designs/[designId]/attach/route.ts',
+  'apps/web/src/app/api/artifacts/designs/route.ts',
   'apps/web/src/app/api/artifacts/[artifactId]/route.ts',
   'apps/web/src/app/api/artifacts/linked/route.ts',
   'apps/web/src/app/api/artifacts/upload-url/route.ts',
@@ -102,6 +105,7 @@ const OPTED_IN = [
   'apps/web/src/app/api/workers/[id]/reattach/route.ts',
   'apps/web/src/app/api/workers/[id]/route.ts',
   'apps/web/src/app/api/workers/[id]/session-upload-url/route.ts',
+  'apps/web/src/app/api/workers/[id]/visual-qa/route.ts',
   'apps/web/src/app/api/workers/active/route.ts',
   'apps/web/src/app/api/workers/claim/route.ts',
   'apps/web/src/app/api/workers/heartbeat/route.ts',
