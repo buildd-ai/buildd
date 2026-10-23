@@ -408,12 +408,10 @@ async function TaskDetailPage({
         where: sqlWhere(sql`${tasks.dependsOn} @> ${JSON.stringify([id])}::jsonb`),
         columns: { id: true, title: true, label: true, status: true },
       });
-  const dependentsRead = dependentsQuery.then(async (dependentRows) => ({
-    dependentRows,
-    dependentReach: dependentRows.length > 0
-      ? await resolveDependencyHolders(reachScope, dependentRows.map(d => d.id)).catch(() => new Map<string, DependencyHolder>())
-      : new Map<string, DependencyHolder>(),
-  }));
+  const dependentsRead = dependentsQuery.then((dependentRows) => (dependentRows.length > 0
+    ? resolveDependencyHolders(reachScope, dependentRows.map(d => d.id)).catch(() => new Map<string, DependencyHolder>())
+    : Promise.resolve(new Map<string, DependencyHolder>())
+  ).then(dependentReach => ({ dependentRows, dependentReach })));
   // The canonical "is a fix attempt open on this task" fact — same
   // predicate explain.ts and Home's action queue use (mission-state-view.ts
   // rule 6½). Only while the task's PR is open.
