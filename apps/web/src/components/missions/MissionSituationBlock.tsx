@@ -294,7 +294,7 @@ export default function MissionSituationBlock({ missionId, situation, because, c
               href={affordance.href}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex min-h-11 md:min-h-0 items-center text-[12px] text-accent-text hover:underline"
+              className="inline-flex min-h-11 md:min-h-0 items-center text-meta text-accent-text hover:underline"
             >
               {affordance.label} →
             </a>
