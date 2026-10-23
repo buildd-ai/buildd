@@ -120,7 +120,7 @@ Steps: topic `diagnosis`.
   Read one with `list_artifacts` / `get_artifact`.
 - **Designs and attachments are read through buildd**, never the original
   third-party link: `get_artifact` (presigned URL, readable with your own task
-  token), `manage_designs action=list`, `list_artifact_links`. A login wall on a
+  token). A login wall on a
   claude.ai or Figma link is not a blocker, and "request an interactive
   session" is not an option buildd can carry out: the gate refuses it.
 - **`learn`** records a durable lesson (`gotcha`, `pattern`, `decision`,
