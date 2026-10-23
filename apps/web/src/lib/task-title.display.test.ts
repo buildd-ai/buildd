@@ -85,3 +85,17 @@ it('strips research prefixes, scopes and retry wraps through the shared prefix p
   expect(displayTaskTitle('research: compare providers')).toBe('Compare providers');
   expect(displayTaskTitle('[retry] RESEARCH(api): compare providers')).toBe('Compare providers');
 });
+
+describe('displayTaskTitle — names, never numbers (Navigation R-14)', () => {
+  it('drops a leading ordinal a planner numbered the task with', () => {
+    expect(displayTaskTitle('07 · Add billing page')).toBe('Add billing page');
+    expect(displayTaskTitle('12. Add the export')).toBe('Add the export');
+    expect(displayTaskTitle('3) wire the hook')).toBe('Wire the hook');
+    expect(displayTaskTitle('feat(x): 07 · Add y')).toBe('Add y');
+  });
+  it('keeps a number that is part of the name', () => {
+    expect(displayTaskTitle('2026 roadmap review')).toBe('2026 roadmap review');
+    expect(displayTaskTitle('3.5 release notes')).toBe('3.5 release notes');
+    expect(displayTaskTitle('07')).toBe('07');
+  });
+});

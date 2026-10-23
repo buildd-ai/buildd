@@ -13,7 +13,7 @@ import {
 } from '@/lib/artifact-links';
 import { extractScreens, parseScreens, type DesignScreen } from './screens';
 import { isAdoptableFile, planAdoption } from './adopt';
-import { DESIGN_ATTACH_KINDS, planStore, type DesignAttachKind } from './store';
+import { DESIGN_ATTACH_KINDS, planStore, specPinnedArtifact, type DesignAttachKind } from './store';
 import { DESIGN_STORED_CONTENT_TYPE, validateDesignHtml } from './upload';
 
 /**
@@ -238,7 +238,11 @@ export async function detachDesign(caller: LinkCaller, designId: string, linkId:
   return r.ok ? r : fail(r.status, r.error);
 }
 
-export interface DesignListEntry extends DesignView { linkId?: string; pinnedRevision?: number | null }
+export interface DesignListEntry extends DesignView {
+  linkId?: string; pinnedRevision?: number | null;
+  /** The design the spec revision itself pins (not an attachment); there is no link to remove. */
+  specPin?: true;
+}
 
 export async function listDesigns(
   caller: LinkCaller, scope: { attachTo: AttachInput } | { workspaceId: string },
@@ -248,14 +252,25 @@ export async function listDesigns(
     if (isErr(target)) return target;
     const linked = await artifactsLinkedTo(target.subjectKind, target.subjectId, { caller, relations: [DESIGN_RELATION] });
     if (!Array.isArray(linked)) return fail(linked.status, linked.error);
-    if (linked.length === 0) return { ok: true, designs: [] };
+    // A spec revision pins a design on the revision itself, with no link: list it, labelled as a pin.
+    let pin: { artifactId: string; revision: number } | null = null;
+    if (target.subjectKind === 'spec_revision') {
+      const [rev] = await db.select({ design: specRevisions.design }).from(specRevisions).where(eq(specRevisions.id, target.subjectId)).limit(1);
+      pin = specPinnedArtifact(rev?.design);
+    }
+    if (linked.length === 0 && !pin) return { ok: true, designs: [] };
+    const wanted = [...linked.map(l => l.artifactId), ...(pin ? [pin.artifactId] : [])];
     const rows = await db.select({ id: artifacts.id, title: artifacts.title, workspaceId: artifacts.workspaceId, currentRevision: artifacts.currentRevision, metadata: artifacts.metadata })
-      .from(artifacts).where(and(inArray(artifacts.id, linked.map(l => l.artifactId)), sql`${artifacts.metadata}->>'kind' = ${DESIGN_KIND}`));
+      .from(artifacts).where(and(inArray(artifacts.id, wanted), sql`${artifacts.metadata}->>'kind' = ${DESIGN_KIND}`));
     const byId = new Map(rows.map(r => [r.id, r]));
-    const designs = linked.flatMap(l => {
+    const designs: DesignListEntry[] = linked.flatMap(l => {
       const r = byId.get(l.artifactId);
       return r ? [{ ...view(r), linkId: l.linkId, pinnedRevision: l.pinnedRevision }] : [];
     });
+    const pinned = pin && !linked.some(l => l.artifactId === pin!.artifactId) ? byId.get(pin.artifactId) : undefined;
+    if (pin && pinned && (await canAccessWorkspace(caller, pinned.workspaceId ?? ''))) {
+      designs.push({ ...view(pinned), pinnedRevision: pin.revision, specPin: true });
+    }
     return { ok: true, designs };
   }
   const ref = await resolveWorkspaceAccess(scope.workspaceId, 'userId' in caller ? { userId: caller.userId } : { account: caller.account });

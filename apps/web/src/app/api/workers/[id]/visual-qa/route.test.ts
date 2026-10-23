@@ -85,6 +85,17 @@ describe('POST /api/workers/[id]/visual-qa', () => {
     expect(dispatched).toEqual([]);
   });
 
+  it('accepts query strings on routes (dev fixtures) but not shell metacharacters', async () => {
+    const routes = '/app/dev/fixtures?state=home-cards&data=red-checks';
+    expect((await POST(req({ routes }), params())).status).toBe(200);
+    expect(dispatched[0].inputs.routes).toBe(routes);
+    dispatched.length = 0;
+    for (const bad of ['/a?x=$(id)', '/a?x=1;rm', '/a?x="1"', '/a b', '/a#frag']) {
+      expect((await POST(req({ routes: bad }), params())).status).toBe(400);
+    }
+    expect(dispatched).toEqual([]);
+  });
+
   it('rejects an unsafe captureRef or viewport before dispatching', async () => {
     expect((await POST(req({ captureRef: 'a..b' }), params())).status).toBe(400);
     expect((await POST(req({ viewport: 'huge' }), params())).status).toBe(400);
