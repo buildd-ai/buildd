@@ -71,9 +71,10 @@ function OptionButton({ option, primary, shortcut, href, onPick, disabled, pendi
       {option.effect && <span data-testid="decision-option-effect" className={`text-meta font-normal [overflow-wrap:anywhere] ${primary ? 'opacity-80' : 'text-text-muted'}`}>{option.effect}</span>}
     </>
   );
-  const cls = primary ? PRIMARY : SECONDARY;
+  // Fills its share of the row: two options side by side when they fit, stacked at 320.
+  const cls = `${primary ? PRIMARY : SECONDARY} w-full [overflow-wrap:anywhere]`;
   return (
-    <span className="group relative inline-flex max-w-full">
+    <span className="group relative flex min-w-0 max-w-full flex-[1_1_10rem]">
       {href
         ? <a href={href} data-testid="decision-option" data-primary={primary || undefined} aria-describedby={option.tip ? tipId : undefined} className={cls}>{body}</a>
         : (
@@ -225,7 +226,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
       )}
       <h3 data-testid="decision-question" className="text-title font-semibold text-text-primary [overflow-wrap:anywhere]">{view.question}</h3>
       {view.options.length > 0 && (
-        <div className="flex flex-wrap gap-2.5">
+        <div data-testid="decision-options" className="flex flex-wrap gap-2.5">
           {view.options.map((o, i) => (
             <OptionButton
               key={o.label}
@@ -240,7 +241,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
           ))}
         </div>
       )}
-      {differently || view.options.length === 0 ? (
+      {differently ? (
         <form
           data-testid="decision-answer-form"
           className="flex flex-wrap gap-2"
@@ -261,7 +262,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
       <div className="flex flex-wrap items-center justify-between gap-x-4">
         {view.answer.kind === 'link'
           ? <span />
-          : view.options.length > 0 && !differently
+          : !differently
             ? <button type="button" data-testid="decision-answer-differently" onClick={() => setDifferently(true)} className={TEXT_BUTTON}>Answer differently</button>
             : <span />}
         <button type="button" data-testid="decision-not-now" onClick={() => (onNotNow ? onNotNow() : setLater(true))} className={TEXT_BUTTON}>Not now</button>
