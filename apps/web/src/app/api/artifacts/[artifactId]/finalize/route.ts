@@ -4,14 +4,16 @@ import { artifacts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorker, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { isStorageConfigured } from '@/lib/storage';
-import { finalizeArtifactUpload } from '@/lib/artifact-upload';
+import { finalizeArtifactUpload, pendingRevisionOf } from '@/lib/artifact-upload';
+import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { isUuid } from '@/lib/uuid';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/artifacts/[artifactId]/finalize { sha256? } — after the PUT to the
  * presigned URL: verify the stored bytes (size, and sha256 when sent) and mark
- * the upload ready, or failed. Only the uploader (the worker's account, or the author of a workerless upload) may finalize;
+ * the upload ready, or failed (or, for a new revision of a file, move the
+ * artifact to it). Only the uploader may finalize;
  * a reader of the artifact finalizes lazily on its own (lib/artifact-upload.ts).
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ artifactId: string }> }) {
@@ -26,11 +28,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ art
   if (!artifact || !taskScopeAllowsWorkspace(account, artifact.workspaceId ?? artifact.worker?.workspaceId ?? null)) {
     return NextResponse.json({ error: 'Artifact not found' }, { status: 404 });
   }
-  // A worker's upload: its own account. A workerless one (a spec attachment a
-  // person started over their MCP session) is stamped with its author, who finalizes it.
-  const isUploader = artifact.worker
-    ? artifact.worker.accountId === account.id && taskScopeAllowsWorker(account, artifact.worker)
-    : artifact.contentAuthor === `account:${account.id}`;
+  // A new revision of a file: whoever started it. A worker's upload: its own
+  // account. A workerless one (a spec attachment, or a design an owner stored
+  // over their MCP session) by its author, which the revision trigger records
+  // on the revision (it clears content_author once it has).
+  const me = `account:${account.id}`;
+  const pending = pendingRevisionOf(artifact.metadata);
+  const isUploader = pending
+    ? pending.author === me
+    : artifact.worker
+      ? artifact.worker.accountId === account.id && taskScopeAllowsWorker(account, artifact.worker)
+      : artifact.contentAuthor === me || (await getArtifactRevision(artifact.id, artifact.currentRevision))?.author === me;
   if (!isUploader) {
     return NextResponse.json({ error: 'Only the uploader may finalize this upload' }, { status: 403 });
   }
