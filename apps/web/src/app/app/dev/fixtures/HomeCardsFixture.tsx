@@ -12,7 +12,7 @@ import { AgentsPanel } from '../../(protected)/home/AgentsPanel';
 import { LandedThisWeek, type LandedMission } from '../../(protected)/home/LandedThisWeek';
 import { HomeBody } from '../../(protected)/home/HomeBody';
 import { deriveHomeAttention } from '@/lib/home-attention';
-import { describeCriteriaBlocker } from '@/lib/criteria-blocker-copy';
+import { describeCriteriaBlocker } from '@/lib/completion-check-summary';
 import { CRITERIA_ESCALATION_NOTE_TITLE } from '@/lib/escalation-note-title';
 import type { GoalCriteriaState } from '@buildd/shared';
 import type { ActionQueueItem } from '@/lib/action-queue';

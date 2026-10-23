@@ -19,7 +19,7 @@ import { computeMissionProgress, deriveMissionProgressMetric, deriveCriteriaGate
 import { isMissionAuditTask, isSurfaceFixTask, surfaceAuditHeadline } from '@buildd/core/surface-audit';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
-import { describeCriteriaBlocker } from '@/lib/criteria-blocker-copy';
+import { describeCriteriaBlocker } from '@/lib/completion-check-summary';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { describeLastCheck, selectOrganizerRuns } from '@/lib/mission-checkins';

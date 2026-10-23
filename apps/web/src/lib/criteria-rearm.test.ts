@@ -8,7 +8,7 @@ import {
   MAX_REARM_CYCLES,
 } from './criteria-rearm';
 import type { GoalCriteriaState } from '@buildd/shared';
-import { describeCriteriaBlocker } from './criteria-blocker-copy';
+import { describeCriteriaBlocker } from './completion-check-summary';
 
 describe('criteria escalation note copy', () => {
   it('retains the blocking evidence and recovery without inventing a cause', () => {

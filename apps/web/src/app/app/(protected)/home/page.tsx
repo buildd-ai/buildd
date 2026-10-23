@@ -32,7 +32,7 @@ import { prLifecycleFor } from '@/lib/delivery-overlay';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
 import { isActionableChip, kernelInboxMembership, missionPrRoleOf, reviewMachineActing, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
-import { describeCriteriaBlocker } from '@/lib/criteria-blocker-copy';
+import { describeCriteriaBlocker } from '@/lib/completion-check-summary';
 import { resolveCiGate } from '@/lib/ci-gate';
 import { DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
 import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
