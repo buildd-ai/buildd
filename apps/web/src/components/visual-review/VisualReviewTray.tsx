@@ -165,7 +165,7 @@ function EmptyPhase({ model, actions }: { model: VisualReviewModel; actions?: Vi
     <div data-testid="visual-review-empty" className="flex flex-col gap-3">
       {boot ? (
         <>
-          <p data-verify-block="body" className="border-l-[3px] border-status-error py-1 pl-3 font-mono text-[13px] leading-[1.5] text-text-primary">{boot.prompt}</p>
+          <p data-verify-block="body" className="border-l-[3px] border-status-error py-1 pl-3 font-mono text-[13px] leading-[1.5] text-text-primary">{boot.prompt.replace(/^App did not boot:\s*/i, '')}</p>
           {a.onAnswer && <AnswerRow target={{ workerId: boot.workerId, taskId: boot.taskId }} options={a.answerOptions} onAnswer={a.onAnswer} />}
         </>
       ) : (
