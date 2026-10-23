@@ -58,6 +58,12 @@ describe('a waiting task from the needs-input feed', () => {
     expect(markup).toContain('data-testid="decision-answer-differently"');
   });
 
+  it('an option wraps inside the card at 390 instead of running past its edge (.btn is nowrap)', () => {
+    const options = html(item).match(/<button[^>]*data-testid="decision-option"[^>]*>/g) ?? [];
+    expect(options).toHaveLength(2);
+    for (const o of options) expect(o).toMatch(/\bwhitespace-normal\b.*\bmin-w-0\b|\bmin-w-0\b.*\bwhitespace-normal\b/);
+  });
+
   it('a waiting task with no worker named keeps its link card (nowhere to post an answer)', () => {
     const [bare] = admitWaitingTasks([], [{ ...waiting[0], workerId: undefined }] as never, t => `/app/tasks/${t.id}`);
     expect(bare.question).toBeUndefined();
