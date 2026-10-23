@@ -2,9 +2,10 @@ import { db } from '@buildd/core/db';
 import { specMetadataChanges, specs } from '@buildd/core/db/schema';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { specShortId, verifyRepoCopy } from '@buildd/spec-contract/repo-copy';
-import { buildSpecIndex, markSpecSuperseded, parseSpecFrontmatter, SPEC_META_FILES, type IndexedSpec } from '@buildd/spec-contract/repo-spec';
+import { buildSpecIndex, parseSpecFrontmatter, SPEC_META_FILES, type IndexedSpec } from '@buildd/spec-contract/repo-spec';
 import { checkSuitesAllPassed, type CheckSuiteSummary } from '@/lib/github';
 import { appBaseUrl } from '@/lib/app-url';
+import { afterRestore, retirementFileChange, supersededFileText } from './retire-file';
 import { defaultRepoCopyDeps, GENERATED_SPEC_COPY_EXCEPTION, mergeGeneratedSpecPr, readRepoState, type RepoCopyDeps } from './repo-copy';
 
 /**
@@ -99,10 +100,12 @@ export async function openRetirementPr(specId: string, deps: RepoCopyDeps = defa
   if (!row) return null;
   const prior = repoFileOf(row.newValue);
   if (prior) return prior;
-  const path = spec.repoCopy?.path ?? spec.repoSource?.path;
-  if (!path || !path.startsWith(SPECS_DIR)) return null;
+  const change = retirementFileChange({ importedPath: spec.repoSource?.path, copyPath: spec.repoCopy?.path });
+  if (!change || !change.path.startsWith(SPECS_DIR)) return null;
+  const { path } = change;
   const at = deps.now().toISOString();
-  let kind: RetirementRepoFile['kind'] = spec.repoCopy?.path ? 'copy' : 'source';
+  // The file itself says which it is: a confirmed import's copy is written over its source file.
+  let kind: RetirementRepoFile['kind'] = change.kind === 'remove' ? 'copy' : 'source';
   try {
     const repo = await readRepoState(spec.workspaceId, deps);
     if ('error' in repo) return record(row.id, { kind, path, state: 'failed', error: repo.error, at });
@@ -128,8 +131,8 @@ export async function openRetirementPr(specId: string, deps: RepoCopyDeps = defa
     } else {
       if (parseSpecFrontmatter(text).fm?.status === 'superseded') return record(row.id, { kind, path, state: 'already', at });
       const by = await supersededByValue((row.newValue as { supersededBy?: unknown } | null)?.supersededBy, repo.specFiles, path);
-      const marked = markSpecSuperseded(text, by.value);
-      if (!marked) return record(row.id, { kind, path, state: 'failed', error: 'the file has no frontmatter block to mark superseded', at });
+      const marked = supersededFileText(text, by.value);
+      if (marked === text) return record(row.id, { kind, path, state: 'failed', error: 'the file has no frontmatter block to mark superseded', at });
       next.set(name, marked);
       tree = [{ path, mode: '100644', type: 'blob', content: marked }];
       title = `docs(specs): mark ${name} superseded`;
@@ -235,6 +238,6 @@ export function restoredRepoNote(rf: RetirementRepoFile | null): string | null {
   }
   if (rf.state === 'removed') return `${rf.path} is no longer in the repo; restoring does not recreate it.`;
   if (rf.state === 'open') return `${rf.path} still reads superseded once PR #${rf.prNumber} merges: restoring does not edit the repo file. Close the PR to leave the file as it was.`;
-  if (rf.state === 'merged' || rf.state === 'already') return `${rf.path} still reads superseded: restoring does not edit the repo file.`;
+  if (rf.state === 'merged' || rf.state === 'already') return afterRestore({ filePr: rf.prNumber, filePath: rf.path }).note;
   return null;
 }

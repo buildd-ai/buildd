@@ -22,6 +22,7 @@ import { FILE_METADATA_KEYS, updateSpecMetadata } from './metadata';
 import { parseSpecFrontmatter } from '@buildd/spec-contract/repo-spec';
 import { specShortId } from '@buildd/spec-contract/repo-copy';
 import { retireSpec } from './retire';
+import { confirmedRetirements, planImportRetirements, type ImportRetirement } from './import-retire';
 
 /**
  * Import a workspace's repo spec files as native specs (docs/specs/living-specs.md
@@ -307,8 +308,25 @@ const strList = (v: unknown): string[] | null => (Array.isArray(v) && v.every((x
 const NOT_PLACED = 'no single area';
 
 const isGone = (status: string) => status === 'retired' || status === 'superseded';
-const supersededMessage = (by: { title: string } | null, named: unknown) =>
-  (by ? `marked superseded by ${by.title}` : typeof named === 'string' && named && named !== 'none' ? `marked superseded by ${named}` : 'marked superseded, with nothing replacing it');
+
+/** The retirement plan (./import-retire.ts) for these imported specs, with each `superseded_by` matched by `replacementFor`. */
+function retirementPlan(
+  imported: ReadonlyArray<Pick<SpecRow, 'id' | 'title' | 'status' | 'repoSource'>>, files: ReadonlyArray<{ path: string; text: string }>, commit: string,
+  candidates: readonly ReplacementCandidate[], dir: ReadonlyMap<string, string>, removedIn: Record<string, string | null>,
+): ImportRetirement[] {
+  const titles: Record<string, string> = {};
+  const names: Record<string, string> = {};
+  for (const f of files) {
+    const named = parseSpecFrontmatter(f.text).fm?.superseded_by;
+    const self = imported.find((s) => s.repoSource?.path === f.path)?.id ?? '';
+    const by = typeof named === 'string' ? replacementFor(named, self, candidates, dir) : null;
+    if (by && typeof named === 'string') { titles[named] = by.specId; names[named] = by.title; }
+  }
+  return planImportRetirements({
+    imported: imported.map((s) => ({ specId: s.id, title: s.title, path: s.repoSource!.path, status: s.status })),
+    files, commit, titles, names, removedIn,
+  });
+}
 type ReplacementCandidate = Pick<SpecRow, 'id' | 'title' | 'status' | 'scope' | 'metadata' | 'repoSource' | 'repoCopy'>;
 
 /**
@@ -468,20 +486,16 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
     const base = { path: f.path, provenance, metadata: {}, unread: [], criteria: { unreadable: [], duplicates: [] }, duplicates: [], duplicateCheck: null, area: null } satisfies Omit<ImportFileRow, 'action'>;
     const prior = byPath.get(f.path);
     // R-79: listed for the person to confirm; nothing here retires it.
-    if (prior && !isGone(prior.status) && f.deleted) {
+    if (prior && !isGone(prior.status) && (f.deleted || (!p.ok && p.reason === 'superseded'))) {
       const oid = prs.get(f.path)?.oid ?? null;
-      return {
-        ...base, action: 'retire', specId: prior.id, retire: { why: 'removed', status: 'retired', supersededBy: null, removedIn: oid },
-        message: oid ? `file removed in ${oid.slice(0, 7)}` : `file removed (not in ${commitSha.slice(0, 7)})`,
-      };
-    }
-    if (prior && !isGone(prior.status) && !p.ok && p.reason === 'superseded') {
-      const named = parseSpecFrontmatter(f.text).fm?.superseded_by;
-      const by = replacementFor(named, prior.id, everyone, dir);
-      return {
-        ...base, action: 'retire', specId: prior.id, retire: { why: 'marked_superseded', status: by ? 'superseded' : 'retired', supersededBy: by },
-        message: supersededMessage(by, named),
-      };
+      const [plan] = retirementPlan([prior], f.deleted ? [] : [{ path: f.path, text: f.text }], commitSha, everyone, dir, { [f.path]: oid });
+      if (plan) {
+        const by = plan.supersededBy ? { specId: plan.supersededBy, title: everyone.find((c) => c.id === plan.supersededBy)?.title ?? '' } : null;
+        return {
+          ...base, action: 'retire', specId: prior.id, message: plan.reason,
+          retire: { why: plan.why, status: by ? 'superseded' : 'retired', supersededBy: by, ...(plan.why === 'removed' ? { removedIn: oid } : {}) },
+        };
+      }
     }
     if (!p.ok) return { ...base, action: 'skip', reason: p.reason, message: p.message, ...(prior ? { specId: prior.id } : {}) };
     const row: ImportFileRow = { ...base, metadata: p.metadata, unread: p.unread, criteria: p.criteria, action: 'create', spec: { title: p.title, scope: 'feature', body: p.body } };
@@ -737,16 +751,20 @@ export async function confirmImportedSpecs(caller: SpecCaller, input: { workspac
   const removed = current ? todo.filter(({ s }) => !current!.has(s.repoSource!.path)).map(({ s }) => s.repoSource!.path) : [];
   const removedIn = removed.length && repo ? await lastPrs(repo, head, removed, deps) : new Map<string, { pr: number | null; oid: string | null }>();
   const dir = new Map([...(current ?? new Map<string, { text: string }>())].map(([p, f]) => [p, f.text]));
+  const plan = current
+    ? confirmedRetirements(retirementPlan(todo.map((t) => t.s), [...dir].map(([path, text]) => ({ path, text })), head, rows, dir,
+      Object.fromEntries([...removedIn].map(([p, v]) => [p, v.oid]))), specIds as string[])
+    : [];
+  const retiring = new Map(plan.map((p) => [p.specId, p]));
   const titles = new Map(rows.map((r) => [r.id, r.title]));
   for (const { s, waiting } of todo) {
     const src = s.repoSource!;
     const short = src.commitSha.slice(0, 7);
     const file = current?.get(src.path);
-    const markedBy = file ? parseSpecFrontmatter(file.text).fm : null;
-    if (current && (!file || markedBy?.status === 'superseded')) {
-      const oid = removedIn.get(src.path)?.oid;
-      const by = file ? replacementFor(markedBy?.superseded_by, s.id, rows, dir) : null;
-      const reason = file ? supersededMessage(by, markedBy?.superseded_by) : oid ? `file removed in ${oid.slice(0, 7)}` : `${src.path} was removed from the repo`;
+    const planned = retiring.get(s.id);
+    if (planned) {
+      const reason = planned.reason;
+      const by = planned.supersededBy ? { specId: planned.supersededBy, title: titles.get(planned.supersededBy) ?? '' } : null;
       const r = await retireSpec(caller, s.id, { reason, supersededBy: by?.specId }, {
         repoFile: { kind: s.repoCopy?.path ? 'copy' : 'source', path: src.path, state: file ? 'already' : 'removed', via: 'import', at: deps.now().toISOString() },
       });
