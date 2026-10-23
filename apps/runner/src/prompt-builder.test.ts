@@ -216,6 +216,34 @@ describe('buildPromptWithComposition — design source', () => {
     const { promptText } = section(withDesign({ sourceUrl: url }));
     expect(promptText).toContain('no copy-in artifact keys');
   });
+
+  const ID = '00000000-0000-4000-8000-00000000d001';
+  const buildd = { artifactId: ID, revision: 2, from: 'spec', screens: ['desktop-mission'], criteria: [{ id: 'AC-8', screens: ['desktop-mission'] }] };
+
+  it('a buildd design artifact: named with its revision, fetched with get_artifact, screens from the spec criteria', () => {
+    const { promptText, rendered } = section(withDesign(buildd));
+    expect(rendered).toBe(true);
+    expect(promptText).toContain(`buildd artifact \`${ID}\` revision 2`);
+    expect(promptText).toContain(`get_artifact artifactId=${ID} revision=2`);
+    expect(promptText).toContain('file://<file>#desktop-mission');
+    expect(promptText).toContain('`desktop-mission` (AC-8)');
+  });
+
+  it('both: the buildd artifact comes first, the canvas is the fallback for an opted-in worker', () => {
+    const { promptText } = section(withDesign({ ...buildd, sourceUrl: url }, 'read'));
+    const artifactAt = promptText.indexOf(`buildd artifact \`${ID}\``);
+    const canvasAt = promptText.indexOf(`Artifact list url=${url}`);
+    expect(artifactAt).toBeGreaterThan(-1);
+    expect(canvasAt).toBeGreaterThan(artifactAt);
+    expect(promptText).toContain('If the buildd artifact cannot be read');
+  });
+
+  it('both, worker not opted in: the buildd artifact only, never the Artifact tool', () => {
+    const { promptText } = section(withDesign({ ...buildd, sourceUrl: url }));
+    expect(promptText).toContain(`buildd artifact \`${ID}\``);
+    expect(promptText).not.toContain('Artifact list');
+    expect(promptText).not.toContain('no claude.ai artifact access and there are no copy-in');
+  });
 });
 
 describe('buildPromptWithComposition — per-section byte accounting', () => {

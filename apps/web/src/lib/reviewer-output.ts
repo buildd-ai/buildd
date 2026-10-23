@@ -15,6 +15,7 @@
 
 import type { ReviewerTaskOutput } from './reviewer';
 import { isApprovalSelfMergeable } from './pr-review-status';
+import { checkRemedyFindings } from './reviewer-remedy';
 
 /** The bar an approval must clear when the workspace sets no threshold. */
 export const DEFAULT_REVIEW_CONFIDENCE_THRESHOLD = 0.6;
@@ -68,6 +69,8 @@ export function parseReviewerOutput(raw: unknown): ParsedReviewerOutput {
   if (typeof o.summary !== 'string') {
     return { ok: false, reason: 'summary must be a string' };
   }
+  const remedy = checkRemedyFindings({ verdict: o.verdict, findings: o.findings });
+  if (!remedy.ok) return { ok: false, reason: remedy.reason };
   return { ok: true, output: o as unknown as ReviewerTaskOutput };
 }
 

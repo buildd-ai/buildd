@@ -102,6 +102,7 @@ const OPTED_IN = [
   'apps/web/src/app/api/workers/[id]/reattach/route.ts',
   'apps/web/src/app/api/workers/[id]/route.ts',
   'apps/web/src/app/api/workers/[id]/session-upload-url/route.ts',
+  'apps/web/src/app/api/workers/[id]/visual-qa/route.ts',
   'apps/web/src/app/api/workers/active/route.ts',
   'apps/web/src/app/api/workers/claim/route.ts',
   'apps/web/src/app/api/workers/heartbeat/route.ts',
