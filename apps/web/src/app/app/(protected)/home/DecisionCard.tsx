@@ -35,7 +35,8 @@ function QueueDecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone: 
   const [confirm, setConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retrySafe, setRetrySafe] = useState(true);
-  useEffect(() => { setConfirm(false); setError(null); setRetrySafe(true); }, [item]);
+  const [closed, setClosed] = useState<string | null>(null);
+  useEffect(() => { setConfirm(false); setError(null); setRetrySafe(true); setClosed(null); }, [item]);
   const q = item.queue;
   const merge = q?.chip === 'MERGE' && q.prNumber != null && !!q.workspaceId;
   const ci = item.label === 'tests failing' && q?.prNumber != null && !!q.workspaceId;
@@ -79,15 +80,18 @@ function QueueDecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone: 
   }
   // An access request is decided in place: the lease is the one the agent asked
   // for (approval can only narrow it; Settings offers shorter ones). The server
-  // decides; a repeat click or a decision someone else made reads as such.
+  // decides; a repeat click or a decision someone else made reads as such. Home
+  // only lists open requests, but one can close while the card is up (its task
+  // ends): when the answer says so, the card drops its buttons and says why.
   async function decideAccess(decision: 'approve' | 'deny') {
     if (busy || !q?.accessRequestId) return;
     setBusy(true); setError(null);
     try {
       const res = await fetch(`/api/agent-capabilities/requests/${encodeURIComponent(q.accessRequestId)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }) });
-      const data = await res.json().catch(() => ({})) as { error?: string; message?: string; grant?: { status?: string } };
-      if (res.ok) { onDone(item.key, decision === 'approve' ? 'approved' : 'denied'); router.refresh(); }
-      else setError(res.status === 409 && data.grant?.status ? `Someone already decided: this request is ${data.grant.status}.` : data.message || data.error || 'Could not save the decision.');
+      const data = await res.json().catch(() => ({})) as { error?: string; message?: string; closed?: boolean; grant?: { status?: string } };
+      if (res.ok) { onDone(item.key, decision === 'approve' ? 'approved' : 'denied'); router.refresh(); return; }
+      if (data.closed) { setClosed(data.error || 'This request is closed.'); router.refresh(); }
+      else setError(data.message || data.error || 'Could not save the decision.');
     } catch { setError('Could not reach the server.'); }
     finally { setBusy(false); }
   }
@@ -106,6 +110,7 @@ function QueueDecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone: 
   }
   let actions: ReactNode;
   if (move) actions = <><button className={primary} disabled={busy} onClick={() => void decideMove('accept')}>{busy ? 'Saving…' : 'Accept'}</button><button className={secondary} disabled={busy} onClick={() => void decideMove('keep')}>Keep</button><button className={secondary} disabled={busy} onClick={() => void decideMove('accept', true)}>Accept + read {move.fromWorkspaceName}</button><Link className={secondary} href={item.primary?.href ?? item.href}>Schedule</Link></>;
+  else if (access && closed) actions = null;
   else if (access) actions = <><button className={primary} disabled={busy} onClick={() => void decideAccess('approve')}>{busy ? 'Saving…' : q!.accessApproveLabel ?? 'Approve'}</button><button className={secondary} disabled={busy} onClick={() => void decideAccess('deny')}>Deny</button><Link className={secondary} href={item.primary?.href ?? item.href}>Details</Link></>;
   else if (merge) actions = <><button className={primary} disabled={busy || !!blocked || !retrySafe} onClick={() => confirm ? void act(`/api/prs/${q.prNumber}/merge`, { workspaceId: q.workspaceId }, 'merged') : setConfirm(true)}>{busy ? 'Merging…' : confirm ? 'Confirm merge' : 'Merge'}</button>{confirm ? <button className={secondary} onClick={() => setConfirm(false)}>Cancel</button> : <Link href={q.prUrl ?? item.href} className={secondary}>{q.docFixTaskId ? 'Claims' : 'Review PR'}</Link>}</>;
   else if (q?.humanReview && q.prUrl) actions = <><Link className={primary} href={`${q.prUrl}/files`}>{q.humanReview.label}</Link>{item.details && <Link className={secondary} href={item.details.href}>{item.details.label}</Link>}</>;
@@ -129,7 +134,8 @@ function QueueDecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone: 
     <h3 className="mt-2 text-title font-semibold text-text-primary [overflow-wrap:anywhere]">{displayTaskTitle(item.title)}</h3>
     <ReviewDecision decision={decision} detail={detail} blockers={review?.blockers ?? []} status={status} />
     {q?.mergeAdvice && <MergeAdvice slot={q.mergeAdvice} />}
-    <div className="mt-auto flex flex-wrap gap-2 pt-3">{actions}</div>
+    {actions && <div data-testid="needs-you-actions" className="mt-auto flex flex-wrap gap-2 pt-3">{actions}</div>}
+    {closed && <p data-testid="needs-you-closed" className="mt-2 text-meta text-text-secondary">{closed}</p>}
     {blocked && <p className="mt-2 text-meta text-text-secondary">{blocked}</p>}
     {error && <p role="alert" className="mt-2 text-meta text-status-error">{error}</p>}
   </article>;
