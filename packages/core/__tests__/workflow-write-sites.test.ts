@@ -95,7 +95,10 @@ const KERNEL_ENTRY_POINTS = new Set(['kernel-client', 'command-api', 'command-ke
   'operator-view',
   // §6: the mission epochs' outbox. The refresh triggers owe the writable epoch's refresh row and drain
   // it; it writes only workflow_effects rows owned by an epoch, never a delivery or an epoch's state.
-  'epoch-effects']);
+  'epoch-effects',
+  // release-flow.md AC-14/AC-25: what review a frozen release candidate (no delivery, by design) is owed.
+  // A composition read over the constituents' rounds; no command, no write to a kernel table.
+  'candidate-review']);
 const COMPOSITION_ROOT = 'apps/web/src/modules.ts';
 // The package is matched too: importing `@buildd/workflow-kernel/reducer` is importing the reducer, and its
 // root (`@buildd/workflow-kernel`, every module at once) reads as `index`, which is no entry point.

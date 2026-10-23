@@ -569,3 +569,89 @@ describe('collectComposition: a refresh PR', () => {
     expect((await collect(api({ truncated: true }))).attestation.novelDelta).toEqual({ result: 'unverifiable', reason: 'refresh_merge_unreadable:M' });
   });
 });
+
+// ── Release candidate shapes the attestation met on a real release ──────────
+// release-flow.md AC-25 to AC-27: the prod branch merged back after the last
+// release, a PR landed with a merge commit, and an aggregate past GitHub's
+// file cap are each provable, never a reason to review the whole candidate.
+
+describe('buildCompositionAttestation: a release candidate', () => {
+  const versionPatch = '@@ -1,4 +1,4 @@\n {\n   "name": "@acme/web",\n-  "version": "1.2.2",\n+  "version": "1.2.3",\n   "private": true,';
+  const syncMerge = (diff: FileDiff[]) => ({ sha: 'SYNC', parents: ['S2', 'MAIN'], message: "Merge branch 'main' into dev", files: diff.map((f) => f.filename), diff, mergeParentsInBase: true });
+
+  test('the prod branch merged back (CHANGELOG + version-only package.json) is a release artifact, not a merge resolution', () => {
+    const b = buildCompositionAttestation(base({
+      commits: [...base().commits!.slice(0, 2), syncMerge([fd('CHANGELOG.md'), { filename: 'apps/web/package.json', status: 'modified', patch: versionPatch }]), base().commits![2]],
+    }));
+    expect(b.attestation.novelDelta).toEqual({ result: 'none' });
+    expect(b.novelCommits).toEqual([]);
+  });
+
+  test('a merge back that changes anything in package.json besides the version stays a resolution owed a review', () => {
+    const deps = '@@ -5 +5 @@\n-    "zod": "3.0.0"\n+    "zod": "4.0.0"';
+    const b = buildCompositionAttestation(base({
+      commits: [...base().commits!.slice(0, 2), syncMerge([{ filename: 'apps/web/package.json', status: 'modified', patch: deps }]), base().commits![2]],
+    }));
+    expect(b.attestation.novelDelta).toEqual({ result: 'present', paths: ['apps/web/package.json'] });
+    expect(b.novelCommits.map((n) => n.reason)).toEqual(['merge_resolution']);
+  });
+
+  test('a PR merged with a merge commit is proven by its merge, and its own commits are not owed a review', () => {
+    const b = buildCompositionAttestation(base({
+      commits: [
+        ...base().commits!.slice(0, 2),
+        { sha: 'K1', parents: ['B0'], message: 'feat(runner): wsl setup', files: ['w.ts'], diff: [fd('w.ts', '@@ -1 +1 @@\n-a\n+step one')], landedVia: 'M13' },
+        { sha: 'K2', parents: ['K1'], message: 'fix(runner): path', files: ['w.ts'], diff: [fd('w.ts', '@@ -1 +1 @@\n-step one\n+step two')], landedVia: 'M13' },
+        { sha: 'M13', parents: ['S2', 'K2'], message: 'Merge pull request #13', files: ['w.ts'], diff: [fd('w.ts', '@@ -1 +1 @@\n-a\n+step two')], mergeParentsInBase: false },
+        base().commits![2],
+      ],
+      aggregateFiles: ['a.ts', 'b.ts', 'w.ts', 'apps/web/package.json', 'CHANGELOG.md'],
+      constituentsByCommit: {
+        ...base().constituentsByCommit,
+        K1: { prNumber: 13, mergedHeadSha: 'K2', delivery: approved('13', 'K2') },
+        K2: { prNumber: 13, mergedHeadSha: 'K2', delivery: approved('13', 'K2') },
+        M13: { prNumber: 13, mergedHeadSha: 'K2', delivery: approved('13', 'K2') },
+      },
+      reviewedDiffs: { ...base().reviewedDiffs, M13: [fd('w.ts', '@@ -9 +9 @@\n-a\n+step two')] },
+    }));
+    expect(b.attestation.novelDelta).toEqual({ result: 'none' });
+    expect(b.attestation.constituents.map((c) => [c.prNumber, c.landedSha])).toEqual([[11, 'S1'], [12, 'S2'], [13, 'M13']]);
+  });
+
+  test('a merge-commit PR whose merge differs from what was reviewed leaves its commits owed a review', () => {
+    const b = buildCompositionAttestation(base({
+      commits: [
+        ...base().commits!.slice(0, 2),
+        { sha: 'K1', parents: ['B0'], message: 'feat: wsl', files: ['w.ts'], diff: [fd('w.ts')], landedVia: 'M13' },
+        { sha: 'M13', parents: ['S2', 'K1'], message: 'Merge pull request #13', files: ['w.ts'], diff: [fd('w.ts', '@@ -1 +1 @@\n-a\n+resolved by hand')], mergeParentsInBase: false },
+      ],
+      aggregateFiles: ['a.ts', 'b.ts', 'w.ts'],
+      constituentsByCommit: {
+        ...base().constituentsByCommit,
+        K1: { prNumber: 13, mergedHeadSha: 'K1', delivery: approved('13', 'K1') },
+        M13: { prNumber: 13, mergedHeadSha: 'K1', delivery: approved('13', 'K1') },
+      },
+      reviewedDiffs: { ...base().reviewedDiffs, K1: [fd('w.ts')], M13: [fd('w.ts')] },
+    }));
+    expect(b.attestation.novelDelta).toEqual({ result: 'present', paths: ['w.ts'] });
+    expect(b.novelCommits.map((n) => [n.sha, n.reason])).toEqual([['M13', 'pr_13_landed_patch_differs']]);
+  });
+
+  test('past the file cap, a candidate stands its complete commit list in for the aggregate; anything else stays unverifiable', () => {
+    expect(buildCompositionAttestation(base({ aggregateFiles: null })).attestation.novelDelta).toEqual({ result: 'unverifiable', reason: 'aggregate_diff_truncated' });
+    expect(buildCompositionAttestation(base({ aggregateFiles: null, aggregateFromCommits: true })).attestation.novelDelta).toEqual({ result: 'none' });
+    // A truncated commit list is never stood in for.
+    expect(buildCompositionAttestation(base({ aggregateFiles: null, aggregateFromCommits: true, commits: null })).attestation.novelDelta.result).toBe('unverifiable');
+  });
+
+  test('(c) a constituent that adds a migration, approved on its own PR, is covered like any other', () => {
+    const mig = 'packages/core/drizzle/20261023000000_x/migration.sql';
+    const b = buildCompositionAttestation(base({
+      commits: [{ sha: 'S1', parents: ['B0'], message: 'feat: schema (#11)', files: [mig], diff: [fd(mig, '@@ -0,0 +1 @@\n+ALTER TABLE t DROP COLUMN c;')] }, base().commits![2]],
+      aggregateFiles: [mig, 'apps/web/package.json', 'CHANGELOG.md'],
+      constituentsByCommit: { S1: { prNumber: 11, mergedHeadSha: 'P11', delivery: approved('11', 'P11') } },
+      reviewedDiffs: { S1: [fd(mig, '@@ -0,0 +1 @@\n+ALTER TABLE t DROP COLUMN c;')] },
+    }));
+    expect(b.attestation.novelDelta).toEqual({ result: 'none' });
+  });
+});

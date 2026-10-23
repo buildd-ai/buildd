@@ -125,3 +125,35 @@ describe('WorkerSteerPanel', () => {
     expect(render({ runner: 'mcp', status: 'idle' })).toContain('worker-release-slot-btn');
   });
 });
+
+test('the task page can hide the separate Communication section while keeping steering', () => {
+  const html = render({ showHistory: false, instructionHistory: [{ id: 'sent', type: 'instruction', message: 'a sent message', timestamp: 1 }] });
+  expect(html).not.toContain('Communication');
+  expect(html).not.toContain('a sent message');
+  expect(html).toContain('worker-instruct-form');
+});
+
+describe('WorkerSteerPanel — stalled run (Navigation R-7, AC-15)', () => {
+  const stalled = async (props: Partial<Parameters<typeof WorkerSteerPanel>[0]>) => {
+    const { RunStallContext } = await import('./run-stall-context');
+    return renderToStaticMarkup(
+      <RunStallContext.Provider value={{ quietMs: 48 * 60_000, label: 'Running 1h 12m · no progress for 48m' }}>
+        <WorkerSteerPanel workerId="w1" status="running" hasUnansweredQuestion={false} instructionHistory={[]} {...props} />
+      </RunStallContext.Provider>,
+    );
+  };
+
+  test('offers Restart and Stop and keeps Steer; Pause is gone', async () => {
+    const html = await stalled({ taskId: 't1' });
+    expect(html).toContain('data-testid="worker-restart-btn"');
+    expect(html).toContain('data-testid="worker-abort-btn"');
+    expect(html).not.toContain('data-testid="worker-pause-btn"');
+    expect(html).toContain('Steer this agent');
+  });
+
+  test('a run making progress keeps Pause and has no Restart', () => {
+    const html = render({ taskId: 't1' });
+    expect(html).toContain('data-testid="worker-pause-btn"');
+    expect(html).not.toContain('data-testid="worker-restart-btn"');
+  });
+});

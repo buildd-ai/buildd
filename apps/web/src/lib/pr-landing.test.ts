@@ -505,6 +505,85 @@ describe('landPr — a PR with no delivery (D2/D3, AC-13)', () => {
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
+  describe('a release candidate under agent-review: composition decides what is reviewed (release-flow.md AC-14, AC-25 to AC-27)', () => {
+    const gateDeps = (scope: any, extra: Partial<LandPrDeps> = {}) => {
+      const outside: any[] = [];
+      const asked: any[] = [];
+      const d: LandPrDeps = {
+        ...deps(),
+        adoptBeforeMerge: (async () => ({ kind: 'gate', why: 'release' })) as never,
+        landThroughKernel: async () => null,
+        mergeOutsideKernel: (async (p: any) => { outside.push(p); return { merged: true, message: 'PR merged' }; }) as never,
+        candidateReview: (async (i: any) => { asked.push(i); return scope; }) as never,
+        ...extra,
+      };
+      return { d, outside, asked };
+    };
+    beforeEach(() => {
+      verdict = 'none';
+      reviewStatus = { state: 'not_requested', verdict: null, confidence: null, merged: false };
+    });
+
+    it('(a) a fully composed candidate (an amended head included) dispatches no reviewer and lands through the release gate', async () => {
+      const { d, outside, asked } = gateDeps({ kind: 'composed', headSha: 'head1', constituents: 55 });
+      const out = await land({ policy: agentReview, releaseConfig: { candidate: {} } as never }, d);
+      expect(out.kind).toBe('merged');
+      expect(asked).toEqual([expect.objectContaining({ workspaceId: 'ws-1', prNumber: 42, releaseConfig: { candidate: {} } })]);
+      expect(mockDispatchFix).not.toHaveBeenCalled();
+      expect(outside).toHaveLength(1);
+    });
+
+    it('(b) N direct commits: one reviewer, over exactly those N, and no merge until it decides', async () => {
+      const commits = [
+        { sha: 'a1'.padEnd(40, '0'), reason: 'direct_commit', paths: ['apps/runner/x.test.ts'] },
+        { sha: 'b2'.padEnd(40, '0'), reason: 'direct_commit', paths: ['apps/web/y.tsx'] },
+      ];
+      const sent: any[] = [];
+      const { d, outside } = gateDeps(
+        { kind: 'delta', headSha: 'head1', commits, paths: ['apps/runner/x.test.ts', 'apps/web/y.tsx'], files: [] },
+        { dispatchFix: undefined, dispatchStaleApprovalReReview: (async (i: any) => { sent.push(i); return { outcome: 'dispatched', reviewTaskId: 'rev-1', plan: 'full' }; }) as never },
+      );
+      const out = await land({ policy: agentReview }, d);
+      expect(out).toMatchObject({ kind: 'needs_fix', fix: 're_review', taskId: 'rev-1' });
+      expect((out as { reason: string }).reason).toContain('2 commits no earlier review covered (a100000, b200000)');
+      expect(sent).toHaveLength(1);
+      expect(sent[0].candidateDelta).toEqual({ commits, paths: ['apps/runner/x.test.ts', 'apps/web/y.tsx'], files: [] });
+      expect(outside).toHaveLength(0);
+    });
+
+    it('a composition that cannot be proved keeps the full review', async () => {
+      const { d, outside } = gateDeps({ kind: 'unverifiable', headSha: 'head1', reason: 'commit_list_truncated' });
+      const out = await land({ policy: agentReview }, d);
+      expect(out).toMatchObject({ kind: 'needs_fix', fix: 're_review', taskId: 'fix-task-1' });
+      expect((out as { reason: string }).reason).toContain('no review was ever requested');
+      expect(outside).toHaveLength(0);
+    });
+
+    it('an answer about another head claims nothing for this one', async () => {
+      const { d, outside } = gateDeps({ kind: 'composed', headSha: 'old-head', constituents: 3 });
+      const out = await land({ policy: agentReview }, d);
+      expect(out.kind).toBe('needs_fix');
+      expect(outside).toHaveLength(0);
+    });
+
+    it('once the delta reviewer approved this head, it lands without composing again', async () => {
+      reviewStatus = { state: 'approved', verdict: 'approve', confidence: 0.9, merged: false };
+      verdict = 'approved';
+      const { d, outside, asked } = gateDeps({ kind: 'delta', headSha: 'head1', commits: [], paths: [], files: [] });
+      expect((await land({ policy: agentReview }, d)).kind).toBe('merged');
+      expect(asked).toHaveLength(0);
+      expect(outside).toHaveLength(1);
+    });
+
+    it('an ordinary PR never asks for a composition', async () => {
+      const asked: any[] = [];
+      const d: LandPrDeps = { ...deps(), candidateReview: (async (i: any) => { asked.push(i); return { kind: 'composed', headSha: 'head1', constituents: 1 }; }) as never };
+      const out = await land({ policy: agentReview }, d);
+      expect(out.kind).toBe('needs_fix');
+      expect(asked).toHaveLength(0);
+    });
+  });
+
   it('shadow (observe only) opens nothing', async () => {
     const adopted: any[] = [];
     const d: LandPrDeps = { ...deps(), adoptBeforeMerge: (async (i: any) => { adopted.push(i); return { kind: 'legacy', reason: 'kernel_off' }; }) as never };
