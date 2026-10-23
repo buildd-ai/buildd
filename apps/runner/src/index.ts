@@ -1,3 +1,4 @@
+import { slotsOriginLine, readSlotsMeta } from './runner-slots';
 import { createPeriodicSelfHeal } from './self-heal';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
@@ -440,6 +441,9 @@ interface SavedConfig {
   serverless?: boolean;
   model?: string;
   maxConcurrent?: number; // Max concurrent workers (default: 3)
+  slotsSetAt?: number; // Epoch ms of the last change of maxConcurrent (runner-slots.ts SlotsMeta)
+  slotsOrigin?: string; // 'dashboard' | 'machine'
+  slotsSetBy?: string | null;
   loginMode?: string; // How this runner's own logins share its slots (runner-logins.ts; default balanced)
   acceptRemoteTasks?: boolean; // Accept task assignments from dashboard (default: true)
   bypassPermissions?: boolean; // Bypass permission prompts (dangerous commands still blocked)
@@ -475,6 +479,9 @@ function loadSavedConfig(): SavedConfig {
         serverless: data.serverless,
         model: data.model,
         maxConcurrent: data.maxConcurrent,
+        slotsSetAt: data.slotsSetAt,
+        slotsOrigin: data.slotsOrigin,
+        slotsSetBy: data.slotsSetBy,
         loginMode: data.loginMode,
         acceptRemoteTasks: data.acceptRemoteTasks,
         bypassPermissions: data.bypassPermissions,
@@ -710,6 +717,11 @@ const config: LocalUIConfig = {
   builddServer: resolveBuilddServer({ env: process.env, saved: savedConfig.builddServer }),
   apiKey: resolvedApiKey,
   maxConcurrent: savedConfig.maxConcurrent || parseInt(process.env.MAX_CONCURRENT || '3'),
+  // Who set it and when, so the heartbeat can say and the later change wins (spec 34a48877 R-21).
+  slotsChangedAt: savedConfig.maxConcurrent && typeof savedConfig.slotsSetAt === 'number' ? savedConfig.slotsSetAt : undefined,
+  slotsOrigin: savedConfig.slotsOrigin === 'dashboard' ? 'dashboard' : savedConfig.slotsSetAt ? 'machine' : undefined,
+  slotsSetBy: savedConfig.slotsSetBy ?? null,
+  slotsConfigFile: CONFIG_FILE,
   // How this runner's own logins share its slots (spec 34a48877 R-14).
   loginMode: parseLoginMode(savedConfig.loginMode) ?? DEFAULT_LOGIN_MODE,
   model: process.env.MODEL || savedConfig.model || bundledTierEntry('standard').model,
@@ -1666,6 +1678,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         ...routeStatus,
         model: config.model,
         maxConcurrent: config.maxConcurrent,
+        // Where N came from and when (spec 34a48877 R-22); top's header says it.
+        slotsNote: slotsOriginLine(readSlotsMeta(CONFIG_FILE)),
         // How this runner's own logins share its slots (spec 34a48877 R-14); top's header says it (c7410e76 R-60).
         loginMode: config.loginMode,
         // What confines each backend here and where its tasks go (isolationVerdict); top's header says it.
@@ -2230,6 +2244,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         slots: config.maxConcurrent,
         running: liveAgentCount(),
         source: slotsSource(loadSavedConfig(), process.env),
+        // Where N came from and when (spec 34a48877 R-22): "set on buildd.dev by Max, 14:02".
+        origin: slotsOriginLine(readSlotsMeta(CONFIG_FILE)),
         paused: workerManager?.slotPauses.size ?? 0,
       }, { headers: corsHeaders });
     }
@@ -2240,9 +2256,11 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       const client = buildd;
       const result = await applySlots(body, {
         setSlots: (n) => {
-          saveConfig({ maxConcurrent: n });
-          if (wm) wm.setSlots(n);
-          else config.maxConcurrent = n;
+          // A change on this machine: the later change wins over one from buildd.dev (R-21).
+          const meta = { changedAt: Date.now(), origin: 'machine' as const, setBy: null };
+          saveConfig({ maxConcurrent: n, slotsSetAt: meta.changedAt, slotsOrigin: meta.origin, slotsSetBy: null });
+          if (wm) wm.setSlots(n, meta);
+          else { config.maxConcurrent = n; config.slotsChangedAt = meta.changedAt; config.slotsOrigin = meta.origin; config.slotsSetBy = null; }
         },
         agents: () => (wm?.getWorkers() ?? []).map((w: LocalWorker) => ({ id: w.id, title: w.taskTitle || w.id, status: w.status, startedAt: w.startedAt ?? 0 })),
         // The same server path as p and x in top, so the dashboard sees the same thing.
@@ -2256,6 +2274,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       });
       // Without a worker manager nothing else says it; with one, setSlots did.
       if (result.status === 200 && !wm) broadcast({ type: 'slots', maxConcurrent: config.maxConcurrent });
+      if (result.status === 200) result.body.origin = slotsOriginLine(readSlotsMeta(CONFIG_FILE));
       return Response.json(result.body, { status: result.status, headers: corsHeaders });
     }
 

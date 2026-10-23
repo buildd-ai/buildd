@@ -4,7 +4,7 @@ import SettingsSection from '../SettingsSection';
 import RunnerTokensSection from '../RunnerTokensSection';
 import CloudflareSection from '../CloudflareSection';
 import { StatusChip } from '../_components/ConnectionRow';
-import { loadAccountLastSeen, loadAccountModelAuth, loadRunnerAccounts, loadSettingsContext } from '../_lib/settings-context';
+import { loadAccountLastSeen, loadAccountModelAuth, loadAccountRunnerSlots, loadRunnerAccounts, loadSettingsContext } from '../_lib/settings-context';
 import { loadFleetSnapshot } from '@/lib/home-fleet';
 import { teamHasAgentCredential } from '@/lib/getting-started-load';
 import type { FleetSnapshot } from '@buildd/shared';
@@ -53,9 +53,10 @@ export default async function RunnersSettingsPage({
     teamId ? teamHasAgentCredential(teamId).catch(() => null) : Promise.resolve(null),
   ]);
   const accountIds = accounts.map((a) => a.id as string);
-  const [lastSeen, modelAuth] = await Promise.all([
+  const [lastSeen, modelAuth, runnerSlots] = await Promise.all([
     loadAccountLastSeen(accountIds).catch(() => ({} as Record<string, string>)),
     loadAccountModelAuth(accountIds).catch(() => ({} as Awaited<ReturnType<typeof loadAccountModelAuth>>)),
+    loadAccountRunnerSlots(accountIds).catch(() => ({} as Awaited<ReturnType<typeof loadAccountRunnerSlots>>)),
   ]);
   // Each control follows the permission its route enforces, with each team's
   // overrides (a personal team counts as owned): the host-runner flag is
@@ -68,6 +69,7 @@ export default async function RunnersSettingsPage({
     lastSeenAt: lastSeen[a.id] ?? null,
     modelAuthSource: modelAuth[a.id]?.claude ?? null,
     codexAuthSource: modelAuth[a.id]?.codex ?? null,
+    runners: runnerSlots[a.id] ?? [],
     canManageHostRunner: adminTeamIds.has(a.teamId),
     // DELETE /api/accounts/[id]: your own key, or manage_team_keys in its team.
     canDelete: adminTeamIds.has(a.teamId) || (createdByUserId != null && createdByUserId === user.id),

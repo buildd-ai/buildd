@@ -6,7 +6,7 @@
  * Run: bun run scripts/run-unit-tests.ts apps/web/src/lib/artifact-page-csp.test.ts
  */
 import { describe, expect, it } from 'bun:test';
-import nextConfig, { artifactPageCsp } from '../../next.config.mjs';
+import nextConfig, { artifactPageCsp, DESIGN_FRAMING_SOURCES } from '../../next.config.mjs';
 
 describe('artifactPageCsp', () => {
   it('allows frames from the storage origin only, dropping the bucket path', () => {
@@ -31,11 +31,14 @@ describe('artifactPageCsp', () => {
 });
 
 describe('next.config headers', () => {
-  it('sets the CSP on the artifact page and nowhere else', async () => {
+  it('sets the CSP on the artifact page and the mission, task and spec pages, nowhere else', async () => {
     const headers = await nextConfig.headers!();
     const withCsp = headers.filter((h) => h.headers.some((x) => x.key === 'Content-Security-Policy'));
-    expect(withCsp.map((h) => h.source)).toEqual(['/app/artifacts/:id']);
-    const value = withCsp[0].headers.find((x) => x.key === 'Content-Security-Policy')!.value;
-    expect(value.startsWith('frame-src ')).toBe(true);
+    expect(withCsp.map((h) => h.source)).toEqual(['/app/artifacts/:id', ...DESIGN_FRAMING_SOURCES]);
+    expect(DESIGN_FRAMING_SOURCES).toEqual(['/app/missions/:id', '/app/tasks/:id', '/app/specs/:specId']);
+    for (const h of withCsp) {
+      const value = h.headers.find((x) => x.key === 'Content-Security-Policy')!.value;
+      expect(value.startsWith('frame-src ')).toBe(true);
+    }
   });
 });
