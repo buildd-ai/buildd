@@ -221,7 +221,7 @@ export function queueWaitGateColumns(now: Date): Record<string, SQL<boolean>> {
   return cols;
 }
 
-async function readTasks(taskIds: string[], now: Date): Promise<QueueWaitTask[]> {
+async function readTasks(taskIds: string[], now: Date, limit: number): Promise<QueueWaitTask[]> {
   const rows = await db
     .select({
       id: tasks.id,
@@ -244,7 +244,7 @@ async function readTasks(taskIds: string[], now: Date): Promise<QueueWaitTask[]>
     .from(tasks)
     .innerJoin(workspaces, eq(workspaces.id, tasks.workspaceId))
     .where(and(inArray(tasks.id, taskIds), eq(tasks.status, 'pending')))
-    .limit(QUEUE_WAIT_LIMIT);
+    .limit(limit);
   return (rows as Array<Record<string, unknown>>).map(r => {
     const gates: QueueWaitTask['gates'] = {};
     for (const g of QUEUE_WAIT_GATES) if (`g_${g}` in r) gates[g] = truthy(r[`g_${g}`]);
@@ -376,15 +376,17 @@ function bypassesMissionBudget(context: unknown): boolean {
 
 /**
  * The one wait of each pending task in `taskIds` (non-pending ids are left
- * out). At most `QUEUE_WAIT_LIMIT` tasks. Never throws: an empty map on a
+ * out). At most `QUEUE_WAIT_LIMIT` tasks, or `opts.limit` (Health › Queue
+ * reads the whole team queue at once). Never throws: an empty map on a
  * failed read.
  */
-export async function loadQueueWaits(taskIds: readonly string[], now: Date = new Date()): Promise<Map<string, LoadedQueueWait>> {
+export async function loadQueueWaits(taskIds: readonly string[], now: Date = new Date(), opts: { limit?: number } = {}): Promise<Map<string, LoadedQueueWait>> {
   const out = new Map<string, LoadedQueueWait>();
-  const ids = [...new Set(taskIds)].slice(0, QUEUE_WAIT_LIMIT);
+  const limit = opts.limit ?? QUEUE_WAIT_LIMIT;
+  const ids = [...new Set(taskIds)].slice(0, limit);
   if (ids.length === 0) return out;
   try {
-    const list = await readTasks(ids, now);
+    const list = await readTasks(ids, now, limit);
     if (list.length === 0) return out;
     const [deps, coord, holds] = await Promise.all([
       readUnmetDependencies(list.filter(t => refuses(t, 'deps'))).catch(() => new Map<string, UnmetDependency[]>()),
@@ -418,7 +420,7 @@ export async function loadQueueWaits(taskIds: readonly string[], now: Date = new
 }
 
 /** The one wait per task id, without the reasons. */
-export async function loadQueueWaitMap(taskIds: readonly string[], now: Date = new Date()): Promise<Map<string, QueueWait>> {
-  const loaded = await loadQueueWaits(taskIds, now);
+export async function loadQueueWaitMap(taskIds: readonly string[], now: Date = new Date(), opts: { limit?: number } = {}): Promise<Map<string, QueueWait>> {
+  const loaded = await loadQueueWaits(taskIds, now, opts);
   return new Map([...loaded].map(([id, l]) => [id, l.wait]));
 }
