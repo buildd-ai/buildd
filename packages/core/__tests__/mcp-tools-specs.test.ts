@@ -225,7 +225,7 @@ describe('manage_specs', () => {
     api.mockResolvedValueOnce({ spec: { ...spec, version: 3, approvedRevision: 2 }, revision: { revision: 2, contentHash: 'ab'.repeat(32) } });
     expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'approve', specId: SPEC, revision: 2, expectedVersion: 2 }, ctx()))).toContain('Approved: revision 2');
     const [endpoint, opts] = api.mock.calls[0];
-    expect([endpoint, opts.method, JSON.parse(opts.body)]).toEqual([`/api/specs/${SPEC}/approve`, 'POST', { revision: 2, expectedVersion: 2 }]);
+    expect([endpoint, opts.method, JSON.parse(opts.body)]).toEqual([`/api/specs/${SPEC}/approve`, 'POST', { revision: 2, expectedVersion: 2, via: 'mcp' }]);
     api.mockRejectedValueOnce(new Error('API error: 403 - {"error":"Approving a spec is a person\'s decision"}'));
     const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'approve', specId: SPEC, revision: 2, expectedVersion: 2 }, ctx());
     expect([r.isError, out(r)]).toEqual([true, "Approving a spec is a person's decision"]);
@@ -233,11 +233,38 @@ describe('manage_specs', () => {
 
   it('approve from an OAuth session returns the confirmation link and says nothing is approved yet', async () => {
     const confirmUrl = `https://buildd.dev/app/specs/${SPEC}/approve?request=tok`;
-    api.mockResolvedValueOnce({ spec: { ...spec, version: 2 }, pending: { confirmUrl, revision: 2, expiresAt: '2026-10-12T20:00:00.000Z' } });
+    api.mockResolvedValueOnce({ spec: { ...spec, version: 2 }, pending: { confirmUrl, revision: 2, expiresAt: '2026-10-12T20:00:00.000Z', sentTo: 'Sam', gate: { passed: true, refusals: [], warnings: [{ code: 'no_change_summary', message: 'No change summary.' }] } } });
     const text = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'approve', specId: SPEC, revision: 2, expectedVersion: 2 }, ctx()));
+    expect(text.split('\n')[0]).toBe('Sent to Sam to confirm; gate passed with 1 warning.');
+    expect(text).toContain('No change summary.');
     expect(text).toContain('Not approved yet');
     expect(text).toContain(confirmUrl);
     expect(text).not.toContain('Approved:');
+  });
+
+  it('approve refused by the quality gate says why and gives no link', async () => {
+    api.mockRejectedValueOnce(new Error('API error: 409 - {"error":"Not sent for approval: the revision fails the quality gate.\\n- R-1 now means something else.","code":"gate_refused"}'));
+    const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'approve', specId: SPEC, revision: 2, expectedVersion: 2 }, ctx());
+    expect(r.isError).toBe(true);
+    expect(out(r)).toContain('Not sent for approval');
+    expect(out(r)).toContain('R-1 now means something else.');
+    expect(out(r)).not.toContain('/approve?request=');
+  });
+
+  it('approve forwards via=chat, and defaults to mcp', async () => {
+    api.mockResolvedValue({ pending: { revision: 2, confirmUrl: 'https://buildd.dev/x', expiresAt: 'soon', gate: { warnings: [] } }, spec: { ...spec, version: 2 } });
+    await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'approve', specId: SPEC, revision: 2, expectedVersion: 2, via: 'chat' }, ctx());
+    expect(JSON.parse(api.mock.calls.at(-1)![1].body).via).toBe('chat');
+    await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'approve', specId: SPEC, revision: 2, expectedVersion: 2 }, ctx());
+    expect(JSON.parse(api.mock.calls.at(-1)![1].body).via).toBe('mcp');
+  });
+
+  it('a gate refusal that carries currentVersion still reports the gate reasons', async () => {
+    api.mockRejectedValueOnce(new Error('API error: 409 - {"error":"Not sent for approval: the revision fails the quality gate.\\n- R-1 now means something else.","code":"gate_refused","currentVersion":2}'));
+    const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'approve', specId: SPEC, revision: 2, expectedVersion: 2 }, ctx());
+    expect(r.isError).toBe(true);
+    expect(out(r)).toContain('R-1 now means something else.');
+    expect(out(r)).not.toContain('Version conflict');
   });
 
   it('submit POSTs the version, and a stale one surfaces currentVersion', async () => {

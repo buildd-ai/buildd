@@ -644,9 +644,10 @@ UPDATE spec_metadata_changes SET previous_value = NULL, new_value = NULL, reason
 UPDATE spec_comments SET body = pg_temp.qa_text(body), anchor_label = pg_temp.qa_text(anchor_label), author_id = md5(author_id),
   resolved_by = CASE WHEN resolved_by IS NULL THEN NULL ELSE md5(resolved_by) END;
 -- A design reference carries free-text screen names and may carry a URL, and an
--- import names the repo path it was read from: both wiped.
+-- import names the repo path it was read from, and an approval carries an
+-- override reason (free text): all wiped.
 UPDATE spec_revisions SET author_id = md5(author_id), change_summary = pg_temp.qa_text(change_summary),
-  approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END, design = NULL, imported = NULL;
+  approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END, design = NULL, imported = NULL, approval = NULL;
 -- Spec attachments: a name is chosen by its author and a caption is free text;
 -- who added or removed one is an id. A name maps to the same placeholder in the
 -- approval record (spec_revisions.approved_attachments), so "changed since

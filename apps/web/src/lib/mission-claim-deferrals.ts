@@ -75,8 +75,10 @@ export function summarizeDeferralRows(
     const detail = (row.detail ?? null) as Record<string, unknown> | null;
     const consecutiveDeferrals = typeof detail?.consecutiveDeferrals === 'number' ? detail.consecutiveDeferrals : 1;
     const firstDeferredAt = typeof detail?.firstDeferredAt === 'string' ? detail.firstDeferredAt : null;
-    // path_overlap layer 1 records the open PR it deferred behind.
+    // path_overlap layer 1 records the open PR it deferred behind; both layers
+    // and a soft overlap record the task that holds the files.
     const blockedByPr = typeof detail?.prNumber === 'number' ? detail.prNumber : null;
+    const holder = [detail?.blockingTaskId, detail?.holderTaskId].find((v): v is string => typeof v === 'string' && v.length > 0) ?? null;
     const prior = byTask.get(row.taskId);
     if (prior && prior.consecutiveDeferrals >= consecutiveDeferrals) continue;
     byTask.set(row.taskId, {
@@ -85,6 +87,7 @@ export function summarizeDeferralRows(
       consecutiveDeferrals,
       firstDeferredAt,
       blockedByPr,
+      blockedByTaskId: holder,
     });
   }
   return [...byTask.values()].sort((a, b) => b.consecutiveDeferrals - a.consecutiveDeferrals);
@@ -113,12 +116,44 @@ export function latestHoldByTask(
 }
 
 /**
- * The claim loop's newest refusal reason for each of these tasks, within
- * `CLAIM_HOLD_WINDOW_MS`. Pass only tasks that are still pending: gate_events
- * never records that a hold cleared. A failed read returns an empty map, which
- * reads as "queued" with no cause, never as a wrong one.
+ * The claim loop's newest refusal for one task, with what the row recorded:
+ * the blocker it named (`detail.blockingTaskId`, `detail.prNumber`), a reset
+ * time, a requirement, and when the streak began. What the R-14 hold reads
+ * (`derivePendingTaskHold`).
  */
-export async function loadClaimHoldReasons(taskIds: readonly string[]): Promise<Map<string, string>> {
+export interface ClaimHoldFacts {
+  reason: string;
+  occurredAt: string;
+  firstDeferredAt: string | null;
+  detail: Record<string, unknown> | null;
+}
+
+/** Pure: the newest refusal per task, with its detail. `rows` must be newest first. */
+export function latestHoldFactsByTask(
+  rows: ReadonlyArray<{ taskId: string | null; reason: string; occurredAt: Date | string; detail?: unknown }>,
+): Map<string, ClaimHoldFacts> {
+  const out = new Map<string, ClaimHoldFacts>();
+  for (const r of rows) {
+    if (!r.taskId || out.has(r.taskId)) continue;
+    const detail = r.detail && typeof r.detail === 'object' ? (r.detail as Record<string, unknown>) : null;
+    const at = new Date(r.occurredAt);
+    out.set(r.taskId, {
+      reason: r.reason,
+      occurredAt: Number.isNaN(at.getTime()) ? String(r.occurredAt) : at.toISOString(),
+      firstDeferredAt: typeof detail?.firstDeferredAt === 'string' ? detail.firstDeferredAt : null,
+      detail,
+    });
+  }
+  return out;
+}
+
+/**
+ * The claim loop's newest refusal for each of these tasks, with its detail,
+ * within `CLAIM_HOLD_WINDOW_MS`. Pass only tasks that are still pending:
+ * gate_events never records that a hold cleared. A failed read returns an
+ * empty map, which reads as "queued" with no cause, never as a wrong one.
+ */
+export async function loadClaimHolds(taskIds: readonly string[]): Promise<Map<string, ClaimHoldFacts>> {
   if (taskIds.length === 0) return new Map();
   try {
     const rows = await db.query.gateEvents.findMany({
@@ -130,10 +165,16 @@ export async function loadClaimHoldReasons(taskIds: readonly string[]): Promise<
       )),
       orderBy: sqlOrderBy([desc(gateEvents.occurredAt)]),
       limit: Math.min(500, taskIds.length * 20),
-      columns: { taskId: true, reason: true },
+      columns: { taskId: true, reason: true, occurredAt: true, detail: true },
     });
-    return latestHoldByTask(rows);
+    return latestHoldFactsByTask(rows);
   } catch {
     return new Map();
   }
+}
+
+/** The newest refusal reason per task (`loadClaimHolds` without the detail). */
+export async function loadClaimHoldReasons(taskIds: readonly string[]): Promise<Map<string, string>> {
+  const holds = await loadClaimHolds(taskIds);
+  return new Map([...holds].map(([id, h]) => [id, h.reason]));
 }

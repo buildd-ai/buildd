@@ -85,6 +85,7 @@ export type TermKey =
   | 'pr.merged_elsewhere'
   | 'pr.closed'
   | 'decision.waiting_on_you'
+  | 'decision.your_decision'
   | 'decision.approval_required'
   // Why something has not started
   | 'wait.scheduled'
@@ -212,6 +213,9 @@ const TERM_LIST: Term[] = [
     from: [] },
   { key: 'decision.waiting_on_you', word: 'Waiting on you', short: 'waiting on you', tone: 'dec', glyph: '!',
     means: 'A decision only a person can make.', liftedBy: 'Answer the decision', from: [k('ESCALATED'), sk('needs_you')] },
+  // The task row's word for the same state (Navigation R-14): the mission's task list and its summary line.
+  { key: 'decision.your_decision', word: 'Your decision', short: 'your decision', tone: 'dec', glyph: '!',
+    means: 'An agent asked a question only a person can answer; the work waits for the answer.', liftedBy: 'Answer the question', from: [] },
 
   // ── Why it has not started ────────────────────────────────────────────────
   { key: 'wait.scheduled', word: 'Scheduled', short: 'scheduled', tone: 'q',
@@ -323,7 +327,8 @@ export type Reader = 'person' | 'agent';
  * `workerId`), so MCP replies are not counted for it.
  */
 export const BANNED_WORDS: ReadonlyArray<{ word: RegExp; use: string; why: string; agentsMay?: true }> = [
-  { word: /\bheld\b|\bon hold\b|\bstart mode\b/i, use: 'Not started, Paused, Scheduled, Usage limit, Waiting for files, or Waiting + the reason',
+  // `held: runs after <task>` is Navigation R-14's own cause for a queued task behind another task's files: it names the cause, so it is not the bare word.
+  { word: /\bheld\b(?!: runs after )|\bon hold\b|\bstart mode\b/i, use: 'Not started, Paused, Scheduled, Usage limit, Waiting for files, Queued · held: runs after <task>, or Waiting + the reason',
     why: '"Held" covers a person’s pause, a schedule, a usage limit and a file lock, each with a different way out. Name the cause.' },
   { word: /\bnot landed\b|\blanded\b|\blanding\b/i, use: 'Merging, Merged, Merged in #N, Closed without merging',
     why: 'GitHub says Merged. "Landed" is the team’s own metaphor and reads differently on every screen.' },
