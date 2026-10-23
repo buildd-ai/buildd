@@ -8,7 +8,13 @@
 export const SPEC_RELATIONS = ['duplicate', 'overlap', 'distinct'] as const;
 export type SpecRelation = (typeof SPEC_RELATIONS)[number];
 
-export interface DuplicateCandidate { specId: string; title: string; relation: SpecRelation; p: number; similarity: number; decisionRecordId: string | null }
+export interface DuplicateCandidate {
+  specId: string; title: string; relation: SpecRelation; p: number; similarity: number; decisionRecordId: string | null;
+  /** The criteria matched side by side: `here` the checked spec's, `there` this candidate's (R-104). */
+  pairs?: Array<{ here: string; there: string }>;
+  /** The candidate is a draft (R-106): it only ever warns. */
+  draft?: boolean;
+}
 
 export type DuplicateCheck =
   | { ran: true; blocking: DuplicateCandidate[]; warnings: DuplicateCandidate[]; compared: number }
@@ -16,8 +22,12 @@ export type DuplicateCheck =
 
 export interface DuplicateCheckInput {
   workspaceId: string; title: string; body: string; userId?: string | null; accountId?: string | null;
-  /** A spec already in the pool (an approval comparing itself with the rest): left out. */
+  /** A spec already in the pool (an approval comparing itself with the rest, a revise): left out. */
   excludeSpecId?: string;
+  /** Compare with drafts as well as approved specs (R-106). Default true; an approval's overlaps pass false. */
+  drafts?: boolean;
+  /** A revise (R-105): only these criteria of the body, the ones it added or changed, are checked. */
+  criteria?: readonly string[];
 }
 
 export type DuplicateOverride = { supersedes?: string; distinctBecause?: string };

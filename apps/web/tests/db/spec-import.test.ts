@@ -20,6 +20,9 @@ const { importRepoSpecs, confirmImportedSpecs } = await import('../../src/lib/sp
 const { specPageView, specReviewView } = await import('../../src/lib/specs/page-view');
 const { db } = await import('@buildd/core/db');
 const { specs } = await import('@buildd/core/db/schema');
+const { specKnowledgeDeps } = await import('../../src/lib/specs/knowledge');
+const { PgVectorStore } = await import('@buildd/core/knowledge-store');
+const { bowEmbedder } = await import('./bow-embedder');
 
 const rand = () => Math.random().toString(36).slice(2, 10);
 const hex = (n: number) => Array.from({ length: n }, () => Math.floor(Math.random() * 16).toString(16)).join('');
@@ -257,8 +260,13 @@ describe('import: writing it (R-18, AC-76)', () => {
     await q(sql`UPDATE workspaces SET team_id = ${teamA}::uuid, access_mode = 'open' WHERE id = ${w}::uuid`);
     const native = await createSpecDraft(user(member), { workspaceId: w, title: 'Invoices', body: '# Invoices\n\n- R-1: Invoices Overview holds for every widget.\n' }, { duplicates: false });
     if (!native.ok) throw new Error(native.error);
+    // The duplicate shortlist reads the spec corpus: index the approved spec (its after-response work) with an offline embedder.
+    const realKnowledge = { ...specKnowledgeDeps };
+    specKnowledgeDeps.store = async () => new PgVectorStore(bowEmbedder());
+    specKnowledgeDeps.afterResponse = () => {};
     const ok = await approveSpecRevision(user(admin), native.spec.id, { revision: 1, expectedVersion: 1 });
     if (!ok.ok) throw new Error(ok.error);
+    for (const t of queued.splice(0)) await t();
     const gh = fakeGitHub({ 'invoices.md': spec('Invoices Overview', 'billing'), 'other.md': spec('Shipping Labels', 'billing') });
     const deps = {
       ...gh.deps,
@@ -276,6 +284,7 @@ describe('import: writing it (R-18, AC-76)', () => {
     const forced = await importRepoSpecs(user(member), { workspaceId: w, dryRun: false, allowDuplicates: ['docs/specs/invoices.md'] }, deps);
     if (!forced.ok) throw new Error(forced.error);
     expect(forced.result.files.find((f) => f.path === 'docs/specs/invoices.md')).toMatchObject({ action: 'create' });
+    Object.assign(specKnowledgeDeps, realKnowledge);
   });
 
   test('an imported spec is not revised in buildd and not approved outside confirmation: the repo file stays the source', async () => {

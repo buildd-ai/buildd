@@ -1,14 +1,13 @@
 import { describe, expect, it, mock } from 'bun:test';
 
 mock.module('@buildd/core/db', () => ({ db: {} }));
-const { MAX_SIMILAR, SIMILAR_FLOOR, neighbourReason, pickSimilar, sharedFileNeighbours } = await import('./neighbours');
+const { MAX_SIMILAR, neighbourReason, pickSimilar, sharedFileNeighbours } = await import('./neighbours');
 
 describe('pickSimilar', () => {
-  it('drops itself and its relatives, keeps vector hits above the floor, at most MAX_SIMILAR, strongest first', () => {
+  it('drops itself and its relatives, at most MAX_SIMILAR, strongest first (the floor is the knowledge store\'s)', () => {
     const hits = [
       { specId: 'self', score: 0.99, source: 'vector' as const },
       { specId: 'parent', score: 0.9, source: 'vector' as const },
-      { specId: 'low', score: SIMILAR_FLOOR - 0.01, source: 'vector' as const },
       ...Array.from({ length: 7 }, (_, i) => ({ specId: `s${i}`, score: 0.6 + i / 100, source: 'vector' as const })),
     ];
     const rows = pickSimilar(hits, new Set(['self', 'parent']));
@@ -17,8 +16,10 @@ describe('pickSimilar', () => {
     expect(rows.every((r) => r.source === 'vector')).toBe(true);
   });
 
-  it('a lexical hit has no floor (its score is not a cosine) and says so', () => {
-    expect(pickSimilar([{ specId: 'a', score: 0.01, source: 'lexical' }], new Set())).toEqual([{ neighborSpecId: 'a', score: 0.01, source: 'lexical' }]);
+  it('keeps the criterion pair and the chunks it matched (R-102, AC-138)', () => {
+    expect(pickSimilar([{ specId: 'a', score: 0.8, source: 'vector', pair: { here: 'AC-3', there: 'R-7' }, chunkIds: ['c1'] }], new Set())).toEqual([
+      { neighborSpecId: 'a', score: 0.8, source: 'vector', detail: { pair: { here: 'AC-3', there: 'R-7' }, chunks: ['c1'] } },
+    ]);
   });
 });
 
@@ -46,6 +47,8 @@ describe('sharedFileNeighbours', () => {
 describe('neighbourReason', () => {
   it('says why in words', () => {
     expect(neighbourReason('similar', null)).toBe('Similar in what it asks for');
+    // AC-139: a criterion-level match is the reason.
+    expect(neighbourReason('similar', { pair: { here: 'AC-3', there: 'R-7' } })).toBe('AC-3 here reads like R-7 there');
     expect(neighbourReason('shares_files', { files: 1 })).toBe("Changes a file this spec's work changed");
     expect(neighbourReason('shares_files', { files: 3 })).toBe("Changes 3 files this spec's work changed");
     expect(neighbourReason('overlaps', { pairs: [{ here: 'AC-2', there: 'AC-4' }] })).toBe('AC-2 here matches AC-4 there');
