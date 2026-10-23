@@ -104,7 +104,7 @@ export default function DesignPreview({
               aria-label="Screen"
               value={screenId ?? ''}
               onChange={(e) => pick(e.target.value)}
-              className="min-h-[44px] sm:min-h-0 max-w-[60vw] sm:max-w-xs bg-surface-3 border border-border-default rounded-md px-2 py-1.5 text-body text-text-primary"
+              className="min-h-[44px] sm:min-h-0 max-w-[60vw] sm:max-w-xs bg-surface-3 border border-border-default px-2 py-1.5 text-body text-text-primary"
             >
               {screens.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -141,7 +141,7 @@ export default function DesignPreview({
           <a
             href={downloadUrl}
             data-testid="design-download"
-            className="ml-auto min-h-[44px] sm:min-h-0 inline-flex items-center px-3 py-1.5 text-meta bg-surface-3 border border-border-default rounded-md text-text-secondary hover:bg-surface-4 hover:text-text-primary transition-colors"
+            className="ml-auto min-h-[44px] sm:min-h-0 inline-flex items-center px-3 py-1.5 text-meta bg-surface-3 border border-border-default text-text-secondary hover:bg-surface-4 hover:text-text-primary transition-colors"
           >
             Download
           </a>
