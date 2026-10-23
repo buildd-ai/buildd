@@ -21,7 +21,7 @@
 import { createContext, useContext, useId, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import Card from '@/components/ui/Card';
-import { SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH } from '@buildd/core/surface-audit';
+import { VISUAL_REVIEW_SKIP_REASONS, type VisualReviewSkipReason } from '@buildd/core/surface-audit';
 import { saveSurfaceAuditWaiver, useSurfaceAuditWaiver } from './MissionSurfaceAuditWaiver';
 import type { CheckRow, CheckStatus, OutcomeSpecLine, RailStep } from '@/lib/mission-checks';
 import { buildFoldLine } from '@/lib/mission-build-stage';
@@ -225,14 +225,15 @@ export function ChecksCard({ rows, onOpenTask }: { rows: readonly CheckRow[]; on
   );
 }
 
-// ── Skip (R-34) ──────────────────────────────────────────────────────────────
+// ── Skip (spec 072de598 I-7) ──────────────────────────────────────────────────
 
 const SkipContext = createContext<{ skipping: string | null; setSkipping: (key: string | null) => void }>({ skipping: null, setSkipping: () => {} });
 
 /**
- * Skip on a check a person may waive: one word beside the status, then one
- * reason field in place. It records the existing visual-audit waiver
- * (PATCH surfaceAuditWaiver); the row then reads waived, never passed.
+ * Skip on a check a person may waive: one word beside the status, then two
+ * buttons in place, an optional note, no minimum length. Either button
+ * records the waiver in one tap (PATCH surfaceAuditWaiver); the row then
+ * reads waived, never passed, and holds until a person withdraws it.
  * Offered only on a mission page, to a person, while the mission is open.
  */
 const CheckSkip = {
@@ -257,16 +258,16 @@ const CheckSkip = {
     const ctx = useSurfaceAuditWaiver();
     const { skipping, setSkipping } = useContext(SkipContext);
     const router = useRouter();
-    const id = useId();
-    const [reason, setReason] = useState('');
-    const [saving, setSaving] = useState(false);
+    const noteId = useId();
+    const [note, setNote] = useState('');
+    const [saving, setSaving] = useState<VisualReviewSkipReason | null>(null);
     const [error, setError] = useState<string | null>(null);
     if (!ctx || ctx.readonly || ctx.waiver || skipping !== row) return null;
-    async function submit() {
-      setSaving(true);
+    async function submit(reason: VisualReviewSkipReason) {
+      setSaving(reason);
       setError(null);
-      const out = await saveSurfaceAuditWaiver(ctx!.missionId, reason);
-      setSaving(false);
+      const out = await saveSurfaceAuditWaiver(ctx!.missionId, { reason, note: note.trim() || null });
+      setSaving(null);
       if (!out.ok) { setError(out.error); return; }
       setSkipping(null);
       router.refresh();
@@ -275,27 +276,38 @@ const CheckSkip = {
       <form
         data-testid="mission-check-skip-form"
         className="col-start-2 mt-1 flex flex-col gap-2 md:col-[2/4]"
-        onSubmit={e => { e.preventDefault(); void submit(); }}
+        onSubmit={e => e.preventDefault()}
       >
-        {/* Nothing is saved until Skip review: say so, since the word Skip alone only opens this field. */}
-        <label htmlFor={id} className="text-meta text-text-secondary">Why skip it? Not skipped until you press Skip review ({SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH}+ characters).</label>
-        <div className="flex flex-col gap-2 md:flex-row md:items-center">
-          <input
-            id={id}
-            autoFocus
-            value={reason}
-            onChange={e => { setReason(e.target.value); if (error) setError(null); }}
-            minLength={SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH}
-            required
-            aria-invalid={error ? true : undefined}
-            data-testid="mission-check-skip-reason"
-            placeholder="No screens changed for users"
-            className="min-h-11 min-w-0 flex-1 bg-surface-1 px-2 text-body text-text-primary md:min-h-9"
-          />
-          <span className="flex gap-2">
-            <button type="submit" disabled={saving} data-testid="mission-check-skip-confirm" className="btn btn-primary h-11 md:h-9">{saving ? 'Skipping…' : 'Skip review'}</button>
-            <button type="button" disabled={saving} onClick={() => setSkipping(null)} className="btn btn-quiet h-11 md:h-9">Cancel</button>
-          </span>
+        <label htmlFor={noteId} className="text-meta text-text-secondary">Why skip it? Optional. Either button below skips right away.</label>
+        <textarea
+          id={noteId}
+          value={note}
+          onChange={e => { setNote(e.target.value); if (error) setError(null); }}
+          rows={2}
+          data-testid="mission-check-skip-note"
+          placeholder="Add detail, if it helps"
+          className="block w-full min-w-0 resize-none bg-surface-1 px-2 py-1.5 text-body text-text-primary"
+        />
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={!!saving}
+            onClick={() => submit('wrong_or_stuck')}
+            data-testid="mission-check-skip-wrong"
+            className="btn btn-primary h-11 md:h-9"
+          >
+            {saving === 'wrong_or_stuck' ? 'Skipping…' : VISUAL_REVIEW_SKIP_REASONS.wrong_or_stuck}
+          </button>
+          <button
+            type="button"
+            disabled={!!saving}
+            onClick={() => submit('ship_anyway')}
+            data-testid="mission-check-skip-ship"
+            className="btn h-11 md:h-9"
+          >
+            {saving === 'ship_anyway' ? 'Skipping…' : VISUAL_REVIEW_SKIP_REASONS.ship_anyway}
+          </button>
+          <button type="button" disabled={!!saving} data-testid="mission-check-skip-cancel" onClick={() => setSkipping(null)} className="btn btn-quiet h-11 md:h-9">Cancel</button>
         </div>
         {error && <p role="alert" className="font-mono text-meta text-status-error [overflow-wrap:anywhere]">{error}</p>}
       </form>

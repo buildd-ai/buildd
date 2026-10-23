@@ -117,10 +117,32 @@ describe('waiver', () => {
   it('waived when a person skipped and no newer audit exists', () => {
     expect(deriveMissionVisualReview(base({ waiver }))).toMatchObject({ status: 'waived', blocksCompletion: false, nextActor: 'none' });
   });
-  it('a later audit supersedes the waiver', () => {
-    const s = deriveMissionVisualReview(base({ waiver, audit: audit({ createdAt: '2026-10-03T00:00:00Z' }), review: review({ phase: 'queued' }) }));
-    expect(s.status).toBe('queued');
-    expect(s.waiver?.supersededBy).toBeTruthy();
+  // Spec 072de598 r15 I-18 / AC-24: a Skip holds until a person withdraws it.
+  it('a later audit round does not undo it: still waived, its findings shown as information, not blocking', () => {
+    const later = audit({ id: 't2', createdAt: '2026-10-03T00:00:00Z', status: 'completed' });
+    for (const r of [
+      review({ phase: 'queued' }),
+      review({ phase: 'capturing' }),
+      review({ phase: 'needs_you', effectiveIssues: 2, awaitingHuman: 1, needsYouReason: 'unsure' }),
+      review({ phase: 'fixing', effectiveIssues: 1, openFixes: 1 }),
+      review({ phase: 'stalled' }),
+    ]) {
+      const s = deriveMissionVisualReview(base({ waiver, audit: later, review: r, branch: { headSha: 'def456', base: 'dev', integrationPr: ready, workLanded: true } }));
+      expect(s).toMatchObject({ status: 'waived', blocksCompletion: false, blocksMerge: false, pendingVerification: false });
+      expect(s.waiver).toMatchObject({ actorLabel: 'Max', openFindings: r.effectiveIssues });
+      expect(s.findings).toBeUndefined();
+      expect(s.blocked).toBeUndefined();
+    }
+  });
+  it('a new commit or a base refresh does not undo it: a pass on an older commit is not asked for again', () => {
+    const s = deriveMissionVisualReview(base({ waiver, audit: audit({ createdAt: '2026-10-03T00:00:00Z' }), review: review(), auditedSha: 'abc123', branch: { headSha: 'fff999', base: 'dev', integrationPr: ready, workLanded: true } }));
+    expect(s).toMatchObject({ status: 'waived', staleEvidence: false, blocksMerge: false });
+  });
+  it('reads which button the person pressed and their note', () => {
+    const s = deriveMissionVisualReview(base({ waiver: { ...waiver, reason: 'Ship it anyway: the padding is fine' } }));
+    expect(s.waiver).toMatchObject({ skipReason: 'ship_anyway', note: 'the padding is fine' });
+    const legacy = deriveMissionVisualReview(base({ waiver }));
+    expect(legacy.waiver).toMatchObject({ skipReason: null, note: 'copy only change' });
   });
   it('strict ignores a waiver', () => {
     expect(deriveMissionVisualReview(base({ waiver, policy: resolveVisualReviewPolicy({ workspace: 'strict' }) })).status).toBe('needed');

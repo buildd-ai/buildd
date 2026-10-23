@@ -124,7 +124,7 @@ export function presentVisualReview(state: MissionVisualReviewState, opts: Prese
     const w = state.waiver;
     return {
       ...quiet, ...common, stage: 'waived', tone: 'neutral', label: 'Visual check waived', showPanel: !!pr,
-      detail: w ? `${w.actorLabel ? `${w.actorLabel}: ` : ''}${w.reason}` : null,
+      detail: w ? waiverDetail(w) : null,
       record: w
         ? { kind: 'waiver', text: 'Visual check waived', detail: w.reason, reason: w.reason, actor: w.actorLabel, at: w.at, policy: state.policy.mode }
         : null,
@@ -279,4 +279,23 @@ export function visualReviewStateLine(p: VisualReviewPresentation): string {
   const head = p.record?.kind === 'waiver' ? `${p.label}. Reason: ${p.record.reason}` : p.detail ? `${p.label}. ${p.detail}` : p.label;
   const tail = p.owner ? ` Waiting on ${p.owner.label}.` : '';
   return `${head}${/[.!?]$/.test(head) ? '' : '.'}${tail}`;
+}
+
+/**
+ * A standing Skip in words (spec 072de598 I-7, I-18): who skipped it, which
+ * button, their note, and the open findings under it, which never block.
+ * Under Ship it anyway the findings were accepted; otherwise they are shown
+ * for information. Never says passed.
+ */
+export function waiverDetail(w: NonNullable<MissionVisualReviewState['waiver']>): string {
+  const who = w.actorLabel ?? 'A person';
+  const why = w.skipReason === 'wrong_or_stuck' ? `${who} skipped it: the review is wrong or stuck.`
+    : w.skipReason === 'ship_anyway' ? `${who} skipped it to ship anyway.`
+    : `${who} skipped it.`;
+  const note = w.skipReason ? w.note : w.reason;
+  const n = w.openFindings;
+  const findings = n <= 0 ? null
+    : w.skipReason === 'ship_anyway' ? `${n} open ${n === 1 ? 'finding' : 'findings'} accepted.`
+    : `${n} open ${n === 1 ? 'finding' : 'findings'} shown for information; ${n === 1 ? 'it does' : 'they do'} not block.`;
+  return [why, note ? (/[.!?]$/.test(note) ? note : `${note}.`) : null, findings].filter(Boolean).join(' ');
 }

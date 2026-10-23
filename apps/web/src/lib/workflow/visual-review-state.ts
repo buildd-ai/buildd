@@ -15,6 +15,7 @@
  * (`visual-review-state-load.ts`) so none re-derives status from `phase`.
  */
 import { OPEN_TASK_STATUSES, isTerminalTaskStatus, type VisualReviewModel, type VisualReviewPhase } from '@buildd/shared';
+import { parseVisualReviewSkipNote, type VisualReviewSkipReason } from '@buildd/core/surface-audit';
 import type { ResolvedVisualReviewPolicy } from './visual-review-policy';
 
 export const MISSION_VISUAL_REVIEW_STATUSES = [
@@ -150,7 +151,21 @@ export interface MissionVisualReviewState {
   progress?: { captured: number; expected: number | null };
   findings?: { issues: number; undecided: number; fixesOpen: number; stage: 'fixing' | 'needs_decision'; /** The automatic fix rounds ran out and the audit still finds issues: a person's call. */ exhausted: boolean };
   blocked?: { cause: VisualReviewBlockedCause; causeOwner: 'buildd' | 'workspace' | 'unknown'; autoRetriesLeft: number };
-  waiver?: { reason: string; actorLabel: string | null; at: string; supersededBy: string | null };
+  /**
+   * A person's Skip (spec 072de598 I-7, I-18). It stands until a person
+   * withdraws it: a later audit, a base refresh or a new commit does not undo
+   * it. `skipReason` is the button they pressed (null for a free-text waiver);
+   * `openFindings` are the review's open findings now, shown under the Skip as
+   * information (accepted, under Ship it anyway), never as a blocker.
+   */
+  waiver?: {
+    reason: string;
+    actorLabel: string | null;
+    at: string;
+    skipReason: VisualReviewSkipReason | null;
+    note: string | null;
+    openFindings: number;
+  };
   auditTaskId: string | null;
   /**
    * A queued audit that never ran because build work it depends on failed
@@ -171,7 +186,10 @@ export interface MissionVisualReviewState {
   };
 }
 
-const t = (s: string | null | undefined): number => (s ? new Date(s).getTime() : 0);
+function skipOf(body: string): { skipReason: VisualReviewSkipReason | null; note: string | null } {
+  const { reason, note } = parseVisualReviewSkipNote(body);
+  return { skipReason: reason, note };
+}
 
 /** Audit task statuses that are still to run or running. */
 const OPEN_AUDIT: ReadonlySet<string> = new Set(OPEN_TASK_STATUSES);
@@ -204,9 +222,9 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
   const pr = branch.integrationPr;
   const prStage = pr ? integrationStage(pr) : null;
 
-  // A person's skip stands only while no audit has been started after it, and never under strict.
-  const waiverActive = !!input.waiver && policy.waiverAllowed && !(audit && t(audit.createdAt) > t(input.waiver.at));
-  const waiverSuperseded = !!input.waiver && !waiverActive && policy.waiverAllowed && !!audit;
+  // A person's Skip stands until a person withdraws it (I-18): a later audit
+  // round, a base refresh or a new commit does not undo it. Never under strict.
+  const waiverActive = !!input.waiver && policy.waiverAllowed;
 
   let status: MissionVisualReviewStatus;
   let nextActor: VisualReviewNextActor = 'none';
@@ -315,8 +333,8 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
     ...(progress ? { progress } : {}),
     ...(findings ? { findings } : {}),
     ...(blocked ? { blocked } : {}),
-    ...(input.waiver && (waiverActive || waiverSuperseded)
-      ? { waiver: { ...input.waiver, supersededBy: waiverActive ? null : (audit?.id ?? null) } }
+    ...(input.waiver && waiverActive
+      ? { waiver: { ...input.waiver, ...skipOf(input.waiver.reason), openFindings: review?.effectiveIssues ?? 0 } }
       : {}),
     auditTaskId: audit?.id ?? null,
     ...(waitingOn ? { waitingOn } : {}),
