@@ -106,6 +106,7 @@ describe('composition root', () => {
     ]);
     expect(byEvent('pr.close_delivered')).toEqual(['jev-decisions:merge-readiness-outcome', 'reviews:pr-activity-on-close', 'reviews:review-callback-on-close']);
     expect(byEvent('sweep.pr_hourly')).toEqual(['jev-decisions:merge-readiness-outcome-sweep', 'jev-decisions:escalation-dispatch-sweep', 'reviews:superseded-refresh-sweep', 'reviews:orphan-pr-sweep']);
+    expect(byEvent('pr.red_check_unclassified')).toEqual(['jev-decisions:red-check-cause-judgement']);
     expect(byEvent('pr.review_submitted')).toEqual(['reviews:capture-review-feedback', 'reviews:github-verdict-mission-note']);
     expect(byEvent('pr.review_comment_created')).toEqual(['reviews:capture-review-comment']);
     expect(byEvent('pr.base_changed')).toEqual(['missions:record-pr-moved-off-delivery', 'missions:retarget-surface-intents']);
