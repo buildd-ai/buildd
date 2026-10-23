@@ -255,7 +255,7 @@ describe('the 24h TTL is measured from activity, not from the last write', () =>
     const stale = Date.now() - 12 * HOUR;
     patchPersisted(worker.id, { _savedAt: stale, lastActivity: stale, completedAt: undefined });
 
-    const loaded = store.loadAllWorkers();
+    const loaded = store.loadAllWorkers({ reconcileRestart: true });
     expect(loaded).toHaveLength(1);
     expect(loaded[0].status).toBe('error');
     expect(loaded[0].killedByRestart).toBe(true);
@@ -277,7 +277,7 @@ describe('the 24h TTL is measured from activity, not from the last write', () =>
     const ancient = Date.now() - (MAX_AGE_MS + HOUR);
     patchPersisted(worker.id, { _savedAt: ancient, lastActivity: ancient, completedAt: undefined });
 
-    expect(store.loadAllWorkers()).toEqual([]);
+    expect(store.loadAllWorkers({ reconcileRestart: true })).toEqual([]);
     expect(existsSync(workerFile(worker.id))).toBe(false);
   });
 });
