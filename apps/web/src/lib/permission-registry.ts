@@ -54,6 +54,11 @@ export const PERMISSIONS = {
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: null,
   },
+  manage_runner_slots: {
+    description: "Set how many agents one of the team's runners may run at once.",
+    defaultRoles: OWNER_ADMIN,
+    minKeyLevel: null,
+  },
   assign_team_owner: {
     description: 'Make someone an owner, demote or remove an owner, or transfer ownership.',
     defaultRoles: OWNER_ONLY,

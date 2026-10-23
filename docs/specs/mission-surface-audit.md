@@ -93,6 +93,20 @@ and `reference` (an approved design reference findings compare against); both
 are off when absent. The audit task files defects as tasks in the **same mission** (not friction
 reports) and completes with an artifact.
 
+**Design vs built**: when the audit has a design (the mission's `design_reference`,
+else the design the dependency's pinned spec revision names), the claim block
+(`visual-audit-spec-criteria.ts`) hands the auditor a `QA_DESIGN` plan holding every
+criterion that names screens on `screen:` lines. `scripts/qa/design-capture.ts`
+renders each named screen at `#<screen-id>` at its own viewport, from memory in a
+fresh browser context with no buildd session and no network beyond web fonts, pairs
+it with the captured route (by name, or an explicit `routes` entry) at the same
+device width, and writes `designs/`, `side-by-side/` (design | built) and
+`design-captures.json`. The judge gets both images per screen and is asked for
+differences that matter to the criterion (layout, content order, words, states
+shown), not pixels; its verdict cites the screen id. The page is shot in the
+design's theme; Night/Day parity stays its own check. A criterion with no screen
+is judged as before.
+
 **Idempotency**: Re-running decomposition (the organizer creating tasks again)
 never creates a second audit task — the existing-task lookup is by title prefix
 within the mission, so a repeat pass only extends `dependsOn`. Best-effort under

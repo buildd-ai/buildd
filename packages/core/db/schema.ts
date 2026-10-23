@@ -3729,6 +3729,14 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   viewerToken: text('viewer_token'),
   workspaceIds: jsonb('workspace_ids').default([]).$type<string[]>().notNull(),
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
+  // The slots this runner should have, with who set them and when, separate
+  // from the value it reports above (maxConcurrentWorkers). The later change
+  // wins, whichever side made it (packages/shared runner-desired-slots.ts).
+  // Null until a runner reports slots or an owner sets them.
+  desiredSlots: integer('desired_slots'),
+  desiredSlotsOrigin: text('desired_slots_origin').$type<'dashboard' | 'machine'>(),
+  desiredSlotsSetBy: text('desired_slots_set_by'),
+  desiredSlotsSetAt: timestamp('desired_slots_set_at', { withTimezone: true }),
   activeWorkerCount: integer('active_worker_count').default(0).notNull(),
   environment: jsonb('environment').$type<WorkerEnvironment>(),
   sandboxEnabled: boolean('sandbox_enabled'),

@@ -33,6 +33,9 @@ const UPLOAD_CALLER_ALLOWLIST = new Set([
   // Spec attachment uploads (living-specs.md §21): buildArtifactKey under the spec's
   // own workspace, the staging key signed for the declared size, at most 50 MB.
   'apps/web/src/lib/specs/attachments.ts',
+  // Design exports: key from the shared key module under the design's workspace, the body
+  // checked by validateDesignHtml (at most 4 MB) and stored as inert text.
+  'apps/web/src/lib/designs/service.ts',
 ]);
 
 /** Routes that accept a storage key from the request body. */

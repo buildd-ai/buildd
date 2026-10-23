@@ -121,7 +121,7 @@ describe('unlink', () => {
   });
 
   test('refuses an unknown subject kind and the kinds that do not exist yet', async () => {
-    expect(await linkArtifact(A(), artifactId, { subjectKind: 'spec_revision', subjectId: missionA, relation: 'context' })).toMatchObject({ ok: false, status: 400 });
+    expect(await linkArtifact(A(), artifactId, { subjectKind: 'verification', subjectId: missionA, relation: 'context' })).toMatchObject({ ok: false, status: 400 });
     expect(await linkArtifact(A(), artifactId, { subjectKind: 'nope', subjectId: missionA, relation: 'context' })).toMatchObject({ ok: false, status: 400 });
   });
 });

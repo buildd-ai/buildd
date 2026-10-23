@@ -864,6 +864,11 @@ export interface LocalUIConfig {
   builddServer: string;
   apiKey: string;
   maxConcurrent: number;
+  /** Epoch ms of the last change of `maxConcurrent`, who made it, and where config.json is kept (spec 34a48877 R-21, R-22). Absent = never recorded. */
+  slotsChangedAt?: number;
+  slotsOrigin?: 'dashboard' | 'machine';
+  slotsSetBy?: string | null;
+  slotsConfigFile?: string;
   /** How this runner's own logins share its slots (runner-logins.ts, spec 34a48877 R-14). Absent = balanced. */
   loginMode?: LoginMode;
   model: string;
