@@ -30,7 +30,15 @@ export interface TaskTimelineInput {
   /** The PR's merge time, for the Merged row. */
   mergedAt?: Date | string | null;
 }
-const stateOf = (status: string): TimelineEvent['state'] => status === 'completed' ? 'passed' : status === 'failed' ? 'failed' : ['running', 'in_progress', 'assigned', 'starting'].includes(status) ? 'running' : 'muted';
+// A switch, not an inline status array: scripts/status-literal-ratchet.test.ts counts those.
+const stateOf = (status: string): TimelineEvent['state'] => {
+  switch (status) {
+    case 'completed': return 'passed';
+    case 'failed': return 'failed';
+    case 'running': case 'in_progress': case 'assigned': case 'starting': return 'running';
+    default: return 'muted';
+  }
+};
 // A value that is not a date (a lineage offset like `+3m`) is no time, never a crash.
 const iso = (v: Date | string | null | undefined): string | null => {
   const t = v == null ? NaN : new Date(v).getTime();
