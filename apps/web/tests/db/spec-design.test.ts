@@ -74,7 +74,14 @@ describe('a revision carries its design', () => {
     if (!a.ok) throw new Error(a.error);
     const before = await specPageView(admin, d.spec.id);
     if (before.state !== 'ok') throw new Error('not found');
-    expect(before.design).toEqual({ label: 'Cart prototype', href: `/app/artifacts/${art.id}`, version: String(art.current_revision), screens: ['Empty cart'], changedSince: null });
+    // A screen name links to the design preview at the pinned revision (components/DesignPreview.tsx).
+    expect(before.design).toEqual({
+      label: 'Cart prototype',
+      href: `/app/artifacts/${art.id}`,
+      version: String(art.current_revision),
+      screens: [{ name: 'Empty cart', href: `/app/artifacts/${art.id}?screen=cart-empty&revision=${art.current_revision}` }],
+      changedSince: null,
+    });
     await bump(art.id, '<main>v2, redesigned</main>');
     const after = await specPageView(admin, d.spec.id);
     if (after.state !== 'ok') throw new Error('not found');
