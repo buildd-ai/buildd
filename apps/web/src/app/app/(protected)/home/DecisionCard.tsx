@@ -10,7 +10,8 @@ import { MergeAdvice } from '@/components/MergeAdvice';
 import Eyebrow from '@/components/ui/Eyebrow';
 import { displayTaskTitle } from '@/lib/task-title';
 import { decisionLine } from './needs-you-layout';
-import { QuestionCard } from './NeedsYouCards';
+import SharedDecisionCard from '@/components/DecisionCard';
+import { QuestionCard, reviewApprovalView } from './NeedsYouCards';
 
 const sentenceCase = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -26,6 +27,9 @@ const secondary = 'btn min-h-11';
 export function DecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone: (key: string, label: string) => void }) {
   // An agent's question is the one decision card every surface shares (Navigation R-16).
   if (item.question) return <QuestionCard q={item.question} onAnswered={() => onDone(item.key, 'answered')} />;
+  // So is a review a person must give on a PR: an approval, decided on the PR.
+  const approval = reviewApprovalView(item);
+  if (approval) return <SharedDecisionCard view={approval} now={Date.now()} testId="needs-you-card" />;
   return <QueueDecisionCard item={item} onDone={onDone} />;
 }
 
