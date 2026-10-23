@@ -54,7 +54,7 @@ let root: ReturnType<typeof createRoot>;
 const q = <T extends HTMLElement>(id: string) => document.querySelector(`[data-testid="${id}"]`) as T | null;
 const frame = () => q<HTMLIFrameElement>('design-frame')!;
 const box = () => q<HTMLDivElement>('design-frame-box')!;
-const picker = () => q<HTMLSelectElement>('design-screen-picker')!;
+const picker = () => q<HTMLElement>('design-screen-picker')!;
 
 function mount(initialScreenId: string | null) {
   act(() => {
@@ -74,8 +74,12 @@ function mount(initialScreenId: string | null) {
 
 function choose(id: string) {
   act(() => {
-    picker().value = id;
-    picker().dispatchEvent(new Event('change', { bubbles: true }));
+    picker().click();
+  });
+  const opts = Array.from(document.querySelectorAll('[role="option"]')) as HTMLElement[];
+  const name = screens.find((s) => s.id === id)!.name;
+  act(() => {
+    opts.find((o) => o.textContent?.includes(name))!.click();
   });
 }
 
@@ -96,7 +100,7 @@ afterEach(() => {
 describe('DesignPreview on a 390px phone', () => {
   it('opens the deep-linked desktop screen scaled to fit the column', () => {
     mount('desktop-mission');
-    expect(picker().value).toBe('desktop-mission');
+    expect(picker().textContent).toContain('Desktop mission');
     expect(frame().getAttribute('src')).toBe(`${signed}#desktop-mission`);
     expect(frame().style.width).toBe('1440px');
     expect(frame().style.height).toBe('900px');

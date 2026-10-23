@@ -18,6 +18,7 @@
  * (next.config.mjs, artifactPageCsp) limits `frame-src` to the storage origin.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Select } from '@/components/ui/Select';
 import { fitScale, frameSrc, type DesignScreen } from '@/lib/design-preview';
 
 export interface DesignPreviewProps {
@@ -97,23 +98,20 @@ export default function DesignPreview({
           {label}
         </p>
         {screens.length > 0 ? (
-          <label className="flex items-center gap-2 text-meta text-text-secondary min-w-0">
-            <span className="sr-only sm:not-sr-only">Screen</span>
-            <select
-              data-testid="design-screen-picker"
+          <div className="flex items-center gap-2 text-meta text-text-secondary min-w-0">
+            <span className="sr-only sm:not-sr-only" aria-hidden="true">Screen</span>
+            <Select
+              testId="design-screen-picker"
               aria-label="Screen"
               value={screenId ?? ''}
-              onChange={(e) => pick(e.target.value)}
-              className="min-h-[44px] sm:min-h-0 max-w-[60vw] sm:max-w-xs bg-surface-3 border border-border-default px-2 py-1.5 text-body text-text-primary"
-            >
-              {screens.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                  {s.viewport ? ` · ${s.viewport.width}×${s.viewport.height}` : ''}
-                </option>
-              ))}
-            </select>
-          </label>
+              onChange={pick}
+              options={screens.map((s) => ({
+                value: s.id,
+                label: `${s.name}${s.viewport ? ` · ${s.viewport.width}×${s.viewport.height}` : ''}`,
+              }))}
+              className="max-w-[60vw] sm:max-w-xs"
+            />
+          </div>
         ) : null}
         {viewport ? (
           <div className="flex items-center rounded-md border border-border-default overflow-hidden" role="group" aria-label="Zoom">
