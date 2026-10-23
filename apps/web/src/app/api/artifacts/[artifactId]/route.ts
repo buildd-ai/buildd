@@ -12,7 +12,8 @@ import { resolveArtifactShortId } from '@/lib/artifact-short-id';
 import { isAuditStorageKey } from '@/lib/storage-keys';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { triggerEvent, channels } from '@/lib/pusher';
-import { artifactMetadataMergeSql, isJsonObject } from '@/lib/artifact-metadata-merge';
+import { artifactMetadataMergeSql, isJsonObject, mergeArtifactMetadata } from '@/lib/artifact-metadata-merge';
+import { validateDesignMetadata } from '@/lib/artifact-design';
 import { getArtifactRevision, writeArtifactBody } from '@/lib/artifact-revisions';
 import { SPEC_BODY_WRITE_REFUSED, specIdForBodyArtifact } from '@/lib/specs/body-guard';
 import { recordArtifactRead } from '@/lib/artifact-reads';
@@ -293,6 +294,13 @@ export async function PATCH(
   const { title, content, metadata, expectedRevision } = body;
   if (metadata !== undefined && !isJsonObject(metadata)) {
     return NextResponse.json({ error: 'metadata must be an object' }, { status: 400 });
+  }
+  if (metadata !== undefined) {
+    // Server-owned: a waiting revision upload and the links it asked for
+    // (lib/artifact-upload.ts, lib/artifact-links.ts).
+    for (const k of ['pendingRevision', 'pendingLinks', 'revisionUploadError']) delete (metadata as Record<string, unknown>)[k];
+    const designError = validateDesignMetadata(mergeArtifactMetadata(artifact.metadata, metadata));
+    if (designError) return NextResponse.json({ error: designError }, { status: 400 });
   }
   if (expectedRevision !== undefined) {
     if (content === undefined) {
