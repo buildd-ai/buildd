@@ -90,11 +90,13 @@ const STRANDS = [
   { id: 'st2', title: 'Docs: runner install on Windows' },
 ].map(({ id, title }) => ({ view: { id, title, href: '#' }, model: { strand: { missionId: id, quietMs: 5 * H, blockedReason: null } } }));
 // An agent's question with what waits on it (spec 1b257609), as the projection returns it.
+// On the real clock: the card ticks its age and expiry from now, not from the fixture's NOW.
+const ASKED_NOW = Date.now();
 const QUESTION = {
   workerId: 'fixture-worker', taskId: WAITS_FIXTURE_TASK, href: '#', label: 'Acceptance tests for autostart', runnerName: null,
-  askedAt: new Date(NOW - 30 * 60_000).toISOString(),
+  askedAt: new Date(ASKED_NOW - 30 * 60_000).toISOString(),
   question: homeQuestionView({ waitingFor: WAITS_FIXTURE_QUESTION })!,
-  waits: waitsFixture(NOW),
+  waits: waitsFixture(ASKED_NOW),
 };
 const DECISIONS = deriveHomeAttention({ queue: QUEUE, missions: STRANDS as never, questions: [QUESTION], held: [], isActionable: () => true });
 const ONE = deriveHomeAttention({ queue: [], missions: [], questions: [QUESTION], held: [], isActionable: () => true });
