@@ -12,7 +12,8 @@
  * compare-and-set. A row holds only while its lease runs and its delivery is
  * still in the refresh window (APPROVED or LANDING, or REPAIRING for `behind`);
  * a row that holds nothing is taken over by the next acquire, so a lost release
- * costs the lease, never the lane. No GitHub read: the delivery's kernel state
+ * costs the lease, never the lane. A holder red at its head, or one that has
+ * held past LANE_MAX_TENURE_MS however often it renewed, holds nothing either. No GitHub read: the delivery's kernel state
  * is the whole answer.
  *
  * The lane never drains effects itself. A parked refresh is an ordinary
@@ -20,22 +21,26 @@
  * waking one only makes it due; whoever drains the outbox runs it.
  */
 import { sql, type SQL } from 'drizzle-orm';
-import { acquireLaneOn, settleLanesOn, LANE_HOLD_MS, LANE_PARKED_OUTCOME, type LaneAcquisition, type LaneKey } from '@buildd/workflow-kernel/landing-lane';
+import { acquireLaneOn, settleLanesOn, LANE_HOLD_MS, LANE_MAX_TENURE_MS, LANE_PARKED_OUTCOME, type LaneAcquisition, type LaneKey } from '@buildd/workflow-kernel/landing-lane';
 import type { Exec } from './kernel';
 
 // The lane's rules (modes, hold and backstop, acquire-then-ask-who-holds,
 // release-then-wake) are the package's; this file keeps the statements.
 export {
-  laneOutcome, resolveLandingLaneMode, LANE_HOLD_MS, LANE_PARK_BACKSTOP_MS, LANE_PARKED_OUTCOME,
+  laneOutcome, resolveLandingLaneMode, LANE_HOLD_MS, LANE_MAX_TENURE_MS, LANE_PARK_BACKSTOP_MS, LANE_PARKED_OUTCOME,
   type LandingLaneMode, type LaneAcquisition, type LaneKey,
 } from '@buildd/workflow-kernel/landing-lane';
 
-/** The lane row `l` still holds: lease running and its delivery in the refresh window. */
+/**
+ * The lane row `l` still holds: lease running, tenure not spent, and its delivery in the
+ * refresh window and not red at its head (the package's `holdsLane`).
+ */
 function holdingSql(): SQL {
-  return sql`(l.lease_until > now() AND EXISTS (
+  return sql`(l.lease_until > now() AND l.granted_at > now() - make_interval(secs => ${LANE_MAX_TENURE_MS}::int / 1000.0) AND EXISTS (
     SELECT 1 FROM workflow_deliveries hd
     WHERE hd.id = l.delivery_id
       AND (hd.state IN ('APPROVED', 'LANDING') OR (hd.state = 'REPAIRING' AND hd.state_reason = 'behind'))
+      AND NOT COALESCE(hd.ci = 'red' AND hd.ci_head_sha = hd.current_head_sha, false)
   ))`;
 }
 
@@ -51,7 +56,7 @@ VALUES (${k.repoFullName}::text, ${k.baseRef}::text, ${k.deliveryId}::uuid, ${k.
   now() + make_interval(secs => ${hold}::int / 1000.0), now())
 ON CONFLICT (repo_full_name, base_ref) DO UPDATE
 SET delivery_id = EXCLUDED.delivery_id, head_sha = EXCLUDED.head_sha,
-    granted_at = CASE WHEN l.delivery_id = EXCLUDED.delivery_id THEN l.granted_at ELSE now() END,
+    granted_at = CASE WHEN l.delivery_id = EXCLUDED.delivery_id AND l.lease_until > now() THEN l.granted_at ELSE now() END,
     lease_until = EXCLUDED.lease_until, updated_at = now()
 WHERE l.delivery_id = EXCLUDED.delivery_id OR NOT ${holdingSql()}
 RETURNING l.delivery_id`;

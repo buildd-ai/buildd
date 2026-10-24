@@ -18,6 +18,8 @@ import { world, type OpenedPr, type World } from './workflow-scenarios-world';
 
 const { landPr } = await import('../../src/lib/pr-landing');
 const { drainDelivery } = await import('../../src/lib/workflow/seam');
+const { applyCommand } = await import('../../src/lib/workflow/kernel');
+const { LANE_MAX_TENURE_MS } = await import('../../src/lib/workflow/landing-lane');
 
 let w: World;
 afterEach(() => w?.dispose());
@@ -133,6 +135,62 @@ describe('landing lane: one behind-refresh in flight per base', () => {
     await w.deliver();
     expect((await w.delivery(a)).state).not.toBe('APPROVED');
     expect(updateBranchCalls(b)).toHaveLength(1);
+  });
+
+  // eccb6687: the lane is for landing order. A holder that will not land soon does not hold
+  // the behind PRs' refreshes: B refreshes and lands while A is still unmerged.
+  test('enforce: the holder reads red at its head while still in the window → B refreshes and lands without waiting', async () => {
+    w = await world({ gitConfig: { landingLane: 'enforce' } });
+    const { a, b } = await twoBehind();
+    await sweep(a);
+    await w.deliver();
+    await sweep(b);
+    await w.deliver();
+    expect(updateBranchCalls(b)).toHaveLength(0);
+
+    // The red reading T10 leaves when it does not act (a re-run, a fix it will not start): A stays in the window.
+    const head = (await w.delivery(a)).currentHeadSha!;
+    const r = await applyCommand({ type: 'CiObserved', actor: 'webhook:ci_reading', headSha: head, verdict: 'red', liveChecks: { complete: true, failing: ['test'] } }, { ref: { deliveryId: a.deliveryId } });
+    expect(r.result).toBe('applied');
+    expect(['APPROVED', 'REPAIRING']).toContain((await w.delivery(a)).state);
+    // A's drain settles its lane and wakes B.
+    await drainDelivery(a.deliveryId);
+    expect(updateBranchCalls(b)).toHaveLength(1);
+
+    await green(b);
+    await sweep(b);
+    await w.deliver();
+    expect(w.gh.pr(w.repo, b.prNumber).merged).toBe(true);
+    expect(w.gh.pr(w.repo, a.prNumber).merged).toBe(false);
+    expect(w.gh.unsupported).toEqual([]);
+  });
+
+  test('enforce: a holder past its tenure yields to the waiter even with its lease running', async () => {
+    w = await world({ gitConfig: { landingLane: 'enforce' } });
+    const { a, b } = await twoBehind();
+    await sweep(a);
+    await w.deliver();
+    await sweep(b);
+    await w.deliver();
+    const due = sql`UPDATE workflow_effects SET not_before = now() WHERE delivery_id = ${b.deliveryId}::uuid AND kind = 'refresh_branch'`;
+    await q(due);
+    await drainDelivery(b.deliveryId);
+    expect(updateBranchCalls(b)).toHaveLength(0);
+
+    // A took the lane longer ago than the cap; its lease (renewed or not) still runs.
+    await q(sql`UPDATE landing_lanes SET granted_at = now() - make_interval(secs => ${LANE_MAX_TENURE_MS / 1000 + 60}::int)
+      WHERE repo_full_name = ${w.repo}`);
+    await q(due);
+    await drainDelivery(b.deliveryId);
+    expect(updateBranchCalls(b)).toHaveLength(1);
+    const [lane] = await q<{ delivery_id: string }>(sql`SELECT delivery_id FROM landing_lanes WHERE repo_full_name = ${w.repo}`);
+    expect(lane.delivery_id).toBe(b.deliveryId);
+
+    await green(b);
+    await sweep(b);
+    await w.deliver();
+    expect(w.gh.pr(w.repo, b.prNumber).merged).toBe(true);
+    expect(w.gh.pr(w.repo, a.prNumber).merged).toBe(false);
   });
 
   test('enforce: a lease that ran out frees the lane for the next drain, with no release', async () => {

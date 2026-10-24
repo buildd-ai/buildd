@@ -7,21 +7,27 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import {
   acquireLaneSql, laneHolderSql, laneOutcome, releaseSettledLanesSql, resolveLandingLaneMode, wakeNextWaiterSql,
-  LANE_HOLD_MS, LANE_PARKED_OUTCOME,
+  LANE_HOLD_MS, LANE_MAX_TENURE_MS, LANE_PARKED_OUTCOME,
 } from './landing-lane';
 
 const render = (q: SQL) => new PgDialect().sqlToQuery(q);
 const HOLDING = "hd.state IN ('APPROVED', 'LANDING') OR (hd.state = 'REPAIRING' AND hd.state_reason = 'behind')";
+const NOT_RED = "AND NOT COALESCE(hd.ci = 'red' AND hd.ci_head_sha = hd.current_head_sha, false)";
+const TENURE = 'l.granted_at > now() - make_interval(secs =>';
 const key = { repoFullName: 'acme/x', baseRef: 'dev' };
 
 describe('landing lane SQL', () => {
   test('acquire takes a free or settled lane, or renews its own, by compare-and-set', () => {
     const { sql, params } = render(acquireLaneSql({ ...key, deliveryId: 'd1', headSha: 'H1' }));
     expect(sql).toContain('ON CONFLICT (repo_full_name, base_ref) DO UPDATE');
-    expect(sql).toContain('WHERE l.delivery_id = EXCLUDED.delivery_id OR NOT (l.lease_until > now() AND EXISTS');
+    expect(sql).toContain('WHERE l.delivery_id = EXCLUDED.delivery_id OR NOT (l.lease_until > now() AND l.granted_at');
     expect(sql).toContain(HOLDING);
+    expect(sql).toContain(NOT_RED);
+    expect(sql).toContain(TENURE);
     expect(sql).toContain('RETURNING l.delivery_id');
-    expect(params).toEqual(['acme/x', 'dev', 'd1', 'H1', LANE_HOLD_MS]);
+    // Tenure runs from the grant: only a renewal inside a running lease keeps it.
+    expect(sql).toContain('granted_at = CASE WHEN l.delivery_id = EXCLUDED.delivery_id AND l.lease_until > now() THEN l.granted_at ELSE now() END');
+    expect(params).toEqual(['acme/x', 'dev', 'd1', 'H1', LANE_HOLD_MS, LANE_MAX_TENURE_MS]);
   });
 
   test('the holder read, the release and the wake share the one holding rule', () => {

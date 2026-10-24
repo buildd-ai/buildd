@@ -23,7 +23,7 @@
  */
 import type { ApplyDecision, AttemptOp, Command, EffectKind, FindingOp, RecordOnly, RoundOp } from '../commands';
 import { effectRetry } from '../effects';
-import { holdsLane, LANE_PARKED_OUTCOME } from '../landing-lane';
+import { holdsLane, LANE_MAX_TENURE_MS, LANE_PARKED_OUTCOME } from '../landing-lane';
 import { MERGE_HELD_OUTCOME } from '../merge-hold';
 import type {
   ClaimedEffect, DeliveryRef, EffectAuthority, EffectSnapshot, FactInsert, FollowupEffect, LaneKey, Store, StoredFact, TransitionWrite,
@@ -389,7 +389,7 @@ export class MemoryStore implements Store {
 
   private laneHolds(l: LaneRecord): boolean {
     const d = this.deliveries.get(l.deliveryId);
-    return ms(l.leaseUntil) > this.clock.ms() && !!d && holdsLane(d);
+    return ms(l.leaseUntil) > this.clock.ms() && ms(l.grantedAt) + LANE_MAX_TENURE_MS > this.clock.ms() && !!d && holdsLane(d);
   }
 
   async acquireLane(k: LaneKey & { deliveryId: string; headSha: string; holdMs: number }): Promise<boolean> {
@@ -402,7 +402,7 @@ export class MemoryStore implements Store {
       return true;
     }
     if (cur.deliveryId !== k.deliveryId && this.laneHolds(cur)) return false;
-    this.lanes.set(key, { ...cur, deliveryId: k.deliveryId, headSha: k.headSha, grantedAt: cur.deliveryId === k.deliveryId ? cur.grantedAt : now, leaseUntil });
+    this.lanes.set(key, { ...cur, deliveryId: k.deliveryId, headSha: k.headSha, grantedAt: cur.deliveryId === k.deliveryId && ms(cur.leaseUntil) > this.clock.ms() ? cur.grantedAt : now, leaseUntil });
     return true;
   }
 
