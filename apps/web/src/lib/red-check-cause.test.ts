@@ -229,7 +229,14 @@ describe("not this PR's code (R-3 rules)", () => {
   it('a job green on the base branch keeps its own rule', () => {
     const jobs = applyNotThisPr([windows], { redOnBase: new Set(['lint']), changed: ['apps/runner/a.ts'] });
     expect(jobs[0].rule).toBe('test');
+    expect(jobs[0].baseGreen).toBe(true);
     expect(causeOf(jobs)).toBe('failure');
+  });
+
+  it('baseGreen says whether the base run was read: absent without one, false when red there', () => {
+    expect(applyNotThisPr([windows], { changed: ['apps/web/a.ts'] })[0].baseGreen).toBeUndefined();
+    expect(applyNotThisPr([windows], { redOnBase: new Set(), changed: ['apps/web/a.ts'] })[0]).toMatchObject({ rule: 'unrelated_to_diff', baseGreen: true });
+    expect(applyNotThisPr([windows], { redOnBase: new Set(['Runner unit tests (windows)']) })[0].baseGreen).toBe(false);
   });
 
   it('the card says why, and does not call it a flake', () => {

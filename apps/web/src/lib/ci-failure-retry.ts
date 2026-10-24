@@ -54,6 +54,7 @@ import { dependencyBotPushRefusal, isDependencyBotAuthor, isDependencyBotPrConte
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { CI_RED_ESCALATED_KEY, scheduleCiRedLook } from '@/lib/ci-red-queue';
 import { rerunIfInfraFailure } from '@/lib/ci-infra-failure';
+import { rerunIfKnownFlake } from '@/lib/ci-flake-rerun';
 import { recordRedChecks } from '@/lib/red-check-record';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -79,6 +80,8 @@ export type CiRetrySkipReason =
   | 'duplicate'
   /** The failed jobs hit an infrastructure fault (registry rate limit, image pull): they were re-run, no fix attempt filed. */
   | 'infra_rerun'
+  /** Every failed job is scoped to paths the diff does not touch and was not red on the base: re-run once, the flaky tests filed as friction. */
+  | 'flake_rerun'
   /** The workflow kernel owns this PR and decided not to dispatch now (its state is the reason). */
   | 'kernel_owned'
   /** The kernel blocked the delivery on a trunk incident (§6.10): the base branch fails the same checks. */
@@ -103,6 +106,7 @@ const SKIP_REASON_TEXT: Record<CiRetrySkipReason, string> = {
   advisory_only: 'no CI retry: all failed checks are advisory only (Visual QA)',
   duplicate: 'no CI retry: a retry for this PR and head was filed concurrently',
   infra_rerun: 'no CI retry: the failure is infrastructure (registry or runner), the failed jobs were re-run',
+  flake_rerun: 'no CI retry: the failed jobs test nothing this PR changes and pass on the base, so they were re-run as a flake',
   kernel_owned: 'no CI retry: the workflow kernel owns this PR and its state owes no CI fix now',
   blocked_on_trunk: 'no CI retry: the base branch fails the same checks; one trunk fix runs for every blocked PR',
   release_candidate: 'no CI retry: a frozen release candidate is fixed on its source branch and then amended, never pushed to',
@@ -367,6 +371,19 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     recordSkip(skipCtx, 'infra_rerun', { infraSignature: infra.signature, runId: infra.runId, runAttempt: infra.runAttempt });
     await lookAgain(skipCtx);
     return { kind: 'skipped', reason: 'infra_rerun' };
+  }
+  // A known flake (a job testing nothing the diff touches, not red on the base)
+  // has nothing in the PR for a builder to fix: re-run it once instead.
+  const flake = await rerunIfKnownFlake({ installationId, repoFullName, prNumber, headSha, workspaceId: task.workspaceId });
+  if (flake.rerun) {
+    recordSkip(skipCtx, 'flake_rerun', {
+      runId: flake.runId,
+      runAttempt: flake.runAttempt,
+      flakeSignatures: flake.tests.map(t => t.signature),
+      frictionTaskIds: flake.friction.map(f => f.taskId),
+    });
+    await lookAgain(skipCtx);
+    return { kind: 'skipped', reason: 'flake_rerun' };
   }
 
   // A frozen release candidate is never repaired on its branch: a push there
