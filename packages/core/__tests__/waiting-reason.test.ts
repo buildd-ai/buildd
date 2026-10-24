@@ -52,7 +52,7 @@ describe('waiting-reason', () => {
   });
 
   it('capability, budget, seat, hold and unknown kinds are never forceable', () => {
-    for (const k of ['task_held', 'account_slots', 'oauth_parallelism', 'codex_single_flight', 'managed_entitlement',
+    for (const k of ['task_held', 'account_slots', 'codex_single_flight', 'managed_entitlement',
       'budget_paused', 'provider_unavailable', 'role_unavailable', 'capability_mismatch', 'runner_cooldown',
       'lease_stale', 'unknown'] as WaitingKind[]) {
       expect(WAITING_KIND_SPEC[k].force).toBeNull();

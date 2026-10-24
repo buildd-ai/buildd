@@ -1390,7 +1390,6 @@ function outcomeWords(o: ClaimOutcome, task: TopTask, state: TopState, holds: Pr
 export const DEFERRAL_WORDS: Record<string, string> = {
   ...EXCLUSION_WORDS,
   budget_paused: TERMS['wait.usage_limit'].short,
-  oauth_parallelism: 'the plan allows only a few sessions at once',
   duplicate_worker: 'an agent already has it',
   sibling_retry_open: 'a retry of it is already open',
   awaiting_owner_answer: 'it is waiting on your answer',

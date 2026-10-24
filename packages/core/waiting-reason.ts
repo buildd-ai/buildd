@@ -34,7 +34,6 @@ export type WaitingKind =
   | 'serialized_surface'
   | 'mission_concurrent'
   | 'account_slots'
-  | 'oauth_parallelism'
   | 'codex_single_flight'
   | 'managed_entitlement'
   | 'mission_budget'
@@ -183,7 +182,6 @@ export const WAITING_KIND_SPEC: Record<WaitingKind, KindSpec> = {
   serialized_surface: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Serialized surface', releasesWhen: { event: 'task.finished', text: 'the task holding that surface finishes' }, owner: 'agent', force: memberForce(), claimLoopKey: 'soft_overlap' },
   mission_concurrent: { class: 'capacity', strength: 'hard', intent: 'intentional', gateName: 'Mission concurrency limit', releasesWhen: { event: 'slot.freed', text: 'another task in the mission finishes' }, owner: 'system', force: memberForce(), claimLoopKey: 'mission_concurrent' },
   account_slots: { class: 'capacity', strength: 'hard', intent: 'incidental', gateName: 'Account worker slots', releasesWhen: { event: 'slot.freed', text: 'a worker slot frees' }, owner: 'system', force: null },
-  oauth_parallelism: { class: 'capacity', strength: 'hard', intent: 'incidental', gateName: 'Seat parallelism', releasesWhen: { event: 'slot.freed', text: 'seat pressure drops' }, owner: 'system', force: null },
   codex_single_flight: { class: 'capacity', strength: 'hard', intent: 'incidental', gateName: 'One Codex task per workspace', releasesWhen: { event: 'slot.freed', text: 'the running Codex task ends' }, owner: 'system', force: null },
   managed_entitlement: { class: 'budget', strength: 'hard', intent: 'incidental', gateName: 'Plan limit', releasesWhen: { event: 'slot.freed', text: 'a managed run ends or the allowance refills' }, owner: 'system', force: null },
   mission_budget: { class: 'budget', strength: 'hard', intent: 'intentional', gateName: 'Mission budget', releasesWhen: { event: 'budget.raised', text: 'the mission budget is raised' }, owner: 'human', force: memberForce(POLICY_RAILS) },

@@ -106,7 +106,7 @@ const ON_TASKS: ReadonlySet<WaitingKind> = new Set<WaitingKind>([
   'lease_overlap', 'lease_stale', 'soft_overlap', 'serialized_surface', 'scope_undeclared_mutex',
 ]);
 const FOR_SLOT: ReadonlySet<WaitingKind> = new Set<WaitingKind>([
-  'mission_concurrent', 'account_slots', 'oauth_parallelism',
+  'mission_concurrent', 'account_slots',
   'codex_single_flight', 'eligible_no_runner', 'dispatch_undelivered', 'runner_preference',
 ]);
 
