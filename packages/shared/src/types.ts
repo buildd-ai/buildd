@@ -1051,6 +1051,8 @@ export interface WaitingForOption {
   consequence?: string;
   /** The consequence cut to the button line, under 40 characters (Navigation R-16). */
   effect?: string;
+  /** What the option does to the task: continues, finishes, stops or changes (packages/core/question-waits.ts). */
+  outcome?: 'continues' | 'finishes' | 'stops' | 'changes';
 }
 
 /**

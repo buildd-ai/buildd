@@ -19,6 +19,8 @@ import QuestionHero from '@/app/app/(protected)/tasks/[id]/QuestionHero';
 import { unifyWorkerQuestion, type BriefedWaitingFor, type QuestionNoteLike } from '@/app/app/(protected)/tasks/[id]/question-hero';
 import { answerOutcomeLines, type AnswerOutcome } from '@/app/app/(protected)/tasks/[id]/respond/submit-answer';
 import { useAnswerSubmit, type AnswerSubmitFailure, type AnswerSubmitState } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
+import { useQuestionWaits } from '@/components/use-question-waits';
+import type { QuestionWaits } from '@buildd/core/question-waits';
 
 export interface TaskQuestionProps {
   taskId: string;
@@ -48,6 +50,8 @@ export interface TaskQuestionProps {
   answer?: AnswerSubmitState;
   /** After an answer the card owns is recorded (a refetch, a refresh). */
   onAnswered?: (outcome: AnswerOutcome) => void | Promise<void>;
+  /** What waits on the answer, when a server read already has it; else the card reads the projection. */
+  waits?: QuestionWaits | null;
 }
 
 /** "builder" → "the Builder": who the answer went to. */
@@ -72,8 +76,10 @@ export default function TaskQuestion({
   testId,
   answer: hosted,
   onAnswered,
+  waits: knownWaits,
 }: TaskQuestionProps) {
   const question = unifyWorkerQuestion(waitingFor, questionNote, { workerError });
+  const waits = useQuestionWaits(taskId, waitingFor.prompt, knownWaits);
   const own = useAnswerSubmit({
     workerId,
     taskId,
@@ -94,6 +100,7 @@ export default function TaskQuestion({
       aside={aside}
       enableKeys={enableKeys}
       landOnArrival={landOnArrival}
+      waits={waits}
       onAnswer={(text) => { void submit(text, { noteId: question.noteId }); }}
       sending={sending}
       error={error && <AnswerFailure error={error} />}

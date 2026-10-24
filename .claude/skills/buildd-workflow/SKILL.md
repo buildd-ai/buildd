@@ -302,9 +302,15 @@ Know when to stop and involve a human:
   waiting for input, NOT recorded as a failure, does not count against
   success-rate metrics, and is never auto-retried into the same dead end. The
   owner is notified and answering resumes the work from where you left off.
+  Start each option's description with what it does to your task, in square
+  brackets: `[continues]`, `[finishes]`, `[stops]` or `[changes]` (exactly
+  `[finishes] Ships the fix as it is.`). buildd turns it into which other tasks
+  start, keep waiting or fail, and shows that beside your option.
 - **The same hard block, from an interactive session** (you claimed the task
   with `claim_task` from a person's own Claude Code; no runner manages you):
-  `buildd action=ask_human params={ question, options?, context? }`, then run
+  `buildd action=ask_human params={ question, options?, context? }` (options as
+  `{ label, consequence, outcome }`, outcome one of continues, finishes, stops,
+  changes), then run
   the reply's `waitCommand` as a Bash command with `run_in_background: true`
   (plain `sh` + `curl`; costs no turns while waiting). It exits 0 once
   answered, non-zero with a one-line reason otherwise; on 0 call
