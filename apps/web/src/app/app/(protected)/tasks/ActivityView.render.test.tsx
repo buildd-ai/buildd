@@ -121,20 +121,26 @@ describe('ActivityView: History', () => {
   it('keeps the prototype outcome chips and adds the finished exception filter, with day tallies', () => {
     const html = render(ACTIVITY_SEQUENCE.length - 1, 'history');
     const chips = [...html.matchAll(/<button[^>]*aria-pressed="(true|false)"[^>]*>([^<]+)<\/button>/g)].map(m => m[2]);
-    // Outcome chips, then History's two lenses (spec 9430a28f R-5); no identity filter without reliable lineage.
-    expect(chips).toEqual(['All', 'Merged', 'Had repairs', 'Sent to you', 'Closed without merging', 'Highlights', 'All activity']);
+    // Outcome chips only; no lens, and no identity filter without reliable lineage.
+    expect(chips).toEqual(['All', 'Merged', 'Had repairs', 'Sent to you', 'Closed without merging']);
+    expect(html).toContain('data-testid="activity-day-totals"');
     expect(html).not.toContain('data-testid="activity-who"');
     expect(html).toContain('data-testid="activity-day"');
     expect(html).not.toContain('aria-label="Mission"');
   });
 
-  it('one episode per delivery: retries and reviews are steps, never rows', () => {
+  it('one bar per delivery: retries and reviews never get a row, and the totals are the bars by end mark', () => {
     const html = render(ACTIVITY_SEQUENCE.length - 1, 'history');
     expect(count(html, '>Scheduled export email<')).toBe(1);
     expect(html).not.toContain('[reviewer #');
     expect(html).not.toContain('[builder · after');
-    expect(html).toContain('Automatic repair 1: review notes');
+    expect(html).not.toContain('Automatic repair');
     expect(tag(html, 'activity-tab-history')).toContain('aria-current="page"');
+    const bars = (outcome: string) => count(html, `data-outcome="${outcome}"`);
+    const total = (key: string) => Number(new RegExp(`data-total="${key}"[^>]*><dd[^>]*>(\\d+)</dd>`).exec(html)?.[1] ?? NaN);
+    expect(total('merged')).toBe(bars('delivered'));
+    expect(total('review')).toBe(bars('came-to-you'));
+    expect(total('closed')).toBe(bars('not-delivered'));
   });
 });
 

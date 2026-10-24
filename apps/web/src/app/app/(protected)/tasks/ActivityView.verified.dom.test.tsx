@@ -83,28 +83,6 @@ describe('R-6: verification claims', () => {
   });
 });
 
-describe('R-5: History highlights, full chronology on demand', () => {
-  it('Highlights by default leave detail steps out; All activity tells every step', () => {
-    const tasks: ActivityTaskInput[] = [
-      finished('t1', { workers: [{ ...finished('t1').workers[0] }] }),
-      { id: 'fx1', title: '[builder · after review #1] Done t1', status: 'completed', taskClass: 'attempt', parentTaskId: 't1', missionId: null, createdAt: T('10:20'), updatedAt: T('10:30'),
-        workers: [{ status: 'completed', startedAt: T('10:20'), completedAt: T('10:30'), updatedAt: T('10:30'), lastCommitSha: H2 }] },
-    ];
-    const history = buildActivityEpisodes({ tasks, missions: [], rules });
-    const m = mount();
-    try {
-      m.render(<ActivityView mode="history" now={{ groups: [], inMotion: 0, liveAgents: 0 }} history={history} nowMs={nowMs} hrefs={hrefs} />);
-      const text = () => m.container.querySelector('[data-testid="activity-episode"]')!.textContent ?? '';
-      const lens = (label: string) => [...m.container.querySelectorAll('[data-testid="activity-history-lens"] button')].find(b => b.textContent === label)!;
-      expect(lens('Highlights').getAttribute('aria-pressed')).toBe('true');
-      expect(text()).toContain('Automatic repair 1');
-      expect(text()).not.toContain('New head');
-      act(() => lens('All activity').click());
-      expect(text()).toContain('New head');
-    } finally { m.done(); }
-  });
-});
-
 describe('R-4 / AC-4: attribution and identity filters', () => {
   const tasks = [
     live('mine', { attribution: attributionOf({ createdByUserId: 'me', requesterSource: 'explicit' }, 'me', names) }),
