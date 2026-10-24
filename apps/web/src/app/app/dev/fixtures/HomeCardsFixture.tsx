@@ -14,7 +14,8 @@ import { useEffect, useState } from 'react';
 import { AgentsPanel } from '../../(protected)/home/AgentsPanel';
 import { LandedThisWeek, type LandedMission } from '../../(protected)/home/LandedThisWeek';
 import { HomeBody } from '../../(protected)/home/HomeBody';
-import { deriveHomeAttention } from '@/lib/home-attention';
+import { deriveHomeAttention, homeQuestionView } from '@/lib/home-attention';
+import { WAITS_FIXTURE_QUESTION, WAITS_FIXTURE_TASK, waitsFixture } from './question-waits-fixture';
 import { describeCriteriaBlocker } from '@/lib/completion-check-summary';
 import { CRITERIA_ESCALATION_NOTE_TITLE } from '@/lib/escalation-note-title';
 import { redCheckView, type RedCheckRecord } from '@/lib/red-check-cause';
@@ -88,8 +89,15 @@ const STRANDS = [
   { id: 'st1', title: 'Quarantine flaky tests' },
   { id: 'st2', title: 'Docs: runner install on Windows' },
 ].map(({ id, title }) => ({ view: { id, title, href: '#' }, model: { strand: { missionId: id, quietMs: 5 * H, blockedReason: null } } }));
-const DECISIONS = deriveHomeAttention({ queue: QUEUE, missions: STRANDS as never, questions: [], held: [], isActionable: () => true });
-const ONE = deriveHomeAttention({ queue: QUEUE.slice(0, 1), missions: [], questions: [], held: [], isActionable: () => true });
+// An agent's question with what waits on it (spec 1b257609), as the projection returns it.
+const QUESTION = {
+  workerId: 'fixture-worker', taskId: WAITS_FIXTURE_TASK, href: '#', label: 'Acceptance tests for autostart', runnerName: null,
+  askedAt: new Date(NOW - 30 * 60_000).toISOString(),
+  question: homeQuestionView({ waitingFor: WAITS_FIXTURE_QUESTION })!,
+  waits: waitsFixture(NOW),
+};
+const DECISIONS = deriveHomeAttention({ queue: QUEUE, missions: STRANDS as never, questions: [QUESTION], held: [], isActionable: () => true });
+const ONE = deriveHomeAttention({ queue: [], missions: [], questions: [QUESTION], held: [], isActionable: () => true });
 const COUNTS: DeliveryCounts = { openMissions: 11, executingMissions: 3, liveAgents: 3, slots: { used: 3, total: 4 } };
 const COUNTS_EMPTY: DeliveryCounts = { openMissions: 0, executingMissions: 0, liveAgents: 0, slots: { used: 0, total: 4 } };
 
