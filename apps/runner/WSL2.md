@@ -159,11 +159,19 @@ It checks first, then hands over in this order:
    up where you left off.
 3. **Install the runner service inside WSL** (`buildd service install`) and check
    that it is running.
-4. **Register and start the `buildd wsl` logon task.** At each Windows logon it
-   starts the distribution and keeps it running (`wsl.exe --distribution <name>
-   --exec sleep infinity`). This is needed because WSL does not start a
-   distribution after a reboot and stops one that is idle. The task does not run
-   a runner itself.
+4. **Register and start the distribution's WSL task.** It is a per-user Scheduled
+   Task named `buildd WSL (<distribution>)`, one per distribution. It starts the
+   distribution (`wsl.exe --distribution <name> --exec sleep infinity`) at each
+   Windows logon, and again every five minutes while you are logged on: when WSL
+   stops the distribution, that long-lived process ends, the task restarts on
+   failure, and the repeat starts it if it is still down. While the distribution
+   runs, a repeat does nothing (a running instance is never doubled). This is
+   needed because WSL does not start a distribution after a reboot, stops an idle
+   one, and Windows would not otherwise start it again. The task does not run a
+   runner itself, so it is never a second supervisor. If the task's name is already
+   taken by one that starts a different distribution, migrate stops instead of
+   reusing it. An old fixed-name `buildd wsl` task from an earlier version is
+   replaced, and migrate says so.
 5. **Remove the Windows runner's Scheduled Task** (`buildd service uninstall`)
    once it has checked again that nothing is running on that runner. If a Windows
    runner was started in a terminal, migrate names it and waits for you to close it.
@@ -173,8 +181,8 @@ Scheduled Task, so it is never removed while no WSL service is running. Fix what
 the message says and rerun `buildd wsl migrate`, or run `buildd resume` to put
 the Windows runner back to work. On a machine that has already been handed over,
 a rerun changes nothing and reports each step as done. `buildd wsl migrate --undo`
-removes the logon task. The service inside WSL stays until you run
-`buildd service uninstall` there.
+--distro <name>` removes that distribution's task and no other. The service inside
+WSL stays until you run `buildd service uninstall` there.
 
 Then check **this WSL runner's** own report, not the old Windows runner's. In
 `buildd top` inside Linux and on the dashboard it should show `linux-wsl`, Claude
@@ -209,7 +217,7 @@ WSL terminal. To enable systemd, follow
 [Microsoft's WSL systemd instructions](https://learn.microsoft.com/windows/wsl/systemd)
 explicitly, and restart the distribution from Windows after work has drained.
 Shutting WSL down ends Linux services, and a Windows reboot does not start the
-distribution. Without the `buildd wsl` logon task, open `wsl --distribution Ubuntu`
+distribution. Without the `buildd WSL (<distribution>)` task, open `wsl --distribution Ubuntu`
 after each reboot, then check the service status. Do not add a second Windows
 Scheduled Task that runs the native runner.
 
