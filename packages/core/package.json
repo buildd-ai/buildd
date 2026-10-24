@@ -346,7 +346,7 @@
     "@buildd/spec-contract": "workspace:*",
     "@buildd/ai-kit": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
-    "@openai/codex-sdk": "^0.163.0",
+    "@openai/codex-sdk": "^0.164.0",
     "@opentelemetry/api": "^1.9.0",
     "@typesafe-ai/sdk": "0.7.0",
     "dotenv": "^18.0.0",
