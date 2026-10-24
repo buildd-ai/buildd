@@ -436,13 +436,16 @@ export interface PendingPinnedOptions {
   fetchFn?: typeof fetch;
   /** The Windows runner's pin: `headless://<host>`. Defaults to this machine's. */
   runnerKey?: string;
+  /** The Windows runner's account name for matching account-name pins. */
+  accountName?: string;
   apiKey?: string;
   baseUrl?: string;
 }
 
 /**
- * Pending tasks pinned (`runner:<key>`) to the Windows runner. The tasks route
- * only takes `status=active` (any non-terminal status) or a terminal one, so
+ * Pending tasks pinned to the Windows runner by any of its identities:
+ * `runner:<headless-key>`, `runner:<hostname>`, or `runner:<account-name>`.
+ * The tasks route only takes `status=active` (any non-terminal status) or a terminal one, so
  * ask for active and keep the pending ones here; the default list is paged,
  * so follow `nextCursor` until it runs out. Never throws: a lookup that fails
  * says so in one line and lists nothing.
@@ -458,7 +461,24 @@ export async function listPendingPinned(opts: PendingPinnedOptions): Promise<{ t
     const apiKey = opts.apiKey ?? (config.apiKey || process.env.BUILDD_API_KEY);
     if (!apiKey) return unchecked('no API key');
     const baseUrl = (opts.baseUrl ?? (process.env.BUILDD_CLIENT_URL || config.builddServer || 'https://buildd.dev')).replace(/\/+$/, '');
-    const pin = `runner:${opts.runnerKey ?? headlessRunnerKey({ hostname: undefined, platform: 'windows' })}`;
+
+    // Build all pins that could match the Windows runner
+    const headlessKey = opts.runnerKey ?? headlessRunnerKey({ hostname: undefined, platform: 'windows' });
+    const pins = new Set<string>();
+    pins.add(`runner:${headlessKey}`);
+
+    // Extract hostname from headless key (format: headless://<hostname>)
+    const hostnameMatch = headlessKey.match(/^headless:\/\/(.+)$/);
+    if (hostnameMatch) {
+      const hostname = hostnameMatch[1];
+      pins.add(`runner:${hostname}`);
+    }
+
+    // Add account name pin if provided
+    if (opts.accountName) {
+      pins.add(`runner:${opts.accountName}`);
+    }
+
     const doFetch = opts.fetchFn ?? fetch;
     const found: { title: string }[] = [];
     let cursor: string | null = null;
@@ -472,7 +492,9 @@ export async function listPendingPinned(opts: PendingPinnedOptions): Promise<{ t
         nextCursor?: string | null;
       };
       for (const task of data.tasks ?? []) {
-        if (task.status === 'pending' && task.requiredCapabilities?.includes(pin)) found.push({ title: task.title });
+        if (task.status === 'pending' && task.requiredCapabilities?.some(cap => pins.has(cap))) {
+          found.push({ title: task.title });
+        }
       }
       if (!data.hasMore || !data.nextCursor) return found;
       cursor = data.nextCursor;

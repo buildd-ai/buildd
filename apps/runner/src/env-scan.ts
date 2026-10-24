@@ -12,6 +12,7 @@ import { posixShell } from './posix-shell';
 import { selectedBrowserCapability, getBrowserProviderProbe } from './browser-provider';
 import { localCodexAuthPath } from './host-seat';
 import { CLAUDE_INNER_SANDBOX_UNSHARE, probeBwrapNamespacesDetailed } from './isolation-probe';
+import { runnerHostName } from './runner-host';
 
 export interface ScanConfig {
   extraEnvKeys?: string[];
@@ -292,7 +293,7 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
       type: 'local',
       os: platform(),
       arch: arch(),
-      hostname: hostname(),
+      hostname: runnerHostName(),
     },
     scannedAt: new Date().toISOString(),
     browserProvider: getBrowserProviderProbe(),
