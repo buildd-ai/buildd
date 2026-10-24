@@ -70,6 +70,23 @@ const stem = (file: string) => basename(file).replace(BOARD_FILE_RE, '');
  * src, href or board), in document order, and takes its title and size from
  * the usual keys. A board with no size there falls back to its own `$preview`.
  */
+/**
+ * A v3 canvas keys `boards` by file name ({ "Main.dc.html": { w, h, title } })
+ * and lists them back to front in `order`. Turn that into entries naming their
+ * file, in `order` (boards it leaves out follow in key order), or null when the
+ * canvas is not that shape.
+ */
+function v3Boards(canvas: unknown): Array<Record<string, unknown>> | null {
+  if (!canvas || typeof canvas !== 'object' || Array.isArray(canvas)) return null;
+  const { boards, order } = canvas as Record<string, unknown>;
+  if (!boards || typeof boards !== 'object' || Array.isArray(boards)) return null;
+  const keyed = boards as Record<string, unknown>;
+  const files = Object.keys(keyed).filter(k => BOARD_FILE_RE.test(k));
+  if (files.length === 0) return null;
+  const ordered = Array.isArray(order) ? order.filter((f): f is string => typeof f === 'string' && files.includes(f)) : [];
+  return [...new Set([...ordered, ...files])].map(file => ({ ...(keyed[file] as Record<string, unknown>), file }));
+}
+
 export function readCanvas(dir: string): CanvasBoard[] {
   const project = resolveProjectDir(dir);
   const canvas = readJson(join(project, 'canvas.json'));
@@ -96,7 +113,7 @@ export function readCanvas(dir: string): CanvasBoard[] {
     }
     for (const v of Object.values(o)) if (v && typeof v === 'object') visit(v);
   };
-  visit(canvas);
+  visit(v3Boards(canvas) ?? canvas);
   if (found.length === 0) throw new Error(`${join(project, 'canvas.json')} names no .dc.html board`);
 
   return found.map(b => {
