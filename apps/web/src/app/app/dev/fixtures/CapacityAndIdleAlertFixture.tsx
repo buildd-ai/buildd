@@ -1,7 +1,7 @@
 'use client';
 
-import UiCapacity from '@/components/delivery/UiCapacity';
-import UiIdleAlert from '@/components/delivery/UiIdleAlert';
+import Capacity from '@/components/ui/Capacity';
+import IdleAlert from '@/components/ui/IdleAlert';
 
 export const CAPACITY_FIXTURE_STATE = 'capacity-and-idle-alert';
 
@@ -14,10 +14,10 @@ export default function CapacityAndIdleAlertFixture() {
     <div
       style={{
         padding: '16px',
-        background: '#F7F5F0',
+        background: 'var(--surface-1)',
         minHeight: '100vh',
-        fontFamily: "'Schibsted Grotesk', system-ui, sans-serif",
-        color: '#26231F',
+        fontFamily: 'var(--font-sans)',
+        color: 'var(--text-primary)',
       }}
     >
       <div style={{ maxWidth: '800px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '32px' }}>
@@ -25,13 +25,13 @@ export default function CapacityAndIdleAlertFixture() {
           <h2 style={{ marginTop: 0 }}>Capacity Component</h2>
           <div
             style={{
-              background: '#FDFCF9',
-              border: '1px solid #E3DED5',
+              background: 'var(--card)',
+              border: '1px solid var(--border)',
               borderRadius: '6px',
               padding: '16px',
             }}
           >
-            <UiCapacity
+            <Capacity
               running={3}
               total={9}
               runnersOnline={2}
@@ -48,13 +48,13 @@ export default function CapacityAndIdleAlertFixture() {
           <h2 style={{ marginTop: 0 }}>Idle Alert - With Issues</h2>
           <div
             style={{
-              background: '#FDFCF9',
-              border: '1px solid #E3DED5',
+              background: 'var(--card)',
+              border: '1px solid var(--border)',
               borderRadius: '6px',
               padding: '16px',
             }}
           >
-            <UiIdleAlert
+            <IdleAlert
               idleSlots={4}
               queuedTasks={3}
               cause="no reviewer runner"
@@ -67,13 +67,13 @@ export default function CapacityAndIdleAlertFixture() {
           <h2 style={{ marginTop: 0 }}>Idle Alert - Different Cause</h2>
           <div
             style={{
-              background: '#FDFCF9',
-              border: '1px solid #E3DED5',
+              background: 'var(--card)',
+              border: '1px solid var(--border)',
               borderRadius: '6px',
               padding: '16px',
             }}
           >
-            <UiIdleAlert
+            <IdleAlert
               idleSlots={6}
               queuedTasks={5}
               cause="all runners at capacity limit"
@@ -86,17 +86,17 @@ export default function CapacityAndIdleAlertFixture() {
           <h2 style={{ marginTop: 0 }}>Idle Alert - No Issues (Empty)</h2>
           <div
             style={{
-              background: '#FDFCF9',
-              border: '1px solid #E3DED5',
+              background: 'var(--card)',
+              border: '1px solid var(--border)',
               borderRadius: '6px',
               padding: '16px',
               minHeight: '40px',
               display: 'flex',
               alignItems: 'center',
-              color: '#6B655C',
+              color: 'var(--text-secondary)',
             }}
           >
-            <UiIdleAlert
+            <IdleAlert
               idleSlots={0}
               queuedTasks={0}
               cause="healthy"
@@ -110,13 +110,13 @@ export default function CapacityAndIdleAlertFixture() {
           <h2 style={{ marginTop: 0 }}>Capacity at Different Peak/Avg Values</h2>
           <div
             style={{
-              background: '#FDFCF9',
-              border: '1px solid #E3DED5',
+              background: 'var(--card)',
+              border: '1px solid var(--border)',
               borderRadius: '6px',
               padding: '16px',
             }}
           >
-            <UiCapacity
+            <Capacity
               running={12}
               total={15}
               runnersOnline={3}
