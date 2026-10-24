@@ -63,6 +63,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   list_connectors: 'workers',
   resolve_capability: 'workers',
   request_capability: 'workers',
+  invoke_model_inference: 'workers',
   list_runners: 'workers',
   probe_budget_wall: 'workers',
   read_evidence: 'workers',
@@ -283,8 +284,9 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   suggest_schedule_update: 'more',
   propose_schedule_move: 'more',
   list_connectors: 'more',
-  resolve_capability: 'more',
-  request_capability: 'more',
+  resolve_capability: 'listed', // the skills and default roles name it for missing access
+  request_capability: 'listed', // the skills and default roles name it for missing access
+  invoke_model_inference: 'listed', // the skills and default roles name it for missing access
   trace_schedule: 'more',
   create_schedule: 'more',
   update_schedule: 'more',
@@ -327,7 +329,7 @@ export function actionsOfGroup(group: McpToolGroup): BuilddAction[] {
 export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; parts: { text: string; actions: BuilddAction[] }[] }> = {
   missions: {
     parts: [
-      { text: 'missions (goals with completion criteria that group tasks)', actions: ['manage_missions', 'link_tracker'] },
+      { text: 'missions (goals that group tasks)', actions: ['manage_missions', 'link_tracker'] },
       { text: 'initiatives', actions: ['manage_initiatives'] },
       { text: 'visual review', actions: ['get_visual_review'] },
       { text: 'the spec discrepancy ledger', actions: ['list_discrepancies', 'get_discrepancy', 'adjudicate_discrepancy', 'promote_discrepancy', 'spec_compare'] },
@@ -378,8 +380,8 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   },
   runners: {
     parts: [
-      { text: 'connectors', actions: ['list_connectors', 'resolve_capability', 'request_capability'] },
-      { text: 'message or answer an agent', actions: ['send_agent_message', 'answer_question'] },
+      { text: 'connectors', actions: ['list_connectors', 'resolve_capability', 'request_capability', 'invoke_model_inference'] },
+      { text: 'message an agent', actions: ['send_agent_message', 'answer_question'] },
     ],
   },
   artifacts: {
@@ -391,7 +393,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   },
   schedules: {
     parts: [
-      { text: 'recurring schedules and what they fired', actions: ['list_schedules', 'trace_schedule'] },
+      { text: 'schedules and what they fired', actions: ['list_schedules', 'trace_schedule'] },
       { text: 'create, edit, pause or delete them', actions: ['create_schedule', 'update_schedule', 'pause_schedules', 'delete_schedule'] },
     ],
   },
@@ -406,7 +408,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'model tiers, evidence', actions: ['manage_model_tiers', 'manage_evidence_backends'] },
       { text: 'watched projects', actions: ['manage_watched_projects'] },
       { text: 'releases', actions: ['trigger_release'] },
-      { text: 'knowledge maintenance', actions: ['consolidate_knowledge', 'memory_delete'] },
+      { text: 'knowledge cleanup', actions: ['consolidate_knowledge', 'memory_delete'] },
     ],
   },
 };
@@ -454,6 +456,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   list_connectors: 'connector health',
   resolve_capability: 'who serves a need',
   request_capability: 'ask for access',
+  invoke_model_inference: 'spend a model grant',
   list_runners: 'slots, branch, build, heartbeat',
   probe_budget_wall: 'recheck a limit',
   read_evidence: 'stored run logs',
@@ -531,8 +534,9 @@ const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   update_task: '{taskId, title?, description?, priority?, status?, cancelReason?, supersededBy?, abort?, startAt?, startIn?, tier?, model?, pause?, …}',
   // Token, cost and diff counters are runner telemetry; help lists them.
   update_progress: '{workerId?, progress?, message?, plan?, kind?, …}',
-  resolve_capability: '{capability?, provider?, access?, …}',
+  resolve_capability: '{capability?, provider?, …}',
   request_capability: '{provider, access, …}',
+  invoke_model_inference: '{model, state, questions}',
   register_skill: '{name, content, slug?, personal?, workspaceId?, description?, isRole?, model?, allowedTools?, …}',
   update_skill: '{slug, personal?, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, …}',
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, outcomeSpec?, description?, limit?, taskId?, …}',
@@ -725,9 +729,12 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   ],
   runners: [
     param('workspaceId', str, [{ text: WS, actions: ['list_connectors', 'resolve_capability'] }]),
-    param('capability', str, [{ text: 'Category search filter as domain:verb, e.g. observability:query (request_capability: only model.inference)', actions: ['resolve_capability', 'request_capability'] }]),
-    param('provider', str, [{ text: 'Catalog slug, e.g. axiom; "buildd" for its own tasks:create / analytics:read on a workspace', actions: ['resolve_capability', 'request_capability'] }]),
-    param('access', { type: 'string', enum: ['read', 'write'] }, [{ text: 'read or write (resolve_capability default read)', actions: ['resolve_capability', 'request_capability'] }]),
+    param('capability', str, [{ text: 'domain:verb (observability:query) or model.inference', actions: ['resolve_capability', 'request_capability'] }]),
+    param('provider', str, [{ text: 'Catalog slug (axiom), or buildd', actions: ['resolve_capability', 'request_capability'] }]),
+    param('access', { type: 'string', enum: ['read', 'write'] }, [{ text: 'Default read', actions: ['resolve_capability', 'request_capability'] }]),
+    param('model', str, [{ text: 'A model your grant lists', actions: ['invoke_model_inference'] }]),
+    param('state', str, [{ text: 'Text to judge', actions: ['invoke_model_inference'] }]),
+    param('questions', { type: 'object' }, [{ text: '{name: {type, instructions}}', actions: ['invoke_model_inference'] }]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message', 'answer_question'] }]),
     param('message', str, [{ text: 'Steering message for the running agent, or the answer to its question', actions: ['send_agent_message', 'answer_question'] }]),
   ],

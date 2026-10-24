@@ -737,6 +737,9 @@ export const workerActions = [
   // access is the one asking; a person decides on the request page, and no
   // key, however high, can approve it.
   'request_capability',
+  // Spend this worker's own model.inference grant: one bounded decision through
+  // buildd's broker, which holds the key and checks the grant and budget.
+  'invoke_model_inference',
   'list_releases',
   'get_release',
   // Read-only and team-scoped. Worker level, not trigger: the caller who needs
@@ -1143,6 +1146,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_visual_review: '{ missionTitle? | missionId?, workspaceId?, awaitingOnly? } — a mission\'s visual QA: phase; each audit task (status, times, why); per route+viewport: round, agent verdict, finding, human decision, fix task, shot links; manual shots and reports; what needs you. missionTitle is team-wide unless workspaceId. No mission: missions waiting on you. [admin]',
     resolve_capability: '{ capability?, provider?, access?, roleSlug?, workspaceId? } — what could serve a need in this workspace, before choosing a role. With provider (a catalog slug, access read|write, default read) it shows that one provider\'s state here. capability is a category search filter, domain:verb, domain one of observability|deployment|database|analytics|work_tracking|docs|source_control, verb read|query|write (e.g. "observability:query", "deployment:read"); omit it to list every need something here serves, with what is available now. Returns ranked candidates: provider (catalog slug), installed connector or null, match exact|partial|category, access permitted|auto_grant (route to a role in roles.withAccess)|ask_admin|forbidden (team blocked it)|reconnect|unhealthy, availableNow, health, workspace enablement, compatibility (unknown_until_tested = the provider may refuse a Buildd-run client), risk (writeToolsExposed: mounting exposes every native tool, so read does not mean read-only), runtimeNeeds, nextSteps. Plus operator (Operator deploy grant, deployment needs only) and unclassifiedConnectors. roleSlug defaults to your own task\'s role under a per-task token. Read-only: installing, enabling or granting stays a team admin act. Native tool names and schemas are untouched.',
     request_capability: '{ provider, access, tool?, resource?, environment?, risk?, ttlSeconds?, reason?, workerId? } — ask for access this run needs: provider is the catalog slug (e.g. axiom, vercel) and access is read or write; never a connector id or credential. resolve_capability { capability: "observability:query" } searches which providers serve a category. For buildd itself use provider "buildd" with resource = the UUID of another workspace of your team: access write files tasks there (tasks:create), access read reads its analytics (analytics:read: buildd\'s own, never a provider\'s — for Axiom or any provider MCP ask provider + access, e.g. { provider: "axiom", access: "read", resource: "buildd-traces" }, and never ask a person to widen the worker key). A person approves it and it lands on your task\'s delegation, which your token re-reads on every call; while it is pending_approval keep working and ask again (same row) — do not end the run or ask_human for the same access. model.inference is still { capability: "model.inference", provider openrouter|litellm, models[], budget }. Returns outcome: existing (your role already has it, or a live grant covers it), auto_granted (team policy granted it now, for ttlSeconds), pending_approval (a team admin decides; asking again returns the same request), denied (a person denied this exact ask for this run), forbidden (team blocked it; not appealable here), need_connection / need_reauth / unhealthy (someone must (re)connect the provider), unavailable (nothing serves it) — plus nextSteps and alternatives (e.g. a role that already mounts it). Writes (access write, or a write/admin tool) always need a person. A grant is bound to this worker, task and role and ends with them; it is re-checked on every use, so a revoke stops the next call. Credentials stay server-side.',
+    invoke_model_inference: '{ model (required: an exact model id your grant lists), state (required: the text the questions judge), questions (required: { name: { type: "choice"|"score"|"noul", instructions, criteria? } }), operation? ("decide"), workerId? } — spend this worker\'s own model.inference grant on one bounded decision, through buildd\'s broker: buildd holds the key, picks the team\'s endpoint, reserves the call\'s worst case against the grant\'s budget and records it. Never pass an endpoint, key or provider (refused). Returns { answers, receipt }: the receipt names the grant, the answering model version, tokens, costUsd and debitedUsd. With no live grant it answers no_grant and the exact request_capability call to make (capability "model.inference", provider, models, budget); a person approves it, then you call this again. Use it instead of any script that reads a database URL or a model key of its own. Keep your own results and save them as an artifact; nothing here stores datasets.',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
     list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10), sinceDays? } — list releases for a workspace or mission, newest first: version, state, deploy time, head SHA, id, and the tasks/PRs each shipped. "What shipped this week" = sinceDays: 7. get_release has the full record.',
     get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus workspaceName, commitRangeUrl, degradationTaskId, attributedTasks (task title, status, prNumber, missionId), and attributedMissions.',
@@ -1264,6 +1268,29 @@ const errorResult = (t: string): ToolResult => ({
   content: [{ type: 'text' as const, text: t }],
   isError: true,
 });
+
+// ── Model inference ──────────────────────────────────────────────────────────
+
+/** What the model-inference route rejects in a body (docs/specs/model-inference-agent-capability.md AC-10). */
+const MODEL_INFERENCE_FORBIDDEN_FIELDS = ['baseURL', 'apiKey', 'endpoint', 'headers', 'provider'] as const;
+
+/** A small budget inside MODEL_INFERENCE_LIMITS, every field the grant service requires. */
+const MODEL_INFERENCE_EXAMPLE_BUDGET = {
+  maxUsd: 0.01, maxUsdPerCall: 0.005, maxCalls: 2, maxConcurrent: 1,
+  maxTokensPerCall: 4000, maxTotalTokens: 8000, timeoutMs: 15000,
+};
+
+/** The JSON body of an `API error: <status> - <body>` thrown by ApiFn, or null when it is not one. */
+function parseApiErrorBody(err: unknown): { error?: string; code?: string; receipt?: unknown } | null {
+  const m = /^API error: \d{3} - ([\s\S]*)$/.exec(err instanceof Error ? err.message : '');
+  if (!m) return null;
+  try {
+    const body = JSON.parse(m[1]);
+    return body && typeof body === 'object' ? body : null;
+  } catch {
+    return null;
+  }
+}
 
 // ── Failure analytics formatting ─────────────────────────────────────────────
 
@@ -6252,6 +6279,35 @@ export async function handleBuilddAction(
         body: JSON.stringify({ ...ask, workerId }),
       });
       return text(JSON.stringify(data, null, 2));
+    }
+
+    case 'invoke_model_inference': {
+      // The route refuses these too; refusing here keeps a confused call from leaving at all.
+      const named = MODEL_INFERENCE_FORBIDDEN_FIELDS.filter(f => f in params);
+      if (named.length > 0) {
+        return errorResult(`invoke_model_inference never takes ${named.join(', ')}: buildd picks the endpoint and holds the key. Pass only model, state, questions and operation.`);
+      }
+      const { model, state, questions, operation } = params as Record<string, unknown>;
+      if (typeof model !== 'string' || !model.trim() || typeof state !== 'string' || !questions || typeof questions !== 'object' || Array.isArray(questions)) {
+        return errorResult('invoke_model_inference needs model, state and questions (e.g. { model: "<a model your grant lists>", state: "<one row>", questions: { label: { type: "choice", instructions: "...", criteria: { a: null, b: null } } } }).');
+      }
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      try {
+        const data = await api('/api/agent-capabilities/model-inference', {
+          method: 'POST',
+          body: JSON.stringify({ workerId, model, ...(operation !== undefined ? { operation } : {}), state, questions }),
+        });
+        return text(JSON.stringify(data, null, 2));
+      } catch (err) {
+        const refusal = parseApiErrorBody(err);
+        if (!refusal) throw err;
+        const lines = [`Refused: ${refusal.code ?? 'error'}: ${refusal.error ?? 'model inference failed'}`];
+        if (refusal.code === 'no_grant') {
+          lines.push(`Ask for one, then call invoke_model_inference again once a person approves it: request_capability ${JSON.stringify({ capability: 'model.inference', provider: '<the provider resolve_capability { capability: "model.inference" } names>', models: [model], budget: MODEL_INFERENCE_EXAMPLE_BUDGET, reason: '<why this run needs it>' })}`);
+        }
+        if (refusal.receipt) lines.push(`Receipt (the provider was reached): ${JSON.stringify(refusal.receipt)}`);
+        return errorResult(lines.join('\n'));
+      }
     }
 
     case 'list_connectors': {

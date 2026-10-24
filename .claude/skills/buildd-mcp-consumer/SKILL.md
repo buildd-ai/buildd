@@ -80,6 +80,14 @@ Details, including `discardEdits` and `alreadyShippedIn`: topic
   answer with `await_answer`. Steps in topic `task-lifecycle`.
 - A tool call refused or cancelled refuses that one call, not the task. Read
   the reason, take another route, and still finish with `complete_task`.
+- Missing access (a provider such as Axiom, another workspace, a model
+  answer): ask for it, never build around it.
+  `buildd action=resolve_capability` says what serves the need (pass
+  `capability: "model.inference"` for a model call), and
+  `buildd action=request_capability` asks; a person decides, so keep working
+  while it is pending approval. Spend a model grant with
+  `buildd action=invoke_model_inference`. Never write a script that reads a
+  database URL or a key of its own, and never end with "the sandbox has no X".
 
 A user's global CLAUDE.md may name other reporting tools. In a buildd worker
 session, buildd's own actions are the record; a named tool that does not exist
