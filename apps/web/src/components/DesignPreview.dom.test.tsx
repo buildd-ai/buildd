@@ -97,6 +97,19 @@ afterEach(() => {
   container.remove();
 });
 
+describe('DesignPreview loading state', () => {
+  it('shows a themed loading cover until the frame loads, never a white block', () => {
+    mount('desktop-mission');
+    expect(q('design-frame-loading')?.textContent).toContain('Loading design');
+    expect(frame().className).not.toContain('bg-white');
+    expect(box().className).toContain('bg-surface-2');
+    act(() => {
+      frame().dispatchEvent(new Event('load'));
+    });
+    expect(q('design-frame-loading')).toBeNull();
+  });
+});
+
 describe('DesignPreview on a 390px phone', () => {
   it('opens the deep-linked desktop screen scaled to fit the column', () => {
     mount('desktop-mission');

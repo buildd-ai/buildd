@@ -20,7 +20,7 @@ export interface TimelineEvent {
 export interface TimelineGroup { label: typeof DELIVERY_STAGES[number]; events: TimelineEvent[] }
 interface BuildWorker { id: string; status: string; exitCause?: string | null; error?: string | null; startedAt?: Date | string | null; completedAt?: Date | string | null; turns?: number | null; filesChanged?: number | null; linesAdded?: number | null; linesRemoved?: number | null }
 export interface TaskTimelineInput {
-  task: { status: string; startAt?: Date | string | null };
+  task: { status: string; startAt?: Date | string | null; createdAt?: Date | string | null };
   /** Newest first, just this task's workers; child repairs are separate events. */
   workers: readonly BuildWorker[];
   kind: DeliveryKind;
@@ -29,6 +29,17 @@ export interface TaskTimelineInput {
   ciAttemptTasks?: readonly { id: string; status: string; createdAt?: Date | string | null; workers?: readonly unknown[] }[];
   /** The PR's merge time, for the Merged row. */
   mergedAt?: Date | string | null;
+  /**
+   * A PR the workflow kernel does not own: its agent review (lib/pr-review-status.ts),
+   * an event in Verify like a kernel round (R-11). Ignored when `delivery` is given.
+   */
+  review?: { taskId: string | null; verdict: string | null | undefined; round: number | null | undefined } | null;
+  /** task id → when that run last did something (its newest worker), for an event linked to it (R-8). */
+  eventTimes?: ReadonlyMap<string, Date | string | null>;
+  /** The task this one waits on before it can start (R-20): the stages still ahead name it. */
+  waitingOn?: { taskId: string; title: string } | null;
+  /** The branch the PR merges into, for the Deliver step of a task that has not opened one. */
+  deliverInto?: string | null;
 }
 // A switch, not an inline status array: scripts/status-literal-ratchet.test.ts counts those.
 const stateOf = (status: string): TimelineEvent['state'] => {
@@ -44,11 +55,18 @@ const iso = (v: Date | string | null | undefined): string | null => {
   const t = v == null ? NaN : new Date(v).getTime();
   return Number.isFinite(t) ? new Date(t).toISOString() : null;
 };
+const REVIEW_WORD: Record<string, { word: string; state: TimelineEvent['state'] }> = {
+  approve: { word: 'Approved', state: 'passed' },
+  'request-changes': { word: 'Changes requested', state: 'failed' },
+  escalate: { word: 'Escalated to a person', state: 'pending' },
+};
 const event = (id: string, label: string, state: TimelineEvent['state'], detail: string | null = null, taskId?: string | null, at?: Date | string | null): TimelineEvent => ({ id, label, detail, at: iso(at), state, taskId, children: [] });
 
 export function buildTaskTimeline(input: TaskTimelineInput): TimelineGroup[] {
   const groups: TimelineGroup[] = DELIVERY_STAGES.map(label => ({ label, events: [] }));
   const [build, verify, deliver] = groups.map(g => g.events);
+  if (input.waitingOn) build.push(event('filed', 'Filed', 'muted', null, null, input.task.createdAt));
+  let attemptNo = 0;
   for (const item of groupAttemptHistory(input.workers.map(worker => ({ worker })), input.task).reverse()) {
     if (item.kind === 'bookkeeping') {
       build.push(event(`claims:${item.entries[0].worker.id}`, `${item.entries.length} ${item.entries.length === 1 ? 'claim' : 'claims'} without a session`, 'muted'));
@@ -56,7 +74,8 @@ export function buildTaskTimeline(input: TaskTimelineInput): TimelineGroup[] {
       const w = item.entry.worker;
       const duration = w.startedAt && w.completedAt ? new Date(w.completedAt).getTime() - new Date(w.startedAt).getTime() : null;
       const detail = [duration != null && duration >= 0 ? formatElapsed(duration) : null, w.turns ? `${w.turns} turns` : null, w.filesChanged ? `${w.filesChanged} files` : null, w.linesAdded || w.linesRemoved ? `+${w.linesAdded ?? 0} −${w.linesRemoved ?? 0} lines` : null].filter(Boolean).join(' · ') || null;
-      build.push(event(`worker:${w.id}`, w.status === 'completed' ? 'Built' : w.status === 'failed' ? 'Build stopped' : 'Builder started', stateOf(w.status), detail, null, w.completedAt ?? w.startedAt));
+      attemptNo++;
+      build.push(event(`worker:${w.id}`, w.status === 'completed' ? 'Built' : w.status === 'failed' ? `Attempt ${attemptNo} stopped` : 'Builder started', stateOf(w.status), detail, null, w.completedAt ?? w.startedAt));
     }
   }
   const v = input.delivery;
@@ -100,12 +119,14 @@ export function buildTaskTimeline(input: TaskTimelineInput): TimelineGroup[] {
         if ((step.n ?? 1) > 1 && cause) {
           const task = ranRetries[retryIndex++];
           if (task) shown.add(task.id);
+          // The failure is when its fix was dispatched: the one stored time it has.
+          if (task && !cause.at) cause.at = iso(task.createdAt);
           cause.children.push(event(`legacy:fix:${i}`, `Fix ${retryIndex}`, task ? stateOf(task.status) : 'muted', step.sub || null, task?.id));
         }
         continue;
       }
       if (step.kind === 'retry') continue;
-      const row = event(`legacy:${i}`, step.title, step.kind === 'ci_failed' ? 'failed' : step.kind === 'ci_running' ? 'running' : 'passed', step.sub || null);
+      const row = event(`legacy:${i}`, step.title, step.kind === 'ci_failed' ? 'failed' : step.kind === 'ci_running' ? 'running' : 'passed', step.sub || null, null, step.kind === 'merged' ? input.mergedAt : null);
       (step.kind === 'merged' ? deliver : verify).push(row);
       if (step.kind === 'ci_failed') cause = row;
     }
@@ -116,6 +137,25 @@ export function buildTaskTimeline(input: TaskTimelineInput): TimelineGroup[] {
       failure.children.push(event(`legacy:fix:${task.id}`, 'Fix queued', task.status === 'pending' ? 'pending' : stateOf(task.status), null, task.id));
       verify.push(failure);
     }
+    const r = input.review;
+    const read = r?.verdict ? REVIEW_WORD[r.verdict] : r ? { word: 'In review', state: 'running' as const } : null;
+    if (r && read) {
+      const row = event(`legacy:review:${r.taskId ?? 'pr'}`, ['Code review', read.word, r.round ? `round ${r.round}` : null].filter(Boolean).join(' · '), read.state, null, r.taskId);
+      verify.push(row);
+    }
+  }
+  if (input.waitingOn) {
+    verify.push(event('waiting:verify', `Runs after ${input.waitingOn.title} merges`, 'pending', null, input.waitingOn.taskId));
+    deliver.push(event('waiting:deliver', input.deliverInto ? `Merge into ${input.deliverInto}` : 'Merge', 'pending'));
+  }
+  // A run linked from an event has its own stored time (R-8: every event its age).
+  const times = input.eventTimes;
+  if (times) {
+    const stamp = (e: TimelineEvent) => {
+      if (!e.at && e.taskId && times.has(e.taskId)) e.at = iso(times.get(e.taskId));
+      e.children.forEach(stamp);
+    };
+    groups.forEach(g => g.events.forEach(stamp));
   }
   // Future stages have only their name in the track; no empty card.
   const at = deliveryStageIndex(input.kind);

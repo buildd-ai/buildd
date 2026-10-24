@@ -541,7 +541,11 @@ export function socketHealthCheck(state: SocketWatchdogState | null): {
 }
 
 /** `buildd --doctor`'s runner-process line, from a probe of the socket. */
-export function runnerProcessFromProbe(probe: SocketProbe, socketPath: string): ReturnType<typeof socketHealthCheck> {
+export function runnerProcessFromProbe(
+  probe: SocketProbe,
+  socketPath: string,
+  isNeverStarted: boolean,
+): ReturnType<typeof socketHealthCheck> {
   if (probe.state === 'live' && probe.pid !== null) {
     return { name: 'runner-process', status: 'ok', message: `Runner running (pid ${probe.pid}); ${socketPath} answers` };
   }
@@ -552,6 +556,12 @@ export function runnerProcessFromProbe(probe: SocketProbe, socketPath: string): 
       message: `A process holds ${socketPath} but did not say who it is: a runner whose socket is wedged, or an older one. Find it with: lsof ${socketPath}`,
     };
   }
+  // Socket probe failed: either no socket file exists, or it exists but doesn't answer
+  // Apply never-started rule only when socket file is absent AND nothing has run before
+  if (probe.state === 'absent' && isNeverStarted) {
+    return { name: 'runner-process', status: 'ok', message: 'Runner not started yet. Start it with `buildd`.' };
+  }
+  // Socket file exists but doesn't answer (stale), or absent but runner ran before: a real error
   return { name: 'runner-process', status: 'error', message: `No runner answers on ${socketPath}` };
 }
 

@@ -45,6 +45,12 @@ describe('decisionFromQuestion (Navigation R-16, AC-10)', () => {
     expect(bare.summary).toBeNull();
     expect(bare.options).toEqual([]);
   });
+  it('a lone option with no effect (a legacy note) is no structured option: the card asks the question with Answer differently', () => {
+    const legacy = decisionFromQuestion({ key: 'k', question: { headline: 'Keep the legacy export?', body: null, noteId: 'n1', options: [{ label: 'Kept the export, it is cheap to carry and two teams still read it', recommended: true }] }, task, askedAt: null, answer: { kind: 'note', missionId: 'm', noteId: 'n1' } });
+    expect(legacy.options).toEqual([]);
+    const lone = decisionFromQuestion({ key: 'k', question: { headline: 'Ship it?', body: null, noteId: null, options: [{ label: 'Ship', description: 'Merges when green', recommended: true }] }, task, askedAt: null, answer: { kind: 'worker', workerId: 'w', taskId: 't1', noteId: null } });
+    expect(lone.options.map(o => o.label)).toEqual(['Ship']);
+  });
 });
 
 describe('decisionOptions', () => {

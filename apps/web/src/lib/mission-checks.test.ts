@@ -107,7 +107,7 @@ describe('visualCheck (R-17, R-18, AC-7, AC-8)', () => {
     const states = [
       visualCheck(visual({ status: 'not_applicable', blocksMerge: false, blocksCompletion: false }), opts),
       visualCheck(visual({ status: 'optional', blocksMerge: false, blocksCompletion: false, policy: { mode: 'off', origin: 'workspace', waiverAllowed: true, locked: false } as MissionVisualReviewState['policy'] }), opts),
-      visualCheck(visual({ status: 'waived', waiver: { reason: 'Copy only', actorLabel: 'Owner', at: '2026-10-14T00:00:00Z', supersededBy: null } }), opts),
+      visualCheck(visual({ status: 'waived', waiver: { reason: 'Copy only', actorLabel: 'Owner', at: '2026-10-14T00:00:00Z', skipReason: null, note: 'Copy only', openFindings: 0 } }), opts),
       visualCheck(visual({ status: 'passed' }), opts),
     ];
     expect(states.map(s => s.status)).toEqual(['not_applicable', 'not_applicable', 'waived', 'passed']);
@@ -167,7 +167,7 @@ describe('visualCheck: Skip (spec f7f67f1a R-34, AC-17)', () => {
     const rows = [
       visualCheck(visual({ status: 'queued', policy: strict }), opts),
       visualCheck(visual({ status: 'passed' }), opts),
-      visualCheck(visual({ status: 'waived', waiver: { reason: 'Copy only', actorLabel: 'Owner', at: '2026-10-14T00:00:00Z', supersededBy: null } }), opts),
+      visualCheck(visual({ status: 'waived', waiver: { reason: 'Copy only', actorLabel: 'Owner', at: '2026-10-14T00:00:00Z', skipReason: null, note: 'Copy only', openFindings: 0 } }), opts),
       visualCheck(visual({ status: 'optional', blocksMerge: false, blocksCompletion: false, policy: { mode: 'off', origin: 'workspace', waiverAllowed: true, locked: false } as MissionVisualReviewState['policy'] }), opts),
       visualCheck(visual({ status: 'not_applicable', blocksMerge: false, blocksCompletion: false }), opts),
     ];

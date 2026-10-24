@@ -8,6 +8,7 @@ import { POST_SESSION_TRIAGE_KIND } from '@buildd/core/decision-kind-post-sessio
 import { FAILURE_INCIDENT_TRIAGE_KIND } from '@buildd/core/decision-kind-failure-incident-triage';
 import { VISUAL_IMPACT_KIND } from '@buildd/core/decision-kind-visual-impact';
 import { MISSION_SCOPE_KIND } from '@buildd/core/decision-kind-mission-scope';
+import { RED_CHECK_CAUSE_KIND } from '@buildd/core/decision-kind-red-check-cause';
 import { SCOUT_PROBE_SELECTION_KIND } from '@buildd/core/decision-kind-scout-probe-selection';
 import { TASK_CATEGORY_MEASUREMENT_KIND } from './task-category-decision';
 import { TASK_ROLE_MODEL_KIND } from './task-role-decision';
@@ -30,6 +31,7 @@ describe('decisions a team can give their own model', () => {
       TASK_CATEGORY_MEASUREMENT_KIND, TASK_ROLE_MODEL_KIND, CLAIM_HOLD_DECISION.id, MANIFEST_DECISION_ID,
       OVERLAP_REAL_DECISION.id, SIZE_BUCKET_DECISION.id, STRAND_CHOICE_DECISION_ID, MERGE_READINESS_KIND,
       POST_SESSION_TRIAGE_KIND, FAILURE_INCIDENT_TRIAGE_KIND, SCOUT_PROBE_SELECTION_KIND, EARLY_RELEASE_KIND, SPEC_DUPLICATE_KIND, SPEC_AREA_KIND, SPEC_TAXONOMY_KIND, SPEC_PUBLICATION_KIND, VISUAL_IMPACT_KIND, MISSION_SCOPE_KIND,
+      RED_CHECK_CAUSE_KIND,
     ];
     expect([...passed].sort()).toEqual([...DECISION_MODEL_KINDS].sort());
   });

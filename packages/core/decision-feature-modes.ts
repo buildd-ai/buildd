@@ -116,6 +116,7 @@ export const FEATURE_EFFECT: Record<InferenceCapability, DecisionFeatureEffect> 
   spec_area: 'acts',
   spec_taxonomy: 'advises',
   spec_publication: 'acts',
+  red_check_cause: 'acts',
   chat: 'interactive',
 };
 

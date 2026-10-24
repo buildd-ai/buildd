@@ -20,6 +20,7 @@ import { getGateAnalytics, getGateReasonFamily } from '@/lib/gate-analytics-quer
 import { getLandingMetrics } from '@/lib/pr-landing-metrics';
 import { getReviewRoundMetrics } from '@/lib/workflow/review-round-metrics';
 import { getStalledIngestReport } from '@/lib/knowledge-ingest-stalls';
+import { formatVisualReviewReliability, getVisualReviewReliability } from '@/lib/visual-review-reliability';
 import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 import type {
   FailureAnalytics,
@@ -151,7 +152,12 @@ async function lookupSignature(
  * user's teams, or the pinned one). A key, when present, is authoritative.
  * A per-task token's scope is its own task's workspace.
  *
- * Response: { analytics, lookup?, family?, gates?, gateFamily?, stalledIngest? }
+ * Response: { analytics, lookup?, family?, gates?, gateFamily?, stalledIngest?, visualReviewReliability? }
+ *
+ * `visualReviewReliability` (overview only, omitted when unreadable): the share
+ * of missions that finished visual review without a "The review is wrong or
+ * stuck" Skip over 7 and 30 days, with the causes (spec 072de598 I-19); `text`
+ * is the same readout in words.
  *
  * `stalledIngest` (overview only, omitted when empty): full knowledge-ingest
  * jobs no runner has taken, and those the serverless fallback is running.
@@ -288,8 +294,16 @@ export async function GET(req: NextRequest) {
 
     // Full ingest jobs no runner takes never become failed workers; the
     // overview names them so they are not only visible in a claim response.
-    const stalledIngest = await getStalledIngestReport(scopedWsIds);
-    return NextResponse.json(stalledIngest ? { analytics, stalledIngest } : { analytics });
+    const [stalledIngest, reliability] = await Promise.all([
+      getStalledIngestReport(scopedWsIds),
+      // Spec 072de598 I-19: missions that finished visual review without a wrong-or-stuck Skip, 7 and 30 days.
+      getVisualReviewReliability(scopedWsIds),
+    ]);
+    return NextResponse.json({
+      analytics,
+      ...(stalledIngest ? { stalledIngest } : {}),
+      ...(reliability ? { visualReviewReliability: { ...reliability, text: formatVisualReviewReliability(reliability) } } : {}),
+    });
   } catch (err) {
     console.error('[GET /api/health/failures] Unhandled error:', err);
     const message = err instanceof Error ? err.message : 'Internal server error';

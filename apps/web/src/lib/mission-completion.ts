@@ -866,7 +866,9 @@ export async function canCompleteMission(
   // Open fixes already hold above through pending_deliverables, and ok and
   // issue screens never need a human. Shadow unless VISUAL_REVIEW_GATE=enforce.
   const hasAudit = allTasks.some(t => isAuditRow(t) || isSurfaceAuditTask(t.title ?? ''));
-  if (hasAudit) {
+  // A person's standing Skip holds until they withdraw it (spec 072de598 I-18):
+  // findings a later round raised are information under it, never a hold.
+  if (hasAudit && !(await surfaceAuditWaived(mission as { id: string; autoSurfaceAudit?: boolean | null; workspaceId?: string | null }))) {
     const hold = await visualReviewHoldFor(mission, loadModel);
     if (hold) {
       base.visualReviewHold = hold;

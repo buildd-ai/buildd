@@ -7,10 +7,13 @@
  * is re-running the failed jobs. `rerunIfInfraFailure` does that instead, and
  * is bounded by the run's own `run_attempt` so a persistent outage ends in the
  * normal fix path rather than looping.
+ *
+ * The database server dropping the tests' connections (`db_connection_lost`)
+ * is re-run the same way: the code never got to answer.
  */
 
 import { githubApi, githubApiText } from '@/lib/github';
-import { detectInfraFailure } from '@/lib/red-check-cause';
+import { detectRerunnableFailure } from '@/lib/red-check-cause';
 
 // The signatures live with the rest of the red-check rules, which Home reads too.
 export { INFRA_SIGNATURES, detectInfraFailure } from '@/lib/red-check-cause';
@@ -24,7 +27,7 @@ export type InfraRerunOutcome =
 
 /**
  * If every failed job of the head's latest failed run matches an infra
- * signature, re-run the failed jobs. Never throws: any read or write failure
+ * signature or lost its database connection, re-run the failed jobs. Never throws: any read or write failure
  * reports `rerun: false` and the caller falls through to its normal path.
  */
 export async function rerunIfInfraFailure(
@@ -46,7 +49,7 @@ export async function rerunIfInfraFailure(
 
     let signature: string | null = null;
     for (const job of failed) {
-      const slug = detectInfraFailure(await githubApiText(installationId, `/repos/${repoFullName}/actions/jobs/${job.id}/logs`));
+      const slug = detectRerunnableFailure(await githubApiText(installationId, `/repos/${repoFullName}/actions/jobs/${job.id}/logs`));
       if (!slug) return { rerun: false, reason: 'not_infra' };
       signature ??= slug;
     }

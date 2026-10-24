@@ -183,6 +183,13 @@ export const GATE_SLUGS = {
    */
   SURFACE_ORDERING: 'surface_ordering',
   /**
+   * A person skipped a mission's visual review (spec 072de598 I-7, I-19). Always
+   * `bypassed`; `detail.skipReason` is the button (`wrong_or_stuck` / `ship_anyway`,
+   * null for free text), with the person, commit, cause and open findings.
+   * Visual review's reliability is read from these rows.
+   */
+  VISUAL_REVIEW_SKIP: 'visual_review_skip',
+  /**
    * Path declaration outcomes and manifest provenance (§3 denominators):
    * `accepted` = declared/acquired, `deferred` = denied by a live holder,
    * `warned` = degraded (coordination unavailable, edits proceeded). `detail.provenance`

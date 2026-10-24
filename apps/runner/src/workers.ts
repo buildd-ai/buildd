@@ -54,7 +54,7 @@ import { hostUserMemoryExcludes, primaryCloneMemoryExcludes } from './host-memor
 import { sweepTerminalWorktrees } from './terminal-worktree-sweep';
 import { resolveBuilddHome } from './buildd-home';
 import { isolateAgentRunnerHome, cleanupAgentRunnerHome } from './agent-runner-home';
-import { startScopedGitHubSession, type ScopedGitHubSession } from './agent-github-credentials';
+import { startScopedGitHubSession, hostHasGitHubCredentials, type ScopedGitHubSession } from './agent-github-credentials';
 import { PusherManager } from './pusher-manager';
 import {
   authContextOf,
@@ -66,6 +66,7 @@ import {
   ContextBreaker,
   DEFAULT_AUTH_CONTEXT,
 } from './claim-breaker';
+import { ProviderLimitHolds, limitFromEvent, providerOfBackend, type ProviderLimit } from './provider-limit';
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { createScoutHostPoller, type ScoutHostPoller } from './scout-host';
 import { CredentialCache, authBackoffMs, isWorkerScopedCredential, runnerLocalCredentialsAllowed } from './credential-cache';
@@ -857,6 +858,8 @@ export class WorkerManager {
   // Per-auth-context breaker — scoped errors (quota, auth, billing) pause only
   // the affected account or tenant so other contexts keep claiming.
   private contextBreaker = new ContextBreaker();
+  /** Providers this runner's login is at its limit on (provider-limit.ts): new work waits, running work finishes. */
+  private providerLimits = new ProviderLimitHolds();
   // Distinct role-env gaps this runner has started workers with — one warning
   // per gap, and listed in getInternalState (/api/debug/internals).
   private roleEnvGapLog = new RoleEnvGapLog();
@@ -2266,6 +2269,13 @@ export class WorkerManager {
       this.emit({ type: 'circuit_breaker', paused: false, pausedUntil: 0, reason: 'reset' });
     }
 
+    // Every provider this runner can start on is at its login limit: poll when the first lifts.
+    if (this.providerLimits.allHeld()) {
+      const lift = this.providerLimits.nextLift();
+      if (lift !== null) this.scheduleResumeAt(lift, 'provider limit reset');
+      return [];
+    }
+
     let slots = this.config.maxConcurrent - this.busySlotCount();
     if (slots <= 0) return [];
     // A slot freed: agents paused to free one continue first, oldest pause first (R-45).
@@ -2294,7 +2304,7 @@ export class WorkerManager {
       this.lookingForWork = (this.lookingForWork || 0) + 1;
       this.emit({ type: 'claim_loop', looking: true });
       try {
-        claimPollResult = await this.handoff().track(() => this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, this.claimEnvironment(withRunnerHold(this.environment, currentRunnerHold())), { claudeLoginId: this.claimLoginIdentity(), loginUse: this.claimLoginUse() }));
+        claimPollResult = await this.handoff().track(() => this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, this.claimEnvironment(withRunnerHold(this.environment, currentRunnerHold())), { claudeLoginId: this.claimLoginIdentity(), loginUse: this.claimLoginUse(), limitWalls: this.providerLimits.report() }));
       } catch (err: any) {
         this.lookingForWork = Math.max(0, (this.lookingForWork || 0) - 1);
         const { status, reason } = parseClaimError(err);
@@ -2394,6 +2404,21 @@ export class WorkerManager {
         // started_at NULL until the reaper killed them ~12 min later and booked
         // them as infra failures (2026-08-28: 3 rows minted in 53ms, 1 started).
         try {
+          // The broad poll is provider-blind, so the server may hand back a row for
+          // a provider this runner's login holds. Do not start it: give it back.
+          const rowProvider = providerOfBackend(claimedWorker.task?.backend ?? claimedWorker.backend);
+          const heldUntil = this.providerLimits.heldUntil(rowProvider);
+          if (heldUntil !== null) {
+            const until = new Date(heldUntil).toISOString();
+            console.log(`[WorkerManager] ${rowProvider} login at its limit until ${until} — releasing claimed worker ${claimedWorker.id}`);
+            this.buildd.updateWorker(claimedWorker.id, {
+              status: 'failed',
+              error: `Runner holds new ${rowProvider} work until ${until}`,
+            }).catch(() => {});
+            if (claimedWorker.taskId) this.noteClaimOutcome(claimedWorker.taskId, { at: Date.now(), reason: 'budget_exhausted', until, walls: [{ kind: 'runner_seat', backend: rowProvider, resetsAt: until }] });
+            this.scheduleResumeAt(heldUntil, 'provider limit reset');
+            continue;
+          }
           const worker = await this.startClaimedWorker(claimedWorker);
           if (worker) started.push(worker);
         } catch (err: any) {
@@ -2639,6 +2664,36 @@ export class WorkerManager {
   }
 
   /**
+   * Hold new work on one provider until its reset time (spec 0dc7c6de R-18).
+   * Memory only: the reset time is the whole state, and it lapses by itself.
+   */
+  private holdProvider(limit: ProviderLimit, worker: LocalWorker): void {
+    const was = this.providerLimits.heldUntil(limit.provider);
+    this.providerLimits.hold(limit);
+    const untilMs = this.providerLimits.heldUntil(limit.provider) ?? limit.untilMs;
+    if (was !== untilMs) {
+      const until = new Date(untilMs).toISOString();
+      console.warn(`[WorkerManager] ${limit.provider} login ${limit.status === 'rejected' ? 'rejected' : 'warned'} (${limit.kind}) — no new ${limit.provider} work until ${until}`);
+      sessionLog(worker.id, 'warn', 'provider_limit_hold', `${limit.provider} ${limit.status} (${limit.kind}): no new ${limit.provider} work until ${until}`, worker.taskId);
+    }
+    this.noteProviderLimitOutcome();
+    this.scheduleResumeAt(untilMs, 'provider limit reset');
+    // `circuit_breaker` paused:true reads as every claim paused; only say so when both providers are held.
+    if (this.providerLimits.allHeld()) {
+      this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: untilMs, reason: `${limit.provider} login at its limit (${limit.kind})` });
+    } else {
+      this.emit({ type: 'provider_limit', provider: limit.provider, pausedUntil: untilMs, kind: limit.kind });
+    }
+  }
+
+  /** `buildd top` reads the runner's own holds as login walls on the last broad claim. */
+  private noteProviderLimitOutcome(): void {
+    const walls = this.providerLimits.report().map(w => ({ kind: 'runner_seat', backend: w.provider, resetsAt: w.resetsAt }));
+    if (walls.length === 0) return;
+    this.noteClaimOutcome(null, { at: Date.now(), reason: 'budget_exhausted', walls });
+  }
+
+  /**
    * Arm the resume timer for the soonest context pause still in force.
    *
    * Without this a context pause had no wake-up at all: the nudge that would
@@ -2732,6 +2787,16 @@ export class WorkerManager {
       return null;
     }
 
+    // This runner's login is at its limit on the task's provider (provider-limit.ts).
+    const taskProvider = providerOfBackend(task.backend);
+    const providerUntil = this.providerLimits.heldUntil(taskProvider);
+    if (providerUntil !== null) {
+      console.log(`[WorkerManager] ${taskProvider} login at its limit until ${new Date(providerUntil).toISOString()} — not claiming task ${task.id}`);
+      this.noteClaimOutcome(task.id, { at: Date.now(), reason: 'budget_exhausted', until: new Date(providerUntil).toISOString(), walls: [{ kind: 'runner_seat', backend: taskProvider, resetsAt: new Date(providerUntil).toISOString() }] });
+      this.scheduleResumeAt(providerUntil, 'provider limit reset');
+      return null;
+    }
+
     // Warn if no credentials found (but let SDK handle actual auth)
     if (!this.hasCredentials && !this.config.serverless) {
       console.warn(`Model auth: ${describeModelAuthSource('none')} (the task fails unless its claim brings a credential)`);
@@ -2746,7 +2811,7 @@ export class WorkerManager {
     // from the full task instead — matching the polling path (claimPendingTasks).
     let claimResult: { workers: any[]; diagnostics?: any };
     try {
-      claimResult = await this.handoff().track(() => this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, advertisedRoleSlugs(this.environment), false, this.claimEnvironment(this.environment), { byPerson: !!opts.byPerson, claudeLoginId: this.claimLoginIdentity(), loginUse: this.claimLoginUse() }));
+      claimResult = await this.handoff().track(() => this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, advertisedRoleSlugs(this.environment), false, this.claimEnvironment(this.environment), { byPerson: !!opts.byPerson, claudeLoginId: this.claimLoginIdentity(), loginUse: this.claimLoginUse(), limitWalls: this.providerLimits.report() }));
     } catch (err: any) {
       const { status, reason } = parseClaimError(err);
       claimLog({ event: 'claim_rejected', slotsRequested: 1, workersClaimed: 0, taskId: task.id, status, reason });
@@ -4470,7 +4535,11 @@ export class WorkerManager {
       // installation token minted for its task's repo — the operator's
       // GITHUB_TOKEN/GH_TOKEN and host git/gh credentials are withheld. See
       // agent-github-credentials.ts. Absent or `runner`: unchanged.
-      if (worker.githubCredentials?.mode === 'scoped') {
+      // A claim with no marker (rollout off) on a host that holds no GitHub
+      // credential at all (fresh WSL, no helper, no gh, no key) would fail
+      // every push, so it gets the scoped token too: nothing is withheld.
+      const bareHost = !worker.githubCredentials?.mode && !hostHasGitHubCredentials();
+      if (worker.githubCredentials?.mode === 'scoped' || bareHost) {
         githubTokenRefresher = await this.startScopedGitHubCredentials(worker, cleanEnv, agentRunnerHome);
         if (!githubTokenRefresher.ok) {
           promptText += '\n\n' + [
@@ -7090,23 +7159,11 @@ export class WorkerManager {
       this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
       console.log(`[Worker ${worker.id}] Rate limit event: ${label}`);
 
-      // Circuit breaker: if rejected, pause claims until reset
-      if (info?.status === 'rejected') {
-        const resetDelay = info.resetsAt ? info.resetsAt - Date.now() : undefined;
-        const pauseMs = resetDelay && resetDelay > 0
-          ? Math.min(resetDelay, 24 * 60 * 60 * 1000) // cap at 24h
-          : info.rateLimitType === 'five_hour' ? 60 * 60 * 1000 // 1h fallback
-          : 5 * 60 * 1000; // 5 min fallback
-
-        this.claimsPaused = true;
-        this.claimsPausedUntil = Date.now() + pauseMs;
-        const reason = info.overageDisabledReason
-          ? `${info.rateLimitType} (${info.overageDisabledReason})`
-          : info.rateLimitType || 'unknown';
-        console.warn(`[WorkerManager] Rate limit rejected (${reason}) — pausing claims ~${Math.round(pauseMs / 60_000)} min`);
-        sessionLog(worker.id, 'warn', 'rate_limit_pause', `Pausing claims: ${reason}, ~${Math.round(pauseMs / 60_000)} min`, worker.taskId);
-        this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: this.claimsPausedUntil, reason });
-      }
+      // The provider's own word about this login (provider-limit.ts): on a
+      // warning or a rejection, start no new work on that provider until its
+      // resetsAt. Running sessions finish; the other provider keeps starting.
+      const limit = limitFromEvent(event, providerOfBackend(worker.taskBackend), Date.now());
+      if (limit) this.holdProvider(limit, worker);
 
       this.emit({ type: 'worker_update', worker });
       return;

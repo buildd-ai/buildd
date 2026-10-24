@@ -10,7 +10,7 @@ import { checkRunsSummary, failingTestEntries, pendingCheckRuns, type CheckRunRo
 import { failingEntries, failingTestsFromLog } from './failing-tests';
 import {
   blockedOnResolvedSql, linkTrunkFixSql, openIncidentsForBaseSql, openOrJoinIncidentSql, recentSignatureDeliveriesSql, repairingCiOnBaseSql,
-  resolveIncidentSql, touchIncidentSql, trunkFixAnchorSql, trunkIncidentSql, unresolvedIncidentsSql,
+  resolveIncidentSql, touchIncidentSql, trunkFixAnchorSql, trunkIncidentSql, unresolvedIncidentsByIdSql, unresolvedIncidentsSql,
   DEFAULT_TRUNK_WINDOW_MINUTES, UNKNOWN_CI_SIGNATURE, ciSignature, signatureCheckNames, signatureChecks, trunkBreakerConfig, trunkExplains, trunkRecovered,
   trunkRecoveredOnRuns,
 } from './trunk';
@@ -190,6 +190,7 @@ describe('incident SQL (rendered through PgDialect)', () => {
   const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q).sql.replace(/\s+/g, ' ');
   const W = '00000000-0000-0000-0000-000000000001';
   const D = '00000000-0000-0000-0000-000000000002';
+  const D2 = '00000000-0000-0000-0000-000000000003';
   test('open-or-join is one upsert on the open-signature index, bounded and idempotent per delivery', () => {
     const s = render(openOrJoinIncidentSql({ workspaceId: W, repoFullName: 'acme/x', baseRef: 'dev', signature: 'ci:unit', deliveryId: D }));
     expect(s).toContain('INSERT INTO trunk_incidents (workspace_id, repo_full_name, base_ref, signature, affected_deliveries)');
@@ -209,6 +210,15 @@ describe('incident SQL (rendered through PgDialect)', () => {
     expect(rep).toContain("wa.status IN ('queued', 'running')");
     expect(render(unresolvedIncidentsSql(5))).toContain("WHERE status <> 'resolved' ORDER BY updated_at, id LIMIT $1::int");
     expect(render(blockedOnResolvedSql(5))).toContain("d.state = 'BLOCKED_ON_TRUNK' AND d.authority = 'kernel' AND i.status = 'resolved'");
+    expect(render(blockedOnResolvedSql(5))).not.toContain('i.id IN');
+  });
+  test('the recheck queue\'s reads: named incidents still unresolved, and only those incidents\' blocked deliveries', () => {
+    const byId = new PgDialect().sqlToQuery(unresolvedIncidentsByIdSql([D, D2]));
+    expect(byId.sql.replace(/\s+/g, ' ')).toContain("WHERE id IN ($1::uuid, $2::uuid) AND status <> 'resolved'");
+    expect(byId.params).toEqual([D, D2]);
+    const blocked = new PgDialect().sqlToQuery(blockedOnResolvedSql(7, [D]));
+    expect(blocked.sql.replace(/\s+/g, ' ')).toContain("i.status = 'resolved' AND i.id IN ($1::uuid) LIMIT $2::int");
+    expect(blocked.params).toEqual([D, 7]);
   });
   test('the trunk-fix anchor: one fixer per unresolved base, never a resolved incident or a finished fixer', () => {
     const s = render(trunkFixAnchorSql(D));
