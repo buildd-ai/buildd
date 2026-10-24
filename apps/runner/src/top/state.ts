@@ -85,6 +85,8 @@ export interface TopTask {
   dependsOn?: string[] | null;
   startAt?: string | null;
   claimedBy?: string | null;
+  /** The runner that holds it, by name, when the server says (the Queue's "Taken by"). */
+  claimedByName?: string | null;
   roleSlug?: string | null;
   /** The agent provider that runs it (claude | codex); absent from older servers, read as claude. */
   backend?: string | null;
@@ -1568,6 +1570,7 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
   // work of this mission it did not send comes from the queue top last read.
   const listed = new Set(tasks.map(t => t.id));
   for (const q of queueRowList(state, now)) {
+    if (q.status === 'running') continue;
     const wsByName = workspaceList(state).find(w => w.name === q.workspace);
     if ((q.missionId || keyOf({ workspaceId: wsByName?.id })) !== mission.key || listed.has(q.taskId)) continue;
     listed.add(q.taskId);
@@ -1590,7 +1593,10 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
  * reason, or why this runner never takes it.
  */
 export function queueRowReason(q: QueueRow): string {
-  if (q.position !== null) return q.starts === 'now' ? `#${q.position} in queue · starts on the next claim` : `#${q.position} in queue · ${q.starts}`;
+  if (q.position !== null) {
+    const tail = q.status === 'queued' ? 'starts on the next claim' : q.status === 'blocked' ? (q.why ?? q.starts) : q.starts.toLowerCase();
+    return `#${q.position} in queue · ${tail}`;
+  }
   return q.reason ?? q.starts;
 }
 
