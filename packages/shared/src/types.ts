@@ -1901,7 +1901,6 @@ export interface ClaimDiagnostics {
    * Populated when reason=all_candidates_deferred: per-reason breakdown of why
    * every candidate in the window was skipped without a claim attempt.
    */
-  deferredTasks?: ClaimDeferredTask[];
   deferrals?: {
     connector_mismatch?: number;
     subject_dead?: number;
@@ -2013,6 +2012,8 @@ export interface ClaimDiagnostics {
      */
     isolation_unenforced?: number;
   };
+  /** Which tasks the claim turned away (window it read), each with its deferral code. Absent from an older server. */
+  deferredTasks?: ClaimDeferredTask[];
 }
 
 /**
