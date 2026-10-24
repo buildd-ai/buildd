@@ -42,6 +42,7 @@ import { MissionVisualAsk, WithMissionVisualReview, type MissionVisualReviewValu
 import type { PlanTask } from '@/lib/mission-plan';
 import { BuildCompleteBar, CheckRail, ChecksCard, OutcomeSpecLines, StandardsLineView } from './MissionChecks';
 import MissionBuildStage from './MissionBuildStage';
+import { MissionStageProvider } from '@/components/design-stage';
 
 /** What the page knows about the checks; the build counts and repairs come from the live board. */
 export type MissionChecksSource = Omit<MissionChecksInput, 'build' | 'repairs'>;
@@ -72,6 +73,8 @@ export interface MissionOverviewProps extends BoardLinkContext {
   history?: HistoryRaised | null;
   /** Task id → expected minutes (task estimates), for the summary's `finish depends on` (Navigation R-22). */
   expectedMinutes?: Readonly<Record<string, number | null | undefined>>;
+  /** The mission's design, closed: one fixed place after the current stage, on every mission (Navigation R-3). */
+  design?: ReactNode;
 }
 
 /** Checks already at work before the build ends (R-13) are shown under the list. */
@@ -87,7 +90,7 @@ export default function MissionOverview(props: MissionOverviewProps) {
 
 function OverviewView({
   model: serverModel, completionText = null, notice, situation, visual: _visual, review,
-  checks: checksSource = null, planTasks = null, held = false, outcomeSpecTitles = null,
+  checks: checksSource = null, planTasks = null, held = false, outcomeSpecTitles = null, design = null,
   decisions = [], history = null, expectedMinutes, ...link
 }: MissionOverviewProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
@@ -204,6 +207,7 @@ function OverviewView({
           {model.complete && <CompletionRecord model={model} text={completionText} visual={vm} />}
         </>
       )}
+      {design && <MissionStageProvider value={stage}>{design}</MissionStageProvider>}
     </div>
   );
 }
