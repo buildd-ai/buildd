@@ -38,6 +38,7 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { applyWaitExit, parseWaitOn } from '@/lib/task-wait-exit';
 import { applyTaskCancelSideEffects, applyTaskDeleteSideEffects, emitTaskUpdated, endLiveWorkersForRequeue } from '@/lib/task-cancel';
 import { checkDependencyCycle, checkDependencyReach, dependencyViewerOf } from '@/lib/task-dependency-reach';
+import { loadQuestionWaits } from '@/lib/question-waits';
 import { resolveDeferredStart } from '@/lib/deferred-start';
 import { wakeTask } from '@/lib/dispatch-authority';
 import { parseLoopConfig } from '@buildd/core/loop-config';
@@ -212,6 +213,8 @@ export async function GET(
           outputTokens: true,
           costUsd: true,
           createdAt: true,
+          // The park clock: when a waiting question was asked (questionWaits below).
+          updatedAt: true,
           // A gate-rejected completion (outputRequirement 400) persists the
           // agent's summary here instead of discarding it — but until now
           // nothing read it back, so a rejected 60-turn run's only trace was
@@ -247,6 +250,17 @@ export async function GET(
       workspace: withoutDispatchToken(task.workspace),
     };
     if (taskWorkers !== undefined) response.workers = taskWorkers;
+    // An open question: what waits on its answer, as data (spec 1b257609 R-8).
+    // get_task reads workers by default, so it carries this on every waiting task.
+    const asking = taskWorkers?.find(w => w.status === 'waiting_input' && w.waitingFor?.type !== 'pause');
+    if (asking) {
+      const questionWaits = await loadQuestionWaits({
+        taskId: id,
+        viewer: dependencyViewerOf(user, apiAccount),
+        worker: { runner: asking.runner, updatedAt: asking.updatedAt, waitingFor: asking.waitingFor },
+      }).catch(() => null);
+      if (questionWaits) response.questionWaits = questionWaits;
+    }
     if (taskArtifacts !== undefined) response.artifacts = taskArtifacts;
     if (include.has('dispatch')) response.dispatch = await dispatchHistoryForTask(id);
     // Task estimates experiment (packages/core/task-estimate-source.ts): the

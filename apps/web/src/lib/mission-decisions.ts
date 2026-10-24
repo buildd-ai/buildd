@@ -3,9 +3,12 @@
  * The mission page's decisions (Navigation d25d923d R-16, read side) and
  * the History line it raises (R-6), as data over what the page already
  * holds: the board model (a parked worker's full `waitingFor`, a delivery
- * waiting on a person, who waits on whom) and the mission's open organizer
- * question notes. Pure; the card itself is `components/DecisionCard.tsx`.
+ * waiting on a person) and the mission's open organizer question notes.
+ * What waits on each decision is the projection's (`loadQuestionWaits`,
+ * Living Spec 1b257609 R-5), passed in by task: this module never derives
+ * its own list. Pure; the card itself is `components/DecisionCard.tsx`.
  */
+import type { QuestionWaits } from '@buildd/core/question-waits';
 import { CRITERIA_ESCALATION_NOTE_TITLE } from './escalation-note-title';
 import { linkQuestionNote, unifyNoteQuestion, unifyWorkerQuestion, type QuestionNoteLike } from '@/app/app/(protected)/tasks/[id]/question-hero';
 import { BOARD_LANDED, type BoardTask, type MissionBoardModel } from './mission-board';
@@ -31,11 +34,8 @@ export interface MissionDecisionsInput {
   hrefFor: (taskId: string) => string;
   /** The mission's current visual review: when it needs a person, its card replaces the round-cap note. */
   visual?: VisualReviewModel | null;
-}
-
-/** The tasks that wait on `id`, by name, in strip order. */
-export function dependentNames(model: Pick<MissionBoardModel, 'phases' | 'tasks'>, id: string): string[] {
-  return stripOrder(model).filter(other => model.tasks[other].blockers.includes(id)).map(other => model.tasks[other].title);
+  /** What waits on each decision's task, from the projection (`loadQuestionWaits`). */
+  waitsByTask?: ReadonlyMap<string, QuestionWaits>;
 }
 
 const taskLink = (t: BoardTask, hrefFor: (id: string) => string) => ({ id: t.id, title: t.title, href: hrefFor(t.id) });
@@ -47,7 +47,8 @@ const taskLink = (t: BoardTask, hrefFor: (id: string) => string) => ({ id: t.id,
  * that no worker card already shows. A note answered through a worker's
  * card is not shown twice.
  */
-export function missionDecisions({ model, notes: allNotes, mission, hrefFor, visual }: MissionDecisionsInput): DecisionView[] {
+export function missionDecisions({ model, notes: allNotes, mission, hrefFor, visual, waitsByTask }: MissionDecisionsInput): DecisionView[] {
+  const waitsOf = (taskId: string) => waitsByTask?.get(taskId) ?? null;
   const out: DecisionView[] = [];
   const notes = withoutStaleRoundCap(allNotes, visual);
   const shownNotes = new Set<string>();
@@ -56,7 +57,6 @@ export function missionDecisions({ model, notes: allNotes, mission, hrefFor, vis
   for (const id of order) {
     if (!needs.has(id)) continue;
     const t = model.tasks[id];
-    const dependents = dependentNames(model, id);
     const full = t.waitingFor?.full;
     if (full) {
       const note = t.workerId ? linkQuestionNote([...notes], t.workerId) : null;
@@ -64,7 +64,7 @@ export function missionDecisions({ model, notes: allNotes, mission, hrefFor, vis
       const question = unifyWorkerQuestion(full, note, { taskTitle: t.title });
       out.push(decisionFromQuestion({
         key: `question:${id}`, question, task: taskLink(t, hrefFor), askedAt: t.waitStartedAt,
-        dependents, answer: { kind: 'worker', workerId: t.workerId ?? '', taskId: id, noteId: note?.id ?? null },
+        waits: waitsOf(id), answer: { kind: 'worker', workerId: t.workerId ?? '', taskId: id, noteId: note?.id ?? null },
       }));
       continue;
     }
@@ -73,7 +73,7 @@ export function missionDecisions({ model, notes: allNotes, mission, hrefFor, vis
       const href = pr ?? hrefFor(id);
       out.push(approvalView({
         key: `approval:${id}`, task: taskLink(t, hrefFor), askedAt: t.waitStartedAt ?? t.endedAt,
-        reason: t.kernelReason ?? t.delivery.label, dependents,
+        reason: t.kernelReason ?? t.delivery.label, waits: waitsOf(id),
         diffHref: pr ? `${pr}/files` : null, approveHref: href, changesHref: pr ? `${pr}/files` : href,
       }));
     }
@@ -87,7 +87,7 @@ export function missionDecisions({ model, notes: allNotes, mission, hrefFor, vis
       task: subject ? taskLink(subject, hrefFor) : null,
       mission: subject ? null : mission,
       askedAt: n.createdAt,
-      dependents: subject ? dependentNames(model, subject.id) : [],
+      waits: subject ? waitsOf(subject.id) : null,
       answer: { kind: 'note', missionId: mission.id, noteId: n.id },
     }));
   }

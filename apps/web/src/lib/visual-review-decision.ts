@@ -11,7 +11,7 @@ import { fixCheckDue } from './visual-review-model';
 import type { DecisionOption, DecisionView } from './needs-you-card';
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
-const opt = (label: string, effect: string, recommended = false): DecisionOption => ({ label, effect, tip: null, recommended });
+const opt = (label: string, effect: string, recommended = false): DecisionOption => ({ label, effect, tip: null, recommended, downstream: null });
 
 /**
  * The round-cap note is the organizer's record of one moment (round N still
@@ -90,7 +90,7 @@ export function visualReviewDecision(visual: VisualReviewModel | null | undefine
     summary,
     question,
     options,
-    dependents: [],
+    waits: null,
     diffHref: null,
     answer: { kind: 'visual', missionId: mission.id, reviewHref: mission.href, markFixed: fixed, startKey: visual.queue[0] ?? null },
     shortcut: false,

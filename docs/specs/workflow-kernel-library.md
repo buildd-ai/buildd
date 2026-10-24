@@ -897,8 +897,10 @@ recorded as such, never as an approval.
   one opens (or adopts) its delivery first; "legacy" merges end at slice S3.
 - GitHub enforces the verdict: on every kernel-owned PR head the kernel's
   `publish_landing_status` effect publishes the commit status
-  `Buildd / Review approval` (also under its former name `buildd/landing`,
-  written with the same answer until nothing reads it). It is `success` only
+  `Buildd / Review approval`, under that one name. Its former name
+  `buildd/landing` is no longer written; heads published before it was
+  retired may still carry it, and readers that skip buildd's own status skip
+  that name too. It is `success` only
   when the kernel would land that head (approved or landing, covered, no open
   verdict), `pending` while review of that head has not finished (so ongoing
   review never reads as failing CI), and `failure` while a required finding is
@@ -1268,7 +1270,7 @@ push, refresh, completion or owner change can make it disappear.
   escalated cannot be waived from the dashboard; the reducer accepts it in any
   state. Who may waive is workspace membership, as for a re-review.
 - The landing gate (`reviewGate`), T15, the policy-merge rule (D11) and
-  `buildd/landing` read open required findings and name the first
+  `Buildd / Review approval` read open required findings and name the first
   one. Only a person's verdict override or their own approval of the head
   passes one. An external merge records `merged_over_open_findings` for an
   open finding even when the newest round approved, and the trunk fix names

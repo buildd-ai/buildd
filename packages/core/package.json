@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.379.0",
+  "version": "0.380.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -93,6 +93,7 @@
     "./runner-health": "./runner-health.ts",
     "./interactive-session-ask": "./interactive-session-ask.ts",
     "./question-brief": "./question-brief.ts",
+    "./question-waits": "./question-waits.ts",
     "./human-attention": "./human-attention.ts",
     "./needs-you": "./needs-you.ts",
     "./question-gate": "./question-gate.ts",
