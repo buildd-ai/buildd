@@ -10,7 +10,7 @@ const CHANGE: Record<CoverageItem['change'], string> = {
 };
 
 /** What the check proves (R-18), said every time the check is shown. */
-export const COVERAGE_HONESTY = 'The explanation is the agent’s. This check confirms it mentions every change, not that what it says is right.';
+export const COVERAGE_HONESTY = 'The agent wrote this explanation. The check confirms it mentions every change; whether it is right is yours to judge.';
 
 /** A section's changed words: added text plain, removed struck, a change with its words marked. */
 function SectionWords({ item, words }: { item: Extract<CoverageItem, { kind: 'section' }>; words: WordOp[] | undefined }) {

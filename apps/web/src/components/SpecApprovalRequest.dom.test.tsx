@@ -389,6 +389,6 @@ describe('SpecApprovalRequest: the explanation and its check', () => {
 
   it('R-18: the page says what the check proves, and that the explanation is the agent\'s', () => {
     act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={viewWith(all)} />));
-    expect(q('spec-explain-honesty')!.textContent).toBe('The explanation is the agent’s. This check confirms it mentions every change, not that what it says is right.');
+    expect(q('spec-explain-honesty')!.textContent).toBe('The agent wrote this explanation. The check confirms it mentions every change; whether it is right is yours to judge.');
   });
 });
