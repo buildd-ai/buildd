@@ -1343,9 +1343,22 @@ describe('open_pr_outpaced_by_base', () => {
     expect(v.remedy).toBeDefined();
     expect(v.remedy).not.toContain('or close it');
     expect(v.remedy).toContain('do not close it');
-    expect(v.remedy).toContain('ask_human');
-    expect(v.remedy).toContain('post_note');
+    expect(v.remedy).not.toContain('Rebase it');
+    expect(v.remedy).toContain('freshness gate');
     expect(v.detail).toContain('ESCALATED');
+  });
+
+  it('holds filing for an ESCALATED PR, so the sweep neither re-asks nor pushes to it', () => {
+    const gated = snapshot({
+      workers: [openPr(20 * HOUR)],
+      baseMerges: merges(PR_OUTPACED_DRIFT),
+      personGatedPrs: new Map([['ws-1 4242', 'ESCALATED']]),
+    });
+    const [g] = evaluateInvariants(gated, NOW).find(x => x.key === key)!.violations;
+    expect(g.holdFiling).toBe(true);
+    const ordinary = snapshot({ workers: [openPr(20 * HOUR)], baseMerges: merges(PR_OUTPACED_DRIFT) });
+    const [o] = evaluateInvariants(ordinary, NOW).find(x => x.key === key)!.violations;
+    expect(o.holdFiling).toBeUndefined();
   });
 
   it('keys the violation on the PR, not the worker row, so a worker-id change does not dodge dedupe', () => {

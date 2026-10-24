@@ -43,8 +43,9 @@ const epoch = (v: Date | string | null | undefined): number | null => {
   return Number.isFinite(t) ? t : null;
 };
 
-export function askerLabelFor(roleName: string | null | undefined): string {
-  return `The ${(roleName || 'agent').toLowerCase()} asks`;
+/** "asks" only while an agent is waiting; otherwise nobody can receive the answer. */
+export function askerLabelFor(roleName: string | null | undefined, waiting = true): string {
+  return `The ${(roleName || 'agent').toLowerCase()} ${waiting ? 'asks' : 'left a question'}`;
 }
 
 export interface ShapedQuestion {
@@ -146,6 +147,7 @@ export async function loadQuestionContext(taskId: string, userId: string): Promi
         body: missionNotes.body,
         defaultChoice: missionNotes.defaultChoice,
         replyTo: missionNotes.replyTo,
+        options: missionNotes.options,
         createdAt: missionNotes.createdAt,
       })
       .from(missionNotes)
@@ -186,7 +188,7 @@ export async function loadQuestionContext(taskId: string, userId: string): Promi
       taskTitle: task.title,
       scope,
       missionId: task.missionId ?? null,
-      askerLabel: askerLabelFor(role?.name),
+      askerLabel: askerLabelFor(role?.name, shaped.open || shaped.awaitingAgent),
       askedAt: shaped.askedAt,
       question: shaped.question,
       answer: shaped.answer,

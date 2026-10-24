@@ -37,7 +37,16 @@ const UNIT_TEST_ROOTS = [
   'apps/web/tests/integration/start-commit-gate.test.ts', // pure decision; same reason
 ] as const;
 
+/**
+ * Test-first acceptance files for spec "Registered requirement verification in
+ * Build, Verify and Deliver" r1. They fail until the build lands, by design, so
+ * the unit gate must not collect them; scripts/run-acceptance-tests.ts runs them
+ * per criterion. The build task removes each entry once its file passes.
+ */
+export const ACCEPTANCE_ONLY_TESTS: readonly string[] = [];
+
 export function isUnitTestFile(path: string): boolean {
+  if (ACCEPTANCE_ONLY_TESTS.includes(path)) return false;
   return (
     UNIT_TEST_ROOTS.some(root => path.startsWith(root)) &&
     (path.endsWith('.test.ts') || path.endsWith('.test.tsx'))
@@ -66,9 +75,11 @@ export function selectTestFiles(named: readonly string[], discovered: readonly s
   const explicit = named.filter(arg => arg !== ALL_SENTINEL);
   if (explicit.length === 0) return [...discovered];
   const selected = new Set<string>();
+  const dropped: string[] = [];
   for (const arg of explicit) {
     if (isTestFileName(arg)) {
       if (isUnitTestFile(arg)) selected.add(arg);
+      else dropped.push(arg);
       continue;
     }
     // Anything else is a directory: every discovered file under it. A package's
@@ -80,6 +91,12 @@ export function selectTestFiles(named: readonly string[], discovered: readonly s
       throw new Error(`no unit test files under '${arg}' (is it under UNIT_TEST_ROOTS in scripts/run-unit-tests.ts?)`);
     }
     for (const file of under) selected.add(file);
+  }
+  // Every named file dropped (non-unit, or ACCEPTANCE_ONLY_TESTS): exiting 0
+  // here would let a spec `check:` line pass without running a test. CI's
+  // affected list is already filtered by isUnitTestFile, so it never trips this.
+  if (selected.size === 0 && dropped.length > 0) {
+    throw new Error(`named test files selected none: ${dropped.join(', ')} (not unit tests, or listed in ACCEPTANCE_ONLY_TESTS; run those with scripts/run-acceptance-tests.ts)`);
   }
   return [...selected].sort();
 }
@@ -1033,7 +1050,15 @@ async function main(): Promise<void> {
   const { named, updateDurations, shard } = parseRunnerArgs(Bun.argv.slice(2));
   const discovered = await discoverUnitTests();
   const hints = readDurationHints();
-  const selected = selectTestFiles(named, discovered);
+  let selected: string[];
+  try {
+    selected = selectTestFiles(named, discovered);
+  } catch (err) {
+    // Named files that select nothing are a failure, not an empty pass.
+    console.error(`run-unit-tests: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+    return;
+  }
   const sliced = shard ? shardFiles(selected, hints, shard.index, shard.count) : selected;
   if (shard) {
     console.log(`Shard ${shard.index}/${shard.count}: ${sliced.length} of ${selected.length} selected files.`);

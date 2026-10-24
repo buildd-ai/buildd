@@ -34,6 +34,10 @@ claim → understand → plan → implement (TDD) → verify → PR → document
 - 3+ failed fixes → question the approach, describe what you tried
 - Change spans >3 subsystems → present plan for review first
 - Stuck >2 attempts → stop, describe problem, ask for guidance
+- **Missing access** (a provider, another workspace, a model call) → not a
+  hard block. `resolve_capability`, then `request_capability`; keep working
+  while it is pending; spend a model grant with `invoke_model_inference`.
+  Never a script that reads a database URL or a key of its own.
 - **Hard block, no correct path forward** → use `AskUserQuestion`. Parks the
   task as waiting-for-input (not failed, not retried, not counted against
   you); the owner is notified and answering resumes your work.

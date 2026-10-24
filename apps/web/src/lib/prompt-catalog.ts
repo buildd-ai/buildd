@@ -28,6 +28,7 @@ import './strand-choice-decision';
 import './surface-audit-advice';
 import './task-category-decision';
 import './task-role-decision';
+import '@buildd/core/decision-kind-ui-copy';
 import '@buildd/core/decision-kind-visual-impact';
 import { listRegisteredPrompts, type RegisteredPrompt } from '@buildd/core/prompts';
 

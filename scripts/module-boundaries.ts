@@ -37,7 +37,8 @@ export const MODULE_RULES: ReadonlyArray<readonly [ModuleId, RegExp]> = [
   // settings/connections is Connected apps; settings/apps holds the team's MCP connectors.
   ['connectors', /\/connectors|settings\/connections\/|settings\/apps\/|connector-|mcp-connector|required-connectors|cross-app|assertion|capability-grants|team-apps-view|\/api\/mcp\/c\/|\/agent-capabilities\/(requests|policy)\//],
   ['spec-conformance', /spec-(conformance|discrepancy|doc-fix|recheck)|discrepanc|doc-fix/],
-  ['visual-qa', /visual-(qa|review|audit|fix)|surface-audit|mcp-visual-review|page-source/],
+  // registered-verification-store admits [surface audit] captures as evidence for the core coordinator.
+  ['visual-qa', /visual-(qa|review|audit|fix)|surface-audit|mcp-visual-review|page-source|registered-verification-store/],
   ['onboarding', /onboarding|workspace-readiness|\/readiness\//],
   ['experiments', /prompt-evals|experiment|readout|shadow-harness|health-experiments|\/api\/experiments|tier-explore/],
   ['jev-decisions', /decision|recoverable-blocker|prompted-decision|\/api\/decisions|question-gate-decision|strand-choice|inference-(client|route|policy|key)|\/api\/inference-keys|model-inference/],

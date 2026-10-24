@@ -20,6 +20,8 @@ import type { KernelView, RoundSnapshot } from './types';
 
 const OPEN_ATTEMPT = new Set(['queued', 'running']);
 
+const MAX_FLOOR_REARMS = 5;
+
 const LIVE_EFFECT = new Set(['pending', 'delivering']);
 
 /**
@@ -69,7 +71,14 @@ export function enqueueMissingEffects(view: KernelView, existing: ReadonlySet<st
       if (current.reviewerTaskId) break;
       const keys = [...existing].filter((k) => k === base || k.startsWith(`${base}:`));
       if (!keys.every((k) => status.get(k) === 'done')) break;
-      owed.push({ kind: 'dispatch_review', dedupeKey: `${base}:floor:v${d.version}`, payload });
+      // The re-arm's key is held for good once inserted, and a rejected ask never moves the
+      // version, so a floor dispatch that also finished without a reviewer (a skipped
+      // dispatch_refused, no role) would owe the very same key and the insert would conflict
+      // forever: the round stranded in AWAITING_REVIEW. Number each re-arm at a version; a
+      // bounded count keeps a permanently unservable round from filing dispatches without end.
+      const floors = keys.filter((k) => k.startsWith(`${base}:floor:v${d.version}`)).length;
+      if (floors >= MAX_FLOOR_REARMS) break;
+      owed.push({ kind: 'dispatch_review', dedupeKey: floors === 0 ? `${base}:floor:v${d.version}` : `${base}:floor:v${d.version}:${floors + 1}`, payload });
       break;
     }
     case 'AWAITING_PUSH': {

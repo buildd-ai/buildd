@@ -856,7 +856,7 @@ function bootFailureOf(auditTasks: readonly VisualReviewTaskInput[]): VisualRevi
 // ── Phase copy ──────────────────────────────────────────────────────────────
 
 /** Phase copy lives with the text rendering, so the MCP action and chat read one source. */
-export { describeVisualPhase } from '@buildd/core/visual-review-text';
+export { describeVisualPhase, visualPhaseDetailRole } from '@buildd/core/visual-review-text';
 
 /**
  * The model of a mission with no audit and no fix from one: what

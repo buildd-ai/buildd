@@ -381,6 +381,21 @@ export const VISUAL_AUDIT_ROUTES: ClaimContextInjection = async (claimedWorkers,
 export const VISUAL_SPEC_VERDICT = recordVisualVerdict;
 
 /**
+ * The visual-qa module's registered verification slot
+ * (lib/specs/registered-verification-store.ts): the store behind the core
+ * coordinator (lib/specs/registered-verification.ts). It admits only captures an
+ * independent [surface audit] uploaded, and resolves the head and who may ask.
+ * POST /api/specs/outcomes/[taskId]/verify runs the coordinator with it.
+ */
+const registeredStore = () => import('@/lib/specs/registered-verification-store');
+export const REGISTERED_VERIFICATION = {
+  deps: async () => (await registeredStore()).registeredVerificationDeps,
+  head: async (taskId: string) => (await registeredStore()).registeredVerificationHead(taskId),
+  requesterRefusal: async (requesterTaskId: string, subjectTaskId: string) =>
+    (await registeredStore()).verificationRequesterRefusal(requesterTaskId, subjectTaskId),
+};
+
+/**
  * The decisions module's spec duplicate slot (lib/spec-duplicate-decision.ts):
  * createSpecDraft compares a new spec with the approved ones, and records a
  * person's override of a refusal on the ledger rows that refused it.
