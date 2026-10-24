@@ -66,8 +66,8 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
    real change, with no model: a change you leave out is listed "Not
    explained" and the person must open it before Approve works; a line for
    something that did not change is listed apart. The explanation is fixed
-   with its revision: a revise that only sends a new one is refused (409
-   `explanation_immutable`). Say what changed and why, plainly; the check
+   with its revision: a revise that only sends a new one is refused (a 409
+   with code explanation_immutable). Say what changed and why, plainly; the check
    only proves you mentioned it.
 4. **Submit and approve: a person's act.** `buildd action=manage_specs params={ action: "submit", specId, expectedVersion }`
    and `buildd action=manage_specs params={ action: "approve", specId, revision, expectedVersion }`
