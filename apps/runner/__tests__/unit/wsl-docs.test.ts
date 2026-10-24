@@ -9,13 +9,8 @@ import { join } from 'path';
 
 const doc = readFileSync(join(import.meta.dir, '../../WSL2.md'), 'utf-8');
 
-// WSL2.md documentation is complete and the acceptance criteria are met.
-// This test validates the guided setup flow (buildd wsl install → buildd codex login → buildd wsl migrate)
-// and the fallback manual recipe.
-const pendingTest = test;
-
 describe('WSL2.md', () => {
-  pendingTest('AC-18: leads with buildd wsl install, buildd codex login and buildd wsl migrate, in that order, and keeps the manual recipe as the fallback', () => {
+  test('AC-18: leads with buildd wsl install, buildd codex login and buildd wsl migrate, in that order, and keeps the manual recipe as the fallback', () => {
     const install = doc.indexOf('buildd wsl install');
     const login = doc.indexOf('buildd codex login');
     const migrate = doc.indexOf('buildd wsl migrate');

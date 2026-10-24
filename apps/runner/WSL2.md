@@ -28,7 +28,7 @@ converts WSL1, creates a Linux user or runs anything as root.
 
 ## Guided authentication: `buildd codex login`
 
-Inside the WSL2 distribution, authenticate both Claude and Codex as the Linux runner user:
+Inside the WSL2 distribution, authenticate the model backend(s) you use, as the Linux runner user. Run `claude login` for the Claude backend and `buildd codex login` for the Codex backend, each only if you use that backend:
 
 ```bash
 claude login
@@ -36,7 +36,7 @@ buildd codex login
 buildd status
 ```
 
-Use the supported browser/device prompts as this Linux user. If using Codex as your model backend, you need both `claude login` (for buildd itself) and `buildd codex login` (for the Codex backend). For headless flows, see the runner README for API-key or token options. A background service must receive its own intended environment. Confirm a simple interactive request succeeds before proceeding with migration.
+buildd itself authenticates with its `bld_xxx` key, which is unrelated to model login. Use the supported browser/device prompts as this Linux user. For headless flows, see the runner README (`claude setup-token` / `CLAUDE_CODE_OAUTH_TOKEN`). A background service must receive its own intended environment. Confirm a simple interactive request succeeds before proceeding with migration.
 
 ## Guided hand over: `buildd wsl migrate`
 
