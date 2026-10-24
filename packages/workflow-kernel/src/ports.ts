@@ -177,7 +177,7 @@ export interface Store {
   laneHolder(k: LaneKey): Promise<{ deliveryId: string; prNumber: number | null } | null>;
   /** Drop the lanes this delivery holds nothing in any more; returns them. */
   releaseSettledLanes(deliveryId: string): Promise<LaneKey[]>;
-  /** Make the oldest parked refresh on this lane due now; returns its delivery. */
+  /** Make the oldest parked refresh that would take this lane (not red at its head) due now; returns its delivery. */
   wakeNextLaneWaiter(k: LaneKey): Promise<string | null>;
   /**
    * §4 merge holds: make this delivery's held `merge_call` for `headSha` (a pending row
