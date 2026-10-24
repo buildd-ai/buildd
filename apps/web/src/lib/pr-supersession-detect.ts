@@ -35,13 +35,16 @@
  */
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
-import { prShipState, type SupersessionScan, type SupersessionSignal, type SupersessionSuggestion } from '@buildd/core/pr-shipped';
+import { prShipState, type RefreshCheck, type SupersessionScan, type SupersessionSignal, type SupersessionSuggestion } from '@buildd/core/pr-shipped';
+import { MISSION_BRANCH_PREFIX } from '@buildd/core/mission-integration';
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { recordPrSupersession, supersessionRepoScope } from '@/lib/pr-supersession';
 import { deferralOf, isOutageAnswer, nextDeferral } from '@/lib/control-plane-deferral';
 import { verifyByContent, verifyByPatchId, mapPath, parseSupersessionClaims, significantAddedLines, type DiffFile } from '@/lib/pr-supersession-verify';
+import { integrationRefreshOf, refreshFiledFor, type IntegrationRefreshContext } from '@/lib/integration-refresh';
+import { verifyRefreshInBranch } from '@/lib/pr-supersession-refresh';
 import { normalizeRepoFullName, prUrlFor, repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { createTeamInstallationResolver } from '@/lib/workspace-installation';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -265,6 +268,11 @@ interface CandidateVerdict {
   confidence: number;
   prUrl?: string;
   mergeCommitSha?: string;
+  /**
+   * Merged, but its file list could not be read: its content was never compared. Unavailable
+   * proof, not negative proof — never cached, never kept as a judged pair, never a ratio of 0.
+   */
+  unavailable?: true;
 }
 
 async function verifyCandidate(opts: {
@@ -291,7 +299,12 @@ async function verifyCandidate(opts: {
   const k = key(cand.repo, cand.prNumber);
   let candFiles = opts.filesCache.get(k);
   if (!candFiles) {
-    candFiles = await listFiles(gh, inst, cand.repo, cand.prNumber).catch(() => []);
+    try {
+      candFiles = await listFiles(gh, inst, cand.repo, cand.prNumber);
+    } catch (err) {
+      console.warn(`[pr-supersession-detect] could not read the files of ${k}:`, err);
+      return { merged: true, verified: false, confidence: 0, unavailable: true, prUrl, mergeCommitSha: pr.merge_commit_sha ?? undefined };
+    }
     opts.filesCache.set(k, candFiles);
   }
 
@@ -380,8 +393,7 @@ export async function verifyPrCarriedBy(opts: {
     if (!pr || typeof pr.number !== 'number') return { outcome: 'unavailable', reason: `${repo}#${opts.prNumber} did not read as a pull request` };
     if (files.length === 0) return { outcome: 'unavailable', reason: `${repo}#${opts.prNumber} has no files to compare` };
 
-    // The candidate's files are read here, not inside verifyCandidate, whose read swallows a
-    // failure into an empty list: an unreadable winner must not look like one carrying nothing.
+    // The candidate's files are read here first, so the reason names the read that failed.
     const filesCache = new Map<string, DiffFile[]>();
     try {
       filesCache.set(key(repo, opts.candidatePrNumber), await listFiles(gh, inst, repo, opts.candidatePrNumber));
@@ -393,6 +405,7 @@ export async function verifyPrCarriedBy(opts: {
     const v = await verifyCandidate({ gh, closedRepo: repo, closed: pr, closedFiles: files, closedInst: inst, cand, inst, filesCache });
     if (gh.interrupted) return { outcome: 'unavailable', reason: `a GitHub read was cut short (${gh.interrupted})` };
     if (!v.merged) return { outcome: 'unavailable', reason: `${repo}#${opts.candidatePrNumber} is not merged, or could not be read` };
+    if (v.unavailable) return { outcome: 'unavailable', reason: `could not read the files of ${repo}#${opts.candidatePrNumber}` };
     if (v.verified) return { outcome: 'verified', method: v.method!, confidence: v.confidence };
     return { outcome: 'unverified', confidence: v.confidence };
   } catch (err) {
@@ -439,7 +452,7 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
       prLifecycleStatus: true, supersededByPrNumber: true, abandonedAt: true, supersessionScan: true,
     },
     with: {
-      task: { columns: { id: true, missionId: true } },
+      task: { columns: { id: true, missionId: true, context: true } },
       workspace: { columns: { repo: true }, with: { githubRepo: { columns: { fullName: true } } } },
     },
   });
@@ -447,6 +460,7 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
   // Already merged, superseded, abandoned or still open: nothing to find.
   if (prShipState({ ...worker, delivery: opts.delivery ?? null }) !== 'closed_unsuperseded') return { outcome: 'skipped', reason: 'not closed-unsuperseded' };
 
+  const scanRows = or(eq(workers.id, worker.id), and(eq(workers.prUrl, worker.prUrl!), isNull(workers.mergedAt)));
   const closedRepo = repoFullNameFromPrUrl(worker.prUrl);
   const prNumber = worker.prNumber;
   if (!closedRepo || !prNumber) return { outcome: 'skipped', reason: 'no parsable PR url' };
@@ -454,6 +468,19 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
   const installationFor = installationResolver(worker.workspaceId);
   const closedInst = await installationFor(closedRepo);
   if (!closedInst) return { outcome: 'skipped', reason: `no installation for ${closedRepo}` };
+
+  // An integration-refresh PR's work is ancestry plus what it adds on top of trunk (mission
+  // migrations, schema, conflict resolution), not a change a sibling PR could "carry": its
+  // effective diff is near-empty by construction, so a content check against any candidate finds
+  // nothing, and the fallback below used to offer that as "likely superseded" (task c8092d2a /
+  // PR #5530, nominated by sibling-task against an unrelated merged PR on zero shared lines).
+  // It gets the refresh proof instead (`checkClosedRefresh`), never a generic candidate.
+  const refresh = integrationRefreshOf(worker.task?.context);
+  if (refresh) {
+    return checkClosedRefresh({
+      gh, opts, now, worker, refresh, context: worker.task?.context, closedRepo, prNumber, inst: closedInst, scanRows,
+    });
+  }
 
   let closed: GhPr;
   let closedFiles: DiffFile[];
@@ -481,7 +508,6 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
   // reads as reconciling (delivery-projection.ts) rather than "scanned, nothing found".
   const unfinished = (): SupersessionScan => prevScan ?? { scannedAt: '', candidatesChecked: checked, suggestion: null };
   const attempt = () => ({ judged: judgedList(), lastAttemptAt: now.toISOString() });
-  const scanRows = or(eq(workers.id, worker.id), and(eq(workers.prUrl, worker.prUrl!), isNull(workers.mergedAt)));
   let checked = 0;
 
   // A run GitHub or the pass's clock cut short: no verdict is written (no stamp, no suggestion).
@@ -570,11 +596,14 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
   }
 
   const filesCache = new Map<string, DiffFile[]>();
-  const merged: Array<Candidate & { prUrl: string; confidence: number }> = [];
+  const merged: Array<Candidate & { prUrl: string; confidence: number; unavailable?: true }> = [];
 
   // A verified candidate the control plane did not take: deferred to the next sweep (nothing stamped),
   // until the deferral runs out; then it is filed as a suggestion with why, and a stranded gate event.
-  const deferOrExhaust = async (cand: Candidate, candUrl: string, reason: string): Promise<DetectResult> => {
+  // `confidence` comes from the content/patch-id check that already verified this candidate
+  // (the only way a caller reaches this function) — never 0 here, unlike the zero-evidence
+  // fallback suggestion below.
+  const deferOrExhaust = async (cand: Candidate, candUrl: string, reason: string, confidence: number): Promise<DetectResult> => {
     const { state, exhausted } = nextDeferral(deferralOf(prevScan?.deferral), reason, now);
     const base = unfinished();
     if (!exhausted) {
@@ -585,6 +614,7 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
       repo: cand.repo, prNumber: cand.prNumber, prUrl: candUrl, signal: cand.signal,
       why: `${cand.why}; its content verified, but the control plane did not take the record for ${state.count} sweep(s) since ${state.firstAt} (${reason})`,
       score: Math.round(cand.score * 100) / 100,
+      contentRatio: Math.round(confidence * 100) / 100,
     };
     const { deferral: _done, ...rest } = base;
     await db.update(workers)
@@ -620,7 +650,7 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
         });
       // An abandoned read makes a candidate look unmerged or empty: never judge on it.
       if (gh.interrupted) return null;
-      if (v.merged) {
+      if (v.merged && !v.unavailable) {
         const reused = prior && prior.mergeCommitSha === v.mergeCommitSha && prior.closedHeadSha === closed.head?.sha;
         if (!reused) {
           judged.set(k, {
@@ -633,10 +663,10 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
         judged.delete(k);
       }
       if (!v.merged) continue;
-      merged.push({ ...cand, prUrl: v.prUrl!, confidence: v.confidence });
+      merged.push({ ...cand, prUrl: v.prUrl!, confidence: v.confidence, ...(v.unavailable ? { unavailable: true as const } : {}) });
       if (!v.verified) continue;
       const recorded = await recordVerified({ workerId: worker.id, workspaceId: worker.workspaceId, taskId: worker.taskId, closedRepo, prNumber, cand, method: v.method!, confidence: v.confidence, via: opts.via });
-      if (recorded?.outcome === 'deferred') return deferOrExhaust(cand, v.prUrl!, recorded.reason);
+      if (recorded?.outcome === 'deferred') return deferOrExhaust(cand, v.prUrl!, recorded.reason, v.confidence);
       if (recorded) return recorded;
     }
     return null;
@@ -666,10 +696,13 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
         prNumber: best.prNumber,
         prUrl: best.prUrl,
         signal: best.signal,
-        why: best.confidence > 0
-          ? `${best.why}; ${Math.round(best.confidence * 100)}% of this PR's added lines are in it, short of the bar to record it automatically`
-          : `${best.why}; none of this PR's added lines were found in it`,
+        why: best.unavailable
+          ? `${best.why}; GitHub did not return its changes, so its content was not compared`
+          : best.confidence > 0
+            ? `${best.why}; ${Math.round(best.confidence * 100)}% of this PR's added lines are in it, short of the bar to record it automatically`
+            : `${best.why}; none of this PR's added lines were found in it`,
         score: Math.round(best.score * 100) / 100,
+        ...(best.unavailable ? { contentUnavailable: true as const } : { contentRatio: Math.round(best.confidence * 100) / 100 }),
       }
     : null;
   const scan: SupersessionScan = {
@@ -698,6 +731,98 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
     return { outcome: 'suggested', suggestion, candidatesChecked: checked };
   }
   return { outcome: 'none', candidatesChecked: checked };
+}
+
+/**
+ * A closed integration-refresh PR: is everything it set out to do already in its integration
+ * branch? The same proof pr-supersession-refresh.ts demands before retiring one
+ * (`verifyRefreshInBranch`: ancestry, then every migration by identical SQL and every added line),
+ * whoever put the work there. The answer is kept on the scan as `refreshCheck`, never as a
+ * suggestion: no PR is offered as its replacement, and nothing durable is recorded. When a newer
+ * merged refresh carries it, that sweep (`sweepSupersededRefreshPrs`, which also takes closed
+ * refresh PRs) records the edge.
+ *
+ *  - landed      → stamped scanned; the mission reads "its work is in <branch>".
+ *  - unique_work → stamped scanned; the mission reads "its closure loses work", with the reason.
+ *  - a read GitHub would not answer → deferred like any other scan, then `unavailable` once the
+ *    deferral runs out; never read as either verdict.
+ *
+ * Repeating it is safe: each run re-reads GitHub rather than trusting the last answer, writes
+ * the same stamp, and announces a verdict (gate event) only when it differs from the last one.
+ */
+async function checkClosedRefresh(a: {
+  gh: GhReader;
+  opts: Parameters<typeof detectPrSupersession>[0];
+  now: Date;
+  worker: { id: string; taskId: string | null; workspaceId: string | null; supersessionScan: SupersessionScan | null };
+  refresh: IntegrationRefreshContext;
+  context: unknown;
+  closedRepo: string;
+  prNumber: number;
+  inst: number;
+  scanRows: ReturnType<typeof or>;
+}): Promise<DetectResult> {
+  const { gh, now, worker, refresh, closedRepo, prNumber, inst, scanRows } = a;
+  const prevScan: SupersessionScan | null = worker.supersessionScan ?? null;
+  const api = (i: number, path: string) => gh.call(i, path);
+
+  const settle = async (check: Omit<RefreshCheck, 'at'>): Promise<DetectResult> => {
+    const refreshCheck: RefreshCheck = { ...check, at: now.toISOString() };
+    const { deferral: _done, judged: _j, lastAttemptAt: _l, ...rest } = prevScan ?? { scannedAt: '', candidatesChecked: 0, suggestion: null };
+    await db.update(workers)
+      .set({ supersessionScan: { ...rest, scannedAt: now.toISOString(), candidatesChecked: 0, suggestion: null, refreshCheck }, supersessionScannedAt: now })
+      .where(scanRows);
+    if (check.outcome === 'unique_work' && prevScan?.refreshCheck?.outcome !== 'unique_work') {
+      fireGateEvent({
+        gate: GATE_SLUGS.AUTO_PR_SUPERSESSION,
+        surface: SURFACE[a.opts.via],
+        outcome: 'stranded',
+        reason: `closed integration-refresh PR carries work its branch does not have: ${check.reason}`,
+        workspaceId: worker.workspaceId ?? null,
+        taskId: worker.taskId ?? null,
+        workerId: worker.id,
+        detail: { kind: 'refresh_unique_work', prNumber, repo: closedRepo, branch: check.branch },
+        callerOrigin: 'system',
+      });
+    }
+    return { outcome: 'none', candidatesChecked: 0 };
+  };
+
+  // A read that did not answer: no verdict. Deferred, then settled as unavailable once that runs out.
+  const defer = async (branch: string | null, reason: string): Promise<DetectResult> => {
+    const { state, exhausted } = nextDeferral(deferralOf(prevScan?.deferral), reason, now);
+    if (exhausted) return settle({ outcome: 'unavailable', branch, reason: `could not be checked for ${state.count} sweep(s): ${reason}` });
+    const base: SupersessionScan = prevScan ?? { scannedAt: '', candidatesChecked: 0, suggestion: null };
+    await db.update(workers).set({ supersessionScan: { ...base, deferral: state, lastAttemptAt: now.toISOString() } }).where(scanRows);
+    return { outcome: 'deferred', reason, candidatesChecked: 0 };
+  };
+
+  let pr: GhPr & { base?: { ref?: string } };
+  try {
+    pr = await gh.call(inst, `/repos/${closedRepo}/pulls/${prNumber}`);
+  } catch (err) {
+    return defer(null, `could not read ${closedRepo}#${prNumber}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (pr?.merged) return { outcome: 'skipped', reason: 'PR is merged on GitHub' };
+  const branch = refreshFiledFor(a.context) ?? pr?.base?.ref ?? null;
+  const head = pr?.head?.sha;
+  // What the proof needs and the PR will never gain: settled as unavailable, not retried.
+  if (!branch || !branch.startsWith(MISSION_BRANCH_PREFIX)) return settle({ outcome: 'unavailable', branch, reason: `${branch ?? 'its base'} is not a mission integration branch` });
+  if (!refresh.trunk) return settle({ outcome: 'unavailable', branch, reason: 'the refresh does not record which trunk it merged' });
+  if (!head) return settle({ outcome: 'unavailable', branch, reason: 'the PR has no head sha' });
+
+  const v = await verifyRefreshInBranch({ installationId: inst, repo: closedRepo, branch, trunk: refresh.trunk, refresh, prHeadSha: head, api });
+  if (gh.interrupted || (!v.ok && v.transient)) return defer(branch, v.ok ? `a GitHub read was cut short (${gh.interrupted})` : v.reason);
+  if (!v.ok) return settle({ outcome: 'unique_work', branch, reason: v.reason });
+  return settle({
+    outcome: 'landed', branch,
+    reason: `its ${refresh.trunk} merge and mission head are in ${branch}'s history, and `
+      + (v.filesChecked
+        ? `every line of the ${v.filesChecked} file(s) it changes on top of ${refresh.trunk} is there`
+          + (v.migrationsMatched ? ` (${v.migrationsMatched} migration(s) matched by identical SQL)` : '')
+        : `it changes nothing on top of ${refresh.trunk}`),
+    filesChecked: v.filesChecked, migrationsMatched: v.migrationsMatched,
+  });
 }
 
 function sameKey(c: { repo: string; prNumber: number }, repo: string, n: number) {
@@ -784,8 +909,10 @@ async function overlapCandidates(opts: {
   const out: Candidate[] = [];
   for (const p of merged) {
     if (opts.gh.stopped()) break;
-    const files = await listFiles(opts.gh, opts.inst, opts.repo, p.number).catch(() => [] as DiffFile[]);
+    const files = await listFiles(opts.gh, opts.inst, opts.repo, p.number).catch(() => null);
     if (opts.gh.interrupted) break;
+    // An unread list is not cached: a later content check must not take it for an empty diff.
+    if (!files) continue;
     opts.filesCache.set(key(opts.repo, p.number), files);
     const shared = closedPaths.filter(f => mapPath(f.filename, files)).length;
     if (shared === 0) continue;

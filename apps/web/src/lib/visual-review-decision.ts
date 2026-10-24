@@ -6,9 +6,12 @@
  * round-cap note, which describes a moment that has since passed. Pure.
  */
 import { VISUAL_REVIEW_MAX_ARTIFACTS, type VisualReviewModel } from '@buildd/shared';
-import { SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE } from '@buildd/core/surface-audit';
+import { SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE, VISUAL_REVIEW_SKIP_REASONS } from '@buildd/core/surface-audit';
 import { fixCheckDue } from './visual-review-model';
 import type { DecisionOption, DecisionView } from './needs-you-card';
+
+/** The option that opens the per-screen deck. */
+export const REVIEW_SCREENS = 'Review screens';
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const opt = (label: string, effect: string, recommended = false): DecisionOption => ({ label, effect, tip: null, recommended, downstream: null });
@@ -47,12 +50,11 @@ export function visualReviewDecision(visual: VisualReviewModel | null | undefine
 
   if (reason === 'fix_check') {
     const t = Math.max(checks.length, 1);
-    summary = `${plural(t, 'fix', 'fixes')} merged with no new screenshot.`;
-    question = `Are the ${plural(t, 'fixed screen')} fixed?`;
+    summary = `${plural(t, 'fix', 'fixes')} merged and no new screenshot will be taken.`;
+    question = `Are ${t === 1 ? 'this screen' : `these ${t} screens`} fixed?`;
     options = [
-      opt('Mark all fixed', 'Clears the review for these screens', true),
-      opt('Review screens →', 'Look at each before opening the merge'),
-      opt('Skip the review', 'Merge without a visual check'),
+      opt('Mark all fixed', 'The review passes and the mission can finish', true),
+      opt(REVIEW_SCREENS, 'Look at each screen before deciding'),
     ];
     const seen = new Set<string>();
     const pairs = checks.flatMap(c => {
@@ -71,12 +73,12 @@ export function visualReviewDecision(visual: VisualReviewModel | null | undefine
     const k = Math.max(visual.summary.awaitingHuman, 1);
     summary = `The audit could not judge ${plural(k, 'screen')}.`;
     question = `Do ${k === 1 ? 'this screen' : `these ${k} screens`} look right?`;
-    options = [opt('Review screens →', 'Decide each: looks right or needs a fix', true), opt('Skip the review', 'Merge without a visual check')];
+    options = [opt(REVIEW_SCREENS, 'Decide each: looks right or needs a fix', true)];
   } else {
     const k = Math.max(visual.summary.effectiveIssues, 1);
     summary = `Issues remain on ${plural(k, 'screen')} after the automatic rounds.`;
     question = 'Fix the remaining screens or ship as is?';
-    options = [opt('Review screens →', 'Mark each fixed or send it back', true), opt('Skip the review', 'Merge without a visual check')];
+    options = [opt(REVIEW_SCREENS, 'Mark each fixed or send it back', true)];
   }
   if (askedAt == null) askedAt = Date.parse(visual.audit?.endedAt ?? '') || null;
 
@@ -92,7 +94,7 @@ export function visualReviewDecision(visual: VisualReviewModel | null | undefine
     options,
     waits: null,
     diffHref: null,
-    answer: { kind: 'visual', missionId: mission.id, reviewHref: mission.href, markFixed: fixed, startKey: visual.queue[0] ?? null },
+    answer: { kind: 'visual', missionId: mission.id, reviewHref: mission.href, markFixed: fixed, startKey: visual.queue[0] ?? null, skips: Object.values(VISUAL_REVIEW_SKIP_REASONS) },
     shortcut: false,
   };
 }
