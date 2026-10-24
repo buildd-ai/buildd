@@ -85,7 +85,7 @@ import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { legacyRepairCompletionGate, legacyReviewFixCompletionGate, type LegacyRepairGateDeps, type LegacyReviewFixGateDeps } from '@/lib/repair-completion';
-import { legacyDiffTouchesFindings, fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, notOwnerTaskSql, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+import { legacyDiffTouchesFindings, fixedElsewhereOf, noopEvidenceOf, blockedOnBaseOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, notOwnerTaskSql, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { endedAtOf, isOwnerTask, reopenOwner, withdrawOwner } from '@/lib/workflow/owner-attempt';
 // T4 and T6 are applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
 import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, attemptRequeued as workflowAttemptRequeued, kernelPrincipalOf, recordReviewVerdict, submitReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
@@ -4586,6 +4586,7 @@ async function patchWorker(
           taskRetryBudgetLeft: shouldAutoRetry && !loopHold,
           ...(kernelReviewFailure ? { reviewFailure: kernelReviewFailure } : {}),
           ...(noopEvidenceOf(body.structuredOutput) ? { noopEvidence: noopEvidenceOf(body.structuredOutput) } : {}),
+          ...(blockedOnBaseOf(body.structuredOutput) ? { blockedOnBase: true } : {}),
         }, { principal: kernelPrincipalOf({ account }) });
       };
 

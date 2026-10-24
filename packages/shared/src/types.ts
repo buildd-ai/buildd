@@ -1858,6 +1858,13 @@ export interface ClaimTaskExclusion {
   holderTaskId?: string;
 }
 
+/** A task a claim turned away: the dispatch-loop code that held it and when the hold lifts, when known. */
+export interface ClaimDeferredTask {
+  taskId: string;
+  code: string;
+  until?: string;
+}
+
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
   /**
@@ -2005,6 +2012,8 @@ export interface ClaimDiagnostics {
      */
     isolation_unenforced?: number;
   };
+  /** Which tasks the claim turned away (window it read), each with its deferral code. Absent from an older server. */
+  deferredTasks?: ClaimDeferredTask[];
 }
 
 /**
@@ -3676,6 +3685,8 @@ export interface RunnerQueueTask {
   alongside?: { prNumber: number | null; holderTaskId: string | null } | null;
   /** With the `advisory_manifest` hold: the task it waits for, running or ahead of it in this queue. */
   holderTaskId?: string | null;
+  /** Its mission's cap on tasks at once (spec 0dc7c6de R-7); absent or null = no mission limit. */
+  missionCap?: number | null;
   /**
    * Whose work it is (spec c7410e76 R-58): the task's owner (who filed it, else
    * its mission's, else its schedule's) against the person behind the runner's
