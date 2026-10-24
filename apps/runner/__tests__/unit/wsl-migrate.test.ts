@@ -329,6 +329,7 @@ describe('the Windows launcher', () => {
 // red by design. They are skipped in the gating run and only execute with
 // BUILDD_RUN_PENDING_ACCEPTANCE=1 (that is how the starting-commit failure is
 // shown). The build that makes them pass MUST swap `pendingTest` back to `test`.
+// AC-18 (docs repo) and AC-20 (real machine) have no unit test by design.
 const pendingTest = process.env.BUILDD_RUN_PENDING_ACCEPTANCE ? test : test.skip;
 describe('acceptance criteria', () => {
   test('AC-10: an active task blocks the handover; the Scheduled Task is removed only once it finishes, never stopped', async () => {
