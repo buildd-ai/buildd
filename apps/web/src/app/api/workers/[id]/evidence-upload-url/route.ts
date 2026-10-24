@@ -13,6 +13,7 @@ import {
 } from '@/lib/evidence-backend';
 import { buildEvidenceObjectKey } from '@/lib/storage-keys';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { findAttemptRootTaskId } from '@/lib/attempt-lineage';
 
 /**
  * POST /api/workers/[id]/evidence-upload-url  {kind, seq, sizeBytes}
@@ -52,27 +53,11 @@ function isRunnerEvidenceKind(v: unknown): v is RunnerEvidenceKind {
   return typeof v === 'string' && Object.prototype.hasOwnProperty.call(RUNNER_EVIDENCE_KINDS, v);
 }
 
-const MAX_LINEAGE_DEPTH = 6;
-
 function refuse(error: string, status: number, extra: Record<string, unknown> = {}) {
   return NextResponse.json({ error, ...extra }, { status });
 }
 
 const storageRefusal = () => refuse('Evidence storage unavailable', 424);
-
-/** Walks parent_task_id to the chain's root, bounded; the task itself when it has no parent. */
-async function findRootTaskId(taskId: string): Promise<string> {
-  let current = taskId;
-  for (let depth = 0; depth < MAX_LINEAGE_DEPTH; depth++) {
-    const t = await db.query.tasks.findFirst({
-      where: sqlWhere(eq(tasks.id, current)),
-      columns: { id: true, parentTaskId: true },
-    });
-    if (!t?.parentTaskId) break;
-    current = t.parentTaskId;
-  }
-  return current;
-}
 
 export async function POST(
   req: NextRequest,
@@ -168,7 +153,10 @@ export async function POST(
   let rootTaskId: string;
   let key: string;
   try {
-    rootTaskId = await findRootTaskId(worker.taskId);
+    rootTaskId = await findAttemptRootTaskId(worker.taskId, (id) => db.query.tasks.findFirst({
+      where: sqlWhere(eq(tasks.id, id)),
+      columns: { parentTaskId: true, taskClass: true },
+    }));
     key = buildEvidenceObjectKey(
       backend.prefix,
       worker.workspaceId,
