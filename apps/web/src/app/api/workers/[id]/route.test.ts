@@ -422,6 +422,11 @@ mock.module('@/lib/notify', () => ({
 }));
 
 
+// What waits on a question (spec 1b257609): the loader is lib/question-waits.test.ts's;
+// here only that the push carries its line.
+const mockLoadQuestionWaits = mock(async (_i: any): Promise<any> => null);
+mock.module('@/lib/question-waits', () => ({ loadQuestionWaits: mockLoadQuestionWaits }));
+
 mock.module('@/lib/task-callback', () => ({
   sendTaskCallback: mock(() => Promise.resolve()),
 }));
@@ -3112,6 +3117,31 @@ describe('PATCH /api/workers/[id]', () => {
       'isWeekend() decides weekend surcharges.',
       'Recommended: Local time. Own calendar.',
     ]);
+  });
+
+  it('the push names the tasks waiting on the answer (spec 1b257609 R-1)', async () => {
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'waiting_input', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' }]) })) })),
+    });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null });
+    mockNotify.mockClear();
+    mockLoadQuestionWaits.mockClear();
+    mockLoadQuestionWaits.mockResolvedValueOnce({
+      taskId: 'task-1', mission: null, hiddenCount: 1, beyondCount: 0, criteria: null, askedAt: null, expiresAt: null,
+      onExpiry: { action: 'restart', option: null }, options: [], lanes: [],
+      waiting: [{ id: 'b', title: 'Repair the totals', depth: 1, missionId: null, missionTitle: null, workspaceName: null, after: null, alsoWaitsOnOther: false }],
+    });
+    const res = await PATCH(createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Ship it?' } },
+    }), { params: mockParams });
+    expect(res.status).toBe(200);
+    await new Promise(r => setTimeout(r, 0));
+    expect(mockLoadQuestionWaits.mock.calls[0][0]).toMatchObject({ taskId: 'task-1', viewer: { kind: 'member' } });
+    const call = mockNotify.mock.calls.find((c: any[]) => c[0]?.title === 'Agent needs input');
+    expect(call![0].message.split('\n')).toEqual(['Ship it?', "Waits on this: Repair the totals and 1 task you can't see."]);
   });
 
   // Held questions (lib/question-hold.ts): the gate said `hold`, so nobody is

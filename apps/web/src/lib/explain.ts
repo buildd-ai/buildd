@@ -20,6 +20,7 @@
  * the five underlying derivations. This module does not decide what a state is;
  * it only supplies the accessor's inputs and turns its answer into evidence.
  */
+import { loadQuestionWaits } from './question-waits';
 import { isOpenAsk, missionOpenQuestions } from './open-ask';
 import { loadTaskAccess } from './agent-capabilities/access-log';
 import { BACKEND_ROUTING_KEY, describeBackendRouting } from '@buildd/core/backend-policy';
@@ -1440,7 +1441,10 @@ export async function explainTask(taskId: string, actor: EvidenceActor, viewer: 
   const verdict = await loadTaskVerdictForExplain(taskId).catch(() => null);
   const withCoordination = holds.length > 0 ? { ...answer, coordination: { holds } } : answer;
   const withAccess = access.length > 0 ? { ...withCoordination, access } : withCoordination;
-  return { scope: 'task', subjects: [verdict ? { ...withAccess, verdict } : withAccess] };
+  // An open question: what waits on its answer, the same projection the cards read (spec 1b257609 R-10).
+  const questionWaits = await loadQuestionWaits({ taskId, viewer, requireQuestion: true }).catch(() => null);
+  const withWaits = questionWaits ? { ...withAccess, questionWaits } : withAccess;
+  return { scope: 'task', subjects: [verdict ? { ...withWaits, verdict } : withWaits] };
 }
 
 // ─── PR scope ─────────────────────────────────────────────────────────────────
