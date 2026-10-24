@@ -10,6 +10,7 @@ import {
   WSL_SERVICE_INSTALL,
   generateLogonTaskXml,
   parseMigrateArgs,
+  listPendingPinned,
   runWslMigrate,
   type MigrateDeps,
 } from '../../src/wsl-migrate';
@@ -137,6 +138,7 @@ function machine(over: Partial<Machine> = {}) {
         events.push(`active:${now.length}`);
         return now;
       },
+      pendingPinned: async () => [],
     },
   });
   return { m, calls, events, lines, deps, sleeps: () => sleeps, out: () => lines.join('\n') };
@@ -331,12 +333,7 @@ describe('the Windows launcher', () => {
 
 // Acceptance criteria (Living Spec a0b82b5d, part 3): one test per check id.
 //
-// The AC-16 test below describes behaviour nobody has
-// built yet, so they are red by design. They are skipped in the gating run and only execute with
-// BUILDD_RUN_PENDING_ACCEPTANCE=1 (that is how the starting-commit failure is
-// shown). The build that makes them pass MUST swap `pendingTest` back to `test`.
 // AC-18 (docs repo) and AC-20 (real machine) have no unit test by design.
-const pendingTest = process.env.BUILDD_RUN_PENDING_ACCEPTANCE ? test : test.skip;
 describe('acceptance criteria', () => {
   test('AC-10: an active task blocks the handover; the Scheduled Task is removed only once it finishes, never stopped', async () => {
     const t = machine({ active: [[{ title: 'Ship the thing', status: 'working' }], []] });
@@ -445,17 +442,80 @@ describe('acceptance criteria', () => {
     expect(mutating(t.calls)).toEqual([]);
   });
 
-  // Not yet built: nothing in runWslMigrate looks up tasks pinned to the
-  // Windows runner before removing it (R-25, R-16) — there is no dependency
-  // for it to read that from. This names the shape such a check would need;
-  // it fails now because migrate never calls it or mentions a pinned task.
-  pendingTest('AC-16: a pending task pinned to the Windows runner is listed before migrate removes it', async () => {
+  // Looks up tasks pinned to the Windows runner before removing it (R-25, R-16).
+  test('AC-16: a pending task pinned to the Windows runner is listed before migrate removes it', async () => {
     const t = machine();
     const deps = t.deps();
-    (deps.windows as typeof deps.windows & { pendingPinned?: () => Promise<{ title: string }[]> }).pendingPinned =
-      async () => [{ title: 'Ship the invoice fix' }];
+    deps.windows.pendingPinned = async () => [{ title: 'Ship the invoice fix' }];
     expect(await runWslMigrate({ undo: false }, deps)).toBe(0);
     expect(t.out()).toContain('Ship the invoice fix');
     expect(t.out()).toMatch(/wait(s|ing)? for (the )?(windows )?runner/i);
+  });
+
+  test('AC-16: no pending tasks pinned to the Windows runner means the list is empty', async () => {
+    const t = machine();
+    const deps = t.deps();
+    deps.windows.pendingPinned = async () => [];
+    expect(await runWslMigrate({ undo: false }, deps)).toBe(0);
+    expect(t.out()).not.toMatch(/wait(s|ing)? for/i);
+  });
+
+  test('AC-16: a failed pending task lookup does not crash the migration', async () => {
+    const t = machine();
+    const deps = t.deps();
+    deps.windows.pendingPinned = async () => { throw new Error('API unreachable'); };
+    expect(await runWslMigrate({ undo: false }, deps)).toBe(0);
+    expect(t.m.winTask).toBe(false);
+  });
+
+  describe('AC-16: listPendingPinned (the lookup main() wires in)', () => {
+    const PIN = 'runner:headless://WIN-BOX';
+    const task = (title: string, status: string, caps: string[]) => ({ title, status, requiredCapabilities: caps });
+    const run = async (respond: (url: string) => Response | Promise<Response>) => {
+      const urls: string[] = [];
+      const lines: string[] = [];
+      const result = await listPendingPinned({
+        configFile: '/nonexistent/config.json',
+        log: (l) => lines.push(l),
+        apiKey: 'bld_test',
+        baseUrl: 'https://example.test/',
+        runnerKey: 'headless://WIN-BOX',
+        fetchFn: (async (u: string) => { urls.push(u); return respond(u); }) as unknown as typeof fetch,
+      });
+      return { result, urls, lines };
+    };
+
+    test('asks for an accepted status and keeps only pending tasks pinned to this runner', async () => {
+      const { result, urls, lines } = await run(() => Response.json({ tasks: [
+        task('pinned pending', 'pending', [PIN]),
+        task('pinned running', 'in_progress', [PIN]),
+        task('other host', 'pending', ['runner:headless://OTHER']),
+        task('unpinned', 'pending', []),
+      ], hasMore: false, nextCursor: null }));
+      expect(urls).toEqual(['https://example.test/api/tasks?status=active']);
+      expect(result).toEqual([{ title: 'pinned pending' }]);
+      expect(lines).toEqual([]);
+    });
+
+    test('follows nextCursor so a later page is not hidden', async () => {
+      const { result, urls } = await run((u) => u.includes('cursor=c1')
+        ? Response.json({ tasks: [task('second page', 'pending', [PIN])], hasMore: false, nextCursor: null })
+        : Response.json({ tasks: [task('first page', 'pending', [PIN])], hasMore: true, nextCursor: 'c1' }));
+      expect(urls[1]).toBe('https://example.test/api/tasks?status=active&cursor=c1');
+      expect(result.map(r => r.title)).toEqual(['first page', 'second page']);
+    });
+
+    test('a non-ok response is reported in one line, not swallowed', async () => {
+      const { result, lines } = await run(() => new Response('nope', { status: 400 }));
+      expect(result).toEqual([]);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(/could not check/i);
+    });
+
+    test('a thrown fetch is reported in one line', async () => {
+      const { result, lines } = await run(() => { throw new Error('offline'); });
+      expect(result).toEqual([]);
+      expect(lines).toHaveLength(1);
+    });
   });
 });
