@@ -66,7 +66,7 @@ beforeEach(() => {
     id: WS, name: 'Web', repo: 'acme/web', teamId: TEAM, gitConfig: { executor: 'any' }, configStatus: 'admin_confirmed',
     accessMode: 'restricted', releaseConfig: null, workTrackerConfig: null,
     webhookConfig: { url: 'https://hooks.example.test/x', token: 'whsec_must_not_be_cached', enabled: true, events: ['task.created'] },
-    maxConcurrentTasks: 3, newStartsPausedUntil: new Date('2030-01-01T00:00:00Z'),
+    newStartsPausedUntil: new Date('2030-01-01T00:00:00Z'),
   };
   accountRows = [{
     id: 'acct-1', name: 'laptop', type: 'user', authType: 'api', apiKeyPrefix: 'bld_ab', maxConcurrentWorkers: 2,

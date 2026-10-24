@@ -118,11 +118,11 @@ describe('requests', () => {
     stub(200);
     expect(await requestTaskStart('t1')).toEqual({ ok: true });
     await requestTaskStart('t1', { forceOverride: true });
-    await requestTaskStart('t1', { capExempt: true, targetLocalUiUrl: 'http://ui' });
+    await requestTaskStart('t1', { targetLocalUiUrl: 'http://ui' });
     expect(calls.map(c => [c.url, c.method, c.body])).toEqual([
       ['/api/tasks/t1/start', 'POST', {}],
       ['/api/tasks/t1/start', 'POST', { forceOverride: true }],
-      ['/api/tasks/t1/start', 'POST', { targetLocalUiUrl: 'http://ui', capExempt: true }],
+      ['/api/tasks/t1/start', 'POST', { targetLocalUiUrl: 'http://ui' }],
     ]);
   });
 

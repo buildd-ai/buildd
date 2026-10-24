@@ -17,7 +17,6 @@ import { modelAuthLabel, codexAuthLabel } from './_lib/model-auth-label';
 import type { RunnerModelAuthSource, RunnerCodexAuthSource } from '@buildd/shared';
 import { shortAgo } from '@/lib/mission-list-card';
 import HostRunnerToggle from './HostRunnerToggle';
-import MaxConcurrentWorkersEditor from './MaxConcurrentWorkersEditor';
 import RunnerSlotsControl from '@/components/RunnerSlotsControl';
 
 interface Account {
@@ -104,9 +103,6 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Teams start folded: the header row already says how many tokens and when one was last seen.
   const [openTeams, setOpenTeams] = useState<Set<string>>(() => new Set());
-  const [maxConcurrentWorkers, setMaxConcurrentWorkers] = useState<Record<string, number>>(
-    accounts.reduce((acc, a) => ({ ...acc, [a.id]: a.maxConcurrentWorkers }), {}),
-  );
   const groups = groupRunnerTokens(accounts);
   const toggleTeam = (team: string) => setOpenTeams((cur) => {
     const next = new Set(cur);
@@ -251,13 +247,6 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                                   <span>Auth: {account.authType}</span>
                                   <span>·</span>
                                   <span>Type: {account.type}</span>
-                                  <span>·</span>
-                                  <MaxConcurrentWorkersEditor
-                                    accountId={account.id}
-                                    value={maxConcurrentWorkers[account.id] ?? account.maxConcurrentWorkers}
-                                    onUpdate={(newValue) => setMaxConcurrentWorkers((cur) => ({ ...cur, [account.id]: newValue }))}
-                                    canEdit={canAdmin}
-                                  />
                                   {account.authType === 'api' && (
                                     <><span>·</span><span>Cost: ${account.totalCost}</span></>
                                   )}

@@ -47,8 +47,8 @@ describe('claimEntryWords', () => {
   });
 
   test('all candidates deferred names a single reason', () => {
-    const w = claimEntryWords({ ...base, event: 'claim_empty', diagnosticReason: 'all_candidates_deferred', deferrals: { mission_paced: 3 } as any }, NOW);
-    expect(w).toBe('waiting: mission is paced');
+    const w = claimEntryWords({ ...base, event: 'claim_empty', diagnosticReason: 'all_candidates_deferred', deferrals: { mission_concurrent: 3 } as any }, NOW);
+    expect(w).toBe('waiting: mission is at its task limit');
   });
 
   test('a gate the server did not name reads reason unknown, never that the server held it', () => {

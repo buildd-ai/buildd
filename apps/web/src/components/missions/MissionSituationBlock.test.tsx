@@ -82,7 +82,7 @@ describe('mission header — Part 2 regression: a live worker must not suppress 
       activeAgents: 1,
       deferrals: [{
         taskId: 'task-stuck',
-        reason: 'workspace_cap',
+        reason: 'mission_concurrent',
         consecutiveDeferrals: 13,
         firstDeferredAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
       }],
@@ -90,8 +90,8 @@ describe('mission header — Part 2 regression: a live worker must not suppress 
 
     expect(html).toContain('13 times in a row');
     // The reason in the gate's own words (Navigation R-14), never its slug.
-    expect(html).toContain('every agent slot in the workspace is in use');
-    expect(html).not.toContain('workspace_cap');
+    expect(html).toContain('the mission is already running as many tasks as it allows');
+    expect(html).not.toContain('mission_concurrent');
   });
 });
 

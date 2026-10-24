@@ -262,7 +262,7 @@ describe('overviewWaitLine', () => {
 
   it('names the hold and what lifts it', () => {
     expect(overviewWaitLine(m, idOf('hold'))).toBe('Mission budget. Starts when the mission budget is raised.');
-    expect(overviewWaitLine(m, idOf('slot'))).toBe('Workspace concurrency limit. Starts when a workspace task finishes.');
+    expect(overviewWaitLine(m, idOf('slot'))).toBe('Mission concurrency limit. Starts when another task in the mission finishes.');
   });
 
   it('leaves waiting on tasks to the strip reason, and says plainly when no reason is recorded', () => {
