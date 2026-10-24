@@ -363,3 +363,15 @@ describe('MissionOverview build stage: one failed task and a goal-criteria escal
     expect(card).toContain('data-testid="decision-not-now"');
   });
 });
+
+describe('MissionOverview design placement (Navigation R-3)', () => {
+  it('renders the design slot once, last, after the stage content', () => {
+    const out = renderToStaticMarkup(<MissionOverview model={dagBoard(spec)} missionId="mission-1" design={<div data-testid="design-slot" />} />);
+    expect(out.match(/data-testid="design-slot"/g)?.length).toBe(1);
+    expect(out.indexOf('data-testid="design-slot"')).toBeGreaterThan(out.indexOf('data-testid="mission-task-list"'));
+    expect(out.trimEnd().endsWith('<div data-testid="design-slot"></div></div>')).toBe(true);
+  });
+  it('renders nothing when there is no design', () => {
+    expect(html).not.toContain('design-slot');
+  });
+});
