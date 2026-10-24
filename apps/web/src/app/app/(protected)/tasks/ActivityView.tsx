@@ -585,7 +585,7 @@ function HistoryDayView({ day, tz }: { day: HistoryDay; tz: string }) {
       </dl>
       <div className="mt-3 overflow-x-auto">
         <div className="md:min-w-[860px]">
-          <div aria-hidden="true" className={`grid grid-cols-1 gap-4 border-b border-border-default pb-1 font-mono text-[10.5px] text-text-muted ${ROW_COLS}`}>
+          <div aria-hidden="true" className={`grid grid-cols-1 gap-4 border-b border-border-default pb-1 font-mono text-chip text-text-muted ${ROW_COLS}`}>
             <span className="hidden md:block">Delivery</span>
             <span className="hidden md:block">Mission</span>
             <span className="relative h-3">
@@ -615,11 +615,11 @@ function DeliveryBarRow({ episode, day, tz }: { episode: Episode; day: HistoryDa
       className={`grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-2 border-b border-border-default py-3 md:gap-x-4 md:gap-y-0 md:py-0 ${ROW_COLS}`}
     >
       <span className="col-start-1 row-start-1 min-w-0 truncate text-body font-medium text-text-primary md:col-auto md:row-auto" title={episode.title}>{displayTaskTitle(episode.title)}</span>
-      <span className="hidden min-w-0 truncate font-mono text-[11.5px] text-text-muted md:block" title={mission}>{mission}</span>
+      <span className="hidden min-w-0 truncate font-mono text-meta text-text-muted md:block" title={mission}>{mission}</span>
       <span className="col-span-2 row-start-2 min-w-0 md:col-auto md:col-span-1 md:row-auto">
         <DeliveryBar {...bar} />
       </span>
-      <span className={`col-start-2 row-start-1 whitespace-nowrap text-right font-mono text-[11.5px] md:col-auto md:row-auto ${END_TEXT[bar.outcome]}`}>
+      <span className={`col-start-2 row-start-1 whitespace-nowrap text-right font-mono text-meta md:col-auto md:row-auto ${END_TEXT[bar.outcome]}`}>
         <span aria-hidden="true">{DELIVERY_END_MARK[bar.outcome]}</span> {hourText(episode.at, tz)}
       </span>
     </Link>
