@@ -289,3 +289,36 @@ describe('Decision subject on the mission page', () => {
     expect(other).toContain('href="/app/missions/mission-1"');
   });
 });
+
+describe('A visual review waiting on a person (Navigation R-16, R-18)', () => {
+  const { buildVisualReviewModel } = require('@/lib/visual-review-model') as typeof import('@/lib/visual-review-model');
+  const { recaptureFixtureInput } = require('@/lib/visual-review-model.fixtures') as typeof import('@/lib/visual-review-model.fixtures');
+  const { visualReviewDecision } = require('@/lib/visual-review-decision') as typeof import('@/lib/visual-review-decision');
+  const base = { now: Date.UTC(2026, 9, 14, 12), missionCreatedAt: Date.UTC(2026, 9, 14, 11), missionStatus: 'active' as const };
+  const f = handoffFixture('handoff-repairing', base);
+  const visual = buildVisualReviewModel(recaptureFixtureInput('recapture-decide'));
+  const decision = visualReviewDecision(visual, { id: 'mission-1', title: 'A mission', href: '/app/missions/mission-1' })!;
+  const out = renderToStaticMarkup(
+    <MissionOverview model={f.model} missionId="mission-1" executor={f.executor} checks={f.checks} planTasks={f.planTasks} held={f.held} visual={visual} decisions={[decision]} />,
+  );
+
+  it('is one decision card, with no separate ask and no Checks panel', () => {
+    expect((out.match(/data-testid="decision-card"/g) ?? []).length).toBe(1);
+    expect(out).not.toContain('data-testid="visual-review-ask"');
+    expect(out).not.toContain('Fixed screens to check');
+    expect(out).not.toContain('Review the screens');
+    expect(out).not.toContain('data-kind="visual"');
+    expect(out).not.toContain('data-testid="mission-check-repairs"');
+    expect(out).not.toContain('blocks finish');
+    expect(out).not.toMatch(/\b[0-9a-f]{7}\b(?=[^<]*<\/span>)/);
+  });
+
+  it('asks the question with the count the summary gives', () => {
+    const n = decision.summary!.match(/^(\d+) fix/)![1];
+    expect(out).toContain(`Are these ${n} screens fixed?`);
+    expect(decision.summary).toBe(`${n} fixes merged and no new screenshot will be taken.`);
+    expect(out).toContain('Mark all fixed');
+    expect(out).toContain('Review screens');
+    expect(out).not.toContain('→');
+  });
+});

@@ -13,9 +13,10 @@ describe('visualReviewDecision', () => {
     expect(model.phase).toBe('needs_you');
     const v = visualReviewDecision(model, mission)!;
     expect(v).not.toBeNull();
-    expect(v.question).toMatch(/^Are the \d+ fixed screens? fixed\?$/);
-    expect(v.options.map(o => o.label)).toEqual(['Mark all fixed', 'Review screens →', 'Skip the review']);
-    expect(v.summary).toMatch(/merged with no new screenshot\.$/);
+    expect(v.question).toMatch(/^Are (this screen|these \d+ screens) fixed\?$/);
+    expect(v.options.map(o => o.label)).toEqual(['Mark all fixed', 'Review screens']);
+    expect(v.summary).toMatch(/^\d+ fix(es)? merged and no new screenshot will be taken\.$/);
+    if (v.answer.kind === 'visual') expect(v.answer.skips).toEqual(['The review is wrong or stuck', 'Ship it anyway']);
     expect(v.summary!.length).toBeLessThan(60);
     expect(v.answer.kind).toBe('visual');
     if (v.answer.kind === 'visual') expect(v.answer.markFixed.flatMap(g => g.artifactIds).length).toBeGreaterThan(0);
