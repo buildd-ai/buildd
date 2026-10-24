@@ -25,6 +25,8 @@ function github(opts: {
   baseDir?: string[];
   /** Drizzle v1 migration folders in the same listing (directory entries). */
   baseFolders?: string[];
+  /** Folders in the drizzle dir at this PR's head; absent = listing unavailable. */
+  headFolders?: string[];
   baseRef?: string;
   peers?: Array<{
     number: number;
@@ -57,6 +59,9 @@ function github(opts: {
           ...(opts.baseDir ?? []).map((name) => ({ name, type: 'file' })),
           ...(opts.baseFolders ?? []).map((name) => ({ name, type: 'dir' })),
         ];
+      }
+      if (decodeURIComponent(path) === DIR && ref === 'abc123' && opts.headFolders) {
+        return opts.headFolders.map((name) => ({ name, type: 'dir' }));
       }
       const source =
         ref === 'abc123' ? opts.head
@@ -733,6 +738,28 @@ describe('inspectPullRequestMigrations — a refresh PR that renumbers the missi
         const verdict = await inspect('dev');
         expect(verdict).toMatchObject({ safe: false, kind: 'stale_parent' });
         expect((verdict as { reason: string }).reason).toMatch(/needs rebase/);
+      });
+
+      it('refuses a fork by folder names when the snapshots cannot be read', async () => {
+        github({
+          files: prFiles,
+          head: { [V1]: SAFE },
+          baseFolders: folders('s-2'),
+          headFolders: ['20260901090000_baseline', OLD, '20261012120000_add_busy_since'],
+        });
+        const verdict = await inspect('dev');
+        expect(verdict).toMatchObject({ safe: false, kind: 'stale_parent' });
+        expect((verdict as { reason: string }).reason).toMatch(/no longer a leaf.*migrations:regenerate/);
+      });
+
+      it('lands when the base gained nothing since the branch was cut', async () => {
+        github({
+          files: prFiles,
+          head: { [V1]: SAFE },
+          baseFolders: folders('s-1'),
+          headFolders: [...folders('s-1'), '20261012120000_add_busy_since'],
+        });
+        expect(await inspect('dev')).toEqual({ safe: true, operationClass: 'EXPAND' });
       });
 
       it('accepts a chain of the PR’s own migrations whose outer parent is the leaf', async () => {

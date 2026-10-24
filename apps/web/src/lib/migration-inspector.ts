@@ -407,8 +407,46 @@ async function inspectOnce(params: {
   if (baseSha && novelV1.length > 0) {
     const stale = await staleSnapshotParent(params, novelV1, baseSha);
     if (stale) return stale;
+    const fork = await forkedFromBase(params, novelV1, baseSha);
+    if (fork) return fork;
   }
   return verdict;
+}
+
+/**
+ * The folder-set twin of the stale-parent rule. That rule reads snapshot ids and
+ * lets the PR through when it cannot read one; this one compares only folder
+ * names, which one directory listing per side answers. A PR whose head holds
+ * folders the base lacks while the base holds folders the head lacks is a fork
+ * of the snapshot chain (the same test as `forkOf` in refresh-migration-fork.ts):
+ * a sibling migration landed after CI ran. Skipped when either listing is
+ * unreadable, as the stale-parent rule is.
+ */
+async function forkedFromBase(
+  params: { installationId: number; repoFullName: string; headSha: string },
+  novelV1: readonly string[],
+  baseSha: string,
+): Promise<MigrationSafety | null> {
+  const dir = novelV1[0]!.split('/').slice(0, -2).join('/');
+  const [head, base] = await Promise.all([
+    migrationNamesAt(params.installationId, params.repoFullName, dir, params.headSha),
+    migrationNamesAt(params.installationId, params.repoFullName, dir, baseSha),
+  ]);
+  if (!head || !base) return null;
+  const onBase = new Set(base.v1Folders);
+  const onHead = new Set(head.v1Folders);
+  const headOnly = head.v1Folders.filter((f) => !onBase.has(f));
+  const baseOnly = base.v1Folders.filter((f) => !onHead.has(f));
+  if (headOnly.length === 0 || baseOnly.length === 0) return null;
+  return {
+    safe: false,
+    operationClass: 'CONTRACT',
+    kind: 'stale_parent',
+    reason:
+      `migration snapshot parent is no longer a leaf of the base: the base gained migration ${baseOnly.sort().join(', ')} ` +
+      `since this branch was cut, so the two snapshot chains fork. Rebase onto the base branch and run ` +
+      `bun run migrations:regenerate, then CI must run again`,
+  };
 }
 
 /**
