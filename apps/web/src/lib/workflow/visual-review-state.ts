@@ -177,6 +177,13 @@ export interface MissionVisualReviewState {
   recapture?: VisualReviewRecaptureState;
   /** The claim loop's newest refusal reason for a queued audit (gate_events), when the loader read one. */
   holdReason?: string | null;
+  /**
+   * The scheduler would not file the audit this state is waiting for (round
+   * cap, cancelled on this commit, retries used up, local executor, capture
+   * setup). Without it a `needed` state reads as "system next" while nothing
+   * will ever run; with it a person is told why and who acts.
+   */
+  scheduleBlock?: { cause: string; reason: string };
   branch: {
     headSha: string | null;
     base: string | null;
