@@ -30,13 +30,17 @@ const DOT_TEXT: Record<ChipTone, string> = {
 };
 
 const CHIP_TONE: Record<QueueReason, ChipTone> = { lane: 'muted', limit: 'warning', dependency: 'info' };
+const SHAPE: Record<QueueReason, string> = { lane: '', limit: 'rotate-45', dependency: 'rounded-full' };
 
 export function ReasonBadge({ reason }: { reason: QueueReason }) {
   return (
     <Chip
       tone={CHIP_TONE[reason]}
+      dot={false}
       data-testid="queue-reason"
+      data-reason={reason}
     >
+      <span aria-hidden="true" className={`w-1.5 h-1.5 shrink-0 bg-current ${SHAPE[reason]}`} />
       {termWord(QUEUE_REASON_TERM[reason])}
     </Chip>
   );
