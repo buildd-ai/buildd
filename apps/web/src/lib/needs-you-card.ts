@@ -41,7 +41,13 @@ export type DecisionAnswer =
   /** An organizer's question note: the mission's note reply route. */
   | { kind: 'note'; missionId: string; noteId: string }
   /** An approval decided where the work is (the PR): the buttons are links. */
-  | { kind: 'link'; primaryHref: string; secondaryHref: string };
+  | { kind: 'link'; primaryHref: string; secondaryHref: string }
+  /**
+   * A mission's visual review waiting on a person: options are `Mark all
+   * fixed` (decide each listed screen looks right), `Review screens →` (opens
+   * the per-screen deck, or goes to the mission) and `Skip the review`.
+   */
+  | { kind: 'visual'; missionId: string; reviewHref: string; markFixed: { artifactIds: string[]; expected: Record<string, string> }[]; startKey: string | null };
 
 export interface DecisionView {
   key: string;
@@ -50,6 +56,8 @@ export interface DecisionView {
   task: { id: string; title: string; href: string } | null;
   /** Named when the card falls back to the mission (an organizer decision with no subject task). */
   mission: { id: string; title: string; href: string } | null;
+  /** Names the subject when there is no task or mission to link (or the page is that mission's own). */
+  label?: string | null;
   /** When it was asked, epoch ms; null when unknown. */
   askedAt: number | null;
   /** Why, in the agent's (or the delivery's) words. Body text; null when nothing is known. */
