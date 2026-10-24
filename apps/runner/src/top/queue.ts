@@ -23,7 +23,7 @@
 import { TERMS, titleWithAttempt, type RunnerQueueExclusion, type RunnerQueueTask } from '@buildd/shared';
 import { taskIdInSentence } from '../claim-outcomes';
 import {
-  DEFERRAL_WORDS, EXCLUSION_WORDS as CLAIM_EXCLUSION_WORDS, MOVED_CODES, RUNNER_COOLDOWN_MS, busySlots, currentTeam, heldNow, inView, isOrganizerTask, liveTaskOutcome, localLiftTime, matchesFilter, providerHolds, providerHoldLine, roleLabel, wallFor, workspaceList,
+  DEFERRAL_WORDS, EXCLUSION_WORDS as CLAIM_EXCLUSION_WORDS, MOVED_CODES, RUNNER_COOLDOWN_MS, busySlots, currentTeam, heldNow, inView, isOrganizerTask, liveTaskOutcome, localLiftTime, matchesFilter, PROVIDER_NAME, providerHolds, providerHoldLine, roleLabel, wallFor, workspaceList,
   type ClaimOutcome, type ProviderHold, type TopState, type TopTask,
 } from './state';
 
@@ -126,7 +126,7 @@ function taskProviderHoldSentence(t: RunnerQueueTask, state: TopState, now: numb
   const backend = t.backend || 'claude';
   const wall = wallFor(o, backend, now);
   if (!wall || wall.kind !== 'runner_seat') return null;
-  return providerHoldLine({ backend: wall.backend, provider: 'Claude', kind: wall.kind, word: 'login limit', resetsAt: wall.resetsAt }, now);
+  return providerHoldLine({ backend: wall.backend, provider: PROVIDER_NAME[wall.backend] ?? wall.backend, kind: wall.kind, word: 'login limit', resetsAt: wall.resetsAt }, now);
 }
 
 /**
