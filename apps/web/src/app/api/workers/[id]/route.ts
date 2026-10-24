@@ -5902,6 +5902,7 @@ async function handleReviewerOutcomeIfNeeded(
         prNumber,
         headSha,
         files: (currentFiles ?? []) as never,
+        trunkRef: workspace?.gitConfig?.targetBranch ?? workspace?.gitConfig?.defaultBranch ?? null,
         ...(deltaBase ? { deltaBase, baseRef: gatedWorker?.prBaseRef ?? null } : {}),
       });
     } catch (err) {

@@ -298,6 +298,16 @@ async function outcomesOf(host: ConformanceHost, s: Delivery, kind: EffectKind):
   return (await host.effects(s.deliveryId)).filter((e) => e.kind === kind).map((e) => e.outcome);
 }
 
+/** A composition of one constituent reviewed and approved at its own head, nothing novel. */
+const composedOf = (s: Delivery, head: string): { attestation: CompositionAttestation; constituents: ConstituentEvidence[] } => ({
+  attestation: {
+    repoFullName: s.repo, prNumber: s.prNumber, baseSha: 'B0', aggregateHeadSha: head, method: 'tree_equal', verifiedAt: MERGED_AT, verifier: 'kernel',
+    constituents: [{ deliveryId: 'dx', roundId: 'rx', prNumber: 3, reviewedHeadSha: 'C1', equivalentHeadShas: [], mergedHeadSha: 'C1', landedSha: 'SQ1', landedPatchId: 'a'.repeat(64), reviewedPatchId: 'a'.repeat(64) }],
+    novelDelta: { result: 'none' },
+  },
+  constituents: [{ roundId: 'rx', deliveryId: 'dx', prNumber: 3, repoFullName: s.repo, roundHeadSha: 'C1', roundStatus: 'decided', effectiveVerdict: 'approve', deliveryApprovedHeads: ['C1'] }],
+});
+
 const closedUnmergedOf = (s: Delivery, head: string): LivePr => s.live(head, { state: 'closed', merged: false, updatedAt: '2026-01-01T02:00:00Z' });
 
 const neverAsked: Decide = { id: 'never', decide: async () => { throw new ConformanceFailure('a replay called the decider'); } };
@@ -1391,10 +1401,29 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const c = await new Delivery(host, 83).open();
       applied(await c.ownerPushed('H1'), 'AWAITING_REVIEW', 'c pushed');
       const fc = fakePorts(host);
-      fc.reviews.attested.set((await c.latestRound()).id, 'ok:composition_attested');
+      const cRound = (await c.latestRound()).id;
+      fc.reviews.attested.set(cRound, 'ok:composition_attested');
+      fc.reviews.onAttest.set(cRound, async () => {
+        applied(await c.submit({ type: 'CompositionAttested', actor: 'kernel', ...composedOf(c, 'H1'), factId: null }), 'APPROVED', 'the attestation approves the head');
+      });
       await drainKernel(host, c, fc.ports);
       eq(await outcomesOf(host, c, 'dispatch_review'), ['ok:composition_attested'], 'attested');
       eq(fc.work.requested.length, 0, 'no reviewer filed');
+    },
+  },
+  {
+    name: 'handlers/review: an attestation that answers ok but leaves the round open (spent at this head earlier) still gets the round its reviewer',
+    async run(host) {
+      // 26b969db: a refresh PR sat in AWAITING_REVIEW with no reviewer for either round.
+      const s = await new Delivery(host, 83).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'refresh PR pushed');
+      const f = fakePorts(host);
+      f.reviews.attested.set((await s.latestRound()).id, 'ok:composition_attested');
+      await drainKernel(host, s, f.ports);
+      eq((await s.d()).state, 'AWAITING_REVIEW', 'still awaiting review');
+      eq(f.work.requested.filter((r) => r.role === 'review').length, 1, 'a reviewer is filed for the round left open');
+      ok((await s.latestRound()).reviewerTaskId, 'and linked');
+      eq(await outcomesOf(host, s, 'dispatch_review'), ['ok'], 'dispatched');
     },
   },
   {
