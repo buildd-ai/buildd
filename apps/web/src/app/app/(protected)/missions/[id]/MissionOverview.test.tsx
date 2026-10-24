@@ -289,7 +289,6 @@ describe('Decision subject on the mission page', () => {
     expect(other).toContain('href="/app/missions/mission-1"');
   });
 });
-||||||| parent of 14acfd625 (fix(missions): design preview in one fixed collapsed place, opens on the stage's screen, tidy chrome)
 
 describe('MissionOverview design placement (Navigation R-3)', () => {
   it('renders the design slot once, last, after the stage content', () => {
