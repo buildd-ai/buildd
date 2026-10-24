@@ -161,11 +161,12 @@ describe('r7 §7: findings after a spent review budget, and a person\'s decision
 
     w.gh.greenCi(w.repo, h2, ['build', 'test']);
     await w.deliver();
+    await w.land(pr, h2);
+    await w.deliver();
+    // The landing request's rails read CI green: the merge effect publishes success before merging.
     const shown = await shownNow();
     expect(shown).toMatchObject({ state: 'success' });
     expect(shown?.description ?? '').toContain('approved by a person over 2 open findings');
-    await w.land(pr, h2);
-    await w.deliver();
     expect((await approve())?.result.result).toBe('duplicate');
     expect(w.mergeCalls(pr)).toHaveLength(1);
   }, 90_000);

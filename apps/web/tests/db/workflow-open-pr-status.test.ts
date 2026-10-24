@@ -52,6 +52,8 @@ describe('the open-PR status sweep', () => {
     const pr = await w.openPr({ branch: 'feat/flag', files: { 'src/a.ts': 'export const a = 2;\n' } });
     await w.approve(pr);
     const head = (await w.delivery(pr)).currentHeadSha!;
+    w.gh.greenCi(w.repo, head, ['build', 'test']);
+    await w.deliver();
     // A head whose status predates the current name (or was overwritten): what GitHub shows is not the kernel's answer.
     await githubApi(w.installationId, `/repos/${w.repo}/statuses/${head}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
