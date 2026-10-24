@@ -103,7 +103,7 @@ export default function Pipeline({ deliveries, layout = 'stack', hrefFor, classN
         const href = hrefFor?.(stage);
         const cellClass = queued
           ? `flex min-h-11 ${row ? 'items-center py-4' : 'items-end'}`
-          : `flex min-h-11 border-l border-border-default ${row ? 'flex-row items-center gap-3.5 px-5 py-4' : 'flex-col gap-1.5 px-2.5'}`;
+          : `flex min-h-11 min-w-0 border-l border-border-default ${row ? 'flex-row items-center gap-3.5 px-5 py-4' : 'flex-col gap-1.5 px-2.5'}`;
         const body = (
           <>
             <span className="flex flex-col gap-1.5">
@@ -116,7 +116,7 @@ export default function Pipeline({ deliveries, layout = 'stack', hrefFor, classN
               <span className="text-[12px] text-text-muted">{STAGE_LABEL[stage]}</span>
             </span>
             {!queued && (
-              <span aria-hidden="true" data-dots={stage} className="flex min-h-2.5 max-w-[120px] flex-wrap gap-1">
+              <span aria-hidden="true" data-dots={stage} className={`flex min-h-2.5 min-w-0 max-w-[120px] flex-wrap gap-1 ${row ? 'flex-1' : ''}`}>
                 {group.map(d => (
                   <span key={d.id} data-dot={dotPattern(d)} className={`block rounded-full ${dotSize}`} style={DOT_STYLE[dotPattern(d)]} />
                 ))}
