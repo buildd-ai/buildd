@@ -23,8 +23,8 @@ export const DELIVERY_END_MARK: Record<DeliveryOutcome, string> = {
 };
 
 const OUTCOME_PHRASE: Record<DeliveryOutcome, string> = {
-  delivered: 'delivered',
-  'not-delivered': 'not delivered',
+  delivered: 'done',
+  'not-delivered': 'not done',
   'came-to-you': 'came to you',
 };
 
@@ -44,7 +44,7 @@ const pct = (n: number) => `${(n * 100).toFixed(3)}%`;
 
 /**
  * One delivery on a day axis: a build segment, a verify segment, a tick per
- * fix round and an end mark (■ delivered, ✕ not delivered, ! came to you).
+ * fix round and an end mark (■ done, ✕ not done, ! came to you).
  * Build is solid and verify hatched, matching StageMeter, so the two read as
  * one language. Read as one image with an accessible name; the parts are
  * decoration. Both segments keep a minimum width so a very short delivery

@@ -8,8 +8,8 @@
 import DeliveryBar, { type DeliveryOutcome } from '@/components/ui/DeliveryBar';
 
 const CASES: { name: string; start: number; end: number; verifyStart?: number; fixRounds: number[]; outcome: DeliveryOutcome }[] = [
-  { name: 'delivered, two fixes', start: 0.15, end: 0.6, verifyStart: 0.35, fixRounds: [0.28, 0.45], outcome: 'delivered' },
-  { name: 'not delivered', start: 0.3, end: 0.7, verifyStart: 0.5, fixRounds: [0.55], outcome: 'not-delivered' },
+  { name: 'done, two fixes', start: 0.15, end: 0.6, verifyStart: 0.35, fixRounds: [0.28, 0.45], outcome: 'delivered' },
+  { name: 'not done', start: 0.3, end: 0.7, verifyStart: 0.5, fixRounds: [0.55], outcome: 'not-delivered' },
   { name: 'came to you', start: 0.1, end: 0.5, verifyStart: 0.3, fixRounds: [0.2, 0.4, 0.45], outcome: 'came-to-you' },
   { name: 'very short', start: 0.5, end: 0.502, fixRounds: [], outcome: 'delivered' },
   { name: 'very long', start: 0, end: 1, verifyStart: 0.6, fixRounds: [0.2, 0.5, 0.8], outcome: 'delivered' },

@@ -25,14 +25,14 @@ describe('DeliveryBar (AC-15)', () => {
   });
 
   it('names the outcome and the fix rounds', () => {
-    expect(deliveryBarName('delivered', 2)).toBe('delivered, 2 fix rounds');
-    expect(deliveryBarName('not-delivered', 1)).toBe('not delivered, 1 fix round');
+    expect(deliveryBarName('delivered', 2)).toBe('done, 2 fix rounds');
+    expect(deliveryBarName('not-delivered', 1)).toBe('not done, 1 fix round');
     expect(deliveryBarName('came-to-you', 0)).toBe('came to you, no fix rounds');
-    expect(html('delivered', { fixRounds: [0.3, 0.4] })).toContain('role="img" aria-label="delivered, 2 fix rounds"');
+    expect(html('delivered', { fixRounds: [0.3, 0.4] })).toContain('role="img" aria-label="done, 2 fix rounds"');
   });
 
   it('lets a caller replace the name', () => {
-    expect(renderToStaticMarkup(<DeliveryBar start={0} end={1} outcome="delivered" label="PR 12, delivered" />)).toContain('aria-label="PR 12, delivered"');
+    expect(renderToStaticMarkup(<DeliveryBar start={0} end={1} outcome="delivered" label="PR 12, done" />)).toContain('aria-label="PR 12, done"');
   });
 
   it('clamps offsets into the axis and survives end before start', () => {
