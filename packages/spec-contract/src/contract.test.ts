@@ -96,3 +96,14 @@ describe('the portable contract', () => {
     expect(approval.design?.screens?.[0]?.id).toBe('/cart');
   });
 });
+
+describe('registered verdict source', () => {
+  it('a registered result is a review whatever its method, including rows authored under the old check: prefix', async () => {
+    const { verdictSourceOfEvidence, verifiedByOfEvidence } = await import('./outcome');
+    for (const recordedBy of ['registered:ui.actions_match_state', 'check:registered:ui.actions_match_state']) {
+      expect(verdictSourceOfEvidence({ kind: 'registered', method: 'deterministic', recordedBy })).toBe('review');
+      expect(verifiedByOfEvidence({ kind: 'registered', method: 'deterministic', recordedBy })).toBe('review');
+    }
+    expect(verdictSourceOfEvidence({ recordedBy: 'check:task-1' })).toBe('test');
+  });
+});

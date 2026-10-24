@@ -61,16 +61,20 @@ export interface ActionButtonProps {
   busyLabel?: string;
   onError?: (message: string) => void;
   className?: string;
+  /** What it does, for registered UI checks (`data-verify-action`, scripts/qa/surface-evidence.ts). */
+  operation?: string;
 }
 
 /** A button for an async callback: disabled while it runs, errors reported up. */
-export function ActionButton({ testId, onAction, children, tone = 'secondary', busyLabel = 'Working…', onError, className = '' }: ActionButtonProps) {
+export function ActionButton({ testId, onAction, children, tone = 'secondary', busyLabel = 'Working…', onError, className = '', operation }: ActionButtonProps) {
   const [busy, setBusy] = useState(false);
   const toneCls = tone === 'primary' ? BTN_PRIMARY : tone === 'ghost' ? BTN_GHOST : BTN_SECONDARY;
   return (
     <button
       type="button"
       data-testid={testId}
+      data-verify-action={operation}
+      data-verify-prominence={tone === 'primary' ? 'primary' : 'secondary'}
       disabled={busy}
       onClick={async () => {
         setBusy(true);

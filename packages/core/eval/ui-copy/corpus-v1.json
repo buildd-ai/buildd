@@ -1,0 +1,739 @@
+{
+  "corpusVersion": "ui-copy-corpus-v1",
+  "labelSource": "synthetic_development",
+  "labelNote": "Every expected label here was written by the corpus author while building the benchmark. They are development labels, not ground truth: no person has confirmed them, and a model's past flags were never copied in as labels. Person-confirmed corrections are imported separately and scored separately.",
+  "cases": [
+    {
+      "id": "dev-rep-status-echo",
+      "split": "development",
+      "category": "repetition",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Ready to merge" },
+        { "id": "s", "role": "status", "text": "Ready to merge" },
+        { "id": "b", "role": "body", "text": "This pull request is ready to merge. You can merge it when you are ready." }
+      ],
+      "actions": [{ "id": "merge", "label": "Merge", "operation": "merge_pr" }],
+      "facts": { "prState": "open" },
+      "expected": { "copy": "fail", "actionState": "pass" },
+      "why": "The status and body restate the heading three times."
+    },
+    {
+      "id": "dev-rep-button-echo",
+      "split": "development",
+      "category": "repetition",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Visual review failed" },
+        { "id": "b", "role": "body", "text": "Click Retry visual review to retry the visual review, or click Skip visual review to skip the visual review." }
+      ],
+      "actions": [
+        { "id": "retry", "label": "Retry visual review", "operation": "retry_visual_review" },
+        { "id": "skip", "label": "Skip visual review", "operation": "skip_visual_review", "prominence": "secondary" }
+      ],
+      "facts": { "verificationState": "failed", "shownVerificationState": "failed" },
+      "expected": { "copy": "fail", "actionState": "pass" },
+      "why": "The body only restates the two buttons."
+    },
+    {
+      "id": "dev-rep-waiting-checks",
+      "split": "development",
+      "category": "repetition",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Waiting for checks" },
+        { "id": "b", "role": "body", "text": "Checks are still running. We are waiting for the checks to finish running before anything else happens." },
+        { "id": "hint", "role": "hint", "text": "Checks are running." }
+      ],
+      "actions": [{ "id": "details", "label": "View checks", "operation": "view_detail" }],
+      "facts": { "prState": "open" },
+      "expected": { "copy": "fail" },
+      "why": "Three blocks say the same thing."
+    },
+    {
+      "id": "dev-wf-diary",
+      "split": "development",
+      "category": "workflow_narration",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Flaky export test fixed" },
+        { "id": "n", "role": "body", "text": "I looked at the failing test first, then I opened the export config and noticed the timeout was too short. After that I raised it, reran the suite twice, and everything passed, so I opened a pull request." }
+      ],
+      "actions": [{ "id": "open", "label": "View changes", "operation": "view_detail" }],
+      "facts": {},
+      "expected": { "copy": "fail" },
+      "why": "A diary of the agent's steps instead of the outcome."
+    },
+    {
+      "id": "dev-wf-preamble",
+      "split": "development",
+      "category": "workflow_narration",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Question about the date format" },
+        { "id": "b", "role": "body", "text": "Great question! Let me walk you through what happened. First I claimed the task, then I planned the work, then I started on the export and realized I needed to ask you something." },
+        { "id": "q", "role": "body", "text": "Should dates use day-month-year or year-month-day?" }
+      ],
+      "actions": [{ "id": "answer", "label": "Answer", "operation": "answer_question" }],
+      "facts": {},
+      "expected": { "copy": "fail" },
+      "why": "Conversational preamble and process narration before the one question that matters."
+    },
+    {
+      "id": "dev-closed-lecture",
+      "split": "development",
+      "category": "closed_pr",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Pull request closed" },
+        { "id": "b", "role": "body", "text": "This pull request was closed. Closed pull requests cannot be merged, because closing a pull request means it is no longer open for merging. A replacement may exist, and if it does you can confirm it." }
+      ],
+      "actions": [
+        { "id": "confirm", "label": "Use #142 instead", "operation": "confirm_replacement" },
+        { "id": "resolve", "label": "Resolve", "operation": "resolve_pr_closure", "prominence": "secondary" }
+      ],
+      "facts": { "prState": "closed", "replacementState": "candidate" },
+      "expected": { "copy": "fail", "actionState": "pass" },
+      "why": "Explains what closing means instead of stating the outcome; 'Resolve' does not say what it resolves."
+    },
+    {
+      "id": "dev-closed-clean",
+      "split": "development",
+      "category": "closed_pr",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "#118 was closed" },
+        { "id": "b", "role": "body", "text": "#142 looks like its replacement." }
+      ],
+      "actions": [
+        { "id": "confirm", "label": "Use #142", "operation": "confirm_replacement" },
+        { "id": "dismiss", "label": "Not a replacement", "operation": "dismiss_replacement", "prominence": "secondary" }
+      ],
+      "facts": { "prState": "closed", "replacementState": "candidate" },
+      "expected": { "copy": "pass", "actionState": "pass" },
+      "why": "Clean control: outcome and the two real choices."
+    },
+    {
+      "id": "dev-jargon-lease",
+      "split": "development",
+      "category": "jargon",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Worker idle" },
+        { "id": "b", "role": "body", "text": "Touch the lease to keep the claim warm, or the reaper will reap the worker." }
+      ],
+      "actions": [{ "id": "touch", "label": "Touch lease", "operation": "other" }],
+      "facts": {},
+      "expected": { "copy": "fail" },
+      "why": "Internal terms (lease, claim, reaper) with no plain meaning for the person."
+    },
+    {
+      "id": "dev-jargon-gate",
+      "split": "development",
+      "category": "jargon",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "s", "role": "status", "text": "Branch refresh deferred: claim-loop gate held (path_overlap)." }
+      ],
+      "actions": [{ "id": "retry", "label": "Retry", "operation": "other" }],
+      "facts": {},
+      "expected": { "copy": "fail" },
+      "why": "A gate code is shown as the explanation; Retry does not say what it retries."
+    },
+    {
+      "id": "dev-recap-narration",
+      "split": "development",
+      "category": "recapture",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "s", "role": "status", "text": "Recapturing" },
+        { "id": "b", "role": "body", "text": "We are taking new screenshots now because the earlier ones failed. This may take a while. Once the screenshots are taken we will compare them again and let you know what we find." }
+      ],
+      "actions": [],
+      "facts": { "verificationState": "pending_recapture", "shownVerificationState": "pending" },
+      "expected": { "copy": "fail", "actionState": "pass" },
+      "why": "Narrates the pipeline instead of stating the pending state."
+    },
+    {
+      "id": "dev-recap-failed-repeat",
+      "split": "development",
+      "category": "recapture",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "s", "role": "status", "text": "Capture failed" },
+        { "id": "b", "role": "body", "text": "Screenshots could not be captured. The capture step failed while capturing." },
+        { "id": "r", "role": "recovery", "text": "Retry, or skip visual review for this mission." }
+      ],
+      "actions": [
+        { "id": "retry", "label": "Retry", "operation": "retry_visual_review" },
+        { "id": "skip", "label": "Skip review", "operation": "skip_visual_review", "prominence": "secondary" }
+      ],
+      "facts": { "verificationState": "failed", "shownVerificationState": "failed" },
+      "expected": { "copy": "fail", "actionState": "pass" },
+      "why": "The body repeats the status twice; the recovery line is necessary and must survive."
+    },
+    {
+      "id": "dev-clean-ready",
+      "split": "development",
+      "category": "clean",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "#204 is ready" },
+        { "id": "s", "role": "status", "text": "Checks passed" }
+      ],
+      "actions": [{ "id": "merge", "label": "Merge", "operation": "merge_pr" }],
+      "facts": { "prState": "open" },
+      "expected": { "copy": "pass", "actionState": "pass" },
+      "why": "Clean control."
+    },
+    {
+      "id": "dev-clean-review-failed",
+      "split": "development",
+      "category": "clean",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Visual review failed" },
+        { "id": "r", "role": "recovery", "text": "Retry, or skip review for this pull request." }
+      ],
+      "actions": [
+        { "id": "retry", "label": "Retry", "operation": "retry_visual_review" },
+        { "id": "skip", "label": "Skip review", "operation": "skip_visual_review", "prominence": "secondary" }
+      ],
+      "facts": { "verificationState": "failed", "shownVerificationState": "failed" },
+      "expected": { "copy": "pass", "actionState": "pass" },
+      "why": "Clean control with a necessary recovery step."
+    },
+    {
+      "id": "dev-clean-question",
+      "split": "development",
+      "category": "clean",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Which date format?" },
+        { "id": "b", "role": "body", "text": "The export needs one format for every row." }
+      ],
+      "actions": [
+        { "id": "answer", "label": "Answer", "operation": "answer_question" },
+        { "id": "later", "label": "Not now", "operation": "cancel", "prominence": "secondary" }
+      ],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "Clean control: the question and why it matters."
+    },
+    {
+      "id": "dev-need-permission",
+      "split": "development",
+      "category": "necessary_disclosure",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Visual review" },
+        { "id": "p", "role": "permission", "text": "Only workspace owners can turn off visual review." }
+      ],
+      "actions": [{ "id": "off", "label": "Turn off visual review", "operation": "turn_off_visual_review" }],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "The permission line is necessary even though it repeats the button's words."
+    },
+    {
+      "id": "dev-need-consequence",
+      "split": "development",
+      "category": "necessary_disclosure",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "#204 is ready" },
+        { "id": "c", "role": "consequence", "text": "Merging closes #118 and deletes its branch." }
+      ],
+      "actions": [{ "id": "merge", "label": "Merge", "operation": "merge_pr" }],
+      "facts": { "prState": "open" },
+      "expected": { "copy": "pass", "actionState": "pass" },
+      "why": "A consequence of merging is necessary, never redundant."
+    },
+    {
+      "id": "dev-need-prerequisite",
+      "split": "development",
+      "category": "necessary_disclosure",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "No tasks yet" },
+        { "id": "p", "role": "prerequisite", "text": "Connect a repository before creating tasks." }
+      ],
+      "actions": [{ "id": "connect", "label": "Connect repository", "operation": "view_detail" }],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "A prerequisite that names the next step."
+    },
+    {
+      "id": "dev-need-recovery",
+      "split": "development",
+      "category": "necessary_disclosure",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "s", "role": "status", "text": "Export failed" },
+        { "id": "r", "role": "recovery", "text": "Check the file is under 50 MB and try again." }
+      ],
+      "actions": [{ "id": "error", "label": "View error", "operation": "view_detail" }],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "Recovery steps are necessary."
+    },
+    {
+      "id": "dev-need-processing",
+      "split": "development",
+      "category": "necessary_disclosure",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Start visual review" },
+        { "id": "c", "role": "consequence", "text": "Screenshots go to the review service and are deleted after 30 days." }
+      ],
+      "actions": [{ "id": "start", "label": "Start review", "operation": "retry_visual_review" }],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "An external processing disclosure is necessary."
+    },
+    {
+      "id": "dev-src-authorize-device",
+      "split": "development",
+      "category": "source_control",
+      "origin": "source_string",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Authorize this device?" },
+        { "id": "b", "role": "body", "text": "A runner on this machine is asking to work as your account." }
+      ],
+      "actions": [
+        { "id": "authorize", "label": "Authorize Device", "operation": "other" },
+        { "id": "cancel", "label": "Cancel", "operation": "cancel", "prominence": "secondary" }
+      ],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "Real UI label the old local prototype flagged. A plain, necessary label; its flag was a false positive."
+    },
+    {
+      "id": "dev-src-checking-fragment",
+      "split": "development",
+      "category": "partial_fragment",
+      "origin": "source_string",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Repo readiness" },
+        { "id": "s", "role": "status", "text": "Checking the repository…" }
+      ],
+      "actions": [],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "Real loading fragment the old prototype flagged. A short processing status is not a defect."
+    },
+    {
+      "id": "dev-src-move-to-team",
+      "split": "development",
+      "category": "high_confidence_false_positive",
+      "origin": "source_string",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Workspace" }
+      ],
+      "actions": [{ "id": "move", "label": "Move to team…", "operation": "view_detail" }],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "Real label among the old prototype's strongest flags. An ordinary menu label."
+    },
+    {
+      "id": "dev-src-needs-decision",
+      "split": "development",
+      "category": "high_confidence_false_positive",
+      "origin": "source_string",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Invoice export" },
+        { "id": "s", "role": "status", "text": "Needs a decision" }
+      ],
+      "actions": [{ "id": "decide", "label": "Decide", "operation": "answer_question" }],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "Real status among the old prototype's strongest flags. Useful, short status."
+    },
+    {
+      "id": "dev-src-waiting-person",
+      "split": "development",
+      "category": "high_confidence_false_positive",
+      "origin": "source_string",
+      "blocks": [
+        { "id": "s", "role": "status", "text": "waiting on a person" }
+      ],
+      "actions": [],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "Real status fragment among the old prototype's strongest flags."
+    },
+    {
+      "id": "dev-src-tier-limit",
+      "split": "development",
+      "category": "source_control",
+      "origin": "source_string",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Maximum allowed" },
+        { "id": "hint", "role": "hint", "text": "The most expensive tier work may use. Enforced on every task and chat. Not a spending budget." }
+      ],
+      "actions": [],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "Real hint the old prototype flagged at 0.71. The 'not a spending budget' line prevents a real misreading."
+    },
+    {
+      "id": "dev-src-own-key",
+      "split": "development",
+      "category": "source_control",
+      "origin": "source_string",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Connect OpenRouter to start" },
+        { "id": "b", "role": "body", "text": "Your team has everyone bring their own key." },
+        { "id": "c", "role": "consequence", "text": "OpenRouter makes one in your account, and your chats bill to it." }
+      ],
+      "actions": [{ "id": "connect", "label": "Connect OpenRouter", "operation": "other" }],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "Real copy the old prototype flagged. Who pays is a necessary consequence."
+    },
+    {
+      "id": "dev-pair-retry-a",
+      "split": "development",
+      "category": "pair",
+      "pair": "retry-label",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Visual review failed" }
+      ],
+      "actions": [{ "id": "act", "label": "Retry visual review", "operation": "retry_visual_review" }],
+      "facts": { "verificationState": "failed", "shownVerificationState": "failed" },
+      "expected": { "copy": "pass", "actionState": "pass" },
+      "why": "The label matches the operation."
+    },
+    {
+      "id": "dev-pair-retry-b",
+      "split": "development",
+      "category": "pair",
+      "pair": "retry-label",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Visual review failed" }
+      ],
+      "actions": [{ "id": "act", "label": "Retry visual review", "operation": "skip_visual_review" }],
+      "facts": { "verificationState": "failed", "shownVerificationState": "failed" },
+      "expected": { "copy": "fail", "actionState": "pass" },
+      "why": "Same words, but the button skips review: the label misstates what it does."
+    },
+    {
+      "id": "dev-pair-merge-a",
+      "split": "development",
+      "category": "pair",
+      "pair": "merge-state",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "#311 is ready" },
+        { "id": "s", "role": "status", "text": "Checks passed" }
+      ],
+      "actions": [{ "id": "merge", "label": "Merge", "operation": "merge_pr" }],
+      "facts": { "prState": "open" },
+      "expected": { "copy": "pass", "actionState": "pass" },
+      "why": "Merge offered on an open pull request."
+    },
+    {
+      "id": "dev-pair-merge-b",
+      "split": "development",
+      "category": "pair",
+      "pair": "merge-state",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "#311 is ready" },
+        { "id": "s", "role": "status", "text": "Checks passed" }
+      ],
+      "actions": [{ "id": "merge", "label": "Merge", "operation": "merge_pr" }],
+      "facts": { "prState": "merged" },
+      "expected": { "copy": "pass", "actionState": "fail" },
+      "why": "Same words, but the pull request already merged. The state verifier owns this; the words alone are not a copy defect."
+    },
+    {
+      "id": "dev-pair-verified-a",
+      "split": "development",
+      "category": "pair",
+      "pair": "verified-state",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Screens checked" },
+        { "id": "s", "role": "status", "text": "Verified" }
+      ],
+      "actions": [],
+      "facts": { "verificationState": "passed", "shownVerificationState": "verified_pass" },
+      "expected": { "copy": "pass", "actionState": "pass" },
+      "why": "The status matches the state."
+    },
+    {
+      "id": "dev-pair-verified-b",
+      "split": "development",
+      "category": "pair",
+      "pair": "verified-state",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Screens checked" },
+        { "id": "s", "role": "status", "text": "Verified" }
+      ],
+      "actions": [],
+      "facts": { "verificationState": "pending_recapture", "shownVerificationState": "verified_pass" },
+      "expected": { "copy": "pass", "actionState": "fail" },
+      "why": "Same words while recapture is still pending. The deterministic state check must fail it."
+    },
+    {
+      "id": "dev-pair-close-a",
+      "split": "development",
+      "category": "pair",
+      "pair": "close-label",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Rename export" }
+      ],
+      "actions": [{ "id": "act", "label": "Close", "operation": "cancel" }],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "Close dismisses the form."
+    },
+    {
+      "id": "dev-pair-close-b",
+      "split": "development",
+      "category": "pair",
+      "pair": "close-label",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Rename export" }
+      ],
+      "actions": [{ "id": "act", "label": "Close", "operation": "resolve_pr_closure" }],
+      "facts": { "prState": "closed", "replacementState": "none" },
+      "expected": { "copy": "fail", "actionState": "pass" },
+      "why": "Same word, but the button resolves a pull request closure the card never mentions."
+    },
+    {
+      "id": "dev-incomplete-text",
+      "split": "development",
+      "category": "incomplete_evidence",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "#204 is ready" }
+      ],
+      "actions": [{ "id": "merge", "label": "Merge", "operation": "merge_pr" }],
+      "facts": { "prState": "open" },
+      "coverage": { "renderedText": "partial" },
+      "expected": { "copy": "inconclusive" },
+      "why": "Only part of the card was captured; no judgment may pass it."
+    },
+    {
+      "id": "dev-incomplete-self-reported",
+      "split": "development",
+      "category": "incomplete_evidence",
+      "origin": "synthetic",
+      "collector": "agent",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "#204 is ready" }
+      ],
+      "actions": [{ "id": "merge", "label": "Merge", "operation": "merge_pr" }],
+      "facts": { "prState": "open" },
+      "expected": { "copy": "inconclusive" },
+      "why": "Evidence the working agent reported about itself is not an independent capture."
+    },
+    {
+      "id": "held-rep-complete",
+      "split": "untouched",
+      "category": "repetition",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Export complete" },
+        { "id": "s", "role": "status", "text": "Complete" },
+        { "id": "b", "role": "body", "text": "Your export has completed successfully and is now complete." }
+      ],
+      "actions": [{ "id": "open", "label": "Open export", "operation": "view_detail" }],
+      "facts": {},
+      "expected": { "copy": "fail" },
+      "why": "Repeated completion status."
+    },
+    {
+      "id": "held-rep-skip-echo",
+      "split": "untouched",
+      "category": "repetition",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Review blocked" },
+        { "id": "b", "role": "body", "text": "Use the Skip button to skip." }
+      ],
+      "actions": [{ "id": "skip", "label": "Skip", "operation": "skip_visual_review" }],
+      "facts": { "verificationState": "failed", "shownVerificationState": "failed" },
+      "expected": { "copy": "fail", "actionState": "pass" },
+      "why": "The body only restates the button."
+    },
+    {
+      "id": "held-wf-plan",
+      "split": "untouched",
+      "category": "workflow_narration",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Working on the importer" },
+        { "id": "b", "role": "body", "text": "Sure! I'll start by reading the spec. Then I will write tests, then the code, then I'll open a pull request and wait for review." }
+      ],
+      "actions": [{ "id": "open", "label": "Open task", "operation": "view_detail" }],
+      "facts": {},
+      "expected": { "copy": "fail" },
+      "why": "Conversational plan narration."
+    },
+    {
+      "id": "held-closed-chatty",
+      "split": "untouched",
+      "category": "closed_pr",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "b", "role": "body", "text": "Heads up: #77 got closed. That means it won't merge. If you think a different pull request replaced it you can confirm that here, or you can resolve the closure, which marks it handled." }
+      ],
+      "actions": [
+        { "id": "confirm", "label": "Confirm", "operation": "confirm_replacement" },
+        { "id": "resolve", "label": "Resolve", "operation": "resolve_pr_closure", "prominence": "secondary" }
+      ],
+      "facts": { "prState": "closed", "replacementState": "candidate" },
+      "expected": { "copy": "fail", "actionState": "pass" },
+      "why": "Chatty closure explanation; bare Confirm and Resolve labels."
+    },
+    {
+      "id": "held-jargon-sweeper",
+      "split": "untouched",
+      "category": "jargon",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "s", "role": "status", "text": "Heartbeat stale: lease reclaimed by sweeper; requeue pending." }
+      ],
+      "actions": [{ "id": "requeue", "label": "Requeue", "operation": "other" }],
+      "facts": {},
+      "expected": { "copy": "fail" },
+      "why": "Internal pipeline terms."
+    },
+    {
+      "id": "held-recap-repeat",
+      "split": "untouched",
+      "category": "recapture",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "s", "role": "status", "text": "Pending recapture" },
+        { "id": "b", "role": "body", "text": "Recapture is pending. We will recapture soon." }
+      ],
+      "actions": [],
+      "facts": { "verificationState": "pending_recapture", "shownVerificationState": "pending" },
+      "expected": { "copy": "fail", "actionState": "pass" },
+      "why": "Repeats the pending status."
+    },
+    {
+      "id": "held-clean-running",
+      "split": "untouched",
+      "category": "clean",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Invoice export" },
+        { "id": "s", "role": "status", "text": "Running" }
+      ],
+      "actions": [{ "id": "cancel", "label": "Cancel export", "operation": "cancel" }],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "Clean control."
+    },
+    {
+      "id": "held-need-permission",
+      "split": "untouched",
+      "category": "necessary_disclosure",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Billing" },
+        { "id": "p", "role": "permission", "text": "Ask an admin to change billing." }
+      ],
+      "actions": [{ "id": "plan", "label": "View plan", "operation": "view_detail" }],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "Necessary permission line."
+    },
+    {
+      "id": "held-need-consequence",
+      "split": "untouched",
+      "category": "necessary_disclosure",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Delete saved filters?" },
+        { "id": "c", "role": "consequence", "text": "This removes all 12 saved filters for everyone in this workspace." }
+      ],
+      "actions": [
+        { "id": "delete", "label": "Delete filters", "operation": "other" },
+        { "id": "cancel", "label": "Cancel", "operation": "cancel", "prominence": "secondary" }
+      ],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "Necessary consequence."
+    },
+    {
+      "id": "held-need-prerequisite",
+      "split": "untouched",
+      "category": "necessary_disclosure",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Invite people" },
+        { "id": "p", "role": "prerequisite", "text": "Add a payment method before inviting more than 5 people." }
+      ],
+      "actions": [{ "id": "pay", "label": "Add payment method", "operation": "view_detail" }],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "Necessary prerequisite."
+    },
+    {
+      "id": "held-src-quick-task",
+      "split": "untouched",
+      "category": "partial_fragment",
+      "origin": "source_string",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Quick Task" },
+        { "id": "hint", "role": "hint", "text": "Set a workspace to add tasks." }
+      ],
+      "actions": [],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "Real hint fragment the old prototype flagged."
+    },
+    {
+      "id": "held-pair-done-a",
+      "split": "untouched",
+      "category": "pair",
+      "pair": "done-label",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Pick a currency for the report" }
+      ],
+      "actions": [{ "id": "act", "label": "Done", "operation": "answer_question" }],
+      "facts": {},
+      "expected": { "copy": "pass" },
+      "why": "Done submits the answer."
+    },
+    {
+      "id": "held-pair-done-b",
+      "split": "untouched",
+      "category": "pair",
+      "pair": "done-label",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Pick a currency for the report" }
+      ],
+      "actions": [{ "id": "act", "label": "Done", "operation": "merge_pr" }],
+      "facts": { "prState": "open" },
+      "expected": { "copy": "fail", "actionState": "pass" },
+      "why": "Same word, but the button merges a pull request."
+    },
+    {
+      "id": "held-incomplete-actions",
+      "split": "untouched",
+      "category": "incomplete_evidence",
+      "origin": "synthetic",
+      "blocks": [
+        { "id": "h", "role": "heading", "text": "Invoice export" }
+      ],
+      "actions": [{ "id": "cancel", "label": "Cancel export", "operation": "cancel" }],
+      "facts": {},
+      "coverage": { "actions": "partial" },
+      "expected": { "copy": "inconclusive" },
+      "why": "Actions were only partly captured."
+    }
+  ]
+}
