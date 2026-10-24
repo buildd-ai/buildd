@@ -1679,7 +1679,7 @@ workflow `gh pr merge` exists.
 | D11 | Policy-rule merge | `workflow/seam.ts` `policyMergeThroughKernel` → `PolicyMergeApproved` → D3/D1 | escalation gate `policy_merge` (`packages/core/escalation-gate.ts`, `merge-policy-rule-executor.ts`) | creates the approval. Lifts `review_exhausted`. Mission ship PRs are excluded |
 | D12 | Manual merge on GitHub | — | a person's account, UI or CLI | not a gate: recorded as an external merge, with a trunk fix filed once (AC-15). `buildd/landing` stops it once trunk requires that status (rule 7). This is the #4686 door |
 | D13 | Agent self-merge | — | local runner Bash (only `gh pr merge` denied, `apps/runner/src/pr-mutation-enforcement.ts`), cloud runner egress (REST and GraphQL merge blocked, `apps/cloud-runner/src/outbound.ts`) | deny lists, not a gate |
-| D14 | Living Spec generated repo copy | `lib/specs/repo-copy.ts` `landSpecRepoCopy` (pinned with `sha`) | `check_suite` success on a spec's generated PR | only the generator's own commit at the approved revision (living-specs R-35); not a kernel delivery |
+| D14 | Living Spec generated repo copy | `lib/specs/repo-copy.ts` `landSpecRepoCopy`, and `lib/specs/retire-repo-file.ts` `landRetirementPr` for a retired spec's copy removal, both through `mergeGeneratedSpecPr` (pinned with `sha`) | `check_suite` success on a spec's generated PR | only the generator's own commit at the approved revision, or the removal commit buildd wrote (living-specs R-35, R-78); not a kernel delivery |
 
 **S3b (workflow-kernel-library.md §4):** D1 now asks the gate when it runs (fresh read,
 review half, rails port; AC-14); D4 refuses with no workspace; D5 `force` keeps the

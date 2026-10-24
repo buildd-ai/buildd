@@ -3,6 +3,7 @@ import type { KnowledgeStore, UpsertChunk, UpsertResult, QueryResult, QueryParam
 import { applyRerank } from './reranker';
 import { getCodeEmbedder, isCodeCorpus } from './voyage-embedder';
 import { applyRecencyAuthority, CORPUS_AUTHORITY } from './recency-authority';
+import { LIVING_SPEC_DRAFT_SOURCE_TYPE } from './living-spec';
 import { createHash } from 'crypto';
 
 // Lazy DB import — avoids hitting DATABASE_URL during build/test
@@ -321,21 +322,30 @@ export class PgVectorStore implements KnowledgeStore {
     const limit = Math.min(topK, 50);
     const candidateLimit = this.reranker ? Math.min(limit * 5, 100) : limit;
 
-    const filterClause = filters?.corpus
+    const typeClause = filters?.corpus
       ? sql`AND corpus = ${filters.corpus}`
       : filters?.sourceType
       ? sql`AND source_type = ${filters.sourceType}`
       : sql``;
+    // Draft Living Specs only when asked (R-106); a caller's own chunks never.
+    const draftClause = params.includeDrafts ? sql`` : sql`AND source_type <> ${LIVING_SPEC_DRAFT_SOURCE_TYPE}`;
+    const excluded = (params.excludeSourceIdPrefixes ?? []).filter(Boolean);
+    const excludeClause = excluded.length
+      ? sql.join(excluded.map(p => sql`AND NOT starts_with(source_id, ${p})`), sql` `)
+      : sql``;
+    const filterClause = sql`${typeClause} ${draftClause} ${excludeClause}`;
 
     // Phase 1: filter superseded chunks (unless history mode)
     const currentClause = history ? sql`` : sql`AND is_current = true`;
 
     let results: QueryResult[];
 
-    if (mode === 'vector' || (mode === 'hybrid' && activeEmbedder)) {
-      const [queryEmbedding] = await activeEmbedder!.embed([text], 'query');
-      const embeddingStr = vectorToString(queryEmbedding);
+    const embeddingStr = mode === 'vector' || mode === 'hybrid'
+      ? await this._queryEmbedding(db, namespace, params, activeEmbedder)
+      : null;
 
+    if (mode === 'vector' && !embeddingStr) return [];
+    if (embeddingStr) {
       if (mode === 'vector') {
         const vectorRanked = await this._vectorSearch(db, namespace, embeddingStr, filterClause, currentClause, limit * 2);
         const ids = vectorRanked.slice(0, candidateLimit).map(r => r.id);
@@ -409,6 +419,39 @@ export class PgVectorStore implements KnowledgeStore {
     }
 
     return finalResults;
+  }
+
+  /**
+   * The vector leg's query embedding, as pgvector text: given, a stored
+   * chunk's own (no embedding call), else `text` embedded. Null when there is
+   * nothing to rank by (no embedder, or the chunk has no embedding).
+   */
+  private async _queryEmbedding(
+    db: Awaited<ReturnType<typeof getDb>>,
+    namespace: string,
+    params: QueryParams,
+    activeEmbedder: Embedder | null,
+  ): Promise<string | null> {
+    if (params.embedding?.length) return vectorToString(params.embedding);
+    if (params.nearChunkId) {
+      if (!activeEmbedder) return null;
+      const res = await db.execute(sql`
+        SELECT embedding::text AS embedding FROM knowledge_chunks
+        WHERE namespace = ${namespace} AND source_id = ${params.nearChunkId} AND embedding IS NOT NULL
+        LIMIT 1
+      `);
+      const row = (res.rows as Array<{ embedding: string | null }>)[0];
+      return row?.embedding ?? null;
+    }
+    if (!activeEmbedder) return null;
+    const [queryEmbedding] = await activeEmbedder.embed([params.text], 'query');
+    return vectorToString(queryEmbedding);
+  }
+
+  async embedQueries(namespace: string, texts: string[]): Promise<number[][] | null> {
+    const embedder = this._selectEmbedder(namespace.split(':')[1] as Corpus);
+    if (!embedder || texts.length === 0) return embedder ? [] : null;
+    return embedder.embed(texts, 'query');
   }
 
   /**
