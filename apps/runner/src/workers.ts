@@ -66,7 +66,7 @@ import {
   ContextBreaker,
   DEFAULT_AUTH_CONTEXT,
 } from './claim-breaker';
-import { ProviderLimitHolds, limitFromEvent, providerOfBackend, type ProviderLimit } from './provider-limit';
+import { ProviderLimitHolds, limitFromEvent, providerOfBackend, type ProviderLimit, type LimitProvider } from './provider-limit';
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { createScoutHostPoller, type ScoutHostPoller } from './scout-host';
 import { CredentialCache, authBackoffMs, isWorkerScopedCredential, runnerLocalCredentialsAllowed } from './credential-cache';
@@ -862,6 +862,9 @@ export class WorkerManager {
   private contextBreaker = new ContextBreaker();
   /** Providers this runner's login is at its limit on (provider-limit.ts): new work waits, running work finishes. */
   private providerLimits = new ProviderLimitHolds();
+  private startableProviders(): LimitProvider[] {
+    return this.codexAuth === 'none' ? ['claude'] : ['claude', 'codex'];
+  }
   // Distinct role-env gaps this runner has started workers with — one warning
   // per gap, and listed in getInternalState (/api/debug/internals).
   private roleEnvGapLog = new RoleEnvGapLog();
@@ -2271,13 +2274,6 @@ export class WorkerManager {
       this.emit({ type: 'circuit_breaker', paused: false, pausedUntil: 0, reason: 'reset' });
     }
 
-    // Every provider this runner can start on is at its login limit: poll when the first lifts.
-    if (this.providerLimits.allHeld()) {
-      const lift = this.providerLimits.nextLift();
-      if (lift !== null) this.scheduleResumeAt(lift, 'provider limit reset');
-      return [];
-    }
-
     let slots = this.config.maxConcurrent - this.busySlotCount();
     if (slots <= 0) return [];
     // A slot freed: agents paused to free one continue first, oldest pause first (R-45).
@@ -2681,7 +2677,11 @@ export class WorkerManager {
     this.noteProviderLimitOutcome();
     this.scheduleResumeAt(untilMs, 'provider limit reset');
     // `circuit_breaker` paused:true reads as every claim paused; only say so when both providers are held.
-    if (this.providerLimits.allHeld()) {
+    // A runner with no Codex login of its own cannot start Codex work, so a held Claude login holds every claim:
+    // pause the poll (running sessions are untouched) until the first hold lifts.
+    if (this.providerLimits.allHeld(Date.now(), this.startableProviders())) {
+      this.claimsPaused = true;
+      this.claimsPausedUntil = Math.max(this.claimsPausedUntil, this.providerLimits.nextLift() ?? untilMs);
       this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: untilMs, reason: `${limit.provider} login at its limit (${limit.kind})` });
     } else {
       this.emit({ type: 'provider_limit', provider: limit.provider, pausedUntil: untilMs, kind: limit.kind });

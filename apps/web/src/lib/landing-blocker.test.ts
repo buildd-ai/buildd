@@ -173,3 +173,24 @@ describe('deriveLandingBlocker — conflict takes precedence over review states'
     expect(blocker?.label).toContain('repair is running');
   });
 });
+
+// e07ee9cf: approved PRs parked in the landing lane read as "a repair is running" with no worker or repair.
+describe('deriveLandingBlocker — a behind refresh is not a repair', () => {
+  const base = { taskId: 'task-1', prNumber: 5660, prUrl: 'https://github.com/org/repo/pull/5660' };
+  const behind = (o: Record<string, unknown> = {}) => ({
+    state: 'REPAIRING' as const, stateReason: 'behind', headline: 'Updating branch', prState: 'awaiting_ci' as const,
+    headSha: 'abc123def456', detail: null, currentAttempt: { taskId: 'task-1', role: 'owner', status: 'completed', createdAt: '2026-10-24T15:00:00Z' }, owner: 'landing' as const, ...o,
+  });
+
+  it('parked in the lane: queued behind the PR landing first, owned by the platform', () => {
+    const b = deriveLandingBlocker({ ...base, delivery: behind({ laneWait: { behindPr: 5657, position: 2 } }) });
+    expect(b).toMatchObject({ cause: 'lane_queued', owner: 'platform', label: 'PR #5660 is queued to land behind PR #5657, position 2' });
+    expect(`${b?.label} ${b?.nextAction}`).not.toMatch(/repair/i);
+  });
+
+  it('refreshing: the platform updates the branch, never "a repair is running"', () => {
+    const b = deriveLandingBlocker({ ...base, delivery: behind() });
+    expect(b).toMatchObject({ cause: 'branch_updating', owner: 'platform' });
+    expect(b?.label).not.toMatch(/repair/i);
+  });
+});

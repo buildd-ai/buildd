@@ -42,6 +42,7 @@ const CAUSE_WORDS: Partial<Record<HumanCause, string>> = {
   unsafe_other: 'a safety rule needs a person to look',
   superseded: 'the change is already upstream',
   dependency_bot: 'a dependency update needs a person',
+  release_candidate: 'a release candidate conflicts and needs an amendment',
   base_rewritten: 'the base branch was rewritten',
   auto_resolve_disabled: 'automatic conflict fixing is turned off',
   no_owner: 'no task owns it',
@@ -120,6 +121,8 @@ export function actionsForReason(reason: PageReason): ActionPlan {
       // the outcome. The person reviews the diff and merges it on GitHub.
       case 'deny_path':
       case 'migration':
+      // A candidate's head moves only through the Release workflow's amend.
+      case 'release_candidate':
         return { primary: 'review_on_github', options: ['review_on_github'] };
       // These can clear once the person acts on GitHub (an approval, a look at
       // the dependency bump), so a retry stays on offer for afterwards.

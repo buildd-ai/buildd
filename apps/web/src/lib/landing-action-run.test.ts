@@ -50,6 +50,8 @@ describe('makeLandingRunner', () => {
   });
   it('conflict surfaces superseded and in-flight honestly', async () => {
     expect(await harness(undefined, { dispatched: false, superseded: true }).run('conflict', ctx())).toMatchObject({ ok: false });
+    expect(await harness(undefined, { dispatched: false, releaseCandidate: 'PR #1 is a frozen release candidate' }).run('conflict', ctx()))
+      .toEqual({ ok: false, error: 'PR #1 is a frozen release candidate' });
     expect(await harness(undefined, { dispatched: false, inFlightTaskId: 'live' }).run('conflict', ctx())).toMatchObject({ ok: true, taskId: 'live' });
   });
   it('retry_landing restarts the budget before the merge door, with no overrides', async () => {

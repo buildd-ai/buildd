@@ -43,12 +43,13 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import type { KernelView, PolicyOutcome, Verdict } from './types';
 import {
   UNKNOWN_CI_SIGNATURE, blockedOnResolvedSql, classifyCiFailure, openOrJoinIncidentSql, repairingCiOnBaseSql,
-  resolveIncidentSql, touchIncidentSql, trunkExplains, trunkRecoveredOnRuns, unresolvedIncidentsSql, unresolvedIncidentsByIdSql, TRUNK_AFFECTED_CAP, type TrunkClassification,
+  resolveIncidentSql, touchIncidentSql, trunkExplains, trunkFixLandedGreen, trunkRecoveredOnRuns, unresolvedIncidentsSql, unresolvedIncidentsByIdSql, TRUNK_AFFECTED_CAP, type TrunkClassification,
 } from './trunk';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
 import { recordPrStateObserved } from './render-observation';
 import { endingWorkerIsCurrentSql, isAttemptRow, notOwnerTaskSql, ownerAttemptEndOf, ownerClaimOpenSql, projectAttemptStartSql, projectLoopExitSql, projectOwnerEndSql, projectReopenSql, projectRequeueSql, projectWithdrawSql, requeueingAttemptIsCurrentSql } from './task-projection';
+import { taskPrOf } from './task-pr';
 import { isTerminalWorkerStatus } from '@buildd/shared';
 import { scheduleKernelHeal } from './kernel-heal';
 import { KernelObservationFailed } from './kernel-observation';
@@ -788,6 +789,8 @@ export async function attemptEnded(p: {
   reviewFailure?: 'prose_verdict' | 'no_verdict' | 'infra' | 'human_takeover';
   /** §13.13 rule 4: a review fix's verified no-op claim (`noopEvidenceOf`). */
   noopEvidence?: { findingIds: string[]; evidence: string } | null;
+  /** A CI fixer's report that the failure is the base's (`blockedOnBaseOf`). */
+  blockedOnBase?: boolean;
 }, deps: SeamDeps = {}): Promise<{ handled: boolean; result?: CommandResult }> {
   const attemptKind = p.task.deliveryRole;
   if (!p.task.deliveryId || (attemptKind !== 'owner' && !isRepairRole(attemptKind) && attemptKind !== 'review')) return { handled: false };
@@ -901,6 +904,17 @@ export async function attemptEnded(p: {
     if (d.state === 'REPAIRING' && d.approvalBasis && d.approvalBasis !== 'policy') carryForward = (await carryForwardReading(view, d.repoFullName, live, deps.exec ?? seamExec, reader)).evidence;
     if (!carryForward && deltaApprovalSource(view)) delta = await readDeltaForApproval(view, d.repoFullName, live, reader);
   }
+  // A CI fixer that reports the failure is upstream: open or join the trunk incident for the
+  // delivery's signature; the kernel takes T25 with it (only for a CI repair on its bound head).
+  let blockedOnBase: { incidentId: string; signature: string } | null = null;
+  if (p.blockedOnBase && ciAttempt?.family === 'ci' && ciAttempt.triggerReason && d.state === 'REPAIRING' && d.repoFullName && (live?.baseRef ?? d.baseRef)) {
+    const signature = ciAttempt.triggerReason;
+    const row = ((await (deps.exec ?? seamExec)(openOrJoinIncidentSql({ workspaceId: p.task.workspaceId, repoFullName: d.repoFullName, baseRef: (live?.baseRef ?? d.baseRef)!, signature, deliveryId }))).rows ?? [])[0] as { id: string } | undefined;
+    if (row) {
+      await scheduleTrunkRecheck(String(row.id));
+      blockedOnBase = { incidentId: String(row.id), signature };
+    }
+  }
   const cmd: Command = {
     type: 'AttemptEnded',
     actor: p.source,
@@ -921,6 +935,7 @@ export async function attemptEnded(p: {
     ...(delta ? { delta } : {}),
     ...(p.noopEvidence && attemptKind === 'fix' ? { noopEvidence: p.noopEvidence } : {}),
     ...(baseOnly ? { baseOnly: true } : {}),
+    ...(blockedOnBase ? { blockedOnBase } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
   if (attemptKind !== 'owner' && result.result === 'applied' && result.decision.toState === 'APPROVED' && result.decision.evidence?.carryForward && live) {
@@ -1088,6 +1103,11 @@ export function noopEvidenceOf(output: unknown): { findingIds: string[]; evidenc
   const ids = Array.isArray(o.findingIds) ? o.findingIds.filter((x): x is string => typeof x === 'string' && !!x.trim()) : [];
   const evidence = typeof o.evidence === 'string' ? o.evidence.trim() : '';
   return ids.length && evidence ? { findingIds: ids, evidence } : null;
+}
+
+/** A CI fixer's `structuredOutput.blockedOnBase: true`: the failure is the base branch's, not this PR's. */
+export function blockedOnBaseOf(output: unknown): boolean {
+  return !!output && typeof output === 'object' && (output as Record<string, unknown>).blockedOnBase === true;
 }
 
 /**
@@ -1910,7 +1930,7 @@ export async function reconcileTrunkIncidents(deps: SeamDeps = {}, limit = 25): 
   return s;
 }
 
-type TrunkIncidentRow = { id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string };
+type TrunkIncidentRow = { id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string; trunk_fix_task_id?: string | null };
 
 /**
  * One incident's recheck, the floor's and the recheck queue's alike: read the base head now and resolve
@@ -1927,8 +1947,12 @@ async function recheckTrunkIncident(inc: TrunkIncidentRow, deps: SeamDeps, s: Tr
     readBase = !!reader;
     const head = reader?.branchHead ? await reader.branchHead(inc.repo_full_name, inc.base_ref) : null;
     const runs = head && reader?.checkRuns ? await reader.checkRuns(inc.repo_full_name, head, { tests: true }) : null;
-    // Unknown, or the incident's checks still running, is never read as recovered.
-    if (trunkRecoveredOnRuns(inc.signature, runs)) {
+    // Unknown, or the incident's checks still running, is never read as recovered. A base head with
+    // no runs at all (a mission branch has no CI of its own) is recovered by its fix PR landing green.
+    if (trunkRecoveredOnRuns(inc.signature, runs) || (head && reader && runs === null && inc.trunk_fix_task_id && await trunkFixLandedGreen({
+      repoFullName: inc.repo_full_name, baseRef: inc.base_ref, baseHead: head, signature: inc.signature, reader,
+      fixPrNumber: (await taskPrOf(String(inc.trunk_fix_task_id), exec))?.prNumber ?? null,
+    }))) {
       const won = ((await exec(resolveIncidentSql(String(inc.id)))).rows ?? []).length > 0;
       if (won) s.resolved++;
       return { resolved: true, readBase };

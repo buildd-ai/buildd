@@ -152,11 +152,29 @@ export function isRecheckAfterApproval(r: Pick<RoundSnapshot, 'scope'> | null | 
   return da != null && typeof da === 'object';
 }
 
+/**
+ * Task 81705dd8: whether a round judged anything the budget should pay for. Besides a re-check
+ * after an approval (c1d66a6a), two kinds of round spend nothing:
+ *  - one a newer push superseded before its own verdict applied: three pushes in ten minutes
+ *    filed three reviewers, only the third judged, and its request for changes escalated
+ *    review_exhausted with no fix ever dispatched (#5500). A verdict that lands on such a round
+ *    afterwards is kept for audit (`endReason` set) but never applied, so it still spends nothing.
+ *  - one opened only because the base branch was merged in (`base_refresh`) that did not ask for
+ *    changes: it re-checks the same change against a new base (#5488). One that does ask counts.
+ * `judging` is the round whose request for changes is being weighed: it is about to ask, so it counts.
+ */
+function spendsReviewBudget(r: RoundSnapshot, judging: string | undefined): boolean {
+  if (isRecheckAfterApproval(r)) return false;
+  if (r.status === 'superseded' && (r.verdict == null || r.endReason != null)) return false;
+  if (r.trigger === 'base_refresh' && r.id !== judging && r.effectiveVerdict !== 'request_changes') return false;
+  return true;
+}
+
 /** The rounds up to `upTo` (default the current one) that spend the review budget. */
-export function spentReviewRounds(view: Pick<KernelView, 'delivery' | 'rounds'>, upTo?: number): number {
+export function spentReviewRounds(view: Pick<KernelView, 'delivery' | 'rounds'>, upTo?: number, judging?: string): number {
   const n = upTo ?? view.delivery?.currentRound ?? 0;
-  const rechecks = new Set(view.rounds.filter((r) => r.round <= n && isRecheckAfterApproval(r)).map((r) => r.round));
-  return n - rechecks.size;
+  const free = new Set(view.rounds.filter((r) => r.round <= n && !spendsReviewBudget(r, judging)).map((r) => r.round));
+  return n - free.size;
 }
 
 /**
@@ -169,9 +187,9 @@ function recheckCycleUsed(view: Pick<KernelView, 'rounds' | 'attempts'>, round: 
 }
 
 /** Whether a request for changes at `round` spends the last of the budget (escalates instead of a fix). */
-function budgetSpentAt(view: Pick<KernelView, 'delivery' | 'rounds'>, round: Pick<RoundSnapshot, 'round' | 'scope'>, maxRounds: number): boolean {
+function budgetSpentAt(view: Pick<KernelView, 'delivery' | 'rounds'>, round: Pick<RoundSnapshot, 'id' | 'round' | 'scope'>, maxRounds: number): boolean {
   if (isRecheckAfterApproval(round)) return false;
-  return spentReviewRounds(view, round.round) >= maxRounds;
+  return spentReviewRounds(view, round.round, round.id) >= maxRounds;
 }
 
 /** The patch that carries a spent review budget into a repair that starts from its escalation. */
@@ -2475,6 +2493,21 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
     return baseOnlyEnd(c, key, a, live!.headSha, end('noop'), { ...evidence, baseOnly: true, attemptId: a.id });
   }
 
+  // A CI fix that ran on a head nothing moved. Only a live read of the unmoved head is evidence.
+  const ciHeadUnmoved = d.state === 'REPAIRING' && a.family === 'ci' && livePrOpen(live) && live!.headSha === a.boundHeadSha && d.currentHeadSha === a.boundHeadSha;
+  // The fixer found the failure upstream: T25's block, so recovery (T26) refreshes the head. The
+  // attempt ends with no change and no new ci row is filed, so no further ci budget is spent.
+  if (ciHeadUnmoved && cmd.blockedOnBase) {
+    const { incidentId, signature } = cmd.blockedOnBase;
+    return c.apply(`trunk:${incidentId}:${d.id}`, 'BLOCKED_ON_TRUNK', {
+      guardHead: true,
+      patch: { resumeState: reviewBudgetHeld(d) ? 'ESCALATED' : headCoverage(d, d.currentHeadSha) !== 'none' ? 'APPROVED' : 'AWAITING_REVIEW', trunkIncidentId: incidentId, stateReason: signature, boundAttemptId: null, ci: 'red', ciHeadSha: a.boundHeadSha },
+      attempts: [end('noop')],
+      effects: [{ kind: 'dispatch_trunk_fix', dedupeKey: `dispatch_trunk_fix:${incidentId}`, payload: { incidentId, signature } }],
+      evidence: { ...evidence, incidentId, signature, blockedOnBase: true },
+    });
+  }
+
   if (cmd.outcome === 'success' || (cmd.outcome === 'unproven' && cmd.commitCount > 0)) {
     // abe42d1b: an agent that pushed from its own session leaves the runner nothing local to
     // report, but its push was attributed to it mid-attempt (§6.9). That push is its L, as the
@@ -2572,6 +2605,15 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
       patch: { stateReason: reason, boundAttemptId: null }, attempts: [end('failed')],
       effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:${a.family}:${a.mode}:${a.attemptNo}`, payload: { family: a.family, attempts: a.attemptNo } }],
       evidence,
+    });
+  }
+  // A CI fix that failed and left the head where it was bound did not find a failure this PR can
+  // fix; the same work on the same head would end the same way. A person decides (no new ci row).
+  if (ciHeadUnmoved && cmd.outcome === 'failed') {
+    return c.apply(key, 'ESCALATED', {
+      patch: { stateReason: 'ci_unfixed_head', boundAttemptId: null }, attempts: [end('failed')],
+      effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:ci:unfixed:${a.attemptNo}`, payload: { family: 'ci', attempts: a.attemptNo, reason: 'ci_unfixed_head' } }],
+      evidence: { ...evidence, noChange: true },
     });
   }
   const id = c.newId();

@@ -7,7 +7,8 @@ import { isIntegrationPermissionError, missingPermissions as missingRepoPermissi
 import { failedChecks } from '@/lib/failed-checks';
 import { db } from '@buildd/core/db';
 import { workers, githubRepos, missions, tasks, workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
-import { integrationRefreshOf, resolveMergeMethod } from '@/lib/integration-refresh';
+import { integrationRefreshOf, refreshPrIsEmpty, resolveMergeMethod } from '@/lib/integration-refresh';
+import { completedWithoutPr } from '@/lib/task-completed-without-pr';
 import { eq, and, ne, isNull, isNotNull, inArray } from 'drizzle-orm';
 import { githubApi, githubGraphQL, githubAppBotLogin, mergePullRequest } from '@/lib/github';
 import { rankPrComments } from '@/lib/pr-comments';
@@ -58,7 +59,7 @@ import { kernelLandingView, type KernelLanding } from '@/lib/workflow/seam';
 import { doorErrorResponse, isDoorError, idempotencyKeyOf, landThroughKernel, openKernelDelivery, type KernelPrincipal } from '@/lib/workflow/kernel-client';
 import { kernelPrincipalOf, type KernelCaller } from '@/lib/workflow/kernel-client';
 import { deliveryBlockerFacts, getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
-import { checkForeignClose, closesForeignPr, foreignCloseComment } from '@/lib/agent-capabilities/pr-close-guard';
+import { checkForeignClose, closesForeignPr, closesOwnRetrySubject, foreignCloseComment, retrySubjectCloseRefusal } from '@/lib/agent-capabilities/pr-close-guard';
 import { prDeliveryReport } from '@/lib/pr-delivery-report';
 import { canonicalPrState, prRecord } from '@/lib/pr-presentation';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
@@ -407,6 +408,16 @@ export async function POST(req: NextRequest) {
     const prAccess = await authorizeWorkerPrCapability(account, worker, existingPrUrl ? 'pr.adopt' : 'pr.create');
     if (!prAccess.allowed) {
       return NextResponse.json({ error: prAccess.error }, { status: prAccess.status });
+    }
+
+    // A task that completed on a no-PR outcome opens no PR afterwards
+    // (lib/task-completed-without-pr.ts).
+    const noPrOutcome = completedWithoutPr(worker.task);
+    if (noPrOutcome) {
+      return NextResponse.json({
+        error: `PR not opened: this task already completed without a PR because ${noPrOutcome}. Opening one now would contradict that outcome.`,
+        code: 'task_completed_without_pr',
+      }, { status: 409 });
     }
 
     // Option A′ derivation — read once, used everywhere below that a PR's head
@@ -1248,6 +1259,19 @@ export async function POST(req: NextRequest) {
     const effectiveBase = prBase.base ?? 'main';
     const freshScope = await scopeCheck(effectiveBase);
     if (freshScope) return freshScope;
+    // A refresh PR another writer already did: the base contains the trunk sha
+    // and the head adds nothing. Superseded before it opens, not merged empty.
+    const emptyRefresh = await refreshPrIsEmpty({
+      installationId: repo.installation.installationId, repoFullName: repo.fullName,
+      context: taskContext, base: effectiveBase, head,
+    });
+    if (emptyRefresh) {
+      return NextResponse.json({
+        error: `PR not opened: ${effectiveBase} already contains ${emptyRefresh.trunk ?? 'trunk'} ${emptyRefresh.trunkSha.slice(0, 7)} and ${head} changes no file over it, so this refresh has nothing to land.`,
+        code: 'refresh_pr_empty',
+        hint: 'Call complete_task: the pr_required gate accepts a refresh already on the branch. If this worker has commits of its own, pass discardEdits saying they only repeat that merge.',
+      }, { status: 409 });
+    }
     // Early release's stacking mechanics (docs/design/early-release.md): a
     // `start_stacked` dependent's PR targets its upstream's own branch, not a
     // merge candidate yet, so it opens as a draft regardless of what the
@@ -1679,6 +1703,12 @@ export async function PATCH(req: NextRequest) {
     // otherwise only with a reason and a merged successor, so the close is
     // recorded as a supersession rather than an unexplained CLOSED_UNMERGED
     // (lib/agent-capabilities/pr-close-guard.ts).
+    // A fix attempt never closes the PR it was filed to repair.
+    if (capability === 'pr.close' && closesOwnRetrySubject(account, worker, prNumber)) {
+      const refusal = retrySubjectCloseRefusal(prNumber);
+      void recordCapabilityDecision({ capability, decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: refusal.reasonCode });
+      return NextResponse.json({ error: refusal.error, reasonCode: refusal.reasonCode, hint: refusal.hint }, { status: refusal.status });
+    }
     let foreignClose: { reason: string; supersedingPrNumber: number } | null = null;
     if (capability === 'pr.close' && closesForeignPr(account, worker, prNumber)) {
       const verdict = await checkForeignClose(
@@ -2698,6 +2728,8 @@ export async function PUT(req: NextRequest) {
           ? `PR #${prNumber} has merge conflicts. Conflict-resolution task dispatched (${dispatchResult.taskId}).`
           : dispatchResult.superseded
           ? `PR #${prNumber} appears superseded — its changes are already in base. Escalated for human review.`
+          : dispatchResult.releaseCandidate
+          ? dispatchResult.releaseCandidate
           : dispatchResult.exhausted
           ? `PR #${prNumber} has merge conflicts and conflict-resolution retries are exhausted. Human action required.`
           : result.message;
@@ -2763,6 +2795,9 @@ export async function GET(req: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let worker: any;
     let resolvedPrNumber: number;
+    // True when no worker owns the PR: the worker found only names the
+    // workspace, and nothing of its task may describe this PR.
+    let anchorOnly = false;
 
     if (workerId) {
       worker = await db.query.workers.findFirst({
@@ -2789,6 +2824,17 @@ export async function GET(req: NextRequest) {
         );
       }
       resolvedPrNumber = parsed;
+      // The workerId anchors the workspace; the PR's delivery, attempts and
+      // evidence belong to the worker that opened it. A worker session asking
+      // about another task's PR sends its own id, so read the owner's.
+      if (worker.prNumber !== parsed && worker.workspaceId) {
+        const owner = await resolveWorkerByPrNumberInWorkspaces([worker.workspaceId], parsed, null).catch(() => null);
+        if (owner && typeof owner.status !== 'number') {
+          worker = owner;
+        } else {
+          anchorOnly = true;
+        }
+      }
     } else {
       // No workerId — resolve worker from prNumber across the account's workspaces.
       const prNum = parseInt(prNumberParam!, 10);
@@ -2923,17 +2969,22 @@ export async function GET(req: NextRequest) {
     // record fills a merge GitHub reported as a plain close. For a
     // kernel-owned PR the record is the delivery (Slice F, §13.10), never the
     // worker columns; a legacy PR keeps the fact cache.
-    const kernelView = worker.taskId
+    // What the task says describes this PR only when its worker owns it; an
+    // anchor-only worker contributes nothing beyond GitHub's view.
+    const prTaskId: string | null = anchorOnly ? null : (worker.taskId ?? null);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prWorker: any = anchorOnly ? {} : worker;
+    const kernelView = prTaskId
       // Findings too: get_pr prints the open-finding count (§7).
-      ? (await getDeliveryViewsForTasks([worker.taskId], undefined, undefined, { withFindings: true })).get(worker.taskId)
+      ? (await getDeliveryViewsForTasks([prTaskId], undefined, undefined, { withFindings: true })).get(prTaskId)
       : undefined;
     const record = prRecord({
       delivery: kernelView && kernelView.prNumber === prNumber ? kernelView : null,
-      mergedAt: worker.mergedAt,
-      prLifecycleStatus: worker.prLifecycleStatus,
-      supersededByPrNumber: worker.supersededByPrNumber,
-      supersededByPrUrl: worker.supersededByPrUrl,
-      supersededReason: worker.supersededReason,
+      mergedAt: prWorker.mergedAt,
+      prLifecycleStatus: prWorker.prLifecycleStatus,
+      supersededByPrNumber: prWorker.supersededByPrNumber,
+      supersededByPrUrl: prWorker.supersededByPrUrl,
+      supersededReason: prWorker.supersededReason,
     });
     const canonicalState = canonicalPrState({ githubMerged: pr.merged === true, githubClosed: pr.state === 'closed' }, record.merged);
     const dbMergedAt = record.mergedAt;
@@ -2948,26 +2999,26 @@ export async function GET(req: NextRequest) {
 
     // Fix attempts on this PR's chain, with why each ended as it did. A read
     // failure costs the list, not the PR.
-    const attempts = await loadPrAttempts(worker.taskId).catch(() => []);
+    const attempts = await loadPrAttempts(prTaskId).catch(() => []);
     // The PR read itself is team-wide for a key, but evidence follows the
     // workspace reach rule (restricted = linked accounts only), the same one
     // GET /api/tasks/[id]/evidence applies. A session already passed team
     // membership above.
-    const evidenceReachable = !!(worker.taskId && worker.workspaceId) && (
+    const evidenceReachable = !!(prTaskId && worker.workspaceId) && (
       sessionUser ? true : await verifyAccountWorkspaceAccess(account!, worker.workspaceId)
     );
     // The mission-level merge gate every door asks (spec 072de598 I-12): an open
     // mission PR whose visual review is owed reads blocked here too, never "ready to merge".
-    const missionMergeGate = canonicalState === 'open' && worker.taskId
+    const missionMergeGate = canonicalState === 'open' && prTaskId
       ? await db.query.tasks.findFirst({
-          where: sqlWhere(eq(tasks.id, worker.taskId)),
+          where: sqlWhere(eq(tasks.id, prTaskId)),
           columns: { id: true, title: true, taskClass: true, missionId: true, context: true },
         })
           .then(t => (t?.missionId ? guardMissionPrMerge(t) : null))
           .catch((err) => { console.warn('[get_pr] mission merge gate unreadable:', err instanceof Error ? err.message : err); return null; })
       : null;
     const evidenceObjects = evidenceReachable
-      ? await loadInlineEvidence(worker.workspaceId, worker.taskId, {
+      ? await loadInlineEvidence(worker.workspaceId, prTaskId!, {
         surface: 'get_pr',
         actor: sessionUser ? { userId: sessionUser.id } : { accountId: account!.id },
       })
@@ -2980,10 +3031,10 @@ export async function GET(req: NextRequest) {
         title: pr.title ?? null,
         body: pr.body ?? null,
         state: canonicalState,
-        url: pr.html_url ?? worker.prUrl ?? null,
+        url: pr.html_url ?? prWorker.prUrl ?? null,
         mergeable: canonicalState === 'open' ? (pr.mergeable ?? null) : null,
         mergeableState: canonicalState === 'open' ? (pr.mergeable_state ?? null) : null,
-        headSha: headSha ?? worker.lastCommitSha ?? null,
+        headSha: headSha ?? prWorker.lastCommitSha ?? null,
         baseRef: pr.base?.ref ?? null,
         additions: splitStats ? splitStats.reviewable.additions : (pr.additions ?? null),
         deletions: splitStats ? splitStats.reviewable.deletions : (pr.deletions ?? null),

@@ -5,28 +5,30 @@
  * The order is the server's (GET /api/workers/queue: the claim route's own
  * order, reach and gates for this runner). This file only puts it in words:
  * per team in view (`t` / `w`, R-23), position, title, workspace, mission, the
- * estimate when the team has estimates on, and when the row starts:
- *   - "now" for every row that would start on a free slot right now, so
- *     several rows start together while slots are free;
- *   - what it waits for, in words, when something holds it: the reason the
- *     server gave the runner's last claim of it ("when #4 ends (same files)",
- *     "after its dependency", a limit or hold with the local time it lifts),
- *     since a read cannot see the claim's in-loop deferrals;
- *   - "in ~15m (next free slot)" only when the slots are full, from the
- *     running agents' estimates ("when a slot frees" without any).
+ * estimate when the team has estimates on, and one status word (spec 0dc7c6de
+ * R-12..R-17):
+ *   - Running: an agent working now, listed above the queued rows;
+ *   - Queued: waiting only for a free slot, so several rows read Queued
+ *     together and the Next line counts the ones a free slot takes;
+ *   - Blocked · <words>: something else holds it, in the words of the reason the
+ *     claim gave for that task ("after #4", "until 14:07", "needs settings this
+ *     runner lacks"), never a guess; a read cannot see the claim's in-loop
+ *     deferrals, so a row with no refusal is Queued;
+ *   - Taken by <runner>: another runner took it; the next refresh drops the row.
  * A row that shares only mergeable files with an open PR or a live lease (the
  * server's `alongside`) also says it "starts alongside #n (same files, merges
- * at the end)": the claim starts it next to that work, and the merge settles it.
- * A row the server is refusing is never "now". A task held on its own (a start
- * time ahead, e.g. a retry floor after failures, or a person's hold) is listed
- * after the queue, not in it, with its reason.
+ * at the end)". A task held on its own (a start time ahead, a person's hold) is
+ * listed after the queue, not in it, Blocked with its reason.
  */
 import { TERMS, titleWithAttempt, type RunnerQueueExclusion, type RunnerQueueTask } from '@buildd/shared';
 import { taskIdInSentence } from '../claim-outcomes';
 import {
-  EXCLUSION_WORDS as CLAIM_EXCLUSION_WORDS, MOVED_CODES, RUNNER_COOLDOWN_MS, busySlots, currentTeam, heldNow, inView, isOrganizerTask, liveTaskOutcome, localLiftTime, matchesFilter, providerHolds, roleLabel, wallFor,
+  DEFERRAL_WORDS, EXCLUSION_WORDS as CLAIM_EXCLUSION_WORDS, MOVED_CODES, RUNNER_COOLDOWN_MS, busySlots, currentTeam, heldNow, inView, isOrganizerTask, liveTaskOutcome, localLiftTime, matchesFilter, providerHolds, roleLabel, wallFor, workspaceList,
   type ClaimOutcome, type ProviderHold, type TopState, type TopTask,
 } from './state';
+
+/** The one status word of a Queue row (R-12); `taken` reads "Taken by <runner>" (R-17). */
+export type QueueStatus = 'running' | 'queued' | 'blocked' | 'taken';
 
 export interface QueueRow {
   taskId: string;
@@ -43,13 +45,16 @@ export interface QueueRow {
   mission: string;
   /** The estimate in words, "-" with none; null when the team has estimates off. */
   est: string | null;
-  /**
-   * When it starts: "now", what holds it ("when #4 ends (same files)", a local
-   * time), "in ~15m (next free slot)", "paused"; on a held row the time then
-   * why ("18:26 · retries after failures"); on a "Not for this runner" row, why.
-   */
+  status: QueueStatus;
+  /** The status as drawn: "Running", "Queued", "Blocked · after #4", "Taken by orion". */
   starts: string;
-  /** Set on a row this runner never takes, or one held on its own. */
+  /** On a Blocked row: the words after the status ("after #4", "until 14:07"). */
+  why?: string;
+  /** On a Queued row: a free slot takes it on the next claim (what the Next line counts). */
+  startsNow?: boolean;
+  /** On a Queued row with every slot busy: minutes until the soonest running agent is due to finish. */
+  eta?: number;
+  /** Set on a row this runner never takes, or one held on its own (the words are the same as after Blocked). */
   reason?: string;
   /** Set on a "Not for this runner" row: the server's reason code. */
   exclusion?: RunnerQueueExclusion;
@@ -143,14 +148,14 @@ function heldOnItsOwn(t: RunnerQueueTask, now: number): boolean {
  */
 function heldWords(t: RunnerQueueTask, now: number): { reason: string; starts: string } {
   const paused = TERMS['work.paused'].short;
-  if (t.holds.includes('task_held')) return { reason: CLAIM_EXCLUSION_WORDS.task_held, starts: `${paused} · by a person` };
-  if (t.holds.includes('mission_held')) return { reason: CLAIM_EXCLUSION_WORDS.mission_held, starts: `${paused} · ${CLAIM_EXCLUSION_WORDS.mission_held}` };
+  if (t.holds.includes('task_held')) return { reason: CLAIM_EXCLUSION_WORDS.task_held, starts: `${paused} by a person` };
+  if (t.holds.includes('mission_held')) return { reason: CLAIM_EXCLUSION_WORDS.mission_held, starts: CLAIM_EXCLUSION_WORDS.mission_held };
   const at = localLiftTime(t.holdUntil!, now);
   const cause = t.holdCause === 'retry_after_failures' ? 'retries after failures'
     : t.holdCause === 'usage_limit_reset' ? 'after the usage limit resets'
     : t.holdCause === 'credential_probe' ? 'rechecks its login'
     : 'scheduled';
-  return { reason: `${cause}, ${at}`, starts: `${at} · ${cause}` };
+  return { reason: `${cause}, ${at}`, starts: `until ${at} · ${cause}` };
 }
 
 const OVERLAP_CODES = new Set(['soft_overlap', 'path_overlap', 'advisory_manifest', 'ordered_behind']);
@@ -189,6 +194,11 @@ function rawTitleOf(taskId: string, state: TopState): string | null {
   return null;
 }
 
+/** Refusals this runner cannot fix, said after "Blocked ·" (R-13, R-14). */
+const BLOCKED_WORDS: Record<string, string> = {
+  role_env_unsatisfied: 'needs settings this runner lacks',
+};
+
 /**
  * What the runner's last claim of this task was refused for, in the Queue's
  * words (AC-30): an overlap names the work it waits for by position, else by
@@ -203,7 +213,9 @@ function refusalWords(o: ClaimOutcome, positions: Map<string, number>, state: To
     return holderWords(holder, positions, state);
   }
   if (code === 'deps_blocked') return 'after its dependency';
+  if (code && BLOCKED_WORDS[code]) return BLOCKED_WORDS[code];
   if (code && CLAIM_EXCLUSION_WORDS[code]) return CLAIM_EXCLUSION_WORDS[code];
+  if (code && DEFERRAL_WORDS[code]) return DEFERRAL_WORDS[code];
   if (o.reason === 'refused') return o.status === 429 ? 'account has no free slot' : 'the server refused its claim';
   if (o.reason === 'no_slots') return 'account has no free slot';
   if (code) return o.detail ? clip(o.detail.replace(/\.\s.*$/s, ''), 40) : TERMS['wait.unknown'].short;
@@ -224,17 +236,17 @@ function refusalKind(o: ClaimOutcome): WaitKind {
 /** Words for the work an overlap waits for: its position here, else its title. */
 function holderWords(holder: string | null | undefined, positions: Map<string, number>, state: TopState): string {
   const at = holder ? positions.get(holder) : undefined;
-  if (at !== undefined) return `when #${at} ends (same files)`;
+  if (at !== undefined) return `after #${at}`;
   const title = holder ? titleOf(holder, state) : null;
-  return title ? `same files as "${clip(title, 18)}"` : 'when work on its files ends';
+  return title ? `after "${clip(title, 18)}"` : 'after work on the same files';
 }
 
 /** Why the row waits, in words and kind, or null when nothing holds it (it starts on a free slot). */
 function waitWords(t: RunnerQueueTask, positions: Map<string, number>, state: TopState, holds: ProviderHold[], now: number): { text: string; kind: WaitKind } | null {
-  if (t.holds.includes('workspace_paused') && future(t.holdUntil, now)) return { text: localLiftTime(t.holdUntil!, now), kind: 'time' };
+  if (t.holds.includes('workspace_paused') && future(t.holdUntil, now)) return { text: `until ${localLiftTime(t.holdUntil!, now)}`, kind: 'time' };
   const own = runnerHoldTime(t, state, holds, now);
-  if (own) return { text: own, kind: 'time' };
-  if (t.holds.includes('runner_cooldown')) return { text: localLiftTime(new Date(now + RUNNER_COOLDOWN_MS).toISOString(), now), kind: 'time' };
+  if (own) return { text: `until ${own}`, kind: 'time' };
+  if (t.holds.includes('runner_cooldown')) return { text: `until ${localLiftTime(new Date(now + RUNNER_COOLDOWN_MS).toISOString(), now)}`, kind: 'time' };
   const o = liveTaskOutcome({ id: t.id, title: t.title, status: 'pending', backend: t.backend }, state, now);
   const refused = o && o.reason !== 'claimed' ? refusalWords(o, positions, state) : null;
   if (refused) return { text: refused, kind: refusalKind(o!) };
@@ -242,6 +254,45 @@ function waitWords(t: RunnerQueueTask, positions: Map<string, number>, state: To
   if (t.holds.includes('advisory_manifest')) return { text: holderWords(t.holderTaskId, positions, state), kind: 'same_files' };
   if (t.holds.includes('deps_blocked')) return { text: 'after its dependency', kind: 'dependency' };
   return null;
+}
+
+const blocked = (why: string) => `Blocked · ${why}`;
+
+/** Mission of a task top knows, from the task list. */
+function missionOfTask(taskId: string, state: TopState): string | null {
+  return state.tasks.find(x => x.id === taskId)?.missionId ?? null;
+}
+
+/** Another runner took a listed task: the name when the server gave it, else "another runner". Null while it is still free. */
+function takenBy(t: RunnerQueueTask, state: TopState): string | null {
+  const live = state.tasks.find(x => x.id === t.id);
+  const mine = Object.values(state.workers).some(w => w.taskId === t.id && (w.status === 'working' || w.status === 'stale'));
+  if (live && !mine && (live.status === 'assigned' || live.status === 'in_progress' || live.status === 'waiting_input')) return live.claimedByName || 'another runner';
+  if (state.claimOutcomes.tasks[t.id]?.reason === 'race_lost') return live?.claimedByName || 'another runner';
+  return null;
+}
+
+/** The agents working now, in view, as rows above the queued ones (R-15). */
+function runningRows(state: TopState, show: (id: string | undefined) => boolean): Array<{ row: QueueRow; workspaceId: string | undefined; estMin: number | undefined }> {
+  const out: Array<{ row: QueueRow; workspaceId: string | undefined; estMin: number | undefined }> = [];
+  const workers = Object.values(state.workers).filter(w => (w.status === 'working' || w.status === 'stale') && (w.workspaceId === undefined || show(w.workspaceId)) && matchesFilter(w.taskTitle, state.filter));
+  workers.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
+  for (const w of workers) {
+    const t = state.tasks.find(x => x.id === w.taskId);
+    if (t && isOrganizerTask(t)) continue;
+    const est = state.estimates[w.taskId];
+    out.push({
+      workspaceId: w.workspaceId,
+      estMin: typeof est === 'number' ? est : undefined,
+      row: {
+        taskId: w.taskId, position: null, title: titleWithAttempt(w.taskTitle), missionId: t?.missionId ?? null, roleSlug: t?.roleSlug,
+        workspace: w.workspaceName || t?.workspace?.name || '-', by: 'you', mission: '-',
+        est: null,
+        status: 'running', starts: 'Running',
+      },
+    });
+  }
+  return out;
 }
 
 /** Remembered estimates (minutes) of the agents running now, soonest to finish first; empty without any. */
@@ -275,36 +326,37 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
   const held = heldNow(state, now) !== null;
   const keep = (t: RunnerQueueTask) => !isOrganizerTask(t) && show(t.workspaceId) && matchesFilter(t.title, state.filter);
   const out: QueueSection[] = [];
-  // Free slots start rows "now", in the claim's order across the teams in view (AC-27).
+  // Free slots go to Queued rows in the claim's order across the teams in view (AC-27).
   let free = Math.max(0, state.runner.maxConcurrent - busySlots(state));
   const remaining = runningRemaining(state, now);
   let slotWait = 0;
-  for (const tm of q.teams) {
-    if (team && tm.teamId !== team.key && tm.teamName !== team.name) continue;
+  // Rows counted against a mission's cap: the mission's running agents, then each row a free slot takes.
+  const inMission = new Map<string, number>();
+  for (const w of Object.values(state.workers)) {
+    if (w.status !== 'working' && w.status !== 'stale') continue;
+    const m = missionOfTask(w.taskId, state);
+    if (m) inMission.set(m, (inMission.get(m) ?? 0) + 1);
+  }
+  const teams = q.teams.filter(tm => !team || tm.teamId === team.key || tm.teamName === team.name);
+  // Running agents sit in the section of their workspace's team, else the first (R-15).
+  const running = runningRows(state, show);
+  const teamOf = (workspaceId: string | undefined) => {
+    const w = workspaceId ? workspaceList(state).find(x => x.id === workspaceId) : undefined;
+    const key = w?.teamId || w?.teamName || null;
+    return teams.find(tm => key !== null && (tm.teamId === key || tm.teamName === key)) ?? teams[0];
+  };
+  for (const tm of teams) {
     const kept = tm.queue.filter(keep);
-    const queued = kept.filter(t => !heldOnItsOwn(t, now));
+    const myRunning = running.filter(r => teamOf(r.workspaceId) === tm);
+    // A task an agent here already runs is a Running row, not a queued one a refresh has not dropped.
+    const runningIds = new Set(running.map(r => r.row.taskId));
+    const queued = kept.filter(t => !heldOnItsOwn(t, now) && !runningIds.has(t.id));
     const heldTasks = kept.filter(t => heldOnItsOwn(t, now));
     const notFor = tm.notForRunner.filter(keep);
-    if (queued.length === 0 && heldTasks.length === 0 && notFor.length === 0) continue;
+    if (myRunning.length === 0 && queued.length === 0 && heldTasks.length === 0 && notFor.length === 0) continue;
     const positions = new Map(queued.map((t, i) => [t.id, i + 1]));
-    const waits: boolean[] = [];
-    const kinds: Array<WaitKind | undefined> = [];
-    const starts = queued.map(t => {
-      // R-33: runner paused, the order stays and nothing has a start time.
-      if (held) { waits.push(true); kinds.push(undefined); return TERMS['runner.paused'].short; }
-      const w = waitWords(t, positions, state, holds, now);
-      waits.push(!!w);
-      kinds.push(w?.kind);
-      if (w) return w.text;
-      if (free > 0) { free--; return 'now'; }
-      const left = remaining[slotWait++];
-      return left !== undefined ? `in ~${estimateWords(left)} (next free slot)` : 'when a slot frees';
-    });
-    out.push({
-      teamId: tm.teamId,
-      teamName: tm.teamName,
-      estimatesOn: tm.estimatesOn,
-      rows: queued.map((t, i) => ({
+    const queuedRows: QueueRow[] = queued.map((t, i) => {
+      const base = {
         taskId: t.id,
         position: i + 1,
         title: titleWithAttempt(t.title),
@@ -314,11 +366,30 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
         by: ownerWords(t),
         mission: t.missionTitle ?? '-',
         est: tm.estimatesOn ? (t.estimateMinutes != null ? estimateWords(t.estimateMinutes) : '-') : null,
-        starts: starts[i],
-        ...(kinds[i] ? { wait: kinds[i] } : {}),
-        // Only a row nothing else holds: one that waits says what it waits for.
-        ...(t.alongside && !waits[i] ? { alongside: alongsideWords(t.alongside, state) } : {}),
-      })),
+      };
+      const block = (why: string, kind?: WaitKind): QueueRow => ({ ...base, status: 'blocked', starts: blocked(why), why, ...(kind ? { wait: kind } : {}) });
+      // R-33: runner paused, the order stays and nothing starts.
+      if (held) return block(TERMS['runner.paused'].short);
+      const by = takenBy(t, state);
+      if (by) return { ...base, status: 'taken', starts: `Taken by ${by}` };
+      const w = waitWords(t, positions, state, holds, now);
+      if (w) return block(w.text, w.kind);
+      if (t.missionId && t.missionCap != null && (inMission.get(t.missionId) ?? 0) >= t.missionCap) return block(CLAIM_EXCLUSION_WORDS.mission_concurrent, 'limit');
+      // Only a row nothing else holds: one that waits says what it waits for.
+      const alongside = t.alongside ? { alongside: alongsideWords(t.alongside, state) } : {};
+      if (free > 0) {
+        free--;
+        if (t.missionId) inMission.set(t.missionId, (inMission.get(t.missionId) ?? 0) + 1);
+        return { ...base, status: 'queued', starts: 'Queued', startsNow: true, ...alongside };
+      }
+      const left = remaining[slotWait++];
+      return { ...base, status: 'queued', starts: 'Queued', ...(left !== undefined ? { eta: left } : {}), ...alongside };
+    });
+    out.push({
+      teamId: tm.teamId,
+      teamName: tm.teamName,
+      estimatesOn: tm.estimatesOn,
+      rows: [...myRunning.map(r => ({ ...r.row, est: tm.estimatesOn ? (r.estMin !== undefined ? estimateWords(r.estMin) : '-') : null })), ...queuedRows],
       held: heldTasks.map(t => {
         const w = heldWords(t, now);
         return {
@@ -331,7 +402,9 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
           by: ownerWords(t),
           mission: t.missionTitle ?? '-',
           est: tm.estimatesOn ? (t.estimateMinutes != null ? estimateWords(t.estimateMinutes) : '-') : null,
-          starts: w.starts,
+          status: 'blocked' as const,
+          starts: blocked(w.starts),
+          why: w.starts,
           reason: w.reason,
           held: true,
         };
@@ -346,7 +419,9 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
         by: ownerWords(t),
         mission: t.missionTitle ?? '-',
         est: tm.estimatesOn ? '-' : null,
-        starts: exclusionWords(t),
+        status: 'blocked' as const,
+        starts: blocked(exclusionWords(t)),
+        why: exclusionWords(t),
         reason: exclusionWords(t),
         exclusion: t.reason,
       })),
@@ -372,8 +447,8 @@ function positionList(ps: string[]): string {
 }
 
 /**
- * The line under the Queue header that says what runs next (R-59): the rows
- * that start now, then how many wait and on what; "nothing can start" when
+ * The line under the Queue header that says what runs next (R-59): the Queued
+ * rows a free slot takes, then how many wait and on what; "nothing can start" when
  * none can; the first row and when a slot frees with every slot busy. Built
  * from the rows' own starts and wait kinds, so it never disagrees with them.
  * Null with nothing queued, and while the runner is paused (every row says so).
@@ -383,9 +458,10 @@ export function queueNextLine(state: TopState, now: number): string | null {
   const sections = queueSections(state, now);
   const several = sections.length > 1;
   const named = (sec: QueueSection, r: QueueRow) => `#${r.position}${several ? ` (${sec.teamName})` : ''}`;
-  const rows = sections.flatMap(sec => sec.rows.map(r => ({ sec, r })));
+  const rows = sections.flatMap(sec => sec.rows.filter(r => r.status !== 'running' && r.status !== 'taken').map(r => ({ sec, r })));
   if (rows.length === 0) return null;
-  const starting = rows.filter(x => x.r.starts === 'now');
+  // Only Queued rows a free slot takes are counted as starting (R-12).
+  const starting = rows.filter(x => x.r.startsNow);
   const counts = new Map<WaitKind, number>();
   for (const { r } of rows) if (r.wait) counts.set(r.wait, (counts.get(r.wait) ?? 0) + 1);
   const waits = WAIT_ORDER.filter(k => counts.has(k)).map(k => {
@@ -393,15 +469,12 @@ export function queueNextLine(state: TopState, now: number): string | null {
     return `${n} ${WAIT_PHRASE[k][n === 1 ? 0 : 1]}`;
   });
   if (starting.length > 0) {
-    const verb = starting.length === 1 ? 'starts' : 'start';
-    return ['Next: ' + `${positionList(starting.map(x => named(x.sec, x.r)))} ${verb} now`, ...waits].join(' · ');
+    const verb = starting.length === 1 ? 'takes' : 'take';
+    return ['Next: ' + `${positionList(starting.map(x => named(x.sec, x.r)))} ${verb} a free slot`, ...waits].join(' · ');
   }
   // Every slot busy: the first row nothing holds waits only for a slot.
-  const slot = rows.find(x => !x.r.wait);
-  if (slot) {
-    const m = slot.r.starts.match(/^in ~(\S+) \(next free slot\)$/);
-    return `Next: ${named(slot.sec, slot.r)}, ${m ? `in ~${m[1]} when a slot frees` : 'when a slot frees'}`;
-  }
+  const slot = rows.find(x => x.r.status === 'queued');
+  if (slot) return `Next: ${named(slot.sec, slot.r)}, ${slot.r.eta !== undefined ? `in ~${estimateWords(slot.r.eta)} when a slot frees` : 'when a slot frees'}`;
   if (counts.size === 1) return `Next: nothing can start · every waiting task ${WAIT_PHRASE[[...counts.keys()][0]][0]}`;
   return ['Next: nothing can start', ...waits].join(' · ');
 }
