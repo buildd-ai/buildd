@@ -30,6 +30,7 @@ import { workspaceRepo } from './github-facts';
 import { prWorkerWhere } from './pr-worker-where';
 import type { DeliverySnapshot, AttemptSnapshot } from './types';
 import type { WorkBuilder } from './kernel-ports';
+import { liveRefreshConflictTaskFor, refreshOwnerNote } from './refresh-task-owner';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
@@ -79,8 +80,17 @@ async function installation(d: DeliverySnapshot): Promise<{ installationId: numb
 }
 
 /** T26's plain update-branch, pinned to the head it judged stale. */
+/** Deferred while a mission branch's refresh conflict task owns merging trunk into it. */
+async function deferredToRefreshTask(d: DeliverySnapshot, installationId: number): Promise<string | null> {
+  const pull = await api()(installationId, `/repos/${d.repoFullName}/pulls/${d.prNumber}`).catch(() => null) as { head?: { ref?: string } } | null;
+  const taskId = await liveRefreshConflictTaskFor(d.workspaceId, pull?.head?.ref);
+  return taskId ? `mission branch refresh owned by task ${taskId.slice(0, 8)}` : null;
+}
+
 async function updateBranch(d: DeliverySnapshot, headSha: string): Promise<BranchUpdate> {
   const repo = await installation(d);
+  const owned = await deferredToRefreshTask(d, repo.installationId);
+  if (owned) return { kind: 'retry', reason: owned };
   const { updateBehindPrBranch } = await import('@/lib/pr-branch-update');
   const res = await updateBehindPrBranch({ installationId: repo.installationId, repoFullName: d.repoFullName!, prNumber: d.prNumber!, headSha, api: deps.api });
   if (res.updated) return { kind: 'updated' };
@@ -93,6 +103,8 @@ async function updateBranch(d: DeliverySnapshot, headSha: string): Promise<Branc
 /** A bound attempt's refresh through base-refresh.ts: the semantic check, the single-flight lease and the operational bound still apply. */
 async function refresh(d: DeliverySnapshot, attempt: AttemptSnapshot): Promise<MechanicalRefresh> {
   const repo = await installation(d);
+  const owned = await deferredToRefreshTask(d, repo.installationId);
+  if (owned) return { kind: 'retry', reason: owned };
   const [owner, prw] = await Promise.all([ownerOf(d), prWorker(d.workspaceId, d.repoFullName!, d.prNumber!)]);
   const run = deps.refresh ?? (await import('@/lib/base-refresh')).refreshBehindPr;
   const out = await run({
@@ -299,6 +311,8 @@ export const conflictFixWork: WorkBuilder = async (req) => {
     ...(refusal?.semanticConflict ? { semanticConflict: refusal.semanticConflict as never } : {}),
   });
   if (!built) return { skipped: 'not_buildable' };
+  const refreshTask = await liveRefreshConflictTaskFor(req.workspaceId, headRef);
+  if (refreshTask) built.description += refreshOwnerNote(refreshTask);
   const identity = await inheritAttemptIdentity(owner.id);
   return {
     workspace,

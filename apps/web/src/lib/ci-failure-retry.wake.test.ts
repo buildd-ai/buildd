@@ -48,9 +48,10 @@ mock.module('@/lib/dispatch-authority', () => ({
 }));
 
 let failedJobNames: string[] = ['Build'];
+let prGate: Record<string, unknown> = { draft: false, closed: false, merged: false, headRef: 'buildd/task-1-fix-bug', baseRef: 'dev' };
 mock.module('@/lib/ci-failure-inspect', () => ({
   checkPrIsDraft: async () => false,
-  fetchPrRetryGate: async () => ({ draft: false, closed: false, merged: false }),
+  fetchPrRetryGate: async () => prGate,
   fetchCIFailureLogs: async () => ({ summary: 'tests failed', runId: 1, runUrl: 'https://ci.example.test/run/1', failedJobId: 2, failedJobNames }),
 }));
 mock.module('@/lib/mission-notifications', () => ({ notifyMissionPrReady: async () => {} }));
@@ -251,5 +252,35 @@ describe('a known flake is re-run, never a CI-fix attempt', () => {
   it('a flake that already had its re-run goes to the normal fix path', async () => {
     flakeOutcome = { rerun: false, reason: 'attempts_exhausted' };
     expect((await retryCiFailureForPr(input)).kind).toBe('dispatched');
+  });
+});
+
+// e2ea3764: a CI fix filed without the PR's head ref resumed the worker row's branch, found it
+// missing on the remote, and was cut from dev: it could change nothing on the PR.
+describe('legacy CI retry: never filed without the PR head GitHub names', () => {
+  beforeEach(() => {
+    insertedRows = [];
+    failedJobNames = ['Build'];
+    kernelSeen = { handled: false };
+    workerRow = {
+      id: 'w1', branch: 'buildd/x', prNumber: 7, prLifecycleStatus: 'open',
+      task: { id: 't1', title: 'Do it', description: null, workspaceId: 'ws1', missionId: null, status: 'completed', context: {}, result: null },
+    };
+  });
+
+  it('an unreadable PR head is a pr_unreadable skip, nothing inserted', async () => {
+    prGate = { draft: false, closed: false, merged: false };
+    try {
+      expect(await retryCiFailureForPr(input)).toEqual({ kind: 'skipped', reason: 'pr_unreadable' });
+      expect(insertedRows).toEqual([]);
+    } finally {
+      prGate = { draft: false, closed: false, merged: false, headRef: 'buildd/task-1-fix-bug', baseRef: 'dev' };
+    }
+  });
+
+  it('a readable head pins the fix to it', async () => {
+    const out = await retryCiFailureForPr(input);
+    expect(out.kind).toBe('dispatched');
+    expect(insertedRows[0].context).toMatchObject({ resumeBranch: 'buildd/task-1-fix-bug', repairTarget: { prNumber: 7, headRef: 'buildd/task-1-fix-bug' } });
   });
 });

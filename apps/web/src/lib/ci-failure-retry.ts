@@ -87,7 +87,9 @@ export type CiRetrySkipReason =
   /** The kernel blocked the delivery on a trunk incident (§6.10): the base branch fails the same checks. */
   | 'blocked_on_trunk'
   /** A frozen release candidate: never fixed on its branch; the fix is filed against its source branch instead. */
-  | 'release_candidate';
+  | 'release_candidate'
+  /** GitHub did not name the PR's head branch: a fix filed without it cannot be pinned to the PR. */
+  | 'pr_unreadable';
 
 /** Fixed text per code: the ledger coalesces on (gate, outcome, reason), so the PR number lives in `detail`. */
 const SKIP_REASON_TEXT: Record<CiRetrySkipReason, string> = {
@@ -108,6 +110,7 @@ const SKIP_REASON_TEXT: Record<CiRetrySkipReason, string> = {
   kernel_owned: 'no CI retry: the workflow kernel owns this PR and its state owes no CI fix now',
   blocked_on_trunk: 'no CI retry: the base branch fails the same checks; one trunk fix runs for every blocked PR',
   release_candidate: 'no CI retry: a frozen release candidate is fixed on its source branch and then amended, never pushed to',
+  pr_unreadable: 'no CI retry yet: the PR head branch could not be read, and a fix is never filed without it',
 };
 
 export type CiRetryOutcome =
@@ -618,6 +621,14 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
   const currentIteration = ciRetriesUsed;
   const ownerCtx = (task.context as Record<string, unknown>) || {};
 
+  // e2ea3764: a fix filed without the PR's head ref resumes the worker row's branch, and one missing
+  // on the remote was cut from trunk instead. The sweep comes back once GitHub answers.
+  if (!prGate.headRef) {
+    recordSkip(skipCtx, 'pr_unreadable');
+    await lookAgain(skipCtx);
+    return { kind: 'skipped', reason: 'pr_unreadable' };
+  }
+
   const retryTask = buildCIRetryTask({
     originalTask: {
       id: task.id,
@@ -635,7 +646,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     ciFailedJobId: ciLogs.failedJobId,
     ciRunUrl: ciLogs.runUrl,
     workspaceMaxCiRetries: workspace.gitConfig?.maxCiRetries,
-    prRefs: prGate.headRef ? { headRef: prGate.headRef, baseRef: prGate.baseRef ?? null } : null,
+    prRefs: { headRef: prGate.headRef, baseRef: prGate.baseRef ?? null },
   });
 
   if (!retryTask) {

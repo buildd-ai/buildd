@@ -289,4 +289,23 @@ describe('detectRerunnableFailure', () => {
     expect(detectRerunnableFailure('(fail) a > b')).toBeNull();
     expect(detectRerunnableFailure(null)).toBeNull();
   });
+
+  // e2ea3764 (#5640): a real snapshot test failure re-run as infrastructure.
+  it('a test that failed on its own and then dropped its database is not infrastructure', () => {
+    const log = [
+      '2026-10-24T12:52:01.1Z migrated schema matches the latest snapshot:',
+      '2026-10-24T12:52:01.2Z (fail) migrated schema matches the latest snapshot > every snapshot column exists [12.00ms]',
+      '2026-10-24T12:52:01.3Z error: terminating connection due to administrator command',
+      '2026-10-24T12:52:01.4Z ##[error]Process completed with exit code 1.',
+    ].join('\n');
+    expect(detectRerunnableFailure(log)).toBeNull();
+  });
+
+  it('a connection drop before the first failure still reads as the cause', () => {
+    const log = [
+      '2026-10-24T12:52:01.1Z FATAL: terminating connection due to administrator command',
+      '2026-10-24T12:52:01.2Z (fail) migrations > apply in order [3.00ms]',
+    ].join('\n');
+    expect(detectRerunnableFailure(log)).toBe('db_connection_lost');
+  });
 });

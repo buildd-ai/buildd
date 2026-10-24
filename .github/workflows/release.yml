@@ -16,6 +16,10 @@ name: Release
 #
 # The captured SHA is `github.sha`: the dev head when this run was triggered. A
 # re-run of the same run reuses it, so a re-run cannot pick up a dev that moved.
+# A cut does not use it blindly: it walks back along dev's first-parent line to
+# the newest commit whose `build` check is green (`--require-check build`), so a
+# head CI has not finished with, or failed, is never what a candidate is cut
+# from. An amend moves to the captured SHA as before: its fix PR's CI ran.
 # Local `bun run release` dispatches this same workflow; `bun run
 # release:candidate -- cut --dry-run --source origin/dev` runs the same engine
 # from a workstation.
@@ -99,6 +103,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # The cut reads dev's check runs to find the newest green commit.
+      checks: read
     steps:
       - name: Guard the trigger
         id: guard
@@ -151,6 +157,8 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           APP_TOKEN: ${{ steps.app-token.outputs.token != '' }}
           SOURCE_SHA: ${{ github.sha }}
+          # Check runs are read with the workflow token: the App may not hold checks:read.
+          GH_CHECKS_TOKEN: ${{ github.token }}
           FORCE: ${{ inputs.force }}
           DRY_RUN: ${{ inputs.dry_run }}
           AMEND: ${{ inputs.amend }}
@@ -170,7 +178,7 @@ jobs:
             exit $?
           fi
           if [ "$FORCE" = "true" ]; then args+=(--force); fi
-          bun scripts/release-candidate.ts cut "${args[@]}"
+          bun scripts/release-candidate.ts cut --require-check build "${args[@]}"
 
       # The owner's composition (dashboard Compose step): changes already on dev
       # that this release leaves out. Applied to the candidate the cut step just

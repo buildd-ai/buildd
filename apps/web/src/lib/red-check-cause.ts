@@ -34,11 +34,19 @@ const DB_CONNECTION_LOST = /terminating connection due to administrator command|
 /**
  * What a re-run of the same code is expected to clear: the database dropping
  * its connections, or an infra signature. `ci-infra-failure.ts` re-runs on it.
+ *
+ * When the log names a failing test, only what came before the first one
+ * counts: an environment fault that caused it precedes it, while a test that
+ * failed on its own and then tore its database down logs the drop after
+ * (e2ea3764: a real snapshot-column failure was re-run as infrastructure).
  */
 export function detectRerunnableFailure(log: string | null | undefined): string | null {
   if (!log) return null;
-  if (DB_CONNECTION_LOST.test(log)) return 'db_connection_lost';
-  return detectInfraFailure(log);
+  const lines = cleanLines(log);
+  const firstFailure = lines.findIndex(l => ASSERTION.some(re => re.test(l.trim())));
+  const text = firstFailure === -1 ? log : lines.slice(0, firstFailure).join('\n');
+  if (DB_CONNECTION_LOST.test(text)) return 'db_connection_lost';
+  return detectInfraFailure(text);
 }
 /** The job or step ran out of time. */
 const TIMED_OUT = /has timed out after \d+|exceeded the maximum execution time|SIGTERM received before the run finished/i;

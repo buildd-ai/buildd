@@ -9,6 +9,7 @@
  */
 import type { ApiFn, ToolResult } from './mcp-tools';
 import { formatVisualReview, missionArtifacts } from './visual-review-text';
+import { runnerPinLabel } from './runner-pin';
 import { activeRunnerHold, executorDisplayName, fleetGroupKey, runnerFleetIdentity, runnerUpdateLine, runnerUpdateState, type RunnerFleetIdentity, type VisualReviewModel, type ActiveRunnerWorkspaces } from '@buildd/shared';
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
@@ -237,7 +238,7 @@ export async function runListRunners(
     const slots = updateView && (newShape || updateView.stuck)
       ? `${r.activeWorkers ?? '?'} busy, no free slots (updating)`
       : `${r.activeWorkers ?? '?'} busy of ${r.maxConcurrent ?? '?'} slots`;
-    const header = `${r.accountName ?? 'Unknown'} — ${r.localUiUrl} — ${slots} — browser: ${browserWord(r, windowMs, wsName)} — branch ${r.trackedBranch ?? 'unknown'}`;
+    const header = `${r.accountName ?? 'Unknown'} — ${r.localUiUrl} — ${slots} — browser: ${browserWord(r, windowMs, wsName)} — branch ${r.trackedBranch ?? 'unknown'} — pin: ${runnerPinLabel(r, hosts)}`;
     const update = [
       `currentCommit=${r.currentCommit ?? 'null'}`,
       `diskCommit=${r.diskCommit ?? 'null'}`,
