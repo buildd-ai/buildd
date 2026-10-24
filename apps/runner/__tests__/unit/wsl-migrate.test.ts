@@ -3,8 +3,8 @@ import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { resolveServicePaths, type CommandResult } from '../../src/service';
+import * as migrateModule from '../../src/wsl-migrate';
 import {
-  logonTaskName,
   WSL_MIGRATE_PREFLIGHT,
   WSL_SERVICE_CHECK,
   WSL_SERVICE_INSTALL,
@@ -13,6 +13,10 @@ import {
   runWslMigrate,
   type MigrateDeps,
 } from '../../src/wsl-migrate';
+
+// Namespace access so a missing per-distribution name fails the logon-task checks, not the whole file.
+const logonTaskName: (distro: string) => string =
+  (migrateModule as { logonTaskName?: (distro: string) => string }).logonTaskName ?? (() => 'buildd wsl');
 
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
