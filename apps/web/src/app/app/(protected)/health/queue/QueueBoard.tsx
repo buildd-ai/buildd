@@ -28,10 +28,10 @@ export interface QueueBoardProps {
 
 function Tile({ label, href, testId, children }: { label: string; href: string; testId: string; children: React.ReactNode }) {
   return (
-    <Card as="a" href={href} interactive padding="sm" data-testid={testId} className="block min-w-0">
+    <a href={href} data-testid={testId} className="block min-w-0 px-2">
       <div className="text-meta text-text-muted">{label}</div>
       {children}
-    </Card>
+    </a>
   );
 }
 
@@ -43,7 +43,7 @@ export function QueueTiles({ view }: { view: HealthQueueResponse }) {
   const { tiles } = view;
   const total = tiles.waiting || 1;
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-2" data-testid="queue-tiles">
+    <Card padding="sm" className="grid grid-cols-4 divide-x divide-[var(--line-soft)]" data-testid="queue-tiles">
       <Tile label="Running" href="/app/health/runners" testId="queue-tile-running">
         <Count>{tiles.running}/{tiles.slots}</Count>
         <div className="text-meta text-text-muted">slots</div>
@@ -64,7 +64,7 @@ export function QueueTiles({ view }: { view: HealthQueueResponse }) {
       <Tile label="Parked" href="#queue-parked" testId="queue-tile-parked">
         <Count>{tiles.parked}</Count>
       </Tile>
-    </div>
+    </Card>
   );
 }
 
