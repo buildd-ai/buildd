@@ -59,6 +59,7 @@ import { MissionNotesSheet } from './MissionFeed';
 import { mastheadBack, parseMissionOrigin } from './MissionDetailView';
 import MissionLayoutShell, { MissionBoardHeader } from './MissionLayoutShell';
 import { historyRaised, missionDecisions, type OpenQuestionNote } from '@/lib/mission-decisions';
+import { loadQuestionWaitsFor } from '@/lib/question-waits';
 import { boardTaskHref } from './MissionBoardParts';
 import FlowTimeline from './FlowTimeline';
 import { expectedMinutesFromPredictions, sameFilesFromRows } from '@/lib/flow-timeline';
@@ -1271,8 +1272,15 @@ async function MissionDetailBody({
     subjectTaskId: (n as { subjectTaskId?: string | null }).subjectTaskId ?? null,
     createdAt: new Date(n.createdAt).getTime(),
   }));
+  // What waits on each decision: the one projection every card reads (Living Spec 1b257609 R-5).
+  const decisionTaskIds = layout === 'board'
+    ? [...boardModel.needsYou, ...openQuestionNotes.map(n => n.subjectTaskId).filter((t): t is string => !!t)]
+    : [];
+  const waitsByTask = decisionTaskIds.length > 0
+    ? await loadQuestionWaitsFor(decisionTaskIds, { kind: 'person', userId: user.id }).catch(() => new Map())
+    : new Map();
   const decisions = layout === 'board'
-    ? missionDecisions({ model: boardModel, notes: openQuestionNotes, mission: { id, title: mission.title, href: `/app/missions/${id}` }, hrefFor: taskId => boardTaskHref(boardLink, taskId) })
+    ? missionDecisions({ model: boardModel, notes: openQuestionNotes, mission: { id, title: mission.title, href: `/app/missions/${id}` }, hrefFor: taskId => boardTaskHref(boardLink, taskId), waitsByTask })
     : [];
   const history = layout === 'board' ? historyRaised(boardModel, openQuestionNotes) : null;
   // Verified reads current verdicts, never a stale stored overall: a criterion not

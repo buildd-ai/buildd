@@ -78,7 +78,10 @@ describe('MissionOverview over AC-4\u2019s mission (16 tasks)', () => {
     const card = out.slice(out.indexOf('data-testid="decision-card"'), out.indexOf('data-testid="task-strip"'));
     expect(card).toContain('Mirror the runner image to Docker Hub');
     expect(card).toContain('The release publishes an image digest');
-    expect(card).toMatch(/The release publishes an image digest waits on this\./);
+    // What waits comes from the projection (spec 1b257609), as a link, with each option's effect and the expiry.
+    expect(card).toMatch(/Waits on this: <\/span><a [^>]*href="\/app\/tasks\/[^"]+"[^>]*>The release publishes an image digest<\/a>/);
+    expect(card).toContain('Finishes the task: The release publishes an image digest starts');
+    expect(card).toContain('Expires in 3 hours 59 minutes, then the task starts again and the agent goes with Provide a token.');
     expect(card).toContain('How should Docker Hub credentials be set up?');
     expect((card.match(/data-testid="decision-option-effect"/g) ?? []).length).toBe(2);
     expect(card).toContain('Answer differently');

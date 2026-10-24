@@ -2,6 +2,8 @@ import { repairPathManifest, readRepairPrFiles } from '@/lib/repair-manifest';
 import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-completion';
 import { NextRequest, NextResponse } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
+import { waitsNotificationLine } from '@buildd/core/question-waits';
+import { loadQuestionWaits } from '@/lib/question-waits';
 import { isUuid } from '@/lib/uuid';
 import { decisionTitleAdvisory } from '@buildd/core/human-attention';
 import { checkSubjectTask } from '@/lib/question-subject';
@@ -1534,18 +1536,25 @@ async function patchWorker(
   // sweep at its deadline (lib/question-hold.ts), a recovered one never.
   if (waitingFor?.type === 'question' && parkAdmitted) {
     const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
-    // Short by design: the question, one line of context, the recommended default.
-    const note = questionNotificationText(
-      withSanitizedBrief(waitingFor),
-      { sensitive: isSensitive },
-    );
-    void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
-      title: note.title,
-      message: note.message,
-      url: `${appBaseUrl}/app/tasks/${worker.taskId}?respond=1`,
-      urlTitle: 'Respond',
-      priority: 0,
-    });
+    // Short by design: the question, one line of context, the recommended
+    // default, and what waits on the answer (spec 1b257609 R-1). The push goes
+    // to the team, whose members see every workspace of it. Off the PATCH's
+    // critical path; a failed read sends the question without the line.
+    const sanitized = withSanitizedBrief(waitingFor);
+    const askingTaskId = worker.taskId;
+    void (async () => {
+      const waits = !isSensitive && askingTaskId
+        ? await loadQuestionWaits({ taskId: askingTaskId, viewer: { kind: 'member' }, worker: null }).catch(() => null)
+        : null;
+      const note = questionNotificationText(sanitized, { sensitive: isSensitive, waitsLine: waits ? waitsNotificationLine(waits) : null });
+      await notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
+        title: note.title,
+        message: note.message,
+        url: `${appBaseUrl}/app/tasks/${worker.taskId}?respond=1`,
+        urlTitle: 'Respond',
+        priority: 0,
+      });
+    })().catch((err) => console.warn('[workers] question notification failed:', err instanceof Error ? err.message : err));
     // Agent chat: a mission filed from a conversation gets the question posted
     // back into it. Lazy + best-effort: never on this PATCH's critical path.
     if (worker.taskId) {

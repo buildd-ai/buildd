@@ -13,6 +13,8 @@ import { approvalView, decisionFromQuestion, type DecisionView } from '@/lib/nee
 import type { HomeAttentionItem } from '@/lib/home-needs-you';
 import { displayTaskTitle } from '@/lib/task-title';
 import type { UnifiedQuestion } from '../tasks/[id]/question-hero';
+import type { QuestionWaits } from '@buildd/core/question-waits';
+import { useQuestionWaits } from '@/components/use-question-waits';
 
 export interface HomeQuestion {
   workerId: string;
@@ -23,6 +25,8 @@ export interface HomeQuestion {
   askedAt: string | null;
   /** The same normalized question the task page renders (lib/home-attention.ts `homeQuestionView`). */
   question: UnifiedQuestion;
+  /** What waits on the answer, when the server already read the projection; else the card reads it. */
+  waits?: QuestionWaits | null;
 }
 
 /** "Per line — match Stripe" → { main: "Per line", sub: "match Stripe" }. */
@@ -34,23 +38,25 @@ export function splitOption(opt: string): { main: string; sub: string | null } {
 /**
  * A Home question as the shared decision card reads it (Navigation R-16):
  * the task it belongs to (its page is where the full answer lives), its
- * age, the brief, and the worker the answer goes to. Home does not load who
- * waits on the task; the mission page names them.
+ * age, the brief, what waits on it (the projection, Living Spec 1b257609),
+ * and the worker the answer goes to.
  */
-export function questionDecisionView(q: HomeQuestion): DecisionView {
+export function questionDecisionView(q: HomeQuestion, waits: QuestionWaits | null = q.waits ?? null): DecisionView {
   return decisionFromQuestion({
     key: `question:${q.taskId ?? q.workerId}`,
     question: q.question,
     // Home already built the task page link (`taskAnswerHref`); a question with no task names none.
     task: q.taskId && q.href ? { id: q.taskId, title: q.label, href: q.href } : null,
     askedAt: q.askedAt ? new Date(q.askedAt).getTime() : null,
+    waits,
     answer: { kind: 'worker', workerId: q.workerId, taskId: q.taskId, noteId: q.question.noteId },
   });
 }
 
 /** A parked worker's question on Home: the one decision card. */
 export function QuestionCard({ q, now = Date.now(), onAnswered }: { q: HomeQuestion; now?: number; onAnswered?: (label: string) => void }) {
-  return <DecisionCard view={questionDecisionView(q)} now={now} onAnswered={onAnswered} testId="needs-you-card" />;
+  const waits = useQuestionWaits(q.taskId, q.question.headline, q.waits);
+  return <DecisionCard view={questionDecisionView(q, waits)} now={now} onAnswered={onAnswered} testId="needs-you-card" />;
 }
 
 const sentence = (s: string | null | undefined) => {
