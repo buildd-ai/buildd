@@ -21,7 +21,7 @@ import { orderChain } from './explain-types';
 import { intersectPaths } from '@buildd/core/path-overlap';
 import type { MissionStateView, WaitingOnDescriptor } from './mission-state-view';
 import { suggestionRef } from './mission-state-view';
-import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
+import { suggestionEvidence, type RefreshCheck, type SupersessionSuggestion } from '@buildd/core/pr-shipped';
 import { describeUnmetCondition, type GateCondition, type UnmetCondition } from './mission-dependency-gate';
 import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
 import { taskRecoverySentence } from './task-recovery-hold';
@@ -104,6 +104,8 @@ export interface StateBecauseExtras {
     closedUnsuperseded?: boolean;
     /** Unverified candidate from automatic detection — a hint, not an edge. */
     suggestion?: SupersessionSuggestion;
+    /** A closed integration-refresh PR's own proof, instead of a suggestion. */
+    refreshCheck?: RefreshCheck;
   }>;
   /** Upstream mission title, when it was loaded. */
   dependencyTitle?: string | null;
@@ -410,13 +412,23 @@ function causeLinksFor(
         .slice(0, 10)
         .map(p =>
           link(
-            p.suggestion
+            p.refreshCheck
+              ? closedRefreshClaim(p.title, p.refreshCheck)
+              : p.suggestion && suggestionEvidence(p.suggestion) === 'unavailable'
+              ? `Task "${p.title}" is completed but its PR closed without merging. ${suggestionRef(p.suggestion, repoOf(p.prUrl))} `
+                + `was nominated as a possible replacement (${p.suggestion.why}); its changes could not be read, so it is neither confirmed nor ruled out `
+                + 'and nothing was recorded. It is checked again on a later sweep.'
+              : p.suggestion && suggestionEvidence(p.suggestion) === 'positive'
               ? `Task "${p.title}" is completed but its PR closed without merging. It is likely superseded by `
                 + `${suggestionRef(p.suggestion, repoOf(p.prUrl))} (${p.suggestion.why}), but the content did not verify, `
                 + 'so nothing was recorded. Confirm it, or mark the PR abandoned with a reason.'
-              : `Task "${p.title}" is completed but its PR closed without merging, and nothing recorded that the `
-                + 'work shipped elsewhere. If it did, record it with record_pr_supersession; if it is not shipping, mark it abandoned.',
-            p.suggestion
+              : p.suggestion
+                ? `Task "${p.title}" is completed but its PR closed without merging. ${suggestionRef(p.suggestion, repoOf(p.prUrl))} `
+                  + `was checked as a possible replacement (${p.suggestion.why}) and does not carry its changes — nothing was recorded. `
+                  + 'Mark the PR abandoned with a reason, or record where it shipped with record_pr_supersession if you know.'
+                : `Task "${p.title}" is completed but its PR closed without merging, and nothing recorded that the `
+                  + 'work shipped elsewhere. If it did, record it with record_pr_supersession; if it is not shipping, mark it abandoned.',
+            p.suggestion || p.refreshCheck
               ? 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan'
               : 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber',
             {
@@ -837,4 +849,13 @@ export function withDispatchLink(chain: CausalLink[], wake: Link | null): Causal
   const links: Link[] = chain.map(({ order: _order, ...l }) => l);
   links.splice(Math.max(0, links.length - 1), 0, wake);
   return orderChain(links);
+}
+
+/** The cause sentence for a closed integration-refresh PR, by its own proof (`SupersessionScan.refreshCheck`). */
+function closedRefreshClaim(title: string, r: RefreshCheck): string {
+  const branch = r.branch ? `\`${r.branch}\`` : 'its integration branch';
+  const head = `Task "${title}" is completed but its refresh PR closed without merging.`;
+  if (r.outcome === 'landed') return `${head} Its work is verified in ${branch} (${r.reason}), so nothing is lost; mark it abandoned with that reason.`;
+  if (r.outcome === 'unique_work') return `${head} ${branch} is missing work it carries (${r.reason}). Land that work on the branch before marking it abandoned.`;
+  return `${head} Whether its work is in ${branch} could not be checked (${r.reason}); nothing was recorded.`;
 }

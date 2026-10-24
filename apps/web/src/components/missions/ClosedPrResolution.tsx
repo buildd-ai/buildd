@@ -20,7 +20,7 @@
  */
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
+import { suggestionEvidence, type SupersessionSuggestion } from '@buildd/core/pr-shipped';
 
 export interface ClosedPrItem {
   taskId: string;
@@ -52,6 +52,12 @@ function ClosedPrRow({ missionId, item, named }: { missionId: string; item: Clos
   const [reason, setReason] = useState('');
   const disabled = busy || isPending;
   const s = item.suggestion;
+  // Only a candidate some of whose content was found gets Confirm as the recommended action.
+  // `none` (read, nothing shared — task c8092d2a / PR #5530: #5479 nominated with zero shared
+  // lines) and `unavailable` (its changes could not be read) make Confirm a guess, so it gets the
+  // same secondary weight as "Not this". `why` says which of the two it is.
+  const evidence = suggestionEvidence(s);
+  const hasEvidence = evidence === 'positive';
 
   async function send(action: 'confirm' | 'dismiss' | 'abandon') {
     setBusy(true);
@@ -90,6 +96,9 @@ function ClosedPrRow({ missionId, item, named }: { missionId: string; item: Clos
             {s.repo}#{s.prNumber}
           </a>
           <span className="text-text-muted"> · {s.why}</span>
+          {evidence === 'unavailable' && (
+            <span data-testid="closed-pr-proof-unavailable" className="text-text-muted"> · not checked</span>
+          )}
         </p>
       ) : (
         <p data-verify-block="consequence" className="text-text-secondary">
@@ -104,10 +113,10 @@ function ClosedPrRow({ missionId, item, named }: { missionId: string; item: Clos
               type="button"
               data-testid="closed-pr-confirm"
               data-verify-action="confirm_replacement"
-              data-verify-prominence="primary"
+              data-verify-prominence={hasEvidence ? 'primary' : 'secondary'}
               onClick={() => send('confirm')}
               disabled={disabled}
-              className="btn btn-primary h-11 md:h-8"
+              className={hasEvidence ? 'btn btn-primary h-11 md:h-8' : secondary}
             >
               Confirm #{s.prNumber}
             </button>
