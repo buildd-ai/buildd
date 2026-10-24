@@ -23,7 +23,7 @@
 import { TERMS, titleWithAttempt, type RunnerQueueExclusion, type RunnerQueueTask } from '@buildd/shared';
 import { taskIdInSentence } from '../claim-outcomes';
 import {
-  DEFERRAL_WORDS, EXCLUSION_WORDS as CLAIM_EXCLUSION_WORDS, MOVED_CODES, RUNNER_COOLDOWN_MS, busySlots, currentTeam, heldNow, inView, isOrganizerTask, liveTaskOutcome, localLiftTime, matchesFilter, providerHolds, roleLabel, wallFor, workspaceList,
+  DEFERRAL_WORDS, EXCLUSION_WORDS as CLAIM_EXCLUSION_WORDS, MOVED_CODES, RUNNER_COOLDOWN_MS, busySlots, currentTeam, heldNow, inView, isOrganizerTask, liveTaskOutcome, localLiftTime, matchesFilter, providerHolds, providerHoldLine, roleLabel, wallFor, workspaceList,
   type ClaimOutcome, type ProviderHold, type TopState, type TopTask,
 } from './state';
 
@@ -64,6 +64,8 @@ export interface QueueRow {
   alongside?: string;
   /** On a queued row that waits: what kind of thing it waits for (the Next line counts these). */
   wait?: WaitKind;
+  /** The provider hold sentence to render under a blocked row, if it has a runner_seat wall. */
+  providerHoldSentence?: string;
 }
 
 export interface QueueSection {
@@ -114,6 +116,17 @@ function future(iso: string | null | undefined, now: number): boolean {
   if (!iso) return false;
   const t = Date.parse(iso);
   return !Number.isNaN(t) && t > now;
+}
+
+/** The provider hold sentence if this task is blocked by a runner_seat wall, null otherwise. */
+function taskProviderHoldSentence(t: RunnerQueueTask, state: TopState, now: number): string | null {
+  const asTask: TopTask = { id: t.id, title: t.title, status: 'pending', backend: t.backend };
+  const o = liveTaskOutcome(asTask, state, now);
+  if (!o) return null;
+  const backend = t.backend || 'claude';
+  const wall = wallFor(o, backend, now);
+  if (!wall || wall.kind !== 'runner_seat') return null;
+  return providerHoldLine({ backend: wall.backend, provider: 'Claude', kind: wall.kind, word: 'login limit', resetsAt: wall.resetsAt }, now);
 }
 
 /**
@@ -367,7 +380,12 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
         mission: t.missionTitle ?? '-',
         est: tm.estimatesOn ? (t.estimateMinutes != null ? estimateWords(t.estimateMinutes) : '-') : null,
       };
-      const block = (why: string, kind?: WaitKind): QueueRow => ({ ...base, status: 'blocked', starts: blocked(why), why, ...(kind ? { wait: kind } : {}) });
+      const block = (why: string, kind?: WaitKind): QueueRow => {
+        const row: QueueRow = { ...base, status: 'blocked', starts: blocked(why), why, ...(kind ? { wait: kind } : {}) };
+        const holdSentence = taskProviderHoldSentence(t, state, now);
+        if (holdSentence) row.providerHoldSentence = holdSentence;
+        return row;
+      };
       // R-33: runner paused, the order stays and nothing starts.
       if (held) return block(TERMS['runner.paused'].short);
       const by = takenBy(t, state);
@@ -392,7 +410,7 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
       rows: [...myRunning.map(r => ({ ...r.row, est: tm.estimatesOn ? (r.estMin !== undefined ? estimateWords(r.estMin) : '-') : null })), ...queuedRows],
       held: heldTasks.map(t => {
         const w = heldWords(t, now);
-        return {
+        const row: QueueRow = {
           taskId: t.id,
           position: null,
           title: titleWithAttempt(t.title),
@@ -408,6 +426,9 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
           reason: w.reason,
           held: true,
         };
+        const holdSentence = taskProviderHoldSentence(t, state, now);
+        if (holdSentence) row.providerHoldSentence = holdSentence;
+        return row;
       }),
       notFor: notFor.map(t => ({
         taskId: t.id,

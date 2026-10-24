@@ -22,7 +22,7 @@ describe('a runner whose Claude login hit its plan limit', () => {
 
   test('R-11: the limit is said in the login\'s words, not as a plan to manage', () => {
     const text = lines().join('\n');
-    expect(text).toMatch(/this runner's login is at its limit until Thu 00:00/);
+    expect(text).toMatch(/This runner's .* login is at its limit until Thu 00:00/);
     expect(text).not.toMatch(/the plan allows only a few sessions/);
   });
 });
