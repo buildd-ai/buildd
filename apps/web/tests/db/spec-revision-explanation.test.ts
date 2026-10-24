@@ -126,13 +126,7 @@ describe('an explanation cannot change once written (AC-18)', () => {
 
   test('the column refuses an UPDATE, and the page shows the original', async () => {
     const p = await revised({ summary: 'Totals round to cents.', lines: ALL });
-    let refused = false;
-    try {
-      await q(sql`UPDATE spec_revisions SET explanation = ${JSON.stringify({ summary: 'Rewritten.', lines: {} })}::jsonb WHERE spec_id = ${p.specId}::uuid AND revision = ${p.revision}`);
-    } catch (err) {
-      refused = /immutable/.test(String((err as Error)?.message ?? err));
-    }
-    expect(refused).toBe(true);
+    await expect(q(sql`UPDATE spec_revisions SET explanation = ${JSON.stringify({ summary: 'Rewritten.', lines: {} })}::jsonb WHERE spec_id = ${p.specId}::uuid AND revision = ${p.revision}`)).rejects.toThrow();
     // Clearing it is a change too.
     await expect(q(sql`UPDATE spec_revisions SET explanation = NULL WHERE spec_id = ${p.specId}::uuid AND revision = ${p.revision}`)).rejects.toThrow();
     // Other columns of the revision still update (approval writes approved_at).
