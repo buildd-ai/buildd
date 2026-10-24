@@ -1188,7 +1188,7 @@ function taskBackend(t: TopTask): string {
   return t.backend || 'claude';
 }
 
-const PROVIDER_NAME: Record<string, string> = { claude: 'Claude', codex: 'Codex' };
+export const PROVIDER_NAME: Record<string, string> = { claude: 'Claude', codex: 'Codex' };
 // provider_pause is a limit recorded for every runner of the team (a shared
 // key or credential); runner_seat is this machine's own login (spec "A
 // runner", R-9, R-12). Neither is necessarily an API rate limit.
