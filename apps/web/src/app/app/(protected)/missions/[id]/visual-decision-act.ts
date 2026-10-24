@@ -11,6 +11,8 @@ import { useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import type { DecisionView } from '@/lib/needs-you-card';
 import { visualReviewDecisionsUrl } from '@/components/visual-review/review-transport';
+import { VISUAL_REVIEW_SKIP_REASONS, isVisualReviewSkipReason } from '@buildd/core/surface-audit';
+import { REVIEW_SCREENS } from '@/lib/visual-review-decision';
 import { saveSurfaceAuditWaiver } from './MissionSurfaceAuditWaiver';
 import { useMissionVisualReview } from './MissionVisualReview';
 
@@ -20,13 +22,14 @@ export function useVisualDecisionAct(view: DecisionView): ((label: string) => Pr
   const review = useMissionVisualReview(answer?.missionId);
   return useCallback(async (label: string) => {
     if (!answer) return;
-    if (label === 'Review screens →') {
+    if (label === REVIEW_SCREENS) {
       if (review) review.openDeck(answer.startKey);
       else router.push(answer.reviewHref);
       return;
     }
-    if (label === 'Skip the review') {
-      const out = await saveSurfaceAuditWaiver(answer.missionId, { reason: 'ship_anyway' });
+    const skip = Object.keys(VISUAL_REVIEW_SKIP_REASONS).find(k => VISUAL_REVIEW_SKIP_REASONS[k as keyof typeof VISUAL_REVIEW_SKIP_REASONS] === label);
+    if (skip && isVisualReviewSkipReason(skip)) {
+      const out = await saveSurfaceAuditWaiver(answer.missionId, { reason: skip });
       if (!out.ok) throw new Error(out.error);
       return;
     }
