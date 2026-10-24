@@ -42,6 +42,7 @@ export interface LandingRunPorts {
     taskId?: string;
     superseded?: boolean;
     dependencyBot?: boolean;
+    releaseCandidate?: string;
     baseRewritten?: boolean;
     inFlightTaskId?: string;
     branchUpdated?: boolean;
@@ -62,6 +63,7 @@ export function makeLandingRunner(ports: LandingRunPorts): LandingActionDeps['ru
         const r = await ports.dispatchConflict(ctx);
         if (r.superseded) return { ok: false, error: 'The change is already upstream; close the PR as superseded instead.' };
         if (r.dependencyBot) return { ok: false, error: 'This is a dependency bot PR; it needs a person.' };
+        if (r.releaseCandidate) return { ok: false, error: r.releaseCandidate };
         if (r.baseRewritten) return { ok: false, error: 'The base branch was rewritten; it needs a person.' };
         if (r.branchUpdated) return { ok: true, summary: 'The branch was updated; it merges when CI is green.', taskId: null };
         if (r.inFlightTaskId) return { ok: true, summary: 'Conflict resolution is already in progress.', taskId: r.inFlightTaskId };

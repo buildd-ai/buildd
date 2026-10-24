@@ -151,16 +151,22 @@ describe('r7 §7: findings after a spent review budget, and a person\'s decision
     // The findings stay listed: an override is not a fix.
     expect(await statesOf(w, pr)).toEqual({ 'src/a.ts': 'addressed', 'src/b.ts': 'open' });
 
-    // The required check reflects it: success for this head, naming the person's override.
+    // The required check reflects it, naming the person's override: pending while CI has not read
+    // green at this head (aa415afd), success once it has.
     const { githubReader } = await import('../../src/lib/workflow/github-facts');
-    const shown = await githubReader(w.installationId).statusOf!(w.repo, h2, 'Buildd / Review approval');
-    expect(shown).toMatchObject({ state: 'success' });
-    expect(shown?.description ?? '').toContain('approved by a person over 2 open findings');
+    const shownNow = () => githubReader(w.installationId).statusOf!(w.repo, h2, 'Buildd / Review approval');
+    const waiting = await shownNow();
+    expect(waiting).toMatchObject({ state: 'pending' });
+    expect(waiting?.description ?? '').toContain('approved by a person over 2 open findings');
 
     w.gh.greenCi(w.repo, h2, ['build', 'test']);
     await w.deliver();
     await w.land(pr, h2);
     await w.deliver();
+    // The landing request's rails read CI green: the merge effect publishes success before merging.
+    const shown = await shownNow();
+    expect(shown).toMatchObject({ state: 'success' });
+    expect(shown?.description ?? '').toContain('approved by a person over 2 open findings');
     expect((await approve())?.result.result).toBe('duplicate');
     expect(w.mergeCalls(pr)).toHaveLength(1);
   }, 90_000);
