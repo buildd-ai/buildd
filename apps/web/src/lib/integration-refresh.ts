@@ -178,6 +178,30 @@ export async function isAncestor(
   }
 }
 
+/**
+ * Would this refresh PR land nothing? True when `base` already contains the
+ * trunk sha the refresh was filed for AND `head` changes no file over `base`:
+ * another writer brought the branch current first, and the PR is superseded
+ * before it opens. Null for a PR that is not a refresh, one with a file of its
+ * own, or on any failed read (it then opens as before).
+ */
+export async function refreshPrIsEmpty(p: {
+  installationId: number;
+  repoFullName: string;
+  context: unknown;
+  base: string;
+  head: string;
+  api?: Api;
+}): Promise<{ trunk: string | null; trunkSha: string } | null> {
+  const refresh = integrationRefreshOf(p.context);
+  if (!refresh?.trunkSha) return null;
+  const api = p.api ?? githubApi;
+  if ((await isAncestor(p.installationId, p.repoFullName, refresh.trunkSha, encodeRef(p.base), api)) !== true) return null;
+  const files = await effectiveDeltaFiles(p.installationId, p.repoFullName, p.base, encodeRef(p.head), api);
+  if (files === null || files.length > 0) return null;
+  return { trunk: refresh.trunk, trunkSha: refresh.trunkSha };
+}
+
 export type RefreshLandingVerdict =
   | { ok: true; branchHead: string; trunkSha: string }
   | { ok: false; branchHead: string | null; trunkSha: string | null; missing: string[]; reason: string; /** A read failed: nothing is proven either way, ask again later. */ transient: boolean };
