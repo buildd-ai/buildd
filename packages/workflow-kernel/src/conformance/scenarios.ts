@@ -122,6 +122,8 @@ function notApplied(r: CommandResult, result: 'duplicate' | 'stale' | 'rejected'
 
 const live = (repo: string, headSha: string, o: Partial<LivePr> = {}): LivePr => ({ state: 'open', merged: false, headSha, headRepoFullName: repo, baseRef: 'dev', ...o });
 const MERGED_AT = '2026-01-01T01:00:00.000Z';
+/** A green CI reading on `headSha`, as the check_suite webhook records it. */
+const ciGreenAt = (headSha: string) => ({ type: 'CiObserved' as const, actor: 'webhook', headSha, verdict: 'green' as const, liveChecks: { complete: true, failing: [] }, allPassing: true });
 
 export class Delivery {
   ref!: DeliveryRef;
@@ -1025,7 +1027,12 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await s.fixEnded(fix, { localHeadSha: 'H2', commitCount: 1, live: s.live('H2'), proof: { liveContainsLocal: true } }), 'AWAITING_REVIEW', 'fix ended');
       applied(await s.verdict('approve'), 'APPROVED', 'approved at H2');
       await drainKernel(host, s, f.ports);
-      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'Buildd / Review approval' }, 'approved: success at H2');
+      // aa415afd: approved is not yet mergeable. CI at H2 has not read green, so the check waits on it, never "Ready to merge".
+      eq(published().at(-1), { sha: 'H2', state: 'pending', context: 'Buildd / Review approval' }, 'approved, CI not green yet: pending at H2');
+      eq(lastDesc(), 'Approved, waiting to merge: H2 approved by review; waiting for CI on H2', 'names the CI it waits on');
+      applied(await s.submit(ciGreenAt('H2')), 'APPROVED', 'CI green at H2');
+      await drainKernel(host, s, f.ports);
+      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'Buildd / Review approval' }, 'approved and CI green: success at H2');
       eq(lastDesc(), 'Ready to merge: H2 approved by review', 'approved reads Ready to merge');
       ok(f.github.written.filter((w) => w.op === 'publishStatus').every((w) => !/\bland/i.test(String(w.description))), 'no published description says "land"');
       ok(!published().some((x) => x.sha === 'H1' && x.state === 'success'), 'H1 was never given success');
@@ -1050,6 +1057,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     async run(host) {
       const s = await new Delivery(host, 40).open();
       applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'under review');
+      applied(await s.submit(ciGreenAt('H1')), 'AWAITING_REVIEW', 'CI green at H1');
       const f = fakePorts(host);
       let moved = false;
       // While this drain publishes "review pending", the review approves (another drain's version).
@@ -2995,6 +3003,8 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
       eq([await of('H1'), await stateOf('H1')], ['kernel', 'pending'], 'review owed at H1: the kernel answers, pending');
       applied(await s.verdict('approve'), 'APPROVED', 'approve');
+      eq([await of('H1'), await stateOf('H1')], ['kernel', 'pending'], 'approved at H1, CI not green yet: the kernel says pending');
+      applied(await s.submit(ciGreenAt('H1')), 'APPROVED', 'CI green at H1');
       eq([await of('H1'), await stateOf('H1')], ['kernel', 'success'], 'approved at H1: the kernel says success at H1');
       // H2 pushed, not yet imported: the approval of H1 never carries over to H2.
       eq([await of('H2'), await stateOf('H2')], ['host', 'pending'], 'a head the delivery has not seen is pending, never the old success');
@@ -3208,6 +3218,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       notApplied(await approve(), 'duplicate', 'idempotency_key_seen', 'the same decision again');
       eq((await host.transitions(s.deliveryId)).length - before, 1, 'one transition');
       eq(await s.findingStates(), { 'src/a.ts': 'open', 'src/b.ts': 'open' }, 'the findings stay listed, not resolved');
+      applied(await s.submit(ciGreenAt('H1')), 'APPROVED', 'CI green at H1');
       eq(pick(landingStatusOf(await s.view())!, ['state', 'sha', 'description']), { state: 'success', sha: 'H1', description: 'Ready to merge: H1 approved by a person over 2 open findings' }, 'Buildd / Review approval reflects the override');
       applied(await s.land('H1'), 'LANDING', 'the landing passes the open findings on the person\'s approval');
       notApplied(await approve(), 'duplicate', 'idempotency_key_seen', 'replayed while landing');

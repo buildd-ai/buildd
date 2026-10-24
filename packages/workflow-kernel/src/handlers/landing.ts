@@ -140,7 +140,8 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
     // The head's own success is on GitHub, read back, before the merge is asked for: a rule that
     // requires `Buildd / Review approval` must never see the merge race ahead of it.
     const targetUrl = ports.links?.review(d) ?? null;
-    const own = landingStatusOf(view);
+    // The rails just read CI at this head (or a person decided past it).
+    const own = landingStatusOf(view, { ciPassed: true });
     const ownReady = own?.state === 'success' && own.sha === headSha;
     if (own && ownReady && staleStatus(await shownStatus(github, d.repoFullName, own), own, targetUrl)) {
       await publishStatusOn(writes, d.repoFullName, own, targetUrl);
