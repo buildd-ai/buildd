@@ -14,6 +14,7 @@
  *    now an effect of its own instead of work after the response.
  *  - `ciEscalate` (`Escalate`, family `ci`): a person owns the red PR.
  */
+import { liveRefreshConflictTaskFor, refreshOwnerNote } from './refresh-task-owner';
 import { desc, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
@@ -94,6 +95,8 @@ export const ciFixWork: WorkBuilder = async (req) => {
       workspaceMaxCiRetries: Math.max(maxAttempts, attemptNo),
     });
   if (!built) return { skipped: 'not_buildable' };
+  const refreshTask = await liveRefreshConflictTaskFor(req.workspaceId, prRefs?.headRef);
+  if (refreshTask) built.description += refreshOwnerNote(refreshTask);
 
   return {
     workspace,
