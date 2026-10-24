@@ -10,9 +10,9 @@
  * then a row per task (title, the one Lifecycle track, one line, its last
  * transition and created time) with the reviews and repairs derived from it
  * folded beneath. New work carries a New marker where it already is.
- * History is day sections with a tally and "Show more", filtered by outcome.
- * Highlights (the default) tell each delivery's meaningful steps; All
- * activity tells every step (spec 9430a28f R-5).
+ * History is day sections: the day's totals, then one DeliveryBar per delivery
+ * on the day axis (table on desktop), with "Show more" by whole days, filtered
+ * by outcome. Detail beyond the bar is on the task page (spec 9430a28f R-17, R-18).
  * A recorded spec verification shows on its row or episode; nothing is shown
  * where none was recorded (R-6). Who work is for shows only from recorded
  * lineage, else "Unattributed"; the identity filters appear only when the
@@ -30,20 +30,19 @@ import { STATE_KEY_OF_DELIVERY } from '@/components/delivery/DeliveryStatePill';
 import StatePill, { StatusPill, TonePill } from '@/components/ui/StatePill';
 import Disclosure from '@/components/ui/Disclosure';
 import { STATES, TONE_TEXT as STATE_TONE_TEXT, type StateKey } from '@/components/ui/states';
-import { DELIVERY_KIND, repairBadge, type DeliveryKind } from '@/lib/delivery-projection';
+import { DELIVERY_KIND, type DeliveryKind } from '@/lib/delivery-projection';
 import {
   age, filterEpisodes, filterNow, hiddenUnattributed,
   type ActivityNow, type ActivityOutcome, type ActivityScope, type DerivedChild, type EvidenceEntry, type Episode, type NowGroup, type NowRow, type Transition,
 } from '@/lib/activity-delivery';
 import type { ActivityWho, Attribution } from '@/lib/activity-attribution';
 import type { VerificationClaim } from '@/lib/activity-verification';
-import type { HistoryLens } from '@/lib/mission-history-episodes';
 import type { LocalSessionView } from '@/lib/local-session-view';
 import { groupSessionsForDisplay } from '@/lib/local-session-display';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
 import InteractiveSessions from './InteractiveSessions';
-import LocalTime from './LocalTime';
-import { HISTORY_PAGE, groupEpisodesByDay } from './history-days';
+import DeliveryBar, { DELIVERY_END_MARK } from '@/components/ui/DeliveryBar';
+import { HISTORY_PAGE, axisHours, barOf, groupEpisodesByDay, type HistoryDay } from './history-days';
 import { displayTaskTitle } from '@/lib/task-title';
 import { TaskTitle } from '@/components/tasks/TaskTitle';
 import { ExpandedContext, useExpanded, useExpandedSet, useKeepFocus, useScrollAnchor } from './stable-live';
@@ -99,12 +98,6 @@ const WHO: ReadonlyArray<{ key: ActivityWho; label: string }> = [
   { key: 'all', label: 'All' },
   { key: 'for-me', label: 'For me' },
   { key: 'filed-by-me', label: 'Filed by me' },
-];
-
-/** History's two lenses, in Mission History's words. */
-const LENSES: ReadonlyArray<{ key: HistoryLens; label: string }> = [
-  { key: 'highlights', label: 'Highlights' },
-  { key: 'all', label: 'All activity' },
 ];
 
 /** Per-state counts for the headline line: `▶ 4 building · ◐ 1 auditing · 2 waiting`. */
@@ -261,32 +254,23 @@ function HistoryView({ history, nowMs, historyReach, outcome, onOutcomeChange: s
   who: ActivityWho; onWhoChange: ((who: ActivityWho) => void) | null;
 }) {
   const [shown, setShown] = useState(HISTORY_PAGE);
-  const [lens, setLens] = useState<HistoryLens>('highlights');
   // The team's zone, else the browser's once mounted; UTC until then so the server render matches.
   const tz = useDisplayTimezone() ?? 'UTC';
-  const episodes = useMemo(() => filterEpisodes(history, { scope: 'all', outcome, who }), [history, outcome, who]);
+  // A mission's creation is an event, not a delivery: it has no bar.
+  const episodes = useMemo(() => filterEpisodes(history, { scope: 'all', outcome, who }).filter(e => !e.event), [history, outcome, who]);
   const days = useMemo(() => groupEpisodesByDay(episodes, shown, nowMs, tz), [episodes, shown, nowMs, tz]);
-  const remaining = episodes.length - Math.min(shown, episodes.length);
+  const remaining = episodes.length - days.reduce((n, d) => n + d.episodes.length, 0);
   return (
     <>
       <div className="mt-4 flex flex-col gap-2" data-testid="activity-filters">
         <FilterGroup label="Outcome" options={OUTCOMES} value={outcome} onChange={k => { setOutcome(k); setShown(HISTORY_PAGE); }} />
         {onWhoChange && <WhoFilter value={who} onChange={k => { onWhoChange(k); setShown(HISTORY_PAGE); }} hidden={hiddenUnattributed(history, who)} />}
-        <div data-testid="activity-history-lens"><FilterGroup label="Steps" options={LENSES} value={lens} onChange={setLens} /></div>
       </div>
       {episodes.length === 0
         ? (history.length === 0 || outcome === 'any'
           ? <Empty text="Nothing finished in the last 30 days." />
           : <FilteredEmpty text="No deliveries match this filter." available={`${history.length} ${history.length === 1 ? 'episode' : 'episodes'} in History`} onClear={() => { setOutcome('any'); onWhoChange?.('all'); setShown(HISTORY_PAGE); }} />)
-        : days.map(d => (
-            <section key={d.key} data-testid="activity-day" className="mt-5">
-              <div className="flex items-baseline justify-between gap-3 border-b border-border-default pb-1">
-                <h2 className="text-meta font-semibold text-text-secondary">{d.label}</h2>
-                <span className="font-mono text-meta text-text-muted">{d.tally}</span>
-              </div>
-              {d.episodes.map(e => <EpisodeView key={e.id} episode={e} nowMs={nowMs} lens={lens} />)}
-            </section>
-          ))}
+        : days.map(d => <HistoryDayView key={d.key} day={d} tz={tz} />)}
       {episodes.length > 0 && remaining === 0 && historyReach && (
         <p data-testid="history-boundary" className="mt-4 text-meta text-text-muted">
           Older work is not shown. History reaches back to {age(Date.parse(historyReach.oldestAt), nowMs)} ago.{' '}
@@ -295,10 +279,9 @@ function HistoryView({ history, nowMs, historyReach, outcome, onOutcomeChange: s
       )}
       {remaining > 0 && (
         <button type="button" data-testid="activity-history-more" onClick={() => setShown(n => n + HISTORY_PAGE)} className="btn mt-4 min-h-11 md:min-h-0">
-          Show {Math.min(remaining, HISTORY_PAGE)} more
+          Show more
         </button>
       )}
-      <p className="mt-4 text-meta text-text-muted">One line per delivery, newest first. Retries and reviews stay inside it, in the order they happened.{lens === 'highlights' ? ' All activity adds every step.' : ''}</p>
     </>
   );
 }
@@ -569,65 +552,76 @@ function RepairChild({ entry }: { entry: Extract<EvidenceEntry, { type: 'repair'
 
 // ── History ─────────────────────────────────────────────────────────────────
 
-/** Steps shown before the earliest fold behind "earlier steps". */
-const STEPS_SHOWN = 6;
+const ROW_COLS = 'md:grid-cols-[minmax(200px,300px)_150px_minmax(320px,1fr)_64px]';
+const END_TEXT: Record<'delivered' | 'not-delivered' | 'came-to-you', string> = {
+  delivered: 'text-status-success', 'not-delivered': 'text-status-error', 'came-to-you': 'text-status-warning',
+};
+const hourText = (at: number, tz: string) => new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(at);
 
-/** A mission's creation: one line beside the deliveries, linking to the mission. */
-function CreatedEventView({ episode, nowMs }: { episode: Episode; nowMs: number }) {
+/**
+ * One day: totals (merged, retried, review, closed: the bars by end mark),
+ * the day axis, then a bar per delivery. A row is a grid: title over bar on a
+ * phone, title | mission | bar | end on desktop. One markup, so each delivery
+ * is one bar at every width.
+ */
+function HistoryDayView({ day, tz }: { day: HistoryDay; tz: string }) {
+  const t = day.totals;
+  const totals: ReadonlyArray<{ key: string; n: number; word: string; tone: string }> = [
+    { key: 'merged', n: t.merged, word: 'merged', tone: 'text-status-success' },
+    { key: 'retried', n: t.retried, word: 'retried', tone: 'text-text-primary' },
+    { key: 'review', n: t.review, word: 'review', tone: 'text-status-warning' },
+    { key: 'closed', n: t.closed, word: 'closed', tone: 'text-status-error' },
+  ];
   return (
-    <article data-testid="activity-created-event" className="flex items-start justify-between gap-3 border-b border-border-default py-3">
-      <p className="min-w-0 break-words text-meta text-text-secondary">
-        <span className="font-semibold text-text-primary">Mission created</span>{' · '}
-        <Link href={episode.href} className="break-words text-text-primary underline-offset-2 hover:underline">{episode.title}</Link>
-      </p>
-      <span className="shrink-0 whitespace-nowrap font-mono text-meta text-text-muted">{age(episode.at, nowMs)}</span>
-    </article>
+    <section data-testid="activity-day" className="mt-6">
+      <h2 className="text-lg font-semibold text-text-primary">{day.label}</h2>
+      <dl data-testid="activity-day-totals" className="mt-2 flex flex-wrap gap-x-7 gap-y-2">
+        {totals.map(x => (
+          <div key={x.key} data-total={x.key} className="flex items-baseline gap-2">
+            <dd className={`font-mono text-2xl font-semibold ${x.n > 0 ? x.tone : 'text-text-muted'}`}>{x.n}</dd>
+            <dt className="text-meta text-text-muted">{x.word}</dt>
+          </div>
+        ))}
+      </dl>
+      <div className="mt-3 overflow-x-auto">
+        <div className="md:min-w-[860px]">
+          <div aria-hidden="true" className={`grid grid-cols-1 gap-4 border-b border-border-default pb-1 font-mono text-[10.5px] text-text-muted ${ROW_COLS}`}>
+            <span className="hidden md:block">Delivery</span>
+            <span className="hidden md:block">Mission</span>
+            <span className="relative h-3">
+              {axisHours(day.axis).map(h => (
+                <span key={h.at} className="absolute top-0 -translate-x-1/2 first:translate-x-0 last:-translate-x-full" style={{ left: `${h.offset * 100}%` }}>{hourText(h.at, tz)}</span>
+              ))}
+            </span>
+            <span className="hidden text-right md:block">Ended</span>
+          </div>
+          {day.episodes.map(e => <DeliveryBarRow key={e.id} episode={e} day={day} tz={tz} />)}
+        </div>
+      </div>
+    </section>
   );
 }
 
-function EpisodeView({ episode, nowMs, lens }: { episode: Episode; nowMs: number; lens: HistoryLens }) {
-  if (episode.event === 'created') return <CreatedEventView episode={episode} nowMs={nowMs} />;
-  return <DeliveryEpisodeView episode={episode} nowMs={nowMs} lens={lens} />;
-}
-
-function DeliveryEpisodeView({ episode, nowMs, lens }: { episode: Episode; nowMs: number; lens: HistoryLens }) {
-  const [all, setAll] = useExpanded(`steps:${episode.id}`);
-  // Highlights leave detail out (a new head, a review that could not run), unless detail is all there is.
-  const meaningful = episode.steps.filter(s => !s.detail);
-  const told = lens === 'all' || meaningful.length === 0 ? episode.steps : meaningful;
-  // All activity is the full chronology: nothing folded.
-  const hidden = all || lens === 'all' ? 0 : Math.max(0, told.length - STEPS_SHOWN);
-  const steps = told.slice(hidden);
+function DeliveryBarRow({ episode, day, tz }: { episode: Episode; day: HistoryDay; tz: string }) {
+  const bar = barOf(episode, day.axis);
+  const mission = episode.missionTitle ?? 'standalone';
   return (
-    <article data-testid="activity-episode" data-kind={episode.kind} data-scroll-anchor={`ep:${episode.id}`} className="border-b border-border-default py-3">
-      <div className="flex items-start justify-between gap-3">
-        <Link href={episode.href} data-focus-key={`ep:${episode.id}`} className="line-clamp-2 min-w-0 break-words text-body font-semibold text-text-primary" title={episode.title}>{displayTaskTitle(episode.title)}</Link>
-        <span className="shrink-0 whitespace-nowrap font-mono text-meta text-text-muted">{age(episode.at, nowMs)}</span>
-      </div>
-      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-        <StatePill state={STATE_KEY_OF_DELIVERY[episode.kind]} label={DELIVERY_KIND[episode.kind].label} variant="plain" data-testid="delivery-state" />
-        {episode.repairRounds > 0 && <span className="font-mono text-meta text-status-warning">{repairBadge(episode.repairRounds)}</span>}
-        <span className="min-w-0 break-words text-meta text-text-muted">{episode.missionTitle ?? 'Standalone'}</span>
-        <span aria-hidden="true" className="text-meta text-text-muted">·</span>
-        <span className="text-meta text-text-muted"><AttributionText attribution={episode.attribution} /></span>
-      </div>
-      {episode.verification && <div className="mt-1"><VerificationView claim={episode.verification} openKey={`ver:${episode.id}`} /></div>}
-      {hidden > 0 && (
-        <button type="button" onClick={() => setAll(true)} className="mt-1 inline-flex min-h-11 items-center text-meta text-text-muted md:min-h-0">
-          Show {hidden} earlier {hidden === 1 ? 'step' : 'steps'}
-        </button>
-      )}
-      <ol className="ml-1 mt-2 border-l border-border-strong pl-3.5">
-        {steps.map((s, i) => (
-          <li key={hidden + i} className="relative grid grid-cols-[4.5rem_minmax(0,1fr)] gap-2 py-0.5">
-            <span aria-hidden="true" className={`absolute -left-[18px] top-[9px] h-[7px] w-[7px] bg-current ${TONE_TEXT[s.tone]}`} />
-            <span className="whitespace-nowrap font-mono text-meta tabular-nums text-text-muted">
-              <LocalTime iso={new Date(s.at).toISOString()} fallback={new Date(s.at).toISOString().slice(11, 16)} />
-            </span>
-            <span className={`text-body ${s.void ? 'text-text-muted line-through' : 'text-text-primary'}`}>{s.text}</span>
-          </li>
-        ))}
-      </ol>
-    </article>
+    <Link
+      href={episode.href}
+      data-testid="activity-episode"
+      data-kind={episode.kind}
+      data-scroll-anchor={`ep:${episode.id}`}
+      data-focus-key={`ep:${episode.id}`}
+      className={`grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-2 border-b border-border-default py-3 md:gap-x-4 md:gap-y-0 md:py-0 ${ROW_COLS}`}
+    >
+      <span className="col-start-1 row-start-1 min-w-0 truncate text-body font-medium text-text-primary md:col-auto md:row-auto" title={episode.title}>{displayTaskTitle(episode.title)}</span>
+      <span className="hidden min-w-0 truncate font-mono text-[11.5px] text-text-muted md:block" title={mission}>{mission}</span>
+      <span className="col-span-2 row-start-2 min-w-0 md:col-auto md:col-span-1 md:row-auto">
+        <DeliveryBar {...bar} />
+      </span>
+      <span className={`col-start-2 row-start-1 whitespace-nowrap text-right font-mono text-[11.5px] md:col-auto md:row-auto ${END_TEXT[bar.outcome]}`}>
+        <span aria-hidden="true">{DELIVERY_END_MARK[bar.outcome]}</span> {hourText(episode.at, tz)}
+      </span>
+    </Link>
   );
 }
