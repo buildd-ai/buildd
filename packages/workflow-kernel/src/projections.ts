@@ -287,6 +287,7 @@ const ESCALATION_COPY: Record<string, string> = {
   review_exhausted: 'Review budget spent without an approval',
   review_unavailable: 'No valid review verdict could be produced',
   ci_exhausted: 'CI fix budget spent',
+  ci_unfixed_head: 'A CI fix ended without changing the head; another on the same head would repeat it',
   conflict_exhausted: 'Conflict fix budget spent',
   push_undeliverable: 'The fix never reached GitHub',
   landing_needs_human: 'Merge blocked: a person has to merge it',
@@ -314,6 +315,22 @@ export function reviewExhaustedCopy(rounds: RoundSnapshot[]): string {
   // The last verdict approved, but left findings unverified, and the verification round did not fit.
   if (refused === 0) return 'Approved, but findings it left unverified ran out of review rounds';
   return `Approved${approvals.length > 1 ? ` ${timesWord(approvals.length)}` : ''}, then a later change was refused${refused > 1 ? ` ${timesWord(refused)}` : ''}`;
+}
+
+/**
+ * `review_escalated` names who escalated. A server gate (migration safety, a hard path rule,
+ * the confidence bar) can override an approve after the reviewer decided; the round keeps the
+ * reviewer's own verdict beside the effective one, so the copy says it was the gate, not the
+ * reviewer, that sent the PR to a person.
+ */
+export function reviewEscalatedCopy(rounds: RoundSnapshot[]): string {
+  const last = rounds.filter((r) => r.status === 'decided' && r.effectiveVerdict).sort((a, b) => b.round - a.round)[0];
+  if (last?.effectiveVerdict === 'escalate' && last.verdict && last.verdict !== 'escalate') {
+    return last.verdict === 'approve'
+      ? 'The reviewer approved; a merge gate escalated this PR'
+      : 'A merge gate escalated this PR';
+  }
+  return ESCALATION_COPY.review_escalated!;
 }
 
 /** c1d66a6a / AC-17: open findings a push already touched, waiting for a review to verify them. */
@@ -470,7 +487,9 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
       if (d.stateReason === 'landing_needs_human') {
         ({ headline, detail } = landingEscalationCopy(input.lastTransition));
       } else {
-        headline = d.stateReason === 'review_exhausted' ? reviewExhaustedCopy(input.view.rounds) : ESCALATION_COPY[d.stateReason ?? ''] ?? 'Needs a decision';
+        headline = d.stateReason === 'review_exhausted' ? reviewExhaustedCopy(input.view.rounds)
+          : d.stateReason === 'review_escalated' ? reviewEscalatedCopy(input.view.rounds)
+          : ESCALATION_COPY[d.stateReason ?? ''] ?? 'Needs a decision';
         detail = [evidenceDetail(input.lastTransition), addressedNote(input.view.findings ?? [])].filter(Boolean).join('; ') || null;
       }
       cta = { action: 'open_pr', label: 'Review on GitHub' };

@@ -73,6 +73,18 @@ describe('owner of the next move (§4)', () => {
     expect(view({ view: V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R({ status: 'reviewing' })]) }).headline).toBe('Reviewing');
     expect(view({ view: V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R()]) }).headline).toBe('Review queued');
   });
+
+  test('a server gate that overrode the reviewer is named as the gate, not the reviewer', () => {
+    const overridden = R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'escalate' });
+    const v = view({
+      view: V(D({ state: 'ESCALATED', stateReason: 'review_escalated', currentRound: 1 }), [overridden]),
+      lastTransition: { command: 'ReviewVerdictRecorded', fromState: 'AWAITING_REVIEW', toState: 'ESCALATED', evidence: { reason: 'PR mixes EXPAND and CONTRACT migrations' }, createdAt: '2026-10-24T00:00:00Z' },
+    });
+    expect(v.headline).toBe('The reviewer approved; a merge gate escalated this PR');
+    expect(v.detail).toBe('PR mixes EXPAND and CONTRACT migrations');
+    const own = R({ status: 'decided', verdict: 'escalate', effectiveVerdict: 'escalate' });
+    expect(view({ view: V(D({ state: 'ESCALATED', stateReason: 'review_escalated', currentRound: 1 }), [own]) }).headline).toBe('The reviewer escalated this PR');
+  });
 });
 
 describe('release composition', () => {

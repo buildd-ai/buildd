@@ -2830,6 +2830,32 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    // Task 81705dd8, the #5500 sequence: three pushes in ten minutes each replaced the open review,
+    // only round 3 judged anything, and its request for changes escalated review_exhausted with no
+    // fix ever dispatched. The fix that addressed it was pushed and never re-reviewed.
+    name: '81705dd8: rounds superseded before their verdict spend no review budget; the only real request for changes gets its fix and its re-review',
+    async run(host) {
+      const s = await new Delivery(host, 121).open({ maxRounds: 3 });
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      const r1 = (await s.latestRound()).id;
+      applied(await s.push('H2'), 'AWAITING_REVIEW', 'a second push replaces round 1');
+      applied(await s.push('H3'), 'AWAITING_REVIEW', 'a third push replaces round 2');
+      eq((await s.view()).rounds.map((r) => r.status), ['superseded', 'superseded', 'queued'], 'two rounds superseded before any verdict');
+      // Round 1's reviewer answers after its head moved: kept for audit, never applied, spends nothing.
+      notApplied(await s.verdict('request_changes', r1), 'stale', 'round_superseded', 'a late verdict on a superseded round');
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'round 3 asks for changes');
+      eq(pick(await s.d(), ['currentRound', 'stateReason']), { currentRound: 3, stateReason: null }, 'not escalated');
+      eq({ fixes: await s.count('dispatch_fix'), told: await s.count('escalate_exhaustion') }, { fixes: 1, told: 0 }, 'a fix, nobody told the budget is spent');
+      applied(await s.push('H4'), 'AWAITING_REVIEW', 'the fix is pushed');
+      eq(await s.count('dispatch_review'), 4, 'and re-reviewed');
+      // The budget still counts the rounds that judged: rounds 3, 4 and 5.
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'round 4 asks again');
+      applied(await s.push('H5'), 'AWAITING_REVIEW', 'fix 2');
+      applied(await s.verdict('request_changes'), 'ESCALATED', 'round 5 spends the budget');
+      eq((await s.d()).stateReason, 'review_exhausted', 'a person\'s, as before');
+    },
+  },
+  {
     // Task b6cfdbb9 (audit case: a PR closed while its review repair was still queued): the close
     // cancelled the ledger row, but its effect left the task to a legacy path that skips kernel PRs,
     // so the repair stayed pending on a closed PR.
@@ -2877,7 +2903,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
         applied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: a.id, revalidation: { live: s.live('H1'), approved: true, ciGreen: false } }), 'REPAIRING', `CI fix ${a.attemptNo} claimed`);
         return a;
       };
-      const fails = async (a: { id: string }) => s.fixEnded(a.id, { outcome: 'failed', taskId: undefined });
+      const fails = async (a: { id: string }) => s.fixEnded(a.id, { outcome: 'failed', taskId: undefined, live: s.live('H9') });
       applied(await s.ciRed('H1'), 'REPAIRING', 'H1 is red: CI fix 1 is filed');
       applied(await fails(await claim()), 'REPAIRING', 'fix 1 failed: fix 2 is filed');
       const second = await queued();
