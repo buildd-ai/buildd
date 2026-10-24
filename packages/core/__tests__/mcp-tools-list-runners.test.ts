@@ -91,6 +91,23 @@ describe('list_runners', () => {
     expect(out).toContain('upToDateWithDeployed=false');
     expect(out).toContain('workspaces: My Workspace');
     expect(out).toContain('last heartbeat 2026-09-27T00:00:00.000Z');
+    // No hostname reported: the key is the pin.
+    expect(out).toContain('pin: http://localhost:8766');
+  });
+
+  it('shows the exact string a create_task runner pin takes: the hostname, or the key when hosts share it', async () => {
+    const row = (localUiUrl: string, hostname: string) => ({
+      localUiUrl, accountName: 'team-runner', activeWorkers: 0, maxConcurrent: 4,
+      environment: { labels: { hostname } }, lastUpdated: '2026-10-24T00:00:00.000Z',
+    });
+    mockApi.mockResolvedValueOnce({
+      activeLocalUis: [row('http://100.64.0.1:8766', 'build-host'), row('headless://win', 'pc'), row('headless://pc-wsl', 'pc')],
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
+    const header = (key: string) => out.split('\n').find((l: string) => l.startsWith(`- team-runner — ${key} —`));
+    expect(header('http://100.64.0.1:8766')).toEndWith('— pin: build-host');
+    expect(header('headless://win')).toEndWith('— pin: headless://win');
+    expect(header('headless://pc-wsl')).toEndWith('— pin: headless://pc-wsl');
   });
 
   describe('workspaces named by team (spec bd009650 R-7)', () => {
