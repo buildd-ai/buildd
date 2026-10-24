@@ -20,7 +20,7 @@
  */
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
+import { suggestionEvidence, type SupersessionSuggestion } from '@buildd/core/pr-shipped';
 
 export interface ClosedPrItem {
   taskId: string;
@@ -52,12 +52,12 @@ function ClosedPrRow({ missionId, item, named }: { missionId: string; item: Clos
   const [reason, setReason] = useState('');
   const disabled = busy || isPending;
   const s = item.suggestion;
-  // `contentRatio: 0` means the content check ran and found NOTHING shared — the candidate was
-  // nominated by a claim, cross-reference, sibling-task or file-overlap signal alone (task c8092d2a
-  // / PR #5530: #5479 nominated with zero shared lines). Confirming it is then a guess, not a
-  // one-tap correction, so it gets the same secondary weight as "Not this" rather than looking like
-  // the recommended action. Absent (a suggestion written before this field existed) assumes positive.
-  const hasEvidence = s == null || s.contentRatio == null || s.contentRatio > 0;
+  // Only a candidate some of whose content was found gets Confirm as the recommended action.
+  // `none` (read, nothing shared — task c8092d2a / PR #5530: #5479 nominated with zero shared
+  // lines) and `unavailable` (its changes could not be read) make Confirm a guess, so it gets the
+  // same secondary weight as "Not this". `why` says which of the two it is.
+  const evidence = suggestionEvidence(s);
+  const hasEvidence = evidence === 'positive';
 
   async function send(action: 'confirm' | 'dismiss' | 'abandon') {
     setBusy(true);
@@ -96,6 +96,9 @@ function ClosedPrRow({ missionId, item, named }: { missionId: string; item: Clos
             {s.repo}#{s.prNumber}
           </a>
           <span className="text-text-muted"> · {s.why}</span>
+          {evidence === 'unavailable' && (
+            <span data-testid="closed-pr-proof-unavailable" className="text-text-muted"> · not checked yet, so neither confirmed nor ruled out</span>
+          )}
         </p>
       ) : (
         <p data-verify-block="consequence" className="text-text-secondary">

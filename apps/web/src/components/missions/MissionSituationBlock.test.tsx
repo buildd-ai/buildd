@@ -425,6 +425,39 @@ describe('mission header — a deliverable PR closed without merging', () => {
     expect(confirmButton).toContain('data-verify-prominence="secondary"');
   });
 
+  // Unavailable proof is not negative proof (task c8092d2a review): a candidate whose changes
+  // GitHub would not return must read as "could not be checked", never "does not carry".
+  it('an unavailable-proof suggestion reads "could not be checked", not "does not carry" or "likely superseded"', () => {
+    const { html } = render(closed({
+      repo: 'org/kb', prNumber: 9, prUrl: 'https://github.com/org/kb/pull/9',
+      signal: 'claim', why: 'a comment names #9; GitHub did not return its changes, so its content was not compared', score: 0.9,
+      contentUnavailable: true,
+    }));
+    expect(html).toContain('could not be checked');
+    expect(html).not.toContain('does not carry');
+    expect(html).not.toContain('likely superseded');
+    expect(html).toContain('data-testid="closed-pr-proof-unavailable"');
+    const confirmButton = html.slice(html.indexOf('data-testid="closed-pr-confirm"') - 400, html.indexOf('data-testid="closed-pr-confirm"') + 200);
+    expect(confirmButton).not.toContain('btn-primary');
+  });
+
+  it('a closed refresh PR whose work is verified in the branch says so, and offers no replacement to confirm', () => {
+    const input = closed();
+    input.completion!.awaitingMergeDetails![0].refreshCheck = { outcome: 'landed', branch: 'mission/acceptance', reason: 'ancestry and migration verified', at: '2026-10-24T00:00:00Z' };
+    const { html } = render(input);
+    expect(html).toContain('refresh work is already in');
+    expect(html).not.toContain('likely superseded');
+    expect(html).not.toContain('data-testid="closed-pr-confirm"');
+  });
+
+  it('a closed refresh PR carrying unique migration work says the branch is missing it', () => {
+    const input = closed();
+    input.completion!.awaitingMergeDetails![0].refreshCheck = { outcome: 'unique_work', branch: 'mission/acceptance', reason: 'migration not found in mission/acceptance with identical SQL: drizzle/x/migration.sql', at: '2026-10-24T00:00:00Z' };
+    const { html } = render(input);
+    expect(html).toContain('is missing work it carries');
+    expect(html).not.toContain('refresh work is already in');
+  });
+
   it('with no suggestion, offers only Mark abandoned — never a guess to confirm', () => {
     const { html } = render(closed());
     expect(html).toContain('data-testid="closed-pr-abandon"');

@@ -106,7 +106,7 @@ function missionStartCopyFor(input: Pick<MissionStateInput, 'isHeld' | 'armedAt'
 }
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import type { CiRedChain } from './ci-red-chain';
-import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
+import { suggestionEvidence, type RefreshCheck, type SupersessionSuggestion } from '@buildd/core/pr-shipped';
 import { isRepeatedlyDeferred, SURFACE_DEFERRAL_MS } from './claim-deferral-thresholds';
 import { quietLabel } from './local-strand';
 import type { LandingBlocker, LandingBlockCause } from './landing-blocker';
@@ -301,6 +301,11 @@ export type WaitingOnDescriptor =
        * hint the owner can Confirm — never a recorded edge.
        */
       suggestions?: Array<{ taskId: string; prNumber: number | null; suggestion: SupersessionSuggestion }>;
+      /**
+       * A closed integration-refresh PR's own proof (`SupersessionScan.refreshCheck`): its work is
+       * in the branch, the branch is missing work it carries, or it could not be checked.
+       */
+      refreshChecks?: Array<{ taskId: string; prNumber: number | null; refreshCheck: RefreshCheck }>;
     }
   /**
    * Every unmerged PR has CI red and its fix chain has ended: the last
@@ -762,6 +767,7 @@ export interface MissionCompletionSummary {
     prUrl: string | null;
     closedUnsuperseded?: boolean;
     suggestion?: SupersessionSuggestion;
+    refreshCheck?: RefreshCheck;
   }>;
   /** The visual review hold, in shadow or enforced (`visual_review_open`). */
   visualReviewHold?: { cells: number; roundCapOpen: boolean; enforced: boolean } | null;
@@ -1468,23 +1474,21 @@ function mergeFact(input: MissionStateInput): Resolution | null {
     // remedy still holds even when a sibling PR is dead.
     if (!missionPr && details.length > 0 && details.every(d => d.closedUnsuperseded)) {
       const suggestions = details.flatMap(d => d.suggestion ? [{ taskId: d.taskId, prNumber: d.prNumber, suggestion: d.suggestion }] : []);
+      const refreshChecks = details.flatMap(d => d.refreshCheck ? [{ taskId: d.taskId, prNumber: d.prNumber, refreshCheck: d.refreshCheck }] : []);
       return {
         kind: 'awaiting_merge',
         waitingOn: {
           kind: 'pr_closed_unmerged',
           tone: 'warning',
           label: details.length === 1
-            ? details[0].suggestion && suggestionHasEvidence(details[0].suggestion)
-              ? `PR #${details[0].prNumber} closed without merging, likely superseded by ${suggestionRef(details[0].suggestion, repoOfPrUrl(details[0].prUrl))}`
-              : details[0].suggestion
-                ? `PR #${details[0].prNumber} closed without merging; ${suggestionRef(details[0].suggestion, repoOfPrUrl(details[0].prUrl))} was checked and does not carry its changes`
-                : `PR #${details[0].prNumber} closed without merging, no supersession recorded`
+            ? `PR #${details[0].prNumber} closed without merging${closedPrFinding(details[0].suggestion, details[0].refreshCheck, repoOfPrUrl(details[0].prUrl))}`
             : `${details.length} completed task(s) have a PR closed without merging, no supersession recorded`,
           count: details.length,
           prNumbers,
           prUrls,
           taskIds: details.map(d => d.taskId),
           ...(suggestions.length > 0 ? { suggestions } : {}),
+          ...(refreshChecks.length > 0 ? { refreshChecks } : {}),
         },
         displayState: 'review',
         source: 'canCompleteMission',
@@ -2196,8 +2200,10 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
     case 'pr_closed_unmerged': {
       const ref = d.prNumbers.length === 1 ? ` #${d.prNumbers[0]}` : '';
       const only = d.count === 1 ? d.suggestions?.[0]?.suggestion : undefined;
-      if (only && suggestionHasEvidence(only)) return `PR${ref} closed without merging, likely superseded by ${suggestionRef(only, repoOfPrUrl(d.prUrls[0]))}: confirm it or mark the PR abandoned`;
-      if (only) return `PR${ref} closed without merging; ${suggestionRef(only, repoOfPrUrl(d.prUrls[0]))} was checked and does not carry its changes: mark the PR abandoned, or record where it shipped if you know`;
+      const refresh = d.count === 1 ? d.refreshChecks?.[0]?.refreshCheck : undefined;
+      if (refresh || only) {
+        return `PR${ref} closed without merging${closedPrFinding(only, refresh, repoOfPrUrl(d.prUrls[0]))}: ${closedPrRemedy(only, refresh)}`;
+      }
       return d.count === 1
         ? `PR${ref} closed without merging, no supersession recorded`
         : `${d.count} completed tasks have a PR closed without merging, no supersession recorded`;
@@ -2457,6 +2463,15 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       if (waitingOn.suggestions?.some(s => suggestionHasEvidence(s.suggestion))) {
         return 'GitHub will not let this PR merge. Confirm the suggested PR if the work merged there, or mark the PR abandoned with a reason if the work will not merge.';
       }
+      if (waitingOn.refreshChecks?.length && waitingOn.refreshChecks.length === waitingOn.count) {
+        const outcomes = new Set(waitingOn.refreshChecks.map(r => r.refreshCheck.outcome));
+        if (outcomes.size === 1 && outcomes.has('landed')) {
+          return 'GitHub will not let this PR merge, and its refresh work is verified in the integration branch, so nothing is lost by its closure. Have the owner mark it abandoned with that reason (Abandon on the mission page).';
+        }
+        if (outcomes.has('unique_work')) {
+          return 'GitHub will not let this PR merge, and the integration branch is missing work it carries (a migration or changed lines). Land that work on the branch, through a new refresh or a PR, before the owner marks it abandoned; abandoning it now drops the work.';
+        }
+      }
       return 'GitHub will not let this PR merge. Record a supersession (record_pr_supersession) if the work merged under a different PR, or have the owner mark the PR abandoned with a reason (POST /api/tasks/[id]/closed-pr, or Abandon on the mission page) if the work will not merge.';
     case 'criterion_failing':
       if (waitingOn.stale) {
@@ -2604,6 +2619,36 @@ export function suggestionRef(s: { repo: string; prNumber: number; prUrl?: strin
  * field existed) is treated as unknown — assume positive, so old rows read as before until their
  * next scan restamps them.
  */
-export function suggestionHasEvidence(s: { contentRatio?: number } | null | undefined): boolean {
-  return s == null || s.contentRatio == null || s.contentRatio > 0;
+export function suggestionHasEvidence(s: { contentRatio?: number; contentUnavailable?: true } | null | undefined): boolean {
+  return suggestionEvidence(s) === 'positive';
+}
+
+/**
+ * What the closed PR's own checks found, as a clause after "PR #N closed without merging".
+ * Negative proof ("does not carry its changes") and unavailable proof ("could not be checked")
+ * are never the same sentence, and neither reads as "likely superseded".
+ */
+function closedPrFinding(s: SupersessionSuggestion | undefined, refresh: RefreshCheck | undefined, homeRepo: string | null): string {
+  if (refresh) {
+    const branch = refresh.branch ? `\`${refresh.branch}\`` : 'its integration branch';
+    if (refresh.outcome === 'landed') return `; its refresh work is already in ${branch}`;
+    if (refresh.outcome === 'unique_work') return `, and ${branch} is missing work it carries (${refresh.reason})`;
+    return `; whether its refresh work is in ${branch} could not be checked (${refresh.reason})`;
+  }
+  if (!s) return ', no supersession recorded';
+  const ref = suggestionRef(s, homeRepo);
+  switch (suggestionEvidence(s)) {
+    case 'positive': return `, likely superseded by ${ref}`;
+    case 'none': return `; ${ref} was checked and does not carry its changes`;
+    case 'unavailable': return `; ${ref} could not be checked, GitHub did not return its changes`;
+  }
+}
+
+function closedPrRemedy(s: SupersessionSuggestion | undefined, refresh: RefreshCheck | undefined): string {
+  if (refresh?.outcome === 'landed') return 'nothing is lost, mark the PR abandoned';
+  if (refresh?.outcome === 'unique_work') return 'land that work on the branch before marking the PR abandoned';
+  if (refresh) return 'it is checked again on a later sweep';
+  if (suggestionEvidence(s) === 'positive') return 'confirm it or mark the PR abandoned';
+  if (suggestionEvidence(s) === 'unavailable') return 'it is checked again on a later sweep; confirm it only if you know the work merged there';
+  return 'mark the PR abandoned, or record where it shipped if you know';
 }

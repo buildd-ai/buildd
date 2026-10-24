@@ -303,6 +303,26 @@ describe('buildStateBecause', () => {
     expect(matchChain[0].claim).toContain('likely superseded by');
   });
 
+  it('names unavailable proof as neither confirmed nor ruled out, and a refresh by its own check', () => {
+    const unavailable = {
+      repo: 'org/buildd', prNumber: 9, prUrl: 'https://github.com/org/buildd/pull/9',
+      signal: 'claim' as const, why: 'GitHub did not return its changes', score: 0.9, contentUnavailable: true as const,
+    };
+    const detail = { taskId: 't', title: 'T', prNumber: 5530, prUrl: 'u', closedUnsuperseded: true as const };
+    const viewOf = (d: any) => deriveMissionStateView({
+      ...base,
+      completion: { ok: false, code: 'awaiting_merge', reason: 'x', awaitingMerge: 1, awaitingMergeDetails: [d] },
+    });
+    const a = { ...detail, suggestion: unavailable };
+    const chain = buildStateBecause(viewOf(a), { missionId: 'm' }, { unmergedPrs: [a] });
+    expect(chain[0].claim).toContain('neither confirmed nor ruled out');
+    expect(chain[0].claim).not.toContain('does not carry');
+
+    const r = { ...detail, refreshCheck: { outcome: 'unique_work' as const, branch: 'mission/m', reason: 'migration not found', at: 'x' } };
+    const rChain = buildStateBecause(viewOf(r), { missionId: 'm' }, { unmergedPrs: [r] });
+    expect(rChain[0].claim).toContain('is missing work it carries');
+  });
+
   it('produces a single honest link when nothing is outstanding', () => {
     const view = deriveMissionStateView(base);
     const chain = buildStateBecause(view, { missionId: 'm' });
