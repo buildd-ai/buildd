@@ -1075,6 +1075,7 @@ export function describeUnfiledRefreshOutcome(res: DispatchConflictRetryResult):
   if (res.dependencyBot) {
     return { refreshOutcome: 'dependency_bot', reason: 'this is a dependency-bot PR; its own rebase owns the branch', page: null };
   }
+  if (res.releaseCandidate) return { refreshOutcome: 'release_candidate', reason: res.releaseCandidate, page: null };
   if (res.headChanged) return { refreshOutcome: 'head_changed', reason: 'the PR head moved before the refresh; the new head re-evaluates', page: null };
   if (res.refreshInFlight) return { refreshOutcome: 'refresh_in_flight', reason: 'another refresh of this PR is in flight', page: null };
   if (res.refreshQueued) return { refreshOutcome: 'refresh_queued', reason: 'a branch refresh is queued; the new head re-evaluates', page: null };

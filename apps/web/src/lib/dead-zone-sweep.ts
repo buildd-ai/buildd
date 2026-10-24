@@ -47,6 +47,7 @@ import {
   createTeamInstallationResolver,
 } from '@/lib/workspace-installation';
 import { resolvePrRepo } from '@/lib/repo-scope';
+import { isCandidateShapedReleasePr } from '@/lib/release-candidate-ci';
 import { recordPrFact } from '@buildd/core/pr-facts';
 import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
@@ -200,7 +201,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
   for (const [wsId, wsWorkers] of byWorkspace) {
     const workspace = await db.query.workspaces.findFirst({
       where: sqlWhere(eq(workspaces.id, wsId)),
-      columns: { id: true, teamId: true, repo: true, name: true, gitConfig: true, webhookConfig: true, githubInstallationId: true, githubRepoId: true },
+      columns: { id: true, teamId: true, repo: true, name: true, gitConfig: true, releaseConfig: true, webhookConfig: true, githubInstallationId: true, githubRepoId: true },
       with: WORKSPACE_INSTALLATION_WITH,
     });
 
@@ -260,7 +261,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
           merged: boolean;
           merged_at: string | null;
           mergeable_state: string | null;
-          head: { sha: string };
+          head: { sha: string; ref?: string };
           base?: { ref?: string };
         };
 
@@ -274,6 +275,14 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
             pr.merged && pr.merged_at ? { kind: 'merged', mergedAt: pr.merged_at } : { kind: 'closed' },
             { scope: factFunnelScope },
           );
+          await db.update(workers).set({ prLastCheckedAt: now, updatedAt: now }).where(eq(workers.id, worker.id));
+          result.skipped++;
+          continue;
+        }
+
+        // A frozen release candidate is never pushed to, by a conflict fix or a
+        // refresh: it is amended through the Release workflow (release-flow.md).
+        if (isCandidateShapedReleasePr(workspace.releaseConfig, { headRef: pr.head.ref, baseRef: pr.base?.ref })) {
           await db.update(workers).set({ prLastCheckedAt: now, updatedAt: now }).where(eq(workers.id, worker.id));
           result.skipped++;
           continue;

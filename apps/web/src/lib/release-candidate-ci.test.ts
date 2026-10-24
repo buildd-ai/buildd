@@ -7,6 +7,7 @@ import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import {
   buildReleaseCandidateFixTask,
   classifyCiRedReleasePr,
+  isCandidateShapedReleasePr,
   releaseCandidateBranchPushRefusal,
 } from './release-candidate-ci';
 
@@ -52,6 +53,20 @@ describe('classifyCiRedReleasePr', () => {
     expect(classifyCiRedReleasePr({ ...config, candidate: undefined, releaseBranch: 'dev' } as WorkspaceReleaseConfig, pr({ headRef: 'dev' }))).toEqual({ kind: 'ordinary' });
     expect(classifyCiRedReleasePr(null, pr())).toEqual({ kind: 'ordinary' });
     expect(classifyCiRedReleasePr({ ...config, enabled: false } as WorkspaceReleaseConfig, pr())).toEqual({ kind: 'ordinary' });
+  });
+});
+
+describe('isCandidateShapedReleasePr (the conflict and refresh doors)', () => {
+  it('any candidate branch into prodBranch, trusted or not', () => {
+    expect(isCandidateShapedReleasePr(config, { headRef: 'release/v0.381.0', baseRef: 'main' })).toBe(true);
+  });
+
+  it('not an ordinary PR, a release/v* branch into another base, the legacy PR, or a workspace without candidates', () => {
+    expect(isCandidateShapedReleasePr(config, { headRef: 'buildd/abc-fix', baseRef: 'dev' })).toBe(false);
+    expect(isCandidateShapedReleasePr(config, { headRef: 'release/v1.2.3', baseRef: 'dev' })).toBe(false);
+    expect(isCandidateShapedReleasePr({ ...config, candidate: undefined, releaseBranch: 'dev' } as WorkspaceReleaseConfig, { headRef: 'dev', baseRef: 'main' })).toBe(false);
+    expect(isCandidateShapedReleasePr(null, { headRef: 'release/v1.2.3', baseRef: 'main' })).toBe(false);
+    expect(isCandidateShapedReleasePr(config, { headRef: null, baseRef: null })).toBe(false);
   });
 });
 
