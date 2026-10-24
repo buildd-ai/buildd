@@ -30,10 +30,11 @@
  * argument to wsl.exe, never part of a shell command (as wsl-setup.ts).
  */
 import { spawnSync } from 'child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, rmSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { parseDistributions } from './wsl-setup';
 import { resolveServicePaths, scheduledTaskStatus, uninstallService, windowsTaskStatus, type CommandResult, type CommandRunner, type ServicePaths } from './service';
+import { headlessRunnerKey } from './runner-host';
 
 /** One task per distribution: migrating a second distribution must not reuse or overwrite the first one's. */
 export const logonTaskName = (distro: string) => `buildd WSL (${distro})`;
@@ -99,8 +100,8 @@ export interface MigrateDeps {
     hold: () => Promise<{ ok: boolean; message: string }>;
     /** What the Windows runner is running now; [] when no runner answers. */
     activeWork: () => Promise<{ title: string; status: string }[] | { error: string }>;
-    /** Pending tasks pinned to the Windows runner; undefined when not available. */
-    pendingPinned?: () => Promise<{ title: string }[]>;
+    /** Pending tasks pinned to the Windows runner; [] when lookup fails or none pinned. */
+    pendingPinned: () => Promise<{ title: string }[]>;
   };
 }
 
@@ -390,11 +391,14 @@ export async function runWslMigrate(args: MigrateArgs, deps: MigrateDeps): Promi
     const err = await drain();
     if (err) return stuck(`The Windows runner did not say what it is running: ${err}`);
     // List pending tasks pinned to the Windows runner before removing it.
-    const pending = deps.windows.pendingPinned ? await deps.windows.pendingPinned() : [];
-    if (pending.length > 0) {
-      for (const task of pending) {
-        log(`  ${task.title} waits for the Windows runner until re-filed or unpinned.`);
-      }
+    let pending: { title: string }[] = [];
+    try {
+      pending = await deps.windows.pendingPinned();
+    } catch {
+      // Lookup errors don't crash the migration; just skip listing
+    }
+    for (const task of pending) {
+      log(`  ${task.title} waits for the Windows runner until re-filed or unpinned.`);
     }
     const removed = uninstallService(deps.paths, 'win32', run);
     if (!removed.ok) return stuck(`Could not remove the Windows runner's Scheduled Task: ${removed.message}`);
@@ -450,6 +454,42 @@ export async function main(argv: string[]): Promise<number> {
         if ((await probeRunnerSocket(socketPath)).state !== 'live') return [];
         const agents = await listAgents({ socketPath });
         return 'error' in agents ? agents : agents.map(a => ({ title: a.title, status: a.status }));
+      },
+      pendingPinned: async () => {
+        try {
+          // Read config to get API key and base URL
+          let config: { apiKey?: string; builddServer?: string } = {};
+          try {
+            const configContent = readFileSync(configFile, 'utf8');
+            config = JSON.parse(configContent);
+          } catch {
+            // Config not readable; API key must come from env var
+          }
+
+          const apiKey = config.apiKey || process.env.BUILDD_API_KEY;
+          if (!apiKey) return [];
+
+          const baseUrl = (process.env.BUILDD_CLIENT_URL || config.builddServer || 'https://buildd.dev').replace(/\/+$/, '');
+          const runnerId = headlessRunnerKey({ hostname: undefined, platform: 'windows' });
+          const runnerCapability = `runner:${runnerId}`;
+
+          // Query pending tasks from the API
+          const response = await fetch(`${baseUrl}/api/tasks?status=pending`, {
+            headers: { 'Authorization': `Bearer ${apiKey}` },
+          });
+
+          if (!response.ok) return [];
+
+          const data = await response.json() as { tasks: Array<{ title: string; requiredCapabilities?: string[] }> };
+
+          // Filter for tasks pinned to this Windows runner
+          return data.tasks
+            .filter(task => task.requiredCapabilities?.includes(runnerCapability))
+            .map(task => ({ title: task.title }));
+        } catch {
+          // Handle any errors gracefully - don't crash the migration
+          return [];
+        }
       },
     },
   });

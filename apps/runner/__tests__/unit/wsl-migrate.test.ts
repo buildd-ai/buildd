@@ -137,6 +137,7 @@ function machine(over: Partial<Machine> = {}) {
         events.push(`active:${now.length}`);
         return now;
       },
+      pendingPinned: async () => [],
     },
   });
   return { m, calls, events, lines, deps, sleeps: () => sleeps, out: () => lines.join('\n') };
@@ -444,10 +445,25 @@ describe('acceptance criteria', () => {
   test('AC-16: a pending task pinned to the Windows runner is listed before migrate removes it', async () => {
     const t = machine();
     const deps = t.deps();
-    (deps.windows as typeof deps.windows & { pendingPinned?: () => Promise<{ title: string }[]> }).pendingPinned =
-      async () => [{ title: 'Ship the invoice fix' }];
+    deps.windows.pendingPinned = async () => [{ title: 'Ship the invoice fix' }];
     expect(await runWslMigrate({ undo: false }, deps)).toBe(0);
     expect(t.out()).toContain('Ship the invoice fix');
     expect(t.out()).toMatch(/wait(s|ing)? for (the )?(windows )?runner/i);
+  });
+
+  test('AC-16: no pending tasks pinned to the Windows runner means the list is empty', async () => {
+    const t = machine();
+    const deps = t.deps();
+    deps.windows.pendingPinned = async () => [];
+    expect(await runWslMigrate({ undo: false }, deps)).toBe(0);
+    expect(t.out()).not.toMatch(/wait(s|ing)? for/i);
+  });
+
+  test('AC-16: a failed pending task lookup does not crash the migration', async () => {
+    const t = machine();
+    const deps = t.deps();
+    deps.windows.pendingPinned = async () => { throw new Error('API unreachable'); };
+    expect(await runWslMigrate({ undo: false }, deps)).toBe(0);
+    expect(t.m.winTask).toBe(false);
   });
 });
