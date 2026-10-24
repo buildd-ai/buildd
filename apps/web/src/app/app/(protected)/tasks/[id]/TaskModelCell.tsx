@@ -32,7 +32,7 @@ export default function TaskModelCell({ summary }: { summary: TaskModelSummary }
         <dd className="text-text-muted text-[11px]">Ran on {summary.divergedTo}</dd>
       )}
       {summary.nextAttemptLabel && (
-        <dd className="text-text-muted text-[11px]" data-testid="task-model-next-attempt">{summary.nextAttemptLabel}</dd>
+        <dd className="text-text-muted text-meta" data-testid="task-model-next-attempt">{summary.nextAttemptLabel}</dd>
       )}
     </div>
   );
