@@ -58,6 +58,25 @@ export function releaseCandidateBranchPushRefusal(prNumber: number, sourceBranch
     `Fix it on ${source}, then amend the candidate through the Release workflow (amend input).`;
 }
 
+/**
+ * Refs only: is this PR shaped like a frozen candidate (a candidate branch into
+ * prodBranch, trusted or not)? The conflict and refresh doors refuse any such
+ * PR. Shape is enough here because refusing is the safe direction: a merge of
+ * the base into a candidate un-candidates it just as a CI fix push would.
+ */
+export function isCandidateShapedReleasePr(
+  config: WorkspaceReleaseConfig | null | undefined,
+  refs: { headRef?: string | null; baseRef?: string | null },
+): boolean {
+  return !isLegacyReleasePr(config, refs) && hasReleasePrShape(config, refs);
+}
+
+export function releaseCandidateConflictRefusal(prNumber: number, sourceBranch: string | null): string {
+  const source = sourceBranch ? `\`${sourceBranch}\`` : 'the branch it was cut from';
+  return `PR #${prNumber} is a frozen release candidate: no conflict fix or refresh is ever pushed to its branch. ` +
+    `Bring ${source} up to date with the prod branch, then amend the candidate through the Release workflow (amend input).`;
+}
+
 export interface ReleaseCandidateFixParams {
   workspaceId: string;
   repoFullName: string;
