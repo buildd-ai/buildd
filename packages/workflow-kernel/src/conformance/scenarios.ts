@@ -2859,7 +2859,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
         applied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: a.id, revalidation: { live: s.live('H1'), approved: true, ciGreen: false } }), 'REPAIRING', `CI fix ${a.attemptNo} claimed`);
         return a;
       };
-      const fails = async (a: { id: string }) => s.fixEnded(a.id, { outcome: 'failed', taskId: undefined });
+      const fails = async (a: { id: string }) => s.fixEnded(a.id, { outcome: 'failed', taskId: undefined, live: s.live('H9') });
       applied(await s.ciRed('H1'), 'REPAIRING', 'H1 is red: CI fix 1 is filed');
       applied(await fails(await claim()), 'REPAIRING', 'fix 1 failed: fix 2 is filed');
       const second = await queued();

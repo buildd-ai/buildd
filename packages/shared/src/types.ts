@@ -3685,6 +3685,8 @@ export interface RunnerQueueTask {
   alongside?: { prNumber: number | null; holderTaskId: string | null } | null;
   /** With the `advisory_manifest` hold: the task it waits for, running or ahead of it in this queue. */
   holderTaskId?: string | null;
+  /** Its mission's cap on tasks at once (spec 0dc7c6de R-7); absent or null = no mission limit. */
+  missionCap?: number | null;
   /**
    * Whose work it is (spec c7410e76 R-58): the task's owner (who filed it, else
    * its mission's, else its schedule's) against the person behind the runner's

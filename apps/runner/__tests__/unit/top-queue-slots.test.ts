@@ -12,7 +12,7 @@ import { describe, expect, test } from 'bun:test';
 import type { RunnerQueueResponse, RunnerQueueTask } from '@buildd/shared';
 import { createPalette, stripAnsi } from '../../src/terminal-palette';
 import { handleKey, actionResultText } from '../../src/top/keys';
-import { queueSections, slotsSummary } from '../../src/top/queue';
+import { queueNextLine, queueSections, slotsSummary } from '../../src/top/queue';
 import { renderFrame, textWidth } from '../../src/top/render';
 import { claimLoopLine, initialState, reduce, type TopState, type TopWorker } from '../../src/top/state';
 import { frameOnce } from '../../src/top/frame';
@@ -74,29 +74,34 @@ const refusedOverlap = (s: TopState, taskId: string, holder: string, withField =
   outcome: { at: NOW - 20_000, reason: 'all_candidates_deferred', exclusion: 'soft_overlap', detail: SOFT(holder), ...(withField ? { holderTaskId: holder } : {}) },
 });
 
-const starts = (s: TopState) => queueSections(s, NOW)[0].rows.map(r => [r.position, r.starts]);
+const queued = (s: TopState) => queueSections(s, NOW)[0].rows.filter(r => r.status !== 'running');
+const starts = (s: TopState) => queued(s).map(r => [r.position, r.starts]);
 
-describe('free slots start rows now, several at once (R-26, AC-27)', () => {
-  test('8 of 9 free: every row nothing holds reads "now"; none reads "next" or "after N"', () => {
+describe('free slots take Queued rows, several at once (R-26, AC-27, R-12)', () => {
+  test('8 of 9 free: every row nothing holds is Queued; none reads "now", "next" or "after N"', () => {
     const s = stateWith(9, 1);
-    expect(starts(s)).toEqual([[1, 'now'], [2, 'now'], [3, 'now'], [4, 'now'], [5, 'after its dependency'], [6, 'now']]);
-    for (const [, w] of starts(s)) expect(String(w)).not.toMatch(/^(next|after \d)/);
+    expect(starts(s)).toEqual([[1, 'Queued'], [2, 'Queued'], [3, 'Queued'], [4, 'Queued'], [5, 'Blocked · after its dependency'], [6, 'Queued']]);
+    expect(queueSections(s, NOW)[0].rows[0]).toMatchObject({ status: 'running', position: null });
   });
 
-  test('raising slots from 1 to 4 with + shows three more rows as "now" before they start (AC-27)', () => {
+  test('raising slots from 1 to 4 with + lets the Next line count three more rows before they start (AC-27)', () => {
     let s = stateWith(1, 1);
-    expect(starts(s).filter(([, w]) => w === 'now')).toHaveLength(0);
+    expect(queued(s).filter(r => r.startsNow)).toHaveLength(0);
     for (let i = 0; i < 3; i++) s = handleKey(s, { name: 'char', ch: '+' }, NOW).state;
     expect(s.runner.maxConcurrent).toBe(4);
-    expect(starts(s).filter(([, w]) => w === 'now').map(([p]) => p)).toEqual([1, 2, 3]);
+    expect(queued(s).filter(r => r.startsNow).map(r => r.position)).toEqual([1, 2, 3]);
+    expect(starts(s).slice(0, 4).every(([, w]) => w === 'Queued')).toBe(true);
   });
 
-  test('slots full: the next free slot is estimated from the running agents\' estimates, else said plainly', () => {
+  test('slots full: the rows are Queued, and the next free slot is estimated from the running agents\' estimates', () => {
     let s = stateWith(1, 1);
-    expect(starts(s)[0]).toEqual([1, 'when a slot frees']);
+    expect(queued(s)[0]).toMatchObject({ position: 1, starts: 'Queued' });
+    expect(queued(s)[0].eta).toBeUndefined();
+    expect(queueNextLine(s, NOW)).toMatch(/^Next: #1, when a slot frees/);
     // The running task was in the queue with a 25m estimate before it started 10 minutes ago.
     s = { ...s, estimates: { ...s.estimates, 'c0c0c0c0-00': 25 } };
-    expect(starts(s)[0]).toEqual([1, 'in ~15m (next free slot)']);
+    expect(queued(s)[0].eta).toBe(15);
+    expect(queueNextLine(s, NOW)).toMatch(/^Next: #1, in ~15m when a slot frees/);
   });
 
   test('the header line counts slots: total, running, free', () => {
@@ -105,27 +110,28 @@ describe('free slots start rows now, several at once (R-26, AC-27)', () => {
   });
 });
 
-describe('a refused row says why, never "now" (AC-30)', () => {
+describe('a refused row is Blocked and says why (AC-30, R-13)', () => {
   test('an overlap with a row in the list names it by position', () => {
     const s = refusedOverlap(stateWith(9, 1), 'a0a0a0a0-0004', 'a0a0a0a0-0001');
-    expect(starts(s)[3]).toEqual([4, 'when #1 ends (same files)']);
+    expect(starts(s)[3]).toEqual([4, 'Blocked · after #1']);
     // The refused row takes no free slot: the rows behind it still start now.
-    expect(starts(s)[5]).toEqual([6, 'now']);
+    expect(starts(s)[5]).toEqual([6, 'Queued']);
+    expect(queued(s)[5].startsNow).toBe(true);
   });
 
   test('an overlap with work not in the list names it by title (here: running work)', () => {
     const s = refusedOverlap(stateWith(9, 1), 'a0a0a0a0-0001', 'c0c0c0c0-00');
-    expect(starts(s)[0]).toEqual([1, 'same files as "running work 1"']);
+    expect(starts(s)[0]).toEqual([1, 'Blocked · after "running work 1"']);
   });
 
   test('a server from before the holder field: the id in its sentence is read', () => {
     const s = refusedOverlap(stateWith(9, 1), 'a0a0a0a0-0004', 'a0a0a0a0-0001', false);
-    expect(starts(s)[3]).toEqual([4, 'when #1 ends (same files)']);
+    expect(starts(s)[3]).toEqual([4, 'Blocked · after #1']);
   });
 
   test('an overlap with work top does not know still says it waits, not "now"', () => {
     const s = refusedOverlap(stateWith(9, 1), 'a0a0a0a0-0002', 'deadbeef-0bad');
-    expect(starts(s)[1]).toEqual([2, 'when work on its files ends']);
+    expect(starts(s)[1]).toEqual([2, 'Blocked · after work on the same files']);
   });
 
   test('other refusals in words: a cap, a dependency, an account limit', () => {
@@ -133,17 +139,17 @@ describe('a refused row says why, never "now" (AC-30)', () => {
     s = reduce(s, { type: 'claim_outcome', taskId: 'a0a0a0a0-0002', outcome: { at: NOW - 5_000, reason: 'all_candidates_deferred', exclusion: 'mission_concurrent', detail: 'Its mission is at its concurrency cap (3/3 tasks in flight).' } });
     s = reduce(s, { type: 'claim_outcome', taskId: 'a0a0a0a0-0003', outcome: { at: NOW - 5_000, reason: 'refused', status: 429, refusal: 'max_concurrent_workers' } });
     s = reduce(s, { type: 'claim_outcome', taskId: 'a0a0a0a0-0006', outcome: { at: NOW - 5_000, reason: 'no_pending_tasks', exclusion: 'deps_blocked', detail: 'It waits on a dependency.' } });
-    expect(starts(s)).toEqual([[1, 'now'], [2, 'mission is at its task limit'], [3, 'account has no free slot'], [4, 'now'], [5, 'after its dependency'], [6, 'after its dependency']]);
+    expect(starts(s)).toEqual([[1, 'Queued'], [2, 'Blocked · mission is at its task limit'], [3, 'Blocked · account has no free slot'], [4, 'Queued'], [5, 'Blocked · after its dependency'], [6, 'Blocked · after its dependency']]);
   });
 
   test('a claim outcome that only says the task moved does not hold it', () => {
     const s = reduce(stateWith(9, 1), { type: 'claim_outcome', taskId: 'a0a0a0a0-0001', outcome: { at: NOW - 5_000, reason: 'no_pending_tasks', exclusion: 'state_changed', detail: 'Retry.' } });
-    expect(starts(s)[0]).toEqual([1, 'now']);
+    expect(starts(s)[0]).toEqual([1, 'Queued']);
   });
 
-  test('runner paused: every row reads "paused", and the slot count says so', () => {
+  test('runner paused: every row is Blocked · paused, and the slot count says so', () => {
     const s = reduce(stateWith(9, 1), { type: 'runner_hold', hold: { since: iso(NOW - 10 * MIN), until: null } });
-    expect(starts(s).every(([, w]) => w === 'paused')).toBe(true);
+    expect(starts(s).every(([, w]) => w === 'Blocked · paused')).toBe(true);
     expect(slotsSummary(s, NOW)).toBe('9 slots · 1 running · paused');
   });
 });
@@ -238,7 +244,7 @@ describe('frames (R-7)', () => {
   };
 
   for (const [cols, rows] of [[80, 24], [120, 40]] as const) {
-    test(`${cols}x${rows}: slots on the tab line, "now" rows, the refused row's reason, the claim-loop line`, () => {
+    test(`${cols}x${rows}: slots on the tab line, Running and Queued rows, the refused row's reason, the claim-loop line`, () => {
       const lines = renderFrame(owner(), { cols, rows, now: NOW, palette: plain });
       expect(lines).toHaveLength(rows);
       for (const l of lines) expect(textWidth(stripAnsi(l))).toBe(cols);
@@ -246,7 +252,7 @@ describe('frames (R-7)', () => {
       expect(t).toMatch(/9 slots · (1 running · )?8 free/);
       expect(t).toContain('1 of 9 slots in use');
       expect(t).toContain('Looked for work 14:58 · started 3');
-      expect(t).toContain('when #1 ends (same files)');
+      expect(t).toContain('Blocked · after #1');
       expect(t).not.toMatch(/\bnext\s*$/m);
       expect(t).not.toMatch(/after \d/);
       if (cols >= 120) expect(t).toContain('- fewer  + more');
@@ -282,7 +288,7 @@ describe('top --frame (one frame, read-only)', () => {
     expect(gets).toContain('/api/queue');
     const t = text(lines);
     expect(t).toContain('[ Queue ]');
-    expect(t).toContain('when #1 ends (same files)');
+    expect(t).toContain('Blocked · after #1');
     expect(t).toContain('● online');
   });
 });
