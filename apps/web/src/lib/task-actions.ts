@@ -202,7 +202,7 @@ export interface StartRequest {
    * Force start past a `coordination_hold` (docs/specs/force-start.md): the
    * ticked kinds and the digest of the reasons the refusal showed.
    */
-  force?: { kinds: WaitingKind[]; reasonsDigest: string; note?: string };
+  force?: { kinds: WaitingKind[]; reasonsDigest: string; note?: string; seenBlockers?: string[] };
   /** Hand the task to one runner's local UI instead of any runner. */
   targetLocalUiUrl?: string;
 }
@@ -329,6 +329,8 @@ export interface TaskWaiting {
   notForceable?: string[];
   /** An unexpired Force start awaiting its runner claim. */
   forceStart?: { kinds: string[]; expiresAt: string };
+  /** Start anyway's observed phase (spec 36df686b): requested, assessing, or blocked on its prerequisite. */
+  startAnyway?: { phase: 'requested' | 'assessing' | 'blocked'; label: string; executing: boolean; taskStatus: 'pending' | 'in_progress'; blockerTaskId?: string; nextStep?: string };
 }
 
 export async function fetchTaskWaiting(taskId: string): Promise<TaskWaiting | null> {
@@ -431,7 +433,9 @@ export function getGateReasonSubtitle(refusal: GateRefusal, ctx: GateCopyContext
       return 'The task starts automatically when the limit lifts.';
     case 'coordination_hold':
       return refusal.canForce
-        ? 'It starts by itself when this clears. Force start skips only the gate named below.'
+        ? (refusal.force?.kinds?.includes('dep_declared')
+          ? 'It starts by itself when its prerequisite finishes. Start anyway lets its agent assess what can proceed first; the dependency stays.'
+          : 'It starts by itself when this clears. Force start skips only the gate named below.')
         : 'It starts by itself when this clears. This wait cannot be forced.';
     case 'workspace_cap_reached':
       return `Queued. The task starts when a slot opens.${typeof refusal.queuePosition === 'number' && refusal.queuePosition > 0 ? ` ${refusal.queuePosition} other pending task${refusal.queuePosition === 1 ? '' : 's'} ahead of it.` : ''}`;

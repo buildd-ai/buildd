@@ -2,13 +2,13 @@
 title: Force Start Past a Coordination Wait
 status: active
 owner: max
-last_verified: 2026-10-18
-summary: A dashboard Start MUST name the real waiting reasons, and Force start MUST lift exactly the confirmed forceable ones through one audited, single-use intent a runner's claim honours.
+last_verified: 2026-10-24
+summary: A dashboard Start MUST name the real waiting reasons, and Force start MUST lift exactly the confirmed forceable ones through one audited, single-use intent a runner's claim honours. Start anyway is the same intent over a declared dependency: it admits the task's agent for assessment and keeps the edge (Living Spec 36df686b).
 domain: tasks
 surfaces: [apps/web/src/app/api/tasks/[id]/start/route.ts, packages/core/waiting-reason.ts, apps/web/src/lib/force-start.ts, apps/web/src/lib/coordination-probe.ts]
 related: [claim-ordering, mission-task-lifecycle, orchestration-decisions-shadow]
 keywords: [run now, force start, forceStart, forceStartHistory, reasons_changed, reasonsDigest, coordination_hold, WaitingReason, inferred dependency, migration slot, human_force_start]
-verified_by: [apps/web/src/app/api/tasks/[id]/start/route.test.ts, apps/web/src/lib/force-start.test.ts, apps/web/src/lib/coordination-probe.test.ts, packages/core/__tests__/waiting-reason.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/workers/claim/deps-gate.test.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskActionZone.coordination.dom.test.tsx, packages/core/__tests__/start-outcome-grade.test.ts]
+verified_by: [apps/web/src/app/api/tasks/[id]/start/start-anyway.test.ts, apps/web/src/lib/force-start-assess.test.ts, apps/web/src/app/api/workers/claim/start-anyway-gate.test.ts, packages/core/__tests__/start-anyway.test.ts, packages/core/__tests__/start-anyway-waiting-reason.test.ts, packages/core/__tests__/start-anyway-queue.test.ts, apps/web/src/lib/start-anyway.test.ts, apps/web/src/lib/task-wait-exit.test.ts, apps/web/tests/db/start-anyway-gate.test.ts, apps/runner/__tests__/unit/start-anyway-prompt.test.ts, apps/web/src/app/api/tasks/[id]/start/route.test.ts, apps/web/src/lib/force-start.test.ts, apps/web/src/lib/coordination-probe.test.ts, packages/core/__tests__/waiting-reason.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/workers/claim/deps-gate.test.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskActionZone.coordination.dom.test.tsx, packages/core/__tests__/start-outcome-grade.test.ts]
 assertions:
   - id: start-route
     type: route
@@ -66,7 +66,7 @@ producer, `lib/coordination-probe.ts`, read by `/start` and `GET /api/tasks/[id]
 | mission concurrency cap / pacing | `mission_concurrent`, `mission_paced` | yes | claim-loop keys |
 | planner order | `ordered_behind` (soft) | yes (human only) | claim planner off for the task |
 | local-session mission | `mission_local` | yes | `bypassHeldGate` (the claim's local prefilter) |
-| declared `dependsOn` | `dep_declared` | **never** | — |
+| declared `dependsOn` | `dep_declared` | yes: **Start anyway** (below) | `context.forceStart.assessDependsOn`, admitted by the dependency gate's `assess_start` arm; the edge is kept |
 | capability, budget pause, seats, provider, task hold, unknown | various | **never** | the blocker's own fix action |
 | session reservation (`context.reservedBy`) | none: a claim exclusion `task_reserved`, not a `WaitingKind` | **never** | the reserving session claims or releases it, or it lapses |
 
@@ -80,10 +80,11 @@ claim's own per-edge SQL predicate (`dependencySatisfied`).
   that request is a confirmed Force start over it (or the legacy `forceOverride` lifts a
   policy gate it names).
 - Force is offered only when every hard reason is forceable. One non-forceable reason
-  (declared dependency, capability, seat, budget pause, provider, task hold, unknown) means
+  (capability, seat, budget pause, provider, task hold, unknown) means
   no Force start anywhere; the surface shows that blocker's fix instead.
-- A declared `dependsOn` edge is never lifted: the dependency gate's force arm also requires
-  the id to be in `pathDeclaration.inferredDependsOn`.
+- A declared `dependsOn` edge is never deleted or marked satisfied. Start anyway admits one
+  claim for assessment; the inferred-edge arm (`liftDependsOn`) still requires the id to be in
+  `pathDeclaration.inferredDependsOn`.
 - Forcing an inferred or migration overlap changes claim order only. The edit-time path lease
   (including the migration anchor) still applies, so migration numbering stays serialized.
 - The admin MCP `claim_task {force: true}` keeps its own gate set.
@@ -93,6 +94,45 @@ claim's own per-edge SQL predicate (`dependencySatisfied`).
 - Declared dependencies and coordination-only holds are counted apart in every headline:
   incidental overlap ordering reads "Waiting on migration slot · N tasks also editing {area}",
   never "waiting on N dependencies".
+
+## Start anyway (declared dependencies)
+
+Successor contract: Living Spec `36df686b` "Start anyway: assess, coordinate and continue"
+(built ahead of browser approval against revision 1), and Health › Queue `4bc3e70e` R-20 /
+AC-13. It replaces the old rule that a declared dependency prevents every form of progress.
+It is the same `POST /start { force }` path and the same `context.forceStart` intent, with
+kind `dep_declared`:
+
+- **Intent.** `forceStart.assessDependsOn` names the declared edges the person started past.
+  It lives 7 days (`START_ANYWAY_INTENT_TTL_MS`), not 15 minutes, so a runner that is offline
+  or missed the wake still finds it. A repeated click with an unexpired intent that already
+  names every holding edge returns 200 with the same `forceId` and writes no second record.
+- **Gate.** `deps-gate.ts` arm `assess_start` admits an edge only while an unexpired intent
+  names it. There is no whole-task bypass: `bypassDepsGate` is no longer written or read, and
+  `forceOverride` over a dependency writes this bounded intent instead. Ordinary automatic
+  claims still wait; the edge and the upstream task are never changed.
+- **Claim.** The claim consumes the intent once into `forceStartHistory` and stores
+  `context.startAnywayAssessment`: the assessment instruction with each prerequisite's task,
+  worker and PR state as of the claim. The runner prompt carries it (`start-anyway` section).
+- **Assess, coordinate, work or park.** The agent records its assessment with `update_progress`
+  before editing, messages the running upstream agent once through `send_worker_message`, and
+  either works within its own path ownership or parks with `complete_task { blockedOnTaskId }`
+  (the wait exit, `lib/task-wait-exit.ts`). For a task started this way the workspace
+  `waitOnTask` flag does not gate the park; a merged or cancelled prerequisite is refused (the
+  recheck that stops a race stranding it), a cycle is refused, and at most
+  `START_ANYWAY_MAX_PARKS` parks are allowed so a dead prerequisite cannot loop. The park
+  returns the same task to `pending`, keeps its branch (`requeueBranchContext`), completes the
+  worker (no executing slot) and releases its path claims.
+- **Resume.** The existing dependency wake (`dependency.satisfied`, outbox) runs the same task
+  when the prerequisite merges; the next attempt's prompt carries the saved assessment
+  (`resumeInstruction`).
+- **Observed state.** `startAnywayView` derives requested / assessing / blocked from the row's
+  own facts; `GET /api/tasks/[id]/waiting` returns it as `startAnyway`, so the task page, the
+  sheet and the Queue read one cause. A request is never rendered as running before its claim.
+- **Queue.** `queueRowAction`: Declared rows offer Start anyway, Limit rows keep Force start,
+  Lane rows admit assessment but grant no lane ownership, a real restriction names its fix.
+- **Not authorised by the start.** Edit-time path leases, migration serialization, existing
+  data-preservation preconditions, credentials, release, merge and destructive work.
 
 ## Request contract
 
@@ -182,6 +222,13 @@ is `scored: false`: observational evidence, never a model error or success.
   task starts with no force records.
 - AC-7: GIVEN a consumed force THEN exactly one gate event at request, one at claim and one
   `buildd.human_force_start` decision row exist.
+- AC-8: GIVEN a pending task with an unfinished declared dependency WHEN its authorized person
+  confirms Start anyway THEN `forceStart.assessDependsOn` names the edge, the edge and the
+  upstream are unchanged, and the next claim admits the task for assessment (Living Spec
+  `36df686b` AC-8).
+- AC-9: GIVEN an assessing task WHEN nothing useful can proceed THEN `complete_task
+  { blockedOnTaskId }` parks the same task (pending, branch kept, no executing slot), and the
+  existing dependency wake resumes it when the prerequisite merges.
 
 **Code surface**:
 

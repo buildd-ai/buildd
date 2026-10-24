@@ -20,6 +20,8 @@ import { requeueBranchContext } from '@/lib/integration-refresh';
 import { withoutForceClaim } from '@/lib/force-claim';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { notDeliveryOwnedTaskSql } from '@/lib/workflow/pr-fact-scope';
+import { parkAllowed } from '@buildd/core/start-anyway';
+import { lastStartAnyway, START_ANYWAY_PARKS_KEY } from '@/lib/start-anyway';
 
 /** The task context key the exit records: who waits on what, and why. */
 export const WAIT_EXIT_CONTEXT_KEY = 'waitExit';
@@ -102,9 +104,18 @@ export function decideWaitExit(i: {
   /** The blocker's latest PR is still open (it is completed but not merged). */
   blockerHasOpenPr: boolean;
   edges: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Set for a task a person started anyway (spec 36df686b): its assessment's
+   * park is the sanctioned wait, so the workspace flag does not gate it. The
+   * budget stops a dead prerequisite from looping wake and re-park.
+   */
+  startAnyway?: { parks: number } | null;
 }): WaitExitDecision {
   const refuse = (status: number, code: string, error: string): WaitExitRefusal => ({ ok: false, status, code, error });
-  if (!i.enabled) {
+  if (i.startAnyway && !parkAllowed(i.startAnyway.parks)) {
+    return refuse(409, 'park_limit', `This task has already parked on a prerequisite ${i.startAnyway.parks} times. Do not park again: finish what can be done, or ask a person.`);
+  }
+  if (!i.enabled && !i.startAnyway) {
     return refuse(409, 'wait_exit_disabled', 'Waiting on another task is not turned on for this workspace. Finish with complete_task { error } naming the task you are blocked by, or ask a person.');
   }
   if (!isOpenTaskStatus(i.task.status)) {
@@ -187,8 +198,11 @@ export async function applyWaitExit(i: {
   const edges = blocker && blocker.workspaceId === i.task.workspaceId
     ? await loadDependencyEdges(blocker.id, i.task.workspaceId)
     : new Map<string, string[]>();
+  const startedAnyway = lastStartAnyway((i.task.context ?? null) as Record<string, unknown> | null);
+  const parks = Number((i.task.context as Record<string, unknown> | null)?.[START_ANYWAY_PARKS_KEY] ?? 0) || 0;
   const decision = decideWaitExit({
     enabled: waitExitEnabled(i.task.gitConfig),
+    startAnyway: startedAnyway ? { parks } : null,
     task: i.task,
     blockerTaskId: i.blockerTaskId,
     blocker: blocker ?? null,
@@ -220,6 +234,7 @@ export async function applyWaitExit(i: {
         ...withoutForceClaim(ctx),
         ...requeueBranchContext(ctx, liveWorker?.branch),
         [WAIT_EXIT_CONTEXT_KEY]: record,
+        ...(startedAnyway ? { [START_ANYWAY_PARKS_KEY]: parks + 1 } : {}),
       },
       updatedAt: new Date(),
     })
