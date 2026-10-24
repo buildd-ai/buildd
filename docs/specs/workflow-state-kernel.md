@@ -1484,7 +1484,18 @@ delivery when an owner session completes (`loopPolicy`). While the delivery is
 `AWAITING_REVIEW`, `REPAIRING`, `LANDING`, `APPROVED` or `BLOCKED_ON_TRUNK`, the next move is
 the kernel's, so the loop holds for the webhook and spends no iteration, however many
 sessions complete meanwhile. A `MERGED` delivery satisfies either condition. Any other state
-(the owner's `WORKING`, a person's `ESCALATED`) is evaluated as before.
+(the owner's `WORKING`) is evaluated as before.
+
+**An owner loop stands down while a person owns the PR (fe45dc7d, #5539).** While the delivery
+is `ESCALATED`, the loop owns no retry: the verdict is `defer`, not a hold (a hold's requeue is
+claimed again at its expiry) and not `exhausted`. No iteration is spent, nothing is requeued,
+the task ends as the kernel projects the owner's end, and `loopState` stays `condition_unmet`, so
+a later green check_suite or merge still settles the loop. Before this, the loop kept running
+passes that pushed commits the escalated delivery ignored, then failed the task over the
+escalation. Explain never calls a failed owner task with a live delivery "completed"
+(`taskFailed` on the unmerged PR). Tests: `loop-dispatcher-policy.test.ts` "an ESCALATED
+delivery stands the loop down"; `explain-because.test.ts` "a failed owner task whose PR is
+still live is not called completed".
 
 ### 13.13 Integration reviews, durable findings, repair builders and landing authority (#4686)
 

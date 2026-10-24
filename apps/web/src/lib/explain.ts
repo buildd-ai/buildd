@@ -1067,6 +1067,7 @@ export function kernelUnmergedPr(
     title: task.title,
     prNumber: d.prNumber,
     prUrl: worker?.prUrl ?? null,
+    ...(task.status === 'failed' ? { taskFailed: true as const } : {}),
     ...(closed ? { closedUnsuperseded: true as const } : {}),
     ...(suggestion ? { suggestion: suggestion as never } : {}),
     ...(refreshCheck ? { refreshCheck: refreshCheck as never } : {}),
@@ -1304,9 +1305,8 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
       ? {
           ok: false,
           code: 'awaiting_merge',
-          reason: unmergedPr[0].closedUnsuperseded
-            ? `Task completed but PR #${unmergedPr[0].prNumber} closed unmerged, no supersession recorded`
-            : `Task completed but PR #${unmergedPr[0].prNumber} has not merged`,
+          reason: `${unmergedPr[0].taskFailed ? 'Task failed, but' : 'Task completed but'} PR #${unmergedPr[0].prNumber} `
+            + (unmergedPr[0].closedUnsuperseded ? 'closed unmerged, no supersession recorded' : 'has not merged'),
           awaitingMerge: 1,
           awaitingMergeDetails: unmergedPr,
         }
