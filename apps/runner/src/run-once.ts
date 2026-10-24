@@ -236,7 +236,7 @@ const DEFERRED_TASK_EXCLUSION_CODES = new Set<string>([
   // Dispatch-loop deferrals (route.ts deferTask) — capacity/provider.
   'mission_budget', 'mission_concurrent', 'account_cap',
   'provider_unavailable', 'budget_paused', 'routing_paused', 'sibling_retry_open', 'awaiting_owner_answer',
-  'runner_capability', 'codex_single_flight', 'oauth_parallelism', 'ordered_behind', 'kernel_unavailable', 'kernel_refused',
+  'runner_capability', 'codex_single_flight', 'ordered_behind', 'kernel_unavailable', 'kernel_refused',
   'path_overlap', 'connector_mismatch', 'role_env_unsatisfied',
   // Cross-workspace reach not granted yet: held until a person grants it.
   'delegation_unmet',

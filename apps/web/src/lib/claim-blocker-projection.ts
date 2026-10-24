@@ -38,7 +38,7 @@ export type ClaimBlockerKind = 'credential_unavailable' | 'capacity_exhausted' |
 const CREDENTIAL_REASONS = new Set(['no_personal_credential', 'provider_unavailable']);
 const CAPACITY_REASONS = new Set([
   'mission_budget', 'mission_concurrent', 'budget_paused', 'managed_concurrency',
-  'managed_runner_hours', 'hosted_runner_hours', 'oauth_parallelism', 'codex_single_flight',
+  'managed_runner_hours', 'hosted_runner_hours', 'codex_single_flight',
 ]);
 
 export function claimBlockerKind(reason: string | null): ClaimBlockerKind | null {

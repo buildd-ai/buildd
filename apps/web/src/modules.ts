@@ -404,6 +404,16 @@ export const SPEC_DUPLICATE_CHECK = checkSpecDuplicates;
 export const SPEC_DUPLICATE_OVERRIDE = recordDuplicateOverride;
 
 /**
+ * The knowledge module's spec draft slot (lib/specs/knowledge.ts, R-106): after
+ * a revision is written, its draft head is indexed into the spec corpus once
+ * the response is out. Loaded on first use, like the similarity install below.
+ */
+export const SPEC_DRAFT_INDEX = async (specId: string): Promise<void> => {
+  const { scheduleSpecDraftIndex } = await import('@/lib/specs/knowledge');
+  scheduleSpecDraftIndex(specId);
+};
+
+/**
  * The decisions module's spec area slot (lib/spec-area-decision.ts): organize
  * (lib/specs/organize.ts) asks which area an unfiled spec belongs in, and a
  * person's move of a spec buildd filed is recorded on that filing's ledger row.

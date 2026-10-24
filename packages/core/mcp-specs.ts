@@ -86,16 +86,31 @@ function apiError(err: unknown): { status: number; body: Record<string, unknown>
   }
 }
 
+type DuplicateWarning = { specId: string; title: string; relation: string; p: number; pairs?: Array<{ here: string; there: string }>; draft?: boolean };
 type DuplicateCheckView =
-  | { ran: true; warnings: Array<{ specId: string; title: string; relation: string; p: number }> }
+  | { ran: true; warnings: DuplicateWarning[] }
   | { ran: false; reason: string };
+
+/** One overlapping spec, with the criteria matched side by side (R-104). */
+const warningLine = (w: DuplicateWarning): string => {
+  const pairs = (w.pairs ?? []).slice(0, 3).map((x) => `${x.here} here matches ${x.there} there`);
+  return `  ${w.title} (${w.specId})${w.draft ? ', a draft' : ''}: ${w.relation}, p ${w.p.toFixed(2)}${pairs.length ? `; ${pairs.join(', ')}` : ''}`;
+};
 
 /** What the duplicate check found, for the create reply. Empty when it found nothing. */
 const duplicateText = (d: DuplicateCheckView | null): string => {
   if (!d) return '';
   if (!d.ran) return `\nDuplicate check did not run: ${d.reason}.`;
   if (!d.warnings.length) return '';
-  return `\nOverlaps with approved specs (check the shared criteria; consider a common parent):\n${d.warnings.map((w) => `  ${w.title} (${w.specId}): ${w.relation}, p ${w.p.toFixed(2)}`).join('\n')}`;
+  return `\nOverlaps with other specs (check the shared criteria; consider a common parent):\n${d.warnings.map(warningLine).join('\n')}`;
+};
+
+/** R-105: what the check found in the criteria a revise added or changed. Warnings only: the revision is written. */
+const reviseDuplicateText = (d: DuplicateCheckView | null | undefined): string => {
+  if (!d) return '';
+  if (!d.ran) return `\nDuplicate check did not run: ${d.reason}.`;
+  if (!d.warnings.length) return '';
+  return `\nThe criteria you added or changed overlap other specs (the revision is written; check the shared criteria):\n${d.warnings.map(warningLine).join('\n')}`;
 };
 
 type AttachmentRow = {
@@ -196,7 +211,7 @@ export const WORKSPACE_SPEC_OPS = ['create_draft', 'list', 'organize', 'import',
 
 type AreaBy = 'classifier' | 'domain' | 'existing';
 type ImportRow = {
-  path: string; action: 'create' | 'reimport' | 'exists' | 'skip'; reason?: string; message?: string; specId?: string; revision?: number; spec?: { title: string };
+  path: string; action: 'create' | 'reimport' | 'exists' | 'skip' | 'retire'; reason?: string; message?: string; specId?: string; revision?: number; spec?: { title: string };
   area: { specId: string | null; title: string; proposed: boolean; by?: AreaBy; p?: number } | null;
   placement?: { by: AreaBy; reason?: string; p?: number };
   suggestion?: { specId: string | null; title: string; answer: string; p: number };
@@ -204,8 +219,9 @@ type ImportRow = {
   provenance?: { commitSha: string; prNumber: number | null }; duplicates?: Array<{ specId: string; title: string; relation: string; p: number; blocks?: boolean }>;
   existing?: { specId: string; title: string; url: string; matchedBy: string }; provenanceAttached?: boolean;
   criteria?: CriterionIdProblems;
+  retire?: { why: string; status: 'retired' | 'superseded'; supersededBy: { specId: string; title: string } | null };
 };
-type ImportReply = { dryRun?: boolean; repo?: string; commitSha?: string; files?: ImportRow[]; counts?: { create: number; reimport: number; exists?: number; skip: number }; byArea?: Array<{ area: string; areaSpecId: string | null; proposed: boolean; count: number; by?: AreaBy | null }>; limit?: number; remaining?: number; nextCursor?: string | null };
+type ImportReply = { dryRun?: boolean; repo?: string; commitSha?: string; files?: ImportRow[]; counts?: { create: number; reimport: number; exists?: number; skip: number; retire?: number }; byArea?: Array<{ area: string; areaSpecId: string | null; proposed: boolean; count: number; by?: AreaBy | null }>; limit?: number; remaining?: number; nextCursor?: string | null };
 
 /** The import params a continuation call repeats, as the caller passed them (cursor is added last). */
 const IMPORT_PARAMS = ['dryRun', 'ref', 'paths', 'allowDuplicates', 'limit', 'attach_provenance', 'attach_to'] as const;
@@ -233,7 +249,7 @@ export function importText(r: ImportReply, call: Record<string, unknown> = {}): 
   const files = r.files ?? [];
   const c = r.counts ?? { create: 0, reimport: 0, skip: 0 };
   const at = r.commitSha ? `${r.repo ?? 'the repo'}@${r.commitSha.slice(0, 7)}` : (r.repo ?? 'the repo');
-  const head = `${r.dryRun === false ? 'Imported' : 'Dry run (nothing written)'} from ${at}: ${c.create} to create, ${c.reimport} to re-import as a new revision, ${c.exists ? `${c.exists} already in buildd, ` : ''}${c.skip} skipped.`;
+  const head = `${r.dryRun === false ? 'Imported' : 'Dry run (nothing written)'} from ${at}: ${c.create} to create, ${c.reimport} to re-import as a new revision, ${c.exists ? `${c.exists} already in buildd, ` : ''}${c.retire ? `${c.retire} to retire, ` : ''}${c.skip} skipped.`;
   // Each file once: only creates and re-imports are listed by area; exists and skips have their own lists.
   const listed = files.filter((f) => f.action === 'create' || f.action === 'reimport');
   const groups = (r.byArea ?? []).map((a) => {
@@ -249,6 +265,13 @@ export function importText(r: ImportReply, call: Record<string, unknown> = {}): 
     ...exists.map((f) => `  exists: ${f.path} is "${f.existing!.title}" (${f.existing!.url}, matched by ${MATCHED_BY[f.existing!.matchedBy] ?? f.existing!.matchedBy})${f.provenanceAttached ? ', provenance recorded' : ''}`),
     ...(exists.some((f) => !f.provenanceAttached) ? ['  To record the repo path and commit on those specs instead: pass attach_provenance: true on a real run (dryRun: false).'] : []),
   ] : [];
+  // R-79: a removed or superseded file's spec, retired only when a person confirms the batch.
+  const retire = files.filter((f) => f.action === 'retire');
+  const retireLines = retire.length ? [
+    'Retire (the repo file was removed or marked superseded):',
+    ...retire.map((f) => `  retire: ${f.path} (${f.specId}): ${f.message}${f.retire?.supersededBy ? `, as superseded by ${f.retire.supersededBy.specId}` : ''}`),
+    '  Nothing is retired until a person confirms: confirm_import { specIds } with these specs retires them.',
+  ] : [];
   const skipped = files.filter((f) => f.action === 'skip');
   const skipLines = skipped.length ? [`Skipped:`, ...skipped.map((f) => `  ${f.path}: ${f.reason}${f.message ? `, ${f.message}` : ''}`)] : [];
   const next = r.dryRun === false
@@ -261,17 +284,19 @@ export function importText(r: ImportReply, call: Record<string, unknown> = {}): 
     args.push(`cursor: ${JSON.stringify(r.nextCursor)}`);
     more.push(`This page covered ${files.length} file(s); ${r.remaining} file(s) remain at the same commit. Continue with: manage_specs { ${args.join(', ')} }`);
   }
-  return [head, ...groups, ...existsLines, ...skipLines, ...more, next].join('\n');
+  return [head, ...groups, ...existsLines, ...retireLines, ...skipLines, ...more, next].join('\n');
 }
 
-type ConfirmReply = { confirmed?: Array<{ specId: string; title: string; path: string; commitSha: string }>; skipped?: Array<{ specId: string; path?: string; reason: string; message: string }>; pending?: { confirmUrl: string; specIds: string[] } };
+type ConfirmReply = { confirmed?: Array<{ specId: string; title: string; path: string; commitSha: string }>; retired?: Array<{ specId: string; title: string; path: string; status: string; reason: string }>; skipped?: Array<{ specId: string; path?: string; reason: string; message: string }>; pending?: { confirmUrl: string; specIds: string[] } };
 
 export function confirmImportText(r: ConfirmReply): string {
   if (r.pending) return `Nothing was confirmed: confirming an import is a person's act on buildd.dev. Open ${r.pending.confirmUrl} to confirm ${r.pending.specIds.length} spec(s).`;
   const ok = r.confirmed ?? [];
   const no = r.skipped ?? [];
-  return [`Confirmed ${ok.length} import(s)${no.length ? `, ${no.length} not confirmed` : ''}.`,
+  const gone = r.retired ?? [];
+  return [`Confirmed ${ok.length} import(s)${gone.length ? `, retired ${gone.length}` : ''}${no.length ? `, ${no.length} not confirmed` : ''}.`,
     ...ok.map((x) => `  confirmed: ${x.title} (${x.specId}) from ${x.path}@${x.commitSha.slice(0, 7)}`),
+    ...gone.map((x) => `  ${x.status}: ${x.title} (${x.specId}) from ${x.path}: ${x.reason}`),
     ...no.map((x) => `  not confirmed: ${x.path ?? x.specId}: ${x.reason}, ${x.message}`)].join('\n');
 }
 
@@ -362,7 +387,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
     case 'create_draft': {
       if (!workspaceId) throw new Error('workspaceId is required (no workspace in this session)');
       const payload: Record<string, unknown> = { workspaceId, title: need(params.title, 'title'), body: need(params.body, 'body (the spec text, Markdown)') };
-      for (const k of ['scope', 'parentSpecId', 'changeSummary', 'repoRefs', 'design', 'supersedes', 'distinctBecause'] as const) if (params[k] !== undefined) payload[k] = params[k];
+      for (const k of ['scope', 'parentSpecId', 'changeSummary', 'repoRefs', 'design', 'supersedes', 'distinctBecause', 'replaces'] as const) if (params[k] !== undefined) payload[k] = params[k];
       let spec;
       let duplicateCheck: DuplicateCheckView | null = null;
       let suggestedParent: { specId: string; title: string; reason: string } | null = null;
@@ -432,11 +457,12 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       if (params.changeSummary !== undefined) payload.changeSummary = params.changeSummary;
       if (params.repoRefs !== undefined) payload.repoRefs = params.repoRefs;
       if (params.design !== undefined) payload.design = params.design;
+      if (params.replaces !== undefined) payload.replaces = params.replaces;
       try {
         const r = await api(`/api/specs/${encodeURIComponent(specId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
         if (r.unchanged) return text(`Unchanged: the body and repo references match revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);
         const what = patch ? ' (find/replace applied, the rest kept)' : target ? ` (${'section' in target ? `section ${String(target.section)}` : `section "${String(target.heading)}"`} replaced, the rest kept)` : '';
-        return text(`Revised${what}: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).\nSpec URL: ${specUrl(specId)}${tipText(r.formatHints)}`);
+        return text(`Revised${what}: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).\nSpec URL: ${specUrl(specId)}${reviseDuplicateText(r.duplicateCheck)}${tipText(r.formatHints)}`);
       } catch (err) {
         const e = apiError(err);
         if (e?.status === 400 || e?.status === 502) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
@@ -454,12 +480,14 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       const specId = need(params.specId, 'specId');
       if (!Number.isInteger(params.expectedVersion)) throw new Error('expectedVersion (the version you read with get) is required');
       if (op === 'approve' && !Number.isInteger(params.revision)) throw new Error('revision (the head revision you read and are approving) is required');
-      const payload = op === 'approve' ? { revision: params.revision, expectedVersion: params.expectedVersion, via: params.via === 'chat' ? 'chat' : 'mcp' } : { expectedVersion: params.expectedVersion };
+      const payload = op === 'approve'
+        ? { revision: params.revision, expectedVersion: params.expectedVersion, ...(params.retire !== undefined ? { retire: params.retire } : {}), via: params.via === 'chat' ? 'chat' : 'mcp' }
+        : { expectedVersion: params.expectedVersion };
       try {
         const r = await api(`/api/specs/${encodeURIComponent(specId)}/${op}`, { method: 'POST', body: JSON.stringify(payload) });
         if (op === 'approve' && r.pending) {
           const warns = (r.pending.gate?.warnings ?? []) as Array<{ message: string }>;
-          return text(`Sent to ${r.pending.sentTo ?? 'the approver'} to confirm; gate passed${warns.length ? ` with ${warns.length} ${warns.length === 1 ? 'warning' : 'warnings'}` : ''}.\nNot approved yet: approving a spec is the person's own decision, so it waits for them to confirm revision ${r.pending.revision} of "${r.spec.title}" on buildd.dev: ${r.pending.confirmUrl}\nThe link works until ${r.pending.expiresAt}, and only while the spec stays at version ${r.spec.version}.${warns.length ? `\nWarnings:\n${warns.map((w) => `- ${w.message}`).join('\n')}` : ''}${r.pending.inboxUrl ? `\nEverything waiting for their approval: ${r.pending.inboxUrl}` : ''}\nSpec URL: ${specUrl(specId)}`);
+          return text(`Sent to ${r.pending.sentTo ?? 'the approver'} to confirm; gate passed${warns.length ? ` with ${warns.length} ${warns.length === 1 ? 'warning' : 'warnings'}` : ''}.\nNot approved yet: approving a spec is the person's own decision, so it waits for them to confirm (the link carries which replaced specs to retire) revision ${r.pending.revision} of "${r.spec.title}" on buildd.dev: ${r.pending.confirmUrl}\nThe link works until ${r.pending.expiresAt}, and only while the spec stays at version ${r.spec.version}.${warns.length ? `\nWarnings:\n${warns.map((w) => `- ${w.message}`).join('\n')}` : ''}${r.pending.inboxUrl ? `\nEverything waiting for their approval: ${r.pending.inboxUrl}` : ''}\nSpec URL: ${specUrl(specId)}`);
         }
         return text(op === 'approve'
           ? `Approved: revision ${r.revision.revision} of "${r.spec.title}" is now in force (sha256 ${r.revision.contentHash}). Version ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`

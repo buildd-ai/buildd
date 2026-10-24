@@ -143,8 +143,8 @@ export async function POST(req: NextRequest) {
     // Auto-creates the workspace bindings too.
     const { account, plaintextKey } = await mintApiKeyAccount(insertValues as Parameters<typeof mintApiKeyAccount>[0], selectedWorkspaces);
 
-    // For OAuth accounts, populate seatId from the team's Claude credential so
-    // groupOauthAccountsBySeatId works immediately without waiting for re-auth.
+    // For OAuth accounts, populate seatId from the team's Claude credential
+    // without waiting for re-auth.
     if (insertValues.authType === 'oauth' && account) {
       try {
         const cred = await resolveClaudeCredential({ teamId, accountId: account.id });

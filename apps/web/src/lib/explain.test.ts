@@ -408,7 +408,7 @@ describe('explainMission', () => {
     function deferralRow(over: Partial<Row> = {}): Row {
       return {
         taskId: 'task-1',
-        reason: 'oauth_parallelism',
+        reason: 'codex_single_flight',
         occurredAt: new Date(),
         detail: {
           consecutiveDeferrals: 24,
@@ -420,7 +420,7 @@ describe('explainMission', () => {
 
     it('drops the warning once the deferred task has left pending', async () => {
       missionRow = { id: 'mission-1', title: 'Build auth', workspaceId: 'ws-1', status: 'active', schedule: null };
-      taskRows = [task({ id: 'task-1', status: 'completed', title: 'OAuth parallelism' })];
+      taskRows = [task({ id: 'task-1', status: 'completed', title: 'Codex single flight' })];
       gateEventRows = [deferralRow()];
 
       const answer = (await explainMission('mission-1'))!.subjects[0];
@@ -430,7 +430,7 @@ describe('explainMission', () => {
 
     it('still reports the warning while the deferred task is pending', async () => {
       missionRow = { id: 'mission-1', title: 'Build auth', workspaceId: 'ws-1', status: 'active', schedule: null };
-      taskRows = [task({ id: 'task-1', status: 'pending', title: 'OAuth parallelism' })];
+      taskRows = [task({ id: 'task-1', status: 'pending', title: 'Codex single flight' })];
       gateEventRows = [deferralRow()];
 
       const answer = (await explainMission('mission-1'))!.subjects[0];

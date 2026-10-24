@@ -28,7 +28,6 @@
  * id. Under pressure, smaller-first moves above unblocking.
  */
 
-import { PARALLELISM_PRESSURE_FLOOR } from './oauth-budget';
 import type { ReadoutVerdict } from './orchestration-promotion';
 import { hasConcretePathManifest, intersectPaths, pathsOverlap, REPO_WIDE_SENTINEL, stripTrailingSep } from './path-overlap';
 
@@ -106,9 +105,6 @@ export interface PlannerInFlight extends PlannerScopeFields {
 export interface PlannerPressure {
   /** Share of the daily budget spent, in [0, 1]. */
   dailyBudgetPct: number | null;
-  /** Learned OAuth window pressure, in [0, 1]. */
-  oauthPressure: number | null;
-  confidence: 'none' | 'low' | 'good' | null;
 }
 
 export interface PlannerThresholds {
@@ -265,9 +261,7 @@ export function overlapFraction(a: string[], b: string[]): number {
 
 export function isUnderPressure(p: PlannerPressure | null): boolean {
   if (!p) return false;
-  const oauth = p.confidence === 'good' && p.oauthPressure != null && p.oauthPressure >= PARALLELISM_PRESSURE_FLOOR;
-  const daily = p.dailyBudgetPct != null && p.dailyBudgetPct >= DAILY_BUDGET_DOWNGRADE_FRACTION;
-  return oauth || daily;
+  return p.dailyBudgetPct != null && p.dailyBudgetPct >= DAILY_BUDGET_DOWNGRADE_FRACTION;
 }
 
 function toMs(v: number | string | Date): number {

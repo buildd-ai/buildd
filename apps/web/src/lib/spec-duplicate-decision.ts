@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
 import { db } from '@buildd/core/db';
 import { specRevisions, specs, workspaces } from '@buildd/core/db/schema';
-import { and, eq, isNotNull } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { choice } from '@buildd/ai-kit/decide';
 import type { DecisionKindConfig, DecisionRequest, DecisionResponse, ModelVerdict } from '@buildd/ai-kit/decide';
 import { defineBuilddDecisionKind, type BuilddDecisionKindBinding } from '@buildd/core/decision-kinds';
 import { runBuilddDecision, type BuilddDecisionScope } from '@buildd/core/decision-policy';
-import { specCard, tfidfRank, type SpecCard } from '@/lib/specs/card';
+import { specCard, type SpecCard } from '@/lib/specs/card';
 import { specDuplicateObjective } from '@/lib/spec-decision-gold';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { SPEC_RELATIONS, type DuplicateCandidate, type DuplicateCheck, type DuplicateCheckInput, type DuplicateOverride, type SpecRelation } from '@/lib/specs/duplicates';
@@ -17,9 +17,13 @@ export { specCard, type SpecCard };
 /**
  * Spec duplicates (Living Specs slice 5, R-22, D-13; docs/specs/living-specs.md
  * §13), the decisions-module half: the shortlist, the Jev kind and the check.
- * Core reaches it through the `SPEC_DUPLICATE_CHECK` slot in modules.ts. When a spec is created, the most similar approved specs in its
- * workspace are shortlisted by TF-IDF over their text, and the team's decision
- * model judges each pair: duplicate, overlap or distinct.
+ * Core reaches it through the `SPEC_DUPLICATE_CHECK` slot in modules.ts. When a spec is created, each of its criteria and
+ * sections is matched against the workspace's spec corpus in the knowledge
+ * store (R-104, lib/specs/knowledge.ts), the closest specs are shortlisted by
+ * spec, and the team's decision model judges each pair, the matched criteria
+ * side by side: duplicate, overlap or distinct. A revise is checked the same
+ * way on the criteria it adds or changes (R-105), and drafts are compared too
+ * (R-106); both only warn.
  *
  * - A duplicate at p >= DUPLICATE_BLOCK_P is refused unless the request says
  *   which spec it supersedes, or why it is distinct. Measured offline
@@ -30,6 +34,7 @@ export { specCard, type SpecCard };
  * - An overlap, or a duplicate below the bar, is a warning.
  * - The shortlist never decides: it ranked lookalike criteria above true
  *   paraphrases in the eval. It only picks what the model reads.
+ * - A draft candidate is only ever a warning: nothing is in force yet.
  * - Fail-open: no key, the capability off, a provider error or a timeout lets
  *   the spec through with a note that the check did not run.
  *
@@ -44,10 +49,6 @@ export const SPEC_DUPLICATE_CAPABILITY = 'spec_duplicate' as const;
 export const DUPLICATE_BLOCK_P = 0.9;
 /** At or above, an overlap is worth a warning. */
 export const OVERLAP_WARN_P = 0.5;
-export const SHORTLIST_SIZE = 5;
-/** Below this TF-IDF cosine a candidate is not worth a model call. */
-export const SHORTLIST_FLOOR = 0.05;
-const MAX_APPROVED_SCANNED = 300;
 const CARD_CHARS = 3000;
 
 export interface SpecPair { a: SpecCard; b: SpecCard }
@@ -65,11 +66,19 @@ const block = (label: string, c: SpecCard) => {
 /** The model's state: the measured format, the existing spec as A and the new one as B. */
 export const specPairState = (p: SpecPair): string => `${block('Spec A', p.a)}\n${block('Spec B', p.b)}`;
 
-// ── Shortlist: TF-IDF cosine, in process ────────────────────────────────────
-
-/** Rank `pool` by TF-IDF cosine to `query`, best first, above the floor, at most `k`. Pure. */
-export function tfidfShortlist<T extends { card: SpecCard }>(query: SpecCard, pool: readonly T[], k = SHORTLIST_SIZE, floor = SHORTLIST_FLOOR): Array<T & { score: number }> {
-  return tfidfRank(query, pool, k, floor);
+/**
+ * The pair with its matched criteria first on both cards, in the same order,
+ * so the model reads them side by side and the card cap never cuts them. The
+ * card format and the question are the measured ones. Pure.
+ */
+export function sideBySide(p: SpecPair, pairs: ReadonlyArray<{ here: string; there: string }>): SpecPair {
+  if (pairs.length === 0) return p;
+  const lead = (c: SpecCard, ids: string[]) => {
+    const idOf = (x: string) => x.slice(0, x.indexOf(':'));
+    const first = ids.flatMap((id) => c.criteria.filter((x) => idOf(x) === id)).filter((x, i, all) => all.indexOf(x) === i);
+    return { ...c, criteria: [...first, ...c.criteria.filter((x) => !first.includes(x))] };
+  };
+  return { a: lead(p.a, pairs.map((x) => x.there)), b: lead(p.b, pairs.map((x) => x.here)) };
 }
 
 // ── The decision kind ───────────────────────────────────────────────────────
@@ -136,24 +145,45 @@ export const specDuplicateKind = defineBuilddDecisionKind(SPEC_DUPLICATE_CONFIG,
 
 // ── The check ───────────────────────────────────────────────────────────────
 
+/** A spec the knowledge base matched, as the card the model reads. */
+export interface ShortlistedSpec {
+  specId: string; title: string; card: SpecCard;
+  /** The corpus match score (a cosine in vector mode). */
+  similarity: number;
+  draft: boolean;
+  pairs: Array<{ here: string; there: string }>;
+}
+
 export interface DuplicateCheckDeps {
-  /** The approved specs to compare against, as cards. */
-  approved?: (workspaceId: string) => Promise<Array<{ specId: string; title: string; card: SpecCard }>>;
+  /** The closest specs in the knowledge base, as cards. */
+  shortlist?: (input: DuplicateCheckInput) => Promise<ShortlistedSpec[]>;
   /** One model judgement, with the ledger row id it was recorded under. */
   judge?: (pair: SpecPair, scope: BuilddDecisionScope, subjectId: string) => Promise<{ response: DecisionResponse<string, SpecRelation>; recordId: string | null }>;
   teamOf?: (workspaceId: string) => Promise<string | null>;
 }
 
-async function approvedCards(workspaceId: string): Promise<Array<{ specId: string; title: string; card: SpecCard }>> {
-  const rows = await db.select({ id: specs.id, title: specs.title, bodyArtifactId: specs.bodyArtifactId, artifactRevision: specRevisions.artifactRevision })
-    .from(specs)
-    .innerJoin(specRevisions, and(eq(specRevisions.specId, specs.id), eq(specRevisions.revision, specs.approvedRevision)))
-    .where(and(eq(specs.workspaceId, workspaceId), isNotNull(specs.approvedRevision), isNotNull(specRevisions.approvedAt)))
-    .limit(MAX_APPROVED_SCANNED);
-  const out: Array<{ specId: string; title: string; card: SpecCard }> = [];
-  for (const r of rows) {
-    const body = await getArtifactRevision(r.bodyArtifactId, r.artifactRevision);
-    if (typeof body?.content === 'string') out.push({ specId: r.id, title: r.title, card: specCard(r.title, body.content) });
+/** The shortlist from the spec corpus (R-104), each spec read at the revision the corpus holds. */
+async function corpusShortlist(input: DuplicateCheckInput): Promise<ShortlistedSpec[]> {
+  const { specCorpusShortlist } = await import('@/lib/specs/knowledge');
+  const matches = await specCorpusShortlist({
+    workspaceId: input.workspaceId, title: input.title, body: input.body,
+    criteria: input.criteria, excludeSpecId: input.excludeSpecId, drafts: input.drafts !== false,
+  });
+  if (matches.length === 0) return [];
+  const rows = await db.select({ id: specs.id, title: specs.title, status: specs.status, bodyArtifactId: specs.bodyArtifactId, approvedRevision: specs.approvedRevision, headRevision: specs.headRevision })
+    .from(specs).where(and(eq(specs.workspaceId, input.workspaceId), inArray(specs.id, matches.map((m) => m.specId))));
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const out: ShortlistedSpec[] = [];
+  for (const m of matches) {
+    const r = byId.get(m.specId);
+    if (!r || r.status === 'retired' || r.status === 'superseded') continue;
+    const n = m.revision ?? (m.draft ? r.headRevision : r.approvedRevision);
+    if (n === null) continue;
+    const [rev] = await db.select({ artifactRevision: specRevisions.artifactRevision }).from(specRevisions)
+      .where(and(eq(specRevisions.specId, r.id), eq(specRevisions.revision, n))).limit(1);
+    const body = rev ? await getArtifactRevision(r.bodyArtifactId, rev.artifactRevision) : null;
+    if (typeof body?.content !== 'string') continue;
+    out.push({ specId: r.id, title: r.title, card: specCard(r.title, body.content), similarity: m.score, draft: m.draft, pairs: m.pairs.map((x) => ({ here: x.here, there: x.there })) });
   }
   return out;
 }
@@ -177,8 +207,8 @@ async function teamOfWorkspace(workspaceId: string): Promise<string | null> {
 export const digest = (c: SpecCard) => createHash('sha256').update(JSON.stringify(c)).digest('hex').slice(0, 16);
 
 /**
- * Compare a new spec with its workspace's approved specs. Never throws: any
- * failure comes back as `{ ran: false, reason }`.
+ * Compare a new spec (or a revise's added or changed criteria) with the
+ * workspace's specs. Never throws: any failure comes back as `{ ran: false, reason }`.
  */
 export async function checkSpecDuplicates(
   input: DuplicateCheckInput,
@@ -187,27 +217,34 @@ export async function checkSpecDuplicates(
   try {
     const teamId = await (deps.teamOf ?? teamOfWorkspace)(input.workspaceId);
     if (!teamId) return { ran: false, reason: 'the workspace has no team' };
-    const pool = (await (deps.approved ?? approvedCards)(input.workspaceId)).filter((p) => p.specId !== input.excludeSpecId);
-    const card = specCard(input.title, input.body);
-    const shortlist = tfidfShortlist(card, pool);
+    const shortlist = (await (deps.shortlist ?? corpusShortlist)(input)).filter((p) => p.specId !== input.excludeSpecId);
     if (shortlist.length === 0) return { ran: true, blocking: [], warnings: [], compared: 0 };
+    const card = specCard(input.title, input.body);
+    // A revise is judged on what it added or changed.
+    const only = input.criteria ? new Set(input.criteria) : null;
+    const asked: SpecCard = only ? { ...card, criteria: card.criteria.filter((x) => only.has(x.slice(0, x.indexOf(':')))) } : card;
     const scope: BuilddDecisionScope = { teamId, workspaceId: input.workspaceId, userId: input.userId ?? null, accountId: input.accountId ?? null };
     const judge = deps.judge ?? judgeOnce;
     const results = await Promise.all(shortlist.map(async (c) => {
-      const { response, recordId } = await judge({ a: c.card, b: card }, scope, `${c.specId}:${digest(card)}`);
+      // The subject id hashes the whole new card, as the grader re-derives it.
+      const { response, recordId } = await judge(sideBySide({ a: c.card, b: asked }, c.pairs), scope, `${c.specId}:${digest(card)}`);
       return { c, response, recordId };
     }));
     // Nothing answered: the capability is off, there is no key, or the provider failed.
     if (results.every((r) => r.response.source !== 'model')) {
       const cause = results[0]?.response.fallbackCause ?? 'unavailable';
-      return { ran: false, reason: cause === 'disabled' ? 'spec duplicate checks are off for this team' : cause === 'no_provider' ? 'this team has no decision-model key' : `the decision model did not answer (${cause})` };
+      return { ran: false, reason: cause === 'disabled' ? 'spec duplicate checks are off for this team' : cause === 'no_provider' ? 'this team has no decision model set up' : `the decision model did not answer (${cause})` };
     }
     const blocking: DuplicateCandidate[] = [];
     const warnings: DuplicateCandidate[] = [];
     for (const { c, response, recordId } of results) {
       if (response.source !== 'model' || response.confidence === null) continue;
-      const cand: DuplicateCandidate = { specId: c.specId, title: c.title, relation: response.decision, p: response.confidence, similarity: Number(c.score.toFixed(3)), decisionRecordId: recordId };
-      if (response.decision === 'duplicate' && response.confidence >= DUPLICATE_BLOCK_P) blocking.push(cand);
+      const cand: DuplicateCandidate = {
+        specId: c.specId, title: c.title, relation: response.decision, p: response.confidence, similarity: Number(c.similarity.toFixed(3)), decisionRecordId: recordId,
+        ...(c.pairs.length ? { pairs: c.pairs } : {}), ...(c.draft ? { draft: true } : {}),
+      };
+      // A draft is not in force: it never refuses, only warns (R-106).
+      if (response.decision === 'duplicate' && response.confidence >= DUPLICATE_BLOCK_P && !c.draft) blocking.push(cand);
       else if (response.decision === 'duplicate' || (response.decision === 'overlap' && response.confidence >= OVERLAP_WARN_P)) warnings.push(cand);
     }
     return { ran: true, blocking, warnings, compared: results.length };
