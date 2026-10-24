@@ -1,6 +1,7 @@
 ---
 title: Claim Overlap Scheduling
-status: draft
+status: superseded
+superseded_by: 'living-spec:Overlap scheduling: serial lanes and file locks'
 owner: max
 last_verified: 2026-10-18
 summary: Overlapping work MUST start by default, undeclared scope included; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, hard surfaces) and only while its holder is live.
