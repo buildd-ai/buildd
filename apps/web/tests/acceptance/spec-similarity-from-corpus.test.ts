@@ -35,7 +35,7 @@ function fakeStore(answer: (text: string) => Array<{ specId: string; revision: n
     query: async (namespace: string, params: { text: string } & Record<string, unknown>) => {
       queries.push({ namespace, text: params.text, params });
       return answer(params.text).map((h) => ({
-        id: h.criterionId ? `${h.specId}@${h.revision}#${h.criterionId}` : `living-spec:${h.specId}#1`,
+        id: h.criterionId ? `living-spec:${h.specId}@${h.revision}#${h.criterionId}` : `living-spec:${h.specId}#1`,
         namespace, corpus: 'spec', sourceType: 'living_spec', sourcePath: null, sourceUrl: null,
         content: h.content ?? `${h.criterionId ?? 'text'}`,
         metadata: { specId: h.specId, revision: h.revision, ...(h.criterionId ? { criterionId: h.criterionId, criterion: h.criterionId } : {}), ...(h.draft ? { draft: true } : {}) },
@@ -87,14 +87,14 @@ describe('R-102: criteria are indexed one per chunk, and the reason names them',
     '## Empty state', '', '- AC-4: An empty basket shows a friendly message.', '',
   ].join('\n');
 
-  it('R-102: an approved revision is one chunk per criterion, keyed <specId>@<revision>#<id>, carrying its id and section', async () => {
+  it('R-102: an approved revision is one chunk per criterion, keyed living-spec:<specId>@<revision>#<id>, carrying its id and section', async () => {
     const chunks = await buildLivingSpecChunks({
       specId: ME, workspaceId: WS, title: 'Basket', body, revision: 2, contentHash: 'h', parentSpecId: null, scope: 'feature',
       approvedAt: new Date('2026-10-11T12:00:00Z'), sourceUrl: 'https://example.test/s',
     });
     const byId = new Map(chunks.map((c) => [c.id, c]));
-    for (const id of ['R-7', 'AC-3', 'AC-4']) expect(byId.has(`${ME}@2#${id}`)).toBe(true);
-    const ac4 = byId.get(`${ME}@2#AC-4`)!;
+    for (const id of ['R-7', 'AC-3', 'AC-4']) expect(byId.has(`living-spec:${ME}@2#${id}`)).toBe(true);
+    const ac4 = byId.get(`living-spec:${ME}@2#AC-4`)!;
     expect(ac4.content).toContain('friendly message');
     expect(JSON.stringify(ac4.metadata)).toContain('AC-4');
     expect(JSON.stringify(ac4.metadata)).toContain('Empty state');
