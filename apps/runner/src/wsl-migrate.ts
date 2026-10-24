@@ -99,6 +99,8 @@ export interface MigrateDeps {
     hold: () => Promise<{ ok: boolean; message: string }>;
     /** What the Windows runner is running now; [] when no runner answers. */
     activeWork: () => Promise<{ title: string; status: string }[] | { error: string }>;
+    /** Pending tasks pinned to the Windows runner; undefined when not available. */
+    pendingPinned?: () => Promise<{ title: string }[]>;
   };
 }
 
@@ -387,6 +389,13 @@ export async function runWslMigrate(args: MigrateArgs, deps: MigrateDeps): Promi
     // A person may start work on a held runner (claims they make still run): wait for it too.
     const err = await drain();
     if (err) return stuck(`The Windows runner did not say what it is running: ${err}`);
+    // List pending tasks pinned to the Windows runner before removing it.
+    const pending = deps.windows.pendingPinned ? await deps.windows.pendingPinned() : [];
+    if (pending.length > 0) {
+      for (const task of pending) {
+        log(`  ${task.title} waits for the Windows runner until re-filed or unpinned.`);
+      }
+    }
     const removed = uninstallService(deps.paths, 'win32', run);
     if (!removed.ok) return stuck(`Could not remove the Windows runner's Scheduled Task: ${removed.message}`);
     log(`  Windows runner: ${removed.message}`);

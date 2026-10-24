@@ -331,12 +331,7 @@ describe('the Windows launcher', () => {
 
 // Acceptance criteria (Living Spec a0b82b5d, part 3): one test per check id.
 //
-// The AC-16 test below describes behaviour nobody has
-// built yet, so they are red by design. They are skipped in the gating run and only execute with
-// BUILDD_RUN_PENDING_ACCEPTANCE=1 (that is how the starting-commit failure is
-// shown). The build that makes them pass MUST swap `pendingTest` back to `test`.
 // AC-18 (docs repo) and AC-20 (real machine) have no unit test by design.
-const pendingTest = process.env.BUILDD_RUN_PENDING_ACCEPTANCE ? test : test.skip;
 describe('acceptance criteria', () => {
   test('AC-10: an active task blocks the handover; the Scheduled Task is removed only once it finishes, never stopped', async () => {
     const t = machine({ active: [[{ title: 'Ship the thing', status: 'working' }], []] });
@@ -445,11 +440,8 @@ describe('acceptance criteria', () => {
     expect(mutating(t.calls)).toEqual([]);
   });
 
-  // Not yet built: nothing in runWslMigrate looks up tasks pinned to the
-  // Windows runner before removing it (R-25, R-16) — there is no dependency
-  // for it to read that from. This names the shape such a check would need;
-  // it fails now because migrate never calls it or mentions a pinned task.
-  pendingTest('AC-16: a pending task pinned to the Windows runner is listed before migrate removes it', async () => {
+  // Looks up tasks pinned to the Windows runner before removing it (R-25, R-16).
+  test('AC-16: a pending task pinned to the Windows runner is listed before migrate removes it', async () => {
     const t = machine();
     const deps = t.deps();
     (deps.windows as typeof deps.windows & { pendingPinned?: () => Promise<{ title: string }[]> }).pendingPinned =
