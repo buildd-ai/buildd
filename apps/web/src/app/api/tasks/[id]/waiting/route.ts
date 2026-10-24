@@ -8,6 +8,7 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { probeCoordination } from '@/lib/coordination-probe';
 import { blockingReasons, coordinationHoldBody, readForceStart } from '@buildd/core/waiting-reason';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { loadStartAnywayView } from '@/lib/start-anyway-view';
 
 /**
  * GET /api/tasks/[id]/waiting
@@ -18,7 +19,9 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
  * runner-liveness copy. Read-only. A non-pending task has no reasons.
  *
  * Body: { waitingReasons, reasonsDigest?, canForce?, force?, notForceable?,
- *         forceStart? (an unexpired intent awaiting its claim), probed }
+ *         forceStart? (an unexpired intent awaiting its claim),
+ *         startAnyway? (lib/start-anyway-view.ts: requested, assessing, working
+ *         or blocked on its prerequisite, for any open task), probed }
  */
 export async function GET(
   req: NextRequest,
@@ -45,17 +48,20 @@ export async function GET(
     : await verifyAccountWorkspaceAccess(account!, task.workspaceId);
   if (!allowed) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
 
-  if (task.status !== 'pending') return NextResponse.json({ waitingReasons: [], probed: true });
+  const startAnyway = await loadStartAnywayView(task).catch(() => null);
+  const sa = startAnyway ? { startAnyway } : {};
+  if (task.status !== 'pending') return NextResponse.json({ waitingReasons: [], ...sa, probed: true });
 
   const now = new Date();
   const reasons = await probeCoordination(task as any, now);
   const forceStart = readForceStart(task.context as Record<string, unknown> | null, now);
-  if (reasons === null) return NextResponse.json({ waitingReasons: [], probed: false });
+  if (reasons === null) return NextResponse.json({ waitingReasons: [], ...sa, probed: false });
   const blocking = blockingReasons(reasons);
   return NextResponse.json({
     ...(blocking.length > 0 ? coordinationHoldBody(blocking) : {}),
     waitingReasons: reasons,
-    ...(forceStart ? { forceStart: { kinds: forceStart.kinds, expiresAt: forceStart.expiresAt } } : {}),
+    ...(forceStart ? { forceStart: { kinds: forceStart.kinds, expiresAt: forceStart.expiresAt, ...(forceStart.assessDependsOn ? { assessDependsOn: forceStart.assessDependsOn } : {}) } } : {}),
+    ...sa,
     probed: true,
   });
 }
