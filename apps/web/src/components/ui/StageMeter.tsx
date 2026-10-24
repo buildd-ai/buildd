@@ -42,6 +42,11 @@ const IMPLIED_STAGE: Partial<Record<StageMeterState, StageMeterStage>> = {
   build: 'build', 'fixing-in-build': 'build', verify: 'verify', 'fixing-in-verify': 'verify', deliver: 'deliver',
 };
 
+/** The segment a delivery's meter lights: the state's own stage, else the given one (default `build`). */
+export function meterStage(state: StageMeterState, stage?: StageMeterStage): StageMeterStage {
+  return IMPLIED_STAGE[state] ?? stage ?? 'build';
+}
+
 /** The pattern the current segment takes in each state. Done segments are always `done`, later ones `empty`. */
 const CURRENT_PATTERN: Record<StageMeterState, StageSegmentPattern> = {
   queued: 'dashed',
@@ -108,7 +113,7 @@ function segmentStyle(p: StageSegmentPattern, state: StageMeterState): CSSProper
  * name; the segments are decoration. Spec 9430a28f r2 R-9.
  */
 export default function StageMeter({ stage, state, fixRounds = 0, label, className = '', 'data-testid': testId }: StageMeterProps) {
-  const current = IMPLIED_STAGE[state] ?? stage ?? 'build';
+  const current = meterStage(state, stage);
   const at = STAGES.indexOf(current);
   const mark = markFor(state, fixRounds);
   return (
