@@ -97,7 +97,7 @@ function ClosedPrRow({ missionId, item, named }: { missionId: string; item: Clos
           </a>
           <span className="text-text-muted"> · {s.why}</span>
           {evidence === 'unavailable' && (
-            <span data-testid="closed-pr-proof-unavailable" className="text-text-muted"> · not checked yet, so neither confirmed nor ruled out</span>
+            <span data-testid="closed-pr-proof-unavailable" className="text-text-muted"> · not checked</span>
           )}
         </p>
       ) : (

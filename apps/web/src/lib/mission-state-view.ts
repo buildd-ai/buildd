@@ -2466,10 +2466,10 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       if (waitingOn.refreshChecks?.length && waitingOn.refreshChecks.length === waitingOn.count) {
         const outcomes = new Set(waitingOn.refreshChecks.map(r => r.refreshCheck.outcome));
         if (outcomes.size === 1 && outcomes.has('landed')) {
-          return 'GitHub will not let this PR merge, and its refresh work is verified in the integration branch, so nothing is lost by its closure. Have the owner mark it abandoned with that reason (Abandon on the mission page).';
+          return 'Refresh work is in the integration branch. Mark the PR abandoned (Abandon on the mission page).';
         }
         if (outcomes.has('unique_work')) {
-          return 'GitHub will not let this PR merge, and the integration branch is missing work it carries (a migration or changed lines). Land that work on the branch, through a new refresh or a PR, before the owner marks it abandoned; abandoning it now drops the work.';
+          return 'Integration branch is missing work this PR carries (a migration or changed lines). Land it through a new refresh or PR before abandoning.';
         }
       }
       return 'GitHub will not let this PR merge. Record a supersession (record_pr_supersession) if the work merged under a different PR, or have the owner mark the PR abandoned with a reason (POST /api/tasks/[id]/closed-pr, or Abandon on the mission page) if the work will not merge.';

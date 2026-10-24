@@ -459,9 +459,9 @@ describe('deriveMissionStateView — awaiting merge', () => {
     const unavailable = viewFor({ outcome: 'unavailable', branch: 'mission/m', reason: 'could not read', at });
 
     expect(landed.situation.headline).toContain('refresh work is already in');
-    expect(landed.nextAction).toContain('nothing is lost');
+    expect(landed.nextAction).toContain('Refresh work is in the integration branch');
     expect(unique.situation.headline).toContain('is missing work it carries');
-    expect(unique.nextAction).toContain('abandoning it now drops the work');
+    expect(unique.nextAction).toContain('Land it through a new refresh or PR before abandoning');
     expect(unavailable.situation.headline).toContain('could not be checked');
     for (const v of [landed, unique, unavailable]) expect(v.situation.headline).not.toContain('likely superseded');
     // The mission still cannot complete on any of them: a closed refresh is a person's to settle.
