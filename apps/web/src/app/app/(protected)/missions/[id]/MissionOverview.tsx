@@ -51,6 +51,12 @@ export interface MissionOverviewProps extends BoardLinkContext {
   completionText?: string | null;
   /** What the strip cannot say (a decision gate, the integration PR). */
   notice?: ReactNode;
+  /**
+   * The mission's situation, by stage. Build draws none of a failed task, an
+   * unmet criterion or the visual audit (rows, a decision card and Verify
+   * own those, R-14 to R-20); Verify and Deliver draw all of it.
+   */
+  situation?: { build: ReactNode; verify: ReactNode };
   visual?: VisualReviewModel | null;
   /** The checks that apply after the build (spec f7f67f1a R-11 to R-22). Absent: the build view only. */
   checks?: MissionChecksSource | null;
@@ -80,7 +86,7 @@ export default function MissionOverview(props: MissionOverviewProps) {
 }
 
 function OverviewView({
-  model: serverModel, completionText = null, notice, visual: _visual, review,
+  model: serverModel, completionText = null, notice, situation, visual: _visual, review,
   checks: checksSource = null, planTasks = null, held = false, outcomeSpecTitles = null,
   decisions = [], history = null, expectedMinutes, ...link
 }: MissionOverviewProps & { review: MissionVisualReviewValue | null }) {
@@ -149,6 +155,7 @@ function OverviewView({
         <>
           {cards}
           {history && <HistoryRaisedLine item={history} missionId={link.missionId} />}
+          {situation?.build}
           {notice}
           {showAsk && <MissionVisualAsk review={review} board={model} />}
           {model.phases.length === 0 && model.planning && <PlanningPlaceholder planning={model.planning} now={now} link={link} />}
@@ -166,6 +173,7 @@ function OverviewView({
           </BuildCompleteBar>
           {cards}
           {history && <HistoryRaisedLine item={history} missionId={link.missionId} />}
+          {situation?.verify}
           {notice}
           {showAsk && <MissionVisualAsk review={review} board={model} />}
           {handoff && <ChecksCard rows={listed(handoff.rows)} onOpenTask={openTask} />}
@@ -180,6 +188,7 @@ function OverviewView({
             <span aria-hidden="true" className="state-cell inline-block h-3.5 w-3.5 shrink-0 self-center rounded-[var(--radius-cell)]" data-tone="ok" data-pattern="solid" />
             {`${termWord('mission.done')} · merged into ${checksSource?.target ?? where}`}
           </p>
+          {situation?.verify}
           {notice}
           <details data-testid="mission-requirements-fold" className="group">
             <summary className="flex min-h-11 cursor-pointer list-none items-baseline gap-x-2 text-body md:min-h-0">

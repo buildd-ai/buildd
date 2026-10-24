@@ -49,7 +49,12 @@ export type DecisionAnswer =
    * choices (the review is wrong or stuck, ship it anyway), offered under
    * Answer differently.
    */
-  | { kind: 'visual'; missionId: string; reviewHref: string; markFixed: { artifactIds: string[]; expected: Record<string, string> }[]; startKey: string | null; skips: string[] };
+  | { kind: 'visual'; missionId: string; reviewHref: string; markFixed: { artifactIds: string[]; expected: Record<string, string> }[]; startKey: string | null; skips: string[] }
+  /**
+   * The mission's goal-criteria escalation: the primary option files the work
+   * (a link), the alternative waives and completes (a PATCH on the mission).
+   */
+  | { kind: 'criteria'; missionId: string; fileWorkHref: string };
 
 export interface DecisionView {
   key: string;

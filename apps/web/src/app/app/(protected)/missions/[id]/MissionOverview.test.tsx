@@ -323,3 +323,43 @@ describe('A visual review waiting on a person (Navigation R-16, R-18)', () => {
     expect(out).not.toContain('→');
   });
 });
+
+describe('MissionOverview build stage: one failed task and a goal-criteria escalation (Navigation R-14, R-16 to R-20)', () => {
+  const { criteriaEscalationDecision } = require('@/lib/mission-decisions') as typeof import('@/lib/mission-decisions');
+  const board = dagBoard({ tasks: ['A', 'B'], edges: { B: ['A'] }, states: { A: 'failed' } });
+  const decision = criteriaEscalationDecision({
+    missionId: 'mission-1',
+    reading: 'Check not verified: Spec "Cloud runner: deploy from Settings in one step" revision 1.',
+    criterion: 'Spec "Cloud runner: deploy from Settings in one step" revision 1',
+    fileWorkHref: '/app/tasks/new?from=mission-1',
+    mission: { id: 'mission-1', title: 'Cloud runner', href: '/app/missions/mission-1' },
+    askedAt: null,
+  });
+  const out = renderToStaticMarkup(<MissionOverview model={board} missionId="mission-1" decisions={[decision]} />);
+
+  it('draws no `A task failed` banner, no Open button and no verification link', () => {
+    expect(out).not.toContain('A task failed');
+    expect(out).not.toContain('Open the failed task');
+    expect(out).not.toContain('run verification');
+    expect(out).not.toContain('Goal criteria');
+    expect(out).not.toContain('Waive and complete</p>');
+  });
+
+  it('the failed task leads the list as `Failed ·` with Retry and Cancel', () => {
+    const list = out.slice(out.indexOf('data-testid="mission-task-list"'));
+    expect(list.indexOf('data-state="failed"')).toBeGreaterThanOrEqual(0);
+    expect(list.indexOf('data-state="failed"')).toBeLessThan(list.indexOf('data-state="waiting"') === -1 ? Infinity : list.indexOf('data-state="waiting"'));
+    expect(list).toMatch(/Failed/);
+    expect(list).toContain('data-testid="task-row-retry"');
+    expect(list).toContain('data-testid="task-row-cancel"');
+  });
+
+  it('the escalation is a DecisionCard with a question and two options, each with its effect', () => {
+    const card = out.slice(out.indexOf('data-testid="decision-card"'));
+    expect(card).toContain('Ship without the &quot;Cloud runner: deploy from Settings in one step&quot; check?');
+    expect(card).toContain('File the work');
+    expect(card).toContain('Waive and complete');
+    expect((card.match(/data-testid="decision-option-effect"/g) ?? []).length).toBe(2);
+    expect(card).toContain('data-testid="decision-not-now"');
+  });
+});
