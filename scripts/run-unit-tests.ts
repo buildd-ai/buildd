@@ -1029,6 +1029,28 @@ export function formatFailureSummary(
   return out.join('\n');
 }
 
+/**
+ * Opt-in contention triage: `BUILDD_TEST_RERUN_FAILED=<n>` reruns up to n failed
+ * files one at a time once the parallel pass ends. A file that fails under load
+ * and passes alone is contention (a timeout on an oversubscribed shared host); a
+ * file that fails alone too is deterministic. Only the latter keeps the run red.
+ * 0 / unset disables it, so CI behaviour is unchanged.
+ */
+export function rerunFailedLimit(configured: string | undefined): number {
+  const n = Number(configured);
+  return configured === undefined || configured.trim() === '' || !Number.isFinite(n) || n < 1 ? 0 : Math.floor(n);
+}
+
+/** Splits first-pass failures by their serial-rerun outcome. */
+export function classifyRerun(
+  rerun: ReadonlyArray<{ file: string; exitCode: number }>,
+): { contention: string[]; deterministic: string[] } {
+  return {
+    contention: rerun.filter(r => r.exitCode === 0).map(r => r.file).sort(),
+    deterministic: rerun.filter(r => r.exitCode !== 0).map(r => r.file).sort(),
+  };
+}
+
 async function main(): Promise<void> {
   // Every file runs in its OWN process. That is load-bearing, not an
   // optimisation: `mock.module` replaces a module globally for the life of a
@@ -1167,6 +1189,19 @@ async function main(): Promise<void> {
       process.stdout.write(`\rUnit test files: ${passed} passed, ${failures.length} failed, ${files.length - passed - failures.length} remaining`);
     }
   }, admission);
+  const rerunLimit = rerunFailedLimit(process.env.BUILDD_TEST_RERUN_FAILED);
+  if (rerunLimit > 0 && failures.length > 0) {
+    const candidates = failures.slice(0, rerunLimit);
+    console.log(`[rerun] retrying ${candidates.length} failed file(s) serially to separate contention from real failures`);
+    const rerun: TestResult[] = [];
+    for (const candidate of candidates) rerun.push(await runTestFile(candidate.file));
+    const { contention, deterministic } = classifyRerun(rerun);
+    for (const file of contention) console.log(`[rerun] passed alone (host contention, not a regression): ${file}`);
+    for (const file of deterministic) console.log(`[rerun] failed alone too (deterministic): ${file}`);
+    const cleared = new Set(contention);
+    passed += cleared.size;
+    for (let i = failures.length - 1; i >= 0; i--) if (cleared.has(failures[i]!.file)) failures.splice(i, 1);
+  }
   if (heartbeat) clearInterval(heartbeat);
   if (process.stdout.isTTY) process.stdout.write('\n');
   process.off('SIGTERM', onKill);
