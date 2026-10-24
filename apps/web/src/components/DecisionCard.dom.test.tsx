@@ -143,6 +143,33 @@ describe('DecisionCard', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('an option label wraps inside the card instead of running past it (no sideways scroll at 320)', () => {
+    act(() => root.render(<DecisionCard view={decision()} now={T0} />));
+    for (const o of qa('[data-testid="decision-option"]')) {
+      expect(o.className).toContain('whitespace-normal');
+      expect(o.className).toContain('h-auto');
+      expect(o.className).toContain('[overflow-wrap:anywhere]');
+      expect(o.className).toContain('w-full');
+    }
+    // Side by side when they fit, each growing to share the row.
+    expect(q('[data-testid="decision-options"]')!.className).toContain('flex-wrap');
+  });
+
+  it('with no structured options the card is the question and Answer differently, no dark bar', async () => {
+    const view = decisionFromQuestion({
+      key: 'note:n2', question: { headline: 'Keep the legacy export?', body: null, noteId: 'n2', options: [{ label: 'Kept the export since two teams still read it', recommended: true }] },
+      task: null, mission: { id: 'm1', title: 'Billing exports', href: '/app/missions/m1' }, askedAt: T0,
+      answer: { kind: 'note', missionId: 'm1', noteId: 'n2' },
+    });
+    act(() => root.render(<DecisionCard view={view} now={T0} />));
+    expect(qa('[data-testid="decision-option"]')).toHaveLength(0);
+    expect(container.querySelector('.btn-ink')).toBeNull();
+    expect(q('[data-testid="decision-question"]')!.textContent).toBe('Keep the legacy export?');
+    expect(q('[data-testid="decision-answer-form"]')).toBeNull();
+    await act(async () => { q('[data-testid="decision-answer-differently"]')!.click(); });
+    expect(q('[data-testid="decision-answer-form"] input')).not.toBeNull();
+  });
+
   it('an approval is Approve and Request changes as links to the diff, with no keyboard shortcut', async () => {
     const view = approvalView({
       key: 'a:t2', task: { id: 't2', title: 'Requester trigger and backfill', href: '/app/tasks/t2' }, askedAt: T0 - 60_000,

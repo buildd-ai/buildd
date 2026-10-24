@@ -144,7 +144,12 @@ jobs:
       contents: read
       packages: write
     outputs:
-      dockerhub_ref: ${{ steps.dockerhub.outputs.ref }}
+      # The digest only, never the ref. The ref embeds the Docker Hub namespace,
+      # which is usually the DOCKERHUB_USERNAME secret, and GitHub drops any job
+      # output containing a secret's value ("may contain a secret"), leaving the
+      # bundle job an empty string. The bundle job rebuilds the ref from the
+      # DOCKERHUB_IMAGE variable.
+      dockerhub_digest: ${{ steps.dockerhub.outputs.digest }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -291,7 +296,7 @@ jobs:
             echo "::error::Pushed docker.io/$DOCKERHUB_IMAGE:$TAG but could not read its digest back (got '${DIGEST}')."
             exit 1
           fi
-          echo "ref=docker.io/$DOCKERHUB_IMAGE@$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           echo "| Docker Hub | \`docker.io/$DOCKERHUB_IMAGE@$DIGEST\` |" >> "$GITHUB_STEP_SUMMARY"
 
   # The release asset a server-side deploy reads: the Worker bundle, its
@@ -319,10 +324,16 @@ jobs:
       - name: Build and attach the cloud runner bundle
         env:
           TAG: ${{ needs.plan.outputs.tag }}
-          DOCKERHUB_REF: ${{ needs.publish.outputs.dockerhub_ref }}
+          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
+          DOCKERHUB_DIGEST: ${{ needs.publish.outputs.dockerhub_digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          if [ -z "${DOCKERHUB_IMAGE:-}" ] || [ -z "${DOCKERHUB_DIGEST:-}" ]; then
+            echo "::error::Missing Docker Hub image (variable DOCKERHUB_IMAGE='${DOCKERHUB_IMAGE:-}') or digest ('${DOCKERHUB_DIGEST:-}') from the publish job; no bundle written."
+            exit 1
+          fi
+          DOCKERHUB_REF="docker.io/$DOCKERHUB_IMAGE@$DOCKERHUB_DIGEST"
           OUT="$RUNNER_TEMP/cloud-runner-$TAG.json"
           bun apps/cloud-runner/scripts/build-release-bundle.ts --tag "$TAG" --out "$OUT" --image "$DOCKERHUB_REF"
           gh release upload "$TAG" "$OUT" --clobber --repo "$GITHUB_REPOSITORY"

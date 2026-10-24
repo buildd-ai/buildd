@@ -60,6 +60,7 @@ export type InferenceCapability =
   | 'spec_area'
   | 'spec_taxonomy'
   | 'spec_publication'
+  | 'red_check_cause'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -366,6 +367,17 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Spec publication',
     description: 'Before an approved spec is written to the repo, a decision model reads the workspace\'s publication policy and the spec and says whether it may be published. When in doubt the spec stays in buildd.',
     costHint: '~$0.0001 per approved revision',
+  },
+  // Red check cause (packages/core/decision-kind-red-check-cause.ts). Asked
+  // once per red PR head the rules could not call, off the render path
+  // (apps/web/src/lib/red-check-decision.ts). Its fallback reads the failure
+  // as the code's, which is what the card says without it.
+  red_check_cause: {
+    id: 'red_check_cause',
+    kind: 'opt_in',
+    label: 'Red check cause',
+    description: 'When a pull request\'s check fails and the rules cannot tell why, a decision model reads the failing log lines and says whether the environment or the code failed, so Home can offer a re-run before a fix. Unsure means the code.',
+    costHint: '~$0.0001 per unclassified red head',
   },
   chat: {
     id: 'chat',

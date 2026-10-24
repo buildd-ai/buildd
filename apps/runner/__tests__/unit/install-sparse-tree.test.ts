@@ -90,8 +90,10 @@ describe('install.sh sparse tree', () => {
       .split('\n')
       .filter((l) => /\bsudo\b/.test(l) && !l.trim().startsWith('#') && !l.includes('echo') && !l.includes('printf'));
     for (const line of sudoLines) {
-      // Allowed: probes (`sudo -n true`, `command -v sudo`).
-      expect(line).toMatch(/sudo -n true|command -v sudo/);
+      // Allowed: probes (`sudo -n true`, `command -v sudo`), and the WSL
+      // package offer's elevation, which runs only after the operator's yes
+      // (wsl-installer.test.ts proves a no installs nothing).
+      expect(line).toMatch(/sudo -n true|command -v sudo|elevate="sudo "  # used only after the operator's yes/);
     }
   });
 });

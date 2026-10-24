@@ -64,6 +64,9 @@ export default function DesignPreview({
   });
   const [zoom, setZoom] = useState<Zoom>('fit');
   const [columnWidth, setColumnWidth] = useState<number | null>(null);
+  // The frame is cross-origin and sandboxed, so `load` is all we can know of it.
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
+  const [slow, setSlow] = useState(false);
   const columnRef = useRef<HTMLDivElement | null>(null);
 
   const screen = useMemo(() => screens.find((s) => s.id === screenId) ?? null, [screens, screenId]);
@@ -84,6 +87,14 @@ export default function DesignPreview({
   const scale = zoom === 'full' || !viewport || !columnWidth ? 1 : fitScale(viewport.width, columnWidth);
   const label = `Design preview · ${title} · revision ${revision}`;
   const src = frameUrl ? frameSrc(frameUrl, screenId) : null;
+
+  const loaded = !!src && loadedSrc === artifactId;
+  useEffect(() => {
+    setSlow(false);
+    if (!src || loaded) return;
+    const t = setTimeout(() => setSlow(true), 8000);
+    return () => clearTimeout(t);
+  }, [src, loaded]);
 
   const pick = useCallback((id: string) => {
     setScreenId(id);
@@ -150,11 +161,11 @@ export default function DesignPreview({
       <div
         ref={columnRef}
         data-testid="design-frame-column"
-        className="bg-surface-1 border border-border-default rounded-md overflow-auto"
+        className="bg-surface-2 border border-border-default rounded-md overflow-auto"
       >
         <div
           data-testid="design-frame-box"
-          className="relative overflow-hidden"
+          className="relative overflow-hidden bg-surface-2"
           style={
             viewport
               ? { width: Math.round(viewport.width * scale), height: Math.round(viewport.height * scale) }
@@ -170,14 +181,25 @@ export default function DesignPreview({
               sandbox="allow-scripts"
               referrerPolicy="no-referrer"
               data-testid="design-frame"
-              className="block border-0 bg-white"
+              onLoad={() => setLoadedSrc(artifactId)}
+              className="block border-0 bg-surface-2"
               style={
                 viewport
                   ? { width: viewport.width, height: viewport.height, transform: `scale(${scale})`, transformOrigin: 'top left' }
                   : { width: '100%', height: '70vh' }
               }
             />
-          ) : (
+          ) : null}
+          {src && !loaded ? (
+            <div
+              data-testid="design-frame-loading"
+              role="status"
+              className="absolute inset-0 flex items-center justify-center p-4 text-center text-body text-text-muted bg-surface-2"
+            >
+              {slow ? 'Still loading the design. If it stays blank, download the file to open it.' : 'Loading design…'}
+            </div>
+          ) : null}
+          {!src ? (
             <div
               data-testid="design-frame-unavailable"
               className="flex items-center justify-center h-full min-h-[160px] p-4 text-center text-body text-text-muted"
@@ -185,7 +207,7 @@ export default function DesignPreview({
             >
               Preview unavailable: file storage is not configured here. Download the file to open it.
             </div>
-          )}
+          ) : null}
         </div>
       </div>
 

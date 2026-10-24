@@ -2,6 +2,7 @@
 
 import { useState, type ReactNode } from 'react';
 import Notice from '@/components/ui/Notice';
+import { mostlyRewritten } from '@buildd/spec-contract/criterion-review';
 import type { ChangeLine, CriterionChange, SectionTextChange, WordOp } from '@buildd/spec-contract/criterion-review';
 
 const KIND: Record<ChangeLine['kind'], string> = {
@@ -23,24 +24,93 @@ function Heading({ path }: { path: string }) {
   );
 }
 
+/** Open inline code / emphasis, carried across the runs of one text so a span may straddle a mark. */
+interface InlineState { code: boolean; strong: boolean; em: boolean }
+const freshInline = (): InlineState => ({ code: false, strong: false, em: false });
+
+/**
+ * A run of criterion text with its inline markdown shown (R-19): `code` as code,
+ * **strong** and *emphasis* as such, never a backtick or asterisk. Only these
+ * three; the markers are consumed and the state passes to the next run.
+ */
+function Inline({ text, state }: { text: string; state: InlineState }) {
+  const parts: ReactNode[] = [];
+  let buf = '';
+  const flush = () => {
+    if (!buf) return;
+    const k = parts.length;
+    let node: ReactNode = buf;
+    if (state.code) node = <code key={k} className="rounded bg-surface-3 px-1 py-0.5 font-mono text-[0.9em] [overflow-wrap:anywhere]">{buf}</code>;
+    else {
+      if (state.em) node = <em>{node}</em>;
+      if (state.strong) node = <strong className="font-semibold">{node}</strong>;
+      node = <span key={k}>{node}</span>;
+    }
+    parts.push(node);
+    buf = '';
+  };
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (ch === '`') { flush(); state.code = !state.code; continue; }
+    if (!state.code && ch === '*') {
+      flush();
+      if (text[i + 1] === '*') { state.strong = !state.strong; i++; } else state.em = !state.em;
+      continue;
+    }
+    buf += ch;
+  }
+  flush();
+  return <>{parts}</>;
+}
+
 /** Changed words marked: removed struck on red, added on green; the rest as written. */
 export function MarkedWords({ words }: { words: WordOp[] }) {
+  const state = freshInline();
   return (
     <>
       {words.map((w, i) => (w.op === '+'
-        ? <ins key={i} className="bg-[var(--ok-tint)] text-text-primary no-underline" data-testid="spec-review-word-added">{w.text}</ins>
+        ? <ins key={i} className="bg-[var(--ok-tint)] text-text-primary no-underline" data-testid="spec-review-word-added"><Inline text={w.text} state={state} /></ins>
         : w.op === '-'
-          ? <del key={i} className="bg-[var(--bad-tint)] text-text-secondary" data-testid="spec-review-word-removed">{w.text}</del>
-          : <span key={i}>{w.text}</span>))}
+          ? <del key={i} className="bg-[var(--bad-tint)] text-text-secondary" data-testid="spec-review-word-removed"><Inline text={w.text} state={state} /></del>
+          : <span key={i}><Inline text={w.text} state={state} /></span>))}
     </>
   );
 }
 
-const Words = ({ text }: { text: string }) => <span className="whitespace-pre-line">{text}</span>;
+/**
+ * A rewritten criterion as the old words and the new ones, each readable whole
+ * (R-18): Was muted and not struck, Now with the added words highlighted.
+ */
+export function WasNow({ words }: { words: WordOp[] }) {
+  const was = freshInline(); const now = freshInline();
+  return (
+    <div className="flex flex-col gap-1.5" data-testid="spec-review-was-now">
+      <p className="text-text-secondary" data-testid="spec-review-was">
+        <span className="mr-2 text-meta font-semibold text-text-muted">Was</span>
+        {words.filter((w) => w.op !== '+').map((w, i) => <span key={i}><Inline text={w.text} state={was} /></span>)}
+      </p>
+      <p className="text-text-primary" data-testid="spec-review-now">
+        <span className="mr-2 text-meta font-semibold text-text-muted">Now</span>
+        {words.filter((w) => w.op !== '-').map((w, i) => (w.op === '+'
+          ? <ins key={i} className="bg-[var(--ok-tint)] no-underline" data-testid="spec-review-word-added"><Inline text={w.text} state={now} /></ins>
+          : <span key={i}><Inline text={w.text} state={now} /></span>))}
+      </p>
+    </div>
+  );
+}
+
+/** A criterion's changed words: inline marks, or Was and Now when most of it changed. */
+export function ChangedText({ words }: { words: WordOp[] }) {
+  return mostlyRewritten(words)
+    ? <WasNow words={words} />
+    : <span className="whitespace-pre-line"><MarkedWords words={words} /></span>;
+}
+
+export const Words = ({ text }: { text: string }) => <span className="whitespace-pre-line"><Inline text={text} state={freshInline()} /></span>;
 
 function Row({ kind, label, children }: { kind: string; label: string; children?: ReactNode }) {
   return (
-    <li className="flex flex-col gap-0.5 py-2 md:grid md:grid-cols-[5.5rem_6.5rem_minmax(0,1fr)] md:gap-3" data-testid="spec-review-change" data-kind={kind}>
+    <li className="flex flex-col gap-0.5 py-2 md:grid md:grid-cols-[5rem_5rem_minmax(0,1fr)] md:gap-3" data-testid="spec-review-change" data-kind={kind}>
       {/* One line on a phone (kind, id), two columns from md. */}
       <div className="flex items-baseline gap-2 md:contents">
         <span className="text-meta text-text-muted">{KIND[kind as ChangeLine['kind']] ?? kind}</span>
@@ -58,7 +128,7 @@ function ChangeRow({ c }: { c: CriterionChange }) {
     case 'changed':
       return (
         <Row kind="changed" label={c.id}>
-          <span className="whitespace-pre-line"><MarkedWords words={c.words} /></span>
+          <ChangedText words={c.words} />
           {c.movedFrom !== undefined ? <p className="text-meta text-text-muted">Moved here from <Heading path={c.movedFrom} />.</p> : null}
         </Row>
       );
@@ -69,7 +139,7 @@ function ChangeRow({ c }: { c: CriterionChange }) {
         </Row>
       );
     case 'removed':
-      return <Row kind="removed" label={c.id}><del className="whitespace-pre-line text-text-secondary">{c.oldText}</del></Row>;
+      return <Row kind="removed" label={c.id}><del className="whitespace-pre-line text-text-secondary"><Inline text={c.oldText} state={freshInline()} /></del></Row>;
     case 'replacing':
       return (
         <Row kind="replacing" label={c.id}>

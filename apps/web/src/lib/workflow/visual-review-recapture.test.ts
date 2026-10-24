@@ -125,13 +125,17 @@ describe('Skip and the gate (second reproduction; I-7, I-12)', () => {
     expect(c.merge.ready).toBe(true);
   });
 
-  it('a Skip a later review replaced still names the person on the row, and the gate holds', () => {
+  // Spec 072de598 r15 I-18 / AC-24 (reverses #5544): a later review does not undo a Skip.
+  it('a Skip recorded before a later review still stands: waived with the person, findings as information, the merge goes through', () => {
     const early = { ...waiver, at: '2026-03-10T09:00:00.000Z' };
     const c = chain('recapture-decide', { waiver: early });
-    expect(c.state.status).toBe('findings');
-    expect(c.state.waiver).toMatchObject({ actorLabel: 'Sam', supersededBy: c.model.audit!.id });
-    expect(c.row.detail).toContain('Sam skipped an earlier review; a later one replaced it.');
-    expect(c.row.waivable).toBe(true);
-    expect(c.merge.ready).toBe(false);
+    expect(c.state.status).toBe('waived');
+    expect(c.state.waiver).toMatchObject({ actorLabel: 'Sam' });
+    expect(c.state.waiver!.openFindings).toBeGreaterThan(0);
+    expect(c.row).toMatchObject({ status: 'waived', state: 'waived', waivable: false });
+    expect(c.row.detail).toContain('Sam skipped it.');
+    expect(c.row.detail).toMatch(/shown for information; (it does|they do) not block/);
+    expect(c.row.state).not.toContain('passed');
+    expect(c.merge).toMatchObject({ ready: true, blockers: [] });
   });
 });

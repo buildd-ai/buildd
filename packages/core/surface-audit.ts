@@ -83,8 +83,51 @@ export function isRenderedSurfaceChange(path: string): boolean {
 /** Title of the mission note that records a human waiver of the surface audit. */
 export const SURFACE_AUDIT_WAIVER_NOTE_TITLE = 'Surface audit waived';
 
-/** A waiver is a recorded decision, not a flag: the reason must say something. */
+/**
+ * The free-text reason the mission decision sheet asks for. The visual review
+ * row's Skip asks with two buttons instead (`VISUAL_REVIEW_SKIP_REASONS`) and
+ * the server takes any non-empty reason (spec 072de598 I-7).
+ */
 export const SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH = 10;
+
+/**
+ * Why a person skipped the visual review (spec 072de598 I-7, I-19): the two
+ * buttons, in the words they show. `wrong_or_stuck` files a visual-review bug
+ * and counts against visual review's reliability; `ship_anyway` keeps the open
+ * findings on record as accepted and files nothing.
+ */
+export const VISUAL_REVIEW_SKIP_REASONS = {
+  wrong_or_stuck: 'The review is wrong or stuck',
+  ship_anyway: 'Ship it anyway',
+} as const;
+
+export type VisualReviewSkipReason = keyof typeof VISUAL_REVIEW_SKIP_REASONS;
+
+export function isVisualReviewSkipReason(v: unknown): v is VisualReviewSkipReason {
+  return v === 'wrong_or_stuck' || v === 'ship_anyway';
+}
+
+/** The waiver note's body for a button Skip: the button's words, then the optional note. */
+export function visualReviewSkipNoteBody(reason: VisualReviewSkipReason, note?: string | null): string {
+  const label = VISUAL_REVIEW_SKIP_REASONS[reason];
+  const text = (note ?? '').trim();
+  return text ? `${label}: ${text}` : label;
+}
+
+/**
+ * A waiver note's body read back: which button it was and the note after it.
+ * A free-text waiver (the decision sheet, an API caller, any written before
+ * the buttons) has no reason; its whole body is the note.
+ */
+export function parseVisualReviewSkipNote(body: string | null | undefined): { reason: VisualReviewSkipReason | null; note: string | null } {
+  const text = (body ?? '').trim();
+  for (const reason of Object.keys(VISUAL_REVIEW_SKIP_REASONS) as VisualReviewSkipReason[]) {
+    const label = VISUAL_REVIEW_SKIP_REASONS[reason];
+    if (text === label) return { reason, note: null };
+    if (text.startsWith(`${label}: `)) return { reason, note: text.slice(label.length + 2).trim() || null };
+  }
+  return { reason: null, note: text || null };
+}
 
 /** The refusal text. Names the UI files and both ways out. */
 export function surfaceAuditMissingReason(

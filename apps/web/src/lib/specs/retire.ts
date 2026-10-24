@@ -4,6 +4,8 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { fail, reach, type SpecCaller, type SpecError, type SpecRow } from './store';
 import { specApprover } from './approval';
+import { appBaseUrl } from '@/lib/app-url';
+import { signSpecStatusRequest, specStatusConfirmPath, verifySpecStatusRequest, type SpecStatusRequest } from './status-request';
 
 /**
  * Retiring a Living Spec (docs/specs/living-specs.md §22): a person takes a
@@ -13,10 +15,13 @@ import { specApprover } from './approval';
  * revise, attachments, the import confirm list) follows.
  *
  * Who: the same people who approve (approval.ts specApprover): an owner or
- * admin of the workspace's team, or a delegated approver, from a dashboard
- * session or their own OAuth session. An agent run or API key gets a 403.
- * Unlike approve, an OAuth session acts directly: retiring is undone by
- * restore, and nothing it does is graded or pinned.
+ * admin of the workspace's team, or a delegated approver. An agent run or API
+ * key gets a 403. From a dashboard session it acts directly. From the person's
+ * own OAuth session (MCP or chat, where an agent may be driving) it changes
+ * nothing, like approve: it returns a link pinned to the spec, its version, its
+ * status and the reason (status-request.ts), and the change happens only when
+ * the person confirms that link from their dashboard (confirmSpecStatusChange;
+ * Living Spec b7fc9316 R-11, R-12).
  *
  * Record: no new column. One statement moves the status (only while it is what
  * was read, bumping the version so a pending approval link goes stale) and
@@ -68,8 +73,48 @@ async function writeStatus(spec: SpecRow, personId: string, next: string, reason
   return { ok: true, spec: after };
 }
 
-/** Retire a spec, or mark it superseded by `supersededBy`. */
-export async function retireSpec(caller: SpecCaller, specId: string, input: { reason: unknown; supersededBy?: unknown }): Promise<{ ok: true; spec: SpecRow } | SpecError> {
+/** A retire or restore asked for from an OAuth session: the link a person opens to confirm it. */
+export interface PendingStatusChange {
+  op: 'retire' | 'restore';
+  confirmUrl: string;
+  expiresAt: string;
+  /** The status the spec moves to when confirmed. */
+  to: string;
+}
+
+type StatusResult = { ok: true; spec: SpecRow } | { ok: true; spec: SpecRow; pending: PendingStatusChange } | SpecError;
+
+/** What a retire would write: the next status and its change-log value, after checking the replacement. */
+async function retireTarget(spec: SpecRow, by: string | null): Promise<{ next: 'retired' | 'superseded'; newValue: Record<string, unknown> } | SpecError> {
+  if (isRetired(spec.status)) return fail(409, `This spec is already ${spec.status}. Restore it first.`);
+  if (by === null) return { next: 'retired', newValue: { status: 'retired' } };
+  if (by === spec.id) return fail(400, 'A spec cannot be superseded by itself');
+  const [r] = await db.select({ id: specs.id, workspaceId: specs.workspaceId, status: specs.status }).from(specs).where(eq(specs.id, by)).limit(1);
+  if (!r || r.workspaceId !== spec.workspaceId) return fail(400, 'supersededBy names no spec in this workspace');
+  if (isRetired(r.status)) return fail(400, `The replacement is ${r.status} itself: name a live spec`);
+  return { next: 'superseded', newValue: { status: 'superseded', supersededBy: r.id } };
+}
+
+/** The status a restore puts back. */
+async function restoreTarget(spec: SpecRow): Promise<string | SpecError> {
+  if (!isRetired(spec.status)) return fail(409, `This spec is ${spec.status}, not retired: nothing to restore`);
+  const last = await lastRetirement(spec);
+  const prev = (last?.previousValue as { status?: unknown } | null)?.status;
+  // With no record (retired before this existed), the status its revisions imply.
+  return typeof prev === 'string' && !isRetired(prev) ? prev : spec.approvedRevision != null ? 'approved' : 'draft';
+}
+
+/** From an OAuth session: a link pinned to what was read, and nothing changed. */
+function askToConfirm(spec: SpecRow, personId: string, op: 'retire' | 'restore', reason: string, supersededBy: string | null, to: string): StatusResult {
+  const now = Date.now();
+  const token = signSpecStatusRequest({ op, specId: spec.id, workspaceId: spec.workspaceId, expectedVersion: spec.version, status: spec.status, reason, supersededBy, requestedBy: personId }, now);
+  if (!token) return fail(502, `Confirm links are not configured on this deployment. ${op === 'retire' ? 'Retire' : 'Restore'} it on buildd.dev.`);
+  const v = verifySpecStatusRequest(token, now);
+  return { ok: true, spec, pending: { op, confirmUrl: `${appBaseUrl()}${specStatusConfirmPath(spec.id, token)}`, expiresAt: new Date(v.ok ? v.payload.exp : now).toISOString(), to } };
+}
+
+/** Retire a spec, or mark it superseded by `supersededBy`. From an OAuth session, a confirm link instead. */
+export async function retireSpec(caller: SpecCaller, specId: string, input: { reason: unknown; supersededBy?: unknown }): Promise<StatusResult> {
   if (typeof input.reason !== 'string' || input.reason.trim().length < 10 || input.reason.length > 500) {
     return fail(400, 'reason (why this spec is retired, 10-500 characters) is required');
   }
@@ -78,17 +123,11 @@ export async function retireSpec(caller: SpecCaller, specId: string, input: { re
   const loaded = await loadForPerson(caller, specId);
   if ('ok' in loaded) return loaded;
   const { spec, personId } = loaded;
-  if (isRetired(spec.status)) return fail(409, `This spec is already ${spec.status}. Restore it first.`);
-  let replacement: { id: string } | null = null;
-  if (typeof by === 'string') {
-    if (by === spec.id) return fail(400, 'A spec cannot be superseded by itself');
-    const [r] = await db.select({ id: specs.id, workspaceId: specs.workspaceId, status: specs.status }).from(specs).where(eq(specs.id, by)).limit(1);
-    if (!r || r.workspaceId !== spec.workspaceId) return fail(400, 'supersededBy names no spec in this workspace');
-    if (isRetired(r.status)) return fail(400, `The replacement is ${r.status} itself: name a live spec`);
-    replacement = { id: r.id };
-  }
-  const next = replacement ? 'superseded' : 'retired';
-  return writeStatus(spec, personId, next, input.reason.trim(), replacement ? { status: next, supersededBy: replacement.id } : { status: next });
+  const reason = input.reason.trim();
+  const target = await retireTarget(spec, typeof by === 'string' ? by : null);
+  if ('ok' in target) return target;
+  if (caller.kind === 'account') return askToConfirm(spec, personId, 'retire', reason, typeof by === 'string' ? by : null, target.next);
+  return writeStatus(spec, personId, target.next, reason, target.newValue);
 }
 
 /** The newest status change that retired the spec, when it is retired now. */
@@ -100,18 +139,93 @@ async function lastRetirement(spec: Pick<SpecRow, 'id' | 'status'>) {
   return row ?? null;
 }
 
-/** Put a retired or superseded spec back to the status it had before. */
-export async function restoreSpec(caller: SpecCaller, specId: string, input: { reason?: unknown }): Promise<{ ok: true; spec: SpecRow } | SpecError> {
+/** Put a retired or superseded spec back to the status it had before. From an OAuth session, a confirm link instead. */
+export async function restoreSpec(caller: SpecCaller, specId: string, input: { reason?: unknown }): Promise<StatusResult> {
   const loaded = await loadForPerson(caller, specId);
   if ('ok' in loaded) return loaded;
   const { spec, personId } = loaded;
-  if (!isRetired(spec.status)) return fail(409, `This spec is ${spec.status}, not retired: nothing to restore`);
-  const last = await lastRetirement(spec);
-  const prev = (last?.previousValue as { status?: unknown } | null)?.status;
-  // With no record (retired before this existed), the status its revisions imply.
-  const back = typeof prev === 'string' && !isRetired(prev) ? prev : spec.approvedRevision != null ? 'approved' : 'draft';
+  const back = await restoreTarget(spec);
+  if (typeof back !== 'string') return back;
   const reason = typeof input.reason === 'string' && input.reason.trim().length >= 3 ? input.reason.trim().slice(0, 500) : 'restored';
+  if (caller.kind === 'account') return askToConfirm(spec, personId, 'restore', reason, null, back);
   return writeStatus(spec, personId, back, reason, { status: back });
+}
+
+const INVALID = 'This link is not valid.';
+
+/** The request a link carries, checked against the spec now: still at the version and status it was asked at. */
+async function readStatusRequest(caller: SpecCaller, specId: string, token: unknown): Promise<{ spec: SpecRow; personId: string; req: SpecStatusRequest } | SpecError> {
+  const v = verifySpecStatusRequest(typeof token === 'string' ? token : null);
+  if (!v.ok) return v.reason === 'expired' ? fail(400, 'This link has expired. Ask for a new one.', { code: 'request_expired' }) : fail(400, INVALID, { code: 'request_invalid' });
+  const req = v.payload;
+  if (!isUuid(specId) || req.specId !== specId) return fail(400, INVALID, { code: 'request_invalid' });
+  const loaded = await loadForPerson(caller, specId);
+  if ('ok' in loaded) return loaded;
+  if (loaded.spec.workspaceId !== req.workspaceId) return fail(400, INVALID, { code: 'request_invalid' });
+  if (loaded.spec.version !== req.expectedVersion || loaded.spec.status !== req.status) {
+    return fail(409, `The spec changed since this was asked for: it is now ${loaded.spec.status}, at version ${loaded.spec.version}. Nothing was changed. Ask again if it still applies.`, { code: 'request_stale', currentVersion: loaded.spec.version });
+  }
+  return { ...loaded, req };
+}
+
+/**
+ * A person confirms a retire or restore asked for from an OAuth session. Only a
+ * dashboard session confirms; any bearer is a 403. A spec whose version or
+ * status moved since the link was made is a 409 (`request_stale`) and nothing
+ * changes (R-12). The change is recorded as the confirming person's.
+ */
+export async function confirmSpecStatusChange(caller: SpecCaller, specId: string, token: unknown): Promise<{ ok: true; spec: SpecRow } | SpecError> {
+  if (caller.kind !== 'user') return fail(403, 'Confirm it on buildd.dev, signed in. A session token, API key or agent run cannot confirm it.');
+  const read = await readStatusRequest(caller, specId, token);
+  if ('ok' in read) return read;
+  const { spec, personId, req } = read;
+  let r: { ok: true; spec: SpecRow } | SpecError;
+  if (req.op === 'retire') {
+    const target = await retireTarget(spec, req.supersededBy);
+    r = 'ok' in target ? target : await writeStatus(spec, personId, target.next, req.reason, target.newValue);
+  } else {
+    const back = await restoreTarget(spec);
+    r = typeof back !== 'string' ? back : await writeStatus(spec, personId, back, req.reason, { status: back });
+  }
+  return !r.ok && r.status === 409 ? { ...r, code: 'request_stale' } : r;
+}
+
+/** What the confirm page (/app/specs/[specId]/retire) shows; it only reads. */
+export type StatusRequestView =
+  | { state: 'invalid' | 'expired' | 'not_found' | 'not_approver' }
+  | { state: 'stale'; title: string; status: string }
+  | { state: 'ready'; title: string; op: 'retire' | 'restore'; from: string; to: string; reason: string; supersededBy: { id: string; title: string } | null };
+
+export async function statusRequestView(userId: string, specId: string, token: string | null | undefined): Promise<StatusRequestView> {
+  const caller = { kind: 'user' as const, userId };
+  const read = await readStatusRequest(caller, specId, token);
+  if ('ok' in read) {
+    if (read.code === 'request_expired') return { state: 'expired' };
+    if (read.status === 404) return { state: 'not_found' };
+    if (read.status === 403) return { state: 'not_approver' };
+    if (read.code === 'request_stale') {
+      const [s] = await db.select({ title: specs.title, status: specs.status }).from(specs).where(eq(specs.id, specId)).limit(1);
+      return s ? { state: 'stale', title: s.title, status: s.status } : { state: 'not_found' };
+    }
+    return { state: 'invalid' };
+  }
+  const { spec, req } = read;
+  let to: string;
+  let supersededBy: { id: string; title: string } | null = null;
+  if (req.op === 'retire') {
+    const target = await retireTarget(spec, req.supersededBy);
+    if ('ok' in target) return { state: 'stale', title: spec.title, status: spec.status };
+    to = target.next;
+    if (req.supersededBy) {
+      const [r] = await db.select({ id: specs.id, title: specs.title }).from(specs).where(eq(specs.id, req.supersededBy)).limit(1);
+      supersededBy = r ?? null;
+    }
+  } else {
+    const back = await restoreTarget(spec);
+    if (typeof back !== 'string') return { state: 'stale', title: spec.title, status: spec.status };
+    to = back;
+  }
+  return { state: 'ready', title: spec.title, op: req.op, from: spec.status, to, reason: req.reason, supersededBy };
 }
 
 /** Why and by what a spec is retired, for its page; null when it is not. */

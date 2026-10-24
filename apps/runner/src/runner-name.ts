@@ -3,7 +3,8 @@
  * dashboard does not have to call it by an asset-tag hostname.
  *
  * Order: BUILDD_RUNNER_NAME, then `name` in ~/.buildd/config.json (BUILDD_HOME
- * and BUILDD_CONFIG respected, as index.ts reads them), then the hostname.
+ * and BUILDD_CONFIG respected, as index.ts reads them), then the hostname, or
+ * `<hostname>-wsl` inside WSL (runner-host.ts, spec a0b82b5d R-23).
  *
  * The name goes out as `environment.labels.name` on every heartbeat and is
  * read fresh each time, so a rename shows without a restart. It is a label
@@ -15,17 +16,18 @@ import { hostname as osHostname } from 'os';
 import { join } from 'path';
 import { normalizeRunnerName, RUNNER_NAME_MAX_LENGTH, type WorkerEnvironment } from '@buildd/shared';
 import { resolveBuilddHome } from './buildd-home';
+import { runnerHostName, type RunnerHostDeps } from './runner-host';
 import { writeSecretJsonFile } from './secure-file';
 
-export type RunnerNameSource = 'env' | 'config' | 'hostname';
+/** `wsl`: no name set, inside WSL, so `<hostname>-wsl` (a0b82b5d R-23). */
+export type RunnerNameSource = 'env' | 'config' | 'hostname' | 'wsl';
 
 type Env = Record<string, string | undefined>;
 
-export interface RunnerNameDeps {
+export interface RunnerNameDeps extends RunnerHostDeps {
   env?: Env;
   /** Defaults to runnerConfigFile(env). */
   configFile?: string;
-  hostname?: string;
 }
 
 /** The runner's config file: BUILDD_CONFIG, else config.json under BUILDD_HOME. */
@@ -48,7 +50,8 @@ export function resolveRunnerName(deps: RunnerNameDeps = {}): { name: string; so
   if (fromEnv) return { name: fromEnv, source: 'env' };
   const fromConfig = normalizeRunnerName(readConfig(deps.configFile ?? runnerConfigFile(env))?.name);
   if (fromConfig) return { name: fromConfig, source: 'config' };
-  return { name: deps.hostname ?? osHostname(), source: 'hostname' };
+  const host = runnerHostName(deps);
+  return { name: host, source: host === (deps.hostname ?? osHostname()) ? 'hostname' : 'wsl' };
 }
 
 /** config.json exists but is not a JSON object, so writing it would lose what it holds (the API key). */
@@ -78,7 +81,8 @@ export function saveRunnerName(configFile: string, name: string | null): void {
 
 /**
  * The name to put on the heartbeat, or null while the runner goes by its
- * hostname (the dashboard already has that label). Never throws: a heartbeat
+ * hostname (the dashboard already has that label). Inside WSL the `-wsl` default
+ * is sent, so it reads apart from a Windows runner on the same machine. Never throws: a heartbeat
  * must not fail over a display name.
  */
 export function heartbeatRunnerName(deps: RunnerNameDeps = {}): string | null {
@@ -118,7 +122,9 @@ export function runNameCommand(args: string[], deps: RunnerNameDeps = {}): NameC
       ? 'from BUILDD_RUNNER_NAME'
       : source === 'config'
         ? `from ${configFile}`
-        : 'the hostname; set a name with: buildd name <name>';
+        : source === 'wsl'
+          ? 'the hostname with -wsl, as this runner is inside WSL; set a name with: buildd name <name>'
+          : 'the hostname; set a name with: buildd name <name>';
     return { code: 0, stdout: `${name} (${where})`, stderr: '' };
   }
 
