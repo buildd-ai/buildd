@@ -31,7 +31,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import path, { dirname, join, resolve } from 'node:path';
 import { detectLayout, MigrationLayoutError, V1_FOLDER, v1LayoutProblems, type MigrationLayout } from './migrate-tree';
 
 // ── git plumbing ─────────────────────────────────────────────────────────────
@@ -48,6 +48,14 @@ function lines(s: string): string[] {
   return s.split('\n').map((l) => l.trim()).filter(Boolean);
 }
 
+/**
+ * `to` relative to `from`, with forward slashes as git prints paths. On Windows
+ * path.relative uses `\`, which never matches git's output.
+ */
+export function repoRelative(from: string, to: string, pathApi: path.PlatformPath = path): string {
+  return pathApi.relative(from, to).split(pathApi.sep).join('/');
+}
+
 export interface RepoPaths {
   /** Repo root. */
   root: string;
@@ -62,7 +70,7 @@ function baseFolders(paths: RepoPaths, base: string): string[] {
   const files = lines(git(paths.root, ['ls-tree', '-r', '--name-only', base, `${paths.drizzleDir}/`]));
   const names = new Set<string>();
   for (const f of files) {
-    const parts = relative(paths.drizzleDir, f).split('/');
+    const parts = repoRelative(paths.drizzleDir, f).split('/');
     if (parts.length === 2 && V1_FOLDER.test(parts[0]!) && parts[1] === 'migration.sql') names.add(parts[0]!);
   }
   return [...names].sort();
@@ -101,9 +109,11 @@ export function layoutProblems(paths: RepoPaths, base: string): string[] {
  * `bun x`: outside the repo's node_modules that silently downloads whatever
  * `latest` is, which is not the pinned rc.
  */
-export function findDrizzleKit(pkgDir: string): string {
+export function findDrizzleKit(pkgDir: string, platform: NodeJS.Platform = process.platform): string {
+  // bun install on Windows writes the shim as drizzle-kit.exe.
+  const name = platform === 'win32' ? 'drizzle-kit.exe' : 'drizzle-kit';
   for (let dir = resolve(pkgDir); ; dir = dirname(dir)) {
-    const bin = join(dir, 'node_modules', '.bin', 'drizzle-kit');
+    const bin = join(dir, 'node_modules', '.bin', name);
     if (existsSync(bin)) return bin;
     if (dirname(dir) === dir) throw new Error(`drizzle-kit is not installed above ${pkgDir}; run bun install`);
   }
@@ -209,7 +219,7 @@ export function regenerateAgainstBase(paths: RepoPaths, base: string): Regenerat
   git(root, ['checkout', baseSha, '--', drizzleDir]);
   const baseTracked = new Set(lines(git(root, ['ls-tree', '-r', '--name-only', baseSha, `${drizzleDir}/`])));
   for (const abs of walk(absDrizzle)) {
-    if (!baseTracked.has(relative(root, abs))) rmSync(abs);
+    if (!baseTracked.has(repoRelative(root, abs))) rmSync(abs);
   }
   // Empty folders left behind by the removals would still make a mixed tree.
   for (const e of readdirSync(absDrizzle, { withFileTypes: true })) {
