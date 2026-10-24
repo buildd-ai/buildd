@@ -333,6 +333,7 @@ export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string
   create_pr: { reason: 'worker-only', note: 'PRs are opened by the worker that wrote the branch.' },
   emit_event: { reason: 'worker-only', note: 'Worker milestone events.' },
   request_capability: { reason: 'worker-only', note: 'A running agent asks for access for its own worker; people decide on Settings.' },
+  invoke_model_inference: { reason: 'worker-only', note: 'A running agent spends its own model.inference grant; chat has no worker.' },
   upload_artifact: { reason: 'worker-only', note: 'Uploads a worker-produced file.' },
   probe_budget_wall: { reason: 'not-yet', note: 'Asks runners to recheck a provider limit; chat has no runner-control tool yet.' },
   get_page_source: { reason: 'worker-only', note: 'The visual auditor asks where its own pages come from.' },
