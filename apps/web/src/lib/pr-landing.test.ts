@@ -1814,6 +1814,7 @@ describe('landPr — behind base is work with an owner', () => {
     it.each([
       ['superseded', { dispatched: false, superseded: true }, 'superseded'],
       ['dependencyBot', { dispatched: false, dependencyBot: true }, 'dependency_bot'],
+      ['releaseCandidate', { dispatched: false, releaseCandidate: 'PR #42 is a frozen release candidate' }, 'release_candidate'],
       ['baseRewritten', { dispatched: false, baseRewritten: true }, 'base_rewritten'],
       ['disabled', { dispatched: false, disabled: true }, 'auto_resolve_disabled'],
     ])('%s → needs_human(%s)', async (_n, result, cause) => {
