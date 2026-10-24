@@ -1625,7 +1625,7 @@ export async function POST(req: NextRequest) {
     const pinnedRunner = pinnedRunnerOf((task as any).requiredCapabilities);
     if (pinnedRunner && !runnerMatchesPin(pinnedRunner, {
       key: runner,
-      hostname: (body.environment as { labels?: { hostname?: string } } | undefined)?.labels?.hostname,
+      hostname: body.environment?.labels?.hostname,
       accountName: (account as { name?: string | null }).name,
     })) { deferTask(task, 'runner_capability', { pinnedRunner }); continue; }
 
