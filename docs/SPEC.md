@@ -753,7 +753,7 @@ brutalist UI.
   onboarding/workspace-configuration approach.
 - **`apps/web/src/lib/claim-gates.ts`** — deleted (PR #1868). `/start` now imports
   directly from the canonical gate modules in `apps/web/src/app/api/workers/claim/`
-  (`connector-gate.ts`, `held-gate.ts`, `workspace-cap-gate.ts`, `deps-gate.ts`).
+  (`connector-gate.ts`, `held-gate.ts`, `deps-gate.ts`).
   There is no longer a hand-mirrored copy of the gate predicates.
 
 **Planned, not in this repo:** iOS app (`buildd-ios`, separate repo;

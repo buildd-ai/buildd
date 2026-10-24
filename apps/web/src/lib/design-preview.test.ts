@@ -139,3 +139,23 @@ describe('links and sizing', () => {
     expect(fitScale(390, 0)).toBe(1);
   });
 });
+
+describe('pickStartScreen / deviceForWidth', () => {
+  const { pickStartScreen, deviceForWidth } = require('./design-preview');
+  const list = ['coverage', 'phone-mission', 'desktop-mission', 'phone-verify', 'desktop-verify', 'phone-delivered'].map((id) => ({ id, name: id, viewport: null }));
+  it('matches device and stage', () => {
+    expect(pickStartScreen(list, { device: 'phone', stage: 'build' })).toBe('phone-mission');
+    expect(pickStartScreen(list, { device: 'desktop', stage: 'verify' })).toBe('desktop-verify');
+    expect(pickStartScreen(list, { device: 'phone', stage: 'deliver' })).toBe('phone-delivered');
+  });
+  it('a deep link wins; no match falls back to the first screen', () => {
+    expect(pickStartScreen(list, { initialId: 'desktop-verify', device: 'phone', stage: 'build' })).toBe('desktop-verify');
+    expect(pickStartScreen(list, { device: 'desktop', stage: 'deliver' })).toBe('coverage');
+    expect(pickStartScreen(list, {})).toBe('coverage');
+    expect(pickStartScreen([], { device: 'phone', stage: 'build' })).toBeNull();
+  });
+  it('phone below 768px', () => {
+    expect(deviceForWidth(390)).toBe('phone');
+    expect(deviceForWidth(1440)).toBe('desktop');
+  });
+});

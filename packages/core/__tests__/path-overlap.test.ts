@@ -12,7 +12,6 @@ import {
   intersectPaths,
   REGENERABLE_PATHS,
   findRegenerable,
-  partitionRegenerableOverlaps,
 } from '../path-overlap';
 
 describe('stripTrailingSep', () => {
@@ -523,45 +522,6 @@ describe('findRegenerable', () => {
       expect(entry.command.length).toBeGreaterThan(0);
       expect(entry.why.length).toBeGreaterThan(0);
     }
-  });
-});
-
-describe('partitionRegenerableOverlaps', () => {
-  it('splits a mixed overlap into contended and regenerable', () => {
-    const { contended, regenerable } = partitionRegenerableOverlaps([
-      'apps/web/src/lib/foo.ts',
-      'docs/specs/INDEX.md',
-    ]);
-    expect(contended).toEqual(['apps/web/src/lib/foo.ts']);
-    expect(regenerable.map(r => r.path)).toEqual(['docs/specs/INDEX.md']);
-  });
-
-  it('reports an all-regenerable overlap as zero contention', () => {
-    const { contended, regenerable } = partitionRegenerableOverlaps([
-      'docs/specs/INDEX.md',
-      'packages/core/drizzle/meta/_journal.json',
-    ]);
-    expect(contended).toEqual([]);
-    expect(regenerable).toHaveLength(2);
-  });
-
-  it('leaves an all-contended overlap untouched', () => {
-    const paths = ['apps/web/src/lib/foo.ts', 'packages/core/db/schema.ts'];
-    const { contended, regenerable } = partitionRegenerableOverlaps(paths);
-    expect(contended).toEqual(paths);
-    expect(regenerable).toEqual([]);
-  });
-
-  it('dedupes a regenerable path reported twice', () => {
-    const { regenerable } = partitionRegenerableOverlaps([
-      'docs/specs/INDEX.md',
-      'docs/specs/INDEX.md/',
-    ]);
-    expect(regenerable).toHaveLength(1);
-  });
-
-  it('is empty in, empty out', () => {
-    expect(partitionRegenerableOverlaps([])).toEqual({ contended: [], regenerable: [] });
   });
 });
 

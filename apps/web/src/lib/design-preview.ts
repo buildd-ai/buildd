@@ -160,3 +160,32 @@ export function fitScale(viewportWidth: number, columnWidth: number): number {
   if (!(columnWidth > 0) || !(viewportWidth > 0)) return 1;
   return Math.min(1, columnWidth / viewportWidth);
 }
+
+export type DesignDevice = 'phone' | 'desktop';
+export type DesignStage = 'build' | 'verify' | 'deliver';
+
+/** The screen a stage is drawn on, as the design names it: `<device>-mission`, `-verify`, `-delivered`. */
+const STAGE_SCREEN: Record<DesignStage, string> = { build: 'mission', verify: 'verify', deliver: 'delivered' };
+
+/** A phone-width viewport is a phone; anything wider is a desktop. */
+export function deviceForWidth(width: number): DesignDevice {
+  return width < 768 ? 'phone' : 'desktop';
+}
+
+/**
+ * Where a design opens, by rule and never by list order or scroll position:
+ * a `?screen=` deep link that names a screen wins; otherwise the screen
+ * matching the viewer's device and the page's stage (`phone-mission` on a
+ * phone in Build, `desktop-verify` on desktop in Verify); otherwise the first.
+ */
+export function pickStartScreen(
+  screens: readonly DesignScreen[],
+  opts: { initialId?: string | null; device?: DesignDevice | null; stage?: DesignStage | null },
+): string | null {
+  if (opts.initialId && screens.some((s) => s.id === opts.initialId)) return opts.initialId;
+  if (opts.device && opts.stage) {
+    const want = `${opts.device}-${STAGE_SCREEN[opts.stage]}`;
+    if (screens.some((s) => s.id === want)) return want;
+  }
+  return screens[0]?.id ?? null;
+}

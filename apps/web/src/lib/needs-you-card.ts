@@ -44,10 +44,17 @@ export type DecisionAnswer =
   | { kind: 'link'; primaryHref: string; secondaryHref: string }
   /**
    * A mission's visual review waiting on a person: options are `Mark all
-   * fixed` (decide each listed screen looks right), `Review screens →` (opens
-   * the per-screen deck, or goes to the mission) and `Skip the review`.
+   * fixed` (decide each listed screen looks right) and `Review screens` (opens
+   * the per-screen deck, or goes to the mission). `skips` are the two Skip
+   * choices (the review is wrong or stuck, ship it anyway), offered under
+   * Answer differently.
    */
-  | { kind: 'visual'; missionId: string; reviewHref: string; markFixed: { artifactIds: string[]; expected: Record<string, string> }[]; startKey: string | null };
+  | { kind: 'visual'; missionId: string; reviewHref: string; markFixed: { artifactIds: string[]; expected: Record<string, string> }[]; startKey: string | null; skips: string[] }
+  /**
+   * The mission's goal-criteria escalation: the primary option files the work
+   * (a link), the alternative waives and completes (a PATCH on the mission).
+   */
+  | { kind: 'criteria'; missionId: string; fileWorkHref: string };
 
 export interface DecisionView {
   key: string;

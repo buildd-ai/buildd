@@ -1,6 +1,7 @@
 ---
 title: Claim Overlap Scheduling
-status: draft
+status: superseded
+superseded_by: 'living-spec:Overlap scheduling: serial lanes and file locks'
 owner: max
 last_verified: 2026-10-18
 summary: Overlapping work MUST start by default, undeclared scope included; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, hard surfaces) and only while its holder is live.
@@ -246,7 +247,7 @@ claim loop, the planner or the Start probe.
   confident or weak, orders undeclared work behind undeclared work.
 - I-48 What still holds undeclared work is what holds any work: a declared
   dependency, an explicit hold (held mission, future `startAt`, a person's
-  hold), the mission and workspace caps, runner, auth and budget limits, and
+  hold), the mission cap, runner slots, auth and budget limits, and
   one open fix attempt per PR (`sibling_retry_open`, the same-branch rule).
   Nothing is leased for it up front: it declares no path, so I-4 has nothing
   to acquire. Paths it is seen editing are leased after its first sync, and a

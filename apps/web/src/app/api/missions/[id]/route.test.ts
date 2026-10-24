@@ -1695,7 +1695,7 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
 
     const second = new NextRequest('http://localhost/api/missions/11111111-1111-4111-8111-111111111111', {
       method: 'PATCH',
-      body: JSON.stringify({ pacingMode: 'paced' }),
+      body: JSON.stringify({ costBudgetUsd: 50 }),
     });
     await PATCH(second, { params: makeParams('11111111-1111-4111-8111-111111111111') });
 

@@ -36,7 +36,20 @@ function firstSentence(text: string): string {
 
 const capitalise = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
+/** `against spec 36df686b-ee6b-…` (optionally `revision 1`): the Spec line already names it, so the goal sentence never carries the id (R-14). */
+const SPEC_ID_RE = /(?:[\s,]+(?:against|per|from|in|for|of))?\s+spec\s+[0-9a-f]{8}(?:-[0-9a-f]{4}){0,4}(?:-[0-9a-f]*)?…?(?:\s+(?:revision|rev\.?|r)\s*\d+)?/gi;
+
+function withoutSpecIds(line: string | null): string | null {
+  if (!line) return line;
+  const out = line.replace(SPEC_ID_RE, '').replace(/\s+([.,!?])/g, '$1').trim();
+  return out || line;
+}
+
 export function missionSummaryLine(description: string | null | undefined): string | null {
+  return withoutSpecIds(summaryLineOf(description));
+}
+
+function summaryLineOf(description: string | null | undefined): string | null {
   if (!description || !description.trim()) return null;
   const lines = description.split('\n').map(l => l.trim());
 

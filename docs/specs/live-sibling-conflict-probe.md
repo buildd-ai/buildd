@@ -2,7 +2,7 @@
 title: Live Sibling Conflict Probe
 status: active
 owner: max
-last_verified: 2026-10-08
+last_verified: 2026-10-24
 summary: Two live workers whose touches share a file MUST be trial-merged on a runner, and a real conflict MUST reach both workers once per pair, naming files, hunks and who rebases.
 domain: runners
 surfaces: [apps/web/src/lib/sibling-conflict-probe.ts, apps/runner/src/sibling-probe.ts, apps/web/src/app/api/cron/sibling-probe/route.ts]
@@ -40,7 +40,9 @@ assertions:
 same file, Buildd MUST find out whether their branches actually conflict, by
 a trial merge on a runner rather than a guess, and tell both workers once,
 while their diffs are small, which files and regions collide and who rebases.
-It is advisory: nothing is blocked.
+It is advisory: nothing is blocked. It is the only same-file overlap signal
+between live workers: no worker is sent a message just because another touched
+the same path (no path_blocked_on_you, no path_regenerable_overlap).
 
 Same-file overlap no longer holds a task at claim (see
 `orchestration-decisions-shadow`), and most shared-file pairs merge cleanly.
@@ -138,6 +140,8 @@ This is the early warning for the ones that do not.
   not read.
 - AC-6: GIVEN a runner that did not declare `siblingProbe` support WHEN it
   heartbeats THEN no request is handed to it or marked dispatched.
+- AC-11: GIVEN two live workers touching the same file with no conflict WHEN
+  either reports progress THEN neither receives an overlap message.
 
 **Code surface**:
 

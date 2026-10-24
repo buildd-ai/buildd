@@ -13,7 +13,7 @@
  * in the queue and is named as a hold. The claim route itself is unchanged.
  *
  * In-loop deferrals the claim makes after reading the window (plan and rate
- * limits, path overlap, mission pacing) are not visible to a read: the runner
+ * limits, path overlap, the mission cap) are not visible to a read: the runner
  * adds them from its last claim outcome for the task (R-25).
  */
 import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
@@ -100,7 +100,6 @@ const HOLD_ORDER: Array<[QueueGateName, RunnerQueueHold]> = [
   ['missionHeld', 'mission_held'],
   ['deps', 'deps_blocked'],
   ['workspacePaused', 'workspace_paused'],
-  ['workspaceCap', 'workspace_cap'],
   ['runnerCooldown', 'runner_cooldown'],
 ];
 
