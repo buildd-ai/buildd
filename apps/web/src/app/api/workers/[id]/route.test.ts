@@ -157,8 +157,6 @@ mock.module('@buildd/core/db', () => ({
       workerErrorTraces: { findMany: mockWorkerErrorTracesFindMany },
       missions: { findFirst: mockMissionsFindFirst },
       missionNotes: { findMany: (...args: any[]) => mockMissionNotesFindMany(...args) },
-      // Lazy wrapper: this mock.module factory runs before the const below is initialised.
-      oauthBudgetEpisodes: { findFirst: (...args: any[]) => mockOauthEpisodesFindFirst(...args) },
       // Provider pause log + account budget flag, read by @/lib/backend-failover
       // when it decides which backend a walled task can move to.
       backendPauses: { findMany: (...args: any[]) => mockBackendPausesFindMany(...args) },
@@ -199,17 +197,6 @@ mock.module('@buildd/core/secrets', () => ({
   decrypt: mockDecrypt,
 }));
 
-// OAuth budget window measurement (sessionized window + model-weighted usage).
-const mockMeasureOauthWindow = mock(() => Promise.resolve({
-  windowStartedAt: new Date('2026-07-30T08:00:00.000Z'),
-  usage: { workerCount: 4, turns: 300, tokens: 120_000, weightedTurns: 900, weightedTokens: 360_000 },
-}));
-mock.module('@/lib/oauth-budget-window', () => ({
-  measureOauthWindow: mockMeasureOauthWindow,
-  loadOauthEpisodes: mock(() => Promise.resolve([])),
-}));
-
-const mockOauthEpisodesFindFirst = mock(() => Promise.resolve(null as any));
 // Active provider pauses (backend_pauses rows) + the legacy per-account Claude
 // budget flag. Empty/none by default: every backend's pool is open.
 const mockBackendPausesFindMany = mock(() => Promise.resolve([] as any[]));
@@ -553,11 +540,11 @@ mock.module('@/lib/dispatch-authority', () => ({
 // here it is pinned so the route's wiring can be asserted. Default: shared,
 // which is the pre-existing behaviour every other test expects.
 const mockResolveRunnerSeatWallKey = mock((..._args: unknown[]) =>
-  Promise.resolve({ seatKey: null as string | null, reason: 'test default' }));
+  ({ seatKey: null as string | null, reason: 'test default' }));
 mock.module('@/lib/runner-seat-wall', () => ({
   resolveRunnerSeatWallKey: mockResolveRunnerSeatWallKey,
   runnerSeatKey: (runner: string | null | undefined) => (runner ? `runner:${runner}` : null),
-  isMachineLoginWallError: () => true,
+  isMachineLoginWallError: (e?: string | null) => /session limit|weekly limit|out of extra usage/i.test(e ?? ''),
   parseRunLoginUsed: (v: unknown) => (v === 'machine_login' || v === 'machine_token' || v === 'stored' ? v : null),
   parseClaudeLoginId: (v: unknown) => (typeof v === 'string' && /^[0-9a-f]{32}$/.test(v) ? v : null),
 }));
@@ -7849,9 +7836,6 @@ describe('PATCH /api/workers/[id]', () => {
       mockWorkersUpdate.mockClear();
       mockAccountsUpdate.mockClear();
       mockTenantBudgetsInsert.mockClear();
-      mockMeasureOauthWindow.mockClear();
-      mockOauthEpisodesFindFirst.mockReset();
-      mockOauthEpisodesFindFirst.mockResolvedValue(null);
       accountsUpdateReturning = [{ id: 'account-1' }];
       lastInsertValues = null;
 
@@ -7963,7 +7947,7 @@ describe('PATCH /api/workers/[id]', () => {
       }
       afterEach(() => {
         mockResolveRunnerSeatWallKey.mockReset();
-        mockResolveRunnerSeatWallKey.mockImplementation(() => Promise.resolve({ seatKey: null, reason: 'test default' }));
+        mockResolveRunnerSeatWallKey.mockImplementation(() => ({ seatKey: null, reason: 'test default' }));
       });
       const report = () => PATCH(createMockRequest({
         method: 'PATCH',
@@ -7973,13 +7957,13 @@ describe('PATCH /api/workers/[id]', () => {
 
       it('records the wall for that runner only and leaves the task claimable now', async () => {
         const { taskSets } = setup();
-        mockResolveRunnerSeatWallKey.mockImplementation(() => Promise.resolve({ seatKey: 'runner:box-a', reason: 'machine login' }));
+        mockResolveRunnerSeatWallKey.mockImplementation(() => ({ seatKey: 'runner:box-a', reason: 'machine login' }));
 
         const res = await report();
         expect(res.status).toBe(200);
 
         expect(mockResolveRunnerSeatWallKey).toHaveBeenCalledWith(expect.objectContaining({
-          backend: 'claude', runner: 'headless://box-a', accountId: 'account-1', teamId: 'team-1', workspaceId: 'ws-1',
+          backend: 'claude', runner: 'headless://box-a',
         }));
         expect(lastBackendPauseValues).toMatchObject({ backend: 'claude', reason: 'budget', seatKey: 'runner:box-a' });
         // The account-wide flag would hold every runner on the account.
@@ -8034,7 +8018,6 @@ describe('PATCH /api/workers/[id]', () => {
       function setupSessionCap() {
         mockAccountsUpdate.mockClear();
         mockBackendPausesInsert.mockClear();
-        mockMeasureOauthWindow.mockClear();
         mockTenantBudgetsInsert.mockClear();
         accountsUpdateSets = [];
         lastBackendPauseValues = null;
@@ -8066,7 +8049,6 @@ describe('PATCH /api/workers/[id]', () => {
         expect(mockBackendPausesInsert).not.toHaveBeenCalled();
         expect(accountsUpdateSets.some((s: any) => s?.budgetExhaustedAt)).toBe(false);
         expect(mockTenantBudgetsInsert).not.toHaveBeenCalled();
-        expect(mockMeasureOauthWindow).not.toHaveBeenCalled();
         expect(lastInsertValues?.exhaustedAt).toBeUndefined();
         // Not held for a reset, not failed over: the task simply fails.
         expect(taskSets.some((s: any) => s?.context?.budgetExhausted)).toBe(false);
@@ -8104,7 +8086,7 @@ describe('PATCH /api/workers/[id]', () => {
           headers: { Authorization: 'Bearer bld_test' },
           body: { status: 'failed', error: "You've hit your session limit · resets 4pm (UTC)", sessionBudgetCapped: true, budgetExhausted: true },
         }), { params: mockParams });
-        expect(mockBackendPausesInsert).toHaveBeenCalled();
+        expect(accountsUpdateSets.some((s: any) => s?.budgetExhaustedAt)).toBe(true);
         expect(taskSets.some((s: any) => s?.context?.budgetExhausted)).toBe(true);
       });
 
@@ -8136,8 +8118,32 @@ describe('PATCH /api/workers/[id]', () => {
           headers: { Authorization: 'Bearer bld_test' },
           body: { status: 'failed', error: "You've hit your session limit · resets 4pm (UTC)", budgetExhausted: true },
         }), { params: mockParams });
-        expect(mockBackendPausesInsert).toHaveBeenCalled();
+        expect(accountsUpdateSets.some((s: any) => s?.budgetExhaustedAt)).toBe(true);
         expect(taskSets.some((s: any) => s?.context?.budgetExhausted)).toBe(true);
+      });
+
+      // Parallelism limits R-10: a team never shares a subscription wall. A
+      // worker that names no runner cannot be keyed to one, so its wall stays
+      // on its own account and no team-wide pause holds every other runner.
+      it('writes no team-wide pause for a subscription wall it cannot key to a runner', async () => {
+        setupSessionCap();
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: "You've hit your weekly limit · resets Oct 16, 4am (UTC)", budgetExhausted: true },
+        }), { params: mockParams });
+        expect(mockBackendPausesInsert).not.toHaveBeenCalled();
+        expect(accountsUpdateSets.some((s: any) => s?.budgetExhaustedAt)).toBe(true);
+      });
+
+      it('still records a team-wide pause for an API rate limit, which is not a subscription wall', async () => {
+        setupSessionCap();
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: '429 rate_limit_error: budget exhausted, retry later', budgetExhausted: true },
+        }), { params: mockParams });
+        expect(mockBackendPausesInsert).toHaveBeenCalled();
       });
 
       // Regression: a Claude task that budget failover ran on Codex keeps
@@ -8161,69 +8167,6 @@ describe('PATCH /api/workers/[id]', () => {
         // A Codex wall says nothing about the Claude seat.
         expect(accountsUpdateSets.some((s: any) => s?.budgetExhaustedAt)).toBe(false);
       });
-    });
-
-    // OAuth pacing can only learn if every exhaustion is recorded with the work
-    // the window actually held — see packages/core/oauth-budget.ts.
-    it('records an OAuth budget episode with the window usage when it flips the flag', async () => {
-      accountsUpdateReturning = [{ id: 'account-1' }]; // this request won the flip
-      mockOauthEpisodesFindFirst.mockResolvedValue({ resetsAt: null });
-      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth' });
-      mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1',
-        accountId: 'account-1', status: 'running', milestones: [],
-      });
-      mockTasksFindFirst.mockResolvedValue({
-        id: 'task-1', context: {}, workspaceId: 'ws-1',
-        workspace: { teamId: 'team-1' },
-      });
-
-      const req = createMockRequest({
-        method: 'PATCH',
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'failed', error: "You've hit your session limit · resets 4pm (UTC)", budgetExhausted: true },
-      });
-      const res = await PATCH(req, { params: mockParams });
-      expect(res.status).toBe(200);
-
-      // The episode insert carries the measured window + the reset boundary that
-      // marks where the *next* window starts.
-      expect(lastInsertValues?.accountId).toBe('account-1');
-      expect(lastInsertValues?.exhaustedAt).toBeInstanceOf(Date);
-      expect(lastInsertValues?.resetsAt).toBeInstanceOf(Date);
-      // Window start comes from sessionized worker history, not a rolling clock.
-      expect(lastInsertValues?.windowStartedAt?.toISOString()).toBe('2026-07-30T08:00:00.000Z');
-      expect(lastInsertValues?.workerCount).toBe(4);
-      expect(lastInsertValues?.turns).toBe(300);
-      // Model-weighted totals are what the learner will use.
-      expect(lastInsertValues?.weightedTurns).toBe(900);
-      expect(lastInsertValues?.weightedTokens).toBe(360_000);
-    });
-
-    it('does not record a second episode when it lost the flip race', async () => {
-      accountsUpdateReturning = []; // another concurrent report already flipped it
-      mockOauthEpisodesFindFirst.mockResolvedValue(null);
-      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth' });
-      mockWorkersFindFirst.mockResolvedValue({
-        id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1',
-        accountId: 'account-1', status: 'running', milestones: [],
-      });
-      mockTasksFindFirst.mockResolvedValue({
-        id: 'task-1', context: {}, workspaceId: 'ws-1',
-        workspace: { teamId: 'team-1' },
-      });
-      lastInsertValues = null;
-
-      const res = await PATCH(createMockRequest({
-        method: 'PATCH',
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { status: 'failed', error: "You've hit your session limit · resets 4pm (UTC)", budgetExhausted: true },
-      }), { params: mockParams });
-
-      expect(res.status).toBe(200);
-      expect(lastInsertValues?.exhaustedAt).toBeUndefined();
-      // Losing the race must not stop the task from being re-queued.
-      expect(mockTasksUpdate).toHaveBeenCalled();
     });
 
     // A Codex rate-limit used to be written to accounts.budget_exhausted_at — the
@@ -8551,8 +8494,6 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(200);
       // Tenant budgets should have been inserted (not account-level budget update)
       expect(mockTenantBudgetsInsert).toHaveBeenCalled();
-      // Account-level budget episode must NOT have been recorded (tenant takes precedence over account budget)
-      expect(mockMeasureOauthWindow).not.toHaveBeenCalled();
     });
 
     it('does not detect budget error for non-budget failures', async () => {
@@ -8584,11 +8525,12 @@ describe('PATCH /api/workers/[id]', () => {
           error: 'Some random error',
         },
       });
+      mockBackendPausesInsert.mockClear();
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
       // Budget exhaustion path must not have fired for a plain error
-      expect(mockMeasureOauthWindow).not.toHaveBeenCalled();
+      expect(mockBackendPausesInsert).not.toHaveBeenCalled();
       expect(mockTenantBudgetsInsert).not.toHaveBeenCalled();
     });
 

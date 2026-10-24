@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-15
 summary: Worker usage MUST be recorded only from the worker's own report and attributed to one task, team-month and provider pool, and a budget-blocked claim MUST answer budget_exhausted with a reset time, not race_lost.
 domain: billing
-surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/oauth-budget.ts, apps/web/src/lib/usage-stats.ts]
+surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/lib/runner-seat-wall.ts, apps/web/src/lib/usage-stats.ts]
 related: [auth-oauth-boundaries, provider-failover, mission-task-lifecycle, runner-liveness]
-keywords: [cost_usd, input_tokens, monthly_cost_usd, oauth_budget_episodes, dailyBudgetPct, budget_exhausted, race_lost, estimateCostUsd, maxCostPerDay, costBudgetUsd]
-verified_by: [apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/lib/usage-stats.test.ts, packages/core/__tests__/oauth-budget.test.ts, packages/core/__tests__/budget-alerts.test.ts, apps/runner/__tests__/unit/usage-aggregate.test.ts, apps/runner/__tests__/unit/worker-manager-lifecycle.test.ts]
+keywords: [cost_usd, input_tokens, monthly_cost_usd, backend_pauses, dailyBudgetPct, budget_exhausted, race_lost, estimateCostUsd, maxCostPerDay, costBudgetUsd]
+verified_by: [apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/lib/usage-stats.test.ts, apps/web/src/lib/runner-seat-wall.test.ts, packages/core/__tests__/budget-alerts.test.ts, apps/runner/__tests__/unit/usage-aggregate.test.ts, apps/runner/__tests__/unit/worker-manager-lifecycle.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -304,18 +304,16 @@ defers that task and reports the reason.
 - Per-task limits are **soft**: they `continue` the dispatch loop, increment a
   named counter in `deferrals`, and leave the task `pending`
   (`route.ts`). No soft limit may mark a task `failed`.
-- One pressure signal drives model routing for both auth types. For `api` it is
-  `totalCost / maxCostPerDay`; for `oauth` it is the learned window pressure;
-  the router sees `max(both)` as `dailyBudgetPct`
-  (`route.ts`). The router downshifts tiers in bands and returns
-  `paused` for priority-0 work at ≥ 95%, which becomes a `routing_paused`
-  deferral (`packages/core/model-router.ts`, `route.ts`).
-- OAuth pacing has exactly three exemptions, all deliberate: an explicit
-  single-task claim (`taskId` present) always wins over pacing, a verified
-  interactive session runs on the person's own credentials, and
-  `OAUTH_BUDGET_PACING=off` makes it fully inert. Below `MIN_SAMPLES` episodes
-  the window is not even measured (`route.ts`,
-  `packages/core/oauth-budget.ts`).
+- One pressure signal drives model routing: `totalCost / maxCostPerDay` for
+  `api` accounts, seen by the router as `dailyBudgetPct` (`route.ts`). The
+  router downshifts tiers in bands and returns `paused` for priority-0 work at
+  ≥ 95%, which becomes a `routing_paused` deferral
+  (`packages/core/model-router.ts`, `route.ts`).
+- The server keeps no model of a subscription (spec `parallelism-limits`
+  R-9, R-19): it does not learn a capacity, measure a usage window, pool
+  accounts that share a login, or cap a login's parallelism. An `oauth`
+  account's only limits here are `maxConcurrentSessions` and the walls its
+  runners report (next section).
 - A mission whose summed worker spend reaches `costBudgetUsd` transitions to
   `budget_exhausted` at the reporting worker's terminal write, never by killing a
   running worker. That status is a one-way door cleared only by a human raising
@@ -333,14 +331,8 @@ defers that task and reports the reason.
 - AC-13: GIVEN an `oauth` account at `maxConcurrentSessions` WHEN a claim is
   attempted THEN the server returns HTTP 429 with
   `error: "Max concurrent sessions limit reached"`.
-- AC-14: GIVEN a learned OAuth capacity and a current window at 100% of it WHEN
-  a priority-0 background claim runs THEN no worker is claimed, `deferrals`
-  carries `routing_paused: 1`, and `diagnostics.budgetPressure` reports `pct`,
-  `limiter`, `confidence` and `samples`.
-- AC-15: GIVEN the same 100%-pressure account WHEN the claim names a specific
-  `taskId` THEN the task is claimed anyway.
-- AC-16: GIVEN fewer than `MIN_SAMPLES` recorded episodes WHEN a claim runs THEN
-  `measureOauthWindow` is not called and `diagnostics.budgetPressure` is absent.
+- AC-14, AC-15, AC-16: retired with the server-side subscription model
+  (spec `parallelism-limits` R-9).
 - AC-17: GIVEN a running worker on an `oauth` account WHEN it reports a terminal
   status THEN `accounts.activeSessions` is decremented, and GIVEN the same
   transition on an `api` account THEN it is not.
@@ -351,8 +343,6 @@ defers that task and reports the reason.
 **Code surface**:
 - Gates: `apps/web/src/app/api/workers/claim/route.ts` (account-wide) (mission gates) (provider walls)
   (router pause)
-- Pressure inputs: `apps/web/src/lib/oauth-budget-window.ts`
-  (`resolveSeatIdPeers`, `loadOauthEpisodes`, `measureOauthWindow`)
 - Router: `packages/core/model-router.ts` (`resolveEffectiveModel`)
 - Schema: `packages/core/db/schema.ts` (`maxCostPerDay`, `totalCost`,
   `maxConcurrentSessions`, `activeSessions`) (`missions.costBudgetUsd`)
@@ -364,7 +354,7 @@ the non-budget deferral reasons
 
 ---
 
-## Budget walls, episodes and resumability
+## Budget walls and resumability
 
 **Capability statement**: A provider wall MUST be recorded once, attributed to
 the pool that actually ran dry, and reported back to the runner with the time it
@@ -378,25 +368,17 @@ clears — so the queue restarts itself.
   window) rather than a misread clock time
   (`apps/web/src/app/api/workers/[id]/route.ts`,
   `apps/web/src/lib/budget-errors.ts`).
-- `accounts.budgetExhaustedAt`/`budgetResetsAt`, the `tenant_budgets` row and the
-  `oauth_budget_episodes` measurement describe the **Claude** session pool only.
-  Any other backend's wall is recorded in `backend_pauses` and MUST NOT touch
-  them (see `provider-failover`;
+- `accounts.budgetExhaustedAt`/`budgetResetsAt` and the `tenant_budgets` row
+  describe the **Claude** session pool only. Any other backend's wall is
+  recorded in `backend_pauses` and MUST NOT touch them (see `provider-failover`;
   `apps/web/src/app/api/workers/[id]/route.ts`).
-- Exactly one episode per wall: only the request that wins the
-  `isNull(budgetExhaustedAt)` CAS inserts into `oauth_budget_episodes`; siblings
-  sharing a `seatId` receive the flag but no row, and losing the race MUST NOT
-  stop the task from being re-queued
-  (`apps/web/src/app/api/workers/[id]/route.ts`).
-- An episode measures the whole `seatId` group's window — start inferred by
-  sessionizing worker start times (not a rolling `now − 5h`), usage weighted into
-  sonnet-equivalents via `MODEL_WEIGHTS`. A weighted value of `0` means "not
-  weighted" and is dropped by the learner rather than treated as a real ceiling
-  (`packages/core/oauth-budget.ts`).
-- Capacity is the conservative quantile (default p25) of the most recent
-  episodes and is only learned per metric once at least `MIN_SAMPLES` episodes
-  reported a positive value for it; pressure is the **binding** (highest) ratio,
-  clamped to `[0,1]` (`packages/core/oauth-budget.ts`).
+- A Claude subscription wall (session, weekly or extra-usage text) is the
+  login's that hit it: it is recorded in `backend_pauses` under that runner's
+  seat key and holds only that runner's claims on that provider until it lifts
+  (`apps/web/src/lib/runner-seat-wall.ts`). A team never shares a subscription
+  wall: a worker that names no runner writes no team-wide pause, only its own
+  account's flag, and the flag is never copied to other accounts. Nothing
+  records how much work the window held.
 - Exhaustion auto-clears: at the top of the claim route, an account whose
   `budgetResetsAt` is in the past has the flag cleared for itself and every
   `seatId` sibling — no operator action
@@ -435,9 +417,9 @@ clears — so the queue restarts itself.
   never a bare `race_lost`.
 - AC-20: GIVEN both the Claude and Codex pools are walled with different reset
   times WHEN a runner claims THEN `budgetResetsAt` is the earlier of the two.
-- AC-21: GIVEN a concurrent report already flipped `budgetExhaustedAt` WHEN a
-  second budget report arrives THEN no `oauth_budget_episodes` row is inserted
-  and the task is still re-queued to `pending`.
+- AC-21: GIVEN runner A's Claude login reported a wall WHEN runner B claims
+  Claude work THEN B is not held by it, and A's claim is deferred with
+  `budgetBlock.walls[0].kind = 'runner_seat'`.
 - AC-22: GIVEN an account whose `budgetResetsAt` is in the past WHEN a claim runs
   THEN `budgetExhaustedAt` and `budgetResetsAt` are set to `null` for the account
   and its `seatId` siblings and claiming proceeds.
@@ -447,9 +429,8 @@ clears — so the queue restarts itself.
   runner handles it THEN a resume poll is scheduled slightly after that instant,
   and GIVEN a reset more than 6h out THEN no timer is scheduled (the hourly
   fallback covers it).
-- AC-25: GIVEN a window whose usage exceeds the learned capacity WHEN
-  `oauthBudgetPressure` is computed THEN `pct` is exactly `1` (clamped) and
-  `limiter` names the binding metric.
+- AC-25: retired with the server-side subscription model (spec
+  `parallelism-limits` R-9).
 
 **Code surface**:
 - Detection: `packages/core/budget-error-classifier.ts` (`isBudgetExhaustionError`,
@@ -462,15 +443,12 @@ clears — so the queue restarts itself.
   alongside `isBudgetExhaustionError`, and the runner's claim breaker imports it
   instead of carrying regexes of its own
 - Wall handling: `apps/web/src/app/api/workers/[id]/route.ts`
-- Learner: `packages/core/oauth-budget.ts` (`learnOauthCapacity`,
-  `oauthBudgetPressure`, `inferWindowStart`, `summarizeWindowUsage`,
-  `readPacingConfig`)
-- Measurement: `apps/web/src/lib/oauth-budget-window.ts`
+- Runner-login walls: `apps/web/src/lib/runner-seat-wall.ts`
+  (`resolveRunnerSeatWallKey`, `callerSeatKeys`)
 - Claim diagnostics: `apps/web/src/app/api/workers/claim/route.ts`
 - Runner resume: `apps/runner/src/workers.ts`
   (`scheduleResumeAt`, also used for per-context breaker wake-ups)
-- Readout: `apps/web/src/app/api/accounts/me/route.ts` (`budgetPacing`)
-- Schema: `packages/core/db/schema.ts` (`oauthBudgetEpisodes`) (`tenantBudgets`) (account flags)
+- Schema: `packages/core/db/schema.ts` (`backendPauses`) (`tenantBudgets`) (account flags)
 
 **Out of scope**: choosing the failover target and the `backend_pauses`
 lifecycle — that is `provider-failover`.
@@ -510,6 +488,6 @@ symbol or test that closed it.
 | `budgetExhaustedAt` with a null `budgetResetsAt` read as exhausted forever. | fixed | `effectiveBudgetResetAt` (`apps/web/src/lib/budget-errors.ts`) derives a missing reset as `exhaustedAt + SESSION_WINDOW_MS`, the writer's own fallback; the claim route uses it. A writer-side test checks every `budgetExhaustedAt:` write pairs a reset. |
 | A truncated usage scan was an arbitrary, unordered sample. | fixed | `fetchUsageRows` (`apps/web/src/lib/usage-stats-query.ts`) orders by `completedAt DESC, id DESC`, and the response carries `scan: { rows, limit, truncated, completeSince }`. Follow-up not taken: no index on `workers.completed_at`, so the scan sorts. |
 | Cache tokens were counted in two places that were never reconciled. | fixed | `byModel[].inputTokens` is cache-inclusive like `totals`; the cache-exclusive figure is `uncachedInputTokens` (`apps/web/src/lib/usage-stats.ts`). A test asserts `sum(byModel[].inputTokens) === totals.inputTokens`. |
-| `oauth_budget_episodes.inputTokens` holds the combined window token total and `outputTokens` holds `0`. The learner sums the two, so it is correct, but any other reader misreads the split; only a code comment at the insert says so, not the schema or a test. | open | `insert(oauthBudgetEpisodes)` in the worker PATCH route; `oauthBudgetEpisodes` in `packages/core/db/schema.ts`. |
+| `oauth_budget_episodes` stored a combined token total in `inputTokens` and `0` in `outputTokens`, misreadable by any reader. | fixed | The table and its writes are gone (spec `parallelism-limits` R-9). |
 
 Renumbered: AC-8b to AC-26.

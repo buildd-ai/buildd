@@ -88,7 +88,7 @@ const CAPACITY_KEYS = new Set([
   'ordered_behind',
 ]);
 const BUDGET_KEYS = new Set(['mission_budget', 'budget_paused', 'managed_runner_hours', 'hosted_runner_hours']);
-const POLICY_KEYS = new Set(['provider_not_allowed', 'tier_policy', 'routing_paused', 'no_personal_credential', 'oauth_parallelism']);
+const POLICY_KEYS = new Set(['provider_not_allowed', 'tier_policy', 'routing_paused', 'no_personal_credential']);
 /** Navigation R-14: held behind another task's files or migration. */
 const COORDINATION_KEYS = new Set(['path_overlap', 'soft_overlap', 'advisory_manifest']);
 
