@@ -2271,7 +2271,6 @@ export class WorkerManager {
       this.emit({ type: 'circuit_breaker', paused: false, pausedUntil: 0, reason: 'reset' });
     }
 
-
     let slots = this.config.maxConcurrent - this.busySlotCount();
     if (slots <= 0) return [];
     // A slot freed: agents paused to free one continue first, oldest pause first (R-45).
