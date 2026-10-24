@@ -427,6 +427,59 @@ export const realRun: CommandRunner = (file, args) => {
   return { exitCode: r.status ?? 1, stdout: decode(r.stdout), stderr: decode(r.stderr) + (r.error ? r.error.message : '') };
 };
 
+export interface PendingPinnedOptions {
+  configFile: string;
+  log: (line: string) => void;
+  fetchFn?: typeof fetch;
+  /** The Windows runner's pin: `headless://<host>`. Defaults to this machine's. */
+  runnerKey?: string;
+  apiKey?: string;
+  baseUrl?: string;
+}
+
+/**
+ * Pending tasks pinned (`runner:<key>`) to the Windows runner. The tasks route
+ * only takes `status=active` (any non-terminal status) or a terminal one, so
+ * ask for active and keep the pending ones here; the default list is paged,
+ * so follow `nextCursor` until it runs out. Never throws: a lookup that fails
+ * says so in one line and lists nothing.
+ */
+export async function listPendingPinned(opts: PendingPinnedOptions): Promise<{ title: string }[]> {
+  const unchecked = (why: string) => {
+    opts.log(`  Could not check for tasks pinned to the Windows runner (${why}); any that are will wait for it until re-filed or unpinned.`);
+    return [];
+  };
+  try {
+    let config: { apiKey?: string; builddServer?: string } = {};
+    try { config = JSON.parse(readFileSync(opts.configFile, 'utf8')); } catch { /* key may come from the environment */ }
+    const apiKey = opts.apiKey ?? (config.apiKey || process.env.BUILDD_API_KEY);
+    if (!apiKey) return unchecked('no API key');
+    const baseUrl = (opts.baseUrl ?? (process.env.BUILDD_CLIENT_URL || config.builddServer || 'https://buildd.dev')).replace(/\/+$/, '');
+    const pin = `runner:${opts.runnerKey ?? headlessRunnerKey({ hostname: undefined, platform: 'windows' })}`;
+    const doFetch = opts.fetchFn ?? fetch;
+    const found: { title: string }[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 50; page++) {
+      const url = `${baseUrl}/api/tasks?status=active${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+      const response = await doFetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
+      if (!response.ok) return unchecked(`HTTP ${response.status}`);
+      const data = await response.json() as {
+        tasks?: Array<{ title: string; status?: string; requiredCapabilities?: string[] | null }>;
+        hasMore?: boolean;
+        nextCursor?: string | null;
+      };
+      for (const task of data.tasks ?? []) {
+        if (task.status === 'pending' && task.requiredCapabilities?.includes(pin)) found.push({ title: task.title });
+      }
+      if (!data.hasMore || !data.nextCursor) return found;
+      cursor = data.nextCursor;
+    }
+    return found;
+  } catch (err) {
+    return unchecked(err instanceof Error ? err.message : String(err));
+  }
+}
+
 export async function main(argv: string[]): Promise<number> {
   const args = parseMigrateArgs(argv);
   if (!args) { console.error(MIGRATE_USAGE); return 64; }
@@ -455,42 +508,7 @@ export async function main(argv: string[]): Promise<number> {
         const agents = await listAgents({ socketPath });
         return 'error' in agents ? agents : agents.map(a => ({ title: a.title, status: a.status }));
       },
-      pendingPinned: async () => {
-        try {
-          // Read config to get API key and base URL
-          let config: { apiKey?: string; builddServer?: string } = {};
-          try {
-            const configContent = readFileSync(configFile, 'utf8');
-            config = JSON.parse(configContent);
-          } catch {
-            // Config not readable; API key must come from env var
-          }
-
-          const apiKey = config.apiKey || process.env.BUILDD_API_KEY;
-          if (!apiKey) return [];
-
-          const baseUrl = (process.env.BUILDD_CLIENT_URL || config.builddServer || 'https://buildd.dev').replace(/\/+$/, '');
-          const runnerId = headlessRunnerKey({ hostname: undefined, platform: 'windows' });
-          const runnerCapability = `runner:${runnerId}`;
-
-          // Query pending tasks from the API
-          const response = await fetch(`${baseUrl}/api/tasks?status=pending`, {
-            headers: { 'Authorization': `Bearer ${apiKey}` },
-          });
-
-          if (!response.ok) return [];
-
-          const data = await response.json() as { tasks: Array<{ title: string; requiredCapabilities?: string[] }> };
-
-          // Filter for tasks pinned to this Windows runner
-          return data.tasks
-            .filter(task => task.requiredCapabilities?.includes(runnerCapability))
-            .map(task => ({ title: task.title }));
-        } catch {
-          // Handle any errors gracefully - don't crash the migration
-          return [];
-        }
-      },
+      pendingPinned: () => listPendingPinned({ configFile, log: (line) => console.log(line) }),
     },
   });
 }

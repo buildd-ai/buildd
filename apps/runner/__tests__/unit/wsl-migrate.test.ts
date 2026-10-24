@@ -10,6 +10,7 @@ import {
   WSL_SERVICE_INSTALL,
   generateLogonTaskXml,
   parseMigrateArgs,
+  listPendingPinned,
   runWslMigrate,
   type MigrateDeps,
 } from '../../src/wsl-migrate';
@@ -465,5 +466,56 @@ describe('acceptance criteria', () => {
     deps.windows.pendingPinned = async () => { throw new Error('API unreachable'); };
     expect(await runWslMigrate({ undo: false }, deps)).toBe(0);
     expect(t.m.winTask).toBe(false);
+  });
+
+  describe('AC-16: listPendingPinned (the lookup main() wires in)', () => {
+    const PIN = 'runner:headless://WIN-BOX';
+    const task = (title: string, status: string, caps: string[]) => ({ title, status, requiredCapabilities: caps });
+    const run = async (respond: (url: string) => Response | Promise<Response>) => {
+      const urls: string[] = [];
+      const lines: string[] = [];
+      const result = await listPendingPinned({
+        configFile: '/nonexistent/config.json',
+        log: (l) => lines.push(l),
+        apiKey: 'bld_test',
+        baseUrl: 'https://example.test/',
+        runnerKey: 'headless://WIN-BOX',
+        fetchFn: (async (u: string) => { urls.push(u); return respond(u); }) as unknown as typeof fetch,
+      });
+      return { result, urls, lines };
+    };
+
+    test('asks for an accepted status and keeps only pending tasks pinned to this runner', async () => {
+      const { result, urls, lines } = await run(() => Response.json({ tasks: [
+        task('pinned pending', 'pending', [PIN]),
+        task('pinned running', 'in_progress', [PIN]),
+        task('other host', 'pending', ['runner:headless://OTHER']),
+        task('unpinned', 'pending', []),
+      ], hasMore: false, nextCursor: null }));
+      expect(urls).toEqual(['https://example.test/api/tasks?status=active']);
+      expect(result).toEqual([{ title: 'pinned pending' }]);
+      expect(lines).toEqual([]);
+    });
+
+    test('follows nextCursor so a later page is not hidden', async () => {
+      const { result, urls } = await run((u) => u.includes('cursor=c1')
+        ? Response.json({ tasks: [task('second page', 'pending', [PIN])], hasMore: false, nextCursor: null })
+        : Response.json({ tasks: [task('first page', 'pending', [PIN])], hasMore: true, nextCursor: 'c1' }));
+      expect(urls[1]).toBe('https://example.test/api/tasks?status=active&cursor=c1');
+      expect(result.map(r => r.title)).toEqual(['first page', 'second page']);
+    });
+
+    test('a non-ok response is reported in one line, not swallowed', async () => {
+      const { result, lines } = await run(() => new Response('nope', { status: 400 }));
+      expect(result).toEqual([]);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(/could not check/i);
+    });
+
+    test('a thrown fetch is reported in one line', async () => {
+      const { result, lines } = await run(() => { throw new Error('offline'); });
+      expect(result).toEqual([]);
+      expect(lines).toHaveLength(1);
+    });
   });
 });
