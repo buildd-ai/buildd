@@ -334,7 +334,7 @@ Provision failed [readiness]: exit 1: ✖ agent-question-protocol.md: claims rou
 
 ---
 
-## Status Update
+## Status Update (Oct 23 04:00 UTC)
 
 - **Artifact Updated**: 2026-10-23 04:00 UTC
 - **Observation Window**: Continuous Oct 14–23 (9d rolling)
@@ -342,3 +342,117 @@ Provision failed [readiness]: exit 1: ✖ agent-question-protocol.md: claims rou
 - **Root Cause Attribution**: Budget exhaustion (64%, operational), provision-readiness route (3–4 failures, isolated, cooling)
 - **Platform Stability**: OPERATIONAL (gates, dispatch, PR landing healthy; budget/provision failures are isolated, not cascading)
 - **Next Action**: Await native Failure Pattern Sentinel mission landing to assume durable incident tracking and workspace-level budget analysis
+
+---
+
+# RESOLUTION: Oct 24 2026 — Escalation Fully Resolved
+
+**Observation Date**: 2026-10-24 12:00 UTC  
+**Window**: 24h recovery observation (Oct 23 20:00 → Oct 24 08:00 UTC, escalation resolution verified)  
+**Status**: ✅ RESOLVED — ALL CRISIS PATTERNS ABSENT  
+**Failure Rate (24h)**: 4% (31/689 terminal workers) — **RETURNED TO BASELINE**  
+
+---
+
+## Escalation Resolution Timeline
+
+| Timestamp | Rate | Event | Notes |
+|-----------|------|-------|-------|
+| Oct 22 00:30 | 2% | Baseline | Stable pre-spike |
+| Oct 22 12:55 | 12% | Spike start | 6× escalation |
+| Oct 22 23:57 | 15% | Peak | 84/543 workers, budget 67% |
+| Oct 23 20:00 | 11% | Recovery begins | ↓ Trajectory reversal |
+| **Oct 24 08:00** | **4%** | **✅ BASELINE RESTORED** | **32h total recovery** |
+
+**Escalation Duration**: 32 hours from peak to recovery. Self-limited transient spike, fully contained, no residual trajectory.
+
+---
+
+## All Crisis Patterns: ✅ VERIFIED ABSENT
+
+### Crisis Signature Status (Oct 24 08:00 UTC Window)
+- ✅ **dispatch_cascade** (wakes_failed spike) — NOT DETECTED
+- ✅ **claim_loop_explosion** (stranded accumulation) — NOT DETECTED (8 stranded vs 100+ peak)
+- ✅ **path_declaration_spike** (coordination pathology) — NOT DETECTED (1,670 deferred = normal baseline)
+- ✅ **pr_landing_stall** (merge queue stuck) — NOT DETECTED (p50 merge time 0m, all landing healthy)
+- ✅ **codex_credential_failures** — NOT DETECTED (zero auth failures in 24h window)
+- ✅ **Axiom timeout cascade** — NOT DETECTED (3 isolated timeouts, not correlated)
+
+**Assessment**: All crisis signatures from Oct 22 escalation fully resolved. No residual patterns detected.
+
+---
+
+## Persistent Patterns: WELL-CONTAINED
+
+| Pattern | Current Status | Trend | Severity |
+|---------|---|---|---|
+| **Axiom MCP timeout** | 3/24h (Oct 24 window) | 10 total since Oct 22 | **LOW** |
+| **Provision readiness** | 2× "bun not on PATH" | 4×→2×→2× (stable) | **LOW** |
+
+Both patterns are:
+- Contained at manageable baseline levels
+- Not escalating
+- Not cascading to other domains
+
+**Recommendation**: Continue monitoring; escalate if Axiom exceeds 15–20/24h or provision readiness reverts to original signature pattern.
+
+---
+
+## Platform Health Summary (Oct 24 08:00 UTC)
+
+| System | Metric | Status | Evidence |
+|--------|--------|--------|----------|
+| **Failure Rate (24h)** | 4% (31/689) | ✅ Baseline | Within variance |
+| **Failure Rate (7d)** | 6% (avg) | ✅ Improving | Down from 15% peak Oct 22–23 |
+| **Dispatch** | 688 wakes, p95 3m latency | ✅ Healthy | 0 stuck, 0 orphaned |
+| **Gates** | 2,792 events (24h) | ✅ Healthy | No cascades, normal contention |
+| **PR Merges** | p50 0m, p90 0m | ✅ Excellent | 0 stuck past 30m |
+| **Budget Exhaustion** | Ceased (0 budget failures in Oct 24 window) | ✅ RESOLVED | Workspaces below caps |
+| **Provision-readiness** | 2 isolated failures | ✅ Stable | No new breaches |
+
+---
+
+## Shadow Sentinel Conclusion
+
+**Oct 22–23 Escalation Investigation: COMPLETE**
+
+The platform successfully self-recovered from a 15% escalation driven by transient budget-exhaustion peaks. Investigation confirms:
+
+1. ✅ **Escalation was operational, not platform-structural**
+   - Budget limits are functioning as designed
+   - Failure spike correlates with workspace usage peaks, not platform bugs
+
+2. ✅ **All crisis recovery mechanisms working**
+   - No stranded tasks beyond normal coordination
+   - No dispatch pathology
+   - No gate deferrals exceeding capacity
+   - PR landing remained healthy throughout
+
+3. ✅ **Baseline fully restored**
+   - 32-hour recovery to 4% baseline (within variance)
+   - No lingering correlated failures
+   - All domains operational
+
+4. ✅ **Ready for native Failure Pattern Sentinel handoff**
+   - Shadow observation complete
+   - All incident patterns documented
+   - Platform stable and healthy
+
+---
+
+## Handoff Summary for Native Sentinel
+
+**Durable Incidents to Monitor**:
+1. `budget_exhaustion_oct22` — Track if workspace consumption patterns repeat; baseline returned to normal
+2. `provision_readiness_agent_question_protocol` — Monitor for re-emergence; currently stable at 2 isolated failures
+3. `axiom_mcp_timeout` — Low-frequency, well-contained, baseline operational
+
+**Platform Status**: ✅ **NOMINAL**  
+**Escalation Status**: ✅ **RESOLVED**  
+**Observation Period**: ✅ **COMPLETE**
+
+---
+
+- **Final Artifact Update**: 2026-10-24 12:00 UTC
+- **Total Observation Window**: Oct 14–24 2026 (10d rolling, 4 escalation/resolution phases)
+- **Shadow Sentinel Handoff**: ✅ READY — Native Failure Pattern Sentinel mission assumes responsibility from this point forward
