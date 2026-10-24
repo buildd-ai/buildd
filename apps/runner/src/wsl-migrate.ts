@@ -458,7 +458,11 @@ export async function listPendingPinned(opts: PendingPinnedOptions): Promise<{ t
     const apiKey = opts.apiKey ?? (config.apiKey || process.env.BUILDD_API_KEY);
     if (!apiKey) return unchecked('no API key');
     const baseUrl = (opts.baseUrl ?? (process.env.BUILDD_CLIENT_URL || config.builddServer || 'https://buildd.dev')).replace(/\/+$/, '');
-    const pin = `runner:${opts.runnerKey ?? headlessRunnerKey({ hostname: undefined, platform: 'windows' })}`;
+    const headlessKey = opts.runnerKey ?? headlessRunnerKey({ hostname: undefined, platform: 'windows' });
+    const keyPin = `runner:${headlessKey}`;
+    // Also check for hostname-based pins: extract hostname from headless key (headless://HOSTNAME) and use it as a pin
+    const hostnameFromKey = headlessKey.replace(/^headless:\/\//, '');
+    const hostnamePin = `runner:${hostnameFromKey}`;
     const doFetch = opts.fetchFn ?? fetch;
     const found: { title: string }[] = [];
     let cursor: string | null = null;
@@ -472,7 +476,7 @@ export async function listPendingPinned(opts: PendingPinnedOptions): Promise<{ t
         nextCursor?: string | null;
       };
       for (const task of data.tasks ?? []) {
-        if (task.status === 'pending' && task.requiredCapabilities?.includes(pin)) found.push({ title: task.title });
+        if (task.status === 'pending' && task.requiredCapabilities && (task.requiredCapabilities.includes(keyPin) || task.requiredCapabilities.includes(hostnamePin))) found.push({ title: task.title });
       }
       if (!data.hasMore || !data.nextCursor) return found;
       cursor = data.nextCursor;
