@@ -1054,13 +1054,14 @@ function prDeliveryView(m: ReadonlyMap<string, DeliveryView>, taskId: string, pr
  */
 export function kernelUnmergedPr(
   task: { id: string; title: string; status: string },
-  worker: { prUrl?: string | null; supersessionScan?: { suggestion?: unknown } | null } | undefined,
+  worker: { prUrl?: string | null; supersessionScan?: { suggestion?: unknown; refreshCheck?: unknown } | null } | undefined,
   d: Pick<DeliveryView, 'state' | 'prNumber'>,
 ): NonNullable<StateBecauseExtras['unmergedPrs']> {
   if (task.status === 'cancelled' || task.status === 'pending' || d.prNumber == null) return [];
   if (d.state === 'MERGED' || d.state === 'SUPERSEDED' || d.state === 'ABANDONED' || d.state === 'FAILED') return [];
   const closed = d.state === 'CLOSED_UNMERGED';
   const suggestion = closed ? worker?.supersessionScan?.suggestion : undefined;
+  const refreshCheck = closed ? worker?.supersessionScan?.refreshCheck : undefined;
   return [{
     taskId: task.id,
     title: task.title,
@@ -1068,6 +1069,7 @@ export function kernelUnmergedPr(
     prUrl: worker?.prUrl ?? null,
     ...(closed ? { closedUnsuperseded: true as const } : {}),
     ...(suggestion ? { suggestion: suggestion as never } : {}),
+    ...(refreshCheck ? { refreshCheck: refreshCheck as never } : {}),
   }];
 }
 
@@ -1217,6 +1219,9 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
           ...(worker.prLifecycleStatus === 'closed' ? { closedUnsuperseded: true as const } : {}),
           ...(worker.prLifecycleStatus === 'closed' && worker.supersessionScan?.suggestion
             ? { suggestion: worker.supersessionScan.suggestion }
+            : {}),
+          ...(worker.prLifecycleStatus === 'closed' && worker.supersessionScan?.refreshCheck
+            ? { refreshCheck: worker.supersessionScan.refreshCheck }
             : {}),
         }]
       : [];
