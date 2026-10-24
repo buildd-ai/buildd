@@ -288,15 +288,36 @@ Know when to stop and involve a human:
 |---------|--------|
 | 3+ failed attempts at the same fix | Stop patching. Question the approach. Describe what you tried. |
 | Change affects >3 unrelated subsystems | Present plan for review before executing |
-| Blocked on external dependency or missing access | Report blocker, move to next task if possible |
+| Missing access (a provider, another workspace, a model call) | Ask for it with `request_capability` (see below), keep working while it is pending |
+| Blocked on an external dependency | Report blocker, move to next task if possible |
 | Test suite broken before your changes | Report the pre-existing failure, don't paper over it |
 | Stuck for >2 attempts with no progress | Stop. Describe the problem and what you've tried. Ask for guidance. |
 | DB migration needed | Flag for human review before applying in production |
 
+### Missing access: ask for it, never build around it
+
+When the work needs access you do not have (a provider such as Axiom or
+Vercel, another workspace of the team, a model call), buildd has a governed
+path for it:
+
+1. `buildd action=resolve_capability` says what could serve the need. For a
+   model call pass `capability: "model.inference"`; the answer names the exact
+   request to make and whether the team's route can be granted.
+2. `buildd action=request_capability` asks for it. A person decides. While it
+   is pending approval, keep working on everything that does not need it.
+3. Once granted, use it: a provider's tools through its connector, a model
+   call with `buildd action=invoke_model_inference`. buildd holds the key and
+   charges the grant's budget.
+
+Never write a script that reads a database URL or a model key of its own to
+get around a missing grant, and never finish with "the sandbox has no X". If
+nothing can serve the need, `request_capability` says so: put that answer in
+your summary.
+
 ### Two ways to bring in a human — pick the right one
 
-- **Hard block, no correct path forward** (a required tool/credential/service is
-  genuinely unavailable, an instruction is impossible to satisfy as written, or
+- **Hard block, no correct path forward** (a required tool or service is
+  genuinely unavailable and `request_capability` cannot provide it, an instruction is impossible to satisfy as written, or
   you cannot proceed without a decision only a human can make): use the
   **`AskUserQuestion`** tool. This ends your turn cleanly — the task is parked
   waiting for input, NOT recorded as a failure, does not count against

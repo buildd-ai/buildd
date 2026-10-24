@@ -8,9 +8,12 @@ domain: auth
 surfaces: [apps/web/src/lib/capability-grants.ts, apps/web/src/lib/capability-grants-store.ts, apps/web/src/lib/task-delegation.ts, apps/web/src/lib/capability-grants-needs-you.ts, apps/web/src/lib/connector-gateway.ts]
 related: [agent-capabilities, model-inference-agent-capability, mcp-connectors-and-roles, team-permissions]
 keywords: [connector gateway, native MCP, tools/list, tools/call, readOnlyHint, toolPolicy, connectorCeiling, request_capability, capability grant, capability policy, auto_grant, ask_human, forbidden, approve, deny, revoke, lease, TTL, provider write guard]
-verified_by: [packages/core/__tests__/provider-access-ask.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/web/src/lib/connector-gateway-store.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/app/app/(protected)/home/DecisionCard.access.dom.test.tsx, apps/web/src/lib/agent-capabilities/access-log.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts]
+verified_by: [packages/core/__tests__/provider-access-ask.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskAccessSection.test.tsx, apps/web/src/lib/connector-gateway.test.ts, apps/web/src/app/api/mcp/c/[connectorId]/route.test.ts, apps/web/src/lib/connector-gateway-store.test.ts, apps/runner/__tests__/unit/connector-gateway-mount.test.ts, apps/web/src/lib/capability-grants-needs-you.test.ts, apps/web/src/app/app/(protected)/home/DecisionCard.access.dom.test.tsx, apps/web/src/lib/agent-capabilities/access-log.test.ts, apps/web/src/lib/capability-grants-view.test.ts, apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.dom.test.tsx, apps/web/src/lib/capability-grants.test.ts, apps/web/src/lib/capability-grants-store.test.ts, apps/web/src/app/api/agent-capabilities/requests/route.test.ts, apps/web/src/app/api/agent-capabilities/requests/[id]/route.test.ts, apps/web/src/app/api/agent-capabilities/policy/route.test.ts, apps/web/src/lib/capability-path-guidance.test.ts]
 supersedes: []
 assertions:
+  - id: agent-reach-tests
+    type: test_file
+    path: apps/web/src/lib/capability-path-guidance.test.ts
   - id: request-route
     type: route
     method: POST
@@ -158,6 +161,29 @@ without naming a connector id or seeing a credential.
 - AC-4: GIVEN the role mounts a provider WHEN an agent asks for `write` THEN it is `pending_approval` (`write_needs_human`), whatever the team rule says.
 - AC-5: WHEN a body names a connector id THEN the route returns 400.
 - AC-5a: GIVEN a running task with no delegation WHEN its agent asks for `buildd` `write` (or `read`) on a same-team workspace THEN the outcome is `pending_approval`; WHEN a person who reaches that workspace approves THEN the task's delegation grants `tasks:create` (`analytics:read` for read) there and a repeat ask is `existing`; WHEN revoked THEN the grant leaves the delegation.
+
+## Agent reach
+
+**Capability statement**: An agent that lacks access MUST be told, where it
+reads its instructions, to ask for it through this service, and MUST NOT be
+steered to build around it or hand it to a person to run by hand.
+
+**Invariants**:
+- The consumer skill (`.claude/skills/buildd-mcp-consumer/SKILL.md` and its
+  scaffold mirror `packages/core/onboarding-templates/consumer-skill.md`), the
+  workflow skill (`.claude/skills/buildd-workflow/SKILL.md`) and the Builder and
+  Researcher default roles name `resolve_capability`, `request_capability` and
+  `invoke_model_inference`, and forbid a script that reads a database URL or a
+  key of its own. The Organizer role plans missing access as a
+  `request_capability` ask, never as a manual step.
+- Missing access is not a hard block: the workflow skill sends it to
+  `request_capability`, and `AskUserQuestion` only when that cannot provide it.
+- `resolve_capability` answers `model.inference` (not a search category) with
+  the request to make and the call that spends it
+  ([model-inference-agent-capability](model-inference-agent-capability.md) AC-15).
+
+**Acceptance criteria**:
+- AC-21: GIVEN the skills and default roles above THEN each names the path, and the Builder and Researcher forbid a key of their own (`apps/web/src/lib/capability-path-guidance.test.ts`).
 
 ## Team policy
 
