@@ -1230,12 +1230,6 @@ export const workspaces = pgTable('workspaces', {
   // webhooks are live on the Worker).
   dispatchTransport: text('dispatch_transport').default('dispatch').notNull().$type<'in_app' | 'shadow' | 'dispatch'>(),
 
-  // Max tasks from this workspace that may have an active worker at once. Repo-backed
-  // workspaces isolate each task in its own git worktree, so parallel work is safe;
-  // this caps it to bound merge-conflict surface. Default 3. No effect on repo-less
-  // workspaces (those are never serialized by the per-repo guard).
-  maxConcurrentTasks: integer('max_concurrent_tasks').default(3).notNull(),
-
   // "Pause new starts until <time>": until then runner claims skip this
   // workspace's tasks (the claim route's workspacePaused gate). Running work
   // carries on and a person's interactive claim is never paused. NULL or a
@@ -1316,12 +1310,6 @@ export const missions = pgTable('missions', {
   dependencyMetAt: timestamp('dependency_met_at', { withTimezone: true }),
   contextArtifactIds: jsonb('context_artifact_ids').default([]).$type<string[]>(),
   maxConcurrentTasks: integer('max_concurrent_tasks'),
-  // Pacing controls: 'eager' starts every claimable task immediately (current default).
-  // 'paced' enforces a minimum interval between task starts for this mission:
-  // at most pacingMaxPerHour starts per hour (default 1 when null).
-  // lastTaskStartedAt is updated atomically each time a task from this mission is claimed.
-  pacingMode: text('pacing_mode').default('eager').notNull().$type<'eager' | 'paced'>(),
-  pacingMaxPerHour: integer('pacing_max_per_hour'),
   lastTaskStartedAt: timestamp('last_task_started_at', { withTimezone: true }),
   // Mission integration branch, shape `mission/<slug>-<id8>`. Generated lazily on
   // first task creation.
@@ -2064,7 +2052,7 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
  * AskUserQuestion options as objects; older rows and hand-written callers still
  * send bare strings, so readers must accept both.
  */
-export type WaitingForOption = string | { label: string; description?: string; recommended?: boolean; consequence?: string };
+export type WaitingForOption = string | { label: string; description?: string; recommended?: boolean; consequence?: string; outcome?: 'continues' | 'finishes' | 'stops' | 'changes' };
 
 /**
  * `context`, `recommended` and `where` are the question brief

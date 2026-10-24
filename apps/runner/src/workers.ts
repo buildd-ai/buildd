@@ -167,7 +167,7 @@ import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_R
 import { buildTerminalAttributionPayload, claudeLoginUsed } from './terminal-attribution';
 import { claudeCostBasis, cloudCostBasis, codexCostBasis } from './cost-basis';
 import { claudeRunRoute, clearRedoneLogins, cloudRunRoute, codexRunRoute, machineRoutes, nextLoginFailures, type LoginFailures, type RouteProblem, type RunRoute } from './run-route';
-import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
+import { runMcpPreflight, settleOptionalConnectorFailures, type McpPreflightFailure } from './mcp-preflight';
 import { handOffUnproven, isHandOffRefusal } from './hand-off-outcome';
 import { preflightHookEntries } from './preflight-guard';
 import { buildSubagentSpans, computeBackgroundAgentMs } from './subagent-spans';
@@ -624,6 +624,8 @@ export interface ResolvedMcpConnector {
   // with the agent's own buildd token (mcp-json.ts gatewayConnectorUrl).
   gateway?: true;
   gatewayPath?: string;
+  // Mounted for every role, not opted into: dropped (not fatal) when pre-flight fails.
+  optional?: true;
 }
 
 /**
@@ -2842,7 +2844,7 @@ export class WorkerManager {
           claimError: 'server_rejected' as const,
           claimReason: reason,
           // The specific gate that excluded this explicit taskId claim (e.g.
-          // `workspace_cap`, `mission_paced`), when the server named one —
+          // `mission_concurrent`, `path_overlap`), when the server named one —
           // finer-grained than `reason` and what classifyClaimFailure
           // (run-once.ts) uses to tell a temporary capacity defer from a
           // permanent refusal.
@@ -5613,34 +5615,55 @@ export class WorkerManager {
       // incidents: Cue secret scavenged from disk, DISPATCH_API_KEY resolved from
       // headers and called directly). Hard-fail here so the failure surfaces in
       // Health and get_error_traces rather than propagating as a silent workaround.
-      const requiredConnectorNames = (claimConnectors ?? []).map(c => c.name);
-      if (requiredConnectorNames.length > 0) {
+      // Optional connectors (gateway ones the role never listed) are probed too,
+      // but a failed one is dropped from the session with a prompt note instead.
+      const probedConnectorNames = (claimConnectors ?? []).map(c => c.name);
+      if (probedConnectorNames.length > 0) {
+        const optionalConnectorNames = new Set((claimConnectors ?? []).filter(c => c.optional).map(c => c.name));
         const preflightResult = await runMcpPreflight({
           mcpServers: queryOptions.mcpServers as Record<string, { type: string; url?: string; headers?: Record<string, string>; command?: string }>,
-          requiredConnectorNames,
+          requiredConnectorNames: probedConnectorNames,
         });
-        if (!preflightResult.ok) {
-          for (const failure of preflightResult.failures) {
+        const settled = settleOptionalConnectorFailures(
+          queryOptions.mcpServers as Record<string, unknown>,
+          preflightResult.failures,
+          optionalConnectorNames,
+        );
+        worker.pendingErrorTraces ??= [];
+        for (const failure of settled.dropped) {
+          console.warn(`[Worker ${worker.id}] MCP pre-flight: optional connector ${failure.server} dropped — ${failure.reason}`);
+          worker.pendingErrorTraces.push({
+            pattern: 'mcp_preflight_optional_dropped',
+            excerpt: `MCP_PREFLIGHT_OPTIONAL_DROPPED: ${failure.server} — ${failure.reason}`,
+            source: 'preflight',
+          });
+        }
+        if (settled.promptNote) {
+          systemPrompt.append = (systemPrompt.append ?? '') + '\n\n' + settled.promptNote;
+          this.addMilestone(worker, { type: 'status', label: `Optional connector unavailable, started without it: ${settled.dropped.map(f => f.server).join(', ')}`, ts: Date.now() });
+        }
+        if (settled.required.length > 0) {
+          for (const failure of settled.required) {
             console.error(`[Worker ${worker.id}] MCP pre-flight FAILED: ${failure.server} — ${failure.reason}`);
           }
-          const firstFailure = preflightResult.failures[0];
+          const firstFailure = settled.required[0];
           const errorMsg = `MCP_PREFLIGHT_FAILED: ${firstFailure.server} unreachable — ${firstFailure.reason}. Check workspace resolution and connector credential injection.`;
           // Buffer error traces so they surface in get_error_traces
-          worker.pendingErrorTraces ??= [];
-          for (const failure of preflightResult.failures) {
+          for (const failure of settled.required) {
             worker.pendingErrorTraces.push({
               pattern: 'mcp_preflight_failed',
               excerpt: `MCP_PREFLIGHT_FAILED: ${failure.server} — ${failure.reason}`,
               source: 'preflight',
             });
           }
-          this.addMilestone(worker, { type: 'status', label: `MCP preflight failed: ${preflightResult.failures.map(f => f.server).join(', ')}`, ts: Date.now() });
+          this.addMilestone(worker, { type: 'status', label: `MCP preflight failed: ${settled.required.map(f => f.server).join(', ')}`, ts: Date.now() });
           const preflightErr = new Error(errorMsg) as Error & { mcpPreflightFailures?: McpPreflightFailure[] };
-          preflightErr.mcpPreflightFailures = preflightResult.failures;
+          preflightErr.mcpPreflightFailures = settled.required;
           throw preflightErr;
         }
-        console.log(`[Worker ${worker.id}] MCP pre-flight passed: ${requiredConnectorNames.length} connector(s) verified`);
-        this.addMilestone(worker, { type: 'status', label: `MCP pre-flight passed (${requiredConnectorNames.length} connector${requiredConnectorNames.length !== 1 ? 's' : ''})`, ts: Date.now() });
+        const verified = probedConnectorNames.length - settled.dropped.length;
+        console.log(`[Worker ${worker.id}] MCP pre-flight passed: ${verified} connector(s) verified`);
+        this.addMilestone(worker, { type: 'status', label: `MCP pre-flight passed (${verified} connector${verified !== 1 ? 's' : ''})`, ts: Date.now() });
       }
 
       // Tier-2 read-jail: Claude tasks only (Codex has no PreToolUse hooks).

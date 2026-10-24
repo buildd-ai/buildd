@@ -485,7 +485,7 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
     // The team's workspaces, for the PR cards' policy and names.
     inboxWorkspaces: hasWs ? db.query.workspaces.findMany({
       where: sqlWhere(inArray(workspacesTable.id, wsIds)),
-      columns: { id: true, name: true, repo: true, gitConfig: true, teamId: true, maxConcurrentTasks: true, dataClass: true },
+      columns: { id: true, name: true, repo: true, gitConfig: true, teamId: true, dataClass: true },
       with: WORKSPACE_INSTALLATION_WITH,
     }) : null,
     // One PR can sit on several worker rows (a CI-retry attempt adopts
@@ -1156,7 +1156,7 @@ function openPrWorkersQuery(wsIds: string[]) {
 }
 
 type OpenPrWorker = Awaited<ReturnType<typeof openPrWorkersQuery>>[number];
-type InboxWorkspace = { id: string; name: string; repo: string | null; gitConfig: any; teamId: string | null; maxConcurrentTasks: number; dataClass?: string | null };
+type InboxWorkspace = { id: string; name: string; repo: string | null; gitConfig: any; teamId: string | null; dataClass?: string | null };
 
 interface EscalationItem {
   humanReview?: HumanPrReview | null;

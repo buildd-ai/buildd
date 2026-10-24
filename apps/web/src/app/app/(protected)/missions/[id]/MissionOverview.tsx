@@ -26,6 +26,7 @@ import Link from 'next/link';
 import { termWord, type VisualReviewModel } from '@buildd/shared';
 import TaskStrip from '@/components/ui/TaskStrip';
 import DecisionCard from '@/components/DecisionCard';
+import { useVisualDecisionAct } from './visual-decision-act';
 import { useMissionFocusSnapshot } from '@/components/missions/mission-focus-context';
 import { BOARD_LANDED, boardNeedsYouCount, type MissionBoardModel } from '@/lib/mission-board';
 import { buildEstimate, isBuildComplete, missionChecks, missionStandardsLine, outcomeSpecLines, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
@@ -50,6 +51,12 @@ export interface MissionOverviewProps extends BoardLinkContext {
   completionText?: string | null;
   /** What the strip cannot say (a decision gate, the integration PR). */
   notice?: ReactNode;
+  /**
+   * The mission's situation, by stage. Build draws none of a failed task, an
+   * unmet criterion or the visual audit (rows, a decision card and Verify
+   * own those, R-14 to R-20); Verify and Deliver draw all of it.
+   */
+  situation?: { build: ReactNode; verify: ReactNode };
   visual?: VisualReviewModel | null;
   /** The checks that apply after the build (spec f7f67f1a R-11 to R-22). Absent: the build view only. */
   checks?: MissionChecksSource | null;
@@ -79,7 +86,7 @@ export default function MissionOverview(props: MissionOverviewProps) {
 }
 
 function OverviewView({
-  model: serverModel, completionText = null, notice, visual: _visual, review,
+  model: serverModel, completionText = null, notice, situation, visual: _visual, review,
   checks: checksSource = null, planTasks = null, held = false, outcomeSpecTitles = null,
   decisions = [], history = null, expectedMinutes, ...link
 }: MissionOverviewProps & { review: MissionVisualReviewValue | null }) {
@@ -133,7 +140,7 @@ function OverviewView({
   const bar = order.length > 0 && (
     <TaskStrip cells={cells} groups={groups} ticks={false} selectedId={selectedId} onSelect={setSelectedId} onOpen={openTask} label="Mission tasks, merged first" />
   );
-  const cards = decisions.length > 0 && <LeadDecision decisions={decisions} now={model.now} />;
+  const cards = decisions.length > 0 && <LeadDecision decisions={decisions} now={model.now} missionId={link.missionId} />;
 
   return (
     <div data-testid="mission-overview" data-stage={stage} className="flex min-w-0 flex-col gap-5">
@@ -143,6 +150,7 @@ function OverviewView({
         <>
           {cards}
           {history && <HistoryRaisedLine item={history} missionId={link.missionId} />}
+          {situation?.build}
           {notice}
           {review && <MissionVisualAsk review={review} board={model} />}
           {model.phases.length === 0 && model.planning && <PlanningPlaceholder planning={model.planning} now={now} link={link} />}
@@ -160,6 +168,7 @@ function OverviewView({
           </BuildCompleteBar>
           {cards}
           {history && <HistoryRaisedLine item={history} missionId={link.missionId} />}
+          {situation?.verify}
           {notice}
           {review && <MissionVisualAsk review={review} board={model} />}
           {handoff && <ChecksCard rows={handoff.rows} onOpenTask={openTask} />}
@@ -174,6 +183,7 @@ function OverviewView({
             <span aria-hidden="true" className="state-cell inline-block h-3.5 w-3.5 shrink-0 self-center rounded-[var(--radius-cell)]" data-tone="ok" data-pattern="solid" />
             {`${termWord('mission.done')} · merged into ${checksSource?.target ?? where}`}
           </p>
+          {situation?.verify}
           {notice}
           <details data-testid="mission-requirements-fold" className="group">
             <summary className="flex min-h-11 cursor-pointer list-none items-baseline gap-x-2 text-body md:min-h-0">
@@ -198,12 +208,17 @@ function OverviewView({
  * on the first phone screen. The rest are reached from it, one line that
  * opens them in place.
  */
-function LeadDecision({ decisions, now }: { decisions: readonly DecisionView[]; now: number }) {
+function MissionDecisionCard({ view, now, missionId }: { view: DecisionView; now: number; missionId: string }) {
+  const visualAct = useVisualDecisionAct(view);
+  return <DecisionCard view={view} now={now} pageMissionId={missionId} visualAct={visualAct} />;
+}
+
+function LeadDecision({ decisions, now, missionId }: { decisions: readonly DecisionView[]; now: number; missionId: string }) {
   const [open, setOpen] = useState(false);
   const rest = decisions.length - 1;
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      <DecisionCard view={decisions[0]} now={now} />
+      <MissionDecisionCard view={decisions[0]} now={now} missionId={missionId} />
       {rest > 0 && !open && (
         <button
           type="button"
@@ -214,7 +229,7 @@ function LeadDecision({ decisions, now }: { decisions: readonly DecisionView[]; 
           {`${rest} more ${rest === 1 ? 'decision' : 'decisions'} ›`}
         </button>
       )}
-      {open && decisions.slice(1).map(d => <DecisionCard key={d.key} view={d} now={now} />)}
+      {open && decisions.slice(1).map(d => <MissionDecisionCard key={d.key} view={d} now={now} missionId={missionId} />)}
     </div>
   );
 }

@@ -80,9 +80,12 @@ every supported action.
   (`ORCHESTRATION_TASK_TOKEN_ADMIN_ACTIONS`). A runner worker session therefore
   lists no admin-only action. The legacy surface is not narrowed.
 - Budget: the whole `groups` surface at admin level (group tools plus
-  `recall`, `learn` and the other listed tools) stays under 6k estimated tokens
-  (JSON length / 3.6, as `chat-eval static` counts); the test holds it under
-  5.1k, and a task-token worker session under 4k.
+  `recall`, `learn` and the other listed tools) stays under 6.3k estimated tokens
+  (JSON length / 3.6, as `chat-eval static` counts), and a task-token worker
+  session under 5.15k (`apps/web/src/app/api/mcp/tools.test.ts`). Raised from 6k
+  when the capability path (`resolve_capability`, `request_capability`,
+  `invoke_model_inference`) became listed: the skills and default roles tell
+  agents to call them for missing access, and an action a prompt names is listed.
 - The busiest actions cap what they send by default and every cut names how
   much it cut and the param or action that returns the rest (`explain` on a
   workspace pages ranked summaries with `limit`/`offset`; `claim_task` previews

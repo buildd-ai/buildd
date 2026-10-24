@@ -17,8 +17,15 @@
  * context, each option's `description` is its consequence, and an option
  * labelled "… (Recommended)" (Claude Code's own convention) is the default.
  *
+ * An option may also carry an outcome kind (continues, finishes, stops,
+ * changes): what it does to the task, which buildd maps to its effect on the
+ * tasks waiting on it (./question-waits.ts). The runner reads it only from the
+ * fixed `[kind]` prefix of the option's description (`readOutcomeTag`).
+ *
  * Everything here is pure and safe to import from client components.
  */
+
+import { OUTCOME_KINDS, OUTCOME_KIND_GUIDANCE, OUTCOME_TAG_GUIDANCE, parseOutcomeKind, readOutcomeTag, type OutcomeKind } from './question-waits';
 
 export interface BriefOptionInput {
   label: string;
@@ -32,6 +39,8 @@ export interface BriefOption {
   /** The consequence cut to the button line (`DECISION_EFFECT_MAX`). */
   effect?: string;
   recommended?: boolean;
+  /** What the option does to the task (./question-waits.ts). */
+  outcome?: OutcomeKind;
 }
 
 export interface BriefWhere {
@@ -97,6 +106,7 @@ export const QUESTION_BRIEF_GUIDANCE =
   `${DECISION_OPTIONS_GUIDANCE} ` +
   'Give every option a description saying what choosing it leads to: what happens next and what stays blocked, in one to three sentences. ' +
   'Put your recommended option first and end its label with "(Recommended)"; its description says why. ' +
+  `${OUTCOME_KIND_GUIDANCE} ${OUTCOME_TAG_GUIDANCE} ` +
   'Bad: "Should isWeekend use local time or UTC?" with bare options. ' +
   'Good: "Adding isWeekend() to the billing date helpers; it decides whether weekend surcharges apply. Should it use the customer\'s local time or UTC?" with options that each say who is charged differently.';
 
@@ -126,6 +136,8 @@ export interface DecisionOption {
   /** Under `DECISION_EFFECT_MAX` characters: the one-line effect on the button. */
   effect?: string;
   recommended?: boolean;
+  /** What the option does to the task (./question-waits.ts). */
+  outcome?: OutcomeKind;
 }
 
 /** An option a person never needs offered: the card's own Not now covers it. */
@@ -172,11 +184,16 @@ export function normalizeDecisionOptions(raw: unknown): { options: DecisionOptio
     const consequence = clean(obj?.consequence ?? obj?.description, DECISION_CONSEQUENCE_MAX);
     const effect = decisionEffect(consequence, obj?.effect);
     const recommended = suffixed || obj?.recommended === true;
+    const outcome = obj?.outcome === undefined || obj?.outcome === null ? undefined : parseOutcomeKind(obj.outcome);
+    if (obj?.outcome != null && !outcome) {
+      return { error: `Option "${label}": outcome must be one of ${OUTCOME_KINDS.slice(0, -1).join(', ')} or ${OUTCOME_KINDS[OUTCOME_KINDS.length - 1]}.` };
+    }
     options.push({
       label,
       ...(consequence ? { consequence } : {}),
       ...(effect ? { effect } : {}),
       ...(recommended ? { recommended: true } : {}),
+      ...(outcome ? { outcome } : {}),
     });
   }
   // One recommendation: the first flagged one wins.
@@ -230,14 +247,18 @@ export function deriveQuestionBrief(
     if (!o || typeof o.label !== 'string' || !o.label.trim()) continue;
     const isRecommended = RECOMMENDED_SUFFIX.test(o.label);
     const label = o.label.replace(RECOMMENDED_SUFFIX, '').trim() || o.label.trim();
-    const consequence = clean(o.description, DECISION_CONSEQUENCE_MAX);
+    // The kind only in its fixed form, and the tag never shown as text.
+    const tagged = readOutcomeTag(o.description);
+    const description = tagged.kind ? tagged.rest.trim() : o.description;
+    const consequence = clean(description, DECISION_CONSEQUENCE_MAX);
     const effect = decisionEffect(consequence);
     const opt: BriefOption = {
       label,
-      ...(o.description ? { description: o.description } : {}),
+      ...(description ? { description } : {}),
       ...(consequence ? { consequence } : {}),
       ...(effect ? { effect } : {}),
       ...(isRecommended ? { recommended: true } : {}),
+      ...(tagged.kind ? { outcome: tagged.kind } : {}),
     };
     if (isRecommended && !recommended) recommended = { label, ...(consequence ? { reason: consequence } : {}) };
     options.push(opt);
@@ -294,10 +315,11 @@ export function sanitizeQuestionBrief(raw: unknown): QuestionBriefFields & { opt
   if (Array.isArray(r.options)) {
     out.options = r.options.map(o => {
       if (!o || typeof o !== 'object' || Array.isArray(o)) return o;
-      const { consequence, effect, ...rest } = o as Record<string, unknown>;
+      const { consequence, effect, outcome, ...rest } = o as Record<string, unknown>;
       const c = clean(consequence, DECISION_CONSEQUENCE_MAX);
       const e = clean(effect, DECISION_EFFECT_MAX);
-      return { ...rest, ...(c ? { consequence: c } : {}), ...(e ? { effect: e } : {}) };
+      const k = parseOutcomeKind(outcome);
+      return { ...rest, ...(c ? { consequence: c } : {}), ...(e ? { effect: e } : {}), ...(k ? { outcome: k } : {}) };
     });
   }
   return out;
@@ -316,7 +338,7 @@ export function withSanitizedBrief<T extends Record<string, unknown>>(waitingFor
 /** A question as the gate and the notification read it. */
 export interface BriefedQuestion extends QuestionBriefFields {
   prompt: string;
-  options?: Array<string | { label: string; description?: string; consequence?: string; recommended?: boolean }>;
+  options?: Array<string | { label: string; description?: string; consequence?: string; recommended?: boolean; outcome?: OutcomeKind }>;
 }
 
 /** Every bit of visible text in a question, for a hard-rail text check (question-gate.ts `detectHardRail`). */
@@ -397,12 +419,13 @@ function firstSentence(text: string, max: number): string {
 
 /**
  * Push / Pushover text for a parked question: short by design. Title, the
- * question, one line of context, and the recommended default. A sensitive
- * workspace gets the generic line only.
+ * question, one line of context, the recommended default, and what waits on
+ * the answer (`waitsLine`, ./question-waits.ts `waitsNotificationLine`). A
+ * sensitive workspace gets the generic line only.
  */
 export function questionNotificationText(
   q: BriefedQuestion | null | undefined,
-  opts: { sensitive?: boolean } = {},
+  opts: { sensitive?: boolean; waitsLine?: string | null } = {},
 ): { title: string; message: string } {
   const title = 'Agent needs input';
   if (opts.sensitive) return { title, message: 'Agent waiting for input' };
@@ -414,6 +437,8 @@ export function questionNotificationText(
   if (context) lines.push(context);
   const rec = q ? recommendedOf(q) : undefined;
   if (rec) lines.push(clean(`Recommended: ${rec.label}${rec.reason ? `. ${rec.reason}` : ''}`, 140)!);
+  const waits = clean(opts.waitsLine, 160);
+  if (waits) lines.push(waits);
   return { title, message: lines.join('\n') };
 }
 

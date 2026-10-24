@@ -1,20 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workers, missions } from '@buildd/core/db/schema';
-import { eq, and, isNull, isNotNull, inArray, ne } from 'drizzle-orm';
+import { tasks, workers } from '@buildd/core/db/schema';
+import { eq, and, isNull, isNotNull, inArray } from 'drizzle-orm';
 import { wakeTask } from '@/lib/dispatch-authority';
 import { requestingPerson } from '@/lib/request-person';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { roleHas } from '@/lib/permissions';
-import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { checkConnectorRouting, findAlternativeRole, type ConnectorFailure } from '../../../workers/claim/connector-gate';
 import { checkMissionStartState } from '../../../workers/claim/held-gate';
 import { checkMissionBudgetExhausted } from '../../../workers/claim/mission-budget-gate';
-import { checkWorkspaceCap } from '../../../workers/claim/workspace-cap-gate';
 import { BYPASS_SUBJECT_GATE_KEY, isSubjectDead } from '@/lib/subject-gate-contract';
-import { BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, CAP_EXEMPT_KEY, hasBypassFlag } from '@/lib/bypass-flags';
+import { BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import { ENTITLEMENT_BLOCK_CONTEXT_KEY } from '@buildd/shared';
 import { checkManagedRunnerEntitlement } from '@/lib/entitlements/managed-runner';
 import { probeCoordination } from '@/lib/coordination-probe';
@@ -49,7 +46,6 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
  * - forceOverride?: boolean - lift the policy gates above (startAt, deps, holds, budget, subject)
  * - retryNow?: boolean - the Overview's `Retry now`: lift only a deferred start
  *   (a retry's backoff); every other gate still applies (spec d25d923d R-20)
- * - capExempt?: boolean - run past the workspace cap this once
  * - force?: { kinds: WaitingKind[], reasonsDigest, note? } - Force start past the
  *   waits a 422 `coordination_hold` named (docs/specs/force-start.md). The digest
  *   must be the one that refusal returned: a person never confirms a gate they
@@ -92,7 +88,7 @@ export async function POST(
 
   try {
     const body = await req.json().catch(() => ({}));
-    const { targetLocalUiUrl, forceOverride, capExempt } = body;
+    const { targetLocalUiUrl, forceOverride } = body;
     const liftStartAt = !!forceOverride || body.retryNow === true;
     const byPerson = !!requestingPerson(authType === 'session' ? { id: userId } : null, sessionAccount);
     if (targetLocalUiUrl && !byPerson) {
@@ -119,18 +115,13 @@ export async function POST(
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    // Authorization check. canRaiseCap: the same bar PATCH /api/workspaces/[id]
-    // sets for maxConcurrentTasks, so a cap refusal only offers "raise the
-    // limit" to someone whose raise would be accepted.
-    let canRaiseCap = false;
+    // Authorization check.
     if (authType === 'session') {
       const access = await verifyWorkspaceAccess(userId!, task.workspaceId);
       if (!access) {
         return NextResponse.json({ error: 'Task not found' }, { status: 404 });
       }
-      canRaiseCap = roleHas(access.role, 'manage_workspace_settings');
     } else {
-      canRaiseCap = hasTokenRouteAdminAccess(sessionAccount, req);
       const hasAccess = await verifyAccountWorkspaceAccess(sessionAccount ?? accountId!, task.workspaceId);
       if (!hasAccess) {
         return NextResponse.json({ error: 'Task not found' }, { status: 404 });
@@ -301,54 +292,6 @@ export async function POST(
       }, { status: 422 });
     }
 
-    // ── Workspace concurrency cap gate ──────────────────────────────────────
-    // Only repo-backed workspaces are capped; repo-less ones (coordination
-    // workspaces) are never serialized.
-    // capExempt=true bypasses the cap for this one task without changing the
-    // workspace setting. The flag is persisted to context so the claim route
-    // also skips the per-task cap check at claim time.
-    const wsForCap = task.workspace as { repo?: string | null; maxConcurrentTasks?: number | null } | undefined;
-    const taskCtxForCap = task.context as Record<string, unknown> | null;
-    const isCapExemptAlready = hasBypassFlag(taskCtxForCap, CAP_EXEMPT_KEY);
-    if (wsForCap?.repo && !capExempt && !isCapExemptAlready) {
-      // A mission may raise the effective cap above the workspace default —
-      // match the GREATEST(workspaceCap, missionCap) logic in the claim route.
-      let missionMaxConcurrent: number | null = null;
-      if (missionId) {
-        const missionRow = await db.query.missions.findFirst({
-          where: sqlWhere(eq(missions.id, missionId)),
-          columns: { maxConcurrentTasks: true },
-        });
-        missionMaxConcurrent = missionRow?.maxConcurrentTasks ?? null;
-      }
-      const capResult = await checkWorkspaceCap(
-        task.workspaceId,
-        wsForCap.maxConcurrentTasks ?? null,
-        missionMaxConcurrent,
-      );
-      if (capResult) {
-        // Count other pending tasks to surface queue position in the UI.
-        const pendingAhead = await db.query.tasks.findMany({
-          where: sqlWhere(and(
-            eq(tasks.workspaceId, task.workspaceId),
-            eq(tasks.status, 'pending'),
-            ne(tasks.id, taskId),
-          )),
-          columns: { id: true },
-        });
-        return NextResponse.json({
-          error: `Task cannot be started: workspace is at its concurrency limit (${capResult.active}/${capResult.cap} active tasks)`,
-          gateReason: 'workspace_cap_reached',
-          blockClass: 'policy',
-          active: capResult.active,
-          cap: capResult.cap,
-          queuePosition: pendingAhead.length,
-          canExempt: true,
-          canRaiseCap,
-        }, { status: 422 });
-      }
-    }
-
     // ── Commercial entitlement (managed runners) ────────────────────────────
     // Only a task a managed runner already deferred carries the stamp, so a
     // self-hosted team never reaches the check. Re-evaluated with fresh
@@ -430,7 +373,6 @@ export async function POST(
     // bypassHeldGate — skip the mission held gate (when the task belongs to a mission).
     // bypassMissionBudget — skip the mission budget_exhausted gate.
     // bypassSubjectGate — skip the subject-liveness gate (when the subject PR is dead).
-    // capExempt — allow this single task to run as a 4th+ slot (one-time exception).
     //
     // There is deliberately NO bypassStartGate: the deferred-start override is
     // expressed by clearing startAt below, which is the only thing the claim
@@ -452,7 +394,6 @@ export async function POST(
           ...(forceOverride && hasMission ? { bypassHeldGate: true } : {}),
           ...(forceOverride && missionBudgetExhausted ? { [BYPASS_MISSION_BUDGET_KEY]: true } : {}),
           ...(forceOverride && subjectDead ? { [BYPASS_SUBJECT_GATE_KEY]: true } : {}),
-          ...(capExempt ? { capExempt: true } : {}),
           ...(forceIntent ? { [FORCE_START_CONTEXT_KEY]: forceIntent } : {}),
           // A forced local-mission task is handed to runners the same way
           // forceOverride hands it over (the claim's local prefilter).

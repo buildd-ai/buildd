@@ -165,10 +165,10 @@ describe('manage_missions — workspace resolution', () => {
     expect(mockApi.mock.calls[0][0]).toBe('/api/missions/capabilities');
   });
 
-  it('preflights and forwards held and pacing controls when the API advertises support', async () => {
+  it('preflights and forwards the held control and never forwards pacing (removed)', async () => {
     mockApi.mockResolvedValueOnce({
       version: 1,
-      capabilities: ['startMode', 'pacing'],
+      capabilities: ['startMode'],
     });
     mockApi.mockResolvedValueOnce({
       id: '00000000-0000-0000-0000-000000000001',
@@ -176,8 +176,6 @@ describe('manage_missions — workspace resolution', () => {
       status: 'active',
       priority: 5,
       isHeld: true,
-      pacingMode: 'paced',
-      pacingMaxPerHour: 120,
     });
 
     await handleBuilddAction(
@@ -196,11 +194,10 @@ describe('manage_missions — workspace resolution', () => {
     expect(mockApi.mock.calls[0][0]).toBe('/api/missions/capabilities');
     const [endpoint, opts] = mockApi.mock.calls[1];
     expect(endpoint).toBe('/api/missions');
-    expect(JSON.parse(opts.body)).toMatchObject({
-      startMode: 'held',
-      pacingMode: 'paced',
-      pacingMaxPerHour: 120,
-    });
+    const sent = JSON.parse(opts.body);
+    expect(sent).toMatchObject({ startMode: 'held' });
+    expect(sent).not.toHaveProperty('pacingMode');
+    expect(sent).not.toHaveProperty('pacingMaxPerHour');
   });
 
   it('throws when workspace name cannot be resolved on create', async () => {
@@ -734,7 +731,7 @@ describe('manage_missions — executor', () => {
     handleBuilddAction(mockApi as unknown as ApiFn, 'manage_missions', params, createMockContext());
 
   it('create: preflights the executor capability and forwards executor', async () => {
-    mockApi.mockResolvedValueOnce({ version: 1, capabilities: ['startMode', 'pacing', 'executor'] });
+    mockApi.mockResolvedValueOnce({ version: 1, capabilities: ['startMode', 'executor'] });
     mockApi.mockResolvedValueOnce({ id: MISSION_ID, title: 'Local', status: 'active', priority: 0, executor: 'local', isHeld: false });
     const res = await run({ action: 'create', title: 'Local', executor: 'local' });
     expect(mockApi.mock.calls[0][0]).toBe('/api/missions/capabilities');
@@ -747,14 +744,14 @@ describe('manage_missions — executor', () => {
   });
 
   it('create: fails closed against an API without executor support', async () => {
-    mockApi.mockResolvedValueOnce({ version: 1, capabilities: ['startMode', 'pacing'] });
+    mockApi.mockResolvedValueOnce({ version: 1, capabilities: ['startMode'] });
     await expect(run({ action: 'create', title: 'Local', executor: 'local' }))
       .rejects.toThrow('does not support required mission controls: executor');
     expect(mockApi).toHaveBeenCalledTimes(1);
   });
 
   it('update: forwards executor and reports LOCAL, not HELD', async () => {
-    mockApi.mockResolvedValueOnce({ version: 1, capabilities: ['startMode', 'pacing', 'executor'] });
+    mockApi.mockResolvedValueOnce({ version: 1, capabilities: ['startMode', 'executor'] });
     mockApi.mockResolvedValueOnce({ id: MISSION_ID, title: 'Local', status: 'active', executor: 'local', isHeld: false });
     const res = await run({ action: 'update', missionId: MISSION_ID, executor: 'local' });
     const patch = mockApi.mock.calls.find((c: any[]) => c[1]?.method === 'PATCH');
@@ -859,7 +856,7 @@ describe('manage_missions — the start gate in catalog words', () => {
   });
 
   it('create: a mission created in the held start mode reads Not started', async () => {
-    mockApi.mockResolvedValueOnce({ version: 1, capabilities: ['startMode', 'pacing', 'executor'] });
+    mockApi.mockResolvedValueOnce({ version: 1, capabilities: ['startMode', 'executor'] });
     mockApi.mockResolvedValueOnce({ id: MISSION_ID, title: 'M', status: 'active', priority: 0, isHeld: true, armedAt: null });
     const out = (await run({ action: 'create', title: 'M', startMode: 'held' })).content[0].text;
     expect(out).toContain('Not started: tasks wait until the mission starts (action=arm)');
@@ -867,7 +864,7 @@ describe('manage_missions — the start gate in catalog words', () => {
   });
 
   it('update: the status tag reads the catalog word and how to start it', async () => {
-    mockApi.mockResolvedValueOnce({ version: 1, capabilities: ['startMode', 'pacing', 'executor'] });
+    mockApi.mockResolvedValueOnce({ version: 1, capabilities: ['startMode', 'executor'] });
     mockApi.mockResolvedValueOnce({ id: MISSION_ID, title: 'M', status: 'active', isHeld: true, armedAt: '2030-01-01T00:00:00.000Z' });
     const out = (await run({ action: 'update', missionId: MISSION_ID, startMode: 'held' })).content[0].text;
     expect(out).toContain('Mission updated: "M" [active] [Paused · isHeld]');

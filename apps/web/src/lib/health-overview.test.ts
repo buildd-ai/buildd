@@ -9,7 +9,7 @@ const CALM: OverviewAttention = {
 const STATE: OverviewState = {
   runners: { total: 1, online: 1, busySlots: 1, slots: 10 },
   credentials: { total: 2, broken: 0 },
-  budget: { monthly: null, pausedProviders: 0 },
+  budget: { monthly: null, paused: [] },
 };
 
 describe('overviewHeadline', () => {
@@ -70,12 +70,22 @@ describe('overviewStatusRows', () => {
 
   it('budget: a paused provider wins, then the monthly limit, else no limit', () => {
     expect(byKey(STATE).budget).toMatchObject({ value: 'No monthly limit set', tone: 'muted' });
-    expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 42, budgetUsd: 100, pctUsed: 42 }, pausedProviders: 0 } }).budget)
+    expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 42, budgetUsd: 100, pctUsed: 42 }, paused: [] } }).budget)
       .toMatchObject({ value: '$42 of $100 this month', tone: 'ok' });
-    expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 75, budgetUsd: 100, pctUsed: 75 }, pausedProviders: 0 } }).budget.tone).toBe('warning');
-    expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 95, budgetUsd: 100, pctUsed: 95 }, pausedProviders: 0 } }).budget.tone).toBe('error');
-    expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 10, budgetUsd: 100, pctUsed: 10 }, pausedProviders: 1 } }).budget)
-      .toMatchObject({ value: 'Paused until a usage limit resets', tone: 'warning' });
+    expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 75, budgetUsd: 100, pctUsed: 75 }, paused: [] } }).budget.tone).toBe('warning');
+    expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 95, budgetUsd: 100, pctUsed: 95 }, paused: [] } }).budget.tone).toBe('error');
+    expect(byKey({ ...STATE, budget: { monthly: { spentUsd: 10, budgetUsd: 100, pctUsed: 10 }, paused: [{ label: 'Codex', resetsInMs: 7 * 3600_000 }] } }).budget)
+      .toMatchObject({ value: 'Codex paused · resets in 7h', tone: 'warning' });
+  });
+
+  it('budget: names every paused provider, with the soonest reset when one is known', () => {
+    const paused = (p: Array<{ label: string; resetsInMs: number | null }>) =>
+      byKey({ ...STATE, budget: { monthly: null, paused: p } }).budget.value;
+    expect(paused([{ label: 'Codex', resetsInMs: null }])).toBe('Codex paused');
+    expect(paused([{ label: 'Codex', resetsInMs: 25 * 60_000 }])).toBe('Codex paused · resets in 25m');
+    expect(paused([{ label: 'Codex', resetsInMs: 3 * 86_400_000 }])).toBe('Codex paused · resets in 3d');
+    expect(paused([{ label: 'Codex', resetsInMs: 7 * 3600_000 }, { label: 'Claude', resetsInMs: 2 * 3600_000 }]))
+      .toBe('Codex and Claude paused · resets in 2h');
   });
 });
 

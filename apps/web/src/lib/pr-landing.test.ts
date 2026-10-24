@@ -356,8 +356,7 @@ describe('evaluateTreadmillBound', () => {
 
   it.each([
     ['migration on both sides', ['packages/core/drizzle/0100_x.sql'], ['packages/core/drizzle/0099_mine.sql']],
-    ['migration on the PR side', ['x/other.ts'], ['packages/core/drizzle/0100_x.sql']],
-    ['schema on the PR side', ['x/other.ts'], ['packages/core/db/schema.ts']],
+    ['schema on both sides', ['packages/core/db/schema.ts'], ['packages/core/drizzle/0099_mine.sql']],
     ['lockfile on the base side', ['bun.lock'], ['apps/web/src/a.ts']],
     ['lockfile on the PR side', ['x/other.ts'], ['package-lock.json']],
   ])('refuses %s', (_n, baseFiles, prFiles) => {
@@ -367,6 +366,11 @@ describe('evaluateTreadmillBound', () => {
   // 92a439a6: a migration only the base carries is no risk to a PR that changes no schema.
   it('accepts a migration or schema change on the base side alone', () => {
     expect(evaluateTreadmillBound({ ...ok, baseFiles: ['packages/core/drizzle/0100_x.sql', 'packages/core/db/schema.ts'] }).accepted).toBe(true);
+  });
+
+  // #5522: nor is a PR's own migration a risk from a gap that carries none.
+  it('accepts a migration or schema change on the PR side alone', () => {
+    expect(evaluateTreadmillBound({ ...ok, baseFiles: ['x/other.ts'], prFiles: ['packages/core/drizzle/0100_x.sql', 'packages/core/db/schema.ts'] }).accepted).toBe(true);
   });
 
   it('refuses when either side could not be enumerated', () => {

@@ -154,7 +154,12 @@ describe('runWorkspacesEdit', () => {
 const LOGIN = resolve(import.meta.dir, '../../src/login.ts');
 const dirs: string[] = [];
 const tmp = (p: string) => { const d = mkdtempSync(join(tmpdir(), p)); dirs.push(d); return d; };
-afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+// A child process can still hold its cwd/home for a moment on Windows (EBUSY); cleanup must not fail the run.
+afterAll(() => {
+  for (const d of dirs) {
+    try { rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* temp dir; the OS reaps it */ }
+  }
+});
 
 function sandbox() {
   const home = tmp('buildd-login-home-');

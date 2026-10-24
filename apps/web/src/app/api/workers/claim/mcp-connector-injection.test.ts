@@ -1041,6 +1041,8 @@ describe('resolveMcpConnectorsForTask — gateway providers are brokered', () =>
 
     const result = await resolve();
     expect(result.map(c => [c.name, (c as any).gateway])).toEqual([['axiom', true]]);
+    // The role never asked for it, so the runner must not fail the task when it is down.
+    expect(result[0].optional).toBe(true);
   });
 
   it('does not mount an unlisted gateway connector disabled in the workspace, or one with no credential', async () => {
