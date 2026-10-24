@@ -278,7 +278,6 @@ export default function DevFixturesPage() {
     if (state === STAGE_METER_FIXTURE_STATE) {
         return <StageMeterFixture />;
     }
-
     if (state === DESIGN_PREVIEW_FIXTURE_STATE) {
         return <DesignPreviewFixture />;
     }

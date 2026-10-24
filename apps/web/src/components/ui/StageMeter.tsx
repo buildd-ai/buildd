@@ -73,7 +73,7 @@ const STATE_PHRASE: Record<StageMeterState, string> = {
   'fixing-in-verify': 'Being fixed in verify',
   'check-cant-run': "Check can't run",
   'waiting-on-you': 'Waiting on you',
-  deliver: 'Delivering',
+  deliver: 'Deliver',
 };
 
 export function stageMeterName(state: StageMeterState, stage: StageMeterStage, fixRounds = 0): string {
