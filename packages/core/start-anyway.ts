@@ -13,6 +13,7 @@
  *
  * Pure and dependency-free: client components and the runner import it.
  */
+import { isLiveWorkerStatus } from '@buildd/shared';
 
 export const START_ANYWAY_EVENTS = ['requested', 'claimed', 'assessed', 'coordinated', 'parked', 'woken', 'delivered'] as const;
 export type StartAnywayEvent = (typeof START_ANYWAY_EVENTS)[number];
@@ -94,7 +95,7 @@ type Progress = 'active' | 'finished' | 'unknown';
 
 function progressOf(p: PrerequisiteInput, recovered: boolean): Progress {
   if (p.status === 'completed') return 'finished';
-  if (p.worker && ['running', 'starting', 'idle', 'waiting_input'].includes(p.worker.status)) return 'active';
+  if (p.worker && isLiveWorkerStatus(p.worker.status)) return 'active';
   if (p.pr?.url) return 'active';
   return recovered ? 'active' : 'unknown';
 }
@@ -157,7 +158,7 @@ export interface CoordinationRequest { workerId: string; need: string; answeredA
 export function planCoordination(i: { prerequisite: PrerequisiteInput; need: string; priorRequests: readonly CoordinationRequest[] }) {
   const base = { createsWorker: false as const, createsTask: false as const, rewritesUpstream: false as const };
   const w = i.prerequisite.worker;
-  const live = !!w && ['running', 'starting', 'idle', 'waiting_input'].includes(w.status);
+  const live = !!w && isLiveWorkerStatus(w.status);
   if (!live) return { ...base, action: 'record_need' as const, workerId: null, message: null };
   const prior = i.priorRequests.find(r => r.workerId === w!.id && r.need === i.need);
   if (prior) return { ...base, action: 'await_existing_request' as const, workerId: w!.id, message: null };
