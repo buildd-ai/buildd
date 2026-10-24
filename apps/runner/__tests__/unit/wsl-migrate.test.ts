@@ -542,5 +542,16 @@ describe('acceptance criteria', () => {
       expect(result).toEqual([]);
       expect(lines).toHaveLength(1);
     });
+
+    // R-25: a task pinned by hostname (not headless key) is also listed
+    test('R-25: tasks pinned to the Windows runner by hostname are also listed', async () => {
+      const HOSTNAME_PIN = 'runner:WIN-BOX';
+      const { result } = await run(() => Response.json({ tasks: [
+        task('pinned by hostname', 'pending', [HOSTNAME_PIN]),
+        task('pinned by headless key', 'pending', [PIN]),
+        task('pinned by other hostname', 'pending', ['runner:OTHER-BOX']),
+      ], hasMore: false, nextCursor: null }));
+      expect(result.map(r => r.title)).toEqual(['pinned by hostname', 'pinned by headless key']);
+    });
   });
 });
