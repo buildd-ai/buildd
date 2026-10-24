@@ -31,6 +31,12 @@ export function lastStartAnyway(context: Record<string, unknown> | null | undefi
   return null;
 }
 
+function specIdOf(context: Record<string, unknown> | null): string | null {
+  const src = (context as { specSource?: unknown } | null)?.specSource;
+  const id = src && typeof src === 'object' ? (src as { specId?: unknown }).specId : undefined;
+  return typeof id === 'string' ? id : null;
+}
+
 /** What the claim stores for the agent: the assessment prompt with the prerequisites' live state at claim. */
 export function assessmentContext(
   task: { id: string; title: string; context: Record<string, unknown> | null },
@@ -38,7 +44,7 @@ export function assessmentContext(
   at: Date,
 ) {
   const brief = buildAssessmentBrief({
-    task: { id: task.id, title: task.title, specId: ((task.context as { specSource?: { specId?: string } } | null)?.specSource?.specId) ?? null },
+    task: { id: task.id, title: task.title, specId: specIdOf(task.context) },
     prerequisites,
     recoveryOutcomes: [],
   });
