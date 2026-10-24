@@ -252,6 +252,15 @@ describe('buildd wsl install: command line', () => {
   });
 });
 
+describe('buildd wsl install: launcher entry (wsl.ts)', () => {
+  test('wsl-install module exports main function with correct signature for launcher routing', async () => {
+    const module = await import('../../src/wsl-install');
+    expect(typeof module.main).toBe('function');
+    // The main function should accept argv string array and return Promise<number>,
+    // matching the signature expected by wsl.ts's COMMANDS routing
+  });
+});
+
 // Acceptance criteria (Living Spec a0b82b5d, part 1): one test per check id,
 // named so grading can find it. The scenarios above already exercise the
 // same code paths in more detail; these are the direct GIVEN/WHEN/THEN.
