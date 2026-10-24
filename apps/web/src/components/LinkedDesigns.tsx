@@ -10,10 +10,12 @@ import { designView } from '@/lib/design-view';
  * current one. Renders nothing when there are none or the lookup fails (a page
  * must not break because its designs cannot be read).
  */
-export default async function LinkedDesigns({ subjectKind, subjectId, userId }: {
+export default async function LinkedDesigns({ subjectKind, subjectId, userId, collapsed = false }: {
   subjectKind: 'mission' | 'task' | 'spec';
   subjectId: string;
   userId: string;
+  /** Closed behind one line until opened (the mission page). */
+  collapsed?: boolean;
 }) {
   try {
     const linked = await artifactsLinkedTo(subjectKind, subjectId, { caller: { kind: 'user', userId }, relations: ['design_reference'] });
@@ -37,7 +39,7 @@ export default async function LinkedDesigns({ subjectKind, subjectId, userId }: 
         downloadUrl: view.frameUrl ? `/api/artifacts/${a.id}/download` : null,
       });
     }
-    return <DesignsSection designs={designs} />;
+    return <DesignsSection designs={designs} collapsed={collapsed} />;
   } catch {
     return null;
   }
