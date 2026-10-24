@@ -51,7 +51,7 @@ import { evaluateMissionWorkState } from '@/lib/mission-pr';
 import { presentMissionState } from '@/lib/mission-state-presentation';
 import { deriveMissionStateView, type MissionStateInput, type MissionStateView } from '@/lib/mission-state-view';
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
-import { getDeliveryViewsForTasks, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
+import { getDeliveryViewsForTasks, kernelDeliveryOwnerForPr, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
 import { missionEpochsOf } from '@/lib/workflow/delivery-ship';
 import { deliveryDisagreements, overlayDeliveryLifecycle, type DeliveryDisagreement } from '@/lib/delivery-overlay';
 import { attemptLine } from '@/lib/workflow/projections';
@@ -1524,19 +1524,6 @@ async function loadBaseSideMerges(input: {
   });
 }
 
-/** The owner task of the kernel delivery bound to this PR, or null. Never throws. */
-async function deliveryOwnerForPr(workspaceId: string, prUrl: string | null, prNumber: number): Promise<string | null> {
-  const repo = prUrl ? /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/.exec(prUrl)?.[1] ?? null : null;
-  if (!repo) return null;
-  const res = await db.execute(sql`-- workflow:delivery_owner_for_pr
-SELECT owner_task_id, pr_number FROM workflow_deliveries
-WHERE workspace_id = ${workspaceId}::uuid AND repo_full_name = ${repo}::text AND pr_number = ${prNumber}::int AND authority = 'kernel'
-ORDER BY created_at DESC LIMIT 1`).catch(() => null);
-  const row = ((res as { rows?: Array<{ owner_task_id?: unknown; pr_number?: unknown }> } | null)?.rows ?? [])
-    .find(r => Number(r.pr_number) === prNumber);
-  return typeof row?.owner_task_id === 'string' ? row.owner_task_id : null;
-}
-
 /** The mission whose integration branch a PR targets, for a PR whose task names none (#5623). */
 async function missionForBaseRef(workspaceId: string, baseRef: string | null): Promise<string | null> {
   if (!baseRef) return null;
@@ -1557,7 +1544,7 @@ async function missionForBaseRef(workspaceId: string, baseRef: string | null): P
 export async function prOwnerTaskId(taskId: string, prNumber: number, pr?: { workspaceId: string; prUrl: string | null }): Promise<string> {
   // The PR's own delivery first: a person's "resolve conflicts and merge" task
   // also records the PR number, and is neither the owner nor an attempt (#5580).
-  const byPr = pr ? await deliveryOwnerForPr(pr.workspaceId, pr.prUrl, prNumber) : null;
+  const byPr = pr ? await kernelDeliveryOwnerForPr(pr.workspaceId, pr.prUrl, prNumber) : null;
   if (byPr) return byPr;
   const dv = (await getDeliveryViewsForTasks([taskId])).get(taskId);
   if (dv && dv.prNumber === prNumber) return dv.ownerTaskId;
