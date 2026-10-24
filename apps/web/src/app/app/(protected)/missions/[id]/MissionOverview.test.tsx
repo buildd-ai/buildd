@@ -40,7 +40,8 @@ describe('MissionOverview', () => {
     expect(html).not.toMatch(/aria-label="\d\d /);
     expect(html).toMatch(/aria-label="feat: task A: merged"/);
     const list = html.slice(html.indexOf('data-testid="mission-task-list"'));
-    expect(list).toContain('feat: task B');
+    expect(list).toContain('Task B');
+    expect(list).not.toContain('feat: task B');
     expect(list).not.toMatch(/>0\d</);
   });
 
