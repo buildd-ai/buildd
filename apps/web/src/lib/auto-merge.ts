@@ -386,6 +386,7 @@ export async function evaluateAutoMergeSafety(
       prNumber,
       headSha,
       files,
+      trunkRef: opts?.gitConfig?.targetBranch ?? opts?.gitConfig?.defaultBranch ?? null,
       ...(deltaBase ? { deltaBase } : {}),
       // A PR this one replaces does not hold its migration slot (§13.11 rule 5).
       ignorePrNumbers: await predecessorPrNumbers(opts?.workspaceId, prNumber),
