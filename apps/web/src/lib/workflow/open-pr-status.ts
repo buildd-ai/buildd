@@ -23,7 +23,7 @@
 import { sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
-import { LANDING_STATUS_CONTEXT, LANDING_STATUS_CONTEXTS, type LandingStatus } from '@buildd/workflow-kernel/landing-gate';
+import { LANDING_STATUS_CONTEXT, type LandingStatus } from '@buildd/workflow-kernel/landing-gate';
 import { openHeadStatus, statusCoverage, type CandidateGateInput, type OpenHeadAnswer, type OpenHead, type StatusCoverage, type UnownedReview } from '@buildd/workflow-kernel/open-pr-status';
 import type { KernelView } from '@buildd/workflow-kernel/types';
 import { githubApi } from '@/lib/github';
@@ -199,8 +199,8 @@ async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha:
   const drain = deps.drain ?? (async (id) => (await import('./seam')).drainDelivery(id));
 
   const out: HeadResult = { shown: false, by: null, wrote: false, republished: false, unchanged: false, skippedNoDelivery: false };
-  const read = () => Promise.all(LANDING_STATUS_CONTEXTS.map((c) => statusOf(installationId, repoFullName, sha, c).catch(() => null)));
-  const matches = (cur: Shown[], want: LandingStatus) => cur.every((x) => x && x.state === want.state && x.description === want.description);
+  const read = () => statusOf(installationId, repoFullName, sha, LANDING_STATUS_CONTEXT).catch(() => null);
+  const matches = (cur: Shown, want: LandingStatus) => !!cur && cur.state === want.state && cur.description === want.description;
   const ownerOf = async () => {
     for (const l of links) {
       const id = await owned(l.workspaceId, repoFullName, pr.number);
@@ -246,14 +246,11 @@ async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha:
       await republish(owner!.deliveryId, view!);
       out.shown = !!(await statusOf(installationId, repoFullName, sha, LANDING_STATUS_CONTEXT).catch(() => null));
     } else {
-      out.shown = current.some((x) => x);
+      out.shown = !!current;
     }
   } else {
-    // Under both names, the legacy one first, as the kernel writes them.
     try {
-      for (const context of LANDING_STATUS_CONTEXTS) {
-        await publish(installationId, { repoFullName, sha, context, state: answer.status.state, description: answer.status.description });
-      }
+      await publish(installationId, { repoFullName, sha, context: LANDING_STATUS_CONTEXT, state: answer.status.state, description: answer.status.description });
     } catch (err) {
       // If the publish fails due to statuses:write permission denied, rethrow as a special error
       // so the caller can skip the entire repo. Other 403s (rate limits, etc.) are regular errors.

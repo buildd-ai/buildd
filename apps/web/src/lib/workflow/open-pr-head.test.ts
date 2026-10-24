@@ -41,10 +41,10 @@ const at = (n: number) => ({ installationId: 1, repoFullName: REPO, prNumber: 9,
 const stateOn = (h: ReturnType<typeof harness>, sha: string) => h.statuses.get(`${sha}|${CONTEXT}`)?.state;
 
 describe('an event publishes one open head now (AC-78)', () => {
-  test('a newly opened PR gets pending at once, under both names', async () => {
+  test('a newly opened PR gets pending at once, under the one name (never the retired buildd/landing)', async () => {
     const h = harness({ sha: H(1) });
     expect(await publishOpenPrHead(at(1), h.deps)).toBe('published');
-    expect(h.writes.map((w) => w.context)).toEqual(['buildd/landing', CONTEXT]);
+    expect(h.writes.map((w) => w.context)).toEqual([CONTEXT]);
     expect(stateOn(h, H(1))).toBe('pending');
   });
 

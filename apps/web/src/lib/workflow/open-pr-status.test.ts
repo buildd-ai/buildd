@@ -5,7 +5,7 @@ import { publishOpenPrStatuses, type LinkedRepo, type OpenPrStatusDeps } from '.
 
 const H = (n: number) => `${n}`.repeat(40).slice(0, 40);
 const REPO = 'acme/app';
-const CONTEXTS = ['buildd/landing', 'Buildd / Review approval'];
+const CONTEXT = 'Buildd / Review approval';
 
 interface Pull { number: number; sha: string; headRef?: string; baseRef?: string; author?: string; body?: string; draft?: boolean }
 
@@ -67,13 +67,13 @@ function approvedView(id: string, sha: string, version = 5): KernelView {
 }
 
 describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', () => {
-  test('a PR no delivery owns (a dependency bot\'s, a draft): pending under both names, never success', async () => {
+  test('a PR no delivery owns (a dependency bot\'s, a draft): pending, never success', async () => {
     const h = harness({ pulls: [{ number: 7, sha: H(7), author: 'renovate[bot]' }, { number: 8, sha: H(8), draft: true }] });
     const s = await publishOpenPrStatuses(h.deps);
     expect(h.writes.map((w) => [w.sha.slice(0, 1), w.context, w.state])).toEqual([
-      ['7', CONTEXTS[0], 'pending'], ['7', CONTEXTS[1], 'pending'], ['8', CONTEXTS[0], 'pending'], ['8', CONTEXTS[1], 'pending'],
+      ['7', CONTEXT, 'pending'], ['8', CONTEXT, 'pending'],
     ]);
-    expect(h.writes[1]!.description).toBe('Review not requested: no buildd review covers 7777777 yet');
+    expect(h.writes[0]!.description).toBe('Review not requested: no buildd review covers 7777777 yet');
     expect(s).toMatchObject({ checked: 2, published: 2, republished: 0, errors: 0, coverage: { verdict: 'covered', missing: [] } });
   });
 
@@ -81,7 +81,7 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
     const h = harness({ pulls: [{ number: 7, sha: H(7), author: 'renovate[bot]' }] });
     await publishOpenPrStatuses(h.deps);
     const before = h.writes.length;
-    expect(before).toBe(2);
+    expect(before).toBe(1);
     const s = await publishOpenPrStatuses(h.deps);
     expect(h.writes.length).toBe(before);
     expect(s).toMatchObject({ published: 0, unchanged: 1, coverage: { verdict: 'covered' } });
@@ -100,7 +100,7 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
     const h = harness({
       pulls: [{ number: 1, sha: H(1) }],
       owned: { 1: { id: 'd1', view } },
-      onDrain: () => { for (const c of CONTEXTS) h.statuses.set(`${H(1)}|${c}`, { state: 'success', description: 'Ready to merge: 1111111 approved by review' }); },
+      onDrain: () => { h.statuses.set(`${H(1)}|${CONTEXT}`, { state: 'success', description: 'Ready to merge: 1111111 approved by review' }); },
     });
     const s = await publishOpenPrStatuses(h.deps);
     expect(h.enqueued).toEqual([{ deliveryId: 'd1', version: 5 }]);
@@ -110,7 +110,7 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
 
   test('a kernel-owned head already showing the kernel\'s answer: nothing is enqueued', async () => {
     const view = approvedView('d1', H(1));
-    const shown = Object.fromEntries(CONTEXTS.map((c) => [`${H(1)}|${c}`, { state: 'success', description: 'Ready to merge: 1111111 approved by review' }]));
+    const shown = { [`${H(1)}|${CONTEXT}`]: { state: 'success', description: 'Ready to merge: 1111111 approved by review' } };
     const h = harness({ pulls: [{ number: 1, sha: H(1) }], owned: { 1: { id: 'd1', view } }, shown });
     const s = await publishOpenPrStatuses(h.deps);
     expect(h.enqueued).toEqual([]);
@@ -122,7 +122,7 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
     const h = harness({ pulls: [{ number: 1, sha: H(2) }], owned: { 1: { id: 'd1', view } } });
     await publishOpenPrStatuses(h.deps);
     expect(h.enqueued).toEqual([]);
-    expect(h.writes.map((w) => [w.sha, w.state])).toEqual([[H(2), 'pending'], [H(2), 'pending']]);
+    expect(h.writes.map((w) => [w.sha, w.state])).toEqual([[H(2), 'pending']]);
   });
 
   test('a frozen release candidate gets the release gate\'s answer at its SHA', async () => {
@@ -133,7 +133,7 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
       pulls: [{ number: 9, sha: H(3), headRef: 'release/v1.2.3', baseRef: 'main', author: 'release-bot[bot]', body: `<!-- release-candidate ${JSON.stringify(meta)} -->` }],
     });
     const s = await publishOpenPrStatuses(h.deps);
-    expect(h.writes.at(-1)).toMatchObject({ sha: H(3), context: CONTEXTS[1], state: 'success', description: 'Ready to merge: release candidate 3333333 is verified' });
+    expect(h.writes.at(-1)).toMatchObject({ sha: H(3), context: CONTEXT, state: 'success', description: 'Ready to merge: release candidate 3333333 is verified' });
     expect(s).toMatchObject({ candidates: 1 });
   });
 
@@ -165,7 +165,7 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
     h.deps.owned = async () => (calls++ === 0 ? null : 'd1');
     h.deps.loadView = async () => view;
     await publishOpenPrStatuses(h.deps);
-    expect(h.writes.length).toBe(2);
+    expect(h.writes.length).toBe(1);
     expect(h.enqueued).toEqual([{ deliveryId: 'd1', version: 5 }]);
   });
 
