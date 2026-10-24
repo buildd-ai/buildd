@@ -3455,9 +3455,10 @@ describe('POST /api/workers/claim', () => {
       workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
     });
 
-    const claimAs = async (runner: string, requiredCapabilities: unknown) => {
+    const claimAs = async (runner: string, requiredCapabilities: unknown, extra: { environment?: unknown; accountName?: string } = {}) => {
       mockAuthenticateApiKey.mockResolvedValue({
         id: 'account-1',
+        name: extra.accountName,
         maxConcurrentWorkers: 3,
         type: 'user',
         authType: 'api',
@@ -3471,11 +3472,33 @@ describe('POST /api/workers/claim', () => {
       }));
       const res = await POST(createMockRequest({
         headers: { Authorization: 'Bearer bld_test' },
-        body: { runner },
+        body: { runner, ...(extra.environment ? { environment: extra.environment } : {}) },
       }));
       expect(res.status).toBe(200);
       return res.json();
     };
+
+    // What a real runner claims with: its key is its localUiUrl, never the
+    // label list_runners leads with nor the hostname its workers report.
+    const realRunner = {
+      key: 'http://100.64.0.1:8766',
+      environment: { labels: { type: 'local', hostname: 'build-host' } },
+      accountName: 'team-runner',
+    };
+
+    it.each([['team-runner'], ['build-host'], ['http://100.64.0.1:8766'], ['Build-Host']])(
+      'a pin by the name list_runners shows (%p) is claimed by that runner',
+      async (pin) => {
+        const data = await claimAs(realRunner.key, [`runner:${pin}`], realRunner);
+        expect(data.workers.length).toBe(1);
+      },
+    );
+
+    it('a real runner still defers a task pinned to another runner', async () => {
+      const data = await claimAs(realRunner.key, ['runner:the-mac'], realRunner);
+      expect(data.workers).toEqual([]);
+      expect(data.diagnostics.deferrals.runner_capability).toBe(1);
+    });
 
     it('defers a pinned task for a different runner, naming the pin', async () => {
       const data = await claimAs('coder', ['runner:the-mac']);
@@ -3934,7 +3957,7 @@ describe('POST /api/workers/claim', () => {
 
     const res = await POST(createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
-      body: { runner: 'coder-workspace', taskId: 'reviewer-task', workspaceId: 'ws-1' },
+      body: { runner: 'team-runner', taskId: 'reviewer-task', workspaceId: 'ws-1' },
     }));
     const data = await res.json();
     expect(data.diagnostics).toMatchObject({ reason: 'no_pending_tasks', taskExclusion: exclusion });

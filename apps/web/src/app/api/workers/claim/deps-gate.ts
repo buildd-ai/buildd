@@ -1,5 +1,4 @@
 import { isNull, or, sql, type SQL } from 'drizzle-orm';
-import { BYPASS_DEPS_GATE_KEY, bypassFlagCondition } from '@/lib/bypass-flags';
 import { tasks, workers, dependencyReleases } from '@buildd/core/db/schema';
 import {
   DEP_SATISFYING_STATUSES,
@@ -40,8 +39,7 @@ export { DEP_SATISFYING_STATUSES };
  * additive — it OR's onto the status check, never replaces it, so a workspace
  * that never writes a `dependency_releases` row sees zero behavior change.
  *
- * Callers should OR this with the bypass conditions (no deps, empty deps,
- * `context.bypassDepsGate = 'true'`).
+ * Callers should OR this with the no-dependency conditions (null or empty deps).
  */
 export function dependenciesSatisfied(): SQL {
   return sql`NOT EXISTS (
@@ -95,6 +93,7 @@ export const DEP_EDGE_ARM_SQL: Record<DepEdgeReleaseArm, (depId: SQL) => SQL> = 
   migration_other_base: (depId) => migrationEdgeOnOtherBase(depId),
   inferred_unstarted_holder: (depId) => inferredEdgeOntoUnstartedHolder(depId),
   force_start: (depId) => forceStartLiftsEdge(depId),
+  assess_start: (depId) => assessStartAdmitsEdge(depId),
 };
 
 function statusArm(depId: SQL): SQL {
@@ -161,6 +160,21 @@ function forceStartLiftsEdge(depId: SQL): SQL {
 }
 
 /**
+ * TRUE when a person's unexpired Start anyway names `depId` in
+ * `context.forceStart.assessDependsOn` (spec 36df686b). It admits the dependent
+ * to be claimed for assessment: it does not delete the edge, mark the upstream
+ * satisfied, or release the dependent for automatic scheduling. The claim
+ * consumes the intent (context.forceStart -> forceStartHistory), so it admits
+ * one claim; without an intent this arm is FALSE and the edge keeps holding.
+ */
+function assessStartAdmitsEdge(depId: SQL): SQL {
+  return sql`(
+    COALESCE(${tasks.context}->'forceStart'->'assessDependsOn' ? (${depId})::text, FALSE)
+    AND COALESCE((${tasks.context}->'forceStart'->>'expiresAt') > to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), FALSE)
+  )`;
+}
+
+/**
  * TRUE when `depId` is an overlap edge the creation route inferred
  * (`pathDeclaration.inferredDependsOn`) and the dependency has not started:
  * still pending, no live worker, and no worker holding an open PR. The edge
@@ -194,8 +208,9 @@ function inferredEdgeOntoUnstartedHolder(depId: SQL): SQL {
 
 /**
  * The claim route's whole dependency gate: TRUE when the task has no
- * dependencies, a person force-started it (context.bypassDepsGate), or every
- * dependency is satisfied.
+ * dependencies, or every dependency is satisfied or admitted by the person's
+ * bounded intent (per edge: `dependencySatisfied`). There is no whole-task
+ * bypass flag: Start anyway names the edges it admits (spec 36df686b R-3).
  *
  * Two-valued on purpose. The bypass check used to be a bare
  * `context->>'bypassDepsGate' = 'true'`, which is NULL (not FALSE) whenever the
@@ -208,7 +223,6 @@ export function depsGate(): SQL {
   return or(
     isNull(tasks.dependsOn),
     sql`${tasks.dependsOn}::jsonb = '[]'::jsonb`,
-    bypassFlagCondition(tasks.context, BYPASS_DEPS_GATE_KEY),
     dependenciesSatisfied(),
   )!;
 }

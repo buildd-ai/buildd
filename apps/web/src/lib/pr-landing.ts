@@ -137,6 +137,8 @@ export type HumanCause =
   | 'fix_exhausted'
   | 'superseded'
   | 'dependency_bot'
+  /** A frozen release candidate conflicts: it is amended through the Release workflow, never fixed on its branch. */
+  | 'release_candidate'
   | 'base_rewritten'
   | 'auto_resolve_disabled'
   | 'no_owner'
@@ -1499,6 +1501,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     }
     if (res.superseded) return human('superseded', 'the change is already upstream; the PR is superseded');
     if (res.dependencyBot) return human('dependency_bot', 'this is a dependency-bot PR; its own rebase owns the branch');
+    if (res.releaseCandidate) return human('release_candidate', res.releaseCandidate);
     if (res.baseRewritten) return human('base_rewritten', 'the base branch was rewritten after this PR opened');
     if (res.exhausted) {
       if (owner.taskId) await escalate(owner.taskId, repoFullName, prNumber, liveHead).catch(() => {});

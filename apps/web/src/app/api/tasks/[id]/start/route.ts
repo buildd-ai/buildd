@@ -23,6 +23,8 @@ import {
   forceDialog,
   gateName,
   isStartForceable,
+  makeWaitingReason,
+  readForceStart,
   type ForceStartIntent,
   type WaitingKind,
   type WaitingReason,
@@ -96,12 +98,13 @@ export async function POST(
     }
     const forceRaw = (body.force && typeof body.force === 'object' ? body.force
       : body.forceCoordination && typeof body.forceCoordination === 'object' ? body.forceCoordination
-      : null) as { kinds?: unknown; reasonsDigest?: unknown; note?: unknown } | null;
+      : null) as { kinds?: unknown; reasonsDigest?: unknown; note?: unknown; seenBlockers?: unknown } | null;
     const forceRequest = forceRaw
       ? {
           kinds: Array.isArray(forceRaw.kinds) ? forceRaw.kinds.filter((k): k is WaitingKind => typeof k === 'string') : null,
           reasonsDigest: typeof forceRaw.reasonsDigest === 'string' ? forceRaw.reasonsDigest : null,
           note: typeof forceRaw.note === 'string' ? forceRaw.note : null,
+          seenBlockers: Array.isArray(forceRaw.seenBlockers) ? forceRaw.seenBlockers.filter((k): k is string => typeof k === 'string') : null,
         }
       : null;
 
@@ -152,7 +155,10 @@ export async function POST(
     // coordination hold the probe below reports, forceable on its own.
     const inferredEdges = new Set(task.pathDeclaration?.inferredDependsOn ?? []);
     const dependsOn = ((task.dependsOn as string[] | null) || []).filter(id => !inferredEdges.has(id));
-    if (dependsOn.length > 0 && !forceOverride) {
+    // A Start anyway over the declared dependency is a person's confirmed
+    // choice (spec 36df686b): the probe below names it and checks the digest.
+    const startsAnyway = !!forceRequest && (forceRequest.kinds ?? []).includes('dep_declared');
+    if (dependsOn.length > 0 && !forceOverride && !startsAnyway) {
       const openDepWorkers = await db.query.workers.findMany({
         where: sqlWhere(and(
           inArray(workers.taskId, dependsOn),
@@ -332,12 +338,33 @@ export async function POST(
     const waitingReasons: WaitingReason[] = (await probeCoordination(task as any, now, { skipMissionLocal: !!forceOverride || isBypassHeld })) ?? [];
     const blocking = blockingReasons(waitingReasons);
     let forceIntent: ForceStartIntent | null = null;
+    // Repeated clicks, or a click after the wake was missed: the accepted
+    // request stays the one request (same id, no second record) and only the
+    // wake is sent again. Nothing is minted while an unexpired intent already
+    // admits every declared edge that still holds.
+    const accepted = readForceStart(task.context as Record<string, unknown> | null, now);
+    const alreadyAccepted = !!forceRequest && !!accepted?.assessDependsOn?.length
+      && blocking.length > 0 && blocking.every(r => r.kind === 'dep_declared' && !!r.blocker && accepted.assessDependsOn!.includes(r.blocker.id));
+    if (alreadyAccepted) {
+      await wakeTask(task.id, 'manual.start', { targetLocalUiUrl: targetLocalUiUrl || null, ...(targetLocalUiUrl ? { byPerson } : {}) });
+      return NextResponse.json({
+        started: true,
+        taskId: task.id,
+        targetLocalUiUrl: targetLocalUiUrl || null,
+        forced: { forceId: accepted!.id, gates: [...new Set(accepted!.kinds.map(gateName))], railsRemaining: [], expiresAt: accepted!.expiresAt, alreadyAccepted: true },
+      });
+    }
     if (blocking.length > 0) {
       const refusal = coordinationHoldBody(blocking);
       if (!forceRequest) {
         return NextResponse.json(refusal, { status: 422 });
       }
-      if (forceRequest.reasonsDigest !== refusal.reasonsDigest) {
+      // A prerequisite that cleared since the person confirmed is not a change
+      // they must re-confirm: if everything still holding is a declared edge
+      // they saw, the start proceeds on what remains (AC-3).
+      const seen = new Set(forceRequest.seenBlockers ?? []);
+      const onlySeenDeclared = seen.size > 0 && blocking.every(r => r.kind === 'dep_declared' && !!r.blocker && seen.has(r.blocker.id));
+      if (forceRequest.reasonsDigest !== refusal.reasonsDigest && !onlySeenDeclared) {
         // §7.2 step 2: a person never confirms a gate they did not see.
         return NextResponse.json({
           ...refusal,
@@ -369,7 +396,7 @@ export async function POST(
     // Always stamp manualStartAt so the task is durably prioritized on next claim cycle
     // even if the Pusher broadcast is missed. Also boost priority once to float it
     // above other same-priority tasks. Human-override bypass flags are written here too.
-    // bypassDepsGate — skip the dep-PR merge gate (when deps exist).
+    // (no bypassDepsGate: a dependency is admitted only by the bounded forceStart intent)
     // bypassHeldGate — skip the mission held gate (when the task belongs to a mission).
     // bypassMissionBudget — skip the mission budget_exhausted gate.
     // bypassSubjectGate — skip the subject-liveness gate (when the subject PR is dead).
@@ -379,6 +406,24 @@ export async function POST(
     // route reads. The old flag was written here and read by nothing — an
     // operator-visible context key that looked like a working override.
     const hasDeps = dependsOn.length > 0;
+    // forceOverride used to write a permanent whole-task bypassDepsGate. It
+    // now converges on the one bounded intent: the same Start anyway request,
+    // naming the declared edges, expiring and consumed by the claim (R-3).
+    if (forceOverride && hasDeps) {
+      const named = forceIntent?.assessDependsOn ?? [];
+      const missing = dependsOn.filter(id => !named.includes(id));
+      if (missing.length > 0) {
+        const reasons = missing.map(id => makeWaitingReason('dep_declared', {
+          because: 'it was declared as a dependency',
+          blocker: { type: 'task', id, label: `task ${id.slice(0, 8)}`, href: `/app/tasks/${id}` },
+          provenance: { source: 'task_context', derivedFrom: 'tasks.dependsOn' },
+        }));
+        const built = buildForceStartIntent({ reasons, userId, accountId, now });
+        forceIntent = forceIntent
+          ? { ...forceIntent, kinds: [...new Set([...forceIntent.kinds, ...built.kinds])], assessDependsOn: [...new Set([...named, ...missing])], expiresAt: built.expiresAt }
+          : built;
+      }
+    }
     const hasStartGate = !!(task.startAt && task.startAt > new Date());
     const hasMission = !!task.missionId;
     const existingContext = (task.context as Record<string, unknown>) || {};
@@ -390,7 +435,6 @@ export async function POST(
         context: {
           ...existingContext,
           manualStartAt: now.toISOString(),
-          ...(forceOverride && hasDeps ? { bypassDepsGate: true } : {}),
           ...(forceOverride && hasMission ? { bypassHeldGate: true } : {}),
           ...(forceOverride && missionBudgetExhausted ? { [BYPASS_MISSION_BUDGET_KEY]: true } : {}),
           ...(forceOverride && subjectDead ? { [BYPASS_SUBJECT_GATE_KEY]: true } : {}),

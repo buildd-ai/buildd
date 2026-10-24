@@ -7,6 +7,7 @@ import { inspectPullRequestMigrations } from './migration-inspector';
 
 const DIR = 'packages/core/drizzle';
 const BASE_SHA = 'base-tip-sha';
+const TRUNK_SHA = 'trunk-tip-sha';
 
 function blob(content: string) {
   return { encoding: 'base64', content: Buffer.from(content).toString('base64') };
@@ -18,7 +19,7 @@ function blob(content: string) {
  * and head SQL. A missing key is a 404.
  */
 function github(opts: {
-  files: Array<{ filename: string; status?: string }>;
+  files: Array<{ filename: string; status?: string; previous_filename?: string }>;
   head?: Record<string, string>;
   base?: Record<string, string>;
   /** Migration filenames listed in the drizzle dir at the target's tip; absent = listing unavailable. */
@@ -26,6 +27,10 @@ function github(opts: {
   /** Drizzle v1 migration folders in the same listing (directory entries). */
   baseFolders?: string[];
   baseRef?: string;
+  /** Path → SQL at trunk's (`dev`, the repo default) tip; set when the PR targets another branch. */
+  trunk?: Record<string, string>;
+  /** Drizzle v1 folders listed at trunk's tip. */
+  trunkFolders?: string[];
   peers?: Array<{
     number: number;
     baseRef?: string;
@@ -36,7 +41,10 @@ function github(opts: {
   mockGithubApi.mockImplementation(async (_installation, url) => {
     if (url.includes('/pulls/42/files')) return opts.files;
     if (url.endsWith('/pulls/42')) return { number: 42, base: { ref: opts.baseRef ?? 'dev' } };
-    if (url.includes('/git/ref/heads/')) return { object: { sha: BASE_SHA } };
+    if (url.endsWith('/repos/acme/app')) return { default_branch: 'dev' };
+    if (url.includes('/git/ref/heads/')) {
+      return { object: { sha: opts.trunk && url.endsWith('/heads/dev') ? TRUNK_SHA : BASE_SHA } };
+    }
     if (url.includes('/pulls?')) {
       return [
         { number: 42 },
@@ -58,9 +66,13 @@ function github(opts: {
           ...(opts.baseFolders ?? []).map((name) => ({ name, type: 'dir' })),
         ];
       }
+      if (decodeURIComponent(path) === DIR && ref === TRUNK_SHA && opts.trunkFolders) {
+        return opts.trunkFolders.map((name) => ({ name, type: 'dir' }));
+      }
       const source =
         ref === 'abc123' ? opts.head
           : ref === BASE_SHA ? opts.base
+            : ref === TRUNK_SHA ? opts.trunk
             : opts.peers?.find((p) => ref === `peer-${p.number}`)?.head;
       const sql = source?.[decodeURIComponent(path)];
       if (sql === undefined) throw new Error('Not Found');
@@ -473,6 +485,70 @@ describe('inspectPullRequestMigrations', () => {
       reason: `modifies existing migration ${DIR}/0094_safe.sql`,
       kind: 'lineage',
     });
+  });
+});
+
+describe('inspectPullRequestMigrations — a PR into a mission branch that is behind trunk', () => {
+  beforeEach(() => mockGithubApi.mockReset());
+
+  const OLD = `${DIR}/20261024125823_open_sunset_bain/migration.sql`;
+  const NEW = `${DIR}/20261024130000_open_sunset_bain/migration.sql`;
+  const BODY = 'ALTER TABLE "tasks" DROP COLUMN "old";';
+  const rename = [{ filename: NEW, status: 'renamed', previous_filename: OLD }];
+
+  it('a folder rename that already exists on trunk is inherited, not authored', async () => {
+    github({
+      baseRef: 'mission/delivery-2',
+      files: rename,
+      head: { [NEW]: BODY },
+      trunk: { [NEW]: BODY },
+      trunkFolders: ['20261024130000_open_sunset_bain'],
+    });
+    // Read the base from the PR, as the verdict-time re-check does.
+    expect(await inspect()).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('a rename the PR authors stays lineage', async () => {
+    github({
+      baseRef: 'mission/delivery-2',
+      files: rename,
+      head: { [NEW]: BODY },
+      trunk: {},
+      trunkFolders: ['20261024125823_open_sunset_bain'],
+    });
+    expect(await inspect()).toMatchObject({ safe: false, kind: 'lineage', reason: `modifies existing migration ${NEW}` });
+  });
+
+  it('a rename whose old folder trunk still runs stays lineage', async () => {
+    github({
+      baseRef: 'mission/delivery-2',
+      files: rename,
+      head: { [NEW]: BODY },
+      trunk: { [NEW]: BODY, [OLD]: BODY },
+      trunkFolders: ['20261024125823_open_sunset_bain', '20261024130000_open_sunset_bain'],
+    });
+    expect(await inspect()).toMatchObject({ safe: false, kind: 'lineage' });
+  });
+
+  it('a rename stays lineage when trunk cannot be listed', async () => {
+    github({ baseRef: 'mission/delivery-2', files: rename, head: { [NEW]: BODY }, trunk: { [NEW]: BODY } });
+    expect(await inspect()).toMatchObject({ safe: false, kind: 'lineage' });
+  });
+
+  it('a modification trunk already carries is inherited', async () => {
+    github({ baseRef: 'mission/delivery-2', files: [{ filename: OLD, status: 'modified' }], head: { [OLD]: BODY }, trunk: { [OLD]: BODY } });
+    expect(await inspect()).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('a modification trunk does not carry stays lineage', async () => {
+    github({ baseRef: 'mission/delivery-2', files: [{ filename: OLD, status: 'modified' }], head: { [OLD]: BODY }, trunk: { [OLD]: SAFE } });
+    expect(await inspect()).toMatchObject({ safe: false, kind: 'lineage', reason: `modifies existing migration ${OLD}` });
+  });
+
+  it('does not consult trunk for a PR into trunk itself', async () => {
+    github({ baseRef: 'dev', files: rename, head: { [NEW]: BODY }, trunk: { [NEW]: BODY }, trunkFolders: [] });
+    expect(await inspect()).toMatchObject({ safe: false, kind: 'lineage' });
+    expect(mockGithubApi.mock.calls.some((c) => c[1].includes(`ref=${TRUNK_SHA}`))).toBe(false);
   });
 });
 

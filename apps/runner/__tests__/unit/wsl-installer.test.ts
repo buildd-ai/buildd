@@ -168,13 +168,28 @@ describe.skipIf(process.platform === 'win32')('install.sh inside WSL', () => {
       expect(r.out).toContain('Claude: already logged in');
       expect(r.out).toContain('Codex: already logged in');
       expect(r.out).toContain('buildd: already logged in');
-      expect(r.out).not.toContain('Q:');
+      expect(r.out).not.toMatch(/Q: .*(Log in|Connect)/);
     });
 
     test('no browser: buildd login --device is offered', () => {
       const r = run('buildd_login_source() { :; }\nwsl_logins /nonexistent', { answer: 'n' });
       expect(r.out).toContain('buildd login --device');
       expect(r.out).toContain('Later: buildd codex login');
+    });
+
+    test('runner name (R-23): offered, typed name runs buildd name, empty or declined keeps the default', () => {
+      const tty = join(temp('buildd-wsl-tty-'), 'tty');
+      writeFileSync(tty, 'my-box\n');
+      const pre = 'buildd_login_source() { echo config; }\nclaude() { :; }\nb() { echo "buildd $*"; }\nmkdir -p "$HOME/.claude" "$HOME/.codex"; echo x > "$HOME/.claude/.credentials.json"; echo x > "$HOME/.codex/auth.json"\nwsl_logins b';
+      const typed = run(pre, { answer: 'y', present: ['claude'], env: { BUILDD_TTY: tty } });
+      expect(typed.out).toMatch(/Q: .*runner a name.*-wsl/);
+      expect(typed.out).toMatch(/buildd name my-box$/m);
+      const empty = run(pre, { answer: 'y', present: ['claude'] });
+      expect(empty.out).not.toMatch(/^buildd name /m);
+      expect(empty.out).toMatch(/Kept .*-wsl/);
+      const declined = run(pre, { answer: 'n', present: ['claude'] });
+      expect(declined.out).not.toMatch(/^buildd name /m);
+      expect(declined.out).toContain('Later: buildd name <name>');
     });
 
     test('never reads a Windows profile', () => {
@@ -207,6 +222,59 @@ describe.skipIf(process.platform === 'win32')('install.sh inside WSL', () => {
       expect(installSh).toMatch(/if \[ "\$WSL_VERIFIED" != "1" \]; then\n\s+INSTALL_SERVICE=0/);
       expect(installSh).toContain('[ "$WSL_VERIFIED" = "1" ] || exit 1');
       expect(installSh).toContain("buildd wsl migrate");
+    });
+  });
+
+  // Acceptance criteria (Living Spec a0b82b5d, part 2): one test per check id.
+  describe('acceptance criteria', () => {
+    test('AC-5: a yes installs exactly the missing packages in one command; a no installs nothing and prints it', () => {
+      const yes = run('wsl_packages_offer', { present: ['git', 'curl', 'unzip'], answer: 'y' });
+      expect(yes.log.split('\n').filter(l => l.startsWith('sudo apt-get install'))).toEqual(['sudo apt-get install -y bubblewrap socat']);
+
+      const no = run('wsl_packages_offer', { present: ['git', 'curl', 'unzip'], answer: 'n' });
+      expect(no.log).toBe('');
+      expect(no.out).toContain('sudo apt-get install -y bubblewrap socat');
+    });
+
+    test('AC-6: on a non-WSL host, no WSL step runs: no /mnt warning, no extra package question, no --verify-wsl', () => {
+      const procVersion = join(temp('buildd-wsl-proc-'), 'version');
+      writeFileSync(procVersion, 'Linux version 6.8.0-generic (buildd@ubuntu) #1 SMP\n');
+      const env = { WSL_INTEROP_FILE: '/nonexistent/WSLInterop', WSL_PROC_VERSION: procVersion };
+      expect(run('is_wsl && echo WSL || echo NOT', { env }).out.trim()).toBe('NOT');
+      // The installer only ever takes the WSL branch when is_wsl says so (R-7);
+      // on a non-WSL host it stays entirely in the pre-existing flow.
+      expect(installSh).toMatch(/if \[ "\$CLIENT_MODE" != "1" \] && is_wsl; then\n\s+IN_WSL=1/);
+      expect(installSh).toContain('[ "$IN_WSL" = "1" ] && wsl_projects_root_check "$SHELL_RC"');
+      expect(installSh).toContain('[ "$IN_WSL" = "1" ] || bwrap_offer');
+    });
+
+    test('AC-7: a /mnt project root warns and offers ~/code; a yes creates and configures it, moving nothing', () => {
+      const r = run('wsl_projects_root_check "$HOME/.bashrc"; echo "ROOT=$PROJECTS_ROOT"', { answer: 'y', env: { PROJECTS_ROOT: '/mnt/c/Users/me/code' } });
+      expect(r.out).toContain('Windows drive (/mnt/c/Users/me/code)');
+      expect(existsSync(join(r.home, 'code'))).toBe(true);
+      expect(r.out).toContain(`ROOT=${r.home}/code`);
+      expect(readFileSync(r.rc, 'utf8')).toContain('export PROJECTS_ROOT="$HOME/code"');
+      // Nothing under the old /mnt root was touched.
+      expect(existsSync('/mnt/c/Users/me/code')).toBe(false);
+    });
+
+    test('AC-9: a failing --verify-wsl prints the remedy, installs no service and exits non-zero; passing prints the verdict', () => {
+      const dir = temp('buildd-wsl-install-ac9-');
+      mkdirSync(join(dir, 'apps/runner/src'), { recursive: true });
+      const bunDir = Bun.which('bun')!;
+      const env = (exit: number) => {
+        writeFileSync(join(dir, 'apps/runner/src/isolation-check.ts'), `if (process.argv.includes('--verify-wsl')) process.exit(${exit}); console.log('  To fix: install bubblewrap');\n`);
+        return { PATH: `${join(bunDir, '..')}:/usr/bin:/bin`, HOME: temp('buildd-wsl-home-ac9-') };
+      };
+      const fail = Bun.spawnSync(['bash', '-c', `GREEN=''; YELLOW=''; RED=''; NC=''\n${block}\nwsl_verify "${dir}"`], { env: env(1) });
+      const failOut = new TextDecoder().decode(fail.stdout);
+      expect(fail.exitCode).toBe(1);
+      expect(failOut).toContain('Not verified');
+      expect(failOut).toContain('No background service was installed');
+
+      const pass = Bun.spawnSync(['bash', '-c', `GREEN=''; YELLOW=''; RED=''; NC=''\n${block}\nwsl_verify "${dir}"`], { env: env(0) });
+      expect(pass.exitCode).toBe(0);
+      expect(new TextDecoder().decode(pass.stdout)).toContain('linux-wsl and Claude runs confined by bwrap');
     });
   });
 });

@@ -23,6 +23,7 @@ import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { cleanupStaleWorkers } from '@/lib/stale-workers';
 import { LIVE_WORKER_STATUSES, isGateSatisfied } from '@/lib/task-presentation';
 import { getSecretsProvider } from '@buildd/core/secrets';
+import { pinnedRunnerOf, runnerMatchesPin } from '@buildd/core/runner-pin';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam } from '@/lib/notify';
 import { resolveCodexApiKey } from '@/lib/codex-credential';
@@ -67,6 +68,7 @@ import { allowExplicitClaim, EXPLICIT_CLAIM_WINDOW_SEC } from './explicit-claim-
 import { FORCE_CLAIM_CONTEXT_KEY, withoutForceClaim } from '@/lib/force-claim';
 import { readForceStart } from '@buildd/core/waiting-reason';
 import { consumeForceStart, recordForceStartClaim } from '@/lib/force-start';
+import { assessmentContext, loadPrerequisites, START_ANYWAY_ASSESSMENT_KEY } from '@/lib/start-anyway';
 import { describeExplicitDeferral } from './explicit-deferral';
 import { decideClaimIsolation, teamSizeLoader } from './isolation-gate';
 import { CREDENTIAL_BLOCK_CONTEXT_KEY, credentialBlockFromDeferral, stampCredentialBlock } from '@/lib/credential-block';
@@ -1624,10 +1626,15 @@ export async function POST(req: NextRequest) {
     if (delegationGap) { deferTask(task, 'delegation_unmet', { gaps: delegationGap.gaps, message: delegationGap.detail }); continue; }
 
     // Runner pin: a `runner:<name>` entry in requiredCapabilities restricts the
-    // task to that one runner; every other runner defers it.
-    const pinnedRunner = ((task as any).requiredCapabilities as string[] | null | undefined)
-      ?.find((c) => typeof c === 'string' && c.startsWith('runner:'))?.slice('runner:'.length);
-    if (pinnedRunner && pinnedRunner !== runner) { deferTask(task, 'runner_capability', { pinnedRunner }); continue; }
+    // task to that one runner; every other runner defers it. The name may be the
+    // runner key this claim sends, its hostname or its account's name
+    // (core/runner-pin.ts): the key alone is a URL nobody pins by.
+    const pinnedRunner = pinnedRunnerOf((task as any).requiredCapabilities);
+    if (pinnedRunner && !runnerMatchesPin(pinnedRunner, {
+      key: runner,
+      hostname: body.environment?.labels?.hostname,
+      accountName: (account as { name?: string | null }).name,
+    })) { deferTask(task, 'runner_capability', { pinnedRunner }); continue; }
 
     // Subject-liveness in-loop guard (defense-in-depth for race between the SQL
     // prefilter and per-task processing). The SQL condition above should already
@@ -2659,6 +2666,11 @@ export async function POST(req: NextRequest) {
     if (forced) {
       console.log(`[claim] force claim: task ${task.id} past [${forceBypassed.join(', ')}] by admin account ${account.id}`);
     }
+    // Start anyway: the claim that consumes an intent admitting declared edges
+    // hands the agent the prerequisites' live state as of now (R-4).
+    const assess = forceStartIntent?.assessDependsOn?.length
+      ? assessmentContext(task as any, await loadPrerequisites(forceStartIntent.assessDependsOn).catch(() => []), now)
+      : null;
     const patchedContext = {
       // A previous claim's force audit never carries over (withoutForceClaim),
       // and a force-start intent is single-use: consumed into its history here.
@@ -2671,6 +2683,7 @@ export async function POST(req: NextRequest) {
           bypassed: [...forceBypassed],
         },
       } : {}),
+      ...(assess ? { [START_ANYWAY_ASSESSMENT_KEY]: assess } : {}),
       model: resolvedModel,
       modelPinned: explicit !== null,
       routingReason: routingDecision.reason,

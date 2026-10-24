@@ -69,7 +69,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### missions (6)
 
-- [Mission Branch Refresh](./mission-branch-refresh.md) · @max — verified 2026-10-14
+- [Mission Branch Refresh](./mission-branch-refresh.md) · @max — verified 2026-10-24
   A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
 - [Mission State and Completion](./mission-completion.md) · @max — verified 2026-10-17
   Missions MUST derive health from live work and refuse completion without passing goal criteria and required reviews.
@@ -90,7 +90,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Every committed migration MUST execute exactly once, recognised by its folder name (legacy history by its exact-ms journal time) and never by a high-water mark for post-cutover files; a missing tracking row for legacy history MUST be backfilled on evidence, never replayed.
 - [Mission Release Gate](./mission-release-gate.md) · @max — verified 2026-10-15
   For a mission with an integration base, canCompleteMission and the on_mission_complete release trigger MUST gate on the mission PR's merge into trunk through one shared accessor.
-- [Release Flow](./release-flow.md) · @max — verified 2026-10-23
+- [Release Flow](./release-flow.md) · @max — verified 2026-10-24
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
 ### runners (14)
@@ -185,8 +185,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A decision call site MUST target a typed decision kind that owns its features, override, fallback and objective, while routes, ledger rows, outcomes and the readout come from one shared substrate.
 - [Failure Incident Recovery](./failure-incident-recovery.md) · @max — verified 2026-10-16
   A failure incident MUST carry one fresh, versioned recovery assessment that is re-checked before any repair, resolved only by a passing check, and shown identically on every surface.
-- [Force Start Past a Coordination Wait](./force-start.md) · @max — verified 2026-10-18
-  A dashboard Start MUST name the real waiting reasons, and Force start MUST lift exactly the confirmed forceable ones through one audited, single-use intent a runner's claim honours.
+- [Force Start Past a Coordination Wait](./force-start.md) · @max — verified 2026-10-24
+  A dashboard Start MUST name the real waiting reasons, and Force start MUST lift exactly the confirmed forceable ones through one audited, single-use intent a runner's claim honours. Start anyway is the same intent over a declared dependency: it admits the task's agent for assessment and keeps the edge (Living Spec 36df686b).
 - [Human Answer Delivery](./human-answer-delivery.md) · @max — verified 2026-10-20
   An authorised human answer MUST reach a live session or a new attempt of the same task, and MUST never be applied twice or silently dropped.
 - [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-10-15
