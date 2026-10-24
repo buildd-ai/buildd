@@ -6023,13 +6023,14 @@ async function handleReviewerOutcomeIfNeeded(
   // after the gates above, so an escalation to a person is kept; before the
   // evidence gate, which still wins.
   if (effectiveVerdict === 'approve') {
-    const { loadDesignRequirement, applyDesignGate, parseDesignChecks } = await import('@/lib/reviewer');
+    const { loadDesignRequirement, applyDesignGate, componentScreens, parseDesignChecks } = await import('@/lib/reviewer');
     const requirement = await loadDesignRequirement(originalTaskId);
     const designGate = applyDesignGate({
       verdict: effectiveVerdict,
       required: requirement.criteria,
       checks: parseDesignChecks(output),
       feedback: output.feedback,
+      components: componentScreens(requirement.design),
     });
     if (designGate.reason) {
       console.log(`[reviewer] PR #${prNumber}: design gate turned approve into request-changes`);

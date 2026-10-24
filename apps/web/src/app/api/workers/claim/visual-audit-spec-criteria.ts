@@ -6,11 +6,12 @@
  * routes, because the audit's dependencies grow after it is filed.
  * Best-effort: a failure attaches nothing, and the audit runs as before.
  */
-import type { ClaimTasksResponse } from '@buildd/shared';
+import type { ClaimTasksResponse, DesignScreenInfo } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { inArray } from 'drizzle-orm';
+import { loadDesignScreenInfo } from '@/lib/designs/screen-info';
 import { specCriteria } from '@buildd/spec-contract/requirements';
 import { criterionScreens } from '@buildd/spec-contract/check-lines';
 import { criterionVerificationScenarios } from '@buildd/spec-contract/verification-bindings';
@@ -70,11 +71,23 @@ export function resolveAuditDesign(subjects: readonly SubjectCriteria[], mission
  * Design vs built (scripts/qa/design-capture.ts): a QA_DESIGN plan with every
  * criterion that names a screen, so the auditor renders those screens beside
  * its page shots and judges both. A criterion with no screen is judged as before.
+ * A component screen (R-17) is compared with its dev fixture, not a route.
  */
-function designVsBuilt(subjects: readonly SubjectCriteria[], design: AuditDesign & { from: 'mission' | 'spec' }): string[] {
+function designVsBuilt(
+  subjects: readonly SubjectCriteria[],
+  design: AuditDesign & { from: 'mission' | 'spec' },
+  screenInfo: readonly DesignScreenInfo[],
+): string[] {
   const criteria = subjects.flatMap((s) => s.criteria.filter((c) => c.screens?.length).map((c) => ({ id: c.id, text: c.text, screens: c.screens! })));
   if (criteria.length === 0) return [];
-  const plan = JSON.stringify({ design: { artifactId: design.artifactId, ...(design.revision ? { revision: design.revision } : {}), file: '<the downloaded file>' }, criteria });
+  const named = new Set(criteria.flatMap((c) => c.screens));
+  const components = screenInfo.filter((i) => named.has(i.id) && i.kind === 'component');
+  const screens = Object.fromEntries(components.map((i) => [i.id, { kind: 'component', ...(i.code ? { code: i.code } : {}) }]));
+  const plan = JSON.stringify({
+    design: { artifactId: design.artifactId, ...(design.revision ? { revision: design.revision } : {}), file: '<the downloaded file>' },
+    criteria,
+    ...(components.length ? { screens } : {}),
+  });
   return [
     '',
     '### Design vs built',
@@ -88,11 +101,22 @@ function designVsBuilt(subjects: readonly SubjectCriteria[], design: AuditDesign
     '```',
     '3. It writes designs/<screen>.png, side-by-side/<shot>--<screen>.png (design | built) and design-captures.json. `bun scripts/qa/judge.ts prepare` then lists each pair under designChecks with the ask: differences that matter to the criterion (layout, content order, words, states shown), not pixels.',
     '4. Upload the side-by-side image and the design shot, cite the screen id in `observed`, and pass the design shot as `designShotIds`.',
+    ...(components.length ? [
+      '',
+      'Component screens are checked on /app/dev/fixtures, not on a route: each specifies one component, so compare it with that component on its dev fixture (`?state=<fixture>`; the fixture that renders the screen\'s code component). A fixture per component state is fine. Page screens keep the real route.',
+      ...components.map((i) => `- ${i.id} (${i.name})${i.code ? `, code ${i.code}` : ''}: capture its fixture at \`viewport=${i.viewport}\`, the screen's own size.`),
+      `Add the fixtures to the plan, one per state: \`"routes": { "${components[0]!.id}": ["/app/dev/fixtures?state=…"] }\`. For these, name the screen id and the fixture URL in \`observed\`, and in a code review's design check the fixture is the route, with the state it shows as its reason.`,
+    ] : []),
   ];
 }
 
 /** The prompt block. Null when no dependency is pinned to a spec. */
-export function renderVisualAuditSpecCriteria(subjects: readonly SubjectCriteria[], missionDesign?: AuditDesign | null): string | null {
+export function renderVisualAuditSpecCriteria(
+  subjects: readonly SubjectCriteria[],
+  missionDesign?: AuditDesign | null,
+  /** The design's own screens (kind, code, size), when buildd could read them. */
+  screenInfo: readonly DesignScreenInfo[] = [],
+): string | null {
   const withCriteria = subjects.filter((s) => s.criteria.length > 0);
   if (withCriteria.length === 0) return null;
   const design = resolveAuditDesign(withCriteria, missionDesign);
@@ -125,7 +149,7 @@ export function renderVisualAuditSpecCriteria(subjects: readonly SubjectCriteria
       ...(s.design ? [designLine(s.design)] : []),
       ...s.criteria.map((c) => `- **${c.id}** ${c.text}${c.screens?.length ? ` (screens: ${c.screens.join(', ')})` : ''}${c.captures?.length ? ` (captures: ${c.captures.join(', ')})` : ''}`),
     ]),
-    ...(design ? designVsBuilt(withCriteria, design) : []),
+    ...(design ? designVsBuilt(withCriteria, design, screenInfo) : []),
   ].join('\n');
 }
 
@@ -178,6 +202,7 @@ export async function attachVisualAuditSpecCriteria(
   claimedTasks: readonly AuditTask[],
   load: (dependsOn: readonly string[]) => Promise<SubjectCriteria[]> = loadVisualAuditSpecCriteria,
   missionDesign: (missionId: string) => Promise<AuditDesign | null> = loadMissionDesign,
+  designScreens: (design: AuditDesign) => Promise<DesignScreenInfo[]> = loadDesignScreenInfo,
 ): Promise<void> {
   for (const cw of claimedWorkers) {
     const task = claimedTasks.find((t) => t.id === cw.taskId);
@@ -187,7 +212,10 @@ export async function attachVisualAuditSpecCriteria(
       const subjects = await load(deps);
       // A failed link read leaves the spec's pin in charge, never the block out.
       const linked = task.missionId ? await missionDesign(task.missionId).catch(() => null) : null;
-      const block = renderVisualAuditSpecCriteria(subjects, linked);
+      const resolved = resolveAuditDesign(subjects.filter((s) => s.criteria.length > 0), linked);
+      // Unreadable kinds leave every screen a page: the plan still runs, and the file's data-kind still counts.
+      const screenInfo = resolved ? await designScreens(resolved).catch(() => []) : [];
+      const block = renderVisualAuditSpecCriteria(subjects, linked, screenInfo);
       if (!block) continue;
       const taskObj = cw.task as any;
       if (taskObj) {

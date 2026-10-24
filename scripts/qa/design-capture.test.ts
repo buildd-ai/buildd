@@ -170,3 +170,36 @@ describe('runDesignCapture', () => {
     } finally { rmSync(out, { recursive: true, force: true }); }
   });
 });
+
+describe('component screens (R-17)', () => {
+  test('a component screen is rendered at its own size and composed beside its dev fixture, which the caption names', async () => {
+    const out = mkdtempSync(join(tmpdir(), 'design-comp-'));
+    try {
+      const file = join(out, 'design.html');
+      writeFileSync(file, '<section data-screen="c-stage-meter" data-viewport="480x160"></section>');
+      const { mkdirSync } = await import('fs');
+      mkdirSync(join(out, 'screenshots'), { recursive: true });
+      writeFileSync(join(out, 'screenshots', 'meter.png'), 'b');
+      const url = '/app/dev/fixtures?state=stage-meter';
+      writeFileSync(join(out, 'captures.json'), JSON.stringify([
+        { id: 'meter', path: url, screenshotFile: 'meter.png', viewport: { width: 480, height: 900 } },
+        { id: 'activity', path: '/app/activity', screenshotFile: 'meter.png', viewport: { width: 480, height: 900 } },
+      ]));
+      const { browser, contexts } = fakeBrowser();
+      const result = await runDesignCapture({
+        browser: browser as any,
+        outDir: out,
+        planText: JSON.stringify({
+          design: { file }, criteria: [{ id: 'AC-14', screens: ['c-stage-meter'] }],
+          screens: { 'c-stage-meter': { kind: 'component', code: 'apps/web/src/components/UiStageMeter.tsx' } },
+        }),
+      });
+      expect(contexts[0].options.viewport).toEqual({ width: 480, height: 160 });
+      expect(result.shots[0]).toMatchObject({ screen: 'c-stage-meter', kind: 'component', file: 'designs/c-stage-meter.png' });
+      expect(result.pairs).toEqual([expect.objectContaining({
+        captureId: 'meter', screen: 'c-stage-meter', kind: 'component', fixture: url, sideBySide: 'side-by-side/meter--c-stage-meter.png',
+      })]);
+      expect(contexts.at(-1)!.content).toContain(`Built · fixture ${url}`);
+    } finally { rmSync(out, { recursive: true, force: true }); }
+  });
+});

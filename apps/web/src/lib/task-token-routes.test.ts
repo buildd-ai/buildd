@@ -41,6 +41,7 @@ const OPTED_IN = [
   'apps/web/src/app/api/agent-capabilities/requests/route.ts',
   // Designs: the routes pass the token taskScope to the link caller (lib/designs/service.ts), which confines the design and its attach target to that workspace.
   'apps/web/src/app/api/artifacts/designs/[designId]/attach/route.ts',
+  'apps/web/src/app/api/artifacts/designs/[designId]/screens/[screenId]/route.ts',
   'apps/web/src/app/api/artifacts/designs/route.ts',
   'apps/web/src/app/api/artifacts/[artifactId]/route.ts',
   'apps/web/src/app/api/artifacts/linked/route.ts',

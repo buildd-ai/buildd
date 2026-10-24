@@ -27,10 +27,11 @@
 import { readFileSync, writeFileSync, existsSync, statSync } from 'fs';
 import { basename, dirname, join, extname } from 'path';
 import { createHash } from 'crypto';
+import { runInNewContext } from 'vm';
 import { validateDesignMetadata } from '../../apps/web/src/lib/artifact-design';
 
 export type CanvasBoard = { file: string; title: string; width: number; height: number };
-export type DesignScreen = { id: string; name: string; viewport: string };
+export type DesignScreen = { id: string; name: string; viewport: string; kind?: string; code?: string };
 export type DesignMetadata = { kind: 'design'; screens: DesignScreen[]; source?: string };
 export type CanvasExport = { html: string; metadata: DesignMetadata; warnings: string[] };
 
@@ -249,6 +250,178 @@ export function mergeHelmets(helmets: string[]): string {
   return [...tags, rules.length ? `<style>\n${rules.join('\n')}\n</style>` : ''].filter(Boolean).join('\n');
 }
 
+
+// ---- Live components -------------------------------------------------------
+// A board is a component: `<dc-import name=X prop="…">` mounts another board,
+// `<sc-for list=… as=…>` repeats its content, `<sc-if value=…>` keeps it or
+// not, and `{{expr}}` reads the values the component's own `renderVals()`
+// returns. The canvas runs that at runtime; here it runs once, on the
+// component's own defaults and the props the import passes, so the design is
+// the page the canvas shows, not one static hole per `{{…}}`.
+
+type Scope = Record<string, unknown>;
+type Component = { body: string; helmet: string; defaults: Scope; render: (props: Scope) => Scope };
+const MAX_DEPTH = 24;
+const camel = (s: string) => s.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+
+/** One board's template, its prop defaults, and its `renderVals()` run in a bare vm context. */
+function loadComponent(html: string, file: string): Component {
+  const parsed = parseBoard(html, file);
+  let defaults: Scope = {};
+  const props = html.match(/data-props='([^']*)'/) ?? html.match(/data-props="([^"]*)"/);
+  if (props) {
+    try {
+      const raw = JSON.parse(props[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&')) as Record<string, unknown>;
+      for (const [k, v] of Object.entries(raw)) {
+        if (k.startsWith('$')) continue;
+        defaults[k] = v && typeof v === 'object' && 'default' in v ? (v as { default: unknown }).default : v;
+      }
+    } catch {
+      defaults = {};
+    }
+  }
+  const code = [...html.matchAll(/<script\b((?:[^>'"]|'[^']*'|"[^"]*")*)>([\s\S]*?)<\/script>/gi)].find(m => m[1].includes('data-dc-script'))?.[2];
+  let Cls: (new (props: Scope) => { renderVals?: () => Scope }) | undefined;
+  if (code) {
+    try {
+      const sandbox = { DCLogic: class { props: Scope; constructor(p: Scope) { this.props = p; } } };
+      Cls = runInNewContext(`${code}\n;Component`, sandbox, { timeout: 1000 });
+    } catch (err) {
+      throw new Error(`${file}: its script does not run: ${(err as Error).message}`);
+    }
+  }
+  const render = (given: Scope): Scope => {
+    const merged = { ...defaults, ...given };
+    if (!Cls) return merged;
+    try {
+      return { ...merged, ...(new Cls(merged).renderVals?.() ?? {}) };
+    } catch (err) {
+      throw new Error(`${file}: renderVals() failed: ${(err as Error).message}`);
+    }
+  };
+  return { body: parsed.body, helmet: parsed.helmet, defaults, render };
+}
+
+/** A path (`g.rows`) or literal (`8`, `true`, `'x'`); undefined when it is neither. */
+function evalExpr(expr: string, scope: Scope): unknown {
+  const e = expr.trim();
+  if (/^-?\d+(\.\d+)?$/.test(e)) return Number(e);
+  if (e === 'true') return true;
+  if (e === 'false') return false;
+  if (e === 'null') return null;
+  const q = e.match(/^(['"])(.*)\1$/);
+  if (q) return q[2];
+  if (!/^[A-Za-z_$][\w$]*(\.[\w$]+)*$/.test(e)) return undefined;
+  let cur: unknown = scope;
+  for (const part of e.split('.')) {
+    if (cur === null || typeof cur !== 'object' || !(part in (cur as object))) return undefined;
+    cur = (cur as Scope)[part];
+  }
+  return cur;
+}
+
+/** The close tag matching the open tag that ends at `from`, counting nested tags of the same name. */
+function findClose(src: string, name: string, from: number): { start: number; end: number } | null {
+  const re = new RegExp(`<(/?)${name}\\b[^>]*?(/?)>`, 'gi');
+  re.lastIndex = from;
+  let depth = 1;
+  for (let m = re.exec(src); m; m = re.exec(src)) {
+    if (m[1]) {
+      if (--depth === 0) return { start: m.index, end: m.index + m[0].length };
+    } else if (!m[2]) depth++;
+  }
+  return null;
+}
+
+const attrsOf = (tag: string): Array<[string, string]> => {
+  const out: Array<[string, string]> = [];
+  for (const m of tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) out.push([m[1], m[2] ?? m[3]]);
+  return out;
+};
+
+type Renderer = {
+  project: string;
+  components: Map<string, Component>;
+  helmets: string[];
+  warnings: string[];
+  missing: Set<string>;
+  file: string;
+  /** placeholders.json value for an expression, by board then `*`. */
+  fallback: (expr: string) => unknown;
+};
+
+function renderTemplate(src: string, scope: Scope, r: Renderer, depth: number): string {
+  if (depth > MAX_DEPTH) throw new Error(`${r.file}: dc-import nests deeper than ${MAX_DEPTH}: a component imports itself?`);
+  const value = (expr: string): unknown => {
+    const v = evalExpr(expr, scope);
+    return v === undefined || v === null ? r.fallback(expr.trim()) : v;
+  };
+  // A whole `{{expr}}` keeps its type; text around it makes a string.
+  const attrValue = (raw: string): unknown => {
+    const whole = raw.match(/^\s*\{\{([\s\S]+?)\}\}\s*$/);
+    if (whole && !raw.slice(whole[0].length).includes('{{')) return value(whole[1]);
+    return raw.replace(/\{\{\s*([\s\S]+?)\s*\}\}/g, (_, e: string) => {
+      const v = value(e);
+      return v === undefined ? `{{${e}}}` : String(v);
+    });
+  };
+
+  let out = '';
+  let i = 0;
+  const open = /<(sc-for|sc-if|dc-import)\b[^>]*?(\/?)>/gi;
+  for (let m = open.exec(src); m; m = open.exec(src)) {
+    out += interpolate(src.slice(i, m.index));
+    const name = m[1].toLowerCase();
+    const attrs = new Map(attrsOf(m[0]));
+    let inner = '';
+    let end = m.index + m[0].length;
+    if (!m[2]) {
+      const close = findClose(src, name, end);
+      if (!close) throw new Error(`${r.file}: <${name}> is never closed`);
+      inner = src.slice(end, close.start);
+      end = close.end;
+    }
+    if (name === 'sc-if') {
+      const v = attrValue(attrs.get('value') ?? '');
+      if (v === undefined) r.missing.add(`{{${attrs.get('value') ?? ''}}}`);
+      else if (v && v !== 'false') out += renderTemplate(inner, scope, r, depth + 1);
+    } else if (name === 'sc-for') {
+      const list = attrValue(attrs.get('list') ?? '');
+      const as = attrs.get('as') ?? 'item';
+      if (Array.isArray(list)) list.forEach((item, index) => (out += renderTemplate(inner, { ...scope, [as]: item, index }, r, depth + 1)));
+      else if (list === undefined) r.missing.add(`{{${attrs.get('list') ?? ''}}}`);
+    } else {
+      const target = attrs.get('name') ?? '';
+      const comp = r.components.get(`${target}.dc.html`.toLowerCase());
+      if (!comp) r.warnings.push(`${r.file} imports ${target}, which canvas.json does not list; left out`);
+      else {
+        const given: Scope = {};
+        for (const [k, v] of attrs) {
+          if (k === 'name' || k.startsWith('hint-')) continue;
+          const val = attrValue(v);
+          if (val !== undefined) given[camel(k)] = val;
+        }
+        r.helmets.push(comp.helmet);
+        out += renderTemplate(comp.body, comp.render(given), { ...r, file: `${r.file} > ${target}` }, depth + 1);
+      }
+    }
+    i = end;
+    open.lastIndex = end;
+  }
+  return out + interpolate(src.slice(i));
+
+  function interpolate(text: string): string {
+    return text.replace(/\{\{\s*([\s\S]+?)\s*\}\}/g, (m0, expr: string) => {
+      const v = value(expr);
+      if (v === undefined || v === null) {
+        r.missing.add(`{{${expr}}}`);
+        return m0;
+      }
+      return escapeHtml(String(v));
+    });
+  }
+}
+
 const SHELL_CSS = `body{margin:0}
 .dc-index{padding:24px 32px;display:flex;flex-wrap:wrap;gap:8px 20px;font:14px system-ui,sans-serif}
 .dc-index strong{width:100%;font-size:18px}
@@ -276,12 +449,15 @@ export function exportCanvas(dir: string, opts: { title?: string; source?: strin
 
   const screens = boards.map(b => {
     const o = boardEntry(overrides, b.file);
-    const ov = typeof o === 'string' ? { id: o } : ((o ?? {}) as { id?: unknown; name?: unknown });
+    const ov = typeof o === 'string' ? { id: o } : ((o ?? {}) as { id?: unknown; name?: unknown; kind?: unknown; code?: unknown });
     return {
       board: b,
       id: str(ov.id) ?? screenIdFor(b.file, b.width),
       name: str(ov.name) ?? `${formFactor(b.width)} · ${b.title}`,
       viewport: `${b.width}x${b.height}`,
+      // A component board and the code it specifies (validated below with the rest).
+      ...(ov.kind !== undefined ? { kind: ov.kind as string } : {}),
+      ...(ov.code !== undefined ? { code: ov.code as string } : {}),
     };
   });
 
@@ -293,31 +469,29 @@ export function exportCanvas(dir: string, opts: { title?: string; source?: strin
   }
   const idByFile = new Map(screens.map(s => [s.board.file.toLowerCase(), s.id]));
 
+  const components = new Map(screens.map(s => [s.board.file.toLowerCase(), loadComponent(readFileSync(join(project, s.board.file), 'utf8'), s.board.file)]));
   const helmets: string[] = [];
   const sections: string[] = [];
   const unresolved: string[] = [];
   for (const s of screens) {
     const file = s.board.file;
-    const parsed = parseBoard(readFileSync(join(project, file), 'utf8'), file);
-    helmets.push(parsed.helmet);
+    const comp = components.get(file.toLowerCase())!;
+    helmets.push(comp.helmet);
     const own = (boardEntry(values, file) ?? {}) as Record<string, unknown>;
-
-    let body = parsed.body.replace(/href=(["'])(?:\.\/)?(?:project\/)?([^"'#?]+?\.dc\.html)(?:[?#][^"']*)?\1/gi, (m, q: string, target: string) => {
+    const missing = new Set<string>();
+    const rendered = renderTemplate(
+      comp.body,
+      comp.render({}),
+      { project, components, helmets, warnings, missing, file, fallback: expr => (expr in own ? own[expr] : shared[expr]) },
+      0,
+    );
+    const body = rendered.replace(/href=(["'])(?:\.\/)?(?:project\/)?([^"'#?]+?\.dc\.html)(?:[?#][^"']*)?\1/gi, (m, q: string, target: string) => {
       const id = idByFile.get(basename(target).toLowerCase());
       if (!id) {
         warnings.push(`${file} links to ${target}, which canvas.json does not list; left as is`);
         return m;
       }
       return `href=${q}#${id}${q}`;
-    });
-    const missing = new Set<string>();
-    body = body.replace(/\{\{\s*([\s\S]+?)\s*\}\}/g, (m, expr: string) => {
-      const v = expr in own ? own[expr] : shared[expr];
-      if (v === undefined || v === null) {
-        missing.add(`{{${expr}}}`);
-        return m;
-      }
-      return escapeHtml(String(v));
     });
     if (missing.size) unresolved.push(`${file}: ${[...missing].join(', ')}`);
 
@@ -356,7 +530,7 @@ ${ROUTER}
 </html>
 `;
 
-  const metadata: DesignMetadata = { kind: 'design', screens: screens.map(({ id, name, viewport }) => ({ id, name, viewport })) };
+  const metadata: DesignMetadata = { kind: 'design', screens: screens.map(({ id, name, viewport, kind, code }) => ({ id, name, viewport, ...(kind !== undefined ? { kind } : {}), ...(code !== undefined ? { code } : {}) })) };
   if (opts.source) metadata.source = opts.source;
   const invalid = validateDesignMetadata(metadata);
   if (invalid) throw new Error(`buildd would refuse these screens: ${invalid}`);
