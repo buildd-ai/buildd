@@ -354,7 +354,7 @@ function QueuedGroup({ deliveries, nowMs }: { deliveries: readonly NowDelivery[]
 
 const SEGMENT_STYLE: Record<MissionSegment, string> = {
   merged: 'bg-[var(--faint)]',
-  build: 'bg-accent',
+  build: 'bg-[var(--accent)]',
   verify: 'bg-status-info',
   fixing: 'bg-[repeating-linear-gradient(135deg,var(--accent)_0_2px,var(--accent-soft)_2px_4px)]',
   deliver: 'bg-status-success',
