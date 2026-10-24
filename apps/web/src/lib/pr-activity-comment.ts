@@ -413,25 +413,55 @@ export interface ActivityHeader {
   status?: string;
 }
 
+/**
+ * What the cap folded away, so "Started" and the offsets keep the delivery's
+ * real start and the reader is told rows are missing. The legacy writer keeps
+ * it in the state block (`parsePrActivityFold`); the kernel passes its own.
+ */
+export interface ActivityFold {
+  /** When the delivery started: the first entry ever, not the first one kept. */
+  startedAt?: string | null;
+  /** Rows folded by earlier renders, on top of any this render drops. */
+  folded?: number;
+  /** Where the full history is read; defaults to the first task linked. */
+  url?: string | null;
+}
+
+function earliest(a: string | null | undefined, b: string): string {
+  if (!a || !Number.isFinite(new Date(a).getTime())) return b;
+  return new Date(a).getTime() < new Date(b).getTime() ? a : b;
+}
+
 export function renderPrActivityComment(
   entries: PrActivityEntry[],
   timezone: string = DEFAULT_TIMEZONE,
-  opts: { header?: ActivityHeader; stateBlock?: boolean } = {},
+  opts: { header?: ActivityHeader; stateBlock?: boolean; fold?: ActivityFold } = {},
 ): string {
   const withState = opts.stateBlock !== false;
-  const tail = (k: NormalizedEntry[]): string[] => (withState ? [stateBlock(k)] : []);
-  const kept = entries.slice(-MAX_ACTIVITY_ENTRIES).map(normalize);
+  const all = entries.map(normalize);
+  const kept = all.slice(-MAX_ACTIVITY_ENTRIES);
+  const dropped = all.slice(0, all.length - kept.length);
+  const folded = Math.max(0, opts.fold?.folded ?? 0) + dropped.length;
+  const foldUrl = opts.fold?.url ?? all.find((e) => e.taskUrl)?.taskUrl ?? null;
+  const start = all.length ? earliest(opts.fold?.startedAt, all[0].at) : null;
+  const tail = (k: NormalizedEntry[]): string[] => (withState ? [stateBlock(k, { startedAt: start, folded, url: foldUrl })] : []);
   if (kept.length === 0) {
     const h = opts.header;
     const line = h ? `**buildd** · ${h.tone === 'plain' || h.tone === 'working' ? '' : `${GLYPH[h.tone]} `}**${h.headline}**${h.status ? ` · ${h.status}` : ''}` : '**buildd** · no activity yet';
     return [ACTIVITY_COMMENT_MARKER, line, ...tail(kept)].join('\n');
   }
 
-  const start = kept[0].at;
   let story: Story = { fix: null };
   const rows: string[] = [];
   const seenTasks = new Set<string>();
   let head: { entry: NormalizedEntry; p: Rendered } | null = null;
+
+  // Folded rows still shape the story ("Re-review queued · after fix 2 of 3").
+  for (const e of dropped) story = advance(story, e);
+  if (folded > 0) {
+    const what = `${folded} earlier ${folded === 1 ? 'event' : 'events'}`;
+    rows.push(`- ${what}${foldUrl ? ` · [see Buildd](${foldUrl})` : ' not shown'}`);
+  }
 
   for (const e of kept) {
     story = advance(story, e);
@@ -439,7 +469,7 @@ export function renderPrActivityComment(
     if (!p.aside || !head) head = { entry: e, p };
 
     const detail = e.detail ? ` · ${e.detail}` : '';
-    rows.push(`- \`${formatOffset(start, e.at)}\` ${rowGlyph(p.tone)}${p.label}${detail}${links(e, p, seenTasks)}`);
+    rows.push(`- \`${formatOffset(start!, e.at)}\` ${rowGlyph(p.tone)}${p.label}${detail}${links(e, p, seenTasks)}`);
     if (e.note) {
       const body = escapeNote(e.note).split('\n').map((l) => (l ? `  ${l}` : '')).join('\n');
       rows.push(`  <details><summary>${p.noteLabel ?? 'Details'}</summary>`, '', body, '', '  </details>');
@@ -463,15 +493,45 @@ export function renderPrActivityComment(
     '',
     ...rows,
     '',
-    `<sub>Started ${formatStamp(start, timezone)} · edited in place by [buildd](https://buildd.dev)</sub>`,
+    `<sub>Started ${formatStamp(start!, timezone)} · edited in place by [buildd](https://buildd.dev)</sub>`,
     ...tail(kept),
   ].join('\n');
 }
 
-function stateBlock(kept: NormalizedEntry[]): string {
+function stateBlock(kept: NormalizedEntry[], fold: { startedAt: string | null; folded: number; url: string | null }): string {
+  // Fold fields are additive to v1: a reader that only knows `entries` ignores them.
+  const meta = {
+    ...(fold.startedAt ? { startedAt: fold.startedAt } : {}),
+    ...(fold.folded > 0 ? { folded: fold.folded, ...(fold.url ? { foldedUrl: fold.url } : {}) } : {}),
+  };
   // `>` is escaped so a note containing `-->` can't end the HTML comment early.
-  const json = JSON.stringify({ v: 1, entries: kept }).replace(/>/g, '\\u003e');
+  const json = JSON.stringify({ v: 1, ...meta, entries: kept }).replace(/>/g, '\\u003e');
   return `${STATE_PREFIX}${json}${STATE_SUFFIX}`;
+}
+
+function readStateJson(body: string): Record<string, unknown> | null {
+  const start = body.indexOf(STATE_PREFIX);
+  if (start === -1) return null;
+  const from = start + STATE_PREFIX.length;
+  const end = body.indexOf(STATE_SUFFIX, from);
+  if (end === -1) return null;
+  try {
+    const parsed = JSON.parse(body.slice(from, end)) as unknown;
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** What earlier renders folded away, from an existing comment body. Corrupt or absent → `{}`. */
+export function parsePrActivityFold(body: string): ActivityFold {
+  const s = readStateJson(body);
+  if (!s) return {};
+  const out: ActivityFold = {};
+  if (typeof s.startedAt === 'string') out.startedAt = s.startedAt;
+  if (typeof s.folded === 'number' && s.folded > 0) out.folded = Math.floor(s.folded);
+  if (typeof s.foldedUrl === 'string') out.url = s.foldedUrl;
+  return out;
 }
 
 const KNOWN_KINDS: ReadonlySet<string> = new Set<PrActivityKind>([
@@ -501,22 +561,13 @@ export function taskActivityUrl(taskId: string): string {
 
 /** Recover the entry list from an existing comment body. Corrupt state → `[]`. */
 export function parsePrActivityState(body: string): PrActivityEntry[] {
-  const start = body.indexOf(STATE_PREFIX);
-  if (start === -1) return [];
-  const from = start + STATE_PREFIX.length;
-  const end = body.indexOf(STATE_SUFFIX, from);
-  if (end === -1) return [];
-  try {
-    const parsed = JSON.parse(body.slice(from, end)) as { entries?: unknown };
-    if (!Array.isArray(parsed.entries)) return [];
-    return parsed.entries.filter(
-      (e): e is PrActivityEntry =>
-        !!e && typeof e === 'object' && typeof (e as PrActivityEntry).kind === 'string' &&
-        KNOWN_KINDS.has((e as PrActivityEntry).kind),
-    );
-  } catch {
-    return [];
-  }
+  const entries = readStateJson(body)?.entries;
+  if (!Array.isArray(entries)) return [];
+  return entries.filter(
+    (e): e is PrActivityEntry =>
+      !!e && typeof e === 'object' && typeof (e as PrActivityEntry).kind === 'string' &&
+      KNOWN_KINDS.has((e as PrActivityEntry).kind),
+  );
 }
 
 export type AppendResult =
@@ -628,7 +679,7 @@ export async function appendPrActivity(params: {
       await githubApi(installationId, `/repos/${repoFullName}/issues/comments/${existing.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body: renderPrActivityComment([...entries, next], timezone) }),
+        body: JSON.stringify({ body: renderPrActivityComment([...entries, next], timezone, { fold: parsePrActivityFold(existing.body) }) }),
       });
       return { action: 'updated', commentId: existing.id };
     }
