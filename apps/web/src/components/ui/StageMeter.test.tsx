@@ -62,4 +62,12 @@ describe('StageMeter', () => {
   it('lets a caller replace the name', () => {
     expect(renderToStaticMarkup(<StageMeter state="build" label="Build, 3 of 5 tasks" />)).toContain('aria-label="Build, 3 of 5 tasks"');
   });
+
+  it('has one fixed width in every state, so delivery row titles share a left edge', () => {
+    for (const s of STAGE_METER_STATES) {
+      const root = /^<span[^>]*class="([^"]*)"/.exec(html(s, { fixRounds: 3 }))?.[1] ?? '';
+      expect(root).toContain('w-[82px]');
+      expect(root).toContain('shrink-0');
+    }
+  });
 });
