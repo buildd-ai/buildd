@@ -35,7 +35,8 @@ import {
   type FailureWindow,
 } from '@/lib/failure-analytics';
 import { getGateAnalytics } from '@/lib/gate-analytics-query';
-import { getBackendStrandSummary } from '@/lib/backend-strand';
+import { getBackendStrandSummary, type SampleTaskRoute } from '@/lib/backend-strand';
+import { withoutRunnerServedStrands } from '@/lib/strand-headline';
 import type { ClaimBlocker } from '@/lib/claim-blocker-projection';
 import { buildSubagentDelegationPanel, type SubagentMetrics } from '@/lib/subagent-time';
 import type { DerivedMetric } from '@buildd/core/derived-metric';
@@ -176,7 +177,7 @@ export interface StrandedBackendRow {
   label: string;
   strandedPending: number;
   enabledForTeam: boolean;
-  sampleTasks: Array<{ id: string; title: string; workspaceName: string | null; claim?: ClaimBlocker; route?: { requested: string; effective: string } }>;
+  sampleTasks: Array<{ id: string; title: string; workspaceName: string | null; claim?: ClaimBlocker; route?: SampleTaskRoute }>;
 }
 
 export interface CredentialHealthItem {
@@ -671,7 +672,8 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
   const isolationStranded = isolationStrandedCount(onlineRunners.map(r => r.isolation), pendingIsolation);
   for (const r of runners) r.isolationBlocked = isolationBlockedCounts(r.isolation, pendingIsolation);
 
-  const strandedBackends: StrandedBackendRow[] = (strandSummary?.backends ?? [])
+  // A runner's own Codex login serves Codex work with no stored credential.
+  const strandedBackends: StrandedBackendRow[] = withoutRunnerServedStrands(strandSummary?.backends ?? [], runners, now)
     .filter((b) => b.strandedPending > 0)
     .map((b) => ({
       backend: b.backend,
