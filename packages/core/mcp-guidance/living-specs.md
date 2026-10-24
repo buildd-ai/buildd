@@ -103,6 +103,19 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
    `buildd action=manage_specs params={ action: "conflict", specId, revision, criterionIds, note }`.
    It records an advisory discrepancy and blocks nothing.
 
+To request the registered checks on a task's current target, call
+`buildd action=manage_specs params={ action: "verify", taskId, evidenceRef? }`.
+`evidenceRef` is a stored capture's artifact UUID; omit it and the server picks
+the newest captures the mission's [surface audit] stored for this task.
+It needs workspace write access; a task never requests grading of its own
+outcome, so the subject's token and tasks filed under it are refused.
+It cannot choose a method, model, prompt, head or verdict, or submit raw evidence.
+A mission's final verification runs the same coordinator on the integrated target.
+It reads the pinned revision's `verify:` bindings and admits only an audit's own,
+unedited capture of the current commit. A refused capture, missing capture or
+provider failure records nothing, so the criterion stays unverified.
+Declaration coverage says which requirements name checks; it does not mean they passed.
+
 ## Tables and diagrams
 
 The spec page renders GitHub Markdown tables, and fenced code blocks tagged

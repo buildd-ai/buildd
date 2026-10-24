@@ -107,6 +107,8 @@ export function missionDetailCompactLinks(): { label: string; href: string }[] {
     { label: 'all landed', href: `${base}&variant=all-landed` },
     { label: 'verify', href: `${base}&variant=verify` },
     { label: 'delivered', href: `${base}&variant=delivered` },
+    { label: 'design', href: `${base}&variant=building&design=1` },
+    { label: 'design unavailable', href: `${base}&variant=building&design=unavailable` },
   ];
 }
 

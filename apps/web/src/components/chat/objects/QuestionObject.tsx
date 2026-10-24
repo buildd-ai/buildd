@@ -21,7 +21,7 @@ import { AnswerOutcomeText } from '@/components/AnswerRecorded';
 
 /** "The builder asks" → "The Builder": who the answer went to. */
 export function askerName(askerLabel: string): string {
-  const m = /^the\s+(.+?)\s+asks$/i.exec(askerLabel.trim());
+  const m = /^the\s+(.+?)\s+(?:asks|left a question)$/i.exec(askerLabel.trim());
   const who = m ? m[1] : 'agent';
   return `the ${who.charAt(0).toUpperCase()}${who.slice(1)}`;
 }

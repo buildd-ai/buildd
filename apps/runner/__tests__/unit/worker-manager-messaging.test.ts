@@ -335,7 +335,8 @@ describe('WorkerManager — sendMessage', () => {
       const result = await manager.sendMessage('w-msg-1', 'Can you also fix the tests?');
       expect(result).toBe(true);
 
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than sleep: the follow-up spawn is slow on a loaded Windows runner.
+      for (let i = 0; i < 50 && queryCallCount <= queryCountBefore; i++) await new Promise(r => setTimeout(r, 100));
 
       expect(queryCallCount).toBeGreaterThan(queryCountBefore);
       expect(worker.error).toBeUndefined();
