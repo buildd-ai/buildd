@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "f807eb0f-4455-4904-90b3-0099c5de2d4a",
+  "id": "8839506b-5c4f-4b3a-8b09-2f1a20b9905a",
   "prevIds": [
-    "ff258fe4-d5bf-4c63-9d3d-321f91b9f80e"
+    "9277e34e-762d-4597-85ed-5c8cb0e0eb34"
   ],
   "ddl": [
     {
@@ -470,12 +470,6 @@
     {
       "isRlsEnabled": false,
       "name": "notification_preferences",
-      "entityType": "tables",
-      "schema": "public"
-    },
-    {
-      "isRlsEnabled": false,
-      "name": "oauth_budget_episodes",
       "entityType": "tables",
       "schema": "public"
     },
@@ -13897,162 +13891,6 @@
       "entityType": "columns",
       "schema": "public",
       "table": "notification_preferences"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "gen_random_uuid()",
-      "generated": null,
-      "identity": null,
-      "name": "id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "oauth_budget_episodes"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "account_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "oauth_budget_episodes"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "window_started_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "oauth_budget_episodes"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "exhausted_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "oauth_budget_episodes"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "resets_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "oauth_budget_episodes"
-    },
-    {
-      "type": "integer",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "0",
-      "generated": null,
-      "identity": null,
-      "name": "worker_count",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "oauth_budget_episodes"
-    },
-    {
-      "type": "integer",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "0",
-      "generated": null,
-      "identity": null,
-      "name": "turns",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "oauth_budget_episodes"
-    },
-    {
-      "type": "integer",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "0",
-      "generated": null,
-      "identity": null,
-      "name": "input_tokens",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "oauth_budget_episodes"
-    },
-    {
-      "type": "integer",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "0",
-      "generated": null,
-      "identity": null,
-      "name": "output_tokens",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "oauth_budget_episodes"
-    },
-    {
-      "type": "integer",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "0",
-      "generated": null,
-      "identity": null,
-      "name": "weighted_turns",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "oauth_budget_episodes"
-    },
-    {
-      "type": "integer",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "0",
-      "generated": null,
-      "identity": null,
-      "name": "weighted_tokens",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "oauth_budget_episodes"
-    },
-    {
-      "type": "timestamp with time zone",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "now()",
-      "generated": null,
-      "identity": null,
-      "name": "created_at",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "oauth_budget_episodes"
     },
     {
       "type": "text",
@@ -37640,34 +37478,6 @@
       "nameExplicit": true,
       "columns": [
         {
-          "value": "account_id",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        },
-        {
-          "value": "exhausted_at",
-          "isExpression": false,
-          "asc": true,
-          "nullsFirst": false,
-          "opclass": null
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "with": "",
-      "method": "btree",
-      "concurrently": false,
-      "name": "oauth_budget_episodes_account_exhausted_idx",
-      "entityType": "indexes",
-      "schema": "public",
-      "table": "oauth_budget_episodes"
-    },
-    {
-      "nameExplicit": true,
-      "columns": [
-        {
           "value": "expires_at",
           "isExpression": false,
           "asc": true,
@@ -46602,23 +46412,6 @@
     {
       "nameExplicit": false,
       "columns": [
-        "account_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "accounts",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "name": "oauth_budget_episodes_account_id_accounts_id_fk",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "oauth_budget_episodes"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
         "user_id"
       ],
       "schemaTo": "public",
@@ -50815,16 +50608,6 @@
       "name": "notification_preferences_pkey",
       "schema": "public",
       "table": "notification_preferences",
-      "entityType": "pks"
-    },
-    {
-      "columns": [
-        "id"
-      ],
-      "nameExplicit": false,
-      "name": "oauth_budget_episodes_pkey",
-      "schema": "public",
-      "table": "oauth_budget_episodes",
       "entityType": "pks"
     },
     {
