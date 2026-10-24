@@ -19,7 +19,8 @@
  */
 
 import { homedir } from 'os';
-import { join, resolve } from 'path';
+import { join } from 'path';
+import { isUnderHome } from './test-store-guard-path';
 
 /**
  * The CJS `fs` exports object, not an `import * as fs` namespace: an ES module
@@ -50,8 +51,7 @@ function isUnderRealHome(target: unknown): boolean {
     // and a file: URL under the real home is not a pattern any test uses.
     return false;
   }
-  const abs = resolve(target);
-  return abs === REAL_BUILDD_HOME || abs.startsWith(`${REAL_BUILDD_HOME}/`);
+  return isUnderHome(target, REAL_BUILDD_HOME);
 }
 
 function refuse(fnName: string, target: string): never {
