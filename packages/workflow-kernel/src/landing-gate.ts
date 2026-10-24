@@ -14,7 +14,7 @@
  * or a request for changes.
  */
 import { describeFinding, openRequiredFindings } from './findings';
-import { headCoverage, openVerdict } from './reducer';
+import { headCoverage, MERGE_CALLED, openVerdict } from './reducer';
 import type { DeliverySnapshot, FindingSnapshot, KernelView, RoundSnapshot } from './types';
 
 /** The commit status context the kernel publishes on every kernel-owned PR head: the one a trunk rule requires. */
@@ -177,9 +177,10 @@ function plainCode(code: string | null | undefined, fallback: string): string {
 
 /**
  * The `Buildd / Review approval` status for the delivery's current head: `success` only
- * when the kernel would merge that head (approved or merging, covered, no open
- * verdict), `pending` while review of it has not finished (work running, review
- * awaited), `failure` with the blocker otherwise (an open finding, a verdict
+ * when the kernel would merge that head now (approved or merging, covered, no open
+ * verdict, CI read green at that head or `ciPassed` from the merge effect's rails),
+ * `pending` while review of it has not finished (work running, review awaited) or
+ * an approved head waits on CI, `failure` with the blocker otherwise (an open finding, a verdict
  * against it, a person's decision). Null when there is nothing
  * to publish on (no PR or head, or the delivery is over: a merged or closed
  * PR's head keeps the last status it was given).
@@ -189,7 +190,7 @@ function plainCode(code: string | null | undefined, fallback: string): string {
  * (AC-13), "Ready to merge", "Approved, waiting to merge: <rail>" or
  * "Merge blocked: <reason>".
  */
-export function landingStatusOf(view: KernelView, o: { detail?: string | null } = {}): LandingStatus | null {
+export function landingStatusOf(view: KernelView, o: { detail?: string | null; ciPassed?: boolean } = {}): LandingStatus | null {
   const d = view.delivery;
   if (!d || d.prNumber == null || !d.repoFullName || !d.currentHeadSha) return null;
   if (d.state === 'MERGED' || d.state === 'CLOSED_UNMERGED' || d.state === 'SUPERSEDED' || d.state === 'ABANDONED' || d.state === 'FAILED') return null;
@@ -205,6 +206,12 @@ export function landingStatusOf(view: KernelView, o: { detail?: string | null } 
     // A waiting rail refused the merge of this approved head (the detail the refusal named):
     // say what it waits on, the same words get_pr and explain give (spec 072de598 I-12, AC-24).
     if (o.detail && d.state === 'APPROVED') return status('pending', T.waiting, `${at} approved by ${by}${overText}; ${o.detail}`);
+    // "Ready to merge" only when the kernel would merge now: CI recorded green at this head too. The
+    // merge effect passes `ciPassed` once its rails read CI green; a merge already called stands.
+    const ciAtHead = d.ciHeadSha === d.currentHeadSha ? d.ci : null;
+    if (ciAtHead !== 'green' && !o.ciPassed && d.stateReason !== MERGE_CALLED) {
+      return status('pending', T.waiting, `${at} approved by ${by}${overText}; ${ciAtHead === 'red' ? `CI failed on ${at}` : `waiting for CI on ${at}`}`);
+    }
     return status('success', T.ready, `${at} approved by ${by}${overText}`);
   }
   const gateFailure = (r: ReviewGate): LandingStatus | null => {

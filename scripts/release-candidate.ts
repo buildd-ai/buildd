@@ -18,8 +18,10 @@
  * runs the same code from a workstation.
  *
  * CLI:
- *   cut    --source <sha|ref> [--force] [--dry-run]
- *            Idempotent. An open candidate → reported, never changed. An
+ *   cut    --source <sha|ref> [--require-check build] [--green-depth 50] [--force] [--dry-run]
+ *            With --require-check, the candidate is cut from the newest commit on
+ *            the source's first-parent line whose named check(s) are green, never
+ *            from a head CI has not finished with (or failed). Idempotent. An open candidate → reported, never changed. An
  *            unpublished candidate branch (push landed, PR create died) → its PR
  *            is opened, its content is not rebuilt.
  *   amend  --candidate vX.Y.Z --confirm vX.Y.Z --source <sha|ref> [--dry-run]
@@ -263,6 +265,19 @@ const EXCLUDED_END = '<!-- release-candidate:excluded:end -->';
  */
 export const REQUIRED_CANDIDATE_CHECKS = ['build', 'release candidate verified', 'Schema Drift / check-prod'];
 
+export type CheckVerdict = 'green' | 'red' | 'pending';
+
+/**
+ * One check name's latest runs on one commit. Green needs at least one success
+ * and nothing else but skipped/neutral; any run still going (or none yet) is
+ * pending; anything else is red.
+ */
+export function checkVerdict(runs: Array<{ status: string; conclusion: string | null }>): CheckVerdict {
+  if (runs.length === 0 || runs.some((r) => r.status !== 'completed')) return 'pending';
+  if (runs.some((r) => !['success', 'skipped', 'neutral'].includes(r.conclusion ?? ''))) return 'red';
+  return runs.some((r) => r.conclusion === 'success') ? 'green' : 'pending';
+}
+
 export function parseCandidateMeta(body: string | null | undefined): CandidateMeta | null {
   const m = META_RE.exec(body ?? '');
   if (!m) return null;
@@ -377,10 +392,14 @@ interface Ctx {
   versionFile: string;
   today: string;
   dryRun: boolean;
+  /** Check names a source commit must have green before it is cut. Empty: no gate. */
+  requireChecks: string[];
+  /** How many first-parent commits back from the source the green search looks. */
+  greenDepth: number;
 }
 
-function sh(cwd: string, cmd: string, args: string[], input?: string) {
-  const r = spawnSync(cmd, args, { cwd, encoding: 'utf8', input, maxBuffer: 64 * 1024 * 1024 });
+function sh(cwd: string, cmd: string, args: string[], input?: string, env?: Record<string, string>) {
+  const r = spawnSync(cmd, args, { cwd, encoding: 'utf8', input, maxBuffer: 64 * 1024 * 1024, ...(env ? { env: { ...process.env, ...env } } : {}) });
   return { status: r.status ?? 1, stdout: (r.stdout ?? '').trim(), stderr: (r.stderr ?? '').trim() };
 }
 
@@ -685,11 +704,63 @@ function settleRace(ctx: Ctx, mine: number, ignore: number | null = null): boole
   return false;
 }
 
+// ── green source ─────────────────────────────────────────────────────────────
+
+function verdictAt(ctx: Ctx, sha: string): CheckVerdict {
+  // GH_CHECKS_TOKEN: the workflow's own token can read checks; the release App's may not.
+  const env = process.env.GH_CHECKS_TOKEN ? { GH_TOKEN: process.env.GH_CHECKS_TOKEN } : undefined;
+  let worst: CheckVerdict = 'green';
+  for (const name of ctx.requireChecks) {
+    const r = sh(ctx.cwd, 'gh', ['api', `repos/${ctx.repo}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=latest&per_page=100`], undefined, env);
+    if (r.status !== 0) throw new Error(`gh api check-runs for ${sha.slice(0, 12)} failed: ${r.stderr || r.stdout}`);
+    const runs = (JSON.parse(r.stdout || '{}').check_runs ?? []) as Array<{ status: string; conclusion: string | null }>;
+    const v = checkVerdict(runs);
+    if (v === 'red') return 'red';
+    if (v === 'pending') worst = 'pending';
+  }
+  return worst;
+}
+
+/**
+ * The newest commit at or behind `sourceSha` (first parent, so one step is one
+ * merged PR or direct push) whose required checks are green. A head cut 41s
+ * after it landed, before its CI had started, shipped a candidate that was red
+ * from birth; this cuts from the last commit CI actually verified instead.
+ */
+export function greenSource(ctx: Ctx, sourceSha: string): string {
+  if (ctx.requireChecks.length === 0) return sourceSha;
+  const line = git(ctx.cwd, 'rev-list', '--first-parent', `--max-count=${ctx.greenDepth}`, sourceSha).split('\n').filter(Boolean);
+  const passed: Array<{ sha: string; verdict: CheckVerdict }> = [];
+  const checks = ctx.requireChecks.map((c) => `\`${c}\``).join(', ');
+  for (const sha of line) {
+    if (isAncestor(ctx, sha, remoteRef(ctx, ctx.baseBranch))) break; // already released: nothing older is worth cutting
+    const verdict = verdictAt(ctx, sha);
+    if (verdict === 'green') {
+      if (passed.length) {
+        console.log(
+          `::notice title=Cutting from the last green ${ctx.sourceBranch} commit::${ctx.sourceBranch}@${sourceSha.slice(0, 12)} is not green yet ` +
+            `(${passed.map((p) => `${p.sha.slice(0, 12)} ${p.verdict}`).join(', ')}); cutting from ${sha.slice(0, 12)}, ${passed.length} commit(s) behind. ` +
+            'The newer commits are listed as not in this candidate.',
+        );
+      }
+      return sha;
+    }
+    passed.push({ sha, verdict });
+  }
+  const newest = passed[0];
+  throw new Refusal(
+    `no ${ctx.sourceBranch} commit since ${ctx.baseBranch} has ${checks} green` +
+      (newest ? ` (newest ${newest.sha.slice(0, 12)} is ${newest.verdict}, ${passed.length} checked)` : '') +
+      `. A candidate is cut only from a commit CI verified: wait for ${ctx.sourceBranch}'s CI, or fix it, and run the Release workflow again.`,
+  );
+}
+
 // ── cut ──────────────────────────────────────────────────────────────────────
 
 export function cut(ctx: Ctx, source: string, force: boolean): number {
   fetchAll(ctx);
-  const sourceSha = resolveSha(ctx, source);
+  const requestedSha = resolveSha(ctx, source);
+  let sourceSha = requestedSha;
   console.log(`Captured ${ctx.sourceBranch} SHA: ${sourceSha}`);
 
   const open = openPrsIntoBase(ctx);
@@ -712,6 +783,11 @@ export function cut(ctx: Ctx, source: string, force: boolean): number {
     throw new Refusal(`more than one open release candidate (${existing.map((p) => `#${p.number}`).join(', ')}); close all but one.`);
   }
   if (existing.length === 1) return reportExisting(ctx, existing[0], sourceSha);
+
+  // Never cut a head CI has not verified. Checked only when there is a cut to
+  // make: an open candidate above is reported without asking GitHub anything.
+  sourceSha = greenSource(ctx, requestedSha);
+  if (sourceSha !== requestedSha) console.log(`Cut source: ${sourceSha} (newest green; captured ${requestedSha.slice(0, 12)})`);
 
   if (isAncestor(ctx, sourceSha, remoteRef(ctx, ctx.baseBranch))) {
     console.log(`${ctx.sourceBranch}@${sourceSha.slice(0, 12)} is already in ${ctx.baseBranch}; nothing to release.`);
@@ -1049,6 +1125,8 @@ function context(args: string[]): Ctx {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Refusal(`cannot determine the GitHub repo (got "${repo}"); pass --repo owner/name`);
   const today = flag(args, '--today') ?? new Date().toISOString().slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) throw new Refusal(`--today must be YYYY-MM-DD`);
+  const greenDepth = Number(flag(args, '--green-depth') ?? 50);
+  if (!Number.isInteger(greenDepth) || greenDepth < 1) throw new Refusal(`--green-depth must be a positive integer`);
   return {
     cwd,
     repo,
@@ -1059,6 +1137,8 @@ function context(args: string[]): Ctx {
     versionFile: flag(args, '--version-file') ?? 'apps/web/package.json',
     today,
     dryRun,
+    requireChecks: (flag(args, '--require-check') ?? '').split(',').map((c) => c.trim()).filter(Boolean),
+    greenDepth,
   };
 }
 

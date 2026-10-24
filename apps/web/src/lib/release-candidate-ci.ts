@@ -117,7 +117,7 @@ ${logCommand ? `\nRead the failing job's log:\n\n\`\`\`bash\n${logCommand}\n\`\`
 3. Open a PR into \`${p.sourceBranch}\` with \`create_pr\` (base \`${p.sourceBranch}\`).
 4. In the PR body and your completion summary, say that release candidate ${v} (PR #${p.prNumber}) needs an amendment or a re-cut once this merges. Do not dispatch a release yourself: when this PR merges, buildd amends the candidate through the release workflow if the workspace declared how, and otherwise tells the team the candidate needs a re-cut.
 
-This task cannot complete without a PR. "Dev already has the fix" is a claim to verify, not a verdict: reproduce the failing suites on the latest \`${p.sourceBranch}\` (including the real-Postgres DB architecture suite when a migration or snapshot is involved). If it really is fixed there by a direct commit, complete with \`alreadyShippedIn\` set to a merged PR that carries it, or ask a person; a no-PR completion never amends the candidate.
+This task cannot complete without a PR. "Dev already has the fix" is a claim to verify, not a verdict: reproduce the failing suites on the latest \`${p.sourceBranch}\` (including the real-Postgres DB architecture suite when a migration or snapshot is involved). If it really is fixed there, complete with \`alreadyShippedIn\` set to what carries the fix: a merged PR, or the \`${p.sourceBranch}\` commit (its SHA) when it was pushed without one. buildd checks that the commit is on \`${p.sourceBranch}\` and not already in the candidate, then amends the candidate, exactly as when a fix PR merges. A completion that names neither never amends it.
 `;
   return {
     workspaceId: p.workspaceId,
