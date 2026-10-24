@@ -19,12 +19,16 @@ describe('deliveryViewsSql', () => {
     expect(q.sql).toContain('t.delivery_id IS NOT NULL');
     expect(q.sql).toContain('t.conflict_retry_pr_number = d.pr_number');
     expect(q.sql).toContain("t.status IN ('pending', 'assigned', 'in_progress')");
-    expect(q.params).toEqual([JSON.stringify(['t1', 't2']), 'parked:lane_busy%']);
+    expect(q.params).toEqual([JSON.stringify(['t1', 't2']), 'parked:lane_busy%', 'parked:lane_busy%']);
   });
   test('reads the delivery\'s parked behind refresh, if any (the landing lane)', () => {
     const q = dialect.sqlToQuery(deliveryViewsSql(['t1']));
-    expect(q.sql).toContain("e.kind = 'refresh_branch' AND e.status = 'pending' AND e.outcome LIKE $2::text");
+    expect(q.sql).toContain("e.kind = 'refresh_branch' AND e.status = 'pending' AND e.outcome LIKE $3::text");
     expect(q.sql).toContain('AS lane_wait');
+    // Its place in the lane counts the parked refreshes on the same repo + base, oldest first (wakeNextWaiterSql's order).
+    expect(q.sql).toContain("e2.kind = 'refresh_branch' AND e2.status = 'pending' AND e2.outcome LIKE $2::text");
+    expect(q.sql).toContain('d2.repo_full_name = d.repo_full_name AND d2.base_ref = d.base_ref');
+    expect(q.sql).toContain('(e2.created_at, e2.id) <= (e.created_at, e.id)');
   });
   test('reads the workspace git config and owner task only for an APPROVED delivery: the merge rule\'s inputs (spec 3ef37387 R-11)', () => {
     const q = dialect.sqlToQuery(deliveryViewsSql(['t1']));
@@ -50,6 +54,13 @@ describe('laneWaitFrom', () => {
     expect(laneWaitFrom('parked:lane_busy:#41')).toEqual({ behindPr: 41 });
     expect(laneWaitFrom('parked:lane_busy:unknown')).toEqual({ behindPr: null });
     for (const v of [null, undefined, 'ok:updated', 'ok:updated(lane:would_wait:#3)', 7]) expect(laneWaitFrom(v)).toBeNull();
+  });
+
+  test('the loader row carries the place in the lane', () => {
+    expect(laneWaitFrom({ outcome: 'parked:lane_busy:#41', position: 2 })).toEqual({ behindPr: 41, position: 2 });
+    expect(laneWaitFrom({ outcome: 'parked:lane_busy:#41', position: '3' })).toEqual({ behindPr: 41, position: 3 });
+    expect(laneWaitFrom({ outcome: 'parked:lane_busy:#41', position: 0 })).toEqual({ behindPr: 41, position: null });
+    expect(laneWaitFrom({ outcome: 'ok:updated', position: 1 })).toBeNull();
   });
 });
 
@@ -82,6 +93,9 @@ describe('rowToDeliveryView', () => {
     };
     expect(rowToDeliveryView(parked, NOW)).toMatchObject({ headline: 'Waiting to update branch', detail: 'PR #41 is merging into dev first' });
     expect(rowToDeliveryView({ ...parked, lane_wait: null }, NOW)?.headline).toBe('Updating branch');
+    expect(rowToDeliveryView({ ...parked, lane_wait: { outcome: 'parked:lane_busy:#41', position: 3 } }, NOW)).toMatchObject({
+      owner: 'landing', detail: 'PR #41 is merging into dev first; position 3 in the queue', laneWait: { behindPr: 41, position: 3 },
+    });
   });
   // §7 / AC-24: the reader carries the findings and each attempt's proven push head.
   test('carries the delivery\'s findings and each attempt\'s pushed head', () => {
