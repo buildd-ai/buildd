@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "051297d9-1d90-4c85-bcd9-57bbf0ee8ece",
+  "id": "f807eb0f-4455-4904-90b3-0099c5de2d4a",
   "prevIds": [
-    "0057cf59-1e1c-43c9-9512-e9ccbe997454"
+    "ff258fe4-d5bf-4c63-9d3d-321f91b9f80e"
   ],
   "ddl": [
     {
@@ -12880,32 +12880,6 @@
       "generated": null,
       "identity": null,
       "name": "max_concurrent_tasks",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "missions"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "'eager'",
-      "generated": null,
-      "identity": null,
-      "name": "pacing_mode",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "missions"
-    },
-    {
-      "type": "integer",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "pacing_max_per_hour",
       "entityType": "columns",
       "schema": "public",
       "table": "missions"
@@ -33108,19 +33082,6 @@
       "generated": null,
       "identity": null,
       "name": "dispatch_transport",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "workspaces"
-    },
-    {
-      "type": "integer",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "3",
-      "generated": null,
-      "identity": null,
-      "name": "max_concurrent_tasks",
       "entityType": "columns",
       "schema": "public",
       "table": "workspaces"
