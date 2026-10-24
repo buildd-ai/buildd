@@ -110,7 +110,7 @@ LIMIT ${TRUNK_AFFECTED_CAP}::int`;
 /** The least recently rechecked first: every recheck that leaves one unresolved touches it (`touchIncidentSql`). */
 export function unresolvedIncidentsSql(limit: number): SQL {
   return sql`-- workflow:trunk_unresolved
-SELECT id, workspace_id, repo_full_name, base_ref, signature FROM trunk_incidents
+SELECT id, workspace_id, repo_full_name, base_ref, signature, trunk_fix_task_id FROM trunk_incidents
 WHERE status <> 'resolved' ORDER BY updated_at, id LIMIT ${limit}::int`;
 }
 
@@ -118,7 +118,7 @@ WHERE status <> 'resolved' ORDER BY updated_at, id LIMIT ${limit}::int`;
 export function unresolvedIncidentsByIdSql(ids: readonly string[]): SQL {
   const list = sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `);
   return sql`-- workflow:trunk_unresolved_by_id
-SELECT id, workspace_id, repo_full_name, base_ref, signature FROM trunk_incidents
+SELECT id, workspace_id, repo_full_name, base_ref, signature, trunk_fix_task_id FROM trunk_incidents
 WHERE id IN (${list}) AND status <> 'resolved'`;
 }
 
@@ -203,6 +203,25 @@ export function trunkRecoveredOnRuns(incidentSignature: string, runs: CheckRunsR
   if (!runs.pending) return false;
   const checks = new Set(signatureCheckNames(incidentSignature));
   return !signatureCheckNames(ciSignature(runs.pending)).some((c) => checks.has(c));
+}
+
+/**
+ * T26's evidence for a base with no CI of its own. A mission branch's pushes run no gating workflow,
+ * so its head has no check runs and `trunkRecoveredOnRuns` reads it as unknown at every recheck,
+ * until something else moves the base. There the fix stands in for the base's own run: the
+ * incident's fix PR merged into this base, its own checks (run on its merge ref) finished with none
+ * of the incident's entries failing, and the base head contains its merge commit. Only when the
+ * base head reads no runs at all; a base that reports runs is read by them alone.
+ */
+export async function trunkFixLandedGreen(p: {
+  repoFullName: string; baseRef: string; baseHead: string; signature: string; fixPrNumber: number | null; reader: GithubFactReader;
+}): Promise<boolean> {
+  if (p.fixPrNumber == null || !p.reader.checkRuns || !p.reader.contains) return false;
+  const pr = await p.reader.readPr(p.repoFullName, p.fixPrNumber).catch(() => null);
+  if (!pr?.merged || !pr.mergeCommitSha || pr.baseRef !== p.baseRef) return false;
+  const runs = await p.reader.checkRuns(p.repoFullName, pr.headSha, { tests: true }).catch(() => null);
+  if (!runs?.complete || !trunkRecoveredOnRuns(p.signature, runs)) return false;
+  return p.reader.contains(p.repoFullName, pr.mergeCommitSha, p.baseHead).catch(() => false);
 }
 
 /** buildd's `trunk_incidents` as the kernel's `Trunk` port. */
