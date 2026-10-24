@@ -50,7 +50,7 @@ describe('loadSchedulingMetricsInput', () => {
       { occurredAt: new Date('2026-09-02T11:00:00Z'), outcome: 'deferred', reason: 'advisory_manifest' },
       { occurredAt: new Date('2026-09-02T12:00:00Z'), outcome: 'deferred', reason: 'ordered_behind' },
       { occurredAt: new Date('2026-09-02T13:00:00Z'), outcome: 'deferred', reason: 'codex_single_flight' },
-      { occurredAt: new Date('2026-09-02T14:00:00Z'), outcome: 'deferred', reason: 'workspace_cap' }, // not a primary reason: ignored
+      { occurredAt: new Date('2026-09-02T14:00:00Z'), outcome: 'deferred', reason: 'mission_concurrent' }, // not a primary reason: ignored
       { occurredAt: new Date('2026-09-03T00:00:00Z'), outcome: 'stranded', reason: 'path_overlap' },
     ]);
 

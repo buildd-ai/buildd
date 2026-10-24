@@ -83,8 +83,6 @@ const LABEL: Record<MissionPresentationState, string> = {
 
 const CAPACITY_KEYS = new Set([
   'mission_concurrent',
-  'mission_paced',
-  'workspace_cap',
   'codex_single_flight',
   'managed_concurrency',
   'ordered_behind',

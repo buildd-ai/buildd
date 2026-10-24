@@ -104,13 +104,12 @@ export async function seedFixtures(sql: SqlClient, apiKey: string, adminApiKey: 
   if (!workspaceId) {
     const workspaceResult = await sql`
       INSERT INTO workspaces (
-        name, access_mode, data_class, max_concurrent_tasks,
+        name, access_mode, data_class,
         config_status, team_id, created_at, updated_at
       ) VALUES (
         'integration-test-workspace',
         'restricted',
         'standard',
-        3,
         'unconfigured',
         ${teamId},
         NOW(),
