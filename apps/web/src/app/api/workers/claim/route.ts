@@ -23,6 +23,7 @@ import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { cleanupStaleWorkers } from '@/lib/stale-workers';
 import { LIVE_WORKER_STATUSES, isGateSatisfied } from '@/lib/task-presentation';
 import { getSecretsProvider } from '@buildd/core/secrets';
+import { pinnedRunnerOf, runnerMatchesPin } from '@buildd/core/runner-pin';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam } from '@/lib/notify';
 import { resolveCodexApiKey } from '@/lib/codex-credential';
@@ -1618,10 +1619,15 @@ export async function POST(req: NextRequest) {
     if (delegationGap) { deferTask(task, 'delegation_unmet', { gaps: delegationGap.gaps, message: delegationGap.detail }); continue; }
 
     // Runner pin: a `runner:<name>` entry in requiredCapabilities restricts the
-    // task to that one runner; every other runner defers it.
-    const pinnedRunner = ((task as any).requiredCapabilities as string[] | null | undefined)
-      ?.find((c) => typeof c === 'string' && c.startsWith('runner:'))?.slice('runner:'.length);
-    if (pinnedRunner && pinnedRunner !== runner) { deferTask(task, 'runner_capability', { pinnedRunner }); continue; }
+    // task to that one runner; every other runner defers it. The name may be the
+    // runner key this claim sends, its hostname or its account's name
+    // (core/runner-pin.ts): the key alone is a URL nobody pins by.
+    const pinnedRunner = pinnedRunnerOf((task as any).requiredCapabilities);
+    if (pinnedRunner && !runnerMatchesPin(pinnedRunner, {
+      key: runner,
+      hostname: (body.environment as { labels?: { hostname?: string } } | undefined)?.labels?.hostname,
+      accountName: (account as { name?: string | null }).name,
+    })) { deferTask(task, 'runner_capability', { pinnedRunner }); continue; }
 
     // Subject-liveness in-loop guard (defense-in-depth for race between the SQL
     // prefilter and per-task processing). The SQL condition above should already
