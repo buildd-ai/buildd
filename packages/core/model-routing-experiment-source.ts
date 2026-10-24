@@ -27,6 +27,10 @@ import {
 } from './model-routing-experiment';
 import type { Tier as RegistryTier } from './model-tier-defaults';
 
+// The claim route reaches the experiment module through this file only
+// (scripts/module-boundaries.test.ts), so the pure fallback marker is re-exported here.
+export { markDispatchFallback } from './model-routing-experiment';
+
 // ── Experiment lookup (cached) ──────────────────────────────────────────────
 
 /**

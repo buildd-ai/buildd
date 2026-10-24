@@ -437,6 +437,8 @@ mock.module('@buildd/core/model-routing-experiment-source', () => ({
   drawModelRoutingArm: mockDrawModelRoutingArm,
   applyModelRoutingTreatment: mockApplyModelRoutingTreatment,
   recordModelRoutingAssignment: mockRecordModelRoutingAssignment,
+  // Pure, so the real one: the guard tests assert what it writes onto the draw.
+  markDispatchFallback: require('@buildd/core/model-routing-experiment').markDispatchFallback,
 }));
 
 // Tier-pool draw glue. The real module is exercised in
