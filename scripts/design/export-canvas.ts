@@ -30,7 +30,7 @@ import { createHash } from 'crypto';
 import { validateDesignMetadata } from '../../apps/web/src/lib/artifact-design';
 
 export type CanvasBoard = { file: string; title: string; width: number; height: number };
-export type DesignScreen = { id: string; name: string; viewport: string };
+export type DesignScreen = { id: string; name: string; viewport: string; kind?: string; code?: string };
 export type DesignMetadata = { kind: 'design'; screens: DesignScreen[]; source?: string };
 export type CanvasExport = { html: string; metadata: DesignMetadata; warnings: string[] };
 
@@ -276,12 +276,15 @@ export function exportCanvas(dir: string, opts: { title?: string; source?: strin
 
   const screens = boards.map(b => {
     const o = boardEntry(overrides, b.file);
-    const ov = typeof o === 'string' ? { id: o } : ((o ?? {}) as { id?: unknown; name?: unknown });
+    const ov = typeof o === 'string' ? { id: o } : ((o ?? {}) as { id?: unknown; name?: unknown; kind?: unknown; code?: unknown });
     return {
       board: b,
       id: str(ov.id) ?? screenIdFor(b.file, b.width),
       name: str(ov.name) ?? `${formFactor(b.width)} · ${b.title}`,
       viewport: `${b.width}x${b.height}`,
+      // A component board and the code it specifies (validated below with the rest).
+      ...(ov.kind !== undefined ? { kind: ov.kind as string } : {}),
+      ...(ov.code !== undefined ? { code: ov.code as string } : {}),
     };
   });
 
@@ -356,7 +359,7 @@ ${ROUTER}
 </html>
 `;
 
-  const metadata: DesignMetadata = { kind: 'design', screens: screens.map(({ id, name, viewport }) => ({ id, name, viewport })) };
+  const metadata: DesignMetadata = { kind: 'design', screens: screens.map(({ id, name, viewport, kind, code }) => ({ id, name, viewport, ...(kind !== undefined ? { kind } : {}), ...(code !== undefined ? { code } : {}) })) };
   if (opts.source) metadata.source = opts.source;
   const invalid = validateDesignMetadata(metadata);
   if (invalid) throw new Error(`buildd would refuse these screens: ${invalid}`);

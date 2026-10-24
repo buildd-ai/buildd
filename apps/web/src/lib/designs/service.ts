@@ -4,14 +4,16 @@ import { artifactRevisions, artifacts, specRevisions, specs, workspaces, type Ar
 import { ArtifactType } from '@buildd/shared';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
-import { deleteObject, isStorageConfigured, readObject, uploadBuffer } from '@/lib/storage';
+import { deleteObject, generateDownloadUrl, isStorageConfigured, readObject, uploadBuffer } from '@/lib/storage';
+import { getArtifactRevision } from '@/lib/artifact-revisions';
+import { designPreviewHref } from '@/lib/design-preview';
 import { buildArtifactKey } from '@/lib/storage-keys';
 import { resolveWorkspaceAccess } from '@/lib/workspace-access';
 import {
   actorOf, artifactsLinkedTo, canAccessWorkspace, linkArtifact, linksOfArtifact, loadLinkSubject, unlinkArtifact,
   type LinkCaller, type LinkRow,
 } from '@/lib/artifact-links';
-import { extractScreens, parseScreens, type DesignScreen } from './screens';
+import { extractScreens, parseScreens, screenSource, type DesignScreen } from './screens';
 import { isAdoptableFile, planAdoption } from './adopt';
 import { DESIGN_ATTACH_KINDS, planStore, specPinnedArtifact, type DesignAttachKind } from './store';
 import { DESIGN_STORED_CONTENT_TYPE, validateDesignHtml } from './upload';
@@ -279,4 +281,61 @@ export async function listDesigns(
     .from(artifacts).where(and(eq(artifacts.workspaceId, ref.workspace.id), sql`${artifacts.metadata}->>'kind' = ${DESIGN_KIND}`))
     .orderBy(sql`${artifacts.updatedAt} desc`).limit(100);
   return { ok: true, designs: rows.map(view) };
+}
+
+/** A board's source over MCP is capped so one read stays a sane tool reply; the render URL has all of it. */
+const SCREEN_SOURCE_MAX_CHARS = 200_000;
+
+export interface DesignScreenRead {
+  ok: true;
+  design: { id: string; title: string | null; revision: number };
+  screen: DesignScreen;
+  source: { html: string; bytes: number; truncated: boolean };
+  /** `url` opens the whole file at `#<screen>` (one screen at its size) on the storage origin; `page` is buildd's preview. */
+  render: { url: string | null; viewport: string; page: string };
+}
+
+/**
+ * One screen of one design revision, on its own (R-15 / AC-12): that board's
+ * source, cut from the export without the other boards, and where to see it
+ * rendered at its viewport. The file is read as text; it runs only when an
+ * agent or person opens the render URL, which is on the storage origin.
+ */
+export async function readDesignScreen(
+  caller: LinkCaller, designId: string, input: { screenId: string; revision?: number },
+): Promise<DesignScreenRead | DesignError> {
+  const design = await loadDesign(caller, designId);
+  if (!design) return fail(404, 'design not found');
+  const revision = input.revision ?? design.currentRevision;
+  let storageKey = design.storageKey;
+  let metadata = design.metadata as { screens?: DesignScreen[] } | null;
+  if (revision !== design.currentRevision) {
+    const row = await getArtifactRevision(design.id, revision);
+    if (!row?.storageKey) return fail(404, `design has no revision ${revision}`, 'revision');
+    storageKey = row.storageKey;
+    // Screens are recorded for the current file only; an older one is read for its own.
+    metadata = null;
+  }
+  if (!storageKey) return fail(404, 'design has no file');
+  if (!isStorageConfigured()) return fail(503, 'Storage not configured');
+  const bytes = await readObject(storageKey, ADOPT_MAX_BYTES);
+  if (!bytes) return fail(413, 'This design file could not be read (missing, or over 8 MB)');
+  const html = bytes.toString('utf8');
+  const screens = metadata?.screens?.length ? metadata.screens : (() => { const r = extractScreens(html); return r.ok ? r.screens : []; })();
+  const cut = screenSource(html, input.screenId);
+  if (!cut.ok) return fail(404, cut.message, cut.field);
+  const screen = screens.find(s => s.id === input.screenId) ?? { id: input.screenId, name: input.screenId, viewport: '' };
+  let url: string | null = null;
+  try {
+    url = `${await generateDownloadUrl(storageKey, { contentType: 'text/html; charset=utf-8' })}#${encodeURIComponent(input.screenId)}`;
+  } catch {
+    url = null;
+  }
+  return {
+    ok: true,
+    design: { id: design.id, title: design.title, revision },
+    screen,
+    source: { html: cut.html.slice(0, SCREEN_SOURCE_MAX_CHARS), bytes: Buffer.byteLength(cut.html, 'utf8'), truncated: cut.html.length > SCREEN_SOURCE_MAX_CHARS },
+    render: { url, viewport: screen.viewport, page: designPreviewHref(design.id, { screen: input.screenId, revision }) },
+  };
 }
