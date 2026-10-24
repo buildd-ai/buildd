@@ -2,12 +2,12 @@
 title: QA Capture Interaction Steps
 status: active
 owner: builder
-last_verified: 2026-10-05
+last_verified: 2026-10-22
 summary: Visual QA capture MUST be able to open a modal, menu or gated state through a validated, closed list of steps before a shot, and MUST NOT commit a write on a page backed by real data.
 domain: surfaces
-surfaces: [scripts/qa/steps.ts, scripts/qa/capture.ts, apps/web/src/lib/visual-audit-evidence.ts, scripts/demo/run-storyboard.ts]
+surfaces: [scripts/qa/steps.ts, scripts/qa/capture.ts, scripts/qa/surface-evidence.ts, apps/web/src/lib/visual-audit-evidence.ts, scripts/demo/run-storyboard.ts]
 keywords: [QA_PLAN, capture plan, stepFailed, commit step, visual audit, unsure, force-start dialog, storyboard, interaction steps, metadata.qa.state]
-verified_by: [scripts/qa/steps.test.ts, apps/web/src/lib/visual-audit-evidence.test.ts]
+verified_by: [scripts/qa/steps.test.ts, scripts/qa/surface-evidence.test.ts, scripts/qa/capture.test.ts, apps/web/src/lib/visual-audit-evidence.test.ts]
 assertions:
   - id: plan-validation
     type: symbol
@@ -114,6 +114,30 @@ committing step MUST NOT run against a preview.
   is still written; then the run exits 4, so a dispatch with a layout-gated plan comes back red.
   Links inside running text (`display: inline`) are exempt from the tap-target rule.
 
+## Surface evidence
+
+**Capability statement**: Given a plan route or state with `surface: { id, scenario }`,
+capture MUST write the named card as bounded surface evidence beside the shot, collected
+only from what the page declares and renders, with runtime facts supplied independently.
+
+- The card is the one element with `data-verify-surface="<id>"`. Its text is the
+  `data-verify-block="heading|status|body|label|hint"` elements in document order; its
+  actions are every interactive element inside it.
+- An action's meaning is its `data-verify-action="<operation>"`, set by the component that
+  owns it. The label is recorded as shown and never read for meaning: an undeclared action
+  is `other`, which the deterministic check reports as unsupported.
+- Disclosure (`visible` / `collapsed`) is measured from the rendered page; prominence is
+  `menu` inside `role=menu`, else `data-verify-prominence`.
+- Runtime facts come only from `QA_SURFACE_FACTS` (`{ factVersion, scenarios }`), never
+  from the page. A scenario without facts records none and says runtime state is absent.
+- Evidence needs `QA_CAPTURE_SHA`. Without it, or without exactly one rendered card, the
+  entry carries `surface.missing` and no file is written. Anything captured incompletely is
+  marked `partial` and listed in `surface.notes`.
+- The file is `surfaces/<shot id>.json`. The auditor uploads it unchanged as its own `data`
+  artifact; the server admits it by that artifact's lineage alone (`QA_SURFACE_COLLECTOR`
+  is recorded, and grants nothing). Registered `verify:` checks judge it
+  (`apps/web/src/lib/specs/registered-verification.ts`).
+
 ## Evidence
 
 - A state shot is uploaded with `metadata.qa.state = "<key>"`. Shots are keyed
@@ -147,6 +171,12 @@ committing step MUST NOT run against a preview.
   violation, and the process exits 4 after writing every shot.
 - AC-10: GIVEN the same step at 1280px WHEN a target is under 44px THEN it passes (the
   tap-target rule applies below `md` only); overflow still fails at any width.
+- AC-11: GIVEN a plan surface, `QA_CAPTURE_SHA` and `QA_SURFACE_FACTS` WHEN capture runs THEN
+  `surfaces/<id>.json` holds the card's ordered text, declared operations, disclosure and the
+  scenario's supplied facts, and the entry names the file; without `QA_CAPTURE_SHA` the entry
+  carries `surface.missing` and no file is written.
+- AC-12: GIVEN a button with no `data-verify-action` WHEN its card is collected THEN its
+  operation is `other`, whatever its label says.
 
 ## Code surface
 
@@ -158,7 +188,9 @@ committing step MUST NOT run against a preview.
   `/app/missions/:id?layout=feed` (a route may carry a query after `:id`). Clicking the tab
   leaves a client-side "Loading History…" until `router.refresh()` lands, which a short
   capture wait misses.
-- `scripts/qa/capture.ts`: `QA_PLAN` mode, the write guard, `stepFailed`.
+- `scripts/qa/capture.ts`: `QA_PLAN` mode, the write guard, `stepFailed`, `surface`.
+- `scripts/qa/surface-evidence.ts`: `readSurfaceDom` (in the browser), `composeSurfaceEvidence`,
+  `parseSurfaceFacts`.
 - `scripts/demo/run-storyboard.ts`: selector resolution and clicks through the engine.
 - `apps/web/src/lib/visual-audit-evidence.ts`: `parseQaMeta` reads `state`;
   `evaluateVisualAuditEvidence` counts only base shots toward coverage.

@@ -3459,6 +3459,8 @@ export interface LivingSpecCriterionStanding {
   verdictId?: string;
   /** Review verdicts a deciding test result outranks (spec 1dc6cc39 R-85); absent reads 0. */
   overriddenReviews?: number;
+  /** How a required registered check was evaluated; absent for tests and ordinary reviews. */
+  method?: 'deterministic' | 'model' | 'visual' | 'fallback';
 }
 
 /**

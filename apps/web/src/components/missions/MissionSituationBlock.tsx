@@ -42,6 +42,14 @@ import { statusPill } from '@/components/ui/states';
  */
 export const MISSION_CRITERIA_ANCHOR = 'mission-criteria';
 
+/**
+ * The block's `data-verify-surface`, so registered UI checks can capture it
+ * (scripts/qa/surface-evidence.ts). One id in every situation: a closed PR
+ * awaiting a decision and the same mission after its replacement is recorded
+ * are two scenarios of one card, and a check compares them by scenario.
+ */
+export const MISSION_SITUATION_SURFACE = 'mission-situation';
+
 const TONE_TEXT_CLASS: Record<WaitingOnTone, string> = {
   neutral: 'text-text-muted',
   info: 'text-status-info',
@@ -52,7 +60,17 @@ const TONE_TEXT_CLASS: Record<WaitingOnTone, string> = {
 /** How the primary affordance is performed. */
 export type PrimaryAffordance =
   /** Leaves the app — a PR on the forge. */
-  | { kind: 'external'; label: string; href: string }
+  | {
+      kind: 'external';
+      label: string;
+      href: string;
+      /**
+       * `secondary` when the block already renders the action that clears the
+       * blocker (the closed-PR row's Confirm): this link is then navigation and
+       * must not compete with it as a second filled button.
+       */
+      prominence?: 'secondary';
+    }
   /**
    * Somewhere else in the dashboard, or an anchor on this page. `taskId` is set
    * when the destination is one of this mission's tasks: the link carries
@@ -103,11 +121,12 @@ export function affordanceFor(
     }
     case 'pr_closed_unmerged': {
       // GitHub will not reopen a closed PR, so there is nothing to "merge" —
-      // the affordance is to go look at it, not a merge button.
+      // the affordance is to go look at it, not a merge button. The decision
+      // itself is ClosedPrResolution's, so this is a secondary link.
       const href = focus.prUrls[0];
       if (!href) return null;
       const label = focus.count === 1 ? 'Review the closed PR' : `Review ${focus.count} closed PRs`;
-      return { kind: 'external', label, href };
+      return { kind: 'external', label, href, prominence: 'secondary' };
     }
     case 'criterion_failing':
     case 'criterion_unverified':
@@ -221,29 +240,33 @@ export default function MissionSituationBlock({ missionId, situation, because, c
       // No frame of its own: the page's notice slot (MissionNoticeSlot) frames
       // it as a decision only when a person has to act.
       data-tone={situation.tone}
+      data-verify-surface={MISSION_SITUATION_SURFACE}
     >
       <p
         data-testid="mission-situation-headline"
+        data-verify-block="heading"
         className="text-title font-semibold text-text-primary leading-snug"
       >
         {situation.headline}
       </p>
 
       {detail?.kind === 'why' && (
-        <p className="mt-1 text-body text-text-secondary leading-snug">
+        <p data-verify-block="body" className="mt-1 text-body text-text-secondary leading-snug">
           {detail.link.claim} <RefLink refs={detail.link.refs} missionId={missionId} />
         </p>
       )}
       {detail?.kind === 'text' && (
-        <p className="mt-1 text-body text-text-secondary leading-snug">{detail.text}</p>
+        <p data-verify-block="body" className="mt-1 text-body text-text-secondary leading-snug">{detail.text}</p>
       )}
       {detail?.kind === 'blockers' && (
-        <ul data-testid="mission-situation-blockers" className="mt-1 text-body leading-snug">
+        <ul data-testid="mission-situation-blockers" data-verify-block="body" className="mt-1 text-body leading-snug">
           {detail.items.map(b => (
             <li key={b.taskId}>
               <Link
                 href={missionTaskHref({ missionId, taskId: b.taskId })}
                 data-task-id={b.taskId}
+                data-verify-action="view_detail"
+                data-verify-prominence="secondary"
                 className="inline-flex min-h-11 md:min-h-0 items-center gap-1.5 text-accent-text hover:underline"
               >
                 <span className="truncate">{b.title}</span>
@@ -263,9 +286,24 @@ export default function MissionSituationBlock({ missionId, situation, because, c
 
       {affordance && (
         <div className="mt-2.5">
-          {affordance.kind === 'external' ? (
+          {affordance.kind === 'external' && affordance.prominence === 'secondary' ? (
             <a
               data-testid="mission-primary-action"
+              data-verify-action="view_detail"
+              data-verify-prominence="secondary"
+              href={affordance.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex min-h-11 md:min-h-0 items-center text-meta text-accent-text hover:underline"
+            >
+              {affordance.label} →
+            </a>
+          ) : affordance.kind === 'external' ? (
+            <a
+              data-testid="mission-primary-action"
+              // Every external affordance opens a PR on the forge to look at; none merges from here.
+              data-verify-action="view_detail"
+              data-verify-prominence="primary"
               href={affordance.href}
               target="_blank"
               rel="noopener noreferrer"
@@ -279,6 +317,8 @@ export default function MissionSituationBlock({ missionId, situation, because, c
           ) : (
             <Link
               data-testid="mission-primary-action"
+              data-verify-action="view_detail"
+              data-verify-prominence="primary"
               href={affordance.href}
               className="btn btn-primary h-11 w-full md:h-9 md:w-auto"
             >
@@ -289,7 +329,7 @@ export default function MissionSituationBlock({ missionId, situation, because, c
       )}
 
       {situation.alsoOutstanding.length > 0 && (
-        <ul data-testid="mission-also-outstanding" className="mt-2.5 space-y-0.5">
+        <ul data-testid="mission-also-outstanding" data-verify-block="hint" className="mt-2.5 space-y-0.5">
           {situation.alsoOutstanding.map(fact => (
             <li key={fact.kind} className="text-body leading-snug">
               <span className={`mr-1.5 ${TONE_TEXT_CLASS[fact.tone]}`}>·</span>
