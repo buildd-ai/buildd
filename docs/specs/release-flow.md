@@ -2,13 +2,13 @@
 title: Release Flow
 status: active
 owner: max
-last_verified: 2026-10-23
+last_verified: 2026-10-24
 summary: The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 domain: releases
 surfaces: [apps/web/src/lib/release-executor.ts, packages/core/release-strategy.ts, apps/web/src/app/api/releases/trigger/route.ts, apps/web/src/app/api/releases/status/route.ts]
 related: [db-migration-gates, webhook-dataflow]
 keywords: [trigger_release, release_status, workflow_dispatch, branch_merge, prodbranch, releaseresult, release candidate, release/v]
-verified_by: [apps/web/src/lib/release-candidate-ci.test.ts, apps/web/src/lib/ci-failure-retry.release-candidate.test.ts, apps/web/src/lib/release/record.test.ts, apps/web/src/lib/release/candidate-amend.test.ts, apps/web/src/lib/workflow-dispatch-inputs.test.ts, apps/web/src/app/api/workspaces/[id]/config/route.test.ts, packages/core/__tests__/release-strategy.test.ts, packages/core/__tests__/release-compose.test.ts, apps/web/src/lib/release/compose-actions.test.ts, scripts/release-candidate.test.ts, packages/core/__tests__/release-candidate.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/candidate-review.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/release-executor.test.ts]
+verified_by: [apps/web/src/lib/release-candidate-ci.test.ts, apps/web/src/lib/ci-failure-retry.release-candidate.test.ts, apps/web/src/lib/release/record.test.ts, apps/web/src/lib/release/candidate-amend.test.ts, apps/web/src/lib/candidate-fix-commit.test.ts, apps/web/src/lib/workflow-dispatch-inputs.test.ts, apps/web/src/app/api/workspaces/[id]/config/route.test.ts, packages/core/__tests__/release-strategy.test.ts, packages/core/__tests__/release-compose.test.ts, apps/web/src/lib/release/compose-actions.test.ts, scripts/release-candidate.test.ts, packages/core/__tests__/release-candidate.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/candidate-review.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/release-executor.test.ts]
 assertions:
   - id: trigger-release-route
     type: route
@@ -245,9 +245,18 @@ path escalation or the migration inspector.
   dispatch fails). A candidate that is closed, or whose head is no longer the
   one the fix was filed for, is left alone. A merge found by reconciliation
   rather than the webhook amends the same way: the base is read from the fix
-  PR on GitHub. Both context keys (`releaseCandidateFix` on the fix task and
+  PR on GitHub. A fix that reached `sourceBranch` without a PR the fix task
+  owns (a direct commit, or another task's merged PR) amends the same way: the
+  fix task completes with `alreadyShippedIn` naming the commit SHA or the PR,
+  the commit is accepted only if it is on `sourceBranch` and not already in
+  the candidate, and the task's completion is the signal. Both context keys (`releaseCandidateFix` on the fix task and
   the amendment marker) are server-owned: a caller's copy is dropped on every
   task-create path.
+- A cut never starts from a `sourceBranch` commit CI has not verified: the
+  engine walks back along the captured SHA's first-parent line to the newest
+  commit whose `build` check is green, and refuses when none since
+  `prodBranch` is. Newer commits are listed as not in the candidate. An
+  amendment moves to the captured SHA unchanged: the fix PR's own CI ran.
 - A release candidate has **no kernel delivery, by design**. The kernel's
   deliveries exist to drive a PR's own head forward: repair pushes, CI retries
   on its branch, review-fix rounds. A candidate's head is frozen to the SHA its
@@ -300,6 +309,16 @@ path escalation or the migration inspector.
   workflow is dispatched with the contract's `versionInput` (and
   `confirmInput`) set to `<version>`, after the workflow file at `ref` was read
   and found to declare them.
+- AC-28: GIVEN the fix task for a red candidate WHEN it completes with
+  `alreadyShippedIn` set to a `sourceBranch` commit the candidate does not
+  hold (or to a merged PR into `sourceBranch` it does not own) THEN the
+  completion is accepted without a PR and the candidate is amended once, the
+  same way as when a fix PR merges (AC-21); a commit not on `sourceBranch`, or already in the candidate, is
+  refused.
+- AC-29: GIVEN `release.yml` cutting with `--require-check build` WHEN the
+  captured `sourceBranch` head's `build` is pending or red THEN the candidate
+  is cut from the newest first-parent commit whose `build` is green, and when
+  none since `prodBranch` is green nothing is pushed or opened.
 - AC-22: GIVEN a candidate workspace with no `candidate.amend` (or a strategy
   other than `workflow_dispatch`) WHEN the fix PR for its red candidate merges
   THEN nothing is dispatched, and the candidate PR, the fix task and the team
@@ -324,8 +343,11 @@ path escalation or the migration inspector.
   `apps/web/src/lib/ci-failure-retry.ts`,
   `apps/web/src/app/api/prs/[prNumber]/retry-ci/route.ts`
 - Auto-amend: `apps/web/src/lib/release/candidate-amend.ts`:
-  `amendCandidateOnFixMerge()`; subscriber `release-candidate-amend-on-fix`
-  in `apps/web/src/lib/release/subscribers.ts`
+  `amendCandidateOnFixMerge()`, `amendCandidateOnFixCompletion()`; subscribers
+  `release-candidate-amend-on-fix` and `release-candidate-amend-on-fix-completion`
+  in `apps/web/src/lib/release/subscribers.ts`; the commit check
+  `apps/web/src/lib/candidate-fix-commit.ts`
+- Green cut source: `scripts/release-candidate.ts`: `greenSource()`
 - Amend contract: `packages/core/release-config-shape.ts`:
   `amendContractShapeError()`, `amendContractCapabilityError()`,
   `amendDispatchInputs()`; workflow inputs read from the file at `ref`:

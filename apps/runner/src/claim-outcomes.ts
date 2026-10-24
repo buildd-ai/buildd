@@ -9,7 +9,7 @@
  * reason, the exclusion code and its end time, and the budget walls with their
  * reset times. The prose `detail` rides along for a code `top` has no words for.
  */
-import type { ClaimBudgetWall, ClaimDiagnostics } from '@buildd/shared';
+import type { ClaimBudgetWall, ClaimDeferredTask, ClaimDiagnostics } from '@buildd/shared';
 
 export interface ClaimOutcome {
   /** When the runner received it (ms). */
@@ -28,6 +28,8 @@ export interface ClaimOutcome {
   summary?: string;
   /** Broad claim: why every candidate was deferred, by reason. */
   deferrals?: Record<string, number>;
+  /** Broad claim: the tasks it turned away, each with its code (absent from an older server). */
+  deferredTasks?: ClaimDeferredTask[];
   /** Broad claim that took work: how many agents it started. */
   started?: number;
   /** The task a refused overlap waits for (the server's field, else the id its sentence names). */
@@ -70,7 +72,18 @@ export function outcomeFromDiagnostics(diagnostics: ClaimDiagnostics | null | un
     const nonZero = Object.fromEntries(Object.entries(diagnostics.deferrals).filter(([, n]) => typeof n === 'number' && n > 0));
     if (Object.keys(nonZero).length > 0) o.deferrals = nonZero as Record<string, number>;
   }
+  if (diagnostics.deferredTasks?.length) o.deferredTasks = diagnostics.deferredTasks;
   return o;
+}
+
+/** The per-task outcomes a broad claim's `deferredTasks` stand for. */
+export function taskOutcomesFromBroad(o: Pick<ClaimOutcome, 'at' | 'reason' | 'deferredTasks'>): Record<string, ClaimOutcome> {
+  const out: Record<string, ClaimOutcome> = {};
+  for (const d of o.deferredTasks ?? []) {
+    if (!d || typeof d.taskId !== 'string' || typeof d.code !== 'string') continue;
+    out[d.taskId] = { at: o.at, reason: o.reason, exclusion: d.code, ...(d.until ? { until: d.until } : {}) };
+  }
+  return out;
 }
 
 /**
@@ -134,6 +147,7 @@ export class ClaimOutcomeStore {
   /** Keep the broad outcome (with any provider limit that has not lifted) and return what was kept. */
   recordBroad(outcome: ClaimOutcome): ClaimOutcome {
     this.broad = carryBroadWalls(this.broad, outcome);
+    for (const [id, t] of Object.entries(taskOutcomesFromBroad(outcome))) this.recordTask(id, t);
     return this.broad;
   }
 

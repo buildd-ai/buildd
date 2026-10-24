@@ -130,9 +130,9 @@ describe('POST /api/workers/[id]/evidence-upload-url', () => {
 
     mockAuthenticateApiKey.mockResolvedValue({ id: ACCOUNT, teamId: TEAM });
     mockWorkersFindFirst.mockResolvedValue(standardWorker());
-    // TASK's parent is ROOT_TASK, which has no parent.
+    // TASK is a retry attempt of ROOT_TASK, which has no parent.
     mockTasksFindFirst.mockImplementation(async ({ where }: any) =>
-      where.value === TASK ? { id: TASK, parentTaskId: ROOT_TASK } : { id: ROOT_TASK, parentTaskId: null });
+      where.value === TASK ? { id: TASK, parentTaskId: ROOT_TASK, taskClass: 'attempt' } : { id: ROOT_TASK, parentTaskId: null, taskClass: 'work' });
     mockResolveEvidenceBackend.mockResolvedValue(backend());
     mockGenerateEvidenceUploadUrl.mockResolvedValue('https://bucket.example.invalid/signed');
     mockSumBytes.mockResolvedValue([{ total: 0 }]);
@@ -300,6 +300,16 @@ describe('POST /api/workers/[id]/evidence-upload-url', () => {
     mockTasksFindFirst.mockResolvedValue({ id: TASK, parentTaskId: null });
     const json = await (await POST(req(ok), { params: mockParams })).json();
     expect(json.key).toContain(`/${TASK}/${TASK}/`);
+  });
+
+  // A sweep or organizer that files a task becomes its parent; that child is
+  // not its retry, so its runs must not land in the filer's lineage.
+  it('uses the task itself as root when its parent filed it rather than retried it', async () => {
+    mockTasksFindFirst.mockImplementation(async ({ where }: any) =>
+      where.value === TASK ? { id: TASK, parentTaskId: ROOT_TASK, taskClass: 'work' } : { id: ROOT_TASK, parentTaskId: null, taskClass: 'work' });
+    const json = await (await POST(req(ok), { params: mockParams })).json();
+    expect(json.key).toContain(`/${TASK}/${TASK}/`);
+    expect(json.key).not.toContain(ROOT_TASK);
   });
 
   it('never returns a credential value (AC-9)', async () => {

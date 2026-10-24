@@ -132,6 +132,7 @@ describe('provider limit signals', () => {
   beforeEach(() => {
     mgr = new WorkerManager(config);
     mgr.hasCredentials = true;
+    mgr.modelAuth = { source: 'api_key' }; // a Claude-only runner: no Codex login
     worker = runningWorker();
     aborted = false;
     const abortController = new AbortController();

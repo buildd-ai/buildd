@@ -110,6 +110,8 @@ describe('buildReleaseCandidateFixTask', () => {
     expect(built.outputRequirement).toBe('pr_required');
     expect(built.tier).toBe('premium');
     expect(built.description).toContain('alreadyShippedIn');
+    // A fix pushed straight to dev (no PR) is named by its commit, which amends the candidate.
+    expect(built.description).toContain('commit (its SHA) when it was pushed without one');
   });
 
   it('the refusal text names the source branch and the amendment', () => {
