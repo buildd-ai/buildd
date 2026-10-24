@@ -135,12 +135,12 @@ describe('task-assignment claim failure logging', () => {
 
   // The server names the gate that dropped a named task. A gate refusal is
   // not a lost race: "already claimed or no longer pending" is what the
-  // runner printed for hours while the workspace cap refused a green PR's
+  // runner printed for hours while a concurrency cap refused a green PR's
   // reviewer on every wake, which sent every reader looking for another claimer.
   test('a gate refusal names the gate instead of reporting a lost race', async () => {
     const err = Object.assign(lostRace(), {
-      claimTaskExclusionCode: 'workspace_cap',
-      claimTaskExclusionDetail: 'The workspace is at its concurrent-task cap.',
+      claimTaskExclusionCode: 'mission_concurrent',
+      claimTaskExclusionDetail: 'The mission is at its concurrent-task cap.',
     });
     const manager = makeManager(async () => [], async () => { throw err; });
     const cap = captureConsole();
@@ -151,7 +151,7 @@ describe('task-assignment claim failure logging', () => {
     }
     const text = cap.lines.map(l => l.args.map(String).join(' ')).join('\n');
     expect(text).not.toMatch(/claim race/i);
-    const refusal = cap.lines.filter(l => /workspace_cap/.test(String(l.args[0])));
+    const refusal = cap.lines.filter(l => /mission_concurrent/.test(String(l.args[0])));
     expect(refusal).toHaveLength(1);
     expect(String(refusal[0].args[0])).toContain('task-1');
     expect(String(refusal[0].args[0])).toContain('concurrent-task cap');

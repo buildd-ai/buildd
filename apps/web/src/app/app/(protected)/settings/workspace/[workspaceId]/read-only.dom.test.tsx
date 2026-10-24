@@ -33,7 +33,6 @@ const { default: ReleaseSection } = await import('./ReleaseSection');
 const { default: SubjectPolicySection } = await import('./SubjectPolicySection');
 const { default: ExecutorSection } = await import('./ExecutorSection');
 const { default: RunnerSizeSection } = await import('./RunnerSizeSection');
-const { default: ConcurrencySection } = await import('./ConcurrencySection');
 const { default: PauseStartsSection } = await import('./PauseStartsSection');
 const { default: WorkTrackerSection } = await import('./WorkTrackerSection');
 const { RepoAccessCard } = await import('./RepoAccessCard');
@@ -214,12 +213,6 @@ describe('workspace settings, read by a member', () => {
     await mount(<RunnerSizeSection workspaceId="ws-1" explicit={null} effective="large" source="derived" reason="low_disk" canEdit={false} />);
     expectReadOnly();
     expect(host.querySelector('[data-testid="workspace-runner-size-effective"]')!.textContent).toBe('Large');
-  });
-
-  it('ConcurrencySection: the cap as text, with no stepper', async () => {
-    await mount(<ConcurrencySection workspaceId="ws-1" initialMaxConcurrentTasks={4} canEdit={false} />);
-    expectReadOnly();
-    expect(host.querySelector('[data-testid="workspace-concurrency-value"]')!.textContent).toBe('4');
   });
 
   it('PauseStartsSection: off, or until when, as text', async () => {

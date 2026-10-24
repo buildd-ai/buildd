@@ -5,10 +5,11 @@
  * Runs the versioned corpus through the production evaluation flow (`runUiCopyBenchmark` in
  * scripts/ui-copy-benchmark.ts: executeUiVerification -> broker -> runBuilddDecision, the kind's own
  * questions, interpretation and the stored measurement policy). Offline by default; a provider is called
- * only with `--network`, through the team's scoped route, within the decision and spend bounds.
+ * only with `--network`, through buildd's own model.inference capability route under the worker's approved
+ * grant (the server holds the key and writes the usage ledger; this command needs no database and no key).
  *
  *   bun run eval:ui-copy                                   # offline replay of the development split
- *   bun run eval:ui-copy --network --team <id> --max-decisions 20
+ *   BUILDD_SERVER=… BUILDD_API_KEY=… BUILDD_WORKER_ID=… bun run eval:ui-copy --network --max-decisions 12
  *   bun run eval:ui-copy --split untouched --open-untouched   # the reserved split, deliberately
  *
  * Flags:
@@ -21,7 +22,7 @@
  *   --model <id>            offline: which model's cached answers to replay (default the platform's Jev)
  *   --measurement-policy <fingerprint>   offline: which recorded measurement policy to reapply; needed only
  *                           when the cache holds more than one
- *   --network --team <id> [--workspace <id>]
+ *   --network [--server <url>] [--worker <id>]   (env BUILDD_SERVER, BUILDD_API_KEY, BUILDD_WORKER_ID)
  *   --max-decisions <n>     network: provider invocations (default 12, at most 60)
  *   --max-cost-usd <x>      network: stop issuing calls once spend reaches this (default 0.01, at most 0.10)
  *   --json <path>           write the full report as JSON
@@ -32,6 +33,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { emptyUiCopyCache, formatUiCopyBenchmark, parseUiCopyCache, type UiCopySplit } from '../packages/core/eval/ui-copy-benchmark';
+import { grantRouteConfigured } from './ui-copy-grant-transport';
 import { DEFAULT_CACHE, DEFAULT_CORPUS, runUiCopyBenchmark, type UiCopyBenchmarkDeps, type UiCopyBenchmarkOptions } from './ui-copy-benchmark';
 
 export interface UiCopyEvalIo {
@@ -56,10 +58,12 @@ export async function runUiCopyEval(argv: readonly string[], io: UiCopyEvalIo = 
   const cachePath = arg('cache') ?? DEFAULT_CACHE;
   let network: UiCopyBenchmarkOptions['network'] = null;
   if (flag('network')) {
-    const teamId = arg('team');
-    if (!teamId) { err('--network needs --team <id>: the run spends that team\'s own route, through its ui_copy opt-in'); return 1; }
-    if (!env.DATABASE_URL) { err('--network needs DATABASE_URL: the scoped resolver reads the team\'s policy, key and stored measurements; there is no fallback key'); return 1; }
-    network = { teamId, workspaceId: arg('workspace') ?? null, maxDecisions: Number(arg('max-decisions') ?? 12), maxCostUsd: Number(arg('max-cost-usd') ?? 0.01) };
+    network = {
+      server: arg('server') ?? env.BUILDD_SERVER ?? null, apiKey: env.BUILDD_API_KEY ?? null, workerId: arg('worker') ?? env.BUILDD_WORKER_ID ?? null,
+      maxDecisions: Number(arg('max-decisions') ?? 12), maxCostUsd: Number(arg('max-cost-usd') ?? 0.01),
+    };
+    // No fallback: without a server route every case has no answer and the report says INCOMPLETE.
+    if (!grantRouteConfigured(network)) err('network route not configured (BUILDD_SERVER, BUILDD_API_KEY, BUILDD_WORKER_ID): no case can be answered, the run will be INCOMPLETE');
   }
   const result = await runUiCopyBenchmark({
     corpus: JSON.parse(readFileSync(arg('corpus') ?? DEFAULT_CORPUS, 'utf8')),

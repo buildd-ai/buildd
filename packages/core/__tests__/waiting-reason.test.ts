@@ -59,7 +59,7 @@ describe('waiting-reason', () => {
   });
 
   it('maps kinds to exactly the claim-loop keys they lift', () => {
-    expect(claimLoopKeysFor(['pr_overlap_live', 'lease_overlap', 'mission_paced']).sort()).toEqual(['mission_paced', 'path_overlap']);
+    expect(claimLoopKeysFor(['pr_overlap_live', 'lease_overlap', 'mission_concurrent']).sort()).toEqual(['mission_concurrent', 'path_overlap']);
     expect(claimLoopKeysFor(['scope_undeclared_mutex', 'ordered_behind', 'serialized_surface', 'soft_overlap']).sort())
       .toEqual(['advisory_manifest', 'ordered_behind', 'soft_overlap']);
     expect(claimLoopKeysFor(['mission_budget', 'task_held', 'dep_declared'])).toEqual([]);

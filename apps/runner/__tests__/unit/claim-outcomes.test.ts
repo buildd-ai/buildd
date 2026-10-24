@@ -31,8 +31,8 @@ describe('outcomeFromDiagnostics', () => {
   });
 
   test('deferral counts ride along on a deferred broad claim; missing diagnostics read as an empty queue', () => {
-    expect(outcomeFromDiagnostics({ reason: 'all_candidates_deferred', deferrals: { mission_paced: 2, workspace_cap: 0 } } as any, NOW))
-      .toEqual({ at: NOW, reason: 'all_candidates_deferred', deferrals: { mission_paced: 2 } });
+    expect(outcomeFromDiagnostics({ reason: 'all_candidates_deferred', deferrals: { mission_concurrent: 2, path_overlap: 0 } } as any, NOW))
+      .toEqual({ at: NOW, reason: 'all_candidates_deferred', deferrals: { mission_concurrent: 2 } });
     expect(outcomeFromDiagnostics(undefined, NOW)).toEqual({ at: NOW, reason: 'no_pending_tasks' });
   });
 

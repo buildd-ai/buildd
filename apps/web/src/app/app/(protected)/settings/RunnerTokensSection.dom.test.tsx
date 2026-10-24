@@ -88,51 +88,16 @@ describe('RunnerTokensSection token details', () => {
     expect(host.textContent).toContain('Capabilities');
   });
 
-  it('shows maxConcurrentWorkers in the detail', async () => {
-    await mount({ maxConcurrentWorkers: 7 });
-    await expandToken();
-    expect(host.textContent).toContain('Default slots: 7');
-  });
-
-  it('shows maxConcurrentWorkers as editable when canManageHostRunner is true', async () => {
-    await mount({ maxConcurrentWorkers: 3, canManageHostRunner: true });
-    await expandToken();
-
-    expect(host.textContent).toContain('Default slots: 3');
-
-    // Verify the Workers display is clickable (cursor-pointer class applied)
-    const workersSpan = [...host.querySelectorAll('span')].find((s) => s.textContent?.includes('Default slots: 3'));
-    expect(workersSpan).toBeTruthy();
-    expect((workersSpan as HTMLElement).className).toContain('cursor-pointer');
-
-    // Click on the Workers display to enter edit mode
-    await act(async () => {
-      workersSpan?.click();
+  // Settings spec R-8: a token's slot limit is not an account-level setting for
+  // either a subscription login or an API key; slots are set per runner.
+  for (const authType of ['oauth', 'api']) {
+    it(`shows no account slot limit editor for an ${authType} token`, async () => {
+      await mount({ authType, maxConcurrentWorkers: 3, canManageHostRunner: true });
+      await expandToken();
+      expect(host.textContent).not.toContain('Default slots');
+      expect(host.querySelector('input[type="number"]')).toBeNull();
     });
-
-    // Verify the input field is now present
-    const input = host.querySelector<HTMLInputElement>('input[type="number"]');
-    expect(input).toBeTruthy();
-    expect(input?.value).toBe('3');
-    expect(input?.min).toBe('1');
-    expect(input?.max).toBe('50');
-  });
-
-  it('does not allow editing maxConcurrentWorkers when canManageHostRunner is false', async () => {
-    await mount({ maxConcurrentWorkers: 3, canManageHostRunner: false });
-    await expandToken();
-
-    const workersSpan = [...host.querySelectorAll('span')].find((s) => s.textContent?.startsWith('Default slots: 3'));
-    expect(workersSpan).toBeTruthy();
-
-    await act(async () => {
-      workersSpan?.click();
-    });
-
-    // Verify the input field is NOT present
-    const input = host.querySelector<HTMLInputElement>('input[type="number"]');
-    expect(input).toBeFalsy();
-  });
+  }
 });
 
 describe('RunnerTokensSection: one primary', () => {
@@ -164,7 +129,6 @@ describe('RunnerTokensSection: a member without manage_team_keys', () => {
   it('reads every token detail as text; New token is the one control', async () => {
     await mount({ maxConcurrentWorkers: 3, hostRunner: true, canManageHostRunner: false });
     await expandToken();
-    expect(host.textContent).toContain('Default slots: 3');
     expect(host.textContent).toContain('Trusted');
     expect(describeControls(host)).toEqual(['a "+ New token"']);
     expect(host.textContent).not.toMatch(/Admins can|Only a team owner|can change this/);

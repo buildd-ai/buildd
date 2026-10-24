@@ -15,13 +15,11 @@
  *   bypassHeldGate      | `= 'true'` (both)    | `=== true \|\| === 'true'`  |
  *   bypassSubjectGate   | `!= 'true'` (both)   | `=== true \|\| === 'true'`  |
  *   bypassStartGate     | never read (dead)    | never read (dead)         |
- *   capExempt           | ABSENT (the bug)     | `=== true` only           |
  *
  * `->>` renders JSON `true` and JSON `"true"` identically as the text `true`,
  * so the SQL side always accepted both forms while `=== true` accepted only
  * one. A writer using the string form would pass the prefilter and then be
- * dropped by the loop — the same prefilter/loop disagreement that made
- * `capExempt` a no-op. One predicate, one SQL builder, both fed from the same
+ * dropped by the loop. One predicate, one SQL builder, both fed from the same
  * key constants, is the fix.
  *
  * Must stay free of DB/schema imports beyond drizzle's `sql` tag so it can be
@@ -38,14 +36,11 @@ export const BYPASS_DEPS_GATE_KEY = 'bypassDepsGate' as const;
 export const BYPASS_HELD_GATE_KEY = 'bypassHeldGate' as const;
 /** Skip the mission `budget_exhausted` gate (claim-loop mission gate #1). */
 export const BYPASS_MISSION_BUDGET_KEY = 'bypassMissionBudget' as const;
-/** Let one task run as an extra slot past the workspace concurrency cap. */
-export const CAP_EXEMPT_KEY = 'capExempt' as const;
 
 export type BypassFlagKey =
   | typeof BYPASS_DEPS_GATE_KEY
   | typeof BYPASS_HELD_GATE_KEY
-  | typeof BYPASS_MISSION_BUDGET_KEY
-  | typeof CAP_EXEMPT_KEY;
+  | typeof BYPASS_MISSION_BUDGET_KEY;
 
 /**
  * The value forms that count as "set".

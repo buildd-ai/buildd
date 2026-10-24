@@ -1051,6 +1051,8 @@ export interface WaitingForOption {
   consequence?: string;
   /** The consequence cut to the button line, under 40 characters (Navigation R-16). */
   effect?: string;
+  /** What the option does to the task: continues, finishes, stops or changes (packages/core/question-waits.ts). */
+  outcome?: 'continues' | 'finishes' | 'stops' | 'changes';
 }
 
 /**
@@ -1706,7 +1708,7 @@ export interface ClaimTasksInput {
    * team's workspace: claim that one task past the gates a person may override,
    * the MCP equivalent of the dashboard's "Start with override". Skips
    * dependencies, a held mission, a dead subject, a future startAt, mission
-   * concurrency and pacing, path overlap and the workspace cap. Never skips a
+   * concurrency and path overlap. Never skips a
    * live worker, a person's hold on the task, the mission budget,
    * role/runner routing, provider walls or account limits. Ignored otherwise. Audited on the task and the gate ledger.
    */
@@ -1809,7 +1811,6 @@ export type ClaimTaskExclusionCode =
   | 'runner_preference'
   | 'role_mismatch'
   | 'runner_cooldown'
-  | 'workspace_cap'
   /** The workspace's work runs on the other executor (gitConfig.executor: cloud vs host). */
   | 'workspace_executor'
   /** The workspace paused new starts until a set time (runner claims only). */
@@ -1908,8 +1909,6 @@ export interface ClaimDiagnostics {
     soft_overlap?: number;
     mission_budget?: number;
     mission_concurrent?: number;
-    mission_paced?: number;
-    workspace_cap?: number;
     provider_unavailable?: number;
     budget_paused?: number;
     routing_paused?: number;
@@ -3643,7 +3642,6 @@ export type RunnerQueueHold =
   | 'mission_held'
   | 'task_held'
   | 'workspace_paused'
-  | 'workspace_cap'
   | 'runner_cooldown'
   /** Its mission already runs a task that, like it, declares no files: the claim starts one such task per mission at a time. */
   | 'advisory_manifest';

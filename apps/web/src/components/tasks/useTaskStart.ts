@@ -2,7 +2,7 @@
 
 /**
  * The start flow behind every "Run now": the request, a gate refusal and what
- * it offers (Force start, start past the cap, switch backend, raise the cap),
+ * it offers (Force start, switch backend),
  * and what happens after the server accepts (a runner claims it, or the task
  * waits at the front of the queue). Owned by `TaskActionZone`, the one
  * renderer, so the task sheet, the task page and the mission drawer share it.
@@ -41,7 +41,7 @@ const POLL_MS = 5_000;
 export interface TaskStart {
   status: StartStatus;
   /** Which request is in flight, for the button that made it. */
-  pending: 'start' | 'force' | 'exempt' | 'switch' | 'cap' | null;
+  pending: 'start' | 'force' | 'switch' | null;
   refusal: GateRefusal | null;
   error: string | null;
   fleet: RunnerFleetStatus | null;
@@ -53,7 +53,6 @@ export interface TaskStart {
   /** Open a refusal the host already knows (Force start from the waiting line). */
   present(refusal: GateRefusal): void;
   switchBackendAndStart(backend: string): Promise<void>;
-  raiseCapAndStart(cap: number): Promise<void>;
   /** Close a refusal or an error and go back to idle. */
   dismiss(): void;
 }
@@ -78,10 +77,9 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
   const handlerRef = useRef<((data: unknown) => void) | null>(null);
   const onStartedRef = useRef(onStarted);
   onStartedRef.current = onStarted;
-  // Overrides already granted in this chain of refusals. Each one clears one
-  // gate, so "Start anyway" then "Force start" must send both, or each start
-  // trips the gate the other cleared and the two refusals alternate forever.
-  const grantedRef = useRef<Pick<StartRequest, 'forceOverride' | 'capExempt'>>({});
+  // An override already granted in this chain of refusals: a later start in
+  // the same chain must still send it, or it trips the gate it cleared.
+  const grantedRef = useRef<Pick<StartRequest, 'forceOverride'>>({});
 
   const stopTracking = useCallback(() => {
     if (pollRef.current) clearInterval(pollRef.current);
@@ -141,14 +139,13 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
   }, [stopTracking, workspaceId, taskId, loadFleet]);
 
   const start = useCallback(async (asked: StartRequest = {}) => {
-    setPending(asked.forceOverride || asked.force ? 'force' : asked.capExempt ? 'exempt' : 'start');
+    setPending(asked.forceOverride || asked.force ? 'force' : 'start');
     setError(null);
     setWaiting(null);
     setStatus('starting');
     const req: StartRequest = {
       ...asked,
       forceOverride: asked.forceOverride || grantedRef.current.forceOverride,
-      capExempt: asked.capExempt || grantedRef.current.capExempt,
     };
     try {
       const out = await requestTaskStart(taskId, req);
@@ -163,7 +160,7 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
         return;
       }
       if (out.refusal) {
-        grantedRef.current = { forceOverride: req.forceOverride, capExempt: req.capExempt };
+        grantedRef.current = { forceOverride: req.forceOverride };
         setRefusal(out.refusal);
         setStatus('gated');
         // A coordination hold is about another task, not the fleet: no runner copy.
@@ -189,23 +186,6 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
     await start();
   }, [taskId, start]);
 
-  const raiseCapAndStart = useCallback(async (cap: number) => {
-    setPending('cap');
-    const res = await fetch(`/api/workspaces/${workspaceId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ maxConcurrentTasks: cap }),
-    }).catch(() => null);
-    if (!res?.ok) {
-      setPending(null);
-      // The cap is a workspace admin setting (manage_workspace_settings).
-      setError(res?.status === 403 ? 'Raising the workspace limit needs a workspace admin.' : 'Could not update the workspace limit. Try again.');
-      setStatus('failed');
-      return;
-    }
-    await start();
-  }, [workspaceId, start]);
-
   const present = useCallback((r: GateRefusal) => {
     setRefusal(r);
     setError(null);
@@ -222,5 +202,5 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
     setWaiting(null);
   }, [stopTracking]);
 
-  return { status, pending, refusal, error, fleet, forced, waiting, start, present, switchBackendAndStart, raiseCapAndStart, dismiss };
+  return { status, pending, refusal, error, fleet, forced, waiting, start, present, switchBackendAndStart, dismiss };
 }

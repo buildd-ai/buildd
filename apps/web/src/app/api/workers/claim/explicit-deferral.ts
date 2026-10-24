@@ -63,18 +63,6 @@ export function describeExplicitDeferral(
         detail: `Its mission is at its concurrency cap${active !== null && cap !== null ? ` (${active}/${cap} tasks in flight)` : ''}. Wait for one to finish, or raise maxConcurrentTasks. ${FORCE_HINT}`,
       };
     }
-    case 'mission_paced': {
-      const at = str(detail.nextEligibleAt);
-      return { code: reason, detail: `Its mission is paced; the next task may start${at ? ` at ${at}` : ' later'}. ${FORCE_HINT}` };
-    }
-    case 'workspace_cap': {
-      const active = num(detail.active);
-      const cap = num(detail.cap);
-      return {
-        code: reason,
-        detail: `The workspace is at its concurrent-task cap${active !== null && cap !== null ? ` (${active}/${cap})` : ''}. ${FORCE_HINT}`,
-      };
-    }
     case 'provider_unavailable':
       return { code: reason, detail: 'Claude is disabled for the team and Codex has no credential or free slot in this workspace.' };
     case 'budget_paused': {

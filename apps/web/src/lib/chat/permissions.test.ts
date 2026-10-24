@@ -89,7 +89,7 @@ describe('canSkipCard', () => {
     const upd = (extra: Record<string, unknown>) => ({ action: 'update', missionId: 'm', ...extra });
     for (const extra of [
       { maxConcurrentTasks: 20 }, { model: 'opus' }, { cronExpression: '* * * * *' }, { isHeartbeat: true },
-      { pacingMode: 'off' }, { pacingMaxPerHour: 100 }, { startMode: 'now' }, { status: 'cancelled' },
+      { startMode: 'now' }, { status: 'cancelled' },
       { orchestrationMode: 'parallel' }, { autoVerify: false }, { branchStrategy: 'direct' },
     ]) {
       expect(canSkipCard({ tool: 'manage_missions', input: upd(extra), allowedGroups: allowed('missions'), ...clean })).toBe(false);

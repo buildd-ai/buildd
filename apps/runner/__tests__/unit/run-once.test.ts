@@ -198,16 +198,16 @@ describe('runOnce', () => {
     expect(calls).toContain('destroy');
   });
 
-  test('claim deferred for capacity (workspace_cap) → deferred code, prints the reason line, no session', async () => {
+  test('claim deferred for capacity (mission_concurrent) → deferred code, prints the reason line, no session', async () => {
     const { wm, calls } = fakeManager({
-      claim: async () => { throw Object.assign(new Error('rejected'), { claimError: 'server_rejected', claimReason: 'no_pending_tasks', claimTaskExclusionCode: 'workspace_cap' }); },
+      claim: async () => { throw Object.assign(new Error('rejected'), { claimError: 'server_rejected', claimReason: 'no_pending_tasks', claimTaskExclusionCode: 'mission_concurrent' }); },
     });
     const lines: string[] = [];
     const { d } = deps(wm, { log: (m) => lines.push(m) });
     expect(await runOnce({ taskId: TASK_ID }, d)).toBe(EXIT_CLAIM_DEFERRED);
     expect(calls).not.toContain('abort');
     expect(calls).toContain('destroy');
-    expect(lines).toContain(`${CLAIM_DEFERRED_LINE_PREFIX}workspace_cap`);
+    expect(lines).toContain(`${CLAIM_DEFERRED_LINE_PREFIX}mission_concurrent`);
   });
 
   test('claim deferred by the account-wide cap (bare HTTP 429) → deferred code', async () => {
@@ -559,8 +559,8 @@ describe('classifyClaimFailure', () => {
     expect(classifyClaimFailure(new TypeError('fetch failed'))).toBe('failed');
   });
 
-  test('server_rejected with a capacity/pacing taskExclusion code is deferred, not refused', () => {
-    for (const code of ['workspace_cap', 'mission_concurrent', 'mission_paced', 'mission_budget', 'account_cap', 'path_overlap', 'budget_paused', 'oauth_parallelism', 'runner_capability', 'deps_blocked', 'state_changed', 'runner_cooldown']) {
+  test('server_rejected with a capacity taskExclusion code is deferred, not refused', () => {
+    for (const code of ['mission_concurrent', 'mission_budget', 'account_cap', 'path_overlap', 'budget_paused', 'oauth_parallelism', 'runner_capability', 'deps_blocked', 'state_changed', 'runner_cooldown']) {
       const err = Object.assign(new Error('rejected'), { claimError: 'server_rejected', claimReason: 'no_pending_tasks', claimTaskExclusionCode: code });
       expect(classifyClaimFailure(err)).toBe('deferred');
     }

@@ -648,6 +648,8 @@ export interface UnansweredQuestionEntry {
   workerId: string;
   prompt: string | null;
   options: string[];
+  /** The agent's recommended option: the default the person was told the task takes (spec 1b257609 R-3). */
+  recommended?: string | null;
   expiredAt: string;
 }
 
@@ -663,6 +665,7 @@ export function buildUnansweredRequeuePatch(opts: {
   workerId: string;
   prompt?: string | null;
   options?: string[];
+  recommended?: string | null;
   branchContext: { baseBranch?: string; resumeBranch?: string };
   failureContext: string;
   now?: number;
@@ -672,6 +675,7 @@ export function buildUnansweredRequeuePatch(opts: {
     workerId: opts.workerId,
     prompt: opts.prompt ?? null,
     options: opts.options ?? [],
+    ...(opts.recommended ? { recommended: opts.recommended } : {}),
     expiredAt: new Date(opts.now ?? Date.now()).toISOString(),
   };
   return {

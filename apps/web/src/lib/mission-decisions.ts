@@ -3,14 +3,19 @@
  * The mission page's decisions (Navigation d25d923d R-16, read side) and
  * the History line it raises (R-6), as data over what the page already
  * holds: the board model (a parked worker's full `waitingFor`, a delivery
- * waiting on a person, who waits on whom) and the mission's open organizer
- * question notes. Pure; the card itself is `components/DecisionCard.tsx`.
+ * waiting on a person) and the mission's open organizer question notes.
+ * What waits on each decision is the projection's (`loadQuestionWaits`,
+ * Living Spec 1b257609 R-5), passed in by task: this module never derives
+ * its own list. Pure; the card itself is `components/DecisionCard.tsx`.
  */
+import type { QuestionWaits } from '@buildd/core/question-waits';
 import { CRITERIA_ESCALATION_NOTE_TITLE } from './escalation-note-title';
 import { linkQuestionNote, unifyNoteQuestion, unifyWorkerQuestion, type QuestionNoteLike } from '@/app/app/(protected)/tasks/[id]/question-hero';
 import { BOARD_LANDED, type BoardTask, type MissionBoardModel } from './mission-board';
 import { approvalView, decisionFromQuestion, type DecisionView } from './needs-you-card';
 import { stripOrder } from './mission-task-strip';
+import { visualReviewDecision, withoutStaleRoundCap } from './visual-review-decision';
+import type { VisualReviewModel } from '@buildd/shared';
 
 type Model = Pick<MissionBoardModel, 'phases' | 'tasks' | 'needsYou'>;
 
@@ -27,11 +32,10 @@ export interface MissionDecisionsInput {
   notes: readonly OpenQuestionNote[];
   mission: { id: string; title: string; href: string };
   hrefFor: (taskId: string) => string;
-}
-
-/** The tasks that wait on `id`, by name, in strip order. */
-export function dependentNames(model: Pick<MissionBoardModel, 'phases' | 'tasks'>, id: string): string[] {
-  return stripOrder(model).filter(other => model.tasks[other].blockers.includes(id)).map(other => model.tasks[other].title);
+  /** The mission's current visual review: when it needs a person, its card replaces the round-cap note. */
+  visual?: VisualReviewModel | null;
+  /** What waits on each decision's task, from the projection (`loadQuestionWaits`). */
+  waitsByTask?: ReadonlyMap<string, QuestionWaits>;
 }
 
 const taskLink = (t: BoardTask, hrefFor: (id: string) => string) => ({ id: t.id, title: t.title, href: hrefFor(t.id) });
@@ -43,15 +47,16 @@ const taskLink = (t: BoardTask, hrefFor: (id: string) => string) => ({ id: t.id,
  * that no worker card already shows. A note answered through a worker's
  * card is not shown twice.
  */
-export function missionDecisions({ model, notes, mission, hrefFor }: MissionDecisionsInput): DecisionView[] {
+export function missionDecisions({ model, notes: allNotes, mission, hrefFor, visual, waitsByTask }: MissionDecisionsInput): DecisionView[] {
+  const waitsOf = (taskId: string) => waitsByTask?.get(taskId) ?? null;
   const out: DecisionView[] = [];
+  const notes = withoutStaleRoundCap(allNotes, visual);
   const shownNotes = new Set<string>();
   const order = stripOrder(model);
   const needs = new Set(model.needsYou);
   for (const id of order) {
     if (!needs.has(id)) continue;
     const t = model.tasks[id];
-    const dependents = dependentNames(model, id);
     const full = t.waitingFor?.full;
     if (full) {
       const note = t.workerId ? linkQuestionNote([...notes], t.workerId) : null;
@@ -59,7 +64,7 @@ export function missionDecisions({ model, notes, mission, hrefFor }: MissionDeci
       const question = unifyWorkerQuestion(full, note, { taskTitle: t.title });
       out.push(decisionFromQuestion({
         key: `question:${id}`, question, task: taskLink(t, hrefFor), askedAt: t.waitStartedAt,
-        dependents, answer: { kind: 'worker', workerId: t.workerId ?? '', taskId: id, noteId: note?.id ?? null },
+        waits: waitsOf(id), answer: { kind: 'worker', workerId: t.workerId ?? '', taskId: id, noteId: note?.id ?? null },
       }));
       continue;
     }
@@ -68,7 +73,7 @@ export function missionDecisions({ model, notes, mission, hrefFor }: MissionDeci
       const href = pr ?? hrefFor(id);
       out.push(approvalView({
         key: `approval:${id}`, task: taskLink(t, hrefFor), askedAt: t.waitStartedAt ?? t.endedAt,
-        reason: t.kernelReason ?? t.delivery.label, dependents,
+        reason: t.kernelReason ?? t.delivery.label, waits: waitsOf(id),
         diffHref: pr ? `${pr}/files` : null, approveHref: href, changesHref: pr ? `${pr}/files` : href,
       }));
     }
@@ -82,10 +87,12 @@ export function missionDecisions({ model, notes, mission, hrefFor }: MissionDeci
       task: subject ? taskLink(subject, hrefFor) : null,
       mission: subject ? null : mission,
       askedAt: n.createdAt,
-      dependents: subject ? dependentNames(model, subject.id) : [],
+      waits: subject ? waitsOf(subject.id) : null,
       answer: { kind: 'note', missionId: mission.id, noteId: n.id },
     }));
   }
+  const review = visualReviewDecision(visual, mission);
+  if (review) out.push(review);
   return out;
 }
 
@@ -111,4 +118,65 @@ export function historyRaised(model: Pick<MissionBoardModel, 'phases' | 'tasks'>
   const reopened = ids.find(id => model.tasks[id].reopened && !BOARD_LANDED.has(model.tasks[id].status));
   if (reopened) return { kind: 'reopened', text: `Reopened: ${model.tasks[reopened].title}`, taskId: reopened };
   return null;
+}
+
+/** The check a criterion names: `Spec "X" revision 1` reads as `X`; anything else is used whole, clipped. */
+function checkName(criterion: string | null): string | null {
+  const c = criterion?.replace(/\s+/g, ' ').trim();
+  if (!c) return null;
+  const spec = /^Spec\s+"([^"]+)"/.exec(c);
+  const name = spec ? spec[1] : c;
+  return name.length > 80 ? `${name.slice(0, 79)}…` : name;
+}
+
+/**
+ * The goal-criteria escalation as a decision card (R-16): a real question, a
+ * primary option that files the missing work and one alternative that waives
+ * the check and completes, each with its one-line effect. The reading is the
+ * why; the mission is the subject because no single task is.
+ */
+export function criteriaEscalationDecision(input: {
+  missionId: string;
+  /** Why the gate holds, in the gate's words. */
+  reading: string | null;
+  /** The first criterion not passing. */
+  criterion: string | null;
+  fileWorkHref: string;
+  mission: { id: string; title: string; href: string };
+  askedAt: number | null;
+}): DecisionView {
+  const name = checkName(input.criterion);
+  const why = input.reading?.replace(/\s+/g, ' ').trim();
+  return {
+    key: `criteria:${input.missionId}`,
+    kind: 'decision',
+    task: null,
+    mission: input.mission,
+    askedAt: input.askedAt,
+    summary: why ? (/[.!?]$/.test(why) ? why : `${why}.`) : null,
+    waits: null,
+    question: name ? `Ship without the "${name}" check?` : 'Ship without the unmet check?',
+    options: [
+      { label: 'File the work', effect: 'Adds a task for what is missing, then asks again', tip: null, recommended: true, downstream: null },
+      { label: 'Waive and complete', effect: 'Completes the mission; the record notes the override', tip: null, recommended: false, downstream: null },
+    ],
+    diffHref: null,
+    answer: { kind: 'criteria', missionId: input.missionId, fileWorkHref: input.fileWorkHref },
+    shortcut: false,
+  };
+}
+
+/**
+ * The criteria escalation card, or null: it shows only while the mission waits
+ * on a decision, a goal criterion is unmet, and the wait is not the visual-audit
+ * block (which keeps its own sheet).
+ */
+export function criteriaEscalationFor(input: {
+  displayState: string;
+  surfaceAuditBlocked: boolean;
+  criteriaUnmet: boolean;
+} & Parameters<typeof criteriaEscalationDecision>[0]): DecisionView | null {
+  if (input.displayState !== 'waiting_decision' || input.surfaceAuditBlocked || !input.criteriaUnmet) return null;
+  const { displayState: _d, surfaceAuditBlocked: _s, criteriaUnmet: _c, ...view } = input;
+  return criteriaEscalationDecision(view);
 }

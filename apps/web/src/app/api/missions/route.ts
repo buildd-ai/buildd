@@ -190,7 +190,7 @@ export async function POST(req: NextRequest) {
     const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, initiativeId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
       status: requestedStatus, dependsOnMission, gateCondition, mergePolicy, orchestrationMode, costBudgetUsd,
-      pacingMode, pacingMaxPerHour, goalCriteria, autoVerify, branchStrategy, autoSurfaceAudit,
+      goalCriteria, autoVerify, branchStrategy, autoSurfaceAudit,
       startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode, executor, decomposition, createdByWorkerId, outcomeSpec } = body;
 
     if (autoSurfaceAudit !== undefined && typeof autoSurfaceAudit !== 'boolean') {
@@ -270,13 +270,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'maxConcurrentTasks must be an integer between 1 and 20' }, { status: 400 });
     }
 
-    if (pacingMode !== undefined && pacingMode !== 'eager' && pacingMode !== 'paced') {
-      return NextResponse.json({ error: 'pacingMode must be "eager" or "paced"' }, { status: 400 });
-    }
 
-    if (pacingMaxPerHour !== undefined && pacingMaxPerHour !== null && (!Number.isInteger(pacingMaxPerHour) || pacingMaxPerHour < 1)) {
-      return NextResponse.json({ error: 'pacingMaxPerHour must be an integer >= 1' }, { status: 400 });
-    }
 
     if (gateCondition !== undefined && gateCondition !== 'merged' && gateCondition !== 'completed') {
       return NextResponse.json({ error: 'gateCondition must be "merged" or "completed"' }, { status: 400 });
@@ -457,7 +451,6 @@ export async function POST(req: NextRequest) {
         ...(dependsOnMission ? { dependsOnMissionId: dependsOnMission, gateCondition: gateCondition || 'merged' } : {}),
         ...(mergePolicy != null ? { mergePolicy } : {}),
         ...(costBudgetUsd != null ? { costBudgetUsd: String(costBudgetUsd) } : {}),
-        ...(pacingMode === 'paced' ? { pacingMode: 'paced', ...(pacingMaxPerHour != null ? { pacingMaxPerHour } : {}) } : {}),
         ...(selections.length ? { goalCriteria: selections.map((x) => x.criterion) } : goalCriteria !== undefined ? { goalCriteria: goalCriteria ?? null } : {}),
         ...(autoVerify !== undefined ? { autoVerify: autoVerify === true ? true : autoVerify === false ? false : null } : {}),
         ...(autoSurfaceAudit !== undefined ? { autoSurfaceAudit } : {}),
