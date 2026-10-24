@@ -119,3 +119,49 @@ export function historyRaised(model: Pick<MissionBoardModel, 'phases' | 'tasks'>
   if (reopened) return { kind: 'reopened', text: `Reopened: ${model.tasks[reopened].title}`, taskId: reopened };
   return null;
 }
+
+/** The check a criterion names: `Spec "X" revision 1` reads as `X`; anything else is used whole, clipped. */
+function checkName(criterion: string | null): string | null {
+  const c = criterion?.replace(/\s+/g, ' ').trim();
+  if (!c) return null;
+  const spec = /^Spec\s+"([^"]+)"/.exec(c);
+  const name = spec ? spec[1] : c;
+  return name.length > 80 ? `${name.slice(0, 79)}…` : name;
+}
+
+/**
+ * The goal-criteria escalation as a decision card (R-16): a real question, a
+ * primary option that files the missing work and one alternative that waives
+ * the check and completes, each with its one-line effect. The reading is the
+ * why; the mission is the subject because no single task is.
+ */
+export function criteriaEscalationDecision(input: {
+  missionId: string;
+  /** Why the gate holds, in the gate's words. */
+  reading: string | null;
+  /** The first criterion not passing. */
+  criterion: string | null;
+  fileWorkHref: string;
+  mission: { id: string; title: string; href: string };
+  askedAt: number | null;
+}): DecisionView {
+  const name = checkName(input.criterion);
+  const why = input.reading?.replace(/\s+/g, ' ').trim();
+  return {
+    key: `criteria:${input.missionId}`,
+    kind: 'decision',
+    task: null,
+    mission: input.mission,
+    askedAt: input.askedAt,
+    summary: why ? (/[.!?]$/.test(why) ? why : `${why}.`) : null,
+    waits: null,
+    question: name ? `Ship without the "${name}" check?` : 'Ship without the unmet check?',
+    options: [
+      { label: 'File the work', effect: 'Adds a task for what is missing, then asks again', tip: null, recommended: true, downstream: null },
+      { label: 'Waive and complete', effect: 'Completes the mission; the record notes the override', tip: null, recommended: false, downstream: null },
+    ],
+    diffHref: null,
+    answer: { kind: 'criteria', missionId: input.missionId, fileWorkHref: input.fileWorkHref },
+    shortcut: false,
+  };
+}
