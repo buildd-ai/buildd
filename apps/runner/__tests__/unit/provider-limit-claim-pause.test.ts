@@ -240,10 +240,14 @@ describe('claims pause when every available provider is held (R-18)', () => {
     expect(claimTaskMock).not.toHaveBeenCalled();
   });
 
-  test('a runner with no detected provider does not pause', async () => {
-    const m = setup({ claude: false, codex: false });
-    hold(m, 'claude', Date.now() + 3_600_000);
+  test('claims resume when the first hold lifts, even if the second lifts later', () => {
+    const m = setup({ claude: true, codex: true });
+    const t1 = Date.now() + 1_000_000;
+    const t2 = Date.now() + 3_600_000;
+    hold(m, 'claude', t1);
+    hold(m, 'codex', t2);
 
-    expect(m.claimsPaused).toBe(false);
+    expect(m.claimsPaused).toBe(true);
+    expect(m.claimsPausedUntil).toBe(t1);
   });
 });

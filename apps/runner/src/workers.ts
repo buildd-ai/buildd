@@ -2676,11 +2676,6 @@ export class WorkerManager {
     }
     this.noteProviderLimitOutcome();
     this.scheduleResumeAt(untilMs, 'provider limit reset');
-    // Pause claims if all available providers are held.
-    if (this.allAvailableProvidersHeld()) {
-      this.claimsPaused = true;
-      this.claimsPausedUntil = Math.max(this.claimsPausedUntil, untilMs);
-    }
     // `circuit_breaker` paused:true reads as every claim paused; only say so when both providers are held.
     // A runner with no Codex login of its own cannot start Codex work, so a held Claude login holds every claim:
     // pause the poll (running sessions are untouched) until the first hold lifts.
@@ -2698,18 +2693,6 @@ export class WorkerManager {
     const walls = this.providerLimits.report().map(w => ({ kind: 'runner_seat', backend: w.provider, resetsAt: w.resetsAt }));
     if (walls.length === 0) return;
     this.noteClaimOutcome(null, { at: Date.now(), reason: 'budget_exhausted', walls });
-  }
-
-  /** Check if all providers available to this runner are held. */
-  private allAvailableProvidersHeld(): boolean {
-    const claudeAvailable = this.modelAuth.source !== 'none';
-    const codexAvailable = this.codexAuth !== 'none';
-
-    // A runner with no detected provider has nothing to hold, so it never pauses on a provider limit.
-    if (!claudeAvailable && !codexAvailable) return false;
-    if (claudeAvailable && !this.providerLimits.isHeld('claude')) return false;
-    if (codexAvailable && !this.providerLimits.isHeld('codex')) return false;
-    return true;
   }
 
   /**
