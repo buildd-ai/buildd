@@ -27,7 +27,11 @@ afterEach(() => {
   if (saved === undefined) delete process.env.BUILDD_EXECUTOR;
   else process.env.BUILDD_EXECUTOR = saved;
   // Windows can hold a just-exited git process's handles for a moment (EBUSY); retry the teardown.
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
+  // A handle that outlives the retries is not a test failure; the OS temp dir is reaped anyway.
+  for (const dir of dirs.splice(0)) {
+    try { rmSync(dir, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 }); }
+    catch (e: any) { if (process.platform !== 'win32' || e?.code !== 'EBUSY') throw e; }
+  }
 });
 
 function git(cwd: string, ...args: string[]) {
