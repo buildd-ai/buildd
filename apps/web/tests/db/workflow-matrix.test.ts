@@ -1915,11 +1915,12 @@ describe('S23 — CI provenance', () => {
     const o = await openAndHandOn();
     const max = 2;
     const t1 = await ciRepairing(o, max);
-    await endCi(t1, 'failed');
+    // 'lost' (not 'failed'): a failed fix on an unmoved head escalates as ci_unfixed_head instead of re-filing.
+    await endCi(t1, 'lost');
     const [, second] = await tasksOf(o.deliveryId, 'ci_fix');
     const t2 = (await taskRow(second.id)).task;
     expect(await seam.claimFix(t2, deps)).toEqual({ action: 'proceed' });
-    await endCi(t2, 'failed');
+    await endCi(t2, 'lost');
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'ci_exhausted' });
     expect(ciEscalations.length).toBe(1);
     // The sweep coming back changes nothing.
