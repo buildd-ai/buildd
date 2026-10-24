@@ -206,11 +206,11 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
   }, [view.answer, noteSending, onAnswered, router]);
 
   const pick = useCallback((label: string) => {
-  if (view.answer.kind === 'worker') void submit.submit(label);
-  else if (view.answer.kind === 'note') void answerNote(label);
-  else if (view.answer.kind === 'visual') void answerVisual(label);
-  else if (view.answer.kind === 'criteria') void waive(label);
-}, [view.answer.kind, submit, answerNote, answerVisual, waive]);
+    if (view.answer.kind === 'worker') void submit.submit(label);
+    else if (view.answer.kind === 'note') void answerNote(label);
+    else if (view.answer.kind === 'visual') void answerVisual(label);
+    else if (view.answer.kind === 'criteria') void waive(label);
+  }, [view.answer.kind, submit, answerNote, answerVisual, waive]);
 
   const primary = view.options[0] ?? null;
   const sending = submit.sending ?? noteSending;

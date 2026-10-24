@@ -18,3 +18,22 @@ describe('criteriaEscalationDecision', () => {
     expect(criteriaEscalationDecision({ ...base, reading: null, criterion: null }).question).toBe('Ship without the unmet check?');
   });
 });
+
+describe('criteriaEscalationFor (the page assembly)', () => {
+  const { criteriaEscalationFor } = require('./mission-decisions') as typeof import('./mission-decisions');
+  const base = {
+    displayState: 'waiting_decision', surfaceAuditBlocked: false, criteriaUnmet: true,
+    missionId: 'm1', reading: 'Check not verified.', criterion: 'Spec "X" revision 1',
+    fileWorkHref: '/app/tasks/new?from=m1', mission: { id: 'm1', title: 'M', href: '/app/missions/m1' }, askedAt: null,
+  };
+  it('a waiting_decision mission with an unmet criterion gets the card with both options', () => {
+    const v = criteriaEscalationFor(base);
+    expect(v?.options.map(o => o.label)).toEqual(['File the work', 'Waive and complete']);
+    expect(v?.answer.kind).toBe('criteria');
+  });
+  it('is absent when the wait is not a decision, the criteria pass, or the visual audit holds', () => {
+    expect(criteriaEscalationFor({ ...base, displayState: 'active' })).toBeNull();
+    expect(criteriaEscalationFor({ ...base, criteriaUnmet: false })).toBeNull();
+    expect(criteriaEscalationFor({ ...base, surfaceAuditBlocked: true })).toBeNull();
+  });
+});

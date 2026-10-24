@@ -59,7 +59,7 @@ import MissionConfig from './MissionConfig';
 import { MissionNotesSheet } from './MissionFeed';
 import { mastheadBack, parseMissionOrigin } from './MissionDetailView';
 import MissionLayoutShell, { MissionBoardHeader } from './MissionLayoutShell';
-import { criteriaEscalationDecision, historyRaised, missionDecisions, type OpenQuestionNote } from '@/lib/mission-decisions';
+import { criteriaEscalationFor, historyRaised, missionDecisions, type OpenQuestionNote } from '@/lib/mission-decisions';
 import { withoutStaleRoundCap } from '@/lib/visual-review-decision';
 import { loadQuestionWaitsFor } from '@/lib/question-waits';
 import { boardTaskHref } from './MissionBoardParts';
@@ -98,6 +98,7 @@ import { classifyReleaseState } from '@/lib/release-state';
 import { legacyTaskSheetRedirect, taskPageHref } from '@/lib/mission-task-href';
 import MissionDecisionSheet from './MissionDecisionSheet';
 import { buildFileWorkHref } from '@/lib/criteria-decision-links';
+import { criterionLabel } from '@/lib/goal-criterion-label';
 import RaiseBudgetButton from './RaiseBudgetButton';
 import { getMissionSpendUsd } from '@/lib/mission-budget';
 import { getLinksForEntity } from '@buildd/core/external-links';
@@ -1027,12 +1028,9 @@ async function MissionDetailBody({
   // The goal-criteria escalation is a decision card (Navigation R-16); the
   // missing visual audit is a Verify block (R-17 to R-19).
   const escalationGate = displayState === 'waiting_decision' && (() => {
-    const failingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
-    const failingCriterion = failingState ? goalCriteria[failingState.index] ?? null : null;
     const waitingOn = missionAnswer?.waitingOn ?? null;
     const surfaceAuditBlocked = waitingOn?.kind === 'human_decision' && waitingOn.surfaceAudit === true;
-    const criteriaUnmet = goalCriteria.length > 0 && goalCriteriaStateFull?.overall !== 'pass';
-    return { failingState, failingCriterion, waitingOn, surfaceAuditBlocked, criteriaUnmet };
+    return { waitingOn, surfaceAuditBlocked };
   })();
   const decisionBlock = escalationGate && escalationGate.surfaceAuditBlocked && escalationGate.waitingOn?.kind === 'human_decision' && (() => {
     const waitingOn = escalationGate.waitingOn;
@@ -1288,9 +1286,23 @@ async function MissionDetailBody({
   const waitsByTask = decisionTaskIds.length > 0
     ? await loadQuestionWaitsFor(decisionTaskIds, { kind: 'person', userId: user.id }).catch(() => new Map())
     : new Map();
-  const decisions = layout === 'board'
+  const criteriaFailingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
+  const criteriaFailingCriterion = criteriaFailingState ? goalCriteria[criteriaFailingState.index] ?? null : null;
+  const criteriaDecision = layout === 'board' ? criteriaEscalationFor({
+    displayState,
+    surfaceAuditBlocked: !!escalationGate && escalationGate.surfaceAuditBlocked,
+    criteriaUnmet: goalCriteria.length > 0 && goalCriteriaStateFull?.overall !== 'pass',
+    missionId: id,
+    reading: describeCriteriaBlocker(goalCriteriaStateFull),
+    criterion: criteriaFailingCriterion ? criterionLabel(criteriaFailingCriterion) : null,
+    fileWorkHref: buildFileWorkHref({ missionId: id, missionTitle: mission.title, criterion: criteriaFailingCriterion, evidence: criteriaFailingState?.evidence ?? null }),
+    mission: { id, title: mission.title, href: `/app/missions/${id}` },
+    askedAt: null,
+  }) : null;
+  const boardDecisions = layout === 'board'
     ? missionDecisions({ model: boardModel, notes: openQuestionNotes, mission: { id, title: mission.title, href: `/app/missions/${id}` }, hrefFor: taskId => boardTaskHref(boardLink, taskId), visual: boardVisual, waitsByTask })
     : [];
+  const decisions = criteriaDecision ? [criteriaDecision, ...boardDecisions] : boardDecisions;
   const history = layout === 'board' ? historyRaised(boardModel, withoutStaleRoundCap(openQuestionNotes, boardVisual)) : null;
   // Verified reads current verdicts, never a stale stored overall: a criterion not
   // passing on the board's live counts, or a blocking visual review not clear, holds it.

@@ -165,3 +165,18 @@ export function criteriaEscalationDecision(input: {
     shortcut: false,
   };
 }
+
+/**
+ * The criteria escalation card, or null: it shows only while the mission waits
+ * on a decision, a goal criterion is unmet, and the wait is not the visual-audit
+ * block (which keeps its own sheet).
+ */
+export function criteriaEscalationFor(input: {
+  displayState: string;
+  surfaceAuditBlocked: boolean;
+  criteriaUnmet: boolean;
+} & Parameters<typeof criteriaEscalationDecision>[0]): DecisionView | null {
+  if (input.displayState !== 'waiting_decision' || input.surfaceAuditBlocked || !input.criteriaUnmet) return null;
+  const { displayState: _d, surfaceAuditBlocked: _s, criteriaUnmet: _c, ...view } = input;
+  return criteriaEscalationDecision(view);
+}
