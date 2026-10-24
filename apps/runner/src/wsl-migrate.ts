@@ -30,10 +30,11 @@
  * argument to wsl.exe, never part of a shell command (as wsl-setup.ts).
  */
 import { spawnSync } from 'child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, rmSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { parseDistributions } from './wsl-setup';
 import { resolveServicePaths, scheduledTaskStatus, uninstallService, windowsTaskStatus, type CommandResult, type CommandRunner, type ServicePaths } from './service';
+import { headlessRunnerKey } from './runner-host';
 
 /** One task per distribution: migrating a second distribution must not reuse or overwrite the first one's. */
 export const logonTaskName = (distro: string) => `buildd WSL (${distro})`;
@@ -99,6 +100,8 @@ export interface MigrateDeps {
     hold: () => Promise<{ ok: boolean; message: string }>;
     /** What the Windows runner is running now; [] when no runner answers. */
     activeWork: () => Promise<{ title: string; status: string }[] | { error: string }>;
+    /** Pending tasks pinned to the Windows runner; [] when lookup fails or none pinned. */
+    pendingPinned: () => Promise<{ title: string }[]>;
   };
 }
 
@@ -387,6 +390,16 @@ export async function runWslMigrate(args: MigrateArgs, deps: MigrateDeps): Promi
     // A person may start work on a held runner (claims they make still run): wait for it too.
     const err = await drain();
     if (err) return stuck(`The Windows runner did not say what it is running: ${err}`);
+    // List pending tasks pinned to the Windows runner before removing it.
+    let pending: { title: string }[] = [];
+    try {
+      pending = await deps.windows.pendingPinned();
+    } catch {
+      // Lookup errors don't crash the migration; just skip listing
+    }
+    for (const task of pending) {
+      log(`  ${task.title} waits for the Windows runner until re-filed or unpinned.`);
+    }
     const removed = uninstallService(deps.paths, 'win32', run);
     if (!removed.ok) return stuck(`Could not remove the Windows runner's Scheduled Task: ${removed.message}`);
     log(`  Windows runner: ${removed.message}`);
@@ -413,6 +426,59 @@ export const realRun: CommandRunner = (file, args) => {
   const decode = (b: Buffer | null) => !b ? '' : b.includes(0) ? b.toString('utf16le') : b.toString('utf8');
   return { exitCode: r.status ?? 1, stdout: decode(r.stdout), stderr: decode(r.stderr) + (r.error ? r.error.message : '') };
 };
+
+export interface PendingPinnedOptions {
+  configFile: string;
+  log: (line: string) => void;
+  fetchFn?: typeof fetch;
+  /** The Windows runner's pin: `headless://<host>`. Defaults to this machine's. */
+  runnerKey?: string;
+  apiKey?: string;
+  baseUrl?: string;
+}
+
+/**
+ * Pending tasks pinned (`runner:<key>`) to the Windows runner. The tasks route
+ * only takes `status=active` (any non-terminal status) or a terminal one, so
+ * ask for active and keep the pending ones here; the default list is paged,
+ * so follow `nextCursor` until it runs out. Never throws: a lookup that fails
+ * says so in one line and lists nothing.
+ */
+export async function listPendingPinned(opts: PendingPinnedOptions): Promise<{ title: string }[]> {
+  const unchecked = (why: string) => {
+    opts.log(`  Could not check for tasks pinned to the Windows runner (${why}); any that are will wait for it until re-filed or unpinned.`);
+    return [];
+  };
+  try {
+    let config: { apiKey?: string; builddServer?: string } = {};
+    try { config = JSON.parse(readFileSync(opts.configFile, 'utf8')); } catch { /* key may come from the environment */ }
+    const apiKey = opts.apiKey ?? (config.apiKey || process.env.BUILDD_API_KEY);
+    if (!apiKey) return unchecked('no API key');
+    const baseUrl = (opts.baseUrl ?? (process.env.BUILDD_CLIENT_URL || config.builddServer || 'https://buildd.dev')).replace(/\/+$/, '');
+    const pin = `runner:${opts.runnerKey ?? headlessRunnerKey({ hostname: undefined, platform: 'windows' })}`;
+    const doFetch = opts.fetchFn ?? fetch;
+    const found: { title: string }[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 50; page++) {
+      const url = `${baseUrl}/api/tasks?status=active${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+      const response = await doFetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
+      if (!response.ok) return unchecked(`HTTP ${response.status}`);
+      const data = await response.json() as {
+        tasks?: Array<{ title: string; status?: string; requiredCapabilities?: string[] | null }>;
+        hasMore?: boolean;
+        nextCursor?: string | null;
+      };
+      for (const task of data.tasks ?? []) {
+        if (task.status === 'pending' && task.requiredCapabilities?.includes(pin)) found.push({ title: task.title });
+      }
+      if (!data.hasMore || !data.nextCursor) return found;
+      cursor = data.nextCursor;
+    }
+    return found;
+  } catch (err) {
+    return unchecked(err instanceof Error ? err.message : String(err));
+  }
+}
 
 export async function main(argv: string[]): Promise<number> {
   const args = parseMigrateArgs(argv);
@@ -442,6 +508,7 @@ export async function main(argv: string[]): Promise<number> {
         const agents = await listAgents({ socketPath });
         return 'error' in agents ? agents : agents.map(a => ({ title: a.title, status: a.status }));
       },
+      pendingPinned: () => listPendingPinned({ configFile, log: (line) => console.log(line) }),
     },
   });
 }
