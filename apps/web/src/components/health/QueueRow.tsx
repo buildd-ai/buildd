@@ -87,5 +87,3 @@ export default function QueueRow({ title, mission, reason, blockedBy, blockedByD
     </Link>
   );
 }
-
-export { QueueRow };

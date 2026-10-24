@@ -87,5 +87,3 @@ export default function QueueTiles({ running, queued, blocked, scheduled, hrefs,
     </div>
   );
 }
-
-export { QueueTiles };
