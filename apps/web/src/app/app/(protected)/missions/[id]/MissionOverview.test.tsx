@@ -289,3 +289,16 @@ describe('Decision subject on the mission page', () => {
     expect(other).toContain('href="/app/missions/mission-1"');
   });
 });
+||||||| parent of 14acfd625 (fix(missions): design preview in one fixed collapsed place, opens on the stage's screen, tidy chrome)
+
+describe('MissionOverview design placement (Navigation R-3)', () => {
+  it('renders the design slot once, last, after the stage content', () => {
+    const out = renderToStaticMarkup(<MissionOverview model={dagBoard(spec)} missionId="mission-1" design={<div data-testid="design-slot" />} />);
+    expect(out.match(/data-testid="design-slot"/g)?.length).toBe(1);
+    expect(out.indexOf('data-testid="design-slot"')).toBeGreaterThan(out.indexOf('data-testid="mission-task-list"'));
+    expect(out.trimEnd().endsWith('<div data-testid="design-slot"></div></div>')).toBe(true);
+  });
+  it('renders nothing when there is no design', () => {
+    expect(html).not.toContain('design-slot');
+  });
+});

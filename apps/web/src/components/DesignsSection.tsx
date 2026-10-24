@@ -5,6 +5,7 @@
  * an iframe whose sandbox omits allow-same-origin; the host page's CSP
  * (next.config.mjs, designFramingCsp) allows frames from the storage origin only.
  */
+import DesignDisclosure from '@/components/DesignDisclosure';
 import DesignPreview from '@/components/DesignPreview';
 import type { DesignView } from '@/lib/design-view';
 
@@ -15,11 +16,11 @@ export interface DesignSectionItem {
   downloadUrl: string | null;
 }
 
-export default function DesignsSection({ designs }: { designs: DesignSectionItem[] }) {
+export default function DesignsSection({ designs, collapsed = false }: { designs: DesignSectionItem[]; collapsed?: boolean }) {
   if (designs.length === 0) return null;
-  return (
-    <section data-testid="designs-section" aria-label="Designs" className="min-w-0 mt-6">
-      <h2 className="text-label text-text-muted mb-3">{designs.length === 1 ? 'Design' : 'Designs'}</h2>
+  const body = (
+    <section data-testid="designs-section" aria-label="Designs" className={`min-w-0 ${collapsed ? '' : 'mt-6'}`}>
+      {!collapsed && <h2 className="text-label text-text-muted mb-3">{designs.length === 1 ? 'Design' : 'Designs'}</h2>}
       <div className="flex flex-col gap-6">
         {designs.map((d) => (
           <div key={d.id} data-testid="design-item" className="min-w-0 bg-surface-2 border border-border-default p-3 md:p-4">
@@ -37,4 +38,5 @@ export default function DesignsSection({ designs }: { designs: DesignSectionItem
       </div>
     </section>
   );
+  return collapsed ? <DesignDisclosure count={designs.length}>{body}</DesignDisclosure> : body;
 }

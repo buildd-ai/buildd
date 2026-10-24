@@ -1389,7 +1389,7 @@ async function MissionDetailBody({
       {shippedView && <MissionShippedHeader missionId={id} view={shippedView} />}
       {isTerminal && visualPresentation?.record && <MissionVisualRecord record={visualPresentation.record} />}
       {content}
-      <LinkedDesigns subjectKind="mission" subjectId={id} userId={user.id} />
+      {layout !== 'board' && <div className="mt-6"><LinkedDesigns subjectKind="mission" subjectId={id} userId={user.id} collapsed /></div>}
       <div data-testid="mission-board-footer" className="mt-10">
         {footerRows}
       </div>
@@ -1418,7 +1418,7 @@ async function MissionDetailBody({
       <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
         initial={layout}
-        board={layout !== 'board' ? null : boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} checks={overviewChecks} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} decisions={decisions} history={history} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
+        board={layout !== 'board' ? null : boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} checks={overviewChecks} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} decisions={decisions} history={history} expectedMinutes={flowExpectedMinutes} design={<LinkedDesigns subjectKind="mission" subjectId={id} userId={user.id} collapsed />} {...boardLink} />)}
         flow={layout !== 'flow' ? null : boardHeader(<FlowTimeline model={boardModel} sameFiles={flowSameFiles} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
         feed={layout !== 'feed' ? null : boardHeader(
           <MissionFeedLayout
