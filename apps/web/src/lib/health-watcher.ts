@@ -20,6 +20,7 @@ import {
   prepareSubjectFiling,
   recordSubjectMatchObserved,
 } from '@/lib/subject-anchor-observer';
+import { hasReleasePrShape } from '@buildd/core/release-candidate';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type WatchedProject = typeof watchedProjects.$inferSelect;
@@ -90,6 +91,7 @@ interface OpenPR {
   htmlUrl: string;
   headSha: string;
   baseRef: string;
+  headRef: string;
   labels: string[];
   updatedAt: string;
 }
@@ -126,8 +128,17 @@ async function checkFailingReleasePRs(project: WatchedProject): Promise<number> 
   const prs = await listOpenPRs(installationId, owner, name, baseRef);
   const candidates = prs.filter((pr) => matchesFilter(pr, filter));
 
+  // A red release candidate is never fixed on its branch: the CI doors file its
+  // one fix task against the source branch (lib/release-candidate-ci.ts). A
+  // generic "investigate, fix, and push" task here would aim at the frozen head.
+  const ws = await db.query.workspaces.findFirst({
+    where: sqlWhere(eq(workspaces.id, project.workspaceId)),
+    columns: { releaseConfig: true },
+  });
+
   let fired = 0;
   for (const pr of candidates) {
+    if (pr.headRef && hasReleasePrShape(ws?.releaseConfig ?? null, { headRef: pr.headRef, baseRef: pr.baseRef })) continue;
     const failing = await failingChecksFor(installationId, owner, name, pr.headSha);
     if (failing.length === 0) continue;
 
@@ -346,6 +357,7 @@ async function listOpenPRs(
     htmlUrl: (pr.html_url as string) ?? '',
     headSha: ((pr.head as Record<string, unknown>)?.sha as string) ?? '',
     baseRef: ((pr.base as Record<string, unknown>)?.ref as string) ?? baseRef,
+    headRef: ((pr.head as Record<string, unknown>)?.ref as string) ?? '',
     labels: ((pr.labels as Array<{ name?: string }>) ?? [])
       .map((l) => l?.name ?? '')
       .filter(Boolean),
