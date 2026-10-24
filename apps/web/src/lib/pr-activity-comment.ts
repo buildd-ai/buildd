@@ -79,6 +79,8 @@ export type PrActivityKind =
   | 'work_superseded'
   | 'human_applied_recommendation'
   | 'human_override_merge'
+  | 'fix_pr_opened'
+  | 'release_amended'
   | 'merged'
   | 'closed_unmerged'
   // Kernel-rendered kinds (docs/specs/workflow-state-kernel.md §12.1).
@@ -302,6 +304,10 @@ function present(e: NormalizedEntry, story: Story): Rendered {
       return { tone: 'plain', label: 'Superseded', aside: true };
     case 'human_override_merge':
       return { tone: 'done', label: 'Merged · escalation overridden', noteLabel: 'Reason' };
+    case 'fix_pr_opened':
+      return { tone: 'progress', label: 'Fix PR opened', urlLabel: 'PR' };
+    case 'release_amended':
+      return { tone: 'done', label: 'Release candidate amended', status: 'checks and approvals restarting on the new head', urlLabel: 'Run' };
     case 'merged':
       return { tone: 'done', label: 'Merged' };
     case 'closed_unmerged':
@@ -480,7 +486,7 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set<PrActivityKind>([
   'migration_collision_fixing',
   'ci_exhausted', 'fix_started', 'fix_ended', 'fix_superseded_by_approval', 'changes_pushed',
   'review_superseded_by_merge', 'work_superseded',
-  'human_applied_recommendation', 'human_override_merge', 'merged', 'closed_unmerged',
+  'human_applied_recommendation', 'human_override_merge', 'fix_pr_opened', 'release_amended', 'merged', 'closed_unmerged',
   'push_pending', 'push_undeliverable', 'composition_verified', 'composition_delta_approved', 'blocked_on_trunk', 'trunk_recovered',
 ]);
 
@@ -608,9 +614,10 @@ export async function appendPrActivity(params: {
   prNumber: number;
   entry: PrActivityEntry;
   onlyIfPresent?: boolean;
+  updateKind?: PrActivityKind;
   workspaceId?: string | null;
 }): Promise<AppendResult> {
-  const { installationId, repoFullName, prNumber, entry, onlyIfPresent, workspaceId } = params;
+  const { installationId, repoFullName, prNumber, entry, onlyIfPresent, updateKind, workspaceId } = params;
   const diverted = await divertIfKernelOwned({ repoFullName, prNumber, entry, workspaceId });
   if (diverted) return { action: 'diverted', deliveryId: diverted };
   try {
@@ -625,10 +632,17 @@ export async function appendPrActivity(params: {
       if (last && sameEntry(normalize(last), next)) {
         return { action: 'unchanged', commentId: existing.id };
       }
+      // If updateKind is specified, find and update that entry instead of appending
+      let updated = entries;
+      if (updateKind) {
+        updated = entries.map((e) => (e.kind === updateKind ? { ...e, ...next } : e));
+      } else {
+        updated = [...entries, next];
+      }
       await githubApi(installationId, `/repos/${repoFullName}/issues/comments/${existing.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body: renderPrActivityComment([...entries, next], timezone) }),
+        body: JSON.stringify({ body: renderPrActivityComment(updated, timezone) }),
       });
       return { action: 'updated', commentId: existing.id };
     }

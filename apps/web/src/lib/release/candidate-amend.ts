@@ -30,6 +30,7 @@ import { detectArchetype } from '@buildd/core/release-archetype';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { RELEASE_CANDIDATE_FIX_KEY } from '@/lib/release-candidate-ci';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { amendContractCapabilityError, amendDispatchInputs } from '@buildd/core/release-config-shape';
 import { readWorkflowDispatchInputs as defaultReadInputs } from '@/lib/workflow-dispatch-inputs';
 import { notifyTeamOf as defaultNotify } from '@/lib/notify';
@@ -154,10 +155,58 @@ export async function amendCandidateOnFixMerge(
       return { kind: 'dispatch_failed', error: recorded.error };
     }
 
-    await githubApi(installationId, `/repos/${input.repoFullName}/issues/${fix.prNumber}/comments`, {
+    // Update the candidate PR's activity comment to show the fix PR opened and amendment was dispatched
+    const releaseRunUrl = recorded.runUrl ?? null;
+    const fixPrUrl = `https://github.com/${input.repoFullName}/pull/${input.prNumber}`;
+
+    // Update the ci_fixing entry with the fix PR link now that it's ready
+    await appendPrActivity({
+      installationId,
+      repoFullName: input.repoFullName,
+      prNumber: fix.prNumber,
+      updateKind: 'ci_fixing',
+      entry: {
+        kind: 'ci_fixing',
+        detail: `fix via #${input.prNumber}, amend automatically`,
+        url: fixPrUrl,
+      },
+      onlyIfPresent: true,
+      workspaceId: t.workspaceId,
+    }).catch((err: unknown) => console.error(`[release-amend] activity update (ci_fixing) on PR #${fix.prNumber} failed:`, err));
+
+    // Add entry for fix PR opened (retroactively, since we only know about it when it merges)
+    await appendPrActivity({
+      installationId,
+      repoFullName: input.repoFullName,
+      prNumber: fix.prNumber,
+      entry: {
+        kind: 'fix_pr_opened',
+        note: `Fix opened in #${input.prNumber} on \`${fix.sourceBranch}\`.`,
+        url: fixPrUrl,
+      },
+      onlyIfPresent: true,
+      workspaceId: t.workspaceId,
+    }).catch((err: unknown) => console.error(`[release-amend] activity update (fix_pr_opened) on PR #${fix.prNumber} failed:`, err));
+
+    // Add entry for amendment dispatched
+    await appendPrActivity({
+      installationId,
+      repoFullName: input.repoFullName,
+      prNumber: fix.prNumber,
+      entry: {
+        kind: 'release_amended',
+        note: `The fix from #${input.prNumber} merged into \`${fix.sourceBranch}\`. Release candidate v${v} was amended automatically: the Release workflow was dispatched with \`amend: ${v}\`.`,
+        url: releaseRunUrl,
+      },
+      onlyIfPresent: true,
+      workspaceId: t.workspaceId,
+    }).catch((err: unknown) => console.error(`[release-amend] activity update (release_amended) on PR #${fix.prNumber} failed:`, err));
+
+    // Post a separate comment on the fix PR (legacy behavior, now redundant with activity update)
+    await githubApi(installationId, `/repos/${input.repoFullName}/issues/${input.prNumber}/comments`, {
       method: 'POST',
       body: JSON.stringify({ body: amendedComment(contract, v, input.prNumber, fix.sourceBranch, strategy.workflowFile) }),
-    }).catch((err: unknown) => console.error(`[release-amend] comment on PR #${fix.prNumber} failed:`, err));
+    }).catch((err: unknown) => console.error(`[release-amend] comment on fix PR #${input.prNumber} failed:`, err));
     return { kind: 'amended', version: v, candidatePr: fix.prNumber };
   } catch (err) {
     await release();
