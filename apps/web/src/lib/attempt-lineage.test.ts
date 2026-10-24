@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { collectLineage, lineageStamp, LINEAGE_MAX_TASKS } from './attempt-lineage';
+import { collectLineage, findAttemptRootTaskId, lineageStamp, LINEAGE_MAX_TASKS } from './attempt-lineage';
 
 describe('lineageStamp', () => {
   it('roots a chain at the task that opened the PR', () => {
@@ -57,5 +57,29 @@ describe('collectLineage', () => {
     const wide: Row[] = [{ id: 'r', parentTaskId: null, taskClass: null }];
     for (let i = 0; i < LINEAGE_MAX_TASKS * 2; i++) wide.push({ id: `c${i}`, parentTaskId: 'r', taskClass: 'attempt' });
     expect((await collectLineage('r', io(wide))).length).toBeLessThanOrEqual(LINEAGE_MAX_TASKS);
+  });
+});
+
+describe('findAttemptRootTaskId', () => {
+  const rows: Row[] = [
+    { id: 'sweep', parentTaskId: null, taskClass: 'work' },
+    { id: 'filed', parentTaskId: 'sweep', taskClass: 'work' },
+    { id: 'retry1', parentTaskId: 'filed', taskClass: 'attempt' },
+    { id: 'retry2', parentTaskId: 'retry1', taskClass: 'attempt' },
+  ];
+  const fetch = async (id: string) => rows.find(r => r.id === id) ?? null;
+
+  it('walks attempts up to the task that opened the chain', async () => {
+    expect(await findAttemptRootTaskId('retry2', fetch)).toBe('filed');
+  });
+
+  it('stops at a task its parent filed rather than retried', async () => {
+    expect(await findAttemptRootTaskId('filed', fetch)).toBe('filed');
+  });
+
+  it('survives a cycle and a missing task', async () => {
+    const loop: Row[] = [{ id: 'x', parentTaskId: 'y', taskClass: 'attempt' }, { id: 'y', parentTaskId: 'x', taskClass: 'attempt' }];
+    expect(['x', 'y']).toContain(await findAttemptRootTaskId('x', async (id) => loop.find(r => r.id === id) ?? null));
+    expect(await findAttemptRootTaskId('gone', async () => null)).toBe('gone');
   });
 });
