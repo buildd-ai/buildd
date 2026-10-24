@@ -54,7 +54,9 @@ export const TRANSITION_OWNED_KINDS: ReadonlySet<PrActivityKind> = new Set<PrAct
 ]);
 
 /** Transitions that queue a review round (they all end in AWAITING_REVIEW via `startRound`). */
-const ROUND_STARTERS = new Set(['ReviewRequested', 'HeadObserved', 'AttemptEnded', 'PrReopened', 'CompositionAttested', 'HumanResolve', 'PrBound', 'TrunkRecovered']);
+const ROUND_STARTERS = new Set(['ReviewRequested', 'HeadObserved', 'AttemptEnded', 'PrReopened', 'CompositionAttested', 'HumanResolve', 'PrBound', 'TrunkRecovered', 'BaseChanged']);
+
+const queuesRound = (t: ActivityTransition): boolean => t.toState === 'AWAITING_REVIEW' && ROUND_STARTERS.has(t.command);
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
 const shortSha = (v: unknown): string | null => (typeof v === 'string' && v ? v.slice(0, 7) : null);
@@ -85,7 +87,9 @@ export function transitionsToActivityEntries(
   const out: PrActivityEntry[] = [];
   const sorted = [...transitions].sort((a, b) => a.toVersion - b.toVersion);
   const roundsByNo = [...rounds].sort((a, b) => a.round - b.round);
-  let roundIdx = 0;
+  // The newest queued row is the delivery's newest round, so the label agrees with explain
+  // even when some rounds have no transition here (rounds imported with a legacy PR).
+  let roundIdx = roundsByNo.length - sorted.filter(queuesRound).length;
   let fixAttempt: AttemptSnapshot | undefined;
   let lastHead: string | null = null;
   const reviewUrl = (r: RoundSnapshot | undefined): string | null => (r?.reviewerTaskId ? taskActivityUrl(r.reviewerTaskId) : null);
@@ -201,10 +205,14 @@ export function transitionsToActivityEntries(
     // A round was queued by this transition.
     // Rounds are numbered in the order these transitions queued them; the
     // round rows say which head each one was bound to.
-    if (t.toState === 'AWAITING_REVIEW' && ROUND_STARTERS.has(t.command) && roundIdx < roundsByNo.length) {
-      const r = roundsByNo[roundIdx++];
-      const url = reviewUrl(r);
-      push({ kind: 'review_queued', detail: roundLabel(r), ...(url ? { taskUrl: url } : {}) });
+    if (queuesRound(t)) {
+      // More queueing transitions than rounds: the oldest ones queued no round of their own.
+      const r = roundIdx >= 0 ? roundsByNo[roundIdx] : undefined;
+      roundIdx++;
+      if (r) {
+        const url = reviewUrl(r);
+        push({ kind: 'review_queued', detail: roundLabel(r), ...(url ? { taskUrl: url } : {}) });
+      }
     }
   }
   return out;
@@ -262,7 +270,13 @@ export function renderDeliveryActivity(p: {
     tone: toneFor(d.state, currentRound?.status === 'reviewing'),
     status: dv?.detail && dv.detail.length <= 80 ? dv.detail : undefined,
   };
-  const body = renderPrActivityComment(entries, p.timezone, { header, stateBlock: false });
+  // The delivery's start is its first transition (the PR binding), whatever the row cap keeps.
+  const startedAt = [...p.transitions].sort((a, b) => a.toVersion - b.toVersion)[0]?.createdAt ?? null;
+  const body = renderPrActivityComment(entries, p.timezone, {
+    header,
+    stateBlock: false,
+    fold: { startedAt, url: d.ownerTaskId ? taskActivityUrl(d.ownerTaskId) : null },
+  });
   // GitHub already carries actionable review findings. Keep review history,
   // provenance and finding dispositions on the linked Buildd task.
   const decision = dv?.escalation ? renderEscalationDecision(dv) : '';
