@@ -63,12 +63,17 @@ export interface LoopProgress { iteration: number; history: LoopHistoryEntry[] }
  *   `until: 'webhook'` (pr_checks_green with CI still pending) spends no
  *   attempt: progress is unchanged and startAt is the wait expiry, so the
  *   check_suite / merge webhook (lib/loop-webhook.ts) completes it first.
+ * `defer`: the task's kernel delivery is in a person's hands (`deliveryState`,
+ *   ESCALATED). The loop owns no retry: no attempt spent, no requeue, no
+ *   failure. The task ends as the kernel projects it; its loop stays
+ *   `condition_unmet`, so the check_suite / merge webhook can still settle it.
  * `fail`: attempts exhausted; the task fails with `reason`.
  */
 export type LoopVerdict =
   | null
   | { kind: 'pass'; progress: LoopProgress }
   | { kind: 'hold'; until: 'requeue' | 'webhook'; progress: LoopProgress; startAt: Date | null; retryContext: Record<string, unknown> }
+  | { kind: 'defer'; deliveryState: string; progress: LoopProgress }
   | { kind: 'fail'; reason: string; progress: LoopProgress };
 
 // ── release ────────────────────────────────────────────────────────────────
