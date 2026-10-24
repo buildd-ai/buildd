@@ -78,7 +78,10 @@ describe('MissionOverview over AC-4\u2019s mission (16 tasks)', () => {
     const card = out.slice(out.indexOf('data-testid="decision-card"'), out.indexOf('data-testid="task-strip"'));
     expect(card).toContain('Mirror the runner image to Docker Hub');
     expect(card).toContain('The release publishes an image digest');
-    expect(card).toMatch(/The release publishes an image digest waits on this\./);
+    // What waits comes from the projection (spec 1b257609), as a link, with each option's effect and the expiry.
+    expect(card).toMatch(/Waits on this: <\/span><a [^>]*href="\/app\/tasks\/[^"]+"[^>]*>The release publishes an image digest<\/a>/);
+    expect(card).toContain('Finishes the task: The release publishes an image digest starts');
+    expect(card).toContain('Expires in 3 hours 59 minutes, then the task starts again and the agent goes with Provide a token.');
     expect(card).toContain('How should Docker Hub credentials be set up?');
     expect((card.match(/data-testid="decision-option-effect"/g) ?? []).length).toBe(2);
     expect(card).toContain('Answer differently');
@@ -268,5 +271,21 @@ describe('History raised (Navigation R-6, AC-8)', () => {
     expect(raised).toContain('layout=feed');
     expect(html.indexOf('data-testid="mission-history-raised"')).toBeLessThan(html.indexOf('data-testid="mission-task-list"'));
     expect((html.match(/data-testid="mission-history-raised"/g) ?? []).length).toBe(1);
+  });
+});
+
+describe('Decision subject on the mission page', () => {
+  it('leaves out a subject that names the page\'s own mission, and names the topic instead', () => {
+    const model = dagBoard(spec);
+    const mission = { id: 'mission-1', title: 'Spec page: readable on a phone', href: '/app/missions/mission-1' };
+    const notes = [{ id: 'n1', type: 'question', status: 'open', title: 'Keep the legacy export?', body: null, createdAt: Date.UTC(2026, 0, 1) }];
+    const decisions = missionDecisions({ model, notes, mission, hrefFor: id => `/app/tasks/${id}` });
+    const own = renderToStaticMarkup(<MissionOverview model={model} missionId="mission-1" decisions={decisions} />);
+    const subject = own.match(/data-testid="question-subject"[^>]*>[\s\S]*?<\/p>/)?.[0] ?? '';
+    expect(subject).not.toContain(mission.title);
+    expect(subject).not.toContain('href="/app/missions/mission-1"');
+    // Another mission's page still names it.
+    const other = renderToStaticMarkup(<MissionOverview model={model} missionId="mission-2" decisions={decisions} />);
+    expect(other).toContain('href="/app/missions/mission-1"');
   });
 });
