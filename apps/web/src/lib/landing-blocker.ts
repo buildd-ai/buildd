@@ -90,7 +90,7 @@ export function deriveLandingBlocker(p: {
   taskId: string;
   prNumber: number | null;
   prUrl: string | null;
-  delivery?: Pick<DeliveryView, 'state' | 'headSha' | 'prState' | 'headline' | 'detail' | 'currentAttempt' | 'owner'> | null;
+  delivery?: (Pick<DeliveryView, 'state' | 'headSha' | 'prState' | 'headline' | 'detail' | 'currentAttempt' | 'owner'> & Partial<Pick<DeliveryView, 'stateReason'>>) | null;
   /** Newest `pr_landing` row for the task whose outcome refused the landing. */
   landing?: LandingGateRow | null;
   prLifecycleStatus?: string | null;
@@ -159,6 +159,19 @@ export function deriveLandingBlocker(p: {
     }
     if (d.state === 'AWAITING_PUSH') {
       return { ...base, cause: 'push_pending', owner: 'platform', label: `${pr} is waiting for a push to reach GitHub`, nextAction: 'Nothing to do yet: it is reviewed once the push lands.', derivedFrom: 'workflow_deliveries' };
+    }
+    // 210caad3: a behind refresh is the platform updating the branch, often parked behind another
+    // PR's landing; no worker runs it, so "a repair is running" would describe the newest attempt
+    // task (a reviewer, the owner) instead. The delivery's own line names the wait.
+    if (d.state === 'REPAIRING' && d.stateReason === 'behind') {
+      return {
+        ...base,
+        cause: 'repair_queued',
+        owner: 'platform',
+        label: `${pr}: ${d.headline}${d.detail ? ` (${d.detail})` : ''}`,
+        nextAction: 'Nothing to do yet: buildd updates the branch from its base. Red CI or a conflict on this head replaces the wait with a repair.',
+        derivedFrom: 'workflow_deliveries',
+      };
     }
     if (d.state === 'REPAIRING') {
       const running = d.currentAttempt ? d.currentAttempt.status !== 'pending' : !!openRepair?.claimed;

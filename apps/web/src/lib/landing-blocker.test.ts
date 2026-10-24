@@ -172,4 +172,26 @@ describe('deriveLandingBlocker — conflict takes precedence over review states'
     expect(blocker?.owner).toBe('platform');
     expect(blocker?.label).toContain('repair is running');
   });
+
+  it('210caad3: a behind refresh waiting for its lane slot names the wait, not "a repair is running"', () => {
+    const blocker = deriveLandingBlocker({
+      ...base,
+      delivery: {
+        state: 'REPAIRING',
+        stateReason: 'behind',
+        headline: 'Waiting to update branch',
+        prState: 'open' as const,
+        headSha: 'abc123def456',
+        detail: 'PR #41 is merging into dev first',
+        // The newest attempt task is the finished reviewer, not anything working on the branch.
+        currentAttempt: { status: 'completed' },
+        owner: 'platform',
+      },
+      repairs: [],
+    });
+
+    expect(blocker?.cause).toBe('repair_queued');
+    expect(blocker?.label).toBe('PR #42: Waiting to update branch (PR #41 is merging into dev first)');
+    expect(blocker?.label).not.toContain('running');
+  });
 });
