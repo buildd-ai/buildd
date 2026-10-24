@@ -8,7 +8,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
-  NO_MISSION, eventChangesQueue, localLiftTime, providerHolds, reduce, taskRows, waitingReason, type ClaimOutcome,
+  NO_MISSION, eventChangesQueue, liveTaskOutcome, localLiftTime, providerHolds, reduce, taskRows, waitingReason, type ClaimOutcome,
 } from '../../src/top/state';
 import { NOW, TASKS, fixtureState } from './top-fixture';
 
@@ -99,6 +99,34 @@ describe('waiting reasons from the last claim (R-25)', () => {
 
   test('a claim outcome refetches the task list', () => {
     expect(eventChangesQueue(fixtureState(), { type: 'claim_outcome', outcome: { at: NOW, reason: 'race_lost' } })).toBe(true);
+  });
+});
+
+describe('a broad claim names the tasks it turned away (parallelism limits R-13, R-14, AC-6)', () => {
+  const broadDeferred = (deferredTasks?: Array<{ taskId: string; code: string; until?: string }>) => reduce(fixtureState(), {
+    type: 'claim_outcome',
+    outcome: { at: NOW - 5_000, reason: 'all_candidates_deferred', deferrals: { role_env_unsatisfied: 2 }, ...(deferredTasks ? { deferredTasks } : {}) },
+  });
+
+  test('each named task reads as refused for that code, not as starting', () => {
+    const s = broadDeferred([{ taskId: 't-loose', code: 'role_env_unsatisfied' }, { taskId: 't-top', code: 'role_env_unsatisfied' }]);
+    for (const id of ['t-loose', 't-top']) {
+      const t = s.tasks.find(x => x.id === id)!;
+      expect(liveTaskOutcome(t, s, NOW)).toMatchObject({ reason: 'all_candidates_deferred', exclusion: 'role_env_unsatisfied' });
+      expect(waitingReason(t, s, NOW)).not.toMatch(/ready|not tried/);
+    }
+    expect(liveTaskOutcome(s.tasks.find(x => x.id === 't-docs')!, s, NOW)).toBeNull();
+  });
+
+  test('a lift time rides along and the outcome expires with it', () => {
+    const until = new Date(NOW + 60_000).toISOString();
+    const s = broadDeferred([{ taskId: 't-loose', code: 'role_env_unsatisfied', until }]);
+    expect(liveTaskOutcome(loose(), s, NOW)?.until).toBe(until);
+    expect(liveTaskOutcome(loose(), s, NOW + 120_000)).toBeNull();
+  });
+
+  test('an older server sends no deferredTasks: nothing is recorded per task', () => {
+    expect(broadDeferred().claimOutcomes.tasks).toEqual({});
   });
 });
 

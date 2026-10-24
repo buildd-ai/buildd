@@ -263,6 +263,28 @@ describe('buildStateBecause', () => {
     expect(chain[0].refs.prNumber).toBe(77);
   });
 
+  // fe45dc7d (#5539): explain said "Task … is completed but its PR cannot land" over a failed owner task.
+  it('a failed owner task whose PR is still live is not called completed', () => {
+    const pr = { taskId: 't', title: 'Wire the route', prNumber: 77, prUrl: 'u', taskFailed: true as const };
+    const landingBlocked = [{
+      taskId: 't', prNumber: 77, prUrl: 'u', cause: 'human_decision', owner: 'person', label: 'it needs a person', nextAction: 'Decide.',
+      derivedFrom: 'workflow_deliveries',
+    }] as never;
+    for (const extra of [{}, { landingBlocked }]) {
+      const view = deriveMissionStateView({
+        ...base,
+        ...extra,
+        completion: { ok: false, code: 'awaiting_merge', reason: 'unmerged', awaitingMerge: 1, awaitingMergeDetails: [pr] },
+      });
+      const claims = buildStateBecause(view, { missionId: 'm' }, { unmergedPrs: [pr] }).map(l => l.claim).filter(c => c.includes('Wire the route'));
+      expect(claims.length).toBeGreaterThan(0);
+      for (const c of claims) {
+        expect(c).not.toContain('is completed');
+        expect(c).toContain('Task "Wire the route" failed, but its PR');
+      }
+    }
+  });
+
   // Repro (task c8092d2a / PR #5530): the backend's own suggestion already says "none of this
   // PR's added lines were found in it", but the sentence used to still open with "likely
   // superseded by" regardless of that content verdict.
