@@ -170,7 +170,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
     setNoteError(null);
     try {
       await visualAct(label);
-      if (label !== 'Review screens →') {
+      if (label !== 'Review screens') {
         setNoteOutcome({ label, at: Date.now() });
         onAnswered?.(label);
         router.refresh();
@@ -304,7 +304,15 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
           ))}
         </div>
       )}
-      {differently ? (
+      {differently && view.answer.kind === 'visual' ? (
+        <div data-testid="decision-skips" className="flex flex-wrap gap-2.5">
+          {view.answer.skips.map(label => (
+            <button key={label} type="button" data-testid="decision-skip" disabled={!!sending} onClick={() => pick(label)} className="btn min-h-11 md:min-h-9">
+              {sending === label ? 'Saving…' : label}
+            </button>
+          ))}
+        </div>
+      ) : differently ? (
         <form
           data-testid="decision-answer-form"
           className="flex flex-wrap gap-2"
@@ -323,7 +331,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
         </form>
       ) : null}
       <div className="flex flex-wrap items-center justify-between gap-x-4">
-        {view.answer.kind === 'link' || view.answer.kind === 'criteria' || view.answer.kind === 'visual'
+        {view.answer.kind === 'link' || view.answer.kind === 'criteria'
           ? <span />
           : !differently
             ? <button type="button" data-testid="decision-answer-differently" onClick={() => setDifferently(true)} className={TEXT_BUTTON}>Answer differently</button>
