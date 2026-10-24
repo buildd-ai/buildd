@@ -45,9 +45,9 @@ function Tile({ href, value, label, children, testId }: { href: string; value: s
     <Link
       href={href}
       data-testid={testId}
-      className="flex min-h-[44px] flex-col gap-1 border border-border-default bg-surface-2 px-3 py-2.5 text-text-primary no-underline hover:border-border-strong"
+      className="card flex min-h-[44px] flex-col gap-1 text-text-primary no-underline"
     >
-      <span className="font-mono text-[22px] font-semibold leading-[1.1]">{value}</span>
+      <span className="font-mono text-heading font-semibold leading-[1.1]">{value}</span>
       <span className="text-sm text-text-muted">{label}</span>
       {children}
     </Link>

@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { termWord } from '@buildd/shared';
-import type { ChipTone } from '@/components/ui/Chip';
+import Chip, { type ChipTone } from '@/components/ui/Chip';
 import { QUEUE_REASON_TERM, type QueueReason } from './QueueTiles';
 
 export interface QueueRowProps {
@@ -29,24 +29,16 @@ const DOT_TEXT: Record<ChipTone, string> = {
   muted: 'text-text-muted',
 };
 
-/** Square for Lane, diamond for Limit, round for Dependency: the badge reads without colour. */
-const SHAPE: Record<QueueReason, string> = { lane: '', limit: 'rotate-45', dependency: 'rounded-full' };
-const BADGE: Record<QueueReason, string> = {
-  lane: 'border-border-strong text-text-primary',
-  limit: 'border-status-warning text-status-warning',
-  dependency: 'border-status-info text-status-info',
-};
+const CHIP_TONE: Record<QueueReason, ChipTone> = { lane: 'muted', limit: 'warning', dependency: 'info' };
 
 export function ReasonBadge({ reason }: { reason: QueueReason }) {
   return (
-    <span
+    <Chip
+      tone={CHIP_TONE[reason]}
       data-testid="queue-reason"
-      data-reason={reason}
-      className={`inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 px-2 py-[3px] border rounded font-mono text-chip font-semibold ${BADGE[reason]}`}
     >
-      <span aria-hidden="true" className={`w-1.5 h-1.5 shrink-0 bg-current ${SHAPE[reason]}`} />
       {termWord(QUEUE_REASON_TERM[reason])}
-    </span>
+    </Chip>
   );
 }
 
