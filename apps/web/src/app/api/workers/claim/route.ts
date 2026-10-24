@@ -78,6 +78,8 @@ import { allowExplicitClaim, EXPLICIT_CLAIM_WINDOW_SEC } from './explicit-claim-
 import { FORCE_CLAIM_CONTEXT_KEY, withoutForceClaim } from '@/lib/force-claim';
 import { readForceStart } from '@buildd/core/waiting-reason';
 import { consumeForceStart, recordForceStartClaim } from '@/lib/force-start';
+import { START_ANYWAY_CONTEXT_KEY, startAnywayOnClaim } from '@buildd/core/start-anyway';
+import { attachStartAnywayBrief } from './start-anyway-injection';
 import { describeExplicitDeferral } from './explicit-deferral';
 import { decideClaimIsolation, teamSizeLoader } from './isolation-gate';
 import { CREDENTIAL_BLOCK_CONTEXT_KEY, credentialBlockFromDeferral, stampCredentialBlock } from '@/lib/credential-block';
@@ -2801,6 +2803,11 @@ export async function POST(req: NextRequest) {
       ...(ceilingDowngrade && ceiling.binding ? { tierCeiling: { ...ceilingDowngrade, max: ceiling.max, binding: ceiling.binding } } : {}),
     };
     if (!ceilingDowngrade) delete (patchedContext as Record<string, unknown>).tierCeiling;
+    // Start anyway (spec 36df686b): a request naming declared edges opens the
+    // assessment lifecycle; the claim of a parked one is its resume. Read by
+    // the assessment brief below, the edit gate and every view.
+    const startAnywayRecord = startAnywayOnClaim(taskContext ?? {}, forceStartIntent, now);
+    if (startAnywayRecord) (patchedContext as Record<string, unknown>)[START_ANYWAY_CONTEXT_KEY] = startAnywayRecord;
     // Why this claim's backend differs from the stored one — or nothing, so a
     // previous attempt's flip never reads as this one's.
     delete (patchedContext as Record<string, unknown>)[BACKEND_ROUTING_KEY];
@@ -3584,6 +3591,9 @@ export async function POST(req: NextRequest) {
   await attachArtifactReferences(claimedWorkers, filteredTasks);
   await VISUAL_AUDIT_ROUTES(claimedWorkers, filteredTasks);
   await attachTaskAreaScope(claimedWorkers, filteredTasks, taskAreaPredictions);
+  // Last on the rail: a task started before its prerequisites finished reads
+  // its assessment brief, with their live state (./start-anyway-injection).
+  await attachStartAnywayBrief(claimedWorkers);
 
   // Enrich rollup tasks with sibling results (for tasks that have a parentTaskId)
   for (const cw of claimedWorkers) {

@@ -168,7 +168,7 @@ export function buildAssessmentBrief(input: {
   lines.push('2. Record your assessment with `update_progress { assessment: { needs, canProceed, uncertainty, nextStep } }`: what you need from each prerequisite, what can proceed now inside this task\'s scope, what you do not know, and your next step. Say "unknown" where nothing tells you.');
   lines.push('3. Then choose one:');
   lines.push('   - **Work**: implement the part that does not need the prerequisite. Edits take the usual file ownership (path claims); a file another agent holds stays refused until it is released.');
-  lines.push('   - **Coordinate**: when a prerequisite has a live agent and one interface, branch or ownership boundary would unblock you, send that agent one concrete message (`send_agent_message`). Do not repeat it, do not start or file upstream work, and do not change the upstream task.');
+  lines.push('   - **Coordinate**: when a prerequisite has a live agent and one interface, branch or ownership boundary would unblock you, send that agent one concrete message: `send_worker_message { recipientTaskId: <prerequisite task id>, type: "question", body: { text } }`. Its answer reaches you as a message. Do not repeat it, do not start or file upstream work, and do not change the upstream task.');
   lines.push('   - **Park**: when nothing useful can proceed, end with `complete_task { blockedOnTaskId, summary, assessment }`. The task goes back to the queue, frees its slot and its file claims, and starts again by itself when that prerequisite completes and merges. Do not wait in a loop.');
   lines.push('');
   lines.push('Never: mark a prerequisite done, edit dependency edges, change the scope or requirements yourself (a person and the spec revision rules decide), or perform a protected mutation whose precondition is unmet. A migration that needs the prerequisite\'s schema waits for it: earlier independent work does not.');
@@ -621,4 +621,18 @@ export function parkRefusal(r: StartAnywayRecord | null): { code: string; error:
 /** The facts as a short readable chain for the brief: "requested → claimed → parked". */
 export function factChain(r: StartAnywayRecord | null): string[] {
   return (r?.facts ?? []).map(f => f.fact);
+}
+
+/**
+ * Why a Start anyway task may not take file ownership yet, or null: it is
+ * assessing and has not recorded its assessment. Reads need no ownership, so
+ * this only gates edits; another writer's lease still refuses on its own.
+ */
+export function startAnywayEditRefusal(context: unknown): { code: string; message: string } | null {
+  const r = readStartAnyway((context ?? {}) as Record<string, unknown>);
+  if (!r || r.phase !== 'assessing' || r.assessment) return null;
+  return {
+    code: 'assessment_required',
+    message: 'This task was started before its prerequisites finished. Record your assessment first (update_progress { assessment: { needs, canProceed, uncertainty, nextStep } }), then claim the files you will edit.',
+  };
 }

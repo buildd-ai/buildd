@@ -36,6 +36,7 @@ import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { applyWaitExit, parseWaitOn } from '@/lib/task-wait-exit';
+import { saveStartAnywayAssessment } from '@/lib/start-anyway-assessment';
 import { applyTaskCancelSideEffects, applyTaskDeleteSideEffects, emitTaskUpdated, endLiveWorkersForRequeue } from '@/lib/task-cancel';
 import { checkDependencyCycle, checkDependencyReach, dependencyViewerOf } from '@/lib/task-dependency-reach';
 import { loadQuestionWaits } from '@/lib/question-waits';
@@ -301,7 +302,7 @@ export async function GET(
  * how it runs or ends. Status, mission, dependencies, role, model, hold and
  * result go through complete_task and the gates behind it, or through a person.
  */
-const TASK_TOKEN_PATCH_FIELDS = new Set(['title', 'description', 'priority', 'project', 'externalIssueId', 'externalIssueUrl', 'waitOn']);
+const TASK_TOKEN_PATCH_FIELDS = new Set(['title', 'description', 'priority', 'project', 'externalIssueId', 'externalIssueUrl', 'waitOn', 'assessment']);
 
 export async function PATCH(
   req: NextRequest,
@@ -416,11 +417,24 @@ export async function PATCH(
         blockerTaskId: parsed.blockerTaskId,
         reason: parsed.reason,
         workerId,
+        assessment: body.waitOn.assessment,
       });
       if (!out.ok) return NextResponse.json({ error: out.error, code: out.code }, { status: out.status });
       noteWorkChanged({ missionIds: [task.missionId] });
       await emitTaskUpdated({ id, workspaceId: task.workspaceId, missionId: task.missionId ?? null, status: 'pending' });
-      return NextResponse.json({ id, status: 'pending', waitingOn: out.blocker, dependsOn: out.dependsOn, workerId: out.workerId });
+      return NextResponse.json({ id, status: 'pending', waitingOn: out.blocker, dependsOn: out.dependsOn, workerId: out.workerId, ...(out.park ? { park: out.park } : {}) });
+    }
+
+    // assessment: a Start anyway task's agent records what it needs from its
+    // prerequisites before it edits (lib/start-anyway-assessment.ts, Living
+    // Spec 36df686b R-4). Its own request, like waitOn.
+    if (body?.assessment !== undefined) {
+      if (Object.keys(body).some(k => k !== 'assessment')) {
+        return NextResponse.json({ error: 'assessment is sent on its own, with no other fields' }, { status: 400 });
+      }
+      const out = await saveStartAnywayAssessment({ taskId: id, raw: body.assessment, workerId: typeof body.assessment?.workerId === 'string' ? body.assessment.workerId : null });
+      if (!out.ok) return NextResponse.json({ error: out.error, code: out.code }, { status: out.status });
+      return NextResponse.json({ id, assessment: out.assessment });
     }
 
     // pause: true pauses the agent working on this task instead of cancelling
