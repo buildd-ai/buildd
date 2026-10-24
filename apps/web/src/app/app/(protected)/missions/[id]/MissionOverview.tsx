@@ -143,6 +143,11 @@ function OverviewView({
   const bar = order.length > 0 && (
     <TaskStrip cells={cells} groups={groups} ticks={false} selectedId={selectedId} onSelect={setSelectedId} onOpen={openTask} label="Mission tasks, merged first" />
   );
+  // A review waiting on a person is one decision card (R-16); the screens and fixes are evidence behind
+  // its Review screens, not a second ask or a Checks row (R-18).
+  const visualCard = decisions.some(d => d.answer.kind === 'visual');
+  const showAsk = review && !visualCard;
+  const listed = (rows: NonNullable<typeof handoff>['rows']) => (visualCard ? rows.filter(r => r.kind !== 'visual') : rows);
   const cards = decisions.length > 0 && <LeadDecision decisions={decisions} now={model.now} missionId={link.missionId} />;
 
   return (
@@ -155,11 +160,11 @@ function OverviewView({
           {history && <HistoryRaisedLine item={history} missionId={link.missionId} />}
           {situation?.build}
           {notice}
-          {review && <MissionVisualAsk review={review} board={model} />}
+          {showAsk && <MissionVisualAsk review={review} board={model} />}
           {model.phases.length === 0 && model.planning && <PlanningPlaceholder planning={model.planning} now={now} link={link} />}
           {bar}
           {order.length > 0 && <MissionBuildStage model={model} now={now} hrefFor={hrefFor} revealTaskId={hashed} expectedMinutes={expectedMinutes} />}
-          {handoff && handoff.rows.some(r => STARTED.has(r.status)) && <ChecksCard rows={handoff.rows.filter(r => STARTED.has(r.status))} onOpenTask={openTask} />}
+          {handoff && listed(handoff.rows).some(r => STARTED.has(r.status)) && <ChecksCard rows={listed(handoff.rows).filter(r => STARTED.has(r.status))} onOpenTask={openTask} />}
           {estimate && <p data-testid="overview-estimate" className="font-mono text-meta text-text-muted">{estimate}</p>}
         </>
       )}
@@ -173,8 +178,8 @@ function OverviewView({
           {history && <HistoryRaisedLine item={history} missionId={link.missionId} />}
           {situation?.verify}
           {notice}
-          {review && <MissionVisualAsk review={review} board={model} />}
-          {handoff && <ChecksCard rows={handoff.rows} onOpenTask={openTask} />}
+          {showAsk && <MissionVisualAsk review={review} board={model} />}
+          {handoff && <ChecksCard rows={listed(handoff.rows)} onOpenTask={openTask} />}
           {standards && <StandardsLineView line={standards} />}
           {model.complete && <CompletionRecord model={model} text={completionText} visual={vm} />}
         </>
