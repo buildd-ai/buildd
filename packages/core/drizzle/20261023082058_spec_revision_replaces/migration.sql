@@ -1,1 +1,0 @@
-ALTER TABLE "spec_revisions" ADD COLUMN "replaces" jsonb;
