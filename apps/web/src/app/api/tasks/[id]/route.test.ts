@@ -2302,6 +2302,69 @@ describe('PATCH /api/tasks/[id]', () => {
     expect((await response.json()).error).toContain('existing looped task');
   });
 
+  describe('remove a dependency (removeDependency, Health › Queue R-11)', () => {
+    const DEP = '33333333-3333-4333-8333-333333333333';
+    const OTHER = '44444444-4444-4444-8444-444444444444';
+    const waiting = (context: Record<string, unknown> = { model: 'x' }) => ({
+      id: TASK_ID, title: 'needs A', status: 'pending', workspaceId: 'ws-1', missionId: null,
+      workspace: { id: 'ws-1', teamId: 'team-1' }, dependsOn: [DEP, OTHER], context,
+    });
+    function capture() {
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => [{ ...waiting(), ...v }]) })) }; }),
+      });
+      return sets;
+    }
+    const patch = (body: Record<string, unknown>) => callHandler(PATCH, createMockRequest({ method: 'PATCH', body }), TASK_ID);
+    beforeEach(() => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+    });
+
+    it('drops that one edge and records who removed it and why', async () => {
+      mockTasksFindFirst.mockResolvedValue(waiting());
+      const sets = capture();
+      const res = await patch({ removeDependency: { taskId: DEP, reason: 'A was split; B no longer needs it' } });
+      expect(res.status).toBe(200);
+      expect(sets[0].dependsOn).toEqual([OTHER]);
+      expect(sets[0].context.model).toBe('x');
+      expect(sets[0].context.dependencyRemovals).toHaveLength(1);
+      expect(sets[0].context.dependencyRemovals[0]).toMatchObject({ dependencyId: DEP, reason: 'A was split; B no longer needs it', userId: 'user-123' });
+    });
+
+    it('a reason is required', async () => {
+      mockTasksFindFirst.mockResolvedValue(waiting());
+      const sets = capture();
+      const res = await patch({ removeDependency: { taskId: DEP, reason: '   ' } });
+      expect(res.status).toBe(400);
+      expect(sets).toHaveLength(0);
+    });
+
+    it('404 for a task that is not one of its dependencies', async () => {
+      mockTasksFindFirst.mockResolvedValue(waiting());
+      const sets = capture();
+      const res = await patch({ removeDependency: { taskId: '55555555-5555-4555-8555-555555555555', reason: 'r' } });
+      expect(res.status).toBe(404);
+      expect(sets).toHaveLength(0);
+    });
+
+    it('is sent on its own', async () => {
+      mockTasksFindFirst.mockResolvedValue(waiting());
+      const res = await patch({ removeDependency: { taskId: DEP, reason: 'r' }, title: 'x' });
+      expect(res.status).toBe(400);
+    });
+
+    it('an API key is not a person: refused', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockTasksFindFirst.mockResolvedValue(waiting());
+      const sets = capture();
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { removeDependency: { taskId: DEP, reason: 'r' } }, headers: { Authorization: 'Bearer bld_test' } }), TASK_ID);
+      expect([401, 403]).toContain(res.status);
+      expect(sets).toHaveLength(0);
+    });
+  });
+
   describe('hold / resume (held)', () => {
     const openTask = (context: Record<string, unknown> = { model: 'x' }) => ({
       id: TASK_ID, title: 'checkout', status: 'assigned', workspaceId: 'ws-1',

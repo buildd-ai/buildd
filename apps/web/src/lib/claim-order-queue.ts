@@ -301,8 +301,12 @@ const ownerUser = alias(users, 'owner_user');
 /** Who owns a task: who filed it, else its mission's creator, else its schedule's. */
 const taskOwnerId = sql<string | null>`coalesce(${tasks.createdByUserId}, ${missions.createdByUserId}, ${taskSchedules.createdByUserId})`;
 
-/** The read, on any select builder (the db, or a QueryBuilder to render it in a test). */
-export function buildRunnerQueueQuery(builder: { select: typeof db.select }, opts: { workspaceIds: string[]; gates: Partial<Record<QueueGateName, SQL>> }) {
+/**
+ * The read, on any select builder (the db, or a QueryBuilder to render it in a test).
+ * `limit` widens the bound for Health › Queue (lib/health-queue.ts), which
+ * reads the team's queue, not one runner's.
+ */
+export function buildRunnerQueueQuery(builder: { select: typeof db.select }, opts: { workspaceIds: string[]; gates: Partial<Record<QueueGateName, SQL>>; limit?: number }) {
   return builder
     .select({
       id: tasks.id,
@@ -337,7 +341,7 @@ export function buildRunnerQueueQuery(builder: { select: typeof db.select }, opt
     .where(runnerQueueWhere(opts.workspaceIds))
     // The claim candidate query's own ORDER BY.
     .orderBy(...claimOrderBy(tasks, { desc, asc }))
-    .limit(RUNNER_QUEUE_LIMIT + 1);
+    .limit((opts.limit ?? RUNNER_QUEUE_LIMIT) + 1);
 }
 
 async function readWorkspaceConfigs(workspaceIds: string[]) {
