@@ -780,6 +780,9 @@ export async function POST(
             { status: 409 },
           );
         }
+        if (dispatchResult.releaseCandidate) {
+          return NextResponse.json({ error: dispatchResult.releaseCandidate, releaseCandidate: true }, { status: 409 });
+        }
         if (dispatchResult.exhausted) {
           await escalateConflictExhaustion(worker.taskId, repoFullName, prNumber, headSha);
           return NextResponse.json(

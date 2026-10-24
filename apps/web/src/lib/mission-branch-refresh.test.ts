@@ -335,6 +335,7 @@ const {
   refreshEffectAnswer,
   BRANCH_REFRESH_BACKSTOP_MS,
   REFRESH_IN_FLIGHT_PARK_MS,
+  START_REFRESH_MIN_INTERVAL_MS,
 } = await import('./mission-branch-refresh');
 
 function githubError(status: number, body: unknown): Error {
@@ -1140,6 +1141,47 @@ describe('refreshMissionBranchesBeforeStart (a mission task is starting)', () =>
     mockMissionsFindMany.mockRejectedValue(new Error('db down'));
     expect(await refreshMissionBranchesBeforeStart([task({ baseBranch: BRANCH })])).toEqual({});
   });
+
+  // Friction 0e0a8c78: every start merged the latest trunk, so a busy mission
+  // took a refresh every few minutes, each one moving the base under its open
+  // task PRs and restarting their CI.
+  describe('debounced: at most one start refresh per interval', () => {
+    it('a start soon after a confirmed refresh leaves the branch alone, though trunk moved', async () => {
+      missionRow.branchRefreshHeadSha = 'dev-sha-older';
+      missionRow.branchRefreshedAt = new Date(Date.now() - 5 * 60 * 1000);
+      const out = await refreshMissionBranchesBeforeStart([task({ baseBranch: BRANCH })]);
+      expect(merges()).toBe(0);
+      expect(out['m-1']).toMatchObject({ kind: 'skipped', reason: 'recently_refreshed' });
+    });
+
+    it('a start once the interval has passed merges trunk as before', async () => {
+      missionRow.branchRefreshHeadSha = 'dev-sha-older';
+      missionRow.branchRefreshedAt = new Date(Date.now() - START_REFRESH_MIN_INTERVAL_MS - 1000);
+      const out = await refreshMissionBranchesBeforeStart([task({ baseBranch: BRANCH })]);
+      expect(merges()).toBe(1);
+      expect(out['m-1']).toEqual({ kind: 'merged', headSha: 'dev-sha-current' });
+    });
+
+    it('a never-refreshed branch is refreshed on the first start', async () => {
+      await refreshMissionBranchesBeforeStart([task({ baseBranch: BRANCH })]);
+      expect(merges()).toBe(1);
+    });
+
+    it('the backstop is not debounced by the start interval', async () => {
+      missionRow.branchRefreshHeadSha = 'dev-sha-older';
+      missionRow.branchRefreshedAt = new Date(Date.now() - 5 * 60 * 1000);
+      const out = await refreshMissionIntegrationBranch('m-1', { trigger: 'backstop' });
+      expect(out).toEqual({ kind: 'merged', headSha: 'dev-sha-current' });
+    });
+
+    it('a conflict pointer is still settled on a debounced start', async () => {
+      missionRow.branchRefreshedAt = new Date(Date.now() - 5 * 60 * 1000);
+      missionRow.branchRefreshConflictTaskId = 'task-open';
+      tasksById['task-open'] = { id: 'task-open', status: 'in_progress', context: {} };
+      const out = await refreshMissionBranchesBeforeStart([task({ baseBranch: BRANCH })]);
+      expect(out['m-1']).toMatchObject({ kind: 'skipped', reason: 'conflict_task_open' });
+    });
+  });
 });
 
 // ── Cross-operation interleavings (docs/specs/mission-branch-refresh.md, "Lifecycle and concurrency") ──
@@ -1628,6 +1670,8 @@ describe('real Git: refresh, task landings, the repair and the mission PR interl
       gh.commit('dev', { 'dev2.ts': 'more trunk\n' });
       gh.branch('buildd/task-b', BRANCH);
       const bHead = gh.commit('buildd/task-b', { 'b.ts': 'b\n' });
+      // The next start comes after the start debounce interval.
+      missionRow.branchRefreshedAt = new Date(Date.now() - START_REFRESH_MIN_INTERVAL_MS - 1000);
       expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'start' })).toMatchObject({ kind: 'merged' });
       // The task PR's head did not move, so its pinned landing still lands; the base move is inside the result.
       expect(gh.landPr({ base: BRANCH, headBranch: 'buildd/task-b', expectedHeadSha: bHead, method: 'squash' }).merged).toBe(true);

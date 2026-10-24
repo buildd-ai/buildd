@@ -553,6 +553,21 @@ describe('POST /api/github/pr', () => {
     expect(data.pr.number).toBe(42);
   });
 
+  // Friction 0e0a8c78: a refresh task finished "no PR needed", then a PR was
+  // opened from its branch under a minute later.
+  it('refuses to open a PR for a task that already completed without one; nothing reaches GitHub', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValueOnce({
+      id: 'w-1', accountId: 'account-1', taskId: 'task-1', name: 'test-worker', workspace: WORKSPACE_OK,
+      task: { id: 'task-1', status: 'completed', context: {}, result: { summary: 'No PR needed', refreshAlreadyLanded: { branch: 'mission/a' } } },
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-1', title: 'chore: refresh', head: 'feature-branch' } }));
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('task_completed_without_pr');
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
   // S31 (workflow-state-kernel.md §6.10 tier 1): create_pr runs CI's prose scan
   // before the PR exists, on workspaces that opt in, and refuses with the reason.
   describe('preflight: the No Production Data prose scan (S31)', () => {
@@ -7668,6 +7683,15 @@ describe('agent run on the runner key — close / merge', () => {
   it('closes a PR its task records link, with a reason and a merged successor', async () => {
     mockWorkersFindFirst.mockResolvedValue(runWorker({ title: 'Close superseded PR #7', context: { prReach: { prNumbers: [7], grantedBy: 'task:task-organizer', grantedAt: 'x' } } }));
     expect((await closeFor(7)).status).toBe(200);
+  });
+
+  // Friction 0e0a8c78: a fix attempt closed the PR it was fixing once its fix was approved.
+  it('refuses a fix attempt closing the PR it was filed to repair, before calling GitHub', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker({ ciRetryPrNumber: 7 }, { prNumber: null }));
+    const res = await closeFor(7);
+    expect(res.status).toBe(409);
+    expect((await res.json()).reasonCode).toBe('retry_closes_subject');
+    expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
   it('refuses to close a PR its task only names in text, before calling GitHub', async () => {
