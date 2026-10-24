@@ -93,7 +93,7 @@ export const MISSION_PROMPT_DEFAULTS = {
     'If nothing meaningful has changed, create fewer or no sub-tasks.',
   existingChain:
     '\n**Existing task chain detected** — there are pending/active tasks with `dependsOn` set. ' +
-    'Do NOT create overlapping tasks. If additional work is needed, add to the existing chain.',
+    'Do NOT duplicate existing deliverables. Add dependsOn only if additional work needs an existing task\'s result.',
   manyCycles:
     'This mission has been through many cycles. Strongly consider whether objectives are met and completion should be proposed — the goal-criteria gate decides whether it closes.',
   awaitingInput:
@@ -103,16 +103,17 @@ export const MISSION_PROMPT_DEFAULTS = {
   sequencingIntegration:
     '**Sequencing**: This mission has task PRs and an integration branch{{workingBranch}}'
     + ', so sibling task PRs are not a conflict: each targets the integration branch and merges '
-    + 'there unattended, and dependents unblock without a human. Chain a plan step with '
-    + '`dependsOn` and `baseBranch` only when it touches the same files as another step or as an '
-    + 'open PR of this mission. Chain on path overlap; the platform serializes '
-    + 'same-mission siblings at claim time regardless, so an integration branch buys '
-    + 'a shorter wait per link, not parallelism.',
+    + 'there unattended, and dependents unblock without a human. Add `dependsOn` only for a '
+    + 'real ordering need, when one task needs another task\'s result. Declare files in '
+    + '`pathManifest`: schema, migrations and configured hard surfaces use serial lanes, '
+    + 'one at a time, first come. Everything else runs in parallel. Take the edit-time '
+    + 'file lock before editing so two agents cannot edit the same file at once.',
   sequencingDirect:
-    '**Sequencing**: This mission already has task PRs. That is not by itself a reason to '
-    + 'serialize — each task gets its own branch and its own PR. Chain a plan step with '
-    + '`dependsOn` and `baseBranch` when it touches the same files as another step or as an open '
-    + 'PR of this mission; beyond that, follow the Sequencing Rules in your role prompt.',
+    '**Sequencing**: Each task gets its own branch and its own PR. Add `dependsOn` only '
+    + 'for a real ordering need, when one task needs another task\'s result. Declare files '
+    + 'in `pathManifest`: schema, migrations and configured hard surfaces use serial lanes, '
+    + 'one at a time, first come. Everything else runs in parallel. Take the edit-time '
+    + 'file lock before editing so two agents cannot edit the same file at once.',
   // Navigation spec R-16: one decision card, the same on every surface.
   decisionQuestions:
     '**Asking the owner a decision** (`post_note` type=question): ' + DECISION_TITLE_GUIDANCE + ' '
@@ -120,6 +121,7 @@ export const MISSION_PROMPT_DEFAULTS = {
     + 'otherwise it falls back to the mission. '
     + 'Pass `options` as `[{ label, consequence, recommended }]`, each consequence saying what happens next and what stays blocked, in one to three sentences. '
     + DECISION_OPTIONS_GUIDANCE,
+
 } as const satisfies Record<Exclude<keyof typeof MISSION_PROMPT_IDS, 'criteriaRearm'>, string>;
 
 // Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).

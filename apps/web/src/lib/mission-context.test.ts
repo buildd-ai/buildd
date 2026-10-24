@@ -341,12 +341,7 @@ describe('buildMissionContext', () => {
     expect(result!.description).not.toContain('Efficiency mode');
   });
 
-  // The sequencing hint used to read "Multiple PRs exist on this mission. Chain
-  // plan steps with `dependsOn` and `baseBranch` to avoid branch conflicts." —
-  // sibling task PRs are not a conflict (each task has its own branch and its own
-  // PR in every branch shape) and PR count is not the reason to serialize. Path
-  // overlap is. How far to chain beyond that depends on the branch shape, so the
-  // hint reads `integrationBranchEnabled` off the mission row.
+  // Branch shapes change the PR base, not the lane and edit-lock rules.
   function mockSequencingMission(mission: Record<string, unknown>) {
     mockFindFirst.mockResolvedValueOnce({
       id: 'obj-seq',
@@ -370,13 +365,15 @@ describe('buildMissionContext', () => {
     mockSkillsFindMany.mockResolvedValueOnce([]);
   }
 
-  it('sequencing hint blames path overlap, not PR count (trunk shape)', async () => {
+  it('sequencing hint uses real ordering needs, lanes and locks (trunk shape)', async () => {
     mockSequencingMission({ integrationBranchEnabled: false, workingBranch: null });
 
     const result = await buildMissionContext('obj-seq');
     const d = result!.description;
     expect(d).toContain('**Sequencing**');
-    expect(d).toContain('same files');
+    expect(d).toContain('real ordering need');
+    expect(d).toContain('first come');
+    expect(d).toContain('edit-time file lock');
     expect(d).toContain('own branch and its own PR');
     // The two false framings must not come back.
     expect(d).not.toContain('Multiple PRs exist on this mission');
@@ -391,7 +388,9 @@ describe('buildMissionContext', () => {
     expect(d).toContain('**Sequencing**');
     expect(d).toContain('mission/ship-the-thing-1a2b3c4d');
     expect(d).toContain('unattended');
-    expect(d).toContain('same files');
+    expect(d).toContain('real ordering need');
+    expect(d).toContain('first come');
+    expect(d).toContain('edit-time file lock');
     expect(d).not.toContain('to avoid branch conflicts');
   });
 

@@ -226,9 +226,14 @@ async function knownActions(): Promise<{ topLevel: Set<string>; known: Set<strin
   const { allActions } = await import('../packages/core/mcp-tools');
   // The group tool names (`buildd_work`, ...) are real identifiers too.
   const { MCP_TOOL_GROUPS, mcpGroupToolName } = await import('../packages/core/mcp-tool-groups');
+  // Standalone tools such as check_path_claim are tools, not grouped actions.
+  const { listMcpTools } = await import('../apps/web/src/app/api/mcp/tools');
+  const standalone = listMcpTools({ accountLevel: 'admin', isSensitive: false })
+    .flatMap(tool => 'name' in tool && typeof tool.name === 'string' ? [tool.name] : []);
   const topLevel = new Set<string>(allActions);
   const known = new Set<string>([
     ...allActions,
+    ...standalone,
     ...MCP_TOOL_GROUPS.map(mcpGroupToolName),
     ...subActionsFromSource(mcpToolsSource),
     // manage_specs sub-actions: the handler's own case labels, so a sub-action

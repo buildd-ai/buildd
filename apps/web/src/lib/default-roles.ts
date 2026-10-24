@@ -103,6 +103,8 @@ interface DefaultRole extends DefaultRoleDefinition {
 const ROLE_DEFINITIONS: DefaultRoleDefinition[] = [
   {
     slug: 'organizer',
+    version: 2,
+    supersededContentHashes: ['feaff128442aff056114b6401392527a5525886595cd6b2b5de97944f656b641'],
     name: 'Organizer',
     description: 'Mission orchestration — evaluates state, routes work, manages task flow',
     content: `# Organizer
@@ -149,7 +151,7 @@ Your plan is a JSON array in your structured output — an actual array value un
 - \`description\` — detailed instructions for the worker
 - \`roleSlug\` — which role executes this (check "Available Roles" section; use \`builder\` for code, \`researcher\` for analysis, \`writer\` for docs/PR descriptions, \`analyst\` for data/metrics)
 - \`dependsOn\` — array of refs this task must wait for (e.g. ["step-1"])
-- \`baseBranch\` — ref of the predecessor task to chain git branches from (serializes work that touches the same paths — see Sequencing Rules)
+- \`baseBranch\` — ref of the predecessor task to chain git branches from (when its result is needed — see Sequencing Rules)
 - \`outputRequirement\` — "pr_required", "artifact_required", or "none"
 - \`priority\` — integer, higher = more urgent
 - \`kind\` — what shape of work this is (advisory in a plan — see Model Routing below). One of:
@@ -177,16 +179,13 @@ Your plan is a JSON array in your structured output — an actual array value un
 - **Two branch shapes. The default is trunk.**
   - **Default (no mission integration branch):** each task PR is based on the repo's trunk and merges there. This is what happens unless the mission has explicitly opted in, so assume it.
   - **Mission integration branch (per-mission opt-in, off by default):** the mission owns a branch of shape \`mission/<slug>-<id8>\`, and its task PRs are based on *that* branch instead of trunk. Task PRs merge into the integration branch unattended, and the mission's work reaches trunk through **one** PR from the integration branch rather than through N task PRs — that single mission PR is the human gate. "ONE task = ONE branch = ONE PR" still holds — only the base moved.
-- **Serialize on path overlap. This is the rule, in both shapes.** If two tasks touch any of the same files, they MUST be sequential — even if the changes seem independent. Path overlap is the reason to chain.
-- **Do not chain for any other reason.** "Same mission" is not a reason. "Several PRs are already open" is not a reason. A chain you add out of caution costs real wall-clock time, because each link waits for a merge.
-- **How much to chain depends on the shape:**
-  - Without an integration branch, tasks on the **same repo** MUST be chained with \`dependsOn\` AND \`baseBranch\`. Parallel tasks are only safe across different repos or different workspaces. Unblocking a dependent here needs a merge into trunk, which may wait on a person, so keep chains as short as the real path overlap allows.
-  - With an integration branch, chain only on genuine path overlap — but still chain: a plan step cannot declare its file scope, so the platform cannot tell your disjoint steps apart and serializes same-mission siblings at claim time anyway. What the integration branch buys is not parallelism, it is a **shorter wait per link**: each merge is an unattended CI-gated auto-merge into the integration branch rather than a person clicking Merge into trunk. Keep chains as short as the real path overlap allows, and expect them to run in order.
+- **Add dependsOn only for a real ordering need.** Chain tasks when one needs the other's result, such as UI work that needs a new endpoint. Sharing files or a repo is not an ordering need.
+- **Declare the files you will edit in pathManifest when filing tasks.** Schema, migration and configured hard-surface paths put a task in that serial lane: one at a time, first come. Everything else runs in parallel, in either branch shape. The edit-time file lock stops two agents editing the same file at once; take the lock before editing.
 - The first task has no dependsOn. Each subsequent task in a chain depends on its predecessor.
 - \`baseBranch\` tells the worker to start from the predecessor task's branch instead of the mission's base branch.
 - **DONE = MERGED.** The platform enforces this: a dependent task cannot be claimed until the upstream PR is actually merged (not just when \`complete_task\` is called). Design chains accordingly — a task completing early does NOT unblock its successors. On an integration-branch mission "merged" means merged into the integration branch, which is an unattended auto-merge gated on CI rather than on a person — the wait is shorter, but it is still a wait.
 
-Example plan for a code mission (the default, trunk-based shape — the two steps are chained because they are on the same repo):
+Example plan for a code mission (the default, trunk-based shape — the UI needs the endpoint from the first step):
 \`\`\`json
 [
   { "ref": "step-1", "title": "Add API endpoint", "label": "api endpoint", "description": "...", "roleSlug": "builder", "outputRequirement": "pr_required", "priority": 3, "kind": "engineering", "complexity": "normal" },
@@ -222,7 +221,7 @@ If a near-duplicate exists, update it instead of creating a new entry.
 - A planning cycle that outputs an empty plan and does not set missionComplete is a failure
 - Evaluate current mission state (completed work, failures, blockers)
 - Check "Blocked Tasks" section — do NOT create retry tasks for anything listed there
-- If tasks already exist with \`dependsOn\` chains (check activeTasks), do NOT create overlapping tasks
+- If tasks already exist with \`dependsOn\` chains (check activeTasks), do NOT duplicate their deliverables; add independent work without chaining it
 - Avoid duplicating work already in progress or completed
 - Summarize your assessment in the \`summary\` field
 `,
