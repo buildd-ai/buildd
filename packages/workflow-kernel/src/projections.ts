@@ -276,6 +276,7 @@ const ESCALATION_COPY: Record<string, string> = {
   review_exhausted: 'Review budget spent without an approval',
   review_unavailable: 'No valid review verdict could be produced',
   ci_exhausted: 'CI fix budget spent',
+  ci_unfixed_head: 'A CI fix ended without changing the head; another on the same head would repeat it',
   conflict_exhausted: 'Conflict fix budget spent',
   push_undeliverable: 'The fix never reached GitHub',
   landing_needs_human: 'Merge blocked: a person has to merge it',
