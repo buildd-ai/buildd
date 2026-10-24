@@ -33,8 +33,6 @@ export type WaitingKind =
   | 'ordered_behind'
   | 'serialized_surface'
   | 'mission_concurrent'
-  | 'mission_paced'
-  | 'workspace_cap'
   | 'account_slots'
   | 'oauth_parallelism'
   | 'codex_single_flight'
@@ -65,7 +63,7 @@ export interface ForceSpec {
   /** Exactly the gate this lifts. */
   lifts: WaitingKind;
   railsRemaining: Rail[];
-  mechanism: 'start_context' | 'cap_exempt' | 'clear_start_at';
+  mechanism: 'start_context' | 'clear_start_at';
 }
 
 export type BlockerType = 'task' | 'pr' | 'lease' | 'mission' | 'runner' | 'budget' | 'provider' | 'surface' | 'config';
@@ -119,7 +117,7 @@ export interface WaitingReason {
  * The claim loop's deferral key a kind maps to. A force start can only lift a
  * kind that has one: that is the key the claim route checks it against.
  */
-export type ClaimLoopKey = 'path_overlap' | 'soft_overlap' | 'mission_concurrent' | 'mission_paced' | 'advisory_manifest' | 'ordered_behind';
+export type ClaimLoopKey = 'path_overlap' | 'soft_overlap' | 'mission_concurrent' | 'advisory_manifest' | 'ordered_behind';
 
 /**
  * A claim PREFILTER (SQL, before the loop) a force start lifts for this task:
@@ -177,8 +175,6 @@ export const WAITING_KIND_SPEC: Record<WaitingKind, KindSpec> = {
   ordered_behind: { class: 'coordination', strength: 'soft', intent: 'intentional', gateName: 'Planner order', releasesWhen: { event: 'task.claimed', text: 'the task ahead of it is claimed or finishes' }, owner: 'system', force: memberForce(), claimLoopKey: 'ordered_behind' },
   serialized_surface: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Serialized surface', releasesWhen: { event: 'task.finished', text: 'the task holding that surface finishes' }, owner: 'agent', force: memberForce(), claimLoopKey: 'soft_overlap' },
   mission_concurrent: { class: 'capacity', strength: 'hard', intent: 'intentional', gateName: 'Mission concurrency limit', releasesWhen: { event: 'slot.freed', text: 'another task in the mission finishes' }, owner: 'system', force: memberForce(), claimLoopKey: 'mission_concurrent' },
-  mission_paced: { class: 'capacity', strength: 'hard', intent: 'intentional', gateName: 'Mission pacing', releasesWhen: { event: 'time', text: 'the mission\'s pacing interval passes' }, owner: 'system', force: memberForce(), claimLoopKey: 'mission_paced' },
-  workspace_cap: { class: 'capacity', strength: 'hard', intent: 'intentional', gateName: 'Workspace concurrency limit', releasesWhen: { event: 'slot.freed', text: 'a workspace task finishes' }, owner: 'system', force: { scope: 'member', railsRemaining: COORDINATION_RAILS, mechanism: 'cap_exempt' } },
   account_slots: { class: 'capacity', strength: 'hard', intent: 'incidental', gateName: 'Account worker slots', releasesWhen: { event: 'slot.freed', text: 'a worker slot frees' }, owner: 'system', force: null },
   oauth_parallelism: { class: 'capacity', strength: 'hard', intent: 'incidental', gateName: 'Seat parallelism', releasesWhen: { event: 'slot.freed', text: 'seat pressure drops' }, owner: 'system', force: null },
   codex_single_flight: { class: 'capacity', strength: 'hard', intent: 'incidental', gateName: 'One Codex task per workspace', releasesWhen: { event: 'slot.freed', text: 'the running Codex task ends' }, owner: 'system', force: null },

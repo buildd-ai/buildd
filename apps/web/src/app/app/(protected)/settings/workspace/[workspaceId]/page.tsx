@@ -44,7 +44,6 @@ import SubjectPolicySection from './SubjectPolicySection';
 import ExecutorSection from './ExecutorSection';
 import RunnerSizeSection from './RunnerSizeSection';
 import WorkspaceModels from './WorkspaceModels';
-import ConcurrencySection from './ConcurrencySection';
 import PauseStartsSection from './PauseStartsSection';
 import { isPaused } from '@/lib/workspace-pause';
 import { loadWorkspaceSettings } from '@/lib/workspace-settings';
@@ -321,11 +320,6 @@ export default async function WorkspaceSettingsPage({
           {executor.executor !== 'host' && (
             <FreshContainerSection workspaceId={workspace.id} initial={gitConfig?.warmHandover === 'off'} canEdit={canManageSettings} />
           )}
-          <ConcurrencySection
-            workspaceId={workspace.id}
-            initialMaxConcurrentTasks={workspace.maxConcurrentTasks}
-            canEdit={canManageSettings}
-          />
           <PauseStartsSection
             workspaceId={workspace.id}
             pausedUntil={isPaused(workspace.newStartsPausedUntil) ? new Date(workspace.newStartsPausedUntil!).toISOString() : null}
