@@ -79,9 +79,12 @@ describe('DesignPreview chrome', () => {
 
   it('lists each screen with its viewport and keeps the download', () => {
     const html = render();
-    expect(html).toContain('Phone mission · 390×844');
-    // The picker is closed, so only the selected screen's label renders.
-    expect(render({ initialScreenId: 'desktop-mission' })).toContain('Desktop mission · 1440×900');
+    // The picker names the screen; the viewport is separate muted text.
+    expect(html).toContain('Phone mission');
+    expect(html).toContain('data-testid="design-viewport"');
+    expect(html).not.toContain('Phone mission · 390');
+    expect(html).toContain('390×844');
+    expect(render({ initialScreenId: 'desktop-mission' })).toContain('1440×900');
     expect(html).toContain('href="/api/artifacts/a1/download"');
     expect(html).toContain('>Download<');
   });

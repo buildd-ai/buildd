@@ -290,6 +290,40 @@ describe('Decision subject on the mission page', () => {
     expect(other).toContain('href="/app/missions/mission-1"');
   });
 });
+
+describe('A visual review waiting on a person (Navigation R-16, R-18)', () => {
+  const { buildVisualReviewModel } = require('@/lib/visual-review-model') as typeof import('@/lib/visual-review-model');
+  const { recaptureFixtureInput } = require('@/lib/visual-review-model.fixtures') as typeof import('@/lib/visual-review-model.fixtures');
+  const { visualReviewDecision } = require('@/lib/visual-review-decision') as typeof import('@/lib/visual-review-decision');
+  const base = { now: Date.UTC(2026, 9, 14, 12), missionCreatedAt: Date.UTC(2026, 9, 14, 11), missionStatus: 'active' as const };
+  const f = handoffFixture('handoff-repairing', base);
+  const visual = buildVisualReviewModel(recaptureFixtureInput('recapture-decide'));
+  const decision = visualReviewDecision(visual, { id: 'mission-1', title: 'A mission', href: '/app/missions/mission-1' })!;
+  const out = renderToStaticMarkup(
+    <MissionOverview model={f.model} missionId="mission-1" executor={f.executor} checks={f.checks} planTasks={f.planTasks} held={f.held} visual={visual} decisions={[decision]} />,
+  );
+
+  it('is one decision card, with no separate ask and no Checks panel', () => {
+    expect((out.match(/data-testid="decision-card"/g) ?? []).length).toBe(1);
+    expect(out).not.toContain('data-testid="visual-review-ask"');
+    expect(out).not.toContain('Fixed screens to check');
+    expect(out).not.toContain('Review the screens');
+    expect(out).not.toContain('data-kind="visual"');
+    expect(out).not.toContain('data-testid="mission-check-repairs"');
+    expect(out).not.toContain('blocks finish');
+    expect(out).not.toMatch(/\b[0-9a-f]{7}\b(?=[^<]*<\/span>)/);
+  });
+
+  it('asks the question with the count the summary gives', () => {
+    const n = decision.summary!.match(/^(\d+) fix/)![1];
+    expect(out).toContain(`Are these ${n} screens fixed?`);
+    expect(decision.summary).toBe(`${n} fixes merged and no new screenshot will be taken.`);
+    expect(out).toContain('Mark all fixed');
+    expect(out).toContain('Review screens');
+    expect(out).not.toContain('→');
+  });
+});
+
 describe('MissionOverview build stage: one failed task and a goal-criteria escalation (Navigation R-14, R-16 to R-20)', () => {
   const { criteriaEscalationDecision } = require('@/lib/mission-decisions') as typeof import('@/lib/mission-decisions');
   const board = dagBoard({ tasks: ['A', 'B'], edges: { B: ['A'] }, states: { A: 'failed' } });
@@ -327,5 +361,17 @@ describe('MissionOverview build stage: one failed task and a goal-criteria escal
     expect(card).toContain('Waive and complete');
     expect((card.match(/data-testid="decision-option-effect"/g) ?? []).length).toBe(2);
     expect(card).toContain('data-testid="decision-not-now"');
+  });
+});
+
+describe('MissionOverview design placement (Navigation R-3)', () => {
+  it('renders the design slot once, last, after the stage content', () => {
+    const out = renderToStaticMarkup(<MissionOverview model={dagBoard(spec)} missionId="mission-1" design={<div data-testid="design-slot" />} />);
+    expect(out.match(/data-testid="design-slot"/g)?.length).toBe(1);
+    expect(out.indexOf('data-testid="design-slot"')).toBeGreaterThan(out.indexOf('data-testid="mission-task-list"'));
+    expect(out.trimEnd().endsWith('<div data-testid="design-slot"></div></div>')).toBe(true);
+  });
+  it('renders nothing when there is no design', () => {
+    expect(html).not.toContain('design-slot');
   });
 });
