@@ -708,11 +708,17 @@ function queueBody(state: TopState, cols: number, height: number, now: number, p
       lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });
       // Under the selected row: the work it starts alongside (I-38).
       if (sel?.taskId === r.taskId && r.alongside) lines.push({ text: p.fg('muted', fit(' '.repeat(POS_W + 1) + r.alongside, cols)) });
+      // Provider hold sentence on a runner_seat wall (R-11).
+      if (r.status === 'blocked' && r.providerHoldSentence) lines.push({ text: p.fg('muted', fit(' '.repeat(POS_W + 1) + r.providerHoldSentence, cols)) });
     }
     if (section.rows.length === 0) lines.push({ text: p.fg('muted', fit('    Nothing this runner takes is waiting.', cols)) });
     if (section.held.length > 0) {
       lines.push({ text: p.fg('muted', fit(' Not yet', cols)) });
-      for (const r of section.held) lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });
+      for (const r of section.held) {
+        lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });
+        // Provider hold sentence on a runner_seat wall (R-11).
+        if (r.providerHoldSentence) lines.push({ text: p.fg('muted', fit(' '.repeat(POS_W + 1) + r.providerHoldSentence, cols)) });
+      }
     }
     if (section.notFor.length > 0) {
       lines.push({ text: p.fg('muted', fit(' Not for this runner', cols)) });
