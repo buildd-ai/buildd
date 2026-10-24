@@ -1025,9 +1025,9 @@ describe('fleet-idle pass — what is not claimable work', () => {
     expect(mockReportOps).not.toHaveBeenCalled();
   });
 
-  it('counts a dependency-blocked task once a human force-started past the gate', async () => {
+  it('counts a dependency-blocked task once a person\'s Start anyway admits it', async () => {
     fleetHeartbeats = [heartbeat()];
-    fleetPendingTasks = [pendingTask({ dependsOn: ['dep-1'], context: { bypassDepsGate: true } })];
+    fleetPendingTasks = [pendingTask({ dependsOn: ['dep-1'], context: { forceStart: { kinds: ['dep_declared'], loopKeys: [], assessDependsOn: ['dep-1'], expiresAt: new Date(Date.now() + 3_600_000).toISOString() } } })];
     depTasks = [{ id: 'dep-1', title: 'Upstream', status: 'in_progress' }];
     fleetWorkspaces = [workspaceRow()];
     fleetLastStarts = { 'acct-1': [{ startedAt: hoursAgo(3) }] };

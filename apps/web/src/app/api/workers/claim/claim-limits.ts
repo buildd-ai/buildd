@@ -62,7 +62,7 @@ export function describeBudgetWall(wall: ClaimBudgetWall, now: Date = new Date()
     case 'provider_pause':
       return `A run hit the ${name} rate limit for this team.${at ? ` ${name} work waits until ${at}.` : ` ${name} work waits until it clears.`}`;
     case 'runner_seat':
-      return `This runner's own ${name} login hit its limit${at ? ` until ${at}` : ''}. Other runners can still take ${name} work.`;
+      return `This runner's ${name} login is at its limit${at ? ` until ${at}` : ''}. Other runners can still take ${name} work.`;
     case 'tenant_budget':
       return `This tenant's ${name} budget is used up${at ? ` until ${at}` : ''}.`;
   }

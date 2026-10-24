@@ -114,11 +114,10 @@ evaluate by hand.
   (`apps/web/src/app/api/tasks/route.ts`) and `PATCH /api/tasks/[id]`
   carries no `tier` branch, matching the schema comment at
   `packages/core/db/schema.ts`.
-- Budget pressure has two sources folded into one `dailyBudgetPct` input:
-  `totalCost / maxCostPerDay` for API-key accounts, and for OAuth seats the
-  learned window pressure from `oauthBudgetPressure`, combined with `Math.max`
-  (`route.ts`). Seat accounts report no cost, so without the second
-  source their gates would never fire.
+- Budget pressure is one `dailyBudgetPct` input, `totalCost / maxCostPerDay`
+  for API-key accounts (`route.ts`). A subscription login has no server-side
+  pressure: buildd keeps no model of a subscription (spec `parallelism-limits`
+  R-9), so its gates never fire on one.
 
 **Acceptance criteria**:
 - AC-1: GIVEN a pending task whose `context.model` is `claude-opus-4-8` AND an
@@ -351,9 +350,7 @@ than a code sweep.
   runner UI list are the sanctioned homes for literals.
 - Cost accounting classifies an id by substring rather than by exact match, so
   an unknown id degrades to the Sonnet rate instead of to zero:
-  `priceForModel` (`packages/core/model-prices.ts`) and `modelWeight`
-  (`packages/core/oauth-budget.ts`, which also accepts the tier names
-  `premium`/`budget`).
+  `priceForModel` (`packages/core/model-prices.ts`).
 
 **Acceptance criteria**:
 - AC-15 (failure path): GIVEN a new literal `claude-opus-5` added to
@@ -362,13 +359,9 @@ than a code sweep.
   appears only inside a comment or JSDoc WHEN the check runs THEN it exits 0 —
   a model id in prose cannot retarget a tier and is not what this gate exists
   to prevent (`scripts/lint-model-ids.ts --self-test` proves both directions).
-- AC-16: WHEN `modelWeight('premium')` and `modelWeight('claude-opus-4-6')` are
-  called THEN both return `MODEL_WEIGHTS.opus`, and `modelWeight(null)` returns
-  the Sonnet weight `1`.
 
 **Code surface**: `scripts/lint-model-ids.ts`, `.github/workflows/build.yml`,
-`packages/core/model-prices.ts`, `packages/core/oauth-budget.ts`,
-`packages/core/__tests__/oauth-window.test.ts`,
+`packages/core/model-prices.ts`,
 `packages/core/__tests__/model-prices.test.ts`.
 
 **Out of scope**: how the resulting cost is aggregated and billed — see
@@ -438,10 +431,6 @@ matrix can be argued about with data rather than taste.
 `apps/web/src/app/api/cron/routing-calibration/route.ts`,
 `cron-manifest.json` (`Buildd: Routing Calibration`, `enabled: false`),
 `packages/core/__tests__/routing-analytics.test.ts`.
-
-**Out of scope**: the OAuth window measurement that reads `predicted_model` for
-budget pressure (`apps/web/src/lib/oauth-budget-window.ts`) — it is a *consumer*
-of this decision, specced under `usage-and-cost-accounting`.
 
 ---
 
@@ -525,9 +514,7 @@ dropdown options are real literals, not stale.
 **Model ids in the fallbacks.** Fixed: `TIER_DEFAULTS` and `DEFAULT_ALIASES`
 no longer hold literal ids; both read the bundled model policy through
 `bundledTierEntry` (`packages/core/model-tier-defaults.ts`), and
-`priceForModel` has a `fable` branch. Still open: `modelWeight`
-(`packages/core/oauth-budget.ts`) has no `fable` or `premium-plus` branch, so a
-Fable-class session weighs as Sonnet in OAuth window pressure.
+`priceForModel` has a `fable` branch.
 
 **Untested invariants in this spec.** No test covers: the claim route's
 tier-registry path (the routing tests all run with no `teamId` and assert the

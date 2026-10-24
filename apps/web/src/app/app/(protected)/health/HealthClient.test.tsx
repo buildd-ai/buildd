@@ -403,7 +403,6 @@ describe('HealthClient — LIFETIME grammar', () => {
   it('anchors monthly budget spend to the calendar month', () => {
     const html = render({
       budgetForecast: {
-        oauthSessions: [],
         codex: null,
         claudeTenant: null,
         missions: [],
@@ -429,7 +428,6 @@ describe('HealthClient — PROJECTION grammar', () => {
   it('states the runway and the window its rate came from in one string', () => {
     const html = render({
       budgetForecast: {
-        oauthSessions: [],
         codex: null,
         claudeTenant: null,
         missions: [],
@@ -848,7 +846,7 @@ describe('HealthClient — budget forecast labels', () => {
 
   it('captions the window exception in words, not a raw query-string token', () => {
     const html = render({
-      budgetForecast: { oauthSessions: [], codex: null, claudeTenant: null, missions: [], monthly },
+      budgetForecast: { codex: null, claudeTenant: null, missions: [], monthly },
     });
     expect(html).not.toContain('health-section-budget-forecast');
     expect(html).not.toContain('Monthly budget');
@@ -857,7 +855,6 @@ describe('HealthClient — budget forecast labels', () => {
   it('labels monthly and mission spend as an estimate', () => {
     const html = render({
       budgetForecast: {
-        oauthSessions: [],
         codex: null,
         claudeTenant: null,
         missions: [{ missionId: 'm1', missionTitle: 'M', spentUsd: 2, budgetUsd: 10, pctUsed: 20, status: 'active' }],
@@ -871,7 +868,6 @@ describe('HealthClient — budget forecast labels', () => {
   it('reports a Dispatch-tenant wall as Claude, not Codex', () => {
     const html = render({
       budgetForecast: {
-        oauthSessions: [],
         monthly: null,
         missions: [],
         codex: null,
@@ -885,7 +881,6 @@ describe('HealthClient — budget forecast labels', () => {
   it('shows the Codex line from a Codex pause', () => {
     const html = render({
       budgetForecast: {
-        oauthSessions: [],
         monthly: null,
         missions: [],
         claudeTenant: null,
@@ -899,7 +894,6 @@ describe('HealthClient — budget forecast labels', () => {
   it('renders no budget card when the only signal is an elapsed Codex pause', () => {
     const html = render({
       budgetForecast: {
-        oauthSessions: [],
         monthly: null,
         missions: [],
         claudeTenant: { kind: 'claude_tenant', isExhausted: false, resetsAt: null, exhaustedAt: null },
@@ -912,7 +906,6 @@ describe('HealthClient — budget forecast labels', () => {
   it('labels a rejected Codex credential as a credential, not a budget', () => {
     const html = render({
       budgetForecast: {
-        oauthSessions: [],
         monthly: null,
         missions: [],
         claudeTenant: null,

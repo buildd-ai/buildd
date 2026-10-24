@@ -1886,10 +1886,8 @@ export interface ClaimDiagnostics {
    * `summary` is the same thing as one or two sentences for a person.
    * A wall is listed only where a task was actually deferred on it.
    *
-   * Only these hard walls produce budget_exhausted. The learned forecast
-   * (`deferrals.oauth_parallelism`, `budgetPressure`) and plan allowances
-   * (hosted runner hours) never do: they hold a claim under their own
-   * deferral reason, and the forecast never holds an explicit start.
+   * Only these hard walls produce budget_exhausted. Plan allowances (hosted
+   * runner hours) never do: they hold a claim under their own deferral reason.
    */
   budgetBlock?: { walls: ClaimBudgetWall[]; summary: string };
   /**
@@ -1949,12 +1947,6 @@ export interface ClaimDiagnostics {
     /** Resolved model needs a newer Claude Code CLI than this runner reports. */
     runner_capability?: number;
     /**
-     * Claude task held because learned OAuth pressure lowered this seat's
-     * session cap and the seat is at it. Never applies to explicit starts,
-     * Codex, or tenant work. See `budgetPressure` for the reading behind it.
-     */
-    oauth_parallelism?: number;
-    /**
      * Its role (or workspace envMapping) declares env vars no delivery channel
      * can satisfy — no role_env_secret under the mapped label, no mcp_credential
      * of that name, not runner-provided. Held rather than claimed to run
@@ -2012,21 +2004,6 @@ export interface ClaimDiagnostics {
      * packages/shared/src/isolation-policy.ts.
      */
     isolation_unenforced?: number;
-  };
-  /**
-   * Learned OAuth budget pressure for this seat (seat-based auth only).
-   * pct is 0..1 of the capacity learned from past exhaustion episodes. Its only
-   * effect is a lower per-seat concurrent-session cap (never below one live
-   * session, restored when the window resets); it does not change the routed
-   * tier and never pauses or delays claims. Absent when the account is
-   * API-billed, pacing is off, or there are too few episodes to learn from.
-   * See packages/core/oauth-budget.ts (`oauthParallelismCap`).
-   */
-  budgetPressure?: {
-    pct: number;
-    limiter: 'workers' | 'turns' | 'tokens' | null;
-    confidence: 'low' | 'good';
-    samples: number;
   };
 }
 

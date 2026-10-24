@@ -123,3 +123,24 @@ describe.skipIf(process.platform === 'win32')('buildd codex login with no Node o
     expect(out.toLowerCase()).toContain('login');
   });
 });
+
+// Acceptance criterion (Living Spec a0b82b5d, part 2, R-11). The "a later
+// buildd --doctor reports Codex logged in" half of AC-8 is pre-existing,
+// platform-independent doctor behaviour (checkCodexBackend), already covered
+// by apps/runner/__tests__/unit/doctor-model-login.test.ts — not re-tested
+// here, since this mission did not change it.
+describe('acceptance criteria', () => {
+  test('AC-8: the login plan runs the bundled Codex binary directly, with no Node and no codex on PATH needed', () => {
+    const t = fakeTree('linux', 'x64', 'x86_64-unknown-linux-musl', '@openai/codex-linux-x64', 'current');
+    const bundled = locateBundledCodex(t.deps);
+    expect(bundled).not.toBeNull();
+    expect(bundled!.executablePath.endsWith('.js')).toBe(false); // never bin/codex.js, which needs node
+
+    const plan = planCodexCommand(['login'], bundled, { PATH: '/usr/bin:/bin', HOME: '/h' });
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.file).toBe(bundled!.executablePath);
+    // PATH never needs to carry a codex command or a node command for this to work.
+    expect(plan.env.PATH.split(':')).not.toContain('codex');
+  });
+});

@@ -34,7 +34,6 @@ export type WaitingKind =
   | 'serialized_surface'
   | 'mission_concurrent'
   | 'account_slots'
-  | 'oauth_parallelism'
   | 'codex_single_flight'
   | 'managed_entitlement'
   | 'mission_budget'
@@ -52,7 +51,7 @@ export type Rail = 'edit_time_leases' | 'declared_dependencies' | 'budgets_and_s
 
 export const RAIL_TEXT: Record<Rail, string> = {
   edit_time_leases: 'Files another agent is editing stay locked: this agent waits or is refused on them until they are released.',
-  declared_dependencies: 'Declared dependencies still apply.',
+  declared_dependencies: 'Dependency edges stay in place; the prerequisite is not marked done.',
   budgets_and_seats: 'Budgets, seats and plan limits still apply.',
   runner_capability: 'It still needs a runner that can run its role and backend.',
   task_hold: 'A hold a person put on the task still applies.',
@@ -125,7 +124,7 @@ export type ClaimLoopKey = 'path_overlap' | 'soft_overlap' | 'mission_concurrent
  * from the dependency gate (declared edges stay), `local_mission` hands a
  * local mission's task to a runner.
  */
-export type PrefilterLift = 'inferred_deps' | 'local_mission';
+export type PrefilterLift = 'inferred_deps' | 'local_mission' | 'declared_assess';
 
 interface KindSpec {
   class: WaitingClass;
@@ -142,6 +141,12 @@ interface KindSpec {
 
 const COORDINATION_RAILS: Rail[] = ['edit_time_leases', 'declared_dependencies', 'budgets_and_seats', 'runner_capability', 'task_hold'];
 const POLICY_RAILS: Rail[] = ['edit_time_leases', 'declared_dependencies', 'budgets_and_seats', 'runner_capability', 'task_hold'];
+/**
+ * Start anyway (spec 36df686b): a person may start a task past its declared
+ * dependency. The agent assesses first; the edge is kept, never satisfied.
+ */
+const assessForce = (): Omit<ForceSpec, 'lifts'> =>
+  ({ scope: 'member', railsRemaining: ['edit_time_leases', 'budgets_and_seats', 'runner_capability', 'task_hold'], mechanism: 'start_context' });
 const memberForce = (rails: Rail[] = COORDINATION_RAILS): Omit<ForceSpec, 'lifts'> =>
   ({ scope: 'member', railsRemaining: rails, mechanism: 'start_context' });
 
@@ -152,7 +157,8 @@ const memberForce = (rails: Rail[] = COORDINATION_RAILS): Omit<ForceSpec, 'lifts
  *  - `scope_undeclared_mutex` and `ordered_behind` are liftable by a HUMAN
  *    force start only; the admin MCP `claim_task force` keeps not lifting the
  *    mutex.
- *  - `dep_declared` is never forceable: a person wrote that order.
+ *  - `dep_declared` is startable by a person as Start anyway: the intent admits
+ *    the task's agent for assessment (`assessDependsOn`); the edge is kept.
  *  - `dep_inferred` / `serialized_surface` are forceable for claim-time
  *    ordering only; the edit-time anchor lease stays enforced, so migration
  *    numbering is still serialized.
@@ -163,7 +169,7 @@ export const WAITING_KIND_SPEC: Record<WaitingKind, KindSpec> = {
   task_held: { class: 'hold', strength: 'hard', intent: 'intentional', gateName: 'Task paused', releasesWhen: { event: 'hold.released', text: 'someone resumes it' }, owner: 'human', force: null },
   mission_held: { class: 'hold', strength: 'hard', intent: 'intentional', gateName: 'Mission not running', releasesWhen: { event: 'mission.armed', text: 'someone starts or resumes the mission' }, owner: 'human', force: memberForce(POLICY_RAILS) },
   mission_local: { class: 'hold', strength: 'hard', intent: 'intentional', gateName: 'Local-session mission', releasesWhen: { event: 'claimed', text: 'your session claims it' }, owner: 'human', force: memberForce(POLICY_RAILS), prefilterLift: 'local_mission' },
-  dep_declared: { class: 'dependency', strength: 'hard', intent: 'intentional', gateName: 'Declared dependency', releasesWhen: { event: 'task.completed+merged', text: 'its dependencies complete and merge' }, owner: 'agent', force: null },
+  dep_declared: { class: 'dependency', strength: 'hard', intent: 'intentional', gateName: 'Declared dependency', releasesWhen: { event: 'task.completed+merged', text: 'its dependencies complete and merge' }, owner: 'agent', force: assessForce(), prefilterLift: 'declared_assess' },
   dep_inferred: { class: 'coordination', strength: 'hard', intent: 'incidental', gateName: 'File-overlap ordering', releasesWhen: { event: 'task.completed+merged', text: 'the overlapping task completes and merges' }, owner: 'system', force: memberForce(), prefilterLift: 'inferred_deps' },
   subject_dead: { class: 'dependency', strength: 'hard', intent: 'intentional', gateName: 'Closed subject PR', releasesWhen: { event: 'never', text: 'never: its subject PR is gone' }, owner: 'human', force: memberForce(POLICY_RAILS) },
   pr_overlap_live: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Open-PR file overlap', releasesWhen: { event: 'path_claim.released', text: 'that PR merges, closes or narrows its files' }, owner: 'agent', force: memberForce(), claimLoopKey: 'path_overlap' },
@@ -176,7 +182,6 @@ export const WAITING_KIND_SPEC: Record<WaitingKind, KindSpec> = {
   serialized_surface: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Serialized surface', releasesWhen: { event: 'task.finished', text: 'the task holding that surface finishes' }, owner: 'agent', force: memberForce(), claimLoopKey: 'soft_overlap' },
   mission_concurrent: { class: 'capacity', strength: 'hard', intent: 'intentional', gateName: 'Mission concurrency limit', releasesWhen: { event: 'slot.freed', text: 'another task in the mission finishes' }, owner: 'system', force: memberForce(), claimLoopKey: 'mission_concurrent' },
   account_slots: { class: 'capacity', strength: 'hard', intent: 'incidental', gateName: 'Account worker slots', releasesWhen: { event: 'slot.freed', text: 'a worker slot frees' }, owner: 'system', force: null },
-  oauth_parallelism: { class: 'capacity', strength: 'hard', intent: 'incidental', gateName: 'Seat parallelism', releasesWhen: { event: 'slot.freed', text: 'seat pressure drops' }, owner: 'system', force: null },
   codex_single_flight: { class: 'capacity', strength: 'hard', intent: 'incidental', gateName: 'One Codex task per workspace', releasesWhen: { event: 'slot.freed', text: 'the running Codex task ends' }, owner: 'system', force: null },
   managed_entitlement: { class: 'budget', strength: 'hard', intent: 'incidental', gateName: 'Plan limit', releasesWhen: { event: 'slot.freed', text: 'a managed run ends or the allowance refills' }, owner: 'system', force: null },
   mission_budget: { class: 'budget', strength: 'hard', intent: 'intentional', gateName: 'Mission budget', releasesWhen: { event: 'budget.raised', text: 'the mission budget is raised' }, owner: 'human', force: memberForce(POLICY_RAILS) },
@@ -340,7 +345,7 @@ export function forceDialog(reasons: readonly WaitingReason[]): ForceDialog {
     kind: r.kind,
     gate: gateName(r.kind),
     // A mission blocker's label only restates the gate; the sentence says it.
-    sentence: `${r.blocker && r.blocker.type !== 'mission' ? `${r.blocker.label}: ` : ''}${r.because}`,
+    sentence: `${r.blocker && r.blocker.type !== 'mission' ? `${r.blocker.label}: ` : ''}${r.because}${r.kind === 'dep_declared' ? '; the agent assesses what can proceed first and parks if nothing can' : ''}`,
   }));
   const overlapped = forceable.filter(r => r.overlap && r.overlap.pathCount > 0);
   const fileCount = overlapped.reduce((n, r) => n + (r.overlap?.pathCount ?? 0), 0);
@@ -502,6 +507,11 @@ export interface ForceStartIntent {
    * also requires each id to be in `pathDeclaration.inferredDependsOn`.
    */
   liftDependsOn?: string[];
+  /**
+   * Start anyway: the declared dependsOn ids this intent admits for assessment
+   * (claim/deps-gate.ts). The edges are never edited or satisfied.
+   */
+  assessDependsOn?: string[];
   /** The blockers at confirmation: the overlap basis evidence for outcome labelling. */
   blockers: Array<{ kind: WaitingKind; type?: BlockerType; id?: string; label?: string; live?: boolean; pathCount?: number; areas?: AreaCount[]; basis?: OverlapBasis; overlapKind?: string; sharedPaths?: string[] }>;
   note?: string | null;

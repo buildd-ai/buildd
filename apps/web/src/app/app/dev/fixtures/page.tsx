@@ -42,6 +42,7 @@ import AgentAccessFixture from './AgentAccessFixture';
 import ToolBreakdownFixture from './tool-breakdown-fixture';
 import EntitlementBlockedFixture from './EntitlementBlockedFixture';
 import CoordinationHoldFixture from './CoordinationHoldFixture';
+import StartAnywayFixture from './StartAnywayFixture';
 import RunnerSizeFixture from './RunnerSizeFixture';
 import RunnerIsolationFixture from './RunnerIsolationFixture';
 import WorkspacesListFixture from './WorkspacesListFixture';
@@ -103,6 +104,7 @@ import {
     AGENT_ACCESS_FIXTURE_STATE,
     ENTITLEMENT_BLOCKED_FIXTURE_STATE,
     COORDINATION_HOLD_FIXTURE_STATE,
+    START_ANYWAY_FIXTURE_STATE,
     FAILURE_KINDS_FIXTURE_STATE,
     DELIVERY_STATES_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
@@ -260,6 +262,9 @@ export default function DevFixturesPage() {
     }
     if (state === COORDINATION_HOLD_FIXTURE_STATE) {
         return <CoordinationHoldFixture />;
+    }
+    if (state === START_ANYWAY_FIXTURE_STATE) {
+        return <StartAnywayFixture />;
     }
 
     if (state === TOOL_BREAKDOWN_FIXTURE_STATE) {

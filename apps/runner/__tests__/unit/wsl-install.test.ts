@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { installWsl, parseWindowsBuild, LINUX_INSTALLER, type WslInstallDeps, type CommandResult } from '../../src/wsl-setup';
+import { installWsl, inspectWsl, parseWindowsBuild, LINUX_INSTALLER, type WslInstallDeps, type CommandResult } from '../../src/wsl-setup';
 import { classifyCliArgs, RUNNER_USAGE } from '../../src/cli-args';
 
 /**
@@ -249,5 +249,66 @@ describe('buildd wsl install: command line', () => {
   });
   test('usage lists buildd wsl install', () => {
     expect(RUNNER_USAGE).toContain('buildd wsl install');
+  });
+});
+
+// Acceptance criteria (Living Spec a0b82b5d, part 1): one test per check id,
+// named so grading can find it. The scenarios above already exercise the
+// same code paths in more detail; these are the direct GIVEN/WHEN/THEN.
+describe('acceptance criteria', () => {
+  test('AC-1: an unsupported Windows build exits 1 before any wsl.exe call, naming both builds', async () => {
+    const f = fake({ release: '10.0.18363', answer: true });
+    expect(await installWsl(undefined, f)).toBe(1);
+    expect(text(f)).toContain('18363');
+    expect(text(f)).toContain('19041 or later');
+    expect(f.calls).toEqual([]);
+    expect(f.interactive).toEqual([]);
+  });
+
+  test('AC-2: declining the install question changes nothing and prints the exact operator command', async () => {
+    const f = fake({ lists: [ok('')], answer: false });
+    expect(await installWsl(undefined, f)).toBe(1);
+    expect(installed(f)).toBe(false);
+    expect(f.interactive).toEqual([]);
+    expect(text(f)).toContain('wsl --install -d Ubuntu --no-launch');
+  });
+
+  test('AC-3: a yes runs the install once; a reboot stops it, and rerunning continues to the Linux user and installer', async () => {
+    const first = fake({ lists: [ok(''), ok('')], answer: true });
+    expect(await installWsl(undefined, first)).toBe(1);
+    expect(first.interactive.filter(c => c[1] === '--install')).toEqual([['wsl.exe', ...INSTALL]]);
+    expect(text(first)).toMatch(/restart/i);
+    expect(first.interactive.some(c => c.includes(LINUX_INSTALLER))).toBe(false);
+
+    const rerun = fake({ lists: [ok(ubuntu2)], uids: ['0', '1000'], answer: true });
+    expect(await installWsl(undefined, rerun)).toBe(0);
+    expect(rerun.asked).toEqual([]);
+    expect(rerun.interactive).toEqual([
+      ['wsl.exe', '--distribution', 'Ubuntu'],
+      ['wsl.exe', '--distribution', 'Ubuntu', '--exec', 'bash', '-lc', LINUX_INSTALLER],
+    ]);
+  });
+
+  test('AC-4: a WSL1-only machine or a refused listing installs or converts nothing, naming the operator step; the probe stays read-only', async () => {
+    const wsl1 = fake({ lists: [ok('  NAME STATE VERSION\n* Ubuntu Stopped 1\n')], answer: true });
+    expect(await installWsl(undefined, wsl1)).toBe(1);
+    expect(text(wsl1)).toContain('wsl --set-version "Ubuntu" 2');
+    expect(installed(wsl1)).toBe(false);
+    expect(wsl1.interactive).toEqual([]);
+
+    const denied = fake({ lists: [{ code: 1, stdout: 'E_ACCESSDENIED' }], answer: true });
+    expect(await installWsl(undefined, denied)).toBe(1);
+    expect(text(denied)).toContain('same Windows user');
+    expect(installed(denied)).toBe(false);
+
+    // bun run wsl:setup (inspectWsl) stays a probe: it never issues --install,
+    // whatever it finds.
+    const probeCalls: string[][] = [];
+    inspectWsl('win32', undefined, (file, args) => {
+      probeCalls.push([file, ...args]);
+      return args[0] === '--list' ? ok(ubuntu2) : { code: 1, stdout: '', missing: true };
+    });
+    expect(probeCalls.length).toBeGreaterThan(0);
+    expect(probeCalls.some(c => c[1] === '--install')).toBe(false);
   });
 });

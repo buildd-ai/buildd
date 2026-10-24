@@ -61,4 +61,39 @@ describe('GET /api/tasks/[id]/waiting', () => {
     expect((await (await call()).json()).waitingReasons).toEqual([]);
     expect(mockProbe).not.toHaveBeenCalled();
   });
+
+  describe('Start anyway state (spec 36df686b R-12, AC-16)', () => {
+    const intent = (over: Record<string, unknown> = {}) => ({ id: 'f1', at: '2026-10-24T11:00:00Z', kinds: ['dep_declared'], loopKeys: [], assessDependsOn: ['up-1'], expiresAt: new Date(Date.now() + 3_600_000).toISOString(), reasonsDigest: 'x', blockers: [], ...over });
+
+    it('an accepted request on a pending task reads requested, not running', async () => {
+      mockTasksFindFirst.mockResolvedValueOnce({ id: 't1', workspaceId: 'ws', status: 'pending', context: { forceStart: intent() } });
+      const body = await (await call()).json();
+      expect(body.startAnyway).toMatchObject({ phase: 'requested', executing: false });
+    });
+
+    it('a claimed task reads assessing and executing, though it is never probed', async () => {
+      mockTasksFindFirst.mockResolvedValueOnce({ id: 't1', workspaceId: 'ws', status: 'in_progress', context: { forceStartHistory: [{ ...intent(), claimedAt: '2026-10-24T11:05:00Z' }] } });
+      const body = await (await call()).json();
+      expect(body.startAnyway).toMatchObject({ phase: 'assessing', executing: true });
+      expect(mockProbe).not.toHaveBeenCalled();
+    });
+
+    it('a parked task names its prerequisite and next step and holds no slot', async () => {
+      mockTasksFindFirst
+        .mockResolvedValueOnce({ id: 't1', workspaceId: 'ws', status: 'pending', context: {
+          forceStartHistory: [{ ...intent(), claimedAt: '2026-10-24T11:05:00Z' }],
+          waitExit: { blockerTaskId: 'up-1', reason: 'Needs the new API', at: '2026-10-24T11:30:00Z' },
+        } })
+        .mockResolvedValueOnce({ title: 'Upstream task' });
+      const body = await (await call()).json();
+      expect(body.startAnyway).toMatchObject({ phase: 'blocked', executing: false, blockerTaskId: 'up-1' });
+      expect(body.startAnyway.label).toContain('Upstream task');
+      expect(body.startAnyway.label).toContain('Needs the new API');
+    });
+
+    it('a task never started this way carries no startAnyway', async () => {
+      mockTasksFindFirst.mockResolvedValueOnce({ id: 't1', workspaceId: 'ws', status: 'pending', context: {} });
+      expect((await (await call()).json()).startAnyway).toBeUndefined();
+    });
+  });
 });

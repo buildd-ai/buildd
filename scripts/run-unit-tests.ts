@@ -38,8 +38,8 @@ const UNIT_TEST_ROOTS = [
 ] as const;
 
 /**
- * Test-first acceptance files for spec "Registered requirement verification in
- * Build, Verify and Deliver" r1. They fail until the build lands, by design, so
+ * Test-first acceptance files (spec "Start anyway: assess, coordinate and
+ * continue" r1). They fail until the build lands, by design, so
  * the unit gate must not collect them; scripts/run-acceptance-tests.ts runs them
  * per criterion. The build task removes each entry once its file passes.
  */

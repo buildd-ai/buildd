@@ -92,6 +92,20 @@ describe('checkPathClaim', () => {
     expect(mockAcquirePathClaims).not.toHaveBeenCalled();
   });
 
+  it('Start anyway: refuses file ownership until the assessment is recorded, and leases nothing (AC-9)', async () => {
+    const brief = { startAnywayAssessment: { at: '2026-10-23T10:00:00.000Z', text: 'brief' } };
+    mockTasksFindFirst.mockResolvedValue(task({ dependsOn: [SIBLING_ID], context: brief }));
+    const refused = await checkPathClaim({ ...base, paths: ['src/a.ts'] });
+    expect(refused.kind).toBe('conflict');
+    expect((refused as any).body).toMatchObject({ claimed: false, code: 'assessment_required', blockingTaskId: SIBLING_ID });
+    expect(mockAcquirePathClaims).not.toHaveBeenCalled();
+    expect(mockRegisterWaiter).not.toHaveBeenCalled();
+
+    // Recorded after the brief: the ordinary claim runs (another writer's lease still refuses there).
+    mockTasksFindFirst.mockResolvedValue(task({ context: { ...brief, startAnywayAssessed: { at: '2026-10-23T10:05:00.000Z' } } }));
+    expect((await checkPathClaim({ ...base, paths: ['src/a.ts'] })).kind).toBe('claimed');
+  });
+
   it('refuses a terminal task', async () => {
     mockTasksFindFirst.mockResolvedValue(task({ status: 'completed' }));
     const r = await checkPathClaim({ ...base, paths: ['a.ts'] });
