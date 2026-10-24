@@ -34,15 +34,47 @@ export const LANE_PARK_BACKSTOP_MS = 10 * 60_000;
 /** The outcome prefix of a parked refresh; the wake finds parked rows by it. */
 export const LANE_PARKED_OUTCOME = 'parked:lane_busy';
 
+type LaneDelivery = { state: string; stateReason: string | null; ci?: string | null; ciHeadSha?: string | null; currentHeadSha?: string | null };
+type LaneAttempt = { family: string; status: string };
+
+/** CI's last reading is red, and on the head the PR has now: it lands only after a fix. */
+export function redAtHead(d: Pick<LaneDelivery, 'ci' | 'ciHeadSha' | 'currentHeadSha'>): boolean {
+  return d.ci === 'red' && d.ciHeadSha != null && d.ciHeadSha === d.currentHeadSha;
+}
+
 /**
- * The deliveries that still hold a lane they took: in the refresh window, and not red at
- * their head. A red head lands only after a fix, so it does not keep the others waiting
- * (eccb6687): the red releases its row, and a re-run reading running later finds the lane taken.
+ * A CI attempt (a fix or a re-run) is queued or running. While one is, T10 rejects a red
+ * reading as `fix_in_flight`, so the red never reaches the delivery: this is how the lane
+ * sees a head that is being fixed.
  */
-export function holdsLane(d: { state: string; stateReason: string | null; ci?: string | null; ciHeadSha?: string | null; currentHeadSha?: string | null }): boolean {
+export function ciFixOpen(attempts: readonly LaneAttempt[]): boolean {
+  return attempts.some((a) => a.family === 'ci' && (a.status === 'queued' || a.status === 'running'));
+}
+
+/** Will not land soon: red at its head, or a CI fix still in flight. */
+function notLandableSoon(d: LaneDelivery, attempts: readonly LaneAttempt[]): boolean {
+  return redAtHead(d) || ciFixOpen(attempts);
+}
+
+/**
+ * The deliveries that still hold a lane they took: in the refresh window, not red at their
+ * head and with no CI fix in flight. Such a head lands only after a fix, so it does not keep
+ * the others waiting (eccb6687): it releases its row, and a re-run reading running later
+ * finds the lane taken.
+ */
+export function holdsLane(d: LaneDelivery, attempts: readonly LaneAttempt[] = []): boolean {
   const inWindow = d.state === 'APPROVED' || d.state === 'LANDING' || (d.state === 'REPAIRING' && d.stateReason === 'behind');
-  const redAtHead = d.ci === 'red' && d.ciHeadSha != null && d.ciHeadSha === d.currentHeadSha;
-  return inWindow && !redAtHead;
+  return inWindow && !notLandableSoon(d, attempts);
+}
+
+/**
+ * Whether a behind-refresh goes through the lane at all. A delivery that will not land soon
+ * refreshes beside it, neither taking nor waiting on it: its refresh moves the head off the
+ * red reading, and a lane it took then would hold every other behind PR behind one that still
+ * needs a fix (eccb6687: the lane passed from one red head to another, a fix still in flight).
+ */
+export function refreshTakesLane(d: LaneDelivery, attempts: readonly LaneAttempt[] = []): boolean {
+  return !notLandableSoon(d, attempts);
 }
 
 export type LaneAcquisition =

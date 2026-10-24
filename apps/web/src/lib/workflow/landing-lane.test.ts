@@ -12,7 +12,8 @@ import {
 
 const render = (q: SQL) => new PgDialect().sqlToQuery(q);
 const HOLDING = "hd.state IN ('APPROVED', 'LANDING') OR (hd.state = 'REPAIRING' AND hd.state_reason = 'behind')";
-const NOT_RED = "AND NOT COALESCE(hd.ci = 'red' AND hd.ci_head_sha = hd.current_head_sha, false)";
+const NOT_RED = "AND NOT (COALESCE(hd.ci = 'red' AND hd.ci_head_sha = hd.current_head_sha, false)";
+const NO_FIX = "EXISTS (SELECT 1 FROM workflow_attempts fa WHERE fa.delivery_id = hd.id AND fa.family = 'ci' AND fa.status IN ('queued', 'running'))";
 const TENURE = 'l.granted_at > now() - make_interval(secs =>';
 const key = { repoFullName: 'acme/x', baseRef: 'dev' };
 
@@ -23,6 +24,7 @@ describe('landing lane SQL', () => {
     expect(sql).toContain('WHERE l.delivery_id = EXCLUDED.delivery_id OR NOT (l.lease_until > now() AND l.granted_at');
     expect(sql).toContain(HOLDING);
     expect(sql).toContain(NOT_RED);
+    expect(sql).toContain(NO_FIX);
     expect(sql).toContain(TENURE);
     expect(sql).toContain('RETURNING l.delivery_id');
     // Tenure runs from the grant: only a renewal inside a running lease keeps it.
@@ -38,6 +40,9 @@ describe('landing lane SQL', () => {
     const wake = render(wakeNextWaiterSql(key));
     expect(wake.sql).toContain("e.kind = 'refresh_branch' AND e.status = 'pending' AND e.outcome LIKE $1::text");
     expect(wake.sql).toContain('ORDER BY e.created_at, e.id');
+    // A waiter red at its head or mid-fix refreshes beside the lane, so the wake passes it over.
+    expect(wake.sql).toContain("AND NOT (COALESCE(d.ci = 'red' AND d.ci_head_sha = d.current_head_sha, false)");
+    expect(wake.sql).toContain("fa.delivery_id = d.id AND fa.family = 'ci'");
     expect(wake.params).toEqual([`${LANE_PARKED_OUTCOME}%`, 'acme/x', 'dev']);
   });
 

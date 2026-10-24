@@ -193,6 +193,51 @@ describe('landing lane: one behind-refresh in flight per base', () => {
     expect(w.gh.pr(w.repo, a.prNumber).merged).toBe(false);
   });
 
+  // eccb6687 (sweep 202fe852): the lane passed from one not-landable head to another. A free lane
+  // goes to the next waiter that can land; one with a CI fix in flight refreshes beside it.
+  test('enforce: the holder goes red and the oldest waiter has a CI fix in flight → the lane skips it to the next, and the fixing one refreshes beside the lane', async () => {
+    w = await world({ gitConfig: { landingLane: 'enforce' } });
+    const a = await w.openPr({ branch: 'feat/a-deps', files: { 'package.json': '{ "name": "x", "version": "2" }\n' } });
+    const b = await w.openPr({ branch: 'feat/b-fixing', files: { 'src/b.ts': 'export const b = 2;\n' } });
+    const c = await w.openPr({ branch: 'feat/c-code', files: { 'src/c.ts': 'export const c = 3;\n' } });
+    for (const pr of [a, b, c]) await w.approve(pr);
+    w.gh.advanceBase(w.repo, 'dev', { 'src/other.ts': 'export const o = 1;\n' });
+    await w.deliver();
+    for (const pr of [a, b, c]) {
+      await sweep(pr);
+      await w.deliver();
+    }
+    expect(updateBranchCalls(a)).toHaveLength(1);
+    expect(updateBranchCalls(b)).toHaveLength(0);
+    expect(updateBranchCalls(c)).toHaveLength(0);
+
+    // B's CI fix is in flight (T10 rejects its red reading as fix_in_flight, so only the attempt shows it).
+    await q(sql`INSERT INTO workflow_attempts (delivery_id, family, attempt_no, mode, status, max_attempts)
+      VALUES (${b.deliveryId}::uuid, 'ci', 1, 'agent', 'running', 3)`);
+    // A goes red at its head and its drain settles the lane: the wake passes over B and makes C due.
+    const head = (await w.delivery(a)).currentHeadSha!;
+    await applyCommand({ type: 'CiObserved', actor: 'webhook:ci_reading', headSha: head, verdict: 'red', liveChecks: { complete: true, failing: ['test'] } }, { ref: { deliveryId: a.deliveryId } });
+    await drainDelivery(a.deliveryId);
+    await drainDelivery(c.deliveryId);
+    expect(updateBranchCalls(c)).toHaveLength(1);
+    expect(updateBranchCalls(b)).toHaveLength(0);
+    const holder = async () => (await q<{ delivery_id: string }>(sql`SELECT delivery_id FROM landing_lanes WHERE repo_full_name = ${w.repo}`))[0]?.delivery_id;
+    expect(await holder()).toBe(c.deliveryId);
+
+    // B's backstop comes due: it refreshes beside the lane, neither waiting on C nor taking it.
+    await q(sql`UPDATE workflow_effects SET not_before = now() WHERE delivery_id = ${b.deliveryId}::uuid AND kind = 'refresh_branch'`);
+    await drainDelivery(b.deliveryId);
+    expect(updateBranchCalls(b)).toHaveLength(1);
+    expect(await holder()).toBe(c.deliveryId);
+
+    await green(c);
+    await sweep(c);
+    await w.deliver();
+    expect(w.gh.pr(w.repo, c.prNumber).merged).toBe(true);
+    expect(w.gh.pr(w.repo, a.prNumber).merged).toBe(false);
+    expect(w.gh.unsupported).toEqual([]);
+  });
+
   test('enforce: a lease that ran out frees the lane for the next drain, with no release', async () => {
     w = await world({ gitConfig: { landingLane: 'enforce' } });
     const { a, b } = await twoBehind();

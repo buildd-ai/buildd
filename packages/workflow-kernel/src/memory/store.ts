@@ -23,7 +23,7 @@
  */
 import type { ApplyDecision, AttemptOp, Command, EffectKind, FindingOp, RecordOnly, RoundOp } from '../commands';
 import { effectRetry } from '../effects';
-import { holdsLane, LANE_MAX_TENURE_MS, LANE_PARKED_OUTCOME } from '../landing-lane';
+import { holdsLane, refreshTakesLane, LANE_MAX_TENURE_MS, LANE_PARKED_OUTCOME } from '../landing-lane';
 import { MERGE_HELD_OUTCOME } from '../merge-hold';
 import type {
   ClaimedEffect, DeliveryRef, EffectAuthority, EffectSnapshot, FactInsert, FollowupEffect, LaneKey, Store, StoredFact, TransitionWrite,
@@ -387,9 +387,13 @@ export class MemoryStore implements Store {
 
   // ── Landing lane ─────────────────────────────────────────────────────────
 
+  private attemptsOf(deliveryId: string): Array<{ family: string; status: string }> {
+    return this.attempts.filter((a) => a.deliveryId === deliveryId);
+  }
+
   private laneHolds(l: LaneRecord): boolean {
     const d = this.deliveries.get(l.deliveryId);
-    return ms(l.leaseUntil) > this.clock.ms() && ms(l.grantedAt) + LANE_MAX_TENURE_MS > this.clock.ms() && !!d && holdsLane(d);
+    return ms(l.leaseUntil) > this.clock.ms() && ms(l.grantedAt) + LANE_MAX_TENURE_MS > this.clock.ms() && !!d && holdsLane(d, this.attemptsOf(l.deliveryId));
   }
 
   async acquireLane(k: LaneKey & { deliveryId: string; headSha: string; holdMs: number }): Promise<boolean> {
@@ -427,7 +431,7 @@ export class MemoryStore implements Store {
       .filter((e) => {
         const d = this.deliveries.get(e.deliveryId);
         return e.kind === 'refresh_branch' && e.status === 'pending' && (e.outcome ?? '').startsWith(LANE_PARKED_OUTCOME)
-          && d?.repoFullName === k.repoFullName && d?.baseRef === k.baseRef;
+          && d?.repoFullName === k.repoFullName && d?.baseRef === k.baseRef && refreshTakesLane(d, this.attemptsOf(e.deliveryId));
       })
       .sort((a, b) => ms(a.createdAt) - ms(b.createdAt) || a.seq - b.seq)[0];
     if (!next) return null;

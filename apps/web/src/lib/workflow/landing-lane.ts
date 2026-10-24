@@ -12,9 +12,9 @@
  * compare-and-set. A row holds only while its lease runs and its delivery is
  * still in the refresh window (APPROVED or LANDING, or REPAIRING for `behind`);
  * a row that holds nothing is taken over by the next acquire, so a lost release
- * costs the lease, never the lane. A holder red at its head, or one that has
- * held past LANE_MAX_TENURE_MS however often it renewed, holds nothing either. No GitHub read: the delivery's kernel state
- * is the whole answer.
+ * costs the lease, never the lane. A holder red at its head or with a CI
+ * fix in flight, or one that has held past LANE_MAX_TENURE_MS however often it renewed,
+ * holds nothing either. No GitHub read: the delivery's kernel state is the whole answer.
  *
  * The lane never drains effects itself. A parked refresh is an ordinary
  * pending outbox row (effects.ts `parkEffectSql` hands its attempt back), and
@@ -33,15 +33,24 @@ export {
 
 /**
  * The lane row `l` still holds: lease running, tenure not spent, and its delivery in the
- * refresh window and not red at its head (the package's `holdsLane`).
+ * refresh window and not about to need a fix (the package's `holdsLane`).
  */
 function holdingSql(): SQL {
   return sql`(l.lease_until > now() AND l.granted_at > now() - make_interval(secs => ${LANE_MAX_TENURE_MS}::int / 1000.0) AND EXISTS (
     SELECT 1 FROM workflow_deliveries hd
     WHERE hd.id = l.delivery_id
       AND (hd.state IN ('APPROVED', 'LANDING') OR (hd.state = 'REPAIRING' AND hd.state_reason = 'behind'))
-      AND NOT COALESCE(hd.ci = 'red' AND hd.ci_head_sha = hd.current_head_sha, false)
+      AND NOT ${notLandableSoonSql(sql`hd`)}
   ))`;
+}
+
+/**
+ * Delivery `d` will not land soon (the package's `refreshTakesLane` negated): red at its
+ * head, or a CI attempt queued or running (T10 rejects the red reading while one is).
+ */
+function notLandableSoonSql(d: SQL): SQL {
+  return sql`(COALESCE(${d}.ci = 'red' AND ${d}.ci_head_sha = ${d}.current_head_sha, false)
+        OR EXISTS (SELECT 1 FROM workflow_attempts fa WHERE fa.delivery_id = ${d}.id AND fa.family = 'ci' AND fa.status IN ('queued', 'running')))`;
 }
 
 /**
@@ -76,7 +85,11 @@ DELETE FROM landing_lanes l WHERE l.delivery_id = ${deliveryId}::uuid AND NOT ${
 RETURNING l.repo_full_name, l.base_ref`;
 }
 
-/** Make the oldest parked refresh on this lane due now. Returns its delivery. */
+/**
+ * Make the oldest parked refresh that would take this lane due now (the package's
+ * `refreshTakesLane`: not red at its head, no CI fix in flight; such a one refreshes
+ * beside the lane at its backstop). Returns its delivery.
+ */
 export function wakeNextWaiterSql(k: LaneKey): SQL {
   return sql`-- workflow:wake_landing_lane
 UPDATE workflow_effects SET not_before = now(), updated_at = now()
@@ -84,6 +97,7 @@ WHERE id = (
   SELECT e.id FROM workflow_effects e JOIN workflow_deliveries d ON d.id = e.delivery_id
   WHERE e.kind = 'refresh_branch' AND e.status = 'pending' AND e.outcome LIKE ${LANE_PARKED_OUTCOME + '%'}::text
     AND d.repo_full_name = ${k.repoFullName}::text AND d.base_ref = ${k.baseRef}::text
+    AND NOT ${notLandableSoonSql(sql`d`)}
   ORDER BY e.created_at, e.id
   LIMIT 1
 )
