@@ -28,7 +28,7 @@ import { evaluateSoftOverlaps, readSoftOverlaps } from '@/app/api/workers/claim/
 import { loadSoftOverlapHolders } from '@/app/api/workers/claim/soft-overlap-store';
 import { overlapHolds, workspaceHardSurface } from '@/app/api/workers/claim/overlap-policy';
 import { checkMissionLocal } from '@/app/api/workers/claim/held-gate';
-import { BYPASS_DEPS_GATE_KEY, BYPASS_HELD_GATE_KEY, hasBypassFlag } from '@/lib/bypass-flags';
+import { BYPASS_HELD_GATE_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import { evaluateCoordinationGates } from '@/app/api/workers/claim/coordination-gates';
 import { loadMissionCoordination, loadOpenPrTasksByWorkspace } from '@/app/api/workers/claim/coordination-snapshot';
 import { ORDERED_BEHIND_REASON } from '@/app/api/workers/claim/claim-plan-store';
@@ -161,7 +161,6 @@ function holdOverlap(paths: string[], overlapKind: string | null) {
 async function dependencyReasons(task: ProbeTask): Promise<WaitingReason[]> {
   const deps = ((task.dependsOn as string[] | null) ?? []).filter(id => id !== task.id).slice(0, DEP_CAP);
   if (deps.length === 0) return [];
-  if (hasBypassFlag(task.context as Record<string, unknown> | null, BYPASS_DEPS_GATE_KEY)) return [];
   const [holds, satisfied] = await Promise.all([
     loadTaskCoordinationHolds({ ...(task as any), status: 'pending' }).catch(() => [] as CoordinationHold[]),
     unsatisfiedDeps(task.id, deps),

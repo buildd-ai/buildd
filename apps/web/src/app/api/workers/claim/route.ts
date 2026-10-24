@@ -67,6 +67,7 @@ import { allowExplicitClaim, EXPLICIT_CLAIM_WINDOW_SEC } from './explicit-claim-
 import { FORCE_CLAIM_CONTEXT_KEY, withoutForceClaim } from '@/lib/force-claim';
 import { readForceStart } from '@buildd/core/waiting-reason';
 import { consumeForceStart, recordForceStartClaim } from '@/lib/force-start';
+import { assessmentContext, loadPrerequisites, START_ANYWAY_ASSESSMENT_KEY } from '@/lib/start-anyway';
 import { describeExplicitDeferral } from './explicit-deferral';
 import { decideClaimIsolation, teamSizeLoader } from './isolation-gate';
 import { CREDENTIAL_BLOCK_CONTEXT_KEY, credentialBlockFromDeferral, stampCredentialBlock } from '@/lib/credential-block';
@@ -2652,6 +2653,11 @@ export async function POST(req: NextRequest) {
     if (forced) {
       console.log(`[claim] force claim: task ${task.id} past [${forceBypassed.join(', ')}] by admin account ${account.id}`);
     }
+    // Start anyway: the claim that consumes an intent admitting declared edges
+    // hands the agent the prerequisites' live state as of now (R-4).
+    const assess = forceStartIntent?.assessDependsOn?.length
+      ? assessmentContext(task as any, await loadPrerequisites(forceStartIntent.assessDependsOn).catch(() => []), now)
+      : null;
     const patchedContext = {
       // A previous claim's force audit never carries over (withoutForceClaim),
       // and a force-start intent is single-use: consumed into its history here.
@@ -2664,6 +2670,7 @@ export async function POST(req: NextRequest) {
           bypassed: [...forceBypassed],
         },
       } : {}),
+      ...(assess ? { [START_ANYWAY_ASSESSMENT_KEY]: assess } : {}),
       model: resolvedModel,
       modelPinned: explicit !== null,
       routingReason: routingDecision.reason,

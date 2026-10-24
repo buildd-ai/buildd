@@ -206,7 +206,7 @@ describe('TaskActionZone: coordination holds', () => {
     expect([...posts[0].body.force.kinds].sort()).toEqual(['dep_inferred', 'mission_local']);
   });
 
-  it('a declared dependency stays: blocked panel says so and offers no Force start', async () => {
+  it('a declared dependency stays: blocked panel says so and offers Start anyway, not Force start', async () => {
     hold = [migrationEdge('h1'), makeWaitingReason('dep_declared', {
       because: 'it was declared as a dependency',
       blocker: { type: 'task', id: 'd1', label: '“design first”', href: '/app/tasks/d1' },
@@ -217,7 +217,8 @@ describe('TaskActionZone: coordination holds', () => {
     // Counted apart: the declared dependency is the headline, the overlap edge is not a dependency.
     expect(text).toContain('Waiting on 1 declared dependency');
     expect(text).not.toMatch(/2 dependencies/);
-    expect(q('[data-action="force_start_offer"]')).toBeNull();
+    // A person may start it anyway: the agent assesses first (spec 36df686b).
+    expect(q('[data-action="force_start_offer"]')!.textContent).toBe('Start anyway…');
   });
 
   it('nothing holding it: the plain queued copy, no waiting line', async () => {
