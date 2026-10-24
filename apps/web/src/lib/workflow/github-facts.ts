@@ -249,6 +249,14 @@ export function githubReader(
         return /\b404\b/.test(err instanceof Error ? err.message : String(err)) ? false : null;
       }
     },
+    async mergeBase(repoFullName, ref, headSha) {
+      try {
+        const cmp = await api(installationId, `/repos/${repoFullName}/compare/${encodeURIComponent(ref)}...${headSha}`) as { merge_base_commit?: { sha?: string } } | null;
+        return cmp?.merge_base_commit?.sha ?? null;
+      } catch {
+        return null;
+      }
+    },
     async contains(repoFullName, ancestorSha, headSha) {
       try {
         const cmp = await api(installationId, `/repos/${repoFullName}/compare/${ancestorSha}...${headSha}`) as { status?: string } | null;
