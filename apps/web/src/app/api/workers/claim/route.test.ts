@@ -61,7 +61,6 @@ const mockMissionsFindMany = mock(() => [] as any[]);
 // mission keep the role gate applying exactly as before.
 const mockTasksFindFirst = mock(() => null as any);
 const mockMissionsFindFirst = mock(() => null as any);
-const mockOauthEpisodesFindMany = mock(() => [] as any[]);
 const mockBackendPausesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockAccountsFindFirst = mock(() => Promise.resolve(null as any));
 
@@ -105,18 +104,6 @@ mock.module('@/lib/openai-credential', () => ({
   resolveOpenAiApiKey: mock(() => Promise.resolve(null as any)),
 }));
 
-const mockLoadOauthEpisodes = mock(() => Promise.resolve([] as any[]));
-const mockMeasureOauthWindow = mock(() => Promise.resolve({
-  windowStartedAt: new Date(),
-  usage: { workerCount: 0, turns: 0, tokens: 0, weightedTurns: 0, weightedTokens: 0 },
-}));
-const mockCountLiveSeatWorkers = mock(() => Promise.resolve(0));
-mock.module('@/lib/oauth-budget-window', () => ({
-  loadOauthEpisodes: mockLoadOauthEpisodes,
-  measureOauthWindow: mockMeasureOauthWindow,
-  countLiveSeatWorkers: mockCountLiveSeatWorkers,
-  resolveSeatIdPeers: mock((a: { id: string }) => Promise.resolve([a.id])),
-}));
 
 const mockRefreshMcpConnectorCredential = mock(() => Promise.resolve('error' as string));
 mock.module('@/lib/mcp-connector-refresh', () => ({
@@ -151,7 +138,6 @@ mock.module('@buildd/core/db', () => ({
       // brokered by the connector gateway (built-in Axiom/Vercel entries).
       connectorCatalogEntries: { findMany: async () => [] },
       missions: { findMany: mockMissionsFindMany, findFirst: mockMissionsFindFirst },
-      oauthBudgetEpisodes: { findMany: mockOauthEpisodesFindMany },
     },
     update: (table: any) => {
       // The mocked schema's workers table is an object (its `turns` column), not the string 'workers'.
@@ -231,7 +217,6 @@ mock.module('@buildd/core/db/schema', () => ({
   secrets: { accountId: 'accountId', purpose: 'purpose', label: 'label', teamId: 'teamId', workspaceId: 'workspaceId' },
   tenantBudgets: { id: 'id', tenantId: 'tenantId', teamId: 'teamId', budgetResetsAt: 'budgetResetsAt' },
   backendPauses: { teamId: 'teamId', backend: 'backend', resetsAt: 'resetsAt' },
-  oauthBudgetEpisodes: { accountId: 'accountId', exhaustedAt: 'exhaustedAt' },
   teams: { id: 'id', enabledBackends: 'enabledBackends' },
   connectors: { id: 'id', teamId: 'teamId', name: 'name', url: 'url', authMode: 'authMode', headerName: 'headerName', transport: 'transport', command: 'command', args: 'args', envMapping: 'envMapping' },
   connectorWorkspaces: { connectorId: 'connectorId', workspaceId: 'workspaceId', enabled: 'enabled' },
@@ -664,8 +649,6 @@ describe('POST /api/workers/claim', () => {
     mockMissionsFindMany.mockReset();
     mockMissionsFindMany.mockResolvedValue([]);
     // Default: no learned OAuth budget episodes (pacing inert)
-    mockOauthEpisodesFindMany.mockReset();
-    mockOauthEpisodesFindMany.mockResolvedValue([]);
     // Default: empty select chain (role lookups, mission concurrency counts)
     mockDbSelect.mockReturnValue(makeSelectChain([]));
   });
@@ -2383,6 +2366,8 @@ describe('POST /api/workers/claim', () => {
     const wallOn = (seatKey: string | null, resetsAt = weeklyReset()) =>
       mockBackendPausesFindMany.mockResolvedValue([{ backend: 'claude', resetsAt, reason: 'budget', seatKey }]);
 
+    // Parallelism limits AC-5: a wall on one runner's Claude login holds only
+    // that runner's Claude claims, never another runner's.
     it('lets runner B claim Claude work while runner A, whose login hit the wall, is deferred', async () => {
       const resetsAt = weeklyReset();
       wallOn(runnerSeatKey(RUNNER_A), resetsAt);
@@ -2402,7 +2387,7 @@ describe('POST /api/workers/claim', () => {
       expect(a.diagnostics.budgetBlock.walls).toEqual([
         { kind: 'runner_seat', backend: 'claude', resetsAt: resetsAt.toISOString() },
       ]);
-      expect(a.diagnostics.budgetBlock.summary).toContain("This runner's own Claude login hit its limit");
+      expect(a.diagnostics.budgetBlock.summary).toContain("This runner's Claude login is at its limit until");
       // A's resume poll lands on its own reset, in the future: no hot loop.
       expect(a.budgetResetsAt).toBe(resetsAt.toISOString());
     });
@@ -8072,343 +8057,6 @@ describe('entity catalog injection at claim time', () => {
       }
     });
   });
-  // OAuth budget pacing (packages/core/oauth-budget.ts). Seat auth reports no
-  // cost, so pressure is learned from past exhaustion episodes. Its only effect
-  // is a lower per-seat concurrency cap (retaining half the slots) — see
-  // oauthParallelismCap.
-  describe('oauth budget pacing', () => {
-    // Several task UPDATEs can fire per claim (claim + post-claim bookkeeping),
-    // so keep every payload and pick the one carrying the routing decision.
-    let taskSetPayloads: any[] = [];
-    const claimPayload = () => taskSetPayloads.find(p => p && 'predictedModel' in p) ?? null;
-
-    function mockClaimSuccess() {
-      mockTasksUpdate.mockImplementation(() => ({
-        set: mock((payload: any) => {
-          taskSetPayloads.push(payload);
-          return {
-            where: mock(() => ({
-              returning: mock(() => [{ id: 'task-1' }]),
-            })),
-          };
-        }),
-      }));
-      mockDbExecute.mockReturnValue(Promise.resolve({
-        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
-      }));
-    }
-
-    /** Five episodes at 600 sonnet-equivalent turns → 'good' confidence, p25 = 600. */
-    function learnedWindow() {
-      return Array.from({ length: 5 }, (_, i) => ({
-        exhaustedAt: new Date(Date.now() - (1 + i) * 60 * 60 * 1000),
-        resetsAt: new Date(Date.now() - 23 * 60 * 60 * 1000),
-        workerCount: 10,
-        turns: 600,
-        inputTokens: 0,
-        outputTokens: 0,
-        weightedTurns: 600,
-        weightedTokens: 0,
-      }));
-    }
-
-    function windowUsage(over: Partial<Record<string, number>> = {}) {
-      return {
-        windowStartedAt: new Date(Date.now() - 60 * 60 * 1000),
-        usage: {
-          workerCount: 0, turns: 0, tokens: 0,
-          weightedTurns: 0, weightedTokens: 0,
-          ...over,
-        },
-      };
-    }
-
-    function pendingTask(over: Record<string, unknown> = {}) {
-      return {
-        id: 'task-1',
-        workspaceId: 'ws-1',
-        title: 'background work',
-        kind: 'engineering',
-        complexity: 'normal',
-        priority: 0,
-        dependsOn: [],
-        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
-        ...over,
-      };
-    }
-
-    beforeEach(() => {
-      taskSetPayloads = [];
-      delete process.env.OAUTH_BUDGET_PACING;
-      mockLoadOauthEpisodes.mockReset();
-      mockLoadOauthEpisodes.mockResolvedValue([]);
-      mockMeasureOauthWindow.mockReset();
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage());
-      mockCountLiveSeatWorkers.mockReset();
-      mockCountLiveSeatWorkers.mockResolvedValue(0);
-      mockAuthenticateApiKey.mockResolvedValue({
-        id: 'account-1', maxConcurrentWorkers: 5, type: 'user',
-        authType: 'oauth', maxConcurrentSessions: null,
-      });
-      mockWorkersFindMany.mockResolvedValueOnce([]);
-      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
-      mockAccountWorkspacesFindMany.mockResolvedValue([]);
-      mockTasksFindMany.mockResolvedValue([pendingTask()]);
-      mockClaimSuccess();
-    });
-
-    afterEach(() => {
-      delete process.env.OAUTH_BUDGET_PACING;
-    });
-
-    it('stays inert with too few episodes — claims exactly as before', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow().slice(0, 2));
-      // Usage that would be way over capacity if it were being applied.
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ weightedTurns: 99_999 }));
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      expect(claimPayload()).not.toBeNull();
-      expect(data.diagnostics?.budgetPressure).toBeUndefined();
-      // Below the sample threshold we never even measure the window.
-      expect(mockMeasureOauthWindow).not.toHaveBeenCalled();
-    });
-
-    // The 5h-wall forecast is unreliable, so learned pressure may only narrow
-    // how many sessions a seat runs at once. It must never pause or downshift a
-    // task: a seat with nothing running always gets its next claim.
-    it('never pauses work on the forecast alone — an idle seat still claims at full pressure', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 6, turns: 600, weightedTurns: 600 }));
-      mockCountLiveSeatWorkers.mockResolvedValue(0);
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      expect(claimPayload()).not.toBeNull();
-    });
-
-    it('keeps a ten-slot healthy seat claiming when saturated forecast has one busy worker', async () => {
-      mockAuthenticateApiKey.mockResolvedValue({
-        id: 'account-1', maxConcurrentWorkers: 10, type: 'user',
-        authType: 'oauth', maxConcurrentSessions: null,
-      });
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ turns: 600, weightedTurns: 600 }));
-      mockCountLiveSeatWorkers.mockResolvedValue(1);
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' },
-      }));
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      expect(data.diagnostics?.deferrals?.oauth_parallelism).toBeUndefined();
-    });
-
-    it('fails open when the newest forecast observation belongs to a prior window', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow().map(e => ({
-        ...e, exhaustedAt: new Date(Date.now() - 6 * 60 * 60 * 1000),
-      })));
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({weightedTurns: 99_999}));
-      mockCountLiveSeatWorkers.mockResolvedValue(4);
-      const res = await POST(createMockRequest({
-        headers: {Authorization: 'Bearer bld_test'}, body: {runner: 'test-runner'},
-      }));
-      expect((await res.json()).workers).toHaveLength(1);
-      expect(mockCountLiveSeatWorkers).not.toHaveBeenCalled();
-    });
-
-    it('narrows seat parallelism at high pressure instead of pausing', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      // Full forecast -> cap of three; the seat already has three Claude sessions.
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 6, turns: 600, weightedTurns: 600 }));
-      mockCountLiveSeatWorkers.mockResolvedValue(3);
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(0);
-      expect(claimPayload()).toBeNull();
-      expect(data.diagnostics.reason).toBe('all_candidates_deferred');
-      expect(data.diagnostics.deferrals.oauth_parallelism).toBe(1);
-      expect(data.diagnostics.deferrals.routing_paused).toBeUndefined();
-      expect(data.diagnostics.budgetPressure).toEqual({
-        pct: 1,
-        limiter: 'turns',
-        confidence: 'good',
-        samples: 5,
-      });
-    });
-
-    // Budget failover flips a Claude task to Codex in-memory. The flipped task
-    // no longer draws on the Claude seat, so the Claude-only cap must not hold
-    // it — this is exactly when the cap is likely active (Claude walled, high
-    // pressure). Deferring it after the flip would also leave the workspace
-    // marked as flipped and refuse later Codex work in the same batch.
-    describe('after budget failover to Codex', () => {
-      const exhaustedOauthAccount = () => ({
-        id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const,
-        authType: 'oauth' as const, maxConcurrentSessions: 10, activeSessions: 0,
-        budgetExhaustedAt: new Date().toISOString(),
-        budgetResetsAt: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
-      });
-
-      beforeEach(() => {
-        mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
-        mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
-        mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
-        mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-codex' });
-        mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-        // Full forecast -> Claude cap of three sessions.
-        mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 6, turns: 600, weightedTurns: 600 }));
-      });
-
-      it('claims a failed-over task on Codex even when the Claude seat is at its cap', async () => {
-        mockCountLiveSeatWorkers.mockResolvedValue(3);
-        mockTasksFindMany.mockResolvedValue([
-          pendingTask({ backend: 'claude', workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' } }),
-        ]);
-
-        const res = await POST(createMockRequest({
-          headers: { Authorization: 'Bearer bld_test' },
-          body: { runner: 'test-runner', capabilities: ['backend:codex', 'CODEX_HOME'] },
-        }));
-
-        const data = await res.json();
-        expect(data.workers).toHaveLength(1);
-        expect(data.workers[0].task.backend).toBe('codex');
-        expect(data.diagnostics?.deferrals?.oauth_parallelism).toBeUndefined();
-      });
-    });
-
-    it('claims only up to the narrowed cap in one batch', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      // 75% → cap 4 of 5; three already live on the seat → one more slot.
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 3, turns: 450, weightedTurns: 450 }));
-      mockCountLiveSeatWorkers.mockResolvedValue(3);
-      mockTasksFindMany.mockResolvedValue([pendingTask(), pendingTask({ id: 'task-2' })]);
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-    });
-
-    it('fails open at low confidence — no cap, however full the forecast', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow().slice(0, 3));
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ weightedTurns: 99_999 }));
-      mockCountLiveSeatWorkers.mockResolvedValue(4);
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      expect(mockCountLiveSeatWorkers).not.toHaveBeenCalled();
-    });
-
-    it('an opus-heavy window fills faster than a haiku-heavy one at equal turn counts', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      // 150 raw turns, but haiku-weighted to ~40 sonnet-equivalents → 7% pressure.
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 3, turns: 150, weightedTurns: 40 }));
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      expect(claimPayload()?.predictedModel).toBe(tierModel('standard'));
-      // Well under half the window: parallelism is untouched, so no seat count.
-      expect(mockCountLiveSeatWorkers).not.toHaveBeenCalled();
-    });
-
-    it('never downshifts the model on learned OAuth pressure', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 5, turns: 480, weightedTurns: 480 }));
-      mockTasksFindMany.mockResolvedValue([pendingTask({ complexity: 'complex' })]);
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      // 80% pressure used to downshift opus → sonnet. The forecast is not
-      // trusted to change what runs, only how much runs at once.
-      expect(claimPayload()?.predictedModel).toBe(tierModel('premium'));
-    });
-
-    // The whole point of the Start button is that it does something. Pacing must
-    // never turn an explicit start into a silent no-op (the phantom-stop bug
-    // /api/tasks/[id]/start already has for other gates).
-    it('never paces an explicit single-task claim, even at 100% pressure', async () => {
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ weightedTurns: 99_999 }));
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner', taskId: 'task-1' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      expect(claimPayload()).not.toBeNull();
-      // Pacing was not even consulted for a targeted claim.
-      expect(mockLoadOauthEpisodes).not.toHaveBeenCalled();
-    });
-
-    it('OAUTH_BUDGET_PACING=off makes it fully inert', async () => {
-      process.env.OAUTH_BUDGET_PACING = 'off';
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ weightedTurns: 99_999 }));
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      expect(mockLoadOauthEpisodes).not.toHaveBeenCalled();
-      expect(data.diagnostics?.budgetPressure).toBeUndefined();
-    });
-
-    it('does not pace API-billed accounts (they have a real cost signal)', async () => {
-      mockAuthenticateApiKey.mockResolvedValue({
-        id: 'account-1', maxConcurrentWorkers: 5, type: 'user',
-        authType: 'api', maxCostPerDay: '100', totalCost: '1',
-      });
-      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-
-      const res = await POST(createMockRequest({
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { runner: 'test-runner' },
-      }));
-
-      const data = await res.json();
-      expect(data.workers).toHaveLength(1);
-      expect(mockLoadOauthEpisodes).not.toHaveBeenCalled();
-    });
-  });
 
   // --- connector_advisory_mode workspace flag ---
   // When connector_advisory_mode=true on a workspace, connector failures that
@@ -8630,8 +8278,6 @@ describe('claim gate overrides', () => {
     mockWorkspaceSkillsFindMany.mockResolvedValue([]);
     mockWorkspaceSkillsFindFirst.mockReset();
     mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
-    mockOauthEpisodesFindMany.mockReset();
-    mockOauthEpisodesFindMany.mockResolvedValue([]);
     mockBackendPausesFindMany.mockReset();
     mockBackendPausesFindMany.mockResolvedValue([]);
     mockGetActiveClaimsByWorkspace.mockReset();
@@ -9610,8 +9256,6 @@ describe('claim response — top-level pendingCredentialRefreshes', () => {
     mockHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
     mockMissionsFindMany.mockReset();
     mockMissionsFindMany.mockResolvedValue([]);
-    mockOauthEpisodesFindMany.mockReset();
-    mockOauthEpisodesFindMany.mockResolvedValue([]);
     mockBackendPausesFindMany.mockReset();
     mockBackendPausesFindMany.mockResolvedValue([]);
     mockConnectorsFindMany.mockReset();
@@ -11212,7 +10856,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
     mockTeamsFindFirst.mockResolvedValue(null);
     mockHeartbeatsFindFirst.mockReset();
     mockHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
-    for (const m of [mockSecretsFindMany, mockConnectorsFindMany, mockConnectorSharesFindMany, mockConnectorWorkspacesFindMany, mockWorkspaceSkillsFindMany, mockOauthEpisodesFindMany, mockBackendPausesFindMany]) {
+    for (const m of [mockSecretsFindMany, mockConnectorsFindMany, mockConnectorSharesFindMany, mockConnectorWorkspacesFindMany, mockWorkspaceSkillsFindMany, mockBackendPausesFindMany]) {
       m.mockReset();
       m.mockResolvedValue([] as any);
     }
@@ -11806,8 +11450,6 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
     mockWorkspaceSkillsFindMany.mockResolvedValue([]);
     mockWorkspaceSkillsFindFirst.mockReset();
     mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
-    mockOauthEpisodesFindMany.mockReset();
-    mockOauthEpisodesFindMany.mockResolvedValue([]);
     mockBackendPausesFindMany.mockReset();
     mockBackendPausesFindMany.mockResolvedValue([]);
     mockGetActiveClaimsByWorkspace.mockReset();

@@ -560,7 +560,7 @@ describe('classifyClaimFailure', () => {
   });
 
   test('server_rejected with a capacity taskExclusion code is deferred, not refused', () => {
-    for (const code of ['mission_concurrent', 'mission_budget', 'account_cap', 'path_overlap', 'budget_paused', 'oauth_parallelism', 'runner_capability', 'deps_blocked', 'state_changed', 'runner_cooldown']) {
+    for (const code of ['mission_concurrent', 'mission_budget', 'account_cap', 'path_overlap', 'budget_paused', 'runner_capability', 'deps_blocked', 'state_changed', 'runner_cooldown']) {
       const err = Object.assign(new Error('rejected'), { claimError: 'server_rejected', claimReason: 'no_pending_tasks', claimTaskExclusionCode: code });
       expect(classifyClaimFailure(err)).toBe('deferred');
     }

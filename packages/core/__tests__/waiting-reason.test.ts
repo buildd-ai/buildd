@@ -39,8 +39,10 @@ describe('waiting-reason', () => {
     expect(canForceStart([r('pr_overlap_live'), r('mission_concurrent')])).toBe(true);
     // Human force lifts the scope-undeclared mutex and planner order (§7.2).
     expect(canForceStart([r('pr_overlap_live'), r('scope_undeclared_mutex')])).toBe(true);
+    // A declared dependency is startable by a person (Start anyway, spec 36df686b).
+    expect(canForceStart([r('pr_overlap_live'), r('dep_declared')])).toBe(true);
     // One non-forceable reason: the task still would not start.
-    expect(canForceStart([r('pr_overlap_live'), r('dep_declared')])).toBe(false);
+    expect(canForceStart([r('dep_declared'), r('provider_unavailable')])).toBe(false);
     expect(canForceStart([migrationEdge('a'), r('mission_local')])).toBe(true);
     expect(canForceStart([r('role_unavailable')])).toBe(false);
     expect(canForceStart([r('task_held')])).toBe(false);
@@ -50,9 +52,9 @@ describe('waiting-reason', () => {
   });
 
   it('capability, budget, seat, hold and unknown kinds are never forceable', () => {
-    for (const k of ['task_held', 'account_slots', 'oauth_parallelism', 'codex_single_flight', 'managed_entitlement',
+    for (const k of ['task_held', 'account_slots', 'codex_single_flight', 'managed_entitlement',
       'budget_paused', 'provider_unavailable', 'role_unavailable', 'capability_mismatch', 'runner_cooldown',
-      'lease_stale', 'dep_declared', 'unknown'] as WaitingKind[]) {
+      'lease_stale', 'unknown'] as WaitingKind[]) {
       expect(WAITING_KIND_SPEC[k].force).toBeNull();
       expect(isStartForceable(k)).toBe(false);
     }
@@ -63,7 +65,7 @@ describe('waiting-reason', () => {
     expect(claimLoopKeysFor(['scope_undeclared_mutex', 'ordered_behind', 'serialized_surface', 'soft_overlap']).sort())
       .toEqual(['advisory_manifest', 'ordered_behind', 'soft_overlap']);
     expect(claimLoopKeysFor(['mission_budget', 'task_held', 'dep_declared'])).toEqual([]);
-    expect(prefilterLiftsFor(['dep_inferred', 'mission_local', 'dep_declared']).sort()).toEqual(['inferred_deps', 'local_mission']);
+    expect(prefilterLiftsFor(['dep_inferred', 'mission_local', 'dep_declared']).sort()).toEqual(['declared_assess', 'inferred_deps', 'local_mission']);
   });
 
   it('summary keeps declared dependencies apart from coordination-only ordering', () => {
@@ -87,11 +89,11 @@ describe('waiting-reason', () => {
     expect(d.risk).toBe('core/db overlap · declared files');
   });
 
-  it('refusal body: a declared dependency in the set means no force is offered and says why', () => {
-    const body = coordinationHoldBody([migrationEdge('a'), r('dep_declared', 'z')]);
+  it('refusal body: a non-forceable reason in the set means no force is offered and says why', () => {
+    const body = coordinationHoldBody([migrationEdge('a'), r('provider_unavailable', 'z')]);
     expect(body.canForce).toBe(false);
     expect(body.force).toBeNull();
-    expect(body.notForceable).toEqual(['Declared dependency']);
+    expect(body.notForceable).toEqual(['Provider unavailable']);
     const ok = coordinationHoldBody([migrationEdge('a'), r('mission_local', 'm')]);
     expect(ok.canForce).toBe(true);
     expect(ok.force?.kinds?.sort()).toEqual(['dep_inferred', 'mission_local']);

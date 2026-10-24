@@ -8,6 +8,7 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { probeCoordination } from '@/lib/coordination-probe';
 import { blockingReasons, coordinationHoldBody, readForceStart } from '@buildd/core/waiting-reason';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { startAnywayView } from '@/lib/start-anyway';
 
 /**
  * GET /api/tasks/[id]/waiting
@@ -45,17 +46,28 @@ export async function GET(
     : await verifyAccountWorkspaceAccess(account!, task.workspaceId);
   if (!allowed) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
 
-  if (task.status !== 'pending') return NextResponse.json({ waitingReasons: [], probed: true });
-
   const now = new Date();
+  // The observed Start anyway phase (requested / assessing / blocked), from the
+  // row's own facts: the one derivation every surface renders.
+  const ctx = task.context as Record<string, unknown> | null;
+  const blockerId = (ctx?.waitExit as { blockerTaskId?: string } | undefined)?.blockerTaskId;
+  const blockerTitle = task.status === 'pending' && blockerId && ctx?.forceStartHistory
+    ? (await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, blockerId)), columns: { title: true } }).catch(() => null))?.title ?? null
+    : null;
+  const view = startAnywayView({ context: ctx, status: task.status, now, prerequisiteTitle: blockerTitle });
+  const startAnyway = view ? { startAnyway: view } : {};
+
+  if (task.status !== 'pending') return NextResponse.json({ waitingReasons: [], probed: true, ...startAnyway });
+
   const reasons = await probeCoordination(task as any, now);
   const forceStart = readForceStart(task.context as Record<string, unknown> | null, now);
-  if (reasons === null) return NextResponse.json({ waitingReasons: [], probed: false });
+  if (reasons === null) return NextResponse.json({ waitingReasons: [], probed: false, ...startAnyway });
   const blocking = blockingReasons(reasons);
   return NextResponse.json({
     ...(blocking.length > 0 ? coordinationHoldBody(blocking) : {}),
     waitingReasons: reasons,
     ...(forceStart ? { forceStart: { kinds: forceStart.kinds, expiresAt: forceStart.expiresAt } } : {}),
+    ...startAnyway,
     probed: true,
   });
 }
