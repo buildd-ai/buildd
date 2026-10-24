@@ -123,7 +123,7 @@ export default function StageMeter({ stage, state, fixRounds = 0, label, classNa
     <span
       role="img"
       aria-label={label ?? stageMeterName(state, current, fixRounds)}
-      className={`inline-flex items-stretch gap-[2px] align-middle ${className}`}
+      className={`inline-flex w-[82px] shrink-0 items-stretch gap-[2px] align-middle ${className}`}
       data-state={state}
       data-stage={current}
       data-testid={testId}
@@ -138,7 +138,7 @@ export default function StageMeter({ stage, state, fixRounds = 0, label, classNa
             data-segment={s}
             data-pattern={pattern}
             data-mark={here && mark ? mark : undefined}
-            className={`flex h-[14px] items-center justify-center border font-mono text-[10px] leading-none rounded-[3px] ${here && mark ? 'min-w-[30px] px-1' : 'w-[22px]'}`}
+            className={`flex h-[14px] items-center justify-center border font-mono text-[10px] leading-none rounded-[3px] min-w-0 ${here && mark ? 'flex-[1.6]' : 'flex-1'}`}
             style={segmentStyle(pattern, state)}
           >
             {here ? mark : null}
