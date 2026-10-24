@@ -4,8 +4,10 @@
  * (`releaseConfig.candidate.amend`) and say so on the candidate PR.
  *
  * The fix task is filed by `retryCiFailureForPr` (lib/release-candidate-ci.ts)
- * and carries `context.releaseCandidateFix`. Its PR merging into the candidate's
- * source branch is the signal; nothing else dispatches the amendment.
+ * and carries `context.releaseCandidateFix`. Two signals dispatch the
+ * amendment: its PR merging into the candidate's source branch, or the task
+ * completing with no PR of its own while naming where the fix already is (a
+ * source-branch commit pushed without a PR, or a merged PR another task owns).
  *
  * buildd dispatches only a declared contract the workflow file at `ref` still
  * takes (its `workflow_dispatch` inputs are read before every dispatch). With
@@ -28,7 +30,13 @@ import { resolveReleaseTarget } from '@/lib/release/target';
 import { recordAndDispatchRelease } from '@/lib/release/record';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
-import { RELEASE_CANDIDATE_FIX_KEY } from '@/lib/release-candidate-ci';
+import {
+  RELEASE_CANDIDATE_FIX_COMMIT_KEY,
+  releaseCandidateFixOf,
+  verifyCandidateFixCommit,
+  type CandidateFixLanded,
+  type ReleaseCandidateFixContext,
+} from '@/lib/release/candidate-fix-commit';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { amendContractCapabilityError, amendDispatchInputs } from '@buildd/core/release-config-shape';
 import { readWorkflowDispatchInputs as defaultReadInputs } from '@/lib/workflow-dispatch-inputs';
@@ -39,7 +47,7 @@ export const RELEASE_CANDIDATE_AMEND_PR_KEY = 'releaseCandidateAmendPr';
 
 export type CandidateAmendOutcome =
   | { kind: 'amended'; version: string; candidatePr: number }
-  | { kind: 'skipped'; reason: 'not_a_candidate_fix' | 'wrong_base' | 'not_merged' | 'already_amended' | 'candidate_not_open' | 'candidate_moved' | 'not_configured' }
+  | { kind: 'skipped'; reason: 'not_a_candidate_fix' | 'no_fix_named' | 'wrong_base' | 'not_merged' | 'commit_not_on_source' | 'already_amended' | 'candidate_not_open' | 'candidate_moved' | 'not_configured' }
   | { kind: 'dispatch_failed'; error: string }
   /** Nothing dispatched: the team's pipeline must re-cut or amend. Posted on the candidate, the fix task and to the team. */
   | { kind: 'needs_recut'; reason: 'no_contract' | 'contract_not_in_workflow' | 'workflow_unreadable'; checked: string; candidatePr: number };
@@ -52,7 +60,17 @@ export interface CandidateAmendDeps {
   notify?: typeof defaultNotify;
 }
 
-interface FixContext { prNumber: number; headSha: string; version: string; branch: string; sourceBranch: string }
+type FixContext = ReleaseCandidateFixContext;
+
+/** What carried the fix onto the candidate's source branch. */
+export type FixVia = { kind: 'pr'; prNumber: number } | { kind: 'commit'; sha: string };
+
+/** "merged in #101" / "landed on `dev` in `b9c6a996b000`": how the candidate PR is told. */
+function fixedIn(via: FixVia, sourceBranch: string): string {
+  return via.kind === 'pr' ? `merged in #${via.prNumber}` : `landed on \`${sourceBranch}\` in \`${via.sha.slice(0, 12)}\``;
+}
+
+type FixTaskRow = { id: string; workspaceId: string; missionId: string | null; context: unknown };
 
 /**
  * `baseRef` and `installationId` come from the webhook delivery when there is
@@ -65,11 +83,6 @@ export async function amendCandidateOnFixMerge(
   deps: CandidateAmendDeps = {},
 ): Promise<CandidateAmendOutcome> {
   const db = deps.db ?? defaultDb;
-  const githubApi = deps.githubApi ?? defaultGithubApi;
-  const dispatch = deps.dispatch ?? recordAndDispatchRelease;
-  const readInputs = deps.readInputs ?? defaultReadInputs;
-  const notify = deps.notify ?? defaultNotify;
-
   const worker = await db.query.workers.findFirst({
     where: sqlWhere(workerOwnsPr(input.repoFullName, input.prNumber)),
     columns: { taskId: true },
@@ -79,8 +92,52 @@ export async function amendCandidateOnFixMerge(
     where: sqlWhere(eq(tasks.id, worker.taskId)),
     columns: { id: true, workspaceId: true, missionId: true, context: true },
   });
-  const fix = (fixTask?.context as Record<string, unknown> | null)?.[RELEASE_CANDIDATE_FIX_KEY] as FixContext | undefined;
-  if (!fixTask || !fix?.version || !fix.sourceBranch) return { kind: 'skipped', reason: 'not_a_candidate_fix' };
+  if (!fixTask) return { kind: 'skipped', reason: 'not_a_candidate_fix' };
+  return amendForFixTask(fixTask, { kind: 'pr', prNumber: input.prNumber }, input, deps);
+}
+
+/**
+ * A candidate fix task completed without a PR of its own, naming where the fix
+ * already is: a dev commit (`candidateFixLanded`, checked by
+ * lib/release/candidate-fix-commit.ts before the completion was accepted) or a
+ * merged PR another task owns (`alreadyShippedIn`). Neither ever emits a
+ * `pr.merged` this task owns, so without this the candidate stays red until an
+ * operator amends it by hand.
+ */
+export async function amendCandidateOnFixCompletion(
+  input: { taskId: string },
+  deps: CandidateAmendDeps = {},
+): Promise<CandidateAmendOutcome> {
+  const db = deps.db ?? defaultDb;
+  const fixTask = await db.query.tasks.findFirst({
+    where: sqlWhere(eq(tasks.id, input.taskId)),
+    columns: { id: true, workspaceId: true, missionId: true, context: true, result: true },
+  });
+  if (!fixTask || !releaseCandidateFixOf(fixTask.context)) return { kind: 'skipped', reason: 'not_a_candidate_fix' };
+  const result = (fixTask.result ?? {}) as Record<string, unknown>;
+  const landed = result[RELEASE_CANDIDATE_FIX_COMMIT_KEY] as CandidateFixLanded | undefined;
+  const shipped = result.alreadyShippedIn as { prNumber?: number } | undefined;
+  const via: FixVia | null = landed?.commitSha
+    ? { kind: 'commit', sha: landed.commitSha }
+    : typeof shipped?.prNumber === 'number' ? { kind: 'pr', prNumber: shipped.prNumber } : null;
+  if (!via) return { kind: 'skipped', reason: 'no_fix_named' };
+  return amendForFixTask(fixTask, via, {}, deps);
+}
+
+async function amendForFixTask(
+  fixTask: FixTaskRow,
+  via: FixVia,
+  input: { repoFullName?: string; baseRef?: string | null; installationId?: number | null },
+  deps: CandidateAmendDeps,
+): Promise<CandidateAmendOutcome> {
+  const db = deps.db ?? defaultDb;
+  const githubApi = deps.githubApi ?? defaultGithubApi;
+  const dispatch = deps.dispatch ?? recordAndDispatchRelease;
+  const readInputs = deps.readInputs ?? defaultReadInputs;
+  const notify = deps.notify ?? defaultNotify;
+
+  const fix = releaseCandidateFixOf(fixTask.context);
+  if (!fix) return { kind: 'skipped', reason: 'not_a_candidate_fix' };
 
   const target = await resolveReleaseTarget({ workspaceId: fixTask.workspaceId, scope: { internal: true } });
   if (!target.ok) return { kind: 'skipped', reason: 'not_configured' };
@@ -89,19 +146,28 @@ export async function amendCandidateOnFixMerge(
   const strategy = resolution.ok && resolution.strategy.kind === 'workflow_dispatch' ? resolution.strategy : null;
   const contract = t.releaseConfig?.candidate?.amend;
   const installationId = input.installationId ?? t.installationId;
+  const repoFullName = input.repoFullName ?? t.repoFullName;
 
-  let baseRef = input.baseRef;
-  if (baseRef === undefined) {
-    const fixPr = await githubApi(installationId, `/repos/${input.repoFullName}/pulls/${input.prNumber}`);
-    if (!fixPr?.merged) return { kind: 'skipped', reason: 'not_merged' };
-    baseRef = (fixPr.base?.ref as string | undefined) ?? null;
+  if (via.kind === 'pr') {
+    let baseRef = input.baseRef;
+    if (baseRef === undefined) {
+      const fixPr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${via.prNumber}`);
+      if (!fixPr?.merged) return { kind: 'skipped', reason: 'not_merged' };
+      baseRef = (fixPr.base?.ref as string | undefined) ?? null;
+    }
+    if (baseRef !== fix.sourceBranch) return { kind: 'skipped', reason: 'wrong_base' };
+  } else {
+    // Checked when the completion was accepted; checked again here, because a
+    // redelivery or a replay can come long after and the branch may have moved.
+    const check = await verifyCandidateFixCommit({ api: githubApi, installationId, repoFullName, sha: via.sha, fix });
+    if (!check.ok) return { kind: 'skipped', reason: 'commit_not_on_source' };
   }
-  if (baseRef !== fix.sourceBranch) return { kind: 'skipped', reason: 'wrong_base' };
 
+  const marker = via.kind === 'pr' ? sql`to_jsonb(${via.prNumber}::int)` : sql`to_jsonb(${via.sha}::text)`;
   const claimed = await db
     .update(tasks)
     .set({
-      context: sql`jsonb_set(coalesce(${tasks.context}, '{}'::jsonb), ${`{${RELEASE_CANDIDATE_AMEND_PR_KEY}}`}::text[], to_jsonb(${input.prNumber}::int))`,
+      context: sql`jsonb_set(coalesce(${tasks.context}, '{}'::jsonb), ${`{${RELEASE_CANDIDATE_AMEND_PR_KEY}}`}::text[], ${marker})`,
       updatedAt: new Date(),
     })
     .where(and(eq(tasks.id, fixTask.id), sql`${tasks.context}->>${RELEASE_CANDIDATE_AMEND_PR_KEY} is null`))
@@ -116,13 +182,13 @@ export async function amendCandidateOnFixMerge(
   };
 
   try {
-    const candidate = await githubApi(installationId, `/repos/${input.repoFullName}/pulls/${fix.prNumber}`);
+    const candidate = await githubApi(installationId, `/repos/${repoFullName}/pulls/${fix.prNumber}`);
     if (candidate?.state !== 'open') return { kind: 'skipped', reason: 'candidate_not_open' };
     if (candidate?.head?.sha !== fix.headSha) return { kind: 'skipped', reason: 'candidate_moved' };
 
     const v = fix.version;
     const recut = (reason: Extract<CandidateAmendOutcome, { kind: 'needs_recut' }>['reason'], checked: string) =>
-      postRecutNotice({ db, githubApi, notify, installationId, repoFullName: input.repoFullName, fixPrNumber: input.prNumber, fix, fixTask, reason, checked });
+      postRecutNotice({ db, githubApi, notify, installationId, repoFullName, via, fix, fixTask, reason, checked });
 
     if (!contract || !strategy) {
       return recut('no_contract', !strategy
@@ -130,7 +196,7 @@ export async function amendCandidateOnFixMerge(
         : 'the workspace release settings declare no amend contract (release candidates → "When a fix merges")');
     }
     const where = `\`${strategy.workflowFile}\` at \`${strategy.ref}\``;
-    const declared = await readInputs({ installationId, repoFullName: input.repoFullName, workflowFile: strategy.workflowFile, ref: strategy.ref }, githubApi);
+    const declared = await readInputs({ installationId, repoFullName, workflowFile: strategy.workflowFile, ref: strategy.ref }, githubApi);
     if (!declared.ok) return recut('workflow_unreadable', declared.error);
     const capability = amendContractCapabilityError(contract, declared.inputs, where);
     if (capability) return recut('contract_not_in_workflow', capability);
@@ -154,9 +220,9 @@ export async function amendCandidateOnFixMerge(
       return { kind: 'dispatch_failed', error: recorded.error };
     }
 
-    await githubApi(installationId, `/repos/${input.repoFullName}/issues/${fix.prNumber}/comments`, {
+    await githubApi(installationId, `/repos/${repoFullName}/issues/${fix.prNumber}/comments`, {
       method: 'POST',
-      body: JSON.stringify({ body: amendedComment(contract, v, input.prNumber, fix.sourceBranch, strategy.workflowFile) }),
+      body: JSON.stringify({ body: amendedComment(contract, v, via, fix.sourceBranch, strategy.workflowFile) }),
     }).catch((err: unknown) => console.error(`[release-amend] comment on PR #${fix.prNumber} failed:`, err));
     return { kind: 'amended', version: v, candidatePr: fix.prNumber };
   } catch (err) {
@@ -165,11 +231,11 @@ export async function amendCandidateOnFixMerge(
   }
 }
 
-function amendedComment(contract: ReleaseCandidateAmendContract, v: string, fixPr: number, sourceBranch: string, workflowFile: string): string {
+function amendedComment(contract: ReleaseCandidateAmendContract, v: string, via: FixVia, sourceBranch: string, workflowFile: string): string {
   const how = contract.mode === 'inputs'
     ? `\`${workflowFile}\` was dispatched with \`${contract.versionInput}: ${v}\``
     : `\`${workflowFile}\` was dispatched again for your pipeline to re-cut it`;
-  return `The fix for this candidate merged in #${fixPr}. Amending release candidate v${v} from \`${sourceBranch}\`: ${how}. Its checks and approvals restart on the new head.`;
+  return `The fix for this candidate ${fixedIn(via, sourceBranch)}. Amending release candidate v${v} from \`${sourceBranch}\`: ${how}. Its checks and approvals restart on the new head.`;
 }
 
 /**
@@ -184,14 +250,15 @@ async function postRecutNotice(p: {
   notify: typeof defaultNotify;
   installationId: number;
   repoFullName: string;
-  fixPrNumber: number;
+  via: FixVia;
   fix: FixContext;
   fixTask: { id: string; missionId: string | null };
   reason: Extract<CandidateAmendOutcome, { kind: 'needs_recut' }>['reason'];
   checked: string;
 }): Promise<CandidateAmendOutcome> {
   const v = `v${p.fix.version}`;
-  const body = `The fix for this candidate merged in #${p.fixPrNumber}, but buildd did not amend release candidate ${v}. ` +
+  const how = fixedIn(p.via, p.fix.sourceBranch);
+  const body = `The fix for this candidate ${how}, but buildd did not amend release candidate ${v}. ` +
     `It still holds the commit that failed CI: your release pipeline needs to re-cut or amend it from \`${p.fix.sourceBranch}\`.\n\n` +
     `Checked: ${p.checked}.`;
   const log = (what: string) => (err: unknown) => console.error(`[release-amend] re-cut notice (${what}) for PR #${p.fix.prNumber} failed:`, err);
@@ -205,14 +272,14 @@ async function postRecutNotice(p: {
     taskId: p.fixTask.id,
     authorType: 'system',
     type: 'warning',
-    title: `Release candidate ${v} needs a re-cut: the fix merged, buildd did not amend it`,
+    title: `Release candidate ${v} needs a re-cut: the fix landed, buildd did not amend it`,
     body,
     actorLabel: `candidate amend: ${p.reason}`,
     status: 'open',
   }).catch(log('task note'));
   await p.notify({ taskId: p.fixTask.id }, 'needsAttention', {
     title: `Release candidate ${v} needs a re-cut`,
-    message: `The fix merged in #${p.fixPrNumber}. buildd did not amend the candidate (PR #${p.fix.prNumber}): ${p.checked}.`,
+    message: `The fix ${how}. buildd did not amend the candidate (PR #${p.fix.prNumber}): ${p.checked}.`,
     url: `https://github.com/${p.repoFullName}/pull/${p.fix.prNumber}`,
     urlTitle: `Release candidate ${v}`,
     priority: 0,

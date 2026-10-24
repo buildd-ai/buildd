@@ -7,6 +7,8 @@
  *   branch is recorded as a release, and a gated release advances, whether or
  *   not a worker owns the PR. Every delivery, fire-and-forget: both writes are
  *   idempotent on the head sha, so a redelivery records nothing new.
+ * - `task.completed` (worker reports): a red candidate's fix task that named a
+ *   fix already on the source branch amends the candidate.
  * - `task.pr_merged` (once per merge, worker-owned PRs): Path B, the
  *   webhook-side release trigger for workflow_dispatch workspaces.
  * - `workflow_run.completed`: the release row's state, and the release record
@@ -29,7 +31,7 @@ import { canCompleteMission } from '@/lib/mission-completion';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { notifyTeamOf } from '@/lib/notify';
 import { recordAndDispatchRelease } from '@/lib/release/record';
-import { amendCandidateOnFixMerge } from '@/lib/release/candidate-amend';
+import { amendCandidateOnFixMerge, amendCandidateOnFixCompletion } from '@/lib/release/candidate-amend';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import { buildWorkflowRunOutcome, hasOpenReleasePr, isConfiguredReleaseRun, mapWorkflowConclusionToReleaseState } from '@/lib/release/workflow-run';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
@@ -95,6 +97,22 @@ async function amendCandidateOnFix(e: EventOf<'pr.merged'>): Promise<void> {
   } else if (out.kind === 'skipped' && out.reason !== 'not_a_candidate_fix') {
     // A candidate fix that did not amend: say why, so a missing amendment can be traced.
     console.log(`[release-amend] PR #${e.prNumber} on ${e.repoFullName}: skipped (${out.reason})${d ? '' : ' [reconciled merge]'}`);
+  }
+}
+
+/**
+ * A candidate fix task completed with no PR of its own, accepted because the
+ * fix is already on the source branch (a direct commit, or another task's
+ * merged PR). No `pr.merged` will ever name this task, so the completion is the
+ * signal. Every other completed task is skipped on its first read.
+ */
+async function amendCandidateOnFixCompleted(e: EventOf<'task.completed'>): Promise<void> {
+  if (e.via !== 'worker') return;
+  const out = await amendCandidateOnFixCompletion({ taskId: e.taskId });
+  if (out.kind === 'dispatch_failed') {
+    console.error(`[release-amend] task ${e.taskId}: ${out.error}`);
+  } else if (out.kind === 'skipped' && out.reason !== 'not_a_candidate_fix') {
+    console.log(`[release-amend] task ${e.taskId}: skipped (${out.reason}) [completion]`);
   }
 }
 
@@ -591,6 +609,7 @@ async function readBackWorkflowRun(e: EventOf<'workflow_run.completed'>): Promis
 export const releaseSubscribers: readonly AnySubscriber[] = [
   subscriber('releases', 'pr.merged', 'release-record-prod-merge', recordProdMerge),
   subscriber('releases', 'pr.merged', 'release-candidate-amend-on-fix', amendCandidateOnFix),
+  subscriber('releases', 'task.completed', 'release-candidate-amend-on-fix-completion', amendCandidateOnFixCompleted),
   subscriber('releases', 'task.pr_merged', 'release-path-b-trigger', releaseOnTaskPrMerge),
   subscriber('releases', 'workflow_run.completed', 'release-workflow-run-readback', readBackWorkflowRun),
 ];
