@@ -88,10 +88,13 @@ describe('only a person with approval rights retires', () => {
     expect(view).toMatchObject({ status: 'retired', reason: REASON, supersededBy: null, by: `user:${admin}` });
   });
 
-  test('the admin\'s own OAuth session retires too (it can be undone)', async () => {
+  test('the admin\'s own OAuth session only asks: a confirm link, the spec unchanged (spec-approval-inbox.test.ts)', async () => {
     const spec = await draft();
     const r = await retireSpec(adminOAuth(), spec.id, { reason: REASON });
-    expect(r.ok && r.spec.status).toBe('retired');
+    expect(r.ok && 'pending' in r && r.pending.to).toBe('retired');
+    expect(r.ok && r.spec.status).toBe('draft');
+    const [row] = await q<{ status: string }>(sql`SELECT status FROM specs WHERE id = ${spec.id}::uuid`);
+    expect(row.status).toBe('draft');
   });
 
   test('retiring a retired spec is a 409', async () => {

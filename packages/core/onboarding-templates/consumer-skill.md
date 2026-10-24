@@ -126,6 +126,11 @@ Steps: topic `diagnosis`.
 - **Artifacts** are deliverables on a task: a `summary` before you complete,
   or an `impl_plan` with a `key` when a later task reads your output by name.
   Read one with `list_artifacts` / `get_artifact`.
+- **Designs and attachments are read through buildd**, never the original
+  third-party link: `get_artifact` (presigned URL, readable with your own task
+  token). A login wall on a
+  claude.ai or Figma link is not a blocker, and "request an interactive
+  session" is not an option buildd can carry out: the gate refuses it.
 - **`learn`** records a durable lesson (`gotcha`, `pattern`, `decision`,
   `discovery`) the next agent needs before starting. Not a summary of what you
   did, and not what the repo docs already say.

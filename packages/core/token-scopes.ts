@@ -100,7 +100,7 @@ export function requiredScopeForAction(action: string, params: Record<string, un
   if (['manage_missions', 'manage_initiatives', 'manage_workspaces', 'manage_designs'].includes(action) && ['list', 'get', 'get_criteria_state'].includes(String(params.action))) return 'tasks:read';
   // Readiness is a read-only GET of /api/workspaces/[id]/readiness, which the route policy maps to tasks:read.
   if (action === 'manage_workspaces' && params.action === 'readiness') return 'tasks:read';
-  if (action === 'manage_specs' && ['list', 'get', 'outcome', 'read_ref', 'diff', 'comments', 'attachments', 'history'].includes(String(params.action))) return 'tasks:read';
+  if (action === 'manage_specs' && ['list', 'get', 'outcome', 'read_ref', 'diff', 'comments', 'attachments', 'history', 'awaiting_approval'].includes(String(params.action))) return 'tasks:read';
   // metadata without changes only reads the block (a GET).
   if (action === 'manage_specs' && params.action === 'metadata' && params.changes === undefined) return 'tasks:read';
   if (action === 'manage_experiments' && ['list', 'get', 'readout'].includes(String(params.action))) return 'analytics:read';

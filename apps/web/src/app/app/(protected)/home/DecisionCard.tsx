@@ -10,7 +10,8 @@ import { MergeAdvice } from '@/components/MergeAdvice';
 import Eyebrow from '@/components/ui/Eyebrow';
 import { displayTaskTitle } from '@/lib/task-title';
 import { decisionLine } from './needs-you-layout';
-import { QuestionCard } from './NeedsYouCards';
+import SharedDecisionCard from '@/components/DecisionCard';
+import { QuestionCard, reviewApprovalView } from './NeedsYouCards';
 
 const sentenceCase = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -26,12 +27,17 @@ const secondary = 'btn min-h-11';
 export function DecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone: (key: string, label: string) => void }) {
   // An agent's question is the one decision card every surface shares (Navigation R-16).
   if (item.question) return <QuestionCard q={item.question} onAnswered={() => onDone(item.key, 'answered')} />;
+  // So is a review a person must give on a PR: an approval, decided on the PR.
+  const approval = reviewApprovalView(item);
+  if (approval) return <SharedDecisionCard view={approval} now={Date.now()} testId="needs-you-card" />;
   return <QueueDecisionCard item={item} onDone={onDone} />;
 }
 
 function QueueDecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone: (key: string, label: string) => void }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
+  // Which of a card's actions is in flight, when it has two that post.
+  const [busyAction, setBusyAction] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retrySafe, setRetrySafe] = useState(true);
@@ -39,7 +45,9 @@ function QueueDecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone: 
   useEffect(() => { setConfirm(false); setError(null); setRetrySafe(true); setClosed(null); }, [item]);
   const q = item.queue;
   const merge = q?.chip === 'MERGE' && q.prNumber != null && !!q.workspaceId;
-  const ci = item.label === 'tests failing' && q?.prNumber != null && !!q.workspaceId;
+  // A red PR with no fix running (home-attention, surface-ia §11): Re-run leads only for a likely flake.
+  const ci = item.actionType === 'fix' && q?.ciGate?.kind === 'blocked' && q.prNumber != null && !!q.workspaceId;
+  const rerun = ci && q?.ciGate?.kind === 'blocked' && q.ciGate.red?.primary === 'rerun';
   const access = q?.chip === 'ACCESS' && !!q.accessRequestId;
   const move = q?.chip === 'SCHEDULE_MOVE' ? q.scheduleMove : undefined;
   const blocked = merge ? q?.missionMergeBlockedReason : item.strand?.blockedReason;
@@ -49,7 +57,7 @@ function QueueDecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone: 
   };
   async function act(url: string, body: object, label: string, method = 'POST') {
     if (busy) return;
-    setBusy(true); setError(null);
+    setBusy(true); setBusyAction(label); setError(null);
     try {
       const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const data = await res.json().catch(() => ({}));
@@ -76,7 +84,7 @@ function QueueDecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone: 
       }
       router.refresh();
     } catch (e) { if (merge) setRetrySafe(false); setError(e instanceof Error ? e.message : 'Could not reach the server.'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setBusyAction(null); }
   }
   // An access request is decided in place: the lease is the one the agent asked
   // for (approval can only narrow it; Settings offers shorter ones). The server
@@ -114,7 +122,13 @@ function QueueDecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone: 
   else if (access) actions = <><button className={primary} disabled={busy} onClick={() => void decideAccess('approve')}>{busy ? 'Saving…' : q!.accessApproveLabel ?? 'Approve'}</button><button className={secondary} disabled={busy} onClick={() => void decideAccess('deny')}>Deny</button><Link className={secondary} href={item.primary?.href ?? item.href}>Details</Link></>;
   else if (merge) actions = <><button className={primary} disabled={busy || !!blocked || !retrySafe} onClick={() => confirm ? void act(`/api/prs/${q.prNumber}/merge`, { workspaceId: q.workspaceId }, 'merged') : setConfirm(true)}>{busy ? 'Merging…' : confirm ? 'Confirm merge' : 'Merge'}</button>{confirm ? <button className={secondary} onClick={() => setConfirm(false)}>Cancel</button> : <Link href={q.prUrl ?? item.href} className={secondary}>{q.docFixTaskId ? 'Claims' : 'Review PR'}</Link>}</>;
   else if (q?.humanReview && q.prUrl) actions = <><Link className={primary} href={`${q.prUrl}/files`}>{q.humanReview.label}</Link>{item.details && <Link className={secondary} href={item.details.href}>{item.details.label}</Link>}</>;
-  else if (ci) actions = <><button className={primary} disabled={busy} onClick={() => void act(`/api/prs/${q!.prNumber}/retry-ci`, { workspaceId: q!.workspaceId }, 'fix started')}>{busy ? 'Starting…' : 'Start fix'}</button><Link className={secondary} href={q?.prUrl ? `${q.prUrl}/checks` : item.href}>Logs</Link></>;
+  else if (ci) {
+    const startFix = (cls: string) => <button className={cls} disabled={busy} onClick={() => void act(`/api/prs/${q!.prNumber}/retry-ci`, { workspaceId: q!.workspaceId }, 'fix started')}>{busyAction === 'fix started' ? 'Starting…' : 'Start fix'}</button>;
+    const logs = <Link className={secondary} href={q?.prUrl ? `${q.prUrl}/checks` : item.href}>Logs</Link>;
+    actions = rerun
+      ? <><button className={primary} disabled={busy} onClick={() => void act(`/api/prs/${q!.prNumber}/rerun-ci`, { workspaceId: q!.workspaceId }, 're-run started')}>{busyAction === 're-run started' ? 'Re-running…' : 'Re-run'}</button>{startFix(secondary)}{logs}</>
+      : <>{startFix(primary)}{logs}</>;
+  }
   else if (item.strand) actions = <><button className={primary} disabled={busy || !!blocked} onClick={() => { recordStrand('continue-on-runner'); void act(`/api/missions/${encodeURIComponent(item.strand!.missionId)}`, { executor: 'runner' }, 'moved to runner', 'PATCH'); }}>{busy ? 'Moving…' : 'Move to runner'}</button><button className={secondary} disabled={busy} onClick={() => { recordStrand('wait-for-local'); onDone(item.key, 'kept local'); }}>Keep local</button></>;
   else if (item.held) actions = <><button className={primary} disabled={busy} onClick={() => void act(`/api/missions/${encodeURIComponent(item.held!.id)}`, { arm: true }, 'started', 'PATCH')}>{busy ? MISSION_START_COPY[item.held.startState ?? 'not_started'].actionPending : item.held.startState === 'paused' ? 'Resume' : 'Start'}</button><Link href={item.href} className={secondary}>Open</Link></>;
   else actions = <><Link className={primary} href={item.primary?.href ?? item.href}>{item.primary?.label ?? 'View'}</Link>{item.details && <Link className={secondary} href={item.details.href}>{item.details.label}</Link>}</>;

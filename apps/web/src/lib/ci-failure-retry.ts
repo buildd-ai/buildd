@@ -54,6 +54,7 @@ import { dependencyBotPushRefusal, isDependencyBotAuthor, isDependencyBotPrConte
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { CI_RED_ESCALATED_KEY, scheduleCiRedLook } from '@/lib/ci-red-queue';
 import { rerunIfInfraFailure } from '@/lib/ci-infra-failure';
+import { recordRedChecks } from '@/lib/red-check-record';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Which door asked. Recorded as the gate row's `surface`. */
@@ -348,6 +349,15 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     const reason = earlyGate.merged ? 'pr_merged' : 'pr_closed';
     recordSkip(skipCtx, reason);
     return { kind: 'skipped', reason };
+  }
+  // What failed and why, kept for Home's card (surface-ia §11). Deferred and
+  // best-effort: the card falls back to plain words, the retry never waits.
+  const recordRed = () => recordRedChecks({ installationId, repoFullName, prNumber, headSha }).then(() => undefined);
+  try {
+    after(recordRed);
+  } catch {
+    // Outside a request scope (tests, direct invocation, the cron): run inline.
+    await recordRed();
   }
   const infra = await rerunIfInfraFailure(installationId, repoFullName, headSha);
   if (infra.rerun) {

@@ -6,7 +6,7 @@ const { attachVisualAuditSpecCriteria, renderVisualAuditSpecCriteria, VISUAL_AUD
 
 const worker = (taskId: string) => ({ taskId, task: { id: taskId, context: {} } }) as any;
 const BUILDER = '11111111-1111-4111-8111-111111111111';
-const subject = (criteria: Array<{ id: string; text: string }>) => ({ taskId: BUILDER, taskTitle: 'feat(cart): empty state', specTitle: 'Cart', revision: 3, criteria });
+const subject = (criteria: Array<{ id: string; text: string; captures?: string[] }>) => ({ taskId: BUILDER, taskTitle: 'feat(cart): empty state', specTitle: 'Cart', revision: 3, criteria });
 
 describe('renderVisualAuditSpecCriteria', () => {
   it('names each task, its spec revision and the criteria it answers for, and how to record a verdict', () => {
@@ -29,6 +29,16 @@ describe('renderVisualAuditSpecCriteria', () => {
     expect(block).toContain('- **AC-1** Empty state. (screens: cart-empty)');
     expect(block).toContain('- **AC-2** Totals.\n\n### Design vs built');
     expect(block).toContain('designShotIds');
+  });
+
+  it('R-18: names the captures a registered check needs and how to collect them independently; nothing extra without one', () => {
+    const block = renderVisualAuditSpecCriteria([subject([{ id: 'AC-1', text: 'Closed PR offers nothing to merge.', captures: ['closed-pr@mobile', 'closed-pr@desktop'] }, { id: 'AC-2', text: 'Totals.' }])])!;
+    expect(block).toContain('- **AC-1** Closed PR offers nothing to merge. (captures: closed-pr@mobile, closed-pr@desktop)');
+    expect(block).toContain('### Captures registered checks need');
+    expect(block).toContain('QA_SURFACE_COLLECTOR=visual_auditor');
+    expect(block).toContain('never from what the page says');
+    expect(block).toContain('type "data"');
+    expect(renderVisualAuditSpecCriteria([subject([{ id: 'AC-2', text: 'Totals.' }])])).not.toContain('Captures registered checks need');
   });
 
   it('gives the auditor a design plan for design vs built: the screens each criterion names, at the pinned revision', () => {
@@ -54,9 +64,9 @@ describe('renderVisualAuditSpecCriteria', () => {
   });
 
   it('renders nothing when no dependency is pinned, or none has criteria', () => {
-    expect(renderVisualAuditSpecCriteria([])).toBeNull();
-    expect(renderVisualAuditSpecCriteria([subject([])])).toBeNull();
-  });
+  expect(renderVisualAuditSpecCriteria([])).toBeNull();
+  expect(renderVisualAuditSpecCriteria([subject([])])).toBeNull();
+});
 });
 
 describe('attachVisualAuditSpecCriteria', () => {

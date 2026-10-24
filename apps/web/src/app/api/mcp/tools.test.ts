@@ -262,6 +262,8 @@ describe('listMcpTools — group tools', () => {
   // +37, measured 5.94k admin / 4.77k task token.
   // probe_budget_wall named on More: (runner budget-wall nudge): +8, measured
   // 4.81k task token, so the task-token ceiling moves 4.8k -> 4.85k.
+  // check_path_claim accepts an explicit workerId (#5473): +1 over 4.85k, so
+  // the task-token ceiling moves 4.85k -> 4.9k.
   // store_design + manage_designs named on More: (task e3ef49b1): +8, measured
   // 4.86k task token, so the task-token ceiling moves 4.85k -> 4.9k; the admin
   // surface stays under 6k (trimmed the purpose line to pay for it).

@@ -76,6 +76,7 @@ import { answerInChatHref } from '@/lib/chat/answer-link';
 import { loadPrActionSheet } from '@/lib/pr-landing-sheet';
 import type { ClaimContextInjection } from '@/app/api/workers/claim/context-injection';
 import { attachVisualAuditRoutes } from '@/app/api/workers/claim/visual-audit-routes';
+import { attachVisualAuditRecapture } from '@/app/api/workers/claim/visual-audit-recapture';
 import { attachVisualAuditSpecCriteria } from '@/app/api/workers/claim/visual-audit-spec-criteria';
 import { recordVisualVerdict } from '@/lib/visual-audit-spec-verdict';
 import { checkSpecDuplicates, recordDuplicateOverride } from '@/lib/spec-duplicate-decision';
@@ -368,6 +369,7 @@ export const OPERATOR_ONLY_RESPONSE = operatorOnlyResponse;
  */
 export const VISUAL_AUDIT_ROUTES: ClaimContextInjection = async (claimedWorkers, claimedTasks) => {
   await attachVisualAuditRoutes(claimedWorkers, claimedTasks);
+  await attachVisualAuditRecapture(claimedWorkers, claimedTasks);
   await attachVisualAuditSpecCriteria(claimedWorkers, claimedTasks);
 };
 
@@ -377,6 +379,21 @@ export const VISUAL_AUDIT_ROUTES: ClaimContextInjection = async (claimedWorkers,
  * mission's [surface audit] saw on a spec criterion.
  */
 export const VISUAL_SPEC_VERDICT = recordVisualVerdict;
+
+/**
+ * The visual-qa module's registered verification slot
+ * (lib/specs/registered-verification-store.ts): the store behind the core
+ * coordinator (lib/specs/registered-verification.ts). It admits only captures an
+ * independent [surface audit] uploaded, and resolves the head and who may ask.
+ * POST /api/specs/outcomes/[taskId]/verify runs the coordinator with it.
+ */
+const registeredStore = () => import('@/lib/specs/registered-verification-store');
+export const REGISTERED_VERIFICATION = {
+  deps: async () => (await registeredStore()).registeredVerificationDeps,
+  head: async (taskId: string) => (await registeredStore()).registeredVerificationHead(taskId),
+  requesterRefusal: async (requesterTaskId: string, subjectTaskId: string) =>
+    (await registeredStore()).verificationRequesterRefusal(requesterTaskId, subjectTaskId),
+};
 
 /**
  * The decisions module's spec duplicate slot (lib/spec-duplicate-decision.ts):

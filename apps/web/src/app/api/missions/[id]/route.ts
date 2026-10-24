@@ -3,9 +3,9 @@ import { readMissionSummaries } from '@/lib/mission-summary-store';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { settleSpecWaive } from '@/lib/mission-spec-waive-settle';
 import { cancelWaivedSurfaceAudits } from '@/lib/surface-audit-waiver-cancel';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules, initiatives, workspaces } from '@buildd/core/db/schema';
+import { missions, missionNotes, tasks, taskSchedules, initiatives, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -43,9 +43,11 @@ import { wakeTasks } from '@/lib/dispatch-authority';
 import { continueOnRunnerBlockedReason } from '@/lib/local-strand';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks } from '@/lib/mission-surface-audit-gate';
 import {
-  SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH,
   SURFACE_AUDIT_WAIVER_NOTE_TITLE,
+  isVisualReviewSkipReason,
   surfaceAuditMissingReason,
+  visualReviewSkipNoteBody,
+  type VisualReviewSkipReason,
 } from '@buildd/core/surface-audit';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 import { selectMissionSpec, type OutcomeSpecInput, type OutcomeSpecRemoval } from '@/lib/specs/mission-selection';
@@ -361,18 +363,33 @@ export async function PATCH(
     const gateCaller = gateCallerOrigin({ apiAccount, user, workerId: actorWorkerId });
 
     // A waiver is a person's call. An in-task agent or the engine cannot waive
-    // the check that exists to catch an unreviewed UI change.
+    // the check that exists to catch an unreviewed UI change. Three shapes
+    // (spec 072de598 I-7, I-18): one of the two Skip buttons with an optional
+    // note, free text (any non-empty reason), or null to withdraw a standing Skip.
     let surfaceWaiverReason: string | null = null;
+    let surfaceSkip: { reason: VisualReviewSkipReason | null; note: string | null } | null = null;
+    let withdrawSurfaceWaiver = false;
     if (surfaceAuditWaiver !== undefined) {
-      if (typeof surfaceAuditWaiver !== 'string' || surfaceAuditWaiver.trim().length < SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH) {
+      const w = surfaceAuditWaiver as unknown;
+      if (w === null) {
+        withdrawSurfaceWaiver = true;
+      } else if (typeof w === 'string' && w.trim().length > 0) {
+        surfaceWaiverReason = w.trim();
+        surfaceSkip = { reason: null, note: surfaceWaiverReason };
+      } else if (w && typeof w === 'object' && !Array.isArray(w) && isVisualReviewSkipReason((w as { reason?: unknown }).reason)) {
+        const rawNote = (w as { note?: unknown }).note;
+        const note = typeof rawNote === 'string' && rawNote.trim() ? rawNote.trim().slice(0, 1000) : null;
+        const reason = (w as { reason: VisualReviewSkipReason }).reason;
+        surfaceWaiverReason = visualReviewSkipNoteBody(reason, note);
+        surfaceSkip = { reason, note };
+      } else {
         return NextResponse.json({
-          error: `surfaceAuditWaiver must be a reason of at least ${SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH} characters (why no visual audit is needed for this mission)`,
+          error: 'surfaceAuditWaiver must be { reason: "wrong_or_stuck" | "ship_anyway", note? }, a non-empty reason, or null to withdraw a Skip',
         }, { status: 400 });
       }
       if (actor.kind !== 'user' && actor.kind !== 'mcp') {
-        return NextResponse.json({ error: 'Only a person can waive the surface audit; an in-task agent cannot' }, { status: 403 });
+        return NextResponse.json({ error: 'Only a person can skip or withdraw the visual review; an in-task agent cannot' }, { status: 403 });
       }
-      surfaceWaiverReason = surfaceAuditWaiver.trim();
     }
 
     // Strict Visual Review forbids skip/waive: no waiver and no opt-out of the audit.
@@ -878,6 +895,20 @@ export async function PATCH(
         .where(eq(taskSchedules.id, existing.scheduleId));
     }
 
+    // What the review looked like before the Skip: once written it reads
+    // waived and its queued audit is cancelled (spec 072de598 I-19).
+    const skipSnapshot = surfaceWaiverReason
+      ? await import('@/lib/visual-review-skip-record').then(m => m.snapshotVisualReviewForSkip(id, existing.workspaceId ?? null))
+      : null;
+
+    // A person withdraws a standing Skip (I-18): its notes stop counting, and the feed says so.
+    if (withdrawSurfaceWaiver) {
+      await db.update(missionNotes)
+        .set({ status: 'dismissed' })
+        .where(and(eq(missionNotes.missionId, id), eq(missionNotes.title, SURFACE_AUDIT_WAIVER_NOTE_TITLE)));
+      await postMissionFeedEvent({ missionId: id, type: 'update', title: 'Visual review skip withdrawn', body: 'Visual review applies again.', actor });
+    }
+
     // Written before the status change and not swallowed: a waiver that could
     // not be recorded must not let the mission close on it.
     if (surfaceWaiverReason) {
@@ -904,6 +935,34 @@ export async function PATCH(
       .returning();
     // Status, hold, schedule or criteria: the summary reads them (lib/work-changed.ts).
     if (updated) noteWorkChanged({ missionIds: [id] });
+
+    // Every Skip is recorded centrally with its button, person, commit and open
+    // findings; The review is wrong or stuck also files (or folds into) one bug (I-19, AC-26).
+    if (surfaceWaiverReason && surfaceSkip && skipSnapshot) {
+      const record = () => import('@/lib/visual-review-skip-record')
+        .then(m => m.recordVisualReviewSkip({
+          mission: { id, title: existing.title, workspaceId: existing.workspaceId ?? null },
+          skipReason: surfaceSkip!.reason,
+          note: surfaceSkip!.note,
+          actorLabel: actor.label,
+          callerOrigin: gateCaller,
+          snapshot: skipSnapshot,
+        }))
+        .catch(err => console.error('[missions PATCH] recording the visual review skip failed', err));
+      try { after(record); } catch { void record(); }
+    }
+
+    // A recorded Skip lifts the visual review's hold on the mission PR. Nothing
+    // else re-drives a PR whose CI was already green, so re-drive it through
+    // its usual merge door once the response is sent; it still checks every rail.
+    if (surfaceWaiverReason && existing.primaryPrNumber && existing.workspaceId) {
+      const wsId = existing.workspaceId;
+      const prNumber = existing.primaryPrNumber;
+      const redrive = () => import('@/lib/surface-ordering-wake')
+        .then(m => m.redriveSurfaceWaiter(wsId, prNumber))
+        .catch(err => console.error('[missions PATCH] re-driving the mission PR after a skip failed', err));
+      try { after(redrive); } catch { /* outside a request scope (tests): nothing to re-drive */ }
+    }
 
     // A mission change that lifts a claim gate leaves its tasks `pending`, so
     // the outbox trigger sees nothing; wake them here or they wait for a poll.

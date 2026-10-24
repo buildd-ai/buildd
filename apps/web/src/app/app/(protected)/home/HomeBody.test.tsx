@@ -107,9 +107,12 @@ describe('Home inbox', () => {
   });
 });
 
-it('human review links to GitHub with machine status and no merge button', () => {
+it('a human review is the shared approval card: Approve and Request changes on GitHub, machine status, no merge button', () => {
   const html = render(deriveHomeAttention({ queue: [{ subjectKey: 'review', chip: 'REVIEW', prNumber: 7, workspaceId: 'example', taskTitle: 'A change', prUrl: 'https://github.com/example/project/pull/7', humanReview: { label: 'Approve on GitHub', reason: 'Protected migration paths changed. More detail.', decision: 'Protected migration paths changed.', blockers: [] }, machineStatus: 'CI running' }], questions: [], held: [], missions: [] }));
-  expect(html).toContain('Approve on GitHub');
+  expect(html).toContain('data-kind="approval"');
+  expect(html).toContain('Approve A change?');
+  expect(html).toMatch(/>Approve<.*>Merges when green</);
+  expect(html).toMatch(/>Request changes<.*>Builder revises it</);
   expect(html).toContain('CI running');
   expect(html).toContain('/pull/7/files');
   expect(html).not.toMatch(/>Merge<|>Merge anyway</);
@@ -170,7 +173,9 @@ describe('one decisions list at every width', () => {
   });
 
   it('renders at every width: nothing in it is phone-only or desktop-only', () => {
-    expect(html).not.toMatch(/class="[^"]*\bmd:hidden\b/);
+    // The one exception is the shared decision card's own More toggle for a clamped why (R-16), as on the mission page.
+    const rest = html.replace(/<button[^>]*\bmd:hidden\b[^>]*>More<\/button>/g, '');
+    expect(rest).not.toMatch(/class="[^"]*\bmd:hidden\b/);
     expect(html).not.toMatch(/class="[^"]*(^|\s)hidden md:/);
     // Stacked on a phone, three across on a wide screen.
     expect(html).toContain('min-[1100px]:grid-cols-3');
@@ -190,12 +195,13 @@ describe('one decisions list at every width', () => {
     expect(list).not.toMatch(/\buppercase\b|tracking-\[/);
   });
 
-  it('a review card is the ReviewDecision structure: one decision line, fact tags, Details folded', () => {
-    const review = html.slice(html.indexOf('Review 3'));
-    expect(review).toContain('data-testid="review-decision"');
-    expect(review).toContain('Protected paths changed.');
-    expect(review).toContain('CI running');
-    expect(review).toContain('Details');
+  it('a review card is the shared decision card: the why, the approval as a question, two options, Not now', () => {
+    const review = html.slice(html.indexOf('Review 3'), html.indexOf('data-testid="needs-you-rows"'));
+    expect(review).toContain('Protected paths changed. CI running.');
+    expect(review).toContain('Approve Review 3?');
+    expect(review.match(/data-testid="decision-option"/g)).toHaveLength(2);
+    expect(review).toContain('data-testid="decision-not-now"');
+    expect(review).not.toContain('Details');
   });
 
   it('names the hidden missions plainly', () => {

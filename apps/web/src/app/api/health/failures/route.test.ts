@@ -84,6 +84,14 @@ mock.module('@/lib/workflow/review-round-metrics', () => ({ getReviewRoundMetric
 const mockGetStalledIngestReport = mock(async (_ws: string[]) => null as any);
 mock.module('@/lib/knowledge-ingest-stalls', () => ({ getStalledIngestReport: mockGetStalledIngestReport }));
 
+// Spec 072de598 I-19: the reliability read is tested on its own (lib/visual-review-reliability.test.ts).
+const RELIABILITY = { windows: [{ days: 7, missions: 3, reliable: 2, wrongOrStuck: 1, shipAnyway: 1, share: 2 / 3, causes: [{ cause: 'stalled', text: 'the audit stalled', count: 1 }] }] };
+const mockGetVisualReviewReliability = mock(async (_ws: string[]) => RELIABILITY as any);
+mock.module('@/lib/visual-review-reliability', () => ({
+  getVisualReviewReliability: mockGetVisualReviewReliability,
+  formatVisualReviewReliability: () => 'Visual review reliability\n- 2 of 3 missions',
+}));
+
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 mock.module('@buildd/core/db', () => ({
@@ -191,6 +199,13 @@ describe('GET /api/health/failures', () => {
     mockWorkspacesFindFirst.mockResolvedValue({ id: VALID_UUID, teamId: 'other-team' });
     const res = await GET(makeRequest(`${URL_BASE}?workspaceId=${VALID_UUID}`));
     expect(res.status).toBe(404);
+  });
+
+  it('the overview carries visual review reliability for the caller workspaces, with its text', async () => {
+    mockGetVisualReviewReliability.mockClear();
+    const body = await (await GET(makeRequest(URL_BASE))).json();
+    expect(body.visualReviewReliability).toEqual({ ...RELIABILITY, text: 'Visual review reliability\n- 2 of 3 missions' });
+    expect(mockGetVisualReviewReliability.mock.calls[0][0]).toEqual([VALID_UUID]);
   });
 
   it('omits stalledIngest when no ingest job is stuck', async () => {

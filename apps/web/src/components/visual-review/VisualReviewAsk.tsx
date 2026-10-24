@@ -43,7 +43,7 @@ export function AnswerRow({ target, options = [], onAnswer }: { target: AnswerTa
   }
 
   if (sent) {
-    return <p data-testid="visual-review-answer-sent" className="font-mono text-[13px] text-status-success">Answer sent. The audit picks up from here.</p>;
+    return <p data-testid="visual-review-answer-sent" data-verify-block="consequence" className="font-mono text-[13px] text-status-success">Answer sent.</p>;
   }
   return (
     <div className="flex min-w-0 flex-col gap-2">
@@ -53,6 +53,9 @@ export function AnswerRow({ target, options = [], onAnswer }: { target: AnswerTa
             key={o}
             type="button"
             data-testid="visual-review-answer-option"
+            // The answer is free text to the parked worker; what it leads to is the worker's call, not this button's.
+            data-verify-action="answer_question"
+            data-verify-prominence={i === 0 ? 'primary' : 'secondary'}
             disabled={sending !== null}
             onClick={() => void send(o)}
             className={`${BTN_BASE} ${BTN_SIZE} ${i === 0 ? BTN_PRIMARY : BTN_SECONDARY}`}
@@ -61,7 +64,7 @@ export function AnswerRow({ target, options = [], onAnswer }: { target: AnswerTa
           </button>
         ))}
         {!replying && (
-          <button type="button" data-testid="visual-review-reply" onClick={() => setReplying(true)} className={`${BTN_BASE} ${BTN_SIZE} ${BTN_SECONDARY}`}>
+          <button type="button" data-testid="visual-review-reply" data-verify-action="answer_question" data-verify-prominence="secondary" onClick={() => setReplying(true)} className={`${BTN_BASE} ${BTN_SIZE} ${BTN_SECONDARY}`}>
             Reply
           </button>
         )}
@@ -75,7 +78,7 @@ export function AnswerRow({ target, options = [], onAnswer }: { target: AnswerTa
             aria-label="Your answer"
             className="min-h-10 min-w-0 flex-1 border-2 border-border-default bg-surface-1 px-2.5 font-mono text-base text-text-primary placeholder:text-text-muted focus:border-primary focus:outline-none md:text-[13px]"
           />
-          <button type="submit" disabled={!text.trim() || sending !== null} className={`${BTN_BASE} ${BTN_SIZE} ${BTN_SECONDARY}`}>
+          <button type="submit" data-verify-action="answer_question" data-verify-prominence="secondary" disabled={!text.trim() || sending !== null} className={`${BTN_BASE} ${BTN_SIZE} ${BTN_SECONDARY}`}>
             {sending && sending === text.trim() ? 'Sending…' : 'Send'}
           </button>
         </form>
@@ -103,7 +106,7 @@ export default function VisualReviewAsk({ model, onReview, onAnswer, answerOptio
   const target = model.needsYou?.workerId && model.needsYou?.taskId
     ? { workerId: model.needsYou.workerId, taskId: model.needsYou.taskId }
     : null;
-  const heading = reason === 'question' ? 'The visual audit asks' : reason === 'unsure' ? 'Screens to check' : 'Visual issues: decision needed';
+  const heading = reason === 'question' ? 'The visual audit asks' : reason === 'unsure' ? 'Screens to check' : reason === 'fix_check' ? 'Fixed screens to check' : 'Visual issues: decision needed';
 
   return (
     <section

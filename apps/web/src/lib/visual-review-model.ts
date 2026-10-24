@@ -27,6 +27,7 @@ import type {
   VisualReviewModel,
   VisualReviewNeedsYou,
   VisualReviewPhase,
+  VisualReviewRecapture,
   VisualReviewReplacedAudit,
   VisualReviewResolvedElsewhere,
   VisualReviewShot,
@@ -34,7 +35,7 @@ import type {
   VisualReviewSummary,
   VisualReviewSupersededShot,
 } from '@buildd/shared';
-import { isSurfaceFixTask, surfaceAuditRound } from '@buildd/core/surface-audit';
+import { MAX_TOTAL_SURFACE_AUDIT_ROUNDS, isSurfaceFixTask, surfaceAuditRound } from '@buildd/core/surface-audit';
 import { dependencyFailureOf } from '@buildd/core/dependency-failure';
 import { captureRefMatch, normalizeCaptureRef } from '@buildd/core/visual-qa-capture-ref';
 import { DEP_SATISFYING_STATUSES } from './dep-gate-contract';
@@ -296,11 +297,26 @@ export function fixCheckOf(history: readonly VisualReviewCellEntry[]): VisualRev
   return { state: after ? 'check' : 'awaiting_capture', fix, beforeShotId: before.shot.id, beforeRound: before.round };
 }
 
-/** A cell waiting on a screenshot after its merged fix: settled, nothing to decide. */
+/** A cell waiting on a screenshot after its merged fix, with a capture queued or owed: nothing to decide yet. */
 export const awaitingCapture = (c: Pick<VisualReviewCell, 'fixCheck'>): boolean => c.fixCheck?.state === 'awaiting_capture';
 
-/** A cell whose fix merged and whose new screenshot nobody has checked. */
-export const fixCheckDue = (c: Pick<VisualReviewCell, 'fixCheck' | 'current'>): boolean => c.fixCheck?.state === 'check' && !c.current.review;
+/**
+ * The person's decision on a fix check: the current shot's review, but for a
+ * `decide` cell only one made after the fix merged. The current shot there is
+ * the "before", and its older review is what asked for the fix.
+ */
+export function fixDecisionOf(c: Pick<VisualReviewCell, 'fixCheck' | 'current'>): HumanShotReview | null {
+  const review = c.current.review;
+  if (!review || c.fixCheck?.state !== 'decide') return review;
+  return ms(review.createdAt) > ms(c.fixCheck.fix.mergedAt) ? review : null;
+}
+
+/** A merged fix's Fixed / Still broken question: a new screenshot to judge (`check`), or none coming (`decide`). */
+export const isFixCheck = (c: Pick<VisualReviewCell, 'fixCheck'>): boolean => c.fixCheck?.state === 'check' || c.fixCheck?.state === 'decide';
+
+/** A cell whose fix merged and that waits on a person's Fixed / Still broken: a new screenshot, or none coming (`decide`). */
+export const fixCheckDue = (c: Pick<VisualReviewCell, 'fixCheck' | 'current'>): boolean =>
+  (c.fixCheck?.state === 'check' || c.fixCheck?.state === 'decide') && !fixDecisionOf(c);
 
 /** A fix task that ended without landing: terminal, and not completed. */
 const FIX_DEAD = new Set<string>(TERMINAL_TASK_STATUSES.filter(s => s !== 'completed'));
@@ -313,9 +329,9 @@ const FIX_DEAD = new Set<string>(TERMINAL_TASK_STATUSES.filter(s => s !== 'compl
  */
 export function standingOf(c: Pick<VisualReviewCell, 'fixCheck' | 'current'>): VisualReviewStanding {
   if (c.fixCheck?.state === 'awaiting_capture') return 'fixing';
-  const review = c.current.review;
+  const review = fixDecisionOf(c);
   if (review) return review.decision === 'looks_right' ? 'fine' : 'fixing';
-  if (c.fixCheck?.state === 'check') return 'to_review';
+  if (c.fixCheck?.state === 'check' || c.fixCheck?.state === 'decide') return 'to_review';
   const verdict = c.current.agentVerdict;
   if (verdict === 'unsure') return 'to_review';
   if (verdict === 'ok') return 'fine';
@@ -341,6 +357,7 @@ export function screensToReview(m: Pick<VisualReviewModel, 'cells'>, decided?: R
 
 export function markerOf(review: HumanShotReview | null, fixCheck?: VisualReviewFixCheck | null): VisualReviewMarker {
   if (fixCheck?.state === 'awaiting_capture') return 'fix_merged';
+  if (fixCheck?.state === 'decide' && review && ms(review.createdAt) <= ms(fixCheck.fix.mergedAt)) return 'awaiting';
   if (!review) return 'awaiting';
   if (review.relation === 'agree') return 'confirmed';
   if (review.relation === 'dispute') return 'disputed';
@@ -351,8 +368,8 @@ const VERDICT_RANK: Record<VisualQaVerdict, number> = { unsure: 0, issue: 2, ok:
 
 /** Triage rank: unsure, fix checks, issue, ok, then reviewed. The queue holds the `to_review` ones. */
 export function queueRankOf(c: Pick<VisualReviewCell, 'fixCheck' | 'current'>): number {
-  if (c.current.review) return 4;
-  if (c.fixCheck?.state === 'check') return 1;
+  if (fixDecisionOf(c)) return 4;
+  if (c.fixCheck?.state === 'check' || c.fixCheck?.state === 'decide') return 1;
   return VERDICT_RANK[c.current.agentVerdict];
 }
 const VIEWPORT_RANK: Record<VisualQaViewport, number> = { mobile: 0, desktop: 1 };
@@ -461,7 +478,29 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     rounds.set(s.round, s);
     perCell.set(key, rounds);
   }
-  const cells: VisualReviewCell[] = [];
+  const cellOf = (key: string, history: VisualReviewCellEntry[], decide = false): VisualReviewCell => {
+    const current = history[history.length - 1];
+    const derived = fixCheckOf(history);
+    const fixCheck = decide && derived?.state === 'awaiting_capture' ? { ...derived, state: 'decide' as const } : derived;
+    const review = fixDecisionOf({ current, fixCheck });
+    const effectiveVerdict: VisualQaVerdict = review
+      ? (review.decision === 'looks_right' ? 'ok' : 'issue')
+      : current.agentVerdict;
+    return {
+      key,
+      route: current.shot.qa.route,
+      viewport: current.shot.qa.viewport,
+      variant: current.shot.variant ?? null,
+      current,
+      history,
+      effectiveVerdict,
+      marker: markerOf(current.review, fixCheck),
+      needsHuman: current.agentVerdict === 'unsure' && !current.review && (!fixCheck || fixCheck.state === 'check'),
+      fixCheck,
+      standing: standingOf({ current, fixCheck }),
+    };
+  };
+  let cells: VisualReviewCell[] = [];
   for (const [key, rounds] of perCell) {
     const history: VisualReviewCellEntry[] = [...rounds.entries()]
       .sort(([a], [b]) => a - b)
@@ -470,26 +509,7 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
         const fixTask = fixFor(review?.fixTaskId, 'human') ?? fixFor(shot.qa.fixTaskId, 'auditor');
         return { round, shot, agentVerdict: shot.qa.verdict, finding: shot.qa.finding, fixTask, review };
       });
-    const current = history[history.length - 1];
-    const review = current.review;
-    const effectiveVerdict: VisualQaVerdict = review
-      ? (review.decision === 'looks_right' ? 'ok' : 'issue')
-      : current.agentVerdict;
-    const fixCheck = fixCheckOf(history);
-    const standing = standingOf({ current, fixCheck });
-    cells.push({
-      key,
-      route: current.shot.qa.route,
-      viewport: current.shot.qa.viewport,
-      variant: current.shot.variant ?? null,
-      current,
-      history,
-      effectiveVerdict,
-      marker: markerOf(review, fixCheck),
-      needsHuman: current.agentVerdict === 'unsure' && !review && fixCheck?.state !== 'awaiting_capture',
-      fixCheck,
-      standing,
-    });
+    cells.push(cellOf(key, history));
   }
 
   // Display order: route, variant, phone first.
@@ -499,46 +519,96 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     || VIEWPORT_RANK[a.viewport] - VIEWPORT_RANK[b.viewport];
   cells.sort(byPlace);
 
-  // 3b. A cell stuck "awaiting a new screenshot" is resolved when a
-  // different cell — another variant key — captured the same route, viewport
-  // and state after its fix merged: a later round often re-shoots only the
-  // routes it fixed with no title collision, so the recapture lands in a
-  // sibling cell instead of this one's history (the per-round collision that
-  // named the original variant no longer holds). Hidden from
-  // `cells`/`queue`/the summary counts, kept in `resolvedElsewhere` for audit.
-  const placeOf = (c: VisualReviewCell) => `${c.route}\u0000${c.viewport}\u0000${(c.current.shot.qa as { state?: string }).state ?? ''}`;
-  const byCellPlace = new Map<string, VisualReviewCell[]>();
-  for (const c of cells) byCellPlace.set(placeOf(c), [...(byCellPlace.get(placeOf(c)) ?? []), c]);
+  // 3b. One screen, one cell (spec 072de598 I-15, AC-15). A screen is its
+  // route, viewport and known state (`qa.state`): a title variant is only a
+  // caption, so two cells differing by title alone may or may not show the
+  // same thing, and nothing resolves a cell whose state is unknown.
+  //  - A cell waiting on a new screenshot after its fix merged takes a later
+  //    shot of its screen into its history, so it reads as a Fixed / Still
+  //    broken check; the shot's own cell folds into it. A second cell of the
+  //    same screen ("shot 2") is covered by that check.
+  //  - A later round's shot of the screen supersedes an earlier round's
+  //    still-open cell there. Only open cells are hidden; an ok one stays.
+  const screenOf = (c: VisualReviewCell): string | null => {
+    const state = c.current.shot.qa.state;
+    return state ? `${c.route}\u0000${c.viewport}\u0000${state}` : null;
+  };
+  const byScreen = new Map<string, VisualReviewCell[]>();
+  for (const c of cells) {
+    const k = screenOf(c);
+    if (k) byScreen.set(k, [...(byScreen.get(k) ?? []), c]);
+  }
   const resolvedElsewhere: VisualReviewResolvedElsewhere[] = [];
   const resolvedKeys = new Set<string>();
+  const foldedInto = new Map<string, string>();
+  const replaced = new Map<string, VisualReviewCell>();
   for (const c of cells) {
+    const k = screenOf(c);
     const mergedAt = c.fixCheck?.state === 'awaiting_capture' ? c.fixCheck.fix.mergedAt : null;
-    if (!mergedAt) continue;
-    const after = (byCellPlace.get(placeOf(c)) ?? [])
-      .filter(s => s.key !== c.key && ms(s.current.shot.createdAt) > ms(mergedAt))
+    if (!k || !mergedAt) continue;
+    const after = (byScreen.get(k) ?? [])
+      .filter(s => s.key !== c.key && !resolvedKeys.has(s.key) && ms(s.current.shot.createdAt) > ms(mergedAt))
       .sort((a, b) => ms(b.current.shot.createdAt) - ms(a.current.shot.createdAt))[0];
-    if (after) {
-      resolvedElsewhere.push({ key: c.key, route: c.route, viewport: c.viewport, variant: c.variant, resolvedBy: after.key });
+    if (!after) continue;
+    const into = foldedInto.get(after.key);
+    if (into) {
+      resolvedElsewhere.push({ key: c.key, route: c.route, viewport: c.viewport, variant: c.variant, resolvedBy: into });
       resolvedKeys.add(c.key);
+      continue;
     }
+    foldedInto.set(after.key, c.key);
+    replaced.set(c.key, cellOf(c.key, [...c.history, after.current]));
   }
-  // A later round that re-shot a place (route, viewport, state) supersedes an
-  // earlier round's still-open cell there, whatever either shot was titled:
-  // the variant comes from the title, so a retitled recapture would otherwise
-  // leave the old issue standing. Only open cells are hidden; an ok one stays.
+  if (foldedInto.size > 0) {
+    cells = cells.filter(c => !foldedInto.has(c.key)).map(c => replaced.get(c.key) ?? c);
+  }
   const roundOf = (c: VisualReviewCell) => c.history[c.history.length - 1].round;
   for (const c of cells) {
-    if (resolvedKeys.has(c.key) || c.standing === 'fine') continue;
-    const siblings = byCellPlace.get(placeOf(c)) ?? [];
-    const later = siblings
-      .filter(s => s.key !== c.key && roundOf(s) > roundOf(c))
+    const k = screenOf(c);
+    if (!k || resolvedKeys.has(c.key) || c.standing === 'fine' || replaced.has(c.key)) continue;
+    const later = (byScreen.get(k) ?? [])
+      .map(s => replaced.get(s.key) ?? s)
+      .filter(s => s.key !== c.key && !foldedInto.has(s.key) && !resolvedKeys.has(s.key) && roundOf(s) > roundOf(c))
       .sort((a, b) => roundOf(b) - roundOf(a))[0];
     if (later) {
       resolvedElsewhere.push({ key: c.key, route: c.route, viewport: c.viewport, variant: c.variant, resolvedBy: later.key });
       resolvedKeys.add(c.key);
     }
   }
-  const liveCells = resolvedKeys.size > 0 ? cells.filter(c => !resolvedKeys.has(c.key)) : cells;
+  let liveCells = resolvedKeys.size > 0 ? cells.filter(c => !resolvedKeys.has(c.key)) : cells;
+
+  // 3c. A merged fix waiting for a screenshot (spec 072de598 I-15) never
+  // waits on nobody: an audit that has not finished takes it (queued), else
+  // the scheduler files one recapture naming exactly these screens, else
+  // (the round cap, or a recapture that already missed them) a person
+  // decides Fixed or Still broken.
+  const latestAudit = latestAuditOf(tasks);
+  const waiting = liveCells.filter(awaitingCapture);
+  let recapture: VisualReviewRecapture | null = null;
+  if (waiting.length > 0) {
+    const next: VisualReviewRecapture['next'] = latestAudit && !TERMINAL.has(latestAudit.status)
+      ? 'queued'
+      : input.roundCapOpen === true
+          || (latestAudit && (isRecaptureAudit(latestAudit) || surfaceAuditRound(latestAudit) + 1 > MAX_TOTAL_SURFACE_AUDIT_ROUNDS))
+        ? 'decide'
+        : 'capture';
+    recapture = {
+      next,
+      screens: waiting.map(c => ({
+        key: c.key,
+        route: c.route,
+        viewport: c.viewport,
+        state: c.current.shot.qa.state ?? null,
+        variant: c.variant,
+        fixTaskId: c.fixCheck!.fix.id,
+        fixPrNumber: c.fixCheck!.fix.prNumber,
+      })),
+    };
+    if (next === 'decide') {
+      const keys = new Set(waiting.map(c => c.key));
+      liveCells = liveCells.map(c => (keys.has(c.key) ? cellOf(c.key, c.history, true) : c));
+    }
+  }
 
   const queue = liveCells
     .filter(c => c.standing === 'to_review')
@@ -575,13 +645,14 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
   const unreplaced = replacedIds.size > 0 ? tasks.filter(t => !replacedIds.has(t.id)) : tasks;
 
   // 5. Phase.
-  const latest = latestAuditOf(tasks);
+  const latest = latestAudit;
   const latestFailed = !!latest && latest.status === 'failed' && !replacedIds.has(latest.id);
   // It never ran: build work it depends on failed. Not a failure of the check (spec 072de598 I-14).
   const waitingOn = latestFailed ? dependencyFailureOf(latest.dependencyFailure ?? latest.result) : null;
   const bootFailed = auditBootFailed(unreplaced);
   const bootFailure = bootFailed ? bootFailureOf(unreplaced.filter(isAudit)) : null;
   const awaitingHuman = liveCells.filter(c => c.needsHuman).length;
+  const fixDecisions = recapture?.next === 'decide' ? liveCells.filter(c => c.fixCheck?.state === 'decide' && fixCheckDue(c)).length : 0;
   const roundCapOpen = capNoteOpen;
   let phase: VisualReviewPhase;
   let progress: VisualReviewModel['progress'] = null;
@@ -610,9 +681,9 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     const captured = liveCells.filter(c => c.current.round === round && c.current.shot.auditTaskId === latest.id).length;
     const required = requiredRoutesOf ? requiredRoutesOf(latest) : [];
     progress = { captured, expected: required.length > 0 ? required.length * 2 : null };
-  } else if (awaitingHuman > 0 || roundCapOpen) {
+  } else if (awaitingHuman > 0 || roundCapOpen || fixDecisions > 0) {
     phase = 'needs_you';
-    needsYou = { reason: awaitingHuman > 0 ? 'unsure' : 'round_cap' };
+    needsYou = { reason: awaitingHuman > 0 ? 'unsure' : fixDecisions > 0 ? 'fix_check' : 'round_cap' };
   } else if (openFixes > 0) {
     phase = 'fixing';
   } else if (latest && latest.status === 'pending') {
@@ -675,10 +746,18 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     superseded,
     captureGaps,
     resolvedElsewhere,
+    recapture,
     replacedAudits,
     waitingOn: phase === 'waiting_on_failed_work' ? waitingOn : null,
     generatedAt: new Date(now).toISOString(),
   };
+}
+
+/** An audit filed to re-shoot screens whose fix merged (`context.visualReview.reason`). */
+export function isRecaptureAudit(t: { context?: unknown }): boolean {
+  const ctx = t.context;
+  const vr = ctx && typeof ctx === 'object' && !Array.isArray(ctx) ? (ctx as Record<string, unknown>).visualReview : null;
+  return !!vr && typeof vr === 'object' && (vr as Record<string, unknown>).reason === 'recapture';
 }
 
 /**
@@ -777,7 +856,7 @@ function bootFailureOf(auditTasks: readonly VisualReviewTaskInput[]): VisualRevi
 // ── Phase copy ──────────────────────────────────────────────────────────────
 
 /** Phase copy lives with the text rendering, so the MCP action and chat read one source. */
-export { describeVisualPhase } from '@buildd/core/visual-review-text';
+export { describeVisualPhase, visualPhaseDetailRole } from '@buildd/core/visual-review-text';
 
 /**
  * The model of a mission with no audit and no fix from one: what

@@ -13,8 +13,8 @@ the sub-action in `params.action`. On the group tools it is
 `buildd_artifacts` action `manage_specs`, listed on that tool's `More:` line.
 
 A read-only session (a `tasks:read` grant) can call the reads: `list`, `get`,
-`diff`, `history`, `read_ref`, `outcome`, `comments`, `attachments`, and
-`metadata` without `changes`. Every other sub-action needs write access and is refused
+`diff`, `history`, `read_ref`, `outcome`, `comments`, `attachments`,
+`awaiting_approval`, and `metadata` without `changes`. Every other sub-action needs write access and is refused
 with `requiredScope`.
 
 This is not the `spec-sync` skill. `spec-sync` keeps a repo's own spec files
@@ -77,6 +77,10 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
    override: only they can, on the confirm page, with a reason that is
    recorded on the approval with how it was approved (`mcp`, `chat` or
    `dashboard`).
+   Several revisions waiting? `buildd action=manage_specs params={ action: "awaiting_approval" }`
+   (read-only) gives the count and the person's inbox link, where they
+   review and approve each one with a click. Hand that link on too. An API
+   key's 403 names the same link.
 5. **Pin:** file work with `create_task` and
    `context: { specSource: { specId, criteria, revision } }`. The server pins
    the approved revision itself. `criteria` (optional, 1 to 50 `R-n`/`AC-n`
@@ -98,6 +102,19 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
 9. **Conflict:** two criteria of an approved revision that disagree:
    `buildd action=manage_specs params={ action: "conflict", specId, revision, criterionIds, note }`.
    It records an advisory discrepancy and blocks nothing.
+
+To request the registered checks on a task's current target, call
+`buildd action=manage_specs params={ action: "verify", taskId, evidenceRef? }`.
+`evidenceRef` is a stored capture's artifact UUID; omit it and the server picks
+the newest captures the mission's [surface audit] stored for this task.
+It needs workspace write access; a task never requests grading of its own
+outcome, so the subject's token and tasks filed under it are refused.
+It cannot choose a method, model, prompt, head or verdict, or submit raw evidence.
+A mission's final verification runs the same coordinator on the integrated target.
+It reads the pinned revision's `verify:` bindings and admits only an audit's own,
+unedited capture of the current commit. A refused capture, missing capture or
+provider failure records nothing, so the criterion stays unverified.
+Declaration coverage says which requirements name checks; it does not mean they passed.
 
 ## Tables and diagrams
 
@@ -403,7 +420,11 @@ approval and moves neither the version nor the approved hash.
 
 A spec is retired, never deleted. Retiring is a person's act: from an agent
 run or API key it is a 403, so say what should be retired and why, and let
-the person do it on the spec page or from their own session.
+the person do it on the spec page. From the person's own OAuth session,
+retire and restore change nothing, like approve: the reply is a confirm link
+pinned to the spec, its version, its status and the reason. Hand it on and
+stop; the person confirms it on buildd.dev, and a spec that moved since is
+refused as stale.
 
 - Retire: `buildd action=manage_specs params={ action: "retire", specId, reason }`.
   Add `supersededBy` (a live spec in the same workspace) when another spec

@@ -25,3 +25,16 @@ describe('dependencyFailureOf', () => {
     }
   });
 });
+
+describe('dependencyFailedResult across workspaces (spec e28018c2 R-13)', () => {
+  it('stores the upstream id with no title and a generic error', () => {
+    const r = dependencyFailedResult({ id: ID, title: 'Secret upstream' }, { crossWorkspace: true });
+    expect(r).toEqual({
+      error: 'Blocked: a task this one depends on, in another workspace, failed',
+      errorType: DEPENDENCY_FAILED_ERROR_TYPE,
+      blockedBy: { taskId: ID, title: null },
+    });
+    expect(JSON.stringify(r)).not.toContain('Secret upstream');
+    expect(dependencyFailureOf(r)).toEqual({ taskId: ID, title: null });
+  });
+});

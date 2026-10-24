@@ -344,6 +344,20 @@ export type CoreEvent =
   /** A check suite completed red on a PR. Every delivery, once per PR in the suite. */
   | { type: 'pr.ci_failed'; repoFullName: string; prNumber: number; headSha: string; installationId: number }
   /**
+   * A red PR head was read (lib/red-check-record.ts) and no rule could say
+   * whether the environment or the code failed (surface-ia §11 R-3). Once per
+   * new failure signature on the head; already off the render path. The
+   * decisions module judges it from `jobs`' failing lines.
+   */
+  | {
+      type: 'pr.red_check_unclassified';
+      repoFullName: string;
+      prNumber: number;
+      headSha: string;
+      signature: string;
+      jobs: Array<{ name: string; step: string | null; lines: string | null }>;
+    }
+  /**
    * Every check suite on a worker PR's head passed (the PR's lifecycle is now
    * ci_green). Once per transition to green, per workspace linked to the repo;
    * `workerId` / `taskId` are the worker row that owns the PR there.

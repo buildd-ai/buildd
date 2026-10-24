@@ -250,6 +250,7 @@ async function scheduleFromFacts(prepared: Prepared, facts: ScheduleFacts, now: 
   if (plan.action === 'enqueue') {
     const res = await requestMissionSurfaceAudit(missionId, {
       headSha: plan.headSha, round: plan.round, reason: plan.reason, attempt: plan.attempt,
+      ...(plan.reason === 'recapture' && state.recapture ? { recapture: { screens: state.recapture.screens, routes: state.recapture.routes } } : {}),
       gateTasks: missionTasks, gateRepos: facts.repos, gateWaived: waiver != null,
     });
     return { missionId, plan, ...(res.ok ? { taskId: res.taskId } : {}) };

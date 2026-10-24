@@ -132,12 +132,21 @@ describe('VisualReviewTray with no shots', () => {
     const onAnswer = mock(async (_a: string, _t: { workerId: string; taskId: string }) => {});
     render(<VisualReviewTray model={m} actions={{ onAnswer, answerOptions: ['Try again', 'Skip the audit'] }} />);
     expect(container.textContent).toContain('the dev server exited on start');
+    expect(q('visual-review-empty')!.querySelector('p')!.textContent).toBe('the dev server exited on start');
+    expect(container.textContent!.match(/App did not boot/g)).toHaveLength(1);
     const opts = qa('visual-review-answer-option');
     expect(opts.map(o => o.textContent)).toEqual(['Try again', 'Skip the audit']);
     act(() => opts[0].click());
     await flush();
     expect(onAnswer).toHaveBeenCalledWith('Try again', { workerId: m.bootFailure!.workerId, taskId: m.bootFailure!.taskId });
     expect(q('visual-review-answer-sent')).not.toBeNull();
+  });
+
+  it('preserves boot failure reasons without the status prefix', () => {
+    const m = buildVisualReviewFixtureModel('boot_failed');
+    m.bootFailure!.prompt = 'The app did not boot because its port was busy';
+    render(<VisualReviewTray model={m} />);
+    expect(q('visual-review-empty')!.querySelector('p')!.textContent).toBe(m.bootFailure!.prompt);
   });
 
   it('stalled and failed offer retry (and skip)', async () => {
@@ -204,6 +213,6 @@ describe('VisualReviewAsk', () => {
   it('the round cap asks for your call', () => {
     const m = buildVisualReviewFixtureModel('needs_you', { needsYou: 'round_cap' });
     render(<VisualReviewAsk model={m} onReview={() => {}} />);
-    expect(q('visual-review-ask')!.textContent).toContain('Issues remain after 2 rounds');
+    expect(q('visual-review-ask')!.textContent).toContain('Issues remain after the automatic fixes');
   });
 });

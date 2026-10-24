@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.377.0",
+  "version": "0.379.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,8 @@
     "db:studio": "drizzle-kit studio"
   },
   "exports": {
+    "./ui-verification": "./ui-verification.ts",
+    "./decision-kind-ui-copy": "./decision-kind-ui-copy.ts",
     "./db": "./db/index.ts",
     "./run-evidence": "./run-evidence.ts",
     "./artifact-redaction": "./artifact-redaction.ts",
@@ -89,6 +91,7 @@
     "./report-ops": "./report-ops.ts",
     "./describe-error": "./describe-error.ts",
     "./runner-health": "./runner-health.ts",
+    "./interactive-session-ask": "./interactive-session-ask.ts",
     "./question-brief": "./question-brief.ts",
     "./human-attention": "./human-attention.ts",
     "./needs-you": "./needs-you.ts",
@@ -201,6 +204,7 @@
     "./decision-kind-operator-recovery": "./decision-kind-operator-recovery.ts",
     "./decision-kind-visual-impact": "./decision-kind-visual-impact.ts",
     "./decision-kind-mission-scope": "./decision-kind-mission-scope.ts",
+    "./decision-kind-red-check-cause": "./decision-kind-red-check-cause.ts",
     "./decision-shadow-harness": "./decision-shadow-harness.ts",
     "./manifest-prediction": "./manifest-prediction.ts",
     "./manifest-prediction-source": "./manifest-prediction-source.ts",

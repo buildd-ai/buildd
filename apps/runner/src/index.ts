@@ -5,8 +5,8 @@ import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import { fetchOpenRouterCatalog } from '@buildd/core/model-catalog';
 import { setCatalogPrices } from '@buildd/core/model-prices';
 import { join } from 'path';
-import { hostname } from 'os';
 import { resolveBuilddHome } from './buildd-home';
+import { headlessRunnerKey, runnerHostName, wslIdentityNotice } from './runner-host';
 import { resolveBuilddServer } from './server-url';
 import type { LocalUIConfig, LLMProvider, LocalWorker, ProviderConfig } from './types';
 import { DEFAULT_LOGIN_MODE, parseLoginMode } from '@buildd/shared';
@@ -179,6 +179,20 @@ if (CLI.kind === 'web') {
   process.exit(await runWebCommand({ socketPath: socketPathFor(BUILDD_DIR) }));
 }
 
+// `buildd wsl install [--distro <name>]`: Windows only. Asks before installing
+// WSL and Ubuntu, then runs the Linux installer inside the distribution
+// (wsl-setup.ts). Never starts a runner here.
+if (CLI.kind === 'wsl-install') {
+  const { installWsl, realWslCommand, realWslInteractive } = await import('./wsl-setup');
+  const { terminalConfirm } = await import('./runner-hold');
+  const { release } = await import('os');
+  process.exit(await installWsl(CLI.distro ?? undefined, {
+    platform: process.platform, release: release(),
+    run: realWslCommand, runInteractive: realWslInteractive,
+    confirm: terminalConfirm(), out: line => console.log(line),
+  }));
+}
+
 // --version: print and exit. Deliberately after every static import above, so a
 // zero exit also proves the runner's whole module graph loads (the installer
 // smoke test relies on that).
@@ -195,7 +209,7 @@ if (process.argv.includes('--doctor')) {
   // Find the runner the way `buildd top` does: through its socket.
   const { probeRunnerSocket: probe, runnerSocketPath: socketPathFor, runnerProcessFromProbe } = await import('./runner-socket');
   const socketPath = socketPathFor(BUILDD_DIR);
-  const report = doctor.runDiagnostics({ runnerProcess: runnerProcessFromProbe(await probe(socketPath), socketPath) });
+  const report = doctor.runDiagnostics({ runnerProcess: runnerProcessFromProbe(await probe(socketPath), socketPath, doctor.isRunnerNeverStarted()) });
 
   const RED = '\x1b[31m';
   const GREEN = '\x1b[32m';
@@ -678,8 +692,12 @@ function detectTailscaleIp(): string | null {
 // In headless mode (no --debug), returns a sentinel for heartbeat identification only
 function resolveLocalUiUrl(): string {
   if (!DEBUG_MODE) {
-    // Headless sentinel — unique per host, used as heartbeat upsert key only
-    return `headless://${hostname()}`;
+    // Headless sentinel — unique per host, used as heartbeat upsert key only.
+    // Inside WSL it is `headless://<hostname>-wsl`, apart from a Windows runner
+    // on this machine (spec a0b82b5d R-22); say so once (R-26).
+    const notice = wslIdentityNotice({ builddHome: BUILDD_DIR });
+    if (notice) console.log(`  ${notice}`);
+    return headlessRunnerKey();
   }
   if (process.env.LOCAL_UI_URL) return process.env.LOCAL_UI_URL;
   if (savedConfig.localUiUrl) return savedConfig.localUiUrl;
@@ -764,7 +782,7 @@ if (ONCE_RUN) {
     config,
     resolver,
     builddHome: BUILDD_DIR,
-    host: hostname(),
+    host: runnerHostName(),
     env: process.env as Record<string, string | undefined>,
   });
   if (isRun) await (await import('./run-attach')).recordRunExit(BUILDD_DIR, recordTask, code);

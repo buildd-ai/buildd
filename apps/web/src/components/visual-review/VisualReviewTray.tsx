@@ -16,11 +16,15 @@
  * actions, all as callbacks: turn the audit off or skip it when no browser
  * runner is online, answer the boot-failure question, retry a stalled or
  * failed audit.
+ *
+ * The tray is a `data-verify-surface` for registered UI checks
+ * (scripts/qa/surface-evidence.ts): every control declares its operation, and
+ * a thumbnail's caption (Fix merged, After fix) is a label block.
  */
 import { useState } from 'react';
 import Link from 'next/link';
 import type { VisualReviewCell, VisualReviewMarker, VisualReviewModel } from '@buildd/shared';
-import { awaitingCapture, describeVisualPhase, screensToReview } from '@/lib/visual-review-model';
+import { awaitingCapture, describeVisualPhase, screensToReview, visualPhaseDetailRole } from '@/lib/visual-review-model';
 import ShotImage, { VERDICT_DOT, VIEWPORT_LABEL, viewportAspect } from './ShotImage';
 import VisualReviewLine from './VisualReviewLine';
 import { AnswerRow, type OnAnswer } from './VisualReviewAsk';
@@ -56,8 +60,12 @@ export interface VisualReviewTrayProps {
    * host whose width is not the viewport's (a board column).
    */
   columns?: 'auto' | 'one' | 'fit';
+  /** Its `data-verify-surface` id; a host showing several trays gives each its own. */
+  verifySurface?: string;
   className?: string;
 }
+
+export const VISUAL_REVIEW_SURFACE = 'visual-review';
 
 const MARKER_LABEL: Record<VisualReviewMarker, string> = {
   awaiting: 'not reviewed',
@@ -70,6 +78,7 @@ const MARKER_LABEL: Record<VisualReviewMarker, string> = {
 /** The thumbnail's plain words: what the agent said, or where the fix stands. */
 function thumbState(cell: VisualReviewCell): string {
   if (awaitingCapture(cell)) return MARKER_LABEL.fix_merged;
+  if (cell.fixCheck?.state === 'decide') return cell.current.review && cell.marker !== 'awaiting' ? `fix merged, ${MARKER_LABEL[cell.marker]}` : 'fix merged, no new screenshot: fixed or still broken';
   if (cell.fixCheck?.state === 'check') return cell.current.review ? `fix merged, ${MARKER_LABEL[cell.marker]}` : 'fix merged, new screenshot to check';
   return `agent said ${cell.current.agentVerdict}, ${MARKER_LABEL[cell.marker]}`;
 }
@@ -109,10 +118,10 @@ function Thumb({ cell, onOpen }: { cell: VisualReviewCell; onOpen?: (key: string
         <ShotImage shot={cell.current.shot} alt="" className="block h-full w-full object-cover object-top" />
         <i aria-hidden="true" className={`absolute -right-1 -top-1 z-10 block h-2.5 w-2.5 ring-2 ring-surface-2 ${VERDICT_DOT[verdict]}`} />
       </span>
-      <span className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[1px] text-text-muted">
+      <span data-verify-block="label" className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[1px] text-text-muted">
         <ReviewMarker marker={cell.marker} />
         {VIEWPORT_LABEL[cell.viewport]}
-        {awaitingCapture(cell) ? ' · Fix merged' : cell.fixCheck ? ' · After fix' : cell.current.round > 1 ? ` · R${cell.current.round}` : ''}
+        {awaitingCapture(cell) || cell.fixCheck?.state === 'decide' ? ' · Fix merged' : cell.fixCheck ? ' · After fix' : cell.current.round > 1 ? ` · R${cell.current.round}` : ''}
       </span>
     </>
   );
@@ -128,7 +137,7 @@ function Thumb({ cell, onOpen }: { cell: VisualReviewCell; onOpen?: (key: string
     return <span {...common} aria-label={label} className="group flex flex-col items-start gap-1.5">{inner}</span>;
   }
   return (
-    <button {...common} type="button" aria-label={label} onClick={() => onOpen(cell.key)} className="group flex flex-col items-start gap-1.5 text-left focus-visible:outline-none">
+    <button {...common} type="button" aria-label={label} data-verify-action="view_detail" data-verify-prominence="secondary" onClick={() => onOpen(cell.key)} className="group flex flex-col items-start gap-1.5 text-left focus-visible:outline-none">
       {inner}
     </button>
   );
@@ -140,35 +149,35 @@ function EmptyPhase({ model, actions }: { model: VisualReviewModel; actions?: Vi
   const a = actions ?? {};
   const buttons: React.ReactNode[] = [];
   if (model.phase === 'no_browser_runner') {
-    if (a.onTurnOff) buttons.push(<ActionButton key="off" testId="visual-review-action-turn-off" tone="primary" onAction={a.onTurnOff} onError={setError}>Turn off for this mission</ActionButton>);
-    if (a.onSkip) buttons.push(<ActionButton key="skip" testId="visual-review-action-skip" onAction={a.onSkip} onError={setError}>Skip this audit</ActionButton>);
+    if (a.onTurnOff) buttons.push(<ActionButton key="off" testId="visual-review-action-turn-off" operation="turn_off_visual_review" tone="primary" onAction={a.onTurnOff} onError={setError}>Turn off for this mission</ActionButton>);
+    if (a.onSkip) buttons.push(<ActionButton key="skip" testId="visual-review-action-skip" operation="skip_visual_review" onAction={a.onSkip} onError={setError}>Skip this audit</ActionButton>);
   } else if (model.phase === 'stalled' || model.phase === 'failed') {
-    if (a.onRetry) buttons.push(<ActionButton key="retry" testId="visual-review-action-retry" tone="primary" onAction={a.onRetry} onError={setError}>Retry the audit</ActionButton>);
-    if (a.onSkip) buttons.push(<ActionButton key="skip" testId="visual-review-action-skip" onAction={a.onSkip} onError={setError}>Skip this audit</ActionButton>);
+    if (a.onRetry) buttons.push(<ActionButton key="retry" testId="visual-review-action-retry" operation="retry_visual_review" tone="primary" onAction={a.onRetry} onError={setError}>Retry the audit</ActionButton>);
+    if (a.onSkip) buttons.push(<ActionButton key="skip" testId="visual-review-action-skip" operation="skip_visual_review" onAction={a.onSkip} onError={setError}>Skip this audit</ActionButton>);
   }
   // It never ran: nothing of its own to retry. The way on is the failed task (spec 072de598 I-14).
   const waitingOn = model.phase === 'waiting_on_failed_work' ? model.waitingOn ?? null : null;
   if (waitingOn) {
-    buttons.push(<Link key="open" data-testid="visual-review-action-open-failed" href={`/app/tasks/${encodeURIComponent(waitingOn.taskId)}`} className={`${BTN_BASE} ${BTN_SIZE} ${BTN_SECONDARY}`}>Open the failed task</Link>);
+    buttons.push(<Link key="open" data-testid="visual-review-action-open-failed" data-verify-action="view_detail" data-verify-prominence="secondary" href={`/app/tasks/${encodeURIComponent(waitingOn.taskId)}`} className={`${BTN_BASE} ${BTN_SIZE} ${BTN_SECONDARY}`}>Open the failed task</Link>);
   }
   const boot = model.phase === 'boot_failed' ? model.bootFailure : null;
   return (
     <div data-testid="visual-review-empty" className="flex flex-col gap-3">
       {boot ? (
         <>
-          <p className="border-l-[3px] border-status-error py-1 pl-3 font-mono text-[13px] leading-[1.5] text-text-primary">{boot.prompt}</p>
+          <p data-verify-block="body" className="border-l-[3px] border-status-error py-1 pl-3 font-mono text-[13px] leading-[1.5] text-text-primary">{boot.prompt.replace(/^App did not boot:\s*/i, '')}</p>
           {a.onAnswer && <AnswerRow target={{ workerId: boot.workerId, taskId: boot.taskId }} options={a.answerOptions} onAnswer={a.onAnswer} />}
         </>
       ) : (
-        <p className="text-[13px] leading-[1.5] text-text-secondary">{copy.detail}</p>
+        <p data-verify-block={visualPhaseDetailRole(model.phase)} className="text-[13px] leading-[1.5] text-text-secondary">{copy.detail}</p>
       )}
       {buttons.length > 0 && <div className="flex flex-wrap gap-2">{buttons}</div>}
-      {error && <p role="alert" data-testid="visual-review-action-error" className="font-mono text-[12px] text-status-error">{error}</p>}
+      {error && <p role="alert" data-testid="visual-review-action-error" data-verify-block="status" className="font-mono text-[12px] text-status-error">{error}</p>}
     </div>
   );
 }
 
-export default function VisualReviewTray({ model, onReview, actions, hideLine = false, hideReviewButton = false, columns = 'auto', className = '' }: VisualReviewTrayProps) {
+export default function VisualReviewTray({ model, onReview, actions, hideLine = false, hideReviewButton = false, columns = 'auto', verifySurface = VISUAL_REVIEW_SURFACE, className = '' }: VisualReviewTrayProps) {
   const groups = groupCells(model.cells);
   // One count across the Line, the Ask, the deck and this button: every screen
   // waiting on you, a fix check included (screensToReview).
@@ -177,6 +186,8 @@ export default function VisualReviewTray({ model, onReview, actions, hideLine = 
     <button
       type="button"
       data-testid="visual-review-review-button"
+      data-verify-action="view_detail"
+      data-verify-prominence="secondary"
       onClick={() => onReview(model.queue[0] ?? null)}
       className={`${BTN_BASE} ${BTN_SIZE} ${BTN_SECONDARY} shrink-0`}
     >
@@ -185,7 +196,7 @@ export default function VisualReviewTray({ model, onReview, actions, hideLine = 
   ) : null;
 
   return (
-    <div data-testid="visual-review-tray" data-phase={model.phase} className={`flex min-w-0 flex-col gap-3 ${columns === 'fit' ? '@container' : ''} ${className}`}>
+    <div data-testid="visual-review-tray" data-phase={model.phase} data-verify-surface={verifySurface} className={`flex min-w-0 flex-col gap-3 ${columns === 'fit' ? '@container' : ''} ${className}`}>
       {(!hideLine || reviewButton) && (
         <div className="flex flex-wrap items-center justify-between gap-2">
           {!hideLine ? <VisualReviewLine model={model} /> : <span />}
@@ -205,7 +216,7 @@ export default function VisualReviewTray({ model, onReview, actions, hideLine = 
               className="min-w-0 border border-border-default bg-surface-2 p-2.5"
             >
               <p className="mb-2 flex min-w-0 flex-wrap items-center gap-1.5">
-                <span className="break-all font-mono text-[13px] font-semibold text-text-primary">{g.route}</span>
+                <span data-verify-block="heading" className="break-all font-mono text-[13px] font-semibold text-text-primary">{g.route}</span>
                 {g.variant && <span className={CHIP}>{g.variant}</span>}
               </p>
               <div className="flex items-end gap-3">
@@ -217,7 +228,7 @@ export default function VisualReviewTray({ model, onReview, actions, hideLine = 
         </ul>
       )}
       {model.phase === 'capturing' && model.cells.length > 0 && (
-        <p className="font-mono text-[12px] text-text-muted">{describeVisualPhase(model).detail}</p>
+        <p data-verify-block="body" className="font-mono text-[12px] text-text-muted">{describeVisualPhase(model).detail}</p>
       )}
     </div>
   );

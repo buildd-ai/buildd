@@ -37,7 +37,13 @@
  *
  * retire and restore (POST|DELETE /api/specs/[id]/retire) take a spec out of
  * force, retired or superseded by another, and put it back: a person's act,
- * an agent run or API key gets the route's 403, passed through.
+ * an agent run or API key gets the route's 403, passed through. From an OAuth
+ * session, like approve, nothing changes: the route returns a link the person
+ * opens on buildd.dev to confirm it, which this shows.
+ *
+ * awaiting_approval (read-only, GET /api/specs/approvals) says how many spec
+ * revisions wait for approval and gives the inbox link: never anything that
+ * approves.
  *
  * copy (POST /api/specs/[id]/copy) is the cross-workspace handoff: one
  * revision copied into another workspace as a draft, never approved by
@@ -186,7 +192,7 @@ export function organizeText(r: OrganizeReply): string {
 }
 
 /** Sub-actions scoped to a workspace rather than to a spec or task: the caller resolves the session workspace for these. */
-export const WORKSPACE_SPEC_OPS = ['create_draft', 'list', 'organize', 'import'] as const;
+export const WORKSPACE_SPEC_OPS = ['create_draft', 'list', 'organize', 'import', 'awaiting_approval'] as const;
 
 type AreaBy = 'classifier' | 'domain' | 'existing';
 type ImportRow = {
@@ -453,7 +459,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         const r = await api(`/api/specs/${encodeURIComponent(specId)}/${op}`, { method: 'POST', body: JSON.stringify(payload) });
         if (op === 'approve' && r.pending) {
           const warns = (r.pending.gate?.warnings ?? []) as Array<{ message: string }>;
-          return text(`Sent to ${r.pending.sentTo ?? 'the approver'} to confirm; gate passed${warns.length ? ` with ${warns.length} ${warns.length === 1 ? 'warning' : 'warnings'}` : ''}.\nNot approved yet: approving a spec is the person's own decision, so it waits for them to confirm revision ${r.pending.revision} of "${r.spec.title}" on buildd.dev: ${r.pending.confirmUrl}\nThe link works until ${r.pending.expiresAt}, and only while the spec stays at version ${r.spec.version}.${warns.length ? `\nWarnings:\n${warns.map((w) => `- ${w.message}`).join('\n')}` : ''}\nSpec URL: ${specUrl(specId)}`);
+          return text(`Sent to ${r.pending.sentTo ?? 'the approver'} to confirm; gate passed${warns.length ? ` with ${warns.length} ${warns.length === 1 ? 'warning' : 'warnings'}` : ''}.\nNot approved yet: approving a spec is the person's own decision, so it waits for them to confirm revision ${r.pending.revision} of "${r.spec.title}" on buildd.dev: ${r.pending.confirmUrl}\nThe link works until ${r.pending.expiresAt}, and only while the spec stays at version ${r.spec.version}.${warns.length ? `\nWarnings:\n${warns.map((w) => `- ${w.message}`).join('\n')}` : ''}${r.pending.inboxUrl ? `\nEverything waiting for their approval: ${r.pending.inboxUrl}` : ''}\nSpec URL: ${specUrl(specId)}`);
         }
         return text(op === 'approve'
           ? `Approved: revision ${r.revision.revision} of "${r.spec.title}" is now in force (sha256 ${r.revision.contentHash}). Version ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`
@@ -464,6 +470,38 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         // A gate refusal also carries currentVersion; its reasons are the answer, not a stale version.
         if (e?.status === 409 && e.body?.code === 'gate_refused') return errorResult(String(e.body.error ?? 'The quality gate refused this revision.'));
         if (e?.status === 409) return errorResult(`${String(e.body?.error ?? 'Conflict.')}${typeof e.body?.currentVersion === 'number' ? `\ncurrentVersion: ${e.body.currentVersion}` : ''}`);
+        throw err;
+      }
+    }
+
+    case 'verify': {
+      if (Object.keys(params).some(key => params[key] !== undefined && !['action', 'taskId', 'evidenceRef'].includes(key))) {
+        return errorResult('verify accepts only taskId and optional evidenceRef (a stored artifact id); policy, head and verdict are resolved by the server.');
+      }
+      if (typeof params.taskId !== 'string' || !params.taskId.trim()) return errorResult('taskId is required');
+      if (params.evidenceRef !== undefined && (typeof params.evidenceRef !== 'string' || !params.evidenceRef.trim())) {
+        return errorResult('evidenceRef must be a stored artifact id');
+      }
+      try {
+        const r = await api(`/api/specs/outcomes/${encodeURIComponent(params.taskId.trim())}/verify`, {
+          method: 'POST', body: JSON.stringify(params.evidenceRef !== undefined ? { evidenceRef: params.evidenceRef } : {}),
+        });
+        const verification = r.verification as {
+          reason?: string;
+          results: Array<{ criterionId: string; verdict: string; method: string; cached: boolean; recorded: boolean; reason?: string }>;
+          coverage: Array<{ status: string }>;
+          refused?: Array<{ ref: string; reason: string }>;
+        };
+        return text([
+          'Registered verification:',
+          ...(verification.reason ? [verification.reason] : []),
+          ...verification.results.map(result => `  ${result.criterionId}: ${result.verdict} (${result.method}${result.cached ? ', cached' : ''}; ${result.recorded ? 'recorded' : `not recorded${result.reason ? `: ${result.reason}` : ''}`})`),
+          ...(verification.refused ?? []).map(x => `  refused capture ${x.ref}: ${x.reason}`),
+          `Coverage: ${verification.coverage.filter(criterion => criterion.status === 'declared').length}/${verification.coverage.length} criteria declare checks.`,
+        ].join('\n'));
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 403, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
     }
@@ -715,7 +753,11 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       if (params.reason !== undefined) payload.reason = params.reason;
       if (op === 'retire' && params.supersededBy !== undefined && params.supersededBy !== null) payload.supersededBy = params.supersededBy;
       try {
-        const { spec } = await api(`/api/specs/${encodeURIComponent(specId)}/retire`, { method: op === 'retire' ? 'POST' : 'DELETE', body: JSON.stringify(payload) });
+        const { spec, pending } = await api(`/api/specs/${encodeURIComponent(specId)}/retire`, { method: op === 'retire' ? 'POST' : 'DELETE', body: JSON.stringify(payload) });
+        // From an OAuth session: a link the person confirms on buildd.dev; nothing changed.
+        if (pending) {
+          return text(`Not ${op === 'retire' ? 'retired' : 'restored'} yet: ${op === 'retire' ? 'retiring' : 'restoring'} a spec is the person's own decision, so it waits for them to confirm it on buildd.dev: ${pending.confirmUrl}\n"${spec.title}" is still ${spec.status}; confirmed, it becomes ${pending.to}. The link works until ${pending.expiresAt}, and only while the spec stays at version ${spec.version} and ${spec.status}.\nSpec URL: ${specUrl(specId)}`);
+        }
         if (op === 'restore') return text(`Restored: "${spec.title}" is ${spec.status} again. Version ${spec.version}.\nSpec URL: ${specUrl(specId)}`);
         return text(spec.status === 'superseded'
           ? `Superseded: "${spec.title}" is replaced by ${String(payload.supersededBy)} and out of force. Undo with restore.\nSpec URL: ${specUrl(specId)}`
@@ -723,6 +765,25 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       } catch (err) {
         const e = apiError(err);
         if (e && [400, 403, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'awaiting_approval': {
+      // Read-only (R-7): a count and the inbox link, never anything that approves.
+      const q = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : '';
+      try {
+        const r = await api(`/api/specs/approvals${q}`);
+        const n = Number(r.count ?? 0);
+        const revisions = `${n} spec ${n === 1 ? 'revision' : 'revisions'}`;
+        const wait = n === 1 ? 'waits' : 'wait';
+        if (r.scope === 'person') {
+          return text(n === 0 ? `Nothing waits for your approval. Inbox: ${r.inboxUrl}` : `${revisions} ${wait} for your approval. A person approves each one on buildd.dev, one at a time: ${r.inboxUrl}`);
+        }
+        return text(n === 0 ? `Nothing waits for approval in this workspace. Inbox: ${r.inboxUrl}` : `${revisions} ${wait} for approval in this workspace. A person approves each one on buildd.dev: ${r.inboxUrl}`);
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 403, 404].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
     }

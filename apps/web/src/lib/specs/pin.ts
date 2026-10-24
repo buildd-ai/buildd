@@ -6,6 +6,7 @@ import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { specCriteria } from '@buildd/spec-contract/requirements';
 import { pinCriterionHashes } from './criteria';
 import { checkCriteriaScope } from '@buildd/spec-contract/scope';
+import { verificationDeclarationError } from '@buildd/spec-contract/verification-bindings';
 import type { StoredDesign } from './design';
 
 /**
@@ -85,10 +86,17 @@ export async function pinSpecSource<C extends Ctx>(workspaceId: string, context:
     ...(provisional ? { provisional: true } : {}),
     ...(typeof commitSha === 'string' && /^[0-9a-f]{7,40}$/i.test(commitSha) ? { commitSha } : {}),
   };
+  // The pinned text must carry readable verification declarations: a revision
+  // stored before they were checked on write is refused here, never pinned
+  // with a required check that would silently drop out of its outcome.
+  const read = await readPinnedSpecRevision(pinned);
+  if (read.ok) {
+    const declaration = verificationDeclarationError(read.body);
+    if (declaration) return { ok: false, status: 409, error: `Revision ${rev.revision} has an invalid verification declaration (${declaration}); revise the spec, then pin the new revision` };
+  }
   // The criteria this task answers for (./scope.ts), checked against the
   // revision it is pinned to; left out, it answers for every one.
   if (criteria !== undefined) {
-    const read = await readPinnedSpecRevision(pinned);
     if (!read.ok) return { ok: false, status: 409, error: `context.specSource.criteria cannot be checked: ${read.reason}` };
     const scope = checkCriteriaScope(criteria, specCriteria(read.body).map((c) => c.id), rev.revision);
     if (!scope.ok) return { ok: false, status: 400, error: scope.error };

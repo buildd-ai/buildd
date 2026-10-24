@@ -35,6 +35,8 @@ export type InferenceCapability =
   | 'heartbeat_triage'
   | 'task_category'
   | 'surface_audit_advice'
+  | 'ui_verification'
+  | 'ui_copy'
   | 'task_role_shadow'
   | 'task_role_apply'
   | 'orchestration_manifest'
@@ -58,6 +60,7 @@ export type InferenceCapability =
   | 'spec_area'
   | 'spec_taxonomy'
   | 'spec_publication'
+  | 'red_check_cause'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -73,6 +76,16 @@ export interface CapabilityDescriptor {
 }
 
 export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescriptor> = {
+  ui_verification: {
+    id: 'ui_verification', kind: 'built_in', label: 'UI specification checks',
+    description: 'Checks captured interface cards against registered product requirements.',
+    costHint: 'metered per captured card',
+  },
+  ui_copy: {
+    id: 'ui_copy', kind: 'opt_in', label: 'UI copy checks',
+    description: 'Judges a captured card for repeated status, unclear actions and process narration.',
+    costHint: 'metered per captured card',
+  },
   criteria_grading: {
     id: 'criteria_grading',
     kind: 'server_feature',
@@ -354,6 +367,17 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Spec publication',
     description: 'Before an approved spec is written to the repo, a decision model reads the workspace\'s publication policy and the spec and says whether it may be published. When in doubt the spec stays in buildd.',
     costHint: '~$0.0001 per approved revision',
+  },
+  // Red check cause (packages/core/decision-kind-red-check-cause.ts). Asked
+  // once per red PR head the rules could not call, off the render path
+  // (apps/web/src/lib/red-check-decision.ts). Its fallback reads the failure
+  // as the code's, which is what the card says without it.
+  red_check_cause: {
+    id: 'red_check_cause',
+    kind: 'opt_in',
+    label: 'Red check cause',
+    description: 'When a pull request\'s check fails and the rules cannot tell why, a decision model reads the failing log lines and says whether the environment or the code failed, so Home can offer a re-run before a fix. Unsure means the code.',
+    costHint: '~$0.0001 per unclassified red head',
   },
   chat: {
     id: 'chat',

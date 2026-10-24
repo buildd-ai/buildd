@@ -47,7 +47,8 @@ async function methodsOf(sub: string, extra: Record<string, unknown>): Promise<s
     return {};
   }) as unknown as ApiFn;
   try {
-    await handleBuilddAction(api, 'manage_specs', { ...BASE, ...extra, action: sub }, ctx);
+    const params = sub === 'verify' ? { taskId: TASK, action: sub } : { ...BASE, ...extra, action: sub };
+    await handleBuilddAction(api, 'manage_specs', params, ctx);
   } catch {
     // A handler may choke on the stub's empty reply after its call: the call is what counts.
   }

@@ -9,6 +9,10 @@
  *   &view=deck | deck-phone | compare         the review deck (dialog, inline sheet, compare open)
  *   &view=fix-check                           a merged fix with a new screenshot: Before / After, Fixed / Still broken
  *   &view=fix-merged                          a merged fix with no screenshot since: settled, no buttons
+ *   &view=fix-merged-tray                     the same working set, deck closed: the tray's "Fix merged" thumbnail awaiting recapture
+ *   &view=recapture | recapture-queued | recapture-decide
+ *                                             merged fixes an audit did not re-shoot (spec 072de598 I-15):
+ *                                             a recapture owed, queued, or a person's Fixed / Still broken
  *   &view=reviewed                            the reviewed tray
  *   &expired=1                                one image that fails to load
  *
@@ -19,6 +23,7 @@ import { VISUAL_REVIEW_PHASES, type VisualReviewNeedsYouReason, type VisualRevie
 import type { VisualReviewFixtureOptions } from '@/lib/visual-review-model.fixtures';
 import { mockWorkers } from './fixtures-data';
 import { RUN_ACTIVITY_FIXTURE_STATE } from './run-activity-fixtures';
+import { CLOSED_PR_FIXTURE_STATE } from './closed-pr-fixtures';
 
 export const VISUAL_REVIEW_FIXTURE_STATE = 'visual-review';
 /** The real mission Board, Lanes and Feed with a visual model (mission-board-visual-fixtures.ts). */
@@ -84,6 +89,8 @@ export const RUNNER_SIZE_FIXTURE_STATE = 'runner-size';
 export const RUNNER_ISOLATION_FIXTURE_STATE = 'runner-isolation';
 /** The mission page's "Waive visual audit": the blocked audit's drawer and the Visual review card. */
 export const SURFACE_AUDIT_WAIVER_FIXTURE_STATE = 'surface-audit-waiver';
+/** The visual review row's Skip, live (spec 072de598 I-7, I-18, AC-24, AC-26): `&held=1` for a held Skip with later findings. */
+export const SKIP_ROW_FIXTURE_STATE = 'skip-row';
 /** The hosted runner allowance on every surface it shows (HostedRunnerFixture.tsx). */
 export const HOSTED_RUNNER_FIXTURE_STATE = 'hosted-runner';
 /** Team service status: banner, the owner's card, the Health list and a task's line (ServiceStatusFixture.tsx). */
@@ -136,13 +143,17 @@ export const MISSION_DELIVERIES_FIXTURE_STATE = 'mission-deliveries';
 /** The artifact page's sandboxed design preview around a sample design (DesignPreviewFixture.tsx). */
 export const DESIGN_PREVIEW_FIXTURE_STATE = 'design-preview';
 
-export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, GOAL_CRITERIA_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE, MODEL_PROVIDERS_FIXTURE_STATE, MODEL_PROVIDERS_LONE_FIXTURE_STATE, MODEL_PROVIDERS_STORED_POLICY_FIXTURE_STATE, OPERATOR_ACCESS_FIXTURE_STATE, TASK_SHIPPED_FIXTURE_STATE, COMMIT_CHECKS_FIXTURE_STATE, TASK_PAGE_FIXTURE_STATE, ANSWER_STATES_FIXTURE_STATE, AGENT_ACCESS_FIXTURE_STATE, FAILURE_KINDS_FIXTURE_STATE, ENTITLEMENT_BLOCKED_FIXTURE_STATE, COORDINATION_HOLD_FIXTURE_STATE, ONBOARDING_FIXTURE_STATE, MISSION_TASK_STRIP_FIXTURE_STATE, MISSION_PLAN_FIXTURE_STATE, TOOL_BREAKDOWN_FIXTURE_STATE, RUNNER_SIZE_FIXTURE_STATE, RUNNER_ISOLATION_FIXTURE_STATE, INTERACTIVE_SESSIONS_FIXTURE_STATE, WORKSPACES_LIST_FIXTURE_STATE, HOSTED_RUNNER_FIXTURE_STATE, SERVICE_STATUS_FIXTURE_STATE, DELIVERY_STATES_FIXTURE_STATE, SURFACE_AUDIT_WAIVER_FIXTURE_STATE, DELIVERY_REVIEW_ACTIONS_FIXTURE_STATE, DELIVERY_DOCK_FIXTURE_STATE, DELIVERY_RUN_FIX_FIXTURE_STATE, ACTIVITY_DELIVERY_FIXTURE_STATE, TEAM_MEMBERS_FIXTURE_STATE, REFINED_COMPONENTS_FIXTURE_STATE, MISSION_FLOW_FIXTURE_STATE, MISSION_DETAIL_COMPACT_FIXTURE_STATE, RUN_ACTIVITY_FIXTURE_STATE, HOME_CARDS_FIXTURE_STATE, MCP_CONNECTIONS_FIXTURE_STATE, TASK_ERROR_EVIDENCE_FIXTURE_STATE, SPEC_SURFACE_FIXTURE_STATE, BRANCH_PANEL_FIXTURE_STATE, SPEC_INDEX_FIXTURE_STATE, SPEC_ATTACHMENTS_FIXTURE_STATE, SPEC_DELIVERY_FIXTURE_STATE, SPEC_IMPORT_REVIEW_FIXTURE_STATE, RUNNER_KEYS_FIXTURE_STATE, MISSION_DELIVERIES_FIXTURE_STATE, DESIGN_PREVIEW_FIXTURE_STATE];
+export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, GOAL_CRITERIA_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE, MODEL_PROVIDERS_FIXTURE_STATE, MODEL_PROVIDERS_LONE_FIXTURE_STATE, MODEL_PROVIDERS_STORED_POLICY_FIXTURE_STATE, OPERATOR_ACCESS_FIXTURE_STATE, TASK_SHIPPED_FIXTURE_STATE, COMMIT_CHECKS_FIXTURE_STATE, TASK_PAGE_FIXTURE_STATE, ANSWER_STATES_FIXTURE_STATE, AGENT_ACCESS_FIXTURE_STATE, FAILURE_KINDS_FIXTURE_STATE, ENTITLEMENT_BLOCKED_FIXTURE_STATE, COORDINATION_HOLD_FIXTURE_STATE, ONBOARDING_FIXTURE_STATE, MISSION_TASK_STRIP_FIXTURE_STATE, MISSION_PLAN_FIXTURE_STATE, TOOL_BREAKDOWN_FIXTURE_STATE, RUNNER_SIZE_FIXTURE_STATE, RUNNER_ISOLATION_FIXTURE_STATE, INTERACTIVE_SESSIONS_FIXTURE_STATE, WORKSPACES_LIST_FIXTURE_STATE, HOSTED_RUNNER_FIXTURE_STATE, SERVICE_STATUS_FIXTURE_STATE, DELIVERY_STATES_FIXTURE_STATE, SURFACE_AUDIT_WAIVER_FIXTURE_STATE, SKIP_ROW_FIXTURE_STATE, DELIVERY_REVIEW_ACTIONS_FIXTURE_STATE, DELIVERY_DOCK_FIXTURE_STATE, DELIVERY_RUN_FIX_FIXTURE_STATE, ACTIVITY_DELIVERY_FIXTURE_STATE, TEAM_MEMBERS_FIXTURE_STATE, REFINED_COMPONENTS_FIXTURE_STATE, MISSION_FLOW_FIXTURE_STATE, MISSION_DETAIL_COMPACT_FIXTURE_STATE, RUN_ACTIVITY_FIXTURE_STATE, HOME_CARDS_FIXTURE_STATE, MCP_CONNECTIONS_FIXTURE_STATE, TASK_ERROR_EVIDENCE_FIXTURE_STATE, SPEC_SURFACE_FIXTURE_STATE, BRANCH_PANEL_FIXTURE_STATE, SPEC_INDEX_FIXTURE_STATE, SPEC_ATTACHMENTS_FIXTURE_STATE, SPEC_DELIVERY_FIXTURE_STATE, SPEC_IMPORT_REVIEW_FIXTURE_STATE, RUNNER_KEYS_FIXTURE_STATE, MISSION_DELIVERIES_FIXTURE_STATE, CLOSED_PR_FIXTURE_STATE, DESIGN_PREVIEW_FIXTURE_STATE];
 
 export function isFixtureView(value: string | null | undefined): value is string {
   return value != null && FIXTURE_VIEWS.includes(value);
 }
 
-export const VISUAL_REVIEW_FIXTURE_VIEWS = ['tray', 'board', 'deck', 'deck-phone', 'compare', 'fix-check', 'fix-merged', 'reviewed'] as const;
+export const VISUAL_REVIEW_FIXTURE_VIEWS = ['tray', 'board', 'deck', 'deck-phone', 'compare', 'fix-check', 'fix-merged', 'fix-merged-tray', 'reviewed', 'recapture', 'recapture-queued', 'recapture-decide'] as const;
+/** The views that show a merged fix waiting for a screenshot, with the Verify row they produce. */
+export const RECAPTURE_FIXTURE_VIEWS = ['recapture', 'recapture-queued', 'recapture-decide'] as const;
+export type RecaptureFixtureView = (typeof RECAPTURE_FIXTURE_VIEWS)[number];
+export const isRecaptureFixtureView = (v: string): v is RecaptureFixtureView => (RECAPTURE_FIXTURE_VIEWS as readonly string[]).includes(v);
 export type VisualReviewFixtureView = (typeof VISUAL_REVIEW_FIXTURE_VIEWS)[number];
 
 const REASONS: readonly VisualReviewNeedsYouReason[] = ['unsure', 'question', 'round_cap'];
@@ -173,10 +184,15 @@ export function parseVisualReviewFixtureParams(q: URLSearchParams): VisualReview
   const reasonParam = q.get('reason');
   const reason = (REASONS as readonly string[]).includes(reasonParam ?? '') ? (reasonParam as VisualReviewNeedsYouReason) : undefined;
   const expired = q.get('expired') === '1';
-  const deckLike = view === 'deck' || view === 'deck-phone' || view === 'compare' || view === 'fix-check' || view === 'fix-merged';
+  const deckLike = view === 'deck' || view === 'deck-phone' || view === 'compare' || view === 'fix-check' || view === 'fix-merged' || view === 'fix-merged-tray';
 
   if (view === 'reviewed') {
     return { view, phase: 'reviewed', options: { expired }, startKey: null, compare: false };
+  }
+  if (isRecaptureFixtureView(view)) {
+    // The scenario decides the model; the phase named here is the one it produces.
+    const phase: VisualReviewPhase = view === 'recapture-queued' ? 'queued' : view === 'recapture-decide' ? 'needs_you' : 'reviewed';
+    return { view, phase, options: { scenario: view, expired }, startKey: null, compare: false };
   }
   if (deckLike) {
     // The two-round working set with mixed human reviews.
@@ -209,7 +225,11 @@ export function visualReviewFixtureLinks(): { label: string; href: string }[] {
     { label: 'compare', href: `${base}&view=compare` },
     { label: 'fix merged, new screenshot', href: `${base}&view=fix-check` },
     { label: 'fix merged, no screenshot yet', href: `${base}&view=fix-merged` },
+    { label: 'fix merged, tray', href: `${base}&view=fix-merged-tray` },
     { label: 'reviewed', href: `${base}&view=reviewed` },
+    { label: 'fix merged, recapture owed', href: `${base}&view=recapture` },
+    { label: 'fix merged, recapture queued', href: `${base}&view=recapture-queued` },
+    { label: 'fix merged, your call', href: `${base}&view=recapture-decide` },
     { label: 'expired', href: `${base}&view=deck-phone&expired=1` },
   ];
 }

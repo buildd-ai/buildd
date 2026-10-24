@@ -140,6 +140,14 @@ export const STALL_GRACE_MS = 5 * 60_000;
 export type DependencyRow = {
   id?: string;
   title?: string | null;
+  /**
+   * Resolved per viewer (spec e28018c2 R-6): the viewer cannot see it, so
+   * nothing about it is rendered. Its status and workers stay, for the gate
+   * predicate only.
+   */
+  hidden?: boolean;
+  /** A visible dependency in another workspace than the dependent's. */
+  workspaceName?: string | null;
   status: string;
   updatedAt?: Date | string | null;
   workers?: Array<{
@@ -227,6 +235,8 @@ export function unmetDependencyPrs(
 ): Record<string, number> {
   const out: Record<string, number> = {};
   for (const id of unmetDependencyIds(task, byId)) {
+    // A dependency the viewer cannot see has no PR they may be shown.
+    if (byId.get(id)?.hidden) continue;
     for (const w of byId.get(id)?.workers ?? []) {
       const n = (w as { prNumber?: number | null }).prNumber;
       if (typeof n === 'number' && w.prUrl && !w.mergedAt && w.prLifecycleStatus !== 'closed') {
