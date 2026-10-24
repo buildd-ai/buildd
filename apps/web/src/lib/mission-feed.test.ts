@@ -192,7 +192,7 @@ describe('postMissionFeedEvent', () => {
       missionId: 'm1',
       type: 'update',
       title: 'Mission configuration updated',
-      body: 'pacingMode: eager → paced',
+      body: 'orchestrationMode: auto → manual',
       actor: { kind: 'user', id: 'u1', label: 'jane@co' },
       collapseKey: 'config:user:u1',
     });
@@ -202,7 +202,7 @@ describe('postMissionFeedEvent', () => {
     expect(updatedNotes[0].data.collapseCount).toBe(2);
     // Both the earlier and the new field survive in the merged body.
     expect(updatedNotes[0].data.body).toContain('priority: 0 → 5');
-    expect(updatedNotes[0].data.body).toContain('pacingMode: eager → paced');
+    expect(updatedNotes[0].data.body).toContain('orchestrationMode: auto → manual');
   });
 
   it('replaces (not duplicates) the line for a field that changes again in the same window', async () => {

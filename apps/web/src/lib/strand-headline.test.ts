@@ -5,7 +5,7 @@ const NOW = '2026-10-19T10:00:00.000Z';
 const blocked = { state: 'blocked', kind: 'credential_unavailable', reason: 'provider_unavailable', phrase: 'x', evaluatedAt: NOW } as const;
 const stale = { ...blocked, state: 'stale' } as const;
 const unknown = { state: 'unknown', kind: null, reason: null, phrase: null, evaluatedAt: null } as const;
-const capacity = { ...blocked, kind: 'capacity_exhausted', reason: 'workspace_cap' } as const;
+const capacity = { ...blocked, kind: 'capacity_exhausted', reason: 'mission_concurrent' } as const;
 const row = (claims: Array<any>, opts: { pinned?: boolean; enabledForTeam?: boolean } = {}) => ({
   label: 'Codex', strandedPending: claims.length, enabledForTeam: opts.enabledForTeam ?? true,
   sampleTasks: claims.map((claim, i) => ({

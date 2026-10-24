@@ -5,7 +5,6 @@ import {
   BYPASS_DEPS_GATE_KEY,
   BYPASS_HELD_GATE_KEY,
   BYPASS_MISSION_BUDGET_KEY,
-  CAP_EXEMPT_KEY,
   bypassFlagCondition,
   hasBypassFlag,
 } from './bypass-flags';
@@ -18,24 +17,23 @@ import {
  */
 describe('hasBypassFlag', () => {
   it('accepts the boolean form written by /start', () => {
-    expect(hasBypassFlag({ capExempt: true }, CAP_EXEMPT_KEY)).toBe(true);
+    expect(hasBypassFlag({ bypassMissionBudget: true }, BYPASS_MISSION_BUDGET_KEY)).toBe(true);
   });
 
   it('accepts the string form that `context->>key` yields', () => {
-    expect(hasBypassFlag({ capExempt: 'true' }, CAP_EXEMPT_KEY)).toBe(true);
+    expect(hasBypassFlag({ bypassMissionBudget: 'true' }, BYPASS_MISSION_BUDGET_KEY)).toBe(true);
   });
 
   it('rejects absent, null, false and other truthy-looking values', () => {
-    expect(hasBypassFlag(null, CAP_EXEMPT_KEY)).toBe(false);
-    expect(hasBypassFlag(undefined, CAP_EXEMPT_KEY)).toBe(false);
-    expect(hasBypassFlag({}, CAP_EXEMPT_KEY)).toBe(false);
-    expect(hasBypassFlag({ capExempt: false }, CAP_EXEMPT_KEY)).toBe(false);
-    expect(hasBypassFlag({ capExempt: 'yes' }, CAP_EXEMPT_KEY)).toBe(false);
-    expect(hasBypassFlag({ capExempt: 1 }, CAP_EXEMPT_KEY)).toBe(false);
+    expect(hasBypassFlag(null, BYPASS_MISSION_BUDGET_KEY)).toBe(false);
+    expect(hasBypassFlag(undefined, BYPASS_MISSION_BUDGET_KEY)).toBe(false);
+    expect(hasBypassFlag({}, BYPASS_MISSION_BUDGET_KEY)).toBe(false);
+    expect(hasBypassFlag({ bypassMissionBudget: false }, BYPASS_MISSION_BUDGET_KEY)).toBe(false);
+    expect(hasBypassFlag({ bypassMissionBudget: 'yes' }, BYPASS_MISSION_BUDGET_KEY)).toBe(false);
+    expect(hasBypassFlag({ bypassMissionBudget: 1 }, BYPASS_MISSION_BUDGET_KEY)).toBe(false);
   });
 
   it('does not leak between keys — one override never opens another gate', () => {
-    expect(hasBypassFlag({ bypassDepsGate: true }, CAP_EXEMPT_KEY)).toBe(false);
     expect(hasBypassFlag({ bypassDepsGate: true }, BYPASS_MISSION_BUDGET_KEY)).toBe(false);
     expect(hasBypassFlag({ bypassMissionBudget: true }, BYPASS_HELD_GATE_KEY)).toBe(false);
   });
@@ -43,7 +41,7 @@ describe('hasBypassFlag', () => {
 
 describe('bypassFlagCondition', () => {
   it('renders the key as a bound literal so SQL and TS read the same flag', () => {
-    const cond: any = bypassFlagCondition({ name: 'context' }, CAP_EXEMPT_KEY);
+    const cond: any = bypassFlagCondition({ name: 'context' }, BYPASS_MISSION_BUDGET_KEY);
     const literals: string[] = [];
     const walk = (n: any, seen = new Set<any>()) => {
       if (typeof n === 'string') { literals.push(n); return; }
@@ -52,13 +50,13 @@ describe('bypassFlagCondition', () => {
       for (const v of Array.isArray(n) ? n : Object.values(n)) walk(v, seen);
     };
     walk(cond);
-    expect(literals).toContain(CAP_EXEMPT_KEY);
+    expect(literals).toContain(BYPASS_MISSION_BUDGET_KEY);
     // Both value forms collapse to the text 'true' through ->>.
     expect(literals.some(l => l.includes("= 'true'"))).toBe(true);
   });
 
   it('every live bypass key is a distinct context key', () => {
-    const keys = [BYPASS_DEPS_GATE_KEY, BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, CAP_EXEMPT_KEY];
+    const keys = [BYPASS_DEPS_GATE_KEY, BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY];
     expect(new Set(keys).size).toBe(keys.length);
   });
 });
@@ -73,10 +71,10 @@ describe('bypassFlagCondition', () => {
 // never see a malformed fragment, only a real dialect render can.
 describe('bypassFlagCondition() — emitted SQL', () => {
   const dialect = new PgDialect();
-  const render = (key: typeof CAP_EXEMPT_KEY) => dialect.sqlToQuery(bypassFlagCondition(tasks.context, key));
+  const render = (key: typeof BYPASS_MISSION_BUDGET_KEY) => dialect.sqlToQuery(bypassFlagCondition(tasks.context, key));
 
   it('reads the key via ->> so both the boolean and string forms compare as text', () => {
-    const { sql: text } = render(CAP_EXEMPT_KEY);
+    const { sql: text } = render(BYPASS_MISSION_BUDGET_KEY);
     // `->` returns jsonb, and jsonb `true` would then need a jsonb literal on
     // the right-hand side rather than the text comparison this predicate uses.
     expect(text).toContain('->>');
@@ -84,15 +82,15 @@ describe('bypassFlagCondition() — emitted SQL', () => {
   });
 
   it("compares against the text 'true', not a boolean or jsonb literal", () => {
-    expect(render(CAP_EXEMPT_KEY).sql).toMatch(/= 'true'$/);
-    expect(render(CAP_EXEMPT_KEY).params).toEqual([CAP_EXEMPT_KEY]);
+    expect(render(BYPASS_MISSION_BUDGET_KEY).sql).toMatch(/= 'true'$/);
+    expect(render(BYPASS_MISSION_BUDGET_KEY).params).toEqual([BYPASS_MISSION_BUDGET_KEY]);
   });
 
   it('COALESCEs a missing key to empty string rather than leaving it NULL', () => {
     // NULL = 'true' is NULL (neither true nor false) in Postgres, which would
     // make the predicate silently inert for a task with no context at all.
-    expect(render(CAP_EXEMPT_KEY).sql).toContain("COALESCE(");
-    expect(render(CAP_EXEMPT_KEY).sql).toContain(", '')");
+    expect(render(BYPASS_MISSION_BUDGET_KEY).sql).toContain("COALESCE(");
+    expect(render(BYPASS_MISSION_BUDGET_KEY).sql).toContain(", '')");
   });
 
   it('binds the requested key as a parameter, not string-interpolated text', () => {

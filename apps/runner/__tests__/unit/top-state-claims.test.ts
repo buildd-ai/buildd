@@ -29,9 +29,7 @@ describe('waiting reasons from the last claim (R-25)', () => {
       [{ exclusion: 'task_reserved' }, 'taken by your session'],
       [{ exclusion: 'already_claimed' }, 'another runner has it'],
       [{ exclusion: 'active_worker' }, 'another runner has it'],
-      [{ exclusion: 'workspace_cap' }, 'workspace is at its task limit'],
       [{ exclusion: 'mission_concurrent' }, 'mission is at its task limit'],
-      [{ exclusion: 'mission_paced' }, 'mission is paced'],
       [{ exclusion: 'codex_single_flight' }, 'one Codex run per workspace at a time'],
       [{ exclusion: 'path_overlap' }, 'waits for work on the same files'],
       [{ exclusion: 'role_mismatch' }, 'needs a role this runner lacks'],
@@ -205,7 +203,7 @@ describe('what the last claim did not see (R-25, AC-11)', () => {
   });
 
   test('a row keeps its own reason, and a mixed deferral is not pinned on a row it may not describe', () => {
-    let s = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { budget_paused: 5, workspace_cap: 1 } });
+    let s = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { budget_paused: 5, mission_concurrent: 1 } });
     expect(waitingReason(loose(), s, NOW)).toBe('skipped at the last claim, for reasons it did not tie to this task');
     s = reduce(s, { type: 'claim_outcome', taskId: 't-loose', outcome: { at: NOW - 500, reason: 'no_pending_tasks', exclusion: 'mission_local' } });
     expect(waitingReason(loose(), s, NOW)).toBe('your session');

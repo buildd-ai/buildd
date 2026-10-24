@@ -491,15 +491,15 @@ describe('deferred claims and container-capacity starts self-schedule a retry', 
 
   test('a claim deferred for capacity (exit 5) is `deferred`, not crashed; no crash report; a backoff retry is scheduled', async () => {
     const h = harness({ now: () => NOW });
-    h.fc.setStdout(['[once] claim deferred: no_pending_tasks', 'BUILDD_CLAIM_DEFERRED=workspace_cap']);
+    h.fc.setStdout(['[once] claim deferred: no_pending_tasks', 'BUILDD_CLAIM_DEFERRED=mission_concurrent']);
     h.sup.dispatch();
     await h.until(() => h.state.status === 'running');
     h.fc.exits[0]!.resolve(5);
     await h.settle();
-    expect(h.state).toMatchObject({ status: 'exited', exitCode: 5, outcome: 'deferred', claimDeferredReason: 'workspace_cap', deferredRetryCount: 1 });
+    expect(h.state).toMatchObject({ status: 'exited', exitCode: 5, outcome: 'deferred', claimDeferredReason: 'mission_concurrent', deferredRetryCount: 1 });
     // Pre-claim: no worker was ever created, so there is nothing to crash-report.
     expect(h.fetches).toHaveLength(0);
-    expect(h.state.report).toMatchObject({ outcome: 'deferred', crashReport: null, deferredRetry: { retryNumber: 1, backoffMs: 30_000, reason: 'workspace_cap' } });
+    expect(h.state.report).toMatchObject({ outcome: 'deferred', crashReport: null, deferredRetry: { retryNumber: 1, backoffMs: 30_000, reason: 'mission_concurrent' } });
     expect([...h.sched.scheduled.values()]).toEqual([{ at: NOW + 30_000, payload: { notBefore: NOW + 30_000, deferredRetry: true } }]);
   });
 
@@ -1355,7 +1355,7 @@ describe('container class: the report says which class ran and why, and how the 
   test('the decision carries over to the agent\'s own retries, which never re-ask', async () => {
     const NOW = 2_000_000;
     const h = harness({ config: { runnerSize: 'large' }, now: () => NOW });
-    h.fc.setStdout(['BUILDD_CLAIM_DEFERRED=workspace_cap']);
+    h.fc.setStdout(['BUILDD_CLAIM_DEFERRED=mission_concurrent']);
     h.sup.dispatch({ runnerSize: LARGE });
     await h.until(() => h.state.status === 'running');
     h.fc.exits[0]!.resolve(5);

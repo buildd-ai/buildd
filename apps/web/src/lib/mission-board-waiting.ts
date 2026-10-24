@@ -98,8 +98,6 @@ export const DEFERRAL_WAITING_KIND: Readonly<Record<string, WaitingKind>> = {
   subject_dead: 'subject_dead',
   mission_budget: 'mission_budget',
   mission_concurrent: 'mission_concurrent',
-  mission_paced: 'mission_paced',
-  workspace_cap: 'workspace_cap',
   provider_unavailable: 'provider_unavailable',
   budget_paused: 'budget_paused',
 };

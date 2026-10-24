@@ -49,18 +49,18 @@ describe('evaluateCoordinationGates', () => {
     expect(reasons[0].blocker).toMatchObject({ id: 'h', live: true });
   });
 
-  it('mission concurrency and pacing hold an undeclared task; undeclared scope alone never does', () => {
-    const mission = { status: 'active', maxConcurrentTasks: 2, pacingMode: 'paced' as const, pacingMaxPerHour: 1, lastTaskStartedAt: new Date('2026-10-07T11:50:00Z') };
+  it('mission concurrency holds an undeclared task; undeclared scope alone never does', () => {
+    const mission = { status: 'active', maxConcurrentTasks: 2 };
     const kinds = evaluateCoordinationGates(task({ missionId: 'm', pathManifest: ['**'] }), snap({ mission, missionActiveCount: 2 })).map(r => r.kind);
-    expect(kinds).toEqual(['mission_concurrent', 'mission_paced']);
-    const free = { status: 'active', maxConcurrentTasks: 5, pacingMode: 'eager' as const, pacingMaxPerHour: null, lastTaskStartedAt: null };
+    expect(kinds).toEqual(['mission_concurrent']);
+    const free = { status: 'active', maxConcurrentTasks: 5 };
     for (const pathManifest of [null, [], ['**']]) {
       expect(evaluateCoordinationGates(task({ missionId: 'm', pathManifest }), snap({ mission: free, missionActiveCount: 3 }))).toEqual([]);
     }
   });
 
-  it('reviews skip mission concurrency/pacing', () => {
-    const mission = { status: 'active', maxConcurrentTasks: 1, pacingMode: 'eager' as const, pacingMaxPerHour: null, lastTaskStartedAt: null };
+  it('reviews skip mission concurrency', () => {
+    const mission = { status: 'active', maxConcurrentTasks: 1 };
     const s = snap({ mission, missionActiveCount: 5 });
     const review = task({ missionId: 'm', category: 'review', context: { reviewerFor: 'pr-1' }, pathManifest: null });
     expect(evaluateCoordinationGates(review, s)).toEqual([]);
