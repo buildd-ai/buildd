@@ -136,6 +136,15 @@ describe('TaskActionZone: Start anyway', () => {
     expect(line.dataset.phase).toBe('requested');
     expect(line.textContent).toContain('Start requested');
     expect(line.textContent).not.toMatch(/running/i);
+    expect(q('[data-testid="task-blocked"]')).toBeNull();
+  });
+
+  it('an assessing task shows no generic Blocked box', async () => {
+    hold = [];
+    startAnywayState = { phase: 'assessing', label: 'Assessing what can proceed', executing: true, taskStatus: 'in_progress' };
+    await render({ isBlocked: true, blockedByCount: 1 });
+    expect(q('[data-testid="task-start-anyway-status"]')).not.toBeNull();
+    expect(q('[data-testid="task-blocked"]')).toBeNull();
   });
 
   it('a parked task names the prerequisite it waits on and the next step', async () => {
@@ -145,5 +154,14 @@ describe('TaskActionZone: Start anyway', () => {
     const line = q('[data-testid="task-start-anyway-status"]')!;
     expect(line.dataset.phase).toBe('blocked');
     expect(line.textContent).toContain('Blocked on Build the schema: Needs the new API');
+  });
+
+  it('a parked task shows its blocker once and words the re-offer as a retry', async () => {
+    hold = [declared('up-1', '“Build the schema”')];
+    startAnywayState = { phase: 'blocked', label: 'Blocked on Build the schema: Needs the new API', executing: false, taskStatus: 'pending', blockerTaskId: 'up-1' };
+    await render({ isBlocked: true, blockedByCount: 1 });
+    expect(q('[data-testid="task-waiting-line"]')).toBeNull();
+    expect(container.textContent?.match(/Build the schema/g)).toHaveLength(1);
+    expect(q('[data-action="force_start_offer"]')!.textContent).toBe('Retry start anyway…');
   });
 });
