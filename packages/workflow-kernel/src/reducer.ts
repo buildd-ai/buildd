@@ -2117,6 +2117,10 @@ function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' 
         contentDiffChanged: cmd.proof?.contentDiffChanged,
       });
       if (!proof.holds) {
+        // 08d752ed (#5539): a conflict repair owed a head without the conflict, not its own commit.
+        // Its push failed, but a head that is not conflicted answers it whoever pushed it, as a spent
+        // conflict budget is answered (above). Only a review fix's work is its commit (§9).
+        if (a?.family === 'conflict' && cmd.live.mergeableState !== 'dirty') return toReview({ evidence: { ...evidence, proof, conflictAnswered: true } });
         if (d.state === 'ESCALATED') return record();
         // Record the head, stay, and re-arm recovery from this head: the push that
         // arrived is not the work, so the next try re-reads and re-asks (§6.4).
@@ -2490,6 +2494,12 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
       contentDiffChanged: cmd.proof?.contentDiffChanged,
     });
     if (!proof.holds) {
+      // 08d752ed (#5539): a conflict repair whose own push failed, with the PR already at another
+      // head that is not conflicted: that head answers the conflict, and no push recovery would ever
+      // see it (it only reads a head that moves from here).
+      if (d.state === 'REPAIRING' && a.family === 'conflict' && livePrOpen(live) && live!.headSha !== a.boundHeadSha && live!.mergeableState !== 'dirty') {
+        return resumeAfterRepair(c, key, live!.headSha, { attempts: [end('unproven')], patch: { currentHeadSha: live!.headSha }, evidence: { ...evidence, proof, conflictAnswered: true } });
+      }
       // #3754: FIXING → AWAITING_REVIEW is not reachable without §9 proof.
       return c.apply(key, 'AWAITING_PUSH', { attempts: [end('unproven')], effects: [c.pushRecovery(L)], evidence: { ...evidence, proof } });
     }

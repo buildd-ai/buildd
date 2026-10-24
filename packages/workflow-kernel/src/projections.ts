@@ -228,6 +228,14 @@ export function deliveryPrState(d: DeliverySnapshot): PrDisplayState | null {
 
 const short = (sha: string | null | undefined): string => (sha ? sha.slice(0, 7) : 'unknown');
 
+/** " · PR is red", naming the failing check when the last transition read them. */
+function redSuffix(t: TransitionRef | null | undefined): string {
+  const checks = (t?.evidence?.liveChecks as { failing?: unknown } | undefined)?.failing;
+  const failing = Array.isArray(checks) ? checks.filter((c): c is string => typeof c === 'string' && !!c.trim()) : [];
+  if (failing.length === 0) return ' · PR is red';
+  return ` · PR is red: ${failing[0]}${failing.length > 1 ? ` and ${failing.length - 1} more` : ''}`;
+}
+
 /** §4: who the platform waits on, per state. Exactly one per non-terminal state. */
 export function ownerOfNextMove(state: DeliveryState, o: { boundAttemptRunning?: boolean; remediation?: RemediationRef | null; approvedNeedsPerson?: boolean } = {}): NextMoveOwner {
   switch (state) {
@@ -455,6 +463,8 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
         headline = d.stateReason === 'review_exhausted' ? reviewExhaustedCopy(input.view.rounds) : ESCALATION_COPY[d.stateReason ?? ''] ?? 'Needs a decision';
         detail = [evidenceDetail(input.lastTransition), addressedNote(input.view.findings ?? [])].filter(Boolean).join('; ') || null;
       }
+      // 08d752ed (#5539): whatever it escalated for, a red head is part of what the person decides on.
+      if (d.stateReason !== 'ci_exhausted' && d.ci === 'red' && d.ciHeadSha != null && d.ciHeadSha === d.currentHeadSha) headline += redSuffix(input.lastTransition);
       cta = { action: 'open_pr', label: 'Review on GitHub' };
       break;
     case 'MERGED': headline = 'Merged'; break;
