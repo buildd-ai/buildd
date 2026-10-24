@@ -35,7 +35,10 @@ import { dirname, join } from 'path';
 import { parseDistributions } from './wsl-setup';
 import { resolveServicePaths, scheduledTaskStatus, uninstallService, windowsTaskStatus, type CommandResult, type CommandRunner, type ServicePaths } from './service';
 
-export const LOGON_TASK_NAME = 'buildd wsl';
+/** One task per distribution: migrating a second distribution must not reuse or overwrite the first one's. */
+export const logonTaskName = (distro: string) => `buildd WSL (${distro})`;
+/** The single fixed name earlier versions registered for whichever distribution was migrated. */
+export const LEGACY_LOGON_TASK_NAME = 'buildd wsl';
 const SCHTASKS = 'schtasks.exe';
 const MARKER = 'BUILDD_WSL_MIGRATE=';
 /** A distribution name we pass as one argument without quoting worries. */
@@ -101,7 +104,14 @@ export interface MigrateDeps {
 
 const xml = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-/** The `buildd wsl` task: at logon, as the user, unelevated, start the distribution and keep it running. */
+/** How often the task re-checks that the distribution is up; a no-op while it is (IgnoreNew). */
+export const LOGON_TASK_REPEAT = 'PT5M';
+
+/**
+ * The per-distribution task: at logon and every few minutes after, as the user, unelevated, start the
+ * distribution and keep it running. The long-lived `wsl.exe` ends when WSL stops; the failure restart and the
+ * repeating trigger then start it again, while a running instance makes each repeat a no-op. It runs no runner.
+ */
 export function generateLogonTaskXml(distro: string, windowsUser: string): string {
   const user = xml(windowsUser);
   return `<?xml version="1.0" encoding="UTF-16"?>
@@ -114,6 +124,14 @@ export function generateLogonTaskXml(distro: string, windowsUser: string): strin
       <Enabled>true</Enabled>
       <UserId>${user}</UserId>
     </LogonTrigger>
+    <TimeTrigger>
+      <Enabled>true</Enabled>
+      <StartBoundary>2000-01-01T00:00:00</StartBoundary>
+      <Repetition>
+        <Interval>${LOGON_TASK_REPEAT}</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">
@@ -150,14 +168,27 @@ export function generateLogonTaskXml(distro: string, windowsUser: string): strin
 `;
 }
 
-export function logonTaskXmlPath(paths: ServicePaths): string {
-  return join(dirname(paths.logsDir), 'service', 'buildd-wsl.xml');
+export function logonTaskXmlPath(paths: ServicePaths, distro: string): string {
+  return join(dirname(paths.logsDir), 'service', `buildd-wsl-${distro}.xml`);
 }
 
 const failure = (r: CommandResult) => (r.stderr || r.stdout).trim() || `exit ${r.exitCode}`;
 
-function logonTaskStatus(run: CommandRunner): string | null {
-  return scheduledTaskStatus(LOGON_TASK_NAME, run)?.status ?? null;
+function logonTaskStatus(name: string, run: CommandRunner): string | null {
+  return scheduledTaskStatus(name, run)?.status ?? null;
+}
+
+/** The distribution a registered logon task starts, read from its definition; null when unreadable. */
+function logonTaskTarget(name: string, run: CommandRunner): string | null {
+  const q = run(SCHTASKS, ['/Query', '/TN', name, '/XML']);
+  if (q.exitCode !== 0) return null;
+  const text = q.stdout.replace(/\0/g, '');
+  return text.match(/--distribution\s+(?:&quot;|")([^"&]+)(?:&quot;|")/)?.[1] ?? null;
+}
+
+function deleteTask(name: string, run: CommandRunner): CommandResult {
+  run(SCHTASKS, ['/End', '/TN', name]);
+  return run(SCHTASKS, ['/Delete', '/TN', name, '/F']);
 }
 
 interface Preflight { systemd: boolean; service: boolean; linger: boolean; foreground: boolean; verify: boolean }
@@ -188,16 +219,30 @@ export async function runWslMigrate(args: MigrateArgs, deps: MigrateDeps): Promi
   }
 
   if (args.undo) {
-    if (!logonTaskStatus(run)) {
-      log(`No '${LOGON_TASK_NAME}' logon task is registered. Nothing changed.`);
+    let target = args.distro;
+    if (!target) {
+      const list = run('wsl.exe', ['--list', '--verbose']);
+      const wsl2 = list.exitCode === 0 ? parseDistributions(list.stdout).filter(d => d.version === 2) : [];
+      if (wsl2.length === 1) target = wsl2[0].name;
+    }
+    if (!target || !DISTRO_NAME.test(target)) {
+      log('Say which distribution to undo: buildd wsl migrate --undo --distro <name> (see wsl --list --verbose). Nothing changed.');
+      return 1;
+    }
+    const name = logonTaskName(target);
+    const legacyHere = logonTaskStatus(LEGACY_LOGON_TASK_NAME, run) && logonTaskTarget(LEGACY_LOGON_TASK_NAME, run) === target;
+    if (!logonTaskStatus(name, run) && !legacyHere) {
+      log(`No '${name}' logon task is registered. Nothing changed.`);
       return 0;
     }
-    run(SCHTASKS, ['/End', '/TN', LOGON_TASK_NAME]);
-    const del = run(SCHTASKS, ['/Delete', '/TN', LOGON_TASK_NAME, '/F']);
-    if (del.exitCode !== 0) { log(`Could not remove the '${LOGON_TASK_NAME}' logon task: ${failure(del)}`); return 1; }
-    rmSync(logonTaskXmlPath(deps.paths), { force: true });
-    log(`Removed the '${LOGON_TASK_NAME}' logon task: Windows no longer starts the distribution at logon.`);
-    log('The runner service inside WSL is unchanged; stop it there with buildd service uninstall.');
+    for (const n of [name, ...(legacyHere ? [LEGACY_LOGON_TASK_NAME] : [])]) {
+      if (n === name && !logonTaskStatus(n, run)) continue;
+      const del = deleteTask(n, run);
+      if (del.exitCode !== 0) { log(`Could not remove the '${n}' logon task: ${failure(del)}`); return 1; }
+      log(`Removed the '${n}' logon task: Windows no longer starts ${target} at logon or restarts it.`);
+    }
+    rmSync(logonTaskXmlPath(deps.paths, target), { force: true });
+    log('Other distributions\' tasks and the runner service inside WSL are unchanged; stop the service there with buildd service uninstall.');
     return 0;
   }
 
@@ -307,20 +352,33 @@ export async function runWslMigrate(args: MigrateArgs, deps: MigrateDeps): Promi
   }
 
   // ── 4. the logon task ─────────────────────────────────────────────────────
-  const status = logonTaskStatus(run);
+  const taskName = logonTaskName(distro);
+  if (logonTaskStatus(LEGACY_LOGON_TASK_NAME, run)) {
+    // The old fixed-name task is not tied to a distribution we can trust: replace it with per-distribution ones.
+    const was = logonTaskTarget(LEGACY_LOGON_TASK_NAME, run);
+    const del = deleteTask(LEGACY_LOGON_TASK_NAME, run);
+    if (del.exitCode !== 0) return stuck(`Could not replace the old '${LEGACY_LOGON_TASK_NAME}' logon task: ${failure(del)}`);
+    log(`  Replaced the old '${LEGACY_LOGON_TASK_NAME}' logon task with '${taskName}'.` +
+      (was && was !== distro ? ` It started ${was}: run buildd wsl migrate --distro ${was} to register that distribution's own task.` : ''));
+  }
+  const status = logonTaskStatus(taskName, run);
+  const registeredFor = status ? logonTaskTarget(taskName, run) : null;
+  if (status && registeredFor !== distro) {
+    return stuck(`The '${taskName}' logon task already exists and ${registeredFor ? `starts ${registeredFor}, not ${distro}` : 'its target cannot be read'}. Remove it (schtasks /Delete /TN "${taskName}") or run buildd wsl migrate --undo for that distribution, then rerun.`);
+  }
   if (status === 'Running') {
-    log(`  The '${LOGON_TASK_NAME}' logon task is already registered and running.`);
+    log(`  The '${taskName}' logon task is already registered and running.`);
   } else {
     if (!status) {
-      const file = logonTaskXmlPath(deps.paths);
+      const file = logonTaskXmlPath(deps.paths, distro);
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, Buffer.from(`﻿${generateLogonTaskXml(distro, deps.paths.windowsUser)}`, 'utf16le'));
-      const create = run(SCHTASKS, ['/Create', '/TN', LOGON_TASK_NAME, '/XML', file, '/F']);
-      if (create.exitCode !== 0) return stuck(`Could not register the '${LOGON_TASK_NAME}' logon task: ${failure(create)}`);
-      log(`  Registered the '${LOGON_TASK_NAME}' logon task: at each logon it starts ${distro} and keeps it running.`);
+      const create = run(SCHTASKS, ['/Create', '/TN', taskName, '/XML', file, '/F']);
+      if (create.exitCode !== 0) return stuck(`Could not register the '${taskName}' logon task: ${failure(create)}`);
+      log(`  Registered the '${taskName}' logon task: at each logon, and again every few minutes if WSL has stopped, it starts ${distro}.`);
     }
-    const start = run(SCHTASKS, ['/Run', '/TN', LOGON_TASK_NAME]);
-    if (start.exitCode !== 0) return stuck(`Could not start the '${LOGON_TASK_NAME}' logon task: ${failure(start)}`);
+    const start = run(SCHTASKS, ['/Run', '/TN', taskName]);
+    if (start.exitCode !== 0) return stuck(`Could not start the '${taskName}' logon task: ${failure(start)}`);
     log(`  Started it now, so ${distro} stays running after this window closes.`);
   }
 
@@ -343,7 +401,7 @@ export async function runWslMigrate(args: MigrateArgs, deps: MigrateDeps): Promi
   }
 
   log(`Done. The runner inside ${distro} now does this machine's work and starts at each Windows logon.`);
-  log(`buildd wsl migrate --undo removes the '${LOGON_TASK_NAME}' logon task.`);
+  log(`buildd wsl migrate --undo --distro ${distro} removes the '${taskName}' logon task.`);
   return 0;
 }
 

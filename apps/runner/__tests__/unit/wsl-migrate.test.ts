@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { resolveServicePaths, type CommandResult } from '../../src/service';
 import {
-  LOGON_TASK_NAME,
+  logonTaskName,
   WSL_MIGRATE_PREFLIGHT,
   WSL_SERVICE_CHECK,
   WSL_SERVICE_INSTALL,
@@ -91,13 +91,15 @@ function machine(over: Partial<Machine> = {}) {
         if (verb === '/End') { events.push('windows-task-end'); if (!m.windowsForeground) m.windowsLive = false; return ok(); }
         if (verb === '/Delete') { events.push('windows-task-delete'); m.winTask = false; return ok(); }
       }
-      if (name === LOGON_TASK_NAME) {
-        if (verb === '/Query') return m.logonTask === 'absent' ? fail('not found') : ok(`TaskName: \\${LOGON_TASK_NAME}\nStatus: ${m.logonTask}\n`);
+      if (name === logonTaskName('Ubuntu')) {
+        if (verb === '/Query' && args.includes('/XML')) return m.logonTask === 'absent' ? fail('not found') : ok(generateLogonTaskXml('Ubuntu', 'PC\\me'));
+        if (verb === '/Query') return m.logonTask === 'absent' ? fail('not found') : ok(`TaskName: \\${logonTaskName('Ubuntu')}\nStatus: ${m.logonTask}\n`);
         if (verb === '/Create') { events.push('logon-create'); if (m.logonCreateFails) return fail('Access is denied.'); m.logonTask = 'Ready'; return ok(); }
         if (verb === '/Run') { events.push('logon-run'); m.logonTask = 'Running'; return ok(); }
         if (verb === '/End') return ok();
         if (verb === '/Delete') { events.push('logon-delete'); m.logonTask = 'absent'; return ok(); }
       }
+      if (verb === '/Query') return fail('not found'); // e.g. the legacy fixed-name task
     }
     throw new Error(`unexpected command: ${file} ${args.join(' ')}`);
   };
@@ -294,7 +296,7 @@ describe('the logon task (R-18)', () => {
     expect(xml).not.toContain('buildd.cmd');
     expect(xml).toContain('<RunLevel>LeastPrivilege</RunLevel>');
     expect(xml).toContain('<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>');
-    expect(LOGON_TASK_NAME).not.toBe('buildd runner');
+    expect(logonTaskName('Ubuntu-22.04')).not.toBe('buildd runner');
   });
 
   test('distribution names that are not plain words are refused before any command', async () => {
@@ -325,7 +327,7 @@ describe('the Windows launcher', () => {
 
 // Acceptance criteria (Living Spec a0b82b5d, part 3): one test per check id.
 //
-// The AC-16 test and the two R-18 bug tests below describe behaviour nobody has
+// The AC-16 test below describes behaviour nobody has
 // built yet, so they are red by design. They are skipped in the gating run and only execute with
 // BUILDD_RUN_PENDING_ACCEPTANCE=1 (that is how the starting-commit failure is
 // shown). The build that makes them pass MUST swap `pendingTest` back to `test`.
@@ -370,7 +372,7 @@ describe('acceptance criteria', () => {
   // Not yet built (bug eb029481): the logon task only has a LogonTrigger, so
   // once WSL stops the distribution outside of a logon (the observed
   // failure: it stayed down for hours) nothing brings it back. Fails now.
-  pendingTest('R-18 (bug eb029481): the logon task also brings the distribution back if WSL stops it, not only at the next sign-in', () => {
+  test('R-18 (bug eb029481): the logon task also brings the distribution back if WSL stops it, not only at the next sign-in', () => {
     const xml = generateLogonTaskXml('Ubuntu-22.04', 'PC\\me');
     const triggers = xml.match(/<Triggers>([\s\S]*?)<\/Triggers>/)?.[1] ?? '';
     const triggerKinds = triggers.match(/<(\w+Trigger)>/g) ?? [];
@@ -386,7 +388,7 @@ describe('acceptance criteria', () => {
   // the first one's task already registered (same name) and reports it as
   // already done instead of making its own. Fails now: `created` ends up
   // with one entry, not two.
-  pendingTest('R-18 (bug eb029481): migrating a second distribution on one machine registers its own logon task, not the first one\'s', async () => {
+  test('R-18 (bug eb029481): migrating a second distribution on one machine registers its own logon task, not the first one\'s', async () => {
     const tasks = new Map<string, 'Ready' | 'Running'>();
     const created: string[] = [];
     const preflightOk = 'BUILDD_WSL_MIGRATE=ok systemd=yes service=no linger=yes foreground=no verify=pass\n';
@@ -402,6 +404,7 @@ describe('acceptance criteria', () => {
         const name = args[args.indexOf('/TN') + 1];
         const verb = args[0];
         if (name === 'buildd runner') return fail('not found'); // already gone on this machine
+        if (verb === '/Query' && args.includes('/XML')) return tasks.has(name) ? ok(generateLogonTaskXml(name.slice('buildd WSL ('.length, -1), 'PC\\me')) : fail('not found');
         if (verb === '/Query') return tasks.has(name) ? ok(`TaskName: \\${name}\nStatus: ${tasks.get(name)}\n`) : fail('not found');
         if (verb === '/Create') { created.push(name); tasks.set(name, 'Ready'); return ok(); }
         if (verb === '/Run') { tasks.set(name, 'Running'); return ok(); }
