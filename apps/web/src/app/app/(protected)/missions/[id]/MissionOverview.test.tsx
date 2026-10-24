@@ -273,3 +273,19 @@ describe('History raised (Navigation R-6, AC-8)', () => {
     expect((html.match(/data-testid="mission-history-raised"/g) ?? []).length).toBe(1);
   });
 });
+
+describe('Decision subject on the mission page', () => {
+  it('leaves out a subject that names the page\'s own mission, and names the topic instead', () => {
+    const model = dagBoard(spec);
+    const mission = { id: 'mission-1', title: 'Spec page: readable on a phone', href: '/app/missions/mission-1' };
+    const notes = [{ id: 'n1', type: 'question', status: 'open', title: 'Keep the legacy export?', body: null, createdAt: Date.UTC(2026, 0, 1) }];
+    const decisions = missionDecisions({ model, notes, mission, hrefFor: id => `/app/tasks/${id}` });
+    const own = renderToStaticMarkup(<MissionOverview model={model} missionId="mission-1" decisions={decisions} />);
+    const subject = own.match(/data-testid="question-subject"[^>]*>[\s\S]*?<\/p>/)?.[0] ?? '';
+    expect(subject).not.toContain(mission.title);
+    expect(subject).not.toContain('href="/app/missions/mission-1"');
+    // Another mission's page still names it.
+    const other = renderToStaticMarkup(<MissionOverview model={model} missionId="mission-2" decisions={decisions} />);
+    expect(other).toContain('href="/app/missions/mission-1"');
+  });
+});

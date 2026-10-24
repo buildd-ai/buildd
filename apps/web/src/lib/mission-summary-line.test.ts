@@ -45,3 +45,9 @@ describe('missionSummaryLine', () => {
     expect(missionSummaryLine('   ')).toBeNull();
   });
 });
+
+describe('a heading-like first word', () => {
+  it('keeps the sentence that follows it', () => {
+    expect(missionSummaryLine('Specs. Make the spec page readable on a phone and retire specs with their replacement.')).toBe('Specs. Make the spec page readable on a phone and retire specs with their replacement.');
+  });
+});
