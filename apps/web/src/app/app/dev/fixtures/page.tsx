@@ -65,6 +65,7 @@ import { CLOSED_PR_FIXTURE_STATE } from './closed-pr-fixtures';
 import DesignPreviewFixture from './DesignPreviewFixture';
 import StageMeterFixture from './StageMeterFixture';
 import DeliveryRowFixture from './DeliveryRowFixture';
+import DeliveryBarFixture from './DeliveryBarFixture';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
@@ -101,6 +102,7 @@ import {
     DESIGN_PREVIEW_FIXTURE_STATE,
     STAGE_METER_FIXTURE_STATE,
     DELIVERY_ROW_FIXTURE_STATE,
+    DELIVERY_BAR_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
     TASK_PAGE_FIXTURE_STATE,
@@ -282,6 +284,9 @@ export default function DevFixturesPage() {
     }
     if (state === DELIVERY_ROW_FIXTURE_STATE) {
         return <DeliveryRowFixture />;
+    }
+    if (state === DELIVERY_BAR_FIXTURE_STATE) {
+        return <DeliveryBarFixture />;
     }
     if (state === DESIGN_PREVIEW_FIXTURE_STATE) {
         return <DesignPreviewFixture />;
