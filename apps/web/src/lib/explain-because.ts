@@ -102,6 +102,8 @@ export interface StateBecauseExtras {
      * not "wait for it to merge" (task fcaf83d5).
      */
     closedUnsuperseded?: boolean;
+    /** The owner task failed while its kernel delivery is still live (fe45dc7d): never read as completed. */
+    taskFailed?: boolean;
     /** Unverified candidate from automatic detection — a hint, not an edge. */
     suggestion?: SupersessionSuggestion;
     /** A closed integration-refresh PR's own proof, instead of a suggestion. */
@@ -357,9 +359,9 @@ function causeLinksFor(
       return (extra.unmergedPrs ?? []).slice(0, 10).map(p =>
         link(
           p.closedUnsuperseded
-            ? `Task "${p.title}" is completed but its PR closed without merging, and nothing recorded that the `
+            ? `${taskBut(p)} its PR closed without merging, and nothing recorded that the `
               + 'work shipped elsewhere. If it did, record it with record_pr_supersession.'
-            : `Task "${p.title}" is completed but its PR has not merged.`,
+            : `${taskBut(p)} its PR has not merged.`,
           p.closedUnsuperseded ? 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber' : 'workers.mergedAt',
           {
             ...base,
@@ -376,7 +378,7 @@ function causeLinksFor(
         .slice(0, 10)
         .map(p =>
           link(
-            `Task "${p.title}" is completed but its PR's CI is still red after ${w.attempts} fix attempt${w.attempts === 1 ? '' : 's'}`
+            `${taskBut(p)} its PR's CI is still red after ${w.attempts} fix attempt${w.attempts === 1 ? '' : 's'}`
               + `${w.failing.length ? `: ${w.failing.join(', ')}` : ''}.`,
             'workers.prLifecycleStatus + tasks.parentTaskId',
             {
@@ -394,7 +396,7 @@ function causeLinksFor(
         .slice(0, 10)
         .map(p =>
           link(
-            `Task "${p.title}" is completed but its PR cannot land yet: ${w.label}. `
+            `${taskBut(p)} its PR cannot land yet: ${w.label}. `
               + `${w.owner === 'person' ? 'This needs a person' : 'buildd owns the next step'}: ${w.nextAction}`,
             'deriveLandingBlocker',
             {
@@ -415,18 +417,18 @@ function causeLinksFor(
             p.refreshCheck
               ? closedRefreshClaim(p.title, p.refreshCheck)
               : p.suggestion && suggestionEvidence(p.suggestion) === 'unavailable'
-              ? `Task "${p.title}" is completed but its PR closed without merging. ${suggestionRef(p.suggestion, repoOf(p.prUrl))} `
+              ? `${taskBut(p)} its PR closed without merging. ${suggestionRef(p.suggestion, repoOf(p.prUrl))} `
                 + `was nominated as a possible replacement (${p.suggestion.why}); its changes could not be read, so it is neither confirmed nor ruled out `
                 + 'and nothing was recorded. It is checked again on a later sweep.'
               : p.suggestion && suggestionEvidence(p.suggestion) === 'positive'
-              ? `Task "${p.title}" is completed but its PR closed without merging. It is likely superseded by `
+              ? `${taskBut(p)} its PR closed without merging. It is likely superseded by `
                 + `${suggestionRef(p.suggestion, repoOf(p.prUrl))} (${p.suggestion.why}), but the content did not verify, `
                 + 'so nothing was recorded. Confirm it, or mark the PR abandoned with a reason.'
               : p.suggestion
-                ? `Task "${p.title}" is completed but its PR closed without merging. ${suggestionRef(p.suggestion, repoOf(p.prUrl))} `
+                ? `${taskBut(p)} its PR closed without merging. ${suggestionRef(p.suggestion, repoOf(p.prUrl))} `
                   + `was checked as a possible replacement (${p.suggestion.why}) and does not carry its changes — nothing was recorded. `
                   + 'Mark the PR abandoned with a reason, or record where it shipped with record_pr_supersession if you know.'
-                : `Task "${p.title}" is completed but its PR closed without merging, and nothing recorded that the `
+                : `${taskBut(p)} its PR closed without merging, and nothing recorded that the `
                   + 'work shipped elsewhere. If it did, record it with record_pr_supersession; if it is not shipping, mark it abandoned.',
             p.suggestion || p.refreshCheck
               ? 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan'
@@ -852,6 +854,11 @@ export function withDispatchLink(chain: CausalLink[], wake: Link | null): Causal
 }
 
 /** The cause sentence for a closed integration-refresh PR, by its own proof (`SupersessionScan.refreshCheck`). */
+/** How an unmerged PR's claim opens: a failed owner task whose delivery is still live is not "completed" (fe45dc7d). */
+function taskBut(p: { title: string; taskFailed?: boolean }): string {
+  return p.taskFailed ? `Task "${p.title}" failed, but` : `Task "${p.title}" is completed but`;
+}
+
 function closedRefreshClaim(title: string, r: RefreshCheck): string {
   const branch = r.branch ? `\`${r.branch}\`` : 'its integration branch';
   const head = `Task "${title}" is completed but its refresh PR closed without merging.`;

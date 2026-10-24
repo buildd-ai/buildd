@@ -4401,6 +4401,10 @@ async function patchWorker(
           if (loop.startAt) {
             taskUpdate.startAt = loop.startAt;
           }
+        } else if (loop.kind === 'defer') {
+          // The kernel delivery is a person's to move (ESCALATED): no requeue, no loop failure. The
+          // task ends as reported (the kernel projects an owner's end); the webhook can still settle it.
+          taskUpdate.loopState = 'condition_unmet';
         } else {
           // Worker reported completed but loop iterations are exhausted → task is failed.
           taskUpdate.status = 'failed';

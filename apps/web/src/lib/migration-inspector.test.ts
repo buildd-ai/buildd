@@ -26,6 +26,8 @@ function github(opts: {
   baseDir?: string[];
   /** Drizzle v1 migration folders in the same listing (directory entries). */
   baseFolders?: string[];
+  /** Folders in the drizzle dir at this PR's head; absent = listing unavailable. */
+  headFolders?: string[];
   baseRef?: string;
   /** Path → SQL at trunk's (`dev`, the repo default) tip; set when the PR targets another branch. */
   trunk?: Record<string, string>;
@@ -65,6 +67,9 @@ function github(opts: {
           ...(opts.baseDir ?? []).map((name) => ({ name, type: 'file' })),
           ...(opts.baseFolders ?? []).map((name) => ({ name, type: 'dir' })),
         ];
+      }
+      if (decodeURIComponent(path) === DIR && ref === 'abc123' && opts.headFolders) {
+        return opts.headFolders.map((name) => ({ name, type: 'dir' }));
       }
       if (decodeURIComponent(path) === DIR && ref === TRUNK_SHA && opts.trunkFolders) {
         return opts.trunkFolders.map((name) => ({ name, type: 'dir' }));
@@ -811,6 +816,28 @@ describe('inspectPullRequestMigrations — a refresh PR that renumbers the missi
         expect((verdict as { reason: string }).reason).toMatch(/needs rebase/);
       });
 
+      it('refuses a fork by folder names when the snapshots cannot be read', async () => {
+        github({
+          files: prFiles,
+          head: { [V1]: SAFE },
+          baseFolders: folders('s-2'),
+          headFolders: ['20260901090000_baseline', OLD, '20261012120000_add_busy_since'],
+        });
+        const verdict = await inspect('dev');
+        expect(verdict).toMatchObject({ safe: false, kind: 'stale_parent' });
+        expect((verdict as { reason: string }).reason).toMatch(/no longer a leaf.*migrations:regenerate/);
+      });
+
+      it('lands when the base gained nothing since the branch was cut', async () => {
+        github({
+          files: prFiles,
+          head: { [V1]: SAFE },
+          baseFolders: folders('s-1'),
+          headFolders: [...folders('s-1'), '20261012120000_add_busy_since'],
+        });
+        expect(await inspect('dev')).toEqual({ safe: true, operationClass: 'EXPAND' });
+      });
+
       it('accepts a chain of the PR’s own migrations whose outer parent is the leaf', async () => {
         const V1B = `${DIR}/20261012120500_second/migration.sql`;
         const V1B_SNAPSHOT = `${DIR}/20261012120500_second/snapshot.json`;
@@ -841,5 +868,49 @@ describe('inspectPullRequestMigrations — a refresh PR that renumbers the missi
       });
       expect(await inspect('dev')).toEqual({ safe: true, operationClass: 'EXPAND' });
     });
+  });
+});
+
+describe('inspectPullRequestMigrations — functions and triggers', () => {
+  beforeEach(() => mockGithubApi.mockReset());
+
+  const OWN = `${DIR}/20261024130028_explanation_immutable/migration.sql`;
+  const BASE_TRIGGER = `${DIR}/20261010170119_artifact_revisions_trigger/migration.sql`;
+  const trigger = (fn: string, table: string) => [
+    `CREATE OR REPLACE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$;`,
+    `DROP TRIGGER IF EXISTS ${fn} ON ${table};`,
+    `CREATE TRIGGER ${fn} BEFORE UPDATE ON ${table} FOR EACH ROW EXECUTE FUNCTION ${fn}();`,
+  ].join('\n--> statement-breakpoint\n');
+
+  it('a new trigger is EXPAND once the base is read and does not define it', async () => {
+    github({
+      files: [{ filename: OWN, status: 'added' }],
+      head: { [OWN]: trigger('spec_revisions_explanation_immutable', 'spec_revisions') },
+      base: { [BASE_TRIGGER]: trigger('artifact_revisions_immutable', 'artifact_revisions') },
+      baseFolders: ['20261010170119_artifact_revisions_trigger'],
+    });
+    await expect(inspect('dev')).resolves.toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('redefining a trigger the base defines stays CONTRACT', async () => {
+    github({
+      files: [{ filename: OWN, status: 'added' }],
+      head: { [OWN]: trigger('artifact_revisions_immutable', 'artifact_revisions') },
+      base: { [BASE_TRIGGER]: trigger('artifact_revisions_immutable', 'artifact_revisions') },
+      baseFolders: ['20261010170119_artifact_revisions_trigger'],
+    });
+    await expect(inspect('dev')).resolves.toMatchObject({
+      safe: false,
+      reason: 'replaces function artifact_revisions_immutable, which the base already defines',
+    });
+  });
+
+  it('fails closed when a base migration cannot be read', async () => {
+    github({
+      files: [{ filename: OWN, status: 'added' }],
+      head: { [OWN]: trigger('spec_revisions_explanation_immutable', 'spec_revisions') },
+      baseFolders: ['20261010170119_artifact_revisions_trigger'],
+    });
+    await expect(inspect('dev')).resolves.toMatchObject({ safe: false, operationClass: 'CONTRACT' });
   });
 });

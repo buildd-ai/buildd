@@ -138,6 +138,8 @@ async function fakeGithubApi(_installationId: number, path: string, opts?: Reque
   }
   if (ghApi && method === 'GET' && !/\/issues\//.test(path)) { const out = ghApi(path); if (out !== undefined) return out; }
   if (!/\/issues\//.test(path)) {
+    // The PR itself names its head branch: a CI fix is never filed without it (e2ea3764).
+    if (method === 'GET' && new RegExp(`^/repos/${REPO}/pulls/\\d+$`).test(path)) return { head: { ref: 'feat/matrix', sha: gh.head }, base: { ref: gh.baseRef ?? 'dev' } };
     if (method === 'GET') return null;
     const body = opts?.body ? JSON.parse(String(opts.body)) : null;
     ghWrites.push({ path, method, body });

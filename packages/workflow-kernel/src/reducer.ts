@@ -152,11 +152,29 @@ export function isRecheckAfterApproval(r: Pick<RoundSnapshot, 'scope'> | null | 
   return da != null && typeof da === 'object';
 }
 
+/**
+ * Task 81705dd8: whether a round judged anything the budget should pay for. Besides a re-check
+ * after an approval (c1d66a6a), two kinds of round spend nothing:
+ *  - one a newer push superseded before its own verdict applied: three pushes in ten minutes
+ *    filed three reviewers, only the third judged, and its request for changes escalated
+ *    review_exhausted with no fix ever dispatched (#5500). A verdict that lands on such a round
+ *    afterwards is kept for audit (`endReason` set) but never applied, so it still spends nothing.
+ *  - one opened only because the base branch was merged in (`base_refresh`) that did not ask for
+ *    changes: it re-checks the same change against a new base (#5488). One that does ask counts.
+ * `judging` is the round whose request for changes is being weighed: it is about to ask, so it counts.
+ */
+function spendsReviewBudget(r: RoundSnapshot, judging: string | undefined): boolean {
+  if (isRecheckAfterApproval(r)) return false;
+  if (r.status === 'superseded' && (r.verdict == null || r.endReason != null)) return false;
+  if (r.trigger === 'base_refresh' && r.id !== judging && r.effectiveVerdict !== 'request_changes') return false;
+  return true;
+}
+
 /** The rounds up to `upTo` (default the current one) that spend the review budget. */
-export function spentReviewRounds(view: Pick<KernelView, 'delivery' | 'rounds'>, upTo?: number): number {
+export function spentReviewRounds(view: Pick<KernelView, 'delivery' | 'rounds'>, upTo?: number, judging?: string): number {
   const n = upTo ?? view.delivery?.currentRound ?? 0;
-  const rechecks = new Set(view.rounds.filter((r) => r.round <= n && isRecheckAfterApproval(r)).map((r) => r.round));
-  return n - rechecks.size;
+  const free = new Set(view.rounds.filter((r) => r.round <= n && !spendsReviewBudget(r, judging)).map((r) => r.round));
+  return n - free.size;
 }
 
 /**
@@ -169,9 +187,9 @@ function recheckCycleUsed(view: Pick<KernelView, 'rounds' | 'attempts'>, round: 
 }
 
 /** Whether a request for changes at `round` spends the last of the budget (escalates instead of a fix). */
-function budgetSpentAt(view: Pick<KernelView, 'delivery' | 'rounds'>, round: Pick<RoundSnapshot, 'round' | 'scope'>, maxRounds: number): boolean {
+function budgetSpentAt(view: Pick<KernelView, 'delivery' | 'rounds'>, round: Pick<RoundSnapshot, 'id' | 'round' | 'scope'>, maxRounds: number): boolean {
   if (isRecheckAfterApproval(round)) return false;
-  return spentReviewRounds(view, round.round) >= maxRounds;
+  return spentReviewRounds(view, round.round, round.id) >= maxRounds;
 }
 
 /** The patch that carries a spent review budget into a repair that starts from its escalation. */
