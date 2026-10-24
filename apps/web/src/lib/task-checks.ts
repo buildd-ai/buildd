@@ -71,7 +71,7 @@ export interface TaskChecks {
 }
 
 export type ChecksInput = Pick<DeliveryView, 'state' | 'stateReason' | 'prNumber' | 'headSha' | 'prState' | 'rounds' | 'ledger' | 'approvedCurrentHead' | 'approvalBasis'>
-  & Partial<Pick<DeliveryView, 'findings' | 'supersededBy'>>;
+  & Partial<Pick<DeliveryView, 'findings' | 'supersededBy' | 'laneWait'>>;
 
 function repairOf(a: AttemptSnapshot, v: ChecksInput): CheckRepair {
   return { label: repairLabelOf(a, v.ledger), status: repairPhaseOf(a, v), taskId: a.taskId };
@@ -158,7 +158,15 @@ function mergeRow(v: ChecksInput): CheckRow | null {
       return { ...base, state: 'passed', result: n != null ? `Merged in #${n}` : 'Merged in another PR' };
     }
     case 'REPAIRING': {
-      if (v.stateReason === 'behind') return { ...base, state: 'running', result: 'Updating branch' };
+      if (v.stateReason === 'behind') {
+        // Parked in the landing lane: queued behind another PR, nothing running yet.
+        if (v.laneWait) {
+          const behind = v.laneWait.behindPr != null ? `#${v.laneWait.behindPr}` : 'another PR';
+          const place = v.laneWait.position != null && v.laneWait.position > 0 ? `, position ${v.laneWait.position}` : '';
+          return { ...base, state: 'pending', result: `Queued to land behind ${behind}${place}` };
+        }
+        return { ...base, state: 'running', result: 'Updating branch' };
+      }
       if (v.stateReason === 'conflict' || v.stateReason === 'migration') {
         const family = v.stateReason === 'migration' ? 'migration' : 'conflict';
         const fix = newest(repairs(v.ledger).filter(a => a.family === family && a.boundHeadSha === v.headSha));

@@ -135,7 +135,7 @@ describe('landingStatusOf: the buildd/landing status (§4)', () => {
     'the head is behind its base, but the base delta is small, disjoint from this PR and risk-free (S15); the merge door merges it without another refresh',
   ];
   test('R-43: every description leads with a plain review term and never says "land"', () => {
-    const terms = ['Repair in progress', 'Branch update in progress', 'CI fix in progress', 'Conflict fix in progress', 'Migration fix in progress', 'Review in progress', 'Changes requested', 'Unresolved review finding', 'Ready to merge', 'Approved, waiting to merge', 'Merge blocked'];
+    const terms = ['Repair in progress', 'Branch update in progress', 'CI fix in progress', 'Conflict fix in progress', 'Migration fix in progress', 'Review in progress', 'Changes requested', 'Unresolved review finding', 'Ready to merge', 'Approved, waiting to merge', 'Approved, queued to merge', 'Merge blocked'];
     const F = { id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'abcdef1234', ordinal: 0, path: 'src/a.ts', line: 4, title: 'rename the flag', required: true, status: 'open' as const, lastRound: 1, addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null };
     const states: DeliverySnapshot['state'][] = ['WORKING', 'AWAITING_PUSH', 'AWAITING_REVIEW', 'CHANGES_REQUESTED', 'FIXING', 'APPROVED', 'LANDING', 'REPAIRING', 'BLOCKED_ON_TRUNK', 'ESCALATED'];
     const out: string[] = [landingStatusUnknown('abcdef1234').description];
@@ -176,6 +176,15 @@ describe('landingStatusOf while the PR is being repaired (review validity vs lan
     ['something_else', 'Repair in progress: review approved abcdef1; the PR is being repaired'],
   ])('reason %s reads in its own terms and stays pending', (stateReason, description) => {
     expect(landingStatusOf(V(rep({ stateReason }), [R(1, 'approve')]))).toEqual({ state: 'pending', sha: 'abcdef1234', description });
+  });
+  // e07ee9cf: a refresh parked in the landing lane is queued, not "Branch update in progress".
+  test('parked in the landing lane (the refresh handler names the PR ahead): queued, pending', () => {
+    const s = landingStatusOf(V(rep(), [R(1, 'approve')]), { detail: 'queued behind PR #7, which is merging into dev first' })!;
+    expect(s).toEqual({ state: 'pending', sha: 'abcdef1234', description: 'Approved, queued to merge: review approved abcdef1; queued behind PR #7, which is merging into dev first' });
+    expect(s.description).not.toMatch(/\bland|in progress/i);
+  });
+  test('the queued words are for a behind refresh only', () => {
+    expect(landingStatusOf(V(rep({ stateReason: 'ci' }), [R(1, 'approve')]), { detail: 'x' })!.description).toMatch(/^CI fix in progress/);
   });
   test('a CI repair never reads as a branch update', () => {
     expect(landingStatusOf(V(rep({ stateReason: 'ci' }), [R(1, 'approve')]))!.description).not.toMatch(/branch update/i);
