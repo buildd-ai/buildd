@@ -127,6 +127,27 @@ beforeEach(() => {
 });
 
 describe('detectPrSupersession', () => {
+  // Repro (task c8092d2a / PR #5530): a mission/dev refresh PR with an empty effective diff
+  // closed unmerged (its work had already landed by direct push). The generic detector's
+  // sibling-task signal nominated #5479, an unrelated acceptance-tests PR in the same mission,
+  // and — finding zero shared content, as any refresh PR's near-empty diff guarantees — still
+  // surfaced it as "likely superseded". A refresh PR's "work" is branch ancestry, not a code
+  // change a sibling PR could carry, so this generic scan is the wrong tool for it entirely:
+  // mission-branch-refresh.ts's own ancestry check is authoritative here.
+  it('an integration-refresh task is never scanned for a generic replacement: no GitHub calls, no false suggestion, scan settles clean', async () => {
+    workerRow = { ...workerRow, task: { ...workerRow.task, context: { requireMergeCommit: true } } };
+    siblingTasks = [{ id: 't-7', title: 'Acceptance tests', workers: [{ prUrl: 'https://github.com/org/kb/pull/5479', prNumber: 5479, mergedAt: '2026-10-23T01:00:00Z' }] }];
+
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep' });
+
+    expect(r).toEqual({ outcome: 'none', candidatesChecked: 0 });
+    expect(ghCalls).toEqual([]);
+    expect(recordCalls).toHaveLength(0);
+    expect(scanWrites).toHaveLength(1);
+    expect(scanWrites[0].supersessionScannedAt).toBeInstanceOf(Date);
+    expect(scanWrites[0].supersessionScan).toMatchObject({ suggestion: null, candidatesChecked: 0 });
+  });
+
   it('records the edge when a sibling squash carries the closed PR’s content, naming the method', async () => {
     gh['org/kb/issues/6/comments'] = [{ body: 'superseded by #9' }];
     mergedPr('org/kb', 9, [{ filename: 'buildd/design/strategy.md', status: 'added', patch: patch(...DOC_LINES, 'Squashed in with a follow-up line.') }]);
@@ -151,7 +172,7 @@ describe('detectPrSupersession', () => {
     expect(r.outcome).toBe('suggested');
     expect(recordCalls).toHaveLength(0);
     const scan = scanWrites.at(-1).supersessionScan;
-    expect(scan.suggestion).toMatchObject({ prNumber: 2558, signal: 'claim' });
+    expect(scan.suggestion).toMatchObject({ prNumber: 2558, signal: 'claim', contentRatio: 0 });
     expect(scan.suggestion.why).toContain('none of this PR');
     expect(gateEvents[0]).toMatchObject({ outcome: 'deferred' });
   });
@@ -280,7 +301,7 @@ describe('a verified record the control plane did not answer is deferred, bounde
     expect(w.supersessionScannedAt).toBeInstanceOf(Date);
     expect(w.supersessionScan.deferral).toBeUndefined();
     expect(w.supersessionScan.deferralExhausted).toMatchObject({ count: 24, firstAt: '2026-10-14T00:10:00Z' });
-    expect(w.supersessionScan.suggestion).toMatchObject({ prNumber: 9 });
+    expect(w.supersessionScan.suggestion).toMatchObject({ prNumber: 9, contentRatio: 1 });
     expect(w.supersessionScan.suggestion.why).toContain('did not take the record');
     expect(gateEvents).toHaveLength(1);
     expect(gateEvents[0]).toMatchObject({ outcome: 'stranded', detail: expect.objectContaining({ kind: 'control_plane_deferral_exhausted' }) });

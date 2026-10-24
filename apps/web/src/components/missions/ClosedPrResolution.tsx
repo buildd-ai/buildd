@@ -52,6 +52,12 @@ function ClosedPrRow({ missionId, item, named }: { missionId: string; item: Clos
   const [reason, setReason] = useState('');
   const disabled = busy || isPending;
   const s = item.suggestion;
+  // `contentRatio: 0` means the content check ran and found NOTHING shared — the candidate was
+  // nominated by a claim, cross-reference, sibling-task or file-overlap signal alone (task c8092d2a
+  // / PR #5530: #5479 nominated with zero shared lines). Confirming it is then a guess, not a
+  // one-tap correction, so it gets the same secondary weight as "Not this" rather than looking like
+  // the recommended action. Absent (a suggestion written before this field existed) assumes positive.
+  const hasEvidence = s == null || s.contentRatio == null || s.contentRatio > 0;
 
   async function send(action: 'confirm' | 'dismiss' | 'abandon') {
     setBusy(true);
@@ -104,10 +110,10 @@ function ClosedPrRow({ missionId, item, named }: { missionId: string; item: Clos
               type="button"
               data-testid="closed-pr-confirm"
               data-verify-action="confirm_replacement"
-              data-verify-prominence="primary"
+              data-verify-prominence={hasEvidence ? 'primary' : 'secondary'}
               onClick={() => send('confirm')}
               disabled={disabled}
-              className="btn btn-primary h-11 md:h-8"
+              className={hasEvidence ? 'btn btn-primary h-11 md:h-8' : secondary}
             >
               Confirm #{s.prNumber}
             </button>

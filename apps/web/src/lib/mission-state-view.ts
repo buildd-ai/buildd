@@ -1474,9 +1474,11 @@ function mergeFact(input: MissionStateInput): Resolution | null {
           kind: 'pr_closed_unmerged',
           tone: 'warning',
           label: details.length === 1
-            ? details[0].suggestion
+            ? details[0].suggestion && suggestionHasEvidence(details[0].suggestion)
               ? `PR #${details[0].prNumber} closed without merging, likely superseded by ${suggestionRef(details[0].suggestion, repoOfPrUrl(details[0].prUrl))}`
-              : `PR #${details[0].prNumber} closed without merging, no supersession recorded`
+              : details[0].suggestion
+                ? `PR #${details[0].prNumber} closed without merging; ${suggestionRef(details[0].suggestion, repoOfPrUrl(details[0].prUrl))} was checked and does not carry its changes`
+                : `PR #${details[0].prNumber} closed without merging, no supersession recorded`
             : `${details.length} completed task(s) have a PR closed without merging, no supersession recorded`,
           count: details.length,
           prNumbers,
@@ -2194,7 +2196,8 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
     case 'pr_closed_unmerged': {
       const ref = d.prNumbers.length === 1 ? ` #${d.prNumbers[0]}` : '';
       const only = d.count === 1 ? d.suggestions?.[0]?.suggestion : undefined;
-      if (only) return `PR${ref} closed without merging, likely superseded by ${suggestionRef(only, repoOfPrUrl(d.prUrls[0]))}: confirm it or mark the PR abandoned`;
+      if (only && suggestionHasEvidence(only)) return `PR${ref} closed without merging, likely superseded by ${suggestionRef(only, repoOfPrUrl(d.prUrls[0]))}: confirm it or mark the PR abandoned`;
+      if (only) return `PR${ref} closed without merging; ${suggestionRef(only, repoOfPrUrl(d.prUrls[0]))} was checked and does not carry its changes: mark the PR abandoned, or record where it shipped if you know`;
       return d.count === 1
         ? `PR${ref} closed without merging, no supersession recorded`
         : `${d.count} completed tasks have a PR closed without merging, no supersession recorded`;
@@ -2451,7 +2454,7 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
     case 'landing_blocked':
       return waitingOn.nextAction;
     case 'pr_closed_unmerged':
-      if (waitingOn.suggestions && waitingOn.suggestions.length > 0) {
+      if (waitingOn.suggestions?.some(s => suggestionHasEvidence(s.suggestion))) {
         return 'GitHub will not let this PR merge. Confirm the suggested PR if the work merged there, or mark the PR abandoned with a reason if the work will not merge.';
       }
       return 'GitHub will not let this PR merge. Record a supersession (record_pr_supersession) if the work merged under a different PR, or have the owner mark the PR abandoned with a reason (POST /api/tasks/[id]/closed-pr, or Abandon on the mission page) if the work will not merge.';
@@ -2589,4 +2592,18 @@ function repoOfPrUrl(url: string | null | undefined): string | null {
 /** `#N` for a suggestion, or `owner/repo#N` when it is in another repo. */
 export function suggestionRef(s: { repo: string; prNumber: number; prUrl?: string | null }, homeRepo?: string | null): string {
   return homeRepo && s.repo.toLowerCase() !== homeRepo.toLowerCase() ? `${s.repo}#${s.prNumber}` : `#${s.prNumber}`;
+}
+
+/**
+ * Whether a supersession suggestion carries any actual content evidence, as opposed to a bare
+ * claim/cross-reference/sibling-task/file-overlap nomination that the content check found NOTHING
+ * in (`contentRatio: 0` — task c8092d2a / PR #5530, nominated by sibling-task with zero shared
+ * lines). Only the former reads as "likely superseded"; the repo's own detector already says so
+ * honestly in `why` ("none of this PR's added lines were found in it"), but the headline used to
+ * repeat "likely superseded" regardless. `contentRatio` absent (a suggestion written before this
+ * field existed) is treated as unknown — assume positive, so old rows read as before until their
+ * next scan restamps them.
+ */
+export function suggestionHasEvidence(s: { contentRatio?: number } | null | undefined): boolean {
+  return s == null || s.contentRatio == null || s.contentRatio > 0;
 }

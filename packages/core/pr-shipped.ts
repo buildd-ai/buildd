@@ -113,6 +113,18 @@ export interface SupersessionSuggestion {
   why: string;
   /** Rank among the candidates found, 0–1. Not a probability. */
   score: number;
+  /**
+   * How much of the closed PR's content was actually found in this candidate's own diff
+   * (`verifyByContent`/`verifyByPatchId`'s ratio) — never the nomination `score` above, which is
+   * only a claim/cross-reference/sibling-task/file-overlap signal and proves nothing about content.
+   * 0 means the content check ran and found NOTHING shared: the candidate was nominated by signal
+   * alone (PR #5530 nominated #5479 this way, with zero shared lines). A reader must not call that
+   * "likely superseded" — see mission-state-view.ts's `suggestionRef` call sites and
+   * ClosedPrResolution.tsx. Absent (old rows written before this field existed, or a suggestion from
+   * a caller that has not been updated) is treated as "unknown, assume positive" so existing
+   * suggestions keep reading as before until their next scan restamps them.
+   */
+  contentRatio?: number;
 }
 
 /**

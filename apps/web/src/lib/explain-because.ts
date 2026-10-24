@@ -20,7 +20,7 @@ import type { CausalLink, ExplainRefs, TouchSource } from './explain-types';
 import { orderChain } from './explain-types';
 import { intersectPaths } from '@buildd/core/path-overlap';
 import type { MissionStateView, WaitingOnDescriptor } from './mission-state-view';
-import { suggestionRef } from './mission-state-view';
+import { suggestionRef, suggestionHasEvidence } from './mission-state-view';
 import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
 import { describeUnmetCondition, type GateCondition, type UnmetCondition } from './mission-dependency-gate';
 import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
@@ -410,12 +410,16 @@ function causeLinksFor(
         .slice(0, 10)
         .map(p =>
           link(
-            p.suggestion
+            p.suggestion && suggestionHasEvidence(p.suggestion)
               ? `Task "${p.title}" is completed but its PR closed without merging. It is likely superseded by `
                 + `${suggestionRef(p.suggestion, repoOf(p.prUrl))} (${p.suggestion.why}), but the content did not verify, `
                 + 'so nothing was recorded. Confirm it, or mark the PR abandoned with a reason.'
-              : `Task "${p.title}" is completed but its PR closed without merging, and nothing recorded that the `
-                + 'work shipped elsewhere. If it did, record it with record_pr_supersession; if it is not shipping, mark it abandoned.',
+              : p.suggestion
+                ? `Task "${p.title}" is completed but its PR closed without merging. ${suggestionRef(p.suggestion, repoOf(p.prUrl))} `
+                  + `was checked as a possible replacement (${p.suggestion.why}) and does not carry its changes — nothing was recorded. `
+                  + 'Mark the PR abandoned with a reason, or record where it shipped with record_pr_supersession if you know.'
+                : `Task "${p.title}" is completed but its PR closed without merging, and nothing recorded that the `
+                  + 'work shipped elsewhere. If it did, record it with record_pr_supersession; if it is not shipping, mark it abandoned.',
             p.suggestion
               ? 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan'
               : 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber',

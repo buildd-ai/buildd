@@ -406,6 +406,25 @@ describe('mission header — a deliverable PR closed without merging', () => {
     expect(html).toContain('data-testid="closed-pr-abandon"');
   });
 
+  // Repro (task c8092d2a / PR #5530): the suggestion's own `why` already says "none of this PR's
+  // added lines were found in it" — Confirm must not be styled as the recommended primary action
+  // for a candidate the content check found zero evidence for, and the headline must not call it
+  // "likely superseded".
+  it('a zero-evidence suggestion offers Confirm without primary styling, and skips "likely superseded"', () => {
+    const { html } = render(closed({
+      repo: 'org/kb', prNumber: 5479, prUrl: 'https://github.com/org/kb/pull/5479',
+      signal: 'sibling_task', why: 'merged by a sibling task; none of this PR\'s added lines were found in it', score: 0.6,
+      contentRatio: 0,
+    }));
+    expect(html).not.toContain('likely superseded');
+    expect(html).toContain('data-testid="closed-pr-confirm"');
+    expect(html).toContain('data-testid="closed-pr-dismiss"');
+    expect(html).toContain('data-testid="closed-pr-abandon"');
+    const confirmButton = html.slice(html.indexOf('data-testid="closed-pr-confirm"') - 400, html.indexOf('data-testid="closed-pr-confirm"') + 200);
+    expect(confirmButton).not.toContain('btn-primary');
+    expect(confirmButton).toContain('data-verify-prominence="secondary"');
+  });
+
   it('with no suggestion, offers only Mark abandoned — never a guess to confirm', () => {
     const { html } = render(closed());
     expect(html).toContain('data-testid="closed-pr-abandon"');

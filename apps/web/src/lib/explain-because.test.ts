@@ -263,6 +263,46 @@ describe('buildStateBecause', () => {
     expect(chain[0].refs.prNumber).toBe(77);
   });
 
+  // Repro (task c8092d2a / PR #5530): the backend's own suggestion already says "none of this
+  // PR's added lines were found in it", but the sentence used to still open with "likely
+  // superseded by" regardless of that content verdict.
+  it('does not call a zero-evidence suggestion "likely superseded"; a positive one still is', () => {
+    const noMatch = {
+      repo: 'org/buildd', prNumber: 5479, prUrl: 'https://github.com/org/buildd/pull/5479',
+      signal: 'sibling_task' as const, why: 'merged by a sibling task in the same mission', score: 0.6,
+      contentRatio: 0,
+    };
+    const view = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false,
+        code: 'awaiting_merge',
+        reason: 'x',
+        awaitingMerge: 1,
+        awaitingMergeDetails: [{ taskId: 't', title: 'Merge dev into mission branch', prNumber: 5530, prUrl: 'u', closedUnsuperseded: true, suggestion: noMatch }],
+      },
+    });
+    const chain = buildStateBecause(view, { missionId: 'm' }, {
+      unmergedPrs: [{ taskId: 't', title: 'Merge dev into mission branch', prNumber: 5530, prUrl: 'u', closedUnsuperseded: true, suggestion: noMatch }],
+    });
+    expect(chain[0].claim).not.toContain('likely superseded by');
+    expect(chain[0].claim).toContain('does not carry its changes');
+    expect(chain[0].claim).toContain('#5479');
+
+    const match = { ...noMatch, contentRatio: 0.95 };
+    const matchView = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false, code: 'awaiting_merge', reason: 'x', awaitingMerge: 1,
+        awaitingMergeDetails: [{ taskId: 't', title: 'T', prNumber: 5530, prUrl: 'u', closedUnsuperseded: true, suggestion: match }],
+      },
+    });
+    const matchChain = buildStateBecause(matchView, { missionId: 'm' }, {
+      unmergedPrs: [{ taskId: 't', title: 'T', prNumber: 5530, prUrl: 'u', closedUnsuperseded: true, suggestion: match }],
+    });
+    expect(matchChain[0].claim).toContain('likely superseded by');
+  });
+
   it('produces a single honest link when nothing is outstanding', () => {
     const view = deriveMissionStateView(base);
     const chain = buildStateBecause(view, { missionId: 'm' });

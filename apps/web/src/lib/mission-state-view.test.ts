@@ -391,6 +391,37 @@ describe('deriveMissionStateView — awaiting merge', () => {
     expect(view.nextAction).toContain('Confirm the suggested PR');
   });
 
+  // Repro (task c8092d2a / PR #5530): the detector's own suggestion already says "none of this
+  // PR's added lines were found in it" (contentRatio 0) — the headline must not still call that
+  // "likely superseded", and the next action must not ask for a one-tap Confirm on it.
+  it('does not call a zero-evidence suggestion "likely superseded"', () => {
+    const suggestion = {
+      repo: 'org/buildd', prNumber: 5479, prUrl: 'https://github.com/org/buildd/pull/5479',
+      signal: 'sibling_task' as const, why: 'merged by a sibling task in the same mission; none of this PR\'s added lines were found in it', score: 0.6,
+      contentRatio: 0,
+    };
+    const view = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false,
+        code: 'awaiting_merge',
+        reason: 'x',
+        awaitingMerge: 1,
+        awaitingMergeDetails: [
+          { taskId: 'task-c', title: 'Merge dev into mission branch', prNumber: 5530, prUrl: 'https://github.com/org/buildd/pull/5530', closedUnsuperseded: true, suggestion },
+        ],
+      },
+    });
+
+    const waiting = gated(view);
+    if (waiting.kind !== 'pr_closed_unmerged') throw new Error('expected pr_closed_unmerged');
+    expect(waiting.label).not.toContain('likely superseded');
+    expect(waiting.label).toContain('does not carry its changes');
+    expect(view.situation.headline).not.toContain('likely superseded');
+    expect(view.nextAction).not.toContain('Confirm the suggested PR');
+    expect(view.nextAction).toContain('record_pr_supersession');
+  });
+
   it('keeps the ordinary merge reading when only some of the unmerged PRs are closed', () => {
     const view = deriveMissionStateView({
       ...base,

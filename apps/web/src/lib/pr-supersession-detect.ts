@@ -42,6 +42,7 @@ import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { recordPrSupersession, supersessionRepoScope } from '@/lib/pr-supersession';
 import { deferralOf, isOutageAnswer, nextDeferral } from '@/lib/control-plane-deferral';
 import { verifyByContent, verifyByPatchId, mapPath, parseSupersessionClaims, significantAddedLines, type DiffFile } from '@/lib/pr-supersession-verify';
+import { integrationRefreshOf } from '@/lib/integration-refresh';
 import { normalizeRepoFullName, prUrlFor, repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { createTeamInstallationResolver } from '@/lib/workspace-installation';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -439,13 +440,32 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
       prLifecycleStatus: true, supersededByPrNumber: true, abandonedAt: true, supersessionScan: true,
     },
     with: {
-      task: { columns: { id: true, missionId: true } },
+      task: { columns: { id: true, missionId: true, context: true } },
       workspace: { columns: { repo: true }, with: { githubRepo: { columns: { fullName: true } } } },
     },
   });
   if (!worker) return { outcome: 'skipped', reason: 'worker not found' };
   // Already merged, superseded, abandoned or still open: nothing to find.
   if (prShipState({ ...worker, delivery: opts.delivery ?? null }) !== 'closed_unsuperseded') return { outcome: 'skipped', reason: 'not closed-unsuperseded' };
+
+  const scanRows = or(eq(workers.id, worker.id), and(eq(workers.prUrl, worker.prUrl!), isNull(workers.mergedAt)));
+
+  // An integration-refresh PR's "work" is landing trunk in the branch's ancestry
+  // (integration-refresh.ts), not a code change a sibling PR could "carry". The
+  // claim/cross-reference/sibling-task/file-overlap signals below prove nothing about
+  // content here, and a refresh's effective diff is near-empty by construction, so the
+  // content check against ANY candidate finds nothing — yet the fallback below still
+  // surfaced that as a "likely superseded" suggestion (task c8092d2a / PR #5530,
+  // nominated by sibling-task against an unrelated PR, #5479, on zero shared content).
+  // mission-branch-refresh.ts's own ancestry check (verifyRefreshLanded) is the
+  // authoritative answer for whether this refresh's work landed; this detector is the
+  // wrong tool for it and is skipped. The scan is still stamped scanned (no suggestion)
+  // so the mission card reads "no supersession recorded" instead of "still reconciling"
+  // forever (delivery-projection.ts reads an unstamped scan as owed).
+  if (integrationRefreshOf(worker.task?.context)) {
+    await db.update(workers).set({ supersessionScan: { scannedAt: now.toISOString(), candidatesChecked: 0, suggestion: null }, supersessionScannedAt: now }).where(scanRows);
+    return { outcome: 'none', candidatesChecked: 0 };
+  }
 
   const closedRepo = repoFullNameFromPrUrl(worker.prUrl);
   const prNumber = worker.prNumber;
@@ -481,7 +501,6 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
   // reads as reconciling (delivery-projection.ts) rather than "scanned, nothing found".
   const unfinished = (): SupersessionScan => prevScan ?? { scannedAt: '', candidatesChecked: checked, suggestion: null };
   const attempt = () => ({ judged: judgedList(), lastAttemptAt: now.toISOString() });
-  const scanRows = or(eq(workers.id, worker.id), and(eq(workers.prUrl, worker.prUrl!), isNull(workers.mergedAt)));
   let checked = 0;
 
   // A run GitHub or the pass's clock cut short: no verdict is written (no stamp, no suggestion).
@@ -574,7 +593,10 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
 
   // A verified candidate the control plane did not take: deferred to the next sweep (nothing stamped),
   // until the deferral runs out; then it is filed as a suggestion with why, and a stranded gate event.
-  const deferOrExhaust = async (cand: Candidate, candUrl: string, reason: string): Promise<DetectResult> => {
+  // `confidence` comes from the content/patch-id check that already verified this candidate
+  // (the only way a caller reaches this function) — never 0 here, unlike the zero-evidence
+  // fallback suggestion below.
+  const deferOrExhaust = async (cand: Candidate, candUrl: string, reason: string, confidence: number): Promise<DetectResult> => {
     const { state, exhausted } = nextDeferral(deferralOf(prevScan?.deferral), reason, now);
     const base = unfinished();
     if (!exhausted) {
@@ -585,6 +607,7 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
       repo: cand.repo, prNumber: cand.prNumber, prUrl: candUrl, signal: cand.signal,
       why: `${cand.why}; its content verified, but the control plane did not take the record for ${state.count} sweep(s) since ${state.firstAt} (${reason})`,
       score: Math.round(cand.score * 100) / 100,
+      contentRatio: Math.round(confidence * 100) / 100,
     };
     const { deferral: _done, ...rest } = base;
     await db.update(workers)
@@ -636,7 +659,7 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
       merged.push({ ...cand, prUrl: v.prUrl!, confidence: v.confidence });
       if (!v.verified) continue;
       const recorded = await recordVerified({ workerId: worker.id, workspaceId: worker.workspaceId, taskId: worker.taskId, closedRepo, prNumber, cand, method: v.method!, confidence: v.confidence, via: opts.via });
-      if (recorded?.outcome === 'deferred') return deferOrExhaust(cand, v.prUrl!, recorded.reason);
+      if (recorded?.outcome === 'deferred') return deferOrExhaust(cand, v.prUrl!, recorded.reason, v.confidence);
       if (recorded) return recorded;
     }
     return null;
@@ -670,6 +693,7 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
           ? `${best.why}; ${Math.round(best.confidence * 100)}% of this PR's added lines are in it, short of the bar to record it automatically`
           : `${best.why}; none of this PR's added lines were found in it`,
         score: Math.round(best.score * 100) / 100,
+        contentRatio: Math.round(best.confidence * 100) / 100,
       }
     : null;
   const scan: SupersessionScan = {
