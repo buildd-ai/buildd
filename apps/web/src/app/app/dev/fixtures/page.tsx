@@ -64,6 +64,7 @@ import ClosedPrFixture from './ClosedPrFixture';
 import { CLOSED_PR_FIXTURE_STATE } from './closed-pr-fixtures';
 import DesignPreviewFixture from './DesignPreviewFixture';
 import StageMeterFixture from './StageMeterFixture';
+import DeliveryRowFixture from './DeliveryRowFixture';
 import YouStripPipelineFixture from './YouStripPipelineFixture';
 import DeliveryBarFixture from './DeliveryBarFixture';
 import {
@@ -101,6 +102,7 @@ import {
     MISSION_DELIVERIES_FIXTURE_STATE,
     DESIGN_PREVIEW_FIXTURE_STATE,
     STAGE_METER_FIXTURE_STATE,
+    DELIVERY_ROW_FIXTURE_STATE,
     YOU_STRIP_PIPELINE_FIXTURE_STATE,
     DELIVERY_BAR_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
@@ -282,6 +284,9 @@ export default function DevFixturesPage() {
     if (state === STAGE_METER_FIXTURE_STATE) {
         return <StageMeterFixture />;
     }
+    if (state === DELIVERY_ROW_FIXTURE_STATE) {
+        return <DeliveryRowFixture />;
+    }
     if (state === DELIVERY_BAR_FIXTURE_STATE) {
         return <DeliveryBarFixture />;
     }
@@ -289,8 +294,8 @@ export default function DevFixturesPage() {
         return <YouStripPipelineFixture />;
     }
     if (state === DESIGN_PREVIEW_FIXTURE_STATE) {
-    return <DesignPreviewFixture />;
-}
+        return <DesignPreviewFixture />;
+    }
     if (state === MCP_CONNECTIONS_FIXTURE_STATE) {
         return <ConnectionsFixture />;
     }
