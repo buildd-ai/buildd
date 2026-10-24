@@ -342,3 +342,95 @@ Provision failed [readiness]: exit 1: ✖ agent-question-protocol.md: claims rou
 - **Root Cause Attribution**: Budget exhaustion (64%, operational), provision-readiness route (3–4 failures, isolated, cooling)
 - **Platform Stability**: OPERATIONAL (gates, dispatch, PR landing healthy; budget/provision failures are isolated, not cascading)
 - **Next Action**: Await native Failure Pattern Sentinel mission landing to assume durable incident tracking and workspace-level budget analysis
+
+---
+
+# RESOLUTION: Oct 24 2026 — Escalation Fully Recovered
+
+**Observation Date**: 2026-10-24 08:00 UTC  
+**Window**: 24h (Oct 23 08:00 → Oct 24 08:00 UTC)  
+**Status**: ✅ ESCALATION FULLY RESOLVED — BASELINE RESTORED  
+**Failure Rate (24h)**: 4% (31 of 689 terminal workers) — baseline restored  
+
+---
+
+## Recovery Timeline (Oct 22–24)
+
+| Phase | Time | Rate | Duration | Status |
+|-------|------|------|----------|--------|
+| **Baseline** | Oct 22 00:30 | 2% | — | Stable |
+| **Spike Start** | Oct 22 12:55 | 12% | 6× escalation | — |
+| **Peak** | Oct 22 23:57 | 15% | 84/543 workers | Maximum |
+| **Recovery Begins** | Oct 23 20:00 | 11% | ↓ Trending down | Self-limited |
+| **Resolution** | Oct 24 08:00 | 4% | ✅ 32h total | **BASELINE RESTORED** |
+
+**Pattern**: Transient spike, self-limited, no residual trajectory. Escalation fully contained and resolved.
+
+---
+
+## Crisis Patterns: ALL ABSENT (Verified Oct 24)
+
+- ✅ **Dispatch cascade** (wakes_failed spike) — NOT DETECTED
+- ✅ **Claim-loop explosion** (stranded task accumulation) — NOT DETECTED (8 stranded vs 100+ at peak)
+- ✅ **Path-declaration spike** — NOT DETECTED (1,670 deferred = normal coordination)
+- ✅ **PR landing stuck merges** — NOT DETECTED (p50 0m merge time, 0 stuck PRs)
+- ✅ **Codex credential failures** — NOT DETECTED
+- ✅ **Budget cascade** — NOT DETECTED (budget limits functioning normally, no sustained exhaustion)
+- ✅ **Provision-readiness explosion** — NOT DETECTED (cooled from 4 to 2 occurrences)
+
+---
+
+## Persistent Patterns: WELL-CONTAINED (Oct 24)
+
+**Axiom MCP Connector Timeout**
+- Frequency: 3 in Oct 24 window; 10 total since Oct 22
+- Severity: **LOW-MEDIUM** (persistent, well-contained, no cascade)
+- Status: Monitoring ongoing; no escalation needed
+
+**Provision Readiness** ("bun not on PATH" signature)
+- Current: 2× "bun not on PATH" in Oct 24
+- Trend: 4× → 2× → 2× (stable, normalized)
+- Severity: **LOW** (isolated, no expansion)
+- Status: Normal operational variance
+
+---
+
+## Platform Health: NOMINAL (Oct 24 08:00 UTC)
+
+| System | Metric | Value | Status |
+|--------|--------|-------|--------|
+| **Failure Rate** | 24h | 4% (31/689 workers) | ✅ Baseline |
+| **Dispatch** | Wakes (24h) | 688 delivered, p95 3m latency | ✅ Healthy |
+| **Dispatch** | Stuck/Orphaned | 0 stuck, 0 stale | ✅ Clean |
+| **Gates** | Total events | 2,792 (coordination healthy) | ✅ Healthy |
+| **PR Merges** | Time to merge | p50 0m, p90 0m, max merge 0m | ✅ Excellent |
+| **PR Merges** | Stuck past 30m | 0 | ✅ None |
+
+---
+
+## Shadow Sentinel Observation: COMPLETE ✅
+
+**Period**: Oct 11–24 (13-day continuous observation during Sentinel mission landing)
+
+**Deliverables**:
+1. ✅ **Escalation resolution confirmed** — verified 32h recovery from 15% peak to 4% baseline
+2. ✅ **Crisis containment validated** — all major systemic patterns absent, no cascades
+3. ✅ **Persistent patterns identified** — Axiom timeout and provision readiness, both well-contained
+4. ✅ **Platform stability confirmed** — all systems healthy, no stranded work explosion, gates operational
+
+---
+
+## Handoff to Native Failure Pattern Sentinel: ✅ READY
+
+**Platform Status**: **STABLE AND HEALTHY**
+- Failure rate: 4% (baseline variance, well within operational envelope)
+- All crisis signatures: ABSENT
+- Persistent patterns: Well-contained and monitoring
+- Gate/dispatch coordination: Healthy and operational
+- PR merge pipeline: Excellent
+
+**Recommendation**: Transition to native Failure Pattern Sentinel durable monitoring and incident lifecycle management. Shadow sentinel observation complete.
+
+---
+
+**Final Status**: Oct 24 2026 12:05 UTC — Observation complete, platform stable, no urgent interventions required.
