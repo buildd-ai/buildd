@@ -59,6 +59,7 @@ import { MissionNotesSheet } from './MissionFeed';
 import { mastheadBack, parseMissionOrigin } from './MissionDetailView';
 import MissionLayoutShell, { MissionBoardHeader } from './MissionLayoutShell';
 import { historyRaised, missionDecisions, type OpenQuestionNote } from '@/lib/mission-decisions';
+import { withoutStaleRoundCap } from '@/lib/visual-review-decision';
 import { loadQuestionWaitsFor } from '@/lib/question-waits';
 import { boardTaskHref } from './MissionBoardParts';
 import FlowTimeline from './FlowTimeline';
@@ -1280,9 +1281,9 @@ async function MissionDetailBody({
     ? await loadQuestionWaitsFor(decisionTaskIds, { kind: 'person', userId: user.id }).catch(() => new Map())
     : new Map();
   const decisions = layout === 'board'
-    ? missionDecisions({ model: boardModel, notes: openQuestionNotes, mission: { id, title: mission.title, href: `/app/missions/${id}` }, hrefFor: taskId => boardTaskHref(boardLink, taskId), waitsByTask })
+    ? missionDecisions({ model: boardModel, notes: openQuestionNotes, mission: { id, title: mission.title, href: `/app/missions/${id}` }, hrefFor: taskId => boardTaskHref(boardLink, taskId), visual: boardVisual, waitsByTask })
     : [];
-  const history = layout === 'board' ? historyRaised(boardModel, openQuestionNotes) : null;
+  const history = layout === 'board' ? historyRaised(boardModel, withoutStaleRoundCap(openQuestionNotes, boardVisual)) : null;
   // Verified reads current verdicts, never a stale stored overall: a criterion not
   // passing on the board's live counts, or a blocking visual review not clear, holds it.
   const verifiedHoldReason = verifiedHold({
