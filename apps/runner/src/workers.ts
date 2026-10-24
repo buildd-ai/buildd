@@ -3222,6 +3222,7 @@ export class WorkerManager {
         // so later steps (git stats, the prompt, parking) read the ref the
         // worktree really uses instead of re-deriving it.
         worker.worktreeBaseRef = setupResult.base;
+        worker.worktreeBaseSha = setupResult.baseSha;
         worker.resumedFrom = setupResult.resumed?.from;
         // The PR's base, which the path-claim sweep measures against. Read
         // after setup: a fallback to a fresh base has already cleared the
@@ -3849,7 +3850,7 @@ export class WorkerManager {
     // that ran — its work is not on GitHub, which is not the work failing.
     const handOff = isHandOffRefusal(refusal)
       ? handOffUnproven(
-        await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+        await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha),
         worker.commits.length,
       )
       : null;
@@ -3953,7 +3954,7 @@ export class WorkerManager {
     sessionLog(worker.id, 'info', 'input_as_retry', worker.error || 'needs_input', worker.taskId);
     // No TASK_ERROR checkpoint: a parked question or a pause is not a failure,
     // and a "Task failed" milestone right after "Paused" read as one.
-    const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
+    const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha);
     // Mirrors the sibling non-abort branch's local 'waiting' state — the
     // session is gone here, but 'waiting' + no live session is already a
     // recognized local state elsewhere in this file.
@@ -6176,7 +6177,7 @@ export class WorkerManager {
         // backend and the claim breaker walls the seat for an hour.
         sessionLog(worker.id, 'error', 'session_budget_capped', 'maxBudgetUsd limit hit', worker.taskId);
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
-        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha);
         worker.status = 'error';
         worker.error = SESSION_BUDGET_CAP_ERROR;
         worker.currentAction = 'Session cost cap';
@@ -6279,7 +6280,7 @@ export class WorkerManager {
           error: errMsg,
           // S30: an unmet output requirement after work is a hand-off failure, not a failed attempt.
           ...handOffUnproven(
-            await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+            await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha),
             worker.commits.length,
           ),
           milestones: worker.milestones,
@@ -6361,7 +6362,7 @@ export class WorkerManager {
         // A clean completion proves the credential works — reset the auth-failure
         // backoff so claims resume at full cadence.
         this.consecutiveAuthFailures = 0;
-        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef, worker.worktreeBaseSha);
 
         // B (write-back): After a successful OAuth Codex session, the CLI may have
         // silently refreshed the tokens. Read the auth.json we left in place
