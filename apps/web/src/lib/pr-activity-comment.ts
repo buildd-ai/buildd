@@ -432,6 +432,8 @@ function earliest(a: string | null | undefined, b: string): string {
   return new Date(a).getTime() < new Date(b).getTime() ? a : b;
 }
 
+const QUEUED_FIX_KINDS: ReadonlySet<PrActivityKind> = new Set<PrActivityKind>(['ci_fixing', 'migration_collision_fixing', 'human_applied_recommendation']);
+
 export function renderPrActivityComment(
   entries: PrActivityEntry[],
   timezone: string = DEFAULT_TIMEZONE,
@@ -463,12 +465,17 @@ export function renderPrActivityComment(
     rows.push(`- ${what}${foldUrl ? ` · [see Buildd](${foldUrl})` : ' not shown'}`);
   }
 
-  for (const e of kept) {
+  // A queued fix is moot once a later push lands (an amended release candidate voids
+  // the SHA the fix was queued for), so the row says so instead of reading as pending.
+  const lastPushIdx = kept.map((x) => x.kind).lastIndexOf('changes_pushed');
+  for (const [i, e] of kept.entries()) {
     story = advance(story, e);
     const p = present(e, story);
     if (!p.aside || !head) head = { entry: e, p };
 
-    const detail = e.detail ? ` · ${e.detail}` : '';
+    const moot = i < lastPushIdx && QUEUED_FIX_KINDS.has(e.kind);
+    const detail = [e.detail, moot ? `superseded by the push at${kept[lastPushIdx].sha ? ` \`${kept[lastPushIdx].sha}\`` : ' a later head'}` : null]
+      .filter(Boolean).map((d) => ` · ${d}`).join('');
     rows.push(`- \`${formatOffset(start!, e.at)}\` ${rowGlyph(p.tone)}${p.label}${detail}${links(e, p, seenTasks)}`);
     if (e.note) {
       const body = escapeNote(e.note).split('\n').map((l) => (l ? `  ${l}` : '')).join('\n');

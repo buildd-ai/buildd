@@ -59,7 +59,7 @@ function approvedView(id: string, sha: string, version = 5): KernelView {
   return {
     delivery: {
       id, workspaceId: 'ws1', ownerTaskId: 't1', repoFullName: REPO, prNumber: 1, currentHeadSha: sha, baseRef: 'dev', state: 'APPROVED',
-      version, approvalBasis: 'review', approvedHeads: [sha], compositionHeads: [], currentRound: 1,
+      version, approvalBasis: 'review', approvedHeads: [sha], compositionHeads: [], currentRound: 1, ci: 'green', ciHeadSha: sha,
     },
     rounds: [{ id: 'r1', round: 1, headSha: sha, status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' }],
     attempts: [], findings: [],
