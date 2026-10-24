@@ -5,7 +5,7 @@ owner: max
 last_verified: 2026-10-24
 summary: A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
 domain: missions
-surfaces: [apps/web/src/lib/mission-branch-refresh.ts, apps/web/src/lib/integration-refresh.ts, apps/web/src/lib/task-completed-without-pr.ts, apps/web/src/lib/agent-capabilities/pr-close-guard.ts, apps/web/src/lib/workflow/epoch-effects.ts, apps/web/src/lib/mission-subscribers.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/cron/pr-reconcile/route.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
+surfaces: [apps/web/src/lib/mission-branch-refresh.ts, apps/web/src/lib/workflow/epoch-effects.ts, apps/web/src/lib/mission-subscribers.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/cron/pr-reconcile/route.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-kernel-library, mission-release-gate, mission-task-lifecycle, workflow-state-kernel]
 keywords: [refresh settlement, redundant refresh PR, branch retirement, delivery epoch, integration branch, mission/*, merge dev into, chore(mission), branch refresh, branchRefreshHeadSha, branch_refreshed_at, refresh conflict task, requireMergeCommit, trunk merge, refresh lease, abandoned lease, conflict reservation, paused mission refresh, mission branch concurrency]
 verified_by: [apps/web/src/lib/task-completed-without-pr.test.ts, apps/web/src/lib/agent-capabilities/pr-close-guard.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/epoch-effects.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/src/lib/mission-pr.test.ts, apps/web/src/lib/mission-branch-refresh.test.ts, apps/web/src/lib/mission-shipping-pr.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, scripts/resolve-generated-conflicts.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/integration-refresh.test.ts]
@@ -604,10 +604,10 @@ list.
 | AC-1–AC-5, single-flight, stale holder fencing | `apps/web/src/lib/mission-branch-refresh.test.ts` › `refreshMissionIntegrationBranch` (incl. "an expired caller cannot dispatch twice or release its successor lease", "does not merge after its lease expires…") |
 | AC-6, AC-7 (no `pr.merged` trigger; claim emits) | `apps/web/src/modules.test.ts`, `apps/web/src/app/api/workers/claim/route.test.ts` |
 | AC-8–AC-14 | `mission-branch-refresh.test.ts` › `refreshMissionBranchesBeforeStart`, `sweepMissionBranchRefresh` |
-| AC-42 | `mission-branch-refresh.test.ts` › "debounced: at most one start refresh per interval" |
-| AC-43 | `apps/web/src/lib/integration-refresh.test.ts` › "refreshPrIsEmpty" |
-| AC-44 | `apps/web/src/lib/task-completed-without-pr.test.ts`; `apps/web/src/app/api/github/pr/route.test.ts` › "refuses to open a PR for a task that already completed without one" |
-| AC-45 | `apps/web/src/lib/agent-capabilities/pr-close-guard.test.ts` › `closesOwnRetrySubject`; `apps/web/src/app/api/github/pr/route.test.ts` › "refuses a fix attempt closing the PR it was filed to repair" |
+| Start debounce (AC-42) | `mission-branch-refresh.test.ts` › "debounced: at most one start refresh per interval" |
+| Empty refresh PR refused (AC-43) | `apps/web/src/lib/integration-refresh.test.ts` › "refreshPrIsEmpty" |
+| No PR after a no-PR completion (AC-44) | `apps/web/src/lib/task-completed-without-pr.test.ts`; `apps/web/src/app/api/github/pr/route.test.ts` › "refuses to open a PR for a task that already completed without one" |
+| Fix attempt cannot close its subject (AC-45) | `apps/web/src/lib/agent-capabilities/pr-close-guard.test.ts` › `closesOwnRetrySubject`; `apps/web/src/app/api/github/pr/route.test.ts` › "refuses a fix attempt closing the PR it was filed to repair" |
 | AC-21–AC-27, AC-29, AC-30 | `mission-branch-refresh.test.ts` › "interleavings: mission state, unknown outcomes, and request termination" |
 | AC-28 | `mission-branch-refresh.test.ts` › "a reservation whose insert outlives the lease…", "a caller that died between reserving and inserting…" |
 | AC-31–AC-33 (real Git ancestry, lost commits, pinned landing) | `mission-branch-refresh.test.ts` › "real Git: refresh, task landings, the repair and the mission PR interleave…" |
@@ -686,6 +686,10 @@ conflict retry both tell the agent to run it first.
   has no `pr.merged` refresh subscriber (`apps/web/src/modules.test.ts` pins
   both).
 - `apps/web/src/lib/core-events.ts`: the `tasks.claimed` event contract.
+- `apps/web/src/lib/integration-refresh.ts` (`refreshPrIsEmpty`),
+  `apps/web/src/lib/task-completed-without-pr.ts` (`completedWithoutPr`) and
+  `apps/web/src/lib/agent-capabilities/pr-close-guard.ts`
+  (`closesOwnRetrySubject`), applied by `apps/web/src/app/api/github/pr/route.ts`.
 - `apps/web/src/app/api/cron/pr-reconcile/route.ts`: runs the backstop.
 - `apps/web/src/lib/integration-refresh.ts`: `verifyRefreshLanded`, the ancestry
   proof a merged conflict task must pass.
