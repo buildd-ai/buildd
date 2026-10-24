@@ -85,6 +85,8 @@ export interface PrFixAttemptRow {
   conflictRetryPrNumber?: number | null;
   context: unknown;
   createdAt: Date | string;
+  /** A pending row deferred to a future start (a loop pass, a backoff) is not in flight until then. */
+  startAt?: Date | string | null;
 }
 
 /**
@@ -99,6 +101,7 @@ export const STALE_PENDING_CONFLICT_FIX_MS = 30 * 60 * 1000;
  *
  * - `inFlight`: a fix attempt (CI retry, review fix, conflict fix) that is still
  *   pending or running. It will push again, so a new CI retry would stack on it.
+ *   A pending one deferred to a future `startAt` is not in flight yet.
  * - `ciRetriesUsed`: agent-authored CI retries the automatic loop has filed
  *   since the last manual "Fix CI" click (which grants a fresh budget). Every
  *   dispatched retry counts whoever authored the failing commit (allocation is
@@ -119,7 +122,11 @@ export function summarizePrFixAttempts(
     r.status === 'pending' &&
     r.conflictRetryPrNumber === prNumber &&
     now - time(r) > STALE_PENDING_CONFLICT_FIX_MS;
-  const inFlight = rows.find((r) => isOpenTaskStatus(r.status) && !staleUnclaimedConflictFix(r)) ?? null;
+  // Nobody pushes from a row that will not start for hours: blocking on it left
+  // red PRs idle until a loop pass's backoff ran out.
+  const deferred = (r: PrFixAttemptRow) =>
+    r.status === 'pending' && r.startAt != null && new Date(r.startAt).getTime() > now;
+  const inFlight = rows.find((r) => isOpenTaskStatus(r.status) && !staleUnclaimedConflictFix(r) && !deferred(r)) ?? null;
 
   const ciRows = rows.filter((r) => r.ciRetryPrNumber === prNumber);
   const lastManual = ciRows

@@ -119,6 +119,11 @@ export interface DeliveryViewInput {
    * the PR holding the lane on this base, when known. Absent or null = not parked.
    */
   laneWait?: { behindPr: number | null } | null;
+  /**
+   * The owner task is back in the queue with no worker on it (a loop pass waiting
+   * on its backoff, a retry): WORKING then names the wait, not an agent at work.
+   */
+  ownerParked?: boolean;
 }
 
 export type DeliveryCta =
@@ -400,7 +405,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
   const pr = d.prNumber != null ? `PR #${d.prNumber}` : 'the PR';
 
   switch (d.state) {
-    case 'WORKING': headline = 'Agent working'; break;
+    case 'WORKING': headline = input.ownerParked ? "Waiting for the agent's next pass" : 'Agent working'; break;
     case 'AWAITING_PUSH':
       headline = 'Waiting for the fix to reach GitHub';
       detail = `${pr} is still at ${short(d.currentHeadSha)}; the platform is re-checking for the pushed commit`;
