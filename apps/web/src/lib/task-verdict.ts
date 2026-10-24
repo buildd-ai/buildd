@@ -82,6 +82,8 @@ export interface VerdictInput {
    * `landing` is the merge policy merging on green. Absent: unknown, read as a person.
    */
   deliveryOwner?: string | null;
+  /** The delivery's own headline, for a PR whose next move is the platform's and no rule above named it. */
+  deliveryHeadline?: string | null;
   /**
    * The delivery is parked on a review escalation (kernel `deriveEscalationBrief`): the
    * cause label, what is left and what a person may choose. The verdict names it instead
@@ -410,6 +412,18 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
         cause: green ? 'Checks are green; the merge policy merges it without you.' : 'No checks have reported yet; it merges by itself once they pass.',
         actions: [link(`View PR #${pr.number}`, pr.url)],
         causeKey: green ? 'in_progress:merging' : 'in_progress:no_checks',
+      };
+    }
+    // e07ee9cf: the delivery says the next move is the platform's (a worker, the trunk, buildd itself):
+    // never "needs you" nor "no checks reported" because the row-level facts above ran out.
+    if (input.deliveryOwner && input.deliveryOwner !== 'human' && input.deliveryOwner !== 'none') {
+      return {
+        ...base,
+        state: 'in_progress',
+        headline: `${input.deliveryHeadline ?? 'buildd is handling it'} · PR #${pr.number}`,
+        cause: 'Nothing is waiting on you.',
+        actions: [link(`View PR #${pr.number}`, pr.url)],
+        causeKey: `in_progress:delivery_${input.deliveryOwner}`,
       };
     }
     return {

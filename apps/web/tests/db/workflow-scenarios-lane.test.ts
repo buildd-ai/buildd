@@ -95,6 +95,13 @@ describe('landing lane: one behind-refresh in flight per base', () => {
       sql`SELECT attempt_count, last_error FROM workflow_effects WHERE dedupe_key = ${parked.dedupe_key}`);
     expect(row).toMatchObject({ attempt_count: 0, last_error: null });
     expect((await w.delivery(b))).toMatchObject({ state: 'REPAIRING', stateReason: 'behind' });
+    // e07ee9cf: parked is queued behind A, owned by the landing lane: not a repair, not a worker's.
+    const { githubReader } = await import('../../src/lib/workflow/github-facts');
+    const shown = await githubReader(w.installationId).statusOf!(w.repo, w.gh.pr(w.repo, b.prNumber).headSha, 'Buildd / Review approval');
+    expect(shown).toMatchObject({ state: 'pending', description: expect.stringContaining(`queued behind PR #${a.prNumber}`) });
+    const { getDeliveryViewsForTasks } = await import('../../src/lib/workflow/delivery-view');
+    const bView = (await getDeliveryViewsForTasks([b.ownerTaskId])).get(b.ownerTaskId);
+    expect(bView).toMatchObject({ owner: 'landing', needsYou: false, laneWait: { behindPr: a.prNumber, position: 1 } });
 
     // B draining again while A still holds the lane parks again, still spending nothing.
     await drainDelivery(b.deliveryId);
