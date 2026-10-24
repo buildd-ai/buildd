@@ -71,7 +71,7 @@ describe('waitingKindFor', () => {
   });
 
   it('otherwise the claim loop\'s last deferral, and nothing when there is none', () => {
-    expect(waitingKindFor(task({ deferralReason: 'workspace_cap' }), MISSION_FREE)).toBe('workspace_cap');
+    expect(waitingKindFor(task({ deferralReason: 'mission_budget' }), MISSION_FREE)).toBe('mission_budget');
     expect(waitingKindFor(task({ deferralReason: 'mission_concurrent' }), MISSION_FREE)).toBe('mission_concurrent');
     expect(waitingKindFor(task({ deferralReason: 'path_overlap' }), MISSION_FREE)).toBe('pr_overlap_live');
     expect(waitingKindFor(task({ deferralReason: 'something_new' }), MISSION_FREE)).toBeNull();
@@ -89,11 +89,11 @@ describe('combineGateFacts', () => {
         edge({ dependent_id: 'e', dependency_id: 'a', arm_status: true }),
       ],
       pending: [{ id: 'b', deferred: false, held: false }, { id: 'c', deferred: false, held: false }, { id: 'd', deferred: false, held: false }, { id: 'e', deferred: false, held: false }],
-      deferrals: [{ taskId: 'e', reason: 'workspace_cap' }],
+      deferrals: [{ taskId: 'e', reason: 'mission_concurrent' }],
       mission: MISSION_FREE,
     });
     expect(facts.releasedEdges).toEqual([{ dependentId: 'b', dependencyId: 'a', arm: 'early_release' }]);
-    expect(facts.waitingKinds).toEqual({ c: 'dep_declared', d: 'dep_inferred', e: 'workspace_cap' });
+    expect(facts.waitingKinds).toEqual({ c: 'dep_declared', d: 'dep_inferred', e: 'mission_concurrent' });
   });
 
   it('a held task reads held even when every edge is released', () => {

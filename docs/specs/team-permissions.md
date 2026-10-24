@@ -527,7 +527,6 @@ makes the decision.
 | `apps/web/src/app/api/workspaces/[id]/config/route.ts` (`resolveWriteAuth`) | write workspace config | owner, admin | admin | `manage_workspace_settings` |
 | `apps/web/src/app/api/workspaces/[id]/route.ts` (`PATCH`) | PATCH git config (incl. merge policy, member repo access), access mode, data class, connector gate, webhook, concurrency cap | owner, admin | admin (route policy) | `manage_workspace_settings` |
 | `apps/web/src/app/api/workspaces/[id]/settings/route.ts` (`verifyWriteAccess`) | PATCH work tracker config | owner, admin | admin | `manage_workspace_settings` |
-| `apps/web/src/app/api/tasks/[id]/start/route.ts` (`POST`) | `canRaiseCap` on a `workspace_cap_reached` refusal: whether the task's "raise the workspace limit" control shows | owner, admin | admin (route policy) | `manage_workspace_settings` |
 | `apps/web/src/app/api/workspaces/[id]/pause-starts/route.ts` (`access`) | pause or resume new starts (the control is on the workspace's settings page, Where work runs; Health › Runners only shows a pause) | owner, admin | admin (route policy) | `manage_workspace_settings` |
 | `apps/web/src/app/api/workspaces/[id]/github-access/route.ts` (`authorize`) | POST re-check the GitHub App's repo access and link the repo (GET open to members) | owner, admin | admin (route policy) | `manage_workspace_settings` |
 | `apps/web/src/app/api/workspaces/route.ts` (`POST`) | POST create a workspace in the target team (a member is refused, not moved to their personal team) | owner, admin, personal team | admin | `create_workspace` |

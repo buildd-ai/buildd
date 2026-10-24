@@ -246,7 +246,7 @@ claim loop, the planner or the Start probe.
   confident or weak, orders undeclared work behind undeclared work.
 - I-48 What still holds undeclared work is what holds any work: a declared
   dependency, an explicit hold (held mission, future `startAt`, a person's
-  hold), the mission and workspace caps, runner, auth and budget limits, and
+  hold), the mission cap, runner slots, auth and budget limits, and
   one open fix attempt per PR (`sibling_retry_open`, the same-branch rule).
   Nothing is leased for it up front: it declares no path, so I-4 has nothing
   to acquire. Paths it is seen editing are leased after its first sync, and a
