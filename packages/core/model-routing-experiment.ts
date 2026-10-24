@@ -284,5 +284,23 @@ export function treatmentApplicable(args: {
     && (args.backend ?? 'claude') === 'claude';
 }
 
+/**
+ * The claim's dispatch guard refused the model a draw was assigned and served
+ * another one. Un-serve the draw and keep why and what was refused, so a
+ * readout can tell a runner whose CLI was too old from an id nobody knows
+ * (work analytics spec R-2). Shared by the routing experiment and tier pools,
+ * whose draws have the same three fields. Returns whether it marked anything.
+ */
+export function markDispatchFallback(
+  draw: { served: boolean; assignedModel: string | null; eligibility: Record<string, unknown> } | null | undefined,
+  args: { rejectedModel: string; servedModel: string; reason: string },
+): boolean {
+  if (!draw || draw.assignedModel !== args.rejectedModel) return false;
+  draw.served = false;
+  draw.assignedModel = args.servedModel;
+  draw.eligibility = { ...draw.eligibility, fallback: 'dispatch_rejected', fallbackReason: args.reason, rejectedModel: args.rejectedModel };
+  return true;
+}
+
 /** Re-export so callers validating a fraction use the randomiser's own rule. */
 export { resolveEnrolmentFraction };

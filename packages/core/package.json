@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.378.0",
+  "version": "0.379.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,8 @@
     "db:studio": "drizzle-kit studio"
   },
   "exports": {
+    "./ui-verification": "./ui-verification.ts",
+    "./decision-kind-ui-copy": "./decision-kind-ui-copy.ts",
     "./db": "./db/index.ts",
     "./run-evidence": "./run-evidence.ts",
     "./artifact-redaction": "./artifact-redaction.ts",

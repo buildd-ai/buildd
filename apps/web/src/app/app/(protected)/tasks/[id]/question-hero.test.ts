@@ -163,3 +163,32 @@ describe('unifyWorkerQuestion: never a context-free card', () => {
     expect(q.context).toBe('Asked while working on "Surface audit".');
   });
 });
+
+describe('note options and paused tasks', () => {
+  const withOptions = {
+    ...note,
+    defaultChoice: null,
+    options: [
+      { label: 'Keep holding', consequence: 'Nothing changes' },
+      { label: 'Decide the visual review', recommended: true, consequence: 'Unblocks the merge' },
+    ],
+  };
+
+  test('a note\'s structured options become buttons, the recommended one first', () => {
+    const q = unifyNoteQuestion(withOptions);
+    expect(q.options.map(o => o.label)).toEqual(['Decide the visual review', 'Keep holding']);
+    expect(q.options[0].recommended).toBe(true);
+  });
+
+  test('a pause\'s Resume is never offered as an option of the note\'s question', () => {
+    const paused = { type: 'pause', prompt: 'Paused. Resume to continue the same session.', options: [{ label: 'Resume', recommended: true }] };
+    const q = unifyWorkerQuestion(paused, withOptions);
+    expect(q.options.map(o => o.label)).toEqual(['Decide the visual review', 'Keep holding']);
+    expect(q.options.some(o => o.label === 'Resume')).toBe(false);
+  });
+
+  test('a pause with no note offers no options at all', () => {
+    const paused = { type: 'pause', prompt: 'Paused.', options: [{ label: 'Resume', recommended: true }] };
+    expect(unifyWorkerQuestion(paused, null).options).toEqual([]);
+  });
+});

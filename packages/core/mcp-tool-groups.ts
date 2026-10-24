@@ -539,7 +539,7 @@ const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   manage_evidence_backends: '{action, backendId?, …}',
   read_evidence: '{taskId?|prNumber?, grep?, …}',
   get_artifact: '{artifactId, view?, section?, grep?, full?, …}',
-  manage_specs: `{action: ${alt('manage_specs')}, specId?, title?, body?, expectedVersion?, parentSpecId?, …}`,
+  manage_specs: `{action: ${alt('manage_specs')}, specId?, title?, body?, expectedVersion?, …}`,
   record_pr_supersession: '{prNumber?, supersedingPrNumber, supersedingRepo?, reason, …}',
   merge_pr: '{prNumber, workspaceId?, overrides?, reason?, …}',
   manage_providers: `{action: ${alt('manage_providers')}, provider?, scope?, value?, surface?, …}`,
@@ -749,7 +749,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('html', str, [{ text: 'HTML', actions: ['store_design'] }]),
     // Nearly every manage_specs call names a spec, and every write carries the version read.
     param('specId', str, [{ text: 'Spec UUID', actions: ['manage_specs'], forMore: true }]),
-    param('expectedVersion', num, [{ text: 'Writes: the version you read', actions: ['manage_specs'], forMore: true }]),
+    param('expectedVersion', num, [{ text: 'Writes: version you read', actions: ['manage_specs'], forMore: true }]),
   ],
   schedules: [
     param('scheduleId', str, [{ text: 'Schedule UUID', actions: ['update_schedule', 'delete_schedule'] }]),

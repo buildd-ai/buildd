@@ -65,6 +65,13 @@ describe('enqueueMissingEffects (§11 op 2)', () => {
     ]);
     // The floor's own key, once held, is owed no more at this version.
     expect(enqueueMissingEffects(v, new Set([...held, 'dispatch_review:d1:2:floor:v9']), new Map([['dispatch_review:d1:2', 'done'], ['dispatch_review:d1:2:floor:v9', 'pending']]))).toEqual([]);
+    // The floor's own dispatch finished without a reviewer too (same version, asked again): a new key, not a conflict.
+    const floorDone = new Set([...held, 'dispatch_review:d1:2:floor:v9']);
+    const allDone = new Map([['dispatch_review:d1:2', 'done'], ['dispatch_review:d1:1', 'done'], ['dispatch_review:d1:2:floor:v9', 'done']]);
+    expect(enqueueMissingEffects(v, floorDone, allDone).map((e) => e.dedupeKey)).toEqual(['dispatch_review:d1:2:floor:v9:2']);
+    // Bounded: a round no dispatch can serve stops being re-armed.
+    const spent = new Set([...held, 'dispatch_review:d1:2:floor:v9', ...[2, 3, 4, 5].map((n) => `dispatch_review:d1:2:floor:v9:${n}`)]);
+    expect(enqueueMissingEffects(v, spent, new Map([...spent].map((k) => [k, 'done'] as [string, string])))).toEqual([]);
     // A live retry is the round's exit; a dead dispatch is EffectDead's; an unread status proves nothing.
     expect(enqueueMissingEffects(v, new Set([...held, 'dispatch_review:d1:2:retry1']), new Map([['dispatch_review:d1:2', 'done'], ['dispatch_review:d1:2:retry1', 'delivering']]))).toEqual([]);
     expect(enqueueMissingEffects(v, held, new Map([['dispatch_review:d1:2', 'dead']]))).toEqual([]);

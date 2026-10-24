@@ -100,7 +100,7 @@ export function auditorRefusal(audit: TaskRow, subject: TaskRow): string | null 
 const basename = (key: string) => key.split('/').pop() || 'screenshot.png';
 
 /** The screenshots among `ids` that a worker of `audit` uploaded through upload-url; null when any is not. */
-async function ownShots(audit: TaskRow, ids: readonly string[]): Promise<Array<{ id: string; storageKey: string }> | null> {
+export async function ownShots(audit: Pick<TaskRow, 'id' | 'workspaceId'>, ids: readonly string[]): Promise<Array<{ id: string; storageKey: string }> | null> {
   if (ids.length === 0) return [];
   const rows = await db.select({ id: artifacts.id, storageKey: artifacts.storageKey, type: artifacts.type, workspaceId: artifacts.workspaceId })
     .from(artifacts)

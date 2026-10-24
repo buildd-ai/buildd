@@ -13,6 +13,7 @@ import { tasks } from '@buildd/core/db/schema';
 import { inArray } from 'drizzle-orm';
 import { specCriteria } from '@buildd/spec-contract/requirements';
 import { criterionScreens } from '@buildd/spec-contract/check-lines';
+import { criterionVerificationScenarios } from '@buildd/spec-contract/verification-bindings';
 import { inScope } from '@buildd/spec-contract/scope';
 import { readPinnedSpecRevision } from '@/lib/specs/pin';
 import { MAX_VISUAL_SHOTS } from '@/lib/specs/visual-limits';
@@ -35,10 +36,18 @@ export interface SubjectCriteria {
   revision: number;
   /** The pinned revision's design (§12), when it has one. */
   design?: { kind: string; ref: string; version: string; screens: Array<{ id: string; name: string }> } | null;
-  criteria: Array<{ id: string; text: string; screens?: string[] }>;
+  /** `captures`: the `scenario@viewport` captures a registered `verify:` check on it needs. */
+  criteria: Array<{ id: string; text: string; screens?: string[]; captures?: string[] }>;
 }
 
 const screensFor = (body: string) => new Map(criterionScreens(body).map((x) => [x.criterionId, x.screens]));
+const capturesFor = (body: string) => {
+  try {
+    return new Map([...criterionVerificationScenarios(body)].map(([id, list]) => [id, list.map((x) => `${x.scenarioId}@${x.viewport}`)]));
+  } catch {
+    return new Map<string, string[]>();
+  }
+};
 
 const pinOf = (context: unknown): Record<string, unknown> | null => {
   const c = context && typeof context === 'object' ? (context as Record<string, unknown>).specSource : null;
@@ -100,12 +109,21 @@ export function renderVisualAuditSpecCriteria(subjects: readonly SubjectCriteria
     ...(withCriteria.some((s) => s.design) ? [
       '- Where a criterion names design screens, open the design at the pinned version, render each named screen at the same viewport and state as your shot, screenshot it, upload it like any shot, and pass it as `designShotIds` (1-2). Judge whether the build matches the design in layout, content and states, not pixels. A verdict on such a criterion is refused without one.',
     ] : []),
+    ...(withCriteria.some((s) => s.criteria.some((c) => c.captures?.length)) ? [
+      '',
+      '### Captures registered checks need',
+      'Criteria marked "captures" also run registered checks on surface evidence you collect; buildd runs them when your run ends. Each named capture is a scenario at a viewport, and a check passes only when every one is there. For each:',
+      '- Capture with a QA_PLAN route or state carrying `surface: { id: <the card\'s data-verify-surface>, scenario: <scenario> }`, at that viewport, with `QA_CAPTURE_SHA` set to the full commit you captured and `QA_SURFACE_COLLECTOR=visual_auditor` (scripts/qa/surface-evidence.ts).',
+      '- Pass the scenario\'s runtime facts in `QA_SURFACE_FACTS` (`{ factVersion, scenarios }`), read from buildd or GitHub (the PR\'s state, its replacement, its verification), never from what the page says. A scenario you have no facts for records none; do not guess them.',
+      '- Upload each `surfaces/<shot>.json` unchanged as your own `data` artifact (`create_artifact` type "data", content: the file). To cite its screenshot, upload that first and set `capture.screenshotRef` to its id. Do not edit an uploaded capture; capture again.',
+      '- A capture the page could not provide (`surface.missing` in captures.json) stays missing: say so in your summary.',
+    ] : []),
     ...withCriteria.flatMap((s) => [
       '',
       `### ${s.taskTitle}`,
       `taskId \`${s.taskId}\`, spec "${s.specTitle}" revision ${s.revision}`,
       ...(s.design ? [designLine(s.design)] : []),
-      ...s.criteria.map((c) => `- **${c.id}** ${c.text}${c.screens?.length ? ` (screens: ${c.screens.join(', ')})` : ''}`),
+      ...s.criteria.map((c) => `- **${c.id}** ${c.text}${c.screens?.length ? ` (screens: ${c.screens.join(', ')})` : ''}${c.captures?.length ? ` (captures: ${c.captures.join(', ')})` : ''}`),
     ]),
     ...(design ? designVsBuilt(withCriteria, design) : []),
   ].join('\n');
@@ -130,6 +148,7 @@ export async function loadVisualAuditSpecCriteria(dependsOn: readonly string[]):
     if (!pin || typeof pin.specId !== 'string') continue;
     const read = await readPinnedSpecRevision(pin);
     if (!read.ok) continue;
+    const captures = capturesFor(read.body);
     out.push({
       taskId: row.id,
       taskTitle: row.title,
@@ -138,7 +157,8 @@ export async function loadVisualAuditSpecCriteria(dependsOn: readonly string[]):
       design: read.design ? { kind: read.design.kind, ref: read.design.ref, version: read.design.version, screens: read.design.screens ?? [] } : null,
       criteria: inScope(pin, specCriteria(read.body)).map((c) => {
         const screens = read.design ? screensFor(read.body).get(c.id) : undefined;
-        return { id: c.id, text: c.text, ...(screens?.length ? { screens } : {}) };
+        const needed = captures.get(c.id);
+        return { id: c.id, text: c.text, ...(screens?.length ? { screens } : {}), ...(needed?.length ? { captures: needed } : {}) };
       }),
     });
   }
