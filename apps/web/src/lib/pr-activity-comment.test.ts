@@ -32,12 +32,14 @@ const {
   SPINNER_PATH,
   appendPrActivity,
   parsePrActivityState,
+  parsePrActivityFold,
   renderPrActivityComment,
   formatOffset,
   GLYPH,
   MAX_ACTIVITY_ENTRIES,
   MAX_NOTE_CHARS,
 } = await import('./pr-activity-comment');
+type PrActivityEntry = import('./pr-activity-comment').PrActivityEntry;
 
 function bodyOf(call: Call): string {
   return JSON.parse(call.options.body as string).body as string;
@@ -398,6 +400,35 @@ describe('renderPrActivityComment — state block', () => {
     expect(parsed).toHaveLength(MAX_ACTIVITY_ENTRIES);
     expect(parsed[parsed.length - 1]!.sha).toBe(`sha${MAX_ACTIVITY_ENTRIES + 4}`);
     expect(body).not.toContain('`sha0`');
+  });
+
+  it('keeps the real start and says how many rows were folded, across later edits', () => {
+    const entries: PrActivityEntry[] = Array.from({ length: MAX_ACTIVITY_ENTRIES + 3 }, (_, i) => ({
+      kind: 'changes_pushed' as const,
+      sha: `sha${i}`,
+      at: new Date(Date.UTC(2026, 7, 29, 14, 3 + i * 10)).toISOString(),
+      ...(i === 0 ? { taskUrl: 'https://buildd.dev/app/tasks/t1' } : {}),
+    }));
+    const first = renderPrActivityComment(entries);
+    expect(first).toContain('Started Aug 29, 14:03 UTC');
+    expect(first).toContain('- 3 earlier events · [see Buildd](https://buildd.dev/app/tasks/t1)');
+    // The first kept row is offset from the real start, not `0m`.
+    expect(first).toContain('- `+30m` Pushed `sha3`');
+
+    // The legacy writer re-renders from the state block: the fold must survive it.
+    const next = renderPrActivityComment(
+      [...parsePrActivityState(first), { kind: 'changes_pushed', sha: 'late', at: '2026-08-29T20:00:00.000Z' }],
+      'UTC',
+      { fold: parsePrActivityFold(first) },
+    );
+    expect(next).toContain('Started Aug 29, 14:03 UTC');
+    expect(next).toContain('- 4 earlier events · [see Buildd](https://buildd.dev/app/tasks/t1)');
+  });
+
+  it('shows no fold line while everything fits', () => {
+    const body = renderPrActivityComment([{ kind: 'reviewing', at: at(0) }]);
+    expect(body).not.toContain('earlier event');
+    expect(parsePrActivityFold(body).folded).toBeUndefined();
   });
 
   it('points the spinner at a camo-reachable origin, never at localhost', () => {
