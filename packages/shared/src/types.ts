@@ -2686,6 +2686,19 @@ export const DANGEROUS_CREDENTIAL_READ_PATTERNS = [
   /\benv\b.*\bBUILD_API_KEY\b/,
 ] as const;
 
+// Bash commands an agent must not run with whatever GitHub login its host holds.
+// On a runner whose agents still inherit the operator's `gh` login, GitHub
+// records these as the owner, and nothing tells an agent apart from the person.
+// Dispatching the Release workflow cuts or amends a candidate (voiding its
+// checks and approvals): buildd amends a candidate itself when its fix merges,
+// and an owner-requested release goes through the `trigger_release` action,
+// which buildd records. A guard against an honest mistake, not a sandbox: the
+// credential fix is task-scoped GitHub tokens (docs/runner-github-credentials.md).
+export const OWNER_ONLY_GITHUB_COMMAND_PATTERNS = [
+  /\bgh\s+workflow\s+run\b(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+["']?release(?:\.ya?ml)?["']?(?=\s|$)/i,
+  /\/actions\/workflows\/release\.ya?ml\/dispatches\b/i,
+] as const;
+
 // Runner capability keys — advertised in WorkerEnvironment.envKeys, matched
 // against Task.requiredCapabilities during claim.
 // Use these constants everywhere so typos can't cause silent mismatches.
