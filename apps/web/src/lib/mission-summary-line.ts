@@ -25,7 +25,13 @@ function clean(line: string): string {
 /** First sentence: up to a `.`, `!` or `?` followed by a space (or the end), not a dotted token. */
 function firstSentence(text: string): string {
   const m = /^(.+?[.!?])(?=\s+[A-Z(“"']|\s*$)/.exec(text);
-  return (m ? m[1] : text).trim();
+  const first = (m ? m[1] : text).trim();
+  // A heading-like word ("Specs.") states nothing: keep the sentence that follows it too.
+  if (m && first.split(/\s+/).length < 3 && text.length > m[0].length) {
+    const rest = text.slice(m[0].length).trim();
+    if (rest) return `${first} ${firstSentence(rest)}`;
+  }
+  return first;
 }
 
 const capitalise = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);

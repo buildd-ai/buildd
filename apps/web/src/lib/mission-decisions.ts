@@ -11,6 +11,8 @@ import { linkQuestionNote, unifyNoteQuestion, unifyWorkerQuestion, type Question
 import { BOARD_LANDED, type BoardTask, type MissionBoardModel } from './mission-board';
 import { approvalView, decisionFromQuestion, type DecisionView } from './needs-you-card';
 import { stripOrder } from './mission-task-strip';
+import { visualReviewDecision, withoutStaleRoundCap } from './visual-review-decision';
+import type { VisualReviewModel } from '@buildd/shared';
 
 type Model = Pick<MissionBoardModel, 'phases' | 'tasks' | 'needsYou'>;
 
@@ -27,6 +29,8 @@ export interface MissionDecisionsInput {
   notes: readonly OpenQuestionNote[];
   mission: { id: string; title: string; href: string };
   hrefFor: (taskId: string) => string;
+  /** The mission's current visual review: when it needs a person, its card replaces the round-cap note. */
+  visual?: VisualReviewModel | null;
 }
 
 /** The tasks that wait on `id`, by name, in strip order. */
@@ -43,8 +47,9 @@ const taskLink = (t: BoardTask, hrefFor: (id: string) => string) => ({ id: t.id,
  * that no worker card already shows. A note answered through a worker's
  * card is not shown twice.
  */
-export function missionDecisions({ model, notes, mission, hrefFor }: MissionDecisionsInput): DecisionView[] {
+export function missionDecisions({ model, notes: allNotes, mission, hrefFor, visual }: MissionDecisionsInput): DecisionView[] {
   const out: DecisionView[] = [];
+  const notes = withoutStaleRoundCap(allNotes, visual);
   const shownNotes = new Set<string>();
   const order = stripOrder(model);
   const needs = new Set(model.needsYou);
@@ -86,6 +91,8 @@ export function missionDecisions({ model, notes, mission, hrefFor }: MissionDeci
       answer: { kind: 'note', missionId: mission.id, noteId: n.id },
     }));
   }
+  const review = visualReviewDecision(visual, mission);
+  if (review) out.push(review);
   return out;
 }
 

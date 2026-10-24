@@ -59,6 +59,7 @@ import { MissionNotesSheet } from './MissionFeed';
 import { mastheadBack, parseMissionOrigin } from './MissionDetailView';
 import MissionLayoutShell, { MissionBoardHeader } from './MissionLayoutShell';
 import { historyRaised, missionDecisions, type OpenQuestionNote } from '@/lib/mission-decisions';
+import { withoutStaleRoundCap } from '@/lib/visual-review-decision';
 import { boardTaskHref } from './MissionBoardParts';
 import FlowTimeline from './FlowTimeline';
 import { expectedMinutesFromPredictions, sameFilesFromRows } from '@/lib/flow-timeline';
@@ -1272,9 +1273,9 @@ async function MissionDetailBody({
     createdAt: new Date(n.createdAt).getTime(),
   }));
   const decisions = layout === 'board'
-    ? missionDecisions({ model: boardModel, notes: openQuestionNotes, mission: { id, title: mission.title, href: `/app/missions/${id}` }, hrefFor: taskId => boardTaskHref(boardLink, taskId) })
+    ? missionDecisions({ model: boardModel, notes: openQuestionNotes, mission: { id, title: mission.title, href: `/app/missions/${id}` }, hrefFor: taskId => boardTaskHref(boardLink, taskId), visual: boardVisual })
     : [];
-  const history = layout === 'board' ? historyRaised(boardModel, openQuestionNotes) : null;
+  const history = layout === 'board' ? historyRaised(boardModel, withoutStaleRoundCap(openQuestionNotes, boardVisual)) : null;
   // Verified reads current verdicts, never a stale stored overall: a criterion not
   // passing on the board's live counts, or a blocking visual review not clear, holds it.
   const verifiedHoldReason = verifiedHold({

@@ -204,4 +204,28 @@ describe('DecisionCard', () => {
     expect(calls[0].body).toEqual({ type: 'reply', title: 'Keep' });
     expect(q('[data-testid="decision-card"]')!.textContent).toContain('You chose Keep');
   });
+
+  it('visual review: fixes merged, awaiting a person: the real options, no stale note, Mark all fixed is handed to the host', async () => {
+    const view: import('@/lib/needs-you-card').DecisionView = {
+      key: 'visual-review:m1:fix_check', kind: 'decision', task: null, mission: { id: 'm1', title: 'Spec page', href: '/app/missions/m1' }, label: 'Visual review',
+      askedAt: T0 - 60_000, summary: '24 fixes merged with no new screenshot.', question: 'Are the 24 fixed screens fixed?',
+      options: [
+        { label: 'Mark all fixed', effect: 'Clears the review for these screens', tip: null, recommended: true },
+        { label: 'Review screens →', effect: 'Look at each before opening the merge', tip: null, recommended: false },
+        { label: 'Skip the review', effect: 'Merge without a visual check', tip: null, recommended: false },
+      ],
+      dependents: [], diffHref: null, shortcut: false,
+      answer: { kind: 'visual', missionId: 'm1', reviewHref: '/app/missions/m1', markFixed: [{ artifactIds: ['a1', 'a2'], expected: { a1: 'issue', a2: 'issue' } }], startKey: null },
+    };
+    const acted: string[] = [];
+    act(() => root.render(<DecisionCard view={view} now={T0} pageMissionId="m1" visualAct={async l => { acted.push(l); }} />));
+    expect(q('[data-testid="question-subject"]')!.textContent).toBe('●Visual review· asked 1m ago');
+    expect(q('[data-testid="question-subject"] a')).toBeNull();
+    expect(qa('[data-testid="decision-option"]').map(o => o.textContent?.split('Clears')[0].split('Look')[0].split('Merge')[0])).toEqual(['Mark all fixed', 'Review screens →', 'Skip the review']);
+    expect(q('[data-testid="decision-answer-differently"]')).toBeNull();
+    await act(async () => { qa('[data-testid="decision-option"]')[0].click(); });
+    await flush();
+    expect(acted).toEqual(['Mark all fixed']);
+    expect(q('[data-answered="true"]')!.textContent).toContain('You chose Mark all fixed');
+  });
 });

@@ -37,6 +37,10 @@ export interface DecisionCardProps {
   onAnswered?: (label: string) => void;
   /** After Not now (the host hides the card). Absent: the card folds to one line itself. */
   onNotNow?: () => void;
+  /** Acts on a visual-review option (`missions/[id]/visual-decision-act.ts`); throws with the reason on a refusal. */
+  visualAct?: (label: string) => Promise<void>;
+  /** The mission whose page this is: a subject naming it is left out (the page already says so). */
+  pageMissionId?: string;
   /** Extra attributes on the article (a surface's own test id). */
   testId?: string;
 }
@@ -106,7 +110,7 @@ function OptionButton({ option, primary, shortcut, href, onPick, disabled, pendi
   );
 }
 
-export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNow, testId }: DecisionCardProps) {
+export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNow, pageMissionId, visualAct, testId }: DecisionCardProps) {
   const router = useRouter();
   const now = useNow(serverNow);
   const [more, setMore] = useState(false);
@@ -149,10 +153,30 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
     }
   }, [view.answer, noteSending, onAnswered, router]);
 
+  // The visual review's options act through the host's handler (mission code the shared card cannot import).
+  const answerVisual = useCallback(async (label: string) => {
+    if (view.answer.kind !== 'visual' || !visualAct || noteSending) return;
+    setNoteSending(label);
+    setNoteError(null);
+    try {
+      await visualAct(label);
+      if (label !== 'Review screens →') {
+        setNoteOutcome({ label, at: Date.now() });
+        onAnswered?.(label);
+        router.refresh();
+      }
+    } catch (e) {
+      setNoteError(e instanceof Error ? e.message : 'Could not reach buildd.');
+    } finally {
+      setNoteSending(null);
+    }
+  }, [view.answer.kind, visualAct, noteSending, onAnswered, router]);
+
   const pick = useCallback((label: string) => {
     if (view.answer.kind === 'worker') void submit.submit(label);
     else if (view.answer.kind === 'note') void answerNote(label);
-  }, [view.answer.kind, submit, answerNote]);
+    else if (view.answer.kind === 'visual') void answerVisual(label);
+  }, [view.answer.kind, submit, answerNote, answerVisual]);
 
   const primary = view.options[0] ?? null;
   const sending = submit.sending ?? noteSending;
@@ -167,9 +191,9 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
 
   const subject: ReactNode = view.task
     ? <Link href={view.task.href} className="underline-offset-4 hover:underline">{view.task.title}</Link>
-    : view.mission
+    : view.mission && view.mission.id !== pageMissionId
       ? <Link href={view.mission.href} className="underline-offset-4 hover:underline">{view.mission.title}</Link>
-      : null;
+      : view.label ?? null;
   const age = askedAgo(view.askedAt, now);
 
   // Collapsed: answered, or set aside.
@@ -260,7 +284,7 @@ export default function DecisionCard({ view, now: serverNow, onAnswered, onNotNo
         </form>
       ) : null}
       <div className="flex flex-wrap items-center justify-between gap-x-4">
-        {view.answer.kind === 'link'
+        {view.answer.kind === 'link' || view.answer.kind === 'visual'
           ? <span />
           : !differently
             ? <button type="button" data-testid="decision-answer-differently" onClick={() => setDifferently(true)} className={TEXT_BUTTON}>Answer differently</button>
