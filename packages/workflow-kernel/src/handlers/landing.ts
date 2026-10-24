@@ -14,7 +14,7 @@
  */
 import { applyCommandOn } from '../command-runner';
 import { EFFECT_MAX_ATTEMPTS, type EffectHandler, type EffectHandlers } from '../effects';
-import { LANDING_STATUS_CONTEXT, LANDING_STATUS_CONTEXTS, landingStatusOf, landingStatusUnknown, reviewGate, type LandingStatus } from '../landing-gate';
+import { LANDING_STATUS_CONTEXT, landingStatusOf, landingStatusUnknown, reviewGate, type LandingStatus } from '../landing-gate';
 import { heldOutcome, MERGE_HOLD_MAX_MS, mergeHoldDelayMs } from '../merge-hold';
 import { githubOf, type GithubFacts, type GithubWrites, type KernelPorts } from '../ports';
 import { hasPr, need } from './ports-of';
@@ -53,16 +53,13 @@ function staleStatus(current: ShownStatus, want: LandingStatus, targetUrl: strin
     || (current.targetUrl !== undefined && targetUrl !== null && current.targetUrl !== targetUrl);
 }
 
-/** What GitHub shows on `want.sha` under every name the kernel publishes (null where it cannot read). */
-function shownStatuses(github: GithubFacts, repoFullName: string, want: LandingStatus): Promise<ShownStatus[]> {
-  return Promise.all(LANDING_STATUS_CONTEXTS.map((c) => (github.statusOf ? github.statusOf(repoFullName, want.sha, c).catch(() => null) : null)));
+/** What GitHub shows on `want.sha` under the kernel's status (null where it cannot read). */
+async function shownStatus(github: GithubFacts, repoFullName: string, want: LandingStatus): Promise<ShownStatus> {
+  return github.statusOf ? github.statusOf(repoFullName, want.sha, LANDING_STATUS_CONTEXT).catch(() => null) : null;
 }
 
-/** One answer, under both names (legacy first) until nothing reads the old one. */
 async function publishStatusOn(writes: GithubWrites, repoFullName: string, s: { state: 'success' | 'failure' | 'pending'; description: string; sha: string }, targetUrl: string | null): Promise<void> {
-  for (const context of LANDING_STATUS_CONTEXTS) {
-    await writes.publishStatus({ repoFullName, sha: s.sha, context, state: s.state, description: s.description, ...(targetUrl ? { targetUrl } : {}) });
-  }
+  await writes.publishStatus({ repoFullName, sha: s.sha, context: LANDING_STATUS_CONTEXT, state: s.state, description: s.description, ...(targetUrl ? { targetUrl } : {}) });
 }
 
 export function landingHandlers(ports: KernelPorts): EffectHandlers {
@@ -145,7 +142,7 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
     const targetUrl = ports.links?.review(d) ?? null;
     const own = landingStatusOf(view);
     const ownReady = own?.state === 'success' && own.sha === headSha;
-    if (own && ownReady && (await shownStatuses(github, d.repoFullName, own)).some((x) => staleStatus(x, own, targetUrl))) {
+    if (own && ownReady && staleStatus(await shownStatus(github, d.repoFullName, own), own, targetUrl)) {
       await publishStatusOn(writes, d.repoFullName, own, targetUrl);
       const back = github.statusOf ? await github.statusOf(d.repoFullName, headSha, LANDING_STATUS_CONTEXT).catch(() => null) : { state: 'success' };
       if (back?.state !== 'success') {
@@ -161,7 +158,7 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
       const named = check ? `required check "${check}"` : 'a required check';
       // The review check on a head the kernel has not approved (a person's override past the
       // review): the kernel will never turn it green, so no wait passes it. GitHub's own bypass does.
-      if (check !== null && LANDING_STATUS_CONTEXTS.includes(check) && !ownReady) {
+      if (check === LANDING_STATUS_CONTEXT && !ownReady) {
         return hold(check, 'required_check', `GitHub requires ${named}, which buildd shows as success only on an approved head; merging past it is a GitHub bypass`, true);
       }
       return hold(check, 'required_check', `GitHub kept the merge waiting on ${named} for ${waited()}${ans.detail ? ` (${ans.detail})` : ''}`);
@@ -205,7 +202,7 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
       for (let pass = 0; pass < 3; pass++) {
         // Nothing to say that GitHub does not already show, under every name: no write (statuses pile up per commit).
         const want = status;
-        if ((await shownStatuses(github, d.repoFullName, want)).some((x) => staleStatus(x, want, targetUrl))) {
+        if (staleStatus(await shownStatus(github, d.repoFullName, want), want, targetUrl)) {
           await publish(want);
           wrote = true;
         }

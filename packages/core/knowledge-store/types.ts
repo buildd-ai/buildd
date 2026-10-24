@@ -154,6 +154,23 @@ export interface QueryParams {
    * age policy that behaves identically either way.
    */
   recencyAuthority?: boolean;
+  /**
+   * Include draft Living Spec chunks (source type `living_spec_draft`). Default
+   * false: recall and every other default query read approved text only; the
+   * spec duplicate check asks for drafts so two drafts can be compared (R-106).
+   */
+  includeDrafts?: boolean;
+  /**
+   * Rank the vector leg by this stored chunk's own embedding instead of
+   * embedding `text` (which still drives the lexical leg). A spec probing with
+   * its own indexed chunks makes no embedding call. A chunk with no embedding
+   * leaves the vector leg empty.
+   */
+  nearChunkId?: string;
+  /** A query embedding computed already (one batch for many probes, see `embedQueries`). */
+  embedding?: number[];
+  /** Leave out chunks whose source id starts with any of these (a spec's own chunks). */
+  excludeSourceIdPrefixes?: readonly string[];
 }
 
 // ── KnowledgeStore interface ──────────────────────────────────────────────────
@@ -169,6 +186,11 @@ export interface KnowledgeStore {
    */
   upsert(namespace: string, chunks: UpsertChunk[]): Promise<UpsertResult | void>;
   query(namespace: string, params: QueryParams): Promise<QueryResult[]>;
+  /**
+   * Embed many query texts in one call with the namespace's embedder, for
+   * `QueryParams.embedding`. Null when the store has no embedder (lexical only).
+   */
+  embedQueries?(namespace: string, texts: string[]): Promise<number[][] | null>;
   delete(namespace: string, ids: string[]): Promise<void>;
   listNamespaces(): Promise<string[]>;
   /** Count current (is_current=true) chunks in a namespace. Optional; used for corpora availability hints. */

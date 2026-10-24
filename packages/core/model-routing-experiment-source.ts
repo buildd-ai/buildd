@@ -27,6 +27,10 @@ import {
 } from './model-routing-experiment';
 import type { Tier as RegistryTier } from './model-tier-defaults';
 
+// The claim route reaches the experiment module through this file only
+// (scripts/module-boundaries.test.ts), so the pure fallback marker is re-exported here.
+export { markDispatchFallback } from './model-routing-experiment';
+
 // ── Experiment lookup (cached) ──────────────────────────────────────────────
 
 /**
@@ -135,15 +139,22 @@ export interface DrawForClaimArgs {
   routerModel: string;
   roleModel: string | null;
   budgetPressure: number;
+  /**
+   * `interactive` when the claim runs on the caller's own session (a verified
+   * interactive session, or an explicit single-task MCP claim). That session's
+   * model runs whatever the arm says, so such a claim is never enrolled.
+   */
+  executor: 'runner' | 'interactive';
 }
 
 /**
  * Evaluate the team's running experiment for one candidate task. Returns null
- * when there is no experiment, the task is ineligible, or anything throws.
+ * when there is no experiment, the claim is interactive, the task is
+ * ineligible, or anything throws.
  */
 export async function drawModelRoutingArm(args: DrawForClaimArgs): Promise<ClaimExperimentDraw | null> {
   try {
-    if (!args.teamId) return null;
+    if (!args.teamId || args.executor === 'interactive') return null;
     const experiment = await loadRunningModelRoutingExperiment(args.teamId);
     if (!experiment) return null;
 

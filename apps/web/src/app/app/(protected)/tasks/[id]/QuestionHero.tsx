@@ -4,6 +4,8 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { UnifiedQuestion } from './question-hero';
 import { useKeyHints } from '@/components/KeyHints';
 import ClampText, { useClamp } from './ClampText';
+import { effectFor, waitsFooter, waitsSummary, type QuestionWaits } from '@buildd/core/question-waits';
+import WaitsParts from '@/components/WaitsParts';
 
 interface Props {
   question: UnifiedQuestion;
@@ -36,6 +38,12 @@ interface Props {
    * back from wherever they went.
    */
   landOnArrival?: boolean;
+  /**
+   * What waits on the answer, from the projection (Living Spec 1b257609):
+   * it fills the summary under the context, each option's effect and the
+   * expiry under the answer field. Absent: the agent's own lines only.
+   */
+  waits?: QuestionWaits | null;
 }
 
 const DENSITY = {
@@ -93,10 +101,15 @@ export default function QuestionHero({
   density = 'hero',
   aside,
   landOnArrival = false,
+  waits = null,
 }: Props) {
   const d = DENSITY[density];
   const [freeText, setFreeText] = useState('');
-  const { options } = question;
+  // The recommended option first (Living Spec 1b257609 R-8), each with its effect on the waiting work.
+  const options = [...question.options.filter(o => o.recommended), ...question.options.filter(o => !o.recommended)]
+    .map(o => ({ ...o, downstream: effectFor(waits, o.label) }));
+  const waitsParts = waits ? waitsSummary(waits) : [];
+  const footer = waits ? waitsFooter(waits) : null;
   const busy = sending !== null;
   // Number keys always answer; the keycaps and "Press 1 or 2" show only for
   // people who turned on keyboard hints (components/KeyHints.tsx).
@@ -166,6 +179,11 @@ export default function QuestionHero({
           {question.body}
         </p>
       )}
+      {waitsParts.length > 0 && (
+        <p data-testid="question-waits" className={`${d.body} max-w-[64ch] leading-relaxed text-text-secondary [overflow-wrap:anywhere]`}>
+          <WaitsParts parts={waitsParts} />
+        </p>
+      )}
 
       {error && <div data-testid="worker-answer-error" className="mt-4 text-sm text-status-error">{error}</div>}
 
@@ -221,6 +239,10 @@ export default function QuestionHero({
             </button>
           </form>
 
+          {footer && (
+            <p data-testid="question-expiry" className="mt-3 text-meta text-text-muted [overflow-wrap:anywhere]" suppressHydrationWarning>{footer}</p>
+          )}
+
           {options.length > 0 && enableKeys && hints && (
             <p className="hidden @md:flex mt-4 items-center gap-1.5 font-mono text-[12px] text-text-muted">
               Press
@@ -251,7 +273,7 @@ function OptionCard({
   showKeyPad,
   onAnswer,
 }: {
-  option: UnifiedQuestion['options'][number];
+  option: UnifiedQuestion['options'][number] & { downstream?: string | null };
   index: number;
   density: 'hero' | 'feed';
   d: (typeof DENSITY)[keyof typeof DENSITY];
@@ -305,6 +327,11 @@ function OptionCard({
             className={`block ${d.optionDesc} leading-snug @md:leading-relaxed [overflow-wrap:anywhere] ${open ? '' : `${clamp} @md:line-clamp-none`} ${o.recommended ? '' : 'text-text-secondary'}`}
           >
             {o.description}
+          </span>
+        )}
+        {o.downstream && (
+          <span data-testid="question-option-downstream" className={`block ${d.optionDesc} leading-snug font-medium [overflow-wrap:anywhere] ${o.recommended ? '' : 'text-text-secondary'}`}>
+            {o.downstream}
           </span>
         )}
       </button>

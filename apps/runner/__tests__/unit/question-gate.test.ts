@@ -86,6 +86,18 @@ describe('questionFromToolInput: the brief', () => {
     expect(q.where).toEqual({ taskTitle: 'Add weekend surcharge', branch: 'buildd/abc-weekend' });
   });
 
+  test('an outcome kind is read only from the fixed [kind] prefix, and stored with the option (spec 1b257609 R-9)', () => {
+    const q = questionFromToolInput(makeWorker(), {
+      questions: [{ question: 'Accept the result?', options: [
+        { label: 'Accept (Recommended)', description: '[finishes] The repair task starts next.' },
+        { label: 'Keep testing', description: 'Finishes: nothing, more runs first.' },
+      ] }],
+    });
+    expect(q.options![0]).toMatchObject({ label: 'Accept', outcome: 'finishes', consequence: 'The repair task starts next.' });
+    expect((q.options![1] as { outcome?: string }).outcome).toBeUndefined();
+    expect((questionPayload(q).options as Array<{ outcome?: string }>)[0].outcome).toBe('finishes');
+  });
+
   test('edited paths are reported relative to the worktree', () => {
     expect(worktreeRelative('/w/tree/src/a.ts', '/w/tree')).toBe('src/a.ts');
     expect(worktreeRelative('/elsewhere/a.ts', '/w/tree')).toBe('/elsewhere/a.ts');

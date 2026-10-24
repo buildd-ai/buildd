@@ -564,8 +564,8 @@ describe('buildMissionBoard — claim-gate release arms (spec f7f67f1a P-1)', ()
   });
 
   it('a queued task carries its waiting cause; a running one does not', () => {
-    const m = board([upstream(), task('docs')], { gateFacts: { releasedEdges: [], waitingKinds: { docs: 'workspace_cap', api: 'mission_local' } } });
-    expect(m.tasks.docs.waitingKind).toBe('workspace_cap');
+    const m = board([upstream(), task('docs')], { gateFacts: { releasedEdges: [], waitingKinds: { docs: 'mission_concurrent', api: 'mission_local' } } });
+    expect(m.tasks.docs.waitingKind).toBe('mission_concurrent');
     expect(m.tasks.api).not.toHaveProperty('waitingKind');
   });
 

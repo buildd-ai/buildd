@@ -15,7 +15,7 @@ const GROUPS: Array<[string, string[]]> = [
   ['Repository', ['<GitConfigForm\n            part="repository"', '<MemberRepoAccessSection']],
   ['Agents', ['<GitConfigForm\n          part="agents"']],
   ['Delivery', ['<MergePolicyEditor', '<BranchStrategySection', '<CiRetrySection', '<ReleaseSection', '<SubjectPolicySection']],
-  ['Where work runs', ['<ExecutorSection', '<RunnerSizeSection', '<FreshContainerSection', '<ConcurrencySection', '<PauseStartsSection']],
+  ['Where work runs', ['<ExecutorSection', '<RunnerSizeSection', '<FreshContainerSection', '<PauseStartsSection']],
   ['Integrations', ['<WorkTrackerSection']],
   ['Danger zone', ['<MoveToTeamButton', '<DeleteWorkspaceButton']],
 ];
@@ -62,8 +62,16 @@ describe('workspace settings page', () => {
   it('places the clean-copy switch after cloud runner size, only off host', () => {
     expect(PAGE.split('<FreshContainerSection').length - 1).toBe(1);
     expect(PAGE.indexOf('<FreshContainerSection')).toBeGreaterThan(PAGE.indexOf('<RunnerSizeSection'));
-    expect(PAGE.indexOf('<FreshContainerSection')).toBeLessThan(PAGE.indexOf('<ConcurrencySection'));
+    expect(PAGE.indexOf('<FreshContainerSection')).toBeLessThan(PAGE.indexOf('<PauseStartsSection'));
     expect(PAGE).toMatch(/executor\.executor !== 'host' && \(?\s*<FreshContainerSection/);
+  });
+
+  // The workspace concurrency cap is gone: the mission cap is the only
+  // per-work parallelism setting, so this page has no cap stepper.
+  it('has no workspace concurrency cap', () => {
+    expect(PAGE).not.toContain('ConcurrencySection');
+    expect(PAGE).not.toContain('maxConcurrentTasks');
+    expect(existsSync(join(import.meta.dir, 'ConcurrencySection.tsx'))).toBe(false);
   });
 
   it('holds the workspace\'s own model keys, between Where work runs and Integrations', () => {

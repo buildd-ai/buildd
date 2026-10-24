@@ -27,12 +27,19 @@ let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 let calls: Array<{ url: string; body: unknown }>;
 let replies: Array<{ status: number; body: unknown }>;
+let waitsReads = 0;
 const realFetch = globalThis.fetch;
 
 beforeEach(() => {
+  waitsReads = 0;
   calls = [];
   replies = [];
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    // The card's read of what waits on the answer (spec 1b257609): its own reply, not an answer's.
+    if (String(url).endsWith('/question-waits')) {
+      waitsReads += 1;
+      return new Response(JSON.stringify({ waits: null }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
     calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
     const next = replies.shift() ?? { status: 200, body: { ok: true } };
     return new Response(JSON.stringify(next.body), { status: next.status, headers: { 'Content-Type': 'application/json' } });

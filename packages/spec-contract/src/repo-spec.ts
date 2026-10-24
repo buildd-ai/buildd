@@ -231,6 +231,32 @@ export function lintSpecFile(slug: string, fm: SpecFrontmatter | null, body: str
   return { errors, warnings };
 }
 
+/**
+ * `superseded_by` values that name no file in the repo: `buildd:<short id>`, a
+ * native spec in buildd that has no repo file, and `none`, retired with nothing
+ * replacing it. Any other value is a slug and must exist.
+ */
+export const SUPERSEDED_BY_ELSEWHERE = /^(?:none|buildd:[0-9a-f]{8})$/;
+
+/**
+ * The file with `status: superseded` and `superseded_by: <value>` in its
+ * frontmatter (living-specs R-78): the status line set (or added after the
+ * first line), any earlier `superseded_by` dropped and the new one put right
+ * after it. Every other byte, the body included, is as it was. Null when the
+ * file has no frontmatter block.
+ */
+export function markSpecSuperseded(text: string, supersededBy: string): string | null {
+  if (!text.startsWith('---\n')) return null;
+  const end = text.indexOf('\n---', 3);
+  if (end === -1) return null;
+  const lines = text.slice(4, end).split('\n').filter((l) => !/^superseded_by:/.test(l));
+  let at = lines.findIndex((l) => /^status:/.test(l));
+  if (at === -1) lines.splice((at = Math.min(1, lines.length)), 0, 'status: superseded');
+  else lines[at] = 'status: superseded';
+  lines.splice(at + 1, 0, `superseded_by: ${supersededBy}`);
+  return `---\n${lines.join('\n')}${text.slice(end)}`;
+}
+
 /** Cross-file checks: duplicate active titles and dangling slugs. */
 export function crossCheckSpecs(specs: readonly IndexedSpec[]): string[] {
   const errors: string[] = [];
@@ -247,7 +273,8 @@ export function crossCheckSpecs(specs: readonly IndexedSpec[]): string[] {
       errors.push(`duplicate active title "${title}" in: ${files.join(', ')}`);
   }
 
-  // Referential integrity: supersedes / superseded_by must point at real slugs.
+  // Referential integrity: supersedes / superseded_by must point at real slugs
+  // (superseded_by may instead name a native spec or nothing, see SUPERSEDED_BY_ELSEWHERE).
   const slugs = new Set(specs.map((s) => s.slug));
   for (const s of specs) {
     for (const ref of s.fm.supersedes ?? [])
@@ -256,6 +283,7 @@ export function crossCheckSpecs(specs: readonly IndexedSpec[]): string[] {
     // here; only its shape is (see validateSpec).
     if (
       s.fm.superseded_by &&
+      !SUPERSEDED_BY_ELSEWHERE.test(s.fm.superseded_by) &&
       nativeSuccessorRef(s.fm.superseded_by) === null &&
       !slugs.has(s.fm.superseded_by)
     )

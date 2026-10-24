@@ -29,6 +29,11 @@ export interface SpecApprovalRequest {
   requestedBy: string;
   /** The surface the request came from; a token minted before this existed reads as 'mcp'. */
   via?: 'mcp' | 'chat';
+  /**
+   * The replaced specs to supersede with the approval (R-77), each at the
+   * version read when the link was made. Absent on a link made before it.
+   */
+  retire?: Array<{ specId: string; expectedVersion?: number }>;
   /** Epoch ms. */
   exp: number;
   nonce: string;
@@ -54,6 +59,7 @@ function isPayload(v: unknown): v is SpecApprovalRequest {
   if (!v || typeof v !== 'object') return false;
   const p = v as Record<string, unknown>;
   return (
+    
     typeof p.specId === 'string' &&
     typeof p.workspaceId === 'string' &&
     Number.isSafeInteger(p.revision) &&
@@ -63,7 +69,8 @@ function isPayload(v: unknown): v is SpecApprovalRequest {
     (p.via === undefined || p.via === 'mcp' || p.via === 'chat') &&
     typeof p.exp === 'number' &&
     typeof p.nonce === 'string' &&
-    p.nonce.length > 0
+    p.nonce.length > 0 &&
+    (p.retire === undefined || (Array.isArray(p.retire) && p.retire.every((r) => !!r && typeof r === 'object' && typeof (r as { specId?: unknown }).specId === 'string')))
   );
 }
 

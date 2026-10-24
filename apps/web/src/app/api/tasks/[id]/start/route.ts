@@ -1,20 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workers, missions } from '@buildd/core/db/schema';
-import { eq, and, isNull, isNotNull, inArray, ne } from 'drizzle-orm';
+import { tasks, workers } from '@buildd/core/db/schema';
+import { eq, and, isNull, isNotNull, inArray } from 'drizzle-orm';
 import { wakeTask } from '@/lib/dispatch-authority';
 import { requestingPerson } from '@/lib/request-person';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { roleHas } from '@/lib/permissions';
-import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { checkConnectorRouting, findAlternativeRole, type ConnectorFailure } from '../../../workers/claim/connector-gate';
 import { checkMissionStartState } from '../../../workers/claim/held-gate';
 import { checkMissionBudgetExhausted } from '../../../workers/claim/mission-budget-gate';
-import { checkWorkspaceCap } from '../../../workers/claim/workspace-cap-gate';
 import { BYPASS_SUBJECT_GATE_KEY, isSubjectDead } from '@/lib/subject-gate-contract';
-import { BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, CAP_EXEMPT_KEY, hasBypassFlag } from '@/lib/bypass-flags';
+import { BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import { ENTITLEMENT_BLOCK_CONTEXT_KEY } from '@buildd/shared';
 import { checkManagedRunnerEntitlement } from '@/lib/entitlements/managed-runner';
 import { probeCoordination } from '@/lib/coordination-probe';
@@ -26,6 +23,8 @@ import {
   forceDialog,
   gateName,
   isStartForceable,
+  makeWaitingReason,
+  readForceStart,
   type ForceStartIntent,
   type WaitingKind,
   type WaitingReason,
@@ -49,7 +48,6 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
  * - forceOverride?: boolean - lift the policy gates above (startAt, deps, holds, budget, subject)
  * - retryNow?: boolean - the Overview's `Retry now`: lift only a deferred start
  *   (a retry's backoff); every other gate still applies (spec d25d923d R-20)
- * - capExempt?: boolean - run past the workspace cap this once
  * - force?: { kinds: WaitingKind[], reasonsDigest, note? } - Force start past the
  *   waits a 422 `coordination_hold` named (docs/specs/force-start.md). The digest
  *   must be the one that refusal returned: a person never confirms a gate they
@@ -92,7 +90,7 @@ export async function POST(
 
   try {
     const body = await req.json().catch(() => ({}));
-    const { targetLocalUiUrl, forceOverride, capExempt } = body;
+    const { targetLocalUiUrl, forceOverride } = body;
     const liftStartAt = !!forceOverride || body.retryNow === true;
     const byPerson = !!requestingPerson(authType === 'session' ? { id: userId } : null, sessionAccount);
     if (targetLocalUiUrl && !byPerson) {
@@ -100,12 +98,13 @@ export async function POST(
     }
     const forceRaw = (body.force && typeof body.force === 'object' ? body.force
       : body.forceCoordination && typeof body.forceCoordination === 'object' ? body.forceCoordination
-      : null) as { kinds?: unknown; reasonsDigest?: unknown; note?: unknown } | null;
+      : null) as { kinds?: unknown; reasonsDigest?: unknown; note?: unknown; seenBlockers?: unknown } | null;
     const forceRequest = forceRaw
       ? {
           kinds: Array.isArray(forceRaw.kinds) ? forceRaw.kinds.filter((k): k is WaitingKind => typeof k === 'string') : null,
           reasonsDigest: typeof forceRaw.reasonsDigest === 'string' ? forceRaw.reasonsDigest : null,
           note: typeof forceRaw.note === 'string' ? forceRaw.note : null,
+          seenBlockers: Array.isArray(forceRaw.seenBlockers) ? forceRaw.seenBlockers.filter((k): k is string => typeof k === 'string') : null,
         }
       : null;
 
@@ -119,18 +118,13 @@ export async function POST(
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    // Authorization check. canRaiseCap: the same bar PATCH /api/workspaces/[id]
-    // sets for maxConcurrentTasks, so a cap refusal only offers "raise the
-    // limit" to someone whose raise would be accepted.
-    let canRaiseCap = false;
+    // Authorization check.
     if (authType === 'session') {
       const access = await verifyWorkspaceAccess(userId!, task.workspaceId);
       if (!access) {
         return NextResponse.json({ error: 'Task not found' }, { status: 404 });
       }
-      canRaiseCap = roleHas(access.role, 'manage_workspace_settings');
     } else {
-      canRaiseCap = hasTokenRouteAdminAccess(sessionAccount, req);
       const hasAccess = await verifyAccountWorkspaceAccess(sessionAccount ?? accountId!, task.workspaceId);
       if (!hasAccess) {
         return NextResponse.json({ error: 'Task not found' }, { status: 404 });
@@ -161,7 +155,10 @@ export async function POST(
     // coordination hold the probe below reports, forceable on its own.
     const inferredEdges = new Set(task.pathDeclaration?.inferredDependsOn ?? []);
     const dependsOn = ((task.dependsOn as string[] | null) || []).filter(id => !inferredEdges.has(id));
-    if (dependsOn.length > 0 && !forceOverride) {
+    // A Start anyway over the declared dependency is a person's confirmed
+    // choice (spec 36df686b): the probe below names it and checks the digest.
+    const startsAnyway = !!forceRequest && (forceRequest.kinds ?? []).includes('dep_declared');
+    if (dependsOn.length > 0 && !forceOverride && !startsAnyway) {
       const openDepWorkers = await db.query.workers.findMany({
         where: sqlWhere(and(
           inArray(workers.taskId, dependsOn),
@@ -301,54 +298,6 @@ export async function POST(
       }, { status: 422 });
     }
 
-    // ── Workspace concurrency cap gate ──────────────────────────────────────
-    // Only repo-backed workspaces are capped; repo-less ones (coordination
-    // workspaces) are never serialized.
-    // capExempt=true bypasses the cap for this one task without changing the
-    // workspace setting. The flag is persisted to context so the claim route
-    // also skips the per-task cap check at claim time.
-    const wsForCap = task.workspace as { repo?: string | null; maxConcurrentTasks?: number | null } | undefined;
-    const taskCtxForCap = task.context as Record<string, unknown> | null;
-    const isCapExemptAlready = hasBypassFlag(taskCtxForCap, CAP_EXEMPT_KEY);
-    if (wsForCap?.repo && !capExempt && !isCapExemptAlready) {
-      // A mission may raise the effective cap above the workspace default —
-      // match the GREATEST(workspaceCap, missionCap) logic in the claim route.
-      let missionMaxConcurrent: number | null = null;
-      if (missionId) {
-        const missionRow = await db.query.missions.findFirst({
-          where: sqlWhere(eq(missions.id, missionId)),
-          columns: { maxConcurrentTasks: true },
-        });
-        missionMaxConcurrent = missionRow?.maxConcurrentTasks ?? null;
-      }
-      const capResult = await checkWorkspaceCap(
-        task.workspaceId,
-        wsForCap.maxConcurrentTasks ?? null,
-        missionMaxConcurrent,
-      );
-      if (capResult) {
-        // Count other pending tasks to surface queue position in the UI.
-        const pendingAhead = await db.query.tasks.findMany({
-          where: sqlWhere(and(
-            eq(tasks.workspaceId, task.workspaceId),
-            eq(tasks.status, 'pending'),
-            ne(tasks.id, taskId),
-          )),
-          columns: { id: true },
-        });
-        return NextResponse.json({
-          error: `Task cannot be started: workspace is at its concurrency limit (${capResult.active}/${capResult.cap} active tasks)`,
-          gateReason: 'workspace_cap_reached',
-          blockClass: 'policy',
-          active: capResult.active,
-          cap: capResult.cap,
-          queuePosition: pendingAhead.length,
-          canExempt: true,
-          canRaiseCap,
-        }, { status: 422 });
-      }
-    }
-
     // ── Commercial entitlement (managed runners) ────────────────────────────
     // Only a task a managed runner already deferred carries the stamp, so a
     // self-hosted team never reaches the check. Re-evaluated with fresh
@@ -389,12 +338,33 @@ export async function POST(
     const waitingReasons: WaitingReason[] = (await probeCoordination(task as any, now, { skipMissionLocal: !!forceOverride || isBypassHeld })) ?? [];
     const blocking = blockingReasons(waitingReasons);
     let forceIntent: ForceStartIntent | null = null;
+    // Repeated clicks, or a click after the wake was missed: the accepted
+    // request stays the one request (same id, no second record) and only the
+    // wake is sent again. Nothing is minted while an unexpired intent already
+    // admits every declared edge that still holds.
+    const accepted = readForceStart(task.context as Record<string, unknown> | null, now);
+    const alreadyAccepted = !!forceRequest && !!accepted?.assessDependsOn?.length
+      && blocking.length > 0 && blocking.every(r => r.kind === 'dep_declared' && !!r.blocker && accepted.assessDependsOn!.includes(r.blocker.id));
+    if (alreadyAccepted) {
+      await wakeTask(task.id, 'manual.start', { targetLocalUiUrl: targetLocalUiUrl || null, ...(targetLocalUiUrl ? { byPerson } : {}) });
+      return NextResponse.json({
+        started: true,
+        taskId: task.id,
+        targetLocalUiUrl: targetLocalUiUrl || null,
+        forced: { forceId: accepted!.id, gates: [...new Set(accepted!.kinds.map(gateName))], railsRemaining: [], expiresAt: accepted!.expiresAt, alreadyAccepted: true },
+      });
+    }
     if (blocking.length > 0) {
       const refusal = coordinationHoldBody(blocking);
       if (!forceRequest) {
         return NextResponse.json(refusal, { status: 422 });
       }
-      if (forceRequest.reasonsDigest !== refusal.reasonsDigest) {
+      // A prerequisite that cleared since the person confirmed is not a change
+      // they must re-confirm: if everything still holding is a declared edge
+      // they saw, the start proceeds on what remains (AC-3).
+      const seen = new Set(forceRequest.seenBlockers ?? []);
+      const onlySeenDeclared = seen.size > 0 && blocking.every(r => r.kind === 'dep_declared' && !!r.blocker && seen.has(r.blocker.id));
+      if (forceRequest.reasonsDigest !== refusal.reasonsDigest && !onlySeenDeclared) {
         // §7.2 step 2: a person never confirms a gate they did not see.
         return NextResponse.json({
           ...refusal,
@@ -426,17 +396,34 @@ export async function POST(
     // Always stamp manualStartAt so the task is durably prioritized on next claim cycle
     // even if the Pusher broadcast is missed. Also boost priority once to float it
     // above other same-priority tasks. Human-override bypass flags are written here too.
-    // bypassDepsGate — skip the dep-PR merge gate (when deps exist).
+    // (no bypassDepsGate: a dependency is admitted only by the bounded forceStart intent)
     // bypassHeldGate — skip the mission held gate (when the task belongs to a mission).
     // bypassMissionBudget — skip the mission budget_exhausted gate.
     // bypassSubjectGate — skip the subject-liveness gate (when the subject PR is dead).
-    // capExempt — allow this single task to run as a 4th+ slot (one-time exception).
     //
     // There is deliberately NO bypassStartGate: the deferred-start override is
     // expressed by clearing startAt below, which is the only thing the claim
     // route reads. The old flag was written here and read by nothing — an
     // operator-visible context key that looked like a working override.
     const hasDeps = dependsOn.length > 0;
+    // forceOverride used to write a permanent whole-task bypassDepsGate. It
+    // now converges on the one bounded intent: the same Start anyway request,
+    // naming the declared edges, expiring and consumed by the claim (R-3).
+    if (forceOverride && hasDeps) {
+      const named = forceIntent?.assessDependsOn ?? [];
+      const missing = dependsOn.filter(id => !named.includes(id));
+      if (missing.length > 0) {
+        const reasons = missing.map(id => makeWaitingReason('dep_declared', {
+          because: 'it was declared as a dependency',
+          blocker: { type: 'task', id, label: `task ${id.slice(0, 8)}`, href: `/app/tasks/${id}` },
+          provenance: { source: 'task_context', derivedFrom: 'tasks.dependsOn' },
+        }));
+        const built = buildForceStartIntent({ reasons, userId, accountId, now });
+        forceIntent = forceIntent
+          ? { ...forceIntent, kinds: [...new Set([...forceIntent.kinds, ...built.kinds])], assessDependsOn: [...new Set([...named, ...missing])], expiresAt: built.expiresAt }
+          : built;
+      }
+    }
     const hasStartGate = !!(task.startAt && task.startAt > new Date());
     const hasMission = !!task.missionId;
     const existingContext = (task.context as Record<string, unknown>) || {};
@@ -448,11 +435,9 @@ export async function POST(
         context: {
           ...existingContext,
           manualStartAt: now.toISOString(),
-          ...(forceOverride && hasDeps ? { bypassDepsGate: true } : {}),
           ...(forceOverride && hasMission ? { bypassHeldGate: true } : {}),
           ...(forceOverride && missionBudgetExhausted ? { [BYPASS_MISSION_BUDGET_KEY]: true } : {}),
           ...(forceOverride && subjectDead ? { [BYPASS_SUBJECT_GATE_KEY]: true } : {}),
-          ...(capExempt ? { capExempt: true } : {}),
           ...(forceIntent ? { [FORCE_START_CONTEXT_KEY]: forceIntent } : {}),
           // A forced local-mission task is handed to runners the same way
           // forceOverride hands it over (the claim's local prefilter).

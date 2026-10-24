@@ -324,11 +324,16 @@ function failure(r: CommandResult): string {
   return (r.stderr || r.stdout).trim();
 }
 
-/** The task's `Status:` from schtasks /Query, or null when it is not registered. */
-function windowsTaskStatus(paths: ServicePaths, run: CommandRunner): { status: string; detail: string } | null {
-  const q = run(SCHTASKS, ['/Query', '/TN', paths.taskName, '/FO', 'LIST']);
+/** A Scheduled Task's `Status:` from schtasks /Query, or null when it is not registered. */
+export function scheduledTaskStatus(taskName: string, run: CommandRunner): { status: string; detail: string } | null {
+  const q = run(SCHTASKS, ['/Query', '/TN', taskName, '/FO', 'LIST']);
   if (q.exitCode !== 0) return null;
   return { status: q.stdout.match(/^Status:\s*(.+?)\s*$/m)?.[1] ?? 'unknown', detail: q.stdout.trim() };
+}
+
+/** The runner's own Scheduled Task (`buildd runner`). */
+export function windowsTaskStatus(paths: ServicePaths, run: CommandRunner): { status: string; detail: string } | null {
+  return scheduledTaskStatus(paths.taskName, run);
 }
 
 export function installService(

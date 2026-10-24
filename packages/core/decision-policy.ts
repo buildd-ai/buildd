@@ -51,7 +51,7 @@ import {
   type TeamDecisionRow,
 } from './decision-client';
 import { isMeasuredForKind, type BuilddDecisionKind, type BuilddDecisionKindBinding } from './decision-kinds';
-import { loadMeasurementsSafe, measurementFor, type StoredMeasurement } from './decision-model-measurements';
+import { loadMeasurementsSafe, measurementFor, type MeasurementReason, type StoredMeasurement } from './decision-model-measurements';
 import type { ChallengerRunInput, DecisionLedgerInput } from './decision-ledger';
 import { assignExperimentArm, type ExperimentAssignment } from './experiment-randomizer';
 import type { DecisionReplayCapture } from './decision-replay';
@@ -100,10 +100,15 @@ export interface BuilddDecisionDeps {
  * kind's current prompt fingerprint; the kind's code-listed `measuredModels`
  * still count, at the kind's own threshold. Jev with no row keeps today.
  */
-function measuredRoute(
+export function measuredRoute(
   kind: { kind: string; promptFingerprint: string; binding: Pick<BuilddDecisionKindBinding, 'measuredModels'> },
   rows: readonly StoredMeasurement[],
-): { isMeasured: (model: string) => boolean; thresholdFor: (model: string) => number | null } {
+): {
+  isMeasured: (model: string) => boolean;
+  thresholdFor: (model: string) => number | null;
+  /** Why: the stored row's reason, or `code_listed` when only the kind's `measuredModels` makes it eligible. For reports. */
+  reasonFor: (model: string) => MeasurementReason | 'code_listed';
+} {
   const lookup = (model: string) => {
     const m = measurementFor(rows, { kind: kind.kind, answeringModel: model, fingerprint: kind.promptFingerprint });
     // This path compares the kind's interpreted confidence for every label, so
@@ -117,6 +122,10 @@ function measuredRoute(
   return {
     isMeasured: model => lookup(model).measured || isMeasuredForKind(kind.binding, model),
     thresholdFor: model => lookup(model).threshold,
+    reasonFor: model => {
+      const m = lookup(model);
+      return !m.measured && isMeasuredForKind(kind.binding, model) ? 'code_listed' : m.reason;
+    },
   };
 }
 

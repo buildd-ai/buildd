@@ -11,7 +11,7 @@
  * here as `visualReviewPhaseCopy` for callers that need the bare strings.
  */
 import type { VisualReviewModel, VisualReviewPhase } from '@buildd/shared';
-import { awaitingCapture, describeVisualPhase, fixDecisionOf } from '@/lib/visual-review-model';
+import { awaitingCapture, describeVisualPhase, visualPhaseDetailRole, fixDecisionOf } from '@/lib/visual-review-model';
 import { VERDICT_DOT } from './ShotImage';
 
 export const visualReviewPhaseCopy = describeVisualPhase;
@@ -101,13 +101,13 @@ export default function VisualReviewLine({ model, variant = 'compact', className
     <div data-testid="visual-review-line" data-phase={model.phase} className={`min-w-0 ${className}`}>
       <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
         <span className="section-label !text-text-muted">Screens</span>
-        <span data-testid="visual-review-line-label" aria-label={aria} className={`font-mono text-[13px] font-semibold ${VISUAL_TONE_TEXT[tone]}`}>
+        <span data-testid="visual-review-line-label" data-verify-block="status" aria-label={aria} className={`font-mono text-[13px] font-semibold ${VISUAL_TONE_TEXT[tone]}`}>
           {copy.label}
         </span>
         <VerdictDots cells={model.cells} />
       </div>
       {variant === 'full' && (
-        <p data-testid="visual-review-line-detail" className="mt-1 text-[13px] leading-[1.45] text-text-secondary">
+        <p data-testid="visual-review-line-detail" data-verify-block={visualPhaseDetailRole(model.phase)} className="mt-1 text-[13px] leading-[1.45] text-text-secondary">
           {copy.detail}
         </p>
       )}

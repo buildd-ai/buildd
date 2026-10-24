@@ -9,6 +9,7 @@ import { probeCoordination } from '@/lib/coordination-probe';
 import { loadQueueWaits } from '@/lib/queue-wait-load';
 import { blockingReasons, coordinationHoldBody, orderWaitingReasons, readForceStart, type WaitingKind } from '@buildd/core/waiting-reason';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { startAnywayView } from '@/lib/start-anyway';
 
 /**
  * GET /api/tasks/[id]/waiting
@@ -30,7 +31,7 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
  */
 
 /** Kinds the start probe produces itself; the queue-wait read adds the rest. */
-const PROBE_KINDS: ReadonlySet<WaitingKind> = new Set<WaitingKind>(['mission_local', 'dep_declared', 'lane', 'mission_concurrent', 'mission_paced', 'ordered_behind']);
+const PROBE_KINDS: ReadonlySet<WaitingKind> = new Set<WaitingKind>(['mission_local', 'dep_declared', 'lane', 'mission_concurrent', 'ordered_behind']);
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -56,15 +57,25 @@ export async function GET(
     : await verifyAccountWorkspaceAccess(account!, task.workspaceId);
   if (!allowed) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
 
-  if (task.status !== 'pending') return NextResponse.json({ waitingReasons: [], probed: true });
-
   const now = new Date();
+  // The observed Start anyway phase (requested / assessing / blocked), from the
+  // row's own facts: the one derivation every surface renders.
+  const ctx = task.context as Record<string, unknown> | null;
+  const blockerId = (ctx?.waitExit as { blockerTaskId?: string } | undefined)?.blockerTaskId;
+  const blockerTitle = task.status === 'pending' && blockerId && ctx?.forceStartHistory
+    ? (await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, blockerId)), columns: { title: true } }).catch(() => null))?.title ?? null
+    : null;
+  const view = startAnywayView({ context: ctx, status: task.status, now, prerequisiteTitle: blockerTitle });
+  const startAnyway = view ? { startAnyway: view } : {};
+
+  if (task.status !== 'pending') return NextResponse.json({ waitingReasons: [], probed: true, ...startAnyway });
+
   const [probed, live] = await Promise.all([
     probeCoordination(task as any, now),
     loadQueueWaits([task.id], now).then(m => m.get(task.id) ?? null),
   ]);
   const forceStart = readForceStart(task.context as Record<string, unknown> | null, now);
-  if (probed === null) return NextResponse.json({ waitingReasons: [], ...(live ? { queueWait: live.wait } : {}), probed: false });
+  if (probed === null) return NextResponse.json({ waitingReasons: [], ...(live ? { queueWait: live.wait } : {}), probed: false, ...startAnyway });
   const reasons = orderWaitingReasons([...probed, ...(live?.reasons ?? []).filter(r => !PROBE_KINDS.has(r.kind))]);
   const blocking = blockingReasons(reasons);
   return NextResponse.json({
@@ -72,6 +83,7 @@ export async function GET(
     waitingReasons: reasons,
     ...(live ? { queueWait: live.wait } : {}),
     ...(forceStart ? { forceStart: { kinds: forceStart.kinds, expiresAt: forceStart.expiresAt } } : {}),
+    ...startAnyway,
     probed: true,
   });
 }

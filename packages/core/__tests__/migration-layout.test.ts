@@ -2,12 +2,13 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, posix, resolve, win32 } from 'node:path';
 import {
   baseIsV1,
   findDrizzleKit,
   layoutProblems,
   regenerateAgainstBase,
+  repoRelative,
   runDrizzleCheck,
   type RepoPaths,
 } from '../db/migration-layout';
@@ -273,5 +274,28 @@ describe('layout check (drizzle v1 folders)', () => {
     repo('legacy');
     writeFileSync(join(drizzle(), '0001_next.sql'), 'SELECT 1;');
     expect(layoutProblems(paths(), 'dev').join('\n')).toMatch(/legacy journal layout/);
+  });
+});
+
+describe('Windows paths and binaries', () => {
+  it('compares repo paths with forward slashes whatever the platform separator is', () => {
+    expect(repoRelative('C:\\repo\\packages\\core\\drizzle', 'C:\\repo\\packages\\core\\drizzle\\20261023080203_x\\migration.sql', win32))
+      .toBe('20261023080203_x/migration.sql');
+    expect(repoRelative('C:\\repo', 'C:\\repo\\packages\\core\\drizzle\\20261023080203_x\\snapshot.json', win32))
+      .toBe('packages/core/drizzle/20261023080203_x/snapshot.json');
+    expect(repoRelative('/repo', '/repo/packages/core/drizzle/20261023080203_x/migration.sql', posix))
+      .toBe('packages/core/drizzle/20261023080203_x/migration.sql');
+  });
+
+  it('finds drizzle-kit.exe on Windows, and only the bare name elsewhere', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'drizzle-kit-bin-'));
+    try {
+      mkdirSync(join(dir, 'node_modules', '.bin'), { recursive: true });
+      writeFileSync(join(dir, 'node_modules', '.bin', 'drizzle-kit.exe'), '');
+      expect(findDrizzleKit(dir, 'win32')).toBe(join(dir, 'node_modules', '.bin', 'drizzle-kit.exe'));
+      expect(() => findDrizzleKit(dir, 'linux')).toThrow(/drizzle-kit is not installed/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

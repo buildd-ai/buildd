@@ -120,6 +120,8 @@ describe('shapeQuestion', () => {
   it('asker label from the role name', () => {
     expect(askerLabelFor('Builder')).toBe('The builder asks');
     expect(askerLabelFor(null)).toBe('The agent asks');
+    expect(askerLabelFor('Builder', false)).toBe('The builder left a question');
+    expect(askerLabelFor(null, false)).toBe('The agent left a question');
   });
 });
 

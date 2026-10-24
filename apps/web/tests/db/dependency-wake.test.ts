@@ -101,12 +101,12 @@ describe('enqueueReadyDependents: the dependency.satisfied wake', () => {
     expect(await enqueueReadyDependents(p, depsGate())).toEqual([c]);
   });
 
-  test('a force-started dependent (bypassDepsGate) is woken like the claim would let it through', async () => {
+  test('the retired whole-task bypassDepsGate no longer releases a dependent (only a bounded Start anyway intent does)', async () => {
     const p = await seedTask(workspaceId, { status: 'in_progress' });
     const q2 = await seedTask(workspaceId, { status: 'in_progress' });
     const c = await seedTask(workspaceId, { dependsOn: [p, q2] });
     await db.execute(sql`UPDATE tasks SET context = jsonb_build_object('bypassDepsGate', 'true') WHERE id = ${c}::uuid`);
-    expect(await enqueueReadyDependents(p, depsGate())).toEqual([c]);
+    expect(await enqueueReadyDependents(p, depsGate())).toEqual([]);
   });
 
   test('a missing or malformed dependency id blocks rather than erroring', async () => {

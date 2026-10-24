@@ -1,0 +1,81 @@
+[
+  {
+    "route": "/app/dev/fixtures?state=closed-pr&case=awaiting-confirmation",
+    "states": [
+      {
+        "key": "card",
+        "steps": [{ "action": "waitFor", "selector": "testid:closed-pr-confirm", "timeoutMs": 15000 }],
+        "surface": { "id": "mission-situation", "scenario": "closed-pr-awaiting-confirmation" }
+      },
+      {
+        "key": "abandon-reason",
+        "steps": [
+          { "action": "waitFor", "selector": "testid:closed-pr-abandon", "timeoutMs": 15000 },
+          { "action": "click", "selector": "testid:closed-pr-abandon" },
+          { "action": "waitFor", "selector": "testid:closed-pr-abandon-reason" }
+        ],
+        "surface": { "id": "mission-situation", "scenario": "closed-pr-abandon-reason" }
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=closed-pr&case=no-suggestion",
+    "states": [
+      {
+        "key": "card",
+        "steps": [{ "action": "waitFor", "selector": "testid:closed-pr-abandon", "timeoutMs": 15000 }],
+        "surface": { "id": "mission-situation", "scenario": "closed-pr-no-suggestion" }
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=closed-pr&case=replaced",
+    "states": [
+      {
+        "key": "card",
+        "steps": [{ "action": "waitFor", "selector": "testid:closed-pr-fixture-task", "timeoutMs": 15000 }],
+        "surface": { "id": "mission-situation", "scenario": "closed-pr-replaced" }
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=visual-review&phase=failed",
+    "states": [
+      {
+        "key": "tray",
+        "steps": [{ "action": "waitFor", "selector": "testid:visual-review-action-retry", "timeoutMs": 15000 }],
+        "surface": { "id": "visual-review", "scenario": "visual-review-failed" }
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=visual-review&phase=stalled",
+    "states": [
+      {
+        "key": "tray",
+        "steps": [{ "action": "waitFor", "selector": "testid:visual-review-action-retry", "timeoutMs": 15000 }],
+        "surface": { "id": "visual-review", "scenario": "visual-review-stalled" }
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=visual-review&phase=boot_failed",
+    "states": [
+      {
+        "key": "tray",
+        "steps": [{ "action": "waitFor", "selector": "testid:visual-review-empty", "timeoutMs": 15000 }],
+        "surface": { "id": "visual-review", "scenario": "visual-review-boot-failed" }
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=visual-review&view=fix-merged-tray",
+    "states": [
+      {
+        "key": "tray",
+        "steps": [{ "action": "waitFor", "selector": "css:[data-testid=visual-review-thumb][data-marker=fix_merged]", "timeoutMs": 15000 }],
+        "surface": { "id": "visual-review", "scenario": "visual-review-fix-merged" }
+      }
+    ]
+  }
+]

@@ -17,7 +17,7 @@ const FAR = '2099-01-01T00:00:00.000Z';
 
 async function forecastText(forecast: Record<string, unknown>): Promise<string> {
   const api = mock(async () => ({
-    forecast: { oauthSessions: [], monthly: null, codex: null, claudeTenant: null, missions: [], ...forecast },
+    forecast: { monthly: null, codex: null, claudeTenant: null, missions: [], ...forecast },
   }));
   const res = await handleBuilddAction(api as unknown as ApiFn, 'get_budget_forecast', {}, ctx());
   expect(res.isError).toBeFalsy();
@@ -60,26 +60,4 @@ describe('get_budget_forecast', () => {
     expect(out).toContain('Codex credential: rejected');
     expect(out).not.toContain('Codex budget');
   });
-});
-
-it('learned OAuth pressure is labeled as a forecast with evidence, never percent used', async () => {
-  const out = await forecastText({oauthSessions: [{
-    accountName: 'Test seat', pressurePct: 100, state: 'active', windowEndsAt: FAR,
-    episodes: 5, confidence: 'high', limiter: 'turns', observationAgeMs: 3600000,
-    source: 'learned_exhaustion_floor', sampleBasis: {quantile: 0.25},
-  }]});
-  expect(out).not.toContain('% used');
-  expect(out).toContain('100% forecast floor pressure');
-  expect(out).toContain('5 episodes');
-  expect(out).toContain('observation age: 60m');
-  expect(out).toContain('provider usage: unknown');
-});
-
-it('labels expired observations unknown rather than asking for already available samples', async () => {
-  const out = await forecastText({oauthSessions: [{
-    accountName: 'Test seat', pressurePct: 0, state: 'learning', episodes: 5, confidence: null,
-  }]});
-  expect(out).toContain('unknown');
-  expect(out).toContain('inert');
-  expect(out).not.toContain('need 3+');
 });

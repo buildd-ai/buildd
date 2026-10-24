@@ -9,6 +9,7 @@ import { diffSpecBodies, diffSpecHunks, diffSpecRevisions, type DiffHunk, type S
 import { getSpec } from './store';
 import { nativeSourceOn } from './repo-copy';
 import { attachmentSources, type AttachmentSource } from './attachments';
+import { liveReplaced } from './replaces';
 import { runApprovalGate } from './approval-gate';
 import type { SpecGateResult } from '@buildd/core/db/schema';
 import type { RevisionReview } from './revision-changes';
@@ -43,6 +44,12 @@ export type ApprovalRequestView =
     repoChecks?: boolean;
     /** What `attachment:<name>` resolves to on the revision being approved (§21). */
     attachments?: Record<string, AttachmentSource>;
+    /**
+     * The live specs the revision replaces (R-77), each "Retire it" checked as
+     * the link's choice says (all, for a link made before the choice existed),
+     * at the version the link read, so one that moved since reports stale.
+     */
+    replacing: Array<{ id: string; title: string; version: number; checked: boolean }>;
     /** The quality gate now: refusals need a reason to approve anyway, warnings are shown. */
     gate: SpecGateResult;
     /** What the revision changes, by criterion (the Review change list); null when it cannot be read. */
@@ -54,7 +61,7 @@ export async function approvalRequestView(userId: string, specId: string, token:
   if (!v.ok) return { state: v.reason === 'expired' ? 'expired' : 'invalid' };
   const req = v.payload;
   if (!isUuid(specId) || req.specId !== specId) return { state: 'invalid' };
-  return approvalPinView(userId, specId, req, { workspaceId: req.workspaceId });
+  return approvalPinView(userId, specId, req, { workspaceId: req.workspaceId, retire: req.retire });
 }
 
 /** What an Approve is pinned to: the revision, the spec version and the body's hash, as shown. */
@@ -64,9 +71,10 @@ export interface ApprovalPin { revision: number; expectedVersion: number; conten
  * The confirm view for one pinned revision, with or without a request token
  * (an inbox row has none, Living Spec b7fc9316 R-2): the person may approve
  * here, the revision's body still has that hash, and the spec has not moved.
- * `workspaceId`, when a token named one, must be the spec's.
+ * `workspaceId`, when a token named one, must be the spec's. `retire`: the
+ * link's choice of replaced specs (R-77); none, all of them checked.
  */
-export async function approvalPinView(userId: string, specId: string, pin: ApprovalPin, opts: { workspaceId?: string } = {}): Promise<ApprovalRequestView> {
+export async function approvalPinView(userId: string, specId: string, pin: ApprovalPin, opts: { workspaceId?: string; retire?: ReadonlyArray<{ specId: string; expectedVersion?: number }> } = {}): Promise<ApprovalRequestView> {
   if (!isUuid(specId)) return { state: 'not_found' };
   const caller = { kind: 'user' as const, userId };
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
@@ -85,17 +93,21 @@ export async function approvalPinView(userId: string, specId: string, pin: Appro
     attachmentSources(specId, pin.revision).catch(() => ({})),
     runApprovalGate(spec, pin.revision),
   ]);
+  const replacing = (await liveReplaced(spec.workspaceId, rev.replaces)).map((r) => {
+    const chosen = opts.retire?.find((c) => c.specId === r.id);
+    return { id: r.id, title: r.title, version: chosen?.expectedVersion ?? r.version, checked: opts.retire ? !!chosen : true };
+  });
   const changes = review ? { summary: review.summary, lines: review.lines, otherText: review.otherText, mismatch: review.mismatch } : null;
   const ready = { ...base, pin: { revision: pin.revision, expectedVersion: pin.expectedVersion, contentHash: pin.contentHash }, repoChecks, attachments, gate, changes };
   if (spec.approvedRevision) {
     const d = await diffSpecRevisions(caller, specId, { from: spec.approvedRevision, to: pin.revision, rows: true });
     if (!d.ok || d.diff.toBody === undefined) return { state: 'stale', ...base };
-    return { state: 'ready', ...ready, replaces: spec.approvedRevision, sections: d.diff.sections, hunks: d.diff.hunks ?? [], omittedLines: d.diff.omittedLines, body: d.diff.toBody };
+    return { state: 'ready', ...ready, replaces: spec.approvedRevision, sections: d.diff.sections, hunks: d.diff.hunks ?? [], omittedLines: d.diff.omittedLines, body: d.diff.toBody, replacing };
   }
   // Nothing approved yet: the whole revision is what comes into force.
   const s = await getSpec(caller, specId, { revision: pin.revision });
   if (!s.ok || typeof s.view.body !== 'string') return { state: 'stale', ...base };
   const d = diffSpecBodies('', s.view.body);
   const h = diffSpecHunks('', s.view.body);
-  return { state: 'ready', ...ready, replaces: null, sections: d.sections, hunks: h.hunks, omittedLines: h.omittedLines, body: s.view.body };
+  return { state: 'ready', ...ready, replaces: null, sections: d.sections, hunks: h.hunks, omittedLines: h.omittedLines, body: s.view.body, replacing };
 }

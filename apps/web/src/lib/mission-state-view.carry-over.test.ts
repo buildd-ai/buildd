@@ -51,7 +51,7 @@ describe('R-33: a held open task names its hold', () => {
   it('rows held for different reasons do not invent one cause', () => {
     const v = deriveMissionStateView({ ...base, openTasks: [
       { id: 'b1', status: 'pending', holdReason: 'budget_paused' },
-      { id: 'b2', status: 'pending', holdReason: 'workspace_cap' },
+      { id: 'b2', status: 'pending', holdReason: 'mission_concurrent' },
     ] });
     expect(v.situation?.headline).toBe('2 open tasks are waiting.');
   });

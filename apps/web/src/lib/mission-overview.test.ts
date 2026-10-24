@@ -266,9 +266,9 @@ describe('overviewWaitLine', () => {
     expect(overviewWaitLine(m, idOf('slot'))).toBeNull();
     // A cap is a limit that names itself, never "next in line" (spec: Overlap scheduling, AC-10).
     const id = idOf('hold');
-    const capped = { ...m, tasks: { ...m.tasks, [id]: { ...m.tasks[id], waitingKind: 'workspace_cap' as const } } };
+    const capped = { ...m, tasks: { ...m.tasks, [id]: { ...m.tasks[id], waitingKind: 'mission_concurrent' as const } } };
     expect(overviewWaitCause(capped, id)).toBe('hold');
-    expect(overviewWaitLine(capped, id)).toBe('Workspace concurrency limit. Starts when a workspace task finishes.');
+    expect(overviewWaitLine(capped, id)).toBe('Mission concurrency limit. Starts when another task in the mission finishes.');
   });
 
   it('leaves waiting on tasks to the strip reason, and says plainly when no reason is recorded', () => {

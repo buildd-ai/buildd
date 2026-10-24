@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useOptimisticApprove } from '@/components/useOptimisticApprove';
+import SpecReplacedChoice, { approvalResultText, retireChoice, type ApprovalRetirementReply } from '@/components/SpecReplacedChoice';
 import Lede from '@/components/ui/Lede';
 import Notice from '@/components/ui/Notice';
 import PrimaryAction from '@/components/ui/PrimaryAction';
@@ -30,7 +31,8 @@ const CLOSED: Record<Exclude<ApprovalRequestView['state'], 'ready'>, { tone: 'in
  * and one Approve action that sends the request token to
  * POST /api/specs/[specId]/approve/confirm from this signed-in session.
  * A first approval opens on the spec, since its diff is every line added;
- * a later one opens on the changes.
+ * a later one opens on the changes. The specs the revision replaces are
+ * listed above Approve, "Retire it" checked as the link's choice says (R-77).
  *
  * Without a token it is one row of the Awaiting your approval inbox (Living
  * Spec b7fc9316 R-2 to R-5): the same view, and an Approve pinned to the
@@ -39,6 +41,10 @@ const CLOSED: Record<Exclude<ApprovalRequestView['state'], 'ready'>, { tone: 'in
  * reloads so the row shows the new head.
  */
 export default function SpecApprovalRequest({ specId, token, view, showTitle = true }: { specId: string; token?: string; view: ApprovalRequestView; showTitle?: boolean }) {
+  const revision = view.state === 'ready' ? view.revision : 0;
+  const replacing = view.state === 'ready' ? view.replacing ?? [] : [];
+  const [checked, setChecked] = useState<Set<string>>(() => new Set(replacing.filter((r) => r.checked).map((r) => r.id)));
+  const toggle = (id: string) => setChecked((c) => { const n = new Set(c); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const router = useRouter();
   const inbox = token === undefined;
   const approvedText = `Approved revision ${view.state === 'ready' ? view.revision : ''}.`;
@@ -46,19 +52,20 @@ export default function SpecApprovalRequest({ specId, token, view, showTitle = t
   const refused = view.state === 'ready' && !view.gate.passed;
   const { shown: result, retry, approve } = useOptimisticApprove(async () => {
     const override = refused ? { overrideReason: reason.trim() } : {};
+    const retire = retireChoice(replacing, checked);
     const res = inbox && view.state === 'ready'
       ? await fetch(`/api/specs/${encodeURIComponent(specId)}/approve/inbox`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...view.pin, ...override }),
+        body: JSON.stringify({ ...view.pin, ...(replacing.length ? { retire } : {}), ...override }),
       })
       : await fetch(`/api/specs/${encodeURIComponent(specId)}/approve/confirm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ request: token, ...override }),
+        body: JSON.stringify({ request: token, retire, ...override }),
       });
-    const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
-    if (res.ok) return { tone: 'ok', text: approvedText };
+    const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string; retirements?: ApprovalRetirementReply[] };
+    if (res.ok) return approvalResultText(revision, body.retirements);
     // An inbox row that moved under the person: show the new head.
     if (inbox && body.code === 'stale') router.refresh();
     return { tone: body.code === 'request_stale' || body.code === 'request_expired' || body.code === 'stale' ? 'warn' : 'err', text: body.error ?? 'Approval failed. Try again.' };
@@ -119,10 +126,13 @@ export default function SpecApprovalRequest({ specId, token, view, showTitle = t
       </section>
       {result ? <Notice tone={result.tone} data-testid="spec-approval-result">{result.text}</Notice> : null}
       {!result || retry ? (
-        <div>
-          <PrimaryAction onClick={approve} disabled={refused && reason.trim().length < MIN_REASON} fullWidthOnMobile data-testid="spec-approval-approve">
-            {refused ? 'Override and approve' : 'Approve'} revision {view.revision}
-          </PrimaryAction>
+        <div className="flex flex-col gap-2">
+          <SpecReplacedChoice options={replacing} checked={checked} onToggle={toggle} />
+          <div>
+            <PrimaryAction onClick={approve} disabled={refused && reason.trim().length < MIN_REASON} fullWidthOnMobile data-testid="spec-approval-approve">
+              {refused ? `Override and approve revision ${view.revision}` : replacing.some((r) => checked.has(r.id)) ? 'Approve and retire' : `Approve revision ${view.revision}`}
+            </PrimaryAction>
+          </div>
         </div>
       ) : null}
       {view.repoChecks ? <SpecRepoChecksFetch specId={specId} /> : null}

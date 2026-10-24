@@ -2,13 +2,13 @@
 title: Model Inference Agent Capability
 status: active
 owner: max
-last_verified: 2026-10-11
+last_verified: 2026-10-23
 summary: A running agent MUST get a brokered decision-model answer only under a live task-scoped model.inference grant and a reserved budget, never seeing a key or choosing an endpoint, and failing closed.
 domain: auth
 surfaces: [apps/web/src/lib/capability-model-inference.ts, apps/web/src/lib/capability-model-inference-ledger.ts, apps/web/src/app/api/agent-capabilities/model-inference/route.ts, packages/core/decision-client.ts]
 related: [agent-capabilities, credential-isolation, decision-kinds]
 keywords: [model.inference, Jev, TypeSafe, OpenRouter, LiteLLM, brokered inference, agent eval, decide, grant, budget ledger]
-verified_by: [apps/web/src/lib/capability-model-inference.test.ts, apps/web/tests/db/model-inference-ledger.test.ts, apps/web/tests/db/model-inference-e2e.test.ts, apps/web/src/app/api/agent-capabilities/model-inference/route.test.ts, apps/web/src/lib/task-token-routes.test.ts]
+verified_by: [apps/web/src/lib/capability-model-inference.test.ts, apps/web/tests/db/model-inference-ledger.test.ts, apps/web/tests/db/model-inference-e2e.test.ts, apps/web/src/app/api/agent-capabilities/model-inference/route.test.ts, apps/web/src/lib/task-token-routes.test.ts, packages/core/__tests__/mcp-tools-capabilities.test.ts, apps/web/src/app/api/connectors/capabilities/route.test.ts]
 supersedes: []
 assertions:
   - id: "model-inference-route"
@@ -52,6 +52,12 @@ assertions:
   - id: "route-tests"
     type: "test_file"
     path: "apps/web/src/app/api/agent-capabilities/model-inference/route.test.ts"
+  - id: "mcp-invoke-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/mcp-tools-capabilities.test.ts"
+  - id: "discovery-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/connectors/capabilities/route.test.ts"
 ---
 
 # Model Inference Agent Capability
@@ -67,16 +73,19 @@ evaluation platform: the agent runs its own script and dataset on its own
 runner and stores what it learns as task artifacts, exactly as it stores any
 other output.
 
-**Status today: wired, not yet live.** Grants come from the capability
-request service ([capability-requests](capability-requests.md)): an agent asks
-with `request_capability` (`capability: model.inference`, provider, exact
-models, budget), a team admin approves, and the route reads it through
-`capabilityGrantSource`. Spend goes through the durable per-grant ledger
-(`modelInferenceLedger`); both are what `defaultModelInferenceDeps` wires.
-Request → approve → invoke is covered end to end on real Postgres with a fake
-provider (AC-12). The capability is not declared live until an approved,
-task-scoped grant has made one real, funded call: that needs a team admin to
-configure the team's own OpenRouter or LiteLLM key.
+**Status today: wired and reachable by an agent, not yet live.** An agent
+finds it with `resolve_capability { capability: "model.inference" }`, which
+answers with the exact `request_capability` call for the team's route (or
+says the route cannot be granted), asks with `request_capability`
+(`capability: model.inference`, provider, exact models, budget), and once a
+team admin approves, spends it with the `invoke_model_inference` MCP action.
+The route reads the grant through `capabilityGrantSource` and spends through
+the durable per-grant ledger (`modelInferenceLedger`); both are what
+`defaultModelInferenceDeps` wires. Request → approve → invoke is covered end
+to end on real Postgres with a fake provider (AC-12). The capability is not
+declared live until an approved, task-scoped grant has made one real, funded
+call: that needs a team admin to configure the team's own OpenRouter or
+LiteLLM key.
 
 **Invariants**:
 
@@ -142,11 +151,22 @@ configure the team's own OpenRouter or LiteLLM key.
 - AC-10: WHEN a body names `baseURL`, `apiKey` or `endpoint` THEN the route returns 400 before resolving any grant.
 - AC-11: WHEN a per-task token names a worker on another task THEN the route returns 404.
 - AC-12: GIVEN an agent's `model.inference` request approved by a person WHEN the run calls through `defaultModelInferenceDeps` THEN it gets answers and a receipt naming the grant, task, worker, requested model, answering model version, token counts, `costUsd` and `debitedUsd`, and the grant's ledger row is debited; WHEN the request is pending, denied, expired, revoked, for an unlisted model, over budget, or made by another team's principal THEN zero provider calls are made.
+- AC-14: WHEN an agent calls the `invoke_model_inference` MCP action THEN it posts `{ workerId, model, operation?, state, questions }` as its own worker to this route and returns `{ answers, receipt }`; WHEN its params name `baseURL`, `apiKey`, `endpoint`, `headers` or `provider` THEN it refuses before any call; WHEN the route answers `no_grant` THEN the action returns the exact `request_capability` call to make (`packages/core/__tests__/mcp-tools-capabilities.test.ts`).
+- AC-15: WHEN `resolve_capability` is asked for `model.inference` THEN it names a `request_capability` call only for a provider a grant can name (`MODEL_INFERENCE_PROVIDERS`), filled with the team route's provider and model when there is one; GIVEN a team route no grant can name THEN `grantable` is false, `requestWith` is null and the message says why; the answer names `invoke_model_inference` (`apps/web/src/app/api/connectors/capabilities/route.test.ts`).
 
-**Calling it from an agent script**
+**Calling it from an agent**
 
-The agent's normal script (on the runner, in the task's checkout) posts one
-request per decision with its task credential, and keeps its own results:
+An agent calls the `invoke_model_inference` MCP action, one call per
+decision; the MCP server posts it as the agent's own worker with the task's
+credential, so nothing has to reach a script's environment:
+
+```
+buildd action=invoke_model_inference params={ model: "typesafe/jev-1.13", state: "<one dataset row>",
+  questions: { label: { type: "choice", instructions: "Classify the row.", criteria: { a: null, b: null } } } }
+```
+
+A script outside the MCP session posts the same body to the route with its
+task credential, and keeps its own results:
 
 ```bash
 curl -sS -X POST "$BUILDD_SERVER/api/agent-capabilities/model-inference" \
@@ -190,6 +210,7 @@ and the stale sweep are each one SQL statement; no interactive transaction.
 - Audit: `apps/web/src/lib/agent-capabilities/audit.ts`, table `agentCapabilityDecisions` in `packages/core/db/schema.ts`
 - Key and route resolution: `packages/core/decision-client.ts` (`resolveDecisionRoute`)
 - Transport: `packages/ai-kit/src/decide/index.ts` (`decide`)
+- MCP: `packages/core/mcp-tools.ts` (`invoke_model_inference`); discovery answer: `apps/web/src/app/api/connectors/capabilities/route.ts`
 
 **Out of scope**: generic `chat` or completion proxying, agent-supplied
 endpoints or keys, running evaluations or storing datasets, the grant

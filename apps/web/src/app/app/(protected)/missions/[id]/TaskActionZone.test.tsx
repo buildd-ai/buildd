@@ -21,9 +21,8 @@ describe('task-actions shared helpers', () => {
       expect(getGateReasonTitle({ gateReason: 'mission_budget_exhausted' })).toBe('Blocked: mission budget exhausted');
     });
 
-    it('interpolates backend, cap and start time', () => {
+    it('interpolates backend and start time', () => {
       expect(getGateReasonTitle({ gateReason: 'capability_mismatch', backend: 'codex' })).toBe('Blocked: no codex credential available');
-      expect(getGateReasonTitle({ gateReason: 'workspace_cap_reached', active: 3, cap: 3 })).toBe('Workspace full (3/3 running)');
       expect(getGateReasonTitle({ gateReason: 'deferred_start' }, { deferredStartLabel: '9:00 AM' })).toBe('Starts at 9:00 AM');
     });
 
@@ -101,7 +100,6 @@ describe('task-actions shared helpers', () => {
       expect(canOfferForce({ gateReason: 'mission_local', canForce: true })).toBe(true);
       expect(canOfferForce({ gateReason: 'mission_local', canForce: false })).toBe(false);
       expect(canOfferForce({ gateReason: 'capability_mismatch', canForce: true, blockClass: 'capability' })).toBe(false);
-      expect(canOfferForce({ gateReason: 'workspace_cap_reached', canForce: true })).toBe(false);
       expect(canOfferForce(null)).toBe(false);
     });
   });

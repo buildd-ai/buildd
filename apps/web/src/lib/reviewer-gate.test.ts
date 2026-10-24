@@ -464,10 +464,10 @@ describe('reviewer stall facts', () => {
   it('free seats and a filtered claim show the verbatim stamp without guessing a cause', () => {
     const result = resolveReviewerGate(baseInput({
       reviewerTask,
-      stallFacts: { seats: { inProgress: 0, maxConcurrentTasks: 4 }, budgetPauses: [] },
+      stallFacts: { seats: { inProgress: 0 }, budgetPauses: [] },
     }));
     expect(result.reason).toContain('Pending · task age 47m');
-    expect(result.reason).toContain('seats 0/4');
+    expect(result.reason).toContain('0 running in workspace');
     expect(result.reason).toContain('no recorded budget pause');
     expect(result.reason).toContain('claimable: last attempt no, no_pending_tasks');
     expect(result.reason).toContain('2026-09-01T11:58:00Z');
@@ -475,26 +475,26 @@ describe('reviewer stall facts', () => {
   });
   // A wake claim the WHERE dropped reports only `no_pending_tasks` as its
   // reason; the gate that did it is in the stamped exclusion. The PR #3678
-  // reviewer read "seats 0/10 … no_pending_tasks" for hours while the
-  // workspace cap was refusing it on every wake.
+  // reviewer read "no_pending_tasks" for hours while one WHERE gate was
+  // refusing it on every wake.
   it('names the exact gate when the claim stamped one, not the coarse no_pending_tasks', () => {
     const result = resolveReviewerGate(baseInput({
       reviewerTask: {
         ...reviewerTask,
         context: {
           ...reviewerTask.context,
-          lastClaimAttemptExclusion: { code: 'workspace_cap', detail: 'The workspace is at its concurrent-task cap.' },
+          lastClaimAttemptExclusion: { code: 'deps_blocked', detail: 'A dependency is not satisfied yet.' },
         },
       },
-      stallFacts: { seats: { inProgress: 0, maxConcurrentTasks: 10 }, budgetPauses: [] },
+      stallFacts: { seats: { inProgress: 0 }, budgetPauses: [] },
     }));
     expect(result.actor).toBe('human');
-    expect(result.reason).toContain('claimable: last attempt no, workspace_cap');
+    expect(result.reason).toContain('claimable: last attempt no, deps_blocked');
     expect(result.reason).not.toContain('no_pending_tasks');
   });
   it('missing evidence remains unknown, including claimability without a stamp', () => {
     const result = resolveReviewerGate(baseInput({ reviewerTask: { ...reviewerTask, context: {} } }));
-    expect(result.reason).toContain('seats unknown');
+    expect(result.reason).toContain('running unknown');
     expect(result.reason).toContain('budget pause unknown');
     expect(result.reason).toContain('claimable: not yet diagnosed');
     expect(result.reason).not.toMatch(/no recorded budget pause|contention|backoff/i);
@@ -502,9 +502,9 @@ describe('reviewer stall facts', () => {
   it('shows recorded pauses and an active provider retry floor', () => {
     const result = resolveReviewerGate(baseInput({
       reviewerTask: { ...reviewerTask, startAt: new Date('2026-09-01T13:00:00Z'), context: { budgetExhausted: true } },
-      stallFacts: { seats: { inProgress: 4, maxConcurrentTasks: 4 }, budgetPauses: ['codex budget pause until 2026-09-01T13:00:00.000Z'] },
+      stallFacts: { seats: { inProgress: 4 }, budgetPauses: ['codex budget pause until 2026-09-01T13:00:00.000Z'] },
     }));
-    expect(result.reason).toContain('seats 4/4');
+    expect(result.reason).toContain('4 running in workspace');
     expect(result.reason).toContain('codex budget pause until');
     expect(result.reason).toContain('provider retry floor until');
     expect(result.reason).not.toContain('no recorded budget pause');

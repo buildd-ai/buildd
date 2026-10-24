@@ -246,6 +246,12 @@ export interface ExplainAnswer {
    */
   verdict?: Pick<import('./task-verdict').TaskVerdict, 'state' | 'headline' | 'cause' | 'actions' | 'wordedBy'>;
   /**
+   * Task scope, with a question open: what waits on its answer, its expiry
+   * and each option's outcome kind (Living Spec 1b257609 R-10), from the one
+   * projection every decision card reads (lib/question-waits.ts).
+   */
+  questionWaits?: import('@buildd/core/question-waits').QuestionWaits;
+  /**
    * Why the task runs (or last ran) on a backend other than the one it was
    * filed with: a claim-time flip (budget failover, provider toggle) or a
    * worker-report failover. Absent when nothing moved it. `describeBackendRouting`

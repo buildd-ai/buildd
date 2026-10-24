@@ -82,3 +82,31 @@ describe('decideWaitExit', () => {
     expect(code(decide({ task: task({ deliveryId: 'd-1' }) }))).toBe('delivery_owned');
   });
 });
+
+describe('decideWaitExit: a task started anyway (spec 36df686b R-8, R-11)', () => {
+  const code = (d: ReturnType<typeof decideWaitExit>) => (d.ok ? null : d.code);
+
+  it('may park on its prerequisite without the workspace flag: it is the only park for an assessment', () => {
+    expect(code(decide({ enabled: false }))).toBe('wait_exit_disabled');
+    const d = decide({ enabled: false, startAnyway: { parks: 0 } });
+    expect(d).toEqual({ ok: true, dependsOn: [B] });
+  });
+
+  it('keeps the declared edge: parking adds nothing it already has', () => {
+    expect(decide({ enabled: false, startAnyway: { parks: 0 }, task: task({ dependsOn: [B, C] }) })).toEqual({ ok: true, dependsOn: [B, C] });
+  });
+
+  it('refuses to park again once the budget is spent, so a dead prerequisite cannot loop', () => {
+    expect(code(decide({ startAnyway: { parks: 3 } }))).toBe('park_limit');
+    expect(decide({ startAnyway: { parks: 2 } }).ok).toBe(true);
+  });
+
+  it('still refuses a merged prerequisite: the recheck that stops a race from stranding the task', () => {
+    expect(code(decide({ startAnyway: { parks: 0 }, blocker: blocker({ status: 'completed' }) }))).toBe('blocker_merged');
+  });
+
+  it('still refuses a cancelled prerequisite and a cycle', () => {
+    expect(code(decide({ startAnyway: { parks: 0 }, blocker: blocker({ status: 'cancelled' }) }))).toBe('blocker_cancelled');
+    expect(code(decide({ startAnyway: { parks: 0 }, edges: new Map([[B, [T]]]) }))).toBe('cycle');
+  });
+});

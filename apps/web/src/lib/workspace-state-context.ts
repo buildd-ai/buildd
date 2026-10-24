@@ -66,7 +66,6 @@ export interface SiblingMission {
   /** First run time: a gated mission that ran reads Paused, one that never did Not started. */
   armedAt?: Date | string | null;
   executor?: string | null;
-  pacingMode: string;
   progress: number;
 }
 
@@ -192,7 +191,7 @@ function renderSiblingMissions(siblings: SiblingMission[]): string {
   if (siblings.length === 0) return '';
   const lines: string[] = [`### Sibling missions (${siblings.length} active)`];
   for (const m of siblings.slice(0, 5)) {
-    let line = `[${m.progress}%] ${m.title} · ${m.status} · ${m.pacingMode}`;
+    let line = `[${m.progress}%] ${m.title} · ${m.status}`;
     if (m.isHeld) line += ` [${missionGateTerm(m).word}]`;
     else if (m.executor === 'local') line += ` [${TERMS['mission.your_session'].word} · executor=local]`;
     lines.push(line);
@@ -319,7 +318,6 @@ function createDefaultQuerier(): WorkspaceStateQuerier {
           isHeld: missions.isHeld,
           armedAt: missions.armedAt,
           executor: missions.executor,
-          pacingMode: missions.pacingMode,
           completedTasks: sql<number>`COUNT(${tasks.id}) FILTER (WHERE ${tasks.status} = 'completed')::int`,
           totalTasks: sql<number>`COUNT(${tasks.id}) FILTER (WHERE ${tasks.status} != 'cancelled')::int`,
         })
@@ -337,7 +335,6 @@ function createDefaultQuerier(): WorkspaceStateQuerier {
           missions.isHeld,
           missions.armedAt,
           missions.executor,
-          missions.pacingMode,
         )
         .limit(5);
 
@@ -348,7 +345,6 @@ function createDefaultQuerier(): WorkspaceStateQuerier {
         isHeld: r.isHeld,
         armedAt: r.armedAt,
         executor: r.executor,
-        pacingMode: r.pacingMode,
         progress: r.totalTasks > 0
           ? Math.round((r.completedTasks / r.totalTasks) * 100)
           : 0,

@@ -21,12 +21,12 @@ import type { DeliverySnapshot, FindingSnapshot, KernelView, RoundSnapshot } fro
 export const LANDING_STATUS_CONTEXT = 'Buildd / Review approval';
 
 /**
- * The name it was published under before the rename. Still written with the same answer, so a
- * rule or tool that already reads it keeps working until nothing does; never read as CI.
+ * The name it was published under before the rename. No longer written; older heads still carry
+ * it, so a reader that skips the kernel's own status skips this one too. Never read as CI.
  */
 export const LEGACY_LANDING_STATUS_CONTEXT = 'buildd/landing';
 
-/** Every context carrying the kernel's verdict, the legacy name first so the current one is the last write. */
+/** Every context a head may carry the kernel's verdict under: for readers that skip it, never for writes. */
 export const LANDING_STATUS_CONTEXTS: readonly string[] = [LEGACY_LANDING_STATUS_CONTEXT, LANDING_STATUS_CONTEXT];
 
 /** GitHub caps a status description at 140 characters. */

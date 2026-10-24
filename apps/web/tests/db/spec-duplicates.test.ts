@@ -1,15 +1,25 @@
 /**
  * Spec duplicates on create (Living Specs §13), against real Postgres: the
- * shortlist reads the workspace's approved specs, a clear duplicate is refused
+ * shortlist reads the workspace's spec corpus in the knowledge store (R-104;
+ * an offline test embedder stands in for the store's model), a clear duplicate is refused
  * with nothing written, an override creates it, an overlap warns, and with no
  * decision model the spec is created with a note. The model is stubbed.
  */
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { assertDbConfigured, q, seedWorkspace } from './harness';
+import { bowEmbedder } from './bow-embedder';
 
+delete process.env.VOYAGE_API_KEY;
 const { createSpecDraft } = await import('../../src/lib/specs/store');
-const { approveSpecRevision } = await import('../../src/lib/specs/approval');
+const { approveSpecRevision, specApprovalDeps } = await import('../../src/lib/specs/approval');
+const { specKnowledgeDeps } = await import('../../src/lib/specs/knowledge');
+const { PgVectorStore } = await import('@buildd/core/knowledge-store');
+
+// Every spec here goes into a corpus the test can rank; after-response work runs when asked.
+const corpus = new PgVectorStore(bowEmbedder());
+specKnowledgeDeps.store = async () => corpus;
+specKnowledgeDeps.afterResponse = () => {};
 
 const rand = () => Math.random().toString(36).slice(2, 10);
 const CART = '# Cart\nThe cart page.\n- **AC-1** An empty cart shows the empty state.\n- **AC-2** Totals are in the shopper currency.\n';
@@ -25,8 +35,12 @@ beforeAll(async () => {
   admin = u.id;
   const d = await createSpecDraft(user(), { workspaceId: wsA, title: 'Cart', body: CART }, { duplicates: false });
   if (!d.ok) throw new Error(d.error);
+  // The approval indexes Cart after its response; run that and wait for it.
+  const jobs: Array<() => Promise<unknown>> = [];
+  specApprovalDeps.afterResponse = (t) => { jobs.push(t); };
   const a = await approveSpecRevision(user(), d.spec.id, { revision: 1, expectedVersion: 1 });
   if (!a.ok) throw new Error(a.error);
+  for (const t of jobs) await t();
   cartId = d.spec.id;
 });
 const user = () => ({ kind: 'user' as const, userId: admin });

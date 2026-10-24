@@ -5,7 +5,7 @@ import { SURFACE_DEFERRAL_MS, STRAND_MS, MIN_CONSECUTIVE_DEFERRALS, isRepeatedly
 describe('summarizeDeferralRows', () => {
   it('keeps the longest streak when one task is refused for several reasons', () => {
     const out = summarizeDeferralRows([
-      { taskId: 't1', reason: 'workspace_cap', detail: { consecutiveDeferrals: 4 } },
+      { taskId: 't1', reason: 'mission_concurrent', detail: { consecutiveDeferrals: 4 } },
       { taskId: 't1', reason: 'path_overlap', detail: { consecutiveDeferrals: 19, firstDeferredAt: '2026-09-19T09:00:00.000Z' } },
     ]);
 
@@ -17,15 +17,15 @@ describe('summarizeDeferralRows', () => {
 
   it('ranks tasks worst-first, so the header names the most stuck one', () => {
     const out = summarizeDeferralRows([
-      { taskId: 't1', reason: 'workspace_cap', detail: { consecutiveDeferrals: 3 } },
-      { taskId: 't2', reason: 'workspace_cap', detail: { consecutiveDeferrals: 30 } },
+      { taskId: 't1', reason: 'mission_concurrent', detail: { consecutiveDeferrals: 3 } },
+      { taskId: 't2', reason: 'mission_concurrent', detail: { consecutiveDeferrals: 30 } },
     ]);
 
     expect(out.map(d => d.taskId)).toEqual(['t2', 't1']);
   });
 
   it('treats a row with no counter as a streak of one, not as unknown', () => {
-    const out = summarizeDeferralRows([{ taskId: 't1', reason: 'mission_paced', detail: null }]);
+    const out = summarizeDeferralRows([{ taskId: 't1', reason: 'mission_concurrent', detail: null }]);
 
     expect(out[0].consecutiveDeferrals).toBe(1);
     expect(out[0].firstDeferredAt).toBeNull();
@@ -35,14 +35,14 @@ describe('summarizeDeferralRows', () => {
   it('carries the blocking PR number from a path_overlap row', () => {
     const out = summarizeDeferralRows([
       { taskId: 't1', reason: 'path_overlap', detail: { consecutiveDeferrals: 5, prNumber: 1126, prUrl: 'https://github.com/org/repo/pull/1126' } },
-      { taskId: 't2', reason: 'workspace_cap', detail: { consecutiveDeferrals: 2 } },
+      { taskId: 't2', reason: 'mission_concurrent', detail: { consecutiveDeferrals: 2 } },
     ]);
     expect(out.find(d => d.taskId === 't1')?.blockedByPr).toBe(1126);
     expect(out.find(d => d.taskId === 't2')?.blockedByPr ?? null).toBeNull();
   });
 
   it('drops rows with no task to attribute them to', () => {
-    expect(summarizeDeferralRows([{ taskId: null, reason: 'workspace_cap', detail: { consecutiveDeferrals: 99 } }])).toEqual([]);
+    expect(summarizeDeferralRows([{ taskId: null, reason: 'mission_concurrent', detail: { consecutiveDeferrals: 99 } }])).toEqual([]);
   });
 });
 
@@ -99,7 +99,7 @@ describe('latestHoldByTask (spec f7f67f1a R-33)', () => {
   it('keeps the newest reason per task, rows newest first', () => {
     const out = latestHoldByTask([
       { taskId: 't1', reason: 'budget_paused' },
-      { taskId: 't1', reason: 'workspace_cap' },
+      { taskId: 't1', reason: 'mission_concurrent' },
       { taskId: 't2', reason: 'path_overlap' },
       { taskId: null, reason: 'budget_paused' },
     ]);
