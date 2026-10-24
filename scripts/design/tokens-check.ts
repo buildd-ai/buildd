@@ -26,15 +26,28 @@ export interface TokenDiff {
 export function extractTokens(css: string): Tokens {
   const out: Tokens = { night: {}, day: {} };
   const clean = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const unrecognized: string[] = [];
   for (const m of clean.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const selector = m[1].trim();
-    let theme: Theme | null = null;
-    if (/^\[data-theme=["']light["']\]$/.test(selector)) theme = 'day';
-    else if (/^:root\s*,\s*\[data-theme=["']dark["']\]$/.test(selector)) theme = 'night';
-    if (!theme) continue;
-    for (const d of m[2].matchAll(/(--[\w-]+)\s*:\s*([^;]+);?/g)) {
-      out[theme][d[1]] = d[2].replace(/\s+/g, ' ').trim();
+    let themes: Theme[] = [];
+    if (/^\[data-theme=["']light["']\]$/.test(selector)) themes = ['day'];
+    else if (/^:root\s*,\s*\[data-theme=["']dark["']\]$/.test(selector)) themes = ['night'];
+    else if (/^:root\s*,\s*\[data-theme\]$/.test(selector)) themes = ['night', 'day'];
+    else if (/^:root$/.test(selector)) themes = ['night', 'day'];
+    if (themes.length === 0) {
+      if (/^(:root|\[data-theme)/.test(selector)) unrecognized.push(selector);
+      continue;
     }
+    for (const d of m[2].matchAll(/(--[\w-]+)\s*:\s*([^;]+);?/g)) {
+      const value = d[2].replace(/\s+/g, ' ').trim();
+      for (const theme of themes) {
+        out[theme][d[1]] = value;
+      }
+    }
+  }
+  if (unrecognized.length) {
+    const msg = `Warning: unrecognized selectors with :root or [data-theme]: ${unrecognized.join(', ')}`;
+    console.warn(msg);
   }
   return out;
 }

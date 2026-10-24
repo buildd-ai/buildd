@@ -22,6 +22,10 @@ const CSS = `
 [data-theme="light"] {
   --surface-1: #f7f5f0;
 }
+:root, [data-theme] {
+  --shared-faint: var(--faint);
+  --shared-ok: var(--ok-tint);
+}
 .card { --not-a-token: 1; }
 `;
 
@@ -31,12 +35,20 @@ describe('extractTokens', () => {
     expect(t.night['--surface-1']).toBe('#1a1816');
     expect(t.day['--surface-1']).toBe('#f7f5f0');
   });
+  it('applies :root and :root, [data-theme] tokens to both night and day', () => {
+    const t = extractTokens(CSS);
+    expect(t.night['--radius-card']).toBe('6px');
+    expect(t.day['--radius-card']).toBe('6px');
+    expect(t.night['--shared-faint']).toBe('var(--faint)');
+    expect(t.day['--shared-faint']).toBe('var(--faint)');
+    expect(t.night['--shared-ok']).toBe('var(--ok-tint)');
+    expect(t.day['--shared-ok']).toBe('var(--ok-tint)');
+  });
   it('ignores comments, other rules and non-custom properties', () => {
     const t = extractTokens(CSS);
     expect(t.night['--fake']).toBeUndefined();
     expect(t.night['--not-a-token']).toBeUndefined();
     expect(t.night['color-scheme']).toBeUndefined();
-    expect(t.night['--radius-card']).toBeUndefined();
   });
   it('collapses whitespace in values', () => {
     expect(extractTokens(CSS).night['--long']).toBe('1px solid red');
