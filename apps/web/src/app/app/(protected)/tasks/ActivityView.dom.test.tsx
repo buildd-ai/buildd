@@ -2,13 +2,15 @@ import { GlobalRegistrator } from '@happy-dom/global-registrator';
 GlobalRegistrator.register({ url: 'http://localhost/app/tasks' });
 import { expect, it } from 'bun:test';
 import * as rules from '@buildd/core/mission-helpers';
-import { buildActivityNow, WAITING_ROWS_PER_GROUP } from '@/lib/activity-delivery';
+import { buildActivityNow, type ActivityTaskInput } from '@/lib/activity-delivery';
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: ActivityView } = await import('./ActivityView');
 
-it('expands standalone waiting tasks in place and collapses them again', () => {
+const hrefs = { now: '/app/tasks', history: '/app/tasks?view=history' };
+
+it('queued work is the last group, folded, and opens in place with every queued delivery', () => {
   const nowMs = Date.parse('2026-10-08T12:00:00Z');
   const tasks = Array.from({ length: 5 }, (_, i) => ({
     id: `waiting-${i}`, title: `Waiting task ${i}`, status: 'pending',
@@ -19,23 +21,51 @@ it('expands standalone waiting tasks in place and collapses them again', () => {
   document.body.appendChild(container);
   const root = createRoot(container);
   try {
-    act(() => root.render(<ActivityView mode="now" now={now} history={[]} latest={null} nowMs={nowMs} hrefs={{ now: '/app/tasks', history: '/app/tasks?view=history' }} />));
-    const group = container.querySelector('[data-mission="standalone"]')!;
+    act(() => root.render(<ActivityView mode="now" now={now} history={[]} nowMs={nowMs} hrefs={hrefs} />));
+    // The Pipeline counts every queued delivery, folded behind "+N more" in the projection or not.
+    expect(container.querySelector('[data-testid="pipeline"] [data-stage="queued"] [data-count]')?.getAttribute('data-count')).toBe('5');
+    const group = container.querySelector('[data-testid="activity-stage"][data-stage="queued"]')!;
     const rowLinks = () => [...group.querySelectorAll('[data-testid="activity-now-row"] a')].map(a => a.getAttribute('href'));
-    expect(rowLinks()).toEqual(tasks.slice(0, WAITING_ROWS_PER_GROUP).map(t => `/app/tasks/${t.id}`));
-    const toggle = [...group.querySelectorAll('button')].find(b => b.textContent?.includes('more waiting'))!;
-    expect(toggle).toBeDefined();
+    const toggle = group.querySelector('button')!;
+    expect(toggle.textContent).toContain('5 queued');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(rowLinks()).toHaveLength(0);
     act(() => toggle.click());
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(rowLinks()).toEqual(tasks.map(t => `/app/tasks/${t.id}`));
     act(() => toggle.click());
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(rowLinks()).toHaveLength(WAITING_ROWS_PER_GROUP);
+    expect(rowLinks()).toHaveLength(0);
   } finally {
     act(() => root.unmount());
     container.remove();
   }
+});
+
+it('AC-11: with nothing waiting the phone opens on a green dot and "Nothing waiting on you"; else on the decision, whose row reads waiting on you', () => {
+  const nowMs = Date.parse('2026-10-08T12:00:00Z');
+  const iso = new Date(nowMs).toISOString();
+  const building: ActivityTaskInput = { id: 'b', title: 'Building work', status: 'in_progress', missionId: null, createdAt: iso, updatedAt: iso, workers: [{ status: 'running' }] };
+  const asking: ActivityTaskInput = { id: 'q', title: 'Pick the rail order', status: 'in_progress', missionId: null, createdAt: iso, updatedAt: iso, workers: [{ status: 'waiting_input' }], waitingPrompt: 'Which first?' };
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  const first = () => container.querySelector('[data-testid="activity-now-phone"]')!.firstElementChild!;
+  try {
+    act(() => root.render(<ActivityView mode="now" now={buildActivityNow({ tasks: [building], missions: [], rules, now: nowMs })} history={[]} nowMs={nowMs} hrefs={hrefs} />));
+    expect(first().getAttribute('data-testid')).toBe('you-strip');
+    expect(first().getAttribute('data-waiting')).toBe('0');
+    expect(first().querySelector('[data-testid="you-strip-dot"]')).not.toBeNull();
+    expect(first().textContent).toBe('Nothing waiting on you');
+
+    act(() => root.render(<ActivityView mode="now" now={buildActivityNow({ tasks: [building, asking], missions: [], rules, now: nowMs })} history={[]} nowMs={nowMs} hrefs={hrefs} />));
+    expect(first().getAttribute('data-waiting')).toBe('1');
+    const card = first().querySelector('[data-testid="you-strip-card"]')!;
+    expect(card.getAttribute('data-item')).toBe('q');
+    expect(card.querySelector('a')?.getAttribute('href')).toBe('/app/tasks/q');
+    const meter = container.querySelector('[data-testid="activity-now-row"][data-row="q"] [data-testid="delivery-meter"]')!;
+    expect(meter.getAttribute('data-state')).toBe('waiting-on-you');
+    // The desktop rail carries the same strip under Waiting on you.
+    expect(container.querySelector('[data-testid="activity-rail-waiting"] [data-testid="you-strip-card"]')?.getAttribute('data-item')).toBe('q');
+  } finally { act(() => root.unmount()); }
 });
 
 it('History pages: the first 20 deliveries, then "Show more"; a filter starts the paging over', () => {
@@ -130,83 +160,45 @@ it('History-only outcomes do not hide live rows when switching to Now', () => {
   } finally { act(() => root.unmount()); }
 });
 
-it('AC-1: a new mission that started at once shows once, marked New, created apart from its last activity', async () => {
+it('AC-18: a new mission that started at once shows once, with no New pill and no created time on its rows', async () => {
   const { activityContextFixture, ACTIVITY_FIXTURE_NOW, NEW_MISSION } = await import('@/app/app/dev/fixtures/activity-delivery-fixtures');
   const f = activityContextFixture();
   const container = document.createElement('div');
   const root = createRoot(container);
   try {
-    act(() => root.render(<ActivityView mode="now" now={f.now} history={f.history} nowMs={ACTIVITY_FIXTURE_NOW} hrefs={{ now: '/app/tasks', history: '/app/tasks?view=history' }} />));
-    const groups = container.querySelectorAll(`[data-mission="${NEW_MISSION.id}"]`);
-    expect(groups).toHaveLength(1);
-    // One New marker for the mission; its tasks do not repeat it.
-    expect(groups[0].querySelectorAll('[data-testid="activity-new"]')).toHaveLength(1);
-    expect(groups[0].querySelectorAll('[data-testid="activity-now-row"] [data-testid="activity-new"]')).toHaveLength(0);
-    // A new standalone task carries its own marker, on its row.
-    expect(container.querySelector('[data-row="fx-solo"] [data-testid="activity-new"]')).not.toBeNull();
-    expect(groups[0].querySelector('[data-testid="activity-created"]')?.textContent).toBe('created 8m ago');
-    const current = groups[0].querySelector('[data-testid="activity-current"]')!;
-    expect(current.querySelector('a')?.getAttribute('href')).toBe('/app/tasks/fx-new-1');
-    const row = [...groups[0].querySelectorAll('[data-testid="activity-now-row"]')].find(r => r.querySelector('[data-testid="activity-transition"]')?.textContent?.includes('Build started'))!;
-    expect(row.querySelector('[data-testid="activity-transition"]')?.textContent).toBe('Build started · 6m ago');
-    expect(row.querySelector('[data-testid="activity-created"]')?.textContent).toBe('created 7m ago');
-    act(() => root.render(<ActivityView mode="history" now={f.now} history={f.history} nowMs={ACTIVITY_FIXTURE_NOW} hrefs={{ now: '/app/tasks', history: '/app/tasks?view=history' }} />));
-    // A creation is no delivery: History draws a bar per delivery and no event line.
-    expect(container.querySelector('[data-testid="activity-created-event"]')).toBeNull();
+    act(() => root.render(<ActivityView mode="now" now={f.now} history={f.history} nowMs={ACTIVITY_FIXTURE_NOW} hrefs={hrefs} />));
+    const rows = [...container.querySelectorAll('[data-testid="activity-now-row"]')].map(r => r.getAttribute('data-row'));
+    expect(rows.filter(id => id === 'fx-new-1')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="activity-now-card"][data-row="fx-new-1"]')).toHaveLength(1);
+    expect(container.querySelector('[data-testid="activity-new"]')).toBeNull();
+    expect(container.textContent).not.toContain('New');
+    expect(container.textContent).not.toMatch(/created \d/);
+    // Its tag is the mission, and its row links to the task page that carries its creation.
+    const row = container.querySelector('[data-testid="activity-now-row"][data-row="fx-new-1"]')!;
+    expect(row.querySelector('[data-testid="delivery-tag"]')?.textContent).toBe(NEW_MISSION.title);
+    expect(row.querySelector('a')?.getAttribute('href')).toBe('/app/tasks/fx-new-1');
+    // The mission is in the rail once.
+    expect([...container.querySelectorAll('[data-testid="activity-rail-mission"]')].filter(m => m.textContent?.includes(NEW_MISSION.title))).toHaveLength(1);
   } finally { act(() => root.unmount()); }
 });
 
-it('AC-2: a five-generation chain is one row whose attempts expand, each linking to its task and its real parent', async () => {
+it('AC-19: a five-generation review/repair chain is one row, its fix rounds on the meter, and no attempt gets a row', async () => {
   const { activityContextFixture, ACTIVITY_FIXTURE_NOW, CHAIN_ROOT } = await import('@/app/app/dev/fixtures/activity-delivery-fixtures');
   const f = activityContextFixture();
+  const chain = f.now.groups.flatMap(g => g.rows).find(r => r.id === CHAIN_ROOT)!;
+  expect(chain.children).toHaveLength(5);
   const container = document.createElement('div');
   const root = createRoot(container);
   try {
-    act(() => root.render(<ActivityView mode="now" now={f.now} history={[]} nowMs={ACTIVITY_FIXTURE_NOW} hrefs={{ now: '/app/tasks', history: '/app/tasks?view=history' }} />));
-    const rows = [...container.querySelectorAll('[data-testid="activity-now-row"]')].filter(r => r.getAttribute('data-row') === CHAIN_ROOT);
-    expect(rows).toHaveLength(1);
-    const derived = rows[0].querySelector('[data-testid="activity-derived"]')!;
-    const toggle = derived.querySelector('button')!;
-    expect(toggle.textContent).toContain('2 reviews · repair tasks');
-    expect(toggle.textContent).not.toContain('derived');
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(derived.querySelectorAll('[data-testid="activity-derived-child"]')).toHaveLength(0);
-    act(() => toggle.click());
-    const kids = [...derived.querySelectorAll('[data-testid="activity-derived-child"]')];
-    expect(kids[0].textContent).toMatch(/· generation 1/);
-    expect(kids.some(k => /· gen \d/.test(k.textContent ?? ''))).toBe(false);
-    expect(kids.map(k => k.querySelector('[data-testid="activity-derived-task"]')?.getAttribute('href')))
-      .toEqual(['g1', 'g2', 'g3', 'g4', 'g5'].map(g => `/app/tasks/fx-chain-${g}`));
-    expect(kids.map(k => k.querySelector('[data-testid="activity-derived-parent"]')?.getAttribute('href')))
-      .toEqual([CHAIN_ROOT, 'fx-chain-g1', 'fx-chain-g2', 'fx-chain-g3', 'fx-chain-g4'].map(id => `/app/tasks/${id}`));
-    expect(kids.every(k => k.querySelector('[data-testid="activity-derived-mission"]')?.getAttribute('href') === '/app/missions/fx-flaky')).toBe(true);
-  } finally { act(() => root.unmount()); }
-});
-
-it('a delivery with one failed repair says so once: the repair line, not the meta line or the attempts summary', async () => {
-  const { ACTIVITY_FIXTURE_NOW, CHAIN_ROOT, fiveGenerationChain } = await import('@/app/app/dev/fixtures/activity-delivery-fixtures');
-  const [rootTask, , , , ciRepair] = fiveGenerationChain(null);
-  const failed = { ...ciRepair, parentTaskId: CHAIN_ROOT, status: 'failed', updatedAt: '2026-10-08T10:50:00.000Z',
-    workers: [{ status: 'failed', startedAt: '2026-10-08T10:30:00.000Z', completedAt: '2026-10-08T10:50:00.000Z', updatedAt: '2026-10-08T10:50:00.000Z' }] };
-  const now = buildActivityNow({ tasks: [rootTask, failed], missions: [], rules, now: ACTIVITY_FIXTURE_NOW });
-  const row = now.groups.flatMap(g => g.rows).find(r => r.id === CHAIN_ROOT)!;
-  // The projection still tells it: History and the mission header read the same step.
-  expect(row.transition).toMatchObject({ text: 'Repair 1 failed', repair: true });
-  const container = document.createElement('div');
-  const root = createRoot(container);
-  try {
-    act(() => root.render(<ActivityView mode="now" now={now} history={[]} nowMs={ACTIVITY_FIXTURE_NOW} hrefs={{ now: '/app/tasks', history: '/app/tasks?view=history' }} />));
-    const el = container.querySelector(`[data-row="${CHAIN_ROOT}"]`)!;
-    const repairs = [...el.querySelectorAll('[data-testid="activity-repair"]')];
-    expect(repairs).toHaveLength(1);
-    expect(repairs[0].getAttribute('data-status')).toBe('failed');
-    expect(el.querySelector('[data-testid="activity-transition"]')).toBeNull();
-    const summary = el.querySelector('[data-testid="activity-derived"] button')!.textContent ?? '';
-    expect(summary).not.toMatch(/1 repair|1 attempt/);
-    expect(summary).toContain('Repair tasks');
-    expect(el.textContent).not.toContain('Repair 1 failed');
-    // Its link to the repair task is still one click away.
-    act(() => el.querySelector<HTMLButtonElement>('[data-testid="activity-derived"] button')!.click());
-    expect(el.querySelectorAll('[data-testid="activity-derived-child"]')).toHaveLength(1);
+    act(() => root.render(<ActivityView mode="now" now={f.now} history={[]} nowMs={ACTIVITY_FIXTURE_NOW} hrefs={hrefs} />));
+    const ids = [...container.querySelectorAll('[data-testid="activity-now-row"]')].map(r => r.getAttribute('data-row'));
+    expect(ids.filter(id => id === CHAIN_ROOT)).toHaveLength(1);
+    expect(ids.some(id => id?.startsWith('fx-chain-g'))).toBe(false);
+    const meter = container.querySelector(`[data-testid="activity-now-row"][data-row="${CHAIN_ROOT}"] [data-testid="delivery-meter"]`)!;
+    expect(meter.getAttribute('data-state')).toBe('fixing-in-verify');
+    expect(meter.querySelector('[data-mark]')?.getAttribute('data-mark')).toBe(`↻${chain.delivery.repairRounds}`);
+    expect(chain.delivery.repairRounds).toBeGreaterThan(0);
+    // While it is being fixed the tag names the check beside the mission.
+    expect(container.querySelector(`[data-row="${CHAIN_ROOT}"] [data-testid="delivery-tag"]`)?.textContent).toMatch(/^Quarantine flaky integration tests · /);
   } finally { act(() => root.unmount()); }
 });
