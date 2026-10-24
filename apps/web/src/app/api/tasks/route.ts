@@ -1,4 +1,4 @@
-import { isLivingSpecRevisionTask, LIVING_SPEC_REVISION_ROLE_REFUSAL } from '@/lib/specs/spec-revision-task';
+import { isLivingSpecRevisionTask, LIVING_SPEC_REVISION_ROLE_REFUSAL } from '@/lib/revision-task-guard';
 import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
 import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus, type TaskStatusValue } from '@buildd/shared';

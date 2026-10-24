@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { isLivingSpecRevisionTask } from './spec-revision-task';
+import { isLivingSpecRevisionTask } from './revision-task-guard';
 
 describe('isLivingSpecRevisionTask', () => {
   it('matches a manage_specs revise task', () => {
