@@ -91,8 +91,6 @@ export function stripAnsi(text: string): string {
 /** A single job log is megabytes; refuse anything past this before gzip. */
 const MAX_LOG_CHARS = 64 * 1024 * 1024;
 
-const MAX_LINEAGE_DEPTH = 50;
-
 export async function captureCiJobLogEvidence(
   input: CiJobLogEvidenceInput,
   deps: CiJobLogEvidenceDeps = defaultDeps,
@@ -295,18 +293,11 @@ const defaultDeps: CiJobLogEvidenceDeps = {
     const { db } = await import('@buildd/core/db');
     const { tasks } = await import('@buildd/core/db/schema');
     const { eq } = await import('drizzle-orm');
-    let current = taskId;
-    const seen = new Set<string>();
-    for (let i = 0; i < MAX_LINEAGE_DEPTH && !seen.has(current); i++) {
-      seen.add(current);
-      const t = await db.query.tasks.findFirst({
-        where: sqlWhere(eq(tasks.id, current)),
-        columns: { parentTaskId: true },
-      });
-      if (!t?.parentTaskId) break;
-      current = t.parentTaskId;
-    }
-    return current;
+    const { findAttemptRootTaskId } = await import('./attempt-lineage');
+    return findAttemptRootTaskId(taskId, (id) => db.query.tasks.findFirst({
+      where: sqlWhere(eq(tasks.id, id)),
+      columns: { parentTaskId: true, taskClass: true },
+    }));
   },
   insertRows: recordCiJobLogEvidenceRows,
   serverSecretValues() {

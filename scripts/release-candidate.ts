@@ -957,8 +957,12 @@ export function amend(ctx: Ctx, candidate: string, confirm: string, source: stri
     supersedes: version === want ? meta.supersedes : pr.number,
   };
   const body = renderCandidateBody(next, snap.included, excludedSince(ctx, sourceSha), ctx.repo);
+  // The dispatching account, not a person: an agent holding the owner's gh
+  // login dispatches as the owner, so this never claims an operator asked.
+  const actor = process.env.GITHUB_TRIGGERING_ACTOR?.trim();
+  const requestedBy = actor ? `by a dispatch from \`${actor}\`` : 'by a run outside GitHub Actions (no dispatcher recorded)';
   const voided =
-    `Amended by an explicit operator request: candidate \`${pr.headRefOid}\` → \`${candidateSha}\` (captured \`${ctx.sourceBranch}\` ` +
+    `Amended ${requestedBy}: candidate \`${pr.headRefOid}\` → \`${candidateSha}\` (captured \`${ctx.sourceBranch}\` ` +
     `\`${meta.sourceSha.slice(0, 12)}\` → \`${sourceSha.slice(0, 12)}\`). Every check result and approval on the old SHA is void; ` +
     'CI re-runs on the new head and the aggregate needs a fresh review.';
 
