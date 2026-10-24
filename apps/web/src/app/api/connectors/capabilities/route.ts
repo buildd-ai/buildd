@@ -8,6 +8,7 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { loadDiscoveryInput } from '@/lib/connector-capabilities-store';
 import { listCapabilities, resolveCapability, resolveProviderAccess } from '@/lib/connector-capabilities';
 import { MODEL_INFERENCE_CAPABILITY, resolveTeamDecisionRoute } from '@/lib/capability-model-inference';
+import { MODEL_INFERENCE_PROVIDERS } from '@/lib/capability-grants';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const ROLE_SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -79,17 +80,32 @@ export async function GET(req: NextRequest) {
     } catch {
       route = null;
     }
+    // Advertise only a request the grant service accepts: a team whose route is
+    // a provider no grant can name (Clef on Cloudflare) is told so, not handed a
+    // request that is refused at parse.
+    const configured = !!route?.apiKey;
+    const routeProvider = configured ? route!.provider : null;
+    const grantable = routeProvider !== null && (MODEL_INFERENCE_PROVIDERS as readonly string[]).includes(routeProvider);
+    const unrequestable = configured && !grantable;
     return NextResponse.json({
       capability: MODEL_INFERENCE_CAPABILITY,
       kind: 'governed_call',
-      message: 'model.inference is not a domain:verb category. Request a grant with request_capability, then call the invoke endpoint.',
-      requestWith: {
+      message: unrequestable
+        ? `model.inference cannot be granted on this team's decision route (${routeProvider}): a grant names ${MODEL_INFERENCE_PROVIDERS.join(' or ')}. A team admin sets one in Settings > Models > Routing.`
+        : 'model.inference is not a domain:verb category. Request a grant with request_capability, then spend it with invoke_model_inference.',
+      requestWith: unrequestable ? null : {
         tool: 'request_capability',
-        params: { capability: MODEL_INFERENCE_CAPABILITY, provider: 'openrouter | litellm | cloudflare', models: ['<model>'], budget: '<budget>' },
+        params: {
+          capability: MODEL_INFERENCE_CAPABILITY,
+          provider: grantable ? routeProvider : MODEL_INFERENCE_PROVIDERS.join(' | '),
+          models: grantable ? [route!.model] : ['<model>'],
+          budget: '<budget>',
+        },
       },
-      routeConfigured: !!route?.apiKey,
-      route: route?.apiKey ? { provider: route.provider, model: route.model } : null,
-      invoke: { method: 'POST', path: '/api/agent-capabilities/model-inference', auth: 'Bearer <task token or runner API key>', body: '{ workerId, model, operation?, state, questions }' },
+      routeConfigured: configured,
+      grantable,
+      route: configured ? { provider: route!.provider, model: route!.model } : null,
+      invoke: { tool: 'invoke_model_inference', method: 'POST', path: '/api/agent-capabilities/model-inference', body: '{ workerId, model, operation?, state, questions }' },
     });
   }
 
