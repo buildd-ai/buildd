@@ -6,6 +6,7 @@
  * packages/core/__tests__/question-waits.test.ts.
  */
 import { describe, expect, it } from 'bun:test';
+import { isTerminalTaskStatus } from '@buildd/shared';
 import { affectedCriteria, expiryOf, loadQuestionWaits, type DependentRow, type LaneRow, type MissionRow, type QuestionWaitsIo, type SpecRow } from './question-waits';
 import { NOTHING_WAITS, partsText, waitsFooter, waitsSummary, type QuestionWaits } from '@buildd/core/question-waits';
 import type { DependencyHolder } from './task-dependency-reach';
@@ -28,7 +29,7 @@ interface World {
 }
 
 function io(w: World): QuestionWaitsIo {
-  const open = (t: World['tasks'][number]) => !['completed', 'failed', 'cancelled'].includes(t.status);
+  const open = (t: World['tasks'][number]) => !isTerminalTaskStatus(t.status);
   return {
     async loadTask(tid) {
       const t = w.tasks.find(x => x.id === tid);

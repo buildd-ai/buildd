@@ -105,7 +105,7 @@ export interface QuestionWaitsIo {
   resolve(scope: { viewer: DependencyViewer; teamId: string | null; dependentWorkspaceId: string | null }, ids: readonly string[]): Promise<Map<string, DependencyHolder>>;
 }
 
-const SATISFIED = new Set(['completed', 'cancelled']);
+const SATISFIED = new Set<string>(TERMINAL_TASK_STATUSES.filter(s => s !== 'failed'));
 const asStrings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
 
 const dbIo: QuestionWaitsIo = {

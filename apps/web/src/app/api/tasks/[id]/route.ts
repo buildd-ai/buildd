@@ -252,7 +252,7 @@ export async function GET(
     if (taskWorkers !== undefined) response.workers = taskWorkers;
     // An open question: what waits on its answer, as data (spec 1b257609 R-8).
     // get_task reads workers by default, so it carries this on every waiting task.
-    const asking = taskWorkers?.find(w => w.status === 'waiting_input' && (w.waitingFor as { type?: string } | null)?.type !== 'pause');
+    const asking = taskWorkers?.find(w => w.status === 'waiting_input' && w.waitingFor?.type !== 'pause');
     if (asking) {
       const questionWaits = await loadQuestionWaits({
         taskId: id,
