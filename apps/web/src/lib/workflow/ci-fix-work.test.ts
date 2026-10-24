@@ -13,6 +13,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       tasks: { findFirst: async () => owner },
+      missions: { findFirst: async () => null },
       workspaces: { findFirst: async () => ({ id: 'w1', teamId: 't1' }) },
       workers: { findFirst: async () => ({ id: 'wk1', branch: 'buildd/owner-branch', prUrl: 'https://github.com/acme/w/pull/7', prNumber: 7 }) },
     },
