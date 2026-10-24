@@ -1440,7 +1440,10 @@ outage costs nothing new.
 each expires on its own:
 - the outbox row's lease: 120s, re-claimable after.
 - `base-refresh`'s single-flight lease on the owner task: 60s, or 460s with the semantic check.
-- the landing lane: 20 minutes, renewed only while its holder is in the refresh window.
+- the landing lane: 20 minutes, renewed only while its holder is in the refresh window, and
+  never past 40 minutes from its grant. A holder red at its head or with a CI attempt open
+  holds nothing. A PR in that state refreshes beside the lane, neither taking nor waiting on it,
+  and the wake passes it over, so the lane only goes to a head that can land (eccb6687).
 
 A refresh that throws (`in_flight`, `deferred`, `semantic_deferred`) backs off 15s, doubling,
 capped at 30 minutes, and is retried by:

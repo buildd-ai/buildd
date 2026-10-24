@@ -555,6 +555,24 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
 
+  {
+    name: 'lane: a holder red at its head yields the lane to the next waiter, and a re-run does not take it back',
+    async run(host) {
+      const a = await (await new Delivery(host, 11).open()).approvedAt('A1');
+      const b = await (await new Delivery(host, 12).open()).approvedAt('B1');
+      const k = { repoFullName: a.repo, baseRef: 'dev' };
+      eq(await acquireLaneOn(host.store, { ...k, deliveryId: a.deliveryId, headSha: 'A1' }), { acquired: true }, 'A takes the lane');
+      eq((await acquireLaneOn(host.store, { ...k, deliveryId: b.deliveryId, headSha: 'B1' })).acquired, false, 'B waits on A');
+      // eccb6687: CI red on A's head, recorded with A still APPROVED (T10 did not act).
+      applied(await a.submit({ type: 'CiObserved', actor: 'webhook:ci_reading', headSha: 'A1', verdict: 'red', liveChecks: { complete: true, failing: ['build'] } }), 'APPROVED', 'red reading');
+      eq(await host.store.laneHolder(k), null, 'a red holder holds nothing');
+      await settleLanesOn(host.store, a.deliveryId);
+      eq(await acquireLaneOn(host.store, { ...k, deliveryId: b.deliveryId, headSha: 'B1' }), { acquired: true }, 'B takes it while A is red');
+      applied(await a.submit({ type: 'CiObserved', actor: 'webhook:ci_reading', headSha: 'A1', verdict: 'running', liveChecks: { complete: false, failing: [] } }), 'APPROVED', 'A re-runs');
+      eq((await acquireLaneOn(host.store, { ...k, deliveryId: a.deliveryId, headSha: 'A1' })).acquired, false, 'A re-running waits on B');
+    },
+  },
+
   // ── Decide (AC-27, AC-28, AC-29) ──────────────────────────────────────────
   {
     name: 'AC-27: a decider\'s answer is recorded as a fact with its id before the transition that uses it, which links it',
