@@ -322,3 +322,110 @@ describe('the Windows launcher', () => {
     expect(launcher.indexOf('=="wsl"')).toBeLessThan(launcher.indexOf(':runloop'));
   });
 });
+
+// Acceptance criteria (Living Spec a0b82b5d, part 3): one test per check id.
+describe('acceptance criteria', () => {
+  test('AC-10: an active task blocks the handover; the Scheduled Task is removed only once it finishes, never stopped', async () => {
+    const t = machine({ active: [[{ title: 'Ship the thing', status: 'working' }], []] });
+    expect(await runWslMigrate({ undo: false }, t.deps())).toBe(0);
+    const busy = t.events.indexOf('active:1');
+    const end = t.events.indexOf('windows-task-end');
+    expect(busy).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(busy);
+    expect(t.calls.filter(c => c.includes('/End'))).toEqual(['schtasks.exe /End /TN buildd runner']);
+    expect(t.m.winTask).toBe(false);
+  });
+
+  test('AC-11: a WSL runner failing --verify-wsl is refused; the Windows runner stays off hold with its task in place', async () => {
+    const t = machine({ verify: 'fail' });
+    expect(await runWslMigrate({ undo: false }, t.deps())).toBe(1);
+    expect(t.m.held).toBe(false);
+    expect(t.m.winTask).toBe(true);
+    expect(mutating(t.calls)).toEqual([]);
+  });
+
+  // Not yet built (bug eb029481): the logon task only has a LogonTrigger, so
+  // once WSL stops the distribution outside of a logon (the observed
+  // failure: it stayed down for hours) nothing brings it back. Fails now.
+  test('AC-12: the logon task also brings the distribution back if WSL stops it, not only at the next sign-in', () => {
+    const xml = generateLogonTaskXml('Ubuntu-22.04', 'PC\\me');
+    const triggers = xml.match(/<Triggers>([\s\S]*?)<\/Triggers>/)?.[1] ?? '';
+    const triggerKinds = triggers.match(/<(\w+Trigger)>/g) ?? [];
+    // A trigger besides LogonTrigger that can re-fire without a fresh sign-in
+    // (e.g. a repeating time trigger), so the action restarts the
+    // distribution if WSL already shut it down.
+    expect(triggerKinds.some(t => t !== '<LogonTrigger>')).toBe(true);
+    expect(triggers).toContain('<Repetition>');
+  });
+
+  // Not yet built (bug eb029481): LOGON_TASK_NAME is one fixed name for every
+  // distribution. On one real machine, migrating a second distribution finds
+  // the first one's task already registered (same name) and reports it as
+  // already done instead of making its own. Fails now: `created` ends up
+  // with one entry, not two.
+  test('AC-13: migrating a second distribution on one machine registers its own logon task, not the first one\'s', async () => {
+    const tasks = new Map<string, 'Ready' | 'Running'>();
+    const created: string[] = [];
+    const preflightOk = 'BUILDD_WSL_MIGRATE=ok systemd=yes service=no linger=yes foreground=no verify=pass\n';
+    const run = (file: string, args: string[]): CommandResult => {
+      if (file === 'wsl.exe' && args[0] === '--list') return ok('  NAME STATE VERSION\n* Ubuntu Running 2\n  Debian Running 2\n');
+      if (file === 'wsl.exe' && args[0] === '--distribution') {
+        const script = args[5];
+        if (script === WSL_MIGRATE_PREFLIGHT) return ok(preflightOk);
+        if (script === WSL_SERVICE_INSTALL) return ok('Installed');
+        if (script === WSL_SERVICE_CHECK) return ok('BUILDD_WSL_MIGRATE=running\n');
+      }
+      if (file === 'schtasks.exe') {
+        const name = args[args.indexOf('/TN') + 1];
+        const verb = args[0];
+        if (name === 'buildd runner') return fail('not found'); // already gone on this machine
+        if (verb === '/Query') return tasks.has(name) ? ok(`TaskName: \\${name}\nStatus: ${tasks.get(name)}\n`) : fail('not found');
+        if (verb === '/Create') { created.push(name); tasks.set(name, 'Ready'); return ok(); }
+        if (verb === '/Run') { tasks.set(name, 'Running'); return ok(); }
+        if (verb === '/End' || verb === '/Delete') return ok();
+      }
+      throw new Error(`unexpected command: ${file} ${args.join(' ')}`);
+    };
+    const home = mkdtempSync(join(tmpdir(), 'wsl-migrate-ac13-'));
+    dirs.push(home);
+    const deps = (): MigrateDeps => ({
+      platform: 'win32',
+      paths: resolveServicePaths({ home, builddHome: join(home, '.buildd'), platform: 'win32', windowsUser: 'PC\\me' }),
+      run,
+      runInteractive: () => 0,
+      log: () => {},
+      confirm: null,
+      sleep: async () => {},
+      pollMs: 1,
+      windows: { live: async () => false, hold: async () => ({ ok: true, message: '' }), activeWork: async () => [] },
+    });
+    expect(await runWslMigrate({ undo: false, distro: 'Ubuntu' }, deps())).toBe(0);
+    expect(await runWslMigrate({ undo: false, distro: 'Debian' }, deps())).toBe(0);
+    // One logon task per distribution: migrating Debian is not a no-op
+    // against Ubuntu's task.
+    expect(created.length).toBe(2);
+    expect(new Set(created).size).toBe(2);
+  });
+
+  test('AC-14: a distribution without systemd stops with the enable-systemd step; the Windows runner is never removed without a WSL service', async () => {
+    const t = machine({ systemd: 'no' });
+    expect(await runWslMigrate({ undo: false }, t.deps())).toBe(1);
+    expect(t.m.winTask).toBe(true);
+    expect(t.out()).toContain('learn.microsoft.com/windows/wsl/systemd');
+    expect(mutating(t.calls)).toEqual([]);
+  });
+
+  // Not yet built: nothing in runWslMigrate looks up tasks pinned to the
+  // Windows runner before removing it (R-25, R-16) — there is no dependency
+  // for it to read that from. This names the shape such a check would need;
+  // it fails now because migrate never calls it or mentions a pinned task.
+  test('AC-16: a pending task pinned to the Windows runner is listed before migrate removes it', async () => {
+    const t = machine();
+    const deps = t.deps();
+    (deps.windows as typeof deps.windows & { pendingPinned?: () => Promise<{ title: string }[]> }).pendingPinned =
+      async () => [{ title: 'Ship the invoice fix' }];
+    expect(await runWslMigrate({ undo: false }, deps)).toBe(0);
+    expect(t.out()).toContain('Ship the invoice fix');
+    expect(t.out()).toMatch(/wait(s|ing)? for (the )?(windows )?runner/i);
+  });
+});

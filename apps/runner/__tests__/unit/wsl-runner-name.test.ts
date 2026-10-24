@@ -108,3 +108,32 @@ describe('the one-time identity notice (R-26)', () => {
     expect(() => wslIdentityNotice({ builddHome: join(home, 'missing', 'deeper'), hostname: 'h', platform: 'linux-wsl' })).not.toThrow();
   });
 });
+
+// Acceptance criteria (Living Spec a0b82b5d, part 4): one test per check id.
+// AC-15 is graded at the dashboard (the runner list rendering two rows),
+// which is pre-existing, platform-generic code this mission did not change;
+// what the mission adds is the mechanism that makes the two rows distinct
+// and correctly labelled, tested here.
+describe('acceptance criteria', () => {
+  test('AC-15: a Windows and a WSL runner on one machine get distinct heartbeat keys, names and platforms', () => {
+    const windowsKey = headlessRunnerKey({ hostname: 'DESKTOP-ABC', platform: 'windows' });
+    const wslKey = headlessRunnerKey({ hostname: 'DESKTOP-ABC', platform: 'linux-wsl' });
+    expect(windowsKey).not.toBe(wslKey);
+
+    expect(heartbeatRunnerName({ env: {}, configFile, hostname: 'DESKTOP-ABC', platform: 'windows' })).toBeNull();
+    expect(heartbeatRunnerName({ env: {}, configFile, hostname: 'DESKTOP-ABC', platform: 'linux-wsl' })).toBe('DESKTOP-ABC-wsl');
+    expect(runnerHostName({ hostname: 'DESKTOP-ABC', platform: 'linux-wsl' })).toBe('DESKTOP-ABC-wsl');
+  });
+
+  test('AC-17: a WSL runner installed before this change takes the WSL key on its first start, saying so once; the Windows row is untouched', () => {
+    const notice = wslIdentityNotice({ builddHome: home, hostname: 'DESKTOP-ABC', platform: 'linux-wsl' });
+    expect(notice).not.toBeNull();
+    expect(notice).toContain(headlessRunnerKey({ hostname: 'DESKTOP-ABC', platform: 'linux-wsl' }));
+    expect(notice).toContain(headlessRunnerKey({ hostname: 'DESKTOP-ABC', platform: 'windows' }));
+    // Said once: a second start inside the same WSL home stays quiet.
+    expect(wslIdentityNotice({ builddHome: home, hostname: 'DESKTOP-ABC', platform: 'linux-wsl' })).toBeNull();
+    // A native Windows runner on the same machine never gets this notice, so
+    // its own row is never touched by a WSL runner starting up.
+    expect(wslIdentityNotice({ builddHome: home, hostname: 'DESKTOP-ABC', platform: 'windows' })).toBeNull();
+  });
+});
