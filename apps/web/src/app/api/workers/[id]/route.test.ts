@@ -6383,6 +6383,52 @@ describe('PATCH /api/workers/[id]', () => {
         });
       });
 
+      // A red release candidate's fix pushed straight to dev (no PR): the fix
+      // task names the commit, and the completion records it for the amend.
+      describe('release candidate fix already on dev as a commit', () => {
+        const FIX = 'b9c6a996b0000000000000000000000000000000';
+        const candidateFixTask = {
+          ...shippedTask,
+          context: {
+            baseBranch: 'dev',
+            releaseCandidateFix: { prNumber: 90, headSha: 'cand0000cand', version: '1.2.3', branch: 'release/v1.2.3', sourceBranch: 'dev' },
+          },
+        };
+        const github = (opts: { onDev: boolean; inCandidate: boolean }) => mockGithubApi.mockImplementation((_i: number, path: string) => {
+          if (path.includes('/pulls?head=')) return Promise.resolve([]);
+          if (path === '/repos/org/repo/commits/b9c6a996b') return Promise.resolve({ sha: FIX });
+          if (path === `/repos/org/repo/compare/${FIX}...dev`) return Promise.resolve({ status: opts.onDev ? 'ahead' : 'diverged' });
+          if (path === `/repos/org/repo/compare/${FIX}...cand0000cand`) return Promise.resolve({ status: opts.inCandidate ? 'ahead' : 'diverged' });
+          return Promise.resolve(null);
+        });
+
+        it('a dev commit the candidate lacks completes the task and is recorded for the amend', async () => {
+          mockTasksFindFirst.mockResolvedValue(candidateFixTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          github({ onDev: true, inCandidate: false });
+          const res = await complete({ alreadyShippedIn: 'b9c6a996b' });
+          expect(res.status).toBe(200);
+          expect(capturedTaskSet?.result?.candidateFixLanded).toEqual({ commitSha: FIX, sourceBranch: 'dev', candidatePr: 90 });
+        });
+
+        it('a commit the red candidate already holds is refused: it is not the fix', async () => {
+          mockTasksFindFirst.mockResolvedValue(candidateFixTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          github({ onDev: true, inCandidate: true });
+          const res = await complete({ alreadyShippedIn: 'b9c6a996b' });
+          expect(res.status).toBe(400);
+          expect((await res.json()).error).toContain('already in release candidate v1.2.3');
+        });
+
+        it('on an ordinary task a sha is still not a PR number', async () => {
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          github({ onDev: true, inCandidate: false });
+          const res = await complete({ alreadyShippedIn: 'b9c6a996b' });
+          expect(res.status).toBe(400);
+          expect((await res.json()).error).toContain('must be a PR number');
+        });
+      });
+
       it('the plain pr_required refusal points at alreadyShippedIn', async () => {
         mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
         githubPr(true);

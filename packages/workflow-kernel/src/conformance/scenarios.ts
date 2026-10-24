@@ -122,6 +122,8 @@ function notApplied(r: CommandResult, result: 'duplicate' | 'stale' | 'rejected'
 
 const live = (repo: string, headSha: string, o: Partial<LivePr> = {}): LivePr => ({ state: 'open', merged: false, headSha, headRepoFullName: repo, baseRef: 'dev', ...o });
 const MERGED_AT = '2026-01-01T01:00:00.000Z';
+/** A green CI reading on `headSha`, as the check_suite webhook records it. */
+const ciGreenAt = (headSha: string) => ({ type: 'CiObserved' as const, actor: 'webhook', headSha, verdict: 'green' as const, liveChecks: { complete: true, failing: [] }, allPassing: true });
 
 export class Delivery {
   ref!: DeliveryRef;
@@ -295,6 +297,16 @@ export async function drainKernel(host: ConformanceHost, s: Delivery, ports: Ker
 async function outcomesOf(host: ConformanceHost, s: Delivery, kind: EffectKind): Promise<Array<string | null>> {
   return (await host.effects(s.deliveryId)).filter((e) => e.kind === kind).map((e) => e.outcome);
 }
+
+/** A composition of one constituent reviewed and approved at its own head, nothing novel. */
+const composedOf = (s: Delivery, head: string): { attestation: CompositionAttestation; constituents: ConstituentEvidence[] } => ({
+  attestation: {
+    repoFullName: s.repo, prNumber: s.prNumber, baseSha: 'B0', aggregateHeadSha: head, method: 'tree_equal', verifiedAt: MERGED_AT, verifier: 'kernel',
+    constituents: [{ deliveryId: 'dx', roundId: 'rx', prNumber: 3, reviewedHeadSha: 'C1', equivalentHeadShas: [], mergedHeadSha: 'C1', landedSha: 'SQ1', landedPatchId: 'a'.repeat(64), reviewedPatchId: 'a'.repeat(64) }],
+    novelDelta: { result: 'none' },
+  },
+  constituents: [{ roundId: 'rx', deliveryId: 'dx', prNumber: 3, repoFullName: s.repo, roundHeadSha: 'C1', roundStatus: 'decided', effectiveVerdict: 'approve', deliveryApprovedHeads: ['C1'] }],
+});
 
 const closedUnmergedOf = (s: Delivery, head: string): LivePr => s.live(head, { state: 'closed', merged: false, updatedAt: '2026-01-01T02:00:00Z' });
 
@@ -997,7 +1009,12 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await s.fixEnded(fix, { localHeadSha: 'H2', commitCount: 1, live: s.live('H2'), proof: { liveContainsLocal: true } }), 'AWAITING_REVIEW', 'fix ended');
       applied(await s.verdict('approve'), 'APPROVED', 'approved at H2');
       await drainKernel(host, s, f.ports);
-      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'Buildd / Review approval' }, 'approved: success at H2');
+      // aa415afd: approved is not yet mergeable. CI at H2 has not read green, so the check waits on it, never "Ready to merge".
+      eq(published().at(-1), { sha: 'H2', state: 'pending', context: 'Buildd / Review approval' }, 'approved, CI not green yet: pending at H2');
+      eq(lastDesc(), 'Approved, waiting to merge: H2 approved by review; waiting for CI on H2', 'names the CI it waits on');
+      applied(await s.submit(ciGreenAt('H2')), 'APPROVED', 'CI green at H2');
+      await drainKernel(host, s, f.ports);
+      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'Buildd / Review approval' }, 'approved and CI green: success at H2');
       eq(lastDesc(), 'Ready to merge: H2 approved by review', 'approved reads Ready to merge');
       ok(f.github.written.filter((w) => w.op === 'publishStatus').every((w) => !/\bland/i.test(String(w.description))), 'no published description says "land"');
       ok(!published().some((x) => x.sha === 'H1' && x.state === 'success'), 'H1 was never given success');
@@ -1022,6 +1039,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     async run(host) {
       const s = await new Delivery(host, 40).open();
       applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'under review');
+      applied(await s.submit(ciGreenAt('H1')), 'AWAITING_REVIEW', 'CI green at H1');
       const f = fakePorts(host);
       let moved = false;
       // While this drain publishes "review pending", the review approves (another drain's version).
@@ -1383,10 +1401,29 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const c = await new Delivery(host, 83).open();
       applied(await c.ownerPushed('H1'), 'AWAITING_REVIEW', 'c pushed');
       const fc = fakePorts(host);
-      fc.reviews.attested.set((await c.latestRound()).id, 'ok:composition_attested');
+      const cRound = (await c.latestRound()).id;
+      fc.reviews.attested.set(cRound, 'ok:composition_attested');
+      fc.reviews.onAttest.set(cRound, async () => {
+        applied(await c.submit({ type: 'CompositionAttested', actor: 'kernel', ...composedOf(c, 'H1'), factId: null }), 'APPROVED', 'the attestation approves the head');
+      });
       await drainKernel(host, c, fc.ports);
       eq(await outcomesOf(host, c, 'dispatch_review'), ['ok:composition_attested'], 'attested');
       eq(fc.work.requested.length, 0, 'no reviewer filed');
+    },
+  },
+  {
+    name: 'handlers/review: an attestation that answers ok but leaves the round open (spent at this head earlier) still gets the round its reviewer',
+    async run(host) {
+      // 26b969db: a refresh PR sat in AWAITING_REVIEW with no reviewer for either round.
+      const s = await new Delivery(host, 83).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'refresh PR pushed');
+      const f = fakePorts(host);
+      f.reviews.attested.set((await s.latestRound()).id, 'ok:composition_attested');
+      await drainKernel(host, s, f.ports);
+      eq((await s.d()).state, 'AWAITING_REVIEW', 'still awaiting review');
+      eq(f.work.requested.filter((r) => r.role === 'review').length, 1, 'a reviewer is filed for the round left open');
+      ok((await s.latestRound()).reviewerTaskId, 'and linked');
+      eq(await outcomesOf(host, s, 'dispatch_review'), ['ok'], 'dispatched');
     },
   },
   {
@@ -2948,6 +2985,8 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
       eq([await of('H1'), await stateOf('H1')], ['kernel', 'pending'], 'review owed at H1: the kernel answers, pending');
       applied(await s.verdict('approve'), 'APPROVED', 'approve');
+      eq([await of('H1'), await stateOf('H1')], ['kernel', 'pending'], 'approved at H1, CI not green yet: the kernel says pending');
+      applied(await s.submit(ciGreenAt('H1')), 'APPROVED', 'CI green at H1');
       eq([await of('H1'), await stateOf('H1')], ['kernel', 'success'], 'approved at H1: the kernel says success at H1');
       // H2 pushed, not yet imported: the approval of H1 never carries over to H2.
       eq([await of('H2'), await stateOf('H2')], ['host', 'pending'], 'a head the delivery has not seen is pending, never the old success');
@@ -3161,6 +3200,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       notApplied(await approve(), 'duplicate', 'idempotency_key_seen', 'the same decision again');
       eq((await host.transitions(s.deliveryId)).length - before, 1, 'one transition');
       eq(await s.findingStates(), { 'src/a.ts': 'open', 'src/b.ts': 'open' }, 'the findings stay listed, not resolved');
+      applied(await s.submit(ciGreenAt('H1')), 'APPROVED', 'CI green at H1');
       eq(pick(landingStatusOf(await s.view())!, ['state', 'sha', 'description']), { state: 'success', sha: 'H1', description: 'Ready to merge: H1 approved by a person over 2 open findings' }, 'Buildd / Review approval reflects the override');
       applied(await s.land('H1'), 'LANDING', 'the landing passes the open findings on the person\'s approval');
       notApplied(await approve(), 'duplicate', 'idempotency_key_seen', 'replayed while landing');
