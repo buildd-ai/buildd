@@ -53,6 +53,13 @@ shorten the word, never re-word it.
 | `wait.agent` | Waiting for an agent | `waiting for an agent` | The work is filed; it starts when an agent picks it up. |  |  |
 | `wait.checks` | Waiting for checks | `waiting for checks` | Nothing is running here; the PR waits on its required checks. |  |  |
 | `wait.review` | Waiting for review | `waiting for review` | The PR waits for a reviewer to pick it up. |  |  |
+| `queue.blocked` | Blocked | `blocked` | The task cannot start yet; its reason (Lane, Limit or Dependency) says why. |  |  |
+| `queue.lane` | Lane | `lane` | Another task holds the lane it needs: the same files or the same runner. |  |  |
+| `queue.limit` | Limit | `limit` | A cap is reached: slots, budget or the provider’s usage limit. |  |  |
+| `queue.dependency` | Dependency | `dependency` | It waits on another task and starts by itself when that one finishes. |  |  |
+| `queue.needs_review` | Needs review | `needs review` | The PR is open and waits for a reviewer. |  |  |
+| `queue.retrying` | Retrying | `retrying` | A new attempt at this work is running. |  |  |
+| `queue.retried` | Retried | `retried` | A later attempt took over this work. |  |  |
 | `runner.paused` | ‖ Paused | `paused` | This runner starts nothing new; running agents finish. | buildd resume | `runner:hold` |
 | `release.releasing` | Releasing | `releasing` | The release is deploying to production. |  | `release:deploying` |
 | `release.released` | Released | `released` | The change is live in production. |  | `release:deployed` |
@@ -81,8 +88,9 @@ One noun each. "Worker" is the internal row behind an agent and "seat" an old bi
 | `\bdeliver(?:ed\|ing)\b` | Done, Merging, Done this week | "Delivery" is the kernel’s internal noun for a PR’s journey. |
 | `\bauditing\b\|\bin audit\b\|\brepairing\b` | In review, Checking, Fixing | Review was Auditing, In audit or In review, and a fix was Repairing on the web and Fixing everywhere else. |
 | `^(?:Pending\|Never started\|Assigned\|Starting\|Running now)$` | Queued, Waiting on <task>, Running, Not started | Pending and Queued named one row; Assigned, Starting and Running now all meant an agent is on it. The task words are Navigation R-14's. |
+| `^(?:Parked\|Declared)$` | Queued, Blocked, Scheduled, Paused · Lane, Limit, Dependency | Parked and Declared named queue states the Queue tabs (Queued, Blocked, Scheduled, Paused) and reasons (Lane, Limit, Dependency) now say. |
 | `\bwaiting for a worker\b` | Waiting for an agent | "Worker" is the platform’s internal noun for one agent session. |
-| `\b(?:of\|\/)\s*\S+\s+busy\b\|\bslots? (?:is \|are )?busy\b\|\bevery slot is busy\b` | 2 of 3 slots in use | Capacity read busy, running or working; those are state words. |
+| `\b(?:of\|\/)\s*\S+\s+busy\b\|\bslots? (?:is \|are )?busy\b\|\bevery slot is busy\b` | Running 3/9 | Capacity read busy, running or working; those are state words. |
 | `^completed$\|\bcompleted this week\b` | Done, Merged | A task marked Completed drew the merged glyph even when it had no PR. |
 | `\blocal[- ]sessions?\b\|\[LOCAL\b\|^LOCAL$\|\bbuilding locally\b` | Your session, Run from your session, Running in your session | One claim read LOCAL, local session, Your sessions and claimed. It is the person’s own session; say so. |
 | `(?<![/.])\bworkers?\b(?!\.)\|^\[?Workers?\b(?! (?:URL\|upload\|AI\|Scripts)\b)` | runner, slot, agent (agents may) | "Worker" is the internal row behind an agent. A person sees runners, their slots and the agents in them. |
