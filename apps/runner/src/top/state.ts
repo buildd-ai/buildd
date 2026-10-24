@@ -229,6 +229,8 @@ export interface ClaimOutcome {
   walls?: Array<{ kind: string; backend: string; resetsAt: string | null }>;
   summary?: string;
   deferrals?: Record<string, number>;
+  /** Broad claim: the tasks it turned away, each with its code. */
+  deferredTasks?: Array<{ taskId: string; code: string; until?: string }>;
   status?: number;
   refusal?: string;
   /** A broad claim that took work: how many agents it started. */
@@ -450,7 +452,15 @@ export function reduce(state: TopState, event: TopEvent): TopState {
       const e = event as Extract<TopEvent, { type: 'claim_outcome' }>;
       if (!e.outcome || typeof e.outcome.reason !== 'string') return state;
       // A broad outcome is the claim coming back: no longer looking.
-      if (!e.taskId) return { ...state, lookingForWork: false, claimOutcomes: { ...state.claimOutcomes, broad: stampBroad(carryWalls(state.claimOutcomes.broad, e.outcome), state.tasks) } };
+      if (!e.taskId) {
+        // Tasks the broad claim named as turned away read as refused, like a claim of that task alone.
+        const named = (e.outcome.deferredTasks ?? []).filter(d => d && typeof d.taskId === 'string' && typeof d.code === 'string');
+        const tasks = { ...state.claimOutcomes.tasks };
+        for (const d of named) {
+          tasks[d.taskId] = { at: e.outcome.at, reason: e.outcome.reason, exclusion: d.code, ...(d.until ? { until: d.until } : {}) };
+        }
+        return { ...state, lookingForWork: false, claimOutcomes: { ...state.claimOutcomes, tasks, broad: stampBroad(carryWalls(state.claimOutcomes.broad, e.outcome), state.tasks) } };
+      }
       const tasks = { ...state.claimOutcomes.tasks };
       if (e.outcome.reason === 'claimed') delete tasks[e.taskId];
       else tasks[e.taskId] = e.outcome;

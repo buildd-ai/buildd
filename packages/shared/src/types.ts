@@ -1858,6 +1858,13 @@ export interface ClaimTaskExclusion {
   holderTaskId?: string;
 }
 
+/** A task a claim turned away: the dispatch-loop code that held it and when the hold lifts, when known. */
+export interface ClaimDeferredTask {
+  taskId: string;
+  code: string;
+  until?: string;
+}
+
 export interface ClaimDiagnostics {
   reason: ClaimDiagnosticReason;
   /**
@@ -2005,6 +2012,8 @@ export interface ClaimDiagnostics {
      */
     isolation_unenforced?: number;
   };
+  /** Which tasks the claim turned away (window it read), each with its deferral code. Absent from an older server. */
+  deferredTasks?: ClaimDeferredTask[];
 }
 
 /**
