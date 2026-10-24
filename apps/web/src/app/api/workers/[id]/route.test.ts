@@ -16061,8 +16061,8 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
       });
     }
     const blocked = (id: string, from: string) => ({
-      id, type: 'path_blocked_on_you', fromTaskId: from, fromWorkerId: `w-${from}`,
-      sentAt: new Date().toISOString(), hopCount: 0, body: { overlappingPaths: ['a.ts'] },
+      id, type: 'question', fromTaskId: from, fromWorkerId: `w-${from}`,
+      sentAt: new Date().toISOString(), hopCount: 0, body: { text: 'Are you still working on this?' },
     });
     // Liveness read: select().from('workers') resolves to the given live rows;
     // every other select keeps the default task-row behaviour.

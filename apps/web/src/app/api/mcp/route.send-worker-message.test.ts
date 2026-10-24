@@ -214,7 +214,7 @@ describe('send_worker_message MCP handler', () => {
   it('returns isError for invalid message type', async () => {
     const body: any = await callTool({ ...VALID_ARGS, type: 'broadcast' });
     expect(body.result.isError).toBe(true);
-    expect(body.result.content[0].text).toContain('path_blocked_on_you');
+    expect(body.result.content[0].text).toContain('path_released');
   });
 
   it('returns isError when body exceeds 2 KB', async () => {
@@ -394,15 +394,16 @@ describe('send_worker_message MCP handler', () => {
     expect(result.delivered).toBe(true);
   });
 
-  it('path_blocked_on_you type is accepted', async () => {
+  it('path_blocked_on_you type is rejected', async () => {
     const body: any = await callTool({
       recipientTaskId: RECIPIENT_TASK_ID,
       type: 'path_blocked_on_you',
       body: { paths: ['apps/web/schema.ts'], blockedTaskId: SENDER_TASK_ID },
     });
-    expect(body.result.isError).toBeFalsy();
-    const result = JSON.parse(body.result.content[0].text);
-    expect(result.delivered).toBe(true);
+    expect(body.result.isError).toBe(true);
+    expect(body.result.content[0].text).toContain('path_released');
+    expect(body.result.content[0].text).toContain('question');
+    expect(body.result.content[0].text).toContain('answer');
   });
 
   it('answer type is accepted', async () => {
