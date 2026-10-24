@@ -8,8 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { isNull, or, sql } from 'drizzle-orm';
-import { DEP_EDGE_ARM_SQL, dependencySatisfied, depsGate, outsideSurfaceAuditMission } from '@/app/api/workers/claim/deps-gate';
-import { BYPASS_DEPS_GATE_KEY, bypassFlagCondition } from '@/lib/bypass-flags';
+import { DEP_EDGE_ARM_SQL, dependencySatisfied, depsGate, outsideSurfaceAuditMission, startAnywayAdmitsEdge } from '@/app/api/workers/claim/deps-gate';
 import { tasks } from '@buildd/core/db/schema';
 import { DEP_EDGE_RELEASE_ARMS, DEP_GATE_RELEASE_ARMS } from '@/lib/dep-gate-contract';
 import { edgeFactsSql, edgeReleaseArm, type EdgeFactsRow } from '@/lib/mission-board-waiting';
@@ -30,16 +29,16 @@ describe('claim gate and mission page read the same dependency arms', () => {
     expect(text(dependencySatisfied(DEP))).toBe(fromRecord);
   });
 
-  it('the whole gate is no dependencies, the bypass flag, or every edge released by an arm or the surface-audit scope', () => {
-    expect([...DEP_GATE_RELEASE_ARMS]).toEqual(['surface_audit_scope', 'bypass']);
+  it('the whole gate is no dependencies, or every edge released by an arm, the surface-audit scope or a Start anyway', () => {
+    expect([...DEP_GATE_RELEASE_ARMS]).toEqual(['surface_audit_scope', 'start_anyway']);
     const composed = or(
       isNull(tasks.dependsOn),
       sql`${tasks.dependsOn}::jsonb = '[]'::jsonb`,
-      bypassFlagCondition(tasks.context, BYPASS_DEPS_GATE_KEY),
       sql`NOT EXISTS (
     SELECT 1 FROM jsonb_array_elements_text(${tasks.dependsOn}::jsonb) AS dep_id
     WHERE NOT ${dependencySatisfied(DEP)}
     AND NOT ${outsideSurfaceAuditMission(DEP)}
+    AND NOT ${startAnywayAdmitsEdge(DEP)}
   )`,
     )!;
     expect(text(depsGate())).toBe(text(composed));
@@ -51,7 +50,7 @@ describe('claim gate and mission page read the same dependency arms', () => {
       expect(q).toContain(`${text(DEP_EDGE_ARM_SQL[arm](DEP))} AS "arm_${arm}"`);
     }
     expect(q).toContain(`${text(outsideSurfaceAuditMission(DEP))} AS arm_surface_audit_scope`);
-    expect(q).toContain(`${text(bypassFlagCondition(tasks.context, BYPASS_DEPS_GATE_KEY))} AS arm_bypass`);
+    expect(q).toContain(`${text(startAnywayAdmitsEdge(DEP))} AS arm_start_anyway`);
   });
 
   it('every non-status arm, alone, releases an edge on the page', () => {

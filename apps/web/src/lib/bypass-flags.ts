@@ -11,7 +11,7 @@
  *
  *   flag                | SQL prefilter        | in-loop / route TS        |
  *   --------------------|----------------------|---------------------------|
- *   bypassDepsGate      | `= 'true'` (both)    | (SQL only)                |
+ *   bypassDepsGate      | retired: a declared dependency is admitted per edge by Start anyway |
  *   bypassHeldGate      | `= 'true'` (both)    | `=== true \|\| === 'true'`  |
  *   bypassSubjectGate   | `!= 'true'` (both)   | `=== true \|\| === 'true'`  |
  *   bypassStartGate     | never read (dead)    | never read (dead)         |
@@ -32,8 +32,6 @@ import { sql, type SQL } from 'drizzle-orm';
 
 // ── Keys ──────────────────────────────────────────────────────────────────────
 
-/** Skip the dependency-PR merge gate (`dependenciesSatisfied()`). */
-export const BYPASS_DEPS_GATE_KEY = 'bypassDepsGate' as const;
 /** Skip the held-mission gate (`missionNotHeld()`). */
 export const BYPASS_HELD_GATE_KEY = 'bypassHeldGate' as const;
 /** Skip the mission `budget_exhausted` gate (claim-loop mission gate #1). */
@@ -42,7 +40,6 @@ export const BYPASS_MISSION_BUDGET_KEY = 'bypassMissionBudget' as const;
 export const CAP_EXEMPT_KEY = 'capExempt' as const;
 
 export type BypassFlagKey =
-  | typeof BYPASS_DEPS_GATE_KEY
   | typeof BYPASS_HELD_GATE_KEY
   | typeof BYPASS_MISSION_BUDGET_KEY
   | typeof CAP_EXEMPT_KEY;

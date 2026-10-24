@@ -24,7 +24,7 @@ const edge = (over: Partial<EdgeFactsRow> = {}): EdgeFactsRow => ({
   arm_inferred_unstarted_holder: false,
   arm_force_start: false,
   arm_surface_audit_scope: false,
-  arm_bypass: false,
+  arm_start_anyway: false,
   ...over,
 });
 
@@ -42,7 +42,7 @@ describe('edgeReleaseArm', () => {
   });
 
   it('gate-level arms win: they release every edge of the dependent', () => {
-    expect(edgeReleaseArm(edge({ arm_bypass: true, arm_early_release: true }))).toBe('bypass');
+    expect(edgeReleaseArm(edge({ arm_start_anyway: true, arm_early_release: true }))).toBe('start_anyway');
     expect(edgeReleaseArm(edge({ arm_surface_audit_scope: true }))).toBe('surface_audit_scope');
   });
 
@@ -125,7 +125,7 @@ describe('the loader queries', () => {
     expect(q.params).toEqual(expect.arrayContaining([MISSION, 'm-2', 'ws-1']));
     // Same arms as the page's one-mission read.
     const one = render(edgeFactsSql(MISSION)).sql;
-    for (const arm of ['arm_status', 'arm_early_release', 'arm_force_start', 'arm_surface_audit_scope', 'arm_bypass']) {
+    for (const arm of ['arm_status', 'arm_early_release', 'arm_force_start', 'arm_surface_audit_scope', 'arm_start_anyway']) {
       expect(one).toContain(arm);
       expect(q.sql).toContain(arm);
     }

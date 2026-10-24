@@ -1033,9 +1033,10 @@ describe('fleet-idle pass — what is not claimable work', () => {
     expect(mockReportOps).not.toHaveBeenCalled();
   });
 
-  it('counts a dependency-blocked task once a human force-started past the gate', async () => {
+  it('counts a dependency-blocked task once a person started it anyway past that edge', async () => {
     fleetHeartbeats = [heartbeat()];
-    fleetPendingTasks = [pendingTask({ dependsOn: ['dep-1'], context: { bypassDepsGate: true } })];
+    const forceStart = { assessDependsOn: ['dep-1'], expiresAt: new Date(Date.now() + 60_000).toISOString() };
+    fleetPendingTasks = [pendingTask({ dependsOn: ['dep-1'], context: { forceStart } })];
     depTasks = [{ id: 'dep-1', title: 'Upstream', status: 'in_progress' }];
     fleetWorkspaces = [workspaceRow()];
     fleetLastStarts = { 'acct-1': [{ startedAt: hoursAgo(3) }] };
@@ -1044,6 +1045,18 @@ describe('fleet-idle pass — what is not claimable work', () => {
 
     expect(body.claimablePending).toBe(1);
     expect(body.alarms).toBe(1);
+  });
+
+  it('the retired gate-wide bypass flag no longer counts a dependency-blocked task as claimable', async () => {
+    fleetHeartbeats = [heartbeat()];
+    fleetPendingTasks = [pendingTask({ dependsOn: ['dep-1'], context: { bypassDepsGate: true } })];
+    depTasks = [{ id: 'dep-1', title: 'Upstream', status: 'in_progress' }];
+    fleetWorkspaces = [workspaceRow()];
+    fleetLastStarts = { 'acct-1': [{ startedAt: hoursAgo(3) }] };
+
+    const body = await (await POST(fleetRequest())).json();
+
+    expect(body.claimablePending).toBe(0);
   });
 
   it('does not count work in a restricted workspace the account cannot claim from', async () => {

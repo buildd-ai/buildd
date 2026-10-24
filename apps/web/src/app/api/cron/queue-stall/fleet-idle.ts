@@ -62,7 +62,8 @@ import {
   DEP_SATISFYING_STATUSES,
   DEP_UNBLOCKING_PR_LIFECYCLE,
 } from '@/lib/dep-gate-contract';
-import { hasBypassFlag, BYPASS_DEPS_GATE_KEY } from '@/lib/bypass-flags';
+import { admitsDeclaredEdge } from '@buildd/core/start-anyway';
+import { FORCE_START_CONTEXT_KEY } from '@buildd/core/waiting-reason';
 import { isOpenWithinTeams } from '@/lib/open-workspaces';
 import { missionNotHeld, missionNotLocal, taskNotHeld } from '@/app/api/workers/claim/held-gate';
 import { RUNNER_RECENTLY_SEEN_MS, isOnceRunnerUrl } from '@buildd/shared';
@@ -289,9 +290,7 @@ async function claimablePendingTasks(now: Date): Promise<PendingRow[]> {
   // cannot become a third drifting copy.
   const depIds = [
     ...new Set(
-      waited
-        .filter(t => !hasBypassFlag(t.context ?? {}, BYPASS_DEPS_GATE_KEY))
-        .flatMap(t => (t.dependsOn ?? []) as string[]),
+      waited.flatMap(t => (t.dependsOn ?? []) as string[]),
     ),
   ];
   if (depIds.length === 0) return waited;
@@ -317,8 +316,9 @@ async function claimablePendingTasks(now: Date): Promise<PendingRow[]> {
   );
 
   return waited.filter(t => {
-    if (hasBypassFlag(t.context ?? {}, BYPASS_DEPS_GATE_KEY)) return true;
     for (const depId of t.dependsOn ?? []) {
+      // A person's Start anyway admits this edge for assessment (same arm as the claim gate).
+      if (admitsDeclaredEdge({ intent: (t.context ?? {})[FORCE_START_CONTEXT_KEY] as never, edgeId: depId })) continue;
       const status = depStatus.get(depId);
       // A dangling dep id can never be satisfied; an unsatisfying status still
       // blocks; a completed dep with an unmerged PR still blocks.

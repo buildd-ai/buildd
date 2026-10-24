@@ -26,11 +26,14 @@ import {
   forceDialog,
   gateName,
   isStartForceable,
+  makeWaitingReason,
+  readForceStart,
   type ForceStartIntent,
   type WaitingKind,
   type WaitingReason,
 } from '@buildd/core/waiting-reason';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
+import { startAnywayPhase } from '@buildd/core/start-anyway';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
@@ -46,7 +49,10 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
  *   person's call only (dashboard, or the person's own OAuth session): the
  *   runner runs a Start aimed at it even while on hold (spec c7410e76 R-34), so
  *   an API key or per-task token sending it is refused 403.
- * - forceOverride?: boolean - lift the policy gates above (startAt, deps, holds, budget, subject)
+ * - forceOverride?: boolean - lift the policy gates above (startAt, holds, budget, subject).
+ *   Declared dependencies are not bypassed: forceOverride writes the same
+ *   bounded Start anyway intent as `force` (see below), naming the declared
+ *   edges, so the agent assesses past them and the edges stay.
  * - retryNow?: boolean - the Overview's `Retry now`: lift only a deferred start
  *   (a retry's backoff); every other gate still applies (spec d25d923d R-20)
  * - capExempt?: boolean - run past the workspace cap this once
@@ -103,6 +109,8 @@ export async function POST(
       : null) as { kinds?: unknown; reasonsDigest?: unknown; note?: unknown } | null;
     const forceRequest = forceRaw
       ? {
+          // Start anyway past a declared dependency is this same request: its
+          // kinds include `dep_declared` (docs/specs/force-start.md, spec 36df686b).
           kinds: Array.isArray(forceRaw.kinds) ? forceRaw.kinds.filter((k): k is WaitingKind => typeof k === 'string') : null,
           reasonsDigest: typeof forceRaw.reasonsDigest === 'string' ? forceRaw.reasonsDigest : null,
           note: typeof forceRaw.note === 'string' ? forceRaw.note : null,
@@ -387,8 +395,15 @@ export async function POST(
     // the old behaviour rather than blocking the start.
     const now = new Date();
     const waitingReasons: WaitingReason[] = (await probeCoordination(task as any, now, { skipMissionLocal: !!forceOverride || isBypassHeld })) ?? [];
-    const blocking = blockingReasons(waitingReasons);
+    // forceOverride's declared dependencies are admitted by the bounded intent
+    // built below, never by a gate-wide bypass; its other gates keep their
+    // refusal here.
+    const blocking = blockingReasons(waitingReasons).filter(r => !(forceOverride && r.kind === 'dep_declared'));
+    // An accepted request still waiting for its claim: a repeat click (or a
+    // retried request) keeps it instead of minting a second (AC-14).
+    const accepted = readForceStart(task.context as Record<string, unknown> | null, now);
     let forceIntent: ForceStartIntent | null = null;
+    let reusedIntent = false;
     if (blocking.length > 0) {
       const refusal = coordinationHoldBody(blocking);
       if (!forceRequest) {
@@ -413,20 +428,43 @@ export async function POST(
         }, { status: 422 });
       }
       const lifted = new Set(requested);
-      forceIntent = buildForceStartIntent({
-        reasons: blocking.filter(r => lifted.has(r.kind)),
-        digestOf: blocking,
-        userId,
-        accountId,
-        now,
-        note: forceRequest.note,
-      });
+      if (accepted && accepted.reasonsDigest === refusal.reasonsDigest && requested.every(k => accepted.kinds.includes(k))) {
+        forceIntent = accepted;
+        reusedIntent = true;
+      } else {
+        forceIntent = buildForceStartIntent({
+          reasons: blocking.filter(r => lifted.has(r.kind)),
+          digestOf: blocking,
+          userId,
+          accountId,
+          now,
+          note: forceRequest.note,
+        });
+      }
+    } else if (forceOverride && dependsOn.length > 0) {
+      // Legacy forceOverride converges on the bounded intent (R-3): the
+      // declared edges as the probe named them, or as declared when the probe
+      // could not read them.
+      const probed = waitingReasons.filter(r => r.kind === 'dep_declared');
+      const declared = probed.length > 0 ? probed : dependsOn.map(id => makeWaitingReason('dep_declared', {
+        because: 'it was declared as a dependency',
+        blocker: { type: 'task', id, label: `task ${id.slice(0, 8)}`, href: `/app/tasks/${id}` },
+        provenance: { source: 'task_context', derivedFrom: 'tasks.dependsOn' },
+      }));
+      const ids = declared.map(r => r.blocker?.id).filter((id): id is string => !!id);
+      if (accepted && ids.every(id => accepted.assessDependsOn?.includes(id))) {
+        forceIntent = accepted;
+        reusedIntent = true;
+      } else {
+        forceIntent = buildForceStartIntent({ reasons: declared, userId, accountId, now });
+      }
     }
 
     // Always stamp manualStartAt so the task is durably prioritized on next claim cycle
     // even if the Pusher broadcast is missed. Also boost priority once to float it
     // above other same-priority tasks. Human-override bypass flags are written here too.
-    // bypassDepsGate — skip the dep-PR merge gate (when deps exist).
+    // (No bypassDepsGate: a declared dependency is admitted per edge by the
+    // Start anyway intent, `forceStart.assessDependsOn`, never bypassed.)
     // bypassHeldGate — skip the mission held gate (when the task belongs to a mission).
     // bypassMissionBudget — skip the mission budget_exhausted gate.
     // bypassSubjectGate — skip the subject-liveness gate (when the subject PR is dead).
@@ -436,7 +474,6 @@ export async function POST(
     // expressed by clearing startAt below, which is the only thing the claim
     // route reads. The old flag was written here and read by nothing — an
     // operator-visible context key that looked like a working override.
-    const hasDeps = dependsOn.length > 0;
     const hasStartGate = !!(task.startAt && task.startAt > new Date());
     const hasMission = !!task.missionId;
     const existingContext = (task.context as Record<string, unknown>) || {};
@@ -448,7 +485,6 @@ export async function POST(
         context: {
           ...existingContext,
           manualStartAt: now.toISOString(),
-          ...(forceOverride && hasDeps ? { bypassDepsGate: true } : {}),
           ...(forceOverride && hasMission ? { bypassHeldGate: true } : {}),
           ...(forceOverride && missionBudgetExhausted ? { [BYPASS_MISSION_BUDGET_KEY]: true } : {}),
           ...(forceOverride && subjectDead ? { [BYPASS_SUBJECT_GATE_KEY]: true } : {}),
@@ -474,7 +510,7 @@ export async function POST(
       targetLocalUiUrl: targetLocalUiUrl || null,
     }));
 
-    if (forceIntent) {
+    if (forceIntent && !reusedIntent) {
       recordForceStartRequest({
         intent: forceIntent,
         task: { id: task.id, workspaceId: task.workspaceId, missionId: task.missionId ?? null },
@@ -500,8 +536,12 @@ export async function POST(
           gates: [...new Set(forceIntent.kinds.map(gateName))],
           railsRemaining: forceDialog(blocking.filter(r => forceIntent!.kinds.includes(r.kind))).stillEnforced,
           expiresAt: forceIntent.expiresAt,
+          action: forceIntent.assessDependsOn?.length ? 'start_anyway' : 'force_start',
+          ...(reusedIntent ? { alreadyRequested: true } : {}),
         },
       } : {}),
+      // Observed, never optimistic: an accepted request is "requested" until a runner claims it (R-12).
+      ...(forceIntent?.assessDependsOn?.length ? { startAnyway: startAnywayPhase({ intent: forceIntent, claimed: false, parked: false, executing: false }) } : {}),
     });
   } catch (error) {
     console.error('Start task error:', error);

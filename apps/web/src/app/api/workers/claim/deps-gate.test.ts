@@ -218,7 +218,7 @@ describe('dependencySatisfied() — early-release arm (dependency_releases)', ()
   });
 });
 
-// Friction cad81659: the route's deps gate was
+// Friction cad81659 (the gate-wide bypass is gone since Start anyway): the route's deps gate was
 //   depends_on IS NULL OR depends_on = '[]' OR context->>'bypassDepsGate' = 'true' OR <satisfied>
 // and the bypass arm is NULL when the key is absent, so a task with an
 // unsatisfied dependency evaluated to NULL, not FALSE. The claim excluded it
@@ -227,10 +227,10 @@ describe('dependencySatisfied() — early-release arm (dependency_releases)', ()
 describe('depsGate(): two-valued', () => {
   const text = () => dialect.sqlToQuery(depsGate()).sql.replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ');
 
-  it('coalesces the force-start bypass so a missing key is FALSE', () => {
-    expect(text()).toMatch(/COALESCE\("tasks"\."context"->>\$\d+, ''\) = 'true'/);
-    expect(dialect.sqlToQuery(depsGate()).params).toContain('bypassDepsGate');
-    expect(text()).not.toMatch(/"tasks"\."context"->>'bypassDepsGate' = 'true'/);
+  it('has no gate-wide bypass; the Start anyway admission coalesces a missing key to FALSE', () => {
+    expect(dialect.sqlToQuery(depsGate()).params).not.toContain('bypassDepsGate');
+    expect(text()).not.toContain('bypassDepsGate');
+    expect(text()).toContain(`COALESCE("tasks"."context"->'forceStart'->'assessDependsOn' ? (dep_id::uuid)::text, FALSE)`);
   });
 
   it('keeps the no-deps and empty-deps escapes and the satisfied check', () => {

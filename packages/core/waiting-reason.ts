@@ -50,9 +50,10 @@ export type WaitingKind =
   | 'unknown';
 
 /** What a force start leaves enforced, shown verbatim in the confirm step. */
-export type Rail = 'edit_time_leases' | 'declared_dependencies' | 'budgets_and_seats' | 'runner_capability' | 'task_hold';
+export type Rail = 'dependency_kept' | 'edit_time_leases' | 'declared_dependencies' | 'budgets_and_seats' | 'runner_capability' | 'task_hold';
 
 export const RAIL_TEXT: Record<Rail, string> = {
+  dependency_kept: 'The dependency stays: the agent assesses what can proceed without it, works on that or waits, and resumes by itself when it lands.',
   edit_time_leases: 'Files another agent is editing stay locked: this agent waits or is refused on them until they are released.',
   declared_dependencies: 'Declared dependencies still apply.',
   budgets_and_seats: 'Budgets, seats and plan limits still apply.',
@@ -124,10 +125,11 @@ export type ClaimLoopKey = 'path_overlap' | 'soft_overlap' | 'mission_concurrent
 /**
  * A claim PREFILTER (SQL, before the loop) a force start lifts for this task:
  * `inferred_deps` drops only the creation-time overlap edges the force names
- * from the dependency gate (declared edges stay), `local_mission` hands a
- * local mission's task to a runner.
+ * from the dependency gate (declared edges stay), `assess_deps` admits the
+ * declared edges a Start anyway names for assessment (never satisfies them),
+ * `local_mission` hands a local mission's task to a runner.
  */
-export type PrefilterLift = 'inferred_deps' | 'local_mission';
+export type PrefilterLift = 'inferred_deps' | 'local_mission' | 'assess_deps';
 
 interface KindSpec {
   class: WaitingClass;
@@ -144,6 +146,8 @@ interface KindSpec {
 
 const COORDINATION_RAILS: Rail[] = ['edit_time_leases', 'declared_dependencies', 'budgets_and_seats', 'runner_capability', 'task_hold'];
 const POLICY_RAILS: Rail[] = ['edit_time_leases', 'declared_dependencies', 'budgets_and_seats', 'runner_capability', 'task_hold'];
+/** Start anyway past a declared dependency: the edge is kept, never satisfied (spec 36df686b). */
+const ASSESS_RAILS: Rail[] = ['dependency_kept', 'edit_time_leases', 'budgets_and_seats', 'runner_capability', 'task_hold'];
 const memberForce = (rails: Rail[] = COORDINATION_RAILS): Omit<ForceSpec, 'lifts'> =>
   ({ scope: 'member', railsRemaining: rails, mechanism: 'start_context' });
 
@@ -154,7 +158,10 @@ const memberForce = (rails: Rail[] = COORDINATION_RAILS): Omit<ForceSpec, 'lifts
  *  - `scope_undeclared_mutex` and `ordered_behind` are liftable by a HUMAN
  *    force start only; the admin MCP `claim_task force` keeps not lifting the
  *    mutex.
- *  - `dep_declared` is never forceable: a person wrote that order.
+ *  - `dep_declared` takes Start anyway (Living Spec 36df686b): the claim
+ *    admits the task's own agent to assess past exactly the named edges; the
+ *    edge stays, automatic scheduling still waits on it, and the agent works
+ *    on what does not need it or parks until it lands.
  *  - `dep_inferred` / `serialized_surface` are forceable for claim-time
  *    ordering only; the edit-time anchor lease stays enforced, so migration
  *    numbering is still serialized.
@@ -165,7 +172,7 @@ export const WAITING_KIND_SPEC: Record<WaitingKind, KindSpec> = {
   task_held: { class: 'hold', strength: 'hard', intent: 'intentional', gateName: 'Task paused', releasesWhen: { event: 'hold.released', text: 'someone resumes it' }, owner: 'human', force: null },
   mission_held: { class: 'hold', strength: 'hard', intent: 'intentional', gateName: 'Mission not running', releasesWhen: { event: 'mission.armed', text: 'someone starts or resumes the mission' }, owner: 'human', force: memberForce(POLICY_RAILS) },
   mission_local: { class: 'hold', strength: 'hard', intent: 'intentional', gateName: 'Local-session mission', releasesWhen: { event: 'claimed', text: 'your session claims it' }, owner: 'human', force: memberForce(POLICY_RAILS), prefilterLift: 'local_mission' },
-  dep_declared: { class: 'dependency', strength: 'hard', intent: 'intentional', gateName: 'Declared dependency', releasesWhen: { event: 'task.completed+merged', text: 'its dependencies complete and merge' }, owner: 'agent', force: null },
+  dep_declared: { class: 'dependency', strength: 'hard', intent: 'intentional', gateName: 'Declared dependency', releasesWhen: { event: 'task.completed+merged', text: 'its dependencies complete and merge' }, owner: 'agent', force: memberForce(ASSESS_RAILS), prefilterLift: 'assess_deps' },
   dep_inferred: { class: 'coordination', strength: 'hard', intent: 'incidental', gateName: 'File-overlap ordering', releasesWhen: { event: 'task.completed+merged', text: 'the overlapping task completes and merges' }, owner: 'system', force: memberForce(), prefilterLift: 'inferred_deps' },
   subject_dead: { class: 'dependency', strength: 'hard', intent: 'intentional', gateName: 'Closed subject PR', releasesWhen: { event: 'never', text: 'never: its subject PR is gone' }, owner: 'human', force: memberForce(POLICY_RAILS) },
   pr_overlap_live: { class: 'coordination', strength: 'hard', intent: 'intentional', gateName: 'Open-PR file overlap', releasesWhen: { event: 'path_claim.released', text: 'that PR merges, closes or narrows its files' }, owner: 'agent', force: memberForce(), claimLoopKey: 'path_overlap' },
@@ -331,6 +338,11 @@ export interface ForceDialog {
   risk: string | null;
   /** Red lines: what the force can NOT get past (migration numbering). */
   redLines: string[];
+  /**
+   * The button: `start_anyway` when a declared dependency is among the gates
+   * (the agent assesses past it), else `force_start`.
+   */
+  action: 'start_anyway' | 'force_start';
 }
 
 const BASIS_TEXT: Record<OverlapBasis, string> = {
@@ -349,7 +361,9 @@ export function forceDialog(reasons: readonly WaitingReason[]): ForceDialog {
   const overlapped = forceable.filter(r => r.overlap && r.overlap.pathCount > 0);
   const fileCount = overlapped.reduce((n, r) => n + (r.overlap?.pathCount ?? 0), 0);
   const areas = [...new Set(overlapped.flatMap(r => r.overlap!.areas.map(a => a.area)))];
-  const rails = railsRemainingFor(forceable);
+  const assessing = forceable.some(r => r.kind === 'dep_declared');
+  // Start anyway keeps the dependency; "declared dependencies still apply" would contradict the start.
+  const rails = railsRemainingFor(forceable).filter(rail => !(assessing && rail === 'declared_dependencies'));
   const stillEnforced = rails.map(rail => rail === 'edit_time_leases' && fileCount > 0
     ? `Files another agent is editing stay locked: this agent waits or is refused on ${fileCount} file${fileCount === 1 ? '' : 's'} in ${areas.slice(0, 3).join(', ')} until they are released.`
     : RAIL_TEXT[rail]);
@@ -363,7 +377,7 @@ export function forceDialog(reasons: readonly WaitingReason[]): ForceDialog {
       ? `${migrationHolders.slice(0, 2).join(', ')} and ${migrationHolders.length - 2} more release it`
       : migrationHolders.length === 2 ? `${migrationHolders.join(' and ')} release it` : `${migrationHolders[0]} releases it`}.`]
     : [];
-  return { checklist, stillEnforced, risk, redLines };
+  return { checklist, stillEnforced, risk, redLines, action: assessing ? 'start_anyway' : 'force_start' };
 }
 
 /** Coordination-only kinds: incidental serialization, never an order a person declared. */
@@ -448,6 +462,7 @@ export function coordinationHoldBody(blocking: WaitingReason[]) {
           checklist: dialog.checklist,
           risk: dialog.risk,
           redLines: dialog.redLines,
+          action: dialog.action,
         }
       : null,
     ...(notForceable.length > 0 ? { notForceable: [...new Set(notForceable.map(r => gateName(r.kind)))] } : {}),
@@ -506,6 +521,13 @@ export interface ForceStartIntent {
    * also requires each id to be in `pathDeclaration.inferredDependsOn`.
    */
   liftDependsOn?: string[];
+  /**
+   * Start anyway: the declared dependsOn edges the claim admits for
+   * assessment while this intent is unexpired (claim/deps-gate.ts). Admitted,
+   * never satisfied: automatic dependency release and every other edge are
+   * unchanged, and a later edge the person never saw still holds.
+   */
+  assessDependsOn?: string[];
   /** The blockers at confirmation: the overlap basis evidence for outcome labelling. */
   blockers: Array<{ kind: WaitingKind; type?: BlockerType; id?: string; label?: string; live?: boolean; pathCount?: number; areas?: AreaCount[]; basis?: OverlapBasis; overlapKind?: string; sharedPaths?: string[] }>;
   note?: string | null;

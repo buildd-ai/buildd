@@ -2,7 +2,6 @@ import { describe, it, expect } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { tasks } from '@buildd/core/db/schema';
 import {
-  BYPASS_DEPS_GATE_KEY,
   BYPASS_HELD_GATE_KEY,
   BYPASS_MISSION_BUDGET_KEY,
   CAP_EXEMPT_KEY,
@@ -58,7 +57,7 @@ describe('bypassFlagCondition', () => {
   });
 
   it('every live bypass key is a distinct context key', () => {
-    const keys = [BYPASS_DEPS_GATE_KEY, BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, CAP_EXEMPT_KEY];
+    const keys = [BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, CAP_EXEMPT_KEY];
     expect(new Set(keys).size).toBe(keys.length);
   });
 });

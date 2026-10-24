@@ -274,6 +274,7 @@
     "./path-overlap": "./path-overlap.ts",
     "./unmergeable-surfaces": "./unmergeable-surfaces.ts",
     "./waiting-reason": "./waiting-reason.ts",
+    "./start-anyway": "./start-anyway.ts",
     "./claim-planner": "./claim-planner.ts",
     "./github-installation-auth": "./github-installation-auth.ts",
     "./pr-scope-read": "./pr-scope-read.ts",

@@ -69,7 +69,7 @@ describe('probeCoordination: dependencies, soft overlaps, local missions', () =>
     expect(byBlocker.h1.blocker?.live).toBe(true);
     expect(byBlocker.h2.blocker?.live).toBe(false);
     expect(byBlocker.d1.kind).toBe('dep_declared');
-    expect(byBlocker.d1.action.force).toBeNull();
+    expect(byBlocker.d1.action.force?.mechanism).toBe('start_context'); // Start anyway: assessed past, the edge kept
     expect(byBlocker.done).toBeUndefined();
   });
 

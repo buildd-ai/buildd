@@ -557,7 +557,7 @@ describe('buildMissionBoard — claim-gate release arms (spec f7f67f1a P-1)', ()
   it('a released dependency on another mission is not an off-strip blocker', () => {
     const m = board([task('e2e', { dependsOn: ['other'] })], {
       externalDeps: [{ id: 'other', title: 'Elsewhere', status: 'in_progress' }],
-      gateFacts: { releasedEdges: [{ dependentId: 'e2e', dependencyId: 'other', arm: 'bypass' }], waitingKinds: {} },
+      gateFacts: { releasedEdges: [{ dependentId: 'e2e', dependencyId: 'other', arm: 'start_anyway' }], waitingKinds: {} },
     });
     expect(m.tasks.e2e.offStrip).toEqual([]);
     expect(m.tasks.e2e.status).toBe('ready');

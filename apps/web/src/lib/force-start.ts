@@ -20,6 +20,13 @@
  *     existing outcome join grades the override like any other start.
  *
  * Unclaimed intents lapse after FORCE_START_TTL_MS.
+ *
+ * Start anyway (Living Spec 36df686b) is the same intent over a declared
+ * dependency: `assessDependsOn` names the declared edges the person saw, the
+ * claim admits exactly those for the task's own agent to assess (never
+ * satisfying them), and the lifecycle after the claim is
+ * `context.startAnyway` (@buildd/core/start-anyway). It lasts
+ * START_ANYWAY_TTL_MS so a missed wake or an offline runner does not lose it.
  */
 import { randomUUID } from 'node:crypto';
 import {
@@ -34,6 +41,7 @@ import {
   type WaitingKind,
   type WaitingReason,
 } from '@buildd/core/waiting-reason';
+import { START_ANYWAY_TTL_MS } from '@buildd/core/start-anyway';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { emit } from '@/lib/core-emit';
 import type { OverrideStart } from '@/lib/core-events';
@@ -59,16 +67,18 @@ export function buildForceStartIntent(opts: {
 }): ForceStartIntent {
   const kinds = [...new Set(opts.reasons.map(r => r.kind))];
   const liftDependsOn = opts.reasons.filter(r => r.kind === 'dep_inferred' && r.blocker?.id).map(r => r.blocker!.id);
+  const assessDependsOn = opts.reasons.filter(r => r.kind === 'dep_declared' && r.blocker?.id).map(r => r.blocker!.id);
   return {
     id: randomUUID(),
     at: opts.now.toISOString(),
-    expiresAt: new Date(opts.now.getTime() + FORCE_START_TTL_MS).toISOString(),
+    expiresAt: new Date(opts.now.getTime() + (assessDependsOn.length > 0 ? START_ANYWAY_TTL_MS : FORCE_START_TTL_MS)).toISOString(),
     userId: opts.userId,
     accountId: opts.accountId,
     kinds,
     loopKeys: claimLoopKeysFor(kinds),
     prefilterLifts: prefilterLiftsFor(kinds),
     ...(liftDependsOn.length > 0 ? { liftDependsOn: [...new Set(liftDependsOn)] } : {}),
+    ...(assessDependsOn.length > 0 ? { assessDependsOn: [...new Set(assessDependsOn)] } : {}),
     reasonsDigest: waitingReasonsDigest(opts.digestOf ?? opts.reasons),
     blockers: opts.reasons.map(r => ({
       kind: r.kind,
@@ -106,6 +116,7 @@ export function recordForceStartRequest(opts: {
       kinds: opts.intent.kinds,
       loopKeys: opts.intent.loopKeys,
       prefilterLifts: opts.intent.prefilterLifts ?? [],
+      ...(opts.intent.assessDependsOn ? { assessDependsOn: opts.intent.assessDependsOn } : {}),
       blockers: opts.intent.blockers,
       reasonsDigest: opts.intent.reasonsDigest,
       userId: opts.intent.userId,
@@ -194,6 +205,7 @@ export function recordForceStartClaim(opts: {
       forceId: intent.id,
       kinds: intent.kinds,
       bypassed: lifted,
+      ...(intent.assessDependsOn ? { assessDependsOn: intent.assessDependsOn } : {}),
       blockers: intent.blockers,
       reasonsDigest: intent.reasonsDigest,
       userId: intent.userId,

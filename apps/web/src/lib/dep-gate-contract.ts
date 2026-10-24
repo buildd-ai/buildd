@@ -75,7 +75,8 @@ export function isTerminalPrLifecycle(status: string | null | undefined): status
  *   - `force_start` — a person's unexpired force start lifted this inferred edge.
  * Gate-level arms, which release every edge of the dependent:
  *   - `surface_audit_scope` — a `[surface audit]` ignores dependencies outside its mission.
- *   - `bypass` — `context.bypassDepsGate`.
+ *   - `start_anyway` — a person's unexpired Start anyway admits this declared edge for assessment
+ *     (admitted, not satisfied: the claim consumes it once).
  *
  * `dep-gate-display-parity.test.ts` fails when the gate gains an arm this list
  * does not name.
@@ -87,6 +88,6 @@ export const DEP_EDGE_RELEASE_ARMS = [
   'inferred_unstarted_holder',
   'force_start',
 ] as const;
-export const DEP_GATE_RELEASE_ARMS = ['surface_audit_scope', 'bypass'] as const;
+export const DEP_GATE_RELEASE_ARMS = ['surface_audit_scope', 'start_anyway'] as const;
 export type DepEdgeReleaseArm = (typeof DEP_EDGE_RELEASE_ARMS)[number];
 export type DepReleaseArm = DepEdgeReleaseArm | (typeof DEP_GATE_RELEASE_ARMS)[number];

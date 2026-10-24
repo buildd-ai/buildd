@@ -67,7 +67,9 @@ import { isSubjectDead } from '@/lib/subject-gate-contract';
 // route's SQL prefilter and /start. This file previously carried a local copy
 // that was byte-for-byte hasBypassFlag — a third copy of gate logic in the very
 // job whose purpose is to catch gate logic drifting.
-import { hasBypassFlag, BYPASS_DEPS_GATE_KEY, BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, CAP_EXEMPT_KEY } from '@/lib/bypass-flags';
+import { admitsDeclaredEdge } from '@buildd/core/start-anyway';
+import { FORCE_START_CONTEXT_KEY } from '@buildd/core/waiting-reason';
+import { hasBypassFlag, BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, CAP_EXEMPT_KEY } from '@/lib/bypass-flags';
 // Reporting only. The credential state this reads has deliberately NO
 // task-level gate (`capability_mismatch` / `checkCapabilityMatch` were removed
 // in PR #1864 and replaced by configuration-time surfacing); the watchdog names
@@ -237,13 +239,15 @@ async function resolveStallGate(
 
   // ── Dependency gate (deps-gate.ts / dep-gate-contract.ts) ─────────────────
   const dependsOn = task.dependsOn ?? [];
-  if (dependsOn.length > 0 && !hasBypassFlag(ctx, BYPASS_DEPS_GATE_KEY)) {
+  if (dependsOn.length > 0) {
     const missing: string[] = [];
     const failed: string[] = [];
     const unmerged: string[] = [];
     let inFlight = 0;
 
     for (const depId of dependsOn) {
+      // A person's Start anyway admits this edge for assessment (same arm as the claim gate).
+      if (admitsDeclaredEdge({ intent: ctx[FORCE_START_CONTEXT_KEY] as never, edgeId: depId })) continue;
       const dep = deps.byId.get(depId);
       if (!dep) {
         // A dangling dep id can never be satisfied — the SQL gate's NOT EXISTS

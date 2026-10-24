@@ -1688,18 +1688,34 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     expect(body.waitingReasons ?? []).toEqual([]);
   });
 
-  it('a non-forceable reason (declared dependency) offers no Force start and refuses one', async () => {
+  it('a declared dependency beside an overlap edge takes Start anyway: one intent names both, the declared edge for assessment', async () => {
     mockProbe.mockResolvedValue([migrationEdge('a'), declaredEdge('z')]);
     const refused = await (await callHandler(createMockRequest(), 'task-123')).json();
-    expect(refused.canForce).toBe(false);
-    expect(refused.force).toBeNull();
-    expect(refused.notForceable).toEqual(['Declared dependency']);
+    expect(refused.canForce).toBe(true);
+    expect(refused.force.action).toBe('start_anyway');
 
     const res = await callHandler(createMockRequest({
       body: { force: { kinds: ['dep_inferred', 'dep_declared'], reasonsDigest: refused.reasonsDigest } },
     }), 'task-123');
+    expect(res.status).toBe(200);
+    const ctx = (mockDbUpdate.set.mock.calls.at(-1) as any)[0].context;
+    expect(ctx.forceStart.liftDependsOn).toEqual(['a']);
+    expect(ctx.forceStart.assessDependsOn).toEqual(['z']);
+    expect(ctx.bypassDepsGate).toBeUndefined();
+  });
+
+  it('a non-forceable reason beside a declared dependency offers no start and refuses one', async () => {
+    mockProbe.mockResolvedValue([declaredEdge('z'), makeWaitingReason('provider_unavailable', {
+      because: 'the provider is disabled', provenance: { source: 'probe', derivedFrom: 'providers' },
+    })]);
+    const refused = await (await callHandler(createMockRequest(), 'task-123')).json();
+    expect(refused.canForce).toBe(false);
+    expect(refused.force).toBeNull();
+    expect(refused.notForceable).toEqual(['Provider unavailable']);
+    const res = await callHandler(createMockRequest({
+      body: { force: { kinds: ['dep_declared'], reasonsDigest: refused.reasonsDigest } },
+    }), 'task-123');
     expect(res.status).toBe(422);
-    expect(mockDbUpdate.set).not.toHaveBeenCalled();
     expect(mockWakeTask).not.toHaveBeenCalled();
   });
 

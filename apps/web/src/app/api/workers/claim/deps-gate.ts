@@ -1,5 +1,4 @@
 import { isNull, or, sql, type SQL } from 'drizzle-orm';
-import { BYPASS_DEPS_GATE_KEY, bypassFlagCondition } from '@/lib/bypass-flags';
 import { tasks, workers, dependencyReleases } from '@buildd/core/db/schema';
 import {
   DEP_SATISFYING_STATUSES,
@@ -40,14 +39,37 @@ export { DEP_SATISFYING_STATUSES };
  * additive — it OR's onto the status check, never replaces it, so a workspace
  * that never writes a `dependency_releases` row sees zero behavior change.
  *
- * Callers should OR this with the bypass conditions (no deps, empty deps,
- * `context.bypassDepsGate = 'true'`).
+ * An edge a person's unexpired Start anyway names (`startAnywayAdmitsEdge`)
+ * does not hold the claim either: the task's agent is admitted to assess past
+ * it. That arm is separate from satisfaction on purpose: `dependencySatisfied`
+ * (and so the probe, the board and automatic release) still reads the edge as
+ * unfinished.
+ *
+ * Callers should OR this with the no-dependency conditions (see `depsGate`).
  */
 export function dependenciesSatisfied(): SQL {
   return sql`NOT EXISTS (
     SELECT 1 FROM jsonb_array_elements_text(${tasks.dependsOn}::jsonb) AS dep_id
     WHERE NOT ${dependencySatisfied(sql`dep_id::uuid`)}
     AND NOT ${outsideSurfaceAuditMission(sql`dep_id::uuid`)}
+    AND NOT ${startAnywayAdmitsEdge(sql`dep_id::uuid`)}
+  )`;
+}
+
+/**
+ * TRUE when a person's unexpired Start anyway (`context.forceStart`, written
+ * by POST /api/tasks/[id]/start) names `depId` in `assessDependsOn`
+ * (docs/specs/force-start.md, Living Spec 36df686b). Admission for
+ * assessment, not satisfaction: the claim consumes the intent, so it admits
+ * one claim; an edge added after the person confirmed is not named and still
+ * holds; nothing here marks the upstream done. The TS twin is
+ * `admitsDeclaredEdge` in @buildd/core/start-anyway. Keys are literals so the
+ * gate's bound parameters stay the contract's.
+ */
+export function startAnywayAdmitsEdge(depId: SQL): SQL {
+  return sql`(
+    COALESCE(${tasks.context}->'forceStart'->'assessDependsOn' ? (${depId})::text, FALSE)
+    AND COALESCE((${tasks.context}->'forceStart'->>'expiresAt') > to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), FALSE)
   )`;
 }
 
@@ -194,8 +216,12 @@ function inferredEdgeOntoUnstartedHolder(depId: SQL): SQL {
 
 /**
  * The claim route's whole dependency gate: TRUE when the task has no
- * dependencies, a person force-started it (context.bypassDepsGate), or every
- * dependency is satisfied.
+ * dependencies or every dependency is satisfied or admitted.
+ *
+ * There is no gate-wide bypass any more: the old `context.bypassDepsGate`
+ * flag (written by `/start` forceOverride and never cleared) let a task past
+ * every dependency forever, including ones added later. A person's override
+ * is now the bounded Start anyway intent, per edge (`startAnywayAdmitsEdge`).
  *
  * Two-valued on purpose. The bypass check used to be a bare
  * `context->>'bypassDepsGate' = 'true'`, which is NULL (not FALSE) whenever the
@@ -208,7 +234,6 @@ export function depsGate(): SQL {
   return or(
     isNull(tasks.dependsOn),
     sql`${tasks.dependsOn}::jsonb = '[]'::jsonb`,
-    bypassFlagCondition(tasks.context, BYPASS_DEPS_GATE_KEY),
     dependenciesSatisfied(),
   )!;
 }
