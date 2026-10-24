@@ -71,9 +71,20 @@ An agent reads one board on its own with
 `manage_designs action=screen designId=<id> revision=<n> screenId=<screen>`:
 its source without the other boards, and a URL that renders it.
 
-Boards are live components: text like `{{count}}` is filled in by the canvas
-at runtime. A static design needs a value for each, in
-`project/placeholders.json`, per board or for all (`"*"`):
+Boards are live components, and the export runs them. A board's own script
+(`renderVals()`) and its prop defaults supply the values for `{{expr}}`;
+`<dc-import name=X prop="…">` mounts board `X.dc.html` with those props (the
+board's defaults fill what the import leaves out); `<sc-for list="{{rows}}"
+as="r">` repeats its content once per item, and `<sc-if value="{{flag}}">`
+keeps or drops it. Each board is still its own screen, with its id from
+`screens.json`; an imported component's CSS is merged in once. An import of a
+board `canvas.json` does not list is reported and left out. `hint-*`
+attributes are canvas editor hints and are ignored. Expressions are a path
+(`g.rows`) or a literal, not arbitrary JavaScript.
+
+Only a value the logic does not supply needs a static one, in
+`project/placeholders.json`, per board or for all (`"*"`); the export fails and
+names any `{{…}}` still without one:
 
 ```json
 { "*": { "missionTitle": "Registered requirement verification" }, "Detail": { "count": "3" } }
