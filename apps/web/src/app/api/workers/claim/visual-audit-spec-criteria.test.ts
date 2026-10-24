@@ -63,6 +63,32 @@ describe('renderVisualAuditSpecCriteria', () => {
     expect(block).not.toContain('"artifactId":"spec-art"');
   });
 
+  it('R-17: a component screen is checked on its dev fixture at its own size, and the verdict names the screen and the fixture URL', () => {
+    const block = renderVisualAuditSpecCriteria([{
+      ...subject([{ id: 'AC-14', text: 'The stage meter.', screens: ['c-stage-meter'] }, { id: 'AC-4', text: 'The page.', screens: ['phone-activity'] }]),
+      design: { kind: 'artifact', ref: 'art-1', version: '2', screens: [] },
+    }], null, [
+      { id: 'c-stage-meter', name: 'Stage meter', viewport: '480x160', kind: 'component', code: 'apps/web/src/components/UiStageMeter.tsx' },
+      { id: 'phone-activity', name: 'Activity', viewport: '390x844' },
+      { id: 'c-unnamed', name: 'Not on a criterion', viewport: '300x100', kind: 'component' },
+    ])!;
+    expect(block).toContain('"screens":{"c-stage-meter":{"kind":"component","code":"apps/web/src/components/UiStageMeter.tsx"}}');
+    expect(block).not.toContain('c-unnamed');
+    expect(block).toContain('Component screens are checked on /app/dev/fixtures, not on a route');
+    expect(block).toContain('- c-stage-meter (Stage meter), code apps/web/src/components/UiStageMeter.tsx: capture its fixture at `viewport=480x160`');
+    expect(block).toContain('"routes": { "c-stage-meter": ["/app/dev/fixtures?state=…"] }');
+    expect(block).toContain('name the screen id and the fixture URL in `observed`');
+  });
+
+  it('with only page screens the block says nothing about fixtures', () => {
+    const block = renderVisualAuditSpecCriteria([{
+      ...subject([{ id: 'AC-4', text: 'The page.', screens: ['phone-activity'] }]),
+      design: { kind: 'artifact', ref: 'art-1', version: '2', screens: [] },
+    }], null, [{ id: 'phone-activity', name: 'Activity', viewport: '390x844', kind: 'page' }])!;
+    expect(block).not.toContain('Component screens');
+    expect(block).not.toContain('"screens":{');
+  });
+
   it('renders nothing when no dependency is pinned, or none has criteria', () => {
   expect(renderVisualAuditSpecCriteria([])).toBeNull();
   expect(renderVisualAuditSpecCriteria([subject([])])).toBeNull();
@@ -91,6 +117,25 @@ describe('attachVisualAuditSpecCriteria', () => {
     expect(asked).toEqual(['m-1']);
     expect(cw.task.context[VISUAL_AUDIT_SPEC_CRITERIA_CONTEXT_KEY]).toEqual([{ taskId: BUILDER, revision: 3, criteria: ['AC-4'] }]);
     expect(cw.task.context.visualAuditDesign).toEqual({ artifactId: 'mission-art', revision: 2, from: 'mission' });
+  });
+
+  it("reads the design's screen kinds and puts its component screens in the plan; a failed read leaves them pages", async () => {
+    const cw = worker('audit-4');
+    const asked: unknown[] = [];
+    await attachVisualAuditSpecCriteria([cw], [{ id: 'audit-4', roleSlug: 'visual-auditor', dependsOn: [BUILDER], missionId: 'm-1' }],
+      async () => [subject([{ id: 'AC-14', text: 'x', screens: ['c-meter'] }])],
+      async () => ({ artifactId: 'mission-art', revision: 2 }),
+      async (d) => { asked.push(d); return [{ id: 'c-meter', name: 'Meter', viewport: '480x160', kind: 'component' }]; });
+    expect(asked).toEqual([{ artifactId: 'mission-art', revision: 2, from: 'mission' }]);
+    expect(cw.resolvedContextProviders[0]).toContain('"c-meter":{"kind":"component"}');
+
+    const failed = worker('audit-5');
+    await attachVisualAuditSpecCriteria([failed], [{ id: 'audit-5', roleSlug: 'visual-auditor', dependsOn: [BUILDER], missionId: 'm-1' }],
+      async () => [subject([{ id: 'AC-14', text: 'x', screens: ['c-meter'] }])],
+      async () => ({ artifactId: 'mission-art', revision: 2 }),
+      async () => { throw new Error('db down'); });
+    expect(failed.resolvedContextProviders[0]).toContain('### Design vs built');
+    expect(failed.resolvedContextProviders[0]).not.toContain('Component screens');
   });
 
   it('leaves other roles alone, and a failing read attaches nothing', async () => {
