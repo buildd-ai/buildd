@@ -64,6 +64,7 @@ import ServiceStatusFixture from './ServiceStatusFixture';
 import ClosedPrFixture from './ClosedPrFixture';
 import { CLOSED_PR_FIXTURE_STATE } from './closed-pr-fixtures';
 import DesignPreviewFixture from './DesignPreviewFixture';
+import CapacityAndIdleAlertFixture, { CAPACITY_FIXTURE_STATE } from './CapacityAndIdleAlertFixture';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
@@ -350,6 +351,10 @@ export default function DevFixturesPage() {
 
     if (state === CLOSED_PR_FIXTURE_STATE) {
         return <ClosedPrFixture />;
+    }
+
+    if (state === CAPACITY_FIXTURE_STATE) {
+        return <CapacityAndIdleAlertFixture />;
     }
 
     if (state === VISUAL_REVIEW_FIXTURE_STATE) {
