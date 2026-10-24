@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   candidateVersionOf,
+  checkVerdict,
   isShippable,
   latestSemverTag,
   parseCandidateMeta,
@@ -88,6 +89,10 @@ if (a === 'api') {
   if (method === 'GET' && (m = /pulls\\/(\\d+)\\/reviews/.exec(path))) { console.log(JSON.stringify(find(m[1]).reviews || [])); process.exit(0); }
   if (method === 'PUT' && (m = /pulls\\/(\\d+)\\/reviews\\/(\\d+)\\/dismissals/.exec(path))) {
     const r = find(m[1]).reviews.find((x) => x.id === Number(m[2])); r.state = 'DISMISSED'; save(); process.exit(0);
+  }
+  if (method === 'GET' && (m = /commits\\/([0-9a-f]{40})\\/check-runs\\?check_name=([^&]+)/.exec(path))) {
+    const runs = ((st.checks || {})[m[1]] || []).filter((r) => r.name === decodeURIComponent(m[2]));
+    console.log(JSON.stringify({ total_count: runs.length, check_runs: runs })); process.exit(0);
   }
 }
 console.error('gh stub: unhandled ' + args.join(' '));
@@ -181,6 +186,12 @@ const originSha = (f: Fixture, ref: string) => {
 const devHead = (f: Fixture) => originSha(f, 'refs/heads/dev')!;
 const prs = (f: Fixture): StubPr[] => JSON.parse(readFileSync(f.state, 'utf8')).prs;
 const setPrs = (f: Fixture, list: StubPr[], next = 100) => writeFileSync(f.state, JSON.stringify({ next, prs: list }));
+/** The check runs GitHub reports on a commit: `build` with that status/conclusion. */
+const setCheck = (f: Fixture, sha: string, verdict: 'success' | 'failure' | 'pending') => {
+  const st = JSON.parse(readFileSync(f.state, 'utf8'));
+  (st.checks ||= {})[sha] = [{ name: 'build', status: verdict === 'pending' ? 'in_progress' : 'completed', conclusion: verdict === 'pending' ? null : verdict }];
+  writeFileSync(f.state, JSON.stringify(st));
+};
 const ghCalls = (f: Fixture): string[][] => readFileSync(f.log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const showAt = (f: Fixture, rev: string, path: string) => git(f.origin, 'show', `${rev}:${path}`);
 
@@ -700,5 +711,86 @@ describe('reconcileChangelog: main’s promoted CHANGELOG back into dev', () => 
   test('dev edited a released section → refuses rather than pick a side', () => {
     const ours = base.replace('- old', '- old, corrected');
     expect(() => reconcileChangelog(base, ours, theirs)).toThrow('outside [Unreleased]');
+  });
+});
+
+// v0.381.0 was cut 41s after its source commit landed on dev, before dev's CI
+// on it had started; that CI went red, and so was the candidate from birth.
+describe('cut --require-check: only a commit CI verified is cut', () => {
+  const gated = (f: Fixture, source: string) => cut(f, source, ['--require-check', 'build']);
+
+  test('a head whose build is still running: the cut picks the last green dev SHA, and lists the head as not in it', () => {
+    const f = fixture();
+    const green = devCommit(f, 'feat: verified (#11)');
+    const head = devCommit(f, 'fix: landed 41s ago (#12)');
+    setCheck(f, green, 'success');
+    setCheck(f, head, 'pending');
+    const r = gated(f, head);
+    expect(r.status, r.log).toBe(0);
+    expect(r.outputs.status).toBe('created');
+    expect(r.outputs.source_sha).toBe(green);
+    expect(git(f.origin, 'rev-parse', 'refs/heads/release/v1.3.0^')).toBe(green);
+    expect(r.log).toContain('Cutting from the last green dev commit');
+    const [pr] = prs(f);
+    expect(parseCandidateMeta(pr.body)!.sourceSha).toBe(green);
+    expect(pr.body.slice(pr.body.indexOf('### Not in this candidate'))).toContain('#12');
+  });
+
+  test('a head whose build failed is skipped the same way', () => {
+    const f = fixture();
+    const green = devCommit(f, 'feat: verified (#11)');
+    const red = devCommit(f, 'fix: forked the migration chain (#12)');
+    setCheck(f, green, 'success');
+    setCheck(f, red, 'failure');
+    const r = gated(f, red);
+    expect(r.status, r.log).toBe(0);
+    expect(r.outputs.source_sha).toBe(green);
+  });
+
+  test('a green head is cut as captured', () => {
+    const f = fixture();
+    const head = devCommit(f, 'feat: verified (#11)');
+    setCheck(f, head, 'success');
+    const r = gated(f, head);
+    expect(r.status, r.log).toBe(0);
+    expect(r.outputs.source_sha).toBe(head);
+    expect(r.log).not.toContain('Cutting from the last green');
+  });
+
+  test('no green commit since main: refused, nothing pushed or opened', () => {
+    const f = fixture();
+    const head = devCommit(f, 'feat: unverified (#11)');
+    setCheck(f, head, 'pending');
+    const r = gated(f, head);
+    expect(r.status).toBe(1);
+    expect(r.outputs.status).toBe('refused');
+    expect(r.log).toContain('no dev commit since main has `build` green');
+    expect(originSha(f, 'refs/heads/release/v1.3.0')).toBeNull();
+    expect(prs(f)).toHaveLength(0);
+  });
+
+  test('an open candidate is reported without reading any checks', () => {
+    const f = fixture();
+    const head = devCommit(f, 'feat: x (#11)');
+    setCheck(f, head, 'success');
+    expect(gated(f, head).status).toBe(0);
+    const later = devCommit(f, 'fix: y (#12)');
+    writeFileSync(f.log, '');
+    const r = gated(f, later);
+    expect(r.status, r.log).toBe(0);
+    expect(r.outputs.status).toBe('existing');
+    expect(ghCalls(f).some((c) => c.some((x) => x.includes('check-runs')))).toBe(false);
+  });
+});
+
+describe('checkVerdict', () => {
+  test('green needs a success and nothing worse; running or absent is pending', () => {
+    expect(checkVerdict([{ status: 'completed', conclusion: 'success' }])).toBe('green');
+    expect(checkVerdict([{ status: 'completed', conclusion: 'success' }, { status: 'completed', conclusion: 'skipped' }])).toBe('green');
+    expect(checkVerdict([])).toBe('pending');
+    expect(checkVerdict([{ status: 'queued', conclusion: null }])).toBe('pending');
+    expect(checkVerdict([{ status: 'completed', conclusion: 'skipped' }])).toBe('pending');
+    expect(checkVerdict([{ status: 'completed', conclusion: 'success' }, { status: 'completed', conclusion: 'failure' }])).toBe('red');
+    expect(checkVerdict([{ status: 'completed', conclusion: 'cancelled' }])).toBe('red');
   });
 });
