@@ -22,7 +22,10 @@
  *     REPAIRING uses its currentAttempt to determine repair_running vs repair_queued;
  *  4. the newest `pr_landing` gate row, when it is about the current head (kernel)
  *     or no repair has completed since it was written (legacy);
- *  5. the legacy conflict fact (`workers.prLifecycleStatus = 'conflict'`).
+ *  5. the legacy conflict fact (`workers.prLifecycleStatus = 'conflict'`);
+ *  6. checks that are not green: an APPROVED delivery whose head is still
+ *     checking or red, or a legacy PR whose lifecycle says `ci_running` /
+ *     `ci_failed`. "Ready to merge" needs green checks (task 8d440b64).
  * An open repair attempt upgrades a conflict or collision to queued / running.
  */
 import type { DeliveryView } from '@/lib/workflow/projections';
@@ -36,6 +39,8 @@ export type LandingBlockCause =
   | 'human_decision'
   | 'trunk_blocked'
   | 'ci_pending'
+  /** The PR's checks are red on its current head, and no CI-fix chain reports it. */
+  | 'ci_failed'
   | 'review_pending'
   | 'fix_pending'
   | 'push_pending'
@@ -192,7 +197,7 @@ export function deriveLandingBlocker(p: {
     cause = 'conflicted';
     derivedFrom = 'workers.prLifecycleStatus';
   }
-  if (!cause) return null;
+  if (!cause) return checksBlocker(pr, base, d, p.prLifecycleStatus);
 
   if ((cause === 'conflicted' || cause === 'migration_collision') && openRepair) {
     return {
@@ -236,4 +241,37 @@ export function deriveLandingBlocker(p: {
     default:
       return null;
   }
+}
+
+/**
+ * Rule 6: an otherwise mergeable PR whose checks are not green. A legacy
+ * `pr_open` (no check has reported) is not read as pending: a repo without CI
+ * never leaves it.
+ */
+function checksBlocker(
+  pr: string,
+  base: Pick<LandingBlocker, 'taskId' | 'prNumber' | 'prUrl'>,
+  d: Pick<DeliveryView, 'state' | 'prState' | 'owner'> | null | undefined,
+  prLifecycleStatus: string | null | undefined,
+): LandingBlocker | null {
+  const ci = d
+    ? (d.state === 'APPROVED' ? d.prState : null)
+    : prLifecycleStatus === 'ci_failed' ? 'ci_failed' : prLifecycleStatus === 'ci_running' ? 'ci_running' : null;
+  const derivedFrom: LandingBlocker['derivedFrom'] = d ? 'workflow_deliveries' : 'workers.prLifecycleStatus';
+  if (ci === 'ci_running' || ci === 'awaiting_ci') {
+    return { ...base, cause: 'ci_pending', owner: 'platform', label: `${pr}: CI is still running`, nextAction: 'Nothing to do yet: it is re-checked when CI finishes.', derivedFrom };
+  }
+  if (ci !== 'ci_failed') return null;
+  // A kernel-owned PR's CI repair is the platform's move unless the delivery names a person.
+  const person = d ? d.owner === 'human' : true;
+  return {
+    ...base,
+    cause: 'ci_failed',
+    owner: person ? 'person' : 'platform',
+    label: `${pr}: its checks are failing`,
+    nextAction: person
+      ? 'Not ready to merge: fix the failing checks, or re-run them if the failure is a flake.'
+      : 'Not ready to merge: buildd repairs CI on this head before it merges.',
+    derivedFrom,
+  };
 }

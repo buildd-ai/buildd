@@ -173,3 +173,32 @@ describe('deriveLandingBlocker — conflict takes precedence over review states'
     expect(blocker?.label).toContain('repair is running');
   });
 });
+
+describe('deriveLandingBlocker — ready to merge needs green checks (task 8d440b64)', () => {
+  const base = { taskId: 'task-1', prNumber: 42, prUrl: 'https://github.com/org/repo/pull/42' };
+  const approved = (prState: 'ci_failed' | 'ci_running' | 'awaiting_ci' | 'ci_passed', owner: 'landing' | 'human' = 'landing') => ({
+    state: 'APPROVED' as const, headline: 'Approved', prState, headSha: 'abc123', detail: null, currentAttempt: null, owner,
+  });
+
+  it('an approved delivery with red checks is blocked, the platform\'s move unless a person owns it', () => {
+    expect(deriveLandingBlocker({ ...base, delivery: approved('ci_failed') })).toMatchObject({ cause: 'ci_failed', owner: 'platform' });
+    expect(deriveLandingBlocker({ ...base, delivery: approved('ci_failed', 'human') })).toMatchObject({ cause: 'ci_failed', owner: 'person' });
+  });
+
+  it('an approved delivery still checking waits on CI', () => {
+    expect(deriveLandingBlocker({ ...base, delivery: approved('ci_running') })?.cause).toBe('ci_pending');
+    expect(deriveLandingBlocker({ ...base, delivery: approved('awaiting_ci') })?.cause).toBe('ci_pending');
+  });
+
+  it('an approved delivery with green checks is not blocked', () => {
+    expect(deriveLandingBlocker({ ...base, delivery: approved('ci_passed') })).toBeNull();
+  });
+
+  it('a legacy PR reads its lifecycle: red and running block, open and green do not', () => {
+    expect(deriveLandingBlocker({ ...base, prLifecycleStatus: 'ci_failed' })).toMatchObject({ cause: 'ci_failed', owner: 'person', derivedFrom: 'workers.prLifecycleStatus' });
+    expect(deriveLandingBlocker({ ...base, prLifecycleStatus: 'ci_running' })?.cause).toBe('ci_pending');
+    // A repo with no CI never leaves pr_open, so it is not read as pending.
+    expect(deriveLandingBlocker({ ...base, prLifecycleStatus: 'pr_open' })).toBeNull();
+    expect(deriveLandingBlocker({ ...base, prLifecycleStatus: 'ci_green' })).toBeNull();
+  });
+});

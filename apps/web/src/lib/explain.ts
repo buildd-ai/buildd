@@ -1192,9 +1192,6 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
       })) as any as LoadedTask[],
   });
   const historyTasks = [...new Map([...lineage, ...family].map(t => [t.id, t])).values()];
-  // Family scope: the attempts ARE this task's work, so they count here even
-  // though mission-scope health (deliverables only) ignores them.
-  const health = deriveTaskHealthSignal({}, family, { scope: 'family' });
   const activeAgents = family.flatMap(t => t.workers ?? []).filter(w => LIVE_WORKER_STATUSES.has(w.status)).length;
 
   const worker = task.workers?.[0];
@@ -1262,12 +1259,25 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
       ? [{ id: openAttempt.taskId, status: openAttempt.status, title: openAttempt.title }]
       : [];
   // S35: a failed attempt the kernel already carried past is history, not a failure.
+  // While the PR's delivery is live it owns the state, so no failed row in the
+  // family overrides it: two PRs escalated on one rule read alike whether or not
+  // a fix attempt failed on the way (task 8d440b64).
+  const deliveryLive = !!prDelivery && !deliverySettled(prDelivery);
   const replaced = replacedFailedTaskIds(deliveries, family.filter(t => t.status === 'failed').map(t => t.id));
-  const failedTasks = family.filter(t => t.status === 'failed' && !replaced.has(t.id));
+  const failedTasks = deliveryLive ? [] : family.filter(t => t.status === 'failed' && !replaced.has(t.id));
+  // Family scope: the attempts ARE this task's work, so they count here even
+  // though mission-scope health (deliverables only) ignores them.
+  const health = deriveTaskHealthSignal({}, deliveryLive ? family.filter(t => t.status !== 'failed') : family, { scope: 'family' });
 
   // Why the unmerged PR cannot land, from stored landing facts (§13.11 rule 3).
   const openPr = unmergedPr.find(p => !p.closedUnsuperseded) ?? null;
-  const landingBlocked = openPr ? await loadLandingBlocker(task, openPr, prDelivery, worker?.prLifecycleStatus ?? null, historyTasks) : [];
+  const ciRed = deriveCiRedChains(
+    unmergedPr.filter(p => !p.closedUnsuperseded).map(p => (prDelivery ? { ...p, ciRed: prDelivery.prState === 'ci_failed' } : p)),
+    family,
+  );
+  // An exhausted CI-fix chain says more than "its checks are failing", so it keeps the reading.
+  const landingBlocked = (openPr ? await loadLandingBlocker(task, openPr, prDelivery, worker?.prLifecycleStatus ?? null, historyTasks) : [])
+    .filter(b => b.cause !== 'ci_failed' || !ciRed.some(c => c.prNumber === b.prNumber));
 
   const runnerOnline = await runnerOnlineFor(family, task.workspaceId, executor === 'local');
   const missingBrowser = await missingBrowserFor(family, task.workspaceId, executor === 'local');
@@ -1296,10 +1306,7 @@ async function viewForTask(taskId: string, viewer: DependencyViewer): Promise<{
     })),
     wait: classifyMissionWait(family as unknown as WaitClassifiableTask[]),
     landingBlocked,
-    ciRed: deriveCiRedChains(
-      unmergedPr.filter(p => !p.closedUnsuperseded).map(p => (prDelivery ? { ...p, ciRed: prDelivery.prState === 'ci_failed' } : p)),
-      family,
-    ),
+    ciRed,
     completion: unmergedPr.length > 0 && !openAttempt
       ? {
           ok: false,
@@ -1369,11 +1376,16 @@ async function holdsForViewer(
  * `actor` is who the inline evidence list is audited to. Reach is the caller's
  * job: GET /api/explain has already decided the actor can read the workspace.
  */
-/** Attach the kernel's DeliveryView reading when the task's delivery is kernel-owned (S28). */
+/**
+ * Attach the kernel's DeliveryView reading when the task's delivery is kernel-owned (S28).
+ * While the delivery is live it names the owner of the next move, so the
+ * presentation's needsYou is the delivery's: one answer never says both (task 8d440b64).
+ */
 function withDelivery(answer: ExplainAnswer, v: DeliveryView | null): ExplainAnswer {
   if (!v) return answer;
   return {
     ...answer,
+    ...(deliverySettled(v) ? {} : { presentation: { ...answer.presentation, needsYou: v.needsYou } }),
     delivery: { state: v.state, owner: v.owner, needsYou: v.needsYou, headline: v.headline, detail: v.detail, attempts: attemptLine(v.attempts) },
   };
 }
@@ -1512,6 +1524,29 @@ async function loadBaseSideMerges(input: {
   });
 }
 
+/** The owner task of the kernel delivery bound to this PR, or null. Never throws. */
+async function deliveryOwnerForPr(workspaceId: string, prUrl: string | null, prNumber: number): Promise<string | null> {
+  const repo = prUrl ? /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/.exec(prUrl)?.[1] ?? null : null;
+  if (!repo) return null;
+  const res = await db.execute(sql`-- workflow:delivery_owner_for_pr
+SELECT owner_task_id, pr_number FROM workflow_deliveries
+WHERE workspace_id = ${workspaceId}::uuid AND repo_full_name = ${repo}::text AND pr_number = ${prNumber}::int AND authority = 'kernel'
+ORDER BY created_at DESC LIMIT 1`).catch(() => null);
+  const row = ((res as { rows?: Array<{ owner_task_id?: unknown; pr_number?: unknown }> } | null)?.rows ?? [])
+    .find(r => Number(r.pr_number) === prNumber);
+  return typeof row?.owner_task_id === 'string' ? row.owner_task_id : null;
+}
+
+/** The mission whose integration branch a PR targets, for a PR whose task names none (#5623). */
+async function missionForBaseRef(workspaceId: string, baseRef: string | null): Promise<string | null> {
+  if (!baseRef) return null;
+  const m = await db.query.missions.findFirst({
+    where: sqlWhere(and(eq(missions.workspaceId, workspaceId), eq(missions.workingBranch, baseRef))),
+    columns: { id: true, integrationBranchEnabled: true, workingBranch: true },
+  }).catch(() => null);
+  return m && m.integrationBranchEnabled && m.workingBranch === baseRef ? m.id : null;
+}
+
 /**
  * The task a PR ships: the owner of its kernel delivery, else the task that
  * opened it. Every fix attempt on the PR (a CI fix, a review fix) records the
@@ -1519,7 +1554,11 @@ async function loadBaseSideMerges(input: {
  * be an attempt's; read as the subject, a cancelled CI fix reported an open,
  * red PR as complete. An attempt that opened a PR of its own keeps it.
  */
-export async function prOwnerTaskId(taskId: string, prNumber: number): Promise<string> {
+export async function prOwnerTaskId(taskId: string, prNumber: number, pr?: { workspaceId: string; prUrl: string | null }): Promise<string> {
+  // The PR's own delivery first: a person's "resolve conflicts and merge" task
+  // also records the PR number, and is neither the owner nor an attempt (#5580).
+  const byPr = pr ? await deliveryOwnerForPr(pr.workspaceId, pr.prUrl, prNumber) : null;
+  if (byPr) return byPr;
   const dv = (await getDeliveryViewsForTasks([taskId])).get(taskId);
   if (dv && dv.prNumber === prNumber) return dv.ownerTaskId;
   let id = taskId;
@@ -1562,10 +1601,11 @@ export async function explainPr(worker: {
 }, actor: EvidenceActor, viewer: DependencyViewer = { kind: 'member' }): Promise<ExplainResult | null> {
   if (!worker.taskId || worker.prNumber == null) return null;
 
-  const taskId = await prOwnerTaskId(worker.taskId, worker.prNumber);
+  const taskId = await prOwnerTaskId(worker.taskId, worker.prNumber, worker);
   const loaded = await viewForTask(taskId, viewer);
   if (!loaded) return null;
-  const { view, task, lineage, answerExtras, workspaceId, missionId, deliveries, prDelivery } = loaded;
+  const { view, task, lineage, answerExtras, workspaceId, deliveries, prDelivery } = loaded;
+  const missionId = loaded.missionId ?? await missionForBaseRef(workspaceId ?? worker.workspaceId, worker.prBaseRef);
 
   const subject: ExplainAnswer['subject'] = {
     scope: 'pr',
