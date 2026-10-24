@@ -173,6 +173,13 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      # The harness imports packages/core files (ui-verification.ts needs zod),
+      # but bun installs a workspace's deps into that workspace's own
+      # node_modules, which a module under .qa-harness never walks up to.
+      # Link the app's so the harness's import graph resolves.
+      - name: Link app dependencies into the QA harness
+        run: ln -s "$PWD/packages/core/node_modules" .qa-harness/packages/core/node_modules
+
       - name: Install Playwright + Chromium
         id: browser_install
         # The repo's pinned Playwright, same as the runner (playwright-pin.ts).
