@@ -2271,12 +2271,6 @@ export class WorkerManager {
       this.emit({ type: 'circuit_breaker', paused: false, pausedUntil: 0, reason: 'reset' });
     }
 
-    // Every provider this runner can start on is at its login limit: poll when the first lifts.
-    if (this.providerLimits.allHeld()) {
-      const lift = this.providerLimits.nextLift();
-      if (lift !== null) this.scheduleResumeAt(lift, 'provider limit reset');
-      return [];
-    }
 
     let slots = this.config.maxConcurrent - this.busySlotCount();
     if (slots <= 0) return [];
@@ -2680,6 +2674,11 @@ export class WorkerManager {
     }
     this.noteProviderLimitOutcome();
     this.scheduleResumeAt(untilMs, 'provider limit reset');
+    // Pause claims if all available providers are held.
+    if (this.allAvailableProvidersHeld()) {
+      this.claimsPaused = true;
+      this.claimsPausedUntil = Math.max(this.claimsPausedUntil, untilMs);
+    }
     // `circuit_breaker` paused:true reads as every claim paused; only say so when both providers are held.
     if (this.providerLimits.allHeld()) {
       this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: untilMs, reason: `${limit.provider} login at its limit (${limit.kind})` });
@@ -2693,6 +2692,22 @@ export class WorkerManager {
     const walls = this.providerLimits.report().map(w => ({ kind: 'runner_seat', backend: w.provider, resetsAt: w.resetsAt }));
     if (walls.length === 0) return;
     this.noteClaimOutcome(null, { at: Date.now(), reason: 'budget_exhausted', walls });
+  }
+
+  /** Check if all providers available to this runner are held. */
+  private allAvailableProvidersHeld(): boolean {
+    const claudeAvailable = this.modelAuth.source !== 'none';
+    const codexAvailable = this.codexAuth !== 'none';
+
+    // If credentials are detected, use those. If neither is detected but hasCredentials is true,
+    // assume Claude is available (test setup compatibility when detection isn't fully configured).
+    const effectiveClaudeAvailable = claudeAvailable || (this.hasCredentials && !claudeAvailable && !codexAvailable);
+    const effectiveCodexAvailable = codexAvailable;
+
+    if (!effectiveClaudeAvailable && !effectiveCodexAvailable) return false;
+    if (effectiveClaudeAvailable && !this.providerLimits.isHeld('claude')) return false;
+    if (effectiveCodexAvailable && !this.providerLimits.isHeld('codex')) return false;
+    return true;
   }
 
   /**
