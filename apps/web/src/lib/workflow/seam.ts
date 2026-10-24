@@ -43,12 +43,13 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import type { KernelView, PolicyOutcome, Verdict } from './types';
 import {
   UNKNOWN_CI_SIGNATURE, blockedOnResolvedSql, classifyCiFailure, openOrJoinIncidentSql, repairingCiOnBaseSql,
-  resolveIncidentSql, touchIncidentSql, trunkExplains, trunkRecoveredOnRuns, unresolvedIncidentsSql, unresolvedIncidentsByIdSql, TRUNK_AFFECTED_CAP, type TrunkClassification,
+  resolveIncidentSql, touchIncidentSql, trunkExplains, trunkFixLandedGreen, trunkRecoveredOnRuns, unresolvedIncidentsSql, unresolvedIncidentsByIdSql, TRUNK_AFFECTED_CAP, type TrunkClassification,
 } from './trunk';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
 import { recordPrStateObserved } from './render-observation';
 import { endingWorkerIsCurrentSql, isAttemptRow, notOwnerTaskSql, ownerAttemptEndOf, ownerClaimOpenSql, projectAttemptStartSql, projectLoopExitSql, projectOwnerEndSql, projectReopenSql, projectRequeueSql, projectWithdrawSql, requeueingAttemptIsCurrentSql } from './task-projection';
+import { taskPrOf } from './task-pr';
 import { isTerminalWorkerStatus } from '@buildd/shared';
 import { scheduleKernelHeal } from './kernel-heal';
 import { KernelObservationFailed } from './kernel-observation';
@@ -1910,7 +1911,7 @@ export async function reconcileTrunkIncidents(deps: SeamDeps = {}, limit = 25): 
   return s;
 }
 
-type TrunkIncidentRow = { id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string };
+type TrunkIncidentRow = { id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string; trunk_fix_task_id?: string | null };
 
 /**
  * One incident's recheck, the floor's and the recheck queue's alike: read the base head now and resolve
@@ -1927,8 +1928,12 @@ async function recheckTrunkIncident(inc: TrunkIncidentRow, deps: SeamDeps, s: Tr
     readBase = !!reader;
     const head = reader?.branchHead ? await reader.branchHead(inc.repo_full_name, inc.base_ref) : null;
     const runs = head && reader?.checkRuns ? await reader.checkRuns(inc.repo_full_name, head, { tests: true }) : null;
-    // Unknown, or the incident's checks still running, is never read as recovered.
-    if (trunkRecoveredOnRuns(inc.signature, runs)) {
+    // Unknown, or the incident's checks still running, is never read as recovered. A base head with
+    // no runs at all (a mission branch has no CI of its own) is recovered by its fix PR landing green.
+    if (trunkRecoveredOnRuns(inc.signature, runs) || (head && reader && runs === null && inc.trunk_fix_task_id && await trunkFixLandedGreen({
+      repoFullName: inc.repo_full_name, baseRef: inc.base_ref, baseHead: head, signature: inc.signature, reader,
+      fixPrNumber: (await taskPrOf(String(inc.trunk_fix_task_id), exec))?.prNumber ?? null,
+    }))) {
       const won = ((await exec(resolveIncidentSql(String(inc.id)))).rows ?? []).length > 0;
       if (won) s.resolved++;
       return { resolved: true, readBase };
