@@ -30,6 +30,7 @@ import { selectMissionRecords } from '@/lib/flight-strip-nav';
 import MissionVerifiedPill from './MissionVerifiedPill';
 import MissionOverflowMenu from './MissionOverflowMenu';
 import MissionNoticeSlot, { noticeNeedsPerson } from './MissionNoticeSlot';
+import { buildStageSituation } from '@/lib/mission-build-notice';
 import MissionRecoveryNotice from '@/components/recovery/MissionRecoveryNotice';
 import { loadTaskRecoveryViewsForViewer } from '@/lib/incident-recovery-load';
 import MissionMergePolicyRow from '@/components/MissionMergePolicyRow';
@@ -58,10 +59,10 @@ import MissionConfig from './MissionConfig';
 import { MissionNotesSheet } from './MissionFeed';
 import { mastheadBack, parseMissionOrigin } from './MissionDetailView';
 import MissionLayoutShell, { MissionBoardHeader } from './MissionLayoutShell';
-import { historyRaised, missionDecisions, type OpenQuestionNote } from '@/lib/mission-decisions';
+import { criteriaEscalationFor, historyRaised, missionDecisions, type OpenQuestionNote } from '@/lib/mission-decisions';
 import { withoutStaleRoundCap } from '@/lib/visual-review-decision';
 import { loadQuestionWaitsFor } from '@/lib/question-waits';
-import { boardTaskHref } from './MissionBoardParts';
+import { missionTaskHref } from '@/lib/mission-task-href';
 import FlowTimeline from './FlowTimeline';
 import { expectedMinutesFromPredictions, sameFilesFromRows } from '@/lib/flow-timeline';
 import MissionOverview, { type MissionChecksSource } from './MissionOverview';
@@ -97,6 +98,7 @@ import { classifyReleaseState } from '@/lib/release-state';
 import { legacyTaskSheetRedirect, taskPageHref } from '@/lib/mission-task-href';
 import MissionDecisionSheet from './MissionDecisionSheet';
 import { buildFileWorkHref } from '@/lib/criteria-decision-links';
+import { criterionLabel } from '@/lib/goal-criterion-label';
 import RaiseBudgetButton from './RaiseBudgetButton';
 import { getMissionSpendUsd } from '@/lib/mission-budget';
 import { getLinksForEntity } from '@buildd/core/external-links';
@@ -1023,40 +1025,31 @@ async function MissionDetailBody({
   const recordIds = new Set(missionRecords.map(a => a.id));
   const recordItems = artifactItems.filter(a => recordIds.has(a.id));
 
-  const decisionBlock = displayState === 'waiting_decision' && (() => {
-        const readingCopy = describeCriteriaBlocker(goalCriteriaStateFull);
-        // First non-passing criterion, by its stable `index` — not array
-        // position in `criteria`, which can skip entries.
-        const failingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
-        const failingCriterionIndex = failingState ? failingState.index : null;
-        const failingCriterion = failingCriterionIndex != null ? goalCriteria[failingCriterionIndex] ?? null : null;
-        const waitingOn = missionAnswer?.waitingOn ?? null;
-        const surfaceAuditBlocked = waitingOn?.kind === 'human_decision' && waitingOn.surfaceAudit === true;
-        const surfaceAuditPaths = surfaceAuditBlocked && waitingOn.surfaceAuditPaths ? waitingOn.surfaceAuditPaths : [];
-        const criteriaUnmet = goalCriteria.length > 0 && goalCriteriaStateFull?.overall !== 'pass';
-        const fileWorkHref = buildFileWorkHref({
-          missionId: id,
-          missionTitle: mission.title,
-          criterion: failingCriterion,
-          evidence: failingState?.evidence ?? null,
-        });
-        return (
-          <div data-testid="mission-decision">
-            <p className="text-body text-text-secondary [overflow-wrap:anywhere]">
-              <span className="font-semibold text-accent-text">Decision needed. </span>
-              {surfaceAuditBlocked ? surfaceAuditHeadline(surfaceAuditPaths.length) : readingCopy}
-            </p>
-            <MissionDecisionSheet
-              missionId={id}
-              fileWorkHref={fileWorkHref}
-              criteriaUnmet={criteriaUnmet}
-              surfaceAudit={surfaceAuditBlocked
-                ? { paths: surfaceAuditPaths, executorLocal: (mission as any).executor === 'local' }
-                : null}
-            />
-          </div>
-        );
-      })();
+  // The goal-criteria escalation is a decision card (Navigation R-16); the
+  // missing visual audit is a Verify block (R-17 to R-19).
+  const escalationGate = displayState === 'waiting_decision' && (() => {
+    const waitingOn = missionAnswer?.waitingOn ?? null;
+    const surfaceAuditBlocked = waitingOn?.kind === 'human_decision' && waitingOn.surfaceAudit === true;
+    return { waitingOn, surfaceAuditBlocked };
+  })();
+  const decisionBlock = escalationGate && escalationGate.surfaceAuditBlocked && escalationGate.waitingOn?.kind === 'human_decision' && (() => {
+    const waitingOn = escalationGate.waitingOn;
+    const surfaceAuditPaths = waitingOn.surfaceAuditPaths ?? [];
+    return (
+      <div data-testid="mission-decision">
+        <p className="text-body text-text-secondary [overflow-wrap:anywhere]">
+          <span className="font-semibold text-accent-text">Decision needed. </span>
+          {surfaceAuditHeadline(surfaceAuditPaths.length)}
+        </p>
+        <MissionDecisionSheet
+          missionId={id}
+          fileWorkHref=""
+          criteriaUnmet={false}
+          surfaceAudit={{ paths: surfaceAuditPaths, executorLocal: (mission as any).executor === 'local' }}
+        />
+      </div>
+    );
+  })();
 
   // The mission's settings: rendered inside the ⋯ sheet, the one place the
   // mission is configured (MissionOverflowMenu).
@@ -1239,23 +1232,36 @@ async function MissionDetailBody({
   // Overview only (spec f7f67f1a R-37): History is the timeline, not a second copy.
   const quietState = ['running', 'active', 'complete'].includes(displayState);
   const budgetExhausted = budgetUsd != null && mission.status === 'budget_exhausted';
+  const needsPerson = !quietState && noticeNeedsPerson({
+    displayState,
+    budgetExhausted,
+    focusKind: missionAnswer?.situation.focus?.kind ?? null,
+  });
+  const verifySituation = !quietState && missionAnswer && (
+    <MissionNoticeSlot needsYou={needsPerson}>
+      <MissionSituationBlock
+        missionId={id}
+        situation={missionAnswer.situation}
+        because={missionAnswer.because}
+        criteriaReachable={criteriaReachable}
+      />
+      {decisionBlock}
+    </MissionNoticeSlot>
+  );
+  // Build: a failed task is a row, the goal escalation a decision card, the audit a Verify fact.
+  const buildSituationView = !quietState && missionAnswer ? buildStageSituation(missionAnswer.situation) : null;
+  const buildSituation = buildSituationView && (
+    <MissionNoticeSlot needsYou={needsPerson}>
+      <MissionSituationBlock
+        missionId={id}
+        situation={buildSituationView}
+        because={missionAnswer!.because}
+        criteriaReachable={criteriaReachable}
+      />
+    </MissionNoticeSlot>
+  );
   const boardNotice = quietState && !missionPrCard && !scopeUpdatesBlock && !acceptanceBlock && !reviewSummary && recoveryItems.length === 0 ? null : (
-    <MissionNoticeSlot
-      needsYou={!quietState && noticeNeedsPerson({
-        displayState,
-        budgetExhausted,
-        focusKind: missionAnswer?.situation.focus?.kind ?? null,
-      })}
-    >
-      {!quietState && missionAnswer && (
-        <MissionSituationBlock
-          missionId={id}
-          situation={missionAnswer.situation}
-          because={missionAnswer.because}
-          criteriaReachable={criteriaReachable}
-        />
-      )}
-      {!quietState && decisionBlock}
+    <MissionNoticeSlot needsYou={needsPerson}>
       {!quietState && budgetExhausted && budgetDetail}
       {recoveryItems.length > 0 && <MissionRecoveryNotice items={recoveryItems} />}
       {missionPrCard}
@@ -1280,9 +1286,23 @@ async function MissionDetailBody({
   const waitsByTask = decisionTaskIds.length > 0
     ? await loadQuestionWaitsFor(decisionTaskIds, { kind: 'person', userId: user.id }).catch(() => new Map())
     : new Map();
-  const decisions = layout === 'board'
-    ? missionDecisions({ model: boardModel, notes: openQuestionNotes, mission: { id, title: mission.title, href: `/app/missions/${id}` }, hrefFor: taskId => boardTaskHref(boardLink, taskId), visual: boardVisual, waitsByTask })
+  const criteriaFailingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
+  const criteriaFailingCriterion = criteriaFailingState ? goalCriteria[criteriaFailingState.index] ?? null : null;
+  const criteriaDecision = layout === 'board' ? criteriaEscalationFor({
+    displayState,
+    surfaceAuditBlocked: !!escalationGate && escalationGate.surfaceAuditBlocked,
+    criteriaUnmet: goalCriteria.length > 0 && goalCriteriaStateFull?.overall !== 'pass',
+    missionId: id,
+    reading: describeCriteriaBlocker(goalCriteriaStateFull),
+    criterion: criteriaFailingCriterion ? criterionLabel(criteriaFailingCriterion) : null,
+    fileWorkHref: buildFileWorkHref({ missionId: id, missionTitle: mission.title, criterion: criteriaFailingCriterion, evidence: criteriaFailingState?.evidence ?? null }),
+    mission: { id, title: mission.title, href: `/app/missions/${id}` },
+    askedAt: null,
+  }) : null;
+  const boardDecisions = layout === 'board'
+    ? missionDecisions({ model: boardModel, notes: openQuestionNotes, mission: { id, title: mission.title, href: `/app/missions/${id}` }, hrefFor: taskId => missionTaskHref({ missionId: boardLink.missionId, taskId, from: boardLink.from, initiativeId: boardLink.initiativeId }), visual: boardVisual, waitsByTask })
     : [];
+  const decisions = criteriaDecision ? [criteriaDecision, ...boardDecisions] : boardDecisions;
   const history = layout === 'board' ? historyRaised(boardModel, withoutStaleRoundCap(openQuestionNotes, boardVisual)) : null;
   // Verified reads current verdicts, never a stale stored overall: a criterion not
   // passing on the board's live counts, or a blocking visual review not clear, holds it.
@@ -1418,7 +1438,7 @@ async function MissionDetailBody({
       <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
         initial={layout}
-        board={layout !== 'board' ? null : boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} checks={overviewChecks} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} decisions={decisions} history={history} expectedMinutes={flowExpectedMinutes} design={<LinkedDesigns subjectKind="mission" subjectId={id} userId={user.id} collapsed />} {...boardLink} />)}
+        board={layout !== 'board' ? null : boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} situation={{ build: buildSituation || null, verify: verifySituation || null }} visual={boardVisual} checks={overviewChecks} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} decisions={decisions} history={history} expectedMinutes={flowExpectedMinutes} design={<LinkedDesigns subjectKind="mission" subjectId={id} userId={user.id} collapsed />} {...boardLink} />)}
         flow={layout !== 'flow' ? null : boardHeader(<FlowTimeline model={boardModel} sameFiles={flowSameFiles} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
         feed={layout !== 'feed' ? null : boardHeader(
           <MissionFeedLayout

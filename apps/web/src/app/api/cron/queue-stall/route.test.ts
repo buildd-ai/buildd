@@ -114,7 +114,6 @@ mock.module('@buildd/core/db/schema', () => ({
 const mockCheckConnectorRouting = mock(() => Promise.resolve(null as any));
 const mockCheckMissionHeld = mock(() => Promise.resolve(false));
 const mockCheckMissionLocal = mock(() => Promise.resolve(false));
-const mockCheckWorkspaceCap = mock(() => Promise.resolve(null as any));
 const mockCheckMissionBudgetExhausted = mock(() => Promise.resolve(false));
 
 mock.module('@/app/api/workers/claim/connector-gate', () => ({
@@ -134,9 +133,6 @@ mock.module('@/app/api/workers/claim/held-gate', () => ({
 }));
 mock.module('@/app/api/workers/claim/mission-budget-gate', () => ({
   checkMissionBudgetExhausted: mockCheckMissionBudgetExhausted,
-}));
-mock.module('@/app/api/workers/claim/workspace-cap-gate', () => ({
-  checkWorkspaceCap: mockCheckWorkspaceCap,
 }));
 
 // The backend-credential probe (lib/backend-strand.ts) reads secrets + the team
@@ -206,7 +202,6 @@ function task(over: Record<string, unknown> = {}) {
       name: 'buildd',
       teamId: 'team-1',
       repo: null,
-      maxConcurrentTasks: 3,
     },
     ...over,
   };
@@ -228,8 +223,6 @@ beforeEach(() => {
   mockCheckMissionHeld.mockResolvedValue(false);
   mockCheckMissionLocal.mockClear();
   mockCheckMissionLocal.mockResolvedValue(false);
-  mockCheckWorkspaceCap.mockClear();
-  mockCheckWorkspaceCap.mockResolvedValue(null);
   mockCheckMissionBudgetExhausted.mockClear();
   mockCheckMissionBudgetExhausted.mockResolvedValue(false);
   strandVerdict = null;
@@ -406,18 +399,17 @@ describe('queue-stall cron — names the blocking gate', () => {
     expect(body.stalled[0].gate).toBe('mission_held');
   });
 
-  it('names workspace_cap_reached for a repo-backed workspace at its cap', async () => {
+  it('never names a workspace cap: a repo-backed workspace has no concurrency number', async () => {
     candidateTasks = [
       task({
-        workspace: { id: 'ws-1', name: 'buildd', teamId: 'team-1', repo: 'org/repo', maxConcurrentTasks: 3 },
+        workspace: { id: 'ws-1', name: 'buildd', teamId: 'team-1', repo: 'org/repo' },
       }),
     ];
-    mockCheckWorkspaceCap.mockResolvedValue({ active: 3, cap: 3 });
 
     const body = await (await POST(makeRequest())).json();
 
-    expect(body.stalled[0].gate).toBe('workspace_cap_reached');
-    expect(body.stalled[0].detail).toContain('3/3');
+    expect(body.stalled[0].gate).toBe('no_gate_identified');
+    expect(JSON.stringify(body)).not.toContain('workspace_cap');
   });
 
   it('names mission_budget_exhausted — the widest-blast-radius gate', async () => {
@@ -688,13 +680,13 @@ describe('queue-stall cron — missing backend credential', () => {
   it('keeps /start\'s gate order: a gate /start can name still wins', async () => {
     // Every reason shared with /api/tasks/[id]/start is reported in /start's
     // order, so an operator who clicks Start sees the same answer.
-    candidateTasks = [task({ workspace: { ...task().workspace, repo: 'buildd-ai/buildd' } })];
-    mockCheckWorkspaceCap.mockResolvedValue({ active: 3, cap: 3 });
+    candidateTasks = [task({ missionId: 'mission-1', workspace: { ...task().workspace, repo: 'buildd-ai/buildd' } })];
+    mockCheckMissionBudgetExhausted.mockResolvedValue(true);
     strandVerdict = { backend: 'codex', label: 'Codex' };
 
     const body = await (await POST(makeRequest())).json();
 
-    expect(body.stalled[0].gate).toBe('workspace_cap_reached');
+    expect(body.stalled[0].gate).toBe('mission_budget_exhausted');
   });
 
   it('reports missing credentials for an undeclared-scope mission task', async () => {
@@ -1157,7 +1149,6 @@ describe('fleet-idle pass — scope isolation', () => {
     expect(body.alarms).toBe(1);
     expect(mockCheckConnectorRouting).not.toHaveBeenCalled();
     expect(mockCheckMissionHeld).not.toHaveBeenCalled();
-    expect(mockCheckWorkspaceCap).not.toHaveBeenCalled();
     expect(mockStrandCheck).not.toHaveBeenCalled();
     expect(mockPacingCheck).not.toHaveBeenCalled();
     expect(body.stalled).toBeUndefined();

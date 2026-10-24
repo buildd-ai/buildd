@@ -6,7 +6,7 @@ import { describeExplicitDeferral, type DeferralReason } from './explicit-deferr
 // key must name itself.
 const ALL: DeferralReason[] = [
   'connector_mismatch', 'subject_dead', 'path_overlap', 'advisory_manifest',
-  'mission_budget', 'mission_concurrent', 'mission_paced', 'workspace_cap',
+  'mission_budget', 'mission_concurrent',
   'provider_unavailable', 'budget_paused', 'routing_paused', 'duplicate_worker',
   'runner_capability', 'codex_single_flight', 'oauth_parallelism', 'role_env_unsatisfied',
   'managed_concurrency', 'managed_runner_hours', 'hosted_runner_hours', 'no_personal_credential',
@@ -55,9 +55,6 @@ describe('describeExplicitDeferral', () => {
 
   it('carries the numbers the loop had in hand', () => {
     expect(describeExplicitDeferral('mission_concurrent', { active: 3, cap: 3 }).detail).toContain('3/3');
-    expect(describeExplicitDeferral('workspace_cap', { active: 4, cap: 3 }).detail).toContain('4/3');
-    expect(describeExplicitDeferral('mission_paced', { nextEligibleAt: '2026-09-28T13:00:00.000Z' }).detail)
-      .toContain('2026-09-28T13:00:00.000Z');
     expect(describeExplicitDeferral('advisory_manifest', { blockingPeer: 'peer-task' }).detail).toContain('peer-task');
     expect(describeExplicitDeferral('path_overlap', { blockingTaskId: 'blocker-1', prNumber: null }).detail).toContain('blocker-1');
     expect(describeExplicitDeferral('path_overlap', { prNumber: 12 }).detail).toContain('PR #12');
@@ -78,7 +75,7 @@ describe('describeExplicitDeferral', () => {
   });
 
   it('points at force: true only where the override actually applies', () => {
-    for (const reason of ['mission_concurrent', 'mission_paced', 'workspace_cap', 'path_overlap'] as const) {
+    for (const reason of ['mission_concurrent', 'path_overlap'] as const) {
       expect(describeExplicitDeferral(reason).detail).toContain('force: true');
     }
     // Cost, scope serialization, capacity walls and routing are not overridable.
