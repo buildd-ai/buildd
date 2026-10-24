@@ -43,7 +43,7 @@ import {
   sectionDenominator,
 } from '@/lib/health-metric-grammar';
 import { resolveClaudeRoute } from '@/lib/claude-route-eligibility';
-import { strandHeadline } from '@/lib/strand-headline';
+import { strandHeadline, STRAND_FIX } from '@/lib/strand-headline';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import RunnerSlotsControl from '@/components/RunnerSlotsControl';
 import { describeRunnerRoute } from '@/lib/runner-route';
@@ -543,7 +543,13 @@ export function HealthClient({
               monthly: budgetForecast?.monthly
                 ? { spentUsd: budgetForecast.monthly.spentUsd, budgetUsd: budgetForecast.monthly.budgetUsd, pctUsed: budgetForecast.monthly.pctUsed }
                 : null,
-              pausedProviders: (budgetForecast?.codex?.isExhausted ? 1 : 0) + (budgetForecast?.claudeTenant?.isExhausted ? 1 : 0),
+              paused: [
+                { label: 'Codex', forecast: budgetForecast?.codex },
+                { label: 'Claude', forecast: budgetForecast?.claudeTenant },
+              ].filter(p => p.forecast?.isExhausted).map(p => ({
+                label: p.label,
+                resetsInMs: p.forecast?.resetsAt ? Date.parse(p.forecast.resetsAt) - now : null,
+              })),
             },
           },
           { hideOfflineRunners: offlineRunners.length > 0 },
@@ -636,10 +642,10 @@ export function HealthClient({
                       )}
                     </div>
                     <a
-                      href="/app/settings/runners"
+                      href={STRAND_FIX.href}
                       className="text-[11px] px-2.5 h-7 flex items-center rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors shrink-0"
                     >
-                      Fix in Settings
+                      {STRAND_FIX.label}
                     </a>
                   </div>
                 </div>
@@ -665,7 +671,6 @@ export function HealthClient({
                     </div>
                     <p className="text-xs text-text-muted mt-0.5">
                       {h.detail}
-                      {b.enabledForTeam ? '. Connect it, or disable it team-wide to reroute' : ''}.
                     </p>
                     {b.sampleTasks.length > 0 && (
                       <p className="text-xs text-text-muted mt-0.5 truncate">
@@ -684,10 +689,10 @@ export function HealthClient({
                     )}
                   </div>
                   <a
-                    href="/app/settings/runners"
+                    href={STRAND_FIX.href}
                     className="text-[11px] px-2.5 h-7 flex items-center rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors shrink-0"
                   >
-                    Fix in Settings
+                    {STRAND_FIX.label}
                   </a>
                 </div>
               </div>

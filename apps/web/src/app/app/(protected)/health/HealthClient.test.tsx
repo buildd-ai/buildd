@@ -937,14 +937,14 @@ describe('HealthClient — stranded backend headline (spec R-10)', () => {
     expect(html).toContain('data-confirmed="false"');
     expect(html).not.toContain('unclaimable');
     expect(html).not.toContain('no runner can claim');
-    expect(html).toContain('not confirmed');
+    expect(html).toContain('Not confirmed by the scheduler');
   });
 
   it('says it when the scheduler recently refused for a credential', () => {
     const html = render({ strandedBackends: [row(refused)] });
     expect(html).toContain('data-confirmed="true"');
-    expect(html).toContain('Codex has no credential');
-    expect(html).toContain('2 tasks unclaimable');
+    expect(html).toContain('No Codex sign-in');
+    expect(html).toContain('2 tasks blocked');
   });
 });
 

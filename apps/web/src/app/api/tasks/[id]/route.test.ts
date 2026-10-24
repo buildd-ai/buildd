@@ -129,6 +129,9 @@ mock.module('@/lib/task-dependency-reach', () => ({
   dependencyViewerOf: (user: any, account: any) => (account ? { kind: 'account', account } : user ? { kind: 'person', userId: user.id } : { kind: 'member' }),
 }));
 
+const mockLoadQuestionWaits = mock(async (_i: any): Promise<any> => null);
+mock.module('@/lib/question-waits', () => ({ loadQuestionWaits: mockLoadQuestionWaits }));
+
 // Mock team-access
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
@@ -326,6 +329,30 @@ describe('GET /api/tasks/[id]', () => {
     expect(await response.json()).toEqual({ id: TASK_ID, workspaceId: 'ws-1', status: 'pending' });
     expect(mockTasksFindFirst.mock.calls[0][0].with).toBeUndefined();
     expect(mockTasksFindFirst.mock.calls[0][0].columns.context).toBeUndefined();
+  });
+
+  // Living Spec 1b257609 AC-8: get_task on a waiting task returns what waits on the answer as data.
+  it('a task with an open question carries questionWaits, resolved for the caller', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', status: 'in_progress' });
+    const askedAt = new Date('2026-10-24T11:30:00.000Z');
+    const waitingFor = { type: 'question', prompt: 'Ship?', options: [{ label: 'Ship', outcome: 'finishes' }] };
+    mockWorkersFindMany.mockResolvedValueOnce([{ id: 'w1', status: 'waiting_input', runner: 'r1', updatedAt: askedAt, waitingFor }]);
+    const waits = { taskId: TASK_ID, waiting: [{ id: 'b', title: 'B', depth: 1 }], hiddenCount: 1, beyondCount: 0, criteria: { specId: 's', specTitle: 'S', affected: ['R-1'], total: 2 }, expiresAt: '2026-10-24T15:30:00.000Z', onExpiry: { action: 'default', option: 'Ship' }, options: [{ label: 'Ship', outcome: 'finishes', effect: '"B" starts when this task is done.', recommended: false }] };
+    mockLoadQuestionWaits.mockResolvedValueOnce(waits);
+    const body = await (await callHandler(GET, createMockRequest({ search: '?include=workers' }), TASK_ID)).json();
+    expect(body.questionWaits).toEqual(waits);
+    expect(mockLoadQuestionWaits.mock.calls.at(-1)![0]).toEqual({ taskId: TASK_ID, viewer: { kind: 'person', userId: 'user-1' }, worker: { runner: 'r1', updatedAt: askedAt, waitingFor } });
+  });
+
+  it('a task with no open question carries no questionWaits and loads none', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', status: 'in_progress' });
+    mockWorkersFindMany.mockResolvedValueOnce([{ id: 'w1', status: 'running', runner: 'r1', updatedAt: new Date(), waitingFor: null }]);
+    mockLoadQuestionWaits.mockClear();
+    const body = await (await callHandler(GET, createMockRequest({ search: '?include=workers' }), TASK_ID)).json();
+    expect(body).not.toHaveProperty('questionWaits');
+    expect(mockLoadQuestionWaits).not.toHaveBeenCalled();
   });
 
   it('returns task for API key auth', async () => {

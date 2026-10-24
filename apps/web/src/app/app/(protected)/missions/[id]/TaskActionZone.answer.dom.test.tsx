@@ -44,6 +44,8 @@ beforeEach(() => {
   resolveNext = null;
   changed = 0;
   globalThis.fetch = ((url: string) => {
+    // The card's read of what waits on the answer (spec 1b257609): nothing, answered at once.
+    if (String(url).endsWith('/question-waits')) return Promise.resolve({ ok: false, status: 404, json: async () => ({}) } as Response);
     posts.push(String(url));
     // Every call is held until the test answers it.
     return new Promise<Response>(resolve => { resolveNext = resolve; });
