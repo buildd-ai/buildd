@@ -771,7 +771,9 @@ export function renderStartAnyway(ctx: Record<string, unknown> | null | undefine
   const w = ctx?.waitExit as { blockerTaskId?: string; reason?: string; at?: string } | undefined;
   const parked = !!w?.blockerTaskId && typeof w.reason === 'string';
   if (parked && (!a?.at || !w!.at || w!.at >= a.at)) {
-    return resumeInstruction({ blockerTaskId: w!.blockerTaskId!, reason: w!.reason!, at: w!.at });
+    // A structured assessment saved with the park (task-wait-exit.ts), when the agent sent one.
+    const park = ctx?.startAnywayPark as { structured?: boolean; assessment?: Parameters<typeof resumeInstruction>[0]['assessment'] } | undefined;
+    return resumeInstruction({ blockerTaskId: w!.blockerTaskId!, reason: w!.reason!, at: w!.at, assessment: park?.structured ? park.assessment : null });
   }
   return typeof a?.text === 'string' && a.text ? a.text : null;
 }
