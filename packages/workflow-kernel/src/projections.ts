@@ -116,9 +116,15 @@ export interface DeliveryViewInput {
   escalationPermissions?: EscalationBriefPermissions;
   /**
    * A behind refresh parked in the landing lane (lib/workflow/landing-lane.ts):
-   * the PR holding the lane on this base, when known. Absent or null = not parked.
+   * the PR holding the lane on this base, when known, and this PR's place among the
+   * parked refreshes on that base (1 = next). Absent or null = not parked.
    */
-  laneWait?: { behindPr: number | null } | null;
+  laneWait?: LaneWait | null;
+}
+
+export interface LaneWait {
+  behindPr: number | null;
+  position?: number | null;
 }
 
 export type DeliveryCta =
@@ -200,6 +206,11 @@ export interface DeliveryView {
   reviewApproval?: { state: 'success' | 'failure' | 'pending'; description: string } | null;
   /** What a person is asked to decide on a review escalation: its cause, findings by state, and the actions open to them. Null otherwise. */
   escalation?: EscalationBrief | null;
+  /**
+   * A behind refresh parked in the landing lane: queued behind another PR on the
+   * same base, no repair running. Null when not parked. Owner is `landing` then.
+   */
+  laneWait?: LaneWait | null;
 }
 
 /**
@@ -386,6 +397,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
 
   const conflictOnHead = d.mergeable === 'dirty' && d.mergeableHeadSha === d.currentHeadSha;
   const repairKind = d.state === 'REPAIRING' ? d.stateReason : null;
+  const laneWait = repairKind === 'behind' ? input.laneWait ?? null : null;
   const conflictBlocked = repairKind === 'conflict' || repairKind === 'migration'
     || (conflictOnHead && !['MERGED', 'SUPERSEDED', 'ABANDONED', 'FAILED', 'CLOSED_UNMERGED'].includes(d.state));
 
@@ -417,10 +429,16 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     // updating the branch from its base (docs/specs/task-page.md). Parked in the
     // landing lane, it says which PR is landing on that base first.
     case 'REPAIRING':
-      if (repairKind === 'behind' && input.laneWait) {
+      if (laneWait) {
+        // Parked, not repairing: nothing runs on this PR until the lane frees, and the
+        // landing lane (not a worker) owns the next move.
         const base = d.baseRef ?? 'its base';
-        headline = 'Waiting to update branch';
-        detail = input.laneWait.behindPr != null ? `PR #${input.laneWait.behindPr} is merging into ${base} first` : `another PR is merging into ${base} first`;
+        const approved = d.currentHeadSha != null && d.approvedHeads.includes(d.currentHeadSha);
+        const behind = laneWait.behindPr != null ? `PR #${laneWait.behindPr}` : 'another PR';
+        headline = approved ? `Approved · queued to land behind ${behind}` : 'Waiting to update branch';
+        const place = laneWait.position != null && laneWait.position > 0 ? `; position ${laneWait.position} in the queue` : '';
+        detail = `${behind} is merging into ${base} first${place}`;
+        owner = 'landing';
       } else {
         headline = repairKind === 'ci' ? 'Fixing CI' : repairKind === 'behind' ? 'Updating branch' : 'Repairing';
       }
@@ -541,6 +559,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     findingTotals: findingTotals(input.view.findings),
     reviewApproval: reviewApprovalOf(input.view),
     escalation: deriveEscalationBrief(input.view, input.escalationPermissions),
+    laneWait,
   };
 }
 

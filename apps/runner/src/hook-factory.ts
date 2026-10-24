@@ -2,7 +2,7 @@ import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, PermissionSuggestion } from './types';
 import { isPathDeniedByReadJail, resolveToolPath } from './read-jail.js';
 import { findWorktreeEscape, findWriteEscape } from './worktree-confinement.js';
-import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, SENSITIVE_READ_PATHS, DANGEROUS_CREDENTIAL_READ_PATTERNS, classifyArtifactToolCall, isClaudeAiArtifactTool, type ClaudeAiArtifactAccess } from '@buildd/shared';
+import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, SENSITIVE_READ_PATHS, DANGEROUS_CREDENTIAL_READ_PATTERNS, OWNER_ONLY_GITHUB_COMMAND_PATTERNS, classifyArtifactToolCall, isClaudeAiArtifactTool, type ClaudeAiArtifactAccess } from '@buildd/shared';
 import { readFileSync } from 'fs';
 import { looksLikeMergeCommand, reportAgentMerges } from './merge-drivers';
 import { saveWorker as storeSaveWorker } from './worker-store';
@@ -623,6 +623,16 @@ export class HookFactory {
             return denyPreToolUse(runnerDenial(
               'reading the runner\'s own credential files is blocked',
               'use the credentials already provided to you through your environment and MCP tools',
+            ));
+          }
+        }
+
+        for (const pattern of OWNER_ONLY_GITHUB_COMMAND_PATTERNS) {
+          if (pattern.test(command)) {
+            console.log(`[Worker ${worker.id}] Blocked owner-only GitHub command: ${command.slice(0, 80)}`);
+            return denyPreToolUse(runnerDenial(
+              'dispatching the Release workflow is an owner action, and from here GitHub would record it as the owner',
+              'buildd amends a release candidate by itself when its fix PR merges; if a release really is needed, ask for it with buildd action=post_note or use the trigger_release action',
             ));
           }
         }
