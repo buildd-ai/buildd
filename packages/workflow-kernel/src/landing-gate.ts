@@ -136,6 +136,8 @@ export const REVIEW_STATUS_TERMS = {
   ready: 'Ready to merge',
   /** Approved, and a rail that clears by itself (a visual review, CI still running) refused the merge for now. */
   waiting: 'Approved, waiting to merge',
+  /** Approved, and its branch update is parked in the landing lane behind another PR on the same base. */
+  queued: 'Approved, queued to merge',
   blocked: 'Merge blocked',
   repairing: 'Repair in progress',
   repairingBehind: 'Branch update in progress',
@@ -233,6 +235,8 @@ export function landingStatusOf(view: KernelView, o: { detail?: string | null } 
     // review of this head stands clean the check is pending, never a red that reads as a rejection.
     if (d.state === 'REPAIRING') {
       const review = reviewGate(view, { states: ['REPAIRING'] });
+      // e07ee9cf: parked in the landing lane (the refresh handler names the PR ahead): queued, not "in progress".
+      if (review.ok && o.detail && d.stateReason === 'behind') return status('pending', T.queued, `review approved ${at}; ${o.detail}`);
       if (review.ok) return status('pending', repairTerm(d.stateReason), `review approved ${at}; ${repairWords(d.stateReason)}`);
       if (review.blocker === 'review_missing') return status('pending', T.inProgress, `no review covers ${at} yet`);
       const failedReview = gateFailure(review);

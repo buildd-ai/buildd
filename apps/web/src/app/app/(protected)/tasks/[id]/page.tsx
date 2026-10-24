@@ -135,7 +135,7 @@ import { nonDiffActions } from './attempt-actions';
 import { groupAttemptHistory, isBookkeepingAttempt } from './bookkeeping-attempt';
 import BookkeepingAttemptRow from './BookkeepingAttemptRow';
 import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision, verdictLinksPr, verdictRepeatsOpenQuestion } from '@/lib/task-verdict';
-import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
+import { buildVerdictInput, deliveryVerdictFields, traceOutcomeOf } from '@/lib/task-verdict-facts';
 import { priorAttemptFactsOf, resolveTraceConsequences } from '@/lib/trace-consequence';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
 import StartTimeControl from '@/components/StartTimeControl';
@@ -918,10 +918,7 @@ async function TaskDetailPage({
           primary: { label: escalationCopy.primary.label, href: decisionActionHref(escalationCopy.primary.id) },
         }
       : null,
-    // The platform updating the branch or merging: in progress, not "ready to merge".
-    deliveryActivity: deliveryView && ((deliveryView.state === 'REPAIRING' && deliveryView.stateReason === 'behind') || deliveryView.state === 'LANDING') ? deliveryView.headline : null,
-    awaitingCi: deliveryView?.prState === 'awaiting_ci',
-    deliveryOwner: deliveryView?.owner ?? null,
+    ...deliveryVerdictFields(deliveryView),
     // A merged PR is stated once, on the status row, with how it got there.
     mergedRun: {
       took: lineageClaimToMergeMs != null ? formatElapsed(lineageClaimToMergeMs) : null,
