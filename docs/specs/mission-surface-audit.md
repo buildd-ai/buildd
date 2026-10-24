@@ -105,7 +105,10 @@ device width, and writes `designs/`, `side-by-side/` (design | built) and
 differences that matter to the criterion (layout, content order, words, states
 shown), not pixels; its verdict cites the screen id. The page is shot in the
 design's theme; Night/Day parity stays its own check. A criterion with no screen
-is judged as before.
+is judged as before. A screen of kind `component` (the design's screen metadata,
+or the section's `data-kind`) is compared with its dev fixture
+(`/app/dev/fixtures?state=…`, one per component state allowed) at the screen's own
+width, never with a real route; its verdict names the screen and the fixture URL.
 
 **Idempotency**: Re-running decomposition (the organizer creating tasks again)
 never creates a second audit task — the existing-task lookup is by title prefix
