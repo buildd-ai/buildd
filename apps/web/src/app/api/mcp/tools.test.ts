@@ -267,14 +267,20 @@ describe('listMcpTools — group tools', () => {
   // store_design + manage_designs named on More: (task e3ef49b1): +8, measured
   // 4.86k task token, so the task-token ceiling moves 4.85k -> 4.9k; the admin
   // surface stays under 6k (trimmed the purpose line to pay for it).
-  it('keeps the whole groups surface under the 6k spec budget', () => {
-  const all = tools({ accountLevel: 'admin', isSensitive: false, surface: 'groups' });
-  expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(6000);
-});
+  // Raised to 6.3k / 5.15k for the capability path (spec budget raised with it):
+  // resolve_capability, request_capability and invoke_model_inference moved from
+  // More: to listed, because the skills and default roles now tell agents to call
+  // them for missing access and an action a prompt names must be listed. Hidden on
+  // More:, agents never found them and built around missing grants instead.
+  // Measured 6.19k admin / 5.06k task token, after trimming their param text.
+  it('keeps the whole groups surface under the 6.3k spec budget', () => {
+    const all = tools({ accountLevel: 'admin', isSensitive: false, surface: 'groups' });
+    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(6300);
+  });
 
-  it('keeps a runner worker session (task token) under 4.9k tokens', () => {
+  it('keeps a runner worker session (task token) under 5.15k tokens', () => {
     const all = tools({ accountLevel: 'worker', isSensitive: false, surface: 'groups', principal: 'task_token' });
-    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(4900);
+    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(5150);
   });
 
   it('names the rare actions on one More: line per group, and keeps them callable', () => {

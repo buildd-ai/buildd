@@ -57,7 +57,7 @@ import {
   DISPATCH_MODEL_REJECTED_PATTERN,
   type DispatchModelRejection, type DispatchModelSource,
 } from '@buildd/core/dispatch-model-guard';
-import { drawModelRoutingArm, applyModelRoutingTreatment, recordModelRoutingAssignment } from '@buildd/core/model-routing-experiment-source';
+import { drawModelRoutingArm, applyModelRoutingTreatment, recordModelRoutingAssignment, markDispatchFallback } from '@buildd/core/model-routing-experiment-source';
 import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type AgentPoolDraw } from '@buildd/core/tier-pool-source';
 import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
@@ -2451,6 +2451,7 @@ export async function POST(req: NextRequest) {
     const experimentDraw = await drawModelRoutingArm({
       teamId: taskTeamId, task: task as any, explicitModel: explicit, routerReason: routingDecision.reason,
       routerModel: routingDecision.model, roleModel, budgetPressure: dailyBudgetPct,
+      executor: runsOnCallersSeat ? 'interactive' : 'runner',
     });
 
     // Resolve the concrete model ID through the model policy (the team's tier
@@ -2632,11 +2633,7 @@ export async function POST(req: NextRequest) {
       if (guarded.rejection) {
         modelRejections.push({ rejected: guarded.rejection.rejected, reason: guarded.rejection.reason, source: guarded.rejection.source });
         for (const draw of [experimentDraw, poolDraw]) {
-          if (draw && draw.assignedModel === guarded.rejection.rejected) {
-            draw.served = false;
-            draw.assignedModel = guarded.model;
-            draw.eligibility = { ...draw.eligibility, fallback: 'model_unrecognized' };
-          }
+          markDispatchFallback(draw, { rejectedModel: guarded.rejection.rejected, servedModel: guarded.model, reason: guarded.rejection.reason });
         }
         resolvedModel = guarded.model;
         modelSource = guarded.source;
