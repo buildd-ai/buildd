@@ -179,7 +179,7 @@ export interface MissionVisualReviewState {
   holdReason?: string | null;
   /**
    * The scheduler would not file the audit this state is waiting for (round
-   * cap, cancelled on this commit, retries used up, local executor, capture
+   * cap, cancelled on this commit, retries used up, capture
    * setup). Without it a `needed` state reads as "system next" while nothing
    * will ever run; with it a person is told why and who acts.
    */
