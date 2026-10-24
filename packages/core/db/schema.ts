@@ -3100,6 +3100,12 @@ export const specRevisions = pgTable('spec_revisions', {
   // specs in the same workspace, checked on write, never read from the body.
   // Approving the revision offers to supersede each (R-77). NULL: none.
   replaces: jsonb('replaces').$type<string[]>(),
+  // What the revision's author says it changes ("Approving specs from a
+  // session" R-15): a one-line summary and one line per changed criterion id
+  // or section heading (SpecExplanation in packages/spec-contract). Written
+  // with the revision and never changed: a trigger refuses any later UPDATE
+  // of it (migration *_spec_revision_explanation_immutable). NULL: none given.
+  explanation: jsonb('explanation').$type<{ summary: string; lines: Record<string, string> }>(),
   // The binding attachments this revision was approved with (living-specs.md
   // §21), each at the artifact revision it had then. Written once, by the
   // approving statement, next to approved_at; reference attachments are never
