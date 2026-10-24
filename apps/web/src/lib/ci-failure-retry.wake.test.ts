@@ -90,6 +90,9 @@ mock.module('@/lib/workflow/seam', () => ({ observeCiFailure: mockObserveCiFailu
 const realKernelClient = await import('@/lib/workflow/kernel-client');
 mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, observeCiFailure: mockObserveCiFailure }));
 const gateEvents: any[] = [];
+let flakeOutcome: any = { rerun: false, reason: 'not_flake' };
+const mockRerunIfKnownFlake = mock(async (_input: any) => flakeOutcome);
+mock.module('@/lib/ci-flake-rerun', () => ({ rerunIfKnownFlake: mockRerunIfKnownFlake }));
 mock.module('@/lib/policy-overrides', () => ({ policyValue: () => 3, POLICY_DEFAULTS: { maxCiRetries: 3 } }));
 
 const { retryCiFailureForPr, kernelCiOutcome } = await import('./ci-failure-retry');
@@ -219,5 +222,34 @@ describe('legacy CI budget: allocation is consumption, never author or context.i
     const out = await retryCiFailureForPr(input);
     expect(out.kind).toBe('dispatched');
     expect(mockWakeTask.mock.calls.length).toBe(1);
+  });
+});
+
+describe('a known flake is re-run, never a CI-fix attempt', () => {
+  beforeEach(() => {
+    mockWakeTask.mockClear();
+    insertedRows = [];
+    failedJobNames = ['Runner unit tests (windows)'];
+    kernelSeen = { handled: false };
+    mockObserveCiFailure.mockClear();
+    mockRerunIfKnownFlake.mockClear();
+    workerRow = {
+      id: 'w1', branch: 'buildd/x', prNumber: 7, prLifecycleStatus: 'open',
+      task: { id: 't1', title: 'Do it', description: null, workspaceId: 'ws1', missionId: null, status: 'completed', context: {}, result: null },
+    };
+  });
+
+  it('skips with flake_rerun: no task filed, no kernel attempt, so no budget spent', async () => {
+    flakeOutcome = { rerun: true, runId: 9, runAttempt: 1, tests: [{ signature: 'ci-flake:x' }], friction: [{ signature: 'ci-flake:x', taskId: 'f1', outcome: 'created' }] };
+    expect(await retryCiFailureForPr(input)).toEqual({ kind: 'skipped', reason: 'flake_rerun' });
+    expect(insertedRows).toEqual([]);
+    expect(mockObserveCiFailure).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
+    expect(mockRerunIfKnownFlake.mock.calls[0][0]).toEqual({ installationId: 1, repoFullName: 'o/r', prNumber: 7, headSha: 'abc1234', workspaceId: 'ws1' });
+  });
+
+  it('a flake that already had its re-run goes to the normal fix path', async () => {
+    flakeOutcome = { rerun: false, reason: 'attempts_exhausted' };
+    expect((await retryCiFailureForPr(input)).kind).toBe('dispatched');
   });
 });

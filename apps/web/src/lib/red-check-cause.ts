@@ -183,6 +183,11 @@ export interface RedJob {
   /** Failing lines (`failingLines`, or the test report's when the log names no test). */
   lines: string | null;
   rule: RedRule;
+  /**
+   * Set when the base branch's run at the same time was read: true when the
+   * job was not red there. Absent when no base run could be compared.
+   */
+  baseGreen?: boolean;
 }
 
 /** A line that shows the code itself is wrong: a failing test, a type error, a thrown assertion. */
@@ -249,9 +254,10 @@ export function applyNotThisPr(
   ctx: { redOnBase?: ReadonlySet<string> | null; changed?: readonly string[] | null; scopes?: readonly JobPathScope[] },
 ): RedJob[] {
   return jobs.map(j => {
-    if (ctx.redOnBase?.has(j.name)) return { ...j, rule: 'red_on_base' as const };
-    if (unrelatedToDiff(j.name, ctx.changed ?? null, ctx.scopes)) return { ...j, rule: 'unrelated_to_diff' as const };
-    return j;
+    const base = ctx.redOnBase ? { baseGreen: !ctx.redOnBase.has(j.name) } : {};
+    if (ctx.redOnBase?.has(j.name)) return { ...j, ...base, rule: 'red_on_base' as const };
+    if (unrelatedToDiff(j.name, ctx.changed ?? null, ctx.scopes)) return { ...j, ...base, rule: 'unrelated_to_diff' as const };
+    return { ...j, ...base };
   });
 }
 
