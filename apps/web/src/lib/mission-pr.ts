@@ -1221,6 +1221,28 @@ async function deliveryTargetHold(
       }
     }
   }
+  if (refresh && task.id) {
+    // A refresh the branch has since moved past: a later refresh already merged a newer trunk
+    // (which contains the one this PR was filed for), so merging this stale copy would re-add
+    // what the branch has — a regenerated migration under a second folder name, a forked chain.
+    const [mission, self] = await Promise.all([
+      db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, task.missionId)), columns: { branchRefreshHeadSha: true, branchRefreshedAt: true } }),
+      db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, task.id)), columns: { createdAt: true } }),
+    ]);
+    const confirmedSha = (mission as { branchRefreshHeadSha?: string | null } | undefined)?.branchRefreshHeadSha ?? null;
+    const confirmedAt = (mission as { branchRefreshedAt?: Date | string | null } | undefined)?.branchRefreshedAt;
+    const filedAt = (self as { createdAt?: Date | string | null } | undefined)?.createdAt;
+    if (
+      refresh.trunkSha && confirmedSha && confirmedSha !== refresh.trunkSha
+      && confirmedAt && filedAt && new Date(confirmedAt).getTime() > new Date(filedAt).getTime()
+    ) {
+      return {
+        code: 'refresh_target_mismatch', lasting: true,
+        reason: `This refresh was filed for ${refresh.trunk ?? 'trunk'} ${refresh.trunkSha.slice(0, 7)}, but the mission branch has since been refreshed to ${confirmedSha.slice(0, 7)}. `
+          + `Merging this older copy would add its migration a second time. Close it as superseded.`,
+      };
+    }
+  }
   const shipped = epochs.length > 0 ? shippedEpochOf({ epochs }, prBase) : null;
   if (shipped) {
     const current = writableEpoch({ epochs });
