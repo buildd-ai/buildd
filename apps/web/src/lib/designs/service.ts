@@ -308,20 +308,20 @@ export async function readDesignScreen(
   if (!design) return fail(404, 'design not found');
   const revision = input.revision ?? design.currentRevision;
   let storageKey = design.storageKey;
-  let metadata = design.metadata as { screens?: DesignScreen[] } | null;
+  let recorded = view(design).screens;
   if (revision !== design.currentRevision) {
     const row = await getArtifactRevision(design.id, revision);
     if (!row?.storageKey) return fail(404, `design has no revision ${revision}`, 'revision');
     storageKey = row.storageKey;
     // Screens are recorded for the current file only; an older one is read for its own.
-    metadata = null;
+    recorded = [];
   }
   if (!storageKey) return fail(404, 'design has no file');
   if (!isStorageConfigured()) return fail(503, 'Storage not configured');
   const bytes = await readObject(storageKey, ADOPT_MAX_BYTES);
   if (!bytes) return fail(413, 'This design file could not be read (missing, or over 8 MB)');
   const html = bytes.toString('utf8');
-  const screens = metadata?.screens?.length ? metadata.screens : (() => { const r = extractScreens(html); return r.ok ? r.screens : []; })();
+  const screens = recorded.length ? recorded : (() => { const r = extractScreens(html); return r.ok ? r.screens : []; })();
   const cut = screenSource(html, input.screenId);
   if (!cut.ok) return fail(404, cut.message, cut.field);
   const screen = screens.find(s => s.id === input.screenId) ?? { id: input.screenId, name: input.screenId, viewport: '' };
