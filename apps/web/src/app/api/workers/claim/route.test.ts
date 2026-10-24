@@ -2985,7 +2985,7 @@ describe('POST /api/workers/claim', () => {
       expect(res.status).toBe(200);
       expect((await res.json()).workers.length).toBe(1);
       expect(mockDrawModelRoutingArm).toHaveBeenCalledTimes(1);
-      expect(mockDrawModelRoutingArm.mock.calls[0][0]).toMatchObject({ teamId: 'team-1', routerReason: 'baseline', explicitModel: null });
+      expect(mockDrawModelRoutingArm.mock.calls[0][0]).toMatchObject({ teamId: 'team-1', routerReason: 'baseline', explicitModel: null, executor: 'runner' });
       expect(mockApplyModelRoutingTreatment).not.toHaveBeenCalled();
       expect(mockRecordModelRoutingAssignment).not.toHaveBeenCalled();
       const claimSet = sets.find(v => v.status === 'assigned');
@@ -3310,8 +3310,21 @@ describe('POST /api/workers/claim', () => {
         expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5-5');
         expect(draw.served).toBe(false);
         expect(draw.assignedModel).toBe('claude-sonnet-5-5');
-        expect(draw.eligibility).toMatchObject({ fallback: 'model_unrecognized' });
+        expect(draw.eligibility).toMatchObject({ fallback: 'dispatch_rejected', fallbackReason: 'newer_than_floor_table', rejectedModel: BAD });
         expect(mockRecordAgentPoolAssignment.mock.calls[0][1]).toMatchObject({ resolvedModel: 'claude-sonnet-5-5' });
+      });
+
+      it('a routing-experiment draw whose model the guard refuses records the fallback, its reason and the refused model', async () => {
+        const sets = setup();
+        const draw: any = { arm: 'treatment', served: true, assignedModel: BAD, eligibility: { source: 'drawn' } };
+        mockDrawModelRoutingArm.mockResolvedValue(draw);
+        mockApplyModelRoutingTreatment.mockResolvedValue({ tier: 'premium', model: BAD, provider: 'anthropic', source: 'default' });
+        await POST(claimReq());
+
+        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5-5');
+        expect(draw).toMatchObject({ served: false, assignedModel: 'claude-sonnet-5-5' });
+        expect(draw.eligibility).toEqual({ source: 'drawn', fallback: 'dispatch_rejected', fallbackReason: 'newer_than_floor_table', rejectedModel: BAD });
+        expect(mockRecordModelRoutingAssignment.mock.calls[0][1]).toMatchObject({ resolvedModel: 'claude-sonnet-5-5' });
       });
 
       it('a recognised model is left alone and leaves no trace', async () => {
@@ -10276,6 +10289,24 @@ describe('explicit taskId claims (organizer workflow)', () => {
         expect(mockProjectAttemptStart.mock.calls[0][0]).toEqual({ deliveryId: 'delivery-1', taskId: 'task-1', claimedBy: account().id, claimedAt: STAMP });
       }
     });
+  });
+
+  // Work analytics spec R-8 / AC-3: these claims run on the caller's own session
+  // model, so the routing experiment is told they are interactive.
+  it('an explicit mcp claim of one task reaches the routing experiment as interactive', async () => {
+    mockDrawModelRoutingArm.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'work' })]);
+    await claim({ runner: 'mcp' });
+    expect(mockDrawModelRoutingArm.mock.calls.at(-1)?.[0]).toMatchObject({ executor: 'interactive' });
+  });
+
+  it('a verified interactive session claim reaches the routing experiment as interactive', async () => {
+    mockDrawModelRoutingArm.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'work' })]);
+    await claim({ runner: 'mcp', taskId: undefined }, interactiveHeaders());
+    expect(mockDrawModelRoutingArm.mock.calls.at(-1)?.[0]).toMatchObject({ executor: 'interactive' });
   });
 
   it('a task that is not an attempt never consults the retry guard', async () => {
