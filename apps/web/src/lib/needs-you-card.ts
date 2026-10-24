@@ -47,7 +47,12 @@ export type DecisionAnswer =
    * fixed` (decide each listed screen looks right), `Review screens →` (opens
    * the per-screen deck, or goes to the mission) and `Skip the review`.
    */
-  | { kind: 'visual'; missionId: string; reviewHref: string; markFixed: { artifactIds: string[]; expected: Record<string, string> }[]; startKey: string | null };
+  | { kind: 'visual'; missionId: string; reviewHref: string; markFixed: { artifactIds: string[]; expected: Record<string, string> }[]; startKey: string | null }
+  /**
+   * The mission's goal-criteria escalation: the primary option files the work
+   * (a link), the alternative waives and completes (a PATCH on the mission).
+   */
+  | { kind: 'criteria'; missionId: string; fileWorkHref: string };
 
 export interface DecisionView {
   key: string;
