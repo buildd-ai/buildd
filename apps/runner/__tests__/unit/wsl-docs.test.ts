@@ -9,10 +9,10 @@ import { join } from 'path';
 
 const doc = readFileSync(join(import.meta.dir, '../../WSL2.md'), 'utf-8');
 
-// WSL2.md does not mention `buildd codex login` yet, so this is red by design: skipped in the
-// gating run, executed with BUILDD_RUN_PENDING_ACCEPTANCE=1. The build that fixes the doc MUST
-// swap `pendingTest` back to `test`.
-const pendingTest = process.env.BUILDD_RUN_PENDING_ACCEPTANCE ? test : test.skip;
+// WSL2.md documentation is complete and the acceptance criteria are met.
+// This test validates the guided setup flow (buildd wsl install → buildd codex login → buildd wsl migrate)
+// and the fallback manual recipe.
+const pendingTest = test;
 
 describe('WSL2.md', () => {
   pendingTest('AC-18: leads with buildd wsl install, buildd codex login and buildd wsl migrate, in that order, and keeps the manual recipe as the fallback', () => {

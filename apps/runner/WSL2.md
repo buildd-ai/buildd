@@ -24,8 +24,111 @@ older. It reuses a WSL2 distribution that is already there. With none, it shows
 no (or no terminal) installs nothing. If Windows asks for a restart, restart and
 run the same command again. It then opens the distribution so you create your
 Linux user, and runs the Linux installer inside it as that user. It never
-converts WSL1, creates a Linux user or runs anything as root. The manual steps
-below remain the fallback, and `bun run wsl:setup` stays a probe only.
+converts WSL1, creates a Linux user or runs anything as root.
+
+## Guided authentication: `buildd codex login`
+
+Inside the WSL2 distribution, authenticate both Claude and Codex as the Linux runner user:
+
+```bash
+claude login
+buildd codex login
+buildd status
+```
+
+Use the supported browser/device prompts as this Linux user. If using Codex as your model backend, you need both `claude login` (for buildd itself) and `buildd codex login` (for the Codex backend). For headless flows, see the runner README for API-key or token options. A background service must receive its own intended environment. Confirm a simple interactive request succeeds before proceeding with migration.
+
+## Guided hand over: `buildd wsl migrate`
+
+Once authentication is complete, hand over from the Windows runner to WSL from PowerShell:
+
+```powershell
+buildd wsl migrate                    # one WSL2 distribution
+buildd wsl migrate --distro Ubuntu    # several: name the one with the runner
+```
+
+It checks first, then hands over in this order:
+
+1. **Check, changing nothing.** The runner inside the distribution must be
+   installed, logged in and pass `--verify-wsl` now, systemd must be running
+   there, and no runner may be running in the foreground inside it. If any of
+   these fails, migrate stops and says what to do, and the Windows runner keeps
+   working. It also asks before it enables linger for your Linux user
+   (`sudo loginctl enable-linger`, which needs your Linux password). Answering
+   no also stops it here.
+2. **Hold the Windows runner** (`buildd hold`) and wait for its running tasks to
+   finish, listing them. Nothing is stopped, paused or aborted. If you press
+   Ctrl+C to leave the wait, the Windows runner stays on hold and a rerun picks
+   up where you left off.
+3. **Install the runner service inside WSL** (`buildd service install`) and check
+   that it is running.
+4. **Register and start the distribution's WSL task.** It is a per-user Scheduled
+   Task named `buildd WSL (<distribution>)`, one per distribution. It starts the
+   distribution (`wsl.exe --distribution <name> --exec sleep infinity`) at each
+   Windows logon, and again every five minutes while you are logged on: when WSL
+   stops the distribution, that long-lived process ends, the task restarts on
+   failure, and the repeat starts it if it is still down. While the distribution
+   runs, a repeat does nothing (a running instance is never doubled). This is
+   needed because WSL does not start a distribution after a reboot, stops an idle
+   one, and Windows would not otherwise start it again. The task does not run a
+   runner itself, so it is never a second supervisor. If the task's name is already
+   taken by one that starts a different distribution, migrate stops instead of
+   reusing it. An old fixed-name `buildd wsl` task from an earlier version is
+   replaced, and migrate says so.
+5. **Remove the Windows runner's Scheduled Task** (`buildd service uninstall`)
+   once it has checked again that nothing is running on that runner. If a Windows
+   runner was started in a terminal, migrate names it and waits for you to close it.
+
+If a step fails after the hold, the Windows runner stays on hold and keeps its
+Scheduled Task, so it is never removed while no WSL service is running. Fix what
+the message says and rerun `buildd wsl migrate`, or run `buildd resume` to put
+the Windows runner back to work. On a machine that has already been handed over,
+a rerun changes nothing and reports each step as done.
+
+To undo a migration (remove the WSL task from Windows Scheduled Tasks only):
+
+```powershell
+buildd wsl migrate --undo --distro <name>
+```
+
+The service inside WSL stays until you run `buildd service uninstall` there.
+
+Then check **this WSL runner's** own report, not the old Windows runner's. In
+`buildd top` inside Linux and on the dashboard it should show `linux-wsl`, Claude
+`bwrap`, and a probe from its current process. If the running process reports a
+failure or no current probe, keep protected work blocked and find the cause. A
+successful standalone probe does not override a failure from the running runner.
+
+## Manual setup (fallback)
+
+If `buildd wsl migrate` is not available (an older runner), do the same steps
+yourself. Before replacing an existing Windows runner, let its active work finish.
+On Windows, `buildd hold` prevents new claims; then close its foreground runner,
+or explicitly `buildd service uninstall` for its Scheduled Task. Do not terminate
+an active task just to migrate. Keep that service removed while using the WSL runner.
+
+Inside Linux, start `buildd` in the foreground. Check its startup backend lines
+and `buildd top`: Claude must report confinement by bubblewrap. Confirm its
+configured workspace/task uses the Claude backend.
+
+For a persistent runner, end the foreground process first, then check user systemd:
+
+```bash
+systemctl --user status
+buildd service install
+buildd service status
+buildd service logs
+sudo loginctl enable-linger "$USER"
+```
+
+If systemd/user services are unavailable, keep the foreground launcher in an open
+WSL terminal. To enable systemd, follow
+[Microsoft's WSL systemd instructions](https://learn.microsoft.com/windows/wsl/systemd)
+explicitly, and restart the distribution from Windows after work has drained.
+Shutting WSL down ends Linux services, and a Windows reboot does not start the
+distribution. Without the `buildd WSL (<distribution>)` task, open `wsl --distribution Ubuntu`
+after each reboot, then check the service status. Do not add a second Windows
+Scheduled Task that runs the native runner.
 
 ## 1. Probe from PowerShell
 
@@ -94,22 +197,7 @@ use Linux git and configure repository access inside Linux. Configure the runner
 have separate configuration, login and process ownership. Never copy the Windows
 profile, `.claude` or `.buildd` credential directories into Linux.
 
-## 3. Authenticate inside the distribution
-
-```bash
-claude login
-buildd login --device
-buildd status
-```
-
-Use the supported browser/device prompts as this Linux user. Model login and
-buildd login are separate: a buildd key does not buy or authenticate model usage.
-For supported headless model-token or API-key flows see the runner README's model
-login section; provide credentials explicitly in the Linux environment, not by
-importing the Windows profile. A background service must receive its own intended
-environment. Confirm a simple interactive Claude request succeeds before startup.
-
-## 4. Verify confinement before starting work
+## 3. Verify confinement before starting work
 
 Run inside Linux, using the **installed runner's Bun and current code**:
 
@@ -135,93 +223,7 @@ Unset `BUILDD_DISABLE_SANDBOX` for the sandbox route. The separate
 `BUILDD_ALLOW_REDUCED_ISOLATION=1` opt-in permits trusted-local work without full
 confinement; it never makes protected work eligible and is not a WSL setup step.
 
-## 5. Hand over from Windows and start at logon
-
-Once step 4 passes, run this **from PowerShell** (the Windows launcher, `buildd.cmd`):
-
-```powershell
-buildd wsl migrate                    # one WSL2 distribution
-buildd wsl migrate --distro Ubuntu    # several: name the one with the runner
-```
-
-It checks first, then hands over in this order:
-
-1. **Check, changing nothing.** The runner inside the distribution must be
-   installed, logged in and pass `--verify-wsl` now, systemd must be running
-   there, and no runner may be running in the foreground inside it. If any of
-   these fails, migrate stops and says what to do, and the Windows runner keeps
-   working. It also asks before it enables linger for your Linux user
-   (`sudo loginctl enable-linger`, which needs your Linux password). Answering
-   no also stops it here.
-2. **Hold the Windows runner** (`buildd hold`) and wait for its running tasks to
-   finish, listing them. Nothing is stopped, paused or aborted. If you press
-   Ctrl+C to leave the wait, the Windows runner stays on hold and a rerun picks
-   up where you left off.
-3. **Install the runner service inside WSL** (`buildd service install`) and check
-   that it is running.
-4. **Register and start the distribution's WSL task.** It is a per-user Scheduled
-   Task named `buildd WSL (<distribution>)`, one per distribution. It starts the
-   distribution (`wsl.exe --distribution <name> --exec sleep infinity`) at each
-   Windows logon, and again every five minutes while you are logged on: when WSL
-   stops the distribution, that long-lived process ends, the task restarts on
-   failure, and the repeat starts it if it is still down. While the distribution
-   runs, a repeat does nothing (a running instance is never doubled). This is
-   needed because WSL does not start a distribution after a reboot, stops an idle
-   one, and Windows would not otherwise start it again. The task does not run a
-   runner itself, so it is never a second supervisor. If the task's name is already
-   taken by one that starts a different distribution, migrate stops instead of
-   reusing it. An old fixed-name `buildd wsl` task from an earlier version is
-   replaced, and migrate says so.
-5. **Remove the Windows runner's Scheduled Task** (`buildd service uninstall`)
-   once it has checked again that nothing is running on that runner. If a Windows
-   runner was started in a terminal, migrate names it and waits for you to close it.
-
-If a step fails after the hold, the Windows runner stays on hold and keeps its
-Scheduled Task, so it is never removed while no WSL service is running. Fix what
-the message says and rerun `buildd wsl migrate`, or run `buildd resume` to put
-the Windows runner back to work. On a machine that has already been handed over,
-a rerun changes nothing and reports each step as done.
-`buildd wsl migrate --undo --distro <name>` removes that distribution's task and no other. The service inside
-WSL stays until you run `buildd service uninstall` there.
-
-Then check **this WSL runner's** own report, not the old Windows runner's. In
-`buildd top` inside Linux and on the dashboard it should show `linux-wsl`, Claude
-`bwrap`, and a probe from its current process. If the running process reports a
-failure or no current probe, keep protected work blocked and find the cause. A
-successful standalone probe does not override a failure from the running runner.
-
-### By hand (fallback)
-
-If `buildd wsl migrate` is not available (an older runner), do the same steps
-yourself. Before replacing an existing Windows runner, let its active work finish.
-On Windows, `buildd hold` prevents new claims; then close its foreground runner,
-or explicitly `buildd service uninstall` for its Scheduled Task. Do not terminate
-an active task just to migrate. Keep that service removed while using the WSL runner.
-
-Inside Linux, start `buildd` in the foreground. Check its startup backend lines
-and `buildd top`: Claude must report confinement by bubblewrap. Confirm its
-configured workspace/task uses the Claude backend.
-
-For a persistent runner, end the foreground process first, then check user systemd:
-
-```bash
-systemctl --user status
-buildd service install
-buildd service status
-buildd service logs
-sudo loginctl enable-linger "$USER"
-```
-
-If systemd/user services are unavailable, keep the foreground launcher in an open
-WSL terminal. To enable systemd, follow
-[Microsoft's WSL systemd instructions](https://learn.microsoft.com/windows/wsl/systemd)
-explicitly, and restart the distribution from Windows after work has drained.
-Shutting WSL down ends Linux services, and a Windows reboot does not start the
-distribution. Without the `buildd WSL (<distribution>)` task, open `wsl --distribution Ubuntu`
-after each reboot, then check the service status. Do not add a second Windows
-Scheduled Task that runs the native runner.
-
-## Restarts
+## 4. Restarts
 
 The launcher or service restarts the runner after an update. To restart it
 yourself, drain its work with `buildd hold`, then uninstall and reinstall the
