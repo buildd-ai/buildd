@@ -755,11 +755,20 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     expect(applied(end(repairing(), { attemptId: 'c1', localHeadSha: 'H2', live: live('H2') })).toState).toBe('AWAITING_REVIEW');
     const cf = applied(end(repairing({}, { approvedHeads: ['H1'], approvalBasis: 'composition', compositionHeads: ['H1'] }), { attemptId: 'c1', localHeadSha: 'H2', live: live('H2'), carryForward: 'content_equivalent' }));
     expect(cf.toState).toBe('APPROVED');
-    const retry = applied(end(repairing(), { attemptId: 'c1', outcome: 'failed' }));
+    // Failed with the head where it was bound: no second attempt on the same head.
+    const unmoved = applied(end(repairing(), { attemptId: 'c1', outcome: 'failed' }));
+    expect(unmoved.toState).toBe('ESCALATED');
+    expect(unmoved.patch.stateReason).toBe('ci_unfixed_head');
+    expect(unmoved.attempts.some((x) => x.op === 'insert')).toBe(false);
+    expect(effectKinds(unmoved)).not.toContain('dispatch_ci_fix');
+    // Failed after the head moved (someone pushed meanwhile): the next ledger row, bound to the old head.
+    const retry = applied(end(repairing(), { attemptId: 'c1', outcome: 'failed', live: live('H9') }));
     expect(retry.toState).toBe('REPAIRING');
     expect(retry.attempts[1]).toMatchObject({ op: 'insert', family: 'ci', attemptNo: 2, status: 'queued' });
     expect(retry.patch.boundAttemptId).toBe((retry.attempts[1] as { id: string }).id);
     expect(effectKinds(retry)).toContain('dispatch_ci_fix');
+    // Lost (infrastructure) is not the fixer's conclusion: it still re-files.
+    expect(applied(end(repairing(), { attemptId: 'c1', outcome: 'lost' })).toState).toBe('REPAIRING');
     const mech = applied(end(repairing({ family: 'conflict', mode: 'mechanical' }), { attemptId: 'c1', outcome: 'failed' }));
     expect(effectKinds(mech)).toContain('refresh_branch');
     const migr = applied(end(repairing({ family: 'migration', mode: 'mechanical' }), { attemptId: 'c1', outcome: 'failed' }));
@@ -776,7 +785,18 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     // A skipped row (revalidation found nothing to do) spends nothing: attempt 3 after a skip is not the last.
     const skipped = repairing({ attemptNo: 3 });
     const withSkip = { ...skipped, attempts: [A({ id: 'p1', family: 'ci', attemptNo: 1, status: 'ended' }), A({ id: 'p2', family: 'ci', attemptNo: 2, status: 'skipped' }), ...skipped.attempts] };
-    expect(applied(end(withSkip, { attemptId: 'c1', outcome: 'failed' })).toState).toBe('REPAIRING');
+    expect(applied(end(withSkip, { attemptId: 'c1', outcome: 'failed', live: live('H9') })).toState).toBe('REPAIRING');
+  });
+  test('REPAIRING: a fixer blocked on base → BLOCKED_ON_TRUNK, no further ci row', () => {
+    const blocked = applied(end(repairing(), { attemptId: 'c1', outcome: 'success', commitCount: 0, localHeadSha: null, blockedOnBase: { incidentId: 'inc1', signature: 'sig' } }));
+    expect(blocked.toState).toBe('BLOCKED_ON_TRUNK');
+    expect(blocked.patch).toMatchObject({ trunkIncidentId: 'inc1', resumeState: 'AWAITING_REVIEW', boundAttemptId: null });
+    expect(blocked.attempts.some((x) => x.op === 'insert')).toBe(false);
+    expect(effectKinds(blocked)).toContain('dispatch_trunk_fix');
+    expect(effectKinds(blocked)).not.toContain('dispatch_ci_fix');
+    // A head that moved is not "blocked": the report is not honoured.
+    const moved = applied(end(repairing(), { attemptId: 'c1', outcome: 'failed', live: live('H9'), blockedOnBase: { incidentId: 'inc1', signature: 'sig' } }));
+    expect(moved.toState).toBe('REPAIRING');
   });
 });
 
@@ -2954,7 +2974,7 @@ describe('295486ba: a cancelled CI fix that never started spends nothing; a gree
     expect(rows.map((a) => attemptOrdinal(rows, a))).toEqual([1, null, 2, 3]);
     // Every dispatch the reducer files is numbered within its budget.
     const dec = applied(run(V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c3' }), [], [...history, ci({ status: 'running' })]),
-      { type: 'AttemptEnded', actor: 'runner', workerId: 'w3', attemptId: 'c3', outcome: 'failed', localHeadSha: null, commitCount: 0, live: live('H1') }));
+      { type: 'AttemptEnded', actor: 'runner', workerId: 'w3', attemptId: 'c3', outcome: 'failed', localHeadSha: null, commitCount: 0, live: live('H9') }));
     const row = inserts(dec)[0] as AttemptSnapshot & { op: 'insert' };
     const after = [...history, ci({ status: 'ended', outcome: 'failed' }), { ...row, reportedShas: [], outcome: null }];
     expect(attemptOrdinal(after, after.at(-1)!)).toBeLessThanOrEqual(row.maxAttempts);

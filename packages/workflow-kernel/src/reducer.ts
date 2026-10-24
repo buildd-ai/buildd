@@ -2475,6 +2475,21 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
     return baseOnlyEnd(c, key, a, live!.headSha, end('noop'), { ...evidence, baseOnly: true, attemptId: a.id });
   }
 
+  // A CI fix that ran on a head nothing moved. Only a live read of the unmoved head is evidence.
+  const ciHeadUnmoved = d.state === 'REPAIRING' && a.family === 'ci' && livePrOpen(live) && live!.headSha === a.boundHeadSha && d.currentHeadSha === a.boundHeadSha;
+  // The fixer found the failure upstream: T25's block, so recovery (T26) refreshes the head. The
+  // attempt ends with no change and no new ci row is filed, so no further ci budget is spent.
+  if (ciHeadUnmoved && cmd.blockedOnBase) {
+    const { incidentId, signature } = cmd.blockedOnBase;
+    return c.apply(`trunk:${incidentId}:${d.id}`, 'BLOCKED_ON_TRUNK', {
+      guardHead: true,
+      patch: { resumeState: reviewBudgetHeld(d) ? 'ESCALATED' : headCoverage(d, d.currentHeadSha) !== 'none' ? 'APPROVED' : 'AWAITING_REVIEW', trunkIncidentId: incidentId, stateReason: signature, boundAttemptId: null, ci: 'red', ciHeadSha: a.boundHeadSha },
+      attempts: [end('noop')],
+      effects: [{ kind: 'dispatch_trunk_fix', dedupeKey: `dispatch_trunk_fix:${incidentId}`, payload: { incidentId, signature } }],
+      evidence: { ...evidence, incidentId, signature, blockedOnBase: true },
+    });
+  }
+
   if (cmd.outcome === 'success' || (cmd.outcome === 'unproven' && cmd.commitCount > 0)) {
     // abe42d1b: an agent that pushed from its own session leaves the runner nothing local to
     // report, but its push was attributed to it mid-attempt (§6.9). That push is its L, as the
@@ -2572,6 +2587,15 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
       patch: { stateReason: reason, boundAttemptId: null }, attempts: [end('failed')],
       effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:${a.family}:${a.mode}:${a.attemptNo}`, payload: { family: a.family, attempts: a.attemptNo } }],
       evidence,
+    });
+  }
+  // A CI fix that failed and left the head where it was bound did not find a failure this PR can
+  // fix; the same work on the same head would end the same way. A person decides (no new ci row).
+  if (ciHeadUnmoved && cmd.outcome === 'failed') {
+    return c.apply(key, 'ESCALATED', {
+      patch: { stateReason: 'ci_unfixed_head', boundAttemptId: null }, attempts: [end('failed')],
+      effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:ci:unfixed:${a.attemptNo}`, payload: { family: 'ci', attempts: a.attemptNo, reason: 'ci_unfixed_head' } }],
+      evidence: { ...evidence, noChange: true },
     });
   }
   const id = c.newId();
