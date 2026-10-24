@@ -31,6 +31,26 @@ const MCP_INITIALIZE_BODY = JSON.stringify({
   },
 });
 
+/**
+ * The JSON-RPC error in an initialize answer (plain JSON or SSE `data:` lines),
+ * as a one-line reason, or null when there is none or the body is not JSON-RPC.
+ */
+export function initializeRpcError(contentType: string, body: string): string | null {
+  const payloads = contentType.includes('text/event-stream')
+    ? body.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trim())
+    : [body];
+  for (const p of payloads) {
+    let msg: { error?: { code?: unknown; message?: unknown; data?: { code?: unknown } } };
+    try { msg = JSON.parse(p); } catch { continue; }
+    const err = msg?.error;
+    if (!err || typeof err !== 'object') continue;
+    const message = String(err.message ?? 'no message').slice(0, 100);
+    const code = typeof err.data?.code === 'string' && !message.includes(err.data.code) ? ` (${err.data.code})` : '';
+    return `JSON-RPC error ${String(err.code ?? '?')}: ${message}${code}`;
+  }
+  return null;
+}
+
 /** POST an MCP initialize request and return null on success or an error reason string. */
 async function probeHttp(
   url: string,
@@ -52,6 +72,13 @@ async function probeHttp(
     if (res.status === 404) return `HTTP 404 (server not found at URL)`;
     // 502/503/504 = upstream proxy can't reach the backend
     if (res.status === 502 || res.status === 503 || res.status === 504) return `HTTP ${res.status} (gateway/proxy error)`;
+    // A 2xx that answers initialize with a JSON-RPC error is not up: buildd's
+    // connector gateway reports a dead provider credential this way, and the
+    // SDK then fails the server for the whole session.
+    if (res.ok) {
+      const rpcError = initializeRpcError(res.headers.get('content-type') ?? '', await res.text().catch(() => ''));
+      if (rpcError) return rpcError;
+    }
     // Any other response (200, 400, 401, 403, 500) = server is reachable
     return null;
   } catch (err: any) {
@@ -112,4 +139,29 @@ export async function runMcpPreflight(opts: McpPreflightOptions): Promise<{ ok: 
   }
 
   return { ok: failures.length === 0, failures };
+}
+
+/**
+ * Split pre-flight failures into the ones that fail the task (connectors the
+ * role opted into) and optional ones (gateway connectors mounted for every
+ * role), which are removed from `mcpServers` so the session starts without them.
+ *
+ * The note matters as much as the drop: a gateway connector is served from
+ * buildd's own origin (/api/mcp/c/<id>), and agents read its failure as "the
+ * buildd MCP server is down", then never call complete_task.
+ */
+export function settleOptionalConnectorFailures(
+  mcpServers: Record<string, unknown>,
+  failures: McpPreflightFailure[],
+  optionalNames: ReadonlySet<string>,
+): { required: McpPreflightFailure[]; dropped: McpPreflightFailure[]; promptNote: string | null } {
+  const required = failures.filter(f => !optionalNames.has(f.server));
+  const dropped = failures.filter(f => optionalNames.has(f.server));
+  for (const f of dropped) delete mcpServers[f.server];
+  const promptNote = dropped.length === 0 ? null : [
+    '## Unavailable connectors',
+    `These optional MCP connectors failed to start and are not in this session: ${dropped.map(f => `${f.server} (${f.reason})`).join('; ')}.`,
+    'Each is a separate data source, not the buildd server: the buildd tools (complete_task, artifacts, analytics, progress) still work. Do not report buildd as unavailable because of them. Work from the sources you have, say in your result which one was missing, and finish the task with complete_task as usual.',
+  ].join('\n');
+  return { required, dropped, promptNote };
 }
