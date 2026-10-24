@@ -82,25 +82,21 @@ describe('a live update keeps what the reader opened', () => {
     expect(row('fx-chain')!.querySelectorAll('[data-testid="activity-derived-child"]')).toHaveLength(5);
   });
 
-  it("History keeps its pages and an episode's earlier steps open", () => {
+  it('History keeps its pages and shows a new delivery once', () => {
     const now = { groups: [], inMotion: 0, liveAgents: 0 };
     const history = Array.from({ length: 25 }, (_, i) => ({
       id: `ep-${i}`, title: `Delivery ${i}`, href: `/app/tasks/ep-${i}`, missionId: null, missionTitle: null,
-      kind: 'landed' as const, repairRounds: 0, at: ACTIVITY_FIXTURE_NOW - i * 3_600_000,
-      steps: Array.from({ length: 9 }, (_, s) => ({ at: ACTIVITY_FIXTURE_NOW - i * 3_600_000 - (9 - s) * 60_000, text: `step ${s}`, tone: 'muted' as const })),
+      kind: 'landed' as const, repairRounds: 0, at: ACTIVITY_FIXTURE_NOW - i * 86_400_000,
+      steps: [{ at: ACTIVITY_FIXTURE_NOW - i * 86_400_000 - 600_000, text: 'Build started', tone: 'muted' as const, void: false }],
     }));
     render(now, 'history', history);
     act(() => container.querySelector<HTMLButtonElement>('[data-testid="activity-history-more"]')!.click());
-    const earlier = () => [...container.querySelectorAll<HTMLButtonElement>('[data-testid="activity-episode"] button')].find(b => b.textContent?.includes('earlier'));
-    act(() => earlier()!.click());
-    const shownSteps = () => container.querySelector('[data-testid="activity-episode"] ol')!.children.length;
-    expect(shownSteps()).toBe(9);
-    // A new delivery lands at the top of History.
+    expect(container.querySelectorAll('[data-testid="activity-episode"]')).toHaveLength(25);
+    // A new delivery lands at the top of History; the pages already shown stay.
     const next = [{ ...history[0], id: 'ep-new', title: 'Delivery new', at: ACTIVITY_FIXTURE_NOW }, ...history];
     render(now, 'history', next);
     expect(container.querySelectorAll('[data-testid="activity-episode"]')).toHaveLength(26);
-    const ep0 = [...container.querySelectorAll('[data-testid="activity-episode"]')].find(e => e.textContent?.includes('Delivery 0'))!;
-    expect(ep0.querySelector('ol')!.children.length).toBe(9);
+    expect([...container.querySelectorAll('[data-testid="activity-episode"]')].filter(e => e.textContent?.includes('Delivery new'))).toHaveLength(1);
   });
 });
 

@@ -38,11 +38,11 @@ it('expands standalone waiting tasks in place and collapses them again', () => {
   }
 });
 
-it('History pages: the first 20 deliveries, then "Show N more"; a filter starts the paging over', () => {
+it('History pages: the first 20 deliveries, then "Show more"; a filter starts the paging over', () => {
   const nowMs = Date.parse('2026-10-08T12:00:00Z');
   const history = Array.from({ length: 25 }, (_, i) => ({
     id: `ep-${i}`, title: `Delivery ${i}`, href: `/app/tasks/ep-${i}`, missionId: null, missionTitle: null,
-    kind: (i === 3 ? 'needs' : 'landed') as 'needs' | 'landed', repairRounds: 0, at: nowMs - i * 3_600_000, steps: [],
+    kind: (i === 3 ? 'needs' : 'landed') as 'needs' | 'landed', repairRounds: 0, at: nowMs - i * 86_400_000, steps: [],
   }));
   const container = document.createElement('div');
   document.body.appendChild(container);
@@ -52,7 +52,7 @@ it('History pages: the first 20 deliveries, then "Show N more"; a filter starts 
     const episodes = () => container.querySelectorAll('[data-testid="activity-episode"]').length;
     const more = () => container.querySelector<HTMLButtonElement>('[data-testid="activity-history-more"]');
     expect(episodes()).toBe(20);
-    expect(more()?.textContent).toBe('Show 5 more');
+    expect(more()?.textContent).toBe('Show more');
     act(() => more()!.click());
     expect(episodes()).toBe(25);
     expect(more()).toBeNull();
@@ -151,9 +151,8 @@ it('AC-1: a new mission that started at once shows once, marked New, created apa
     expect(row.querySelector('[data-testid="activity-transition"]')?.textContent).toBe('Build started · 6m ago');
     expect(row.querySelector('[data-testid="activity-created"]')?.textContent).toBe('created 7m ago');
     act(() => root.render(<ActivityView mode="history" now={f.now} history={f.history} nowMs={ACTIVITY_FIXTURE_NOW} hrefs={{ now: '/app/tasks', history: '/app/tasks?view=history' }} />));
-    const created = [...container.querySelectorAll('[data-testid="activity-created-event"]')].filter(e => e.textContent?.includes(NEW_MISSION.title));
-    expect(created).toHaveLength(1);
-    expect(created[0].querySelector('a')?.getAttribute('href')).toBe(`/app/missions/${NEW_MISSION.id}`);
+    // A creation is no delivery: History draws a bar per delivery and no event line.
+    expect(container.querySelector('[data-testid="activity-created-event"]')).toBeNull();
   } finally { act(() => root.unmount()); }
 });
 
