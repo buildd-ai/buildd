@@ -818,6 +818,11 @@ installing, enabling, granting and connecting stay admin/human acts.
 - A search is `domain:verb` (a category filter; what an agent requests is a provider and `read | write`, see capability-requests.md): domain one of `observability | deployment | database |
   analytics | work_tracking | docs | source_control`, verb `read | query | write`.
   A bare domain means `read`. Anything else is rejected, never guessed.
+- `model.inference` is not a category: it is requested, not searched. Asked for
+  it, discovery answers with the `request_capability` call for the team's
+  decision route (only for a provider a grant can name) and the
+  `invoke_model_inference` action that spends it
+  ([model-inference-agent-capability](model-inference-agent-capability.md) AC-15).
 - Provider coverage comes from a short per-catalog-slug profile
   (`PROVIDER_PROFILES`), else the catalog entry's category. Provider tools are
   not modelled: tool names and schemas stay the provider's own.
